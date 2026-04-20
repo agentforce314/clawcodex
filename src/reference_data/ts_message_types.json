@@ -1,0 +1,39 @@
+{
+  "_comment": "Message types and content blocks from TS types/message.ts",
+  "message_types": [
+    {"type": "user", "class": "UserMessage", "role": "user"},
+    {"type": "assistant", "class": "AssistantMessage", "role": "assistant"},
+    {"type": "system", "class": "SystemMessage", "role": "system"},
+    {"type": "progress", "class": "ProgressMessage", "role": "system"},
+    {"type": "attachment", "class": "AttachmentMessage", "role": "user"}
+  ],
+  "content_block_types": [
+    {"type": "text", "class": "TextBlock", "fields": ["text"]},
+    {"type": "tool_use", "class": "ToolUseBlock", "fields": ["id", "name", "input"]},
+    {"type": "tool_result", "class": "ToolResultBlock", "fields": ["tool_use_id", "content", "is_error"]},
+    {"type": "thinking", "class": "ThinkingBlock", "fields": ["thinking", "signature"]},
+    {"type": "redacted_thinking", "class": "RedactedThinkingBlock", "fields": ["data"]},
+    {"type": "image", "class": "ImageBlock", "fields": ["source"]},
+    {"type": "document", "class": "DocumentBlock", "fields": ["source"]}
+  ],
+  "stream_event_types": [
+    "MessageStart",
+    "ContentBlockStart",
+    "ContentBlockDelta",
+    "ContentBlockStop",
+    "MessageDelta",
+    "MessageStop"
+  ],
+  "message_constants": [
+    "INTERRUPT_MESSAGE",
+    "INTERRUPT_MESSAGE_FOR_TOOL_USE",
+    "CANCEL_MESSAGE",
+    "REJECT_MESSAGE",
+    "NO_CONTENT_MESSAGE",
+    "NO_RESPONSE_REQUESTED",
+    "SYNTHETIC_TOOL_RESULT_PLACEHOLDER"
+  ],
+  "user_message_fields": ["role", "content", "type", "uuid", "timestamp", "isMeta", "isVirtual", "isCompactSummary", "origin", "toolUseResult"],
+  "assistant_message_fields": ["role", "content", "type", "uuid", "timestamp", "stop_reason", "model", "usage", "isApiErrorMessage"],
+  "system_message_fields": ["role", "content", "type", "subtype", "level", "preventContinuation"]
+}

@@ -1,0 +1,13 @@
+# Core Dependencies
+anthropic>=0.18.0
+openai>=1.0.0
+zhipuai>=2.0.0
+python-dotenv>=1.0.0
+rich>=13.0.0
+prompt-toolkit>=3.0.0
+textual>=0.79
+
+# Development Dependencies
+build>=1.0.0
+twine>=5.0.0
+pytest>=8.0.0

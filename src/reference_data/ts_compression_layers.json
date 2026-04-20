@@ -1,0 +1,16 @@
+{
+  "_comment": "Compression pipeline layers from TS services/compact/",
+  "layers_in_order": [
+    {"index": 1, "name": "tool_result_budget", "description": "Persist large tool results to disk, replace with references"},
+    {"index": 2, "name": "snip_compact", "description": "Trim old tool results, preserve message structure"},
+    {"index": 3, "name": "microcompact", "description": "Compress intermediate tool calls"},
+    {"index": 4, "name": "context_collapse", "description": "Read-time projection of collapsed subtasks"},
+    {"index": 5, "name": "autocompact", "description": "Full LLM summarization (last resort)"}
+  ],
+  "pipeline_behavior": {
+    "execution_order": "cheap_to_expensive",
+    "early_exit": true,
+    "early_exit_description": "If earlier layers free enough tokens, later layers are no-ops",
+    "failure_handling": "continue_on_failure"
+  }
+}

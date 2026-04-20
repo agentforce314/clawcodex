@@ -1,0 +1,111 @@
+{
+  "_comment": "Permission test vectors: given (mode, rules, tool) inputs, expected decision output",
+  "permission_modes": ["default", "plan", "acceptEdits", "bypassPermissions", "dontAsk"],
+  "rule_sources": ["userSettings", "projectSettings", "localSettings", "flagSettings", "policySettings", "cliArg", "command", "session"],
+  "decision_types": ["allow", "deny", "ask"],
+  "test_vectors": [
+    {
+      "id": "deny_rule_blocks_tool",
+      "mode": "default",
+      "deny_rules": {"session": ["Bash"]},
+      "allow_rules": {},
+      "tool_name": "Bash",
+      "tool_is_mcp": false,
+      "expected_behavior": "deny"
+    },
+    {
+      "id": "ask_rule_prompts",
+      "mode": "default",
+      "deny_rules": {},
+      "allow_rules": {},
+      "ask_rules": {"session": ["Edit"]},
+      "tool_name": "Edit",
+      "tool_is_mcp": false,
+      "expected_behavior": "ask"
+    },
+    {
+      "id": "allow_rule_permits",
+      "mode": "default",
+      "deny_rules": {},
+      "allow_rules": {"session": ["Read"]},
+      "tool_name": "Read",
+      "tool_is_mcp": false,
+      "expected_behavior": "allow"
+    },
+    {
+      "id": "bypass_mode_allows",
+      "mode": "bypassPermissions",
+      "deny_rules": {},
+      "allow_rules": {},
+      "tool_name": "Edit",
+      "tool_is_mcp": false,
+      "expected_behavior": "allow"
+    },
+    {
+      "id": "deny_overrides_bypass",
+      "mode": "bypassPermissions",
+      "deny_rules": {"session": ["Bash"]},
+      "allow_rules": {},
+      "tool_name": "Bash",
+      "tool_is_mcp": false,
+      "expected_behavior": "deny"
+    },
+    {
+      "id": "dontAsk_mode_denies_ask",
+      "mode": "dontAsk",
+      "deny_rules": {},
+      "allow_rules": {},
+      "tool_name": "Edit",
+      "tool_is_mcp": false,
+      "expected_behavior": "deny"
+    },
+    {
+      "id": "default_mode_passthrough_asks",
+      "mode": "default",
+      "deny_rules": {},
+      "allow_rules": {},
+      "tool_name": "Bash",
+      "tool_is_mcp": false,
+      "expected_behavior": "ask"
+    },
+    {
+      "id": "deny_rule_priority_over_allow",
+      "mode": "default",
+      "deny_rules": {"session": ["Bash"]},
+      "allow_rules": {"session": ["Bash"]},
+      "tool_name": "Bash",
+      "tool_is_mcp": false,
+      "expected_behavior": "deny"
+    },
+    {
+      "id": "ask_rule_checked_before_tool_custom",
+      "mode": "default",
+      "deny_rules": {},
+      "allow_rules": {},
+      "ask_rules": {"session": ["Read"]},
+      "tool_name": "Read",
+      "tool_is_mcp": false,
+      "expected_behavior": "ask"
+    },
+    {
+      "id": "plan_mode_with_bypass_available",
+      "mode": "plan",
+      "deny_rules": {},
+      "allow_rules": {},
+      "is_bypass_available": true,
+      "tool_name": "Edit",
+      "tool_is_mcp": false,
+      "expected_behavior": "allow"
+    },
+    {
+      "id": "should_avoid_prompts_denies_ask",
+      "mode": "default",
+      "deny_rules": {},
+      "allow_rules": {},
+      "should_avoid_prompts": true,
+      "tool_name": "Edit",
+      "tool_is_mcp": false,
+      "expected_behavior": "deny"
+    }
+  ]
+}

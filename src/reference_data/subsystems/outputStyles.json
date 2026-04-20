@@ -1,0 +1,8 @@
+{
+  "archive_name": "outputStyles",
+  "package_name": "outputStyles",
+  "module_count": 1,
+  "sample_files": [
+    "outputStyles/loadOutputStylesDir.ts"
+  ]
+}

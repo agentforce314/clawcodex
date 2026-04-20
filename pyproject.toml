@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "clawcodex"
+version = "0.1.0"
+description = "A production-oriented Python rebuild of Claude Code — real architecture, reliable CLI agent"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Claw Codex Team", email = "team@example.com"}
+]
+keywords = ["claude", "cli", "ai", "llm", "anthropic", "openai", "glm"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "anthropic",
+    "openai",
+    "zhipuai",
+    "python-dotenv",
+    "rich",
+    "prompt-toolkit",
+    "tiktoken>=0.7.0",
+    "textual>=0.79",
+]
+
+[project.optional-dependencies]
+dev = [
+    "build>=1.0.0",
+    "twine>=5.0.0",
+    "pytest>=8.0.0",
+]
+
+[project.scripts]
+clawcodex = "src.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/agentforce314/clawcodex"
+Repository = "https://github.com/agentforce314/clawcodex"
+Documentation = "https://github.com/agentforce314/clawcodex#readme"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
