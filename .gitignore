@@ -1,0 +1,147 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+src/claude-code-ref/
+
+venv/
+ENV/
+env/
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# MyPy
+.mypy_cache/
+
+# OS files
+.DS_Store
+Thumbs.db
+*.Identifier
+
+# Project specific
+archive/
+*.log
+
+# Sensitive files - NEVER COMMIT
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*.secret
+secrets.json
+credentials.json
+.secrets/
+
+# Claude Code specific
+.claude/
+.clawcodex/
+CLAUDE.md
+
+# Session data
+sessions/
+.transcripts/
+.port_sessions/
+
+# Claude Code personal settings
+CLAUDE.local.md
+
+/reference_projects/
+/my-prompts/
+
+# Demos
+/demos/
+
+#typescript sources
+/typescript/
+
+# TypeScript / Node.js
+node_modules/
+jspm_packages/
+bower_components/
+
+# TypeScript build output
+dist/
+build/
+out/
+*.tsbuildinfo
+.tsbuildinfo
+
+# TypeScript/JavaScript caches
+.npm
+.yarn/
+.yarn-integrity
+.pnp.*
+.parcel-cache/
+.next/
+.nuxt/
+.cache/
+.turbo/
+.rollup.cache/
+.vite/
+.svelte-kit/
+
+#random files
+/assets/
+/my-docs/
+/screenshots_work/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Coverage and test output
+coverage/
+*.lcov
+.nyc_output/
+
+# Editor / misc
+*.tgz
+.eslintcache
+.stylelintcache
+
+# Local env files (in addition to Python section above)
+.env.development.local
+.env.test.local
+.env.production.local
