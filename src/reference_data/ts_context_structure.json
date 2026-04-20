@@ -1,0 +1,33 @@
+{
+  "_comment": "Context system structure from TS context.ts and queryContext.ts",
+  "system_prompt_parts_fields": [
+    "default_system_prompt",
+    "user_context",
+    "system_context"
+  ],
+  "user_context_keys": [
+    "claudeMd",
+    "currentDate"
+  ],
+  "system_context_keys": [
+    "gitStatus"
+  ],
+  "context_assembly_order": [
+    "fetch_system_prompt_parts",
+    "_build_default_system_prompt_sections",
+    "append_system_context",
+    "prepend_user_context"
+  ],
+  "memory_file_levels": [
+    "managed",
+    "user",
+    "project",
+    "local"
+  ],
+  "context_caches": [
+    "user_context_cache",
+    "system_context_cache",
+    "memory_file_cache",
+    "git_context_cache"
+  ]
+}

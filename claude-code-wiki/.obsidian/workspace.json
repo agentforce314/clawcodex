@@ -1,0 +1,225 @@
+{
+  "main": {
+    "id": "a7a6b372b8332ff6",
+    "type": "split",
+    "children": [
+      {
+        "id": "9ca17ae93b011b5b",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "c89c981a6e2ba312",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "wiki/sources/05-multi-agent-system.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "05-multi-agent-system"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "vertical"
+  },
+  "left": {
+    "id": "52d88d2f54d48e57",
+    "type": "split",
+    "children": [
+      {
+        "id": "0aac25f77e66cc16",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "e63b7ec909cf6d72",
+            "type": "leaf",
+            "state": {
+              "type": "file-explorer",
+              "state": {
+                "sortOrder": "alphabetical",
+                "autoReveal": false
+              },
+              "icon": "lucide-folder-closed",
+              "title": "Files"
+            }
+          },
+          {
+            "id": "d2c9bc82d89aa5ce",
+            "type": "leaf",
+            "state": {
+              "type": "search",
+              "state": {
+                "query": "",
+                "matchingCase": false,
+                "explainSearch": false,
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical"
+              },
+              "icon": "lucide-search",
+              "title": "Search"
+            }
+          },
+          {
+            "id": "5431d7e4345a5e8c",
+            "type": "leaf",
+            "state": {
+              "type": "bookmarks",
+              "state": {},
+              "icon": "lucide-bookmark",
+              "title": "Bookmarks"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300
+  },
+  "right": {
+    "id": "30a456fdb65f2979",
+    "type": "split",
+    "children": [
+      {
+        "id": "78fe6dfbedff3a83",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "778c85c0eacdd1dd",
+            "type": "leaf",
+            "state": {
+              "type": "backlink",
+              "state": {
+                "file": "wiki/sources/05-multi-agent-system.md",
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical",
+                "showSearch": false,
+                "searchQuery": "",
+                "backlinkCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-coming-in",
+              "title": "Backlinks for 05-multi-agent-system"
+            }
+          },
+          {
+            "id": "a1a92d820eb5f273",
+            "type": "leaf",
+            "state": {
+              "type": "outgoing-link",
+              "state": {
+                "file": "wiki/sources/05-multi-agent-system.md",
+                "linksCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-going-out",
+              "title": "Outgoing links from 05-multi-agent-system"
+            }
+          },
+          {
+            "id": "ec4e403f52fba38f",
+            "type": "leaf",
+            "state": {
+              "type": "tag",
+              "state": {
+                "sortOrder": "frequency",
+                "useHierarchy": true,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-tags",
+              "title": "Tags"
+            }
+          },
+          {
+            "id": "56299efecc26f1f0",
+            "type": "leaf",
+            "state": {
+              "type": "all-properties",
+              "state": {
+                "sortOrder": "frequency",
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-archive",
+              "title": "All properties"
+            }
+          },
+          {
+            "id": "75e9a05a8fbb0ddc",
+            "type": "leaf",
+            "state": {
+              "type": "outline",
+              "state": {
+                "file": "wiki/sources/05-multi-agent-system.md",
+                "followCursor": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-list",
+              "title": "Outline of 05-multi-agent-system"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300,
+    "collapsed": true
+  },
+  "left-ribbon": {
+    "hiddenItems": {
+      "switcher:Open quick switcher": false,
+      "graph:Open graph view": false,
+      "canvas:Create new canvas": false,
+      "daily-notes:Open today's daily note": false,
+      "templates:Insert template": false,
+      "command-palette:Open command palette": false,
+      "bases:Create new base": false
+    }
+  },
+  "active": "c89c981a6e2ba312",
+  "lastOpenFiles": [
+    "wiki/concepts/multi-agent-system.md",
+    "wiki/sources/00-index-architecture-overview.md",
+    "wiki/sources/04b-context-management.md",
+    "wiki/sources/04-query-loop-api.md",
+    "wiki/sources/01-architecture-overview.md",
+    "wiki/concepts/query-loop.md",
+    "wiki/index.md",
+    "raw/claude-code-sourcemap-learning-notebook/en/02_tool_system.md",
+    "raw/claude-code-sourcemap-learning-notebook/en/00_index.md",
+    "wiki/sources/02-tool-system.md",
+    "wiki/sources/05-multi-agent-system.md",
+    "wiki/concepts/tool-system.md",
+    "wiki/concepts/message-type-system.md",
+    "wiki/concepts/plugins-system.md",
+    "wiki/concepts/async-generator-pattern.md",
+    "wiki/concepts/tool-execution-lifecycle.md",
+    "wiki/concepts/agent-isolation.md",
+    "wiki/concepts/buddy-system.md",
+    "wiki/concepts/voice-mode.md",
+    "wiki/concepts/session-memory.md",
+    "wiki/concepts/hook-system.md",
+    "wiki/concepts/tool-search.md",
+    "wiki/concepts/transferable-design-patterns.md",
+    "wiki/concepts/autocompact.md",
+    "wiki/concepts/token-budget.md",
+    "wiki/concepts/feature-flags.md",
+    "wiki/sources/08-voice-buddy.md.tmp.79328.1775616169652",
+    "raw/claude-code-sourcemap-learning-notebook/zh-CN",
+    "raw/claude-code-sourcemap-learning-notebook/en",
+    "raw/claude-code-sourcemap-learning-notebook/LICENSE",
+    "raw/claude-code-sourcemap-learning-notebook",
+    "wiki/sources",
+    "wiki/entities",
+    "wiki/concepts",
+    "wiki/analyses",
+    "wiki"
+  ]
+}
