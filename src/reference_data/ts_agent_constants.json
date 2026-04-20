@@ -1,0 +1,59 @@
+{
+  "_comment": "Agent system constants from TS tools/AgentTool/constants.ts",
+  "agent_tool_name": "Agent",
+  "legacy_agent_tool_name": "Task",
+  "all_agent_disallowed_tools": [
+    "TaskOutput",
+    "ExitPlanMode",
+    "EnterPlanMode",
+    "Agent",
+    "AskUserQuestion",
+    "TaskStop",
+    "Brief"
+  ],
+  "async_agent_allowed_tools": [
+    "Read",
+    "WebSearch",
+    "TodoWrite",
+    "Grep",
+    "WebFetch",
+    "Glob",
+    "Bash",
+    "Edit",
+    "Write",
+    "Skill",
+    "StructuredOutput",
+    "EnterWorktree",
+    "ExitWorktree"
+  ],
+  "one_shot_builtin_agent_types": [
+    "Explore",
+    "Plan"
+  ],
+  "built_in_agents": [
+    {"type": "GeneralPurpose", "name": "General Purpose Agent"},
+    {"type": "Explore", "name": "Explore Agent"},
+    {"type": "Plan", "name": "Plan Agent"},
+    {"type": "fork", "name": "Fork Agent"}
+  ],
+  "permission_mode_inheritance": {
+    "bypassPermissions": "parent_takes_precedence",
+    "acceptEdits": "parent_takes_precedence",
+    "auto": "parent_takes_precedence",
+    "plan": "agent_overrides_if_has_mode",
+    "default": "agent_overrides_if_has_mode"
+  },
+  "subagent_isolation_defaults": {
+    "abort_controller": "new_child_linked_to_parent",
+    "permission_context": "wrapped_avoid_prompts",
+    "read_file_state": "cloned_from_parent",
+    "todos": "fresh_empty",
+    "tasks": "fresh_empty",
+    "outbox": "fresh_empty",
+    "crons": "fresh_empty",
+    "permission_handler": "none",
+    "set_response_length": "none",
+    "content_replacement_state": "deep_cloned",
+    "query_tracking_depth": "parent_plus_one"
+  }
+}

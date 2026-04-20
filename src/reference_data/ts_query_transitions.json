@@ -1,0 +1,33 @@
+{
+  "_comment": "Query state transitions from TS query.ts",
+  "transition_reasons": [
+    "next_turn",
+    "max_output_tokens_recovery",
+    "max_output_tokens_escalate",
+    "reactive_compact_retry",
+    "collapse_drain_retry",
+    "stop_hook_blocking",
+    "token_budget_continuation"
+  ],
+  "query_state_fields": [
+    "messages",
+    "tool_use_context",
+    "auto_compact_tracking",
+    "max_output_tokens_recovery_count",
+    "has_attempted_reactive_compact",
+    "max_output_tokens_override",
+    "stop_hook_active",
+    "turn_count",
+    "transition"
+  ],
+  "recovery_constants": {
+    "ESCALATED_MAX_TOKENS": 64000,
+    "MAX_OUTPUT_TOKENS_RECOVERY_LIMIT": 3
+  },
+  "query_config_fields": [
+    "session_id",
+    "streaming_tool_execution",
+    "emit_tool_use_summaries",
+    "fast_mode_enabled"
+  ]
+}
