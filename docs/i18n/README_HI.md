@@ -1,6 +1,6 @@
 <div align="center">
 
-[English](../../README.md) | [中文](../../README.md#中文版) | [Français](README_FR.md) | [Русский](README_RU.md) | **हिन्दी** | [العربية](README_AR.md) | [Português](README_PT.md)
+[English](../../README.md) | [中文](README_ZH.md) | [Français](README_FR.md) | [Русский](README_RU.md) | **हिन्दी** | [العربية](README_AR.md) | [Português](README_PT.md)
 
 # 🚀 Claude Code Python
 
