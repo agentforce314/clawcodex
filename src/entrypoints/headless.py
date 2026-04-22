@@ -70,7 +70,15 @@ class HeadlessOptions:
     provider_name: str | None = None
     model: str | None = None
     max_turns: int = 20
+    # ``skip_permissions`` is a backward-compat alias for the boolean form
+    # of ``--dangerously-skip-permissions``. ``permission_mode`` and
+    # ``is_bypass_permissions_mode_available`` were added in round 5 to
+    # mirror the TS reference's resolved state. When ``skip_permissions``
+    # is True we treat it as ``permission_mode='bypassPermissions'`` and
+    # ``is_bypass_permissions_mode_available=True``.
     skip_permissions: bool = False
+    permission_mode: str = "default"
+    is_bypass_permissions_mode_available: bool = False
     allowed_tools: tuple[str, ...] = ()
     disallowed_tools: tuple[str, ...] = ()
     include_partial_messages: bool = False
@@ -137,9 +145,31 @@ def run_headless(options: HeadlessOptions) -> int:
         _filter_registry(tool_registry, keep=lambda n: n.lower() not in deny)
 
     workspace_root = options.workspace_root or Path.cwd()
-    tool_context = ToolContext(workspace_root=workspace_root)
-    tool_context.options.is_non_interactive_session = True
+
+    # Compute the effective permission context. ``skip_permissions=True`` is
+    # the legacy alias and means "user passed --dangerously-skip-permissions";
+    # ``permission_mode`` / ``is_bypass_permissions_mode_available`` are the
+    # round-5 fields. When skip_permissions wins, force bypass mode + bypass
+    # availability so the registry's ``has_permissions_to_use_tool`` check
+    # short-circuits to ``allow``.
+    from src.permissions.types import ToolPermissionContext
+
     if options.skip_permissions:
+        effective_mode: str = "bypassPermissions"
+        bypass_available = True
+    else:
+        effective_mode = options.permission_mode or "default"
+        bypass_available = bool(options.is_bypass_permissions_mode_available)
+
+    tool_context = ToolContext(
+        workspace_root=workspace_root,
+        permission_context=ToolPermissionContext(
+            mode=effective_mode,  # type: ignore[arg-type]
+            is_bypass_permissions_mode_available=bypass_available,
+        ),
+    )
+    tool_context.options.is_non_interactive_session = True
+    if options.skip_permissions or effective_mode == "bypassPermissions":
         tool_context.allow_docs = True
         tool_context.permission_handler = None
     else:
@@ -172,9 +202,7 @@ def run_headless(options: HeadlessOptions) -> int:
                 provider=provider_name,
                 cwd=str(workspace_root),
                 tools=tools,
-                permission_mode="bypassPermissions"
-                if options.skip_permissions
-                else "default",
+                permission_mode=effective_mode,
             )
         )
 

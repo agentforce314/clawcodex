@@ -35,6 +35,12 @@ class TUIOptions:
     disallowed_tools: tuple[str, ...] = ()
     workspace_root: Path | None = None
     stream: bool = True
+    # Resolved permission state from --dangerously-skip-permissions /
+    # --allow-dangerously-skip-permissions / --permission-mode. Threaded
+    # in by ``cli._run_tui_mode`` so the TUI tool context honors the same
+    # flags as the headless entrypoint.
+    permission_mode: str = "default"
+    is_bypass_permissions_mode_available: bool = False
     # Test hook: replace the provider instance we'd otherwise build from config.
     provider_factory: Callable[[], object] | None = None
 
@@ -99,10 +105,23 @@ def run_tui(options: TUIOptions) -> int:
         deny = {name.lower() for name in options.disallowed_tools}
         _filter_registry(tool_registry, keep=lambda n: n.lower() not in deny)
 
-    tool_context = ToolContext(workspace_root=workspace_root)
-    # In the TUI we *do* want tool permission prompts to show up as dialogs,
-    # but until we ship ``PermissionDialog`` we default to the same
-    # bypassPermissions behavior the current Rich REPL uses.
+    # Apply the resolved permission state (from ``--dangerously-skip-permissions``
+    # or ``--permission-mode``). When bypass is in effect we also flip
+    # ``allow_docs`` so the doc-write gate in write.py / edit.py doesn't
+    # second-guess the user's explicit opt-in.
+    from src.permissions.types import ToolPermissionContext
+
+    tool_context = ToolContext(
+        workspace_root=workspace_root,
+        permission_context=ToolPermissionContext(
+            mode=options.permission_mode or "default",  # type: ignore[arg-type]
+            is_bypass_permissions_mode_available=bool(
+                options.is_bypass_permissions_mode_available
+            ),
+        ),
+    )
+    if options.permission_mode == "bypassPermissions":
+        tool_context.allow_docs = True
     tool_context.options.is_non_interactive_session = False
 
     # Build and run app ---------------------------------------------------

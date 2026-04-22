@@ -121,7 +121,17 @@ clawcodex -p --output-format stream-json --input-format stream-json < events.ndj
 # Overrides for a single run
 clawcodex --provider anthropic --model claude-sonnet-4-6 -p "Hi"
 clawcodex --max-turns 10 --allowed-tools Read,Grep -p "Find TODOs"
+
+# Permission control (REPL, TUI, and -p all honor these)
+clawcodex --permission-mode plan                       # plan / acceptEdits / dontAsk
+clawcodex --dangerously-skip-permissions -p "ls"       # bypass all permission checks
+clawcodex --allow-dangerously-skip-permissions         # allow /permission-mode bypass later
 ```
+
+> **`--dangerously-skip-permissions`** disables every tool permission check
+> for the session. Recommended only inside sandboxed containers/VMs with no
+> internet access. The flag is refused when the process is running as
+> root/sudo unless `IS_SANDBOX=1` or `CLAUDE_CODE_BUBBLEWRAP=1` is set.
 
 ***
 
