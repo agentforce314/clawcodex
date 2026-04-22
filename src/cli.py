@@ -53,6 +53,11 @@ def main():
     if args.config:
         return show_config()
 
+    # Resolve permission state ONCE here so all modes (print/TUI/REPL) honor
+    # ``--dangerously-skip-permissions`` consistently. Mirrors
+    # ``typescript/src/main.tsx:1383-1389``.
+    _resolve_permission_state(args)
+
     if args.print:
         return _run_print_mode(args)
 
@@ -69,7 +74,11 @@ def main():
     if should_use_tui(explicit_tui):
         return _run_tui_mode(args)
 
-    return start_repl(stream=args.stream)
+    return start_repl(
+        stream=args.stream,
+        permission_mode=args._resolved_permission_mode,
+        is_bypass_permissions_mode_available=args._resolved_is_bypass_available,
+    )
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -147,12 +156,6 @@ Examples:
         help='Include incremental assistant text chunks in stream-json output',
     )
     noninteractive.add_argument(
-        '--dangerously-skip-permissions',
-        dest='dangerously_skip_permissions',
-        action='store_true',
-        help='Bypass all tool permission checks (use with care)',
-    )
-    noninteractive.add_argument(
         '--max-turns',
         type=int,
         default=20,
@@ -188,6 +191,39 @@ Examples:
         help='Emit verbose diagnostics to stderr',
     )
 
+    # ---- Permissions ----
+    # ``--dangerously-skip-permissions`` and ``--allow-dangerously-skip-permissions``
+    # apply to all UI modes (REPL, TUI, headless), so they live in a top-level
+    # group rather than under ``noninteractive``. Mirrors the TS reference at
+    # ``typescript/src/main.tsx:970``.
+    permissions_group = parser.add_argument_group("permissions")
+    permissions_group.add_argument(
+        '--dangerously-skip-permissions',
+        dest='dangerously_skip_permissions',
+        action='store_true',
+        help=(
+            'Bypass all permission checks. Recommended only for sandboxes '
+            'with no internet access.'
+        ),
+    )
+    permissions_group.add_argument(
+        '--allow-dangerously-skip-permissions',
+        dest='allow_dangerously_skip_permissions',
+        action='store_true',
+        help=(
+            'Enable bypassing all permission checks as an option, without it '
+            'being enabled by default. Recommended only for sandboxes with '
+            'no internet access.'
+        ),
+    )
+    permissions_group.add_argument(
+        '--permission-mode',
+        dest='permission_mode',
+        choices=('default', 'plan', 'acceptEdits', 'bypassPermissions', 'dontAsk'),
+        default=None,
+        help='Initial permission mode (default: default)',
+    )
+
     # Subcommands are intercepted in ``main`` before argparse runs so that a
     # free-form prompt argument cannot be misinterpreted as a subcommand.
     # Listing them here purely for ``--help`` documentation.
@@ -202,6 +238,60 @@ Examples:
         "  config   Show current configuration\n"
     )
     return parser
+
+
+def _resolve_permission_state(args) -> None:
+    """Resolve and stash permission state on ``args``.
+
+    Computes the effective :class:`PermissionMode` from the CLI flags and
+    settings, runs the root/sudo safety gate, and emits a single log line
+    when either bypass flag was passed. Stashes the result on ``args`` so
+    every downstream mode (print, TUI, REPL) can read it without re-deriving.
+
+    Mirrors the wiring in ``typescript/src/main.tsx`` lines 1087-1392 plus
+    the safety check in ``typescript/src/setup.ts:382-401``.
+    """
+    import logging as _logging
+
+    from src.permissions.dangerous_safety import (
+        enforce_dangerous_skip_permissions_safety,
+    )
+    from src.permissions.modes import (
+        has_allow_bypass_permissions_mode,
+        initial_permission_mode_from_cli,
+    )
+
+    dangerously = bool(getattr(args, 'dangerously_skip_permissions', False))
+    allow_dangerously = bool(getattr(args, 'allow_dangerously_skip_permissions', False))
+    permission_mode_cli = getattr(args, 'permission_mode', None)
+
+    # Safety gate first — refuse to run as root outside a sandbox.
+    enforce_dangerous_skip_permissions_safety(
+        bypass_requested=dangerously or allow_dangerously,
+    )
+
+    mode = initial_permission_mode_from_cli(
+        permission_mode_cli=permission_mode_cli,
+        dangerously_skip_permissions=dangerously,
+    )
+
+    is_bypass_available = (
+        dangerously
+        or allow_dangerously
+        or has_allow_bypass_permissions_mode()
+    )
+
+    # Stash on args so downstream entrypoints don't need to re-derive.
+    args._resolved_permission_mode = mode
+    args._resolved_is_bypass_available = is_bypass_available
+
+    if dangerously or allow_dangerously:
+        _logging.getLogger("clawcodex.permissions").info(
+            "permission flags: dangerously_skip=%s allow_dangerously_skip=%s mode=%s",
+            dangerously,
+            allow_dangerously,
+            mode,
+        )
 
 
 def _run_print_mode(args) -> int:
@@ -233,6 +323,8 @@ def _run_print_mode(args) -> int:
         model=args.model,
         max_turns=args.max_turns,
         skip_permissions=bool(args.dangerously_skip_permissions),
+        permission_mode=args._resolved_permission_mode,
+        is_bypass_permissions_mode_available=args._resolved_is_bypass_available,
         allowed_tools=tuple(allowed),
         disallowed_tools=tuple(disallowed),
         include_partial_messages=bool(args.include_partial_messages),
@@ -256,6 +348,8 @@ def _run_tui_mode(args) -> int:
         allowed_tools=tuple(allowed),
         disallowed_tools=tuple(disallowed),
         stream=True,
+        permission_mode=args._resolved_permission_mode,
+        is_bypass_permissions_mode_available=args._resolved_is_bypass_available,
     )
     return run_tui(options)
 
@@ -371,13 +465,29 @@ def show_config():
     return 0
 
 
-def start_repl(stream: bool = False):
-    """Start interactive REPL."""
+def start_repl(
+    stream: bool = False,
+    *,
+    permission_mode: str = "default",
+    is_bypass_permissions_mode_available: bool = False,
+):
+    """Start interactive REPL.
+
+    ``permission_mode`` and ``is_bypass_permissions_mode_available`` are
+    resolved by :func:`_resolve_permission_state`. They control whether
+    the in-process tool registry will short-circuit permission checks
+    for the user (when ``--dangerously-skip-permissions`` is set).
+    """
     from src.config import get_default_provider
     from src.repl import ClawcodexREPL
 
     provider = get_default_provider()
-    repl = ClawcodexREPL(provider_name=provider, stream=stream)
+    repl = ClawcodexREPL(
+        provider_name=provider,
+        stream=stream,
+        permission_mode=permission_mode,
+        is_bypass_permissions_mode_available=is_bypass_permissions_mode_available,
+    )
     repl.run()
     return 0
 

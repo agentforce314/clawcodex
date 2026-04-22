@@ -262,7 +262,14 @@ _TASK_WIDGET_TOOL_NAMES: set[str] = {
 class ClawcodexREPL:
     """Interactive REPL for Claw Codex."""
 
-    def __init__(self, provider_name: str = "glm", stream: bool = False):
+    def __init__(
+        self,
+        provider_name: str = "glm",
+        stream: bool = False,
+        *,
+        permission_mode: str = "default",
+        is_bypass_permissions_mode_available: bool = False,
+    ):
         # Mark this process as running an interactive session BEFORE we build
         # the tool registry. Tools like TaskCreate / TaskUpdate / TodoWrite
         # toggle themselves on/off via ``is_todo_v2_enabled()`` which reads
@@ -270,6 +277,14 @@ class ClawcodexREPL:
         from src.bootstrap.state import set_is_interactive
 
         set_is_interactive(True)
+
+        # Stash the resolved permission state so ``ToolContext`` honors
+        # ``--dangerously-skip-permissions`` / ``--permission-mode`` flags
+        # passed at startup. See ``src/cli.py:_resolve_permission_state``.
+        self._permission_mode = permission_mode
+        self._is_bypass_permissions_mode_available = bool(
+            is_bypass_permissions_mode_available
+        )
 
         self.console = Console()
         self.provider_name = provider_name
@@ -298,11 +313,31 @@ class ClawcodexREPL:
 
         self.tool_registry = build_default_registry(provider=self.provider)
         self._engine_messages: list[Any] = []
-        self.tool_context = ToolContext(workspace_root=Path.cwd())
+        from src.permissions.types import ToolPermissionContext
+
+        self.tool_context = ToolContext(
+            workspace_root=Path.cwd(),
+            permission_context=ToolPermissionContext(
+                mode=self._permission_mode,  # type: ignore[arg-type]
+                is_bypass_permissions_mode_available=(
+                    self._is_bypass_permissions_mode_available
+                ),
+            ),
+        )
         self.tool_context.ask_user = self._ask_user_questions
         # Permission handler with status control for proper input handling
         self._current_status = None
-        self.tool_context.permission_handler = self._handle_permission_request
+        if self._permission_mode == "bypassPermissions":
+            # The bypass mode short-circuits the registry's permission check
+            # before the handler is ever consulted, but a few tools call the
+            # handler directly (e.g. the doc-write gate). Auto-allow there
+            # too so the user's explicit opt-in is honored end-to-end.
+            self.tool_context.allow_docs = True
+            self.tool_context.permission_handler = (
+                lambda _tn, _msg, _sug: (True, False)
+            )
+        else:
+            self.tool_context.permission_handler = self._handle_permission_request
 
         # Persistent bottom-toolbar accumulators. Mirrors the TS Ink
         # status line that always shows model · provider · cwd · turn /
