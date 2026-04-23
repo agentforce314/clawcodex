@@ -87,8 +87,9 @@ CLAUDE.local.md
 /reference_projects/
 /my-prompts/
 
-# Demos
-/demos/
+# Demos - source committed; build output and dependencies covered by node_modules/ and dist/ above
+demos/*/node_modules/
+demos/*/dist/
 
 #typescript sources
 /typescript/
