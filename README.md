@@ -332,6 +332,26 @@ Example:
 
 ***
 
+## 🎨 Demos
+
+**Every app under [`demos/`](demos/) was generated end-to-end by ClawCodex itself** — same CLI you just installed, same agent loop, same tools. No hand-edits 🙂
+
+| Demo | Stack | Description |
+| ---- | ----- | ----------- |
+| [`demos/crm-app`](demos/crm-app) | React 18 + Vite + Vitest | Mini CRM with contacts, deals, dashboard, and a full test suite |
+| [`demos/linkedin-app`](demos/linkedin-app) | React 18 + Vite + React Router | LinkedIn-style feed: profile, network, jobs, messaging |
+| [`demos/minecraft-app`](demos/minecraft-app) | React + three.js + @react-three/fiber | Browser voxel sandbox with terrain, mining, HUD, and player controls |
+
+```bash
+cd demos/crm-app   # or linkedin-app / minecraft-app
+npm install
+npm run dev        # vite dev server
+```
+
+Want to see how it's done? Open ClawCodex in any empty directory and ask it to build something — these three were generated exactly that way.
+
+***
+
 ## 🎓 Why ClawCodex?
 
 ### Based on Real Source Code
