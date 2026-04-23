@@ -234,7 +234,7 @@ wheels = [
 ]
 
 [[package]]
-name = "claw-codex"
+name = "clawcodex"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
