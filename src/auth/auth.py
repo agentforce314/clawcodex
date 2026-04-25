@@ -21,6 +21,7 @@ _OPENAI_KEY_ENV_VARS = ("OPENAI_API_KEY",)
 _AWS_KEY_ENV_VARS = ("AWS_ACCESS_KEY_ID",)
 _GEMINI_KEY_ENV_VARS = ("GEMINI_API_KEY", "GOOGLE_API_KEY")
 _OPENROUTER_KEY_ENV_VARS = ("OPENROUTER_API_KEY",)
+_DEEPSEEK_KEY_ENV_VARS = ("DEEPSEEK_API_KEY",)
 
 # Provider → env var lists
 _PROVIDER_ENV_VARS: dict[str, tuple[str, ...]] = {
@@ -29,6 +30,7 @@ _PROVIDER_ENV_VARS: dict[str, tuple[str, ...]] = {
     "aws": _AWS_KEY_ENV_VARS,
     "gemini": _GEMINI_KEY_ENV_VARS,
     "openrouter": _OPENROUTER_KEY_ENV_VARS,
+    "deepseek": _DEEPSEEK_KEY_ENV_VARS,
 }
 
 # Simple format validators
@@ -36,6 +38,7 @@ _KEY_PATTERNS: dict[str, re.Pattern[str]] = {
     "anthropic": re.compile(r"^sk-ant-[a-zA-Z0-9_-]{20,}$"),
     "openai": re.compile(r"^sk-[a-zA-Z0-9_-]{20,}$"),
     "openrouter": re.compile(r"^sk-or-[a-zA-Z0-9_-]{20,}$"),
+    "deepseek": re.compile(r"^sk-[a-zA-Z0-9_-]{20,}$"),
 }
 
 

@@ -81,7 +81,7 @@ Explain the code in $path. Start with an analogy, then draw a diagram.
 ClawCodex’s main advantage is **multi-provider support**: while Claude Code targets **Claude** models, we aim to support **every major LLM provider** behind the same agent runtime—so you can swap vendors, regions, and price tiers without giving up tools, skills, or the coding loop. That flexibility is what makes agentic coding practical at scale.
 
 ```python
-providers = ["anthropic", "openai", "glm", "minimax", "openrouter"]  # OpenAI-compatible & GLM APIs; more can be added
+providers = ["anthropic", "openai", "glm", "minimax", "openrouter", "deepseek"]  # OpenAI-compatible & GLM APIs; more can be added
 ```
 
 ### Interactive REPL (default) and Textual TUI (opt-in)
@@ -150,7 +150,7 @@ clawcodex --allow-dangerously-skip-permissions         # allow /permission-mode 
 |--------|--------|-------------|
 | CLI Entry | ✅ | `clawcodex`, `login`, `config`, `-p` / `--print`, `--tui`, `--stream`, `--version` |
 | Interactive REPL | ✅ | Default inline REPL; optional Textual TUI; history, tab completion, multiline |
-| Multi-Provider | ✅ | Anthropic, OpenAI, Zhipu GLM, Minimax, OpenRouter |
+| Multi-Provider | ✅ | Anthropic, OpenAI, Zhipu GLM, Minimax, OpenRouter, DeepSeek |
 | Session Persistence | ✅ | Save/load sessions locally |
 | Agent Loop | ✅ | Tool calling loop with streaming and headless mode |
 | Skill System | ✅ | SKILL.md-based slash-command skills with args + tool limits |
@@ -213,7 +213,7 @@ clawcodex login
 
 This flow will:
 
-1. ask you to choose a provider: anthropic / openai / glm / minimax / openrouter
+1. ask you to choose a provider: anthropic / openai / glm / minimax / openrouter / deepseek
 2. ask for that provider's API key
 3. optionally save a custom base URL
 4. optionally save a default model
@@ -249,6 +249,11 @@ The configuration file is saved in in `~/.clawcodex/config.json`. Example struct
       "api_key": "base64-encoded-key",
       "base_url": "https://openrouter.ai/api/v1",
       "default_model": "deepseek/deepseek-v4-pro"
+    },
+    "deepseek": {
+      "api_key": "base64-encoded-key",
+      "base_url": "https://api.deepseek.com",
+      "default_model": "deepseek-v4-pro"
     }
   }
 }
@@ -390,7 +395,7 @@ clawcodex/
 │   ├── entrypoints/        # Headless (-p) and TUI bootstraps
 │   ├── repl/               # Inline REPL (prompt_toolkit + Rich)
 │   ├── tui/                # Textual UI (--tui, /tui)
-│   ├── providers/          # Anthropic, OpenAI, GLM, Minimax, OpenRouter
+│   ├── providers/          # Anthropic, OpenAI, GLM, Minimax, OpenRouter, DeepSeek
 │   ├── agent/              # Conversation, session, prompts
 │   ├── tool_system/        # Agent loop, tools, schemas
 │   ├── skills/             # SKILL.md loading and skill tool
