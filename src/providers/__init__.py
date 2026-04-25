@@ -106,6 +106,19 @@ PROVIDER_INFO: dict[str, ProviderInfo] = {
             "MiniMax-M2",
         ],
     },
+    "deepseek": {
+        "label": "DeepSeek",
+        "default_base_url": "https://api.deepseek.com",
+        "default_model": "deepseek-v4-pro",
+        "available_models": [
+            # V4 series (current)
+            "deepseek-v4-pro",
+            "deepseek-v4-flash",
+            # Legacy aliases (being deprecated; map to v4-flash modes)
+            "deepseek-chat",
+            "deepseek-reasoner",
+        ],
+    },
     "openrouter": {
         "label": "OpenRouter (multi-vendor proxy)",
         "default_base_url": "https://openrouter.ai/api/v1",
@@ -179,6 +192,10 @@ def get_provider_class(provider_name: str):
         from .openrouter_provider import OpenRouterProvider
 
         return OpenRouterProvider
+    if provider_name == "deepseek":
+        from .deepseek_provider import DeepSeekProvider
+
+        return DeepSeekProvider
     raise ValueError(f"Unknown provider: {provider_name}")
 
 
