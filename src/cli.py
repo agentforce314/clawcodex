@@ -171,7 +171,7 @@ Examples:
         '--provider',
         type=str,
         default=None,
-        help='Override the provider (anthropic, openai, glm, minimax)',
+        help='Override the provider (anthropic, openai, glm, minimax, openrouter)',
     )
     noninteractive.add_argument(
         '--allowed-tools',

@@ -106,6 +106,47 @@ PROVIDER_INFO: dict[str, ProviderInfo] = {
             "MiniMax-M2",
         ],
     },
+    "openrouter": {
+        "label": "OpenRouter (multi-vendor proxy)",
+        "default_base_url": "https://openrouter.ai/api/v1",
+        "default_model": "anthropic/claude-sonnet-4.5",
+        "available_models": [
+            # DeepSeek V4 (latest, strongest — top of the list)
+            "deepseek/deepseek-v4-pro",
+            "deepseek/deepseek-v4-flash",
+            # Anthropic
+            "anthropic/claude-sonnet-4.5",
+            "anthropic/claude-opus-4.1",
+            "anthropic/claude-haiku-4.5",
+            "anthropic/claude-3.5-sonnet",
+            "anthropic/claude-3.5-haiku",
+            # OpenAI
+            "openai/gpt-5",
+            "openai/gpt-5-mini",
+            "openai/gpt-4o",
+            "openai/gpt-4o-mini",
+            "openai/o1",
+            "openai/o1-mini",
+            # Google
+            "google/gemini-2.5-pro",
+            "google/gemini-2.5-flash",
+            "google/gemini-2.0-flash",
+            # Meta
+            "meta-llama/llama-3.3-70b-instruct",
+            "meta-llama/llama-3.1-405b-instruct",
+            # Mistral
+            "mistralai/mistral-large",
+            "mistralai/mixtral-8x22b-instruct",
+            # DeepSeek (V3.x line — V4 is at top of list)
+            "deepseek/deepseek-v3.2",
+            "deepseek/deepseek-v3.2-speciale",
+            "deepseek/deepseek-v3.1-terminus",
+            "deepseek/deepseek-chat-v3.1",
+            "deepseek/deepseek-r1-0528",
+            # xAI
+            "x-ai/grok-2",
+        ],
+    },
 }
 
 
@@ -134,6 +175,10 @@ def get_provider_class(provider_name: str):
         from .minimax_provider import MinimaxProvider
 
         return MinimaxProvider
+    if provider_name == "openrouter":
+        from .openrouter_provider import OpenRouterProvider
+
+        return OpenRouterProvider
     raise ValueError(f"Unknown provider: {provider_name}")
 
 
