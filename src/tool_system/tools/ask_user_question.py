@@ -46,7 +46,19 @@ AskUserQuestionTool: Tool = build_tool(
                     "properties": {
                         "question": {"type": "string"},
                         "header": {"type": "string"},
-                        "options": {"type": "array"},
+                        "multiSelect": {"type": "boolean"},
+                        "options": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "label": {"type": "string"},
+                                    "description": {"type": "string"},
+                                    "preview": {"type": "string"},
+                                },
+                                "required": ["label"],
+                            },
+                        },
                     },
                     "required": ["question"],
                 },
