@@ -344,7 +344,14 @@ def normalize_message_for_api(message: MessageLike) -> dict[str, Any] | None:
     else:
         normalized_content = str(content)
 
-    return {"role": api_role, "content": normalized_content}
+    result: dict[str, Any] = {"role": api_role, "content": normalized_content}
+    # DeepSeek/GLM thinking modes may require replaying assistant
+    # reasoning_content on follow-up turns.
+    if api_role == "assistant":
+        reasoning_content = _get_field(message, "reasoning_content", None)
+        if isinstance(reasoning_content, str) and reasoning_content:
+            result["reasoning_content"] = reasoning_content
+    return result
 
 
 def ensure_tool_result_pairing(
@@ -407,6 +414,9 @@ def ensure_tool_result_pairing(
             final_content = [{"type": "text", "text": "[Tool use interrupted]"}]
 
         assistant_msg = {"role": "assistant", "content": final_content}
+        reasoning_content = msg.get("reasoning_content")
+        if isinstance(reasoning_content, str) and reasoning_content:
+            assistant_msg["reasoning_content"] = reasoning_content
         result.append(assistant_msg)
 
         tool_use_ids = list(seen_tool_use_ids)

@@ -132,6 +132,49 @@ class TestClaudeCodeToolParity(unittest.TestCase):
         )
         self.assertEqual(self.ctx.todos, [])
 
+    def test_openai_messages_preserve_reasoning_content_across_tool_turns(self) -> None:
+        conversation = Conversation()
+        conversation.add_user_message("hi")
+
+        mock_provider = MagicMock()
+        mock_provider.__class__.__name__ = "DeepSeekProvider"
+        first = ChatResponse(
+            content="Let me check",
+            model="deepseek-v4-pro",
+            usage={"input_tokens": 1, "output_tokens": 1},
+            finish_reason="tool_calls",
+            reasoning_content="hidden chain of thought token stream",
+            tool_uses=[{"id": "toolu_1", "name": "SendUserMessage", "input": {"message": "working"}}],
+        )
+        second = ChatResponse(
+            content="done",
+            model="deepseek-v4-pro",
+            usage={"input_tokens": 1, "output_tokens": 1},
+            finish_reason="stop",
+            tool_uses=None,
+        )
+        mock_provider.chat.side_effect = [first, second]
+
+        out = run_agent_loop(
+            conversation=conversation,
+            provider=mock_provider,
+            tool_registry=self.registry,
+            tool_context=self.ctx,
+            verbose=False,
+        )
+        self.assertEqual(out.response_text, "done")
+        self.assertEqual(mock_provider.chat.call_count, 2)
+        second_call_messages = mock_provider.chat.call_args_list[1].args[0]
+        assistant_with_tool_call = next(
+            msg
+            for msg in second_call_messages
+            if msg.get("role") == "assistant" and msg.get("tool_calls")
+        )
+        self.assertEqual(
+            assistant_with_tool_call.get("reasoning_content"),
+            "hidden chain of thought token stream",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

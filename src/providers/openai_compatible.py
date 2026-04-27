@@ -67,6 +67,11 @@ def _convert_anthropic_messages_to_openai(
                     "role": "assistant",
                     "tool_calls": tool_calls,
                 }
+                # DeepSeek thinking mode requires reasoning_content to be
+                # replayed together with assistant tool call messages.
+                reasoning_content = msg.get("reasoning_content")
+                if isinstance(reasoning_content, str) and reasoning_content:
+                    assistant_msg["reasoning_content"] = reasoning_content
                 text_content = "\n".join(text_parts) if text_parts else None
                 if text_content:
                     assistant_msg["content"] = text_content

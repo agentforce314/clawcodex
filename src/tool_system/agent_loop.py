@@ -363,6 +363,10 @@ def run_agent_loop(
             conversation.add_assistant_message(final_assistant_content)
             # Add assistant message to OpenAI messages (text only)
             openai_assistant_msg: dict[str, Any] = {"role": "assistant", "content": final_assistant_content}
+            # DeepSeek/GLM thinking modes require reasoning_content to be replayed
+            # on subsequent turns when the assistant response included it.
+            if response.reasoning_content:
+                openai_assistant_msg["reasoning_content"] = response.reasoning_content
             # If there are tool_uses, add them in OpenAI format
             if response.tool_uses:
                 # Build OpenAI tool_calls

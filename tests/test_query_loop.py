@@ -129,6 +129,62 @@ class TestQueryLoopSingleTurn(unittest.TestCase):
         ]
         self.assertGreaterEqual(len(tool_results), 1)
 
+    def test_multi_turn_replays_reasoning_content_for_followup(self):
+        provider = MagicMock()
+        provider.chat_stream_response.side_effect = NotImplementedError()
+
+        first = ChatResponse(
+            content="I'll handle this",
+            model="deepseek-v4-pro",
+            usage={"input_tokens": 10, "output_tokens": 20},
+            finish_reason="tool_use",
+            reasoning_content="thinking trace from provider",
+            tool_uses=[{
+                "id": "toolu_001",
+                "name": "Write",
+                "input": {
+                    "file_path": str(self.workspace / "reasoning.txt"),
+                    "content": "hello",
+                },
+            }],
+        )
+        second = ChatResponse(
+            content="Done",
+            model="deepseek-v4-pro",
+            usage={"input_tokens": 30, "output_tokens": 10},
+            finish_reason="end_turn",
+            tool_uses=None,
+        )
+        provider.chat.side_effect = [first, second]
+
+        params = QueryParams(
+            messages=[UserMessage(content="Create file")],
+            system_prompt="You are helpful.",
+            tools=self.registry.list_tools(),
+            tool_registry=self.registry,
+            tool_use_context=self.context,
+            provider=provider,
+            abort_controller=self.abort,
+            max_turns=10,
+        )
+
+        async def run():
+            async for _msg in query(params):
+                pass
+
+        _run(run())
+
+        self.assertEqual(provider.chat.call_count, 2)
+        second_call_messages = provider.chat.call_args_list[1].args[0]
+        assistant_with_tool_use = next(
+            msg for msg in second_call_messages
+            if msg.get("role") == "assistant" and isinstance(msg.get("content"), list)
+        )
+        self.assertEqual(
+            assistant_with_tool_use.get("reasoning_content"),
+            "thinking trace from provider",
+        )
+
     def test_max_turns_limit(self):
         provider = MagicMock()
         provider.chat_stream_response.side_effect = NotImplementedError()
