@@ -270,6 +270,9 @@ async def _call_model_sync(
         content=assistant_blocks if assistant_blocks else "",
         stop_reason=stop_reason,
     )
+    if response.reasoning_content:
+        # Preserve provider thinking metadata for follow-up turns.
+        assistant_msg.reasoning_content = response.reasoning_content  # type: ignore[attr-defined]
 
     if stop_reason == "max_tokens":
         assistant_msg._api_error = "max_output_tokens"  # type: ignore[attr-defined]
