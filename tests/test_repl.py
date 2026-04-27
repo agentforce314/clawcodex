@@ -7,6 +7,8 @@ from unittest.mock import Mock, patch, MagicMock
 from pathlib import Path
 import tempfile
 import json
+import threading
+import time
 from rich.markdown import Markdown
 
 from src.repl import ClawcodexREPL
@@ -428,6 +430,94 @@ class TestREPL(unittest.TestCase):
 
                         # Session should not change
                         self.assertEqual(repl.session, original_session)
+
+    def test_permission_prompt_is_serialized(self):
+        """Concurrent permission checks should not open overlapping prompts."""
+        with patch('src.repl.core.get_provider_config', return_value={
+            "api_key": "test_api_key_12345678",
+            "base_url": "https://open.bigmodel.cn/api/paas/v4",
+            "default_model": "glm-4.5",
+        }), patch('src.repl.core.PromptSession') as mock_prompt_session:
+            mock_prompt_session.return_value = Mock(prompt=Mock(return_value=""))
+            with patch('src.repl.core.Session.create'):
+                with patch('src.repl.core.get_provider_class') as mock_provider_class:
+                    mock_provider = Mock()
+                    mock_provider.model = "glm-4.5"
+                    mock_provider_class.return_value = mock_provider
+                    repl = ClawcodexREPL(provider_name="glm")
+                    repl.console.print = Mock()
+
+                    in_prompt = 0
+                    max_in_prompt = 0
+                    counter_lock = threading.Lock()
+
+                    def fake_input(_prompt: str) -> str:
+                        nonlocal in_prompt, max_in_prompt
+                        with counter_lock:
+                            in_prompt += 1
+                            if in_prompt > max_in_prompt:
+                                max_in_prompt = in_prompt
+                        time.sleep(0.03)
+                        with counter_lock:
+                            in_prompt -= 1
+                        return "1"
+
+                    repl._safe_input = fake_input  # type: ignore[assignment]
+
+                    t1 = threading.Thread(
+                        target=repl._handle_permission_request,
+                        args=("Grep", "Claude wants to use Grep. Allow?", None),
+                    )
+                    t2 = threading.Thread(
+                        target=repl._handle_permission_request,
+                        args=("Read", "Claude wants to use Read. Allow?", None),
+                    )
+                    t1.start()
+                    t2.start()
+                    t1.join()
+                    t2.join()
+
+                    self.assertEqual(max_in_prompt, 1)
+
+    def test_permission_prompt_cached_per_tool(self):
+        """After first decision, same tool should not prompt again."""
+        with patch('src.repl.core.get_provider_config', return_value={
+            "api_key": "test_api_key_12345678",
+            "base_url": "https://open.bigmodel.cn/api/paas/v4",
+            "default_model": "glm-4.5",
+        }), patch('src.repl.core.PromptSession') as mock_prompt_session:
+            mock_prompt_session.return_value = Mock(prompt=Mock(return_value=""))
+            with patch('src.repl.core.Session.create'):
+                with patch('src.repl.core.get_provider_class') as mock_provider_class:
+                    mock_provider = Mock()
+                    mock_provider.model = "glm-4.5"
+                    mock_provider_class.return_value = mock_provider
+                    repl = ClawcodexREPL(provider_name="glm")
+                    repl.console.print = Mock()
+
+                    prompt_calls = 0
+
+                    def fake_input(_prompt: str) -> str:
+                        nonlocal prompt_calls
+                        prompt_calls += 1
+                        return "1"
+
+                    repl._safe_input = fake_input  # type: ignore[assignment]
+
+                    first = repl._handle_permission_request(
+                        "Grep",
+                        "Claude wants to use Grep. Allow?",
+                        None,
+                    )
+                    second = repl._handle_permission_request(
+                        "Grep",
+                        "Claude wants to use Grep. Allow?",
+                        None,
+                    )
+
+                    self.assertEqual(first, (True, False))
+                    self.assertEqual(second, (True, False))
+                    self.assertEqual(prompt_calls, 1)
 
 
 class TestConversation(unittest.TestCase):

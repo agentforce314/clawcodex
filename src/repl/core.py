@@ -354,6 +354,13 @@ class ClawcodexREPL:
         # reference's "type while it's still thinking" affordance.
         self._queued_prompts: list[str] = []
         self._queued_prompts_lock = threading.Lock()
+        # Permission dialogs can be requested from different worker paths
+        # (e.g. subagents/tools). Serialize interactive prompts so we never
+        # mount competing prompt_toolkit applications at once.
+        self._permission_prompt_lock = threading.Lock()
+        # Session-level cache for permission decisions (tool_name -> allow/deny)
+        # so identical prompts in loops don't repeatedly interrupt the user.
+        self._permission_decision_cache: dict[str, bool] = {}
 
         # The currently mounted ``LiveStatus`` (if any). ``_safe_input``
         # pauses it before reading a synchronous answer (e.g. permission
@@ -671,65 +678,76 @@ class ClawcodexREPL:
             Tuple of (allowed: bool, continue_without_caching: bool).
             continue_without_caching is always False since we don't cache in REPL.
         """
-        # Stop the Rich status spinner if running, so we can get clean input
-        if self._current_status is not None:
-            try:
-                self._current_status.stop()
-            except Exception:
-                pass
+        with self._permission_prompt_lock:
+            cache_key = tool_name.strip().lower()
+            cached = self._permission_decision_cache.get(cache_key)
+            if cached is not None:
+                return cached, False
 
-        self.console.print("")
-        self.console.print("[bold yellow]⚠ Permission Required[/bold yellow]")
-        self.console.print(f"  {message}")
-        self.console.print("")
+            # Stop the Rich status spinner if running, so we can get clean input
+            if self._current_status is not None:
+                try:
+                    self._current_status.stop()
+                except Exception:
+                    pass
 
-        # Determine if this is a setting that can be enabled
-        can_enable_setting = False
-        setting_to_enable: str | None = None
+            self.console.print("")
+            self.console.print("[bold yellow]⚠ Permission Required[/bold yellow]")
+            self.console.print(f"  {message}")
+            self.console.print("")
 
-        msg_lower = message.lower()
-        if "allow_docs" in msg_lower or "documentation files" in msg_lower:
-            if not self.tool_context.allow_docs:
-                can_enable_setting = True
-                setting_to_enable = "allow_docs"
+            # Determine if this is a setting that can be enabled
+            can_enable_setting = False
+            setting_to_enable: str | None = None
 
-        # Build options
-        options: list[tuple[str, str]] = [
-            ("y", "Yes, allow this action"),
-            ("n", "No, deny this action"),
-        ]
-        if can_enable_setting:
-            options.insert(0, ("e", f"Enable {setting_to_enable} and allow"))
+            msg_lower = message.lower()
+            if "allow_docs" in msg_lower or "documentation files" in msg_lower:
+                if not self.tool_context.allow_docs:
+                    can_enable_setting = True
+                    setting_to_enable = "allow_docs"
 
-        self.console.print("[bold]Options:[/bold]")
-        for i, (key, desc) in enumerate(options, start=1):
-            self.console.print(f"  {i}. [{key}] {desc}")
-        self.console.print("")
+            # Build options
+            options: list[tuple[str, str]] = [
+                ("y", "Yes, allow this action"),
+                ("n", "No, deny this action"),
+            ]
+            if can_enable_setting:
+                options.insert(0, ("e", f"Enable {setting_to_enable} and allow"))
 
-        # Get input via prompt_toolkit so it cooperates with patch_stdout()
-        # and the LiveStatus bottom region.
-        choice = self._safe_input("Select option> ").strip().lower()
+            self.console.print("[bold]Options:[/bold]")
+            for i, (key, desc) in enumerate(options, start=1):
+                self.console.print(f"  {i}. [{key}] {desc}")
+            self.console.print("")
 
-        # Parse choice based on the actual displayed options
-        if can_enable_setting:
-            # Menu: 1=Enable, 2=Yes, 3=No
-            if choice in ("1", "e", "enable"):
-                self._enable_permission_setting(setting_to_enable)
-                return True, False
-            elif choice in ("2", "y", "yes", ""):
-                return True, False
-            elif choice in ("3", "n", "no"):
-                return False, False
-        else:
-            # Menu: 1=Yes, 2=No
-            if choice in ("1", "y", "yes", ""):
-                return True, False
-            elif choice in ("2", "n", "no"):
-                return False, False
+            # Get input via prompt_toolkit so it cooperates with patch_stdout()
+            # and the LiveStatus bottom region.
+            choice = self._safe_input("Select option> ").strip().lower()
 
-        # Default to deny for invalid input
-        self.console.print("[dim]Invalid choice, defaulting to deny.[/dim]")
-        return False, False
+            # Parse choice based on the actual displayed options
+            if can_enable_setting:
+                # Menu: 1=Enable, 2=Yes, 3=No
+                if choice in ("1", "e", "enable"):
+                    self._enable_permission_setting(setting_to_enable)
+                    self._permission_decision_cache[cache_key] = True
+                    return True, False
+                elif choice in ("2", "y", "yes", ""):
+                    self._permission_decision_cache[cache_key] = True
+                    return True, False
+                elif choice in ("3", "n", "no"):
+                    self._permission_decision_cache[cache_key] = False
+                    return False, False
+            else:
+                # Menu: 1=Yes, 2=No
+                if choice in ("1", "y", "yes", ""):
+                    self._permission_decision_cache[cache_key] = True
+                    return True, False
+                elif choice in ("2", "n", "no"):
+                    self._permission_decision_cache[cache_key] = False
+                    return False, False
+
+            # Default to deny for invalid input
+            self.console.print("[dim]Invalid choice, defaulting to deny.[/dim]")
+            return False, False
 
     def _enable_permission_setting(self, setting_name: str | None) -> None:
         """Enable a permission setting in the tool context."""

@@ -94,6 +94,15 @@ class TestMessageNormalization(unittest.TestCase):
         self.assertEqual(normalized[0]["content"][0]["text"], "legacy")
         self.assertEqual(normalized[0]["content"][1]["name"], "Grep")
 
+    def test_preserves_assistant_reasoning_content(self):
+        assistant = AssistantMessage(content=[TextBlock(text="working")])
+        assistant.reasoning_content = "internal reasoning trace"  # type: ignore[attr-defined]
+
+        normalized = normalize_messages_for_api([assistant])
+
+        self.assertEqual(normalized[0]["role"], "assistant")
+        self.assertEqual(normalized[0]["reasoning_content"], "internal reasoning trace")
+
 
 if __name__ == "__main__":
     unittest.main()
