@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 from src.providers import get_provider_class
 from src.providers.anthropic_provider import AnthropicProvider
 from src.providers.glm_provider import GLMProvider
+from src.providers.openai_compatible import _convert_anthropic_messages_to_openai
 from src.providers.openai_provider import OpenAIProvider
 from src.providers.base import ChatMessage, ChatResponse
 
@@ -188,6 +189,28 @@ class TestOpenAIProvider(unittest.TestCase):
         models = provider.get_available_models()
         self.assertIn("gpt-4", models)
         self.assertIn("gpt-4o", models)
+
+    def test_converter_preserves_reasoning_with_tool_calls(self):
+        messages = [
+            {
+                "role": "assistant",
+                "reasoning_content": "keep-me",
+                "content": [
+                    {"type": "text", "text": "Thinking..."},
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_1",
+                        "name": "TaskCreate",
+                        "input": {"title": "todo"},
+                    },
+                ],
+            }
+        ]
+        converted = _convert_anthropic_messages_to_openai(messages)
+        self.assertEqual(len(converted), 1)
+        self.assertEqual(converted[0]["role"], "assistant")
+        self.assertEqual(converted[0]["reasoning_content"], "keep-me")
+        self.assertTrue(converted[0]["tool_calls"])
 
     @patch("src.providers.openai_provider.OpenAI")
     def test_chat(self, mock_openai):
