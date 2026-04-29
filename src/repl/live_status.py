@@ -33,8 +33,11 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from contextlib import contextmanager
 from typing import Callable, Iterator
+
+from src.utils.format import format_duration, format_number
 
 try:
     from prompt_toolkit.application import Application
@@ -68,6 +71,9 @@ _SPINNER_FRAMES: tuple[str, ...] = (
     "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏",
 )
 _FRAME_INTERVAL = 0.08
+# Mirrors ``SHOW_TOKENS_AFTER_MS`` in
+# ``typescript/src/components/Spinner/SpinnerAnimationRow.tsx``.
+_SHOW_TIMER_AFTER_MS = 30_000
 
 
 class LiveStatus:
@@ -103,6 +109,7 @@ class LiveStatus:
         on_submit: Callable[[str], None] | None = None,
         on_expand: Callable[[], None] | None = None,
         completer=None,
+        verbose: bool = False,
     ) -> None:
         if not _HAS_PROMPT_TOOLKIT:
             raise RuntimeError(
@@ -125,6 +132,18 @@ class LiveStatus:
         self._ready = threading.Event()
         self._lock = threading.Lock()
         self._input_buffer: Buffer | None = None
+        # Tracks the wall-clock origin for the spinner's elapsed-time
+        # readout (mirrors ``loadingStartTimeRef`` in the TS spinner).
+        # Set in ``__enter__`` / ``paused.__exit__`` and cleared in
+        # ``_stop`` so a paused-and-resumed cycle restarts the timer.
+        self._started_at: float | None = None
+        # Latest token total surfaced via :meth:`set_tokens`. Mirrors
+        # ``responseLengthRef.current / 4`` + teammate sum from
+        # ``SpinnerAnimationRow.tsx``.
+        self._tokens: int = 0
+        # Force-show the elapsed/token suffix before the 30s threshold.
+        # Maps to the TS ``verbose`` prop in ``SpinnerWithVerb``.
+        self._verbose = verbose
 
     # ---- public API ----
     def update(self, message: str) -> None:
@@ -134,7 +153,24 @@ class LiveStatus:
             self._message = message
         self._invalidate()
 
+    def set_tokens(self, n: int) -> None:
+        """Update the token count shown in the spinner suffix.
+
+        Safe to call from any thread. Pass the running per-turn total
+        (input + output tokens) — the spinner re-renders on the next
+        frame tick. Mirrors how the TS spinner reads
+        ``responseLengthRef.current / 4`` each frame.
+        """
+
+        with self._lock:
+            if n == self._tokens:
+                return
+            self._tokens = max(0, int(n))
+        self._invalidate()
+
     def __enter__(self) -> "LiveStatus":
+        self._started_at = time.monotonic()
+        self._tokens = 0
         self._thread = threading.Thread(
             target=self._run_thread,
             name="clawcodex-live-status",
@@ -168,6 +204,11 @@ class LiveStatus:
         on_submit = self._on_submit
         on_expand = self._on_expand
         completer = self._completer
+        # Preserve the timer / token counter across the pause so the
+        # spinner picks up where it left off after the foreground prompt
+        # finishes. ``_stop`` clears ``_started_at``; capture first.
+        started_at = self._started_at
+        tokens = self._tokens
         self._stop()
         try:
             yield
@@ -178,6 +219,8 @@ class LiveStatus:
             self._on_expand = on_expand
             self._completer = completer
             self._frame_index = 0
+            self._started_at = started_at
+            self._tokens = tokens
             self._ready = threading.Event()
             self._thread = threading.Thread(
                 target=self._run_thread,
@@ -369,14 +412,31 @@ class LiveStatus:
     def _render_spinner_text(self) -> "FormattedText":
         with self._lock:
             message = self._message
+            started_at = self._started_at
+            tokens = self._tokens
+            verbose = self._verbose
         frame = _SPINNER_FRAMES[self._frame_index % len(_SPINNER_FRAMES)]
         self._frame_index += 1
+
+        # Match ``SpinnerAnimationRow.tsx``'s suffix:
+        # ``(esc to interrupt · 12s · ↓ 1.2k tokens)``.
+        # Timer + token suffix gated by 30s elapsed (or ``verbose``),
+        # tokens additionally require a non-zero count.
+        elapsed_ms = (time.monotonic() - started_at) * 1000 if started_at else 0.0
+        wants_timer = verbose or elapsed_ms > _SHOW_TIMER_AFTER_MS
+        suffix = "  (esc to interrupt"
+        if wants_timer:
+            suffix += f" · {format_duration(elapsed_ms)}"
+            if tokens > 0:
+                suffix += f" · ↓ {format_number(tokens)} tokens"
+        suffix += ")"
+
         return FormattedText(
             [
                 ("class:spinner", frame),
                 ("", " "),
                 ("class:status", message),
-                ("class:hint", "  (esc to cancel · enter to queue)"),
+                ("class:hint", suffix),
             ]
         )
 
@@ -403,3 +463,8 @@ class LiveStatus:
         self._loop = None
         self._thread = None
         self._input_buffer = None
+        # Cleared so a fresh ``__enter__`` after a full teardown starts
+        # the elapsed timer from zero. ``paused()`` snapshots and
+        # restores this so its pause/resume cycle preserves the timer.
+        self._started_at = None
+        self._tokens = 0
