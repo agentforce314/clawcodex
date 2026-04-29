@@ -2289,6 +2289,11 @@ class ClawcodexREPL:
                 last_text_was_printed = False
                 api_call_count = 0
                 tool_use_map: dict[str, tuple[str, dict]] = {}
+                # Per-turn token totals — surfaced to the spinner suffix
+                # via ``status.set_tokens(...)``. Local to the closure so
+                # they reset every turn; ``self._stats_*`` remain the
+                # session-cumulative counters for ``/stats``.
+                turn_tokens = 0
                 # Track whether a Task*/TodoWrite round is "in flight" so we
                 # can coalesce a run of task-management calls into a single
                 # TaskListV2-style snapshot instead of dumping one ``●`` bullet
@@ -2331,12 +2336,13 @@ class ClawcodexREPL:
                         self.session.conversation.add_assistant_message(msg.content)
                         usage = getattr(msg, "usage", None)
                         if isinstance(usage, dict):
-                            self._stats_input_tokens += int(
-                                usage.get("input_tokens", 0) or 0
-                            )
-                            self._stats_output_tokens += int(
-                                usage.get("output_tokens", 0) or 0
-                            )
+                            in_toks = int(usage.get("input_tokens", 0) or 0)
+                            out_toks = int(usage.get("output_tokens", 0) or 0)
+                            self._stats_input_tokens += in_toks
+                            self._stats_output_tokens += out_toks
+                            turn_tokens += in_toks + out_toks
+                            if _engine_status_ref:
+                                _engine_status_ref[0].set_tokens(turn_tokens)
                         content = msg.content
                         if isinstance(content, str):
                             if content:

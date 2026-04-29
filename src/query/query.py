@@ -269,6 +269,7 @@ async def _call_model_sync(
     assistant_msg = AssistantMessage(
         content=assistant_blocks if assistant_blocks else "",
         stop_reason=stop_reason,
+        usage=response.usage,
     )
     if response.reasoning_content:
         # Preserve provider thinking metadata for follow-up turns.
