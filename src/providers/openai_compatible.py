@@ -336,12 +336,24 @@ class OpenAICompatibleProvider(BaseProvider):
             converted = [_convert_to_openai_tool_schema(t) for t in tools]
             extra_kwargs["tools"] = [t for t in converted if t is not None]
 
+        # ``stream_options.include_usage`` opts the OpenAI streaming API
+        # into emitting a final ``usage`` chunk; without it, ``chunk.usage``
+        # is always ``None`` and the rebuilt ChatResponse has empty token
+        # counts. The spinner row + ``/stats`` rely on this — see
+        # ``_build_usage_dict`` below and the consumer in
+        # ``src/query/query.py``.
+        stream_kwargs = {k: v for k, v in kwargs.items() if k not in ["model", "tools"]}
+        existing_stream_options = stream_kwargs.pop("stream_options", None) or {}
+        stream_kwargs["stream_options"] = {
+            **existing_stream_options,
+            "include_usage": True,
+        }
         stream = self.client.chat.completions.create(
             model=model,
             messages=provider_messages,
             stream=True,
             **extra_kwargs,
-            **{k: v for k, v in kwargs.items() if k not in ["model", "tools"]},
+            **stream_kwargs,
         )
 
         content_parts: list[str] = []
