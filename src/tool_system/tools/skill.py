@@ -76,7 +76,11 @@ def _validate_skill_input(tool_input: dict[str, Any], context: ToolContext) -> V
     # Remove leading slash if present (for compatibility)
     command_name = trimmed.lstrip("/")
 
-    # Look up in the skill registry
+    # Populate the unified registry for the current cwd, then look up.
+    # The registry now includes managed/user/project disk skills (with
+    # nested namespacing like "git:commit"), bundled skills, and any
+    # MCP-provided skills. `get_registered_skill` falls back to bundled
+    # alias matching for back-compat.
     from src.skills.loader import get_all_skills, get_registered_skill
 
     get_all_skills(project_root=context.workspace_root)
@@ -168,15 +172,46 @@ def _skill_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
 
 def _run_markdown_skill(skill_name: str, args: str, context: ToolContext) -> ToolResult:
     from src.skills.loader import get_all_skills, get_registered_skill
-    from src.skills.argument_substitution import substitute_arguments
+    from src.skills.runtime_substitution import render_skill_prompt
 
+    # Populate / refresh the unified registry for the active cwd. This
+    # pulls in managed / user / project disk skills (with nested
+    # `category:skill` namespacing), bundled skills, and any registered
+    # MCP skills.
     get_all_skills(project_root=context.workspace_root)
     skill = get_registered_skill(skill_name)
     if skill is None:
-        return ToolResult(name="Skill", output={"error": f"skill not found: {skill_name}"}, is_error=True)
+        return ToolResult(
+            name="Skill",
+            output={"error": f"skill not found: {skill_name}"},
+            is_error=True,
+        )
 
-    body = skill.markdown_content or ""
-    prompt = substitute_arguments(body, args, argument_names=skill.arg_names or [])
+    # Bundled skills supply a callable prompt builder and define their
+    # own substitution semantics; we pass args through and trust the
+    # callable. Disk-loaded skills go through the canonical renderer
+    # which mirrors TS' getPromptForCommand transform pipeline:
+    #   1. base-dir header → 2. arg substitute → 3. ${CLAUDE_SKILL_DIR}
+    #   → 4. ${CLAUDE_SESSION_ID} → 5. embedded shell exec (gated on
+    #   non-MCP sources, scoped through skill.allowed_tools).
+    if getattr(skill, "get_prompt_for_command", None) is not None:
+        prompt = skill.get_prompt_for_command(args or "")
+    else:
+        body = skill.markdown_content or skill.content or ""
+        base_dir = skill.base_dir or skill.skill_root
+        executor = _make_shell_executor(
+            context, skill.allowed_tools, slash_command_name=f"/{skill_name}"
+        )
+        prompt = render_skill_prompt(
+            body=body,
+            args=args,
+            base_dir=base_dir,
+            argument_names=skill.argument_names,
+            session_id=context.session_id,
+            loaded_from=skill.loaded_from,
+            slash_command_name=f"/{skill_name}",
+            shell_executor=executor,
+        )
 
     # Build context modifier if skill specifies allowed_tools, model, or effort
     context_modifier = _build_context_modifier(skill)
@@ -194,6 +229,69 @@ def _run_markdown_skill(skill_name: str, args: str, context: ToolContext) -> Too
         },
         context_modifier=context_modifier,
     )
+
+
+def _make_shell_executor(
+    context: ToolContext,
+    allowed_tools: list[str] | None,
+    *,
+    slash_command_name: str,
+):
+    """Return a callable that runs a shell command via BashTool.
+
+    The returned executor matches the
+    ``runtime_substitution.ShellExecutor`` signature: ``(command, inline)
+    -> rendered text``. Errors and non-zero exits are formatted via
+    ``format_shell_error`` / ``format_shell_output`` so the renderer can
+    splice the result back into the prompt without raising.
+
+    The skill's ``allowed_tools`` list is documented for parity with TS
+    (which injects them as ``alwaysAllowRules.command`` for the duration
+    of the call), but the Python BashTool's ``call()`` path bypasses the
+    registry-level permission gate and runs the command directly under
+    the active ``ToolContext`` permission mode. Wiring the
+    ``alwaysAllowRules.command`` injection precisely is tracked as a
+    follow-up; in bypass-permissions sessions (the default for the
+    in-process SkillTool path) commands run unprompted.
+    """
+    from .bash import BashTool
+    from src.skills.runtime_substitution import (
+        format_shell_error,
+        format_shell_output,
+    )
+
+    _ = allowed_tools  # acknowledged; precise injection deferred (see docstring)
+
+    def _exec(command: str, inline: bool) -> str:
+        try:
+            tr = BashTool.call({"command": command}, context)
+        except Exception as exc:  # noqa: BLE001 — surface every failure
+            return format_shell_error(exc, command, inline=inline)
+
+        output = tr.output if isinstance(tr.output, dict) else {}
+        stdout = str(output.get("stdout", ""))
+        stderr = str(output.get("stderr", ""))
+        exit_code = output.get("exit_code")
+
+        # Treat non-zero exit codes the same way TS' ShellError surfaces
+        # — embed the failure text inline so the model sees what went
+        # wrong, but keep going so the rest of the prompt still renders.
+        if isinstance(exit_code, int) and exit_code != 0:
+            err_text = format_shell_output(stdout, stderr, inline=inline)
+            err_text = err_text or f"command failed (exit {exit_code})"
+            return format_shell_error(err_text, command, inline=inline)
+
+        if tr.is_error:
+            err_text = (
+                format_shell_output(stdout, stderr, inline=inline)
+                or output.get("error")
+                or "command failed"
+            )
+            return format_shell_error(str(err_text), command, inline=inline)
+
+        return format_shell_output(stdout, stderr, inline=inline)
+
+    return _exec
 
 
 def _build_context_modifier(skill: Any) -> Any:
