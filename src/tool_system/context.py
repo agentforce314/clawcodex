@@ -103,6 +103,12 @@ class ToolContext:
     agent_type: str | None = None
     tool_use_id: str | None = None
     user_modified: bool = False
+    # Identifier of the active query/session. Surfaced to skills (SKILL.md
+    # bodies may reference ``${CLAUDE_SESSION_ID}``) and any other tool
+    # that needs to correlate with persisted session state. ``None`` is
+    # interpreted as "unknown" by callers; substitutions yield an empty
+    # string in that case.
+    session_id: str | None = None
 
     def __post_init__(self) -> None:
         self.workspace_root = Path(self.workspace_root).resolve()
