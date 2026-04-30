@@ -1,4 +1,5 @@
 from .argument_substitution import parse_arguments, substitute_arguments
+from .bundled import init_bundled_skills
 from .bundled_skills import (
     BundledSkillDefinition,
     SkillValidationError,
@@ -17,17 +18,31 @@ from .loader import (
     add_skill_directories,
     clear_dynamic_skills,
     clear_skill_caches,
+    clear_skill_registry,
     create_skill_command,
     discover_skill_dirs_for_paths,
+    get_all_skills,
     get_conditional_skill_count,
     get_dynamic_skills,
+    get_registered_skill,
     get_skill_dir_commands,
     get_skills_path,
+    load_skills_from_dir,
     load_skills_from_skills_dir,
     parse_skill_frontmatter_fields,
 )
 from .mcp_skill_builders import get_mcp_skill_builders, register_mcp_skill_builders
 from .model import PromptSkill, Skill
+from .runtime_substitution import (
+    find_shell_blocks,
+    format_shell_error,
+    format_shell_output,
+    has_shell_blocks,
+    prepend_base_dir_header,
+    render_skill_prompt,
+    substitute_session_id,
+    substitute_skill_dir,
+)
 
 __all__ = [
     "Skill",
@@ -50,6 +65,7 @@ __all__ = [
     "get_skill_dir_commands",
     "get_skills_path",
     "load_skills_from_skills_dir",
+    "load_skills_from_dir",
     "discover_skill_dirs_for_paths",
     "add_skill_directories",
     "activate_conditional_skills_for_paths",
@@ -57,6 +73,18 @@ __all__ = [
     "get_conditional_skill_count",
     "clear_skill_caches",
     "clear_dynamic_skills",
+    "clear_skill_registry",
+    "get_all_skills",
+    "get_registered_skill",
     "register_mcp_skill_builders",
     "get_mcp_skill_builders",
+    "render_skill_prompt",
+    "prepend_base_dir_header",
+    "substitute_skill_dir",
+    "substitute_session_id",
+    "find_shell_blocks",
+    "has_shell_blocks",
+    "format_shell_output",
+    "format_shell_error",
+    "init_bundled_skills",
 ]

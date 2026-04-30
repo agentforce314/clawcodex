@@ -33,6 +33,20 @@ class Skill:
     base_dir: Optional[str] = None
     markdown_content: str = ""
     progress_message: str = "running"
+    # ------------------------------------------------------------------
+    # Frontmatter fields supported by the TS port that the prior Python
+    # parser silently dropped:
+    #   - ``hooks``: nested dict shaped as
+    #     ``{HookEvent: [{"matcher"?: str, "hooks": [HookCommand]}]}``.
+    #     Validated by ``parse_skill_frontmatter_fields`` against
+    #     ``ALL_HOOK_EVENTS``; invalid shapes are logged and dropped
+    #     (set to ``None``) without raising.
+    #   - ``shell``: ``"bash"`` | ``"powershell"``. Used by the runtime
+    #     shell-execution-in-prompt path to pick which shell tool
+    #     evaluates ``!`...``` blocks. ``None`` -> caller default (bash).
+    # ------------------------------------------------------------------
+    hooks: Optional[dict] = None
+    shell: Optional[str] = None
 
     get_prompt_for_command: Optional[Callable[[str], str]] = None
     is_enabled_fn: Optional[Callable[[], bool]] = None
@@ -69,7 +83,30 @@ class Skill:
             return self.is_enabled_fn()
         return True
 
+    # ------------------------------------------------------------------
+    # Backward-compat alias
+    #
+    # Historically a separate `PromptSkill` subclass exposed an `arg_names`
+    # field while the TS-port `Skill` used `argument_names`. Now that the
+    # two have collapsed to a single canonical `Skill`, expose `arg_names`
+    # as a property that proxies to `argument_names` so older call sites
+    # (e.g., command_system/skills_integration.py, tools/skill.py) keep
+    # working without modification.
+    # ------------------------------------------------------------------
 
-@dataclass
-class PromptSkill(Skill):
-    arg_names: list[str] = field(default_factory=list)
+    @property
+    def arg_names(self) -> list[str]:
+        return self.argument_names
+
+    @arg_names.setter
+    def arg_names(self, value: list[str] | None) -> None:
+        self.argument_names = list(value) if value else []
+
+
+# ----------------------------------------------------------------------
+# `PromptSkill` is preserved as an alias for backward compatibility.
+# All disk-loaded skills are now plain `Skill` instances; the prior
+# parallel hierarchy has been folded into one canonical type.
+# ----------------------------------------------------------------------
+
+PromptSkill = Skill

@@ -44,6 +44,14 @@ class TestBundledSkills:
         assert len(get_bundled_skills()) == 3
 
     def test_clear(self) -> None:
+        # Test the in-process behavior of `clear_bundled_skills`:
+        # registering a one-off, then clearing, must wipe that one-off
+        # from the registry. We don't assert "len == 0" after clear
+        # because clearing also re-arms the lazy-init flag, so the next
+        # `get_bundled_skills()` call seeds the always-on bundled
+        # catalogue (simplify, debug, loop, stuck, verify-content).
+        # Instead we assert the temporary skill is gone.
+        from src.skills.bundled_skills import _bundled_skills
         register_bundled_skill(
             BundledSkillDefinition(
                 name="temp",
@@ -51,9 +59,15 @@ class TestBundledSkills:
                 get_prompt_for_command=lambda a: a,
             )
         )
-        assert len(get_bundled_skills()) == 1
+        assert len(get_bundled_skills()) == 1  # lazy-init suppressed by register
         clear_bundled_skills()
-        assert len(get_bundled_skills()) == 0
+        # After clear, the in-memory list is empty until the next
+        # consumer triggers lazy-init.
+        assert _bundled_skills == []
+        seeded = get_bundled_skills()
+        names = {s.name for s in seeded}
+        assert "temp" not in names  # one-off was wiped
+        assert "simplify" in names  # bundled catalogue re-seeded
 
     def test_get_returns_copy(self) -> None:
         register_bundled_skill(

@@ -41,6 +41,35 @@ class BundledSkillDefinition:
 
 _bundled_skills: list[Skill] = []
 
+# Lazy-init guard — populated on first read so callers don't need to
+# explicitly invoke ``init_bundled_skills`` at runtime startup. Tests
+# that wipe state via ``clear_bundled_skills`` also reset this flag,
+# leaving them in full control.
+_LAZY_INITIALIZED: bool = False
+
+
+def _lazy_init() -> None:
+    """Run ``init_bundled_skills`` once on first registry consumer.
+
+    Imported lazily to break the import cycle (``bundled.*`` modules
+    import from this file). The first call seeds the registry; later
+    calls are no-ops until ``clear_bundled_skills`` resets the flag.
+    """
+    global _LAZY_INITIALIZED
+    if _LAZY_INITIALIZED:
+        return
+    # Set BEFORE the import to avoid recursion if a register_*_skill
+    # callable somehow calls back into ``get_bundled_skills`` mid-init.
+    _LAZY_INITIALIZED = True
+    try:
+        from .bundled import init_bundled_skills
+        init_bundled_skills()
+    except Exception:
+        # Fail open: if a bundled-skill module is malformed at import
+        # time, surface the failure as "no bundled skills" rather than
+        # crashing every SkillTool.call.
+        logger.exception("failed to initialize bundled skills")
+
 
 def validate_skill_definition(
     definition: BundledSkillDefinition,
@@ -129,6 +158,14 @@ def skill_from_mcp_tool(
 
 
 def register_bundled_skill(definition: BundledSkillDefinition) -> None:
+    """Append a bundled-skill definition to the in-process registry.
+
+    Suppresses the lazy-init seeding for the rest of this fixture
+    cycle: if a caller (test or app) is explicitly registering, they
+    own the catalogue contents. ``clear_bundled_skills`` re-arms the
+    lazy-init flag so the next caller-driven cycle starts fresh.
+    """
+    global _LAZY_INITIALIZED
     skill = Skill(
         name=definition.name,
         description=definition.description,
@@ -148,13 +185,16 @@ def register_bundled_skill(definition: BundledSkillDefinition) -> None:
         is_hidden=not definition.user_invocable,
     )
     _bundled_skills.append(skill)
+    _LAZY_INITIALIZED = True
 
 
 def get_bundled_skills() -> list[Skill]:
+    _lazy_init()
     return list(_bundled_skills)
 
 
 def get_bundled_skill_by_name(name: str) -> Skill | None:
+    _lazy_init()
     for skill in _bundled_skills:
         if skill.name == name:
             return skill
@@ -164,4 +204,22 @@ def get_bundled_skill_by_name(name: str) -> Skill | None:
 
 
 def clear_bundled_skills() -> None:
+    """Wipe the registry and reset the lazy-init flag.
+
+    Resetting the flag ensures the next ``get_bundled_skills`` /
+    ``register_bundled_skill`` cycle re-seeds the catalogue, which is
+    what test fixtures want — otherwise a clear-then-read would return
+    an empty list and silently mask "did init_bundled_skills get
+    called?" bugs.
+    """
+    global _LAZY_INITIALIZED
     _bundled_skills.clear()
+    _LAZY_INITIALIZED = False
+    try:
+        from .bundled import reset_bundled_skills_init_flag
+        reset_bundled_skills_init_flag()
+    except Exception:
+        # If the bundled package can't import, the lazy-init flag in
+        # this module is enough; the bundled-side flag is just a
+        # belt-and-braces idempotency check.
+        pass
