@@ -18,6 +18,8 @@
 
 **🔥 Active Development • New Features Weekly 🔥**
 
+![ClawCodex Screenshot](assets/clawcodex-screenshot-1.png)
+
 </div>
 
 ***
