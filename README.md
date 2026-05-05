@@ -24,6 +24,19 @@
 
 ***
 
+## ⚡ Quick Install
+
+```bash
+git clone https://github.com/agentforce314/clawcodex.git
+cd clawcodex
+python3 -m venv .venv && source .venv/bin/activate   # Python 3.10+
+pip install -r requirements.txt
+python -m src.cli login
+python -m src.cli
+```
+
+***
+
 ## 🎯 Why ClawCodex?
 
 **ClawCodex** is a **production-oriented Python rebuild of Claude Code**, ported from the **real TypeScript architecture** and shipped as a **working CLI agent**, not just a source dump.
