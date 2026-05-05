@@ -31,8 +31,10 @@ git clone https://github.com/agentforce314/clawcodex.git
 cd clawcodex
 python3 -m venv .venv && source .venv/bin/activate   # Python 3.10+
 pip install -r requirements.txt
-python -m src.cli login
-python -m src.cli
+
+python -m src.cli login   # writes config to ~/.clawcodex/config.json
+
+python -m src.cli         # start the REPL
 ```
 
 ***
