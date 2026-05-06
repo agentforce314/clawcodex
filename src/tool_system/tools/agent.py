@@ -11,7 +11,6 @@ Supports three modes:
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import sys
 import time
@@ -30,7 +29,6 @@ from src.agent.agent_definitions import (
     get_built_in_agents,
 )
 from src.agent.agent_tool_utils import (
-    count_tool_uses,
     extract_partial_result,
     finalize_agent_tool,
 )
@@ -176,8 +174,10 @@ def make_agent_tool(
         if is_async:
             return _launch_async_agent(
                 run_params=run_params,
+                context=context,
                 agent_id=agent_id,
                 description=description,
+                prompt=prompt,
                 agent_type=agent_def.agent_type,
             )
         else:
@@ -185,6 +185,7 @@ def make_agent_tool(
                 run_params=run_params,
                 agent_id=agent_id,
                 start_time=start_time,
+                prompt=prompt,
                 agent_type=agent_def.agent_type,
             )
 
@@ -193,6 +194,7 @@ def make_agent_tool(
         run_params: RunAgentParams,
         agent_id: str,
         start_time: float,
+        prompt: str,
         agent_type: str,
     ) -> ToolResult:
         """Run an agent synchronously and return the result."""
@@ -230,6 +232,7 @@ def make_agent_tool(
             name=AGENT_TOOL_NAME,
             output={
                 "status": "completed",
+                "prompt": prompt,
                 "agent_id": result.agent_id,
                 "agent_type": result.agent_type,
                 "content": result.content,
@@ -242,34 +245,67 @@ def make_agent_tool(
     def _launch_async_agent(
         *,
         run_params: RunAgentParams,
+        context: ToolContext,
         agent_id: str,
         description: str,
+        prompt: str,
         agent_type: str,
     ) -> ToolResult:
         """Launch an agent in the background and return immediately."""
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
+        context.tasks[agent_id] = {
+            "id": agent_id,
+            "subject": description,
+            "description": prompt,
+            "status": "in_progress",
+            "owner": agent_type,
+            "blocks": [],
+            "blockedBy": [],
+            "metadata": {"_internal": True, "task_type": "agent"},
+            "output": "",
+        }
 
         async def _background_lifecycle() -> None:
             try:
                 messages = await _collect_agent_messages(run_params)
+                metadata = {
+                    "start_time": time.time(),
+                    "agent_type": agent_type,
+                }
+                result = finalize_agent_tool(messages, agent_id, metadata)
+                result_text = "\n".join(
+                    block.get("text", "")
+                    for block in result.content
+                    if isinstance(block, dict) and block.get("type") == "text"
+                ).strip()
+                if not result_text:
+                    result_text = "(Subagent completed with no textual output.)"
+                context.tasks[agent_id]["status"] = "completed"
+                context.tasks[agent_id]["output"] = result_text
                 logger.info(
                     "Async agent %s (%s) finished: %d messages",
                     agent_id, agent_type, len(messages),
                 )
-            except Exception:
+            except Exception as exc:
+                partial = extract_partial_result(locals().get("messages", []))
+                context.tasks[agent_id]["status"] = "failed"
+                context.tasks[agent_id]["output"] = partial or str(exc)
                 logger.exception(
                     "Async agent %s (%s) failed",
                     agent_id, agent_type,
                 )
 
-        if loop.is_running():
-            asyncio.ensure_future(_background_lifecycle())
+        try:
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            running_loop = None
+
+        if running_loop is not None:
+            running_loop.create_task(_background_lifecycle())
         else:
-            loop.create_task(_background_lifecycle())
+            def _runner(_stop_event: Any) -> None:
+                asyncio.run(_background_lifecycle())
+
+            context.task_manager.start(name=f"agent:{agent_type}", target=_runner)
 
         return ToolResult(
             name=AGENT_TOOL_NAME,
@@ -278,6 +314,8 @@ def make_agent_tool(
                 "agent_id": agent_id,
                 "agent_type": agent_type,
                 "description": description,
+                "prompt": prompt,
+                "task_output_key": agent_id,
             },
         )
 
@@ -296,6 +334,33 @@ def make_agent_tool(
                 "tool_use_id": tool_use_id,
                 "content": result.get("error", content),
                 "is_error": True,
+            }
+        if result.get("status") == "async_launched":
+            return {
+                "type": "tool_result",
+                "tool_use_id": tool_use_id,
+                "content": (
+                    "Async agent launched successfully.\n"
+                    f"agent_id: {result.get('agent_id', '')}\n"
+                    f"task_output_key: {result.get('task_output_key', '')}\n"
+                    "Use TaskOutput with task_id equal to task_output_key to check completion."
+                ),
+            }
+        if result.get("status") == "completed":
+            text_parts: list[str] = []
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        text = block.get("text")
+                        if isinstance(text, str) and text.strip():
+                            text_parts.append(text.strip())
+            elif isinstance(content, str) and content.strip():
+                text_parts.append(content.strip())
+            rendered = "\n\n".join(text_parts).strip() or "(Subagent completed with no textual output.)"
+            return {
+                "type": "tool_result",
+                "tool_use_id": tool_use_id,
+                "content": rendered,
             }
         return {"type": "tool_result", "tool_use_id": tool_use_id, "content": content}
 
