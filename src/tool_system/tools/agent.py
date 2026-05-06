@@ -25,6 +25,7 @@ from ..registry import ToolRegistry
 
 from src.agent.agent_definitions import (
     AgentDefinition,
+    FORK_AGENT,
     find_agent_by_type,
     get_built_in_agents,
 )
@@ -34,10 +35,16 @@ from src.agent.agent_tool_utils import (
 )
 from src.agent.constants import (
     AGENT_TOOL_NAME,
+    FORK_SUBAGENT_TYPE,
     LEGACY_AGENT_TOOL_NAME,
     ONE_SHOT_BUILTIN_AGENT_TYPES,
 )
-from src.agent.prompt import get_agent_prompt
+from src.agent.fork_subagent import (
+    build_forked_messages,
+    is_fork_subagent_enabled,
+    is_in_fork_child,
+)
+from src.agent.prompt import get_agent_prompt, get_agent_system_prompt
 from src.agent.run_agent import RunAgentParams, run_agent
 
 logger = logging.getLogger(__name__)
@@ -120,9 +127,30 @@ def make_agent_tool(
         model = tool_input.get("model")
         run_in_background = bool(tool_input.get("run_in_background", False))
 
-        # Resolve agent definition
+        # Resolve agent definition.
+        #
+        # Routing rules mirror typescript/src/tools/AgentTool/AgentTool.tsx:318-356:
+        # - subagent_type provided → use it (explicit wins).
+        # - subagent_type omitted, fork gate on → implicit fork via FORK_AGENT.
+        # - subagent_type omitted, fork gate off → default to general-purpose.
         agent_definitions = _get_agent_definitions(context)
-        if subagent_type:
+        is_fork_path = (
+            subagent_type is None and is_fork_subagent_enabled(context)
+        )
+
+        if is_fork_path:
+            # Recursive-fork guard. Primary check: querySource on the parent's
+            # options. Secondary check: scan parent messages for the fork
+            # boilerplate tag. Either one trips means we are already inside a
+            # fork child, so refuse to spawn another.
+            parent_query_source = getattr(context.options, "query_source", None)
+            if parent_query_source == f"agent:builtin:{FORK_SUBAGENT_TYPE}" or is_in_fork_child(context.messages):
+                raise ToolInputError(
+                    "Fork is not available inside a forked worker. "
+                    "Complete your task directly using your tools."
+                )
+            agent_def = FORK_AGENT
+        elif subagent_type:
             agent_def = find_agent_by_type(agent_definitions, subagent_type)
             if agent_def is None:
                 available = [a.agent_type for a in agent_definitions]
@@ -158,10 +186,61 @@ def make_agent_tool(
                 is_error=True,
             )
 
+        # Fork-specific run-agent inputs.
+        #
+        # On the fork path:
+        #   * The child inherits the parent's full conversation as
+        #     ``context_messages`` so the API-request prefix matches the
+        #     parent's most recent turn.
+        #   * ``build_forked_messages()`` produces the trailing pair: a
+        #     cloned parent assistant message plus a single user message
+        #     carrying placeholder tool_results and the boilerplate-wrapped
+        #     directive. This pair is passed as a single concatenated
+        #     ``prompt`` (run_agent appends a UserMessage built from
+        #     ``params.prompt``); to preserve the cloned-assistant block we
+        #     instead route the messages via ``context_messages`` and pass
+        #     the directive bytes alone as ``params.prompt``.
+        #   * ``use_exact_tools`` skips ``resolve_agent_tools()`` so the
+        #     child's tool array is byte-identical to the parent's.
+        #   * ``query_source`` is threaded onto the child's options for the
+        #     primary recursive-fork guard at the next call site.
+        #   * ``parent_system_prompt`` carries the parent's resolved prompt
+        #     so the fork agent's empty get_system_prompt is filled in via
+        #     ``get_agent_system_prompt()``.
+        fork_context_messages: list[Any] | None = None
+        fork_query_source: str | None = None
+        fork_use_exact_tools = False
+        fork_parent_system_prompt: str | None = None
+        fork_prompt = prompt
+
+        if is_fork_path:
+            from src.types.messages import AssistantMessage
+
+            parent_assistant: AssistantMessage | None = None
+            for msg in reversed(context.messages):
+                if isinstance(msg, AssistantMessage):
+                    parent_assistant = msg
+                    break
+
+            forked_pair = build_forked_messages(prompt, parent_assistant)
+            fork_context_messages = list(context.messages) + forked_pair
+            fork_use_exact_tools = True
+            fork_query_source = f"agent:builtin:{FORK_SUBAGENT_TYPE}"
+            # Best-effort parent system prompt: derived from the active
+            # agent definition or falling back to None. Threading the
+            # exact rendered bytes from the main loop is a follow-up.
+            fork_parent_system_prompt = _resolve_parent_system_prompt(context, agent_definitions)
+            # ``run_agent`` will append a UserMessage built from ``prompt``
+            # to whatever ``context_messages`` it receives. We have already
+            # placed the directive inside ``forked_pair`` via
+            # ``build_forked_messages``; pass an empty prompt so we don't
+            # duplicate it.
+            fork_prompt = ""
+
         run_params = RunAgentParams(
             parent_context=context,
             agent_definition=agent_def,
-            prompt=prompt,
+            prompt=fork_prompt,
             available_tools=available_tools,
             tool_registry=registry,
             provider=provider,
@@ -169,6 +248,10 @@ def make_agent_tool(
             agent_id=agent_id,
             is_async=is_async,
             max_turns=agent_def.max_turns,
+            context_messages=fork_context_messages,
+            use_exact_tools=fork_use_exact_tools,
+            query_source=fork_query_source,
+            parent_system_prompt=fork_parent_system_prompt,
         )
 
         if is_async:
@@ -378,6 +461,40 @@ def make_agent_tool(
         to_auto_classifier_input=lambda input_data: (input_data or {}).get("prompt", "")[:200],
         get_activity_description=lambda input_data: (input_data or {}).get("description", "Running agent") if input_data else None,
     )
+
+
+def _resolve_parent_system_prompt(
+    context: ToolContext,
+    agent_definitions: list[AgentDefinition],
+) -> str | None:
+    """Best-effort parent-system-prompt resolution for fork children.
+
+    The TS implementation threads the parent's already-rendered
+    ``renderedSystemPrompt`` so the bytes are identical to the parent's
+    last API call. We do not yet propagate the rendered bytes from the
+    main loop, so this helper falls back to:
+
+    1. ``context.options.custom_system_prompt`` if provided.
+    2. The active agent definition's ``get_system_prompt()`` output.
+    3. ``None`` (let the FORK_AGENT empty prompt fall through to the
+       default).
+
+    Returns ``None`` when no candidate is available.
+    """
+    custom = getattr(context.options, "custom_system_prompt", None)
+    if isinstance(custom, str) and custom.strip():
+        return custom
+
+    active_type = getattr(context, "agent_type", None)
+    if active_type:
+        active_def = find_agent_by_type(agent_definitions, active_type)
+        if active_def is not None:
+            try:
+                return active_def.get_system_prompt()
+            except Exception:
+                return None
+
+    return None
 
 
 def _sync_collect_agent_messages(params: RunAgentParams) -> list[Any]:

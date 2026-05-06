@@ -57,6 +57,13 @@ class RunAgentParams:
     context_messages: list[Message] | None = None
     abort_controller: AbortController | None = None
     on_message: Any = None
+    # When True, use ``available_tools`` directly without filtering through
+    # ``resolve_agent_tools()``. Mirrors the ``useExactTools`` flag from
+    # typescript/src/tools/AgentTool/runAgent.ts (the fork path).
+    use_exact_tools: bool = False
+    # Identifier threaded into ``ToolUseOptions.query_source`` for the
+    # primary recursive-fork guard. Mirrors the TS ``querySource`` argument.
+    query_source: str | None = None
 
 
 @dataclass
@@ -199,20 +206,26 @@ async def run_agent(params: RunAgentParams) -> AsyncGenerator[Message, None]:
         is_async=params.is_async,
     )
 
-    # Resolve tools for the agent
-    resolved = resolve_agent_tools(
-        agent_def,
-        params.available_tools,
-        is_async=params.is_async,
-    )
-    agent_tools = resolved.resolved_tools
-
-    if resolved.invalid_tools:
-        logger.warning(
-            "Agent %s has invalid tools: %s",
-            agent_def.agent_type,
-            resolved.invalid_tools,
+    # Resolve tools for the agent.
+    # When ``use_exact_tools`` is set (fork path), bypass ``resolve_agent_tools``
+    # so the child receives the parent's exact tool array. Mirrors the
+    # ``useExactTools`` branch in typescript/src/tools/AgentTool/runAgent.ts:513.
+    if params.use_exact_tools:
+        agent_tools = list(params.available_tools)
+    else:
+        resolved = resolve_agent_tools(
+            agent_def,
+            params.available_tools,
+            is_async=params.is_async,
         )
+        agent_tools = resolved.resolved_tools
+
+        if resolved.invalid_tools:
+            logger.warning(
+                "Agent %s has invalid tools: %s",
+                agent_def.agent_type,
+                resolved.invalid_tools,
+            )
 
     # Build system prompt
     system_prompt = (
@@ -240,17 +253,37 @@ async def run_agent(params: RunAgentParams) -> AsyncGenerator[Message, None]:
         params.is_async,
     )
 
+    # Strip orphaned tool_use blocks before threading parent context into the
+    # child. Mirrors typescript/src/tools/AgentTool/runAgent.ts:381-385 — the
+    # API rejects assistant messages whose tool_use IDs lack matching
+    # tool_result IDs.
+    if params.context_messages:
+        sanitized_context_messages = filter_incomplete_tool_calls(params.context_messages)
+    else:
+        sanitized_context_messages = []
+
+    # When the fork path threads its own ``query_source`` (e.g.
+    # ``"agent:builtin:fork"``), surface it on the child's options so the
+    # primary recursive-fork guard at the Agent tool's call site can read it.
+    options_override = None
+    if params.query_source is not None:
+        # Shallow-copy the parent options so we don't mutate them in place.
+        from copy import copy as _shallow_copy
+        options_override = _shallow_copy(params.parent_context.options)
+        options_override.query_source = params.query_source
+
     # Build overrides
     overrides = SubagentContextOverrides(
         agent_id=agent_id,
         agent_type=agent_def.agent_type,
-        messages=params.context_messages or [],
+        messages=sanitized_context_messages,
         abort_controller=abort_controller,
         permission_context=perm_context,
         share_abort_controller=not params.is_async,
         # Both sync and async subagents should contribute to response-length metrics.
         share_set_response_length=True,
         share_permission_handler=not params.is_async,
+        options=options_override,
     )
 
     # Create isolated context
@@ -259,9 +292,16 @@ async def run_agent(params: RunAgentParams) -> AsyncGenerator[Message, None]:
         overrides,
     )
 
-    # Build initial messages
-    prompt_message = UserMessage(content=params.prompt)
-    initial_messages: list[Message] = list(subagent_context.messages) + [prompt_message]
+    # Build initial messages.
+    # When ``params.prompt`` is empty (e.g. fork path, where the directive is
+    # already embedded inside ``context_messages`` via build_forked_messages),
+    # do not append an empty user turn — it would shift the cache boundary
+    # and confuse the model with a blank input.
+    if params.prompt:
+        prompt_message = UserMessage(content=params.prompt)
+        initial_messages: list[Message] = list(subagent_context.messages) + [prompt_message]
+    else:
+        initial_messages = list(subagent_context.messages)
 
     # Determine max turns — mirrors TS: maxTurns ?? agentDefinition.maxTurns
     # TS has no built-in fallback, but we keep a safety net to prevent runaway agents.
@@ -271,6 +311,7 @@ async def run_agent(params: RunAgentParams) -> AsyncGenerator[Message, None]:
     # TS microcompact is a no-op for subagents (only fires for
     # repl_main_thread). Don't pass pipeline_config so we don't
     # aggressively clear tool results the model just read.
+    effective_query_source = params.query_source or f"agent_{agent_def.agent_type}"
     query_params = QueryParams(
         messages=initial_messages,
         system_prompt=system_prompt,
@@ -279,7 +320,7 @@ async def run_agent(params: RunAgentParams) -> AsyncGenerator[Message, None]:
         tool_use_context=subagent_context,
         provider=params.provider,
         abort_controller=abort_controller,
-        query_source=f"agent_{agent_def.agent_type}",
+        query_source=effective_query_source,
         max_turns=max_turns,
     )
 
