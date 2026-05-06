@@ -349,6 +349,39 @@ class TestFilterIncompleteToolCalls(unittest.TestCase):
         result = filter_incomplete_tool_calls(msgs)
         assert len(result) == 1
 
+    def test_matched_tool_use_is_kept(self):
+        from src.agent.run_agent import filter_incomplete_tool_calls
+        from src.types.messages import AssistantMessage, UserMessage
+        from src.types.content_blocks import ToolUseBlock, ToolResultBlock
+
+        msgs = [
+            AssistantMessage(content=[
+                ToolUseBlock(id="t1", name="Read", input={"path": "/tmp/a"}),
+            ]),
+            UserMessage(content=[
+                ToolResultBlock(tool_use_id="t1", content="ok"),
+            ]),
+        ]
+        result = filter_incomplete_tool_calls(msgs)
+        assert len(result) == 2
+
+    def test_unmatched_tool_use_removed_even_if_not_trailing(self):
+        from src.agent.run_agent import filter_incomplete_tool_calls
+        from src.types.messages import AssistantMessage, UserMessage
+        from src.types.content_blocks import ToolUseBlock, TextBlock
+
+        msgs = [
+            AssistantMessage(content=[
+                ToolUseBlock(id="t1", name="Read", input={"path": "/tmp/a"}),
+            ]),
+            UserMessage(content="no tool results here"),
+            AssistantMessage(content=[TextBlock(text="final summary")]),
+        ]
+        result = filter_incomplete_tool_calls(msgs)
+        assert len(result) == 2
+        assert isinstance(result[0], UserMessage)
+        assert isinstance(result[1], AssistantMessage)
+
 
 class TestAgentDefinitions(unittest.TestCase):
     """Test agent definition module."""
