@@ -18,7 +18,7 @@ from ..tool_system.context import ToolContext
 from ..tool_system.registry import ToolRegistry
 from ..types.content_blocks import ToolUseBlock
 from ..types.messages import AssistantMessage, Message, UserMessage
-from ..utils.abort_controller import AbortController, create_child_abort_controller
+from ..utils.abort_controller import AbortController
 
 from .agent_definitions import AgentDefinition, is_built_in_agent
 from .agent_tool_utils import resolve_agent_tools, count_tool_uses
@@ -119,34 +119,57 @@ def _build_permission_context(
 
 
 def filter_incomplete_tool_calls(messages: list[Message]) -> list[Message]:
-    """Remove trailing assistant messages that have incomplete tool_use blocks.
+    """Remove assistant messages that contain incomplete tool_use blocks.
 
     Mirrors filterIncompleteToolCalls() from typescript/src/tools/AgentTool/runAgent.ts.
 
-    When an agent is interrupted, the last assistant message may contain tool_use
-    blocks without corresponding tool_result messages. Sending these would cause
-    an API error. This function removes such trailing messages.
+    Assistant messages with tool_use blocks are only valid if each tool_use has a
+    corresponding tool_result block in a user message. This function removes any
+    assistant message containing unresolved tool_use IDs.
     """
-    if not messages:
-        return messages
+    tool_use_ids_with_results: set[str] = set()
 
-    result = list(messages)
-    while result:
-        last = result[-1]
-        if not isinstance(last, AssistantMessage):
-            break
-        content = last.content
+    for message in messages:
+        if not isinstance(message, UserMessage):
+            continue
+        content = message.content
         if not isinstance(content, list):
-            break
-        has_tool_use = any(
-            isinstance(block, ToolUseBlock) for block in content
-        )
-        if not has_tool_use:
-            break
-        # Check if there's a following user message with tool_result
-        result.pop()
+            continue
+        for block in content:
+            block_type = block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
+            if block_type != "tool_result":
+                continue
+            tool_use_id = (
+                block.get("tool_use_id")
+                if isinstance(block, dict)
+                else getattr(block, "tool_use_id", None)
+            )
+            if isinstance(tool_use_id, str) and tool_use_id:
+                tool_use_ids_with_results.add(tool_use_id)
 
-    return result
+    filtered: list[Message] = []
+    for message in messages:
+        if isinstance(message, AssistantMessage):
+            content = message.content
+            if isinstance(content, list):
+                has_incomplete_tool_call = False
+                for block in content:
+                    block_type = block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
+                    if block_type != "tool_use":
+                        continue
+                    tool_use_id = (
+                        block.get("id")
+                        if isinstance(block, dict)
+                        else getattr(block, "id", None)
+                    )
+                    if isinstance(tool_use_id, str) and tool_use_id not in tool_use_ids_with_results:
+                        has_incomplete_tool_call = True
+                        break
+                if has_incomplete_tool_call:
+                    continue
+        filtered.append(message)
+
+    return filtered
 
 
 async def run_agent(params: RunAgentParams) -> AsyncGenerator[Message, None]:
@@ -200,11 +223,10 @@ async def run_agent(params: RunAgentParams) -> AsyncGenerator[Message, None]:
     # Determine abort controller
     if params.abort_controller is not None:
         abort_controller = params.abort_controller
-    elif params.is_async and params.parent_context.abort_controller is not None:
-        # Async agents get an independent abort controller (child linked to parent)
-        abort_controller = create_child_abort_controller(
-            params.parent_context.abort_controller
-        )
+    elif params.is_async:
+        # Async agents run independently in the background and should survive
+        # parent cancellation events.
+        abort_controller = AbortController()
     elif params.parent_context.abort_controller is not None:
         # Sync agents share abort with parent
         abort_controller = params.parent_context.abort_controller
@@ -226,7 +248,8 @@ async def run_agent(params: RunAgentParams) -> AsyncGenerator[Message, None]:
         abort_controller=abort_controller,
         permission_context=perm_context,
         share_abort_controller=not params.is_async,
-        share_set_response_length=not params.is_async,
+        # Both sync and async subagents should contribute to response-length metrics.
+        share_set_response_length=True,
         share_permission_handler=not params.is_async,
     )
 
