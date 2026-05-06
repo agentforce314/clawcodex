@@ -70,4 +70,4 @@ DEFAULT_AGENT_PROMPT = (
 # Fork-specific constants
 FORK_SUBAGENT_TYPE = "fork"
 FORK_BOILERPLATE_TAG = "fork-boilerplate"
-FORK_DIRECTIVE_PREFIX = "DIRECTIVE: "
+FORK_DIRECTIVE_PREFIX = "Your directive: "
