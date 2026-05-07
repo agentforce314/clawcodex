@@ -2,17 +2,27 @@ from __future__ import annotations
 
 import logging
 
-from .types import PERMISSION_MODES, PermissionMode
+from .types import (
+    EXTERNAL_PERMISSION_MODES,
+    PERMISSION_MODES,
+    ExternalPermissionMode,
+    PermissionMode,
+)
 
 log = logging.getLogger(__name__)
 
 
 _MODE_CONFIG: dict[PermissionMode, dict[str, str]] = {
-    "default": {"title": "Default", "short_title": "Default", "symbol": ""},
-    "plan": {"title": "Plan Mode", "short_title": "Plan", "symbol": "⏸"},
-    "acceptEdits": {"title": "Accept edits", "short_title": "Accept", "symbol": "⏵⏵"},
-    "bypassPermissions": {"title": "Bypass Permissions", "short_title": "Bypass", "symbol": "⏵⏵"},
-    "dontAsk": {"title": "Don't Ask", "short_title": "DontAsk", "symbol": "⏵⏵"},
+    "default": {"title": "Default", "short_title": "Default", "symbol": "", "external": "default"},
+    "plan": {"title": "Plan Mode", "short_title": "Plan", "symbol": "⏸", "external": "plan"},
+    "acceptEdits": {"title": "Accept edits", "short_title": "Accept", "symbol": "⏵⏵", "external": "acceptEdits"},
+    "bypassPermissions": {"title": "Bypass Permissions", "short_title": "Bypass", "symbol": "⏵⏵", "external": "bypassPermissions"},
+    "dontAsk": {"title": "Don't Ask", "short_title": "DontAsk", "symbol": "⏵⏵", "external": "dontAsk"},
+    # Internal modes — neither user-addressable nor persisted to settings.json.
+    # `external` maps them to a sensible external display mode (parity with
+    # typescript/src/utils/permissions/PermissionMode.ts:80-90).
+    "auto": {"title": "Auto mode", "short_title": "Auto", "symbol": "⏵⏵", "external": "default"},
+    "bubble": {"title": "Bubble", "short_title": "Bubble", "symbol": "↑", "external": "default"},
 }
 
 
@@ -40,6 +50,31 @@ def permission_mode_from_string(s: str) -> PermissionMode:
 
 def is_default_mode(mode: PermissionMode | None) -> bool:
     return mode is None or mode == "default"
+
+
+def to_external_permission_mode(mode: PermissionMode) -> ExternalPermissionMode:
+    """Map a possibly-internal mode to its external representation.
+
+    Mirrors ``toExternalPermissionMode`` in
+    ``typescript/src/utils/permissions/PermissionMode.ts:111-115``. ``auto``
+    and ``bubble`` are internal and surface to external consumers as
+    ``"default"``.
+    """
+    config = _get_config(mode)
+    external = config.get("external", "default")
+    return external  # type: ignore[return-value]
+
+
+def is_external_permission_mode(mode: PermissionMode) -> bool:
+    """True when ``mode`` is in :data:`EXTERNAL_PERMISSION_MODES`.
+
+    Mirrors ``isExternalPermissionMode`` in
+    ``typescript/src/utils/permissions/PermissionMode.ts:97-105``. The TS
+    reference adds an internal ``USER_TYPE === 'ant'`` guard; we omit it
+    because that gate is Anthropic-internal and not part of the public
+    Python contract.
+    """
+    return mode in EXTERNAL_PERMISSION_MODES
 
 
 def initial_permission_mode_from_cli(

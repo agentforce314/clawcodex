@@ -15,6 +15,7 @@ from unittest.mock import MagicMock
 
 from src.permissions.check import has_permissions_to_use_tool
 from src.permissions.types import (
+    EXTERNAL_PERMISSION_MODES,
     PERMISSION_MODES,
     PERMISSION_RULE_SOURCES,
     PermissionAllowDecision,
@@ -56,9 +57,16 @@ class TestPermissionModesParity(unittest.TestCase):
         cls.snapshot = _load_json("ts_permission_vectors.json")
 
     def test_all_modes_present(self) -> None:
+        # The snapshot lists the user-addressable (external) modes; the
+        # internal `auto` and `bubble` modes (parity with TS
+        # InternalPermissionMode) are not part of the public surface.
         ts_modes = set(self.snapshot["permission_modes"])
-        py_modes = set(PERMISSION_MODES)
-        self.assertEqual(ts_modes, py_modes)
+        py_external = set(EXTERNAL_PERMISSION_MODES)
+        self.assertEqual(ts_modes, py_external)
+        # Internal modes must extend the external set.
+        self.assertTrue(set(PERMISSION_MODES).issuperset(py_external))
+        self.assertIn("auto", PERMISSION_MODES)
+        self.assertIn("bubble", PERMISSION_MODES)
 
     def test_all_rule_sources_present(self) -> None:
         ts_sources = set(self.snapshot["rule_sources"])

@@ -14,6 +14,8 @@ from .rules import (
     tool_always_allowed_rule,
 )
 from .types import (
+    AsyncAgentDecisionReason,
+    ClassifierDecisionReason,
     ModeDecisionReason,
     OtherDecisionReason,
     PermissionAllowDecision,
@@ -106,21 +108,95 @@ def has_permissions_to_use_tool(
     *,
     tool_use_context: Any | None = None,
 ) -> PermissionDecision:
+    """Resolve permission for ``tool`` against ``context``.
+
+    Mirrors ``hasPermissionsToUseTool`` in
+    ``typescript/src/utils/permissions/permissions.ts:473-956``. The flow:
+
+    1. Run :func:`has_permissions_to_use_tool_inner` for rule + tool +
+       passthrough → ask resolution.
+    2. Apply ``dontAsk`` transform: ask → deny.
+    3. Apply ``auto`` mode: dispatch to :func:`auto_mode_classify` and
+       convert the result to allow/deny. Skipped when the inner result is a
+       non-classifier-approvable safety check (parity with TS lines 530-548).
+    4. Apply ``bubble`` mode: ask escalates with an ``asyncAgent`` reason.
+       The real cross-process escalation lives in the coordinator; for now
+       we surface a structured deny so callers can recognize the path.
+    5. Apply ``should_avoid_permission_prompts`` headless guard last so it
+       can't be bypassed by an earlier ``ask`` short-circuit.
+    """
     result = has_permissions_to_use_tool_inner(
         tool, tool_input, context, tool_use_context=tool_use_context,
     )
 
-    if context.mode == "dontAsk" and result.behavior == "ask":
+    if result.behavior != "ask":
+        return result
+
+    if context.mode == "dontAsk":
         return PermissionDenyDecision(
             behavior="deny",
             message="Permission denied: dontAsk mode is active.",
             decision_reason=ModeDecisionReason(mode="dontAsk"),
         )
 
-    if (
-        context.should_avoid_permission_prompts
-        and result.behavior == "ask"
-    ):
+    if context.mode == "auto":
+        # Non-classifier-approvable safety checks are immune to auto-allow:
+        # parity with typescript/src/utils/permissions/permissions.ts:530-548.
+        ask_reason = getattr(result, "decision_reason", None)
+        if (
+            ask_reason is not None
+            and ask_reason.type == "safetyCheck"
+            and not getattr(ask_reason, "classifier_approvable", False)
+        ):
+            if context.should_avoid_permission_prompts:
+                return PermissionDenyDecision(
+                    behavior="deny",
+                    message=getattr(result, "message", ""),
+                    decision_reason=AsyncAgentDecisionReason(
+                        reason=(
+                            "Safety check requires interactive approval and "
+                            "permission prompts are not available in this context"
+                        ),
+                    ),
+                )
+            return result
+
+        decision = auto_mode_classify(tool.name, tool_input, context)
+        if decision.allow:
+            return PermissionAllowDecision(
+                behavior="allow",
+                updated_input=getattr(result, "updated_input", None) or tool_input,
+                decision_reason=ClassifierDecisionReason(
+                    classifier="auto-mode",
+                    reason=decision.reason,
+                ),
+            )
+        return PermissionDenyDecision(
+            behavior="deny",
+            message=f"Auto-mode classifier blocked {tool.name}: {decision.reason}",
+            decision_reason=ClassifierDecisionReason(
+                classifier="auto-mode",
+                reason=decision.reason,
+            ),
+        )
+
+    if context.mode == "bubble":
+        # Stub for the parent-escalation path described in
+        # book/ch01-architecture.md line 126 + ch06 lines 211-213. A future
+        # change replaces this with a real cross-process request to the
+        # parent agent; the structured reason makes that swap observable.
+        return PermissionDenyDecision(
+            behavior="deny",
+            message=(
+                f"Permission required for {tool.name} in bubble mode; "
+                "request must be escalated to the parent agent."
+            ),
+            decision_reason=AsyncAgentDecisionReason(
+                reason="bubble: sub-agent escalates permission to parent",
+            ),
+        )
+
+    if context.should_avoid_permission_prompts:
         return PermissionDenyDecision(
             behavior="deny",
             message=f"Permission denied: tool {tool.name} requires approval but prompts are not available.",
