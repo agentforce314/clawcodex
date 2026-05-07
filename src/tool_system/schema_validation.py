@@ -124,3 +124,22 @@ def _is_valid(value: Any, schema: Mapping[str, Any]) -> bool:
     _validate(value, schema, path="$", issues=issues)
     return not issues
 
+
+def build_schema_not_sent_hint(tool: Any) -> str:
+    """Recovery hint when a deferred tool is called without ToolSearch.
+
+    Mirrors ``buildSchemaNotSentHint`` in
+    ``typescript/src/services/tools/toolExecution.ts:579``. Deferred tools
+    are sent to the API with ``defer_loading: true`` (name + description
+    only) — the model must call ``ToolSearchTool`` first to load the full
+    parameter schema. When the model skips that step and calls the tool
+    directly, schema validation fails because the typed parameters arrive
+    as raw strings. The hint nudges the model to use ToolSearch.
+    """
+    name = getattr(tool, "name", "this tool")
+    return (
+        f"\n\nHint: '{name}' is a deferred tool — its full parameter schema "
+        "is loaded on demand. Call the ToolSearchTool first with this tool's "
+        "name to retrieve the schema, then re-issue the call."
+    )
+
