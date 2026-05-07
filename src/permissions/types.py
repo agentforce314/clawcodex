@@ -4,7 +4,13 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Union
 
 
-PermissionMode = Literal[
+# Mirrors typescript/src/types/permissions.ts:16-38.
+# `EXTERNAL_PERMISSION_MODES` is the user-addressable set written to
+# settings.json / passed via --permission-mode. `auto` and `bubble` are
+# *internal* modes (auto: TRANSCRIPT_CLASSIFIER; bubble: sub-agent escalation)
+# that the resolution chain needs to recognize but that never get persisted as
+# external configuration.
+ExternalPermissionMode = Literal[
     "default",
     "plan",
     "acceptEdits",
@@ -12,20 +18,32 @@ PermissionMode = Literal[
     "dontAsk",
 ]
 
+PermissionMode = Literal[
+    "default",
+    "plan",
+    "acceptEdits",
+    "bypassPermissions",
+    "dontAsk",
+    "auto",
+    "bubble",
+]
+
+EXTERNAL_PERMISSION_MODES: tuple[ExternalPermissionMode, ...] = (
+    "acceptEdits",
+    "bypassPermissions",
+    "default",
+    "dontAsk",
+    "plan",
+)
+
 PERMISSION_MODES: tuple[PermissionMode, ...] = (
     "default",
     "plan",
     "acceptEdits",
     "bypassPermissions",
     "dontAsk",
-)
-
-EXTERNAL_PERMISSION_MODES: tuple[PermissionMode, ...] = (
-    "acceptEdits",
-    "bypassPermissions",
-    "default",
-    "dontAsk",
-    "plan",
+    "auto",
+    "bubble",
 )
 
 PermissionBehavior = Literal["allow", "deny", "ask"]
@@ -106,11 +124,27 @@ class PermissionUpdateSetMode:
     mode: PermissionMode = "default"
 
 
+@dataclass(frozen=True)
+class PermissionUpdateAddDirectories:
+    type: Literal["addDirectories"] = "addDirectories"
+    destination: PermissionUpdateDestination = "session"
+    directories: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class PermissionUpdateRemoveDirectories:
+    type: Literal["removeDirectories"] = "removeDirectories"
+    destination: PermissionUpdateDestination = "session"
+    directories: tuple[str, ...] = ()
+
+
 PermissionUpdate = Union[
     PermissionUpdateAddRules,
     PermissionUpdateReplaceRules,
     PermissionUpdateRemoveRules,
     PermissionUpdateSetMode,
+    PermissionUpdateAddDirectories,
+    PermissionUpdateRemoveDirectories,
 ]
 
 
@@ -175,6 +209,44 @@ class SubcommandResultsDecisionReason:
     reasons: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class ClassifierDecisionReason:
+    """Auto-mode classifier decision (LLM transcript classifier in TS).
+
+    Mirrors ``typescript/src/types/permissions.ts:303-307``. The ``classifier``
+    field names which classifier produced the decision (e.g. ``"auto-mode"``,
+    ``"dangerous-agent-action"``); ``reason`` is the prose rationale.
+    """
+    type: Literal["classifier"] = "classifier"
+    classifier: str = ""
+    reason: str = ""
+
+
+@dataclass(frozen=True)
+class PermissionPromptToolDecisionReason:
+    """A custom permission prompt tool produced the decision.
+
+    Mirrors ``typescript/src/types/permissions.ts:285-289``. Used when an
+    external tool (typically MCP-provided) is configured as the permission
+    prompt and resolves the decision before reaching the user.
+    """
+    type: Literal["permissionPromptTool"] = "permissionPromptTool"
+    permission_prompt_tool_name: str = ""
+    tool_result: Any | None = None
+
+
+@dataclass(frozen=True)
+class SandboxOverrideDecisionReason:
+    """Sandbox-bypass decision reason.
+
+    Mirrors ``typescript/src/types/permissions.ts:299-302``. Either the
+    command is on the excluded-from-sandbox list, or the user explicitly
+    passed ``dangerouslyDisableSandbox``.
+    """
+    type: Literal["sandboxOverride"] = "sandboxOverride"
+    reason: Literal["excludedCommand", "dangerouslyDisableSandbox"] = "excludedCommand"
+
+
 PermissionDecisionReason = Union[
     RuleDecisionReason,
     ModeDecisionReason,
@@ -184,6 +256,9 @@ PermissionDecisionReason = Union[
     WorkingDirDecisionReason,
     OtherDecisionReason,
     SubcommandResultsDecisionReason,
+    ClassifierDecisionReason,
+    PermissionPromptToolDecisionReason,
+    SandboxOverrideDecisionReason,
 ]
 
 
