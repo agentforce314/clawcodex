@@ -286,6 +286,14 @@ class TestBuildAppSmoke(unittest.TestCase):
         self.assertGreater(len(tools), 0)
 
     def test_pip_install_editable(self) -> None:
+        # Skip when the active interpreter has no ``pip`` module — the venv
+        # may have been provisioned by ``uv`` (no pip by default). The test
+        # is a build-smoke check, not a pip presence check.
+        try:
+            __import__("pip")
+        except ImportError:
+            self.skipTest("pip not installed in this interpreter (e.g. uv venv)")
+
         result = subprocess.run(
             [sys.executable, "-m", "pip", "install", "-e", ".", "--quiet"],
             capture_output=True,
