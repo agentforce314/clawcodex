@@ -18,6 +18,7 @@ from .mcp_resources import ListMcpResourcesTool, ReadMcpResourceTool
 from .misc import ClipboardReadTool, ClipboardWriteTool, StatusTool
 from .plan_mode import EnterPlanModeTool, ExitPlanModeTool
 from .read import ReadTool
+from .send_message import SendMessageTool
 from .send_user_message import SendUserMessageTool
 from .skill import SkillTool
 from .sleep import SleepTool
@@ -61,6 +62,7 @@ ALL_STATIC_TOOLS: list[Tool] = [
     NotebookEditTool,
     ReadMcpResourceTool,
     ReadTool,
+    SendMessageTool,
     SendUserMessageTool,
     SkillTool,
     SleepTool,
@@ -104,6 +106,7 @@ __all__ = [
     "NotebookEditTool",
     "ReadMcpResourceTool",
     "ReadTool",
+    "SendMessageTool",
     "SendUserMessageTool",
     "SkillTool",
     "SleepTool",
