@@ -256,7 +256,15 @@ Returns full task details:
 
 
 def _task_list_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
-    # Filter out internal tasks (metadata._internal == True)
+    # FOLLOW-UP (chapter-10 / Chunk B / critic concern C2): this filter
+    # was scoped out of WI-1.5 (which only migrated ``_task_output_call``).
+    # Post-WI-1.5 ``context.tasks`` no longer hosts runtime-agent entries
+    # (those moved to ``context.runtime_tasks``), so
+    # ``metadata._internal=True`` should never appear here in steady
+    # state. Keep the filter as defense-in-depth against legacy
+    # transcript replays that might introduce such an entry; **drop in a
+    # Phase-2-or-later one-line cleanup** once we have confidence no
+    # such transcripts remain in CI fixtures.
     all_tasks = [
         t for t in context.tasks.values()
         if not (t.get("metadata") or {}).get("_internal")
@@ -495,18 +503,142 @@ Set up task dependencies:
 )
 
 
-def _task_output_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
+async def _task_output_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
+    """Return the current state / output of a runtime task or todo.
+
+    Chapter-10 / Chunk D / WI-4.1: full polling semantics. ``block``
+    defaults to True; when set, the call polls ``runtime_tasks`` until
+    the task reaches a terminal state or the ``timeout`` expires.
+    Three ``retrieval_status`` values match TS
+    ``TaskOutputTool.tsx:52``:
+
+    * ``"success"`` — task is in a terminal state (chapter-10
+      ``completed`` / ``failed`` / ``killed``) when polling stops.
+      Also returned for non-terminal tasks when ``block=False``-and-
+      task-already-terminal (which collapses to the same case).
+    * ``"timeout"`` — ``block=True``, deadline expired, task still
+      running. The return body still carries the latest snapshot so
+      callers see the partial output collected so far.
+    * ``"not_ready"`` — ``block=False`` and task is non-terminal.
+
+    The function is ``async def`` so the polling loop can ``await
+    asyncio.sleep`` instead of busy-waiting. The dispatch layer (Chunk
+    D / WI-4.0) handles sync-vs-async at the registry level — calls
+    from sync contexts (test fixtures, tools dispatched from tools)
+    still work transparently.
+    """
     task_id = tool_input.get("task_id")
     if not isinstance(task_id, str) or not task_id.strip():
         raise ToolInputError("task_id must be a non-empty string")
+    task_id = task_id.strip()
 
-    # Background Bash commands (spawned by ``Bash`` with ``run_in_background:
-    # true``) register themselves on ``context.background_bash_tasks``. Check
-    # that registry first so ``TaskOutput`` doubles as the polling tool for
-    # long-running shell commands, matching
-    # ``typescript/src/tools/BashTool/BashTool.tsx``.
-    bg_tasks = getattr(context, "background_bash_tasks", None) or {}
-    if task_id in bg_tasks:
+    block = bool(tool_input.get("block", True))
+    timeout_ms = tool_input.get("timeout")
+    if timeout_ms is None:
+        timeout_ms = 30_000  # default per TS TaskOutputTool.tsx:33
+    try:
+        timeout_seconds = float(timeout_ms) / 1000.0
+    except (TypeError, ValueError):
+        raise ToolInputError("timeout must be a number")
+
+    # Branch 1 — runtime_tasks (chapter-10 source of truth).
+    runtime = context.runtime_tasks.get(task_id)
+    if runtime is not None:
+        if not block:
+            return _runtime_task_to_output(task_id, runtime, context)
+        return await _poll_runtime_until_terminal(task_id, timeout_seconds, context)
+
+    # Branch 2 — TaskCreate / tasks_v2 todos. Same key space, different
+    # semantics; no polling — output text is set or not at the moment
+    # of the call.
+    task = context.tasks.get(task_id)
+    if task is None:
+        return ToolResult(name="TaskOutput", output={"retrieval_status": "success", "task": None})
+
+    output = str(task.get("output") or "")
+    retrieval_status = "success" if output else "not_ready"
+    return ToolResult(
+        name="TaskOutput",
+        output={
+            "retrieval_status": retrieval_status,
+            "task": {
+                "task_id": task_id,
+                "task_type": "task_list",
+                "status": task.get("status"),
+                "description": task.get("description"),
+                "output": output,
+            },
+        },
+    )
+
+
+async def _poll_runtime_until_terminal(
+    task_id: str,
+    timeout_seconds: float,
+    context: ToolContext,
+) -> ToolResult:
+    """Block until the runtime task is terminal or the deadline expires.
+
+    Returns the same shape ``_runtime_task_to_output`` produces, but
+    sets ``retrieval_status="timeout"`` if the deadline expired with
+    the task still running. ``await asyncio.sleep`` is bounded at 250ms
+    per tick so cancellation is responsive but the loop doesn't burn
+    CPU.
+
+    Respects an abort signal on ``context.abort_controller`` if one is
+    set: the abort exits the poll early with the current snapshot. The
+    parent's stop signal must propagate.
+    """
+    import asyncio
+    import time
+
+    from src.tasks_core import is_terminal_task_status
+
+    deadline = time.monotonic() + timeout_seconds
+    poll_interval = 0.25
+    while True:
+        runtime = context.runtime_tasks.get(task_id)
+        if runtime is None:
+            # Task evicted mid-poll — treat as success/None like the
+            # not-found branch above.
+            return ToolResult(
+                name="TaskOutput",
+                output={"retrieval_status": "success", "task": None},
+            )
+        if is_terminal_task_status(runtime.status):
+            return _runtime_task_to_output(task_id, runtime, context)
+
+        # Abort fast-path — if the parent's controller is signalled,
+        # exit with the current snapshot rather than waiting out the
+        # remaining timeout.
+        abort_signal = getattr(context.abort_controller, "signal", None) if context.abort_controller else None
+        if abort_signal is not None and getattr(abort_signal, "aborted", False):
+            return _runtime_task_to_output(task_id, runtime, context)
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            # Timed out — return the running snapshot but flag it.
+            snapshot = _runtime_task_to_output(task_id, runtime, context)
+            timed_out = dict(snapshot.output) if isinstance(snapshot.output, dict) else {}
+            timed_out["retrieval_status"] = "timeout"
+            return ToolResult(name="TaskOutput", output=timed_out)
+        await asyncio.sleep(min(poll_interval, max(remaining, 0.01)))
+
+
+def _runtime_task_to_output(
+    task_id: str,
+    runtime: Any,
+    context: ToolContext,
+) -> ToolResult:
+    """Project a ``runtime_tasks`` entry into the model-facing output shape."""
+    # Local imports defer the cycle.
+    from src.tasks.local_agent import LocalAgentTaskState
+    from src.tasks.local_shell import LocalShellTaskState
+    from src.tasks_core import is_terminal_task_status
+
+    if isinstance(runtime, LocalShellTaskState):
+        # Reuse the existing rich snapshot helper (combined output capture,
+        # exit-code marker stripping, etc.) so behavior is unchanged.
         from src.tool_system.tools.bash.background import read_background_output
 
         snapshot = read_background_output(context, task_id)
@@ -535,22 +667,39 @@ def _task_output_call(tool_input: dict[str, Any], context: ToolContext) -> ToolR
             },
         )
 
-    task = context.tasks.get(task_id)
-    if task is None:
-        return ToolResult(name="TaskOutput", output={"retrieval_status": "success", "task": None})
+    if isinstance(runtime, LocalAgentTaskState):
+        text = runtime.result_text or ""
+        if is_terminal_task_status(runtime.status):
+            retrieval_status = "success"
+        else:
+            retrieval_status = "not_ready"
+        return ToolResult(
+            name="TaskOutput",
+            output={
+                "retrieval_status": retrieval_status,
+                "task": {
+                    "task_id": task_id,
+                    "task_type": "local_agent",
+                    "status": runtime.status,
+                    "description": runtime.description,
+                    "agent_type": runtime.agent_type,
+                    "output": text,
+                },
+            },
+        )
 
-    output = str(task.get("output") or "")
-    retrieval_status = "success" if output else "not_ready"
+    # Unknown TaskStateBase subclass — surface what we have. Future task
+    # types can extend this dispatch without touching the readers above.
     return ToolResult(
         name="TaskOutput",
         output={
-            "retrieval_status": retrieval_status,
+            "retrieval_status": "success",
             "task": {
                 "task_id": task_id,
-                "task_type": "task_list",
-                "status": task.get("status"),
-                "description": task.get("description"),
-                "output": output,
+                "task_type": runtime.type,
+                "status": runtime.status,
+                "description": runtime.description,
+                "output": "",
             },
         },
     )
@@ -563,8 +712,20 @@ TaskOutputTool: Tool = build_tool(
         "additionalProperties": False,
         "properties": {
             "task_id": {"type": "string"},
-            "block": {"type": "boolean"},
-            "timeout": {"type": "number"},
+            "block": {
+                "type": "boolean",
+                "default": True,
+                "description": "Whether to wait for task completion (default: true)",
+            },
+            # Chapter-10 / WI-4.1 schema bounds (mirrors TS
+            # TaskOutputTool.tsx:33 ``z.number().min(0).max(600000)``).
+            "timeout": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 600000,
+                "default": 30000,
+                "description": "Max wait time in ms (default 30000; max 600000)",
+            },
         },
         "required": ["task_id"],
     },

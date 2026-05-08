@@ -12,7 +12,11 @@ TOOL_SNAPSHOT_PATH = CURRENT_ROOT / 'reference_data' / 'tools_snapshot.json'
 
 ARCHIVE_ROOT_FILES = {
     'QueryEngine.ts': 'QueryEngine.py',
-    'Task.ts': 'task.py',
+    # Chapter-10 refactor (Chunk B / WI-1.1): the TS ``Task.ts`` file now maps
+    # to ``src/tasks_core.py`` (TaskType union, TaskStatus union, TaskStateBase,
+    # ``is_terminal_task_status``, ``generate_task_id``). The legacy stub at
+    # ``src/task.py`` remains for the moment as a re-export shim (PortingTask).
+    'Task.ts': 'tasks_core.py',
     'Tool.ts': 'Tool.py',
     'commands.ts': 'commands.py',
     'context.ts': 'context.py',
@@ -27,7 +31,11 @@ ARCHIVE_ROOT_FILES = {
     'query.ts': 'query.py',
     'replLauncher.tsx': 'replLauncher.py',
     'setup.ts': 'setup.py',
-    'tasks.ts': 'tasks.py',
+    # Chapter-10 refactor (Chunk B / WI-1.0): the old ``tasks.py`` flat file
+    # was deleted in favor of a real ``src/tasks/`` package. The TS root file
+    # ``tasks.ts`` now maps to ``src/task_registry.py`` (which holds
+    # ``RuntimeTaskRegistry``, ``Task`` Protocol, and ``get_all_tasks``).
+    'tasks.ts': 'task_registry.py',
     'tools.ts': 'tools.py',
 }
 
@@ -60,7 +68,10 @@ ARCHIVE_DIR_MAPPINGS = {
     'services': 'services',
     'skills': 'skills',
     'state': 'state',
-    'tasks': 'tasks.py',
+    # Chapter-10 refactor (Chunk B / WI-1.0): TS ``tasks/`` directory now
+    # maps to a real ``src/tasks/`` Python package (was a flat
+    # ``src/tasks.py`` stub before the refactor).
+    'tasks': 'tasks',
     'tools': 'tools.py',
     'types': 'types',
     'upstreamproxy': 'upstreamproxy',
