@@ -27,7 +27,10 @@ class TestTeammate(unittest.TestCase):
 
     def test_elapsed(self) -> None:
         t = Teammate()
-        self.assertGreater(t.elapsed_seconds, 0)
+        # Elapsed can legitimately be 0.0 immediately after construction
+        # — ``started_at`` and the read of ``time.time()`` can fall in the
+        # same clock tick on fast machines. Assert non-negative instead.
+        self.assertGreaterEqual(t.elapsed_seconds, 0)
 
 
 class TestTeammateManager(unittest.TestCase):

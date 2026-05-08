@@ -466,10 +466,11 @@ class TestIntegrationUsageTracking:
 class TestIntegrationREPLChat:
     """End-to-end via ClawcodexREPL.chat()."""
 
-    def _make_config(self, home: Path):
+    def _make_config(self, home: Path) -> Path:
         cfg_dir = home / ".clawcodex"
         cfg_dir.mkdir(parents=True, exist_ok=True)
-        (cfg_dir / "config.json").write_text(json.dumps({
+        cfg_file = cfg_dir / "config.json"
+        cfg_file.write_text(json.dumps({
             "default_provider": "glm",
             "providers": {
                 "glm": {
@@ -479,35 +480,59 @@ class TestIntegrationREPLChat:
                 }
             },
         }), encoding="utf-8")
+        return cfg_file
+
+    def _redirect_global_config(self, config_file: Path):
+        """Patch ``GLOBAL_CONFIG_FILE`` and reset the cached manager.
+
+        ``HOME``-based redirection does not work — the constant is captured
+        at module-import time. Patching the constant directly + resetting
+        the singleton is the equivalent that actually takes effect.
+        """
+        import src.config as config_module
+        patcher = patch.object(config_module, "GLOBAL_CONFIG_FILE", config_file)
+        patcher.start()
+        config_module._default_manager = None
+        return patcher
+
+    def _make_repl(self, *, provider_name: str = "glm"):
+        from src.repl.core import ClawcodexREPL
+        return ClawcodexREPL(
+            provider_name=provider_name,
+            stream=False,
+            permission_mode="bypassPermissions",
+            is_bypass_permissions_mode_available=True,
+        )
 
     def test_repl_chat_simple_query(self, tmp_path):
         home = tmp_path / "home"
         work = tmp_path / "work"
         work.mkdir()
-        self._make_config(home)
+        config_file = self._make_config(home)
+        config_patcher = self._redirect_global_config(config_file)
 
-        old_home = os.environ.get("HOME")
         old_cwd = Path.cwd()
         try:
-            os.environ["HOME"] = str(home)
             os.chdir(work)
             with patch("src.repl.core.get_provider_class", return_value=lambda *a, **kw: _TextOnlyProvider()):
-                from src.repl.core import ClawcodexREPL
-                repl = ClawcodexREPL(provider_name="glm", stream=False)
+                repl = self._make_repl()
                 repl.chat("Hello")
             msgs = repl.session.conversation.get_messages()
             roles = [m["role"] for m in msgs]
             assert "user" in roles
             assert "assistant" in roles
         finally:
-            os.environ["HOME"] = old_home or ""
+            config_patcher.stop()
+            import src.config as config_module
+            config_module._default_manager = None
             os.chdir(old_cwd)
 
     def test_repl_chat_tool_creates_file(self, tmp_path):
         home = tmp_path / "home"
         work = tmp_path / "work"
         work.mkdir()
-        self._make_config(home)
+        config_file = self._make_config(home)
+        config_patcher = self._redirect_global_config(config_file)
 
         target = work / "created.txt"
 
@@ -545,17 +570,16 @@ class TestIntegrationREPLChat:
 
         _Provider._turn = 0
 
-        old_home = os.environ.get("HOME")
         old_cwd = Path.cwd()
         try:
-            os.environ["HOME"] = str(home)
             os.chdir(work)
             with patch("src.repl.core.get_provider_class", return_value=_Provider):
-                from src.repl.core import ClawcodexREPL
-                repl = ClawcodexREPL(provider_name="glm", stream=False)
+                repl = self._make_repl()
                 repl.chat("Create created.txt")
             assert target.exists()
             assert target.read_text(encoding="utf-8") == "repl-ok\n"
         finally:
-            os.environ["HOME"] = old_home or ""
+            config_patcher.stop()
+            import src.config as config_module
+            config_module._default_manager = None
             os.chdir(old_cwd)
