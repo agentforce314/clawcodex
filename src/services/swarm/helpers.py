@@ -24,7 +24,7 @@ def format_team_summary(manager: TeammateManager) -> str:
             TeammateStatus.RUNNING: "🔄",
             TeammateStatus.COMPLETED: "✅",
             TeammateStatus.FAILED: "❌",
-            TeammateStatus.CANCELLED: "⛔",
+            TeammateStatus.KILLED: "⛔",
             TeammateStatus.PENDING: "⏳",
         }.get(t.status, "?")
         prompt_preview = t.config.prompt[:40] + ("..." if len(t.config.prompt) > 40 else "")
