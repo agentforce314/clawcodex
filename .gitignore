@@ -124,6 +124,7 @@ out/
 /assets/
 /my-docs/
 /screenshots_work/
+/claude-code-from-source/
 
 # Logs
 npm-debug.log*
