@@ -397,12 +397,19 @@ class TestSleepTool(ToolSystemTests):
 
 class TestTaskStopTool(ToolSystemTests):
     def test_task_stop(self) -> None:
+        import asyncio
+
         def target(stop_event):
             while not stop_event.is_set():
                 time.sleep(0.01)
 
         task = self.ctx.task_manager.start(name="loop", target=target)
-        out = TaskStopTool.call({"task_id": task.task_id}, self.ctx).output
+        # Post Chunk D / WI-4.0, ``TaskStopTool.call`` is async; drive it
+        # via asyncio.run for this sync-style test. The dispatcher does
+        # the same when called from a sync context (registry.dispatch).
+        out = asyncio.run(
+            TaskStopTool.call({"task_id": task.task_id}, self.ctx)
+        ).output
         self.assertTrue(out["stopped"])
 
 
@@ -514,7 +521,11 @@ class TestNewParityTools(ToolSystemTests):
         TaskUpdateTool.call({"taskId": task_id, "status": "completed"}, self.ctx)
         got = TaskGetTool.call({"taskId": task_id}, self.ctx).output
         self.assertEqual(got["task"]["status"], "completed")
-        task_out = TaskOutputTool.call({"task_id": task_id}, self.ctx).output
+        # Post Chunk D / WI-4.1, ``TaskOutputTool.call`` is async.
+        import asyncio as _asyncio
+        task_out = _asyncio.run(
+            TaskOutputTool.call({"task_id": task_id}, self.ctx)
+        ).output
         self.assertEqual(task_out["task"]["task_id"], task_id)
 
     def test_task_cascade_delete_removes_blockers(self) -> None:
