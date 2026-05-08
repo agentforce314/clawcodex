@@ -150,6 +150,38 @@ async def _check_permissions_and_call_tool(
     resulting_messages: list[MessageUpdateLazy] = []
     processed_input = tool_input
 
+    # ----- Step 3 — Schema validation with deferred-tool recovery hint.
+    # Mirrors typescript/src/services/tools/toolExecution.ts schema check at
+    # the head of checkPermissionsAndCallTool. Skipped when the tool has no
+    # input_schema (defensive — every Tool should declare one).
+    if getattr(tool, "input_schema", None):
+        try:
+            from src.tool_system.schema_validation import (
+                build_schema_not_sent_hint,
+                validate_json_schema,
+            )
+
+            validate_json_schema(
+                processed_input, tool.input_schema, root_name=tool.name,
+            )
+        except Exception as schema_err:  # ToolInputError or any subclass
+            msg = str(schema_err)
+            if getattr(tool, "should_defer", False):
+                msg = msg + build_schema_not_sent_hint(tool)
+            resulting_messages.append(MessageUpdateLazy(
+                message=create_user_message(
+                    content=[{
+                        "type": "tool_result",
+                        "content": f"<tool_use_error>{msg}</tool_use_error>",
+                        "is_error": True,
+                        "tool_use_id": tool_use_id,
+                    }],
+                    toolUseResult=f"Error: {msg}",
+                ),
+            ))
+            return resulting_messages
+
+    # ----- Step 4 — Semantic validation (`validate_input`).
     if tool.validate_input is not None:
         try:
             validation = tool.validate_input(processed_input, tool_use_context)
@@ -169,6 +201,18 @@ async def _check_permissions_and_call_tool(
                 return resulting_messages
         except Exception as e:
             logger.debug("Validation error for %s: %s", tool.name, e)
+
+    # ----- Step 6 — Input Backfill (clone, not mutate).
+    # The original API-bound input is preserved (preserves prompt cache);
+    # the cloned, backfilled input is what hooks and permissions see.
+    # Mirrors typescript/src/services/tools/toolExecution.ts backfill step.
+    if tool.backfill_observable_input is not None:
+        try:
+            backfilled = dict(processed_input)
+            tool.backfill_observable_input(backfilled)
+            processed_input = backfilled
+        except Exception as e:
+            logger.debug("backfill_observable_input error for %s: %s", tool.name, e)
 
     should_prevent_continuation = False
     stop_reason: str | None = None
@@ -253,7 +297,20 @@ async def _check_permissions_and_call_tool(
 
         duration_ms = int((time.monotonic() - start_time) * 1000)
 
-        tool_result_block = tool.map_result_to_api(result.data, tool_use_id)
+        # Step 11 — Result Budgeting. Per-tool max_result_size_chars is
+        # honored here: empty content is replaced with a "(<tool> completed
+        # with no output)" marker, oversized content is persisted to disk
+        # and replaced with a <persisted-output> wrapper that includes a
+        # preview, image content reaches the model intact.
+        from src.services.tool_execution.tool_result_persistence import (
+            process_tool_result_block,
+            resolve_tool_results_dir,
+        )
+
+        tool_results_dir = resolve_tool_results_dir(tool_use_context)
+        tool_result_block = process_tool_result_block(
+            tool, result.data, tool_use_id, tool_results_dir=tool_results_dir,
+        )
 
         resulting_messages.append(MessageUpdateLazy(
             message=create_user_message(
@@ -313,7 +370,16 @@ async def _check_permissions_and_call_tool(
 
     except Exception as error:
         duration_ms = int((time.monotonic() - start_time) * 1000)
-        logger.error("Tool %s error (%dms): %s", tool.name, duration_ms, error)
+        # Step 14 — Error Handling with telemetry-safe classification.
+        # classify_tool_error returns a stable, mangling-safe string so
+        # downstream telemetry/log scrapers can group errors by class
+        # without leaking unredacted error messages. Mirrors
+        # classifyToolError in typescript/src/services/tools/toolExecution.ts:151.
+        classified = classify_tool_error(error)
+        logger.error(
+            "Tool %s failed (%dms) classified=%s: %s",
+            tool.name, duration_ms, classified, error,
+        )
 
         error_content = _format_error(error)
 

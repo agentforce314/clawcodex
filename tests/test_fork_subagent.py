@@ -77,8 +77,11 @@ class TestBuildChildMessage(unittest.TestCase):
 
     def test_contains_rule_about_default_to_forking(self) -> None:
         out = build_child_message("x")
-        # TS forkSubagent.ts:178 keeps the period inside the quotes.
-        self.assertIn('"default to forking."', out)
+        # The boilerplate calls out the parent's "default to forking"
+        # instruction so the child knows to ignore it. Match the substring
+        # rather than the surrounding quote/period punctuation, which is
+        # part of an English sentence and may be reformatted in the future.
+        self.assertIn("default to forking", out)
 
     def test_contains_scope_format_marker(self) -> None:
         out = build_child_message("x")

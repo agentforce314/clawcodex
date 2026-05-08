@@ -126,7 +126,7 @@ def test_fork_recursive_guard_via_query_source(
     # Simulate that this context is already a fork child.
     context.options.query_source = "agent:builtin:fork"
 
-    with pytest.raises(ToolInputError, match="(?i)fork"):
+    with pytest.raises(ToolInputError) as excinfo:
         registry.dispatch(
             ToolCall(
                 name="Agent",
@@ -134,6 +134,7 @@ def test_fork_recursive_guard_via_query_source(
             ),
             context,
         )
+    assert "fork" in str(excinfo.value).lower()
 
 
 def test_fork_recursive_guard_via_message_scan(
@@ -147,7 +148,7 @@ def test_fork_recursive_guard_via_message_scan(
         create_user_message(content=[TextBlock(text="<fork-boilerplate>...</fork-boilerplate>")]),
     ]
 
-    with pytest.raises(ToolInputError, match="(?i)fork"):
+    with pytest.raises(ToolInputError) as excinfo:
         registry.dispatch(
             ToolCall(
                 name="Agent",
@@ -155,6 +156,7 @@ def test_fork_recursive_guard_via_message_scan(
             ),
             context,
         )
+    assert "fork" in str(excinfo.value).lower()
 
 
 def test_fork_routing_includes_parent_assistant_clone(
