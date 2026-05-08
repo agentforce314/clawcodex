@@ -12,6 +12,7 @@ Executes tools as they stream in with concurrency control:
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import logging
 from dataclasses import dataclass, field
@@ -83,12 +84,21 @@ class StreamingToolExecutor:
         )
         self._discarded = False
         self._progress_available_event = asyncio.Event()
+        # Retain ensure_future tasks until they complete; asyncio doesn't
+        # hold strong references to scheduled coroutines and may GC them
+        # mid-flight (RuntimeWarning: coroutine was never awaited).
+        self._pending_queue_tasks: set[asyncio.Task[None]] = set()
 
     def discard(self) -> None:
         self._discarded = True
 
     def add_tool(self, block: ToolUseBlock, assistant_message: AssistantMessage) -> None:
         from src.tool_system.build_tool import find_tool_by_name
+        # Local import to avoid an orchestrator → streaming_executor cycle at
+        # module load (orchestrator already imports from this module).
+        from src.services.tool_execution.orchestrator import (
+            classify_concurrency_safe,
+        )
 
         tool_definition = find_tool_by_name(self._tool_definitions, block.name)
         if tool_definition is None:
@@ -110,11 +120,9 @@ class StreamingToolExecutor:
             ))
             return
 
-        is_concurrency_safe = False
-        try:
-            is_concurrency_safe = bool(tool_definition.is_concurrency_safe(block.input))
-        except Exception:
-            is_concurrency_safe = False
+        is_concurrency_safe = classify_concurrency_safe(
+            tool_definition, block.input,
+        )
 
         self._tools.append(TrackedTool(
             id=block.id,
@@ -124,7 +132,12 @@ class StreamingToolExecutor:
             is_concurrency_safe=is_concurrency_safe,
         ))
 
-        asyncio.ensure_future(self._process_queue())
+        # Retain the queue task; otherwise asyncio may GC it
+        # (RuntimeWarning: coroutine was never awaited). The done
+        # callback discards it once the queue tick finishes.
+        task = asyncio.ensure_future(self._process_queue())
+        self._pending_queue_tasks.add(task)
+        task.add_done_callback(self._pending_queue_tasks.discard)
 
     def _can_execute_tool(self, is_concurrency_safe: bool) -> bool:
         executing = [t for t in self._tools if t.status == "executing"]
@@ -259,11 +272,17 @@ class StreamingToolExecutor:
                         tool_abort_controller.signal.reason
                     )
 
-            tool_abort_controller.signal.add_listener(_on_tool_abort)
+            tool_abort_controller.signal.add_listener(_on_tool_abort, once=True)
 
-            tool_context_with_abort = self._tool_use_context
-            original_abort = tool_context_with_abort.abort_controller
-            tool_context_with_abort.abort_controller = tool_abort_controller
+            # Per-tool copy of the context with its own abort controller.
+            # Mirrors TS `{ ...this.toolUseContext, abortController: ... }`.
+            # Mutating self._tool_use_context here would race when sibling
+            # tools execute concurrently (each would stomp the other's
+            # abort_controller mid-flight).
+            tool_context_with_abort = dataclasses.replace(
+                self._tool_use_context,
+                abort_controller=tool_abort_controller,
+            )
 
             this_tool_errored = False
 
@@ -332,8 +351,6 @@ class StreamingToolExecutor:
                     }],
                     toolUseResult=f"Error: {e}",
                 ))
-            finally:
-                tool_context_with_abort.abort_controller = original_abort
 
             tool.results = messages
             tool.context_modifiers = context_modifiers
@@ -384,23 +401,43 @@ class StreamingToolExecutor:
             for result in self.get_completed_results():
                 yield result
 
-            if (
-                self._has_executing_tools()
-                and not self._has_completed_results()
-                and not self._has_pending_progress()
-            ):
-                executing_promises = [
-                    t.promise for t in self._tools
-                    if t.status == "executing" and t.promise is not None
-                ]
+            if not self._has_executing_tools():
+                continue
 
-                self._progress_available_event.clear()
+            # Idle-wait until progress arrives or any executing tool
+            # finishes. Order matters here:
+            #   1. clear() the event FIRST.
+            #   2. THEN re-check for pending progress / completion.
+            #   3. THEN await.
+            # The TS Promise-replacement style hides this; the asyncio
+            # Event flag is sticky, so checking before clearing leaves a
+            # window where a producer's set() between check and clear
+            # gets wiped, and the wait blocks until a tool finishes
+            # (visible UI lag during long concurrent batches).
+            self._progress_available_event.clear()
 
-                if executing_promises:
-                    done, _ = await asyncio.wait(
-                        [*executing_promises, asyncio.ensure_future(self._progress_available_event.wait())],
-                        return_when=asyncio.FIRST_COMPLETED,
-                    )
+            if self._has_completed_results() or self._has_pending_progress():
+                continue
+
+            executing_promises = [
+                t.promise for t in self._tools
+                if t.status == "executing" and t.promise is not None
+            ]
+
+            if not executing_promises:
+                continue
+
+            progress_wait_task = asyncio.ensure_future(
+                self._progress_available_event.wait()
+            )
+            try:
+                await asyncio.wait(
+                    [*executing_promises, progress_wait_task],
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            finally:
+                if not progress_wait_task.done():
+                    progress_wait_task.cancel()
 
         for result in self.get_completed_results():
             yield result
