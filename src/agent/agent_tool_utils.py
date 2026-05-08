@@ -201,10 +201,22 @@ def finalize_agent_tool(
     agent_messages: list[Message],
     agent_id: str,
     metadata: dict[str, Any],
+    *,
+    progress: Any | None = None,
 ) -> AgentToolResult:
     """Extract final result from agent messages.
 
     Mirrors finalizeAgentTool() from typescript/src/tools/AgentTool/agentToolUtils.ts.
+
+    Chapter-10 / Chunk C / WI-2.4: token aggregation now goes through
+    ``ProgressTracker``. Pre-WI-2.4 ``total_tokens`` was hard-coded to
+    ``0`` (gap-analysis §2.2 row); post-WI-2.4 callers pass the live
+    tracker via the ``progress`` keyword and we read the chapter-correct
+    ``latest_input_tokens + cumulative_output_tokens`` total off it. If
+    the caller can't supply a tracker (e.g. a sync agent that didn't
+    feed one during iteration), we fall back to recomputing from
+    ``message.usage`` so the behavior degrades gracefully rather than
+    silently returning zero.
     """
     # Find the last assistant message
     last_assistant: AssistantMessage | None = None
@@ -242,15 +254,62 @@ def finalize_agent_tool(
     total_tool_use_count = count_tool_uses(agent_messages)
     start_time = metadata.get("start_time", time.time())
     duration_ms = int((time.time() - start_time) * 1000)
+    total_tokens = _resolve_total_tokens(progress, agent_messages)
 
     return AgentToolResult(
         agent_id=agent_id,
         agent_type=metadata.get("agent_type", ""),
         content=content,
         total_duration_ms=duration_ms,
-        total_tokens=0,
+        total_tokens=total_tokens,
         total_tool_use_count=total_tool_use_count,
     )
+
+
+def _resolve_total_tokens(
+    progress: Any | None,
+    agent_messages: list[Message],
+) -> int:
+    """Compute the chapter-correct total token count.
+
+    Preferred path: if the caller fed a ``ProgressTracker`` during
+    iteration, read its accumulated totals. Fallback: recompute from
+    ``message.usage`` payloads using the same arithmetic semantics
+    (cumulative-per-call inputs → keep latest; per-turn outputs → sum).
+
+    Local imports (here and below) defer the cycle: ``agent_tool_utils``
+    must not import ``src.tasks.progress`` at module load because some
+    test fixtures construct AgentToolResult directly.
+    """
+    if progress is not None:
+        try:
+            from src.tasks.progress import (
+                ProgressTracker,
+                total_tokens_from_tracker,
+            )
+            if isinstance(progress, ProgressTracker):
+                return total_tokens_from_tracker(progress)
+        except ImportError:
+            pass  # Fall through to message-based recompute.
+
+    # Fallback: walk the messages and apply the same arithmetic the
+    # tracker would have used. Defensive: a sync agent that didn't
+    # feed a tracker still gets a non-zero total instead of WI-2.4's
+    # pre-fix ``total_tokens=0``.
+    latest_input = 0
+    cumulative_output = 0
+    for msg in agent_messages:
+        if not isinstance(msg, AssistantMessage):
+            continue
+        usage = msg.usage if isinstance(msg.usage, dict) else None
+        if usage is None:
+            continue
+        input_tokens = int(usage.get("input_tokens", 0) or 0)
+        cache_creation = int(usage.get("cache_creation_input_tokens", 0) or 0)
+        cache_read = int(usage.get("cache_read_input_tokens", 0) or 0)
+        latest_input = input_tokens + cache_creation + cache_read
+        cumulative_output += int(usage.get("output_tokens", 0) or 0)
+    return latest_input + cumulative_output
 
 
 def extract_partial_result(messages: list[Message]) -> str | None:
