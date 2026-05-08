@@ -47,6 +47,10 @@ dev = [
     "build>=1.0.0",
     "twine>=5.0.0",
     "pytest>=8.0.0",
+    # ``pyproject.toml`` declares ``asyncio_mode = "auto"`` (below) which
+    # requires the pytest-asyncio plugin. Without it, async tests fail at
+    # run time with "async def functions are not natively supported."
+    "pytest-asyncio>=0.23",
 ]
 
 [project.scripts]

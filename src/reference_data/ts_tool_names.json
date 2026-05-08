@@ -65,6 +65,9 @@
     "MCP": {
       "python_name": "MCP"
     },
+    "NotebookEdit": {
+      "python_name": "NotebookEdit"
+    },
     "Read": {
       "python_name": "Read"
     },
@@ -128,7 +131,6 @@
     }
   },
   "not_yet_implemented": [
-    "NotebookEdit",
     "PowerShell",
     "REPL",
     "RemoteTrigger"
