@@ -7,6 +7,8 @@ from typing import Any, Callable, Optional
 from .errors import ToolPermissionError
 from .task_manager import TaskManager
 from src.permissions.types import ToolPermissionContext
+from src.services.swarm.agent_name_registry import AgentNameRegistry
+from src.task_registry import RuntimeTaskRegistry
 
 
 def _resolve_path(p: str | Path) -> Path:
@@ -72,10 +74,39 @@ class ToolContext:
     lsp_client: Any | None = None
     todos: list[dict[str, Any]] = field(default_factory=list)
     tasks: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Chapter-10 / Chunk B / WI-1.3 — typed runtime-task registry. Houses
+    # ``LocalShellTaskState`` / ``LocalAgentTaskState`` / etc. as
+    # ``TaskStateBase`` subclasses. Replaces the un-typed
+    # ``background_bash_tasks`` and ``_internal=True`` agent entries that
+    # used to live on ``tasks``. ``runtime_tasks`` is the source of truth
+    # for the chapter-10 task state machine; ``tasks`` continues to host
+    # ``tasks_v2``/todo entries for the unrelated TaskCreate system.
+    runtime_tasks: RuntimeTaskRegistry = field(default_factory=RuntimeTaskRegistry)
+    # Chapter-10 / Chunk F / WI-6.1 — agent-name registry. Maps the
+    # human-readable ``name`` (passed via Agent({name: "researcher"}))
+    # to the random ``agent_id`` returned by the spawn. SendMessage
+    # consults this registry first when resolving a ``to:`` field;
+    # falling back to "treat ``to`` as a raw agent_id" when the name
+    # isn't registered preserves the legacy code path.
+    #
+    # Per Chunk-F-Phase-6 critic concern C1 (Phase-7 fix): the registry
+    # is a typed ``AgentNameRegistry`` (not a bare dict) so the
+    # collision check + claim is atomic under its own RLock. Two
+    # concurrent same-name spawns can't both succeed.
+    #
+    # Collision policy (gap analysis ambiguity #2 + critic C2):
+    # * spawn-name-collision-with-running task → AgentNameAlreadyClaimedError
+    #   (translated to ToolInputError at the agent-tool boundary).
+    # * spawn-name-collision-with-terminal task → silent overwrite;
+    #   old terminal holders remain reachable by raw task_id + auto-
+    #   resume (WI-7.4).
+    agent_name_registry: AgentNameRegistry = field(default_factory=AgentNameRegistry)
     # Background Bash commands spawned via ``run_in_background: true``.
-    # Keyed by background-task id. Each entry holds the ``Popen`` handle,
-    # the on-disk output path, and book-keeping fields such as ``command``,
-    # ``started_at``, and ``exit_code`` (populated once the process exits).
+    # Kept as a deprecated dict-of-dicts compatibility view during the
+    # Chunk-B migration cycle; the bash spawn writer now populates
+    # ``runtime_tasks`` as the source of truth and mirrors the legacy dict
+    # shape here so any external test fixtures or readers that haven't
+    # migrated yet continue to work. Removed in a follow-up phase.
     background_bash_tasks: dict[str, dict[str, Any]] = field(default_factory=dict)
     plan_mode: bool = False
     worktree_root: Path | None = None

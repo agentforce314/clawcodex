@@ -54,16 +54,11 @@ from .constants import (
 FORK_PLACEHOLDER_RESULT = "Fork started — processing in background"
 
 
-# Truthy values accepted by the env-flag gate. Mirrors common Python
-# convention; matches the spirit of the GrowthBook flag in TS.
-_TRUTHY = frozenset({"1", "true", "yes", "on"})
-
-
-def _is_env_truthy(name: str) -> bool:
-    raw = os.environ.get(name)
-    if raw is None:
-        return False
-    return raw.strip().lower() in _TRUTHY
+# Chunk G / WI-8.1: ``_is_env_truthy`` was hoisted to the canonical
+# ``src.utils.env`` module so coordinator-mode and fork-subagent share
+# one helper. Re-exported here under the original name for back-compat
+# with any in-tree callers that import from this module.
+from src.utils.env import is_env_truthy as _is_env_truthy
 
 
 def is_fork_subagent_enabled(context: ToolContext | None = None) -> bool:
@@ -75,8 +70,21 @@ def is_fork_subagent_enabled(context: ToolContext | None = None) -> bool:
     - ``CLAUDE_FORK_SUBAGENT`` env var is set to a truthy value
       (Python equivalent of the GrowthBook ``feature('FORK_SUBAGENT')``).
     - The current session is interactive (no SDK / ``--print`` mode).
-    - (Coordinator mode is not yet ported; the check is a no-op.)
+    - **Coordinator mode is NOT active** (Chunk G / WI-8.6). Fork
+      subagents and coordinator workers are mutually exclusive — the
+      chapter §"Mutual Exclusion with Fork" calls this out: fork
+      agents inherit the parent's full conversation context (prompt-
+      cache amortization); coordinator workers are independent agents
+      with fresh context. Opposing philosophies of delegation;
+      enforced at the gate level.
     """
+    # Local import to avoid a top-of-module cycle (coordinator
+    # imports back through agent_definitions for WORKER_AGENT).
+    from src.coordinator.mode import is_coordinator_mode
+
+    if is_coordinator_mode():
+        return False
+
     if not _is_env_truthy("CLAUDE_FORK_SUBAGENT"):
         return False
 

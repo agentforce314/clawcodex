@@ -24,7 +24,18 @@ def _team_create_call(tool_input: dict[str, Any], context: ToolContext) -> ToolR
     lead_agent_id = uuid.uuid4().hex[:12]
     team_file = context.workspace_root / ".clawcodex" / "team.json"
     team_file.parent.mkdir(parents=True, exist_ok=True)
-    team = {"team_name": team_name, "description": description, "agent_type": agent_type, "lead_agent_id": lead_agent_id}
+    # Chapter-10 / Chunk F / WI-6.4: schema includes ``members: []`` from
+    # day one. TeammateInit (future Phase-7 work) appends entries when
+    # in-process teammates spawn. Keeping the empty list explicit makes
+    # the team-file parser's "missing members" tolerance defensive
+    # rather than load-bearing.
+    team = {
+        "team_name": team_name,
+        "description": description,
+        "agent_type": agent_type,
+        "lead_agent_id": lead_agent_id,
+        "members": [],
+    }
     team_file.write_text(json.dumps(team, ensure_ascii=False, indent=2), encoding="utf-8")
     context.team = team
     return ToolResult(

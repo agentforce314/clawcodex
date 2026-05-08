@@ -90,6 +90,19 @@ AGENT_INPUT_SCHEMA: dict[str, Any] = {
             ),
             "enum": ["worktree"],
         },
+        # Chapter-10 / Chunk F / WI-6.1: optional human-readable name.
+        # When set, the spawned agent is reachable via
+        # ``SendMessage({to: name})`` instead of the raw agent_id.
+        # Mirrors TS AgentTool's ``name`` parameter; the registry
+        # collision policy is enforced inside ``_launch_async_agent``.
+        "name": {
+            "type": "string",
+            "description": (
+                "Optional name for the spawned agent. Makes it addressable via "
+                "SendMessage({to: name}) while running. Errors if the name is "
+                "already in use by a running agent; overwrites a terminal one."
+            ),
+        },
     },
     "required": ["description", "prompt"],
 }
@@ -126,6 +139,15 @@ def make_agent_tool(
         subagent_type = tool_input.get("subagent_type")
         model = tool_input.get("model")
         run_in_background = bool(tool_input.get("run_in_background", False))
+        # Chapter-10 / WI-6.1 — optional human-readable name. We
+        # validate / register it AFTER agent_id is generated so the
+        # collision-on-running check can compare against the registry
+        # state under the registry's own atomicity guarantees.
+        agent_name = tool_input.get("name")
+        if agent_name is not None and not isinstance(agent_name, str):
+            raise ToolInputError("name must be a string when provided")
+        if isinstance(agent_name, str) and not agent_name.strip():
+            agent_name = None  # treat empty/whitespace as absent
 
         # Resolve agent definition.
         #
@@ -172,7 +194,12 @@ def make_agent_tool(
         # Resolve available tools
         available_tools = registry.list_tools()
 
-        agent_id = uuid4().hex
+        # Chapter-10 / WI-1.5: prefixed task id (``a<8 base36 chars>``)
+        # mirroring TS Task.ts:79-105. Replaces the legacy 32-char
+        # ``uuid4().hex`` so SendMessage / TaskStop dispatch keys are
+        # uniform across types.
+        from src.tasks_core import generate_task_id  # local import — see _launch_async_agent
+        agent_id = generate_task_id("local_agent")
         start_time = time.time()
         is_async = run_in_background
 
@@ -262,6 +289,7 @@ def make_agent_tool(
                 description=description,
                 prompt=prompt,
                 agent_type=agent_def.agent_type,
+                agent_name=agent_name,
             )
         else:
             return _run_sync_agent(
@@ -333,49 +361,193 @@ def make_agent_tool(
         description: str,
         prompt: str,
         agent_type: str,
+        agent_name: str | None = None,
     ) -> ToolResult:
-        """Launch an agent in the background and return immediately."""
-        context.tasks[agent_id] = {
-            "id": agent_id,
-            "subject": description,
-            "description": prompt,
-            "status": "in_progress",
-            "owner": agent_type,
-            "blocks": [],
-            "blockedBy": [],
-            "metadata": {"_internal": True, "task_type": "agent"},
-            "output": "",
-        }
+        """Launch an agent in the background and return immediately.
+
+        Chapter-10 layered story:
+        * Chunk B / WI-1.5 — state on ``context.runtime_tasks`` as a
+          typed ``LocalAgentTaskState`` (no more ``context.tasks`` /
+          ``metadata._internal=True`` workaround).
+        * Chunk C / WI-2.2 (gate-zero) — sidechain JSONL transcript
+          opened for the lifetime of the agent run; ``output_file`` is
+          its absolute path.
+        * Chunk C / WI-2.3 — lifecycle goes through the named helpers
+          (``register_async_agent`` / ``complete_agent_task`` /
+          ``fail_agent_task``) so the registry mutations are atomic
+          and consistent across spawn / kill / completion paths.
+        * Chunk C / WI-2.4 — token accounting via ``ProgressTracker``;
+          ``finalize_agent_tool`` reads its accumulated totals instead
+          of reporting ``total_tokens=0``.
+        * Chunk F / WI-6.1 — optional ``agent_name`` registers the
+          spawn under ``context.agent_name_registry`` so SendMessage
+          can resolve ``to: <name>``. Collision-on-running raises;
+          collision-on-terminal silently overwrites.
+        """
+        # Local imports defer the cycle: ``src.tasks.local_agent``
+        # reaches back into ``src.task_registry`` which is fine, but
+        # importing them at module scope would tangle with
+        # ``defaults.py``'s tool-construction order.
+        from src.agent.transcript import TranscriptWriter
+        from src.tasks.local_agent import (
+            LocalAgentTaskState,
+            complete_agent_task,
+            fail_agent_task,
+            register_async_agent,
+        )
+        from src.tasks.progress import (
+            ProgressTracker,
+            update_progress_from_message,
+        )
+        from src.services.swarm.agent_name_registry import (
+            AgentNameAlreadyClaimedError,
+        )
+        from src.utils.task_notification import enqueue_agent_notification
+
+        # WI-6.1 + critic C1 (Phase-7 fix): atomic check-and-claim
+        # under the typed registry's RLock. The previous Phase-6
+        # implementation had a TOCTOU window between the read and
+        # the write; the typed ``claim_or_raise`` closes it. We do
+        # the claim BEFORE the runtime_tasks write so a refused
+        # spawn doesn't leak a half-constructed agent_id into the
+        # runtime registry.
+        if agent_name is not None:
+            try:
+                context.agent_name_registry.claim_or_raise(
+                    agent_name, agent_id, context.runtime_tasks,
+                )
+            except AgentNameAlreadyClaimedError as exc:
+                raise ToolInputError(str(exc)) from exc
+
+        register_async_agent(
+            agent_id=agent_id,
+            description=description,
+            prompt=prompt,
+            agent_type=agent_type,
+            registry=context.runtime_tasks,
+        )
+        # ``register_async_agent`` populated ``output_file`` with the
+        # JSONL transcript path; pull it back so the writer points at
+        # the same path the lifecycle helpers committed to.
+        registered = context.runtime_tasks.get(agent_id)
+        transcript_path = (
+            registered.output_file
+            if isinstance(registered, LocalAgentTaskState)
+            else ""
+        )
 
         async def _background_lifecycle() -> None:
+            tracker = ProgressTracker()
+            messages: list[Any] = []
+            transcript: TranscriptWriter | None = None
+            if transcript_path:
+                try:
+                    transcript = TranscriptWriter(transcript_path)
+                except OSError:
+                    # Transcript open failure must not abort the run —
+                    # downstream Chunk D / Chunk F will degrade
+                    # gracefully (no outputFile content / no auto-resume
+                    # source) rather than crash.
+                    logger.exception(
+                        "transcript open failed for %s; continuing without disk persistence",
+                        agent_id,
+                    )
+                    transcript = None
             try:
-                messages = await _collect_agent_messages(run_params)
-                metadata = {
-                    "start_time": time.time(),
-                    "agent_type": agent_type,
-                }
-                result = finalize_agent_tool(messages, agent_id, metadata)
-                result_text = "\n".join(
-                    block.get("text", "")
-                    for block in result.content
-                    if isinstance(block, dict) and block.get("type") == "text"
-                ).strip()
-                if not result_text:
-                    result_text = "(Subagent completed with no textual output.)"
-                context.tasks[agent_id]["status"] = "completed"
-                context.tasks[agent_id]["output"] = result_text
-                logger.info(
-                    "Async agent %s (%s) finished: %d messages",
-                    agent_id, agent_type, len(messages),
-                )
-            except Exception as exc:
-                partial = extract_partial_result(locals().get("messages", []))
-                context.tasks[agent_id]["status"] = "failed"
-                context.tasks[agent_id]["output"] = partial or str(exc)
-                logger.exception(
-                    "Async agent %s (%s) failed",
-                    agent_id, agent_type,
-                )
+                try:
+                    async for message in run_agent(run_params):
+                        messages.append(message)
+                        # Live progress accounting — feeds the post-hoc
+                        # ``finalize_agent_tool`` token total via the
+                        # ``progress`` keyword (WI-2.4 fallback also
+                        # works if the tracker is somehow empty).
+                        try:
+                            update_progress_from_message(tracker, message)
+                        except Exception:
+                            logger.exception(
+                                "progress tracker update failed for %s", agent_id
+                            )
+                        # Persist to disk per WI-2.2. Synchronous IO
+                        # outside the registry lock — A6/C5 contract is
+                        # preserved (no ``await`` under the registry's
+                        # RLock).
+                        if transcript is not None:
+                            try:
+                                transcript.append(message)
+                            except OSError:
+                                logger.exception(
+                                    "transcript append failed for %s; further appends will be skipped",
+                                    agent_id,
+                                )
+                                transcript.close()
+                                transcript = None
+
+                    metadata = {
+                        "start_time": time.time(),
+                        "agent_type": agent_type,
+                    }
+                    result = finalize_agent_tool(
+                        messages, agent_id, metadata, progress=tracker
+                    )
+                    result_text = "\n".join(
+                        block.get("text", "")
+                        for block in result.content
+                        if isinstance(block, dict) and block.get("type") == "text"
+                    ).strip()
+                    if not result_text:
+                        result_text = "(Subagent completed with no textual output.)"
+
+                    complete_agent_task(
+                        agent_id,
+                        result_text=result_text,
+                        registry=context.runtime_tasks,
+                    )
+                    # Chunk D / WI-3.1 + WI-3.2 — enqueue a single
+                    # ``<task-notification>`` envelope. Atomic check-and-
+                    # set on ``state.notified`` inside the helper means
+                    # a concurrent kill / fail / completion path can't
+                    # produce a second envelope.
+                    enqueue_agent_notification(
+                        task_id=agent_id,
+                        description=description,
+                        status="completed",
+                        output_file=transcript_path,
+                        final_message=result_text,
+                        usage={
+                            "total_tokens": result.total_tokens,
+                            "tool_uses": result.total_tool_use_count,
+                            "duration_ms": result.total_duration_ms,
+                        },
+                        registry=context.runtime_tasks,
+                    )
+                    logger.info(
+                        "Async agent %s (%s) finished: %d messages, %d tokens",
+                        agent_id, agent_type, len(messages), result.total_tokens,
+                    )
+                except Exception as exc:
+                    partial = extract_partial_result(messages)
+                    err_text = partial or str(exc)
+                    fail_agent_task(
+                        agent_id,
+                        error=err_text,
+                        registry=context.runtime_tasks,
+                    )
+                    enqueue_agent_notification(
+                        task_id=agent_id,
+                        description=description,
+                        status="failed",
+                        output_file=transcript_path,
+                        error=str(exc),
+                        final_message=partial,
+                        registry=context.runtime_tasks,
+                    )
+                    logger.exception(
+                        "Async agent %s (%s) failed",
+                        agent_id, agent_type,
+                    )
+            finally:
+                if transcript is not None:
+                    transcript.close()
 
         try:
             running_loop = asyncio.get_running_loop()
