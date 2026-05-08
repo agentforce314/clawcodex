@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import inspect
+import threading
 from typing import Any, Iterable
 
 from .build_tool import Tool, Tools, tool_matches_name
@@ -114,7 +117,7 @@ class ToolRegistry:
                     tool_use_id=call.tool_use_id,
                 )
 
-        result = tool.call(call.input, context)
+        result = _invoke_tool_call(tool, call.input, context)
         if result.tool_use_id is None and call.tool_use_id is not None:
             return ToolResult(
                 name=result.name,
@@ -126,6 +129,63 @@ class ToolRegistry:
                 context_modifier=result.context_modifier,
             )
         return result
+
+
+def _invoke_tool_call(tool: Any, input: dict, context: ToolContext) -> ToolResult:
+    """Dispatch a tool's ``call`` — sync or async — and return its
+    ``ToolResult``.
+
+    Chapter-10 / Chunk D / WI-4.0: the ``Tool.call`` signature was
+    historically sync-only, but TaskOutputTool's polling loop (WI-4.1)
+    needs async; broadening the dispatcher here unblocks that without
+    rippling through every existing tool. Sync tools are dispatched
+    unchanged; async tools (``inspect.iscoroutinefunction(tool.call)``
+    is True) are awaited via ``asyncio.run`` if no loop is active or
+    via a thread-bridge if we're already inside one (the same pattern
+    Chunk B introduced for TaskStop's async-kill bridge).
+    """
+    fn = tool.call
+    if not inspect.iscoroutinefunction(fn):
+        return fn(input, context)
+
+    # Async tool — drive the coroutine to completion.
+    try:
+        running = asyncio.get_running_loop()
+    except RuntimeError:
+        running = None
+
+    if running is None:
+        return asyncio.run(fn(input, context))
+
+    # Already inside a loop — schedule on a worker thread to avoid
+    # nesting (Python disallows ``run_until_complete`` on a running
+    # loop). Same pattern as ``task_stop.py``'s async-kill bridge.
+    holder: dict[str, Any] = {}
+    done = threading.Event()
+
+    def _runner() -> None:
+        try:
+            holder["result"] = asyncio.run(fn(input, context))
+        except BaseException as exc:  # noqa: BLE001 — re-raise
+            holder["error"] = exc
+        finally:
+            done.set()
+
+    threading.Thread(
+        target=_runner,
+        daemon=True,
+        name=f"tool-async-bridge:{getattr(tool, 'name', '?')}",
+    ).start()
+    # No timeout on this wait — async tools are expected to self-bound
+    # (TaskOutput uses its own ``timeout`` knob; TaskStop uses
+    # ``asyncio.wait_for(timeout=5.0)`` inside its body). A hung
+    # ``done.wait()`` here is a tool bug, not something the dispatcher
+    # tries to paper over with a global cap. If a future tool grows a
+    # naturally-unbounded await, give it an internal deadline first.
+    done.wait()
+    if "error" in holder:
+        raise holder["error"]  # type: ignore[misc]
+    return holder["result"]  # type: ignore[no-any-return]
 
 
 def get_all_base_tools(registry: ToolRegistry) -> Tools:

@@ -104,6 +104,49 @@ def _create_max_turns_attachment(max_turns: int, turn_count: int) -> SystemMessa
     )
 
 
+def _drain_pending_user_messages(tool_use_context: Any) -> list[UserMessage]:
+    """Drain the running agent's ``pending_messages`` inbox, if any.
+
+    Chapter-10 / Chunk D / WI-3.3 hook. The TS implementation drains at
+    the tool-round boundary inside the agent's run loop; the Python
+    equivalent is here, between `tool_results` and the next API call,
+    where the chapter's "messages arrive between tool rounds, not
+    mid-execution" contract holds.
+
+    No-op when:
+    * The context has no ``agent_id`` (top-level / non-runtime-task agents).
+    * The context has no ``runtime_tasks`` registry (test fixtures
+      that didn't construct a real ToolContext).
+    * The agent's entry isn't a ``LocalAgentTaskState`` (defensive —
+      a future task type that runs through the same query loop).
+    * The inbox is empty.
+
+    Returns the drained messages as a list of fresh ``UserMessage``
+    objects, which the caller appends to the next turn's prompt.
+    """
+    agent_id = getattr(tool_use_context, "agent_id", None)
+    runtime = getattr(tool_use_context, "runtime_tasks", None)
+    if not agent_id or runtime is None:
+        return []
+    # Local import to avoid pulling the tasks package into the query
+    # module's import graph at startup; this hook only fires when an
+    # agent_id is set, so the tasks module will already be loaded.
+    try:
+        from src.tasks.local_agent import (
+            LocalAgentTaskState,
+            drain_pending_messages,
+        )
+    except ImportError:
+        return []
+    state = runtime.get(agent_id)
+    if not isinstance(state, LocalAgentTaskState):
+        return []
+    drained = drain_pending_messages(agent_id, runtime)
+    if not drained:
+        return []
+    return [UserMessage(content=text) for text in drained]
+
+
 def _yield_missing_tool_result_blocks(
     assistant_messages: list[AssistantMessage],
     error_message: str,
@@ -633,8 +676,19 @@ async def query(params: QueryParams) -> AsyncGenerator[Message | StreamEvent, No
             yield _create_max_turns_attachment(params.max_turns, next_turn_count)
             return
 
+        # Chapter-10 / Chunk D / WI-3.3 — pending-messages drain at the
+        # tool-round boundary. Per chapter §"Background: Three Channels":
+        # *"messages arrive between tool rounds, not mid-execution. The
+        # agent finishes its current thought, then receives the new
+        # information."* We drain AFTER tool_results have been appended
+        # but BEFORE the next API call, so the model sees the queued
+        # messages on the next turn alongside the tool results.
+        injected_messages = _drain_pending_user_messages(tool_use_context)
+        for inj in injected_messages:
+            yield inj
+
         state = QueryState(
-            messages=[*messages, *assistant_messages, *tool_results],
+            messages=[*messages, *assistant_messages, *tool_results, *injected_messages],
             tool_use_context=tool_use_context,
             auto_compact_tracking=state.auto_compact_tracking,
             turn_count=next_turn_count,
