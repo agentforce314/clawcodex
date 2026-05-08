@@ -3,23 +3,31 @@
 Mirrors the subset of ``typescript/src/tools/BashTool/BashTool.tsx`` that
 handles ``run_in_background: true`` -- the command is spawned detached from
 the foreground request, its combined stdout/stderr streams are captured to a
-temp file, and a small metadata record is kept on ``ToolContext`` so
-``TaskOutput`` can poll it later.
+temp file, and a typed ``LocalShellTaskState`` is registered on the
+``ToolContext.runtime_tasks`` registry so ``TaskOutput`` and ``TaskStop``
+can dispatch on it.
+
+Chapter-10 / Chunk B / WI-1.4: this module previously stored
+dict-of-dicts entries on ``context.background_bash_tasks``. Writers now
+populate ``context.runtime_tasks`` as the source of truth (typed
+``LocalShellTaskState``); the legacy dict is kept in lockstep as a
+compatibility view so external test fixtures or readers that haven't
+migrated yet continue to work. The dict goes away in a follow-up phase.
 """
 
 from __future__ import annotations
 
 import os
-import shlex
 import subprocess
 import tempfile
 import threading
 import time
-import uuid
 from pathlib import Path
 from typing import Any
 
 from ...context import ToolContext
+from src.tasks.local_shell import LocalShellTaskState
+from src.tasks_core import generate_task_id
 
 
 def _bg_output_dir() -> Path:
@@ -46,7 +54,10 @@ def spawn_background_bash(
     ``_bash_map_result_to_api``: it includes the background task id plus a
     human-readable message instructing the model how to poll the output.
     """
-    task_id = uuid.uuid4().hex[:8]
+    # Chapter-10 / WI-1.4: prefixed task id (``b<8 base36 chars>``) instead
+    # of the legacy ``uuid4().hex[:8]``. Mirrors TS Task.ts:79-105 — the
+    # ``b`` prefix is what TaskStop / TaskOutput dispatch on.
+    task_id = generate_task_id("local_bash")
     output_path = _bg_output_dir() / f"{task_id}.log"
     output_path.touch(exist_ok=True)
 
@@ -70,20 +81,28 @@ def spawn_background_bash(
         start_new_session=True,
     )
 
-    entry: dict[str, Any] = {
-        "task_id": task_id,
-        "command": command,
-        "description": description or command,
-        "cwd": str(cwd),
-        "started_at": time.time(),
-        "output_path": str(output_path),
-        "pid": proc.pid,
-        "_proc": proc,
-        "_handle": output_handle,
-        "exit_code": None,
-        "finished_at": None,
-    }
-    context.background_bash_tasks[task_id] = entry
+    started_at = time.time()
+    state = LocalShellTaskState(
+        id=task_id,
+        type="local_bash",
+        status="running",
+        description=description or command,
+        start_time=started_at,
+        # ``output_file`` (chapter-10 base field) carries the same string
+        # as ``output_path`` (bash-specific name kept for legacy readers).
+        output_file=str(output_path),
+        command=command,
+        cwd=str(cwd),
+        pid=proc.pid,
+        output_path=str(output_path),
+        proc=proc,
+        handle=output_handle,
+    )
+    context.runtime_tasks.upsert(state)
+    # Chunk-B compat view: keep the legacy dict-of-dicts alive in lockstep
+    # so readers that haven't migrated yet still work. The dict shares the
+    # task id with runtime_tasks; the reaper updates both.
+    context.background_bash_tasks[task_id] = state.to_legacy_dict()
 
     def _reap() -> None:
         try:
@@ -97,8 +116,37 @@ def spawn_background_bash(
                 output_handle.close()
             except OSError:
                 pass
-            entry["exit_code"] = rc
-            entry["finished_at"] = time.time()
+
+            finished_at = time.time()
+
+            def _patch(prev: Any) -> Any:
+                if not isinstance(prev, LocalShellTaskState):
+                    return prev
+                # ``replace`` keeps every other field (incl. proc/handle)
+                # so a still-pending TaskStop call has the Popen reference.
+                from dataclasses import replace
+                new_status = "completed" if rc == 0 else "failed"
+                return replace(
+                    prev,
+                    exit_code=rc,
+                    finished_at=finished_at,
+                    end_time=finished_at,
+                    status=new_status,
+                )
+
+            context.runtime_tasks.update(task_id, _patch)
+            # Mirror to the legacy dict in lockstep so old readers see the
+            # exit code without round-tripping through runtime_tasks. The
+            # legacy dict carries the chapter-10 status string too — older
+            # callers that grew up reading ``entry["status"]`` get the same
+            # vocabulary as the typed registry. The whole legacy dict goes
+            # away when bg_tasks is removed in a follow-up.
+            entry = context.background_bash_tasks.get(task_id)
+            if entry is not None:
+                entry["exit_code"] = rc
+                entry["finished_at"] = finished_at
+                entry["status"] = "completed" if rc == 0 else "failed"
+                entry["end_time"] = finished_at
 
     threading.Thread(
         target=_reap,
