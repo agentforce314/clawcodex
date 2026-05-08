@@ -127,7 +127,7 @@ class _WriteToolProvider:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_config(home_path: Path, provider: str = "glm") -> None:
+def _make_config(home_path: Path, provider: str = "glm") -> Path:
     config_dir = home_path / ".clawcodex"
     config_dir.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -140,7 +140,23 @@ def _make_config(home_path: Path, provider: str = "glm") -> None:
             }
         },
     }
-    (config_dir / "config.json").write_text(json.dumps(payload), encoding="utf-8")
+    config_file = config_dir / "config.json"
+    config_file.write_text(json.dumps(payload), encoding="utf-8")
+    return config_file
+
+
+def _redirect_global_config(config_file: Path):
+    """Point ``ConfigManager`` at ``config_file`` and drop cached state.
+
+    Patching ``HOME`` does not work because ``GLOBAL_CONFIG_FILE`` is
+    captured at module import time. We patch the module-level constant
+    directly and reset the singleton.
+    """
+    import src.config as config_module
+    patcher = patch.object(config_module, "GLOBAL_CONFIG_FILE", config_file)
+    patcher.start()
+    config_module._default_manager = None
+    return patcher
 
 
 # ---------------------------------------------------------------------------
@@ -152,7 +168,12 @@ class TestIntegrationSmoke:
 
     def _make_repl(self, provider_class):
         from src.repl.core import ClawcodexREPL
-        return ClawcodexREPL(provider_name="glm", stream=False)
+        return ClawcodexREPL(
+            provider_name="glm",
+            stream=False,
+            permission_mode="bypassPermissions",
+            is_bypass_permissions_mode_available=True,
+        )
 
     def test_build_imports(self):
         """App modules import cleanly after WS-1 refactor."""
@@ -167,11 +188,10 @@ class TestIntegrationSmoke:
     def test_simple_query(self, tmp_path):
         """REPL.chat() with a plain text query returns assistant reply without error."""
         home_path = tmp_path / "home"
-        _make_config(home_path)
-        old_home = os.environ.get("HOME")
+        config_file = _make_config(home_path)
+        config_patcher = _redirect_global_config(config_file)
         old_cwd = Path.cwd()
         try:
-            os.environ["HOME"] = str(home_path)
             os.chdir(tmp_path)
             with patch("src.repl.core.get_provider_class", return_value=_FakeProvider):
                 repl = self._make_repl(_FakeProvider)
@@ -181,7 +201,9 @@ class TestIntegrationSmoke:
             assert "user" in roles
             assert "assistant" in roles
         finally:
-            os.environ["HOME"] = old_home or ""
+            config_patcher.stop()
+            import src.config as config_module
+            config_module._default_manager = None
             os.chdir(old_cwd)
 
     def test_tool_task_write_file(self, tmp_path):
@@ -189,15 +211,14 @@ class TestIntegrationSmoke:
         home_path = tmp_path / "home"
         work_path = tmp_path / "work"
         work_path.mkdir()
-        _make_config(home_path)
+        config_file = _make_config(home_path)
+        config_patcher = _redirect_global_config(config_file)
 
         target = work_path / "integration_smoke.txt"
         _WriteToolProvider._target_file = target
 
-        old_home = os.environ.get("HOME")
         old_cwd = Path.cwd()
         try:
-            os.environ["HOME"] = str(home_path)
             os.chdir(work_path)
             with patch("src.repl.core.get_provider_class", return_value=_WriteToolProvider):
                 repl = self._make_repl(_WriteToolProvider)
@@ -205,7 +226,9 @@ class TestIntegrationSmoke:
             assert target.exists(), "Write tool did not create the file"
             assert target.read_text(encoding="utf-8") == "integration-ok\n"
         finally:
-            os.environ["HOME"] = old_home or ""
+            config_patcher.stop()
+            import src.config as config_module
+            config_module._default_manager = None
             os.chdir(old_cwd)
 
     def test_conversation_round_trip(self, tmp_path):
