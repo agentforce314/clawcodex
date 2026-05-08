@@ -335,6 +335,22 @@ def build_full_system_prompt(
     """
     if custom_system_prompt:
         base = custom_system_prompt
+        # SDK custom-prompt branch: when CLAUDE_COWORK_MEMORY_PATH_OVERRIDE
+        # is set, the caller has explicitly opted into the auto-memory
+        # mechanics. Mirror QueryEngine.ts:317-320: append the memory
+        # prompt AFTER the custom prompt and BEFORE append_system_prompt.
+        try:
+            from src.memdir import (
+                has_auto_mem_path_override,
+                load_memory_prompt,
+            )
+            if has_auto_mem_path_override():
+                memory_prompt = load_memory_prompt()
+                if memory_prompt:
+                    base += "\n\n" + memory_prompt
+        except Exception:
+            # Memory subsystem failures must never block prompt building.
+            pass
         if append_system_prompt:
             base += "\n\n" + append_system_prompt
         return base
@@ -389,6 +405,11 @@ def build_full_system_prompt(
     env_section = _build_env_section(cwd, use_cache)
     if env_section:
         sections.append(env_section)
+
+    # 25. Auto-memory section (MEMORY.md + behavioral instructions)
+    memory_section = _build_memory_section()
+    if memory_section:
+        sections.append(memory_section)
 
     # 30. MCP instructions
     mcp_section = _build_mcp_section(mcp_servers, use_cache)
@@ -762,6 +783,31 @@ def _build_env_section(cwd: str | None, use_cache: bool) -> SystemPromptSection 
     content = "\n".join(parts)
     # Environment changes per request (CWD, date)
     return SystemPromptSection(id="environment", content=content, cache_scope=CacheScope.REQUEST, order=20)
+
+
+def _build_memory_section() -> SystemPromptSection | None:
+    """Build the auto-memory system-prompt section.
+
+    Mirrors TS ``constants/prompts.ts:495`` (``systemPromptSection('memory',
+    () => loadMemoryPrompt())``). Returned with ``REQUEST`` scope so any
+    upstream caching layer rebuilds the section per render — ``MEMORY.md``
+    can change mid-session as the model writes to it, and none of the
+    existing cache scopes invalidate on file mtime. The work is small
+    (one read of a ≤25KB file), so correctness over cache hit-rate.
+    """
+    try:
+        from src.memdir import load_memory_prompt
+    except Exception:
+        return None
+    content = load_memory_prompt()
+    if not content:
+        return None
+    return SystemPromptSection(
+        id="memory",
+        content=content,
+        cache_scope=CacheScope.REQUEST,
+        order=25,
+    )
 
 
 def _build_mcp_section(

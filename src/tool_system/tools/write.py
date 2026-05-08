@@ -80,12 +80,19 @@ def _validate_input(tool_input: dict[str, Any], context: ToolContext) -> Validat
             error_code=0,
         )
 
-    # Resolve the path for filesystem checks
-    try:
-        path = context.ensure_allowed_path(file_path)
-    except ToolPermissionError:
-        # Permission errors are handled later by check_permissions / call
-        return ValidationResult.ok()
+    # Resolve the path for filesystem checks. Auto-memory paths are
+    # outside the workspace allowlist so ensure_allowed_path raises;
+    # short-circuit to the expanded path so the staleness check below
+    # still runs (otherwise auto-memory writes would silently bypass
+    # the "read before write" invariant).
+    if _is_auto_memory_write(file_path):
+        path = Path(_expand_path(file_path))
+    else:
+        try:
+            path = context.ensure_allowed_path(file_path)
+        except ToolPermissionError:
+            # Permission errors are handled later by check_permissions / call
+            return ValidationResult.ok()
 
     if not path.exists():
         # New file -- no staleness concern
@@ -110,9 +117,45 @@ def _validate_input(tool_input: dict[str, Any], context: ToolContext) -> Validat
 # check_permissions
 # ---------------------------------------------------------------------------
 
+def _is_auto_memory_write(file_path: str) -> bool:
+    """Whether *file_path* is a write inside the auto-memory directory.
+
+    Mirrors the TS write-tool carve-out at ``filesystem.ts``: writes to
+    paths matched by ``isAutoMemPath()`` are allowed without further
+    permission gating, *but only when ``hasAutoMemPathOverride()`` is
+    false*. The override case means the SDK caller has wired memory
+    themselves and has its own permission story (TS comment at
+    ``paths.ts:262-272``).
+
+    Note: TS does **not** gate this on ``isAutoMemoryEnabled()`` — the
+    carve-out is purely path-shape, not behavior-flag. We mirror that:
+    if a process has memory writes pending and then auto-memory gets
+    disabled mid-session, the in-flight writes still resolve.
+    """
+    try:
+        from src.memdir import (
+            has_auto_mem_path_override,
+            is_auto_mem_path,
+        )
+    except Exception:
+        return False
+    if has_auto_mem_path_override():
+        return False
+    try:
+        return is_auto_mem_path(_expand_path(file_path))
+    except Exception:
+        return False
+
+
 def _check_permissions(tool_input: dict[str, Any], context: ToolContext) -> PermissionResult:
     file_path = tool_input.get("file_path")
     if not isinstance(file_path, str):
+        return PermissionPassthroughResult()
+
+    # Memory carve-out: writes inside the auto-memory directory bypass
+    # the workspace allowlist AND the docs gate. Without this, the model
+    # would prompt the user on every "save a memory" attempt.
+    if _is_auto_memory_write(file_path):
         return PermissionPassthroughResult()
 
     # Path is already expanded by backfill_observable_input
@@ -178,7 +221,14 @@ def _write_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
         raise ToolInputError("content must be a string")
 
     # Path is already expanded by backfill_observable_input
-    path = context.ensure_allowed_path(file_path)
+    if _is_auto_memory_write(file_path):
+        # Memory dir is outside the workspace allowlist; bypass it. The
+        # auto-memory subsystem owns this path namespace and its own
+        # safety rails (sanitize_path, NFC, trailing-sep prefix check
+        # in is_auto_mem_path).
+        path = Path(_expand_path(file_path))
+    else:
+        path = context.ensure_allowed_path(file_path)
 
     original_file: str | None = None
     if path.exists():
