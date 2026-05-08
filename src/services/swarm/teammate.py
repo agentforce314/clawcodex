@@ -16,11 +16,23 @@ logger = logging.getLogger(__name__)
 
 
 class TeammateStatus(str, Enum):
+    """Lifecycle states for a teammate.
+
+    Chapter-10 / Chunk F / WI-6.2 + assumption A3 (gap analysis
+    ambiguity #3): renamed ``CANCELLED → KILLED`` to match the
+    chapter's canonical 5-status vocabulary (``pending`` / ``running``
+    / ``completed`` / ``failed`` / ``killed``). Aliases the old name
+    so legacy callers don't break — the alias goes away in a follow-
+    up sweep.
+    """
     PENDING = "pending"
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
-    CANCELLED = "cancelled"
+    KILLED = "killed"
+    # Back-compat alias — equal to KILLED. Removed when no callers
+    # reference TeammateStatus.KILLED. Don't add new uses.
+    CANCELLED = "killed"
 
 
 @dataclass
@@ -102,7 +114,7 @@ class TeammateManager:
         """Cancel a running teammate."""
         teammate = self._teammates.get(teammate_id)
         if teammate and teammate.is_active:
-            teammate.status = TeammateStatus.CANCELLED
+            teammate.status = TeammateStatus.KILLED
             teammate.completed_at = time.time()
 
     def get(self, teammate_id: str) -> Teammate | None:
@@ -116,7 +128,7 @@ class TeammateManager:
         count = 0
         for t in self._teammates.values():
             if t.is_active:
-                t.status = TeammateStatus.CANCELLED
+                t.status = TeammateStatus.KILLED
                 t.completed_at = time.time()
                 count += 1
         return count
