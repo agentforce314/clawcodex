@@ -45,6 +45,11 @@ dependencies = [
     # DNS-time validation requires httpx's transport API (stable since
     # 0.20; pinned to >=0.24 for AsyncHTTPTransport ergonomics).
     "httpx>=0.24",
+    # File-system change detection for the skill change detector
+    # (Phase-8 / WI-8.1) and FileChanged event watcher (Phase-8 / WI-8.2).
+    # ``watchdog`` is the cross-platform file-watcher library; mirrors
+    # TS' ``chokidar`` usage pattern.
+    "watchdog>=3.0",
 ]
 
 [project.optional-dependencies]
