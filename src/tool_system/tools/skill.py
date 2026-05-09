@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import importlib
 import json
+import logging
 import os
 import sys
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from ..build_tool import Tool, ValidationResult, build_tool
 from ..context import ToolContext
@@ -213,6 +216,32 @@ def _run_markdown_skill(skill_name: str, args: str, context: ToolContext) -> Too
             shell_executor=executor,
         )
 
+    # Phase-3 / WI-3.2 — register the skill's frontmatter hooks as
+    # session-scoped. Skipped when no registry is mounted on the context
+    # (test fixtures and some integration paths don't wire one); skipped
+    # when the skill declares no hooks. Per B1: skill hooks do NOT get the
+    # ``Stop → SubagentStop`` conversion (that's exclusive to
+    # ``register_frontmatter_hooks(is_agent=True)``); ``register_skill_hooks``
+    # forwards events verbatim.
+    #
+    # ``_run_markdown_skill`` stays sync (existing call-site contract;
+    # 30+ tests bypass the dispatcher and call ``SkillTool.call`` directly).
+    # I3's original concern was ``asyncio.run`` blocking inside a running
+    # loop; we sidestep it via fire-and-forget: ``loop.create_task`` schedules
+    # the async registration on the current loop without blocking, and the
+    # task completes before the model's next tool call (microseconds vs.
+    # seconds). When invoked outside a running loop (rare; mostly tests),
+    # we fall back to ``asyncio.run`` since there's no nesting risk.
+    skill_hooks = getattr(skill, "hooks", None)
+    if skill_hooks and context.session_hook_registry is not None and context.session_id:
+        _schedule_skill_hook_registration(
+            registry=context.session_hook_registry,
+            session_id=context.session_id,
+            skill_hooks=skill_hooks,
+            skill_name=skill_name,
+            skill_root=skill.skill_root,
+        )
+
     # Build context modifier if skill specifies allowed_tools, model, or effort
     context_modifier = _build_context_modifier(skill)
 
@@ -229,6 +258,57 @@ def _run_markdown_skill(skill_name: str, args: str, context: ToolContext) -> Too
         },
         context_modifier=context_modifier,
     )
+
+
+def _schedule_skill_hook_registration(
+    *,
+    registry: Any,
+    session_id: str,
+    skill_hooks: Any,
+    skill_name: str,
+    skill_root: str | None,
+) -> None:
+    """Schedule async ``register_skill_hooks`` from a sync caller.
+
+    Two paths:
+      * If a running asyncio loop is available, schedule the registration
+        coroutine via ``loop.create_task`` (fire-and-forget). The task
+        completes asynchronously; the calling tool returns immediately.
+      * If no loop is running (rare; mostly test fixtures that invoke
+        ``SkillTool.call`` from sync test code), fall back to ``asyncio.run``
+        — safe because there's no nesting.
+
+    Failures are logged at ERROR; we never raise (hook registration must
+    not break skill invocation).
+    """
+    import asyncio
+    from src.hooks.register_skill_hooks import register_skill_hooks
+
+    async def _do_register() -> None:
+        try:
+            count = await register_skill_hooks(
+                registry=registry,
+                session_id=session_id,
+                skill_hooks=skill_hooks,
+                skill_name=skill_name,
+                skill_root=skill_root,
+            )
+            if count:
+                logger.debug(
+                    "Skill %r registered %d session hooks", skill_name, count,
+                )
+        except Exception:
+            logger.exception("register_skill_hooks failed for skill %r", skill_name)
+
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(_do_register())
+    except RuntimeError:
+        # No running loop — sync caller (e.g., test). Run directly.
+        try:
+            asyncio.run(_do_register())
+        except Exception:
+            logger.exception("register_skill_hooks failed for skill %r", skill_name)
 
 
 def _make_shell_executor(

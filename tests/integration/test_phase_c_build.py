@@ -25,7 +25,10 @@ class TestPhaseCImports:
         assert hasattr(mod, "execute_prompt_hook")
 
     def test_hooks_session(self):
-        mod = importlib.import_module("src.hooks.session_hooks")
+        # A9 rename: lifecycle helpers (``run_session_start_hooks`` etc.)
+        # moved to ``lifecycle_routers``; ``session_hooks`` is now the
+        # session-scoped registration API (Phase 3 / WI-3.1).
+        mod = importlib.import_module("src.hooks.lifecycle_routers")
         assert hasattr(mod, "run_session_start_hooks")
 
     def test_hooks_post_sampling(self):

@@ -141,16 +141,16 @@ class TestLifecycleRoutersReadFirstClass:
 
     @pytest.mark.asyncio
     async def test_session_start_router_reads_first_class_event(self):
-        from src.hooks.session_hooks import SESSION_START_EVENT
+        from src.hooks.lifecycle_routers import SESSION_START_EVENT
         # The constant is now ``SessionStart`` (first-class), not ``Notification``.
         assert SESSION_START_EVENT == "SessionStart"
 
     @pytest.mark.asyncio
     async def test_session_end_router_reads_first_class_event(self):
-        from src.hooks.session_hooks import SESSION_END_EVENT
+        from src.hooks.lifecycle_routers import SESSION_END_EVENT
         assert SESSION_END_EVENT == "SessionEnd"
 
     @pytest.mark.asyncio
     async def test_compact_router_reads_pre_compact(self):
-        from src.hooks.session_hooks import COMPACT_EVENT
+        from src.hooks.lifecycle_routers import COMPACT_EVENT
         assert COMPACT_EVENT == "PreCompact"
