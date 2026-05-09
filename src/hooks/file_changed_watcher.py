@@ -155,8 +155,11 @@ class FileChangedWatcher:
         debounce_s: float = DEFAULT_DEBOUNCE_S,
     ) -> None:
         self._watch_root = Path(watch_root)
+        # Phase-9 / Step A — pathspec ``gitwildmatch`` factory is
+        # deprecated in pathspec 0.12+. Use the canonical ``gitignore``
+        # name; semantics are identical (gitignore-style globs).
         self._spec = pathspec.PathSpec.from_lines(
-            "gitwildmatch", list(patterns),
+            "gitignore", list(patterns),
         )
         self._observer: Observer | None = None  # type: ignore[valid-type]
         self._handler = _FileChangedEventHandler(
