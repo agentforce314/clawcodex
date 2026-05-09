@@ -63,7 +63,20 @@ def _get_tool_name_for_permission_check(tool: ToolLike) -> str:
     return tool.name
 
 
-def _tool_matches_rule(tool: ToolLike, rule: PermissionRule) -> bool:
+def tool_matches_rule(tool: ToolLike, rule: PermissionRule) -> bool:
+    """Check whether a tool matches a permission rule by name only.
+
+    Returns False if the rule carries ``rule_content`` — content matching
+    is the *permission system*'s scope (it gates granular cases like
+    ``Bash(git commit*)`` for *permissions*). Hook ``if`` matching needs
+    the content branch too; that lives in
+    ``src/hooks/condition_matcher.py:matches_hook_condition`` and uses
+    ``prepare_permission_matcher`` separately.
+
+    Promoted from ``_tool_matches_rule`` per Phase-4 / WI-4.2 / N1; the
+    underscored name is preserved as a back-compat alias for any external
+    callers that imported the private form.
+    """
     if rule.rule_value.rule_content is not None:
         return False
 
@@ -85,6 +98,12 @@ def _tool_matches_rule(tool: ToolLike, rule: PermissionRule) -> bool:
             return True
 
     return False
+
+
+# Back-compat alias — keep the private name available for any caller that
+# imports ``_tool_matches_rule`` directly. Removed two CHANGELOG entries
+# after the rename lands.
+_tool_matches_rule = tool_matches_rule
 
 
 def get_deny_rule_for_tool(
