@@ -39,20 +39,28 @@ async def register_frontmatter_hooks(
     source_name: str,
     is_agent: bool = False,
     skill_root: str | None = None,
-) -> int:
+) -> list[tuple[HookEvent, HookConfig]]:
     """Register frontmatter hooks; convert ``Stop → SubagentStop`` if
     ``is_agent`` is True.
 
-    Returns the count registered.
+    Returns a list of ``(event, hook_config)`` tuples for the hooks that
+    were registered. Callers can use the list to roll back registration
+    on a subsequent error (e.g., ``execute_forked_skill`` rolls back when
+    its runner errors after registration). Empty list means nothing
+    registered.
+
+    Pre-Phase-5-followup return type was ``int`` (count). Changed to a
+    list so D4's rollback contract is implementable. Callers that just
+    want the count use ``len(...)``.
 
     ``source_name`` is informational (e.g., ``"agent foo"`` /
     ``"skill /commit"``); used in debug logs to trace registrations back to
     their declarer.
     """
+    registered_entries: list[tuple[HookEvent, HookConfig]] = []
     if not frontmatter_hooks:
-        return 0
+        return registered_entries
 
-    registered = 0
     for event_name, matcher_groups in frontmatter_hooks.items():
         if not isinstance(matcher_groups, list):
             continue
@@ -108,14 +116,14 @@ async def register_frontmatter_hooks(
                     on_success=on_success,
                     skill_root=skill_root,
                 )
-                registered += 1
+                registered_entries.append((target_event, config))
 
-    if registered > 0:
+    if registered_entries:
         logger.debug(
             "Registered %d frontmatter hook(s) from %s (session=%s, is_agent=%s)",
-            registered, source_name, session_id, is_agent,
+            len(registered_entries), source_name, session_id, is_agent,
         )
-    return registered
+    return registered_entries
 
 
 def _make_once_remover(

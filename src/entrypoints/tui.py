@@ -124,6 +124,17 @@ def run_tui(options: TUIOptions) -> int:
         tool_context.allow_docs = True
     tool_context.options.is_non_interactive_session = False
 
+    # Phase-5 follow-up D3 — wire the production forked-skill runner so
+    # skills with ``context: 'fork'`` actually run a sub-agent (rather
+    # than hitting the "configure forked_skill_runner" error). Idempotent;
+    # test fixtures that pre-inject a stub runner are preserved.
+    from src.tool_system.tools.skill_fork import wire_forked_skill_runner
+    wire_forked_skill_runner(
+        tool_context=tool_context,
+        provider=provider,
+        tool_registry=tool_registry,
+    )
+
     # Build and run app ---------------------------------------------------
     from src.tui.app import ClawCodexTUI
 
