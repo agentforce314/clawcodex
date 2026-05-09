@@ -445,6 +445,12 @@ async def _dispatch_hook_by_type(
         return await execute_agent_hook(
             hook, stdin_data, provider=provider, model=model,
         )
+    if hook_type == "callback":
+        # Phase-9 / WI-9.1 — in-process callable; no subprocess / no
+        # LLM. Skips the command-hook overhead path entirely (the
+        # chapter's "fast path" for SDK / TUI subscribers).
+        from .exec_callback_hook import execute_callback_hook
+        return await execute_callback_hook(hook, stdin_data)
     # Unknown hook type → log and return a no-op result. The validator
     # at config-load time should have caught this; if it slipped
     # through, we don't crash the executor.

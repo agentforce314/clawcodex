@@ -43,6 +43,7 @@ cleanup.
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 from typing import Any, Callable, Literal
@@ -115,6 +116,60 @@ def clear_hook_event_state() -> None:
     _enabled = True
 
 
+class LazyJsonPayload(dict):
+    """Phase-9 / WI-9.2 — dict subclass with a memoized ``json``
+    property for subscribers that need a wire-format serialization.
+
+    Two performance properties this wrapper preserves:
+
+      1. **Zero serialization cost when no subscriber wants JSON.**
+         If subscribers all consume the dict directly (the common case
+         for in-process consumers — TUI / SDK callbacks), ``json`` is
+         never called and ``json.dumps`` never runs.
+      2. **Single serialization shared across all subscribers that
+         want JSON.** If three subscribers (telemetry pipe + audit log
+         + remote forwarder) each access ``payload.json``, the
+         serialization happens exactly once — the result is cached on
+         first access.
+
+    Inheriting from ``dict`` keeps full back-compat with subscribers
+    that read fields directly via ``payload["type"]`` /
+    ``payload.get("event")``. The lazy property is opt-in.
+
+    Memoization is thread-safe via ``threading.Lock`` — multiple
+    subscribers accessing ``payload.json`` concurrently will see one
+    serialization pass, not N races. The lock is per-instance (each
+    event has its own); contention is bounded by the number of
+    subscribers requesting JSON for a single event.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Cached JSON; ``None`` is the not-yet-computed sentinel. Empty
+        # string would be a valid payload (empty dict serializes to
+        # ``"{}"`` not ``""``), so ``None`` is unambiguous.
+        self._json_cache: str | None = None
+        self._json_lock = threading.Lock()
+
+    @property
+    def json(self) -> str:
+        """Return the JSON-serialized payload, computing on first
+        access and caching for subsequent calls.
+
+        Subscribers that don't need JSON pay zero serialization cost.
+        Subscribers that DO need JSON pay it exactly once across all
+        consumers of this event.
+        """
+        if self._json_cache is not None:
+            return self._json_cache
+        with self._json_lock:
+            # Double-check after lock acquisition (another thread may
+            # have populated the cache while we waited).
+            if self._json_cache is None:
+                self._json_cache = json.dumps(dict(self), default=str)
+            return self._json_cache
+
+
 def _dispatch(event: dict[str, Any]) -> None:
     """Fan out one event to all current subscribers.
 
@@ -122,9 +177,18 @@ def _dispatch(event: dict[str, Any]) -> None:
     deregister itself or others mid-iteration safely. Each handler is
     called inside a try/except; failures are logged at WARNING and
     don't break the dispatch loop.
+
+    The event is wrapped in a ``LazyJsonPayload`` (Phase-9 / WI-9.2):
+    subscribers can either read fields directly via dict access (zero
+    serialization cost) or request a memoized JSON serialization via
+    ``event.json``. The wrapper is transparent to existing subscribers
+    that treat the event as a plain dict.
     """
     if not _enabled:
         return
+    # Wrap with lazy-JSON memoization. ``LazyJsonPayload`` IS a dict,
+    # so all existing subscribers continue to work unchanged.
+    payload = LazyJsonPayload(event)
     # Snapshot under the lock so concurrent register/unregister doesn't
     # race the iteration. Lock release is fast — we copy the small list,
     # then iterate without holding it (so subscribers can safely call
@@ -133,7 +197,7 @@ def _dispatch(event: dict[str, Any]) -> None:
         snapshot = list(_handlers)
     for h in snapshot:
         try:
-            h(event)
+            h(payload)
         except Exception:
             # Subscriber crashes do NOT break the executor or other
             # subscribers. Logged at WARNING (not exception, to avoid

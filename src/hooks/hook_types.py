@@ -110,9 +110,15 @@ ALL_HOOK_EVENTS: list[HookEvent] = [
 ]
 
 
-# Hook *type* — the kind of executor that runs the hook. Phase-1 keeps the
-# four config-driven types; ``callback`` lands in Phase 9 (gap #12).
-HookType = Literal["command", "agent", "http", "prompt"]
+# Hook *type* — the kind of executor that runs the hook. Phase-1 had the
+# four config-driven types; Phase-9 / WI-9.1 adds ``callback`` for
+# in-process subscribers (gap #12). Callback hooks bypass the
+# command-hook subprocess fork (-70% overhead) and the LLM dispatch of
+# agent/prompt — they're a synchronous Python callable invoked directly
+# by the executor. Useful for SDK consumers and TUI subscribers that
+# want to react to hook events without the cost / configuration of the
+# other types.
+HookType = Literal["command", "agent", "http", "prompt", "callback"]
 
 
 # ---------------------------------------------------------------------------
@@ -250,6 +256,15 @@ class HookConfig:
     # registration → execution; not parsed from settings.json (only set at
     # skill-hook registration time in Phase 3).
     skill_root: str | None = None
+
+    # Phase-9 / WI-9.1 — callable for ``type="callback"`` hooks. Direct
+    # Python callable invoked by ``execute_callback_hook``; mutually
+    # exclusive with ``command`` / ``url`` / ``prompt_text`` /
+    # ``agent_instructions``. Not parsed from settings.json (callbacks
+    # are programmatic — registered via ``add_session_hook`` from SDK /
+    # TUI consumers). Signature: ``(event_data: dict) -> HookResult |
+    # None``. Returning ``None`` is treated as "exit_code=0, no decision."
+    callback_ref: Any = None
 
 
 # ---------------------------------------------------------------------------
