@@ -186,42 +186,214 @@ def help_command_call(args: str, context: CommandContext) -> LocalCommandResult:
     )
 
 
-def skills_command_call(args: str, context: CommandContext) -> LocalCommandResult:
+def _build_skills_menu_items(skills: list) -> list[dict[str, Any]]:
+    """Build the structured menu-item list for ``/skills``.
+
+    Phase-9 / WI-9.3 — interactive variant data shape. Each item is a
+    dict with the fields a TUI menu component (or SDK consumer) needs:
+
+      * ``name``: skill identifier (e.g., ``"commit"`` or ``"git:commit"``)
+      * ``description``: one-line description from frontmatter
+      * ``when_to_use``: optional usage guidance from frontmatter
+      * ``source``: the chapter's "loaded_from" tier (``user`` /
+        ``project`` / ``bundled`` / ``mcp``)
+      * ``status``: ``"installed"`` (always — current implementation
+        only surfaces installed skills; ``"available"`` is reserved for
+        a future skill-marketplace integration)
+      * ``has_hooks``: True if the skill declares frontmatter hooks
+        (helpful indicator for users debugging hook firings)
+      * ``context``: ``"inline"`` or ``"fork"`` (forked skills run in
+        their own context window — relevant signal for the menu)
+
+    The structured shape is what TUI components consume; the textual
+    fallback (the existing ``/skills`` rendering) is built on top of
+    the same items so the two views never drift.
     """
-    Handle /skills command - list available skills.
+    items: list[dict[str, Any]] = []
+    for skill in skills:
+        items.append({
+            "name": skill.name,
+            "description": skill.description or "",
+            "when_to_use": skill.when_to_use,
+            "source": getattr(skill, "loaded_from", None) or "unknown",
+            "status": "installed",
+            "has_hooks": bool(getattr(skill, "hooks", None)),
+            "context": getattr(skill, "context", "inline") or "inline",
+        })
+    return items
 
-    Args:
-        args: Command arguments
-        context: Command context
 
-    Returns:
-        LocalCommandResult
+def _format_skills_menu_text(items: list[dict[str, Any]]) -> str:
+    """Textual fallback rendering when no interactive UI is available.
+
+    Mirrors the pre-Phase-9 flat listing but adds the source/context/
+    has_hooks columns for parity with the interactive menu.
+    """
+    if not items:
+        return (
+            "No skills available. Add skills to ~/.clawcodex/skills/ or "
+            "./.clawcodex/skills/."
+        )
+
+    lines = ["Available skills:", ""]
+    for item in items:
+        # Inline indicators for non-default options:
+        #   [F] = forked execution (context: 'fork')
+        #   [H] = declares frontmatter hooks
+        flags = []
+        if item["context"] == "fork":
+            flags.append("F")
+        if item["has_hooks"]:
+            flags.append("H")
+        flag_str = f" [{','.join(flags)}]" if flags else ""
+
+        lines.append(f"  {item['name']}{flag_str}  ({item['source']})")
+        if item["description"]:
+            lines.append(f"      {item['description']}")
+        if item["when_to_use"]:
+            lines.append(f"      When to use: {item['when_to_use']}")
+        lines.append("")
+
+    lines.append("Flags: F=forked-execution, H=declares-frontmatter-hooks")
+    return "\n".join(lines)
+
+
+def skills_command_call(args: str, context: CommandContext) -> LocalCommandResult:
+    """Handle ``/skills`` command.
+
+    Phase-9 / WI-9.3: builds a structured menu-item list (consumable by
+    interactive TUI components) and formats a text fallback for the
+    REPL / non-interactive paths. Both views share the same data
+    so they never drift.
+
+    The structured items are exposed on the result via the
+    ``menu_items`` attribute (when supported by ``LocalCommandResult``)
+    so an interactive caller can render the menu directly. Callers
+    that don't need the structure get the formatted text.
     """
     try:
         from ..skills.loader import get_all_skills
-        # Pass project_root to find skills in project directories
         skills = get_all_skills(project_root=context.cwd or context.workspace_root)
     except Exception:
         skills = []
 
-    if not skills:
+    items = _build_skills_menu_items(skills)
+    text = _format_skills_menu_text(items)
+
+    result = LocalCommandResult(type="text", value=text)
+    # Attach structured data for interactive UI consumers. Setattr is
+    # used because ``LocalCommandResult`` is a fixed dataclass; this
+    # keeps the back-compat text shape while adding optional
+    # structured access.
+    try:
+        setattr(result, "menu_items", items)
+    except (AttributeError, TypeError):
+        # Frozen dataclass — fall back to text only.
+        pass
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Phase-9 / WI-9.4 — /hooks slash command
+# ---------------------------------------------------------------------------
+
+
+def hooks_command_call(args: str, context: CommandContext) -> LocalCommandResult:
+    """Handle ``/hooks`` command — list configured hooks.
+
+    Phase-9 / WI-9.4. Lists hooks from the active session's snapshot,
+    grouped by event then sorted by source priority (the chapter's
+    "userSettings → policySettings → pluginHook" order). Useful for
+    debugging "what's about to fire when I run X."
+
+    Respects the workspace-trust gate: if the workspace isn't trusted,
+    only policy-source hooks are listed (matching the executor's
+    runtime gate behavior).
+    """
+    # The snapshot lives on ToolContext.hook_config_manager; the
+    # CommandContext doesn't carry that directly. Look it up via the
+    # context's tool_context attribute if present, falling back to
+    # an "unconfigured" message.
+    tool_ctx = getattr(context, "tool_context", None)
+    if tool_ctx is None:
         return LocalCommandResult(
             type="text",
-            value="No skills available. Add skills to ~/.clawcodex/skills/ or ./.clawcodex/skills/.",
+            value=(
+                "Hook listing unavailable: no ToolContext attached to the "
+                "command context. (This is a configuration issue in the "
+                "session bootstrap, not a user error.)"
+            ),
         )
 
-    lines = ["Available skills:", ""]
-    for skill in skills:
-        lines.append(f"  {skill.name}")
-        lines.append(f"      {skill.description}")
-        if skill.when_to_use:
-            lines.append(f"      When to use: {skill.when_to_use}")
+    manager = getattr(tool_ctx, "hook_config_manager", None)
+    snapshot = getattr(manager, "snapshot", None) if manager is not None else None
+    if snapshot is None or not snapshot.hooks:
+        return LocalCommandResult(
+            type="text",
+            value=(
+                "No hooks configured. Add hooks to ~/.claude/settings.json, "
+                "your project's .claude/settings.json, or a plugin's "
+                "hooks.json."
+            ),
+        )
+
+    # Trust gate — same logic as the executor's runtime gate.
+    workspace_trusted = getattr(tool_ctx, "workspace_trusted", False)
+
+    lines = ["Configured hooks:"]
+    if not workspace_trusted:
+        lines.append(
+            "  (Workspace untrusted — only policy-source hooks shown; "
+            "trust the workspace to see all hooks.)"
+        )
+    lines.append("")
+
+    for event_name in sorted(snapshot.hooks.keys()):
+        event_hooks = snapshot.hooks[event_name]
+        if not workspace_trusted:
+            event_hooks = [h for h in event_hooks if h.source.is_policy]
+        if not event_hooks:
+            continue
+
+        # Sort by source priority (lower = higher precedence per the
+        # chapter's "Six Hook Sources" table).
+        sorted_hooks = sorted(event_hooks, key=lambda h: h.source.priority)
+
+        lines.append(f"  {event_name}:")
+        for hook in sorted_hooks:
+            descriptor = _describe_hook(hook)
+            lines.append(f"    [{hook.source.value}] {descriptor}")
         lines.append("")
 
-    return LocalCommandResult(
-        type="text",
-        value="\n".join(lines),
-    )
+    return LocalCommandResult(type="text", value="\n".join(lines).rstrip())
+
+
+def _describe_hook(hook: Any) -> str:
+    """Format a HookConfig as a one-line descriptor for the listing."""
+    parts = [f"type={hook.type}"]
+    if hook.matcher:
+        parts.append(f"matcher={hook.matcher!r}")
+    if hook.if_condition:
+        parts.append(f"if={hook.if_condition!r}")
+    if hook.once:
+        parts.append("once")
+    if hook.type == "command" and hook.command:
+        # Truncate long commands so the listing stays readable.
+        cmd = hook.command if len(hook.command) <= 60 else hook.command[:57] + "..."
+        parts.append(f"command={cmd!r}")
+    elif hook.type == "http" and hook.url:
+        parts.append(f"url={hook.url}")
+    elif hook.type == "agent" and hook.agent_instructions:
+        instr = hook.agent_instructions
+        instr = instr if len(instr) <= 50 else instr[:47] + "..."
+        parts.append(f"agent_instructions={instr!r}")
+    elif hook.type == "prompt" and hook.prompt_text:
+        prompt = hook.prompt_text
+        prompt = prompt if len(prompt) <= 50 else prompt[:47] + "..."
+        parts.append(f"prompt_text={prompt!r}")
+    elif hook.type == "callback":
+        parts.append("callback=<programmatic>")
+    return " ".join(parts)
 
 
 def exit_command_call(args: str, context: CommandContext) -> LocalCommandResult:
@@ -589,6 +761,13 @@ SKILLS_COMMAND = LocalCommand(
     supports_non_interactive=True,
 )
 
+HOOKS_COMMAND = LocalCommand(
+    name="hooks",
+    description="List configured hooks (Phase-9 / WI-9.4)",
+    argument_hint="",
+    supports_non_interactive=True,
+)
+
 COST_COMMAND = LocalCommand(
     name="cost",
     description="Show session cost and usage",
@@ -648,6 +827,8 @@ def execute_command_sync(cmd_name: str, args: str, context: CommandContext) -> t
             result = exit_command_call(args, context)
         elif cmd is SKILLS_COMMAND:
             result = skills_command_call(args, context)
+        elif cmd is HOOKS_COMMAND:
+            result = hooks_command_call(args, context)
         elif cmd is COST_COMMAND:
             result = cost_command_call(args, context)
         elif cmd is CONTEXT_COMMAND:
@@ -667,6 +848,7 @@ HELP_COMMAND.set_call(help_command_call)
 CLEAR_COMMAND.set_call(clear_command_call)
 EXIT_COMMAND.set_call(exit_command_call)
 SKILLS_COMMAND.set_call(skills_command_call)
+HOOKS_COMMAND.set_call(hooks_command_call)
 COST_COMMAND.set_call(cost_command_call)
 CONTEXT_COMMAND.set_call(context_command_call)
 COMPACT_COMMAND.set_call(compact_command_call)
@@ -679,6 +861,7 @@ def get_builtin_commands() -> list[Command]:
         CLEAR_COMMAND,
         EXIT_COMMAND,
         SKILLS_COMMAND,
+        HOOKS_COMMAND,
         COST_COMMAND,
         CONTEXT_COMMAND,
         COMPACT_COMMAND,
