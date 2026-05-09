@@ -469,7 +469,13 @@ class TestSkillTool(ToolSystemTests):
             arguments=["name"],
         )
         with patch.dict(os.environ, {"CLAWCODEX_SKILLS_DIR": str(skills_dir)}):
-            out = SkillTool.call({"skill": "hello", "args": "bob"}, self.ctx).output
+            # Phase-5: SkillTool.call is async; unittest.TestCase isn't
+            # auto-asyncio under pytest-asyncio's auto mode, so we
+            # bridge with asyncio.run.
+            import asyncio
+            out = asyncio.run(
+                SkillTool.call({"skill": "hello", "args": "bob"}, self.ctx)
+            ).output
             self.assertTrue(out["success"])
             self.assertIn("Hello bob!", out["prompt"])
             self.assertEqual(out["loadedFrom"], "user")
@@ -482,7 +488,12 @@ class TestSkillTool(ToolSystemTests):
             encoding="utf-8",
         )
         with patch.dict(os.environ, {"CLAWCODEX_SKILLS_DIR": str(skills_dir)}):
-            out = SkillTool.call({"name": "legacy", "input": {"name": "bob"}}, self.ctx).output
+            # Phase-5: legacy .py path stays sync inside _skill_call,
+            # but _skill_call itself is async — still need asyncio.run.
+            import asyncio
+            out = asyncio.run(
+                SkillTool.call({"name": "legacy", "input": {"name": "bob"}}, self.ctx)
+            ).output
             self.assertEqual(out["output"], "hi bob")
 
 

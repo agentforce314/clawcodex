@@ -178,6 +178,14 @@ def run_headless(options: HeadlessOptions) -> int:
     # AskUserQuestion has no terminal to read from in headless mode.
     tool_context.ask_user = _noop_ask_user
 
+    # Phase-5 follow-up D3 — wire production forked-skill runner.
+    from src.tool_system.tools.skill_fork import wire_forked_skill_runner
+    wire_forked_skill_runner(
+        tool_context=tool_context,
+        provider=provider,
+        tool_registry=tool_registry,
+    )
+
     # Build the input iterator.
     if options.input_format == "stream-json":
         inputs: Iterable[UserInputMessage] = StreamJsonReader(stdin)

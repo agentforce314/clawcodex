@@ -121,22 +121,21 @@ class TestSkillHookRegistrationProductionPath:
         )
         assert before == []
 
-        # 4. Drive the production entry point: SkillTool.call. Note this
-        #    is a SYNC call returning a ToolResult immediately. The hook
-        #    registration is fire-and-forget via loop.create_task.
+        # 4. Drive the production entry point: SkillTool.call. After
+        #    Phase-5 / WI-5.1 / I3 this is async — registration awaits
+        #    directly inside ``_run_markdown_skill`` rather than going
+        #    through the Phase-3 fire-and-forget bridge. By the time
+        #    ``SkillTool.call`` returns, registration has already landed.
         with patch.dict(os.environ, {"CLAWCODEX_SKILLS_DIR": str(skills_dir)}):
-            result = SkillTool.call({"skill": "audit-skill"}, ctx)
+            result = await SkillTool.call({"skill": "audit-skill"}, ctx)
 
-        # The sync return: ToolResult shape (skill rendered successfully).
+        # The async return: ToolResult shape (skill rendered successfully).
         assert result.is_error is False
         assert result.output["commandName"] == "audit-skill"
 
-        # 5. Yield once to let the loop.create_task'd registration land.
-        #    This is the timing pin: ONE await boundary between SkillTool.call
-        #    return and the registration being visible. If the bridge is
-        #    broken (e.g., asyncio.run inside a running loop, or registration
-        #    silently dropped), this test fails.
-        await asyncio.sleep(0)
+        # 5. (Phase-5 update) Registration is awaited inline before
+        #    ``SkillTool.call`` returns; no asyncio.sleep(0) needed.
+        #    The fire-and-forget bridge from Phase 3 is gone.
 
         # 6. Registration is now visible.
         after = await get_session_hooks(
@@ -203,10 +202,9 @@ class TestSkillHookRegistrationProductionPath:
         )
 
         with patch.dict(os.environ, {"CLAWCODEX_SKILLS_DIR": str(skills_dir)}):
-            result = SkillTool.call({"skill": "plain-skill"}, ctx)
+            result = await SkillTool.call({"skill": "plain-skill"}, ctx)
         assert result.is_error is False
 
-        await asyncio.sleep(0)
         # Registry stays empty across all events.
         for ev in ("PreToolUse", "PostToolUse", "Stop"):
             entries = await get_session_hooks(

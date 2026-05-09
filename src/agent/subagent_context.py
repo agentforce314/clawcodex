@@ -183,6 +183,19 @@ def create_subagent_context(
         agent_id=agent_id,
         agent_type=agent_type,
         user_modified=parent_context.user_modified,
+        # Phase-5 follow-up D3 — sub-agents inherit the parent's
+        # forked-skill runner so a skill with ``context: 'fork'``
+        # invoked from a sub-agent context still spawns correctly.
+        forked_skill_runner=parent_context.forked_skill_runner,
+        # Inherit the chapter-12 hook plumbing too — sub-agents share
+        # the parent's snapshot manager + session-hook registry +
+        # workspace_trusted gate. Otherwise a sub-agent would see
+        # ``hook_config_manager=None`` and trip the deprecation warning
+        # via the legacy options.hooks fallback.
+        hook_config_manager=parent_context.hook_config_manager,
+        workspace_trusted=parent_context.workspace_trusted,
+        session_hook_registry=parent_context.session_hook_registry,
+        session_id=parent_context.session_id,
     )
 
 

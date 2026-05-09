@@ -165,6 +165,23 @@ class ToolContext:
     # snapshot's config-driven hooks at fire time. ``Any`` typing avoids a
     # circular import with ``src.hooks.session_hooks``.
     session_hook_registry: Any | None = None
+    # Chapter-12 / Phase 5 / WI-5.1 — forked-skill runner injection point.
+    # When a skill declares ``context: 'fork'`` in frontmatter,
+    # ``execute_forked_skill`` calls this runner with the rendered prompt
+    # and the skill's allowed_tools / model / effort, awaiting the
+    # sub-agent's final result text.
+    #
+    # ``None`` (default) means no runner is wired — the fork branch
+    # returns an ``is_error=True`` ToolResult explaining the missing
+    # configuration. Bootstrap is responsible for installing a real
+    # runner (e.g., one that drives ``run_agent`` with the skill's
+    # parameters); tests inject stubs to exercise the fork code path
+    # without a real LLM provider.
+    #
+    # Signature: ``async (prompt: str, *, allowed_tools, model, effort,
+    # parent_context) -> str``. ``Any`` typing avoids a circular import
+    # with the agent-tool layer.
+    forked_skill_runner: Any | None = None
 
     def __post_init__(self) -> None:
         self.workspace_root = Path(self.workspace_root).resolve()

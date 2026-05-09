@@ -325,6 +325,14 @@ class ClawcodexREPL:
             ),
         )
         self.tool_context.ask_user = self._ask_user_questions
+
+        # Phase-5 follow-up D3 — wire production forked-skill runner.
+        from src.tool_system.tools.skill_fork import wire_forked_skill_runner
+        wire_forked_skill_runner(
+            tool_context=self.tool_context,
+            provider=self.provider,
+            tool_registry=self.tool_registry,
+        )
         # Permission handler with status control for proper input handling
         self._current_status = None
         if self._permission_mode == "bypassPermissions":
