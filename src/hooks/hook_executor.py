@@ -136,11 +136,75 @@ def _matches_tool(matcher: str | None, tool_name: str) -> bool:
     return matcher == tool_name
 
 
+def _build_hook_env(
+    hook: HookConfig,
+    stdin_data: dict[str, Any],
+    tool_use_context: Any | None,
+) -> dict[str, str]:
+    """Compute the env-var dict passed to a command-hook subprocess.
+
+    Phase-1 / WI-1.5 — adds three vars on top of inherited ``os.environ``:
+
+      * ``CLAUDE_HOOK_EVENT`` — the canonical event name (existing).
+      * ``CLAUDE_PROJECT_DIR`` — workspace root from the active context.
+        Empty string if the context doesn't carry a workspace_root.
+      * ``CLAUDE_PLUGIN_ROOT`` — set from ``hook.skill_root`` (populated only
+        for skill-declared hooks; empty for everything else).
+      * ``CLAUDE_ENV_FILE`` — per-fire ephemeral env file path. Set ONLY for
+        the three lifecycle events that benefit from env propagation
+        (``SessionStart``, ``Setup``, ``CwdChanged``). For other events:
+        empty string. Per N4: this WI sets the path; the
+        sourcing-and-applying loop (read the file back and apply exports to
+        subsequent shells in the session) is a separate follow-up ticket.
+        TODO(ch12-followup): ticket #<TBD> covers the env-file source/apply
+        cycle.
+    """
+    event_name = stdin_data.get("hook_event", "")
+    workspace_root = ""
+    if tool_use_context is not None:
+        wr = getattr(tool_use_context, "workspace_root", None)
+        if wr is not None:
+            workspace_root = str(wr)
+
+    env_file = _env_file_for_event(event_name)
+
+    return {
+        **os.environ,
+        "CLAUDE_HOOK_EVENT": event_name,
+        "CLAUDE_PROJECT_DIR": workspace_root,
+        "CLAUDE_PLUGIN_ROOT": hook.skill_root or "",
+        "CLAUDE_ENV_FILE": env_file,
+    }
+
+
+def _env_file_for_event(event_name: str) -> str:
+    """Return a writable path for the hook to write env exports to.
+
+    Only set for events whose hooks may legitimately propagate env to
+    subsequent shells in the session (TS pattern). For other events, return
+    empty string — the hook MAY still observe ``CLAUDE_ENV_FILE`` and treat
+    "empty" as "no env propagation requested."
+
+    The file is per-fire ephemeral: a unique path under
+    ``~/.clawcodex/hook-env/<event>.<pid>.<nanos>``. This WI does NOT
+    create the file or read it back; it only computes the path. Sourcing is
+    a follow-up.
+    """
+    if event_name not in ("SessionStart", "Setup", "CwdChanged"):
+        return ""
+    home = os.path.expanduser("~")
+    return os.path.join(
+        home, ".clawcodex", "hook-env",
+        f"{event_name}.{os.getpid()}.{time.time_ns()}",
+    )
+
+
 async def _execute_command_hook(
     hook: HookConfig,
     stdin_data: dict[str, Any],
     abort_signal: Any | None = None,
     timeout_ms: int = TOOL_HOOK_EXECUTION_TIMEOUT_MS,
+    tool_use_context: Any | None = None,
 ) -> HookResult:
     command = hook.command
     if not command:
@@ -157,7 +221,7 @@ async def _execute_command_hook(
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env={**os.environ, "CLAUDE_HOOK_EVENT": stdin_data.get("hook_event", "")},
+            env=_build_hook_env(hook, stdin_data, tool_use_context),
         )
 
         try:
@@ -218,25 +282,33 @@ async def _execute_command_hook(
             command=command,
         )
 
+        # Phase-1 / WI-1.4 — schema-validated output parsing. Replaces the
+        # prior ad-hoc ``dict.get`` block: malformed output (capital-D
+        # ``Deny``, unknown fields, non-string ``reason``, etc.) used to no-op
+        # silently; now it logs a WARNING and the decision payload is
+        # dropped (exit code is still honored).
         if stdout:
-            try:
-                parsed = json.loads(stdout)
-                if isinstance(parsed, dict):
-                    decision = parsed.get("decision")
-                    if decision in ("allow", "deny", "ask"):
-                        result.permission_behavior = decision
-                        result.hook_permission_decision_reason = parsed.get("reason")
-                    if parsed.get("updatedInput"):
-                        result.updated_input = parsed["updatedInput"]
-                    if parsed.get("preventContinuation"):
-                        result.prevent_continuation = True
-                        result.stop_reason = parsed.get("stopReason")
-                    if parsed.get("additionalContexts"):
-                        result.additional_contexts = parsed["additionalContexts"]
-                    if parsed.get("updatedMCPToolOutput"):
-                        result.updated_mcp_tool_output = parsed["updatedMCPToolOutput"]
-            except json.JSONDecodeError:
-                pass
+            from src.hooks.output_schema import parse_hook_output  # local import: pydantic
+            parsed, err = parse_hook_output(stdout)
+            if err is not None:
+                logger.warning(
+                    "Hook %r emitted output that failed schema validation; "
+                    "dropping decision payload. error=%s stdout=%r",
+                    command, err, stdout[:200],
+                )
+            elif parsed is not None:
+                if parsed.decision is not None:
+                    result.permission_behavior = parsed.decision
+                    result.hook_permission_decision_reason = parsed.reason
+                if parsed.updatedInput:
+                    result.updated_input = parsed.updatedInput
+                if parsed.preventContinuation:
+                    result.prevent_continuation = True
+                    result.stop_reason = parsed.stopReason
+                if parsed.additionalContexts:
+                    result.additional_contexts = parsed.additionalContexts
+                if parsed.updatedMCPToolOutput is not None:
+                    result.updated_mcp_tool_output = parsed.updatedMCPToolOutput
 
         return result
 
@@ -271,11 +343,12 @@ async def _run_hooks_for_event(
 
     if trust_skip:
         # Drop everything that isn't a policy-source hook. ``HookConfig.source``
-        # is a ``HookSource`` enum; any non-POLICY value is gated. Imported
+        # is a ``HookSource`` enum; any non-policy value is gated. Imported
         # locally to avoid pulling the enum into module-init paths that don't
-        # need it.
-        from src.hooks.hook_types import HookSource
-        event_hooks = [h for h in event_hooks if h.source == HookSource.POLICY]
+        # need it. Phase-1 / WI-1.2 renamed ``POLICY`` → ``POLICY_SETTINGS``;
+        # the ``is_policy`` predicate is the canonical way to ask the
+        # question and shields callers from future renames.
+        event_hooks = [h for h in event_hooks if h.source.is_policy]
 
     tool_use_id = stdin_data.get("tool_use_id", str(uuid4()))
     parent_tool_use_id = ""
@@ -297,6 +370,7 @@ async def _run_hooks_for_event(
             {**stdin_data, "hook_event": event},
             abort_signal=abort_signal,
             timeout_ms=timeout_ms,
+            tool_use_context=tool_use_context,
         )
 
         if result.blocking_error:
