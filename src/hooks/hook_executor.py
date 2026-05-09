@@ -425,8 +425,30 @@ async def _run_hooks_for_event(
     # for UI feedback, not decision-routing).
     collected_results: list[HookResult] = []
 
-    for entry in entries:
+    # Phase-6 / WI-6.1 — emission stream subscribers see one
+    # ``hook_started`` per hook before execution, one ``hook_response``
+    # after, and one ``hook_aggregated`` at the end. Local import
+    # because ``src.hooks.events`` shouldn't be a hard dep of executors
+    # that don't have subscribers (zero-subscriber path is one
+    # ``_dispatch`` short-circuit on the global enable flag).
+    from src.hooks.events import emit_hook_started, emit_hook_response
+
+    for hook_index, entry in enumerate(entries):
         hook = entry.config
+        # Hook id ties ``hook_started`` to the matching ``hook_response``.
+        # Composition (event, sequence, tool_use_id) ensures uniqueness
+        # across concurrent _run_hooks_for_event calls (each with its own
+        # tool_use_id).
+        hook_event_id = f"{event}:{hook_index}:{tool_use_id}"
+
+        emit_hook_started(
+            hook_id=hook_event_id,
+            event=event,
+            hook_type=hook.type,
+            command=hook.command,
+            source=hook.source,
+            tool_use_id=tool_use_id,
+        )
 
         yield {
             "message": create_progress_message(
@@ -445,6 +467,16 @@ async def _run_hooks_for_event(
         )
 
         collected_results.append(result)
+
+        emit_hook_response(
+            hook_id=hook_event_id,
+            event=event,
+            exit_code=result.exit_code,
+            duration_ms=result.duration_ms,
+            blocking_error=result.blocking_error,
+            permission_behavior=result.permission_behavior,
+            command=hook.command,
+        )
 
         # WI-3.1 — ``once: true`` removal. Fire the entry's on_success
         # callback after a *successful* firing (exit 0, no blocking_error,
@@ -498,7 +530,14 @@ async def _run_hooks_for_event(
     # AggregatedHookResult for telemetry/UI.
     if collected_results:
         from .aggregation import aggregate_hook_results
+        from src.hooks.events import emit_hook_aggregated
         agg = aggregate_hook_results(collected_results)
+
+        # Phase-6 / WI-6.1 — fire the final ``hook_aggregated`` event so
+        # subscribers see the post-aggregation decision + full
+        # ``contributing_reasons`` attribution without re-deriving from
+        # individual ``hook_response`` events.
+        emit_hook_aggregated(event=event, aggregated=agg)
 
         if agg.blocking_error:
             yield {
