@@ -135,6 +135,11 @@ def run_tui(options: TUIOptions) -> int:
         tool_registry=tool_registry,
     )
 
+    # Phase-7 follow-up D5 — wire provider + model so prompt/agent hooks
+    # can make real LLM calls via the executor's hook-dispatch path.
+    tool_context.provider = provider
+    tool_context.model = options.model
+
     # Build and run app ---------------------------------------------------
     from src.tui.app import ClawCodexTUI
 
