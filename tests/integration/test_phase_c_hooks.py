@@ -15,7 +15,7 @@ class TestHooksIntegration:
     def test_register_and_retrieve(self, registry):
         async def _run():
             config = HookConfig(command="echo test")
-            hook = await registry.register("PreToolUse", config, HookSource.SETTINGS)
+            hook = await registry.register("PreToolUse", config, HookSource.USER_SETTINGS)
             assert hook is not None
             hooks = await registry.get_hooks_for_event("PreToolUse")
             assert len(hooks) == 1
@@ -23,27 +23,34 @@ class TestHooksIntegration:
 
         assert asyncio.run(_run())
 
-    def test_priority_ordering(self, registry):
+    def test_iteration_order_matches_chapter_table(self, registry):
+        # Phase-1 / WI-1.2 — priority scheme is now ascending integer order:
+        # USER_SETTINGS=0, POLICY_SETTINGS=3, PLUGIN_HOOK=999 (sentinel last).
+        # Pre-Phase-1 this test asserted POLICY first; the rename + integer
+        # priorities reordered the iteration to match the chapter's "Six
+        # Hook Sources" table where userSettings is highest priority.
+        # The "policy cannot be overridden" semantic is enforced separately
+        # by ``apply_policy_cascade`` (Phase 2 / WI-2.3), not by priority.
         async def _run():
             await registry.register(
                 "PreToolUse",
                 HookConfig(command="plugin-hook"),
-                HookSource.PLUGINS,
+                HookSource.PLUGIN_HOOK,
             )
             await registry.register(
                 "PreToolUse",
                 HookConfig(command="policy-hook"),
-                HookSource.POLICY,
+                HookSource.POLICY_SETTINGS,
             )
             await registry.register(
                 "PreToolUse",
                 HookConfig(command="settings-hook"),
-                HookSource.SETTINGS,
+                HookSource.USER_SETTINGS,
             )
             hooks = await registry.get_hooks_for_event("PreToolUse")
-            assert hooks[0].source == HookSource.POLICY
-            assert hooks[1].source == HookSource.SETTINGS
-            assert hooks[2].source == HookSource.PLUGINS
+            assert hooks[0].source == HookSource.USER_SETTINGS
+            assert hooks[1].source == HookSource.POLICY_SETTINGS
+            assert hooks[2].source == HookSource.PLUGIN_HOOK
 
         asyncio.run(_run())
 
@@ -60,17 +67,17 @@ class TestHooksIntegration:
             await registry.register(
                 "PreToolUse",
                 HookConfig(command="a"),
-                HookSource.PLUGINS,
+                HookSource.PLUGIN_HOOK,
             )
             await registry.register(
                 "PreToolUse",
                 HookConfig(command="b"),
-                HookSource.SETTINGS,
+                HookSource.USER_SETTINGS,
             )
-            cleared = await registry.clear_source(HookSource.PLUGINS)
+            cleared = await registry.clear_source(HookSource.PLUGIN_HOOK)
             assert cleared == 1
             hooks = await registry.get_hooks_for_event("PreToolUse")
             assert len(hooks) == 1
-            assert hooks[0].source == HookSource.SETTINGS
+            assert hooks[0].source == HookSource.USER_SETTINGS
 
         asyncio.run(_run())

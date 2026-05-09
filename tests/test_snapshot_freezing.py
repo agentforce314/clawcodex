@@ -80,7 +80,7 @@ def _build_manager_with_snapshot(hooks: dict[str, list[HookConfig]]) -> HookConf
 
 class TestExecutorReadsFromSnapshot:
     def test_get_hooks_from_snapshot_when_manager_present(self):
-        real_hook = HookConfig(type="command", command="echo real", source=HookSource.SETTINGS)
+        real_hook = HookConfig(type="command", command="echo real", source=HookSource.USER_SETTINGS)
         manager = _build_manager_with_snapshot({"PreToolUse": [real_hook]})
 
         ctx = _MockContext(
@@ -98,7 +98,7 @@ class TestExecutorReadsFromSnapshot:
         assert all("BOGUS" not in (h.command or "") for h in result["PreToolUse"])
 
     def test_has_hook_for_event_consults_snapshot(self):
-        real_hook = HookConfig(type="command", command="echo x", source=HookSource.SETTINGS)
+        real_hook = HookConfig(type="command", command="echo x", source=HookSource.USER_SETTINGS)
         manager = _build_manager_with_snapshot({"PreToolUse": [real_hook]})
 
         ctx = _MockContext(hook_config_manager=manager)
@@ -134,7 +134,7 @@ class TestRunHooksForEventReadsSnapshot:
         real_hook = HookConfig(
             type="command",
             command=f"echo 'real' > {marker}",
-            source=HookSource.SETTINGS,
+            source=HookSource.USER_SETTINGS,
         )
         manager = _build_manager_with_snapshot({"PreToolUse": [real_hook]})
 
