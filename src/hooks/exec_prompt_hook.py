@@ -98,11 +98,16 @@ async def execute_prompt_hook(
     start_time = time.monotonic()
 
     if provider is None:
+        # Bootstrap wires ``ToolContext.provider`` at session start
+        # (Phase-7 follow-up D5). If a hook still hits this path, it
+        # means either the dispatch helper called us without a context
+        # (test fixture) OR the bootstrap path didn't populate the
+        # field (configuration mistake).
         return HookResult(
             blocking_error=(
-                "Prompt hook requires a provider but none was provided. "
-                "Bootstrap wires the active session's provider into the "
-                "executor's hook-dispatch path; see Phase-7 / WI-7.1."
+                "Prompt hook requires a provider on ToolContext but none "
+                "was found. Either configure the provider at session start "
+                "or pass it explicitly to execute_prompt_hook."
             ),
             exit_code=-1,
             duration_ms=int((time.monotonic() - start_time) * 1000),

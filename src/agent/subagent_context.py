@@ -196,6 +196,13 @@ def create_subagent_context(
         workspace_trusted=parent_context.workspace_trusted,
         session_hook_registry=parent_context.session_hook_registry,
         session_id=parent_context.session_id,
+        # Phase-7 follow-up D5 — sub-agents inherit provider + model
+        # so prompt/agent hooks fired during sub-agent tool calls reach
+        # the same LLM the parent uses. Without inheritance, a hook
+        # firing inside a sub-agent context would hit the no-provider
+        # blocking_error.
+        provider=parent_context.provider,
+        model=parent_context.model,
     )
 
 

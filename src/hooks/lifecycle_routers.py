@@ -13,6 +13,12 @@ Legacy settings.json with ``Notification + matcher: "onSessionStart"`` is
 translated to first-class events at config load time
 (``config_manager.load_hooks_from_settings``), so by the time these routers
 read from the registry/snapshot, the events have been canonicalized.
+
+Phase-7 follow-up D5 update: dispatch by hook.config.type now goes through
+``_dispatch_hook_by_type`` (in ``hook_executor``) so provider/model from the
+active ToolContext flow into prompt/agent hooks. The optional
+``tool_use_context`` kwarg lets callers thread context through; when None,
+LLM-driven hook types fall back to the no-provider blocking_error.
 """
 
 from __future__ import annotations
@@ -39,7 +45,14 @@ async def run_session_start_hooks(
     *,
     session_id: str | None = None,
     cwd: str | None = None,
+    tool_use_context: Any = None,
 ) -> list[dict[str, Any]]:
+    """Run all SessionStart hooks. Hook results returned in firing order.
+
+    ``tool_use_context`` (Phase-7 D5) carries the active session's
+    provider/model for prompt/agent hook dispatch. Optional for back-compat
+    with callers that don't have a ToolContext at session-start time.
+    """
     reg = registry or get_global_hook_registry()
     hooks = await reg.get_hooks_for_event(SESSION_START_EVENT)
 
@@ -51,18 +64,11 @@ async def run_session_start_hooks(
             "cwd": cwd,
         }
 
-        from .hook_executor import _execute_command_hook
-        from .exec_http_hook import execute_http_hook
-        from .exec_prompt_hook import execute_prompt_hook
-
-        if hook.config.type == "command":
-            result = await _execute_command_hook(hook.config, stdin_data)
-        elif hook.config.type == "http":
-            result = await execute_http_hook(hook.config, stdin_data)
-        elif hook.config.type == "prompt":
-            result = await execute_prompt_hook(hook.config, stdin_data)
-        else:
-            continue
+        from .hook_executor import _dispatch_hook_by_type
+        result = await _dispatch_hook_by_type(
+            hook.config, stdin_data,
+            tool_use_context=tool_use_context,
+        )
 
         results.append({
             "hook": hook.config,
@@ -78,6 +84,7 @@ async def run_session_end_hooks(
     session_id: str | None = None,
     total_cost: float | None = None,
     total_turns: int | None = None,
+    tool_use_context: Any = None,
 ) -> list[dict[str, Any]]:
     reg = registry or get_global_hook_registry()
     hooks = await reg.get_hooks_for_event(SESSION_END_EVENT)
@@ -91,15 +98,11 @@ async def run_session_end_hooks(
             "total_turns": total_turns,
         }
 
-        from .hook_executor import _execute_command_hook
-        from .exec_http_hook import execute_http_hook
-
-        if hook.config.type == "command":
-            result = await _execute_command_hook(hook.config, stdin_data)
-        elif hook.config.type == "http":
-            result = await execute_http_hook(hook.config, stdin_data)
-        else:
-            continue
+        from .hook_executor import _dispatch_hook_by_type
+        result = await _dispatch_hook_by_type(
+            hook.config, stdin_data,
+            tool_use_context=tool_use_context,
+        )
 
         results.append({
             "hook": hook.config,
@@ -116,6 +119,7 @@ async def run_compact_hooks(
     tokens_before: int | None = None,
     tokens_after: int | None = None,
     trigger: str = "manual",
+    tool_use_context: Any = None,
 ) -> list[dict[str, Any]]:
     reg = registry or get_global_hook_registry()
     hooks = await reg.get_hooks_for_event(COMPACT_EVENT)
@@ -130,15 +134,11 @@ async def run_compact_hooks(
             "trigger": trigger,
         }
 
-        from .hook_executor import _execute_command_hook
-        from .exec_http_hook import execute_http_hook
-
-        if hook.config.type == "command":
-            result = await _execute_command_hook(hook.config, stdin_data)
-        elif hook.config.type == "http":
-            result = await execute_http_hook(hook.config, stdin_data)
-        else:
-            continue
+        from .hook_executor import _dispatch_hook_by_type
+        result = await _dispatch_hook_by_type(
+            hook.config, stdin_data,
+            tool_use_context=tool_use_context,
+        )
 
         results.append({
             "hook": hook.config,
