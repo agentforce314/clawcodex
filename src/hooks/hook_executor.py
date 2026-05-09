@@ -398,6 +398,60 @@ async def _collect_hooks_for_event(
     return merged
 
 
+async def _dispatch_hook_by_type(
+    hook: HookConfig,
+    stdin_data: dict[str, Any],
+    *,
+    abort_signal: Any | None = None,
+    timeout_ms: int = TOOL_HOOK_EXECUTION_TIMEOUT_MS,
+    tool_use_context: Any = None,
+) -> HookResult:
+    """Dispatch a hook to its type-specific executor.
+
+    Phase-7 follow-up D5. Mirrors the dispatch pattern in TS
+    ``hookEvents.ts`` / ``hooks.ts`` where each hook type routes to its
+    own executor. Pre-D5 the Python executor always called
+    ``_execute_command_hook`` regardless of ``hook.type`` — agent /
+    prompt / http hooks were silently broken for non-lifecycle events.
+
+    Provider / model for LLM-driven hook types (agent, prompt) come
+    from ``tool_use_context.provider`` and ``tool_use_context.model``.
+    Bootstrap wires these onto the context at session start (analogous
+    to D3's ``forked_skill_runner`` wiring); sub-agent contexts inherit
+    from their parent.
+    """
+    hook_type = hook.type
+    if hook_type == "command":
+        return await _execute_command_hook(
+            hook, stdin_data,
+            abort_signal=abort_signal,
+            timeout_ms=timeout_ms,
+            tool_use_context=tool_use_context,
+        )
+    if hook_type == "http":
+        from .exec_http_hook import execute_http_hook
+        return await execute_http_hook(hook, stdin_data, timeout_ms=timeout_ms)
+    if hook_type == "prompt":
+        from .exec_prompt_hook import execute_prompt_hook
+        provider = getattr(tool_use_context, "provider", None) if tool_use_context else None
+        model = getattr(tool_use_context, "model", None) if tool_use_context else None
+        return await execute_prompt_hook(
+            hook, stdin_data, provider=provider, model=model,
+        )
+    if hook_type == "agent":
+        from .exec_agent_hook import execute_agent_hook
+        provider = getattr(tool_use_context, "provider", None) if tool_use_context else None
+        model = getattr(tool_use_context, "model", None) if tool_use_context else None
+        return await execute_agent_hook(
+            hook, stdin_data, provider=provider, model=model,
+        )
+    # Unknown hook type → log and return a no-op result. The validator
+    # at config-load time should have caught this; if it slipped
+    # through, we don't crash the executor.
+    logger.warning("Unknown hook type %r; treating as no-op", hook_type)
+    return HookResult(exit_code=0)
+
+
 async def _run_hooks_for_event(
     event: str,
     tool_name: str | None,
@@ -458,7 +512,14 @@ async def _run_hooks_for_event(
             ),
         }
 
-        result = await _execute_command_hook(
+        # Phase-7 follow-up D5 — dispatch by hook type. Pre-D5 the
+        # executor always called ``_execute_command_hook`` regardless
+        # of ``hook.type``; agent / prompt / http hooks for non-
+        # lifecycle events (PreToolUse, etc.) silently degraded to
+        # spawning empty commands. D5 routes each type to its proper
+        # executor and threads ``provider``/``model`` from the active
+        # ToolContext for the LLM-driven hook types.
+        result = await _dispatch_hook_by_type(
             hook,
             {**stdin_data, "hook_event": event},
             abort_signal=abort_signal,
