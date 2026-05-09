@@ -269,13 +269,29 @@ def load_hooks_from_settings(
 
 
 class HookConfigManager:
+    """Phase-2 / WI-2.1 — composes the six chapter sources at startup,
+    applies the policy cascade (WI-2.3), and produces the immutable
+    ``HookConfigSnapshot``.
+
+    Pre-Phase-2 this manager only loaded user-tier settings and used
+    ``settings_path`` exclusively. Phase 2 keeps that path as a single-source
+    constructor parameter (legacy callers pass exactly one path) AND adds an
+    optional ``workspace_root`` for project/local discovery. When
+    ``workspace_root`` is None, only the user/policy/plugin sources are
+    consulted (no walk).
+    """
+
     def __init__(
         self,
         registry: AsyncHookRegistry,
         settings_path: str | Path | None = None,
+        workspace_root: str | Path | None = None,
     ) -> None:
         self._registry = registry
+        # ``_settings_path`` is the user-tier path (back-compat with legacy
+        # single-path callers + ``reload_if_changed`` mtime tracking).
         self._settings_path = Path(settings_path) if settings_path else _get_settings_path()
+        self._workspace_root = Path(workspace_root) if workspace_root is not None else None
         self._snapshot: HookConfigSnapshot | None = None
         self._last_mtime: float = 0.0
 
@@ -284,19 +300,67 @@ class HookConfigManager:
         return self._snapshot
 
     async def load(self) -> HookConfigSnapshot:
-        snapshot = load_hooks_from_settings(self._settings_path)
+        # Local imports avoid a startup cost for callers that never reach
+        # ``load()``; also dodges any circular-import surface.
+        from .policy import apply_policy_cascade
+        from .sources.user_settings import load_user_hooks
+        from .sources.project_settings import load_project_hooks
+        from .sources.local_settings import load_local_hooks
+        from .sources.policy_settings import load_policy_hooks, load_policy_config
+        from src.utils.plugins.load_plugin_hooks import load_plugin_hooks
+
+        # Five disk-backed sources. Each returns ``dict[event, list[HookConfig]]``;
+        # missing files / parse errors yield ``{}`` (fail-soft per loader).
+        # Order in this list does NOT matter for correctness — the cascade
+        # uses ``HookSource.priority`` for sort, and ``apply_policy_cascade``
+        # filters by source membership. Order does matter for *trace clarity*
+        # in logs, so policy comes first (most authoritative), plugins last.
+        sources: list[dict[str, list[HookConfig]]] = [
+            load_policy_hooks(),
+            load_user_hooks(self._settings_path),
+            load_project_hooks(self._workspace_root),
+            load_local_hooks(self._workspace_root),
+            load_plugin_hooks(),
+        ]
+        policy_config = load_policy_config()
+
+        # Merge per event. Within each event the per-source lists are
+        # concatenated; ``AsyncHookRegistry.register`` later sorts each
+        # bucket by ``(source.priority, registration_order)``, so the merge
+        # order here only affects ties (which are stable-sorted by
+        # registration_order).
+        merged: dict[str, list[HookConfig]] = {}
+        for source_hooks in sources:
+            for event, hooks in source_hooks.items():
+                merged.setdefault(event, []).extend(hooks)
+
+        # WI-2.3 — apply policy cascade (disableAllHooks /
+        # allowManagedHooksOnly). MUST happen AFTER merge so the cascade
+        # sees all source-tagged hooks, not just policy.
+        merged = apply_policy_cascade(merged, policy_config)
+
+        snapshot = HookConfigSnapshot(
+            hooks=merged,
+            timestamp=time.time(),
+            source_path=str(self._settings_path),
+        )
         self._snapshot = snapshot
 
-        await self._registry.clear_source(HookSource.USER_SETTINGS)
-
+        # Sync the in-memory registry with the snapshot. ``clear`` then
+        # re-register from snapshot — simpler than reconciling deltas, and
+        # ``load()`` is rare (startup + /hooks reload). Each hook is
+        # registered with its TAGGED source (not a hard-coded one) so the
+        # registry's priority sort is correct across all five tiers.
+        await self._registry.clear()
         for event_name, hook_configs in snapshot.hooks.items():
+            if event_name not in ALL_HOOK_EVENTS:
+                continue
             for config in hook_configs:
-                if event_name in ALL_HOOK_EVENTS:
-                    await self._registry.register(
-                        event_name,  # type: ignore[arg-type]
-                        config,
-                        HookSource.USER_SETTINGS,
-                    )
+                await self._registry.register(
+                    event_name,  # type: ignore[arg-type]
+                    config,
+                    config.source,
+                )
 
         try:
             self._last_mtime = self._settings_path.stat().st_mtime
