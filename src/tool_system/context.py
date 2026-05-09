@@ -182,6 +182,19 @@ class ToolContext:
     # parent_context) -> str``. ``Any`` typing avoids a circular import
     # with the agent-tool layer.
     forked_skill_runner: Any | None = None
+    # Phase-7 follow-up D5 — provider + model for prompt/agent hook
+    # dispatch. The executor's hook-dispatch path threads these to
+    # ``execute_prompt_hook`` and ``execute_agent_hook`` so those
+    # executors can make real LLM calls. Pre-D5 the provider was
+    # accepted as a kwarg but no caller threaded it through, so
+    # production sessions silently hit the "Provider required" error.
+    #
+    # Bootstrap (tui/headless/repl/core) populates these at session
+    # start; sub-agent contexts inherit from their parent (matches
+    # the D3 pattern for forked_skill_runner). ``Any`` typing avoids
+    # a circular import with the provider layer.
+    provider: Any | None = None
+    model: str | None = None
 
     def __post_init__(self) -> None:
         self.workspace_root = Path(self.workspace_root).resolve()

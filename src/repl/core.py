@@ -333,6 +333,11 @@ class ClawcodexREPL:
             provider=self.provider,
             tool_registry=self.tool_registry,
         )
+
+        # Phase-7 follow-up D5 — wire provider + model for prompt/agent
+        # hooks (LLM-driven hook types in the executor's dispatch path).
+        self.tool_context.provider = self.provider
+        self.tool_context.model = getattr(self.provider, "model", None)
         # Permission handler with status control for proper input handling
         self._current_status = None
         if self._permission_mode == "bypassPermissions":

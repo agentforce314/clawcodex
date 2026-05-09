@@ -186,6 +186,10 @@ def run_headless(options: HeadlessOptions) -> int:
         tool_registry=tool_registry,
     )
 
+    # Phase-7 follow-up D5 — wire provider + model for prompt/agent hooks.
+    tool_context.provider = provider
+    tool_context.model = options.model if hasattr(options, "model") else None
+
     # Build the input iterator.
     if options.input_format == "stream-json":
         inputs: Iterable[UserInputMessage] = StreamJsonReader(stdin)
