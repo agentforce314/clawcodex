@@ -8,7 +8,7 @@ from src.hooks.exec_agent_hook import execute_agent_hook
 from src.hooks.exec_http_hook import execute_http_hook
 from src.hooks.exec_prompt_hook import execute_prompt_hook
 from src.hooks.post_sampling_hooks import run_post_sampling_hooks
-from src.hooks.session_hooks import (
+from src.hooks.lifecycle_routers import (
     run_session_start_hooks,
     run_session_end_hooks,
     run_compact_hooks,

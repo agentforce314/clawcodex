@@ -322,6 +322,73 @@ async def _execute_command_hook(
         )
 
 
+async def _collect_hooks_for_event(
+    event: str,
+    tool_name: str | None,
+    tool_use_context: Any,
+) -> list[Any]:
+    """Phase-3 / WI-3.1 (I2 contract split — Phase 3 owns "collect"):
+    merge snapshot hooks with session-registered hooks for ``event``,
+    apply the trust gate and matcher filter, return the ordered list of
+    ``SessionHookEntry``-shaped items to fire.
+
+    Each returned item carries:
+      * ``config`` — the ``HookConfig`` to execute
+      * ``event``  — the event name (post-Stop→SubagentStop conversion)
+      * ``matcher`` — copied from ``config.matcher`` (or empty string)
+      * ``on_success`` — optional callback fired by the executor after a
+                          successful firing; populated for ``once: true``
+                          session-scoped hooks.
+
+    Snapshot hooks always have ``on_success=None``: ``once: true`` is a
+    session-hook-only contract per the chapter. (A snapshot ``once: true``
+    would be ambiguous — what would "once" mean for a config-driven hook
+    that's reloaded fresh on every startup?)
+
+    Phase 4 (aggregation) consumes the per-hook results yielded by the
+    executor; this collect step does NOT consume results — it just lines
+    up which hooks are eligible to fire.
+    """
+    from .session_hooks import SessionHookEntry
+
+    trust_skip = should_skip_hook_due_to_trust(tool_use_context)
+
+    snapshot_hooks = _get_hooks_from_snapshot(tool_use_context).get(event, [])
+    if trust_skip:
+        snapshot_hooks = [h for h in snapshot_hooks if h.source.is_policy]
+
+    snapshot_entries: list[SessionHookEntry] = [
+        SessionHookEntry(
+            config=h,
+            event=event,  # type: ignore[arg-type]
+            matcher=h.matcher or "",
+            on_success=None,
+        )
+        for h in snapshot_hooks
+    ]
+
+    session_entries: list[SessionHookEntry] = []
+    registry = getattr(tool_use_context, "session_hook_registry", None)
+    session_id = getattr(tool_use_context, "session_id", None)
+    if registry is not None and session_id is not None:
+        raw_session_entries = await registry.get_for_event(session_id, event)
+        if trust_skip:
+            # Session-source hooks are NEVER policy-tier (only POLICY_SETTINGS
+            # is); under trust gate, all session-scoped hooks are dropped.
+            raw_session_entries = []
+        session_entries = list(raw_session_entries)
+
+    merged = snapshot_entries + session_entries
+
+    if tool_name is not None:
+        merged = [
+            entry for entry in merged
+            if _matches_tool(entry.config.matcher, tool_name)
+        ]
+
+    return merged
+
+
 async def _run_hooks_for_event(
     event: str,
     tool_name: str | None,
@@ -330,32 +397,17 @@ async def _run_hooks_for_event(
     abort_signal: Any | None = None,
     timeout_ms: int = TOOL_HOOK_EXECUTION_TIMEOUT_MS,
 ) -> AsyncGenerator[dict[str, Any], None]:
-    # WI-0.2 — workspace-trust gate. Skip non-policy hooks while the workspace
-    # is untrusted. The per-hook policy check happens below since policy-source
-    # identification is per-HookConfig.
-    trust_skip = should_skip_hook_due_to_trust(tool_use_context)
-
-    # WI-0.1 — read from the frozen snapshot, not from options.hooks. The
-    # snapshot is built once at startup by HookConfigManager.load() and is
-    # immune to settings.json mutation between trust acceptance and tool calls.
-    hooks = _get_hooks_from_snapshot(tool_use_context)
-    event_hooks = hooks.get(event, [])
-
-    if trust_skip:
-        # Drop everything that isn't a policy-source hook. ``HookConfig.source``
-        # is a ``HookSource`` enum; any non-policy value is gated. Imported
-        # locally to avoid pulling the enum into module-init paths that don't
-        # need it. Phase-1 / WI-1.2 renamed ``POLICY`` → ``POLICY_SETTINGS``;
-        # the ``is_policy`` predicate is the canonical way to ask the
-        # question and shields callers from future renames.
-        event_hooks = [h for h in event_hooks if h.source.is_policy]
+    # WI-3.1 — Phase 3 owns "collect": merge snapshot + session-registry
+    # hooks into a single ordered list of entries to fire. Trust gate and
+    # matcher filtering happen inside the helper. Phase 4 will own the
+    # "aggregate" step (deny>ask>allow precedence across results).
+    entries = await _collect_hooks_for_event(event, tool_name, tool_use_context)
 
     tool_use_id = stdin_data.get("tool_use_id", str(uuid4()))
     parent_tool_use_id = ""
 
-    for hook in event_hooks:
-        if tool_name and not _matches_tool(hook.matcher, tool_name):
-            continue
+    for entry in entries:
+        hook = entry.config
 
         yield {
             "message": create_progress_message(
@@ -372,6 +424,22 @@ async def _run_hooks_for_event(
             timeout_ms=timeout_ms,
             tool_use_context=tool_use_context,
         )
+
+        # WI-3.1 — ``once: true`` removal. Fire the entry's on_success
+        # callback after a *successful* firing (exit 0, no blocking_error,
+        # no permission deny). The callback fire-and-forgets removal via
+        # ``asyncio.create_task`` so the executor doesn't await the lock
+        # acquisition.
+        if (
+            entry.on_success is not None
+            and result.exit_code == 0
+            and result.blocking_error is None
+            and result.permission_behavior != "deny"
+        ):
+            try:
+                entry.on_success()
+            except Exception:
+                logger.exception("once: true on_success callback raised")
 
         if result.blocking_error:
             yield {"blocking_error": {"blocking_error": result.blocking_error, "command": result.command}}
