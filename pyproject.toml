@@ -40,6 +40,11 @@ dependencies = [
     # The TS port uses the `ignore` library; ``pathspec`` is the Python
     # equivalent (full ``**`` recursion + anchoring + negation).
     "pathspec>=0.11",
+    # Async HTTP client used for hook HTTP execution with the
+    # SSRF-guarded transport (Phase-7 / WI-7.3). The transport's custom
+    # DNS-time validation requires httpx's transport API (stable since
+    # 0.20; pinned to >=0.24 for AsyncHTTPTransport ergonomics).
+    "httpx>=0.24",
 ]
 
 [project.optional-dependencies]

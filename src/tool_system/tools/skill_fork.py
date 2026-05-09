@@ -62,9 +62,14 @@ async def execute_forked_skill(
 
     Caller responsibilities:
       * Skill prompt rendering — done by the caller (``_run_markdown_skill``).
-      * Hook registration with ``is_agent=True`` — done here, after the
-        runner returns, so hooks scoped to the forked execution don't
-        outlive a runner that errored out.
+      * Hook registration with ``is_agent=True`` — done here, BEFORE the
+        runner runs (Phase-5 follow-up D4 fix). The forked sub-agent's
+        ``SubagentStop`` fires while the runner is awaiting; if
+        registration happened after, the hook would only fire on FUTURE
+        sub-agents, not THIS forked skill's own stop. Pre-D4 ordering had
+        that bug. Rollback contract: if the runner raises, the registered
+        entries are removed via ``remove_session_hook`` so the session is
+        left as if the forked-skill invocation had never happened.
 
     The runner indirection means this function is *almost entirely*
     bookkeeping; the actual sub-agent spawn lives in
