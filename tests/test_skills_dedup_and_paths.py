@@ -399,7 +399,8 @@ class TestActivatedConditionalIsInvokableViaSkillTool(unittest.TestCase):
         # `get_all_skills` must splice `_dynamic_skills` into the
         # registry so the lookup hits.
         ctx = ToolContext(workspace_root=self._project)
-        result = SkillTool.call({"skill": "lint-py"}, ctx)
+        import asyncio  # Phase-5: SkillTool.call is async (I3 migration)
+        result = asyncio.run(SkillTool.call({"skill": "lint-py"}, ctx))
         self.assertFalse(
             result.is_error,
             f"SkillTool returned error after activation: {result.output}",

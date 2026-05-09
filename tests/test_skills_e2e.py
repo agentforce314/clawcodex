@@ -123,13 +123,13 @@ def project_with_fixtures(tmp_path: Path, isolated_home: Path) -> Path:
 # ======================================================================
 
 
-def test_commit_helper_renders_all_substitutions(
+async def test_commit_helper_renders_all_substitutions(
     project_with_fixtures: Path,
 ) -> None:
     ctx = ToolContext(workspace_root=project_with_fixtures)
     ctx.session_id = "S-e2e-001"
 
-    result = SkillTool.call(
+    result = await SkillTool.call(
         {"skill": "commit-helper", "args": "feat"},
         ctx,
     )
@@ -172,7 +172,7 @@ def test_commit_helper_renders_all_substitutions(
 # ======================================================================
 
 
-def test_frontend_add_component_namespaced_invocation(
+async def test_frontend_add_component_namespaced_invocation(
     project_with_fixtures: Path,
 ) -> None:
     # Listing first — confirms the namespace-construction logic.
@@ -189,7 +189,7 @@ def test_frontend_add_component_namespaced_invocation(
 
     # Invoke through SkillTool by the namespaced name.
     ctx = ToolContext(workspace_root=project_with_fixtures)
-    result = SkillTool.call(
+    result = await SkillTool.call(
         {"skill": "frontend:add-component", "args": "Button"},
         ctx,
     )
@@ -254,7 +254,7 @@ def test_lint_py_not_invokable_until_activated(
     )
 
 
-def test_lint_py_after_activation_runs_shell_block_through_skilltool(
+async def test_lint_py_after_activation_runs_shell_block_through_skilltool(
     project_with_fixtures: Path,
 ) -> None:
     """Once activated, lint-py's `!`pwd`` shell block must execute
@@ -275,7 +275,7 @@ def test_lint_py_after_activation_runs_shell_block_through_skilltool(
     )
 
     ctx = ToolContext(workspace_root=project_with_fixtures)
-    result = SkillTool.call({"skill": "lint-py"}, ctx)
+    result = await SkillTool.call({"skill": "lint-py"}, ctx)
 
     out = result.output
     assert out["success"] is True, f"lint-py invocation failed: {out}"
@@ -301,7 +301,7 @@ def test_lint_py_after_activation_runs_shell_block_through_skilltool(
 # ======================================================================
 
 
-def test_simplify_bundled_skill_invokable_through_skilltool(
+async def test_simplify_bundled_skill_invokable_through_skilltool(
     project_with_fixtures: Path,
 ) -> None:
     # DEV-5: init orchestrator registers the bundled-skill catalogue.
@@ -318,7 +318,7 @@ def test_simplify_bundled_skill_invokable_through_skilltool(
     # Invoke through SkillTool — exercises the bundled `get_prompt_for_command`
     # branch in `_run_markdown_skill`.
     ctx = ToolContext(workspace_root=project_with_fixtures)
-    result = SkillTool.call(
+    result = await SkillTool.call(
         {"skill": "simplify", "args": "focus on caching"},
         ctx,
     )

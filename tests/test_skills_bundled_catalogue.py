@@ -12,6 +12,7 @@ Acceptance criteria:
 
 from __future__ import annotations
 
+import asyncio  # Phase-5: SkillTool.call is async (I3 migration)
 import os
 import tempfile
 import unittest
@@ -89,13 +90,13 @@ class TestSimplifySkill(unittest.TestCase):
     def test_simplify_returns_phase1_marker(self) -> None:
         # AC#2
         ctx = ToolContext(workspace_root=self.root)
-        out = SkillTool.call({"skill": "simplify"}, ctx).output
+        out = asyncio.run(SkillTool.call({"skill": "simplify"}, ctx)).output
         self.assertTrue(out["success"])
         self.assertIn("Phase 1: Identify Changes", out["prompt"])
 
     def test_simplify_appends_args(self) -> None:
         ctx = ToolContext(workspace_root=self.root)
-        out = SkillTool.call({"skill": "simplify", "args": "look at /auth"}, ctx).output
+        out = asyncio.run(SkillTool.call({"skill": "simplify", "args": "look at /auth"}, ctx)).output
         self.assertIn("Additional Focus", out["prompt"])
         self.assertIn("look at /auth", out["prompt"])
 
@@ -154,7 +155,7 @@ class TestLoopSkillEndToEnd(unittest.TestCase):
     def test_loop_5m_hello_fixed_prompt_branch(self) -> None:
         # AC#3
         ctx = ToolContext(workspace_root=self.root)
-        out = SkillTool.call({"skill": "loop", "args": "5m hello"}, ctx).output
+        out = asyncio.run(SkillTool.call({"skill": "loop", "args": "5m hello"}, ctx)).output
         self.assertTrue(out["success"])
         prompt = out["prompt"]
         self.assertIn("fixed recurring interval", prompt)
@@ -166,7 +167,7 @@ class TestLoopSkillEndToEnd(unittest.TestCase):
     def test_loop_empty_args_dynamic_branch(self) -> None:
         # AC#4
         ctx = ToolContext(workspace_root=self.root)
-        out = SkillTool.call({"skill": "loop"}, ctx).output
+        out = asyncio.run(SkillTool.call({"skill": "loop"}, ctx)).output
         self.assertTrue(out["success"])
         prompt = out["prompt"]
         self.assertIn("dynamic rescheduling", prompt)
@@ -191,7 +192,7 @@ class TestDebugSkill(unittest.TestCase):
             {"CLAUDE_CODE_DEBUG_LOG_PATH": str(nonexistent)},
         ):
             ctx = ToolContext(workspace_root=self.root)
-            out = SkillTool.call({"skill": "debug"}, ctx).output
+            out = asyncio.run(SkillTool.call({"skill": "debug"}, ctx)).output
         self.assertTrue(out["success"])
         self.assertIn(str(nonexistent), out["prompt"])
         # The "no debug log exists yet" hint must be in the body.
@@ -202,16 +203,16 @@ class TestDebugSkill(unittest.TestCase):
         log.write_text("[INFO] hi\n[ERROR] crash\n")
         with patch.dict(os.environ, {"CLAUDE_CODE_DEBUG_LOG_PATH": str(log)}):
             ctx = ToolContext(workspace_root=self.root)
-            out = SkillTool.call({"skill": "debug"}, ctx).output
+            out = asyncio.run(SkillTool.call({"skill": "debug"}, ctx)).output
         self.assertTrue(out["success"])
         self.assertIn(str(log), out["prompt"])
         self.assertIn("[ERROR] crash", out["prompt"])
 
     def test_debug_prompt_includes_user_issue(self) -> None:
         ctx = ToolContext(workspace_root=self.root)
-        out = SkillTool.call(
+        out = asyncio.run(SkillTool.call(
             {"skill": "debug", "args": "auth keeps failing"}, ctx
-        ).output
+        )).output
         self.assertIn("auth keeps failing", out["prompt"])
 
 
@@ -227,19 +228,19 @@ class TestStuckAndVerifySkills(unittest.TestCase):
 
     def test_stuck_renders(self) -> None:
         ctx = ToolContext(workspace_root=self.root)
-        out = SkillTool.call({"skill": "stuck"}, ctx).output
+        out = asyncio.run(SkillTool.call({"skill": "stuck"}, ctx)).output
         self.assertTrue(out["success"])
         self.assertIn("Reset and Re-Approach", out["prompt"])
 
     def test_stuck_with_args_appends_user_context(self) -> None:
         ctx = ToolContext(workspace_root=self.root)
-        out = SkillTool.call({"skill": "stuck", "args": "tests fail"}, ctx).output
+        out = asyncio.run(SkillTool.call({"skill": "stuck", "args": "tests fail"}, ctx)).output
         self.assertIn("tests fail", out["prompt"])
         self.assertIn("User Context", out["prompt"])
 
     def test_verify_content_renders(self) -> None:
         ctx = ToolContext(workspace_root=self.root)
-        out = SkillTool.call({"skill": "verify-content"}, ctx).output
+        out = asyncio.run(SkillTool.call({"skill": "verify-content"}, ctx)).output
         self.assertTrue(out["success"])
         self.assertIn("Verify Recent Edits Match Intent", out["prompt"])
 

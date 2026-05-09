@@ -111,7 +111,7 @@ def get_deny_rule_for_tool(
     tool: ToolLike,
 ) -> PermissionRule | None:
     for rule in get_deny_rules(context):
-        if _tool_matches_rule(tool, rule):
+        if tool_matches_rule(tool, rule):
             return rule
     return None
 
@@ -121,7 +121,7 @@ def get_ask_rule_for_tool(
     tool: ToolLike,
 ) -> PermissionRule | None:
     for rule in get_ask_rules(context):
-        if _tool_matches_rule(tool, rule):
+        if tool_matches_rule(tool, rule):
             return rule
     return None
 
@@ -131,7 +131,7 @@ def tool_always_allowed_rule(
     tool: ToolLike,
 ) -> PermissionRule | None:
     for rule in get_allow_rules(context):
-        if _tool_matches_rule(tool, rule):
+        if tool_matches_rule(tool, rule):
             return rule
     return None
 

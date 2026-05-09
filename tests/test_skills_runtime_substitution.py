@@ -7,6 +7,7 @@ formatting (failures embed inline rather than crash the SkillTool).
 
 from __future__ import annotations
 
+import asyncio  # Phase-5: SkillTool.call is async (I3 migration)
 import os
 import tempfile
 import unittest
@@ -371,7 +372,7 @@ class TestSkillToolRuntimeIntegration(unittest.TestCase):
             directory=skills_dir, name="hello", description="say hi", body="Hi!",
         )
         ctx = ToolContext(workspace_root=self.root)
-        out = SkillTool.call({"skill": "hello"}, ctx).output
+        out = asyncio.run(SkillTool.call({"skill": "hello"}, ctx)).output
         self.assertTrue(out["success"])
         self.assertTrue(
             out["prompt"].startswith("Base directory for this skill:"),
@@ -390,7 +391,7 @@ class TestSkillToolRuntimeIntegration(unittest.TestCase):
             body="DIR=${CLAUDE_SKILL_DIR}\nSID=${CLAUDE_SESSION_ID}",
         )
         ctx = ToolContext(workspace_root=self.root, session_id="my-session-42")
-        out = SkillTool.call({"skill": "echo"}, ctx).output
+        out = asyncio.run(SkillTool.call({"skill": "echo"}, ctx)).output
         self.assertTrue(out["success"])
         self.assertIn(f"DIR={skills_dir / 'echo'}", out["prompt"])
         self.assertIn("SID=my-session-42", out["prompt"])
@@ -405,7 +406,7 @@ class TestSkillToolRuntimeIntegration(unittest.TestCase):
             )
         )
         ctx = ToolContext(workspace_root=self.root)
-        out = SkillTool.call({"skill": "b1", "args": "x"}, ctx).output
+        out = asyncio.run(SkillTool.call({"skill": "b1", "args": "x"}, ctx)).output
         self.assertTrue(out["success"])
         self.assertNotIn("Base directory for this skill", out["prompt"])
         self.assertIn("BUNDLED-PROMPT:x", out["prompt"])
@@ -418,7 +419,7 @@ class TestSkillToolRuntimeIntegration(unittest.TestCase):
             arguments=["name"], body="Hello $name from $1",
         )
         ctx = ToolContext(workspace_root=self.root)
-        out = SkillTool.call({"skill": "greet", "args": "alice town"}, ctx).output
+        out = asyncio.run(SkillTool.call({"skill": "greet", "args": "alice town"}, ctx)).output
         self.assertTrue(out["success"])
         self.assertTrue(out["prompt"].startswith("Base directory for this skill"))
         self.assertIn("Hello alice from town", out["prompt"])
