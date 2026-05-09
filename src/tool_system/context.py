@@ -159,6 +159,12 @@ class ToolContext:
     # than ``HookSource.POLICY_SETTINGS``) are skipped while the workspace is
     # untrusted, mirroring TS' ``shouldSkipHookDueToTrust`` gate.
     workspace_trusted: bool = False
+    # Chapter-12 / Phase 3 / WI-3.1 — session-scoped hook registry.
+    # Programmatically-registered hooks (e.g., from skill frontmatter via
+    # ``register_skill_hooks``) live here; the executor merges them with the
+    # snapshot's config-driven hooks at fire time. ``Any`` typing avoids a
+    # circular import with ``src.hooks.session_hooks``.
+    session_hook_registry: Any | None = None
 
     def __post_init__(self) -> None:
         self.workspace_root = Path(self.workspace_root).resolve()
