@@ -45,6 +45,7 @@ from .rules import (
     get_deny_rules,
     get_rule_by_contents_for_tool,
     tool_always_allowed_rule,
+    tool_matches_rule,
 )
 from .types import (
     EXTERNAL_PERMISSION_MODES,
@@ -184,5 +185,6 @@ __all__ = [
     "supports_persistence",
     "to_external_permission_mode",
     "tool_always_allowed_rule",
+    "tool_matches_rule",
     "unescape_rule_content",
 ]
