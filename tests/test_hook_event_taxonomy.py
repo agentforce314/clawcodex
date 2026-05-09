@@ -50,13 +50,15 @@ CHAPTER_OTHER_EVENTS = (
 
 
 class TestEventTaxonomy:
-    def test_all_25_events_in_list(self):
-        # Big Five + the rest = 28 total entries because Stop counts in both;
-        # wait — Stop is in big five. Let me recount: Big Five = 5; Other = 23.
-        # That's 28. But the chapter table says ~25. The difference is just
-        # how I'm slicing the lists in this test (Big Five vs reference table).
-        # The actual ALL_HOOK_EVENTS list has 27 entries — we accept anywhere
-        # in [25, 30] as a valid count and verify membership instead.
+    def test_all_chapter_events_present(self):
+        # Chapter (``ch12-extensibility.md``) says "over two dozen distinct
+        # points" and enumerates 22 explicitly across Big Five + the
+        # reference table. WI-1.1 also adds 4 events from the gap analysis
+        # §1 row #2 list (StopFailure, WorktreeCreate/Remove) plus the
+        # pre-existing PostSampling — total 28 in ALL_HOOK_EVENTS.
+        # Membership check is the contract; total count is allowed in
+        # [25, 30] so adding/removing a peripheral event doesn't churn
+        # this assertion.
         assert 25 <= len(ALL_HOOK_EVENTS) <= 30
         for ev in CHAPTER_BIG_FIVE:
             assert ev in ALL_HOOK_EVENTS, f"missing event: {ev}"

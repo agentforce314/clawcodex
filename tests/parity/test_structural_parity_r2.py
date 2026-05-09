@@ -770,7 +770,7 @@ class TestHookRegistryLifecycle(unittest.TestCase):
             config = HookConfig(type="command", command="echo test")
             event = "PreToolUse"
 
-            hook = await reg.register(event, config, HookSource.SETTINGS)
+            hook = await reg.register(event, config, HookSource.USER_SETTINGS)
             self.assertIsNotNone(hook)
             self.assertEqual(reg.hook_count, 1)
 
