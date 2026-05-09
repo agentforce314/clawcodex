@@ -159,21 +159,32 @@ def _skill_map_result_to_api(output: Any, tool_use_id: str) -> dict[str, Any]:
 # Call implementation
 # ---------------------------------------------------------------------------
 
-def _skill_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
+async def _skill_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
+    """Phase-5 / WI-5.1 / I3 — full async migration.
+
+    The Phase-3 fire-and-forget bridge (``_schedule_skill_hook_registration``)
+    is gone. Skill-hook registration awaits ``register_skill_hooks``
+    directly; forked execution awaits the sub-agent runner. The dispatcher
+    (``registry.py:_invoke_tool_call``) handles both sync and async ``call``
+    callables transparently.
+    """
     skill_name = tool_input.get("skill")
     if isinstance(skill_name, str) and skill_name.strip():
         # Normalize: strip leading slash
         normalized = skill_name.strip().lstrip("/")
-        return _run_markdown_skill(normalized, tool_input.get("args", ""), context)
+        return await _run_markdown_skill(normalized, tool_input.get("args", ""), context)
 
     legacy_name = tool_input.get("name")
     if isinstance(legacy_name, str) and legacy_name.strip():
+        # Legacy .py skills don't have a fork path and don't use the
+        # async session-hook registry; the existing sync path is
+        # preserved.
         return _run_legacy_python_skill(legacy_name.strip(), tool_input.get("input", {}), context)
 
     raise ToolInputError("either 'skill' (for SKILL.md) or 'name' (for legacy .py) is required")
 
 
-def _run_markdown_skill(skill_name: str, args: str, context: ToolContext) -> ToolResult:
+async def _run_markdown_skill(skill_name: str, args: str, context: ToolContext) -> ToolResult:
     from src.skills.loader import get_all_skills, get_registered_skill
     from src.skills.runtime_substitution import render_skill_prompt
 
@@ -188,6 +199,23 @@ def _run_markdown_skill(skill_name: str, args: str, context: ToolContext) -> Too
             name="Skill",
             output={"error": f"skill not found: {skill_name}"},
             is_error=True,
+        )
+
+    # Phase-5 / WI-5.1 — forked execution. When skill frontmatter declares
+    # ``context: 'fork'``, run the skill in a sub-agent with its own
+    # context window. The previously-dead ``status == "forked"`` branch in
+    # ``_skill_map_result_to_api`` becomes live code via this branch.
+    # Skill prompt rendering + hook registration both happen inside
+    # ``execute_forked_skill`` (the forked-skill path uses
+    # ``register_frontmatter_hooks(is_agent=True)`` for the
+    # Stop→SubagentStop conversion, NOT ``register_skill_hooks``).
+    if getattr(skill, "context", None) == "fork":
+        from .skill_fork import execute_forked_skill
+        return await execute_forked_skill(
+            skill=skill,
+            args=args,
+            context=context,
+            tool_use_id=context.tool_use_id or "",
         )
 
     # Bundled skills supply a callable prompt builder and define their
@@ -224,23 +252,31 @@ def _run_markdown_skill(skill_name: str, args: str, context: ToolContext) -> Too
     # ``register_frontmatter_hooks(is_agent=True)``); ``register_skill_hooks``
     # forwards events verbatim.
     #
-    # ``_run_markdown_skill`` stays sync (existing call-site contract;
-    # 30+ tests bypass the dispatcher and call ``SkillTool.call`` directly).
-    # I3's original concern was ``asyncio.run`` blocking inside a running
-    # loop; we sidestep it via fire-and-forget: ``loop.create_task`` schedules
-    # the async registration on the current loop without blocking, and the
-    # task completes before the model's next tool call (microseconds vs.
-    # seconds). When invoked outside a running loop (rare; mostly tests),
-    # we fall back to ``asyncio.run`` since there's no nesting risk.
+    # Phase-5 / WI-5.1 / I3 — full async migration: now that
+    # ``_run_markdown_skill`` is ``async def``, we await
+    # ``register_skill_hooks`` directly. The Phase-3 fire-and-forget
+    # bridge (``_schedule_skill_hook_registration``) is gone.
     skill_hooks = getattr(skill, "hooks", None)
     if skill_hooks and context.session_hook_registry is not None and context.session_id:
-        _schedule_skill_hook_registration(
-            registry=context.session_hook_registry,
-            session_id=context.session_id,
-            skill_hooks=skill_hooks,
-            skill_name=skill_name,
-            skill_root=skill.skill_root,
-        )
+        from src.hooks.register_skill_hooks import register_skill_hooks
+        try:
+            count = await register_skill_hooks(
+                registry=context.session_hook_registry,
+                session_id=context.session_id,
+                skill_hooks=skill_hooks,
+                skill_name=skill_name,
+                skill_root=skill.skill_root,
+            )
+            if count:
+                logger.debug(
+                    "Skill %r registered %d session hooks", skill_name, count,
+                )
+        except Exception:
+            # Hook registration failure should not break skill invocation;
+            # log and continue. (The skill itself is still useful; the
+            # author's auxiliary hooks not firing is a degraded but
+            # recoverable state.)
+            logger.exception("register_skill_hooks failed for skill %r", skill_name)
 
     # Build context modifier if skill specifies allowed_tools, model, or effort
     context_modifier = _build_context_modifier(skill)
@@ -258,57 +294,6 @@ def _run_markdown_skill(skill_name: str, args: str, context: ToolContext) -> Too
         },
         context_modifier=context_modifier,
     )
-
-
-def _schedule_skill_hook_registration(
-    *,
-    registry: Any,
-    session_id: str,
-    skill_hooks: Any,
-    skill_name: str,
-    skill_root: str | None,
-) -> None:
-    """Schedule async ``register_skill_hooks`` from a sync caller.
-
-    Two paths:
-      * If a running asyncio loop is available, schedule the registration
-        coroutine via ``loop.create_task`` (fire-and-forget). The task
-        completes asynchronously; the calling tool returns immediately.
-      * If no loop is running (rare; mostly test fixtures that invoke
-        ``SkillTool.call`` from sync test code), fall back to ``asyncio.run``
-        — safe because there's no nesting.
-
-    Failures are logged at ERROR; we never raise (hook registration must
-    not break skill invocation).
-    """
-    import asyncio
-    from src.hooks.register_skill_hooks import register_skill_hooks
-
-    async def _do_register() -> None:
-        try:
-            count = await register_skill_hooks(
-                registry=registry,
-                session_id=session_id,
-                skill_hooks=skill_hooks,
-                skill_name=skill_name,
-                skill_root=skill_root,
-            )
-            if count:
-                logger.debug(
-                    "Skill %r registered %d session hooks", skill_name, count,
-                )
-        except Exception:
-            logger.exception("register_skill_hooks failed for skill %r", skill_name)
-
-    try:
-        loop = asyncio.get_running_loop()
-        loop.create_task(_do_register())
-    except RuntimeError:
-        # No running loop — sync caller (e.g., test). Run directly.
-        try:
-            asyncio.run(_do_register())
-        except Exception:
-            logger.exception("register_skill_hooks failed for skill %r", skill_name)
 
 
 def _make_shell_executor(

@@ -294,7 +294,7 @@ def test_mcp_skill_renderer_does_not_call_shell_executor() -> None:
     assert "!`whoami`" in out
 
 
-def test_mcp_skill_through_skilltool_never_calls_bash(
+async def test_mcp_skill_through_skilltool_never_calls_bash(
     tmp_path: Path, isolated_home: Path
 ) -> None:
     """End-to-end version of the MCP-skip security boundary.
@@ -332,7 +332,7 @@ def test_mcp_skill_through_skilltool_never_calls_bash(
     with mock.patch(
         "src.skills.loader.get_all_skills", lambda **_: None
     ), mock.patch("src.tool_system.tools.bash.BashTool.call") as bash_call:
-        result = SkillTool.call({"skill": "evil-mcp"}, ctx)
+        result = await SkillTool.call({"skill": "evil-mcp"}, ctx)
 
     assert bash_call.call_count == 0, (
         "SECURITY REGRESSION: SkillTool invoked BashTool for an "

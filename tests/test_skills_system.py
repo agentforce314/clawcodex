@@ -81,7 +81,10 @@ class TestSkillUse(SkillSystemTests):
         )
         ctx = ToolContext(workspace_root=self.root)
         with patch.dict(os.environ, {"CLAWCODEX_SKILLS_DIR": str(skills_dir)}):
-            out = SkillTool.call({"skill": "hello", "args": 'bob "the builder"'}, ctx).output
+            import asyncio  # Phase-5: SkillTool.call is async (I3 migration)
+            out = asyncio.run(
+                SkillTool.call({"skill": "hello", "args": 'bob "the builder"'}, ctx)
+            ).output
             self.assertTrue(out["success"])
             self.assertIn("Hello bob (bob)", out["prompt"])
             self.assertIn('bob "the builder"', out["prompt"])

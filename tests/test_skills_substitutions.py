@@ -219,7 +219,7 @@ def test_render_named_argument_substitution_works_after_prepend() -> None:
 # ======================================================================
 
 
-def test_skilltool_invocation_substitutes_all_placeholders(
+async def test_skilltool_invocation_substitutes_all_placeholders(
     tmp_path: Path, isolated_home: Path
 ) -> None:
     project = tmp_path / "proj"
@@ -236,7 +236,7 @@ def test_skilltool_invocation_substitutes_all_placeholders(
     ctx = ToolContext(workspace_root=project)
     ctx.session_id = "S-12345"
 
-    result = SkillTool.call({"skill": "showctx", "args": "ada"}, ctx)
+    result = await SkillTool.call({"skill": "showctx", "args": "ada"}, ctx)
     out = result.output
     assert out["success"] is True
     prompt = out["prompt"]
@@ -253,7 +253,7 @@ def test_skilltool_invocation_substitutes_all_placeholders(
     assert "${CLAUDE_SESSION_ID}" not in prompt
 
 
-def test_skilltool_unknown_session_id_renders_empty(
+async def test_skilltool_unknown_session_id_renders_empty(
     tmp_path: Path, isolated_home: Path
 ) -> None:
     project = tmp_path / "proj"
@@ -266,12 +266,12 @@ def test_skilltool_unknown_session_id_renders_empty(
     # Default ToolContext.session_id is None.
     assert ctx.session_id is None
 
-    result = SkillTool.call({"skill": "sess"}, ctx)
+    result = await SkillTool.call({"skill": "sess"}, ctx)
     prompt = result.output["prompt"]
     assert "session=[]" in prompt
 
 
-def test_bundled_skill_invocation_does_not_get_base_dir_header(
+async def test_bundled_skill_invocation_does_not_get_base_dir_header(
     tmp_path: Path, isolated_home: Path
 ) -> None:
     register_bundled_skill(
@@ -284,7 +284,7 @@ def test_bundled_skill_invocation_does_not_get_base_dir_header(
     project = tmp_path / "proj"
     project.mkdir()
     ctx = ToolContext(workspace_root=project)
-    result = SkillTool.call({"skill": "bcheck", "args": "x"}, ctx)
+    result = await SkillTool.call({"skill": "bcheck", "args": "x"}, ctx)
     prompt = result.output["prompt"]
     # Bundled skills route through their own get_prompt_for_command
     # callable; the header (which is render_skill_prompt's job) must

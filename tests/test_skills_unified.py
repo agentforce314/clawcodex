@@ -85,7 +85,7 @@ def _write_skill(path: Path, body: str) -> None:
 # ======================================================================
 
 
-def test_flat_project_skill_invokable_via_skilltool(
+async def test_flat_project_skill_invokable_via_skilltool(
     tmp_path: Path, isolated_home: Path
 ) -> None:
     project = tmp_path / "proj"
@@ -95,7 +95,7 @@ def test_flat_project_skill_invokable_via_skilltool(
     )
 
     ctx = ToolContext(workspace_root=project)
-    result = SkillTool.call({"skill": "foo"}, ctx)
+    result = await SkillTool.call({"skill": "foo"}, ctx)
     out = result.output
     assert out["success"] is True, f"expected success, got: {out}"
     assert out["commandName"] == "foo"
@@ -109,7 +109,7 @@ def test_flat_project_skill_invokable_via_skilltool(
 # ======================================================================
 
 
-def test_nested_namespace_skill_invokable_as_colon_form(
+async def test_nested_namespace_skill_invokable_as_colon_form(
     tmp_path: Path, isolated_home: Path
 ) -> None:
     project = tmp_path / "proj"
@@ -119,7 +119,7 @@ def test_nested_namespace_skill_invokable_as_colon_form(
     )
 
     ctx = ToolContext(workspace_root=project)
-    result = SkillTool.call({"skill": "git:commit"}, ctx)
+    result = await SkillTool.call({"skill": "git:commit"}, ctx)
     out = result.output
     assert out["success"] is True, (
         "nested-namespace lookup is the previously-broken case from "
@@ -155,7 +155,7 @@ def test_nested_namespace_appears_in_get_all_skills(
 # ======================================================================
 
 
-def test_bundled_skill_discoverable_through_skilltool(
+async def test_bundled_skill_discoverable_through_skilltool(
     tmp_path: Path, isolated_home: Path
 ) -> None:
     register_bundled_skill(
@@ -169,7 +169,7 @@ def test_bundled_skill_discoverable_through_skilltool(
     project = tmp_path / "proj"
     project.mkdir()
     ctx = ToolContext(workspace_root=project)
-    result = SkillTool.call({"skill": "bundled-thing", "args": "hello"}, ctx)
+    result = await SkillTool.call({"skill": "bundled-thing", "args": "hello"}, ctx)
     out = result.output
     assert out["success"] is True
     assert out["commandName"] == "bundled-thing"
@@ -211,7 +211,7 @@ def test_get_all_skills_returns_union_of_bundled_and_disk(
 # ======================================================================
 
 
-def test_env_var_user_skill_dir_is_reachable_via_skilltool(
+async def test_env_var_user_skill_dir_is_reachable_via_skilltool(
     tmp_path: Path, isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     user_skills = tmp_path / "extra_user_skills"
@@ -224,7 +224,7 @@ def test_env_var_user_skill_dir_is_reachable_via_skilltool(
     project = tmp_path / "proj"
     project.mkdir()
     ctx = ToolContext(workspace_root=project)
-    result = SkillTool.call({"skill": "envskill"}, ctx)
+    result = await SkillTool.call({"skill": "envskill"}, ctx)
     out = result.output
     assert out["success"] is True
     assert "body-from-env" in out["prompt"]
