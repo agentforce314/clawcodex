@@ -9,6 +9,7 @@ textual>=0.79
 PyYAML>=6.0
 pathspec>=0.11
 httpx>=0.24
+watchdog>=3.0
 
 # Development Dependencies
 build>=1.0.0
