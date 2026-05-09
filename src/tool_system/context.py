@@ -141,6 +141,25 @@ class ToolContext:
     # string in that case.
     session_id: str | None = None
 
+    # Chapter-12 / Phase 0 / WI-0.1 — frozen snapshot of hook config.
+    # The snapshot is built once at startup by ``HookConfigManager.load()``
+    # and updated only via explicit channels (the ``/hooks`` command or
+    # an explicit ``reload_if_changed()`` call). Hook execution reads from
+    # ``hook_config_manager.snapshot`` instead of ``options.hooks`` so a
+    # malicious post-trust mutation of ``settings.json`` cannot affect
+    # in-flight tool calls.
+    #
+    # ``options.hooks`` survives as a deprecated fallback for one release
+    # cycle (see ``_get_hooks_from_snapshot`` in ``src/hooks/hook_executor.py``):
+    # callers that still pass hooks via options get a ``DeprecationWarning``
+    # but their behavior is preserved.
+    hook_config_manager: Any | None = None
+    # Chapter-12 / Phase 0 / WI-0.2 — workspace-trust gate. Bootstrap flips
+    # this to ``True`` after the user accepts the trust dialog. Hooks (other
+    # than ``HookSource.POLICY``) are skipped while the workspace is
+    # untrusted, mirroring TS' ``shouldSkipHookDueToTrust`` gate.
+    workspace_trusted: bool = False
+
     def __post_init__(self) -> None:
         self.workspace_root = Path(self.workspace_root).resolve()
         if self.cwd is None:
