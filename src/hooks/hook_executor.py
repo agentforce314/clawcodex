@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import time
+import warnings
 from typing import Any, AsyncGenerator
 from uuid import uuid4
 
@@ -28,6 +29,7 @@ from src.hooks.hook_types import (
     HookEvent,
     HookResult,
 )
+from src.hooks.trust_gate import should_skip_hook_due_to_trust
 from src.types.messages import (
     create_attachment_message,
     create_progress_message,
@@ -36,38 +38,87 @@ from src.types.messages import (
 logger = logging.getLogger(__name__)
 
 
-def _get_hooks_from_settings(tool_use_context: Any) -> dict[str, list[HookConfig]]:
+def _get_hooks_from_snapshot(tool_use_context: Any) -> dict[str, list[HookConfig]]:
+    """Read hooks from the frozen snapshot held on the active HookConfigManager.
+
+    Mirrors typescript/src/utils/hooks/hooksConfigSnapshot.ts:119-124
+    (``getHooksConfigFromSnapshot``). settings.json is never re-read implicitly;
+    snapshot updates flow only through ``HookConfigManager.load()`` (startup) or
+    ``HookConfigManager.reload_if_changed()`` (explicit /hooks command).
+
+    **Back-compat:** if ``hook_config_manager`` is not set on the context but
+    ``options.hooks`` is, fall back to the legacy read path with a
+    ``DeprecationWarning``. This keeps existing callers / tests working during
+    one CHANGELOG cycle. After the deprecation cycle, the fallback is removed.
+    """
+    manager = getattr(tool_use_context, "hook_config_manager", None)
+    if manager is not None:
+        snapshot = getattr(manager, "snapshot", None)
+        if snapshot is None:
+            # Manager exists but hasn't been loaded — treat as empty.
+            return {}
+        # Defensive copy: callers MUST NOT mutate the returned dict.
+        return {ev: list(hooks) for ev, hooks in snapshot.hooks.items()}
+
+    # Legacy fallback — emit DeprecationWarning if options.hooks carries data.
+    return _get_hooks_from_options_legacy(tool_use_context)
+
+
+def _get_hooks_from_options_legacy(tool_use_context: Any) -> dict[str, list[HookConfig]]:
+    """Legacy read path: ``tool_use_context.options.hooks``.
+
+    Bypasses the snapshot freezing semantic introduced in WI-0.1. Preserved for
+    one CHANGELOG cycle so existing callers / tests do not break in lockstep
+    with the rewire. Emits a ``DeprecationWarning`` when it actually returns
+    data (silent no-op when options.hooks is empty/None).
+    """
     try:
         options = getattr(tool_use_context, "options", None)
         if options is None:
             return {}
         hooks_config = getattr(options, "hooks", None)
-        if hooks_config is None:
+        if hooks_config is None or not hooks_config:
             return {}
-        if isinstance(hooks_config, dict):
-            result: dict[str, list[HookConfig]] = {}
-            for event_name, hook_list in hooks_config.items():
-                if isinstance(hook_list, list):
-                    configs = []
-                    for h in hook_list:
-                        if isinstance(h, dict):
-                            configs.append(HookConfig(
-                                type=h.get("type", "command"),
-                                command=h.get("command", ""),
-                                timeout=h.get("timeout"),
-                                matcher=h.get("matcher"),
-                            ))
-                        elif isinstance(h, HookConfig):
-                            configs.append(h)
-                    result[event_name] = configs
-            return result
+        if not isinstance(hooks_config, dict):
+            return {}
+        result: dict[str, list[HookConfig]] = {}
+        for event_name, hook_list in hooks_config.items():
+            if isinstance(hook_list, list):
+                configs = []
+                for h in hook_list:
+                    if isinstance(h, dict):
+                        configs.append(HookConfig(
+                            type=h.get("type", "command"),
+                            command=h.get("command", ""),
+                            timeout=h.get("timeout"),
+                            matcher=h.get("matcher"),
+                        ))
+                    elif isinstance(h, HookConfig):
+                        configs.append(h)
+                result[event_name] = configs
+        if result:
+            warnings.warn(
+                "Reading hooks from tool_use_context.options.hooks is deprecated; "
+                "wire a HookConfigManager onto tool_use_context.hook_config_manager "
+                "and call .load() at bootstrap. The legacy path bypasses the snapshot "
+                "security model (chapter §'The Snapshot Security Model'). Will be "
+                "removed two CHANGELOG entries after the rename.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+        return result
     except Exception:
-        pass
-    return {}
+        return {}
+
+
+# Back-compat alias — preserved for any external test fixtures still importing
+# ``_get_hooks_from_settings`` directly. New code uses ``_get_hooks_from_snapshot``.
+def _get_hooks_from_settings(tool_use_context: Any) -> dict[str, list[HookConfig]]:
+    return _get_hooks_from_snapshot(tool_use_context)
 
 
 def has_hook_for_event(event: str, tool_use_context: Any) -> bool:
-    hooks = _get_hooks_from_settings(tool_use_context)
+    hooks = _get_hooks_from_snapshot(tool_use_context)
     return bool(hooks.get(event))
 
 
@@ -207,8 +258,24 @@ async def _run_hooks_for_event(
     abort_signal: Any | None = None,
     timeout_ms: int = TOOL_HOOK_EXECUTION_TIMEOUT_MS,
 ) -> AsyncGenerator[dict[str, Any], None]:
-    hooks = _get_hooks_from_settings(tool_use_context)
+    # WI-0.2 — workspace-trust gate. Skip non-policy hooks while the workspace
+    # is untrusted. The per-hook policy check happens below since policy-source
+    # identification is per-HookConfig.
+    trust_skip = should_skip_hook_due_to_trust(tool_use_context)
+
+    # WI-0.1 — read from the frozen snapshot, not from options.hooks. The
+    # snapshot is built once at startup by HookConfigManager.load() and is
+    # immune to settings.json mutation between trust acceptance and tool calls.
+    hooks = _get_hooks_from_snapshot(tool_use_context)
     event_hooks = hooks.get(event, [])
+
+    if trust_skip:
+        # Drop everything that isn't a policy-source hook. ``HookConfig.source``
+        # is a ``HookSource`` enum; any non-POLICY value is gated. Imported
+        # locally to avoid pulling the enum into module-init paths that don't
+        # need it.
+        from src.hooks.hook_types import HookSource
+        event_hooks = [h for h in event_hooks if h.source == HookSource.POLICY]
 
     tool_use_id = stdin_data.get("tool_use_id", str(uuid4()))
     parent_tool_use_id = ""
