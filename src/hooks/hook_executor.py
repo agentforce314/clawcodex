@@ -326,11 +326,17 @@ async def _collect_hooks_for_event(
     event: str,
     tool_name: str | None,
     tool_use_context: Any,
+    tool_input: dict[str, Any] | None = None,
 ) -> list[Any]:
     """Phase-3 / WI-3.1 (I2 contract split — Phase 3 owns "collect"):
     merge snapshot hooks with session-registered hooks for ``event``,
     apply the trust gate and matcher filter, return the ordered list of
     ``SessionHookEntry``-shaped items to fire.
+
+    Phase-4 / WI-4.2 extension: ``tool_input`` is now threaded through so
+    the ``if`` condition matcher (``matches_hook_condition``) can evaluate
+    rule-content patterns against the tool's input fields (e.g.,
+    ``Bash(git commit*)`` against ``tool_input["command"]``).
 
     Each returned item carries:
       * ``config`` — the ``HookConfig`` to execute
@@ -344,11 +350,8 @@ async def _collect_hooks_for_event(
     session-hook-only contract per the chapter. (A snapshot ``once: true``
     would be ambiguous — what would "once" mean for a config-driven hook
     that's reloaded fresh on every startup?)
-
-    Phase 4 (aggregation) consumes the per-hook results yielded by the
-    executor; this collect step does NOT consume results — it just lines
-    up which hooks are eligible to fire.
     """
+    from .condition_matcher import matches_hook_condition
     from .session_hooks import SessionHookEntry
 
     trust_skip = should_skip_hook_due_to_trust(tool_use_context)
@@ -381,9 +384,15 @@ async def _collect_hooks_for_event(
     merged = snapshot_entries + session_entries
 
     if tool_name is not None:
+        # Phase-4 / WI-4.2 — combined matcher + ``if_condition`` filter.
+        # ``matches_hook_condition`` AND-s the simple matcher with the
+        # permission-rule grammar. Pre-Phase-4 only ``matcher`` was
+        # consulted; the ``if_condition`` field on HookConfig was parsed
+        # but never used. Now both contribute.
+        ti = tool_input or {}
         merged = [
             entry for entry in merged
-            if _matches_tool(entry.config.matcher, tool_name)
+            if matches_hook_condition(entry.config, tool_name, ti)
         ]
 
     return merged
@@ -398,13 +407,23 @@ async def _run_hooks_for_event(
     timeout_ms: int = TOOL_HOOK_EXECUTION_TIMEOUT_MS,
 ) -> AsyncGenerator[dict[str, Any], None]:
     # WI-3.1 — Phase 3 owns "collect": merge snapshot + session-registry
-    # hooks into a single ordered list of entries to fire. Trust gate and
-    # matcher filtering happen inside the helper. Phase 4 will own the
-    # "aggregate" step (deny>ask>allow precedence across results).
-    entries = await _collect_hooks_for_event(event, tool_name, tool_use_context)
+    # hooks. WI-4.2 — also feeds tool_input through so the ``if``-condition
+    # matcher can evaluate rule-content patterns against tool fields.
+    entries = await _collect_hooks_for_event(
+        event,
+        tool_name,
+        tool_use_context,
+        tool_input=stdin_data.get("tool_input"),
+    )
 
     tool_use_id = stdin_data.get("tool_use_id", str(uuid4()))
     parent_tool_use_id = ""
+
+    # WI-4.1 — collect per-hook results in a list rather than yielding
+    # decisions per-hook; aggregate at the end via ``aggregate_hook_results``.
+    # Per-hook progress and attachment messages still yield live (those are
+    # for UI feedback, not decision-routing).
+    collected_results: list[HookResult] = []
 
     for entry in entries:
         hook = entry.config
@@ -425,6 +444,8 @@ async def _run_hooks_for_event(
             tool_use_context=tool_use_context,
         )
 
+        collected_results.append(result)
+
         # WI-3.1 — ``once: true`` removal. Fire the entry's on_success
         # callback after a *successful* firing (exit 0, no blocking_error,
         # no permission deny). The callback fire-and-forgets removal via
@@ -441,31 +462,8 @@ async def _run_hooks_for_event(
             except Exception:
                 logger.exception("once: true on_success callback raised")
 
-        if result.blocking_error:
-            yield {"blocking_error": {"blocking_error": result.blocking_error, "command": result.command}}
-
-        if result.permission_behavior is not None:
-            yield {
-                "permission_behavior": result.permission_behavior,
-                "hook_permission_decision_reason": result.hook_permission_decision_reason,
-                "updated_input": result.updated_input,
-            }
-
-        if result.prevent_continuation:
-            yield {
-                "prevent_continuation": True,
-                "stop_reason": result.stop_reason,
-            }
-
-        if result.additional_contexts:
-            yield {"additional_contexts": result.additional_contexts}
-
-        if result.updated_mcp_tool_output is not None:
-            yield {"updated_mcp_tool_output": result.updated_mcp_tool_output}
-
-        if result.updated_input and result.permission_behavior is None:
-            yield {"updated_input": result.updated_input}
-
+        # Per-hook attachment messages (UI feedback) — live yields.
+        # Decision messages move to the aggregation pass below.
         if result.exit_code is not None and result.exit_code != 0 and result.exit_code != 2:
             yield {
                 "message": create_attachment_message({
@@ -489,6 +487,60 @@ async def _run_hooks_for_event(
                     "command": result.command,
                 }),
             }
+
+    # WI-4.1 — aggregate decisions across all hooks with deny>ask>allow
+    # precedence. Pre-Phase-4 each hook yielded its own decision payload;
+    # downstream consumers reading only the first yield could get the
+    # wrong answer when multiple hooks contributed conflicting decisions.
+    # Now the executor yields ONE aggregated decision payload (matching
+    # the per-hook yield shape so consumers don't need to restructure)
+    # plus an ``aggregated_hook_decision`` key carrying the full
+    # AggregatedHookResult for telemetry/UI.
+    if collected_results:
+        from .aggregation import aggregate_hook_results
+        agg = aggregate_hook_results(collected_results)
+
+        if agg.blocking_error:
+            yield {
+                "blocking_error": {
+                    "blocking_error": agg.blocking_error,
+                    # ``command`` carries the first contributing-result's
+                    # command for log/diagnostic purposes; the full
+                    # attribution is in ``contributing_reasons``.
+                    "command": next(
+                        (r.command for r in collected_results if r.blocking_error),
+                        None,
+                    ),
+                },
+            }
+
+        if agg.permission_behavior is not None:
+            yield {
+                "permission_behavior": agg.permission_behavior,
+                "hook_permission_decision_reason": agg.hook_permission_decision_reason,
+                "updated_input": agg.updated_input,
+            }
+
+        if agg.prevent_continuation:
+            yield {
+                "prevent_continuation": True,
+                "stop_reason": agg.stop_reason,
+            }
+
+        if agg.additional_contexts:
+            yield {"additional_contexts": agg.additional_contexts}
+
+        if agg.updated_mcp_tool_output is not None:
+            yield {"updated_mcp_tool_output": agg.updated_mcp_tool_output}
+
+        if agg.updated_input and agg.permission_behavior is None:
+            yield {"updated_input": agg.updated_input}
+
+        # New: full attribution payload for telemetry/UI subscribers that
+        # want to render "denied by hook A (because X), also denied by
+        # hook B (because Y)" without re-deriving from per-result yields.
+        if agg.contributing_reasons:
+            yield {"aggregated_hook_decision": agg}
 
 
 async def execute_pre_tool_hooks(
