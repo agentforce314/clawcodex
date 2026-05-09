@@ -116,11 +116,14 @@ class TestBasicRegistration:
     @pytest.mark.asyncio
     async def test_returns_zero_for_empty(self):
         reg = SessionHookRegistry()
-        n = await register_frontmatter_hooks(
+        entries = await register_frontmatter_hooks(
             registry=reg, session_id="s1",
             frontmatter_hooks=None, source_name="x",
         )
-        assert n == 0
+        # Phase-5-followup D4: register_frontmatter_hooks returns the
+        # registered (event, config) entries (not just a count) so
+        # callers can roll back on subsequent error.
+        assert entries == []
 
     @pytest.mark.asyncio
     async def test_session_hook_source_tag(self):

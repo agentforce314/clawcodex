@@ -1,6 +1,6 @@
 """Forked skill execution.
 
-Phase-5 / WI-5.1. Mirrors TS
+Phase-5 / WI-5.1 + Phase-5 follow-ups (D3, D4). Mirrors TS
 ``typescript/src/tools/SkillTool/SkillTool.ts:122-289`` (``executeForkedSkill``).
 
 Closes gap #8: the previously-dead ``status == "forked"`` branch in
@@ -115,6 +115,45 @@ async def execute_forked_skill(
             shell_executor=executor,
         )
 
+    # D4 fix — register skill-frontmatter hooks BEFORE the runner so the
+    # hooks fire on THIS forked skill's SubagentStop, not future
+    # sub-agents'. ``is_agent=True`` triggers the B1 Stop→SubagentStop
+    # conversion (the forked skill IS a sub-agent for hook-routing
+    # purposes). Pre-D4 ordering registered AFTER the runner returned —
+    # by which point the sub-agent's SubagentStop had already fired.
+    # Chapter intent ("an agent's stop-verification hook fires when this
+    # agent stops") was therefore unrealized despite the conversion being
+    # plumbed correctly.
+    #
+    # Rollback contract: if the runner raises, the registered entries are
+    # removed from the registry (try/finally with explicit remove). Avoids
+    # a "the runner errored but its hooks are now active for the rest of
+    # the session" leak.
+    registered_entries: list[tuple[Any, Any]] = []
+    skill_hooks = getattr(skill, "hooks", None)
+    if skill_hooks and context.session_hook_registry is not None and context.session_id:
+        from src.hooks.register_frontmatter_hooks import register_frontmatter_hooks
+        try:
+            registered_entries = await register_frontmatter_hooks(
+                registry=context.session_hook_registry,
+                session_id=context.session_id,
+                frontmatter_hooks=skill_hooks,
+                source_name=f"forked-skill {skill.name!r}",
+                is_agent=True,
+                skill_root=skill.skill_root,
+            )
+            if registered_entries:
+                logger.debug(
+                    "Forked skill %r registered %d session hooks (Stop→SubagentStop)",
+                    skill.name, len(registered_entries),
+                )
+        except Exception:
+            logger.exception(
+                "register_frontmatter_hooks failed for forked skill %r",
+                skill.name,
+            )
+            registered_entries = []
+
     # Drive the sub-agent via the injected runner. Errors from the
     # runner surface as is_error=True ToolResults; the user sees the
     # underlying error message, not a generic "forked failed."
@@ -130,6 +169,24 @@ async def execute_forked_skill(
         logger.exception(
             "forked_skill_runner raised for skill %r", skill.name,
         )
+        # D4 rollback — remove the hooks we registered before the runner
+        # ran. Keeps the session's hook surface clean of artifacts from a
+        # forked skill that never actually ran.
+        if registered_entries and context.session_hook_registry and context.session_id:
+            from src.hooks.session_hooks import remove_session_hook
+            for event, hook_config in registered_entries:
+                try:
+                    await remove_session_hook(
+                        registry=context.session_hook_registry,
+                        session_id=context.session_id,
+                        event=event,
+                        hook=hook_config,
+                    )
+                except Exception:
+                    logger.exception(
+                        "rollback of forked-skill hook registration failed "
+                        "(skill=%r, event=%r)", skill.name, event,
+                    )
         return ToolResult(
             name="Skill",
             output={
@@ -139,35 +196,6 @@ async def execute_forked_skill(
             },
             is_error=True,
         )
-
-    # Register skill-frontmatter hooks scoped to the parent session
-    # but with ``is_agent=True`` so the Stop→SubagentStop conversion
-    # fires (the forked skill IS a sub-agent for hook-routing purposes).
-    # B1 correction: this conversion lives in register_frontmatter_hooks,
-    # NOT register_skill_hooks. The forked-skill case is one of the few
-    # places skill code calls register_frontmatter_hooks directly.
-    skill_hooks = getattr(skill, "hooks", None)
-    if skill_hooks and context.session_hook_registry is not None and context.session_id:
-        from src.hooks.register_frontmatter_hooks import register_frontmatter_hooks
-        try:
-            count = await register_frontmatter_hooks(
-                registry=context.session_hook_registry,
-                session_id=context.session_id,
-                frontmatter_hooks=skill_hooks,
-                source_name=f"forked-skill {skill.name!r}",
-                is_agent=True,
-                skill_root=skill.skill_root,
-            )
-            if count:
-                logger.debug(
-                    "Forked skill %r registered %d session hooks (Stop→SubagentStop)",
-                    skill.name, count,
-                )
-        except Exception:
-            logger.exception(
-                "register_frontmatter_hooks failed for forked skill %r",
-                skill.name,
-            )
 
     return ToolResult(
         name="Skill",
@@ -181,4 +209,131 @@ async def execute_forked_skill(
             "allowedTools": skill.allowed_tools if skill.allowed_tools else None,
             "model": skill.model,
         },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase-5 follow-up D3 — production runner factory.
+# ---------------------------------------------------------------------------
+
+
+def make_forked_skill_runner(
+    *,
+    provider: Any,
+    tool_registry: Any,
+):
+    """Build a forked-skill runner closure over ``provider`` + ``tool_registry``.
+
+    Phase-5 follow-up D3 (critic-flagged). Pre-D3, the prior commit's
+    summary claimed "Production bootstrap wires this in production" but
+    ``bootstrap_graph.py`` / ``bootstrap/state.py`` had zero references.
+    Production sessions hit the "configure forked_skill_runner" error.
+
+    This factory closes the gap: bootstrap calls
+    ``make_forked_skill_runner(provider=provider, tool_registry=registry)``
+    and mounts the result on ``ToolContext.forked_skill_runner``. The
+    closure has the exact ``execute_forked_skill`` signature
+    ``(prompt, allowed_tools, model, effort, parent_context) -> str``.
+
+    The runner drives ``run_agent`` with the skill's parameters and
+    returns the sub-agent's final assistant text. When ``allowed_tools``
+    is set, the available-tool list is filtered to that allowlist.
+
+    Falls back to ``general-purpose`` agent definition (the chapter's
+    "default agent" — it has no agent-type-specific tools, so the skill's
+    ``allowed_tools`` is the only filter that matters).
+
+    Local imports below: avoids dragging the agent-tool / run_agent
+    machinery into module-init paths that don't need it (e.g., test
+    fixtures that only hit ``execute_forked_skill`` with a stub runner).
+    """
+
+    async def _runner(
+        *,
+        prompt: str,
+        allowed_tools: list[str] | None,
+        model: str | None,
+        effort: str | None,
+        parent_context: ToolContext,
+    ) -> str:
+        from src.agent.agent_definitions import find_agent_by_type, get_built_in_agents
+        from src.agent.run_agent import RunAgentParams
+        from src.tasks_core import generate_task_id
+        from src.tool_system.tools.agent import (
+            _collect_agent_messages,
+            finalize_agent_tool,
+        )
+        import time as _time
+
+        agent_def = find_agent_by_type(get_built_in_agents(), "general-purpose")
+        if agent_def is None:
+            raise RuntimeError(
+                "No general-purpose agent definition available for forked skill"
+            )
+
+        # Filter the registry's tool list to ``allowed_tools`` when the
+        # skill specifies one. Skills can scope their forked sub-agent's
+        # capabilities — e.g., a research skill may only need Read and
+        # Glob. ``None``/empty means "use parent's full tool list."
+        available_tools = list(tool_registry.list_tools())
+        if allowed_tools:
+            allowed_set = set(allowed_tools)
+            available_tools = [
+                t for t in available_tools
+                if getattr(t, "name", "") in allowed_set
+            ]
+
+        agent_id = generate_task_id("local_agent")
+        start_time = _time.time()
+
+        run_params = RunAgentParams(
+            parent_context=parent_context,
+            agent_definition=agent_def,
+            prompt=prompt,
+            available_tools=available_tools,
+            tool_registry=tool_registry,
+            provider=provider,
+            model=model,
+            agent_id=agent_id,
+            is_async=False,
+            max_turns=agent_def.max_turns,
+        )
+
+        messages = await _collect_agent_messages(run_params)
+        result = finalize_agent_tool(
+            messages,
+            agent_id,
+            {
+                "start_time": start_time,
+                "agent_type": agent_def.agent_type,
+            },
+        )
+        # Return the sub-agent's final assistant text. ``content`` is the
+        # canonical field per ``finalize_agent_tool``'s return shape.
+        return result.content
+
+    return _runner
+
+
+def wire_forked_skill_runner(
+    *,
+    tool_context: ToolContext,
+    provider: Any,
+    tool_registry: Any,
+) -> None:
+    """Mount a production forked-skill runner on ``tool_context``.
+
+    Convenience wrapper around ``make_forked_skill_runner`` so each
+    bootstrap entry point (tui, repl, headless, subagent_context) has
+    a one-liner instead of repeating the factory + assignment.
+
+    Idempotent: a context that already has a runner is left unchanged
+    (test fixtures that inject stubs aren't clobbered if they happen to
+    flow through a bootstrap path).
+    """
+    if getattr(tool_context, "forked_skill_runner", None) is not None:
+        return
+    tool_context.forked_skill_runner = make_forked_skill_runner(
+        provider=provider,
+        tool_registry=tool_registry,
     )
