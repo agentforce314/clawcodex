@@ -42,7 +42,7 @@ def _get_settings_path() -> Path:
     return Path.home() / ".claude" / "settings.json"
 
 
-def _parse_hook_config(raw: dict[str, Any]) -> HookConfig:
+def _parse_hook_config(raw: dict[str, Any], source: HookSource | None = None) -> HookConfig:
     hook_type = raw.get("type", "command")
     return HookConfig(
         type=hook_type,
@@ -52,7 +52,14 @@ def _parse_hook_config(raw: dict[str, Any]) -> HookConfig:
         url=raw.get("url"),
         prompt_text=raw.get("promptText") or raw.get("prompt_text"),
         agent_instructions=raw.get("agentInstructions") or raw.get("agent_instructions"),
-        source=HookSource.SETTINGS,
+        # Phase-1 / WI-1.3 — new fields. Settings.json is permissive on key
+        # casing: accept both ``if_condition`` (snake_case, Python-native) and
+        # ``if`` (TS-native, matches schemas/hooks.ts). ``once`` stays as a
+        # bool. ``skill_root`` is NOT parsed from settings — only set at
+        # skill-hook registration time (Phase 3).
+        if_condition=raw.get("if_condition") or raw.get("if"),
+        once=bool(raw.get("once", False)),
+        source=source if source is not None else HookSource.USER_SETTINGS,
     )
 
 
@@ -71,6 +78,29 @@ def validate_hook_configs(
                 severity="warning",
             ))
             continue
+
+        # Per-hook field validation for the WI-1.3 additions:
+        # ``if`` / ``if_condition`` must be a string when present;
+        # ``once`` must be a bool.
+        if isinstance(hook_list, list):
+            for i, hook_raw in enumerate(hook_list):
+                if not isinstance(hook_raw, dict):
+                    continue
+                if_value = hook_raw.get("if_condition", hook_raw.get("if"))
+                if if_value is not None and not isinstance(if_value, str):
+                    errors.append(HookValidationError(
+                        event=event_name,
+                        index=i,
+                        field="if",
+                        message="`if` must be a string (permission-rule grammar)",
+                    ))
+                if "once" in hook_raw and not isinstance(hook_raw["once"], bool):
+                    errors.append(HookValidationError(
+                        event=event_name,
+                        index=i,
+                        field="once",
+                        message="`once` must be a boolean",
+                    ))
 
         if not isinstance(hook_list, list):
             errors.append(HookValidationError(
@@ -149,6 +179,54 @@ def validate_hook_configs(
     return errors
 
 
+# ---------------------------------------------------------------------------
+# Phase-1 / WI-1.1 — legacy back-compat reader for lifecycle events.
+# ---------------------------------------------------------------------------
+
+# Pre-Phase-1, ``SessionStart`` / ``SessionEnd`` / compaction events were
+# routed through the ``Notification`` event with a magic matcher string.
+# Phase 1 promotes them to first-class events; this map preserves the legacy
+# form for one CHANGELOG cycle. The matcher can be either ``onSessionStart``
+# (legacy code path in ``session_hooks.py`` pre-Phase-1) or the bare event
+# name (used in the regression test). Both translate to the same first-class
+# event with a DeprecationWarning.
+_LEGACY_NOTIFICATION_MATCHER_TO_EVENT: dict[str, HookEvent] = {
+    "onSessionStart": "SessionStart",
+    "onSessionEnd": "SessionEnd",
+    "onCompact": "PreCompact",
+    "SessionStart": "SessionStart",
+    "SessionEnd": "SessionEnd",
+    "PreCompact": "PreCompact",
+    "PostCompact": "PostCompact",
+}
+
+
+def _translate_legacy_notification_entry(
+    hook_raw: dict[str, Any],
+) -> HookEvent | None:
+    """If ``hook_raw`` carries a legacy lifecycle matcher under
+    ``Notification``, return the canonical first-class event name; else None.
+
+    Emits a DeprecationWarning at translation time so settings authors see
+    one warning per offending entry.
+    """
+    matcher = hook_raw.get("matcher")
+    if not isinstance(matcher, str):
+        return None
+    target = _LEGACY_NOTIFICATION_MATCHER_TO_EVENT.get(matcher)
+    if target is None:
+        return None
+    import warnings as _warnings
+    _warnings.warn(
+        f"Hook registered under 'Notification' with matcher={matcher!r} is "
+        f"deprecated; use the first-class event {target!r} directly. "
+        "Will be removed two CHANGELOG entries after the rename.",
+        DeprecationWarning,
+        stacklevel=3,
+    )
+    return target
+
+
 def load_hooks_from_settings(
     settings_path: str | Path | None = None,
 ) -> HookConfigSnapshot:
@@ -171,12 +249,17 @@ def load_hooks_from_settings(
     for event_name, hook_list in hooks_raw.items():
         if not isinstance(hook_list, list):
             continue
-        configs: list[HookConfig] = []
         for hook_raw in hook_list:
-            if isinstance(hook_raw, dict):
-                configs.append(_parse_hook_config(hook_raw))
-        if configs:
-            hooks[event_name] = configs
+            if not isinstance(hook_raw, dict):
+                continue
+            # Phase-1 / WI-1.1 — legacy ``Notification + matcher`` form
+            # translates to first-class lifecycle events.
+            target_event: str = event_name
+            if event_name == "Notification":
+                translated = _translate_legacy_notification_entry(hook_raw)
+                if translated is not None:
+                    target_event = translated
+            hooks.setdefault(target_event, []).append(_parse_hook_config(hook_raw))
 
     return HookConfigSnapshot(
         hooks=hooks,
@@ -204,7 +287,7 @@ class HookConfigManager:
         snapshot = load_hooks_from_settings(self._settings_path)
         self._snapshot = snapshot
 
-        await self._registry.clear_source(HookSource.SETTINGS)
+        await self._registry.clear_source(HookSource.USER_SETTINGS)
 
         for event_name, hook_configs in snapshot.hooks.items():
             for config in hook_configs:
@@ -212,7 +295,7 @@ class HookConfigManager:
                     await self._registry.register(
                         event_name,  # type: ignore[arg-type]
                         config,
-                        HookSource.SETTINGS,
+                        HookSource.USER_SETTINGS,
                     )
 
         try:

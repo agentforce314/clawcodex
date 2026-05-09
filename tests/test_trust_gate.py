@@ -82,7 +82,7 @@ class TestExecutorRespectsGate:
         user_hook = HookConfig(
             type="command",
             command=f"echo 'user' > {marker}",
-            source=HookSource.SETTINGS,
+            source=HookSource.USER_SETTINGS,
         )
         ctx = _MockContext(
             workspace_trusted=False,
@@ -103,7 +103,7 @@ class TestExecutorRespectsGate:
         policy_hook = HookConfig(
             type="command",
             command=f"echo 'policy' > {marker}",
-            source=HookSource.POLICY,  # current Python enum value pre-WI-1.2
+            source=HookSource.POLICY_SETTINGS,
         )
         ctx = _MockContext(
             workspace_trusted=False,
@@ -127,12 +127,12 @@ class TestExecutorRespectsGate:
         user_hook = HookConfig(
             type="command",
             command=f"echo 'u' > {user_marker}",
-            source=HookSource.SETTINGS,
+            source=HookSource.USER_SETTINGS,
         )
         policy_hook = HookConfig(
             type="command",
             command=f"echo 'p' > {policy_marker}",
-            source=HookSource.POLICY,
+            source=HookSource.POLICY_SETTINGS,
         )
         ctx = _MockContext(
             workspace_trusted=True,
@@ -152,7 +152,7 @@ class TestExecutorRespectsGate:
     async def test_untrusted_workspace_with_only_user_hooks_yields_nothing(self):
         """When the gate strips everything, the executor yields no items."""
         user_hook = HookConfig(
-            type="command", command="echo x", source=HookSource.SETTINGS,
+            type="command", command="echo x", source=HookSource.USER_SETTINGS,
         )
         ctx = _MockContext(
             workspace_trusted=False,

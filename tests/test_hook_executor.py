@@ -35,7 +35,18 @@ class TestMatchesTool:
 
 
 class TestHasHookForEvent:
+    """Legacy ``options.hooks`` tests.
+
+    These exercise the deprecation back-compat path introduced by Phase-0
+    WI-0.1: a ToolContext without a ``hook_config_manager`` falls back to
+    reading ``options.hooks`` and emits a ``DeprecationWarning``. The tests
+    are wrapped in ``pytest.warns`` (Phase-1 / N3 nit cleanup) so the
+    warning is *asserted* rather than printed as test-output noise.
+    """
+
     def test_no_hooks(self):
+        # Empty options.hooks does NOT emit a warning (the shim only fires
+        # when the legacy path actually has data).
         class MockCtx:
             options = type("Options", (), {"hooks": None})()
         assert not has_hook_for_event("PreToolUse", MockCtx())
@@ -45,14 +56,16 @@ class TestHasHookForEvent:
             options = type("Options", (), {
                 "hooks": {"PreToolUse": [{"type": "command", "command": "echo test"}]}
             })()
-        assert has_hook_for_event("PreToolUse", MockCtx())
+        with pytest.warns(DeprecationWarning, match="options.hooks"):
+            assert has_hook_for_event("PreToolUse", MockCtx())
 
     def test_wrong_event(self):
         class MockCtx:
             options = type("Options", (), {
                 "hooks": {"PreToolUse": [{"type": "command", "command": "echo test"}]}
             })()
-        assert not has_hook_for_event("PostToolUse", MockCtx())
+        with pytest.warns(DeprecationWarning, match="options.hooks"):
+            assert not has_hook_for_event("PostToolUse", MockCtx())
 
 
 class TestExecuteCommandHook:

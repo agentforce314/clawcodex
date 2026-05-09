@@ -156,7 +156,7 @@ class ToolContext:
     hook_config_manager: Any | None = None
     # Chapter-12 / Phase 0 / WI-0.2 — workspace-trust gate. Bootstrap flips
     # this to ``True`` after the user accepts the trust dialog. Hooks (other
-    # than ``HookSource.POLICY``) are skipped while the workspace is
+    # than ``HookSource.POLICY_SETTINGS``) are skipped while the workspace is
     # untrusted, mirroring TS' ``shouldSkipHookDueToTrust`` gate.
     workspace_trusted: bool = False
 
