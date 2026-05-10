@@ -24,6 +24,9 @@ class McpSSEServerConfig:
     type: Literal["sse"] = "sse"
     headers: dict[str, str] | None = None
     headers_helper: str | None = None
+    # Phase 4 WI-4.1 escape hatch: bypass discovery for OAuth servers
+    # that implement neither RFC 9728 nor RFC 8414.
+    auth_server_metadata_url: str | None = None
 
 
 @dataclass
@@ -32,6 +35,7 @@ class McpHTTPServerConfig:
     type: Literal["http"] = "http"
     headers: dict[str, str] | None = None
     headers_helper: str | None = None
+    auth_server_metadata_url: str | None = None
 
 
 @dataclass
@@ -40,6 +44,7 @@ class McpWebSocketServerConfig:
     type: Literal["ws"] = "ws"
     headers: dict[str, str] | None = None
     headers_helper: str | None = None
+    auth_server_metadata_url: str | None = None
 
 
 @dataclass
@@ -109,9 +114,20 @@ class FailedMCPServer:
 
 @dataclass
 class NeedsAuthMCPServer:
+    """Connection state when the server requires OAuth before tools work.
+
+    Phase 4 WI-4.5 / assumption A7: carry the auth URL on the state so
+    the UI/runtime manager doesn't need to hold a parallel map. Mirrors
+    TS' NeedsAuthMCPServer shape.
+    """
+
     name: str
     type: Literal["needs-auth"] = "needs-auth"
     config: ScopedMcpServerConfig | None = None
+    auth_url: str | None = None
+    auth_method: Literal["oauth", "xaa", "unknown"] = "unknown"
+    requires_user_action: bool = True
+    error: str | None = None
 
 
 @dataclass
@@ -183,23 +199,29 @@ class MCPCliState:
 
 def parse_server_config(data: dict[str, Any]) -> McpServerConfig | None:
     server_type = data.get("type")
+    # ``authServerMetadataUrl`` is the camelCase JSON key (Phase 4 WI-4.1
+    # escape hatch). Accept both spellings so existing configs work either way.
+    asm_url = data.get("authServerMetadataUrl") or data.get("auth_server_metadata_url")
     if server_type == "sse":
         return McpSSEServerConfig(
             url=data["url"],
             headers=data.get("headers"),
             headers_helper=data.get("headersHelper"),
+            auth_server_metadata_url=asm_url,
         )
     elif server_type == "http":
         return McpHTTPServerConfig(
             url=data["url"],
             headers=data.get("headers"),
             headers_helper=data.get("headersHelper"),
+            auth_server_metadata_url=asm_url,
         )
     elif server_type == "ws":
         return McpWebSocketServerConfig(
             url=data["url"],
             headers=data.get("headers"),
             headers_helper=data.get("headersHelper"),
+            auth_server_metadata_url=asm_url,
         )
     elif server_type == "sdk":
         return McpSdkServerConfig(name=data["name"])
