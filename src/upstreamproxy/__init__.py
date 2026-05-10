@@ -1,4 +1,10 @@
-"""Python package placeholder for the archived `upstreamproxy` subsystem."""
+"""CCR upstream proxy subsystem (CONNECT-over-WS relay, container egress).
+
+Real implementations land here per ``my-docs/ch16-remote-refactoring-plan.md``.
+The ``ARCHIVE_NAME``/``MODULE_COUNT``/``SAMPLE_FILES``/``PORTING_NOTE``
+re-exports are preserved for backwards-compat with the parity audit and
+existing test surface; new code uses full module paths.
+"""
 
 from __future__ import annotations
 

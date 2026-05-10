@@ -40,6 +40,14 @@ dependencies = [
     # The TS port uses the `ignore` library; ``pathspec`` is the Python
     # equivalent (full ``**`` recursion + anchoring + negation).
     "pathspec>=0.11",
+    # Ch16 Phase 0: WebSocket client/server for the CCR bridge (Bridge v2,
+    # Direct Connect, Remote Session). The 14.0 lower bound is required for
+    # the new asyncio API's ``additional_headers`` kwarg; v12/v13 use
+    # ``extra_headers`` and would TypeError against our planned API.
+    "websockets>=14.0",
+    # Ch16 Phase 0: SSE consumer for the CCR v2 SSE read transport. ``httpx``
+    # itself is transitively available via the ``anthropic`` SDK.
+    "httpx-sse>=0.4",
 ]
 
 [project.optional-dependencies]
@@ -51,6 +59,9 @@ dev = [
     # requires the pytest-asyncio plugin. Without it, async tests fail at
     # run time with "async def functions are not natively supported."
     "pytest-asyncio>=1.3.0",
+    # Ch16 Phase 0: coverage reporting for the ≥90% line-coverage DoD on
+    # the new ``src/bridge/`` modules.
+    "pytest-cov>=5.0",
 ]
 
 [project.scripts]
@@ -63,6 +74,19 @@ Documentation = "https://github.com/agentforce314/clawcodex#readme"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+markers = [
+    "integration: marks tests as integration (deselect with '-m \"not integration\"')",
+    "linux_only: marks tests that require Linux (auto-skipped on macOS/Windows)",
+]
+filterwarnings = [
+    # Ch16 Phase 0 (WI-0.2/0.3): the legacy CCR-named stubs at
+    # src/services/bridge and src/remote_runtime emit DeprecationWarnings on
+    # import to surface the rename to src/bridge etc. Existing tests still
+    # exercise those modules; suppress so ``pytest -W error::DeprecationWarning``
+    # doesn't break the pre-existing test suite.
+    "ignore::DeprecationWarning:src.services.bridge",
+    "ignore::DeprecationWarning:src.remote_runtime",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]

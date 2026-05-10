@@ -1,4 +1,12 @@
-"""Python package placeholder for the archived `bridge` subsystem."""
+"""CCR bridge subsystem (Bridge v1 + Bridge v2 + shared primitives).
+
+Real implementations land here per ``my-docs/ch16-remote-refactoring-plan.md``.
+The ``ARCHIVE_NAME``/``MODULE_COUNT``/``SAMPLE_FILES``/``PORTING_NOTE``
+re-exports are preserved for backwards compat with
+``tests/test_porting_workspace.py:73-79`` (``from src import bridge`` then
+``bridge.MODULE_COUNT > 0``). New code uses full module paths instead, e.g.
+``from src.bridge.bounded_uuid_set import BoundedUUIDSet``.
+"""
 
 from __future__ import annotations
 
