@@ -27,25 +27,20 @@ MOCK_MCP_SERVER_SCRIPT = textwrap.dedent("""\
     import sys
 
     def read_message():
-        headers = {}
-        while True:
-            line = sys.stdin.readline()
-            if not line or line.strip() == '':
-                break
-            if ':' in line:
-                key, value = line.split(':', 1)
-                headers[key.strip().lower()] = value.strip()
-        content_length = int(headers.get('content-length', 0))
-        if content_length == 0:
+        # MCP stdio framing: one JSON-RPC message per line, terminated by \\n
+        # (or \\r\\n on Windows-emitted streams). rstrip() handles both.
+        # Reference: https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#stdio
+        line = sys.stdin.readline()
+        if not line:
             return None
-        body = sys.stdin.read(content_length)
-        return json.loads(body)
+        text = line.rstrip()
+        if not text:
+            return None
+        return json.loads(text)
 
     def send_message(msg):
-        body = json.dumps(msg)
-        header = f"Content-Length: {len(body.encode('utf-8'))}\\r\\n\\r\\n"
-        sys.stdout.write(header)
-        sys.stdout.write(body)
+        body = json.dumps(msg, separators=(",", ":"))
+        sys.stdout.write(body + '\\n')
         sys.stdout.flush()
 
     TOOLS = [
