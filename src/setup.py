@@ -6,7 +6,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .deferred_init import DeferredInitResult, run_deferred_init
-from .prefetch import PrefetchResult, start_keychain_prefetch, start_mdm_raw_read, start_project_scan
+from .prefetch import (
+    PrefetchResult,
+    get_or_start_keychain_prefetch,
+    get_or_start_mdm_raw_read,
+    start_project_scan,
+)
 
 
 @dataclass(frozen=True)
@@ -63,9 +68,11 @@ def build_workspace_setup() -> WorkspaceSetup:
 
 def run_setup(cwd: Path | None = None, trusted: bool = True) -> SetupReport:
     root = cwd or Path(__file__).resolve().parent.parent
+    # WI-4.1: singleton getters. ``cli.py`` may have already fired these
+    # at module import time; we reuse those handles instead of re-spawning.
     prefetches = [
-        start_mdm_raw_read(),
-        start_keychain_prefetch(),
+        get_or_start_mdm_raw_read(),
+        get_or_start_keychain_prefetch(),
         start_project_scan(root),
     ]
     return SetupReport(

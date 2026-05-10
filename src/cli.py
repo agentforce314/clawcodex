@@ -10,6 +10,26 @@ from rich.console import Console
 from rich.prompt import Prompt
 from rich.table import Table
 
+# WI-4.1 (ch17 Phase 4): fire keychain + MDM child processes at
+# MODULE-IMPORT time so the OS schedules them in parallel with the rest
+# of the Python interpreter's module-loading work. The handles are
+# awaited later by the consumer (typically post-trust-gate when keychain
+# values are actually needed). subprocess.Popen returns in microseconds;
+# the actual subprocess work overlaps with the heavyweight imports the
+# CLI is about to do. On non-macOS platforms these are no-ops
+# (``process=None`` sentinels) so call sites don't need to special-case
+# the platform.
+from src.prefetch import (
+    get_or_start_keychain_prefetch,
+    get_or_start_mdm_raw_read,
+)
+
+# Fire ONCE per process via the singleton getter. ``setup.run_setup``
+# reads the same handles instead of re-spawning, so the cost is paid
+# exactly once even when both entrypoints run in the same interpreter.
+_keychain_handle = get_or_start_keychain_prefetch()
+_mdm_handle = get_or_start_mdm_raw_read()
+
 
 def main():
     """CLI main entry point."""
@@ -29,18 +49,34 @@ def main():
 
     # Subcommands are matched BEFORE the main parser to avoid argparse treating
     # a free-form prompt (e.g. ``clawcodex -p "hello"``) as an unknown
-    # subcommand. We only need to detect `login` / `config`; everything else
-    # falls through to the main parser.
+    # subcommand.
+    #
+    # WI-4.3: ``mcp``, ``daemon``, and ``doctor`` are fast-path subcommands
+    # — they get a thin handler that imports only what it needs, skipping
+    # the TUI/REPL/full-tool-registry load. Mirrors TS ``main.tsx``'s
+    # specialized-subcommand early-returns.
+    #
+    # Sieve looks at ``argv[0]`` ONLY so flag values that happen to equal a
+    # subcommand name don't mis-route (e.g. ``clawcodex --model mcp`` or
+    # ``clawcodex -p "doctor"``). The TS reference also positions
+    # specialized subcommands at argv[0]; global flags don't precede them.
     argv = sys.argv[1:]
-    for idx, token in enumerate(argv):
-        if token.startswith('-'):
-            continue
-        if token in ('login', 'config'):
-            rest = argv[idx + 1:]
-            if token == 'login':
-                return handle_login()
+    if argv and not argv[0].startswith('-'):
+        token = argv[0]
+        rest = argv[1:]
+        if token == 'login':
+            return handle_login()
+        if token == 'config':
             return show_config()
-        break
+        if token == 'mcp':
+            from src.entrypoints.mcp import run_mcp_subcommand
+            return run_mcp_subcommand(rest)
+        if token == 'daemon':
+            from src.entrypoints.daemon import run_daemon_subcommand
+            return run_daemon_subcommand(rest)
+        if token == 'doctor':
+            from src.entrypoints.doctor import run_doctor
+            return run_doctor()
 
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -57,6 +93,16 @@ def main():
     # ``--dangerously-skip-permissions`` consistently. Mirrors
     # ``typescript/src/main.tsx:1383-1389``.
     _resolve_permission_state(args)
+
+    # WI-4.5: fire a HEAD request to the Anthropic API endpoint in the
+    # background to warm DNS/TLS while we finish CLI setup. Mirrors TS's
+    # ``preconnectAnthropicApi()`` early-call in ``main.tsx``. Skipped when
+    # a proxy or custom base URL is configured (see
+    # ``utils/api_preconnect.py:should_skip_preconnect``). The worker
+    # thread has its own try/except, so we don't wrap the call here —
+    # ``ImportError`` should surface visibly during dev.
+    from src.utils.api_preconnect import start_api_preconnect
+    start_api_preconnect()
 
     if args.print:
         return _run_print_mode(args)
