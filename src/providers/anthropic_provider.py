@@ -2,21 +2,48 @@
 
 from __future__ import annotations
 
+import sys
 from typing import Generator, Optional, Any
 
-try:
-    import anthropic  # type: ignore
-except ModuleNotFoundError:  # pragma: no cover
-    class _MissingAnthropic:
-        class Anthropic:  # type: ignore[no-redef]
-            def __init__(self, *args, **kwargs):
-                raise ModuleNotFoundError(
-                    "anthropic package is not installed. Install optional dependencies to use AnthropicProvider."
-                )
-
-    anthropic = _MissingAnthropic()
-
 from .base import BaseProvider, ChatResponse, MessageInput, TextChunkCallback
+
+
+# WI-4.4 (ch17 Phase 4): defer the ``import anthropic`` call. The SDK
+# alone is ~150-200ms to import (verified by ``my-docs/profiler-baseline.md``:
+# provider import accounts for ~70% of cold-start time). Cold-start paths
+# that don't make API calls (``clawcodex --version``, ``clawcodex config``,
+# fast-path subcommands) shouldn't pay that cost.
+#
+# Module-level ``__getattr__`` (PEP 562) provides the ``anthropic``
+# attribute lazily so existing test patterns like
+# ``@patch("src.providers.anthropic_provider.anthropic.Anthropic")``
+# keep working without modification. The first attribute access (a test
+# patch or ``_ensure_client``) triggers the SDK import; subsequent
+# accesses hit the cached value in ``globals()``.
+
+
+def __getattr__(name: str):
+    """PEP 562 module-level __getattr__: lazy-load the anthropic SDK.
+
+    Triggered on any access to an unbound module-level attribute. We
+    only handle ``"anthropic"`` here; other names raise the standard
+    AttributeError so typos still fail loudly.
+    """
+    if name == "anthropic":
+        try:
+            import anthropic as _module
+        except ModuleNotFoundError:  # pragma: no cover
+            class _MissingAnthropic:
+                class Anthropic:  # type: ignore[no-redef]
+                    def __init__(self, *args, **kwargs):
+                        raise ModuleNotFoundError(
+                            "anthropic package is not installed. "
+                            "Install optional dependencies to use AnthropicProvider."
+                        )
+            _module = _MissingAnthropic()  # type: ignore[assignment]
+        globals()["anthropic"] = _module
+        return _module
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 class AnthropicProvider(BaseProvider):
@@ -42,7 +69,12 @@ class AnthropicProvider(BaseProvider):
     def _ensure_client(self):
         if self.client is not None:
             return self.client
-        self.client = anthropic.Anthropic(**self._client_kwargs)
+        # WI-4.4: resolve ``anthropic`` through the module's globals so
+        # test patches at ``src.providers.anthropic_provider.anthropic.Anthropic``
+        # are visible. The first access triggers the PEP 562
+        # ``__getattr__`` lazy-load above.
+        mod = sys.modules[__name__]
+        self.client = mod.anthropic.Anthropic(**self._client_kwargs)
         return self.client
 
     def _build_chat_response(self, response: Any) -> ChatResponse:
