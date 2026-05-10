@@ -1,0 +1,262 @@
+"""LRU cache for ``rich.markdown.Markdown`` renders + fast-path detection.
+
+Mirrors the module-level cache in
+``typescript/src/components/Markdown.tsx`` (token cache + ``hasMarkdownSyntax``
+fast-path), adapted for Rich's ``Markdown`` renderable.
+
+The cache backs the progressive-render path in
+:class:`src.tui.widgets.messages.assistant_text.AssistantTextMessage`. It
+serves two scenarios honestly:
+
+1. **Re-renders of finalized content** — virtual scrolling, ``finalise()``
+   after streaming, ``snapshot()`` calls. The full-content hash key is a
+   straight cache hit on every replay.
+2. **Re-renders at the same safe checkpoint during streaming** — the caller
+   passes ``cache_key`` truncated to the last safe-checkpoint boundary, so
+   chunks that arrive *after* a checkpoint but before the next one all hit
+   the same cached entry. This is what makes the "do not re-parse the entire
+   message on every chunk" claim hold.
+
+At typical Python session scales (~2K tokens / message) the safe-checkpoint
+regex (in :mod:`src.tui.widgets.messages.assistant_text`) is the real
+cost-saver; the LRU primarily covers re-render scenarios. The benchmark in
+``tests/tui/test_streaming_markdown.py`` exercises both paths.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import logging
+import re
+import threading
+from collections import OrderedDict
+from typing import TYPE_CHECKING
+
+from rich.markdown import Markdown
+from rich.text import Text
+
+if TYPE_CHECKING:
+    from rich.console import RenderableType
+
+
+_logger = logging.getLogger(__name__)
+
+
+_DEFAULT_MAX_ENTRIES = 500
+_DEFAULT_PEEK = 500
+_DEFAULT_CODE_THEME = "monokai"
+
+
+# Two passes: block-level markers must anchor to line start; inline markers
+# (links, bold, inline code, fenced code) can appear anywhere — fenced code
+# blocks technically open at line start but the closing ``` could share a
+# line with content in malformed input, so accepting it anywhere is fine for
+# the fast-path check.
+_BLOCK_MARKDOWN_RE = re.compile(
+    r"(^|\n)\s*("
+    r"#{1,6}\s"          # ATX heading
+    r"|[*+\-]\s"         # unordered list bullet
+    r"|\d+\.\s"          # ordered list bullet
+    r"|>\s"              # blockquote
+    r"|---"              # HR (or setext underline)
+    r"|\*\*\*"           # HR
+    r"|___"              # HR
+    r")"
+)
+_INLINE_MARKDOWN_RE = re.compile(
+    r"("
+    r"```"                    # fenced code block (open or close, anywhere)
+    r"|\[[^\]]+\]\([^\)]+\)"  # inline link
+    r"|\*\*\w"                # bold open
+    r"|__\w"                  # bold open (alt)
+    r"|`[^`]"                 # inline code start
+    r")"
+)
+
+
+def has_markdown_syntax(text: str, peek: int = _DEFAULT_PEEK) -> bool:
+    """Return True iff the first ``peek`` chars of ``text`` look like markdown.
+
+    Mirrors ``typescript/src/components/Markdown.tsx hasMarkdownSyntax``. False
+    means safe-to-render-as-plain-text and lets the caller skip the markdown
+    parser entirely. Scans only the first ``peek`` chars to bound regex cost
+    on long inputs.
+
+    Deliberate trade-off — single-marker italic (``*foo*`` / ``_foo_``) is
+    NOT flagged. Detecting it cleanly would require a non-word-boundary
+    lookbehind that produces too many false positives on plain text
+    (``5 * 4``, ``foo_bar``). Bold (``**`` / ``__``) and italic-via-markdown-
+    extension (``***strong+em***``) are detected. False-negatives on
+    italic-only content render as plain text; users who want italic almost
+    always combine it with bold or a heading anyway.
+    """
+
+    if not text:
+        return False
+    sample = text[:peek] if len(text) > peek else text
+    if _BLOCK_MARKDOWN_RE.search(sample) is not None:
+        return True
+    return _INLINE_MARKDOWN_RE.search(sample) is not None
+
+
+class MarkdownCache:
+    """LRU cache for Rich.Markdown renders, keyed by an opaque cache key.
+
+    The cache key strategy is owned by the *caller*, not the cache. Callers
+    typically pass:
+
+    * the SHA-256 of the full content for finalized renders, OR
+    * the SHA-256 of the content truncated to the last safe-checkpoint
+      boundary for in-flight streaming renders.
+
+    See module docstring for why both keying strategies share one cache.
+    """
+
+    def __init__(
+        self,
+        max_entries: int = _DEFAULT_MAX_ENTRIES,
+        *,
+        code_theme: str = _DEFAULT_CODE_THEME,
+    ) -> None:
+        if max_entries <= 0:
+            raise ValueError("max_entries must be > 0")
+        self._max_entries = max_entries
+        self._code_theme = code_theme
+        self._entries: "OrderedDict[str, RenderableType]" = OrderedDict()
+        self._lock = threading.Lock()
+        # Stats are cheap and useful for the WI-1.3 benchmark and for
+        # production debug tooling. Always-on; no env-gate.
+        self.hits = 0
+        self.misses = 0
+
+    @property
+    def max_entries(self) -> int:
+        return self._max_entries
+
+    @property
+    def code_theme(self) -> str:
+        return self._code_theme
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._entries)
+
+    def get_or_render(
+        self,
+        content: str,
+        *,
+        cache_key: str | None = None,
+        code_theme: str | None = None,
+    ) -> "RenderableType":
+        """Return a renderable for ``content`` — cache hit if seen, else parse + insert.
+
+        Args:
+            content: The full content to render. May be empty.
+            cache_key: Optional caller-supplied key. When ``None``, the cache
+                keys on the SHA-256 of ``content`` itself (full-content cache,
+                appropriate for finalized renders). Streaming callers pass the
+                hash of the last safe-checkpoint prefix to share cache hits
+                across chunks that haven't reached the next checkpoint.
+            code_theme: Override the cache's default code theme for this
+                render. Cache key is prefixed with the theme so distinct
+                themes don't collide.
+
+        Returns:
+            Either a ``rich.text.Text`` (plain-text fast path) or a
+            ``rich.markdown.Markdown`` (full markdown parse).
+        """
+
+        theme = code_theme or self._code_theme
+        if cache_key is None:
+            cache_key = _hash(content)
+        full_key = f"{theme}\0{cache_key}"
+
+        with self._lock:
+            cached = self._entries.get(full_key)
+            if cached is not None:
+                # Move-to-end for LRU bookkeeping.
+                self._entries.move_to_end(full_key)
+                self.hits += 1
+                return cached
+            self.misses += 1
+
+        rendered = self._build(content, theme)
+
+        with self._lock:
+            # Re-check after lock acquisition in case another thread already
+            # inserted while we were rendering. First write wins; we don't
+            # bump hits/misses because we already counted the miss.
+            existing = self._entries.get(full_key)
+            if existing is not None:
+                self._entries.move_to_end(full_key)
+                return existing
+            self._entries[full_key] = rendered
+            self._entries.move_to_end(full_key)
+            while len(self._entries) > self._max_entries:
+                self._entries.popitem(last=False)
+        return rendered
+
+    def clear(self) -> None:
+        with self._lock:
+            self._entries.clear()
+            self.hits = 0
+            self.misses = 0
+
+    @staticmethod
+    def _build(content: str, code_theme: str) -> "RenderableType":
+        if not content:
+            return Text("")
+        if not has_markdown_syntax(content):
+            return Text(content)
+        try:
+            return Markdown(content, code_theme=code_theme)
+        except Exception:
+            # Defensive fallback: if Rich.Markdown errors on the content
+            # (e.g. a partial token slipped through despite the safe-checkpoint
+            # gate), degrade to plain text rather than crashing the widget.
+            # Logged at DEBUG so the failure is observable without being noisy
+            # in production.
+            _logger.debug(
+                "Rich.Markdown render failed; falling back to Text for content "
+                "of length %d",
+                len(content),
+                exc_info=True,
+            )
+            return Text(content)
+
+
+def _hash(content: str) -> str:
+    """16-char SHA-256 prefix. Collision-safe for cache scales we use."""
+
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
+
+
+_DEFAULT_CACHE: MarkdownCache | None = None
+_DEFAULT_CACHE_LOCK = threading.Lock()
+
+
+def get_markdown_cache() -> MarkdownCache:
+    """Module-level singleton accessor — survives widget unmount/remount."""
+
+    global _DEFAULT_CACHE
+    if _DEFAULT_CACHE is None:
+        with _DEFAULT_CACHE_LOCK:
+            if _DEFAULT_CACHE is None:
+                _DEFAULT_CACHE = MarkdownCache()
+    return _DEFAULT_CACHE
+
+
+def reset_markdown_cache_for_tests() -> None:
+    """Test helper. Clears the singleton so tests don't leak state."""
+
+    global _DEFAULT_CACHE
+    with _DEFAULT_CACHE_LOCK:
+        _DEFAULT_CACHE = None
+
+
+__all__ = [
+    "MarkdownCache",
+    "get_markdown_cache",
+    "has_markdown_syntax",
+    "reset_markdown_cache_for_tests",
+]

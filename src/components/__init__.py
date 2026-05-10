@@ -1,4 +1,11 @@
-"""Python package placeholder for the archived `components` subsystem."""
+"""Placeholder for parity with ``typescript/src/components/``.
+
+The real Python implementation of the terminal-UI component tree lives at
+``src/tui/widgets/`` (Textual widgets) and ``src/tui/screens/`` (Textual
+screens). This module exists so the ``reference_data`` subsystem snapshots
+resolve and so the namespace is reserved; do not add behavior here. See
+``my-docs/ch13-terminal-ui-gap-analysis.md`` gap #11 for the rationale.
+"""
 
 from __future__ import annotations
 

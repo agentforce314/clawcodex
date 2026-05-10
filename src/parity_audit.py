@@ -22,10 +22,20 @@ ARCHIVE_ROOT_FILES = {
     'context.ts': 'context.py',
     'cost-tracker.ts': 'cost_tracker.py',
     'costHook.ts': 'costHook.py',
-    'dialogLaunchers.tsx': 'dialogLaunchers.py',
+    # Chapter-13 Phase-0 hygiene: ``dialogLaunchers.tsx``, ``ink.ts``, and
+    # ``interactiveHelpers.tsx`` map to the ``src/tui/`` package (Textual
+    # screens / app / a11y), where their behavioral equivalents live. The
+    # previous flat ``src/{ink, dialogLaunchers, interactiveHelpers}.py``
+    # stubs were decoys with no callers and were deleted in WI-0.1 / WI-0.4.
+    # All three map to the same target (``tui``) because the audit checks
+    # only immediate children of ``src/``; the per-feature breakdown lives
+    # at ``my-docs/ch13-terminal-ui-gap-analysis.md`` §4 (Concrete Reference
+    # Index). See gap #11 / #12 for the rationale and the refactoring plan
+    # Phase 0 for the audit + deletion record.
+    'dialogLaunchers.tsx': 'tui',
     'history.ts': 'history.py',
-    'ink.ts': 'ink.py',
-    'interactiveHelpers.tsx': 'interactiveHelpers.py',
+    'ink.ts': 'tui',
+    'interactiveHelpers.tsx': 'tui',
     'main.tsx': 'main.py',
     'projectOnboardingState.ts': 'projectOnboardingState.py',
     'query.ts': 'query.py',
@@ -52,7 +62,13 @@ ARCHIVE_DIR_MAPPINGS = {
     'coordinator': 'coordinator',
     'entrypoints': 'entrypoints',
     'hooks': 'hooks',
-    'ink': 'ink.py',
+    # Chapter-13 Phase-0 hygiene: the TS ``ink/`` directory's renderer
+    # (custom DOM, Yoga, packed cells, blit, BSU/ESU) is correctly delegated
+    # to Textual + Rich; the ``src/ink.py`` decoy was deleted in WI-0.1.
+    # The user-facing surface lives at ``src/tui/`` (Textual app + widgets).
+    # See ``my-docs/ch13-terminal-ui-gap-analysis.md`` gap #11 and the
+    # ``Out of Scope`` block in the refactoring plan.
+    'ink': 'tui',
     'keybindings': 'keybindings',
     'memdir': 'memdir',
     'migrations': 'migrations',
