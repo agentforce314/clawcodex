@@ -1,21 +1,25 @@
-"""Permission request modal screen.
+"""Permission request modal screen with per-tool specialized previews.
 
-Phase 1 parity for ``typescript/src/components/permissions/PermissionRequest.tsx``.
-The ink reference mounts a full ``PermissionRequest`` overlay inside
-``FullscreenLayout.overlay`` that *steals input* until the user
-approves / denies the pending tool call. In Textual we model that as a
-``ModalScreen`` pushed onto the screen stack: Textual handles the
-keyboard priority (modals are always on top of the pushed stack).
+Phase 7 of the ch13 refactor (gap #8) closes the gap between the prior
+unified preview and chapter
+``typescript/src/components/permissions/PermissionRequest.tsx`` which
+routes to a per-tool body (Bash → command + matched rule; Edit →
+inline diff; Write → file path + content preview; etc.).
 
-Tool-specific bodies (``BashPermissionRequest``, ``EditPermissionRequest``, …)
-land in Phase 2 — Phase 1 renders a unified preview that works for every
-tool.
+Architecture per refactoring-plan A9: a single :class:`PermissionModal`
+screen with a tool-name-keyed dispatcher to specialized render
+functions. Avoids a class-per-tool hierarchy that would make adding
+tools verbose. Per the ``mouse=False`` design constraint (gap analysis
+§1 read #2 (c)), all interactive elements are reachable via keyboard
+only; the buttons are decorative — the actual decisions fire from the
+``y`` / ``n`` / ``Esc`` keybindings registered on the modal.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
+from rich.console import Group, RenderableType
 from rich.markup import escape
 from rich.panel import Panel
 from rich.text import Text
@@ -97,7 +101,12 @@ class PermissionModal(ModalScreen[bool]):
             )
         )
         panel.mount(Static(Text(self._request.message), markup=False))
-        input_preview = _preview_tool_input(self._request.tool_input)
+        # Phase-7: dispatch to per-tool renderer (Bash → command + rule;
+        # Edit → inline diff; etc.). Falls back to a generic preview for
+        # unknown tools.
+        input_preview = preview_for_tool(
+            self._request.tool_name, self._request.tool_input
+        )
         if input_preview is not None:
             panel.mount(Static(input_preview, markup=False))
         if self._request.suggestion:
@@ -143,11 +152,43 @@ class PermissionModal(ModalScreen[bool]):
         self.dismiss(allowed)
 
 
-def _preview_tool_input(tool_input: Any) -> Panel | None:
-    """Render the tool input as a compact preview panel."""
+def _preview_tool_input(tool_input: Any) -> RenderableType | None:
+    """Dispatch to a tool-name-keyed renderer, falling back to generic.
+
+    The original signature is preserved so :class:`PermissionModal` keeps
+    the same call site. The dispatcher is the new behavior — Phase 7's
+    specialization happens through this single entry point.
+    """
+
+    return preview_for_tool(None, tool_input)
+
+
+def preview_for_tool(
+    tool_name: str | None, tool_input: Any
+) -> RenderableType | None:
+    """Render a permission preview for ``tool_input`` under ``tool_name``.
+
+    Specialized renderers live in ``_TOOL_RENDERERS``; unknown tools fall
+    through to :func:`_render_generic_input`. Callers may pass
+    ``tool_name=None`` to force the generic path (back-compat with code
+    that doesn't know the tool name).
+    """
 
     if not tool_input:
         return None
+    handler = _TOOL_RENDERERS.get(tool_name) if tool_name else None
+    try:
+        rendered = handler(tool_input) if handler else None
+    except Exception:
+        rendered = None
+    if rendered is None:
+        rendered = _render_generic_input(tool_input)
+    return rendered
+
+
+def _render_generic_input(tool_input: Any) -> RenderableType | None:
+    """Default preview — pretty-prints the input dict, capped per-key."""
+
     if isinstance(tool_input, dict):
         lines: list[str] = []
         for key, value in tool_input.items():
@@ -166,4 +207,172 @@ def _preview_tool_input(tool_input: Any) -> Panel | None:
         body = str(tool_input)
         if len(body) > 400:
             body = body[:397] + "…"
-    return Panel(Text(body), border_style="bright_black", padding=(0, 1), title=escape("input"))
+    return Panel(
+        Text(body),
+        border_style="bright_black",
+        padding=(0, 1),
+        title=escape("input"),
+    )
+
+
+# ---- per-tool renderers -----------------------------------------------------
+
+
+def _render_bash(tool_input: Any) -> RenderableType | None:
+    """Bash command + (when available) the matching permission rule."""
+
+    if not isinstance(tool_input, dict):
+        return None
+    command = tool_input.get("command")
+    if not command:
+        return None
+    body_lines: list[Text] = []
+    body_lines.append(Text("$ ", style="bold"))
+    body_lines[-1].append(str(command), style="default")
+
+    rule = tool_input.get("matched_permission_rule") or tool_input.get("rule")
+    if rule:
+        body_lines.append(Text())
+        body_lines.append(
+            Text("rule: ", style="dim").append(str(rule), style="bold cyan")
+        )
+
+    description = tool_input.get("description")
+    if description:
+        body_lines.append(Text())
+        body_lines.append(Text(str(description), style="italic dim"))
+
+    return Panel(
+        Group(*body_lines),
+        border_style="yellow",
+        padding=(0, 1),
+        title=escape("bash"),
+    )
+
+
+def _render_edit(tool_input: Any) -> RenderableType | None:
+    """File-path + inline old/new diff (line-oriented)."""
+
+    if not isinstance(tool_input, dict):
+        return None
+    file_path = tool_input.get("file_path") or tool_input.get("path")
+    old_string = tool_input.get("old_string", "") or ""
+    new_string = tool_input.get("new_string", "") or ""
+
+    parts: list[RenderableType] = []
+    if file_path:
+        parts.append(
+            Text("file: ", style="dim").append(str(file_path), style="bold")
+        )
+    if old_string or new_string:
+        diff = _format_inline_diff(old_string, new_string)
+        if diff is not None:
+            parts.append(diff)
+    if not parts:
+        return None
+    return Panel(
+        Group(*parts),
+        border_style="yellow",
+        padding=(0, 1),
+        title=escape("edit"),
+    )
+
+
+def _render_write(tool_input: Any) -> RenderableType | None:
+    """File path + content preview (truncated)."""
+
+    if not isinstance(tool_input, dict):
+        return None
+    file_path = tool_input.get("file_path") or tool_input.get("path")
+    content = tool_input.get("content", "") or ""
+    if not file_path and not content:
+        return None
+    parts: list[RenderableType] = []
+    if file_path:
+        parts.append(
+            Text("write: ", style="dim").append(str(file_path), style="bold")
+        )
+    if content:
+        preview = str(content)
+        if len(preview) > 400:
+            preview = preview[:397] + "…"
+        parts.append(Text(preview))
+    return Panel(
+        Group(*parts),
+        border_style="yellow",
+        padding=(0, 1),
+        title=escape("write"),
+    )
+
+
+def _render_read(tool_input: Any) -> RenderableType | None:
+    """File path + optional limit/offset."""
+
+    if not isinstance(tool_input, dict):
+        return None
+    file_path = tool_input.get("file_path") or tool_input.get("path")
+    if not file_path:
+        return None
+    parts: list[RenderableType] = [
+        Text("read: ", style="dim").append(str(file_path), style="bold")
+    ]
+    extras = []
+    if tool_input.get("offset"):
+        extras.append(f"offset={tool_input.get('offset')}")
+    if tool_input.get("limit"):
+        extras.append(f"limit={tool_input.get('limit')}")
+    if extras:
+        parts.append(Text(" ".join(extras), style="dim"))
+    return Panel(
+        Group(*parts),
+        border_style="yellow",
+        padding=(0, 1),
+        title=escape("read"),
+    )
+
+
+def _format_inline_diff(
+    old_string: str, new_string: str, *, max_lines: int = 12
+) -> RenderableType | None:
+    """Render a minus/plus inline diff capped at ``max_lines``."""
+
+    old_lines = old_string.splitlines() or ([""] if old_string else [])
+    new_lines = new_string.splitlines() or ([""] if new_string else [])
+    out: list[Text] = []
+    for line in old_lines[:max_lines]:
+        out.append(Text("- ", style="bold red").append(line, style="red"))
+    if len(old_lines) > max_lines:
+        out.append(
+            Text(f"  … {len(old_lines) - max_lines} more removed lines", style="dim")
+        )
+    for line in new_lines[:max_lines]:
+        out.append(Text("+ ", style="bold green").append(line, style="green"))
+    if len(new_lines) > max_lines:
+        out.append(
+            Text(f"  … {len(new_lines) - max_lines} more added lines", style="dim")
+        )
+    if not out:
+        return None
+    return Group(*out)
+
+
+# Tool name → render function. Add new tools by appending here; the
+# fallback (`_render_generic_input`) catches everything else.
+_TOOL_RENDERERS: dict[str, Callable[[Any], RenderableType | None]] = {
+    "Bash": _render_bash,
+    "Edit": _render_edit,
+    "Write": _render_write,
+    "Read": _render_read,
+    # Common alias variants — match either capitalization the tool
+    # registry might use.
+    "bash": _render_bash,
+    "edit": _render_edit,
+    "write": _render_write,
+    "read": _render_read,
+}
+
+
+__all__ = [
+    "PermissionModal",
+    "preview_for_tool",
+]
