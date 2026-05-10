@@ -1,4 +1,12 @@
-"""Python package placeholder for the archived `vim` subsystem."""
+"""Placeholder for parity with ``typescript/src/vim/``.
+
+The real Python implementation of vim mode lives at ``src/tui/vim.py``
+(single-line state machine for the prompt input). The full multi-line
+editor (motions / operators / textObjects / Visual mode / regex search) is
+planned in phase 4 of ``my-docs/ch13-terminal-ui-refactoring-plan.md``.
+This module exists so the ``reference_data`` subsystem snapshots resolve
+and so the namespace is reserved; do not add behavior here.
+"""
 
 from __future__ import annotations
 
