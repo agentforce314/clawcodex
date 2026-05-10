@@ -30,6 +30,7 @@ from ..messages import (
     AgentRunFinished,
     AgentRunStarted,
     AssistantChunk,
+    ThinkingChunk,
     AssistantMessage,
     PermissionRequested,
     PermissionResolved,
@@ -52,6 +53,16 @@ class REPLScreen(Screen):
 
     BINDINGS = [
         ("ctrl+l", "clear_transcript", "Clear transcript"),
+        # Phase-5 wiring (gap #2 close-out): Ctrl+F opens the inline
+        # transcript-search overlay. The user-config layer can override
+        # this binding via ``transcript.search.open`` in
+        # ``~/.claude/keybindings.json``; this Textual binding is the
+        # default fallback for environments where the keybinding loader
+        # hasn't been wired into Textual's resolver yet.
+        ("ctrl+f", "transcript_search", "Search transcript"),
+        # Phase-8 wiring: /resume and /doctor slash commands route to
+        # placeholder screens; expose them via Ctrl+R (recover stash via
+        # PromptInput already; we use the slash-command path for these).
     ]
 
     DEFAULT_CSS = """
@@ -117,14 +128,81 @@ class REPLScreen(Screen):
         # cross-screen announcement mirrors into this REPL.
         if hasattr(app, "announcer"):
             app.announcer.bind_region(self.live_region)
+        # Phase-2 WI-2.6 wiring: register the transcript-clear handler
+        # with the configurable keybinding layer. ``action_clear_transcript``
+        # below dispatches through the layer so user-config overrides take
+        # effect; if the dispatcher is unavailable (e.g. headless test
+        # harness), the action falls back to the direct call.
+        self._kb_unregister: Callable[[], None] | None = None
+        dispatcher = getattr(app, "keybindings", None)
+        if dispatcher is not None:
+            self._kb_unregister = dispatcher.register(
+                "transcript.clear",
+                self.transcript.clear_transcript,
+            )
         self.prompt_input.focus_input()
         self.transcript.append_system(
             "Ready. Type a prompt, or '/' for commands. "
             "Ctrl+D, /exit, or /repl to leave the Textual TUI.",
         )
 
+    def on_unmount(self) -> None:
+        # Release the dispatcher registration so a re-mount of this screen
+        # (e.g. theme reload) doesn't leave a stale handler behind.
+        if getattr(self, "_kb_unregister", None) is not None:
+            self._kb_unregister()
+            self._kb_unregister = None
+
     # ---- actions ----
+    def action_transcript_search(self) -> None:
+        """Phase-5 close-out: open the transcript search overlay."""
+
+        # Lazy import — keeps the search module out of the import graph
+        # for tests that don't mount this screen.
+        from src.tui.widgets.transcript_search import TranscriptSearch
+
+        def _on_dismiss(row_index: int | None) -> None:
+            if row_index is None:
+                return
+            try:
+                rows = list(getattr(self.transcript, "_mounted_rows", []) or [])
+            except Exception:
+                return
+            if 0 <= row_index < len(rows):
+                target = rows[row_index]
+                try:
+                    self.transcript.scroll_to_widget(target, animate=False)
+                except Exception:
+                    # Textual API differences across versions — not
+                    # critical, the user can scroll manually.
+                    pass
+
+        self.app.push_screen(TranscriptSearch(self.transcript), _on_dismiss)
+
+    def action_open_resume(self) -> None:
+        """Phase-8 close-out: open the resume-conversation placeholder."""
+
+        from .resume_conversation import ResumeConversation
+
+        self.app.push_screen(ResumeConversation())
+
+    def action_open_doctor(self) -> None:
+        """Phase-8 close-out: open the doctor diagnostics screen."""
+
+        from .doctor import DoctorScreen
+
+        app_state = getattr(self.app, "app_state", None)
+        self.app.push_screen(DoctorScreen(app_state=app_state))
+
     def action_clear_transcript(self) -> None:
+        # Route through the keybinding dispatcher so the new layer is
+        # exercised in production. Falls back to the direct call when the
+        # dispatcher isn't bound (e.g. tests that build the screen without
+        # an enclosing ``ClawCodexTUI`` app).
+        app = self.app
+        dispatcher = getattr(app, "keybindings", None)
+        if dispatcher is not None and dispatcher.fire("transcript.clear"):
+            return
         self.transcript.clear_transcript()
 
     # ---- prompt submission ----
@@ -145,6 +223,16 @@ class REPLScreen(Screen):
 
     def on_assistant_chunk(self, message: AssistantChunk) -> None:
         self.transcript.append_assistant_chunk(message.text)
+
+    def on_thinking_chunk(self, message: ThinkingChunk) -> None:
+        # Phase-12 close-out: dispatch ``ThinkingChunk`` from the
+        # ``run_agent_loop`` callback into the transcript's distinct
+        # thinking-row widget. The symmetric retire guard in
+        # ``Transcript.append_assistant_chunk`` keeps the row
+        # transitions correct when assistant text follows.
+        self.transcript.append_thinking_chunk(
+            message.text, redacted=message.redacted
+        )
 
     def on_assistant_message(self, message: AssistantMessage) -> None:
         self.transcript.append_assistant(message.text)

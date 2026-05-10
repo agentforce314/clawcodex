@@ -55,6 +55,21 @@ class AssistantChunk(Message):
 
 
 @dataclass
+class ThinkingChunk(Message):
+    """Streaming thinking-block chunk from the assistant.
+
+    Phase-12 close-out (gap #16 sub-item). Routes to
+    :meth:`Transcript.append_thinking_chunk` so reasoning content
+    renders distinctly from the final assistant response. ``redacted``
+    flips the styling per the chapter's
+    ``RedactedThinkingBlock`` variant.
+    """
+
+    text: str
+    redacted: bool = False
+
+
+@dataclass
 class AssistantMessage(Message):
     """A complete assistant response at the end of a single agent turn.
 

@@ -117,6 +117,13 @@ class AgentLoopResult:
 ToolEventHandler = Callable[[ToolEvent], None]
 TextChunkHandler = Callable[[str], None]
 
+# Phase-12 ch13 close-out: callback for ``ThinkingBlock`` /
+# ``RedactedThinkingBlock`` content (Anthropic) and OpenAI/GLM/DeepSeek
+# ``reasoning_content`` text. Single-arg signature parallels
+# :data:`TextChunkHandler`; the second positional flag is ``redacted``
+# so consumers can render redacted-thinking distinctly.
+ThinkingChunkHandler = Callable[[str, bool], None]
+
 
 def _safe_call_handler(handler: ToolEventHandler | None, event: ToolEvent) -> None:
     if handler is None:
@@ -136,6 +143,32 @@ def _emit_text_chunks(handler: TextChunkHandler | None, text: str, *, chunk_size
     for idx in range(0, len(text), chunk_size):
         try:
             handler(text[idx: idx + chunk_size])
+        except Exception:
+            return
+
+
+def _emit_thinking_chunks(
+    handler: ThinkingChunkHandler | None,
+    text: str,
+    *,
+    redacted: bool = False,
+    chunk_size: int = 64,
+) -> None:
+    """Stream a thinking block to the handler in small chunks.
+
+    Larger ``chunk_size`` than text streaming because thinking content
+    is typically longer and the user doesn't watch it as actively. The
+    chunker is identical otherwise — exception-safe, falls through on
+    bad input.
+    """
+
+    if handler is None or not text:
+        return
+    if chunk_size <= 0:
+        chunk_size = len(text)
+    for idx in range(0, len(text), chunk_size):
+        try:
+            handler(text[idx: idx + chunk_size], redacted)
         except Exception:
             return
 
@@ -257,6 +290,7 @@ def run_agent_loop(
     verbose: bool = False,
     on_event: ToolEventHandler | None = None,
     on_text_chunk: TextChunkHandler | None = None,
+    on_thinking_chunk: ThinkingChunkHandler | None = None,
     cancel_signal: AbortSignal | None = None,
 ) -> AgentLoopResult:
     """Run agent loop: LLM -> tools -> LLM until no more tools or max turns.
@@ -338,6 +372,30 @@ def run_agent_loop(
         if response.usage:
             total_usage["input_tokens"] += response.usage.get("input_tokens", 0)
             total_usage["output_tokens"] += response.usage.get("output_tokens", 0)
+
+        # Phase-12 close-out: emit thinking-block / reasoning_content to
+        # the optional callback so the TUI's transcript can render it
+        # distinctly from regular assistant text. We call the handler
+        # post-turn rather than streaming chunk-by-chunk because
+        # provider streaming for thinking/reasoning content is uneven
+        # across SDKs; the chunk-emitter at
+        # :func:`_emit_text_chunks` keeps the perceived-streaming feel.
+        if on_thinking_chunk is not None:
+            reasoning = getattr(response, "reasoning_content", None)
+            if isinstance(reasoning, str) and reasoning.strip():
+                _emit_thinking_chunks(on_thinking_chunk, reasoning, redacted=False)
+            # Anthropic ``ThinkingBlock`` content rides on
+            # ``response.thinking_blocks`` when the provider exposes
+            # them. Defensive — providers that don't surface thinking
+            # have an empty list / missing attribute.
+            thinking_blocks = getattr(response, "thinking_blocks", None) or []
+            for block in thinking_blocks:
+                text = getattr(block, "thinking", None) or getattr(block, "text", "")
+                redacted = getattr(block, "type", "") == "redacted_thinking"
+                if isinstance(text, str) and text.strip():
+                    _emit_thinking_chunks(
+                        on_thinking_chunk, text, redacted=redacted
+                    )
 
         # Build assistant content for Anthropic or just text for OpenAI
         final_assistant_content = response.content or ""

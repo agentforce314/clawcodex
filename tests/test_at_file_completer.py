@@ -17,6 +17,7 @@ from prompt_toolkit.document import Document
 
 from src.repl.at_file_completer import (
     AtFileCompleter,
+    _build_path_bitmap,
     _filter_candidates,
     _is_path_like_token,
     _path_completions,
@@ -246,3 +247,238 @@ def test_subsequence_score_returns_span():
     # exact prefix has span 0 (but caller would have caught it as a
     # substring before reaching here — we just sanity-check the math)
     assert _subsequence_score("abcdef", "abc") == 2
+
+
+# ---- WI-3.1: 26-bit bitmap pre-filter ---------------------------------------
+
+
+class TestPathBitmap:
+    """Bitmap correctness — single-letter, multi-letter, subset checks."""
+
+    def test_abc_packs_first_three_bits(self):
+        # 'a'=bit 0, 'b'=bit 1, 'c'=bit 2 → 0b111 = 7.
+        assert _build_path_bitmap("abc") == 0b111
+
+    def test_z_packs_top_bit(self):
+        # 'z' = bit 25.
+        assert _build_path_bitmap("z") == (1 << 25)
+
+    def test_az_packs_bottom_and_top_bits(self):
+        # 'a' + 'z' = bit 0 | bit 25.
+        assert _build_path_bitmap("az") == (1 | (1 << 25))
+
+    def test_uppercase_lowercased(self):
+        # Bitmap is case-insensitive; ABC == abc.
+        assert _build_path_bitmap("ABC") == _build_path_bitmap("abc")
+
+    def test_non_letter_chars_ignored(self):
+        # Digits, punctuation, slashes don't contribute.
+        assert _build_path_bitmap("a1b/c.x") == _build_path_bitmap("abcx")
+
+    def test_subset_relationship(self):
+        # The full word's bitmap is a superset of any sub-word's bitmap.
+        # ``(superset & subset) == subset`` — the bitmap-rejection idiom.
+        full = _build_path_bitmap("alphabet")
+        partial = _build_path_bitmap("alpha")
+        assert (full & partial) == partial
+
+    def test_missing_letter_breaks_subset(self):
+        # Path missing letter ``z`` cannot satisfy a query with ``z``.
+        path_bits = _build_path_bitmap("alpha")
+        needle_bits = _build_path_bitmap("zalpha")
+        # path & needle == needle would mean alpha contains z. It doesn't.
+        assert (path_bits & needle_bits) != needle_bits
+
+
+class TestBitmapPreFilterRejectionRatio:
+    """Structural acceptance test (per critic M10): the bitmap pre-filter
+    rejects N% of candidates with rare-letter queries before they reach
+    the inner match. Replaces flake-prone wall-clock thresholds.
+    """
+
+    def test_rare_letter_query_rejects_most_candidates(self):
+        # Synthetic candidates with no 'z'; querying 'z' should reject all.
+        paths = [f"src/file_{i}.py" for i in range(1000)]
+        bitmaps = [_build_path_bitmap(p) for p in paths]
+        # Filter with a 'z' query.
+        result = _filter_candidates(paths, "z", limit=15, bitmaps=bitmaps)
+        # Zero results — every path correctly rejected by bitmap.
+        assert result == []
+
+    def test_letter_in_some_paths_filters_to_those(self):
+        # 100 paths with no 'z'; 5 paths containing 'z' (zonk_*.py).
+        paths = [f"file_{i}.py" for i in range(100)]
+        paths.extend(f"zonk_{i}.py" for i in range(5))
+        bitmaps = [_build_path_bitmap(p) for p in paths]
+        # Querying 'zonk' should return only the zonk_* candidates.
+        result = _filter_candidates(paths, "zonk", limit=15, bitmaps=bitmaps)
+        assert len(result) == 5
+        for path in result:
+            assert path.startswith("zonk_")
+
+
+# ---- WI-3.2: async indexing with thread-based queryable/done ----------------
+
+
+class TestAsyncIndexing:
+    """Thread-based warm-up: queryable resolves before done; bounded wait."""
+
+    def test_queryable_event_set_after_first_completion(self, tmp_path):
+        for i in range(5):
+            (tmp_path / f"f{i}.py").write_text("")
+        c = AtFileCompleter(cwd=tmp_path)
+        # Trigger the warm-up by reading from the index.
+        completions = list(c.get_completions(
+            Document("@"), None,
+        ))
+        # By now the warm-up should have published at least one chunk
+        # (or the synchronous fallback has). Both events should be set.
+        assert c._index_queryable_event.is_set()
+        # Small workspace: done quickly too.
+        assert c._index_done_event.wait(timeout=1.0)
+        # And we got non-empty completions.
+        assert len(completions) > 0
+
+    def test_invalidate_cache_clears_events(self, tmp_path):
+        (tmp_path / "x.py").write_text("")
+        c = AtFileCompleter(cwd=tmp_path)
+        # Warm up.
+        list(c.get_completions(Document("@"), None))
+        assert c._index_done_event.is_set()
+        # Invalidate.
+        c.invalidate_cache()
+        assert not c._index_queryable_event.is_set()
+        assert not c._index_done_event.is_set()
+        # Next call rebuilds.
+        list(c.get_completions(Document("@"), None))
+        assert c._index_done_event.is_set()
+
+    def test_bitmap_built_alongside_path_cache(self, tmp_path):
+        for name in ("alpha.py", "beta.py", "gamma.py"):
+            (tmp_path / name).write_text("")
+        c = AtFileCompleter(cwd=tmp_path)
+        # Warm up via a query.
+        list(c.get_completions(Document("@"), None))
+        # Bitmaps list mirrors paths list length.
+        assert len(c._cache) == len(c._cache_bitmaps)
+        # Each bitmap is a non-zero int (every path has at least one letter).
+        for bm in c._cache_bitmaps:
+            assert isinstance(bm, int)
+            assert bm > 0
+
+
+# ---- WI-3.3: score-bound rejection ------------------------------------------
+
+
+class TestScoreBoundRejection:
+    """The score-bound check skips inner-match work on outclassed candidates.
+
+    These tests directly verify WI-3.3 by patching ``_subsequence_score``
+    and counting calls. Tier-2 candidates are paths where the query letters
+    appear as a subsequence but NOT as a contiguous substring of the
+    basename or full path — so they require the expensive
+    ``_subsequence_score`` scan unless score-bound rejection skips them.
+
+    Verified tier-2 construction: ``q="foo"`` against ``"xfxoxox.py"``::
+        - basename "xfxoxox.py": "foo" NOT a substring → tier-0 fails
+        - full path "xfxoxox.py": "foo" NOT a substring → tier-1 fails
+        - subsequence: f@1, o@3, o@5 → tier-2 hit
+    """
+
+    def test_top_k_full_of_tier_0_skips_tier_2_inner_match(self, monkeypatch):
+        """WI-3.3 must skip the subsequence-score scan for tier-2 candidates
+        when top-K is already full of tier-0 hits.
+
+        Patches ``_subsequence_score`` and asserts call_count == 0. A future
+        regression to the score-bound logic (e.g., removing the early-skip)
+        would cause _subsequence_score to be invoked on the tier-2 paths
+        and fail this test.
+        """
+        import src.utils.at_file_completer as af
+
+        # 20 tier-0 candidates: "foo" is a substring of basename.
+        tier0 = [f"dir{i}/foo.py" for i in range(20)]
+        # Real tier-2 candidates: "foo" is a subsequence but NOT a substring
+        # of basename or path. Verified by the docstring above.
+        tier2 = [
+            "xfxoxox.py",
+            "yfybyoybyoy.py",
+            "zfqzqozqozqz.py",
+            "wfwwowwowww.py",
+        ]
+        paths = tier0 + tier2
+        bitmaps = [_build_path_bitmap(p) for p in paths]
+
+        # Sanity: confirm tier-2 candidates ARE tier-2 — q='foo' should
+        # subsequence-match each but NOT substring-match basename or path.
+        import os as _os
+        for tp in tier2:
+            assert "foo" not in _os.path.basename(tp).lower()
+            assert "foo" not in tp.lower()
+            assert _subsequence_score(tp.lower(), "foo") is not None
+
+        # Instrument: count subsequence-score calls.
+        call_count = [0]
+        orig = af._subsequence_score
+        def counting(text, query):
+            call_count[0] += 1
+            return orig(text, query)
+        monkeypatch.setattr(af, "_subsequence_score", counting)
+
+        result = _filter_candidates(paths, "foo", limit=15, bitmaps=bitmaps)
+
+        # WI-3.3 acceptance: zero subsequence-score calls when top-K is
+        # full of tier-0. If this fires, the score-bound skip regressed.
+        assert call_count[0] == 0, (
+            f"WI-3.3 must skip _subsequence_score for tier-2 candidates "
+            f"when top-K is full of tier-0; got {call_count[0]} calls"
+        )
+        # End-result: top 15 are all tier-0.
+        assert len(result) == 15
+        for path in result:
+            assert "foo" in _os.path.basename(path).lower()
+
+    def test_under_filled_top_k_invokes_subsequence_score(self, monkeypatch):
+        """WI-3.3 must NOT skip when top-K is under-filled — every tier-2
+        candidate is a contender and should enter the inner match.
+
+        Counterpoint to the previous test: with fewer candidates than
+        ``limit``, the score-bound check is a no-op and tier-2 paths
+        SHOULD trigger ``_subsequence_score``.
+        """
+        import src.utils.at_file_completer as af
+        # Only 3 candidates total, all tier-2 (subsequence-only).
+        paths = ["xfxoxox.py", "yfybyoybyoy.py", "zfqzqozqozqz.py"]
+        bitmaps = [_build_path_bitmap(p) for p in paths]
+
+        call_count = [0]
+        orig = af._subsequence_score
+        def counting(text, query):
+            call_count[0] += 1
+            return orig(text, query)
+        monkeypatch.setattr(af, "_subsequence_score", counting)
+
+        result = _filter_candidates(paths, "foo", limit=15, bitmaps=bitmaps)
+
+        # All 3 tier-2 paths reach the inner match (top-K under-filled).
+        assert call_count[0] == 3, (
+            f"WI-3.3 must NOT skip when top-K is under-filled; expected 3 "
+            f"_subsequence_score calls, got {call_count[0]}"
+        )
+        # All 3 returned (each has 'foo' as a subsequence).
+        assert len(result) == 3
+
+
+# ---- backward-compat: legacy callers that don't pass bitmaps still work -----
+
+
+class TestFilterCandidatesBackwardCompat:
+    def test_filter_without_bitmaps_kwarg(self):
+        """Legacy callers that don't pass ``bitmaps`` get the same matching
+        as before (bitmap pre-filter is skipped, full inner-match runs)."""
+        paths = ["alpha.py", "beta.py", "alpha_v2.py"]
+        # No bitmaps kwarg — exercises the legacy code path.
+        result = _filter_candidates(paths, "alpha", limit=15)
+        assert "alpha.py" in result
+        assert "alpha_v2.py" in result
+        assert "beta.py" not in result

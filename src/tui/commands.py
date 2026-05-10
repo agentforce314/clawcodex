@@ -200,6 +200,14 @@ def dispatch_local_command(
         return CommandDispatchResult(handled=True, open_dialog="tasks")
     if name == "/rewind":
         return CommandDispatchResult(handled=True, open_dialog="rewind")
+    # Phase-8 close-out: surface the placeholder Resume / Doctor screens
+    # via slash commands. The screens themselves explain their
+    # placeholder status (transcript-persistence wiring deferred per
+    # ``my-docs/ch13-phase8-audit-result.md``).
+    if name == "/resume":
+        return CommandDispatchResult(handled=True, open_dialog="resume")
+    if name == "/doctor":
+        return CommandDispatchResult(handled=True, open_dialog="doctor")
 
     return CommandDispatchResult(handled=False)
 

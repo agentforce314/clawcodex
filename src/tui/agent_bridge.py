@@ -25,9 +25,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 from src.agent import Session
+from src.services.session_storage import SessionStorage
 from src.tool_system.agent_loop import ToolEvent, run_agent_loop
 from src.tool_system.context import ToolContext
 from src.tool_system.registry import ToolRegistry
+from src.types.messages import Message as TypedMessage
 from src.utils.abort_controller import AbortController, AbortError
 
 from .messages import (
@@ -36,6 +38,7 @@ from .messages import (
     AssistantChunk,
     AssistantMessage,
     PermissionRequested,
+    ThinkingChunk,
     ToolEventMessage,
 )
 from .state import AppState
@@ -74,6 +77,19 @@ class AgentBridge:
         # callback also raises :class:`AbortError` on the worker thread
         # to tear down an in-flight HTTP stream cleanly.
         self._abort_controller: AbortController | None = None
+
+        # Phase-8 close-out: per-session JSONL transcript storage so
+        # the Resume screen has something to list. Best-effort — when
+        # the storage init fails (read-only HOME, etc.) we log and
+        # carry on; the agent loop is unaffected.
+        self._storage: SessionStorage | None = None
+        try:
+            self._storage = SessionStorage(session_id=session.session_id)
+            cwd_str = str(getattr(tool_context, "workspace_root", "") or "")
+            model_str = getattr(provider, "model", "") or ""
+            self._storage.init_metadata(model=model_str, cwd=cwd_str)
+        except Exception:
+            self._storage = None
         # Wire permission handler: the tool dispatcher calls this from
         # the worker thread, we post to the UI and block on an Event.
         tool_context.permission_handler = self._permission_handler
@@ -93,6 +109,9 @@ class AgentBridge:
             self._abort_controller = AbortController()
 
         self._session.conversation.add_user_message(prompt)
+        # Persist the user turn before the agent runs so the on-disk
+        # transcript stays consistent even if the agent loop crashes.
+        self._persist_user_message(prompt)
         self._post(AgentRunStarted(prompt=prompt))
         self._state.set_thinking(True, verb="Synthesizing")
         self._run_worker(
@@ -152,6 +171,14 @@ class AgentBridge:
             self._state.append_streaming_text(chunk)
             self._post(AssistantChunk(text=chunk))
 
+        def _on_thinking(chunk: str, redacted: bool) -> None:
+            # Same abort-propagation contract as text streaming. Posts a
+            # :class:`ThinkingChunk` message routed by the app to the
+            # transcript's ``append_thinking_chunk``.
+            if controller is not None and controller.signal.aborted:
+                raise AbortError(controller.signal.reason or "user_interrupt")
+            self._post(ThinkingChunk(text=chunk, redacted=redacted))
+
         try:
             result = run_agent_loop(
                 conversation=self._session.conversation,
@@ -163,6 +190,7 @@ class AgentBridge:
                 verbose=False,
                 on_event=_on_event,
                 on_text_chunk=_on_text if self._stream else None,
+                on_thinking_chunk=_on_thinking,
                 cancel_signal=controller.signal if controller is not None else None,
             )
         except AbortError:
@@ -189,6 +217,7 @@ class AgentBridge:
             return
 
         self._post(AssistantMessage(text=result.response_text))
+        self._persist_assistant_message(result.response_text)
         if result.usage:
             try:
                 self._state.usage.update(
@@ -215,6 +244,38 @@ class AgentBridge:
         self._state.clear_streaming_text()
         with self._busy_lock:
             self._busy = False
+
+    # ---- transcript persistence (Phase-8 close-out) -----------------
+    def _persist_user_message(self, prompt: str) -> None:
+        """Best-effort write of the user turn to the session JSONL."""
+
+        if self._storage is None or not (prompt or "").strip():
+            return
+        try:
+            self._storage.write_message(
+                TypedMessage(role="user", content=prompt)
+            )
+            self._storage.flush()
+        except Exception:
+            # Persistence is non-critical for an active session; log via
+            # state? — keep it silent here so a write failure (e.g.
+            # ENOSPC) doesn't disrupt the user's prompt cadence.
+            pass
+
+    def _persist_assistant_message(self, text: str) -> None:
+        """Best-effort write of the assistant turn at end of run."""
+
+        if self._storage is None:
+            return
+        if not (text or "").strip():
+            return
+        try:
+            self._storage.write_message(
+                TypedMessage(role="assistant", content=text)
+            )
+            self._storage.flush()
+        except Exception:
+            pass
 
     # ---- permission bridge ----
     def _permission_handler(
