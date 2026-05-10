@@ -94,6 +94,13 @@ class ClawCodexTUI(App):
     TITLE = "Claw Codex"
     SUB_TITLE = "interactive terminal"
 
+    # ``ctrl+c`` and ``ctrl+d`` are reserved at the keybinding-layer level
+    # (see :data:`src.tui.keybindings_resolver.RESERVED_SHORTCUTS`) — they
+    # are NOT rebindable through ``~/.claude/keybindings.json``. Keeping
+    # them on Textual's literal ``BINDINGS`` mechanism is intentional: the
+    # framework's intercept is the only reliable way to handle SIGINT-
+    # equivalent keystrokes that the host terminal may consume before our
+    # process sees them.
     BINDINGS = [
         ("ctrl+c", "cancel_or_quit", "Cancel / Quit"),
         ("ctrl+d", "quit", "Quit"),
@@ -144,6 +151,17 @@ class ClawCodexTUI(App):
         # Screen-reader announcer. The :class:`LiveRegion` widget is
         # bound in :meth:`on_mount` once the REPL screen is composed.
         self.announcer = Announcer(self)
+        # Phase-2 WI-2.6 wiring: the configurable keybinding layer lives
+        # on the app so any screen / widget can register handlers via
+        # ``self.app.keybindings.register(...)``. ``from_user_config``
+        # reads ``~/.claude/keybindings.json`` and falls back to defaults
+        # when the file is missing/malformed (the loader logs the failure
+        # mode). Migrating Textual ``BINDINGS`` blocks to this layer is
+        # explicit future work — today only ``REPLScreen.clear_transcript``
+        # routes through it as a proof of concept.
+        from .keybindings_dispatcher import KeybindingDispatcher
+
+        self.keybindings = KeybindingDispatcher.from_user_config()
         self._agent_bridge = AgentBridge(
             post_message=self._post_to_screen,
             session=self.session,
@@ -170,8 +188,42 @@ class ClawCodexTUI(App):
         except Exception:
             return "dark"
 
+    # ---- frame metrics (Phase-11 close-out) -------------------------
+    def _emit_lifecycle_frame(
+        self,
+        label: str,
+        duration_ms: float,
+        phases: dict[str, float] | None = None,
+    ) -> None:
+        """Emit a coarse :class:`FrameEvent` at a known lifecycle point.
+
+        Textual's render pipeline is internal; the chapter's per-phase
+        timing (Yoga / DOM-to-screen / diff / optimize / write) is not
+        accessible without monkey-patching the renderer. What we *can*
+        observe — and what's most useful for production debugging — are
+        coarse lifecycle boundaries (mount / screen-push / resize). The
+        ``label`` lands in ``component_attribution`` so observers can
+        filter by event source.
+
+        No-op when ``CLAWCODEX_DEBUG_REPAINTS`` is unset (the underlying
+        :func:`emit_frame_event` short-circuits).
+        """
+
+        from src.tui.frame_metrics import FrameEvent, emit_frame_event
+
+        emit_frame_event(
+            FrameEvent(
+                duration_ms=duration_ms,
+                phases=dict(phases or {}),
+                component_attribution=label,
+            )
+        )
+
     # ---- lifecycle ----
     def on_mount(self) -> None:
+        import time
+
+        _start = time.perf_counter()
         # Apply palette-derived CSS on top of the component defaults so
         # the chrome picks up the correct background / foreground even
         # when Textual's internal theme doesn't cover every slot.
@@ -205,6 +257,30 @@ class ClawCodexTUI(App):
         except Exception:
             pass
         self._state_unsub = self.app_state.subscribe(self._on_state_change)
+        self._emit_lifecycle_frame(
+            label="ClawCodexTUI.on_mount",
+            duration_ms=(time.perf_counter() - _start) * 1000.0,
+            phases={"mount": (time.perf_counter() - _start) * 1000.0},
+        )
+
+    async def _on_resize(self, event) -> None:
+        """Emit a FrameEvent on terminal resize so observability can
+        track viewport changes (which trigger full re-renders)."""
+
+        import time
+
+        _start = time.perf_counter()
+        # Forward to Textual's default handler first so the screen
+        # tree actually re-lays out before we measure.
+        try:
+            await super()._on_resize(event)  # type: ignore[misc]
+        except AttributeError:
+            pass
+        self._emit_lifecycle_frame(
+            label="ClawCodexTUI.resize",
+            duration_ms=(time.perf_counter() - _start) * 1000.0,
+            phases={"resize": (time.perf_counter() - _start) * 1000.0},
+        )
 
     def on_unmount(self) -> None:
         # Best-effort cleanup so we don't leave stale chrome on the host.
@@ -399,8 +475,44 @@ class ClawCodexTUI(App):
             self._open_message_selector(transcript)
         elif name == "tasks":
             self._open_tasks_dialog(transcript)
+        # Phase-8 close-out: /resume and /doctor wired through.
+        elif name == "resume":
+            self._open_resume_screen(transcript)
+        elif name == "doctor":
+            self._open_doctor_screen(transcript)
         else:
             transcript.append_system(f"Dialog '{name}' not available.", style="muted")
+
+    def _open_resume_screen(self, transcript: Transcript) -> None:
+        """Phase-8 wiring for ``/resume``. Placeholder per the audit."""
+
+        from .screens.resume_conversation import ResumeConversation
+
+        def _on_dismiss(session_id: str | None) -> None:
+            self._restore_prompt_focus()
+            if session_id:
+                # Future-work placeholder — the audit (state 2) deferred
+                # transcript persistence; when wiring lands, this is
+                # where the resume happens.
+                transcript.append_system(
+                    f"Selected session '{session_id}' — resume not yet wired "
+                    f"(see ch13-phase8-audit-result.md).",
+                    style="muted",
+                )
+
+        self.announcer.announce("Opened resume picker.", notify=False)
+        self.push_screen(ResumeConversation(), callback=_on_dismiss)
+
+    def _open_doctor_screen(self, transcript: Transcript) -> None:
+        """Phase-8 wiring for ``/doctor``. Read-only diagnostics."""
+
+        from .screens.doctor import DoctorScreen
+
+        def _on_dismiss(_value=None) -> None:
+            self._restore_prompt_focus()
+
+        self.announcer.announce("Opened diagnostics.", notify=False)
+        self.push_screen(DoctorScreen(app_state=self.app_state), callback=_on_dismiss)
 
     def _open_model_picker(self, transcript: Transcript) -> None:
         models = self._list_available_models()

@@ -74,3 +74,43 @@ def test_clear_removes_all_bindings():
     assert not tracker.bindings
     # With nothing registered, all keys are misses.
     assert tracker.on_key("g") is None
+
+
+def test_timeout_fires_shorter_binding_when_chord_extension_unrealised():
+    """Vim ``timeoutlen`` regression test (Phase-2 Critic blocker).
+
+    With both ``("g",) → single_g`` and ``("g","g") → double_g`` bound,
+    typing ``g`` then waiting past ``timeout_seconds`` MUST fire
+    ``single_g``. Previously the resolver returned PENDING in the timeout-
+    disambiguation path because ``("g","g")`` was still notionally
+    reachable, so the shorter binding silently disappeared.
+    """
+
+    from src.tui.keybindings import ChordTracker
+
+    tracker = ChordTracker(timeout_seconds=1.0)
+    tracker.add_binding(("g",), "single_g")
+    tracker.add_binding(("g", "g"), "double_g")
+
+    # Buffer fills with first ``g`` — PENDING (shorter match deferred).
+    assert tracker.on_key("g", now=0.0) is None
+    # Far past the timeout: a fresh key arrives. Before discarding the
+    # buffer, the tracker should commit the shorter binding.
+    next_action = tracker.on_key("x", now=2.0)
+    assert next_action == "single_g", (
+        "shorter binding must fire post-timeout when the chord extension "
+        "did not arrive"
+    )
+
+
+def test_timeout_with_only_chord_bound_drops_buffer_silently():
+    """If only ``("g","g")`` is bound and the user types ``g`` then times
+    out, no shorter binding to fire — buffer is silently dropped."""
+
+    from src.tui.keybindings import ChordTracker
+
+    tracker = ChordTracker(timeout_seconds=1.0)
+    tracker.add_binding(("g", "g"), "double_g")
+    assert tracker.on_key("g", now=0.0) is None
+    # Past timeout; no shorter match exists.
+    assert tracker.on_key("x", now=2.0) is None
