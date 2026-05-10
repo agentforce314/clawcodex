@@ -250,7 +250,16 @@ class AnthropicProvider(BaseProvider):
         on_text_chunk: TextChunkCallback | None = None,
         **kwargs
     ) -> ChatResponse:
-        """Stream Anthropic text chunks and return the final structured response."""
+        """Stream Anthropic text chunks and return the final structured response.
+
+        WI-5.2: wraps the stream with a ``StreamWatchdog`` that closes the
+        underlying HTTP response if no chunks arrive within
+        ``CLAUDE_STREAM_IDLE_TIMEOUT_MS`` (default 90 s). On timeout the
+        iterator raises; we catch it and fall back to the non-streaming
+        ``chat()`` path so the user gets an answer rather than a hung session.
+        """
+        from src.utils.stream_watchdog import StreamWatchdog
+
         model = self._get_model(**kwargs)
         max_tokens = kwargs.get("max_tokens", 4096)
         system = kwargs.pop("system", None)
@@ -261,25 +270,86 @@ class AnthropicProvider(BaseProvider):
         if tools:
             extra_kwargs["tools"] = tools
 
+        def _fallback_to_chat() -> ChatResponse:
+            """Re-issue the request without streaming (WI-5.2 recovery path).
+
+            Mirrors TS ``streamLatencyWatchdog.ts:resumeViaChatCompletion``.
+            Strips kwargs that ``chat`` already accepts as named args so we
+            don't double-pass them.
+            """
+            forwarded = {
+                k: v
+                for k, v in kwargs.items()
+                if k not in ["model", "max_tokens", "tools"]
+            }
+            return self.chat(
+                messages,
+                tools=tools,
+                **({"system": system} if system else {}),
+                **forwarded,
+                model=model,
+                max_tokens=max_tokens,
+            )
+
         streamed_text = ""
-        with client.messages.stream(
-            model=model,
-            max_tokens=max_tokens,
-            messages=anthropic_messages,
-            **({"system": system} if system else {}),
-            **extra_kwargs,
-            **{k: v for k, v in kwargs.items() if k not in ["model", "max_tokens", "tools"]},
-        ) as stream:
-            for text in stream.text_stream:
-                if not text:
-                    continue
-                streamed_text += text
-                if on_text_chunk is not None:
-                    on_text_chunk(text)
-            try:
-                final_message = stream.get_final_message()
-            except Exception:
-                final_message = None
+        watchdog_fired = False
+        final_message = None
+        try:
+            with client.messages.stream(
+                model=model,
+                max_tokens=max_tokens,
+                messages=anthropic_messages,
+                **({"system": system} if system else {}),
+                **extra_kwargs,
+                **{k: v for k, v in kwargs.items() if k not in ["model", "max_tokens", "tools"]},
+            ) as stream:
+                watchdog = StreamWatchdog(stream)
+                watchdog.arm()
+                try:
+                    for text in stream.text_stream:
+                        # Each chunk pushes the deadline forward.
+                        watchdog.reset()
+                        if not text:
+                            continue
+                        streamed_text += text
+                        if on_text_chunk is not None:
+                            on_text_chunk(text)
+                    try:
+                        final_message = stream.get_final_message()
+                    except Exception:
+                        final_message = None
+                finally:
+                    # Snapshot watchdog state INSIDE the finally so it
+                    # survives an exception propagating through the
+                    # iterator (close() raises mid-stream). Critic B1
+                    # caught this — otherwise the assignment was on a
+                    # line never reached during the exception path and
+                    # the fallback branch below ran with watchdog_fired
+                    # still False.
+                    watchdog_fired = watchdog.fired
+                    watchdog.disarm()
+        except Exception as streaming_exc:
+            # WI-5.2 fallback path: stream interrupted. If our watchdog
+            # triggered the interruption, fall back to non-streaming so
+            # the user still gets an answer. If the failure is something
+            # else (network/auth/etc.), re-raise the original.
+            if watchdog_fired:
+                try:
+                    return _fallback_to_chat()
+                except Exception as fallback_exc:
+                    # Recovery itself failed — surface BOTH causes so
+                    # observers see the original streaming error AND the
+                    # fallback failure that prevented recovery. Critic
+                    # M3 — bare ``except: pass`` swallowed the fallback
+                    # error and re-raised only the streaming one.
+                    raise fallback_exc from streaming_exc
+            raise
+
+        if watchdog_fired:
+            # Stream got interrupted but no exception escaped the
+            # with-block (close-side raced the iterator's normal exit).
+            # Fall back to non-streaming for the full answer.
+            return _fallback_to_chat()
 
         if final_message is not None:
             return self._build_chat_response(final_message)

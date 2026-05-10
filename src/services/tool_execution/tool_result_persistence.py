@@ -35,6 +35,15 @@ log = logging.getLogger(__name__)
 # Mirrors typescript/src/constants/toolLimits.ts.
 DEFAULT_MAX_RESULT_SIZE_CHARS: int = 50_000
 
+# WI-5.1: per-message tool-result aggregate budget. TS constant at
+# ``typescript/src/constants/toolLimits.ts:49``. Prevents the
+# ``[Read, Read, Read, Read, Read]`` parallel-tool fan-out from blowing
+# the context budget in a single turn — five 40K results each fit under
+# the per-tool 50K threshold but sum to 200K, which is the per-message
+# aggregate cap. The Nth result that would push the running aggregate
+# past this cap is persisted to disk regardless of its individual size.
+MAX_TOOL_RESULTS_PER_MESSAGE_CHARS: int = 200_000
+
 # Preview size for the wrapper message — TS toolResultStorage.ts:109.
 PREVIEW_SIZE_BYTES: int = 2_000
 
@@ -316,20 +325,33 @@ def maybe_persist_large_tool_result(
     *,
     threshold: float,
     tool_results_dir: Path,
+    aggregate_chars_so_far: int = 0,
+    aggregate_cap: int = MAX_TOOL_RESULTS_PER_MESSAGE_CHARS,
 ) -> dict[str, Any]:
     """Apply per-tool persistence to a tool_result block.
 
     Mirrors ``maybePersistLargeToolResult`` in
     ``typescript/src/utils/toolResultStorage.ts:272-334``.
 
+    Returns the (possibly modified) block. Callers tracking the per-
+    message aggregate budget (WI-5.1) should use
+    ``compute_block_chars`` on the returned block + their running
+    counter; ``maybe_persist_large_tool_result`` itself uses the
+    ``aggregate_chars_so_far`` argument only to DECIDE whether to
+    persist a block that would otherwise pass the per-tool threshold
+    but push the running total past ``aggregate_cap``.
+
     Returns the original block unchanged when:
     - content is non-empty AND below ``threshold``
+      AND the running aggregate WOULD NOT exceed ``aggregate_cap``
     - content contains image blocks (those reach the model intact)
     - persistence fails (we surface the original rather than lose data)
 
     Returns a modified block (new ``content``) when:
     - content is empty → ``"(<tool_name> completed with no output)"``
     - content is large → wrapper message with size + path + preview
+    - the running aggregate WOULD exceed ``aggregate_cap`` after adding
+      this block (WI-5.1: persist-to-disk to keep total within budget)
     """
     content = tool_result_block.get("content")
 
@@ -347,7 +369,14 @@ def maybe_persist_large_tool_result(
         return tool_result_block
 
     size = _content_size(content)
-    if size <= threshold:
+
+    # WI-5.1: per-message aggregate gate. Even when this block alone is
+    # under ``threshold``, if adding it would push the running total
+    # over ``aggregate_cap`` we persist it to disk to keep the message
+    # within budget. The TS reference checks the aggregate at the same
+    # point per ``toolLimits.ts:49`` semantics.
+    aggregate_would_exceed = (aggregate_chars_so_far + size) > aggregate_cap
+    if size <= threshold and not aggregate_would_exceed:
         return tool_result_block
 
     tool_use_id = tool_result_block.get("tool_use_id") or _hash_id(content)
@@ -372,18 +401,37 @@ def maybe_persist_large_tool_result(
     return new_block
 
 
+def compute_block_chars(tool_result_block: dict[str, Any]) -> int:
+    """Return the char-size of a tool_result block's content.
+
+    Helper for WI-5.1 aggregate tracking. Use after
+    ``process_tool_result_block`` / ``maybe_persist_large_tool_result``
+    to update the running per-message aggregate counter.
+    """
+    return _content_size(tool_result_block.get("content"))
+
+
 def process_tool_result_block(
     tool: "Tool",
     tool_use_result: Any,
     tool_use_id: str,
     *,
     tool_results_dir: Path,
+    aggregate_chars_so_far: int = 0,
 ) -> dict[str, Any]:
     """Map a tool result to its API form and apply per-tool persistence.
 
     Mirrors ``processToolResultBlock`` in
     ``typescript/src/utils/toolResultStorage.ts:205-226``. The single entry
     point used by the execution pipeline (Step 11).
+
+    Backward-compat: returns just the block (not a tuple). The caller
+    threads the running aggregate counter via ``aggregate_chars_so_far``
+    so this function can decide whether to force-persist a block that
+    would otherwise pass the per-tool threshold but push the running
+    total past ``MAX_TOOL_RESULTS_PER_MESSAGE_CHARS``. Updating the
+    counter post-call is the caller's responsibility — use
+    ``compute_block_chars(returned_block)`` to measure.
     """
     tool_result_block = tool.map_result_to_api(tool_use_result, tool_use_id)
     threshold = get_persistence_threshold(tool.name, tool.max_result_size_chars)
@@ -392,6 +440,7 @@ def process_tool_result_block(
         tool.name,
         threshold=threshold,
         tool_results_dir=tool_results_dir,
+        aggregate_chars_so_far=aggregate_chars_so_far,
     )
 
 

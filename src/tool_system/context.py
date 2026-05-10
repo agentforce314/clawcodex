@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -82,6 +83,26 @@ class ToolContext:
     # for the chapter-10 task state machine; ``tasks`` continues to host
     # ``tasks_v2``/todo entries for the unrelated TaskCreate system.
     runtime_tasks: RuntimeTaskRegistry = field(default_factory=RuntimeTaskRegistry)
+    # WI-5.1: per-message tool-result aggregate counter. The execution
+    # pipeline (Step 11) reads + increments this each time a tool result
+    # is mapped to its API form; when the running total exceeds
+    # ``MAX_TOOL_RESULTS_PER_MESSAGE_CHARS`` (default 200K) the next
+    # result is persisted to disk regardless of its individual size.
+    # Reset to 0 between messages by the turn-loop dispatcher.
+    #
+    # ``_aggregate_lock`` synchronizes the read-decide-write across
+    # concurrent tool dispatches (critic B6). ``_run_tools_partitioned``
+    # uses ``asyncio.to_thread`` to fan out concurrency-safe tools (Read,
+    # Grep, Glob) — without this lock, N threads would all read 0, all
+    # decide their block is under the cap, and the per-message budget
+    # would be silently bypassed. The full read+decide+write runs
+    # serialized so the persistence decision uses the LIVE counter and
+    # the cap is strictly enforced. Cost: the rare persist-to-disk path
+    # serializes against the lock, but persists are O(1) per turn in
+    # typical workloads (the common case under-threshold returns the
+    # block without I/O).
+    tool_result_chars_so_far: int = 0
+    _aggregate_lock: threading.Lock = field(default_factory=threading.Lock)
     # Chapter-10 / Chunk F / WI-6.1 — agent-name registry. Maps the
     # human-readable ``name`` (passed via Agent({name: "researcher"}))
     # to the random ``agent_id`` returned by the spawn. SendMessage
