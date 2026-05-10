@@ -9,6 +9,8 @@ class OutputStyle:
     name: str
     prompt: str
     source_path: Path | None = None
+    description: str | None = None
+    model: str | None = None
 
 
 BUILTIN_OUTPUT_STYLES: dict[str, OutputStyle] = {
