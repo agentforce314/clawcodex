@@ -33,6 +33,13 @@ _mdm_handle = get_or_start_mdm_raw_read()
 
 def main():
     """CLI main entry point."""
+    # WI-0.1 (ch17 Phase 0): instrument cold-start phases. Env-gated by
+    # ``CLAUDE_CODE_PROFILE_STARTUP``; a no-op import + no-op call when
+    # disabled (~ns overhead). On exit the profiler writes a Markdown
+    # report to ``$CLAUDE_CONFIG_DIR/startup-perf/{session_id}.txt``.
+    from src.utils.startup_profiler import profile_checkpoint
+    profile_checkpoint("cli_main_entry")
+
     import os
     if os.environ.get("CLAWCODEX_DEBUG", "").lower() in ("1", "true", "yes"):
         import logging
@@ -80,6 +87,7 @@ def main():
 
     parser = _build_parser()
     args = parser.parse_args(argv)
+    profile_checkpoint("argparse_done")
 
     if args.version:
         from src import __version__
@@ -93,6 +101,7 @@ def main():
     # ``--dangerously-skip-permissions`` consistently. Mirrors
     # ``typescript/src/main.tsx:1383-1389``.
     _resolve_permission_state(args)
+    profile_checkpoint("permissions_resolved")
 
     # WI-4.5: fire a HEAD request to the Anthropic API endpoint in the
     # background to warm DNS/TLS while we finish CLI setup. Mirrors TS's
@@ -105,6 +114,7 @@ def main():
     start_api_preconnect()
 
     if args.print:
+        profile_checkpoint("mode_dispatch_print")
         return _run_print_mode(args)
 
     # Interactive path: decide between the Textual TUI (new default) and the
@@ -118,8 +128,10 @@ def main():
     from src.entrypoints.tui import should_use_tui
 
     if should_use_tui(explicit_tui):
+        profile_checkpoint("mode_dispatch_tui")
         return _run_tui_mode(args)
 
+    profile_checkpoint("mode_dispatch_repl")
     return start_repl(
         stream=args.stream,
         permission_mode=args._resolved_permission_mode,

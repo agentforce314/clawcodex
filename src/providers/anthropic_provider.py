@@ -46,6 +46,54 @@ def __getattr__(name: str):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
+def _extract_usage_dict(usage: Any) -> dict[str, Any]:
+    """Build the ChatResponse.usage dict from an Anthropic SDK ``Usage`` object.
+
+    WI-0.2 (ch17 Phase 0): forwards prompt-cache credits and the
+    ``cache_creation`` 5m/1h breakdown so downstream consumers stop reading
+    0 from the dict. Mirrors TS ``services/api/claude.ts``'s usage handling
+    (chapter line 61: "Token counting is anchored on the API's actual
+    ``usage`` field ... accounting for prompt caching credits").
+
+    The chapter calls out four observability fields on the API response:
+      * ``cache_creation_input_tokens`` — top-level int.
+      * ``cache_read_input_tokens`` — top-level int.
+      * ``cache_creation.ephemeral_5m_input_tokens`` — sub-object.
+      * ``cache_creation.ephemeral_1h_input_tokens`` — sub-object.
+
+    Note on thinking tokens: the Anthropic Python SDK 0.88.0 ``Usage`` type
+    does NOT expose a thinking-token attribute (verified via
+    ``Usage.__annotations__``). Extended-thinking tokens live in content
+    blocks, not ``usage``, so they are not forwarded here. Extend this
+    helper if a future SDK adds the attribute.
+    """
+    if usage is None:
+        return {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+        }
+
+    result: dict[str, Any] = {
+        "input_tokens": getattr(usage, "input_tokens", 0) or 0,
+        "output_tokens": getattr(usage, "output_tokens", 0) or 0,
+        "cache_creation_input_tokens": getattr(usage, "cache_creation_input_tokens", 0) or 0,
+        "cache_read_input_tokens": getattr(usage, "cache_read_input_tokens", 0) or 0,
+    }
+
+    # cache_creation breakdown — sub-object with ephemeral_5m / ephemeral_1h.
+    # Forwarded as a nested dict so consumers can attribute cache writes by TTL.
+    cache_creation = getattr(usage, "cache_creation", None)
+    if cache_creation is not None:
+        result["cache_creation"] = {
+            "ephemeral_5m_input_tokens": getattr(cache_creation, "ephemeral_5m_input_tokens", 0) or 0,
+            "ephemeral_1h_input_tokens": getattr(cache_creation, "ephemeral_1h_input_tokens", 0) or 0,
+        }
+
+    return result
+
+
 class AnthropicProvider(BaseProvider):
     """Anthropic Claude provider."""
 
@@ -77,6 +125,18 @@ class AnthropicProvider(BaseProvider):
         self.client = mod.anthropic.Anthropic(**self._client_kwargs)
         return self.client
 
+    def has_custom_endpoint(self) -> bool:
+        """True iff the caller passed a non-default ``base_url``.
+
+        WI-2.3 (ch17 Phase 2): used by ``cache_state.is_first_party_provider``
+        to decide whether ``scope: 'global'`` may be emitted on
+        ``cache_control`` blocks (only valid against Anthropic's first-party
+        endpoint; proxies / self-hosted / Bedrock shims would either 400
+        or silently drop the field). Public API so the cache-state module
+        doesn't read ``self._client_kwargs`` (encapsulation).
+        """
+        return bool(self._client_kwargs.get("base_url"))
+
     def _build_chat_response(self, response: Any) -> ChatResponse:
         """Convert Anthropic SDK response into the shared ChatResponse shape."""
         content_text = ""
@@ -99,10 +159,7 @@ class AnthropicProvider(BaseProvider):
         return ChatResponse(
             content=content_text,
             model=getattr(response, "model", self.model or ""),
-            usage={
-                "input_tokens": getattr(usage, "input_tokens", 0),
-                "output_tokens": getattr(usage, "output_tokens", 0),
-            },
+            usage=_extract_usage_dict(usage),
             finish_reason=str(getattr(response, "stop_reason", "stop")),
             tool_uses=tool_uses if tool_uses else None,
         )

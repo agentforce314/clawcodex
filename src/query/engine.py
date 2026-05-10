@@ -19,7 +19,9 @@ from ..providers.base import BaseProvider
 from ..context_system import build_context_prompt
 from ..context_system.prompt_assembly import (
     append_system_context,
+    append_system_context_blocks,
     build_full_system_prompt,
+    build_full_system_prompt_blocks,
     fetch_system_prompt_parts,
     prepend_user_context,
 )
@@ -44,6 +46,12 @@ class QueryEngineConfig:
     query_source: str = "repl_main_thread"
     user_context: dict[str, str] | None = None
     system_context: dict[str, str] | None = None
+    # WI-2.3 (critic M1): MCP servers loaded for this session. Threaded into
+    # build_full_system_prompt_blocks so the global-scope gate at
+    # cache_state.should_use_global_cache_scope can disable scope='global'
+    # when MCP schemas are present (per chapter line 91, MCP schemas are
+    # per-user and must NOT land in the cross-user global cache tier).
+    mcp_servers: list[Any] | None = None
 
 
 class QueryEngine:
@@ -68,16 +76,30 @@ class QueryEngine:
 
     async def _build_system_prompt_parts(
         self,
-    ) -> tuple[str, dict[str, str], dict[str, str]]:
+    ) -> tuple[str | list[dict[str, Any]], dict[str, str], dict[str, str]]:
         """
         Build system prompt with user/system context.
 
-        Returns (system_prompt_str, user_context, system_context).
-        Uses build_full_system_prompt() to produce identity, tool docs,
-        environment, and tool usage instructions — then appends user/system
-        context from fetch_system_prompt_parts().
+        Returns (system_prompt, user_context, system_context).
+
+        ``system_prompt`` is ``list[dict[str, Any]]`` for the production
+        cold-start path (no caller-provided system prompt or custom prompt) —
+        each section becomes a block, with ``cache_control: ephemeral``
+        markers placed at the GLOBAL/SESSION/REQUEST scope boundaries so the
+        Anthropic API engages prompt caching. Mirrors TS ``getSystemPrompt()``
+        return shape used at ``services/api/claude.ts``.
+
+        ``system_prompt`` is ``str`` only when:
+          - The caller provided ``system_prompt`` directly (SDK opt-out path).
+          - The caller provided ``custom_system_prompt`` (single-block override).
+          - The fallback to ``build_context_prompt`` is taken (Exception path).
+
+        Both shapes are accepted by ``QueryParams.system_prompt`` and forward
+        cleanly through to ``client.messages.create(system=...)`` via the
+        Anthropic SDK's ``Union[str, Iterable[TextBlockParam]]`` type.
         """
-        # If full system prompt was provided directly, use it
+        # Caller-provided system prompt → use as-is. Could be str or blocks
+        # (the type is permissive at the config layer).
         if self._config.system_prompt:
             user_ctx = self._config.user_context or {}
             sys_ctx = self._config.system_context or {}
@@ -92,29 +114,56 @@ class QueryEngine:
             )
 
             if self._config.custom_system_prompt:
-                # Custom prompt: use it directly with optional append
-                prompt_sections = [self._config.custom_system_prompt]
+                # Custom prompt: single-block override. The cache_control
+                # plumbing doesn't apply — SDK callers using a custom prompt
+                # opt out of the section taxonomy. Return list-shape with one
+                # block so downstream typing is uniform.
+                blocks: list[dict[str, Any]] = [
+                    {"type": "text", "text": self._config.custom_system_prompt}
+                ]
                 if self._config.append_system_prompt:
-                    prompt_sections.append(self._config.append_system_prompt)
-            else:
-                # Build full system prompt with TS-matching 7 modules + env.
-                # Per-tool prompts are NOT in the system prompt — they're sent
-                # via the API tools parameter (tool.prompt() → description).
-                full_prompt = build_full_system_prompt(
-                    cwd=cwd,
-                    append_system_prompt=self._config.append_system_prompt,
-                )
-                prompt_sections = [full_prompt] if full_prompt else parts.default_system_prompt
-                if not full_prompt and self._config.append_system_prompt:
-                    prompt_sections.append(self._config.append_system_prompt)
+                    blocks.append(
+                        {"type": "text", "text": self._config.append_system_prompt}
+                    )
+                # Append git-status etc. as a final uncached block.
+                system_prompt = append_system_context_blocks(blocks, parts.system_context)
+                return system_prompt, parts.user_context, parts.system_context
 
-            system_prompt = append_system_context(
-                prompt_sections, parts.system_context,
+            # Production cold-start path: assemble the full block list with
+            # cache_control markers at scope boundaries. Per WI-1.1, the
+            # final API request shape is::
+            #
+            #   [global blocks…, ⟨ephemeral⟩,
+            #    __SYSTEM_PROMPT_DYNAMIC_BOUNDARY__,
+            #    session blocks…, ⟨ephemeral⟩,
+            #    request blocks…, ⟨ephemeral⟩,
+            #    git-status block (uncached)]
+            blocks = build_full_system_prompt_blocks(
+                cwd=cwd,
+                append_system_prompt=self._config.append_system_prompt,
+                # WI-2.2: thread query_source so the cache_control marker
+                # picks 5m vs 1h based on the per-call decision in
+                # ``cache_state.should_1h_cache_ttl``.
+                query_source=self._config.query_source,
+                # WI-2.3: thread provider AND mcp_servers so GLOBAL-tier
+                # blocks emit ``scope: 'global'`` only when ALL hold:
+                # firstParty + no-MCP + opt-in env. Critic M1: omitting
+                # mcp_servers here would bypass the MCP gate at the
+                # integration layer (per-user MCP schemas would land in
+                # the cross-user GLOBAL cache, violating the chapter's
+                # privacy guarantee at line 91).
+                provider=self._config.provider,
+                mcp_servers=self._config.mcp_servers,
+            )
+            system_prompt = append_system_context_blocks(
+                blocks, parts.system_context,
             )
             return system_prompt, parts.user_context, parts.system_context
 
         except Exception:
-            # Fallback to legacy builder
+            # Fallback to legacy str-shape builder. This branch is only hit
+            # on assembly errors; in steady state the production path above
+            # always returns the block-list shape.
             try:
                 context_prompt = build_context_prompt(
                     self._config.cwd,

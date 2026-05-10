@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+# WI-0.1 (ch17 Phase 0): mark the moment the tool-system package starts
+# import work. Placed before the heavy re-exports so the checkpoint's
+# delta-from-previous reflects the package's cost.
+from src.utils.startup_profiler import profile_checkpoint
+
+profile_checkpoint("tool_system_imported")
+
 from .build_tool import (
     McpInfo,
     SearchOrReadResult,

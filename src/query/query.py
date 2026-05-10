@@ -46,7 +46,13 @@ PROMPT_TOO_LONG_ERROR_MESSAGE = (
 @dataclass
 class QueryParams:
     messages: list[Message]
-    system_prompt: str
+    # WI-1.1: ``system_prompt`` accepts either the legacy ``str`` shape
+    # (joined sections, no cache_control markers) OR the block-list shape
+    # ``list[dict]`` produced by ``build_full_system_prompt_blocks``. The
+    # block-list shape is what engages Anthropic's prompt cache via
+    # ``cache_control: {type: 'ephemeral'}`` markers; the str shape is
+    # retained for backward compat with callers that pass a custom prompt.
+    system_prompt: str | list[dict[str, Any]]
     tools: Tools
     tool_registry: ToolRegistry
     tool_use_context: ToolContext
@@ -200,9 +206,18 @@ async def _call_model_sync(
             else sum(len(str(b)) for b in m.get("content", []))
             for m in api_messages
         )
+        if isinstance(system_prompt, str):
+            sys_desc = f"{len(system_prompt)} chars"
+        else:
+            sys_total_chars = sum(
+                len(blk.get("text", ""))
+                for blk in system_prompt
+                if isinstance(blk, dict)
+            )
+            sys_desc = f"{len(system_prompt)} blocks, {sys_total_chars} chars"
         logger.warning(
-            "[DIAG] _call_model_sync: %d api_messages, ~%d chars, system_prompt=%d chars, %d tools",
-            len(api_messages), _total_chars, len(system_prompt), len(list(tools)),
+            "[DIAG] _call_model_sync: %d api_messages, ~%d chars, system_prompt=%s, %d tools",
+            len(api_messages), _total_chars, sys_desc, len(list(tools)),
         )
         for i, m in enumerate(api_messages):
             role = m.get("role", "?")
@@ -240,9 +255,33 @@ async def _call_model_sync(
 
     is_anthropic = isinstance(provider, (AnthropicProvider, MinimaxProvider))
     if is_anthropic:
+        # Forward whatever shape the engine produced — str or list[dict].
+        # The SDK's ``system`` param accepts ``Union[str, Iterable[TextBlockParam]]``;
+        # cache_control markers on blocks engage server-side prompt caching.
         call_kwargs["system"] = system_prompt
     else:
-        api_messages = [{"role": "system", "content": system_prompt}, *api_messages]
+        # Non-Anthropic providers (OpenAI-compat, GLM, etc.) consume the
+        # system prompt as a single string injected as a ``system`` message.
+        # Flatten the block-list shape to a string by concatenating block text;
+        # cache_control markers don't apply to these providers anyway.
+        #
+        # Critically, FILTER OUT the dynamic-boundary marker block. The
+        # literal ``__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__`` is a cache-only
+        # signal for the Anthropic backend; emitting it as raw text into
+        # a non-Anthropic system prompt embeds an unintelligible token in
+        # the prose that may confuse those models.
+        if isinstance(system_prompt, list):
+            from ..context_system.cache_boundary import SYSTEM_PROMPT_DYNAMIC_BOUNDARY
+            flattened = "\n\n".join(
+                str(blk.get("text", ""))
+                for blk in system_prompt
+                if isinstance(blk, dict)
+                and blk.get("text")
+                and blk.get("text") != SYSTEM_PROMPT_DYNAMIC_BOUNDARY
+            )
+        else:
+            flattened = system_prompt
+        api_messages = [{"role": "system", "content": flattened}, *api_messages]
 
     if max_output_tokens_override is not None:
         call_kwargs["max_tokens"] = max_output_tokens_override
