@@ -45,6 +45,18 @@ class AnthropicProvider(BaseProvider):
         self.client = anthropic.Anthropic(**self._client_kwargs)
         return self.client
 
+    def has_custom_endpoint(self) -> bool:
+        """True iff the caller passed a non-default ``base_url``.
+
+        WI-2.3 (ch17 Phase 2): used by ``cache_state.is_first_party_provider``
+        to decide whether ``scope: 'global'`` may be emitted on
+        ``cache_control`` blocks (only valid against Anthropic's first-party
+        endpoint; proxies / self-hosted / Bedrock shims would either 400
+        or silently drop the field). Public API so the cache-state module
+        doesn't read ``self._client_kwargs`` (encapsulation).
+        """
+        return bool(self._client_kwargs.get("base_url"))
+
     def _build_chat_response(self, response: Any) -> ChatResponse:
         """Convert Anthropic SDK response into the shared ChatResponse shape."""
         content_text = ""
