@@ -12,11 +12,13 @@ typescript/src/utils/api.ts.
 
 from __future__ import annotations
 
+import functools
 import os
 from datetime import datetime
 from typing import Any
 
 from ..types.messages import Message, UserMessage
+from .cache_boundary import SYSTEM_PROMPT_DYNAMIC_BOUNDARY
 from .claude_md import (
     _should_disable_claude_md,
     clear_memory_file_caches,
@@ -73,8 +75,13 @@ async def get_user_context(
 
     context: dict[str, str] = {}
 
-    # Current date in local ISO format
-    context["currentDate"] = _get_local_iso_date()
+    # Date in cached prefix → memoized + date-only.
+    # Per WI-1.2: get_user_context() feeds prepend_user_context() at :200,
+    # which prepends a <system-reminder> user message. If a future
+    # cache_control marker lands on a tool or message block, this date
+    # becomes part of the cached prefix; using sub-second precision here
+    # would bust the cache on every turn.
+    context["currentDate"] = _get_session_start_date_iso()
 
     # CLAUDE.md content (skip in --bare mode unless --add-dir used)
     if not _should_disable_claude_md():
@@ -193,6 +200,29 @@ def append_system_context(
     return "\n\n".join(p for p in parts if p)
 
 
+def append_system_context_blocks(
+    blocks: list[dict[str, Any]],
+    context: dict[str, str],
+) -> list[dict[str, Any]]:
+    """Block-list version of ``append_system_context``.
+
+    Appends the system-context (git status, etc.) as a NEW trailing block
+    rather than joining it inline into an existing block. This preserves
+    cache_control markers on prior blocks — git status is volatile per
+    session and would bust the cached prefix if joined into a cached block.
+
+    The new block is uncached; it sits after the REQUEST-scope cache_control
+    marker so it doesn't extend the cached prefix.
+    """
+    result = list(blocks)
+    context_str = "\n".join(
+        f"{key}: {value}" for key, value in context.items() if value
+    )
+    if context_str:
+        result.append({"type": "text", "text": context_str})
+    return result
+
+
 # ---------------------------------------------------------------------------
 # prependUserContext — mirrors TS api.ts prependUserContext
 # ---------------------------------------------------------------------------
@@ -233,8 +263,43 @@ def prepend_user_context(
 # ---------------------------------------------------------------------------
 
 def _get_local_iso_date() -> str:
-    """Get current date in local ISO format."""
+    """Get current wall-clock datetime in local ISO format with hh:mm:ss.
+
+    DEPRECATED for use in any section that flows through the prompt cache —
+    once cache_control markers engage server-side caching (WI-1.1), the
+    sub-second precision in this string busts the cached prefix on every
+    turn. Prefer ``_get_session_start_date_iso()`` for cache-stable dates.
+
+    Retained for callers in REQUEST-scope sections (``:274``,
+    ``:775``) where per-call drift is harmless because the section sits
+    after ``__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__`` and is not part of the
+    cached prefix.
+    """
     return datetime.now().strftime("%Y-%m-%dT%H:%M:%S%z") or datetime.now().isoformat()
+
+
+@functools.lru_cache(maxsize=1)
+def _get_session_start_date_iso() -> str:
+    """Date frozen at first call, cached for the process lifetime.
+
+    Mirrors TS ``constants/common.ts:24``::
+
+        const getSessionStartDate = memoize(getLocalISODate)
+
+    Used in any prompt section that flows through the prompt cache
+    (system blocks before ``__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__``, OR user-
+    context messages — the latter would land in the cached prefix if a
+    future cache_control marker is placed on a tool/message block).
+
+    Returns date-only (``YYYY-MM-DD``) — no hh:mm:ss. The chapter's
+    rationale: a stale date in the prompt is cosmetic, but a per-call
+    cache bust reprocesses ~190K cached tokens.
+
+    The lru_cache lives at the module level — it is NOT cleared by
+    ``clear_context_caches()``. That function only resets the per-context
+    dicts; this date persists for the process lifetime by design.
+    """
+    return datetime.now().strftime("%Y-%m-%d")
 
 
 def _should_include_git_instructions() -> bool:
@@ -457,6 +522,230 @@ def build_full_system_prompt(
         prompt += "\n\n" + append_system_prompt
 
     return prompt
+
+
+# ---------------------------------------------------------------------------
+# WI-1.1: Block-list assembly with cache_control markers
+#
+# Mirrors TS ``getSystemPrompt()`` in ``constants/prompts.ts`` returning a
+# list of blocks that the API receives as ``system: List[TextBlockParam]``.
+# Each scope-group's last block carries ``cache_control: {type:'ephemeral'}``,
+# turning Anthropic's prompt cache from "decorated but inactive" (the gap
+# analysis's centerpiece finding) into "active and observable via
+# ``cache_read_input_tokens``" (gap #18 / WI-0.2).
+#
+# Block-shape contract (per refactor plan §A2 — max 4 cache_control markers):
+#   * Each section becomes one ``{"type": "text", "text": ...}`` block.
+#   * The LAST block in each scope group (GLOBAL, SESSION, REQUEST) carries
+#     ``cache_control: {"type": "ephemeral", "ttl": ...}``. The TTL is
+#     "5m" today; WI-2.2 swaps in "1h" once ``promptCache1hEligible`` is
+#     latched.
+#   * The ``__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__`` literal sits as its own
+#     block between the last GLOBAL block and the first SESSION block.
+#
+# Caveat: tool-block schemas (the ``tools=`` parameter) are NOT cache-marked
+# in this initial port. Adding/removing a single tool to a session WILL bust
+# the prompt cache because the tools array changes the prefix. Defer to a
+# follow-on if the cache-break detector flags tool churn.
+# ---------------------------------------------------------------------------
+
+
+def build_full_system_prompt_blocks(
+    *,
+    cwd: str | None = None,
+    tools: list[Any] | None = None,
+    tool_registry: Any | None = None,
+    agents: list[Any] | None = None,
+    skills: list[Any] | None = None,
+    mcp_servers: list[Any] | None = None,
+    output_style: str = "default",
+    plan_mode: bool = False,
+    non_interactive: bool = False,
+    tool_restrictions: list[str] | None = None,
+    custom_system_prompt: str | None = None,
+    append_system_prompt: str | None = None,
+    use_cache: bool = True,
+    query_source: str = "main",
+    provider: Any | None = None,
+) -> list[dict[str, Any]]:
+    """Block-list version of ``build_full_system_prompt``.
+
+    Returns a list of ``{"type": "text", "text": ..., "cache_control"?: ...}``
+    dicts suitable for passing as the ``system`` parameter to the Anthropic
+    Python SDK's ``messages.create()`` / ``messages.stream()``. Blocks are
+    grouped by ``CacheScope``:
+
+      [global blocks…, ⟨5m cache_control⟩,
+       __SYSTEM_PROMPT_DYNAMIC_BOUNDARY__,
+       session blocks…, ⟨5m cache_control⟩,
+       request blocks…, ⟨5m cache_control⟩,
+       (optional append_system_prompt block)]
+
+    The ``custom_system_prompt`` branch produces a single uncached block —
+    SDK callers using a custom prompt opt out of the section taxonomy.
+
+    Same parameters as ``build_full_system_prompt``; the only difference is
+    return type. Ordering inside each scope group preserves the section
+    ``order`` attribute so two consecutive calls with identical inputs
+    produce byte-identical block lists (cache stability).
+    """
+    # Custom-prompt branch: same shape as the str-returning path, but
+    # wrapped as a single block. No cache_control marker — SDK callers
+    # using custom prompts opt out of the section taxonomy.
+    if custom_system_prompt:
+        base = custom_system_prompt
+        try:
+            from src.memdir import (
+                has_auto_mem_path_override,
+                load_memory_prompt,
+            )
+            if has_auto_mem_path_override():
+                memory_prompt = load_memory_prompt()
+                if memory_prompt:
+                    base += "\n\n" + memory_prompt
+        except Exception:
+            pass
+        if append_system_prompt:
+            base += "\n\n" + append_system_prompt
+        return [{"type": "text", "text": base}]
+
+    sections: list[SystemPromptSection] = []
+
+    # Re-use the same section builders as the str path so content is
+    # bit-identical. Any divergence between the two paths would let one
+    # path cache while the other busts — explicitly avoided.
+    intro = _build_intro_section(use_cache)
+    if intro:
+        sections.append(intro)
+    system = _build_system_section(use_cache)
+    if system:
+        sections.append(system)
+    tasks = _build_doing_tasks_section(use_cache)
+    if tasks:
+        sections.append(tasks)
+    actions = _build_actions_section(use_cache)
+    if actions:
+        sections.append(actions)
+    using_tools = _build_using_tools_section(use_cache)
+    if using_tools:
+        sections.append(using_tools)
+    tone = _build_tone_style_section(use_cache)
+    if tone:
+        sections.append(tone)
+    efficiency = _build_output_efficiency_section(use_cache)
+    if efficiency:
+        sections.append(efficiency)
+    tool_docs = _build_tool_docs_section(tools, tool_registry, use_cache)
+    if tool_docs:
+        sections.append(tool_docs)
+    env_section = _build_env_section(cwd, use_cache)
+    if env_section:
+        sections.append(env_section)
+    memory_section = _build_memory_section()
+    if memory_section:
+        sections.append(memory_section)
+    mcp_section = _build_mcp_section(mcp_servers, use_cache)
+    if mcp_section:
+        sections.append(mcp_section)
+    agent_section = _build_agent_section(agents, use_cache)
+    if agent_section:
+        sections.append(agent_section)
+    skill_section = _build_skill_section(skills, use_cache)
+    if skill_section:
+        sections.append(skill_section)
+    style_section = _build_output_style_section(output_style, use_cache)
+    if style_section:
+        sections.append(style_section)
+    if plan_mode:
+        plan_section = _build_plan_mode_section(use_cache)
+        if plan_section:
+            sections.append(plan_section)
+    if non_interactive:
+        ni_section = _build_non_interactive_section(use_cache)
+        if ni_section:
+            sections.append(ni_section)
+    if tool_restrictions:
+        restrict_section = _build_tool_restrictions_section(tool_restrictions)
+        if restrict_section:
+            sections.append(restrict_section)
+
+    # Sort within scope groups so block ordering is deterministic across
+    # calls. The cache stability test relies on this.
+    sections.sort(key=lambda s: s.order)
+
+    # Partition by scope. We import CacheScope locally to avoid a top-level
+    # circular import (system_prompt_cache imports from this module's
+    # peers; a top-level import here closes the cycle).
+    from .system_prompt_cache import CacheScope
+
+    global_sections = [s for s in sections if s.cache_scope is CacheScope.GLOBAL and s.content]
+    session_sections = [s for s in sections if s.cache_scope is CacheScope.SESSION and s.content]
+    request_sections = [s for s in sections if s.cache_scope is CacheScope.REQUEST and s.content]
+
+    blocks: list[dict[str, Any]] = []
+
+    # WI-2.2: TTL selector. ``should_1h_cache_ttl(query_source)`` returns
+    # True only when (a) the user is 1h-eligible per the latched
+    # evaluation in cache_state.evaluate_prompt_cache_1h_eligibility, AND
+    # (b) the query source is in the GrowthBook-populated allowlist.
+    # When either condition is False, fall back to "5m" — the safe-default
+    # TTL that Phase 1 already engaged. The allowlist is empty by default
+    # (no GrowthBook port yet), so this defaults to "5m" universally until
+    # a future WI populates it.
+    from src.state.cache_state import should_1h_cache_ttl, should_use_global_cache_scope
+    ttl = "1h" if should_1h_cache_ttl(query_source) else "5m"
+
+    # WI-2.3: global-scope gate. Per chapter line 91, GLOBAL-tier blocks
+    # may emit ``scope: 'global'`` only when (firstParty provider) AND
+    # (no MCP tools) AND (env-gated opt-in flag set). Defaults to OFF for
+    # safety — see ``should_use_global_cache_scope`` docstring.
+    has_mcp_tools = bool(mcp_servers)
+    use_global_scope = (
+        provider is not None
+        and should_use_global_cache_scope(
+            provider=provider, has_mcp_tools=has_mcp_tools,
+        )
+    )
+
+    # Helper that appends a section's content as a block. The LAST block
+    # in each scope group carries cache_control; everything else is plain.
+    def _emit_group(
+        group: list[SystemPromptSection],
+        scope: CacheScope,
+    ) -> None:
+        for idx, section in enumerate(group):
+            block: dict[str, Any] = {"type": "text", "text": section.content}
+            if idx == len(group) - 1:
+                # Last block in this scope group → mark for caching.
+                cache_control: dict[str, Any] = {
+                    "type": "ephemeral", "ttl": ttl,
+                }
+                # Only GLOBAL-tier blocks ever get scope='global'. SESSION
+                # and REQUEST tiers stay at the default org/session scope.
+                if scope is CacheScope.GLOBAL and use_global_scope:
+                    cache_control["scope"] = "global"
+                block["cache_control"] = cache_control
+            blocks.append(block)
+
+    if global_sections:
+        _emit_group(global_sections, CacheScope.GLOBAL)
+
+    # The dynamic-boundary marker sits between GLOBAL and SESSION even when
+    # one of the two groups is empty — its presence in the wire payload is
+    # what request-recording tests assert on.
+    blocks.append({"type": "text", "text": SYSTEM_PROMPT_DYNAMIC_BOUNDARY})
+
+    if session_sections:
+        _emit_group(session_sections, CacheScope.SESSION)
+    if request_sections:
+        _emit_group(request_sections, CacheScope.REQUEST)
+
+    # SDK ``append_system_prompt`` is appended as a final uncached block —
+    # same semantics as the str path's trailing concatenation.
+    if append_system_prompt:
+        blocks.append({"type": "text", "text": append_system_prompt})
+
+    return blocks
 
 
 # ---------------------------------------------------------------------------
