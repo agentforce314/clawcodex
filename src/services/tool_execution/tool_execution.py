@@ -308,8 +308,23 @@ async def _check_permissions_and_call_tool(
         )
 
         tool_results_dir = resolve_tool_results_dir(tool_use_context)
+        # WI-5.1: thread the per-message aggregate counter through. The
+        # function consults it to decide whether to force-persist a
+        # block that would push the running total past the cap. We then
+        # update the counter with the post-decision block size via
+        # ``compute_block_chars``.
+        from src.services.tool_execution.tool_result_persistence import (
+            compute_block_chars,
+        )
         tool_result_block = process_tool_result_block(
-            tool, result.data, tool_use_id, tool_results_dir=tool_results_dir,
+            tool,
+            result.data,
+            tool_use_id,
+            tool_results_dir=tool_results_dir,
+            aggregate_chars_so_far=tool_use_context.tool_result_chars_so_far,
+        )
+        tool_use_context.tool_result_chars_so_far += compute_block_chars(
+            tool_result_block,
         )
 
         resulting_messages.append(MessageUpdateLazy(

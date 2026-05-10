@@ -411,8 +411,12 @@ def _dispatch_single_tool(
 ) -> UserMessage:
     """Dispatch a single tool and return the UserMessage result.
 
-    Uses tool.map_result_to_api() (mirrors TS mapToolResultToAPIMessage)
-    to convert structured output (e.g. file_unchanged) to API-ready text.
+    Routes through ``process_tool_result_block`` (mirrors TS Step 11 of
+    the execution pipeline at ``processToolResultBlock``) so the per-tool
+    persistence threshold AND the WI-5.1 per-message aggregate budget
+    both engage on the production path. The running aggregate is held on
+    ``tool_use_context.tool_result_chars_so_far`` (reset at the top of
+    each per-turn loop in :func:`query`).
     """
     try:
         call = ToolCall(
@@ -423,8 +427,47 @@ def _dispatch_single_tool(
         result = tool_registry.dispatch(call, tool_use_context)
 
         tool = find_tool_by_name(tools, block.name) if tools else None
+        metadata: dict[str, Any] = {}
+        if isinstance(result.output, dict):
+            metadata["tool_output"] = result.output
+
         if tool is not None:
-            api_block = tool.map_result_to_api(result.output, block.id)
+            # WI-5.1: route through ``process_tool_result_block`` so the
+            # 200K per-message aggregate cap is enforced. Without this
+            # call the production REPL ran ``map_result_to_api`` directly
+            # and never engaged the gate (critic B2).
+            #
+            # The read-decide-write on ``tool_result_chars_so_far`` is
+            # serialized via ``_aggregate_lock`` because ``_run_tools_partitioned``
+            # dispatches concurrency-safe tools (Read/Grep/Glob) via
+            # ``asyncio.to_thread`` (critic B6). The decision MUST be
+            # made on a fresh snapshot of the counter — otherwise N
+            # threads racing the read all see 0, all decide "under cap"
+            # and the cap is silently bypassed. ``process_tool_result_block``
+            # is called inside the critical section: for small blocks
+            # under threshold it just returns the block (no I/O); the
+            # rare persist-to-disk path runs while serialized but those
+            # are at most O(1) per turn (typically <5%).
+            from ..services.tool_execution.tool_result_persistence import (
+                compute_block_chars,
+                process_tool_result_block,
+                resolve_tool_results_dir,
+            )
+            tool_results_dir = resolve_tool_results_dir(tool_use_context)
+            with tool_use_context._aggregate_lock:
+                aggregate_so_far = tool_use_context.tool_result_chars_so_far
+                api_block = process_tool_result_block(
+                    tool,
+                    result.output,
+                    block.id,
+                    tool_results_dir=tool_results_dir,
+                    aggregate_chars_so_far=aggregate_so_far,
+                )
+                # Update the running aggregate AFTER the block is
+                # finalized (post-persistence, so the wrapper message
+                # size is what counts toward the budget — not the
+                # original 200K output).
+                tool_use_context.tool_result_chars_so_far += compute_block_chars(api_block)
             content_str = api_block.get("content", "")
             if not isinstance(content_str, str):
                 content_str = json.dumps(content_str, ensure_ascii=False)
@@ -435,12 +478,6 @@ def _dispatch_single_tool(
         else:
             content_str = str(result.output)
 
-        # Preserve the original tool output as in-process metadata so the
-        # REPL/TUI can render rich previews (Edit's structuredPatch is the
-        # current consumer). map_result_to_api strips it for the wire.
-        metadata: dict[str, Any] = {}
-        if isinstance(result.output, dict):
-            metadata["tool_output"] = result.output
         return UserMessage(
             content=[
                 ToolResultBlock(
@@ -539,6 +576,14 @@ async def query(params: QueryParams) -> AsyncGenerator[Message | StreamEvent, No
                 state.transition.reason if state.transition else "initial",
             )
         tool_use_context = state.tool_use_context
+        # WI-5.1: reset the per-message aggregate counter at each turn
+        # boundary. The 200K cap is PER USER MESSAGE (the next batch of
+        # tool_result blocks the model will see), not per session. Without
+        # this reset the counter grows monotonically and every tool result
+        # eventually gets persisted regardless of size. Mirrors TS
+        # ``toolResultStorage.ts:collectCandidatesByMessage`` which
+        # partitions evaluation by message.
+        tool_use_context.tool_result_chars_so_far = 0
         max_output_tokens_recovery_count = state.max_output_tokens_recovery_count
         has_attempted_reactive_compact = state.has_attempted_reactive_compact
         max_output_tokens_override = state.max_output_tokens_override
