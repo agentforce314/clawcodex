@@ -1280,6 +1280,60 @@ class ClawcodexREPL:
                 return f"Task #{t.get('id')}: {t.get('subject')} ({t.get('status')})"
             return "Task not found"
 
+        if tool_name in ("Agent", "Task"):
+            # Show the subagent's terminal outcome instead of the raw JSON
+            # envelope (which dumps prompt / agent_id / token counts inline).
+            content_text = ""
+            agent_type = ""
+            tool_uses_count: int | None = None
+            duration_ms: int | None = None
+            if parsed:
+                agent_type = str(parsed.get("agent_type") or "")
+                blocks = parsed.get("content")
+                if isinstance(blocks, list):
+                    parts = []
+                    for b in blocks:
+                        if isinstance(b, dict) and b.get("type") == "text":
+                            t = b.get("text")
+                            if isinstance(t, str):
+                                parts.append(t)
+                    content_text = "\n".join(parts).strip()
+                elif isinstance(blocks, str):
+                    content_text = blocks.strip()
+                tu = parsed.get("total_tool_use_count")
+                if isinstance(tu, int):
+                    tool_uses_count = tu
+                dur = parsed.get("total_duration_ms")
+                if isinstance(dur, int):
+                    duration_ms = dur
+            head_bits: list[str] = []
+            if agent_type:
+                head_bits.append(f"@{agent_type}")
+            stats: list[str] = []
+            if isinstance(tool_uses_count, int):
+                stats.append(f"{tool_uses_count} tool use{'' if tool_uses_count == 1 else 's'}")
+            if isinstance(duration_ms, int) and duration_ms > 0:
+                if duration_ms >= 1000:
+                    stats.append(f"{duration_ms / 1000:.1f}s")
+                else:
+                    stats.append(f"{duration_ms}ms")
+            if stats:
+                head_bits.append("(" + ", ".join(stats) + ")")
+            head = " ".join(head_bits) if head_bits else "Agent done"
+            if not content_text:
+                return head
+            # Show the first non-empty content line plus an ellipsis hint when
+            # there's more underneath — keeps the result block compact.
+            lines = [ln for ln in content_text.splitlines() if ln.strip()]
+            if not lines:
+                return head
+            first = lines[0]
+            if len(first) > 200:
+                first = first[:197] + "…"
+            if len(lines) > 1:
+                return f"{head}\n{first}\n… +{len(lines) - 1} more line{'' if len(lines) - 1 == 1 else 's'}"
+            return f"{head}\n{first}"
+
         if tool_name == "TodoWrite":
             if parsed:
                 new = parsed.get("newTodos") or []
@@ -2318,6 +2372,12 @@ class ClawcodexREPL:
                 # in the TS Ink reference (see
                 # ``typescript/src/components/REPL.tsx``).
                 pending_tool_use_prints: dict[str, str] = {}
+                # When True, the next tool-use header should be preceded by a
+                # blank-line spacer so consecutive tool calls render as
+                # discrete, scannable blocks instead of a dense wall of
+                # identical-looking lines. Reset to False after each header
+                # we print; set to True after we emit a result line.
+                tool_block_needs_leading_space = False
 
                 def _flush_task_snapshot_if_any() -> None:
                     nonlocal pending_task_flush
@@ -2388,10 +2448,17 @@ class ClawcodexREPL:
                                     # call shape is less noisy than the old
                                     # ``• ToolName (args) running…`` format
                                     # and is easier to scan.
-                                    call_args = f"({summary})" if summary else "()"
+                                    # Args go inside parens in a dim style;
+                                    # omit them entirely when we have nothing
+                                    # meaningful to show so ``● ToolName`` reads
+                                    # cleaner than a literal ``ToolName()``.
+                                    if summary:
+                                        call_args = f"[dim]([/dim]{summary}[dim])[/dim]"
+                                    else:
+                                        call_args = ""
                                     pending_tool_use_prints[block.id] = (
                                         f"[green]●[/green] [bold cyan]{block.name}[/bold cyan]"
-                                        f"[dim]{call_args}[/dim]"
+                                        + (f" {call_args}" if call_args else "")
                                     )
                         continue
 
@@ -2432,6 +2499,8 @@ class ClawcodexREPL:
                                         block.tool_use_id, None
                                     )
                                     if header is not None:
+                                        if tool_block_needs_leading_space:
+                                            self.console.print()
                                         self.console.print(header)
                                     # Match the TS UI's tool-result prefix
                                     # ``  ⎿  `` (see
@@ -2444,7 +2513,17 @@ class ClawcodexREPL:
                                             block, tool_use_map.get(block.tool_use_id),
                                         )
                                         if isinstance(preview, str):
-                                            self.console.print(f"[dim]  ⎿  {preview}[/dim]")
+                                            # Multi-line previews indent
+                                            # continuation lines under the
+                                            # ``⎿`` glyph so they read as part
+                                            # of the same result block.
+                                            if "\n" in preview:
+                                                first, *rest = preview.split("\n")
+                                                self.console.print(f"[dim]  ⎿  {first}[/dim]")
+                                                for ln in rest:
+                                                    self.console.print(f"[dim]     {ln}[/dim]")
+                                            else:
+                                                self.console.print(f"[dim]  ⎿  {preview}[/dim]")
                                         else:
                                             # Rich renderable (e.g. Edit diff
                                             # Group) — emit the prefix then
@@ -2452,6 +2531,7 @@ class ClawcodexREPL:
                                             # styling survives the dim wrap.
                                             self.console.print("[dim]  ⎿  [/dim]", end="")
                                             self.console.print(preview)
+                                    tool_block_needs_leading_space = True
                         continue
 
                 # Flush any trailing task snapshot at end-of-turn so the
@@ -2462,7 +2542,10 @@ class ClawcodexREPL:
                 # short, error mid-loop), surface the headers we were
                 # holding so the user can still see what was attempted.
                 for header in pending_tool_use_prints.values():
+                    if tool_block_needs_leading_space:
+                        self.console.print()
                     self.console.print(header)
+                    tool_block_needs_leading_space = True
                 pending_tool_use_prints.clear()
 
                 return last_text, last_text_was_printed
