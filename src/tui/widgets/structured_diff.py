@@ -191,16 +191,20 @@ def render_diff(lines: Iterable[DiffLine], *, width_hint: int = 100) -> Text:
             out.append("\n")
             continue
         if line.kind == "add":
+            # Match Claude Code's TUI: default terminal foreground on an
+            # ANSI ``green`` background so the entire row reads as a solid
+            # bar. Mirrors ``typescript/src/utils/theme.ts``'s ANSI themes
+            # (``diffAdded: 'ansi:green'``).
             prefix = _fmt_line_no(None, line.new_lineno)
-            out.append(prefix, style="green")
-            out.append("+ ", style="bold green")
-            out.append(line.text, style="green on #0f2314")
+            out.append(prefix, style="on green")
+            out.append("+ ", style="bold on green")
+            out.append(line.text, style="on green")
             out.append("\n")
         elif line.kind == "remove":
             prefix = _fmt_line_no(line.old_lineno, None)
-            out.append(prefix, style="red")
-            out.append("- ", style="bold red")
-            out.append(line.text, style="red on #2a1414")
+            out.append(prefix, style="on red")
+            out.append("- ", style="bold on red")
+            out.append(line.text, style="on red")
             out.append("\n")
         else:  # context
             prefix = _fmt_line_no(line.old_lineno, line.new_lineno)
