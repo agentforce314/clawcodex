@@ -1,13 +1,95 @@
+"""Cost tracker — facade over ``src.bootstrap.state``.
+
+Phase 2.3 of the ch03 state refactor: the class shape is preserved for
+backward compatibility with existing callers (``costHook.py``,
+``repl/core.py``, ``tui/app.py``, ``command_system/builtins.py``), but
+all state now lives in the bootstrap singleton. Every ``CostTracker``
+instance is a view into the same state — there is no "two trackers
+disagreeing about cost" problem.
+
+Legacy ``record(label, units)`` API is retained for the existing
+``costHook.apply_cost_hook`` callers (which feed the /cost slash
+command's event log). The richer ``record_usage(model, usage)`` API
+records to the bootstrap singleton's per-model accumulators and
+also computes USD cost via ``src.services.pricing``.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
+
+from src.bootstrap.state import (
+    ModelUsage,
+    add_to_total_cost_state,
+    get_model_usage,
+    get_total_cost_usd,
+)
+from src.services.pricing import compute_cost
 
 
 @dataclass
 class CostTracker:
+    """Facade over the bootstrap singleton.
+
+    Two distinct event streams co-exist for back-compat:
+
+    * ``events`` and ``total_units``: legacy free-form units that the
+      ``/cost`` slash command displays. These live on the instance (NOT
+      bootstrap) because they're informational — not part of cost
+      accounting. Multiple instances accumulate independently.
+
+    * ``record_usage(model, usage)``: routes through the bootstrap
+      singleton, so cost USD and per-model breakdown agree across
+      every consumer in the process.
+    """
+
     total_units: int = 0
     events: list[str] = field(default_factory=list)
+    last_usage: dict[str, Any] | None = None
 
     def record(self, label: str, units: int) -> None:
+        """Legacy event recorder. Used by ``costHook.apply_cost_hook``."""
         self.total_units += units
-        self.events.append(f'{label}:{units}')
+        self.events.append(f"{label}:{units}")
+
+    def record_usage(self, model: str, usage: dict[str, Any]) -> float:
+        """Record a real API usage event into the bootstrap singleton.
+
+        Computes USD cost from per-model pricing, updates the
+        process-wide ``total_cost_usd`` accumulator, and stores a
+        ``last_usage`` snapshot for downstream consumers (e.g. the
+        ``/cost`` command's last-call summary).
+        """
+        cost = compute_cost(model, usage)
+        bootstrap_usage = ModelUsage(
+            input_tokens=int(usage.get("input_tokens", 0)),
+            output_tokens=int(usage.get("output_tokens", 0)),
+            cache_creation_input_tokens=int(usage.get("cache_creation_input_tokens", 0)),
+            cache_read_input_tokens=int(usage.get("cache_read_input_tokens", 0)),
+            cost_usd=cost,
+        )
+        # Merge with any existing per-model accumulator
+        existing = get_model_usage().get(model)
+        if existing is not None:
+            bootstrap_usage = ModelUsage(
+                input_tokens=existing.input_tokens + bootstrap_usage.input_tokens,
+                output_tokens=existing.output_tokens + bootstrap_usage.output_tokens,
+                cache_creation_input_tokens=(
+                    existing.cache_creation_input_tokens
+                    + bootstrap_usage.cache_creation_input_tokens
+                ),
+                cache_read_input_tokens=(
+                    existing.cache_read_input_tokens + bootstrap_usage.cache_read_input_tokens
+                ),
+                cost_usd=existing.cost_usd + cost,
+            )
+        add_to_total_cost_state(cost, bootstrap_usage, model)
+        self.last_usage = dict(usage)
+        return cost
+
+    @property
+    def total_cost_usd(self) -> float:
+        """Read-through to the bootstrap singleton — every tracker
+        instance sees the same total."""
+        return get_total_cost_usd()

@@ -1,3 +1,20 @@
+"""Lifecycle-event routers (Phase-1 / WI-1.1 wiring).
+
+Pre-Phase-1 these helpers filtered on ``Notification + matcher: "onXxx"``.
+Phase 1 promotes ``SessionStart``, ``SessionEnd``, ``PreCompact`` to first-class
+``HookEvent`` values; this module now routes via those names.
+
+Per assumption A9, this file will be renamed to ``lifecycle_routers.py`` in
+Phase 2 (when a new ``session_hooks.py`` introduces the registration API in
+Phase 3 / WI-3.1). Public function names are preserved across that rename so
+callers don't churn — only the import path moves.
+
+Legacy settings.json with ``Notification + matcher: "onSessionStart"`` is
+translated to first-class events at config load time
+(``config_manager.load_hooks_from_settings``), so by the time these routers
+read from the registry/snapshot, the events have been canonicalized.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -8,9 +25,13 @@ from .registry import AsyncHookRegistry, get_global_hook_registry
 
 logger = logging.getLogger(__name__)
 
-SESSION_START_EVENT: HookEvent = "Notification"
-SESSION_END_EVENT: HookEvent = "Notification"
-COMPACT_EVENT: HookEvent = "Notification"
+# Phase-1 / WI-1.1 — first-class lifecycle event constants. The legacy values
+# (all three pointing at "Notification") have been removed; the back-compat
+# reader at config-load time translates legacy settings.json into these
+# first-class names.
+SESSION_START_EVENT: HookEvent = "SessionStart"
+SESSION_END_EVENT: HookEvent = "SessionEnd"
+COMPACT_EVENT: HookEvent = "PreCompact"
 
 
 async def run_session_start_hooks(
@@ -20,16 +41,12 @@ async def run_session_start_hooks(
     cwd: str | None = None,
 ) -> list[dict[str, Any]]:
     reg = registry or get_global_hook_registry()
-    hooks = await reg.get_hooks_for_event("Notification")
+    hooks = await reg.get_hooks_for_event(SESSION_START_EVENT)
 
     results: list[dict[str, Any]] = []
     for hook in hooks:
-        if hook.config.matcher and hook.config.matcher != "onSessionStart":
-            continue
-
         stdin_data = {
-            "hook_event": "Notification",
-            "notification_type": "onSessionStart",
+            "hook_event": SESSION_START_EVENT,
             "session_id": session_id,
             "cwd": cwd,
         }
@@ -63,16 +80,12 @@ async def run_session_end_hooks(
     total_turns: int | None = None,
 ) -> list[dict[str, Any]]:
     reg = registry or get_global_hook_registry()
-    hooks = await reg.get_hooks_for_event("Notification")
+    hooks = await reg.get_hooks_for_event(SESSION_END_EVENT)
 
     results: list[dict[str, Any]] = []
     for hook in hooks:
-        if hook.config.matcher and hook.config.matcher != "onSessionEnd":
-            continue
-
         stdin_data = {
-            "hook_event": "Notification",
-            "notification_type": "onSessionEnd",
+            "hook_event": SESSION_END_EVENT,
             "session_id": session_id,
             "total_cost": total_cost,
             "total_turns": total_turns,
@@ -105,16 +118,12 @@ async def run_compact_hooks(
     trigger: str = "manual",
 ) -> list[dict[str, Any]]:
     reg = registry or get_global_hook_registry()
-    hooks = await reg.get_hooks_for_event("Notification")
+    hooks = await reg.get_hooks_for_event(COMPACT_EVENT)
 
     results: list[dict[str, Any]] = []
     for hook in hooks:
-        if hook.config.matcher and hook.config.matcher != "onCompact":
-            continue
-
         stdin_data = {
-            "hook_event": "Notification",
-            "notification_type": "onCompact",
+            "hook_event": COMPACT_EVENT,
             "session_id": session_id,
             "tokens_before": tokens_before,
             "tokens_after": tokens_after,

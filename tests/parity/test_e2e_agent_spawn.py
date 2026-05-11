@@ -75,6 +75,7 @@ class TestE2EAgentToolDispatch(unittest.TestCase):
         """Agent tool without provider returns error."""
         result = self.registry.dispatch(
             ToolCall(name="Agent", input={
+                "description": "search task",
                 "prompt": "Search for hello",
             }),
             self.ctx,
@@ -233,10 +234,16 @@ class TestE2EAgentDefinitionLookup(unittest.TestCase):
         self.assertIsNone(found)
 
     def test_explore_agent_has_search_tools(self) -> None:
-        """Explore agent should have search tools."""
-        self.assertIn("Read", EXPLORE_AGENT.tools)
-        self.assertIn("Glob", EXPLORE_AGENT.tools)
-        self.assertIn("Grep", EXPLORE_AGENT.tools)
+        """Explore agent should be able to use search tools.
+
+        Explore uses a denylist (``disallowed_tools``) rather than an
+        allowlist (``tools``), so we verify the search tools are NOT
+        denied. Same semantic intent as an explicit allowlist check.
+        """
+        denied = EXPLORE_AGENT.disallowed_tools or []
+        self.assertNotIn("Read", denied)
+        self.assertNotIn("Glob", denied)
+        self.assertNotIn("Grep", denied)
 
     def test_general_purpose_has_wildcard_tools(self) -> None:
         """General purpose agent should have wildcard tools."""

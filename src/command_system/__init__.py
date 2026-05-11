@@ -4,6 +4,13 @@ Command system for Claw Codex.
 A complete reimplementation of Claude Code's command system.
 """
 
+# WI-0.1 (ch17 Phase 0): mark the moment the command-system package starts
+# import work. Placed before the heavy re-exports so the checkpoint's
+# delta-from-previous reflects the package's cost.
+from src.utils.startup_profiler import profile_checkpoint
+
+profile_checkpoint("command_system_imported")
+
 from .argument_substitution import parse_argument_names, substitute_arguments
 from .builtins import (
     CLEAR_COMMAND,

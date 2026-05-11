@@ -46,7 +46,13 @@ PROMPT_TOO_LONG_ERROR_MESSAGE = (
 @dataclass
 class QueryParams:
     messages: list[Message]
-    system_prompt: str
+    # WI-1.1: ``system_prompt`` accepts either the legacy ``str`` shape
+    # (joined sections, no cache_control markers) OR the block-list shape
+    # ``list[dict]`` produced by ``build_full_system_prompt_blocks``. The
+    # block-list shape is what engages Anthropic's prompt cache via
+    # ``cache_control: {type: 'ephemeral'}`` markers; the str shape is
+    # retained for backward compat with callers that pass a custom prompt.
+    system_prompt: str | list[dict[str, Any]]
     tools: Tools
     tool_registry: ToolRegistry
     tool_use_context: ToolContext
@@ -200,9 +206,18 @@ async def _call_model_sync(
             else sum(len(str(b)) for b in m.get("content", []))
             for m in api_messages
         )
+        if isinstance(system_prompt, str):
+            sys_desc = f"{len(system_prompt)} chars"
+        else:
+            sys_total_chars = sum(
+                len(blk.get("text", ""))
+                for blk in system_prompt
+                if isinstance(blk, dict)
+            )
+            sys_desc = f"{len(system_prompt)} blocks, {sys_total_chars} chars"
         logger.warning(
-            "[DIAG] _call_model_sync: %d api_messages, ~%d chars, system_prompt=%d chars, %d tools",
-            len(api_messages), _total_chars, len(system_prompt), len(list(tools)),
+            "[DIAG] _call_model_sync: %d api_messages, ~%d chars, system_prompt=%s, %d tools",
+            len(api_messages), _total_chars, sys_desc, len(list(tools)),
         )
         for i, m in enumerate(api_messages):
             role = m.get("role", "?")
@@ -240,9 +255,33 @@ async def _call_model_sync(
 
     is_anthropic = isinstance(provider, (AnthropicProvider, MinimaxProvider))
     if is_anthropic:
+        # Forward whatever shape the engine produced — str or list[dict].
+        # The SDK's ``system`` param accepts ``Union[str, Iterable[TextBlockParam]]``;
+        # cache_control markers on blocks engage server-side prompt caching.
         call_kwargs["system"] = system_prompt
     else:
-        api_messages = [{"role": "system", "content": system_prompt}, *api_messages]
+        # Non-Anthropic providers (OpenAI-compat, GLM, etc.) consume the
+        # system prompt as a single string injected as a ``system`` message.
+        # Flatten the block-list shape to a string by concatenating block text;
+        # cache_control markers don't apply to these providers anyway.
+        #
+        # Critically, FILTER OUT the dynamic-boundary marker block. The
+        # literal ``__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__`` is a cache-only
+        # signal for the Anthropic backend; emitting it as raw text into
+        # a non-Anthropic system prompt embeds an unintelligible token in
+        # the prose that may confuse those models.
+        if isinstance(system_prompt, list):
+            from ..context_system.cache_boundary import SYSTEM_PROMPT_DYNAMIC_BOUNDARY
+            flattened = "\n\n".join(
+                str(blk.get("text", ""))
+                for blk in system_prompt
+                if isinstance(blk, dict)
+                and blk.get("text")
+                and blk.get("text") != SYSTEM_PROMPT_DYNAMIC_BOUNDARY
+            )
+        else:
+            flattened = system_prompt
+        api_messages = [{"role": "system", "content": flattened}, *api_messages]
 
     if max_output_tokens_override is not None:
         call_kwargs["max_tokens"] = max_output_tokens_override
@@ -325,10 +364,29 @@ async def _call_model_sync(
     return [assistant_msg], tool_use_blocks
 
 
-# Max tools to run in parallel (TS default: 10, configurable via env var)
-MAX_TOOL_USE_CONCURRENCY = int(
-    os.environ.get("CLAWCODEX_MAX_TOOL_USE_CONCURRENCY", "10")
-)
+# Max tools to run in parallel (TS default: 10, configurable via env var).
+# Reads CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY (the name documented in
+# chapter 7 and used in the TS reference). Falls back to the legacy
+# CLAWCODEX_MAX_TOOL_USE_CONCURRENCY with a DeprecationWarning so
+# users learn to migrate.
+def _resolve_max_tool_use_concurrency() -> int:
+    canonical = os.environ.get("CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY")
+    if canonical is not None:
+        return int(canonical)
+    legacy = os.environ.get("CLAWCODEX_MAX_TOOL_USE_CONCURRENCY")
+    if legacy is not None:
+        import warnings
+        warnings.warn(
+            "CLAWCODEX_MAX_TOOL_USE_CONCURRENCY is deprecated; use "
+            "CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return int(legacy)
+    return 10
+
+
+MAX_TOOL_USE_CONCURRENCY = _resolve_max_tool_use_concurrency()
 
 
 @dataclass
@@ -372,8 +430,12 @@ def _dispatch_single_tool(
 ) -> UserMessage:
     """Dispatch a single tool and return the UserMessage result.
 
-    Uses tool.map_result_to_api() (mirrors TS mapToolResultToAPIMessage)
-    to convert structured output (e.g. file_unchanged) to API-ready text.
+    Routes through ``process_tool_result_block`` (mirrors TS Step 11 of
+    the execution pipeline at ``processToolResultBlock``) so the per-tool
+    persistence threshold AND the WI-5.1 per-message aggregate budget
+    both engage on the production path. The running aggregate is held on
+    ``tool_use_context.tool_result_chars_so_far`` (reset at the top of
+    each per-turn loop in :func:`query`).
     """
     try:
         call = ToolCall(
@@ -384,8 +446,47 @@ def _dispatch_single_tool(
         result = tool_registry.dispatch(call, tool_use_context)
 
         tool = find_tool_by_name(tools, block.name) if tools else None
+        metadata: dict[str, Any] = {}
+        if isinstance(result.output, dict):
+            metadata["tool_output"] = result.output
+
         if tool is not None:
-            api_block = tool.map_result_to_api(result.output, block.id)
+            # WI-5.1: route through ``process_tool_result_block`` so the
+            # 200K per-message aggregate cap is enforced. Without this
+            # call the production REPL ran ``map_result_to_api`` directly
+            # and never engaged the gate (critic B2).
+            #
+            # The read-decide-write on ``tool_result_chars_so_far`` is
+            # serialized via ``_aggregate_lock`` because ``_run_tools_partitioned``
+            # dispatches concurrency-safe tools (Read/Grep/Glob) via
+            # ``asyncio.to_thread`` (critic B6). The decision MUST be
+            # made on a fresh snapshot of the counter — otherwise N
+            # threads racing the read all see 0, all decide "under cap"
+            # and the cap is silently bypassed. ``process_tool_result_block``
+            # is called inside the critical section: for small blocks
+            # under threshold it just returns the block (no I/O); the
+            # rare persist-to-disk path runs while serialized but those
+            # are at most O(1) per turn (typically <5%).
+            from ..services.tool_execution.tool_result_persistence import (
+                compute_block_chars,
+                process_tool_result_block,
+                resolve_tool_results_dir,
+            )
+            tool_results_dir = resolve_tool_results_dir(tool_use_context)
+            with tool_use_context._aggregate_lock:
+                aggregate_so_far = tool_use_context.tool_result_chars_so_far
+                api_block = process_tool_result_block(
+                    tool,
+                    result.output,
+                    block.id,
+                    tool_results_dir=tool_results_dir,
+                    aggregate_chars_so_far=aggregate_so_far,
+                )
+                # Update the running aggregate AFTER the block is
+                # finalized (post-persistence, so the wrapper message
+                # size is what counts toward the budget — not the
+                # original 200K output).
+                tool_use_context.tool_result_chars_so_far += compute_block_chars(api_block)
             content_str = api_block.get("content", "")
             if not isinstance(content_str, str):
                 content_str = json.dumps(content_str, ensure_ascii=False)
@@ -396,12 +497,6 @@ def _dispatch_single_tool(
         else:
             content_str = str(result.output)
 
-        # Preserve the original tool output as in-process metadata so the
-        # REPL/TUI can render rich previews (Edit's structuredPatch is the
-        # current consumer). map_result_to_api strips it for the wire.
-        metadata: dict[str, Any] = {}
-        if isinstance(result.output, dict):
-            metadata["tool_output"] = result.output
         return UserMessage(
             content=[
                 ToolResultBlock(
@@ -500,6 +595,14 @@ async def query(params: QueryParams) -> AsyncGenerator[Message | StreamEvent, No
                 state.transition.reason if state.transition else "initial",
             )
         tool_use_context = state.tool_use_context
+        # WI-5.1: reset the per-message aggregate counter at each turn
+        # boundary. The 200K cap is PER USER MESSAGE (the next batch of
+        # tool_result blocks the model will see), not per session. Without
+        # this reset the counter grows monotonically and every tool result
+        # eventually gets persisted regardless of size. Mirrors TS
+        # ``toolResultStorage.ts:collectCandidatesByMessage`` which
+        # partitions evaluation by message.
+        tool_use_context.tool_result_chars_so_far = 0
         max_output_tokens_recovery_count = state.max_output_tokens_recovery_count
         has_attempted_reactive_compact = state.has_attempted_reactive_compact
         max_output_tokens_override = state.max_output_tokens_override

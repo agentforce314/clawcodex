@@ -1,6 +1,22 @@
+"""DEPRECATED placeholder for remote/SSH/teleport modes.
+
+The ``run_remote_mode``/``run_ssh_mode``/``run_teleport_mode`` callers
+return canned strings; real CCR remote-execution lives at ``src/remote/``
+and ``src/bridge/`` per ``my-docs/ch16-remote-refactoring-plan.md``.
+
+WI-4.5 (RESERVED, post-Phase-4 cleanup) rewrites ``run_remote_mode`` to
+delegate to ``RemoteSessionManager`` once the public API stabilizes.
+"""
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
+
+warnings.warn(
+    'src.remote_runtime is a placeholder; CCR remote execution lives at src/remote/ and src/bridge/.',
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 
 @dataclass(frozen=True)

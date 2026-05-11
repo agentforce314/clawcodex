@@ -1,4 +1,10 @@
-"""Python package placeholder for the archived `screens` subsystem."""
+"""Placeholder for parity with ``typescript/src/screens/``.
+
+The real Python implementation of TUI screens lives at ``src/tui/screens/``
+(REPL, dialogs, pickers). This module exists so the ``reference_data`` subsystem
+snapshots resolve and so the namespace is reserved; do not add behavior here.
+See ``my-docs/ch13-terminal-ui-gap-analysis.md`` gap #11 for the rationale.
+"""
 
 from __future__ import annotations
 

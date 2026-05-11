@@ -2,21 +2,96 @@
 
 from __future__ import annotations
 
+import sys
 from typing import Generator, Optional, Any
 
-try:
-    import anthropic  # type: ignore
-except ModuleNotFoundError:  # pragma: no cover
-    class _MissingAnthropic:
-        class Anthropic:  # type: ignore[no-redef]
-            def __init__(self, *args, **kwargs):
-                raise ModuleNotFoundError(
-                    "anthropic package is not installed. Install optional dependencies to use AnthropicProvider."
-                )
-
-    anthropic = _MissingAnthropic()
-
 from .base import BaseProvider, ChatResponse, MessageInput, TextChunkCallback
+
+
+# WI-4.4 (ch17 Phase 4): defer the ``import anthropic`` call. The SDK
+# alone is ~150-200ms to import (verified by ``my-docs/profiler-baseline.md``:
+# provider import accounts for ~70% of cold-start time). Cold-start paths
+# that don't make API calls (``clawcodex --version``, ``clawcodex config``,
+# fast-path subcommands) shouldn't pay that cost.
+#
+# Module-level ``__getattr__`` (PEP 562) provides the ``anthropic``
+# attribute lazily so existing test patterns like
+# ``@patch("src.providers.anthropic_provider.anthropic.Anthropic")``
+# keep working without modification. The first attribute access (a test
+# patch or ``_ensure_client``) triggers the SDK import; subsequent
+# accesses hit the cached value in ``globals()``.
+
+
+def __getattr__(name: str):
+    """PEP 562 module-level __getattr__: lazy-load the anthropic SDK.
+
+    Triggered on any access to an unbound module-level attribute. We
+    only handle ``"anthropic"`` here; other names raise the standard
+    AttributeError so typos still fail loudly.
+    """
+    if name == "anthropic":
+        try:
+            import anthropic as _module
+        except ModuleNotFoundError:  # pragma: no cover
+            class _MissingAnthropic:
+                class Anthropic:  # type: ignore[no-redef]
+                    def __init__(self, *args, **kwargs):
+                        raise ModuleNotFoundError(
+                            "anthropic package is not installed. "
+                            "Install optional dependencies to use AnthropicProvider."
+                        )
+            _module = _MissingAnthropic()  # type: ignore[assignment]
+        globals()["anthropic"] = _module
+        return _module
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def _extract_usage_dict(usage: Any) -> dict[str, Any]:
+    """Build the ChatResponse.usage dict from an Anthropic SDK ``Usage`` object.
+
+    WI-0.2 (ch17 Phase 0): forwards prompt-cache credits and the
+    ``cache_creation`` 5m/1h breakdown so downstream consumers stop reading
+    0 from the dict. Mirrors TS ``services/api/claude.ts``'s usage handling
+    (chapter line 61: "Token counting is anchored on the API's actual
+    ``usage`` field ... accounting for prompt caching credits").
+
+    The chapter calls out four observability fields on the API response:
+      * ``cache_creation_input_tokens`` — top-level int.
+      * ``cache_read_input_tokens`` — top-level int.
+      * ``cache_creation.ephemeral_5m_input_tokens`` — sub-object.
+      * ``cache_creation.ephemeral_1h_input_tokens`` — sub-object.
+
+    Note on thinking tokens: the Anthropic Python SDK 0.88.0 ``Usage`` type
+    does NOT expose a thinking-token attribute (verified via
+    ``Usage.__annotations__``). Extended-thinking tokens live in content
+    blocks, not ``usage``, so they are not forwarded here. Extend this
+    helper if a future SDK adds the attribute.
+    """
+    if usage is None:
+        return {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+        }
+
+    result: dict[str, Any] = {
+        "input_tokens": getattr(usage, "input_tokens", 0) or 0,
+        "output_tokens": getattr(usage, "output_tokens", 0) or 0,
+        "cache_creation_input_tokens": getattr(usage, "cache_creation_input_tokens", 0) or 0,
+        "cache_read_input_tokens": getattr(usage, "cache_read_input_tokens", 0) or 0,
+    }
+
+    # cache_creation breakdown — sub-object with ephemeral_5m / ephemeral_1h.
+    # Forwarded as a nested dict so consumers can attribute cache writes by TTL.
+    cache_creation = getattr(usage, "cache_creation", None)
+    if cache_creation is not None:
+        result["cache_creation"] = {
+            "ephemeral_5m_input_tokens": getattr(cache_creation, "ephemeral_5m_input_tokens", 0) or 0,
+            "ephemeral_1h_input_tokens": getattr(cache_creation, "ephemeral_1h_input_tokens", 0) or 0,
+        }
+
+    return result
 
 
 class AnthropicProvider(BaseProvider):
@@ -42,8 +117,25 @@ class AnthropicProvider(BaseProvider):
     def _ensure_client(self):
         if self.client is not None:
             return self.client
-        self.client = anthropic.Anthropic(**self._client_kwargs)
+        # WI-4.4: resolve ``anthropic`` through the module's globals so
+        # test patches at ``src.providers.anthropic_provider.anthropic.Anthropic``
+        # are visible. The first access triggers the PEP 562
+        # ``__getattr__`` lazy-load above.
+        mod = sys.modules[__name__]
+        self.client = mod.anthropic.Anthropic(**self._client_kwargs)
         return self.client
+
+    def has_custom_endpoint(self) -> bool:
+        """True iff the caller passed a non-default ``base_url``.
+
+        WI-2.3 (ch17 Phase 2): used by ``cache_state.is_first_party_provider``
+        to decide whether ``scope: 'global'`` may be emitted on
+        ``cache_control`` blocks (only valid against Anthropic's first-party
+        endpoint; proxies / self-hosted / Bedrock shims would either 400
+        or silently drop the field). Public API so the cache-state module
+        doesn't read ``self._client_kwargs`` (encapsulation).
+        """
+        return bool(self._client_kwargs.get("base_url"))
 
     def _build_chat_response(self, response: Any) -> ChatResponse:
         """Convert Anthropic SDK response into the shared ChatResponse shape."""
@@ -67,10 +159,7 @@ class AnthropicProvider(BaseProvider):
         return ChatResponse(
             content=content_text,
             model=getattr(response, "model", self.model or ""),
-            usage={
-                "input_tokens": getattr(usage, "input_tokens", 0),
-                "output_tokens": getattr(usage, "output_tokens", 0),
-            },
+            usage=_extract_usage_dict(usage),
             finish_reason=str(getattr(response, "stop_reason", "stop")),
             tool_uses=tool_uses if tool_uses else None,
         )
@@ -161,7 +250,16 @@ class AnthropicProvider(BaseProvider):
         on_text_chunk: TextChunkCallback | None = None,
         **kwargs
     ) -> ChatResponse:
-        """Stream Anthropic text chunks and return the final structured response."""
+        """Stream Anthropic text chunks and return the final structured response.
+
+        WI-5.2: wraps the stream with a ``StreamWatchdog`` that closes the
+        underlying HTTP response if no chunks arrive within
+        ``CLAUDE_STREAM_IDLE_TIMEOUT_MS`` (default 90 s). On timeout the
+        iterator raises; we catch it and fall back to the non-streaming
+        ``chat()`` path so the user gets an answer rather than a hung session.
+        """
+        from src.utils.stream_watchdog import StreamWatchdog
+
         model = self._get_model(**kwargs)
         max_tokens = kwargs.get("max_tokens", 4096)
         system = kwargs.pop("system", None)
@@ -172,25 +270,86 @@ class AnthropicProvider(BaseProvider):
         if tools:
             extra_kwargs["tools"] = tools
 
+        def _fallback_to_chat() -> ChatResponse:
+            """Re-issue the request without streaming (WI-5.2 recovery path).
+
+            Mirrors TS ``streamLatencyWatchdog.ts:resumeViaChatCompletion``.
+            Strips kwargs that ``chat`` already accepts as named args so we
+            don't double-pass them.
+            """
+            forwarded = {
+                k: v
+                for k, v in kwargs.items()
+                if k not in ["model", "max_tokens", "tools"]
+            }
+            return self.chat(
+                messages,
+                tools=tools,
+                **({"system": system} if system else {}),
+                **forwarded,
+                model=model,
+                max_tokens=max_tokens,
+            )
+
         streamed_text = ""
-        with client.messages.stream(
-            model=model,
-            max_tokens=max_tokens,
-            messages=anthropic_messages,
-            **({"system": system} if system else {}),
-            **extra_kwargs,
-            **{k: v for k, v in kwargs.items() if k not in ["model", "max_tokens", "tools"]},
-        ) as stream:
-            for text in stream.text_stream:
-                if not text:
-                    continue
-                streamed_text += text
-                if on_text_chunk is not None:
-                    on_text_chunk(text)
-            try:
-                final_message = stream.get_final_message()
-            except Exception:
-                final_message = None
+        watchdog_fired = False
+        final_message = None
+        try:
+            with client.messages.stream(
+                model=model,
+                max_tokens=max_tokens,
+                messages=anthropic_messages,
+                **({"system": system} if system else {}),
+                **extra_kwargs,
+                **{k: v for k, v in kwargs.items() if k not in ["model", "max_tokens", "tools"]},
+            ) as stream:
+                watchdog = StreamWatchdog(stream)
+                watchdog.arm()
+                try:
+                    for text in stream.text_stream:
+                        # Each chunk pushes the deadline forward.
+                        watchdog.reset()
+                        if not text:
+                            continue
+                        streamed_text += text
+                        if on_text_chunk is not None:
+                            on_text_chunk(text)
+                    try:
+                        final_message = stream.get_final_message()
+                    except Exception:
+                        final_message = None
+                finally:
+                    # Snapshot watchdog state INSIDE the finally so it
+                    # survives an exception propagating through the
+                    # iterator (close() raises mid-stream). Critic B1
+                    # caught this — otherwise the assignment was on a
+                    # line never reached during the exception path and
+                    # the fallback branch below ran with watchdog_fired
+                    # still False.
+                    watchdog_fired = watchdog.fired
+                    watchdog.disarm()
+        except Exception as streaming_exc:
+            # WI-5.2 fallback path: stream interrupted. If our watchdog
+            # triggered the interruption, fall back to non-streaming so
+            # the user still gets an answer. If the failure is something
+            # else (network/auth/etc.), re-raise the original.
+            if watchdog_fired:
+                try:
+                    return _fallback_to_chat()
+                except Exception as fallback_exc:
+                    # Recovery itself failed — surface BOTH causes so
+                    # observers see the original streaming error AND the
+                    # fallback failure that prevented recovery. Critic
+                    # M3 — bare ``except: pass`` swallowed the fallback
+                    # error and re-raised only the streaming one.
+                    raise fallback_exc from streaming_exc
+            raise
+
+        if watchdog_fired:
+            # Stream got interrupted but no exception escaped the
+            # with-block (close-side raced the iterator's normal exit).
+            # Fall back to non-streaming for the full answer.
+            return _fallback_to_chat()
 
         if final_message is not None:
             return self._build_chat_response(final_message)

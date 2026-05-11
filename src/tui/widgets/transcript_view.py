@@ -31,6 +31,7 @@ from .messages import (
     ToolResultRow,
     UserTextMessage,
 )
+from .messages.assistant_thinking import AssistantThinkingMessage
 
 
 class TranscriptView(VerticalScroll):
@@ -91,10 +92,61 @@ class TranscriptView(VerticalScroll):
     def append_assistant_chunk(self, chunk: str) -> None:
         if not chunk:
             return
+        # Symmetric guard with ``append_thinking_chunk`` (Critic-flagged):
+        # if the active row is a thinking widget, retire it before
+        # mounting an assistant text row. Otherwise assistant chunks
+        # would be appended into the thinking row's body — visible bug
+        # the moment Phase-12 dispatch wiring lands.
+        active = self._active_assistant
+        if active is not None and not isinstance(active, AssistantTextMessage):
+            self._retire_active_assistant()
         if self._active_assistant is None:
             self._active_assistant = AssistantTextMessage()
             self.mount(self._active_assistant)
         self._active_assistant.append_chunk(chunk)
+        self._scroll_end()
+
+    # Phase-12 (gap #16 sub-item): widget-and-helper shell for
+    # thinking-block content. The :class:`AssistantThinkingMessage`
+    # widget exists; the methods below mount and stream into it
+    # correctly. **Dispatch wiring is deferred** — the agent loop's
+    # ``on_text_chunk`` callback only emits user-visible text, not
+    # ``ThinkingBlock`` content blocks. Adding ``on_thinking_chunk`` is
+    # an agent-loop change that lives in a separate ticket so the loop
+    # API change can be reviewed in isolation. Until then, callers
+    # invoke these helpers directly (a few tests do; no production
+    # caller does), and the symmetric guard above keeps the transition
+    # logic correct ahead of the wiring.
+    def append_thinking_chunk(
+        self, chunk: str, *, redacted: bool = False
+    ) -> None:
+        if not chunk:
+            return
+        # We re-use ``_active_assistant`` for thinking too; the
+        # transition to a real assistant text turn calls
+        # :meth:`_retire_active_assistant` which finalises whichever
+        # row is active.
+        active = self._active_assistant
+        if not isinstance(active, AssistantThinkingMessage) or (
+            active.has_class("-redacted") != redacted
+        ):
+            self._retire_active_assistant()
+            row = AssistantThinkingMessage(redacted=redacted)
+            self._active_assistant = row  # type: ignore[assignment]
+            self.mount(row)
+            active = row
+        active.append_chunk(chunk)
+        self._scroll_end()
+
+    def append_thinking(self, text: str, *, redacted: bool = False) -> None:
+        active = self._active_assistant
+        if isinstance(active, AssistantThinkingMessage):
+            active.finalise(text)
+            self._active_assistant = None
+        elif (text or "").strip():
+            row = AssistantThinkingMessage(redacted=redacted)
+            self.mount(row)
+            row.finalise(text)
         self._scroll_end()
 
     def append_assistant(self, text: str) -> None:
