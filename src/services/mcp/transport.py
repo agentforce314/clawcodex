@@ -31,6 +31,8 @@ from mcp.client.websocket import websocket_client
 from mcp.shared.message import SessionMessage
 from mcp.types import JSONRPCMessage
 
+from .fetch_wrappers import build_mcp_http_client
+
 logger = logging.getLogger(__name__)
 
 JSONRPC_VERSION = "2.0"
@@ -276,11 +278,14 @@ class HttpTransport(_SdkTransportAdapter):
             raise RuntimeError("Transport closed; create a new instance to reconnect")
         self._stack = AsyncExitStack()
         try:
-            # Pre-create an httpx.AsyncClient so we can attach headers; the SDK
-            # will use it but won't close it (caller-provided convention per
-            # mcp/client/streamable_http.py:638 ``client_provided`` gate), so
-            # register an aclose() callback on the stack to release it.
-            self._http_client = httpx.AsyncClient(headers=self._headers)
+            # Pre-create an httpx.AsyncClient with MCP-appropriate timeouts
+            # (Phase 2 WI-2.4). The SDK adopts it without closing
+            # (caller-provided convention per mcp/client/streamable_http.py:638
+            # ``client_provided`` gate), so register an aclose() callback on
+            # the stack to release it. Without the timeout wrapper, httpx's
+            # default 5s budget kills slow MCP tool calls and corporate-TLS
+            # handshakes.
+            self._http_client = build_mcp_http_client(headers=self._headers)
             self._stack.push_async_callback(self._http_client.aclose)
             cm = streamable_http_client(url=self._url, http_client=self._http_client)
             yielded = await self._stack.enter_async_context(cm)

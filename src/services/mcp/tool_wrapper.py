@@ -294,10 +294,35 @@ def wrap_mcp_tool(
                     + "\n\n[content exceeded MAX_RESULT_SIZE_CHARS=100000; truncated]"
                 )
 
+            # WI-8.3 (FU#7): preserve the original content-block list on
+            # ``mcp_meta`` so any downstream consumer that wants full
+            # multimodal fidelity has access to it without breaking the
+            # str-typed ``ToolResult.output`` contract that the rest of
+            # the system depends on. The list is the budget-truncated
+            # version (post-WI-8.2) so consumers see a cap-respecting
+            # block list; binary blocks have been side-channeled to
+            # disk via WI-8.5 (the model-facing text already references
+            # the saved path).
+            blocks_for_meta: list[dict[str, Any]]
+            if isinstance(truncated_blocks, list):
+                blocks_for_meta = [b for b in truncated_blocks if isinstance(b, dict)]
+            else:  # pragma: no cover - truncate_mcp_content_if_needed always returns list
+                blocks_for_meta = []
+            mcp_meta: dict[str, Any] = {
+                "server_name": server_name,
+                "tool_name": mcp_tool.name,
+                "content_blocks": blocks_for_meta,
+                "was_truncated": was_truncated,
+            }
+            if result.meta:
+                mcp_meta["server_meta"] = dict(result.meta)
+            if result.structured_content:
+                mcp_meta["structured_content"] = result.structured_content
             return ToolResult(
                 name=fully_qualified_name,
                 output=text_output,
                 is_error=False,
+                mcp_meta=mcp_meta,
             )
         except Exception as e:
             return ToolResult(

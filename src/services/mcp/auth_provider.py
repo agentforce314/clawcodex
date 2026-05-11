@@ -149,6 +149,7 @@ class McpAuthProvider:
         server_url: str,
         *,
         auth_server_metadata_url: str | None = None,
+        config_scope: str | None = None,
         open_browser: bool = True,
         http_client: httpx.AsyncClient | None = None,
     ) -> AuthResult:
@@ -179,6 +180,7 @@ class McpAuthProvider:
                 metadata = await discover_oauth_metadata(
                     server_url,
                     escape_hatch_url=auth_server_metadata_url,
+                    escape_hatch_source_scope=config_scope,
                     http_client=http_client,
                 )
             except OAuthDiscoveryError as exc:

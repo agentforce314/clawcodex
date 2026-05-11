@@ -416,10 +416,19 @@ class TestAsyncTokenEndpoint:
 
     @pytest.mark.asyncio
     async def test_exchange_code_does_not_block_event_loop(self, tmp_path):
-        """Sanity check: while a (mocked) token POST is in flight, another
-        asyncio task makes progress. This would fail with the prior
-        urlopen implementation, which holds the event loop for the
-        duration of the synchronous I/O.
+        """While a (mocked) token POST is in flight, another asyncio task
+        must make progress. This would fail with the prior urlopen
+        implementation: urlopen holds the event loop for the whole
+        synchronous I/O duration, so ``other_task`` never gets a chance
+        to run until ``exchange_code`` returns.
+
+        Concretely the test verifies that:
+          - ``other_made_progress`` fires DURING the in-flight POST
+            (i.e., before the gather returns and the exchange_code
+            coroutine completes), not after.
+          - The fired event is observable from inside ``fake_post``
+            once it wakes up from its sleep — proving the scheduler
+            ran ``other_task`` while ``exchange_code`` was awaiting.
         """
         store = McpTokenStore(store_path=tmp_path / "tokens.json")
         mgr = McpAuthManager(store)
@@ -430,10 +439,18 @@ class TestAsyncTokenEndpoint:
         )
 
         other_made_progress = asyncio.Event()
+        observed_during_post = False
 
         async def fake_post(self, url, *, data=None, headers=None, **kw):
-            # Yield to the event loop so a concurrent task can run.
+            # Yield long enough that ``other_task`` (sleep 0.01) MUST
+            # be scheduled in the meantime under a working event loop.
             await asyncio.sleep(0.05)
+            # Sample the event AFTER the await — under a non-blocking
+            # loop, the concurrent task should have set it during our
+            # sleep. Capture into a closure variable so the assertion
+            # outside can pin it.
+            nonlocal observed_during_post
+            observed_during_post = other_made_progress.is_set()
             return httpx.Response(
                 200,
                 json={"access_token": "tok"},
@@ -450,4 +467,10 @@ class TestAsyncTokenEndpoint:
                 other_task(),
             )
 
+        # The event-loop-aliveness signal:
+        assert observed_during_post, (
+            "concurrent task did NOT progress while exchange_code's "
+            "POST was awaiting — event loop was blocked"
+        )
+        # Belt + suspenders: the event is set by the time gather returns.
         assert other_made_progress.is_set()

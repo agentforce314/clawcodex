@@ -147,6 +147,26 @@ class McpTokenStore:
     def _allow_plaintext_fallback() -> bool:
         return os.environ.get("MCP_ALLOW_PLAINTEXT_TOKEN_STORAGE", "").strip() == "1"
 
+    # Allowlist of keyring backend class names known to provide OS-level
+    # secret-store integration (each end-of-line comment names the OS it
+    # serves). Anything outside the allowlist — most importantly
+    # PlaintextKeyring and EncryptedKeyring from keyrings.alt, which
+    # store tokens in a plaintext-equivalent file under
+    # ~/.local/share/python_keyring/ — must be rejected unless the
+    # operator explicitly opts in via MCP_ALLOW_PLAINTEXT_TOKEN_STORAGE.
+    # Mirrors Critic FU#2.
+    _SAFE_BACKEND_CLASS_NAMES: frozenset[str] = frozenset({
+        # macOS
+        "Keyring", "macOSKeyring", "OS_X",
+        # Linux
+        "SecretService", "Kwallet", "KWallet",
+        # Windows
+        "WinVaultKeyring",
+        # Test/in-memory backends — accept these so unit tests don't trip
+        # the allowlist. They are not deployed to production paths.
+        "_InMemoryKeyringBackend",
+    })
+
     def _validate_backend(self) -> None:
         try:
             import keyring
@@ -157,6 +177,10 @@ class McpTokenStore:
                 "Install with: pip install keyring"
             ) from exc
         backend = keyring.get_keyring()
+        backend_class_name = type(backend).__name__
+
+        # FailKeyring = no backend at all (a no-op that raises on access).
+        # Detected separately so the error message stays specific.
         if isinstance(backend, FailKeyring):
             if self._allow_plaintext_fallback():
                 logger.warning(
@@ -165,7 +189,7 @@ class McpTokenStore:
                     "MCP_ALLOW_PLAINTEXT_TOKEN_STORAGE=1 was set. THIS IS "
                     "INSECURE — tokens will be readable to any process "
                     "running as this user.",
-                    type(backend).__name__, self._legacy_path,
+                    backend_class_name, self._legacy_path,
                 )
                 self._using_plaintext_fallback = True
                 return
@@ -175,6 +199,36 @@ class McpTokenStore:
                 "but none is available on this system. Set "
                 "MCP_ALLOW_PLAINTEXT_TOKEN_STORAGE=1 to opt into plaintext "
                 "storage instead — note that this is insecure."
+            )
+
+        # Reject keyrings.alt-style plaintext fallbacks. These are
+        # automatically selected by the keyring library on Linux when
+        # secret-service is unavailable, so on a developer machine
+        # without an unlocked keyring agent we silently get a plaintext
+        # file under ~/.local/share/python_keyring/keyring_pass.cfg.
+        if backend_class_name not in self._SAFE_BACKEND_CLASS_NAMES:
+            if self._allow_plaintext_fallback():
+                logger.warning(
+                    "MCP token storage: keyring backend %s is not in the "
+                    "allowlist of OS-secret-store backends (and may store "
+                    "tokens in plaintext on disk); plaintext fallback opt-in "
+                    "(MCP_ALLOW_PLAINTEXT_TOKEN_STORAGE=1) honored. THIS IS "
+                    "INSECURE — tokens may be readable to any process "
+                    "running as this user.",
+                    backend_class_name,
+                )
+                self._using_plaintext_fallback = True
+                return
+            raise RuntimeError(
+                f"MCP token storage refuses to use keyring backend "
+                f"{backend_class_name!r}; it is not in the allowlist of "
+                f"OS-secret-store integrations (macOS Keychain, Linux "
+                f"secret-service / kwallet, Windows DPAPI). On Linux: "
+                f"install and configure a secret-service implementation "
+                f"(e.g. gnome-keyring, KeePassXC secret-service plugin). "
+                f"Set MCP_ALLOW_PLAINTEXT_TOKEN_STORAGE=1 to override "
+                f"with the explicit understanding that token storage "
+                f"will be plaintext-equivalent."
             )
 
     def _load_index(self) -> set[str]:
