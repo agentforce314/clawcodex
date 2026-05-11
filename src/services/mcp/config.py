@@ -934,7 +934,26 @@ def filter_mcp_servers_by_policy(
     notices: list[str] = []
     settings_obj = _safe_load_settings()
     if settings_obj is None:
-        return dict(configs), notices
+        # Critic FU#1: enterprise policy gates must fail CLOSED on settings
+        # load failure, not open. A settings-layer exception that silently
+        # disables the policy gate is exactly the failure mode the gate
+        # is supposed to defend against. Operators who genuinely need
+        # bootstrap-time fall-through can set ``MCP_POLICY_FAIL_OPEN=1``;
+        # this is an explicit, audit-able operator opt-in, not a silent
+        # bypass.
+        if os.environ.get("MCP_POLICY_FAIL_OPEN", "").strip() == "1":
+            logger.warning(
+                "MCP policy: settings unavailable; MCP_POLICY_FAIL_OPEN=1 "
+                "honored — %d server(s) bypass the policy gate.",
+                len(configs),
+            )
+            return dict(configs), notices
+        notices.append(
+            "Settings unavailable; MCP policy gate failed closed (no "
+            "servers allowed). Set MCP_POLICY_FAIL_OPEN=1 to override "
+            "(operator opt-in only)."
+        )
+        return {}, notices
 
     # ``disable_all_mcp`` / ``allow_managed_only_mcp`` are not declared
     # on ``SettingsSchema``, so ``SettingsSchema.from_dict`` routes them

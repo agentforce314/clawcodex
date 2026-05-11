@@ -42,6 +42,7 @@ from .types import (
     MCPServerConnection,
     McpServerConfig,
     NeedsAuthMCPServer,
+    PendingMCPServer,
     ScopedMcpServerConfig,
 )
 
@@ -93,8 +94,10 @@ class MCPConnectionManager:
           1. Clear the (name, content-signature) cache entry so the next
              ``connect_to_server`` builds a fresh transport.
           2. Drop the existing client (if any).
-          3. ``connect_to_server`` for the named server's config.
-          4. If Connected, wrap and store tools.
+          3. Publish ``PendingMCPServer`` state so observers can render
+             an in-flight indicator while the connect runs (Critic FU#4).
+          4. ``connect_to_server`` for the named server's config.
+          5. If Connected, wrap and store tools.
         """
         config = get_mcp_config_by_name(name)
         if config is None:
@@ -103,11 +106,35 @@ class MCPConnectionManager:
         async with self._lock_for(name):
             await self._drop_client(name)
             clear_connection_cache(name)
-            # Bind auth_provider BEFORE connect so the NeedsAuth fast-path
-            # + auth-header injection take effect on the very first attempt.
-            client, conn = await connect_to_server(
-                name, config, auth_provider=self._auth_provider
+            # Publish in-flight state so observers can render a spinner /
+            # placeholder while the connect attempt is running. The state
+            # gets overwritten with the terminal connection state below.
+            self._state[name] = PendingMCPServer(
+                name=name,
+                config=config,
+                reconnect_attempt=1,
+                max_reconnect_attempts=1,
             )
+            # try/finally so a hard exception (CancelledError, etc.) in
+            # connect_to_server doesn't leave stale PendingMCPServer in
+            # self._state. On exception, replace with a FailedMCPServer
+            # carrying the exception text so observers see a terminal
+            # state and the next reconnect attempt isn't fooled by
+            # leftover Pending. Critic FU#4b.
+            try:
+                # Bind auth_provider BEFORE connect so the NeedsAuth fast-path
+                # + auth-header injection take effect on the very first attempt.
+                client, conn = await connect_to_server(
+                    name, config, auth_provider=self._auth_provider
+                )
+            except BaseException as exc:
+                self._state[name] = FailedMCPServer(
+                    name=name,
+                    config=config,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+                self._tools.pop(name, None)
+                raise
             self._state[name] = conn
             if isinstance(conn, ConnectedMCPServer):
                 self._clients[name] = client
@@ -144,9 +171,28 @@ class MCPConnectionManager:
                     return failed
                 await self._drop_client(name)
                 clear_connection_cache(name)
-                client, conn = await connect_to_server(
-                    name, config, auth_provider=self._auth_provider
+                # Publish in-flight state for the toggle-induced reconnect
+                # (Critic FU#4). Overwritten below with the terminal state.
+                self._state[name] = PendingMCPServer(
+                    name=name,
+                    config=config,
+                    reconnect_attempt=1,
+                    max_reconnect_attempts=1,
                 )
+                # try/finally guard mirrors reconnect_mcp_server: avoid
+                # stale PendingMCPServer if connect_to_server raises.
+                try:
+                    client, conn = await connect_to_server(
+                        name, config, auth_provider=self._auth_provider
+                    )
+                except BaseException as exc:
+                    self._state[name] = FailedMCPServer(
+                        name=name,
+                        config=config,
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
+                    self._tools.pop(name, None)
+                    raise
                 self._state[name] = conn
                 if isinstance(conn, ConnectedMCPServer):
                     self._clients[name] = client
@@ -218,6 +264,10 @@ class MCPConnectionManager:
                 server_name=name,
                 server_url=server_url,
                 auth_server_metadata_url=getattr(inner, "auth_server_metadata_url", None),
+                # Pass the scope so auth_discovery can reject
+                # authServerMetadataUrl overrides from repo-write scopes
+                # (project / local). Critic FU#3.
+                config_scope=config.scope,
                 open_browser=open_browser,
             )
             if not result.success:
@@ -240,6 +290,46 @@ class MCPConnectionManager:
             async with self._lock_for(name):
                 await self._drop_client(name)
 
+    async def bootstrap_all_servers(
+        self, *, batch_size: int = 5
+    ) -> dict[str, MCPServerConnection]:
+        """Connect to every enabled MCP server in the merged config.
+
+        Critic FU#5: canonical runtime mount point. Replaces the older
+        callback-based ``prefetch_all_mcp_resources`` for callers that
+        want the manager surface (reconnect, toggle, trigger_oauth,
+        snapshot subscription).
+
+        Steps:
+          1. Read merged configs via ``get_all_mcp_configs`` (warms with
+             whatever claudeai snapshot is currently cached).
+          2. For each enabled server, kick off ``reconnect_mcp_server``,
+             concurrently up to ``batch_size``. Each call already takes
+             the per-server lock so this is safe.
+          3. Return a defensive copy of the resulting state map.
+
+        Disabled servers get a ``DisabledMCPServer`` entry without a
+        connect attempt. Failed servers retain a ``FailedMCPServer``.
+        """
+        from .config import get_all_mcp_configs  # local import: avoid cycle
+        configs, _errors = get_all_mcp_configs()
+
+        sem = asyncio.Semaphore(max(1, batch_size))
+
+        async def _bootstrap_one(name: str) -> None:
+            if is_mcp_server_disabled(name):
+                cfg = configs.get(name)
+                self._state[name] = DisabledMCPServer(name=name, config=cfg)
+                return
+            async with sem:
+                await self.reconnect_mcp_server(name)
+
+        await asyncio.gather(
+            *(_bootstrap_one(name) for name in configs),
+            return_exceptions=True,
+        )
+        return self.snapshot()
+
     # --- Internals -------------------------------------------------------
 
     def _lock_for(self, name: str) -> asyncio.Lock:
@@ -260,3 +350,44 @@ class MCPConnectionManager:
                 "MCP connection_manager: client.close raised for %r: %s",
                 name, exc,
             )
+
+
+async def bootstrap_mcp_runtime(
+    *,
+    auth_provider: Any | None = None,
+    prefetch_claudeai: bool = True,
+    batch_size: int = 5,
+) -> MCPConnectionManager:
+    """Build, warm, and return an ``MCPConnectionManager``.
+
+    Critic FU#5 canonical runtime mount. Callers in the agent boot path
+    should prefer this over the legacy callback-based
+    ``prefetch_all_mcp_resources`` — it returns a manager handle so the
+    rest of the runtime can drive reconnect / toggle / trigger_oauth /
+    inject_dynamic_config without rebuilding state.
+
+    Steps:
+      1. (Optional) warm the claudeai snapshot via
+         ``fetch_claudeai_mcp_configs_if_eligible`` so the subsequent
+         ``get_all_mcp_configs`` merge picks up web-configured servers.
+      2. Construct an ``MCPConnectionManager`` bound to the provided
+         auth provider.
+      3. Call ``bootstrap_all_servers`` to connect each enabled server.
+
+    The returned manager owns its clients; callers must invoke
+    ``manager.close_all()`` on shutdown.
+    """
+    if prefetch_claudeai:
+        try:
+            from .claudeai import fetch_claudeai_mcp_configs_if_eligible  # local: cycle
+            await fetch_claudeai_mcp_configs_if_eligible(
+                auth_provider=auth_provider
+            )
+        except Exception as exc:  # pragma: no cover - non-fatal
+            logger.warning(
+                "MCP bootstrap: claudeai prefetch failed (%s); continuing "
+                "without web-configured connectors.", exc,
+            )
+    manager = MCPConnectionManager(auth_provider=auth_provider)
+    await manager.bootstrap_all_servers(batch_size=batch_size)
+    return manager
