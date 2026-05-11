@@ -74,6 +74,9 @@ Documentation = "https://github.com/agentforce314/clawcodex#readme"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# Prepend the project root so pytest imports the worktree's ``src/`` rather
+# than the parent repo's editable-install mapping.
+pythonpath = ["."]
 markers = [
     "integration: marks tests as integration (deselect with '-m \"not integration\"')",
     "linux_only: marks tests that require Linux (auto-skipped on macOS/Windows)",
@@ -91,3 +94,50 @@ filterwarnings = [
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["src*"]
+
+# ---------------------------------------------------------------------------
+# import-linter — DAG-leaf enforcement for src/bootstrap/state.py
+# ---------------------------------------------------------------------------
+# Mirrors the TS ``bootstrap-isolation`` ESLint rule (typescript/src/.eslintrc).
+# Bootstrap state is a DAG leaf — it cannot import from feature subsystems
+# (``src/tui``, ``src/repl``, ``src/agent``, ``src/services``, ``src/query``,
+# ``src/context_system``, ``src/permissions``, ``src/command_system``,
+# ``src/tool_system``, ``src/coordinator``). The contract below enforces
+# this on every commit when ``lint-imports`` runs in CI.
+#
+# To run locally: ``pip install import-linter && lint-imports``.
+# (Not in ``dev`` extras yet — install ad-hoc until CI wires it in.)
+[tool.importlinter]
+root_package = "src"
+
+[[tool.importlinter.contracts]]
+name = "bootstrap/state.py cannot import from feature subsystems (DAG-leaf rule)"
+type = "forbidden"
+source_modules = ["src.bootstrap.state"]
+forbidden_modules = [
+    "src.tui",
+    "src.repl",
+    "src.agent",
+    "src.services",
+    "src.query",
+    "src.context_system",
+    "src.permissions",
+    "src.command_system",
+    "src.tool_system",
+    "src.coordinator",
+    "src.providers",
+    "src.tasks",
+    "src.bridge",
+    "src.remote",
+    "src.commands",
+    "src.skills",
+]
+
+# TODO: add a positive-allowlist (kept) contract restricting bootstrap to
+# import only from ``src.utils.signal`` and a small set of leaf utilities.
+# The forbidden contract above misses the case where someone adds
+# ``from src.utils.tui_helpers import foo`` to bootstrap — ``src.utils`` is
+# not in the blocklist. ``import-linter`` doesn't have a perfect positive-
+# allowlist primitive; the closest is the ``independence`` contract or a
+# custom contract. Plan §P1.0 acknowledged the ~30 min research cost.
+# Tracking as a Phase-2 follow-up.
