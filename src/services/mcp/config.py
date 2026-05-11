@@ -603,22 +603,58 @@ def get_all_mcp_configs() -> tuple[dict[str, ScopedMcpServerConfig], list[Valida
     local_servers, local_errors = get_mcp_configs_by_scope("local")
     managed_servers = get_managed_mcp_configs()
     dynamic_servers = get_dynamic_mcp_configs()
+    # Phase 7 WI-7.3: pick up any Claude.ai connectors that the agent's
+    # async boot path warmed. This is a snapshot read — if the prefetch
+    # hasn't completed yet, claudeai servers simply don't show up this
+    # tick. The next merge cycle picks them up. Dedup against manual
+    # entries (WI-7.5) happens below.
+    from .claudeai import get_cached_claudeai_mcp_configs  # local import to avoid cycle
+    claudeai_servers = get_cached_claudeai_mcp_configs()
 
     merged: dict[str, ScopedMcpServerConfig] = {}
-    # Precedence: managed → user → project → local → dynamic (last writer
-    # wins; dynamic is highest because SDK-injected servers are explicit
-    # caller intent at runtime).
+    # Precedence: managed → claudeai → user → project → local → dynamic
+    # (last writer wins; manual configs at any scope override the
+    # claudeai web-configured ones since the operator who wrote the
+    # local file expressed explicit intent).
     merged.update(managed_servers)
+    merged.update(claudeai_servers)
     merged.update(user_servers)
     merged.update(project_servers)
     merged.update(local_servers)
     merged.update(dynamic_servers)
+
+    # Apply the manual/claudeai dedup (gap #24): when both a manual
+    # and claudeai entry resolve to the same URL signature, drop the
+    # claudeai one so the operator's explicit config takes precedence.
+    dedup_notice_strings: list[str] = []
+    if claudeai_servers:
+        manual_keys = (set(user_servers) | set(project_servers) | set(local_servers))
+        manual_only_servers = {
+            k: merged[k] for k in manual_keys if k in merged and merged[k].scope != "claudeai"
+        }
+        claudeai_only = {k: v for k, v in merged.items() if v.scope == "claudeai"}
+        kept_claudeai, suppressed = dedup_claudeai_mcp_servers(
+            claudeai_only,
+            {k for k in manual_keys if not is_mcp_server_disabled(k)},
+            manual_only_servers,
+        )
+        # Reassemble: non-claudeai entries + deduped claudeai
+        merged = {
+            **{k: v for k, v in merged.items() if v.scope != "claudeai"},
+            **kept_claudeai,
+        }
+        for rec in suppressed:
+            dedup_notice_strings.append(
+                f"Claude.ai connector {rec.get('name')!r} suppressed; "
+                f"duplicate of manual server {rec.get('duplicateOf')!r}."
+            )
 
     filtered, notices = filter_mcp_servers_by_policy(merged)
 
     all_errors = (
         enterprise_errors + user_errors + project_errors + local_errors
         + _notices_to_validation_errors(notices)
+        + _notices_to_validation_errors(dedup_notice_strings)
     )
     return filtered, all_errors
 
@@ -900,14 +936,27 @@ def filter_mcp_servers_by_policy(
     if settings_obj is None:
         return dict(configs), notices
 
-    if getattr(settings_obj, "disable_all_mcp", False):
+    # ``disable_all_mcp`` / ``allow_managed_only_mcp`` are not declared
+    # on ``SettingsSchema``, so ``SettingsSchema.from_dict`` routes them
+    # to the ``extra`` dict. Check both surfaces — the dataclass field
+    # (in case the schema is extended later) and the extras bag — and
+    # accept both snake_case and camelCase spellings since settings JSON
+    # files have used both in the wild.
+    extra = getattr(settings_obj, "extra", None) or {}
+
+    def _policy_flag(snake_name: str, camel_name: str) -> bool:
+        if getattr(settings_obj, snake_name, False):
+            return True
+        return bool(extra.get(snake_name) or extra.get(camel_name))
+
+    if _policy_flag("disable_all_mcp", "disableAllMcp"):
         if configs:
             notices.append(
                 "All MCP servers disabled by policy (settings.disable_all_mcp)."
             )
         return {}, notices
 
-    if getattr(settings_obj, "allow_managed_only_mcp", False):
+    if _policy_flag("allow_managed_only_mcp", "allowManagedOnlyMcp"):
         kept = {
             name: cfg for name, cfg in configs.items()
             if cfg.scope in ("enterprise", "managed")
