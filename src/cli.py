@@ -84,7 +84,7 @@ def main():
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="clawcodex",
-        description="Claw Codex - Claude Code Python Implementation",
+        description="ClawCodex - Claude Code Python Implementation",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 Examples:
@@ -384,7 +384,7 @@ def _show_provider_defaults_table() -> None:
 def handle_login():
     """Interactive API configuration."""
     console = Console()
-    console.print("\n[bold blue]Claw Codex - API Configuration[/bold blue]\n")
+    console.print("\n[bold blue]ClawCodex - API Configuration[/bold blue]\n")
 
     _show_provider_defaults_table()
 
