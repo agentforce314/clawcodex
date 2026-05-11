@@ -106,7 +106,7 @@ class TestREPL(unittest.TestCase):
                             repl._print_startup_header()
 
                         rendered = f.getvalue()
-                        self.assertIn("Claw Codex", rendered)
+                        self.assertIn("ClawCodex", rendered)
                         self.assertIn("glm-4.5", rendered)
                         self.assertIn("GLM Provider", rendered)
                         # Path may be truncated, just check start and end parts

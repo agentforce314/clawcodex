@@ -1676,7 +1676,7 @@ class ClawcodexREPL:
 
         if Panel is None or Group is None or Align is None or Table is None or Text is None or Columns is None:
             print(mascot_ascii)
-            print(f"Claw Codex v{__version__}")
+            print(f"ClawCodex v{__version__}")
             print(f"{model_label} · {provider_label}")
             print(f"{display_path}\n")
             return
@@ -1686,7 +1686,7 @@ class ClawcodexREPL:
         table = Table.grid(padding=(0, 1))
         table.add_column(style="bright_black", justify="right", no_wrap=True)
         table.add_column(style="white", ratio=1)
-        table.add_row("Version", Text.assemble(("Claw Codex", "bold white"), ("  ", ""), (f"v{__version__}", "bold cyan")))
+        table.add_row("Version", Text.assemble(("ClawCodex", "bold white"), ("  ", ""), (f"v{__version__}", "bold cyan")))
         table.add_row("Model", Text(model_label, style="bold magenta"))
         table.add_row("Provider", Text(provider_label, style="bold green"))
         table.add_row("Workspace", Text(self._truncate_middle(display_path, content_width - 12), style="bold blue"))
@@ -1701,7 +1701,7 @@ class ClawcodexREPL:
         header = Panel(
             body,
             border_style="bright_black",
-            title="[bold bright_cyan] CLAW CODEX [/bold bright_cyan]",
+            title="[bold bright_cyan] CLAWCODEX [/bold bright_cyan]",
             subtitle="[dim]interactive terminal[/dim]",
             padding=(1, 2),
         )

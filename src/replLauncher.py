@@ -45,7 +45,7 @@ def build_repl_banner() -> str:
     """One-line banner used by tests to confirm the module loads."""
 
     return (
-        "Claw Codex REPL (legacy prompt_toolkit + rich is default; "
+        "ClawCodex REPL (legacy prompt_toolkit + rich is default; "
         "Textual TUI opt-in via --tui or /tui)."
     )
 
