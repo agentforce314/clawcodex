@@ -240,3 +240,20 @@ def reset_for_test_only() -> None:
     """
     global _LATCHES
     _LATCHES = BetaHeaderLatches()
+
+
+def clear_beta_header_latches() -> None:
+    """Reset the sticky beta-header latches.
+
+    Mirrors TS ``clearBetaHeaderLatches()`` from
+    ``bootstrap/state.ts``. Called on ``/clear`` and ``/compact`` so a fresh
+    conversation re-evaluates AFK / fast-mode / cache-editing / thinking-
+    clear / 1h-eligibility from scratch (per chapter §"Sticky Latch
+    Fields").
+
+    The 1h-eligibility latch is included because the conversation rewind
+    invalidates the request-source history that informed the original
+    evaluation.
+    """
+    global _LATCHES
+    _LATCHES = BetaHeaderLatches()
