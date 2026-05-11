@@ -45,6 +45,50 @@ from .transport import (
     StdioTransport,
     WebSocketTransport,
 )
+from .auth_discovery import OAuthDiscoveryError, discover_oauth_metadata
+from .auth_provider import McpAuthProvider, is_oauth_required_error
+from .claudeai import (
+    CLAUDEAI_SERVER_NAME_PREFIX,
+    fetch_claudeai_mcp_configs_if_eligible,
+    reset_claudeai_cache,
+)
+from .connection_manager import MCPConnectionManager
+from .oauth_callback_server import (
+    CallbackResult,
+    OAuthCallbackError,
+    wait_for_callback,
+)
+from .oauth_error_normalization import normalize_oauth_error_body
+from .oauth_port import find_available_port
+from .oauth_redaction import SENSITIVE_OAUTH_PARAMS, redact_sensitive_params
+from .official_registry import (
+    is_official_mcp_url,
+    prefetch_official_mcp_urls,
+)
+from .output_storage import (
+    get_binary_blob_saved_message,
+    persist_binary_content,
+)
+from .output_validation import (
+    DEFAULT_MAX_MCP_OUTPUT_TOKENS,
+    MAX_RESULT_SIZE_CHARS,
+    get_content_size_estimate,
+    get_max_mcp_output_tokens,
+    truncate_mcp_content_if_needed,
+)
+from .telemetry import emit as telemetry_emit
+from .telemetry import register_sink as register_telemetry_sink
+from .text_truncation import MAX_MCP_DESCRIPTION_LENGTH, truncate_description
+from .xaa import (
+    XaaTokenExchangeError,
+    perform_cross_app_access,
+)
+from .xaa_idp_login import (
+    XaaIdpSettings,
+    acquire_idp_id_token,
+    get_xaa_idp_settings,
+    is_xaa_enabled,
+)
 from .types import (
     ConfigScope,
     ConnectedMCPServer,
@@ -133,4 +177,39 @@ __all__ = [
     "parse_server_config",
     "expand_env_vars_in_string",
     "JsonRpcMessage",
+    # Phase 4 OAuth + Phase 5 XAA + Phase 9 manager + Phase 10 polish.
+    "OAuthDiscoveryError",
+    "discover_oauth_metadata",
+    "McpAuthProvider",
+    "is_oauth_required_error",
+    "CallbackResult",
+    "OAuthCallbackError",
+    "wait_for_callback",
+    "normalize_oauth_error_body",
+    "find_available_port",
+    "SENSITIVE_OAUTH_PARAMS",
+    "redact_sensitive_params",
+    "MCPConnectionManager",
+    "CLAUDEAI_SERVER_NAME_PREFIX",
+    "fetch_claudeai_mcp_configs_if_eligible",
+    "reset_claudeai_cache",
+    "is_official_mcp_url",
+    "prefetch_official_mcp_urls",
+    "persist_binary_content",
+    "get_binary_blob_saved_message",
+    "DEFAULT_MAX_MCP_OUTPUT_TOKENS",
+    "MAX_RESULT_SIZE_CHARS",
+    "get_content_size_estimate",
+    "get_max_mcp_output_tokens",
+    "truncate_mcp_content_if_needed",
+    "MAX_MCP_DESCRIPTION_LENGTH",
+    "truncate_description",
+    "telemetry_emit",
+    "register_telemetry_sink",
+    "XaaTokenExchangeError",
+    "perform_cross_app_access",
+    "XaaIdpSettings",
+    "acquire_idp_id_token",
+    "get_xaa_idp_settings",
+    "is_xaa_enabled",
 ]
