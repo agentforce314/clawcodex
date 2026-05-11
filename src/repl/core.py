@@ -1022,14 +1022,20 @@ class ClawcodexREPL:
                 # on newlines and produce blank rows between every entry.
                 stripped = raw.rstrip("\n").rstrip("\r")
                 if stripped.startswith("+"):
-                    diff.append(f"     {new_lineno:>4}  ", style="green")
-                    diff.append("+ ", style="bold green")
-                    diff.append(stripped[1:] + "\n", style="green on #0f2314")
+                    # Match Claude Code's TUI: default terminal foreground
+                    # on an ANSI ``green`` / ``red`` background, so added
+                    # and removed lines read as solid bars regardless of
+                    # the user's terminal theme. Mirrors
+                    # ``typescript/src/utils/theme.ts``'s ANSI themes —
+                    # ``diffAdded: 'ansi:green'``, ``diffRemoved: 'ansi:red'``.
+                    diff.append(f"     {new_lineno:>4}  ", style="on green")
+                    diff.append("+ ", style="bold on green")
+                    diff.append(stripped[1:] + "\n", style="on green")
                     new_lineno += 1
                 elif stripped.startswith("-"):
-                    diff.append(f"     {old_lineno:>4}  ", style="red")
-                    diff.append("- ", style="bold red")
-                    diff.append(stripped[1:] + "\n", style="red on #2a1414")
+                    diff.append(f"     {old_lineno:>4}  ", style="on red")
+                    diff.append("- ", style="bold on red")
+                    diff.append(stripped[1:] + "\n", style="on red")
                     old_lineno += 1
                 else:
                     body = stripped[1:] if stripped.startswith(" ") else stripped
