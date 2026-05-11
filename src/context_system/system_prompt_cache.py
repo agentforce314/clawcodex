@@ -40,6 +40,67 @@ class SystemPromptSection:
     content: str
     cache_scope: CacheScope = CacheScope.SESSION
     order: int = 0  # Lower = earlier in prompt
+    cache_break: bool = False
+    reason: str | None = None
+
+
+def system_prompt_section(
+    name: str,
+    *,
+    content: str,
+    cache_scope: CacheScope = CacheScope.SESSION,
+    order: int = 0,
+) -> SystemPromptSection:
+    """Build a cacheable prompt section.
+
+    Mirrors TS ``systemPromptSection`` from
+    ``constants/systemPromptSections.ts``. Sections built through this
+    factory have ``cache_break = False``; their content is memoized until
+    ``clear_system_prompt_sections()`` is called (on /clear or /compact).
+    """
+    return SystemPromptSection(
+        id=name,
+        content=content,
+        cache_scope=cache_scope,
+        order=order,
+        cache_break=False,
+    )
+
+
+def DANGEROUS_uncachedSystemPromptSection(
+    name: str,
+    *,
+    content: str,
+    reason: str,
+    cache_scope: CacheScope = CacheScope.REQUEST,
+    order: int = 0,
+) -> SystemPromptSection:
+    """Build a cache-breaking prompt section that recomputes every turn.
+
+    Mirrors TS ``DANGEROUS_uncachedSystemPromptSection`` from
+    ``constants/systemPromptSections.ts``. The loud name is deliberate (per
+    chapter §"The DANGEROUS Naming Convention"): cache-breaking sections
+    must surface in code review because each one risks invalidating ~50-70K
+    tokens of cached prefix.
+
+    ``reason`` is required — a blank reason raises ``ValueError``. The
+    parameter is unused at runtime, but enforcing non-empty content turns
+    code review from "remember to ask why" into a constructor-time invariant.
+    """
+    if not reason or not reason.strip():
+        raise ValueError(
+            "DANGEROUS_uncachedSystemPromptSection requires a non-empty "
+            "reason — explain why this section cannot be cached so future "
+            "readers can evaluate whether the trade-off is still warranted."
+        )
+    return SystemPromptSection(
+        id=name,
+        content=content,
+        cache_scope=cache_scope,
+        order=order,
+        cache_break=True,
+        reason=reason.strip(),
+    )
 
 
 class SystemPromptCache:
@@ -102,3 +163,34 @@ class SystemPromptCache:
             k for k, v in self._cache.items()
             if not v.is_expired
         ]
+
+
+def clear_system_prompt_sections() -> None:
+    """Clear the section cache and reset sticky beta-header latches.
+
+    Mirrors TS ``clearSystemPromptSections()`` (constants/systemPromptSections.ts).
+    Called on ``/clear`` and ``/compact`` so a fresh conversation gets fresh
+    evaluation of AFK / fast-mode / cache-editing / thinking-clear / 1h-cache
+    eligibility *and* fresh content for memoized sections.
+
+    Importing ``cache_state`` lazily avoids a circular dependency: cache_state
+    does not import from this module, but a future change might, and the lazy
+    import keeps that risk contained.
+    """
+    # Lazy import to keep this file free of state dependencies at import time.
+    from src.state.cache_state import clear_beta_header_latches
+
+    # Clear the module-level prompt cache used by prompt_assembly.py.
+    # The cache lives on a singleton created in prompt_assembly; import
+    # lazily to avoid the prompt_assembly → system_prompt_cache circular
+    # dependency that the file's "from .system_prompt_cache import ..."
+    # block already comments on.
+    try:
+        from src.context_system.prompt_assembly import get_system_prompt_cache
+        get_system_prompt_cache().invalidate_all()
+    except ImportError:
+        # prompt_assembly isn't always importable in minimal test contexts;
+        # latch clearing still proceeds.
+        pass
+
+    clear_beta_header_latches()
