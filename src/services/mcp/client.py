@@ -52,6 +52,17 @@ MAX_MCP_DESCRIPTION_LENGTH = 2048
 DEFAULT_CONNECTION_TIMEOUT_MS = 30_000
 
 
+def _is_remote_config(config: Any) -> bool:
+    """Return True for HTTP/SSE/WS configs — the ones that can require OAuth.
+
+    Used to gate auth-provider lookups so stdio / SDK configs never pay
+    the OAuth-cache lookup cost.
+    """
+    return isinstance(
+        config, (McpHTTPServerConfig, McpSSEServerConfig, McpWebSocketServerConfig)
+    )
+
+
 def _unwrap_exception_group_message(exc: BaseException) -> str:
     """Extract the most actionable error string from a (possibly nested)
     ``BaseExceptionGroup``.
@@ -113,6 +124,20 @@ class McpClient:
         # observe the bumped generation and skip the reconnect step.
         self._recovery_lock: asyncio.Lock | None = None
         self._session_generation = 0
+        # Phase 4 WI-4.5: optional OAuth provider. Injected by callers
+        # that want OAuth-protected MCP servers to work end-to-end;
+        # legacy callers (stdio / open HTTP) pass None.
+        self._auth_provider: Any = None
+
+    def set_auth_provider(self, provider: Any) -> None:
+        """Inject the McpAuthProvider used for HTTP/SSE/WS auth flows.
+
+        Wired in by the runtime / connection_manager layer at startup.
+        Stored as ``Any`` to keep the client.py ↔ auth_provider.py
+        import edge optional — callers that don't use OAuth never
+        import the provider module.
+        """
+        self._auth_provider = provider
 
     def _next_id(self) -> int:
         self._request_id += 1
@@ -124,8 +149,25 @@ class McpClient:
         config: ScopedMcpServerConfig,
     ) -> MCPServerConnection:
         connect_start = time.monotonic()
+        # Phase 4 WI-4.8: respect the 15-min needs-auth cache. If a prior
+        # attempt determined this server needs OAuth and the operator
+        # hasn't completed the flow yet, fast-fail to NeedsAuthMCPServer
+        # without retrying the OAuth discovery / browser open on every
+        # call.
+        if self._auth_provider is not None and _is_remote_config(config.config):
+            cached = self._auth_provider.get_needs_auth_state(name)
+            if cached is not None:
+                return NeedsAuthMCPServer(
+                    name=name,
+                    config=config,
+                    auth_url=cached.auth_url,
+                    auth_method="oauth",
+                    requires_user_action=True,
+                    error=cached.reason,
+                )
+
         try:
-            transport = self._create_transport(config.config)
+            transport = self._create_transport(config.config, server_name=name)
             self._transport = transport
 
             timeout_ms = _get_connection_timeout_ms()
@@ -210,37 +252,66 @@ class McpClient:
             if self._transport:
                 await self._transport.close()
             elapsed = int((time.monotonic() - connect_start) * 1000)
+            error_msg = _unwrap_exception_group_message(e)
             logger.debug(
                 "MCP %r connection failed after %dms: %s", name, elapsed, e
             )
+
+            # Phase 4 WI-4.5 + Phase 6b WI-6.2: if the failure looks like
+            # an OAuth-required signal (401 / WWW-Authenticate / "Unauthorized"),
+            # surface NeedsAuthMCPServer instead of a generic Failed.
+            if self._auth_provider is not None and _is_remote_config(config.config):
+                from .auth_provider import is_oauth_required_error
+
+                if is_oauth_required_error(e):
+                    cached = self._auth_provider.get_needs_auth_state(name)
+                    auth_url = cached.auth_url if cached else None
+                    if cached is None:
+                        self._auth_provider.mark_needs_auth(
+                            name, reason=error_msg
+                        )
+                    return NeedsAuthMCPServer(
+                        name=name,
+                        config=config,
+                        auth_url=auth_url,
+                        auth_method="oauth",
+                        requires_user_action=True,
+                        error=error_msg,
+                    )
+
             return FailedMCPServer(
                 name=name,
-                error=_unwrap_exception_group_message(e),
+                error=error_msg,
                 config=config,
             )
 
-    def _create_transport(self, config: McpServerConfig) -> McpTransport:
+    def _create_transport(
+        self, config: McpServerConfig, *, server_name: str | None = None
+    ) -> McpTransport:
         if isinstance(config, McpStdioServerConfig):
             return StdioTransport(
                 command=config.command,
                 args=config.args,
                 env=config.env,
             )
-        elif isinstance(config, McpSSEServerConfig):
-            return SseTransport(
-                url=config.url,
-                headers=config.headers,
-            )
-        elif isinstance(config, McpHTTPServerConfig):
-            return HttpTransport(
-                url=config.url,
-                headers=config.headers,
-            )
-        elif isinstance(config, McpWebSocketServerConfig):
-            return WebSocketTransport(
-                url=config.url,
-                headers=config.headers,
-            )
+        # Phase 4 WI-4.5: merge auth headers into transport-level headers
+        # for remote configs so the SDK transport authenticates requests.
+        if isinstance(config, (McpSSEServerConfig, McpHTTPServerConfig, McpWebSocketServerConfig)):
+            headers = dict(config.headers or {})
+            if (
+                self._auth_provider is not None
+                and server_name is not None
+                and "Authorization" not in headers
+            ):
+                auth_headers = self._auth_provider.get_auth_headers(server_name)
+                if auth_headers:
+                    headers.update(auth_headers)
+            if isinstance(config, McpSSEServerConfig):
+                return SseTransport(url=config.url, headers=headers or None)
+            if isinstance(config, McpHTTPServerConfig):
+                return HttpTransport(url=config.url, headers=headers or None)
+            if isinstance(config, McpWebSocketServerConfig):
+                return WebSocketTransport(url=config.url, headers=headers or None)
         else:
             raise ValueError(f"Unsupported server config type: {type(config).__name__}")
 
