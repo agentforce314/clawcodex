@@ -121,7 +121,6 @@ out/
 .svelte-kit/
 
 #random files
-/assets/
 /my-docs/
 /screenshots_work/
 /claude-code-from-source/
