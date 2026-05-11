@@ -31,6 +31,13 @@ from mcp.client.websocket import websocket_client
 from mcp.shared.message import SessionMessage
 from mcp.types import JSONRPCMessage
 
+from .fetch_wrappers import (
+    DEFAULT_CONNECT_TIMEOUT_S,
+    DEFAULT_READ_TIMEOUT_S,
+    build_mcp_http_client,
+    build_mcp_timeout,
+)
+
 logger = logging.getLogger(__name__)
 
 JSONRPC_VERSION = "2.0"
@@ -276,11 +283,14 @@ class HttpTransport(_SdkTransportAdapter):
             raise RuntimeError("Transport closed; create a new instance to reconnect")
         self._stack = AsyncExitStack()
         try:
-            # Pre-create an httpx.AsyncClient so we can attach headers; the SDK
-            # will use it but won't close it (caller-provided convention per
-            # mcp/client/streamable_http.py:638 ``client_provided`` gate), so
-            # register an aclose() callback on the stack to release it.
-            self._http_client = httpx.AsyncClient(headers=self._headers)
+            # Pre-create an httpx.AsyncClient with MCP-appropriate timeouts
+            # (Phase 2 WI-2.4). The SDK adopts it without closing
+            # (caller-provided convention per mcp/client/streamable_http.py:638
+            # ``client_provided`` gate), so register an aclose() callback on
+            # the stack to release it. Without the timeout wrapper, httpx's
+            # default 5s budget kills slow MCP tool calls and corporate-TLS
+            # handshakes.
+            self._http_client = build_mcp_http_client(headers=self._headers)
             self._stack.push_async_callback(self._http_client.aclose)
             cm = streamable_http_client(url=self._url, http_client=self._http_client)
             yielded = await self._stack.enter_async_context(cm)
@@ -309,11 +319,44 @@ class HttpTransport(_SdkTransportAdapter):
         self._http_client = None
 
 
+def _mcp_sse_http_client_factory(
+    headers: dict[str, str] | None = None,
+    timeout: httpx.Timeout | None = None,
+    auth: httpx.Auth | None = None,
+) -> httpx.AsyncClient:
+    """``McpHttpClientFactory`` adapter that applies MCP-appropriate timeouts.
+
+    The ``mcp`` SDK's ``sse_client`` accepts an ``httpx_client_factory``
+    callable with this exact signature. We use it to ensure the
+    underlying httpx client built for SSE uses our 15s connect / 300s
+    read / 30s write / 10s pool budget rather than httpx's 5s default.
+    Critic FU#6b.
+    """
+    merged_timeout = timeout if timeout is not None else build_mcp_timeout()
+    return httpx.AsyncClient(
+        headers=headers,
+        timeout=merged_timeout,
+        auth=auth,
+    )
+
+
 class SseTransport(_SdkTransportAdapter):
     """Legacy SSE transport (pre-Streamable-HTTP MCP servers).
 
     Wraps ``mcp.client.sse.sse_client``. Two-endpoint pattern: POST for
     client→server, GET with ``text/event-stream`` for server→client.
+
+    Timeouts are configured via:
+      * ``timeout`` (initial connect) — uses the same connect budget as
+        ``HttpTransport`` (``DEFAULT_CONNECT_TIMEOUT_S``).
+      * ``sse_read_timeout`` — the SSE stream's inter-message read
+        timeout, set to the long-running read budget
+        (``DEFAULT_READ_TIMEOUT_S``) so long-idle SSE sessions don't
+        get killed prematurely.
+      * ``httpx_client_factory`` — applies MCP-appropriate timeouts to
+        every httpx request the SDK makes under the hood.
+    All three can be overridden via the ``MCP_*_TIMEOUT_S`` env vars
+    consumed by ``build_mcp_timeout`` (FU#6).
     """
 
     def __init__(self, url: str, headers: dict[str, str] | None = None) -> None:
@@ -322,7 +365,13 @@ class SseTransport(_SdkTransportAdapter):
         self._headers = dict(headers) if headers else None
 
     def _open(self) -> Any:
-        return sse_client(url=self._url, headers=self._headers)
+        return sse_client(
+            url=self._url,
+            headers=self._headers,
+            timeout=DEFAULT_CONNECT_TIMEOUT_S,
+            sse_read_timeout=DEFAULT_READ_TIMEOUT_S,
+            httpx_client_factory=_mcp_sse_http_client_factory,
+        )
 
 
 class WebSocketTransport(_SdkTransportAdapter):

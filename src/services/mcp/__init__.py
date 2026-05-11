@@ -18,6 +18,7 @@ from .config import (
     unwrap_ccr_proxy_url,
 )
 from .env_expansion import expand_env_vars_in_string
+from .fetch_wrappers import build_mcp_http_client, build_mcp_timeout
 from .errors import McpAuthError, McpSessionExpiredError, McpToolCallError
 from .manager import (
     ConnectionAttemptResult,
@@ -45,7 +46,11 @@ from .transport import (
     StdioTransport,
     WebSocketTransport,
 )
-from .auth_discovery import OAuthDiscoveryError, discover_oauth_metadata
+from .auth_discovery import (
+    EscapeHatchScopeRejectedError,
+    OAuthDiscoveryError,
+    discover_oauth_metadata,
+)
 from .auth_provider import McpAuthProvider, is_oauth_required_error
 from .claudeai import (
     CLAUDEAI_SERVER_NAME_PREFIX,
@@ -53,7 +58,7 @@ from .claudeai import (
     get_cached_claudeai_mcp_configs,
     reset_claudeai_cache,
 )
-from .connection_manager import MCPConnectionManager
+from .connection_manager import MCPConnectionManager, bootstrap_mcp_runtime
 from .oauth_callback_server import (
     CallbackResult,
     OAuthCallbackError,
@@ -177,8 +182,11 @@ __all__ = [
     "prefetch_all_mcp_resources",
     "parse_server_config",
     "expand_env_vars_in_string",
+    "build_mcp_http_client",
+    "build_mcp_timeout",
     "JsonRpcMessage",
     # Phase 4 OAuth + Phase 5 XAA + Phase 9 manager + Phase 10 polish.
+    "EscapeHatchScopeRejectedError",
     "OAuthDiscoveryError",
     "discover_oauth_metadata",
     "McpAuthProvider",
@@ -191,6 +199,7 @@ __all__ = [
     "SENSITIVE_OAUTH_PARAMS",
     "redact_sensitive_params",
     "MCPConnectionManager",
+    "bootstrap_mcp_runtime",
     "CLAUDEAI_SERVER_NAME_PREFIX",
     "fetch_claudeai_mcp_configs_if_eligible",
     "get_cached_claudeai_mcp_configs",
