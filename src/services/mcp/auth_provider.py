@@ -160,7 +160,14 @@ class McpAuthProvider:
         method is serialized per server_name so concurrent callers all
         observe the same outcome.
         """
-        lock = self._inflight_locks.setdefault(server_name, asyncio.Lock())
+        # ``setdefault`` always evaluates its default arg, so this would
+        # build a discarded ``asyncio.Lock()`` on every call when a lock
+        # already exists. Cheap but wasteful; guard with a membership
+        # check.
+        lock = self._inflight_locks.get(server_name)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._inflight_locks[server_name] = lock
         async with lock:
             # Double-check: another caller may have completed while we waited.
             existing = self._store.get_token(server_name)
@@ -198,12 +205,20 @@ class McpAuthProvider:
             # binds 127.0.0.1 (RFC 8252 §7.3 anti-DNS-rebinding); the
             # OS resolves ``localhost`` to it. Plan assumption A5.
             redirect_uri = f"http://localhost:{port}/callback"
+            # Scope selection: when the caller named explicit scopes, use
+            # them. Otherwise leave empty — the AS picks its minimum
+            # default. Requesting every value in ``scopes_supported`` is
+            # an overreach (ASs publish their full catalog; many ASs
+            # reject the request when an unprivileged client asks for
+            # admin-tier scopes). TS computes a specific scope set
+            # per-server-type; the safe default here is "ask for nothing
+            # explicit; let the AS pick."
             config = OAuthConfig(
                 authorization_url=str(authorization_endpoint),
                 token_url=str(token_endpoint),
                 client_id=self._client_id,
                 redirect_uri=redirect_uri,
-                scopes=list(self._scopes) or list(metadata.get("scopes_supported", [])),
+                scopes=list(self._scopes),
                 use_pkce=True,
             )
 

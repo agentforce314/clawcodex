@@ -50,6 +50,7 @@ from .auth_provider import McpAuthProvider, is_oauth_required_error
 from .claudeai import (
     CLAUDEAI_SERVER_NAME_PREFIX,
     fetch_claudeai_mcp_configs_if_eligible,
+    get_cached_claudeai_mcp_configs,
     reset_claudeai_cache,
 )
 from .connection_manager import MCPConnectionManager
@@ -192,6 +193,7 @@ __all__ = [
     "MCPConnectionManager",
     "CLAUDEAI_SERVER_NAME_PREFIX",
     "fetch_claudeai_mcp_configs_if_eligible",
+    "get_cached_claudeai_mcp_configs",
     "reset_claudeai_cache",
     "is_official_mcp_url",
     "prefetch_official_mcp_urls",

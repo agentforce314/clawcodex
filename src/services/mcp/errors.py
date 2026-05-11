@@ -13,9 +13,13 @@ from typing import Any
 _NEG32001_RE = re.compile(r'"code"\s*:\s*-32001\b')
 _POS32600_RE = re.compile(r'"code"\s*:\s*(?<!-)32600\b')
 # ``Session terminated`` only counts when it appears alongside a JSON-RPC
-# code field (i.e. inside the JSON envelope), not as free-form tool output.
+# code field carrying one of the recognized session-expiry codes (-32001
+# or 32600). Earlier iteration matched any code, which would misclassify
+# a -32602 (Invalid Params) error whose message text happened to be
+# "Session terminated" as session-expired and trigger spurious reconnects.
 _SESSION_TERMINATED_RE = re.compile(
-    r'"code"\s*:\s*-?\d+.*?"message"\s*:\s*"Session terminated"', re.DOTALL
+    r'"code"\s*:\s*(?:-32001|(?<!-)32600)\b.*?"message"\s*:\s*"Session terminated"',
+    re.DOTALL,
 )
 
 
