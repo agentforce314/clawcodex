@@ -125,6 +125,152 @@ def _is_first_party_endpoint(client: Any) -> bool:
     return "anthropic.com" in str(base_url).lower()
 
 
+def add_cache_breakpoints(
+    messages: list[dict[str, Any]],
+    *,
+    enable_prompt_caching: bool = True,
+    skip_cache_write: bool = False,
+) -> list[dict[str, Any]]:
+    """Place exactly one ``cache_control`` marker on the conversation tail.
+
+    Mirrors TS ``addCacheBreakpoints`` (claude.ts:3107-3255), simplified to
+    omit the cache-edits / cache-references machinery (mycro internal — not
+    part of the public API contract). Per chapter §"Three Tiers", exactly
+    ONE marker per request: two markers create false-positive cache
+    extensions that get evicted on the next turn anyway and waste a
+    breakpoint slot.
+
+    Args:
+        messages: API-shaped message list (``role``/``content`` dicts).
+            Not mutated — returns a shallow-copied list.
+        enable_prompt_caching: When False, returns the input unchanged
+            (e.g. third-party providers that reject ``cache_control``).
+        skip_cache_write: For fire-and-forget forks (subagents that
+            discard their tail), move the marker one position earlier so
+            the cache entry already exists upstream — the fork doesn't
+            leave its own tail in the KVCC. Mirrors TS at claude.ts:3133.
+            With a single message and ``skip_cache_write=True``, no marker
+            is emitted (TS's ``markerIndex = -1`` semantics).
+
+    Returns the new list. Messages strictly before the marker are
+    untouched; the marker message is shallow-cloned with ``cache_control``
+    attached to its LAST content block (string contents wrap into a
+    single text block).
+    """
+    if not enable_prompt_caching or not messages:
+        return list(messages)
+
+    # Mirror TS exactly: ``markerIndex = messages.length - 1`` (or -2 for
+    # skip_cache_write). When ``skip_cache_write`` is True and the list has
+    # only one message, ``markerIndex`` becomes -1 and the marker never
+    # lands — the fire-and-forget fork has no useful cache prefix anyway
+    # (the only message IS the tail being discarded). Mirrors TS at
+    # claude.ts:3133 where ``markerIndex = -1`` results in no message
+    # matching ``index === markerIndex`` inside the .map().
+    marker_idx = len(messages) - (2 if skip_cache_write else 1)
+    if marker_idx < 0:
+        return list(messages)
+
+    out: list[dict[str, Any]] = []
+    for idx, msg in enumerate(messages):
+        if idx != marker_idx:
+            out.append(msg)
+            continue
+
+        cloned = dict(msg)
+        content = cloned.get("content")
+        if isinstance(content, str):
+            cloned["content"] = [
+                {
+                    "type": "text",
+                    "text": content,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ]
+        elif isinstance(content, list) and content:
+            # Mark the LAST block (which is where the API places the
+            # cache boundary for that message). Don't mutate the caller's
+            # list — clone the affected block and reassemble.
+            new_content = list(content[:-1])
+            tail = content[-1]
+            if isinstance(tail, dict):
+                tail_clone = dict(tail)
+            else:
+                tail_clone = {"type": "text", "text": str(tail)}
+            tail_clone["cache_control"] = {"type": "ephemeral"}
+            new_content.append(tail_clone)
+            cloned["content"] = new_content
+        else:
+            # No content — nothing useful to cache. Leave unchanged.
+            pass
+        out.append(cloned)
+    return out
+
+
+SMALL_FAST_MODEL = "claude-haiku-4-5"
+
+
+async def query_haiku(
+    *,
+    user_prompt: str,
+    system_prompt: str = "",
+    signal: Any = None,
+    client: Any = None,
+    model: str = SMALL_FAST_MODEL,
+    structured_output: dict[str, Any] | None = None,
+    max_tokens: int | None = None,
+) -> Any:
+    """Streamlined non-streaming entry point for classifiers / titles / compact.
+
+    Mirrors TS ``queryHaiku`` (claude.ts:3285-3335). Skips streaming, tool
+    search, thinking, advisor, agentic plumbing. Returns the raw SDK
+    response so the caller can extract ``.content[0].text`` (or whatever
+    shape its task needs) without going through stream-event aggregation.
+
+    The chapter rationale: not every API call needs the full pipeline.
+    Compaction, session-title generation, side-question classifiers — each
+    of these uses Haiku to do one synchronous transformation, and the
+    streaming plumbing is pure overhead.
+    """
+    if client is None:
+        try:
+            import anthropic
+        except ImportError as exc:
+            raise RuntimeError(
+                "anthropic package not installed — install optional deps "
+                "to use query_haiku"
+            ) from exc
+        client = anthropic.AsyncAnthropic()
+
+    effective_max_tokens = (
+        max_tokens
+        if max_tokens is not None
+        else get_max_output_tokens_for_model(model)
+    )
+
+    create_kwargs: dict[str, Any] = {
+        "model": model,
+        "max_tokens": effective_max_tokens,
+        "messages": [{"role": "user", "content": user_prompt}],
+    }
+
+    if system_prompt:
+        create_kwargs["system"] = [{"type": "text", "text": system_prompt}]
+
+    extra_headers: dict[str, str] = {}
+    if _is_first_party_endpoint(client):
+        extra_headers[CLIENT_REQUEST_ID_HEADER] = make_client_request_id()
+    if extra_headers:
+        create_kwargs["extra_headers"] = extra_headers
+
+    if structured_output:
+        # Mirrors TS ``output_config.format`` for structured outputs
+        # (claude.ts:1615-1624).
+        create_kwargs["output_config"] = {"format": structured_output}
+
+    return await client.messages.create(**create_kwargs)
+
+
 @dataclass
 class TextDelta:
     type: Literal["text_delta"] = "text_delta"
@@ -245,6 +391,11 @@ class CallModelOptions:
     ``max_tokens=None`` defers to ``get_max_output_tokens_for_model()`` so
     the slot-reservation cap (8K default) applies. Pass an explicit int
     only when the caller needs a specific ceiling.
+
+    ``enable_prompt_caching=False`` is the conservative default — ad-hoc
+    callers (tests, internal classifiers) don't want ``cache_control``
+    blocks. The production streaming pipeline sets it to True via its
+    own ``QueryConfig.enable_prompt_caching`` (lands in PR4).
     """
 
     model: str = "claude-sonnet-4-6"
@@ -259,6 +410,8 @@ class CallModelOptions:
     structured_output: dict[str, Any] | None = None
     extra_headers: dict[str, str] | None = None
     extra_body: dict[str, Any] | None = None
+    enable_prompt_caching: bool = False
+    skip_cache_write: bool = False
 
     def resolved_max_tokens(self) -> int:
         """Return ``max_tokens`` with the per-model cap applied.
@@ -295,10 +448,24 @@ async def call_model(
         system_blocks = _build_system_blocks(opts.system_prompt)
         tool_schemas = _build_tool_schemas(opts.tools)
 
+        # Place exactly one cache_control marker on the tail of the
+        # conversation when caching is enabled. add_cache_breakpoints
+        # returns a new list and clones the marker message, so the
+        # caller's messages are not mutated.
+        api_messages = (
+            add_cache_breakpoints(
+                messages,
+                enable_prompt_caching=True,
+                skip_cache_write=opts.skip_cache_write,
+            )
+            if opts.enable_prompt_caching
+            else messages
+        )
+
         create_kwargs: dict[str, Any] = {
             "model": opts.model,
             "max_tokens": opts.resolved_max_tokens(),
-            "messages": messages,
+            "messages": api_messages,
         }
 
         if system_blocks:
