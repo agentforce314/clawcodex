@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import importlib
+import os
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from src.services.tool_execution.orchestrator import (
     Batch,
@@ -88,3 +92,40 @@ class TestPartitionToolCalls:
         ctx = _make_context([])
         batches = partition_tool_calls([], ctx)
         assert len(batches) == 0
+
+
+class TestMaxToolUseConcurrencyEnvVar:
+    """ch07 / M3: production path reads CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY,
+    not CLAWCODEX_MAX_TOOL_USE_CONCURRENCY."""
+
+    def _reload_query(self):
+        # Use importlib.import_module so the module is keyed in
+        # sys.modules under its fully-qualified name, which
+        # importlib.reload requires.
+        query_mod = importlib.import_module("src.query.query")
+        return importlib.reload(query_mod)
+
+    def test_canonical_env_var_is_honoured(self, monkeypatch):
+        monkeypatch.delenv("CLAWCODEX_MAX_TOOL_USE_CONCURRENCY", raising=False)
+        monkeypatch.setenv("CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY", "3")
+        mod = self._reload_query()
+        assert mod.MAX_TOOL_USE_CONCURRENCY == 3
+
+    def test_legacy_env_var_still_works_with_deprecation(self, monkeypatch):
+        monkeypatch.delenv("CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY", raising=False)
+        monkeypatch.setenv("CLAWCODEX_MAX_TOOL_USE_CONCURRENCY", "7")
+        with pytest.warns(DeprecationWarning, match="CLAWCODEX_MAX_TOOL_USE_CONCURRENCY"):
+            mod = self._reload_query()
+        assert mod.MAX_TOOL_USE_CONCURRENCY == 7
+
+    def test_canonical_takes_precedence_over_legacy(self, monkeypatch):
+        monkeypatch.setenv("CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY", "5")
+        monkeypatch.setenv("CLAWCODEX_MAX_TOOL_USE_CONCURRENCY", "99")
+        mod = self._reload_query()
+        assert mod.MAX_TOOL_USE_CONCURRENCY == 5
+
+    def test_default_when_neither_set(self, monkeypatch):
+        monkeypatch.delenv("CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY", raising=False)
+        monkeypatch.delenv("CLAWCODEX_MAX_TOOL_USE_CONCURRENCY", raising=False)
+        mod = self._reload_query()
+        assert mod.MAX_TOOL_USE_CONCURRENCY == 10
