@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -82,6 +83,26 @@ class ToolContext:
     # for the chapter-10 task state machine; ``tasks`` continues to host
     # ``tasks_v2``/todo entries for the unrelated TaskCreate system.
     runtime_tasks: RuntimeTaskRegistry = field(default_factory=RuntimeTaskRegistry)
+    # WI-5.1: per-message tool-result aggregate counter. The execution
+    # pipeline (Step 11) reads + increments this each time a tool result
+    # is mapped to its API form; when the running total exceeds
+    # ``MAX_TOOL_RESULTS_PER_MESSAGE_CHARS`` (default 200K) the next
+    # result is persisted to disk regardless of its individual size.
+    # Reset to 0 between messages by the turn-loop dispatcher.
+    #
+    # ``_aggregate_lock`` synchronizes the read-decide-write across
+    # concurrent tool dispatches (critic B6). ``_run_tools_partitioned``
+    # uses ``asyncio.to_thread`` to fan out concurrency-safe tools (Read,
+    # Grep, Glob) — without this lock, N threads would all read 0, all
+    # decide their block is under the cap, and the per-message budget
+    # would be silently bypassed. The full read+decide+write runs
+    # serialized so the persistence decision uses the LIVE counter and
+    # the cap is strictly enforced. Cost: the rare persist-to-disk path
+    # serializes against the lock, but persists are O(1) per turn in
+    # typical workloads (the common case under-threshold returns the
+    # block without I/O).
+    tool_result_chars_so_far: int = 0
+    _aggregate_lock: threading.Lock = field(default_factory=threading.Lock)
     # Chapter-10 / Chunk F / WI-6.1 — agent-name registry. Maps the
     # human-readable ``name`` (passed via Agent({name: "researcher"}))
     # to the random ``agent_id`` returned by the spawn. SendMessage
@@ -140,6 +161,25 @@ class ToolContext:
     # interpreted as "unknown" by callers; substitutions yield an empty
     # string in that case.
     session_id: str | None = None
+
+    # Chapter-12 / Phase 0 / WI-0.1 — frozen snapshot of hook config.
+    # The snapshot is built once at startup by ``HookConfigManager.load()``
+    # and updated only via explicit channels (the ``/hooks`` command or
+    # an explicit ``reload_if_changed()`` call). Hook execution reads from
+    # ``hook_config_manager.snapshot`` instead of ``options.hooks`` so a
+    # malicious post-trust mutation of ``settings.json`` cannot affect
+    # in-flight tool calls.
+    #
+    # ``options.hooks`` survives as a deprecated fallback for one release
+    # cycle (see ``_get_hooks_from_snapshot`` in ``src/hooks/hook_executor.py``):
+    # callers that still pass hooks via options get a ``DeprecationWarning``
+    # but their behavior is preserved.
+    hook_config_manager: Any | None = None
+    # Chapter-12 / Phase 0 / WI-0.2 — workspace-trust gate. Bootstrap flips
+    # this to ``True`` after the user accepts the trust dialog. Hooks (other
+    # than ``HookSource.POLICY_SETTINGS``) are skipped while the workspace is
+    # untrusted, mirroring TS' ``shouldSkipHookDueToTrust`` gate.
+    workspace_trusted: bool = False
 
     def __post_init__(self) -> None:
         self.workspace_root = Path(self.workspace_root).resolve()

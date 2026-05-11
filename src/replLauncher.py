@@ -2,14 +2,38 @@
 
 Mirrors the role of ``typescript/src/replLauncher.tsx`` in the Python
 port: a thin factory that decides how to boot the interactive REPL.
-As of the default-UI parity milestone the Textual TUI is the default
-and the legacy Rich / prompt_toolkit REPL is an opt-in fallback.
+
+**Current default**: the legacy ``prompt_toolkit + rich`` REPL at
+:mod:`src.repl.core`. The Textual TUI at :mod:`src.tui.app` is **opt-in**
+via the ``--tui`` flag, the ``CLAWCODEX_TUI=1`` environment variable, or
+the ``/tui`` slash command from within the legacy REPL. See
+:func:`src.entrypoints.tui.should_use_tui` for the policy.
 
 This module intentionally stays slim: the actual wiring lives in
 :mod:`src.entrypoints.tui` (Textual path) and :mod:`src.repl.core`
 (legacy path). Keeping a dedicated entrypoint here makes it easy for
-embedders (e.g. future ``replLauncher`` callers in the `demos/` tree)
+embedders (e.g. future ``replLauncher`` callers in the ``demos/`` tree)
 to pick a UI without reaching into the CLI module.
+
+Composition diagram (entry-point relationships)::
+
+                        cli.main()
+                           |
+                   +-------+--------+
+                   v                v
+      cli._run_tui_mode (--tui)   cli.start_repl (default)
+                   |                |
+                   v                v
+       entrypoints.tui.run_tui   repl.core.PromptSession
+                   |                ^
+                   v                | (slash command /tui handoff)
+            tui.app.ClawCodexTUI ---+
+
+The handoff arrow is one-way: ``/tui`` from inside the legacy REPL boots
+the Textual UI and returns to the shell when the user exits the TUI; the
+legacy REPL does not auto-resume after the round trip (state carry-over
+is read-only via ``_replay_transcript_to_host``). See
+``my-docs/ch13-terminal-ui-refactoring-plan.md`` working assumption A12.
 """
 
 from __future__ import annotations
@@ -20,7 +44,10 @@ from pathlib import Path
 def build_repl_banner() -> str:
     """One-line banner used by tests to confirm the module loads."""
 
-    return "ClawCodex REPL (Textual default; use --legacy-repl for Rich)."
+    return (
+        "ClawCodex REPL (legacy prompt_toolkit + rich is default; "
+        "Textual TUI opt-in via --tui or /tui)."
+    )
 
 
 def launch_repl(

@@ -7,13 +7,19 @@ import os
 import time
 from typing import Any, Callable
 
-from .errors import McpAuthError, McpSessionExpiredError, McpToolCallError
+from .errors import (
+    McpAuthError,
+    McpSessionExpiredError,
+    McpToolCallError,
+    is_mcp_session_expired_error,
+)
 from .transport import (
     HttpTransport,
     JsonRpcMessage,
     McpTransport,
     SseTransport,
     StdioTransport,
+    WebSocketTransport,
 )
 from .types import (
     ConnectedMCPServer,
@@ -35,9 +41,45 @@ from .types import (
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MCP_TOOL_TIMEOUT_MS = 100_000_000
+# Tool-call timeout: 5 minutes default, mirrors TS canonical
+# (typescript/src/services/mcp/client.ts:DEFAULT_MCP_TOOL_TIMEOUT_MS = 300_000).
+# Operators raise via the MCP_TOOL_TIMEOUT env override when a long-running
+# tool (e.g. a deep agentic search) needs a longer cap. The chapter
+# (§"Timeout Architecture") notes ~27.8h as the upper-bound budget for
+# legitimately long operations; that's the cap, not the default.
+DEFAULT_MCP_TOOL_TIMEOUT_MS = 300_000  # 5 min
 MAX_MCP_DESCRIPTION_LENGTH = 2048
 DEFAULT_CONNECTION_TIMEOUT_MS = 30_000
+
+
+def _is_remote_config(config: Any) -> bool:
+    """Return True for HTTP/SSE/WS configs — the ones that can require OAuth.
+
+    Used to gate auth-provider lookups so stdio / SDK configs never pay
+    the OAuth-cache lookup cost.
+    """
+    return isinstance(
+        config, (McpHTTPServerConfig, McpSSEServerConfig, McpWebSocketServerConfig)
+    )
+
+
+def _unwrap_exception_group_message(exc: BaseException) -> str:
+    """Extract the most actionable error string from a (possibly nested)
+    ``BaseExceptionGroup``.
+
+    The SDK's anyio task groups wrap real connection errors (e.g.
+    ``ConnectionRefusedError``) in ``BaseExceptionGroup``, whose ``str()``
+    is the opaque ``"unhandled errors in a TaskGroup (1 sub-exception)"``.
+    Walk the group tree and return the leaf exception's message — that's
+    what the user actually needs to debug an unreachable server.
+    """
+    try:
+        eg_cls = BaseExceptionGroup  # 3.11+ builtin  # type: ignore[name-defined]
+    except NameError:  # pragma: no cover - Python < 3.11
+        return str(exc) or type(exc).__name__
+    if isinstance(exc, eg_cls) and exc.exceptions:
+        return _unwrap_exception_group_message(exc.exceptions[0])
+    return str(exc) or type(exc).__name__
 
 
 def _get_connection_timeout_ms() -> int:
@@ -74,6 +116,28 @@ class McpClient:
         self._connected = False
         self._resource_cache: dict[str, list[dict[str, Any]]] = {}
         self._on_disconnect: Callable[[], None] | None = None
+        # Phase 6a WI-6.1: serialize concurrent session-expiry recovery.
+        # When N parallel call_tool invocations all hit the same expired
+        # session, we want exactly one reconnect, not N. The lock + epoch
+        # counter ("session generation") implement double-checked recovery:
+        # only the first coroutine to take the lock reconnects; the others
+        # observe the bumped generation and skip the reconnect step.
+        self._recovery_lock: asyncio.Lock | None = None
+        self._session_generation = 0
+        # Phase 4 WI-4.5: optional OAuth provider. Injected by callers
+        # that want OAuth-protected MCP servers to work end-to-end;
+        # legacy callers (stdio / open HTTP) pass None.
+        self._auth_provider: Any = None
+
+    def set_auth_provider(self, provider: Any) -> None:
+        """Inject the McpAuthProvider used for HTTP/SSE/WS auth flows.
+
+        Wired in by the runtime / connection_manager layer at startup.
+        Stored as ``Any`` to keep the client.py ↔ auth_provider.py
+        import edge optional — callers that don't use OAuth never
+        import the provider module.
+        """
+        self._auth_provider = provider
 
     def _next_id(self) -> int:
         self._request_id += 1
@@ -85,8 +149,25 @@ class McpClient:
         config: ScopedMcpServerConfig,
     ) -> MCPServerConnection:
         connect_start = time.monotonic()
+        # Phase 4 WI-4.8: respect the 15-min needs-auth cache. If a prior
+        # attempt determined this server needs OAuth and the operator
+        # hasn't completed the flow yet, fast-fail to NeedsAuthMCPServer
+        # without retrying the OAuth discovery / browser open on every
+        # call.
+        if self._auth_provider is not None and _is_remote_config(config.config):
+            cached = self._auth_provider.get_needs_auth_state(name)
+            if cached is not None:
+                return NeedsAuthMCPServer(
+                    name=name,
+                    config=config,
+                    auth_url=cached.auth_url,
+                    auth_method="oauth",
+                    requires_user_action=True,
+                    error=cached.reason,
+                )
+
         try:
-            transport = self._create_transport(config.config)
+            transport = self._create_transport(config.config, server_name=name)
             self._transport = transport
 
             timeout_ms = _get_connection_timeout_ms()
@@ -171,34 +252,66 @@ class McpClient:
             if self._transport:
                 await self._transport.close()
             elapsed = int((time.monotonic() - connect_start) * 1000)
+            error_msg = _unwrap_exception_group_message(e)
             logger.debug(
                 "MCP %r connection failed after %dms: %s", name, elapsed, e
             )
+
+            # Phase 4 WI-4.5 + Phase 6b WI-6.2: if the failure looks like
+            # an OAuth-required signal (401 / WWW-Authenticate / "Unauthorized"),
+            # surface NeedsAuthMCPServer instead of a generic Failed.
+            if self._auth_provider is not None and _is_remote_config(config.config):
+                from .auth_provider import is_oauth_required_error
+
+                if is_oauth_required_error(e):
+                    cached = self._auth_provider.get_needs_auth_state(name)
+                    auth_url = cached.auth_url if cached else None
+                    if cached is None:
+                        self._auth_provider.mark_needs_auth(
+                            name, reason=error_msg
+                        )
+                    return NeedsAuthMCPServer(
+                        name=name,
+                        config=config,
+                        auth_url=auth_url,
+                        auth_method="oauth",
+                        requires_user_action=True,
+                        error=error_msg,
+                    )
+
             return FailedMCPServer(
                 name=name,
-                error=str(e),
+                error=error_msg,
                 config=config,
             )
 
-    def _create_transport(self, config: McpServerConfig) -> McpTransport:
+    def _create_transport(
+        self, config: McpServerConfig, *, server_name: str | None = None
+    ) -> McpTransport:
         if isinstance(config, McpStdioServerConfig):
             return StdioTransport(
                 command=config.command,
                 args=config.args,
                 env=config.env,
             )
-        elif isinstance(config, McpSSEServerConfig):
-            return SseTransport(
-                url=config.url,
-                headers=config.headers,
-            )
-        elif isinstance(config, McpHTTPServerConfig):
-            return HttpTransport(
-                url=config.url,
-                headers=config.headers,
-            )
-        elif isinstance(config, McpWebSocketServerConfig):
-            raise NotImplementedError("WebSocket transport not yet implemented")
+        # Phase 4 WI-4.5: merge auth headers into transport-level headers
+        # for remote configs so the SDK transport authenticates requests.
+        if isinstance(config, (McpSSEServerConfig, McpHTTPServerConfig, McpWebSocketServerConfig)):
+            headers = dict(config.headers or {})
+            if (
+                self._auth_provider is not None
+                and server_name is not None
+                and "Authorization" not in headers
+            ):
+                auth_headers = self._auth_provider.get_auth_headers(server_name)
+                if auth_headers:
+                    headers.update(auth_headers)
+            if isinstance(config, McpSSEServerConfig):
+                return SseTransport(url=config.url, headers=headers or None)
+            if isinstance(config, McpHTTPServerConfig):
+                return HttpTransport(url=config.url, headers=headers or None)
+            if isinstance(config, McpWebSocketServerConfig):
+                return WebSocketTransport(url=config.url, headers=headers or None)
         else:
             raise ValueError(f"Unsupported server config type: {type(config).__name__}")
 
@@ -209,6 +322,16 @@ class McpClient:
             while self._transport.is_connected:
                 msg = await self._transport.receive()
                 if msg is None:
+                    # Transport closed cleanly. Reject any in-flight futures
+                    # so concurrent callers fail fast instead of waiting out
+                    # the full tool-call timeout (5 min default). Without
+                    # this, a `receive() → None` after a peer-side close left
+                    # every pending request silently hung.
+                    closed_exc = ConnectionError("MCP transport closed")
+                    for future in self._pending_requests.values():
+                        if not future.done():
+                            future.set_exception(closed_exc)
+                    self._pending_requests.clear()
                     break
                 if msg.id is not None and msg.id in self._pending_requests:
                     future = self._pending_requests.pop(msg.id)
@@ -295,7 +418,26 @@ class McpClient:
         }
         if meta:
             params["_meta"] = meta
-        result = await self._send_request("tools/call", params)
+
+        # Phase 6a WI-6.1 (gap #8): on Streamable-HTTP session expiry,
+        # the chapter §"Session Expiry Detection" specifies clear-cache +
+        # retry-once. Mirrors typescript/src/services/mcp/client.ts: the
+        # cache is cleared on detection so the next request reconnects
+        # against a fresh session rather than reusing the expired one.
+        try:
+            result = await self._send_request("tools/call", params)
+        except McpToolCallError as err:
+            if not is_mcp_session_expired_error(err):
+                # Regular tool error (invalid params, server-rejected, etc.) —
+                # propagate untouched. No reconnect, no retry.
+                raise
+            await self._recover_from_session_expiry(err, tool_name=tool_name)
+            # Retry once after the recovery routine returned (it either
+            # reconnected, or another concurrent caller did, or recovery
+            # failed and re-raised). A second session-expired here means
+            # the server is unstable / the retry hit a fresh session that
+            # already expired — propagate so we don't loop indefinitely.
+            result = await self._send_request("tools/call", params)
         if not result or not isinstance(result, dict):
             return McpToolResult()
 
@@ -321,6 +463,61 @@ class McpClient:
             meta=result_meta,
             structured_content=structured,
         )
+
+    async def _recover_from_session_expiry(
+        self,
+        original_error: Exception,
+        *,
+        tool_name: str | None = None,
+    ) -> None:
+        """Serialize concurrent session-expiry recovery via lock + epoch.
+
+        When N parallel callers all observe the same expired session, we
+        want exactly one reconnect, not N. The lock implements double-
+        checked recovery: only the first coroutine to take the lock
+        reconnects; the others observe the bumped ``_session_generation``
+        and return immediately, letting their retry path proceed against
+        the freshly-reconnected transport.
+
+        On reconnect failure, all waiters re-raise ``original_error`` so
+        the caller sees the session-expiry signal in context (rather than
+        a misleading reconnect-related error).
+
+        Phase 6a WI-6.1 (gap #8). Scope: invoked from ``call_tool`` only;
+        ``list_tools`` / ``list_resources`` / ``list_prompts`` /
+        ``initialize`` retain their previous propagate-on-error behavior.
+        Lifting recovery into ``_send_request`` to cover every JSON-RPC
+        method is tracked as a follow-up; the chapter §"Session Expiry
+        Detection" describes recovery as a tool-call concern.
+        """
+        # Lazy-init the lock so __init__ doesn't require a running loop.
+        if self._recovery_lock is None:
+            self._recovery_lock = asyncio.Lock()
+        gen_at_entry = self._session_generation
+        async with self._recovery_lock:
+            if self._session_generation != gen_at_entry:
+                # Another concurrent caller already reconnected for this
+                # session generation; nothing to do.
+                logger.info(
+                    "MCP %r tool %r: session expired (gen %d); piggybacking "
+                    "on concurrent reconnect (now gen %d)",
+                    self._name, tool_name, gen_at_entry, self._session_generation,
+                )
+                return
+            logger.info(
+                "MCP %r tool %r: session expired (gen %d); clearing cache + reconnecting",
+                self._name, tool_name, gen_at_entry,
+            )
+            if self._name is not None:
+                clear_connection_cache(self._name)
+            reconnected = await self.reconnect()
+            if not isinstance(reconnected, ConnectedMCPServer):
+                # Reconnect failed; bump the generation anyway so other
+                # waiters don't repeatedly try, and surface the original
+                # session-expired error to all callers.
+                self._session_generation += 1
+                raise original_error
+            self._session_generation += 1
 
     async def list_resources(self) -> list[dict[str, Any]]:
         if not self._capabilities.resources:
@@ -467,18 +664,69 @@ class McpClient:
 
 _connection_cache: dict[str, tuple[McpClient, MCPServerConnection]] = {}
 
+# Cache key separator: only needs to be unambiguous for the prefix-match in
+# ``clear_connection_cache`` (we never parse the key back). Any single char
+# that is unlikely to appear at the start of a server name works.
+_CACHE_KEY_SEP = "|"
+
+
+def _cache_key_for(name: str, config: ScopedMcpServerConfig) -> str:
+    """Compose a content-based cache key for a (name, config) pair.
+
+    Mirrors TS' connection-cache keying (typescript/src/services/mcp/
+    client.ts:600-606 uses ``${name}-${jsonStringify(serverRef)}`` — keying
+    on the **full** scoped config so that env vars / headers / scope all
+    participate). Two configs with the same ``command``/``args`` but
+    different ``env`` (e.g. different API keys) MUST produce distinct cache
+    keys; otherwise the second registration would silently reuse the first
+    server's authenticated connection — a credential-leak class bug.
+
+    NOTE: ``get_mcp_server_signature(...)`` is intentionally narrow — it
+    encodes only ``[command, args]`` for stdio or ``url`` for remote, so it
+    cannot be reused as a cache key without env/header collisions. Its
+    actual call sites (``config.py:dedup_plugin_mcp_servers``) are about
+    de-duplicating plugin servers that share a launch surface, not about
+    keying live connections.
+    """
+    from dataclasses import asdict, is_dataclass
+
+    inner = config.config
+    if is_dataclass(inner):
+        payload = {
+            "scope": config.scope,
+            "plugin_source": config.plugin_source,
+            "type": type(inner).__name__,
+            "config": asdict(inner),
+        }
+    else:  # pragma: no cover - defensive; all current configs are dataclasses
+        payload = {"scope": config.scope, "type": type(inner).__name__, "id": id(inner)}
+    return f"{name}{_CACHE_KEY_SEP}{json.dumps(payload, sort_keys=True, default=str)}"
+
 
 async def connect_to_server(
     name: str,
     config: ScopedMcpServerConfig,
+    *,
+    auth_provider: Any | None = None,
 ) -> tuple[McpClient, MCPServerConnection]:
-    cache_key = f"{name}-{id(config)}"
+    """Connect to (or return cached client for) an MCP server.
+
+    ``auth_provider`` MUST be bound BEFORE ``client.connect`` so the
+    NeedsAuth fast-path + auth-header injection take effect on the very
+    first connect. Threading the provider after ``connect`` (as a prior
+    iteration did) caused first-connect 401s to surface as FailedMCPServer
+    instead of NeedsAuthMCPServer, and tool calls thereafter ran without
+    credentials. This signature mirrors TS' ``connectToServer(name, config, authProvider)``.
+    """
+    cache_key = _cache_key_for(name, config)
     if cache_key in _connection_cache:
         client, conn = _connection_cache[cache_key]
         if isinstance(conn, ConnectedMCPServer) and client._transport and client._transport.is_connected:
             return client, conn
 
     client = McpClient()
+    if auth_provider is not None:
+        client.set_auth_provider(auth_provider)
     connection = await client.connect(name, config)
     if isinstance(connection, ConnectedMCPServer):
         _connection_cache[cache_key] = (client, connection)
@@ -490,6 +738,7 @@ def clear_connection_cache(name: str | None = None) -> None:
     if name is None:
         _connection_cache.clear()
     else:
-        keys_to_remove = [k for k in _connection_cache if k.startswith(f"{name}-")]
+        prefix = f"{name}{_CACHE_KEY_SEP}"
+        keys_to_remove = [k for k in _connection_cache if k.startswith(prefix)]
         for k in keys_to_remove:
             del _connection_cache[k]

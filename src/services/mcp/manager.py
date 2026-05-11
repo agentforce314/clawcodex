@@ -43,6 +43,7 @@ async def _process_server(
     name: str,
     config: ScopedMcpServerConfig,
     on_connection_attempt: OnConnectionAttempt,
+    auth_provider: Any | None = None,
 ) -> None:
     if is_mcp_server_disabled(name):
         on_connection_attempt(
@@ -53,7 +54,9 @@ async def _process_server(
         return
 
     try:
-        mcp_client, connection = await connect_to_server(name, config)
+        mcp_client, connection = await connect_to_server(
+            name, config, auth_provider=auth_provider
+        )
 
         if not isinstance(connection, ConnectedMCPServer):
             on_connection_attempt(
@@ -98,12 +101,15 @@ async def _process_batched(
     servers: list[tuple[str, ScopedMcpServerConfig]],
     batch_size: int,
     on_connection_attempt: OnConnectionAttempt,
+    auth_provider: Any | None = None,
 ) -> None:
     semaphore = asyncio.Semaphore(batch_size)
 
     async def _run(name: str, config: ScopedMcpServerConfig) -> None:
         async with semaphore:
-            await _process_server(name, config, on_connection_attempt)
+            await _process_server(
+                name, config, on_connection_attempt, auth_provider=auth_provider
+            )
 
     await asyncio.gather(
         *[_run(name, config) for name, config in servers],
@@ -114,6 +120,7 @@ async def _process_batched(
 async def get_mcp_tools_commands_and_resources(
     on_connection_attempt: OnConnectionAttempt,
     mcp_configs: dict[str, ScopedMcpServerConfig] | None = None,
+    auth_provider: Any | None = None,
 ) -> None:
     if mcp_configs is None:
         configs, _ = get_all_mcp_configs()
@@ -137,16 +144,23 @@ async def get_mcp_tools_commands_and_resources(
 
     await asyncio.gather(
         _process_batched(
-            local_servers, DEFAULT_LOCAL_BATCH_SIZE, on_connection_attempt
+            local_servers,
+            DEFAULT_LOCAL_BATCH_SIZE,
+            on_connection_attempt,
+            auth_provider=auth_provider,
         ),
         _process_batched(
-            remote_servers, DEFAULT_REMOTE_BATCH_SIZE, on_connection_attempt
+            remote_servers,
+            DEFAULT_REMOTE_BATCH_SIZE,
+            on_connection_attempt,
+            auth_provider=auth_provider,
         ),
     )
 
 
 async def prefetch_all_mcp_resources(
     mcp_configs: dict[str, ScopedMcpServerConfig],
+    auth_provider: Any | None = None,
 ) -> tuple[list[MCPServerConnection], list[Tool]]:
     clients: list[MCPServerConnection] = []
     tools: list[Tool] = []
@@ -158,6 +172,7 @@ async def prefetch_all_mcp_resources(
     await get_mcp_tools_commands_and_resources(
         on_connection_attempt=_on_attempt,
         mcp_configs=mcp_configs,
+        auth_provider=auth_provider,
     )
 
     return clients, tools

@@ -1,4 +1,13 @@
-"""Python package placeholder for the archived `keybindings` subsystem."""
+"""Placeholder for parity with ``typescript/src/keybindings/``.
+
+The real Python implementation of TUI keybindings lives at
+``src/tui/keybindings.py`` (chord-tracker dispatcher). The configurable
+loader / schema / resolver layer (mirroring chapter 13's ``loadUserBindings``,
+``parser``, ``resolver``, ``schema``, ``validate``) is planned in phase 2 of
+``my-docs/ch13-terminal-ui-refactoring-plan.md``. This module exists so the
+``reference_data`` subsystem snapshots resolve and so the namespace is
+reserved; do not add behavior here.
+"""
 
 from __future__ import annotations
 

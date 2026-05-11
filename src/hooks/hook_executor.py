@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import time
+import warnings
 from typing import Any, AsyncGenerator
 from uuid import uuid4
 
@@ -28,6 +29,7 @@ from src.hooks.hook_types import (
     HookEvent,
     HookResult,
 )
+from src.hooks.trust_gate import should_skip_hook_due_to_trust
 from src.types.messages import (
     create_attachment_message,
     create_progress_message,
@@ -36,38 +38,87 @@ from src.types.messages import (
 logger = logging.getLogger(__name__)
 
 
-def _get_hooks_from_settings(tool_use_context: Any) -> dict[str, list[HookConfig]]:
+def _get_hooks_from_snapshot(tool_use_context: Any) -> dict[str, list[HookConfig]]:
+    """Read hooks from the frozen snapshot held on the active HookConfigManager.
+
+    Mirrors typescript/src/utils/hooks/hooksConfigSnapshot.ts:119-124
+    (``getHooksConfigFromSnapshot``). settings.json is never re-read implicitly;
+    snapshot updates flow only through ``HookConfigManager.load()`` (startup) or
+    ``HookConfigManager.reload_if_changed()`` (explicit /hooks command).
+
+    **Back-compat:** if ``hook_config_manager`` is not set on the context but
+    ``options.hooks`` is, fall back to the legacy read path with a
+    ``DeprecationWarning``. This keeps existing callers / tests working during
+    one CHANGELOG cycle. After the deprecation cycle, the fallback is removed.
+    """
+    manager = getattr(tool_use_context, "hook_config_manager", None)
+    if manager is not None:
+        snapshot = getattr(manager, "snapshot", None)
+        if snapshot is None:
+            # Manager exists but hasn't been loaded — treat as empty.
+            return {}
+        # Defensive copy: callers MUST NOT mutate the returned dict.
+        return {ev: list(hooks) for ev, hooks in snapshot.hooks.items()}
+
+    # Legacy fallback — emit DeprecationWarning if options.hooks carries data.
+    return _get_hooks_from_options_legacy(tool_use_context)
+
+
+def _get_hooks_from_options_legacy(tool_use_context: Any) -> dict[str, list[HookConfig]]:
+    """Legacy read path: ``tool_use_context.options.hooks``.
+
+    Bypasses the snapshot freezing semantic introduced in WI-0.1. Preserved for
+    one CHANGELOG cycle so existing callers / tests do not break in lockstep
+    with the rewire. Emits a ``DeprecationWarning`` when it actually returns
+    data (silent no-op when options.hooks is empty/None).
+    """
     try:
         options = getattr(tool_use_context, "options", None)
         if options is None:
             return {}
         hooks_config = getattr(options, "hooks", None)
-        if hooks_config is None:
+        if hooks_config is None or not hooks_config:
             return {}
-        if isinstance(hooks_config, dict):
-            result: dict[str, list[HookConfig]] = {}
-            for event_name, hook_list in hooks_config.items():
-                if isinstance(hook_list, list):
-                    configs = []
-                    for h in hook_list:
-                        if isinstance(h, dict):
-                            configs.append(HookConfig(
-                                type=h.get("type", "command"),
-                                command=h.get("command", ""),
-                                timeout=h.get("timeout"),
-                                matcher=h.get("matcher"),
-                            ))
-                        elif isinstance(h, HookConfig):
-                            configs.append(h)
-                    result[event_name] = configs
-            return result
+        if not isinstance(hooks_config, dict):
+            return {}
+        result: dict[str, list[HookConfig]] = {}
+        for event_name, hook_list in hooks_config.items():
+            if isinstance(hook_list, list):
+                configs = []
+                for h in hook_list:
+                    if isinstance(h, dict):
+                        configs.append(HookConfig(
+                            type=h.get("type", "command"),
+                            command=h.get("command", ""),
+                            timeout=h.get("timeout"),
+                            matcher=h.get("matcher"),
+                        ))
+                    elif isinstance(h, HookConfig):
+                        configs.append(h)
+                result[event_name] = configs
+        if result:
+            warnings.warn(
+                "Reading hooks from tool_use_context.options.hooks is deprecated; "
+                "wire a HookConfigManager onto tool_use_context.hook_config_manager "
+                "and call .load() at bootstrap. The legacy path bypasses the snapshot "
+                "security model (chapter §'The Snapshot Security Model'). Will be "
+                "removed two CHANGELOG entries after the rename.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+        return result
     except Exception:
-        pass
-    return {}
+        return {}
+
+
+# Back-compat alias — preserved for any external test fixtures still importing
+# ``_get_hooks_from_settings`` directly. New code uses ``_get_hooks_from_snapshot``.
+def _get_hooks_from_settings(tool_use_context: Any) -> dict[str, list[HookConfig]]:
+    return _get_hooks_from_snapshot(tool_use_context)
 
 
 def has_hook_for_event(event: str, tool_use_context: Any) -> bool:
-    hooks = _get_hooks_from_settings(tool_use_context)
+    hooks = _get_hooks_from_snapshot(tool_use_context)
     return bool(hooks.get(event))
 
 
@@ -85,11 +136,75 @@ def _matches_tool(matcher: str | None, tool_name: str) -> bool:
     return matcher == tool_name
 
 
+def _build_hook_env(
+    hook: HookConfig,
+    stdin_data: dict[str, Any],
+    tool_use_context: Any | None,
+) -> dict[str, str]:
+    """Compute the env-var dict passed to a command-hook subprocess.
+
+    Phase-1 / WI-1.5 — adds three vars on top of inherited ``os.environ``:
+
+      * ``CLAUDE_HOOK_EVENT`` — the canonical event name (existing).
+      * ``CLAUDE_PROJECT_DIR`` — workspace root from the active context.
+        Empty string if the context doesn't carry a workspace_root.
+      * ``CLAUDE_PLUGIN_ROOT`` — set from ``hook.skill_root`` (populated only
+        for skill-declared hooks; empty for everything else).
+      * ``CLAUDE_ENV_FILE`` — per-fire ephemeral env file path. Set ONLY for
+        the three lifecycle events that benefit from env propagation
+        (``SessionStart``, ``Setup``, ``CwdChanged``). For other events:
+        empty string. Per N4: this WI sets the path; the
+        sourcing-and-applying loop (read the file back and apply exports to
+        subsequent shells in the session) is a separate follow-up ticket.
+        TODO(ch12-followup): ticket #<TBD> covers the env-file source/apply
+        cycle.
+    """
+    event_name = stdin_data.get("hook_event", "")
+    workspace_root = ""
+    if tool_use_context is not None:
+        wr = getattr(tool_use_context, "workspace_root", None)
+        if wr is not None:
+            workspace_root = str(wr)
+
+    env_file = _env_file_for_event(event_name)
+
+    return {
+        **os.environ,
+        "CLAUDE_HOOK_EVENT": event_name,
+        "CLAUDE_PROJECT_DIR": workspace_root,
+        "CLAUDE_PLUGIN_ROOT": hook.skill_root or "",
+        "CLAUDE_ENV_FILE": env_file,
+    }
+
+
+def _env_file_for_event(event_name: str) -> str:
+    """Return a writable path for the hook to write env exports to.
+
+    Only set for events whose hooks may legitimately propagate env to
+    subsequent shells in the session (TS pattern). For other events, return
+    empty string — the hook MAY still observe ``CLAUDE_ENV_FILE`` and treat
+    "empty" as "no env propagation requested."
+
+    The file is per-fire ephemeral: a unique path under
+    ``~/.clawcodex/hook-env/<event>.<pid>.<nanos>``. This WI does NOT
+    create the file or read it back; it only computes the path. Sourcing is
+    a follow-up.
+    """
+    if event_name not in ("SessionStart", "Setup", "CwdChanged"):
+        return ""
+    home = os.path.expanduser("~")
+    return os.path.join(
+        home, ".clawcodex", "hook-env",
+        f"{event_name}.{os.getpid()}.{time.time_ns()}",
+    )
+
+
 async def _execute_command_hook(
     hook: HookConfig,
     stdin_data: dict[str, Any],
     abort_signal: Any | None = None,
     timeout_ms: int = TOOL_HOOK_EXECUTION_TIMEOUT_MS,
+    tool_use_context: Any | None = None,
 ) -> HookResult:
     command = hook.command
     if not command:
@@ -106,7 +221,7 @@ async def _execute_command_hook(
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env={**os.environ, "CLAUDE_HOOK_EVENT": stdin_data.get("hook_event", "")},
+            env=_build_hook_env(hook, stdin_data, tool_use_context),
         )
 
         try:
@@ -167,25 +282,33 @@ async def _execute_command_hook(
             command=command,
         )
 
+        # Phase-1 / WI-1.4 — schema-validated output parsing. Replaces the
+        # prior ad-hoc ``dict.get`` block: malformed output (capital-D
+        # ``Deny``, unknown fields, non-string ``reason``, etc.) used to no-op
+        # silently; now it logs a WARNING and the decision payload is
+        # dropped (exit code is still honored).
         if stdout:
-            try:
-                parsed = json.loads(stdout)
-                if isinstance(parsed, dict):
-                    decision = parsed.get("decision")
-                    if decision in ("allow", "deny", "ask"):
-                        result.permission_behavior = decision
-                        result.hook_permission_decision_reason = parsed.get("reason")
-                    if parsed.get("updatedInput"):
-                        result.updated_input = parsed["updatedInput"]
-                    if parsed.get("preventContinuation"):
-                        result.prevent_continuation = True
-                        result.stop_reason = parsed.get("stopReason")
-                    if parsed.get("additionalContexts"):
-                        result.additional_contexts = parsed["additionalContexts"]
-                    if parsed.get("updatedMCPToolOutput"):
-                        result.updated_mcp_tool_output = parsed["updatedMCPToolOutput"]
-            except json.JSONDecodeError:
-                pass
+            from src.hooks.output_schema import parse_hook_output  # local import: pydantic
+            parsed, err = parse_hook_output(stdout)
+            if err is not None:
+                logger.warning(
+                    "Hook %r emitted output that failed schema validation; "
+                    "dropping decision payload. error=%s stdout=%r",
+                    command, err, stdout[:200],
+                )
+            elif parsed is not None:
+                if parsed.decision is not None:
+                    result.permission_behavior = parsed.decision
+                    result.hook_permission_decision_reason = parsed.reason
+                if parsed.updatedInput:
+                    result.updated_input = parsed.updatedInput
+                if parsed.preventContinuation:
+                    result.prevent_continuation = True
+                    result.stop_reason = parsed.stopReason
+                if parsed.additionalContexts:
+                    result.additional_contexts = parsed.additionalContexts
+                if parsed.updatedMCPToolOutput is not None:
+                    result.updated_mcp_tool_output = parsed.updatedMCPToolOutput
 
         return result
 
@@ -207,8 +330,25 @@ async def _run_hooks_for_event(
     abort_signal: Any | None = None,
     timeout_ms: int = TOOL_HOOK_EXECUTION_TIMEOUT_MS,
 ) -> AsyncGenerator[dict[str, Any], None]:
-    hooks = _get_hooks_from_settings(tool_use_context)
+    # WI-0.2 — workspace-trust gate. Skip non-policy hooks while the workspace
+    # is untrusted. The per-hook policy check happens below since policy-source
+    # identification is per-HookConfig.
+    trust_skip = should_skip_hook_due_to_trust(tool_use_context)
+
+    # WI-0.1 — read from the frozen snapshot, not from options.hooks. The
+    # snapshot is built once at startup by HookConfigManager.load() and is
+    # immune to settings.json mutation between trust acceptance and tool calls.
+    hooks = _get_hooks_from_snapshot(tool_use_context)
     event_hooks = hooks.get(event, [])
+
+    if trust_skip:
+        # Drop everything that isn't a policy-source hook. ``HookConfig.source``
+        # is a ``HookSource`` enum; any non-policy value is gated. Imported
+        # locally to avoid pulling the enum into module-init paths that don't
+        # need it. Phase-1 / WI-1.2 renamed ``POLICY`` → ``POLICY_SETTINGS``;
+        # the ``is_policy`` predicate is the canonical way to ask the
+        # question and shields callers from future renames.
+        event_hooks = [h for h in event_hooks if h.source.is_policy]
 
     tool_use_id = stdin_data.get("tool_use_id", str(uuid4()))
     parent_tool_use_id = ""
@@ -230,6 +370,7 @@ async def _run_hooks_for_event(
             {**stdin_data, "hook_event": event},
             abort_signal=abort_signal,
             timeout_ms=timeout_ms,
+            tool_use_context=tool_use_context,
         )
 
         if result.blocking_error:

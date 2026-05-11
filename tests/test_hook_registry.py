@@ -110,19 +110,28 @@ class TestAsyncHookRegistry:
 
     @pytest.mark.asyncio
     async def test_priority_ordering(self, registry):
-        config_plugin = HookConfig(type="command", command="echo plugin", source=HookSource.PLUGINS)
-        config_settings = HookConfig(type="command", command="echo settings", source=HookSource.SETTINGS)
-        config_policy = HookConfig(type="command", command="echo policy", source=HookSource.POLICY)
+        # Phase-1 / WI-1.2 — priority scheme reshuffled to match the chapter
+        # table (``ch12-extensibility.md`` §"Six Hook Sources"):
+        #   USER_SETTINGS  = 0   (highest priority — sorts first)
+        #   POLICY_SETTINGS = 3
+        #   PLUGIN_HOOK    = 999 (sentinel: always last)
+        # Note: priority is *display ordering* only. The chapter's "policy
+        # cannot be overridden" semantic is enforced by ``apply_policy_cascade``
+        # (Phase 2 / WI-2.3), not by priority. The sort order below reflects
+        # priority, not security precedence.
+        config_plugin = HookConfig(type="command", command="echo plugin", source=HookSource.PLUGIN_HOOK)
+        config_settings = HookConfig(type="command", command="echo settings", source=HookSource.USER_SETTINGS)
+        config_policy = HookConfig(type="command", command="echo policy", source=HookSource.POLICY_SETTINGS)
 
-        await registry.register("PreToolUse", config_plugin, HookSource.PLUGINS)
-        await registry.register("PreToolUse", config_settings, HookSource.SETTINGS)
-        await registry.register("PreToolUse", config_policy, HookSource.POLICY)
+        await registry.register("PreToolUse", config_plugin, HookSource.PLUGIN_HOOK)
+        await registry.register("PreToolUse", config_settings, HookSource.USER_SETTINGS)
+        await registry.register("PreToolUse", config_policy, HookSource.POLICY_SETTINGS)
 
         hooks = await registry.get_hooks_for_event("PreToolUse")
         assert len(hooks) == 3
-        assert hooks[0].source == HookSource.POLICY
-        assert hooks[1].source == HookSource.SETTINGS
-        assert hooks[2].source == HookSource.PLUGINS
+        assert hooks[0].source == HookSource.USER_SETTINGS
+        assert hooks[1].source == HookSource.POLICY_SETTINGS
+        assert hooks[2].source == HookSource.PLUGIN_HOOK
 
     @pytest.mark.asyncio
     async def test_has_hooks_for_event(self, registry):
@@ -144,10 +153,10 @@ class TestAsyncHookRegistry:
     async def test_clear_source(self, registry):
         config_settings = HookConfig(type="command", command="echo settings")
         config_plugins = HookConfig(type="command", command="echo plugins")
-        await registry.register("PreToolUse", config_settings, HookSource.SETTINGS)
-        await registry.register("PreToolUse", config_plugins, HookSource.PLUGINS)
+        await registry.register("PreToolUse", config_settings, HookSource.USER_SETTINGS)
+        await registry.register("PreToolUse", config_plugins, HookSource.PLUGIN_HOOK)
         assert registry.hook_count == 2
-        removed = await registry.clear_source(HookSource.PLUGINS)
+        removed = await registry.clear_source(HookSource.PLUGIN_HOOK)
         assert removed == 1
         assert registry.hook_count == 1
 
@@ -187,15 +196,41 @@ class TestGlobalRegistry:
 
 
 class TestHookSource:
+    """Phase-1 / WI-1.2 — six-source priority scheme.
+
+    Old enum values ``POLICY`` / ``SETTINGS`` / ``PLUGINS`` are preserved as
+    deprecated aliases (``EnumMeta``-level ``__getattr__``); ``FRONTMATTER``
+    and ``SKILLS`` had no producer in Phase 0 (gap analysis §5) and are
+    removed outright.
+    """
+
     def test_priority_ordering(self):
-        assert HookSource.POLICY.priority < HookSource.SETTINGS.priority
-        assert HookSource.SETTINGS.priority < HookSource.FRONTMATTER.priority
-        assert HookSource.FRONTMATTER.priority < HookSource.SKILLS.priority
-        assert HookSource.SKILLS.priority < HookSource.PLUGINS.priority
+        # Phase-1 priority scheme: USER_SETTINGS=0, PROJECT=1, LOCAL=2,
+        # POLICY_SETTINGS=3, SESSION_HOOK=4, PLUGIN_HOOK=999 (sentinel).
+        assert HookSource.USER_SETTINGS.priority < HookSource.PROJECT_SETTINGS.priority
+        assert HookSource.PROJECT_SETTINGS.priority < HookSource.LOCAL_SETTINGS.priority
+        assert HookSource.LOCAL_SETTINGS.priority < HookSource.POLICY_SETTINGS.priority
+        assert HookSource.POLICY_SETTINGS.priority < HookSource.SESSION_HOOK.priority
+        assert HookSource.SESSION_HOOK.priority < HookSource.PLUGIN_HOOK.priority
+
+    def test_plugin_hook_priority_is_999(self):
+        # Sentinel value: any tier added later (e.g., a future "managed-cloud"
+        # source) inserts between LOCAL and PLUGIN without disturbing plugin
+        # ordering.
+        assert HookSource.PLUGIN_HOOK.priority == 999
 
     def test_source_values(self):
-        assert HookSource.POLICY.value == "policy"
-        assert HookSource.SETTINGS.value == "settings"
-        assert HookSource.FRONTMATTER.value == "frontmatter"
-        assert HookSource.SKILLS.value == "skills"
-        assert HookSource.PLUGINS.value == "plugins"
+        # camelCase wire format matches TS' source string identifiers.
+        assert HookSource.USER_SETTINGS.value == "userSettings"
+        assert HookSource.PROJECT_SETTINGS.value == "projectSettings"
+        assert HookSource.LOCAL_SETTINGS.value == "localSettings"
+        assert HookSource.POLICY_SETTINGS.value == "policySettings"
+        assert HookSource.SESSION_HOOK.value == "sessionHook"
+        assert HookSource.PLUGIN_HOOK.value == "pluginHook"
+
+    def test_is_policy_predicate(self):
+        # The trust gate (WI-0.2) and policy cascade (WI-2.3) ask
+        # "is this source the enterprise tier?" via ``is_policy``.
+        assert HookSource.POLICY_SETTINGS.is_policy is True
+        assert HookSource.USER_SETTINGS.is_policy is False
+        assert HookSource.PLUGIN_HOOK.is_policy is False

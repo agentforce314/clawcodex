@@ -120,9 +120,16 @@ class BaseProvider(ABC):
             **kwargs: Keyword arguments that may contain 'model'
 
         Returns:
-            Model name to use
+            Model name to use. The optional ``[1m]`` opt-in suffix
+            (WI-5.3) is stripped here so the API receives a clean
+            model id; the suffix's only effect is driving
+            ``get_context_window_for_model`` to return 1M tokens.
         """
-        return kwargs.get("model", self.model)
+        # Late import to avoid a top-level dependency from base.py
+        # into the models package.
+        from src.models.context import strip_1m_context_suffix
+        raw = kwargs.get("model", self.model)
+        return strip_1m_context_suffix(raw) if raw else raw
 
     def _prepare_messages(self, messages: list[MessageInput]) -> list[dict[str, Any]]:
         """Convert provider messages to API dictionary format."""

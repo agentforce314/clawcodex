@@ -1,4 +1,16 @@
-"""Session management with persistence."""
+"""Session management with persistence.
+
+The session ID is authoritative-from-bootstrap: ``Session.create`` reads
+``get_session_id()`` rather than generating its own. This fixes the
+strftime-collision bug (sessions started in the same second would have
+overlapped IDs) and unifies session identity across the codebase — the
+bootstrap singleton is the single source of truth, exactly per Chapter 3.
+
+``Session.load(sid)`` continues to read from disk by ID; the resume path
+should call ``switch_session(SessionId(sid))`` first (or via a wrapping
+helper) to update the bootstrap singleton, then call ``Session.load(sid)``
+to reconstruct the per-conversation Persistence record.
+"""
 
 from __future__ import annotations
 
@@ -7,6 +19,8 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional
 from dataclasses import dataclass, field
+
+from src.bootstrap.state import get_session_id
 
 from .conversation import Conversation
 
@@ -64,10 +78,17 @@ class Session:
 
     @classmethod
     def create(cls, provider: str, model: str) -> 'Session':
-        """Create a new session."""
-        session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        """Create a new session using the bootstrap singleton's session ID.
+
+        Previously this generated its own strftime-based ID, producing
+        collisions when two sessions started in the same second and
+        diverging from the rest of the codebase. Now reads
+        ``get_session_id()`` — a UUID-based ID generated at bootstrap
+        import time — so every consumer that talks about "the current
+        session" agrees on the identifier.
+        """
         return cls(
-            session_id=session_id,
+            session_id=get_session_id(),
             provider=provider,
-            model=model
+            model=model,
         )

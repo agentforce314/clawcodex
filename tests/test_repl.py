@@ -11,6 +11,7 @@ import threading
 import time
 from rich.markdown import Markdown
 
+import src.config as config_module
 from src.repl import ClawcodexREPL
 from src.agent import Session, Conversation
 from src.providers.base import ChatMessage, ChatResponse
@@ -41,6 +42,19 @@ class TestREPL(unittest.TestCase):
         config_file = self.config_dir / "config.json"
         with open(config_file, 'w') as f:
             json.dump(test_config, f)
+
+        # Redirect ConfigManager to the test config and drop any cached
+        # singleton state. Patching ``get_config_path`` alone is a no-op
+        # because the manager reads ``GLOBAL_CONFIG_FILE`` directly.
+        self._global_config_patcher = patch.object(
+            config_module, "GLOBAL_CONFIG_FILE", config_file
+        )
+        self._global_config_patcher.start()
+        config_module._default_manager = None
+
+    def tearDown(self):
+        self._global_config_patcher.stop()
+        config_module._default_manager = None
 
     def test_repl_initialization(self):
         """Test REPL initialization."""
@@ -358,7 +372,11 @@ class TestREPL(unittest.TestCase):
                         mock_provider.model = "glm-4.5"
                         mock_provider_class.return_value = mock_provider
 
-                        repl = ClawcodexREPL(provider_name="glm")
+                        repl = ClawcodexREPL(
+                            provider_name="glm",
+                            permission_mode="bypassPermissions",
+                            is_bypass_permissions_mode_available=True,
+                        )
                         repl.chat = Mock()
                         repl.handle_command("/hello bob")
                         args, _kwargs = repl.chat.call_args

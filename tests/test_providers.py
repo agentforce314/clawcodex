@@ -170,6 +170,118 @@ class TestAnthropicProvider(unittest.TestCase):
         self.assertEqual(response.tool_uses[0]["name"], "Read")
 
 
+class TestAnthropicUsageForwarding(unittest.TestCase):
+    """WI-0.2 (ch17 Phase 0) — provider forwards prompt-cache credits + breakdown.
+
+    Without this, downstream consumers (``src/tasks/progress.py``,
+    ``src/agent/agent_tool_utils.py``, ``src/context_system/context_analyzer.py``)
+    that read ``usage["cache_creation_input_tokens"]`` / etc. always
+    observe 0 even when server-side prompt caching is engaged. The
+    chapter line 61 anchor — "Token counting is anchored on the API's
+    actual usage field ... accounting for prompt caching credits".
+    """
+
+    @staticmethod
+    def _make_response(usage):
+        response = MagicMock()
+        text_block = MagicMock()
+        text_block.type = "text"
+        text_block.text = "ok"
+        response.content = [text_block]
+        response.model = "claude-sonnet-4-20250514"
+        response.usage = usage
+        response.stop_reason = "end_turn"
+        return response
+
+    def test_cache_creation_input_tokens_forwarded(self):
+        provider = AnthropicProvider(api_key="test")
+        usage = MagicMock(
+            input_tokens=10, output_tokens=5,
+            cache_creation_input_tokens=1234, cache_read_input_tokens=0,
+            cache_creation=None,
+        )
+        cr = provider._build_chat_response(self._make_response(usage))
+        self.assertEqual(cr.usage["cache_creation_input_tokens"], 1234)
+
+    def test_cache_read_input_tokens_forwarded(self):
+        provider = AnthropicProvider(api_key="test")
+        usage = MagicMock(
+            input_tokens=10, output_tokens=5,
+            cache_creation_input_tokens=0, cache_read_input_tokens=9876,
+            cache_creation=None,
+        )
+        cr = provider._build_chat_response(self._make_response(usage))
+        self.assertEqual(cr.usage["cache_read_input_tokens"], 9876)
+
+    def test_missing_cache_fields_default_to_zero(self):
+        """Older SDK responses without cache fields → graceful 0."""
+        class OldUsage:
+            def __init__(self):
+                self.input_tokens = 10
+                self.output_tokens = 5
+        provider = AnthropicProvider(api_key="test")
+        cr = provider._build_chat_response(self._make_response(OldUsage()))
+        self.assertEqual(cr.usage["cache_creation_input_tokens"], 0)
+        self.assertEqual(cr.usage["cache_read_input_tokens"], 0)
+        self.assertNotIn("cache_creation", cr.usage)
+
+    def test_none_value_fields_default_to_zero(self):
+        """SDK ``int | None`` → forward 0 instead of None."""
+        provider = AnthropicProvider(api_key="test")
+        usage = MagicMock(
+            input_tokens=10, output_tokens=5,
+            cache_creation_input_tokens=None, cache_read_input_tokens=None,
+            cache_creation=None,
+        )
+        cr = provider._build_chat_response(self._make_response(usage))
+        self.assertEqual(cr.usage["cache_creation_input_tokens"], 0)
+        self.assertEqual(cr.usage["cache_read_input_tokens"], 0)
+
+    def test_cache_creation_breakdown_forwarded(self):
+        """``cache_creation`` sub-object's 5m/1h breakdown → nested dict."""
+        provider = AnthropicProvider(api_key="test")
+        cache_creation = MagicMock(
+            ephemeral_5m_input_tokens=100, ephemeral_1h_input_tokens=200,
+        )
+        usage = MagicMock(
+            input_tokens=10, output_tokens=5,
+            cache_creation_input_tokens=300, cache_read_input_tokens=0,
+            cache_creation=cache_creation,
+        )
+        cr = provider._build_chat_response(self._make_response(usage))
+        self.assertEqual(
+            cr.usage["cache_creation"],
+            {"ephemeral_5m_input_tokens": 100, "ephemeral_1h_input_tokens": 200},
+        )
+
+    def test_existing_input_output_tokens_regression(self):
+        provider = AnthropicProvider(api_key="test")
+        usage = MagicMock(
+            input_tokens=42, output_tokens=17,
+            cache_creation_input_tokens=0, cache_read_input_tokens=0,
+            cache_creation=None,
+        )
+        cr = provider._build_chat_response(self._make_response(usage))
+        self.assertEqual(cr.usage["input_tokens"], 42)
+        self.assertEqual(cr.usage["output_tokens"], 17)
+
+    def test_missing_usage_object_safe_default(self):
+        provider = AnthropicProvider(api_key="test")
+        response = MagicMock()
+        text_block = MagicMock()
+        text_block.type = "text"
+        text_block.text = "ok"
+        response.content = [text_block]
+        response.model = "claude-sonnet-4-20250514"
+        response.usage = None
+        response.stop_reason = "end_turn"
+        cr = provider._build_chat_response(response)
+        self.assertEqual(cr.usage["input_tokens"], 0)
+        self.assertEqual(cr.usage["output_tokens"], 0)
+        self.assertEqual(cr.usage["cache_creation_input_tokens"], 0)
+        self.assertEqual(cr.usage["cache_read_input_tokens"], 0)
+
+
 class TestOpenAIProvider(unittest.TestCase):
     """Test OpenAI provider."""
 
