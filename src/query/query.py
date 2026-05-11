@@ -400,13 +400,17 @@ def _partition_tool_calls(
     tool_use_blocks: list[ToolUseBlock],
     tools: Tools,
 ) -> list[_ToolBatch]:
-    """Partition tool calls into batches per TS partitionToolCalls().
+    """**DEPRECATED** — ch07 / Phase 2e production cutover replaced this with
+    ``orchestrator.partition_tool_calls`` (which takes a ``ToolContext`` rather
+    than a ``Tools`` list). Retained only because
+    ``tests/test_tool_result_budget.py`` imports the surrounding
+    ``_dispatch_single_tool`` shim; remove this and the rest of the legacy
+    `_run_tools_partitioned` family after that test file is rewritten to
+    drive ``run_tool_use`` directly (Option A in the refactoring plan).
 
+    Partition tool calls into batches per TS partitionToolCalls().
     Consecutive ConcurrencySafe tools are grouped for parallel execution.
     Non-safe tools each get their own exclusive batch.
-
-    Mirrors TS: evaluates isConcurrencySafe per-call with actual tool input
-    (not a static lookup), so e.g. read-only Bash commands can be parallel.
     """
     batches: list[_ToolBatch] = []
     for block in tool_use_blocks:
@@ -428,7 +432,18 @@ def _dispatch_single_tool(
     tool_use_context: ToolContext,
     tools: Tools | None = None,
 ) -> UserMessage:
-    """Dispatch a single tool and return the UserMessage result.
+    """**DEPRECATED** — ch07 / Phase 2e cutover routed production through
+    ``_collect_tool_results`` → ``orchestrator.run_tools`` → ``run_tool_use``
+    (which honours PreToolUse/PostToolUse hooks). This shim is retained
+    only for ``tests/test_tool_result_budget.py`` callers; **no
+    production path invokes it**. Remove this and the rest of the legacy
+    ``_run_tools_partitioned`` family after that test file is rewritten
+    to drive ``run_tool_use`` directly.
+
+    The inline lock + counter logic below is duplicated in
+    ``tool_execution.py`` (Phase 2b); both writes target the same shared
+    ``aggregate_budget.total`` via the property setter (Phase 2a.5), so
+    they don't double-count when only one path is live at a time.
 
     Routes through ``process_tool_result_block`` (mirrors TS Step 11 of
     the execution pipeline at ``processToolResultBlock``) so the per-tool
@@ -526,12 +541,16 @@ async def _run_tools_partitioned(
     tool_use_context: ToolContext,
     tools: Tools,
 ) -> list[UserMessage]:
-    """Run tools with TS-matching concurrency: safe tools parallel, unsafe exclusive.
+    """**DEPRECATED** — ch07 / Phase 2e replaced this with
+    ``_collect_tool_results``. The production query loop no longer
+    invokes this function. Retained only for
+    ``tests/parity/test_orchestrator_partitioned_parity.py`` and the
+    test_tool_result_budget shim path. Remove together with
+    ``_dispatch_single_tool`` and ``_partition_tool_calls`` after the
+    test rewrite (Option A in the refactoring plan).
 
+    Run tools with TS-matching concurrency: safe tools parallel, unsafe exclusive.
     Mirrors typescript/src/tools/partitionToolCalls + runTools (Mode 2).
-    ConcurrencySafe tools (Read, Grep, Glob, etc.) run in parallel up to
-    MAX_TOOL_USE_CONCURRENCY.  Non-safe tools (Bash, Edit, Write) run
-    exclusively one at a time.
     """
     batches = _partition_tool_calls(tool_use_blocks, tools)
     all_results: list[UserMessage] = []
@@ -574,6 +593,209 @@ def _run_tools_sync(
     for block in tool_use_blocks:
         results.append(_dispatch_single_tool(block, tool_registry, tool_use_context))
     return results
+
+
+# ============================================================================
+# ch07 Phase 2d/2e — orchestrator-backed dispatch
+# ============================================================================
+#
+# `_collect_tool_results` replaces `_run_tools_partitioned` as the production
+# tool-dispatch entry point. It drives `orchestrator.run_tools()` (which goes
+# through `run_tool_use` and so honours PreToolUse/PostToolUse hooks), then
+# flattens the orchestrator's `MessageUpdate` stream into the `UserMessage`
+# list shape the query loop expects.
+#
+# `_build_can_use_tool_for_query` builds the `can_use_tool` callback that
+# `tool_hooks.resolve_hook_permission_decision` invokes. Concurrent batches
+# treat ask → deny conservatively (avoid presenting N modals); serial
+# batches go through the same fast-path (their permissions are typically
+# pre-cleared by the time they reach this point).
+#
+# `_dispatch_single_tool` and `_partition_tool_calls` are kept as thin
+# wrappers so existing test imports continue to work; production no longer
+# routes through them.
+
+
+def _build_can_use_tool_for_query(
+    tool_registry: ToolRegistry,
+) -> Callable[..., dict[str, Any]]:
+    """Build the orchestrator's `can_use_tool` callback against the query
+    path's permission flow.
+
+    `tool_hooks.resolve_hook_permission_decision` calls this with both
+    5-arg and 6-arg shapes — the 6-arg form has `force_decision` as a
+    trailing positional when a PreToolUse hook short-circuited to
+    `behavior=ask` (`tool_hooks.py:373-381`). Accept the optional
+    positional so we don't `TypeError` on that branch.
+
+    Concurrent batches convert hook-ask AND rule-ask to deny — the
+    invariant is that `is_concurrency_safe=True` tools are
+    permission-pre-cleared; presenting N modals for a parallel batch
+    would be a bad UX. If a real ask fires on a concurrent batch we
+    log a `warning` so operators can quickly map the deny back to
+    their permission rule.
+    """
+    from ..permissions import has_permissions_to_use_tool
+    # NB: `handle_permission_ask` lives in `src.permissions.handler`; we
+    # don't call it here (concurrent batches deny on ask), but it's the
+    # symbol an operator may chase if they see the warning below.
+
+    def _allow_or_deny(
+        tool: Tool,
+        tool_input: dict[str, Any],
+        ctx: ToolContext,
+        assistant_msg: Any,
+        tool_use_id: str,
+        force_decision: Any = None,
+    ) -> dict[str, Any]:
+        # When a PreToolUse hook returned behavior='ask', the resolver
+        # forwards the hook decision to us as `force_decision`. We
+        # honour it as deny in concurrent batches.
+        if force_decision is not None:
+            if isinstance(force_decision, dict):
+                message = force_decision.get("message") or "Hook requested user approval; not supported in concurrent batch."
+            else:
+                message = getattr(force_decision, "message", None) or "Hook requested user approval; not supported in concurrent batch."
+            return {"behavior": "deny", "message": message}
+
+        decision = has_permissions_to_use_tool(
+            tool, tool_input, ctx.permission_context, tool_use_context=ctx,
+        )
+
+        behavior = getattr(decision, "behavior", None)
+        if behavior == "deny":
+            return {
+                "behavior": "deny",
+                "message": getattr(decision, "message", None) or "permission denied",
+            }
+        if behavior == "ask":
+            logger.warning(
+                "Concurrent batch: permission decision for tool %s is 'ask' "
+                "(decision_reason=%r); concurrent batches convert ask → deny "
+                "to avoid presenting parallel modals. Move this tool to a "
+                "rule-based allow or accept that it'll deny in concurrent batches.",
+                tool.name, getattr(decision, "decision_reason", None),
+            )
+            return {
+                "behavior": "deny",
+                "message": "Permission ask is not supported in concurrent batches.",
+            }
+        # allow path
+        return {
+            "behavior": "allow",
+            "updatedInput": getattr(decision, "updated_input", None) or tool_input,
+        }
+
+    return _allow_or_deny
+
+
+def _normalize_tool_result_blocks(msg: UserMessage) -> UserMessage:
+    """Convert dict tool_result content blocks to `ToolResultBlock`
+    dataclasses, preserving the legacy `_run_tools_partitioned` shape.
+
+    `run_tool_use` emits content as a list of `dict` blocks; the rest of
+    the codebase (REPL render, tests, etc.) expects `ToolResultBlock`
+    instances. Coerce in place so the divergence stays inside this
+    helper rather than rippling into consumers.
+
+    Metadata note: the legacy `_dispatch_single_tool` attached
+    ``metadata={"tool_output": result.output}`` for tools returning
+    structured (dict-shaped) output, which `ToolResultBlock.metadata`
+    documents as the carrier for REPL/TUI rich previews (e.g. Edit's
+    structuredPatch). The wire-shape dict we see here no longer carries
+    the original `result.output`; we set `metadata` to the empty dict
+    and leave the structured-output forwarding as a follow-up — a
+    future TUI render that depends on `tool_output` for tools that go
+    through the concurrent batch path will see an empty metadata dict.
+    No current consumer reads it (verified by grep).
+    """
+    content = getattr(msg, "content", None)
+    if not isinstance(content, list):
+        return msg
+    new_content = []
+    changed = False
+    for b in content:
+        if isinstance(b, dict) and b.get("type") == "tool_result":
+            content_val = b.get("content", "")
+            # Pass-through for structured content (e.g. lists with
+            # image blocks); ToolResultBlock supports list content
+            # directly.
+            new_content.append(ToolResultBlock(
+                tool_use_id=b.get("tool_use_id", ""),
+                content=content_val,
+                is_error=bool(b.get("is_error", False)),
+            ))
+            changed = True
+        else:
+            new_content.append(b)
+    if changed:
+        msg.content = new_content
+    return msg
+
+
+async def _collect_tool_results(
+    tool_use_blocks: list[ToolUseBlock],
+    assistant_messages: list[AssistantMessage],
+    tool_registry: ToolRegistry,
+    tool_use_context: ToolContext,
+    tools: Tools,
+) -> tuple[list[UserMessage], ToolContext]:
+    """Drive orchestrator.run_tools and flatten its updates into a
+    `UserMessage` list.
+
+    Mirrors ch07 §"Batch Execution". Replaces `_run_tools_partitioned`
+    as the production tool-dispatch entry point.
+
+    Returns `(results, last_context)`. The context may have been
+    modified by concurrent-batch queued modifiers; the caller threads
+    it into the next turn.
+    """
+    from ..services.tool_execution.orchestrator import run_tools
+    from ..types.messages import AttachmentMessage
+
+    # ``orchestrator.partition_tool_calls`` and ``run_tool_use`` both
+    # look up tools via ``tool_use_context.options.tools``. The query
+    # loop has historically passed tools as a separate parameter and
+    # not synced them onto the context. Unconditionally overwrite so
+    # the context reflects this turn's tool list (idempotent for the
+    # common case where the list is unchanged turn-to-turn; correct
+    # if/when a future contributor adds dynamic tool refresh).
+    if tools:
+        tool_use_context.options.tools = list(tools)
+
+    can_use_tool = _build_can_use_tool_for_query(tool_registry)
+    results: list[UserMessage] = []
+    last_context = tool_use_context
+
+    async for update in run_tools(
+        tool_use_blocks, assistant_messages, can_use_tool, tool_use_context,
+    ):
+        if update.new_context is not None:
+            last_context = update.new_context
+        msg = update.message
+        if msg is None:
+            continue
+        if isinstance(msg, AttachmentMessage):
+            # Post-hook attachments (e.g. should_prevent_continuation
+            # extra context). Not surfaced today along the partition
+            # path; drop with a DEBUG log. Wiring them into the
+            # next-turn message stream is a follow-up.
+            logger.debug(
+                "Concurrent batch produced an AttachmentMessage; "
+                "dropping (not surfaced in this path). attachments=%s",
+                getattr(msg, "attachments", None),
+            )
+            continue
+        if isinstance(msg, UserMessage):
+            results.append(_normalize_tool_result_blocks(msg))
+        else:
+            # SystemMessage / progress message / etc — side-channel.
+            logger.debug(
+                "Dropping side-channel message of type %s",
+                type(msg).__name__,
+            )
+
+    return results, last_context
 
 
 async def query(params: QueryParams) -> AsyncGenerator[Message | StreamEvent, None]:
@@ -736,9 +958,12 @@ async def query(params: QueryParams) -> AsyncGenerator[Message | StreamEvent, No
 
         if _diag:
             _tools_t0 = time.monotonic()
-            _batches = _partition_tool_calls(tool_use_blocks, params.tools)
+            # ch07 §2e — diagnostic now uses the orchestrator's
+            # `partition_tool_calls` (signature takes a context).
+            from ..services.tool_execution.orchestrator import partition_tool_calls as _orch_partition
+            _batches = _orch_partition(tool_use_blocks, tool_use_context)
             _batch_desc = ", ".join(
-                f"[{'parallel' if b.is_concurrent_safe else 'exclusive'}: {[bl.name for bl in b.blocks]}]"
+                f"[{'parallel' if b.is_concurrency_safe else 'exclusive'}: {[bl.name for bl in b.blocks]}]"
                 for b in _batches
             )
             logger.warning(
@@ -746,8 +971,15 @@ async def query(params: QueryParams) -> AsyncGenerator[Message | StreamEvent, No
                 len(tool_use_blocks), len(_batches), _batch_desc,
             )
 
-        tool_results = await _run_tools_partitioned(
+        # ch07 §2e — production cutover. The query loop now drives the
+        # orchestrator (which goes through run_tool_use, honouring
+        # PreToolUse/PostToolUse hooks). The flattened result list
+        # preserves the legacy UserMessage shape; the threaded
+        # `tool_use_context` carries any concurrent-batch context
+        # modifiers into the next turn.
+        tool_results, tool_use_context = await _collect_tool_results(
             tool_use_blocks,
+            assistant_messages,
             params.tool_registry,
             tool_use_context,
             params.tools,
