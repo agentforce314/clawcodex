@@ -99,7 +99,7 @@ class StartupHeader(Static):
         table.add_row(
             "Version",
             Text.assemble(
-                ("Claw Codex", "bold white"),
+                ("ClawCodex", "bold white"),
                 ("  ", ""),
                 (f"v{self._version}", "bold cyan"),
             ),
@@ -124,7 +124,7 @@ class StartupHeader(Static):
         return Panel(
             body,
             border_style="bright_black",
-            title="[bold bright_cyan] CLAW CODEX [/bold bright_cyan]",
+            title="[bold bright_cyan] CLAWCODEX [/bold bright_cyan]",
             subtitle="[dim]interactive terminal[/dim]",
             padding=(0, 2),
         )

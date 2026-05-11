@@ -91,7 +91,7 @@ def _flatten_message_text(content: Any) -> str:
 class ClawCodexTUI(App):
     """Top-level Textual application for Claw Codex."""
 
-    TITLE = "Claw Codex"
+    TITLE = "ClawCodex"
     SUB_TITLE = "interactive terminal"
 
     BINDINGS = [
@@ -289,7 +289,7 @@ class ClawCodexTUI(App):
         try:
             state = self.app_state
             verb = state.verb if state.is_thinking else "Ready"
-            title = f"Claw Codex — {state.model or self.provider_name}: {verb}"
+            title = f"ClawCodex — {state.model or self.provider_name}: {verb}"
             set_terminal_title(title)
         except Exception:
             pass

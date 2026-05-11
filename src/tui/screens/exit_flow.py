@@ -29,7 +29,7 @@ class ExitFlowScreen(DialogScreen["ExitAction"]):
       * ``"cancel"``     — stay (Esc).
     """
 
-    title_text = "Leave Claw Codex?"
+    title_text = "Leave ClawCodex?"
     footer_hint = "Enter to choose · Esc to stay"
     border_variant = "warning"
 
