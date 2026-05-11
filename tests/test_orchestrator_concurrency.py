@@ -255,5 +255,119 @@ class TestSubmissionOrderInvariant(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ids_seen, {"slow", "f1", "f2"})
 
 
+# ---------------------------------------------------------------------------
+# M6 — per-tool context isolation: concurrent tools see distinct tool_use_id
+# ---------------------------------------------------------------------------
+
+
+class TestPerToolContextIsolation(unittest.IsolatedAsyncioTestCase):
+    async def test_concurrent_tools_see_distinct_tool_use_ids(self):
+        """ch07 / M6: each tool's ``call()`` must observe its own
+        ``context.tool_use_id``. Before the per-tool ``dataclasses.replace``
+        fix, both tools shared the context and saw whichever id was
+        written last by ``run_tool_use``."""
+
+        observed: dict[str, str | None] = {}
+
+        async def slow_capture_call_factory(label: str):
+            def _call(_inp, ctx):
+                # Sleep briefly so the two coroutines interleave their
+                # writes to ``context.tool_use_id`` before either runs.
+                import time
+                time.sleep(0.02)
+                observed[label] = getattr(ctx, "tool_use_id", None)
+                return ToolResult(name=label, output=f"ok:{label}")
+            return _call
+
+        tools = []
+        for i in range(2):
+            label = f"T{i}"
+            tools.append(build_tool(
+                name=label, input_schema={"type": "object", "properties": {}},
+                call=__import__("asyncio").run(slow_capture_call_factory(label)) if False else None,
+                is_concurrency_safe=lambda _: True,
+                is_read_only=lambda _: True,
+            ))
+
+        # Build them properly (avoid the awkward factory)
+        tools = []
+        for i in range(2):
+            label = f"T{i}"
+            def make(label):
+                def _call(_inp, ctx):
+                    import time
+                    time.sleep(0.02)
+                    observed[label] = getattr(ctx, "tool_use_id", None)
+                    return ToolResult(name=label, output=f"ok:{label}")
+                return _call
+            tools.append(build_tool(
+                name=label, input_schema={"type": "object", "properties": {}},
+                call=make(label),
+                is_concurrency_safe=lambda _: True,
+                is_read_only=lambda _: True,
+            ))
+
+        ctx = _make_context(tools)
+        msg = create_assistant_message(content="x")
+        blocks = [
+            ToolUseBlock(id="t0_id", name="T0", input={}),
+            ToolUseBlock(id="t1_id", name="T1", input={}),
+        ]
+
+        async for _ in run_tools(blocks, [msg], _allow_all, ctx):
+            pass
+
+        # Each tool observed its own id, not the other's.
+        self.assertEqual(observed["T0"], "t0_id")
+        self.assertEqual(observed["T1"], "t1_id")
+
+
+# ---------------------------------------------------------------------------
+# Read_file_fingerprints share-across-replace invariant (companion to M6)
+# ---------------------------------------------------------------------------
+
+
+class TestReadFileFingerprintsShared(unittest.IsolatedAsyncioTestCase):
+    async def test_read_in_concurrent_batch_updates_shared_fingerprints(self):
+        """ch07 / Phase 2c regression guard: a Read tool inside a
+        concurrent batch must update the *shared* ``read_file_fingerprints``
+        so a downstream Write in a later serial batch sees the read.
+        Without the share-by-reference invariant on per-tool contexts,
+        this regresses silently.
+        """
+        import tempfile, os
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            f.write("hello")
+            tmppath = f.name
+        try:
+            def _record_call(_inp, ctx):
+                from pathlib import Path
+                ctx.read_file_fingerprints[Path(tmppath).resolve()] = (1, 5, False)
+                return ToolResult(name="Reader", output="ok")
+            tool = build_tool(
+                name="Reader", input_schema={"type": "object", "properties": {}},
+                call=_record_call,
+                is_concurrency_safe=lambda _: True,
+                is_read_only=lambda _: True,
+            )
+            ctx = _make_context([tool])
+            msg = create_assistant_message(content="x")
+            blocks = [
+                ToolUseBlock(id="r1", name="Reader", input={}),
+                ToolUseBlock(id="r2", name="Reader", input={}),
+            ]
+
+            async for _ in run_tools(blocks, [msg], _allow_all, ctx):
+                pass
+
+            # The PARENT context (the one the test holds) saw the read.
+            # If per-tool ``dataclasses.replace`` made an independent
+            # copy of the dict, the parent would still be empty.
+            from pathlib import Path
+            self.assertIn(Path(tmppath).resolve(), ctx.read_file_fingerprints)
+        finally:
+            os.unlink(tmppath)
+
+
 if __name__ == "__main__":
     unittest.main()
