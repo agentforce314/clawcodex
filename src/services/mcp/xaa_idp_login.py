@@ -225,7 +225,9 @@ async def acquire_idp_id_token(
     try:
         metadata = await discover_oidc(s.issuer, http_client=client)
         port = s.callback_port or find_available_port()
-        redirect_uri = f"http://127.0.0.1:{port}/callback"
+        # ``localhost`` (not ``127.0.0.1``) — see auth_provider.py for
+        # the full rationale. Plan A5; matches TS canonical.
+        redirect_uri = f"http://localhost:{port}/callback"
         config = OAuthConfig(
             authorization_url=str(metadata["authorization_endpoint"]),
             token_url=str(metadata["token_endpoint"]),

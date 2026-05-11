@@ -189,7 +189,15 @@ class McpAuthProvider:
                 return AuthResult(success=False, error=msg)
 
             port = find_available_port()
-            redirect_uri = f"http://127.0.0.1:{port}/callback"
+            # Use ``localhost`` (not ``127.0.0.1``) to match TS canonical
+            # (oauthPort.ts) and the way real OAuth providers register
+            # redirect URIs. Providers match the redirect_uri string
+            # *literally*; if Slack/Notion/GitHub have ``http://localhost:*/callback``
+            # on file, sending ``http://127.0.0.1:PORT/callback`` is
+            # rejected with redirect_uri_mismatch. The callback listener
+            # binds 127.0.0.1 (RFC 8252 §7.3 anti-DNS-rebinding); the
+            # OS resolves ``localhost`` to it. Plan assumption A5.
+            redirect_uri = f"http://localhost:{port}/callback"
             config = OAuthConfig(
                 authorization_url=str(authorization_endpoint),
                 token_url=str(token_endpoint),

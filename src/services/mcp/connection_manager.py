@@ -103,9 +103,11 @@ class MCPConnectionManager:
         async with self._lock_for(name):
             await self._drop_client(name)
             clear_connection_cache(name)
-            client, conn = await connect_to_server(name, config)
-            if self._auth_provider is not None:
-                client.set_auth_provider(self._auth_provider)
+            # Bind auth_provider BEFORE connect so the NeedsAuth fast-path
+            # + auth-header injection take effect on the very first attempt.
+            client, conn = await connect_to_server(
+                name, config, auth_provider=self._auth_provider
+            )
             self._state[name] = conn
             if isinstance(conn, ConnectedMCPServer):
                 self._clients[name] = client
@@ -116,20 +118,52 @@ class MCPConnectionManager:
             return conn
 
     async def toggle_mcp_server(self, name: str) -> MCPServerConnection:
-        """Flip the enabled/disabled bit and reconcile the state."""
+        """Flip the enabled/disabled bit and reconcile the state.
+
+        The entire toggle (flip + reconcile) runs under a single lock
+        critical section. An earlier two-step design released the lock
+        between the flip and the reconnect call, leaving a window where
+        a concurrent toggle could observe the just-flipped state and
+        re-flip it, producing inconsistent UI state. We do the inline
+        connect here rather than calling self.reconnect_mcp_server (which
+        re-acquires) to keep the toggle atomic.
+        """
         async with self._lock_for(name):
             if is_mcp_server_disabled(name):
                 set_mcp_server_enabled(name, True)
-            else:
-                set_mcp_server_enabled(name, False)
+                # Inline reconnect — see reconnect_mcp_server for the
+                # canonical flow; we duplicate here to keep the toggle
+                # atomic under one lock acquisition.
+                config = get_mcp_config_by_name(name)
+                if config is None:
+                    failed = FailedMCPServer(
+                        name=name, error=f"No config for {name!r}"
+                    )
+                    self._state[name] = failed
+                    self._tools.pop(name, None)
+                    return failed
                 await self._drop_client(name)
                 clear_connection_cache(name)
-                disabled = DisabledMCPServer(name=name)
-                self._state[name] = disabled
-                self._tools.pop(name, None)
-                return disabled
-        # Re-enable path: connect outside the lock (reconnect re-locks).
-        return await self.reconnect_mcp_server(name)
+                client, conn = await connect_to_server(
+                    name, config, auth_provider=self._auth_provider
+                )
+                self._state[name] = conn
+                if isinstance(conn, ConnectedMCPServer):
+                    self._clients[name] = client
+                    tools_raw = await client.list_tools()
+                    self._tools[name] = wrap_mcp_tools_for_server(
+                        conn, tools_raw, client
+                    )
+                else:
+                    self._tools.pop(name, None)
+                return conn
+            set_mcp_server_enabled(name, False)
+            await self._drop_client(name)
+            clear_connection_cache(name)
+            disabled = DisabledMCPServer(name=name)
+            self._state[name] = disabled
+            self._tools.pop(name, None)
+            return disabled
 
     async def inject_dynamic_config(
         self, name: str, config: McpServerConfig, *, auto_connect: bool = True
