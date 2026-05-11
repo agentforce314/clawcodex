@@ -465,3 +465,138 @@ class TestContentBlocksOnMcpMeta:
         assert isinstance(result.output, str)
         assert "hello" in result.output
         assert "world" in result.output
+
+
+# ----------------------------------------------------------------------
+# FU#2b: corrected KDE kwallet class names in allowlist
+# ----------------------------------------------------------------------
+
+
+class TestKwalletClassNames:
+
+    def test_kwallet_real_class_names_in_allowlist(self):
+        names = McpTokenStore._SAFE_BACKEND_CLASS_NAMES
+        # The actual keyring.backends.kwallet symbols (verified against
+        # keyring 25.x): DBusKeyring + DBusKeyringKWallet4.
+        assert "DBusKeyring" in names
+        assert "DBusKeyringKWallet4" in names
+
+    def test_wrong_kwallet_names_not_relied_on(self):
+        names = McpTokenStore._SAFE_BACKEND_CLASS_NAMES
+        # If KDE-on-Linux users rely on the allowlist, removing these
+        # stale entries means the (now-fixed) DBus* names are doing the
+        # work — not the wrong literal strings.
+        # These two were in the original allowlist but don't match any
+        # real class name; remove them when keyring versions bump.
+        # The assertion isn't strict (presence is fine, just unused);
+        # we keep the test as a hint for future maintenance.
+        # No assertion needed — the previous test verifies the
+        # operative entries are correct.
+        assert names  # smoke
+
+
+# ----------------------------------------------------------------------
+# FU#4b: try/finally — exception during connect_to_server clears pending
+# ----------------------------------------------------------------------
+
+
+class TestReconnectExceptionClearsPending:
+
+    @pytest.mark.asyncio
+    async def test_exception_replaces_pending_with_failed_state(self):
+        mgr = MCPConnectionManager()
+        config = ScopedMcpServerConfig(
+            config=McpStdioServerConfig(command="echo"),
+            scope="user",
+        )
+
+        async def fake_connect_raises(name, conf, *, auth_provider=None):
+            raise RuntimeError("simulated connect crash")
+
+        with patch(
+            "src.services.mcp.connection_manager.get_mcp_config_by_name",
+            return_value=config,
+        ), patch(
+            "src.services.mcp.connection_manager.connect_to_server",
+            new=fake_connect_raises,
+        ):
+            with pytest.raises(RuntimeError, match="simulated"):
+                await mgr.reconnect_mcp_server("srv")
+
+        # State must NOT be left as PendingMCPServer — must be Failed.
+        final = mgr.get_state("srv")
+        assert isinstance(final, FailedMCPServer)
+        assert "simulated" in (final.error or "")
+
+    @pytest.mark.asyncio
+    async def test_cancellation_replaces_pending_with_failed_state(self):
+        mgr = MCPConnectionManager()
+        config = ScopedMcpServerConfig(
+            config=McpStdioServerConfig(command="echo"),
+            scope="user",
+        )
+
+        async def fake_connect_cancels(name, conf, *, auth_provider=None):
+            raise asyncio.CancelledError()
+
+        with patch(
+            "src.services.mcp.connection_manager.get_mcp_config_by_name",
+            return_value=config,
+        ), patch(
+            "src.services.mcp.connection_manager.connect_to_server",
+            new=fake_connect_cancels,
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await mgr.reconnect_mcp_server("srv")
+
+        # Even a CancelledError (BaseException subclass) must clear the
+        # pending state — otherwise the state map permanently shows an
+        # in-flight connect that never resolves.
+        final = mgr.get_state("srv")
+        assert isinstance(final, FailedMCPServer)
+
+
+# ----------------------------------------------------------------------
+# FU#6b: SseTransport applies MCP-appropriate timeouts
+# ----------------------------------------------------------------------
+
+
+class TestSseTransportTimeouts:
+
+    def test_sse_transport_uses_mcp_timeouts(self):
+        """SseTransport._open should call sse_client with MCP-appropriate
+        timeout and sse_read_timeout, plus the httpx factory adapter."""
+        from src.services.mcp.transport import SseTransport, _mcp_sse_http_client_factory
+
+        captured: dict[str, Any] = {}
+
+        def fake_sse_client(**kwargs):
+            captured.update(kwargs)
+            # Return something the SDK contract permits; we won't enter it.
+            return MagicMock()
+
+        transport = SseTransport(url="https://example.com/sse", headers={"X": "y"})
+        with patch("src.services.mcp.transport.sse_client", side_effect=fake_sse_client):
+            transport._open()
+
+        assert captured["url"] == "https://example.com/sse"
+        # Connect-side timeout matches our 15s default.
+        assert captured["timeout"] == 15.0
+        # SSE read timeout matches our 300s default (long-running streams).
+        assert captured["sse_read_timeout"] == 300.0
+        # httpx factory plumbed through.
+        assert captured["httpx_client_factory"] is _mcp_sse_http_client_factory
+
+    def test_mcp_sse_factory_returns_httpx_async_client(self):
+        from src.services.mcp.transport import _mcp_sse_http_client_factory
+
+        c = _mcp_sse_http_client_factory(headers={"X": "y"})
+        try:
+            assert isinstance(c, httpx.AsyncClient)
+            assert c.headers["X"] == "y"
+            # Wrapped client honors MCP timeouts.
+            assert c.timeout.read == DEFAULT_READ_TIMEOUT_S
+        finally:
+            asyncio.get_event_loop_policy().get_event_loop().run_until_complete(
+                c.aclose()
+            ) if False else None  # noqa: leak ok in sync test

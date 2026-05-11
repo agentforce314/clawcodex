@@ -92,10 +92,16 @@ async def discover_oauth_metadata(
         escape_hatch_source_scope: The settings scope that supplied the
             ``escape_hatch_url`` (``user`` / ``project`` / ``local`` /
             ``enterprise`` / ``managed`` / ``dynamic``). When the value
-            comes from a repo-write scope (project / local), the
-            override is rejected with ``EscapeHatchScopeRejectedError``
-            and discovery falls through to RFC 9728 / RFC 8414. Pass
-            ``None`` only from trusted internal callers (tests).
+            comes from a repo-write scope (project / local), discovery
+            **raises** ``EscapeHatchScopeRejectedError`` rather than
+            silently falling through to the RFC 9728 / RFC 8414 chain.
+            Fail-loud is the right default here: the operator who set
+            ``authServerMetadataUrl`` from a repo-write scope is making
+            an explicit assertion that we should not silently bypass —
+            either the AS metadata URL is correct (in which case the
+            higher-trust scope should have set it) or the project-scope
+            config is malicious. Pass ``None`` only from trusted
+            internal callers (tests) — this disables the scope check.
         http_client: Optional pre-configured httpx client. When None,
             we construct a short-lived one with a 30 s timeout.
         www_auth_resource_url: Optional URL extracted from a prior
