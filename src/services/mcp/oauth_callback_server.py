@@ -15,6 +15,7 @@ runtime dep. The listener handles exactly one request, returns a static
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 from dataclasses import dataclass
 from typing import Any
@@ -28,11 +29,24 @@ _OK_BODY = (
     "<body><h1>Authorization complete</h1>"
     "<p>You can close this window and return to the CLI.</p></body></html>"
 )
-_ERROR_BODY = (
+_ERROR_BODY_TEMPLATE = (
     "<!DOCTYPE html><html><head><title>Authorization failed</title></head>"
     "<body><h1>Authorization failed</h1>"
     "<p>{reason}</p></body></html>"
 )
+
+
+def _error_body(reason: str) -> str:
+    """Build the error-page HTML with the reason text HTML-escaped.
+
+    The reason text often carries attacker-controllable values (the
+    OAuth provider's ``error``/``error_description`` query params, or
+    the request path on a mismatch). Without escaping, a malicious
+    redirect like ``?error=<script>...`` would execute in the user's
+    browser against the loopback origin. Mirrors TS' ``xss()`` calls
+    in auth.ts:1198-1200.
+    """
+    return _ERROR_BODY_TEMPLATE.format(reason=html.escape(reason, quote=True))
 
 
 @dataclass
@@ -128,8 +142,8 @@ async def _process_request(
     """Parse the GET request line, validate, resolve the future."""
     parts = request_line.split(" ", 2)
     if len(parts) < 2 or parts[0] != "GET":
-        _write_response(writer, 405, "Method Not Allowed", _ERROR_BODY.format(
-            reason="Only GET is supported on the callback endpoint."
+        _write_response(writer, 405, "Method Not Allowed", _error_body(
+            "Only GET is supported on the callback endpoint."
         ))
         if not result_future.done():
             result_future.set_exception(OAuthCallbackError("non-GET callback"))
@@ -138,8 +152,8 @@ async def _process_request(
     request_target = parts[1]
     parsed = urlparse(request_target)
     if parsed.path != expected_path:
-        _write_response(writer, 404, "Not Found", _ERROR_BODY.format(
-            reason=f"Unexpected path: {parsed.path}",
+        _write_response(writer, 404, "Not Found", _error_body(
+            f"Unexpected path: {parsed.path}",
         ))
         # Don't resolve — wait for the real callback.
         return
@@ -150,7 +164,7 @@ async def _process_request(
     if error:
         description = (params.get("error_description") or [""])[0]
         msg = f"OAuth error: {error}" + (f" — {description}" if description else "")
-        _write_response(writer, 400, "Bad Request", _ERROR_BODY.format(reason=msg))
+        _write_response(writer, 400, "Bad Request", _error_body(msg))
         if not result_future.done():
             result_future.set_exception(OAuthCallbackError(msg))
         return
@@ -158,7 +172,7 @@ async def _process_request(
     state = (params.get("state") or [""])[0]
     if state != expected_state:
         msg = "State mismatch (CSRF defense)"
-        _write_response(writer, 400, "Bad Request", _ERROR_BODY.format(reason=msg))
+        _write_response(writer, 400, "Bad Request", _error_body(msg))
         if not result_future.done():
             result_future.set_exception(OAuthCallbackError(msg))
         return
@@ -166,7 +180,7 @@ async def _process_request(
     code = (params.get("code") or [""])[0]
     if not code:
         msg = "Missing authorization code"
-        _write_response(writer, 400, "Bad Request", _ERROR_BODY.format(reason=msg))
+        _write_response(writer, 400, "Bad Request", _error_body(msg))
         if not result_future.done():
             result_future.set_exception(OAuthCallbackError(msg))
         return

@@ -706,7 +706,18 @@ def _cache_key_for(name: str, config: ScopedMcpServerConfig) -> str:
 async def connect_to_server(
     name: str,
     config: ScopedMcpServerConfig,
+    *,
+    auth_provider: Any | None = None,
 ) -> tuple[McpClient, MCPServerConnection]:
+    """Connect to (or return cached client for) an MCP server.
+
+    ``auth_provider`` MUST be bound BEFORE ``client.connect`` so the
+    NeedsAuth fast-path + auth-header injection take effect on the very
+    first connect. Threading the provider after ``connect`` (as a prior
+    iteration did) caused first-connect 401s to surface as FailedMCPServer
+    instead of NeedsAuthMCPServer, and tool calls thereafter ran without
+    credentials. This signature mirrors TS' ``connectToServer(name, config, authProvider)``.
+    """
     cache_key = _cache_key_for(name, config)
     if cache_key in _connection_cache:
         client, conn = _connection_cache[cache_key]
@@ -714,6 +725,8 @@ async def connect_to_server(
             return client, conn
 
     client = McpClient()
+    if auth_provider is not None:
+        client.set_auth_provider(auth_provider)
     connection = await client.connect(name, config)
     if isinstance(connection, ConnectedMCPServer):
         _connection_cache[cache_key] = (client, connection)
