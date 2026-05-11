@@ -35,6 +35,10 @@ from src.tool_system.protocol import ToolResult
 
 from .client import McpClient
 from .mcp_string_utils import build_mcp_tool_name
+from .output_storage import (
+    get_binary_blob_saved_message,
+    persist_binary_content,
+)
 from .output_validation import (
     MAX_RESULT_SIZE_CHARS,
     truncate_mcp_content_if_needed,
@@ -93,17 +97,28 @@ def _get_input_validator(server_name: str, tool_name: str, schema: dict[str, Any
     return validator
 
 
-def _flatten_content_blocks_to_text(blocks: list[dict[str, Any]]) -> str:
+def _flatten_content_blocks_to_text(
+    blocks: list[dict[str, Any]],
+    *,
+    server_name: str = "mcp",
+    tool_name: str = "tool",
+) -> str:
     """Render a list of MCP content blocks as a single string for the
-    text-only consumer path. Preserves text content; image blocks are
-    rendered as a placeholder; resource and other types serialize to JSON.
+    text-only consumer path. WI-8.5: binary blocks (image / resource with
+    a base64 ``data`` payload) are persisted to a tempfile via
+    ``persist_binary_content`` and replaced in the text with a path
+    reference, so the model sees an actionable summary rather than a
+    multi-MB base64 blob (or the old ``[image content]`` placeholder
+    that lost all signal).
 
     ContentBlock fidelity is preserved at the McpToolResult level (gap #21
-    fix): the flatten happens only when the downstream consumer surface
+    fix); the flatten happens only when the downstream consumer surface
     requires ``str``. WI-8.3 retains the list shape on ``ToolResult.output``
     when the consumer can accept ``Any``; this helper exists for the
     legacy str surface.
     """
+    import base64
+
     parts: list[str] = []
     for item in blocks:
         if not isinstance(item, dict):
@@ -113,9 +128,47 @@ def _flatten_content_blocks_to_text(blocks: list[dict[str, Any]]) -> str:
         if item_type == "text":
             parts.append(item.get("text", ""))
         elif item_type == "image":
-            parts.append("[image content]")
+            data = item.get("data")
+            mime = item.get("mimeType") or "image/png"
+            blob: bytes | None = None
+            if isinstance(data, str) and data:
+                try:
+                    blob = base64.b64decode(data, validate=False)
+                except Exception:
+                    blob = None
+            elif isinstance(data, (bytes, bytearray)):
+                blob = bytes(data)
+            if blob:
+                try:
+                    path = persist_binary_content(
+                        server_name, tool_name, blob, content_type=mime
+                    )
+                    parts.append(get_binary_blob_saved_message(path, len(blob)))
+                except OSError:
+                    parts.append(f"[image content; {len(blob)} bytes; failed to persist]")
+            else:
+                parts.append("[image content]")
         elif item_type == "resource":
-            parts.append(json.dumps(item.get("resource", {})))
+            resource = item.get("resource", {}) if isinstance(item, dict) else {}
+            # Binary resources carry a ``blob`` base64 field per MCP spec;
+            # text resources carry ``text``. Persist the binary form so
+            # the model isn't fed multi-MB base64.
+            blob_b64 = resource.get("blob") if isinstance(resource, dict) else None
+            text = resource.get("text") if isinstance(resource, dict) else None
+            mime = (resource.get("mimeType") if isinstance(resource, dict) else None) or "application/octet-stream"
+            if isinstance(blob_b64, str) and blob_b64:
+                try:
+                    blob = base64.b64decode(blob_b64, validate=False)
+                    path = persist_binary_content(
+                        server_name, tool_name, blob, content_type=mime
+                    )
+                    parts.append(get_binary_blob_saved_message(path, len(blob)))
+                except (OSError, ValueError):
+                    parts.append(json.dumps(resource))
+            elif isinstance(text, str):
+                parts.append(text)
+            else:
+                parts.append(json.dumps(resource))
         else:
             parts.append(json.dumps(item))
     return "\n".join(parts)
@@ -222,7 +275,9 @@ def wrap_mcp_tool(
             text_output = _flatten_content_blocks_to_text(
                 truncated_blocks if isinstance(truncated_blocks, list) else [
                     {"type": "text", "text": str(truncated_blocks)},
-                ]
+                ],
+                server_name=server_name,
+                tool_name=mcp_tool.name,
             )
             # If token-budget truncation already fired, skip the char cap:
             # the budget output ends with the actionable

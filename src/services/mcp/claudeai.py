@@ -49,6 +49,20 @@ def reset_claudeai_cache() -> None:
     _cache_at = 0.0
 
 
+def get_cached_claudeai_mcp_configs() -> dict[str, ScopedMcpServerConfig]:
+    """Return the most recent fetch result without doing I/O.
+
+    Returns ``{}`` if the async ``fetch_claudeai_mcp_configs_if_eligible``
+    has not been called yet (or eligibility was denied). This is the
+    sync surface that ``config.get_all_mcp_configs`` consumes — the
+    boot path is expected to prime the cache via the async helper
+    before the sync aggregator runs. When the cache is cold, claudeai
+    servers simply don't participate in this merge; the next agent
+    boot tick will see them once the prefetch lands.
+    """
+    return dict(_cache) if _cache else {}
+
+
 async def fetch_claudeai_mcp_configs_if_eligible(
     *,
     auth_provider: Any | None = None,

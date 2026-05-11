@@ -85,11 +85,16 @@ class TestIsMcpSessionExpiredError:
         err = Exception('{"code":32600,"message":"Session terminated"}')
         assert is_mcp_session_expired_error(err) is True
 
-    def test_no_status_code_with_session_terminated_message_returns_true(self) -> None:
-        """Dual-mode fallback: the SDK's canonical envelope (code + message)
-        is sufficient even if the specific code value isn't recognized."""
+    def test_session_terminated_with_unrecognized_code_does_NOT_match(self) -> None:
+        """Regression: an unrecognized code paired with the literal
+        'Session terminated' string must NOT trigger session-expiry.
+        A server that emits e.g. -32602 (Invalid Params) and happens to
+        use 'Session terminated' as the message text would otherwise be
+        misclassified, causing spurious reconnect+retry. The regex must
+        require the code field to be one of the recognized session-expiry
+        codes (-32001 or 32600)."""
         err = Exception('{"code":-99999,"message":"Session terminated"}')
-        assert is_mcp_session_expired_error(err) is True
+        assert is_mcp_session_expired_error(err) is False
 
     def test_session_terminated_text_alone_does_not_match(self) -> None:
         """Regression: free-form 'Session terminated' text without a JSON-RPC
