@@ -115,11 +115,26 @@ class MCPConnectionManager:
                 reconnect_attempt=1,
                 max_reconnect_attempts=1,
             )
-            # Bind auth_provider BEFORE connect so the NeedsAuth fast-path
-            # + auth-header injection take effect on the very first attempt.
-            client, conn = await connect_to_server(
-                name, config, auth_provider=self._auth_provider
-            )
+            # try/finally so a hard exception (CancelledError, etc.) in
+            # connect_to_server doesn't leave stale PendingMCPServer in
+            # self._state. On exception, replace with a FailedMCPServer
+            # carrying the exception text so observers see a terminal
+            # state and the next reconnect attempt isn't fooled by
+            # leftover Pending. Critic FU#4b.
+            try:
+                # Bind auth_provider BEFORE connect so the NeedsAuth fast-path
+                # + auth-header injection take effect on the very first attempt.
+                client, conn = await connect_to_server(
+                    name, config, auth_provider=self._auth_provider
+                )
+            except BaseException as exc:
+                self._state[name] = FailedMCPServer(
+                    name=name,
+                    config=config,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+                self._tools.pop(name, None)
+                raise
             self._state[name] = conn
             if isinstance(conn, ConnectedMCPServer):
                 self._clients[name] = client
@@ -164,9 +179,20 @@ class MCPConnectionManager:
                     reconnect_attempt=1,
                     max_reconnect_attempts=1,
                 )
-                client, conn = await connect_to_server(
-                    name, config, auth_provider=self._auth_provider
-                )
+                # try/finally guard mirrors reconnect_mcp_server: avoid
+                # stale PendingMCPServer if connect_to_server raises.
+                try:
+                    client, conn = await connect_to_server(
+                        name, config, auth_provider=self._auth_provider
+                    )
+                except BaseException as exc:
+                    self._state[name] = FailedMCPServer(
+                        name=name,
+                        config=config,
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
+                    self._tools.pop(name, None)
+                    raise
                 self._state[name] = conn
                 if isinstance(conn, ConnectedMCPServer):
                     self._clients[name] = client

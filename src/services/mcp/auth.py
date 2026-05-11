@@ -155,11 +155,23 @@ class McpTokenStore:
     # ~/.local/share/python_keyring/ — must be rejected unless the
     # operator explicitly opts in via MCP_ALLOW_PLAINTEXT_TOKEN_STORAGE.
     # Mirrors Critic FU#2.
+    #
+    # Class names confirmed against keyring v25.x in the project's lock:
+    # - macOS: keyring.backends.macOS.Keyring → just "Keyring"
+    # - Linux secret-service: keyring.backends.SecretService.Keyring →
+    #   "Keyring" (collides with macOS; the bare "Keyring" entry covers both)
+    # - Linux KDE wallet: keyring.backends.kwallet.{DBusKeyring,
+    #   DBusKeyringKWallet4} — NOT "Kwallet" / "KWallet".
+    # - Windows: keyring.backends.Windows.WinVaultKeyring
     _SAFE_BACKEND_CLASS_NAMES: frozenset[str] = frozenset({
-        # macOS
-        "Keyring", "macOSKeyring", "OS_X",
-        # Linux
-        "SecretService", "Kwallet", "KWallet",
+        # macOS + Linux secret-service (both use class name "Keyring";
+        # they collide but both are safe — the bare name covers both).
+        "Keyring",
+        # Explicit cross-platform secret-store classes (some keyring
+        # release versions expose these as distinct symbols).
+        "SecretService", "macOSKeyring", "OS_X",
+        # Linux KDE wallet (correct class names from keyring.backends.kwallet).
+        "DBusKeyring", "DBusKeyringKWallet4",
         # Windows
         "WinVaultKeyring",
         # Test/in-memory backends — accept these so unit tests don't trip
