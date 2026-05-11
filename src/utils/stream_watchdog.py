@@ -28,6 +28,7 @@ and verifies the fallback fires. Re-audit the SDK version when bumping.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import threading
 from typing import Any, Callable
@@ -37,6 +38,7 @@ __all__ = [
     "StreamIdleTimeout",
     "stream_idle_timeout_seconds",
     "StreamWatchdog",
+    "AsyncStreamWatchdog",
 ]
 
 
@@ -182,3 +184,107 @@ class StreamWatchdog:
         except Exception:
             # Best-effort: never let the close propagate out of the timer.
             pass
+
+
+class AsyncStreamWatchdog:
+    """asyncio-native idle watchdog for the async Anthropic SDK stream.
+
+    Mirrors ``StreamWatchdog`` but uses ``asyncio.TimerHandle`` instead of
+    ``threading.Timer`` so it composes with ``async for`` iteration without
+    crossing thread boundaries. Used by ``call_model`` in
+    ``services/api/claude.py`` — that codepath runs on the event loop and
+    consumes ``AsyncMessageStream`` from ``client.messages.create(stream=True)``.
+
+    Usage::
+
+        watchdog = AsyncStreamWatchdog(stream)
+        watchdog.arm()
+        try:
+            async for chunk in stream:
+                watchdog.reset()
+                ...
+        finally:
+            watchdog.disarm()
+        if watchdog.fired:
+            # fall back to non-streaming
+            ...
+
+    On timeout the watchdog calls ``stream.close()`` (or ``aclose()``); the
+    next iterator pull then raises and propagates to the caller's ``except``.
+    The caller checks ``watchdog.fired`` to distinguish a watchdog-triggered
+    abort from an unrelated stream error.
+    """
+
+    def __init__(self, stream: Any, *, timeout_s: float | None = None) -> None:
+        self._stream = stream
+        self._timeout_s = (
+            timeout_s if timeout_s is not None
+            else stream_idle_timeout_seconds()
+        )
+        self._handle: asyncio.TimerHandle | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._fired: bool = False
+
+    @property
+    def fired(self) -> bool:
+        """True iff the watchdog called close() during the iteration."""
+        return self._fired
+
+    @property
+    def timeout_s(self) -> float:
+        return self._timeout_s
+
+    def arm(self) -> None:
+        """Start (or restart) the deadline."""
+        if self._loop is None:
+            self._loop = asyncio.get_running_loop()
+        self._cancel()
+        self._handle = self._loop.call_later(self._timeout_s, self._on_timeout)
+
+    def reset(self) -> None:
+        """Push the deadline forward — called on every successful chunk."""
+        if self._fired:
+            return  # already timed out; reset is a no-op
+        self.arm()
+
+    def disarm(self) -> None:
+        """Cancel the timer (call after the stream completes normally)."""
+        self._cancel()
+
+    def _cancel(self) -> None:
+        if self._handle is not None:
+            try:
+                self._handle.cancel()
+            except Exception:
+                pass
+            self._handle = None
+
+    def _on_timeout(self) -> None:
+        if self._fired:
+            return
+        self._fired = True
+        self._handle = None
+        # Try sync close first; fall back to async close. Either path is
+        # best-effort — the caller's ``fired`` check is what triggers
+        # the fallback. If both close paths fail, the next iterator pull
+        # may still hang briefly until the SDK's own timeout fires.
+        close = getattr(self._stream, "close", None)
+        if callable(close):
+            try:
+                result = close()
+                # Some SDKs return a coroutine even from a method called
+                # ``close``. Schedule it but don't await — we're in a
+                # synchronous callback.
+                if asyncio.iscoroutine(result):
+                    asyncio.ensure_future(result)
+                return
+            except Exception:
+                pass
+        aclose = getattr(self._stream, "aclose", None)
+        if callable(aclose):
+            try:
+                coro = aclose()
+                if asyncio.iscoroutine(coro):
+                    asyncio.ensure_future(coro)
+            except Exception:
+                pass
