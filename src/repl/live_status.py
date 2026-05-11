@@ -418,13 +418,17 @@ class LiveStatus:
         frame = _SPINNER_FRAMES[self._frame_index % len(_SPINNER_FRAMES)]
         self._frame_index += 1
 
-        # Match ``SpinnerAnimationRow.tsx``'s suffix:
-        # ``(esc to interrupt · 12s · ↓ 1.2k tokens)``.
-        # Timer + token suffix gated by 30s elapsed (or ``verbose``),
-        # tokens additionally require a non-zero count.
+        # Spinner suffix layout:
+        # ``(esc to interrupt · enter to queue · 12s · ↓ 1.2k tokens)``.
+        # ``esc to interrupt · enter to queue`` is always shown — it tells
+        # the user how to cancel the run and that typing-while-thinking
+        # queues the next prompt (a Python-only affordance not present in
+        # the TS reference's ``SpinnerAnimationRow.tsx``). Timer + token
+        # parts mirror the TS suffix and stay gated by 30s elapsed (or
+        # ``verbose``); tokens additionally require a non-zero count.
         elapsed_ms = (time.monotonic() - started_at) * 1000 if started_at else 0.0
         wants_timer = verbose or elapsed_ms > _SHOW_TIMER_AFTER_MS
-        suffix = "  (esc to interrupt"
+        suffix = "  (esc to interrupt · enter to queue"
         if wants_timer:
             suffix += f" · {format_duration(elapsed_ms)}"
             if tokens > 0:
