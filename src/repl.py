@@ -67,7 +67,7 @@ class ClawcodexCLI:
         """Print welcome banner."""
         if HAS_RICH:
             self.console.print(Panel.fit(
-                "[bold cyan]Claw Codex[/bold cyan]\n"
+                "[bold cyan]ClawCodex[/bold cyan]\n"
                 "[dim]A complete reimplementation of Claude Code[/dim]",
                 subtitle="Interactive Mode • Type 'help' for commands",
                 border_style="round",
@@ -75,7 +75,7 @@ class ClawcodexCLI:
         else:
             banner = f"""
 {self._colorize('╔═══════════════════════════════════════════════════════════╔', 'cyan')}
-{self._colorize('║', 'cyan')}   {self._colorize('Claw Codex', 'bold')} - Claude Code Reimplementation   {self._colorize('║', 'cyan')}
+{self._colorize('║', 'cyan')}   {self._colorize('ClawCodex', 'bold')}  - Claude Code Reimplementation   {self._colorize('║', 'cyan')}
 {self._colorize('║', 'cyan')}   Type "help" for commands • Interactive Mode                  {self._colorize('║', 'cyan')}
 {self._colorize('╚═══════════════════════════════════════════════════════════╛', 'cyan')}
 """

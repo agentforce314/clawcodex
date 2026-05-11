@@ -20,7 +20,7 @@ from pathlib import Path
 def build_repl_banner() -> str:
     """One-line banner used by tests to confirm the module loads."""
 
-    return "Claw Codex REPL (Textual default; use --legacy-repl for Rich)."
+    return "ClawCodex REPL (Textual default; use --legacy-repl for Rich)."
 
 
 def launch_repl(
