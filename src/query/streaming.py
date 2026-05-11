@@ -11,9 +11,11 @@ from ..services.api.claude import (
     CallModelOptions,
     ContentBlockStop,
     ErrorEvent,
+    FallbackEvent,
     MessageDelta,
     MessageStart,
     MessageStop,
+    RetryEvent,
     TextDelta,
     ThinkingDelta,
     ToolUseDelta,
@@ -206,6 +208,9 @@ async def _run_model_turn(
         structured_output=state.config.structured_output,
         extra_headers=state.config.extra_headers,
         extra_body=state.config.extra_body,
+        enable_prompt_caching=getattr(
+            state.config, "enable_prompt_caching", True,
+        ),
     )
 
     current_tool_use: dict[str, Any] | None = None
@@ -263,3 +268,31 @@ async def _run_model_turn(
 
         elif isinstance(event, MessageStop):
             pass
+
+        elif isinstance(event, FallbackEvent):
+            # call_model is about to replay the non-streamed response as a
+            # complete event sequence. Anything we accumulated from the
+            # aborted partial stream must be discarded — the synthetic
+            # events represent the FULL response, not a continuation.
+            # Mirrors TS ``onStreamingFallback`` callback (claude.ts:2553)
+            # which resets the accumulator state for exactly this reason.
+            turn.text_content = ""
+            turn.thinking_content = ""
+            turn.tool_uses = []
+            turn.usage = NonNullableUsage()
+            current_tool_use = None
+            tool_use_json_parts = []
+            yield QueryEvent(type="fallback", data={"cause": event.cause})
+
+        elif isinstance(event, RetryEvent):
+            # Surface retry progress so the UI can render a "retrying in 5s..."
+            # status inline with the rest of the stream. Mirrors TS
+            # ``SystemAPIErrorMessage`` yielding pattern in withRetry.
+            yield QueryEvent(type="retry", data={
+                "attempt": event.attempt,
+                "delay_ms": event.delay_ms,
+                "error_type": event.error_type,
+                "status": event.status,
+                "message": event.message,
+                "model": event.model,
+            })
