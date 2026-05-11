@@ -63,6 +63,22 @@ class GlobLimits:
 
 
 @dataclass
+class AggregateBudget:
+    """Per-message tool_result aggregate counter, shared across
+    concurrent dispatches of the same turn.
+
+    Holds both the counter and its protecting lock so they cannot get
+    desynchronized in future refactors. ``dataclasses.replace(ctx)``
+    in the orchestrator (ch07/M6) shares this object by reference, so
+    per-tool contexts all hit the same counter — without this
+    indirection, each per-tool copy would get its own scalar counter
+    and the 200K per-message cap would be silently bypassed.
+    """
+    total: int = 0
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+
+@dataclass
 class ToolContext:
     workspace_root: Path
     permission_context: ToolPermissionContext = field(
@@ -83,26 +99,17 @@ class ToolContext:
     # for the chapter-10 task state machine; ``tasks`` continues to host
     # ``tasks_v2``/todo entries for the unrelated TaskCreate system.
     runtime_tasks: RuntimeTaskRegistry = field(default_factory=RuntimeTaskRegistry)
-    # WI-5.1: per-message tool-result aggregate counter. The execution
-    # pipeline (Step 11) reads + increments this each time a tool result
-    # is mapped to its API form; when the running total exceeds
-    # ``MAX_TOOL_RESULTS_PER_MESSAGE_CHARS`` (default 200K) the next
-    # result is persisted to disk regardless of its individual size.
-    # Reset to 0 between messages by the turn-loop dispatcher.
+    # WI-5.1 / ch07 §2a.5: per-message tool-result aggregate counter +
+    # its protecting lock, packed into a shared reference object so
+    # ``dataclasses.replace(ctx)`` per-tool copies all hit the same
+    # counter. Without this indirection, the orchestrator's per-tool
+    # ``dataclasses.replace`` (ch07/M6) would give each concurrent
+    # tool its own scalar counter, silently bypassing the 200K cap.
     #
-    # ``_aggregate_lock`` synchronizes the read-decide-write across
-    # concurrent tool dispatches (critic B6). ``_run_tools_partitioned``
-    # uses ``asyncio.to_thread`` to fan out concurrency-safe tools (Read,
-    # Grep, Glob) — without this lock, N threads would all read 0, all
-    # decide their block is under the cap, and the per-message budget
-    # would be silently bypassed. The full read+decide+write runs
-    # serialized so the persistence decision uses the LIVE counter and
-    # the cap is strictly enforced. Cost: the rare persist-to-disk path
-    # serializes against the lock, but persists are O(1) per turn in
-    # typical workloads (the common case under-threshold returns the
-    # block without I/O).
-    tool_result_chars_so_far: int = 0
-    _aggregate_lock: threading.Lock = field(default_factory=threading.Lock)
+    # Reads + writes flow through the ``tool_result_chars_so_far`` and
+    # ``_aggregate_lock`` property proxies below so existing callsites
+    # in ``query.py`` and ``tool_execution.py`` are unchanged.
+    aggregate_budget: AggregateBudget = field(default_factory=lambda: AggregateBudget())
     # Chapter-10 / Chunk F / WI-6.1 — agent-name registry. Maps the
     # human-readable ``name`` (passed via Agent({name: "researcher"}))
     # to the random ``agent_id`` returned by the spawn. SendMessage
@@ -187,6 +194,23 @@ class ToolContext:
             self.cwd = self.workspace_root
         else:
             self.cwd = Path(self.cwd).resolve()
+
+    # ch07 / Phase 2a.5 — back-compat proxies for the
+    # ``tool_result_chars_so_far`` and ``_aggregate_lock`` fields that
+    # used to live directly on the context. They now route through
+    # the shared ``AggregateBudget`` reference, so per-tool
+    # ``dataclasses.replace`` copies all hit the same counter.
+    @property
+    def tool_result_chars_so_far(self) -> int:
+        return self.aggregate_budget.total
+
+    @tool_result_chars_so_far.setter
+    def tool_result_chars_so_far(self, value: int) -> None:
+        self.aggregate_budget.total = value
+
+    @property
+    def _aggregate_lock(self) -> threading.Lock:
+        return self.aggregate_budget.lock
 
     def mark_file_read(self, path: Path, *, partial: bool = False) -> None:
         stat = path.stat()

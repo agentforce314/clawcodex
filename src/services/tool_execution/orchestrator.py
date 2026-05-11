@@ -224,12 +224,29 @@ async def _run_tools_concurrently(
                         lambda prev: prev | {tool_use.id}
                     )
                 assistant_msg = _find_assistant_message(tool_use, assistant_messages)
+                # ch07 / M6: per-tool copy of the context. ``run_tool_use``
+                # writes ``tool_use_id`` and ``user_modified`` on the
+                # context (tool_execution.py:293–294); concurrent tools
+                # would otherwise stomp each other's IDs on the shared
+                # instance. ``dataclasses.replace`` copies *scalar* fields
+                # by value (so tool_use_id is isolated) but *reference*
+                # fields by reference — including the
+                # ``AggregateBudget`` from Phase 2a.5 — so the shared
+                # 200K cap, ``read_file_fingerprints``, runtime tasks,
+                # etc. all remain coherent across siblings.
+                #
+                # NB: ``set_in_progress_tool_use_ids`` and
+                # ``_mark_tool_use_as_complete`` continue to use the
+                # shared ``tool_use_context`` for UI-state consistency.
+                # Only ``run_tool_use`` gets the per-tool copy.
+                import dataclasses
+                per_tool_context = dataclasses.replace(tool_use_context)
                 try:
                     async for update in run_tool_use(
                         tool_use,
                         assistant_msg,
                         can_use_tool,
-                        tool_use_context,
+                        per_tool_context,
                     ):
                         await results_queue.put(_normalize_update(update))
                 except Exception as exc:

@@ -308,24 +308,31 @@ async def _check_permissions_and_call_tool(
         )
 
         tool_results_dir = resolve_tool_results_dir(tool_use_context)
-        # WI-5.1: thread the per-message aggregate counter through. The
-        # function consults it to decide whether to force-persist a
-        # block that would push the running total past the cap. We then
-        # update the counter with the post-decision block size via
-        # ``compute_block_chars``.
+        # WI-5.1 / ch07 §Phase 2b: read-decide-write must hold
+        # ``_aggregate_lock`` end-to-end. Without this, concurrent
+        # tools through ``run_tool_use`` all read the same
+        # ``tool_result_chars_so_far`` before any writes, all decide
+        # "under cap," and the per-message 200K budget is silently
+        # bypassed. The persist-to-disk path (rare) runs inside the
+        # critical section — same trade-off as the historical
+        # ``_dispatch_single_tool`` path. ``aggregate_budget`` is
+        # shared across ``dataclasses.replace`` per-tool copies
+        # (Phase 2a.5).
         from src.services.tool_execution.tool_result_persistence import (
             compute_block_chars,
         )
-        tool_result_block = process_tool_result_block(
-            tool,
-            result.data,
-            tool_use_id,
-            tool_results_dir=tool_results_dir,
-            aggregate_chars_so_far=tool_use_context.tool_result_chars_so_far,
-        )
-        tool_use_context.tool_result_chars_so_far += compute_block_chars(
-            tool_result_block,
-        )
+        with tool_use_context._aggregate_lock:
+            aggregate_so_far = tool_use_context.tool_result_chars_so_far
+            tool_result_block = process_tool_result_block(
+                tool,
+                result.data,
+                tool_use_id,
+                tool_results_dir=tool_results_dir,
+                aggregate_chars_so_far=aggregate_so_far,
+            )
+            tool_use_context.tool_result_chars_so_far += compute_block_chars(
+                tool_result_block,
+            )
 
         resulting_messages.append(MessageUpdateLazy(
             message=create_user_message(
@@ -438,7 +445,10 @@ async def _call_tool(tool: Tool, tool_input: dict[str, Any], context: ToolContex
     if inspect.iscoroutinefunction(call_fn):
         result = await call_fn(tool_input, context)
     else:
-        result = call_fn(tool_input, context)
+        # ch07 / M7: sync tool.call (e.g. Bash subprocess) must not
+        # block the event loop. Hop to a worker thread so concurrent
+        # siblings, UI updates, and stream consumers keep running.
+        result = await asyncio.to_thread(call_fn, tool_input, context)
 
     if not isinstance(result, ToolResult):
         result = ToolResult(name=tool.name, output=result)
