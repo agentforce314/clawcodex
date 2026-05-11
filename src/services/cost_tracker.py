@@ -1,6 +1,18 @@
 """Cost tracker — per-model pricing, per-turn + cumulative cost, cache hit savings.
 
-Mirrors the TypeScript cost tracking behavior for API usage metering.
+**DEPRECATED**: This module's ``CostTracker`` class is test-only and
+predates the Phase 2.3 consolidation onto the bootstrap singleton. New
+production code should use:
+
+* ``src.cost_tracker.CostTracker`` — facade over the bootstrap singleton.
+* ``src.bootstrap.state.add_to_total_cost_state(...)`` — direct accessor.
+* ``src.services.pricing`` — pricing table + ``compute_cost`` pure function.
+* ``src.services.cost_restore.restore_cost_state_for_session(...)`` — resume orchestrator.
+
+The class below is retained ONLY because ~23 unit/parity tests still
+import it directly. The pricing tables are now re-exported from
+``src.services.pricing`` to eliminate the duplication that previously
+risked pricing drift between this file and the bootstrap-singleton path.
 """
 
 from __future__ import annotations
@@ -9,67 +21,15 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-
-PRICING: dict[str, dict[str, float]] = {
-    "claude-opus-4-20250514": {
-        "input": 15.0 / 1_000_000,
-        "output": 75.0 / 1_000_000,
-        "cache_creation": 18.75 / 1_000_000,
-        "cache_read": 1.50 / 1_000_000,
-    },
-    "claude-sonnet-4-20250514": {
-        "input": 3.0 / 1_000_000,
-        "output": 15.0 / 1_000_000,
-        "cache_creation": 3.75 / 1_000_000,
-        "cache_read": 0.30 / 1_000_000,
-    },
-    "claude-3-7-sonnet-20250219": {
-        "input": 3.0 / 1_000_000,
-        "output": 15.0 / 1_000_000,
-        "cache_creation": 3.75 / 1_000_000,
-        "cache_read": 0.30 / 1_000_000,
-    },
-    "claude-3-5-sonnet-20241022": {
-        "input": 3.0 / 1_000_000,
-        "output": 15.0 / 1_000_000,
-        "cache_creation": 3.75 / 1_000_000,
-        "cache_read": 0.30 / 1_000_000,
-    },
-    "claude-3-5-sonnet-20240620": {
-        "input": 3.0 / 1_000_000,
-        "output": 15.0 / 1_000_000,
-        "cache_creation": 3.75 / 1_000_000,
-        "cache_read": 0.30 / 1_000_000,
-    },
-    "claude-3-haiku-20240307": {
-        "input": 0.25 / 1_000_000,
-        "output": 1.25 / 1_000_000,
-        "cache_creation": 0.30 / 1_000_000,
-        "cache_read": 0.03 / 1_000_000,
-    },
-    "claude-3-5-haiku-20241022": {
-        "input": 1.0 / 1_000_000,
-        "output": 5.0 / 1_000_000,
-        "cache_creation": 1.25 / 1_000_000,
-        "cache_read": 0.10 / 1_000_000,
-    },
-}
-
-DEFAULT_PRICING: dict[str, float] = {
-    "input": 3.0 / 1_000_000,
-    "output": 15.0 / 1_000_000,
-    "cache_creation": 3.75 / 1_000_000,
-    "cache_read": 0.30 / 1_000_000,
-}
-
-
-def _get_pricing(model: str) -> dict[str, float]:
-    if model in PRICING:
-        return PRICING[model]
-    for prefix, pricing in PRICING.items():
-        if model.startswith(prefix.rsplit("-", 1)[0]):
-            return pricing
-    return DEFAULT_PRICING
+# Re-export pricing constants/functions from the canonical source.
+# Phase 2.3: this is the single source of truth — both the bootstrap-
+# backed facade and this legacy class use these tables.
+from src.services.pricing import (
+    DEFAULT_PRICING,
+    PRICING,
+    compute_cost as _compute_cost,
+    get_pricing as _get_pricing,
+)
 
 
 @dataclass
