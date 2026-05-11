@@ -243,6 +243,19 @@ def summarize_tool_use(name: str, tool_input: dict[str, Any]) -> str:
     if lowered == "sendusermessage":
         status = tool_input.get("status")
         return status if isinstance(status, str) else ""
+    if lowered in ("agent", "task"):
+        # Surface ``@<subagent_type>`` + the user-supplied ``description``
+        # so a wall of ``Agent(...)`` calls in a single turn reads as
+        # discrete, scannable activity instead of identical placeholders.
+        sub = tool_input.get("subagent_type")
+        desc = tool_input.get("description")
+        parts: list[str] = []
+        if isinstance(sub, str) and sub.strip():
+            parts.append(f"@{sub.strip()}")
+        if isinstance(desc, str) and desc.strip():
+            s = desc.strip().replace("\n", " ")
+            parts.append(s if len(s) <= 60 else s[:57] + "...")
+        return " · ".join(parts)
     return ""
 
 
