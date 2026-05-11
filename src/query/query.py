@@ -364,10 +364,29 @@ async def _call_model_sync(
     return [assistant_msg], tool_use_blocks
 
 
-# Max tools to run in parallel (TS default: 10, configurable via env var)
-MAX_TOOL_USE_CONCURRENCY = int(
-    os.environ.get("CLAWCODEX_MAX_TOOL_USE_CONCURRENCY", "10")
-)
+# Max tools to run in parallel (TS default: 10, configurable via env var).
+# Reads CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY (the name documented in
+# chapter 7 and used in the TS reference). Falls back to the legacy
+# CLAWCODEX_MAX_TOOL_USE_CONCURRENCY with a DeprecationWarning so
+# users learn to migrate.
+def _resolve_max_tool_use_concurrency() -> int:
+    canonical = os.environ.get("CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY")
+    if canonical is not None:
+        return int(canonical)
+    legacy = os.environ.get("CLAWCODEX_MAX_TOOL_USE_CONCURRENCY")
+    if legacy is not None:
+        import warnings
+        warnings.warn(
+            "CLAWCODEX_MAX_TOOL_USE_CONCURRENCY is deprecated; use "
+            "CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return int(legacy)
+    return 10
+
+
+MAX_TOOL_USE_CONCURRENCY = _resolve_max_tool_use_concurrency()
 
 
 @dataclass
