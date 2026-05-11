@@ -3,6 +3,11 @@
 Splits on pipes and checks each sub-command's leading token against
 a known allowlist.  Rejects shell meta-characters that could bypass
 the simple token check (back-ticks, $(), etc.).
+
+For ``git``, also validates the subcommand against a read-only allowlist.
+Without this, ``git push`` / ``git commit`` / ``git reset`` would
+classify as concurrency-safe and could race on ``.git/index.lock``
+when emitted in the same model turn.
 """
 
 from __future__ import annotations
@@ -29,6 +34,19 @@ READONLY_COMMANDS: frozenset[str] = frozenset([
     "hostname", "tput",
 ])
 
+# Subcommands of ``git`` that don't mutate the working tree, index, or
+# refs. Anything not on this allowlist is treated as not read-only,
+# including stash/worktree (their ``list`` form is read but
+# sub-subcommand parsing isn't worth the complexity here — the
+# conservative classification is a parallelism loss, not a correctness
+# loss).
+GIT_READ_SUBCOMMANDS: frozenset[str] = frozenset([
+    "status", "diff", "log", "show", "blame", "branch", "tag",
+    "describe", "rev-parse", "rev-list", "ls-files", "ls-tree",
+    "cat-file", "config", "remote", "shortlog", "name-rev", "reflog",
+    "whatchanged",
+])
+
 _SHELL_METACHARS = re.compile(r"[;&|`$(){}><]")
 
 
@@ -53,4 +71,11 @@ def is_command_read_only(command: str) -> bool:
         base = tokens[0].split("/")[-1]
         if base not in READONLY_COMMANDS:
             return False
+        if base == "git":
+            # `git` alone is help/usage — treat as not safe (ambiguous).
+            if len(tokens) < 2:
+                return False
+            git_subcmd = tokens[1].lower()
+            if git_subcmd not in GIT_READ_SUBCOMMANDS:
+                return False
     return True
