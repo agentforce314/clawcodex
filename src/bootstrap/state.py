@@ -6,22 +6,26 @@ This module is a DAG leaf — it must not import from any feature subsystem
 package (``src/tui``, ``src/repl``, ``src/agent``, ``src/services``,
 ``src/query``, ``src/context_system``, ``src/permissions``,
 ``src/command_system``, ``src/tool_system``, ``src/coordinator``). The
-``import-linter`` contract (see ``pyproject.toml``) enforces this when the
-linter is installed; until then, treat the rule as review discipline.
+``import-linter`` contract (see ``.importlinter`` / ``pyproject.toml``)
+enforces this when the linter is installed; until then, treat the rule as
+review discipline.
 
-Phase 1 of the ch03 state refactor covers the ~30 fields below.
+Phase 1 of the ch03 state refactor (see
+``my-docs/ch03-state-refactoring-plan.md``) covers the ~30 fields below.
 Subsequent phases will grow the field list as their respective subsystems
 land (telemetry/OTel handles, plugin/channel state, hooks registry, etc.).
 """
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import os
 import time
 import unicodedata
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, NewType
+from typing import Any, Iterator, NewType
 
 from src.utils.signal import Signal, create_signal
 
@@ -155,6 +159,86 @@ class _BootstrapState:
 
 _STATE: _BootstrapState = _BootstrapState()
 
+
+# ---------------------------------------------------------------------------
+# Per-query SDK context (contextvars-based, mirrors TS AsyncLocalStorage)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class SdkContext:
+    """Per-query context that overrides the global ``_STATE`` for the
+    duration of an async/sync call stack.
+
+    Mirrors TS ``SdkContext`` (``bootstrap/state.ts:439-445``). When set
+    via ``run_with_sdk_context(...)``, reads of ``session_id``,
+    ``session_project_dir``, ``cwd``, ``original_cwd``, and
+    ``parent_session_id`` return context-scoped values rather than the
+    global singleton. Used by the Agent SDK when multiple concurrent
+    queries share a process and each needs its own identity view.
+
+    Python implementation note: ``contextvars.ContextVar`` is the
+    asyncio-aware equivalent of Node's ``async_hooks.AsyncLocalStorage``.
+    Both propagate context across ``await`` points without explicit
+    threading; both isolate sibling tasks.
+
+    Sentinel semantics: ``None`` on ``cwd`` / ``original_cwd`` means
+    "not set in this context — fall back to the global". Matches TS
+    nullish-coalescing (``ctx?.originalCwd ?? STATE.originalCwd``).
+    Writing ``set_original_cwd("")`` from inside the context stores the
+    empty string explicitly and returns ``""``; only ``None`` triggers
+    the global fallback.
+    """
+
+    session_id: SessionId
+    session_project_dir: str | None = None
+    cwd: str | None = None
+    original_cwd: str | None = None
+    parent_session_id: SessionId | None = None
+
+
+_sdk_context: contextvars.ContextVar[SdkContext | None] = contextvars.ContextVar(
+    "sdk_context", default=None
+)
+
+
+def _get_sdk_context() -> SdkContext | None:
+    """Return the current per-query SDK context, or None if not inside one."""
+    return _sdk_context.get()
+
+
+@contextlib.contextmanager
+def run_with_sdk_context(context: SdkContext) -> Iterator[None]:
+    """Run a block with an SDK-specific context overriding global state.
+
+    Mirrors TS ``runWithSdkContext`` (``bootstrap/state.ts:460-462``).
+    Within the ``with`` block, ``get_session_id``, ``get_original_cwd``,
+    ``get_cwd_state``, ``get_session_project_dir``, and
+    ``get_parent_session_id`` read from ``context``. Mutations via
+    ``switch_session`` / ``regenerate_session_id`` / ``set_original_cwd``
+    / ``set_cwd_state`` mutate the context (not the global) while inside.
+
+    Example::
+
+        ctx = SdkContext(
+            session_id=SessionId("..."),
+            original_cwd="/tmp/sdk-workspace",
+            cwd="/tmp/sdk-workspace",
+        )
+        with run_with_sdk_context(ctx):
+            run_query()   # reads ctx.session_id, not the global
+
+    Async usage: nested ``await`` calls within the ``with`` block inherit
+    the context automatically — contextvars propagate across asyncio
+    task boundaries created with ``asyncio.create_task`` (since 3.7).
+    """
+    token = _sdk_context.set(context)
+    try:
+        yield
+    finally:
+        _sdk_context.reset(token)
+
+
 # ---------------------------------------------------------------------------
 # Signals
 # ---------------------------------------------------------------------------
@@ -173,8 +257,13 @@ on_session_switch = _session_switched.subscribe
 
 
 def get_session_id() -> SessionId:
-    """Current session ID. Mirrors TS ``getSessionId()``."""
-    return _STATE.session_id
+    """Current session ID. Mirrors TS ``getSessionId()``.
+
+    Within a ``run_with_sdk_context(...)`` block, returns the context's
+    session_id rather than the global. Outside, returns the global.
+    """
+    ctx = _get_sdk_context()
+    return ctx.session_id if ctx is not None else _STATE.session_id
 
 
 def regenerate_session_id(*, set_current_as_parent: bool = False) -> SessionId:
@@ -185,13 +274,24 @@ def regenerate_session_id(*, set_current_as_parent: bool = False) -> SessionId:
     Does NOT emit ``session_switched`` — that is reserved for
     ``switch_session`` (which is the resume/teleport path). This is the
     /clear or new-session-within-same-process path.
+
+    Inside ``run_with_sdk_context``: mutates the context. Outside:
+    mutates the global.
     """
-    current = _STATE.session_id
+    ctx = _get_sdk_context()
+    current = ctx.session_id if ctx is not None else _STATE.session_id
     if set_current_as_parent:
-        _STATE.parent_session_id = current
+        if ctx is not None:
+            ctx.parent_session_id = current
+        else:
+            _STATE.parent_session_id = current
     new_id = _new_session_id()
-    _STATE.session_id = new_id
-    _STATE.session_project_dir = None
+    if ctx is not None:
+        ctx.session_id = new_id
+        ctx.session_project_dir = None
+    else:
+        _STATE.session_id = new_id
+        _STATE.session_project_dir = None
     return new_id
 
 
@@ -202,46 +302,76 @@ def switch_session(session_id: SessionId, project_dir: str | None = None) -> Non
     is the **only** mutator for either. Mirrors TS ``switchSession``
     (``bootstrap/state.ts:522``) and the CC-34 single-setter discipline.
     Fires the ``session_switched`` signal after the mutation.
+
+    Inside ``run_with_sdk_context``: mutates the context. Outside:
+    mutates the global. The signal fires regardless.
     """
-    _STATE.session_id = session_id
-    _STATE.session_project_dir = project_dir
+    ctx = _get_sdk_context()
+    if ctx is not None:
+        ctx.session_id = session_id
+        ctx.session_project_dir = project_dir
+    else:
+        _STATE.session_id = session_id
+        _STATE.session_project_dir = project_dir
     _session_switched.emit(session_id)
 
 
 def get_parent_session_id() -> SessionId | None:
-    return _STATE.parent_session_id
+    ctx = _get_sdk_context()
+    return ctx.parent_session_id if ctx is not None else _STATE.parent_session_id
 
 
 def get_session_project_dir() -> str | None:
-    return _STATE.session_project_dir
+    ctx = _get_sdk_context()
+    return ctx.session_project_dir if ctx is not None else _STATE.session_project_dir
 
 
 def get_original_cwd() -> str:
+    ctx = _get_sdk_context()
+    if ctx is not None and ctx.original_cwd is not None:
+        return ctx.original_cwd
     return _STATE.original_cwd
 
 
 def set_original_cwd(path: str) -> None:
-    _STATE.original_cwd = unicodedata.normalize("NFC", path)
+    normalized = unicodedata.normalize("NFC", path)
+    ctx = _get_sdk_context()
+    if ctx is not None:
+        ctx.original_cwd = normalized
+    else:
+        _STATE.original_cwd = normalized
 
 
 def get_project_root() -> str:
     """Stable project root. Set once at startup (and by ``--worktree``);
     NOT updated by mid-session ``EnterWorktreeTool``. Mirrors TS
-    ``getProjectRoot``."""
+    ``getProjectRoot``.
+
+    Always reads from the global — project_root is process-scope, not
+    per-query, per the chapter's "project identity" framing."""
     return _STATE.project_root
 
 
 def set_project_root(path: str) -> None:
-    """Only for ``--worktree`` startup flag. Mirrors TS ``setProjectRoot``."""
+    """Only for ``--worktree`` startup flag. Mirrors TS ``setProjectRoot``.
+    Always mutates the global — does NOT respect SDK context."""
     _STATE.project_root = unicodedata.normalize("NFC", path)
 
 
 def get_cwd_state() -> str:
+    ctx = _get_sdk_context()
+    if ctx is not None and ctx.cwd is not None:
+        return ctx.cwd
     return _STATE.cwd
 
 
 def set_cwd_state(path: str) -> None:
-    _STATE.cwd = unicodedata.normalize("NFC", path)
+    normalized = unicodedata.normalize("NFC", path)
+    ctx = _get_sdk_context()
+    if ctx is not None:
+        ctx.cwd = normalized
+    else:
+        _STATE.cwd = normalized
 
 
 # ===========================================================================
@@ -551,6 +681,9 @@ __all__ = [
     # Types
     "SessionId",
     "ModelUsage",
+    "SdkContext",
+    # Per-query context
+    "run_with_sdk_context",
     # Signal
     "on_session_switch",
     # Identity & paths

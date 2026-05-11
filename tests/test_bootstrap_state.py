@@ -16,14 +16,17 @@ bootstrap-singleton side:
 
 from __future__ import annotations
 
+import asyncio
 import os
 import unicodedata
 import unittest
+from unittest import mock
 
 import pytest
 
 from src.bootstrap.state import (
     ModelUsage,
+    SdkContext,
     SessionId,
     add_to_total_cost_state,
     add_to_total_duration_state,
@@ -31,6 +34,7 @@ from src.bootstrap.state import (
     consume_post_compaction,
     get_cached_claude_md_content,
     get_client_type,
+    get_cwd_state,
     get_is_interactive,
     get_is_non_interactive_session,
     get_main_loop_model_override,
@@ -49,9 +53,11 @@ from src.bootstrap.state import (
     regenerate_session_id,
     reset_cost_state,
     reset_state_for_tests,
+    run_with_sdk_context,
     set_cached_claude_md_content,
     set_client_type,
     set_cost_state_for_restore,
+    set_cwd_state,
     set_has_unknown_model_cost,
     set_is_interactive,
     set_main_loop_model_override,
@@ -138,7 +144,7 @@ class TestNfcNormalization(unittest.TestCase):
 
     def test_set_original_cwd_normalizes_nfd_to_nfc(self) -> None:
         # NFD form of "é" is two code points: 'e' + combining acute
-        nfd = "/path/café"  # "café" in NFD
+        nfd = "/path/café"  # "café" in NFD
         set_original_cwd(nfd)
         stored = get_original_cwd()
         self.assertEqual(stored, "/path/café")  # composed é
@@ -149,7 +155,7 @@ class TestNfcNormalization(unittest.TestCase):
         set_project_root(nfd)
         self.assertEqual(get_project_root(), nfd)
         # NFD input
-        nfd2 = "/proj/café"
+        nfd2 = "/proj/café"
         set_project_root(nfd2)
         self.assertEqual(get_project_root(), "/proj/café")
 
@@ -319,6 +325,174 @@ class TestCachedClaudeMd(unittest.TestCase):
         set_cached_claude_md_content("foo")
         set_cached_claude_md_content(None)
         self.assertIsNone(get_cached_claude_md_content())
+
+
+class TestSdkContext(unittest.TestCase):
+    """Per-query context overrides via ``run_with_sdk_context``.
+
+    Mirrors the TS AsyncLocalStorage discipline at
+    ``bootstrap/state.ts:438-608``: reads inside the context see context
+    values; reads outside see the global. Mutations route accordingly.
+    """
+
+    def test_get_session_id_outside_context_returns_global(self) -> None:
+        global_id = get_session_id()
+        ctx = SdkContext(session_id=SessionId("ctx-id-12345"))
+        with run_with_sdk_context(ctx):
+            pass  # don't read inside
+        # After the with block, we see the global again
+        self.assertEqual(get_session_id(), global_id)
+
+    def test_get_session_id_inside_context_returns_context(self) -> None:
+        ctx_id = SessionId("ctx-id-aaaaa")
+        ctx = SdkContext(session_id=ctx_id)
+        with run_with_sdk_context(ctx):
+            self.assertEqual(get_session_id(), ctx_id)
+
+    def test_context_falls_back_to_global_for_unset_paths(self) -> None:
+        """SdkContext with empty cwd/original_cwd falls back to the global."""
+        global_cwd = get_original_cwd()
+        ctx = SdkContext(session_id=SessionId("ctx-id-bbbbb"))
+        with run_with_sdk_context(ctx):
+            self.assertEqual(get_original_cwd(), global_cwd)
+
+    def test_context_overrides_cwd_when_provided(self) -> None:
+        ctx = SdkContext(
+            session_id=SessionId("ctx-id-ccccc"),
+            cwd="/tmp/sdk-workspace",
+            original_cwd="/tmp/sdk-workspace",
+        )
+        with run_with_sdk_context(ctx):
+            self.assertEqual(get_cwd_state(), "/tmp/sdk-workspace")
+            self.assertEqual(get_original_cwd(), "/tmp/sdk-workspace")
+
+    def test_switch_session_inside_context_mutates_context_not_global(self) -> None:
+        global_id_before = get_session_id()
+        ctx = SdkContext(session_id=SessionId("ctx-id-ddddd"))
+        with run_with_sdk_context(ctx):
+            switch_session(SessionId("new-id-inside"), "/some/dir")
+            self.assertEqual(get_session_id(), "new-id-inside")
+            self.assertEqual(get_session_project_dir(), "/some/dir")
+
+        # Outside the with block, the global was NOT mutated
+        self.assertEqual(get_session_id(), global_id_before)
+        self.assertEqual(ctx.session_id, "new-id-inside")  # ctx WAS mutated
+
+    def test_regenerate_session_id_inside_context_mutates_context(self) -> None:
+        original_ctx_id = SessionId("ctx-id-eeeee")
+        ctx = SdkContext(session_id=original_ctx_id)
+        with run_with_sdk_context(ctx):
+            new_id = regenerate_session_id(set_current_as_parent=True)
+            self.assertEqual(get_session_id(), new_id)
+            self.assertEqual(get_parent_session_id(), original_ctx_id)
+            self.assertEqual(ctx.session_id, new_id)
+            self.assertEqual(ctx.parent_session_id, original_ctx_id)
+
+    def test_nested_contexts_isolated(self) -> None:
+        """Nested ``run_with_sdk_context`` blocks isolate from each other."""
+        outer_id = SessionId("outer-eeeee")
+        inner_id = SessionId("inner-fffff")
+        with run_with_sdk_context(SdkContext(session_id=outer_id)):
+            self.assertEqual(get_session_id(), outer_id)
+            with run_with_sdk_context(SdkContext(session_id=inner_id)):
+                self.assertEqual(get_session_id(), inner_id)
+            # After inner exits, we're back to outer
+            self.assertEqual(get_session_id(), outer_id)
+
+    def test_switch_session_inside_context_still_emits_signal(self) -> None:
+        """The signal fires regardless of where the mutation happened."""
+        received: list[SessionId] = []
+        unsubscribe = on_session_switch(lambda sid: received.append(sid))
+        try:
+            ctx = SdkContext(session_id=SessionId("ctx-id-99999"))
+            with run_with_sdk_context(ctx):
+                new_id = SessionId("inside-switch")
+                switch_session(new_id)
+            self.assertEqual(received, [new_id])
+        finally:
+            unsubscribe()
+
+    def test_set_original_cwd_inside_context_mutates_context(self) -> None:
+        global_cwd_before = get_original_cwd()
+        ctx = SdkContext(
+            session_id=SessionId("ctx-id-77777"),
+            original_cwd="/initial",
+        )
+        with run_with_sdk_context(ctx):
+            set_original_cwd("/changed/inside")
+            self.assertEqual(get_original_cwd(), "/changed/inside")
+            self.assertEqual(ctx.original_cwd, "/changed/inside")
+
+        # Global was NOT mutated
+        self.assertEqual(get_original_cwd(), global_cwd_before)
+
+
+class TestSdkContextAsyncIsolation(unittest.TestCase):
+    """The whole point of ``contextvars.ContextVar`` over a regular module
+    global: two concurrent ``asyncio`` tasks see independent context
+    values. Without this property, the per-query isolation that M4 is
+    supposed to provide silently breaks.
+
+    Locks the property so a future "optimization" that replaces
+    ``contextvars`` with a thread-local or module-global will fail
+    these tests."""
+
+    def test_concurrent_asyncio_tasks_see_isolated_session_ids(self) -> None:
+        async def task(sid_value: str, results: list) -> None:
+            ctx = SdkContext(session_id=SessionId(sid_value))
+            with run_with_sdk_context(ctx):
+                # Yield to let other tasks run mid-context. If contextvars
+                # isn't isolating, this is where bleed would surface.
+                await asyncio.sleep(0.01)
+                observed_1 = get_session_id()
+                await asyncio.sleep(0.01)
+                observed_2 = get_session_id()
+                results.append((sid_value, observed_1, observed_2))
+
+        async def main() -> list:
+            results: list = []
+            await asyncio.gather(
+                task("aaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", results),
+                task("bbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", results),
+                task("cccc-cccc-cccc-cccc-cccccccccccc", results),
+            )
+            return results
+
+        results = asyncio.run(main())
+
+        # Each task must see ONLY its own session_id — both before and
+        # after the asyncio.sleep yield points
+        for set_sid, obs_1, obs_2 in results:
+            self.assertEqual(
+                obs_1,
+                set_sid,
+                f"task {set_sid} saw {obs_1} on first read (contextvar bleed)",
+            )
+            self.assertEqual(
+                obs_2,
+                set_sid,
+                f"task {set_sid} saw {obs_2} on second read (contextvar bleed)",
+            )
+
+    def test_concurrent_tasks_do_not_leak_to_outer_scope(self) -> None:
+        """After concurrent tasks complete, the outer scope sees the
+        global (no leak from any task's context)."""
+        global_id_before = get_session_id()
+
+        async def task(sid_value: str) -> None:
+            with run_with_sdk_context(SdkContext(session_id=SessionId(sid_value))):
+                await asyncio.sleep(0.01)
+
+        async def main() -> None:
+            await asyncio.gather(
+                task("xxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"),
+                task("yyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy"),
+            )
+
+        asyncio.run(main())
+
+        # Outer scope still sees the global
+        self.assertEqual(get_session_id(), global_id_before)
 
 
 class TestResetStateForTests(unittest.TestCase):
