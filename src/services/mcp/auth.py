@@ -12,8 +12,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode, urlparse, parse_qs
-from urllib.request import Request, urlopen
-from urllib.error import URLError
+
+import httpx
+
+from .oauth_error_normalization import normalize_oauth_error_body
 
 logger = logging.getLogger(__name__)
 
@@ -489,16 +491,7 @@ class McpAuthManager:
             data["code_verifier"] = verifier
 
         try:
-            body = urlencode(data).encode("utf-8")
-            req = Request(
-                config.token_url,
-                data=body,
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-                method="POST",
-            )
-            resp = urlopen(req, timeout=30)
-            resp_data = json.loads(resp.read().decode("utf-8"))
-
+            resp_data = await self._post_token_endpoint(config.token_url, data)
             expires_at = None
             if "expires_in" in resp_data:
                 expires_at = time.time() + int(resp_data["expires_in"])
@@ -534,16 +527,7 @@ class McpAuthManager:
             data["client_secret"] = config.client_secret
 
         try:
-            body = urlencode(data).encode("utf-8")
-            req = Request(
-                config.token_url,
-                data=body,
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-                method="POST",
-            )
-            resp = urlopen(req, timeout=30)
-            resp_data = json.loads(resp.read().decode("utf-8"))
-
+            resp_data = await self._post_token_endpoint(config.token_url, data)
             expires_at = None
             if "expires_in" in resp_data:
                 expires_at = time.time() + int(resp_data["expires_in"])
@@ -560,6 +544,53 @@ class McpAuthManager:
 
         except Exception as e:
             return AuthResult(success=False, error=f"Token refresh failed: {e}")
+
+    async def _post_token_endpoint(
+        self, token_url: str, data: dict[str, str]
+    ) -> dict[str, Any]:
+        """POST to an OAuth token endpoint via httpx.AsyncClient.
+
+        Previously used ``urllib.request.urlopen``, which is synchronous
+        blocking I/O and froze the event loop for the duration of the
+        round-trip (~100ms–1s typical). That stalled every other
+        async task — including concurrent MCP receive loops and the
+        OAuth callback listener itself. Use httpx.AsyncClient with a
+        30s timeout instead.
+
+        Normalizes vendor 200+error responses (Slack-style) to a proper
+        4xx error via ``normalize_oauth_error_body`` so the refresh
+        path raises on ``invalid_grant`` rather than silently storing
+        a nonsensical token.
+        """
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                token_url,
+                data=data,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+
+        # Vendor RFC-quirks (Slack returns 200 with {"error": "..."}) —
+        # normalize before status check so a vendor 200+error becomes a
+        # raised error rather than a silently-stored garbage token.
+        try:
+            body_json: Any = response.json()
+        except (ValueError, TypeError):
+            body_json = None
+        if isinstance(body_json, dict):
+            status_code, body_json = normalize_oauth_error_body(
+                response.status_code, body_json
+            )
+            if status_code >= 400:
+                err = body_json.get("error", "oauth_error")
+                desc = body_json.get("error_description", "")
+                msg = f"{status_code} {err}"
+                if desc:
+                    msg += f": {desc}"
+                raise RuntimeError(msg)
+            return body_json
+
+        response.raise_for_status()
+        return response.json()
 
     def revoke_token(self, server_name: str) -> bool:
         return self._store.remove_token(server_name)

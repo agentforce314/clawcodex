@@ -90,6 +90,14 @@ async def discover_oauth_metadata(
     try:
         # 1) Escape hatch is authoritative: explicit operator intent.
         if escape_hatch_url:
+            # RFC 8414 §2 mandates TLS for AS metadata URLs. The escape
+            # hatch can come from a project-scoped .mcp.json — a write
+            # surface accessible to untrusted repos — so an attacker
+            # could otherwise point the discovery at http:// and steal
+            # the eventual access_token from a plaintext channel.
+            # Mirrors TS auth.ts:332-334.
+            if not escape_hatch_url.lower().startswith("https://"):
+                raise OAuthDiscoveryError(server_url, [escape_hatch_url])
             attempted.append(escape_hatch_url)
             metadata = await _try_as_metadata(client, escape_hatch_url)
             if metadata is not None:
