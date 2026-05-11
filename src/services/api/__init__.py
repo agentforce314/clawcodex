@@ -2,7 +2,9 @@ from .claude import (
     CAPPED_DEFAULT_MAX_TOKENS,
     CLIENT_REQUEST_ID_HEADER,
     CallModelOptions,
+    FallbackEvent,
     MAX_NON_STREAMING_TOKENS,
+    RetryEvent,
     SMALL_FAST_MODEL,
     StreamEvent,
     add_cache_breakpoints,
@@ -23,7 +25,13 @@ from .errors import (
 )
 from .logging import NonNullableUsage, accumulate_usage, update_usage
 from .provider_config import ProviderOverride, resolve_agent_provider
-from .retry import CannotRetryError, RetryContext, with_retry
+from .retry import (
+    CannotRetryError,
+    RetryContext,
+    RetryStatusMessage,
+    with_retry,
+    with_retry_stream,
+)
 from .tool_normalization import normalize_tool_arguments
 
 __all__ = [
@@ -31,6 +39,7 @@ __all__ = [
     "CLIENT_REQUEST_ID_HEADER",
     "CallModelOptions",
     "CannotRetryError",
+    "FallbackEvent",
     "FallbackTriggeredError",
     "MAX_NON_STREAMING_TOKENS",
     "MaxOutputTokensError",
@@ -40,6 +49,8 @@ __all__ = [
     "ProviderOverride",
     "RateLimitError",
     "RetryContext",
+    "RetryEvent",
+    "RetryStatusMessage",
     "SMALL_FAST_MODEL",
     "StreamEvent",
     "accumulate_usage",
@@ -55,4 +66,5 @@ __all__ = [
     "tool_to_api_schema",
     "update_usage",
     "with_retry",
+    "with_retry_stream",
 ]

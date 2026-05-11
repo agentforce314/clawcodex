@@ -32,6 +32,11 @@ class QueryConfig:
     fallback_model: str | None = None
     query_source: str = "repl_main_thread"
     session_id: str = ""
+    # Default ON for first-party Anthropic — the chapter's three-tier cache
+    # policy is the largest single cost lever, and getting a marker on the
+    # tail of the message array is what unlocks it. Third-party providers
+    # that reject cache_control should turn this off explicitly.
+    enable_prompt_caching: bool = True
 
 
 @dataclass(frozen=True)
@@ -57,6 +62,7 @@ class FrozenQueryConfig:
     fallback_model: str | None = None
     query_source: str = "repl_main_thread"
     session_id: str = ""
+    enable_prompt_caching: bool = True
 
 
 def build_query_config(
