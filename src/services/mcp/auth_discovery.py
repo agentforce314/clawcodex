@@ -30,7 +30,7 @@ from .oauth_redaction import redact_sensitive_params
 
 logger = logging.getLogger(__name__)
 
-_DISCOVERY_TIMEOUT_S = 10.0
+_DISCOVERY_TIMEOUT_S = 30.0  # mirrors TS AUTH_REQUEST_TIMEOUT_MS = 30000
 
 
 class OAuthDiscoveryError(RuntimeError):
