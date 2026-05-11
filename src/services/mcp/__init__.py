@@ -1,15 +1,21 @@
 from .client import McpClient, clear_connection_cache, connect_to_server
 from .config import (
+    add_dynamic_mcp_config,
     add_mcp_config,
+    dedup_claudeai_mcp_servers,
     filter_mcp_servers_by_policy,
     get_all_mcp_configs,
+    get_dynamic_mcp_configs,
+    get_managed_mcp_configs,
     get_mcp_config_by_name,
     get_mcp_configs_by_scope,
     is_mcp_server_disabled,
     parse_mcp_config,
     parse_mcp_config_from_file_path,
+    remove_dynamic_mcp_config,
     remove_mcp_config,
     set_mcp_server_enabled,
+    unwrap_ccr_proxy_url,
 )
 from .env_expansion import expand_env_vars_in_string
 from .errors import McpAuthError, McpSessionExpiredError, McpToolCallError
@@ -27,7 +33,18 @@ from .mcp_string_utils import (
 )
 from .normalization import normalize_name_for_mcp
 from .tool_wrapper import wrap_mcp_tool, wrap_mcp_tools_for_server
-from .transport import HttpTransport, JsonRpcMessage, McpTransport, SseTransport, StdioTransport
+from .in_process_transport import (
+    InProcessTransport,
+    create_linked_transport_pair,
+)
+from .transport import (
+    HttpTransport,
+    JsonRpcMessage,
+    McpTransport,
+    SseTransport,
+    StdioTransport,
+    WebSocketTransport,
+)
 from .types import (
     ConfigScope,
     ConnectedMCPServer,
@@ -61,6 +78,9 @@ __all__ = [
     "StdioTransport",
     "SseTransport",
     "HttpTransport",
+    "WebSocketTransport",
+    "InProcessTransport",
+    "create_linked_transport_pair",
     "McpStdioServerConfig",
     "McpSSEServerConfig",
     "McpHTTPServerConfig",
@@ -101,6 +121,12 @@ __all__ = [
     "is_mcp_server_disabled",
     "set_mcp_server_enabled",
     "filter_mcp_servers_by_policy",
+    "unwrap_ccr_proxy_url",
+    "dedup_claudeai_mcp_servers",
+    "add_dynamic_mcp_config",
+    "remove_dynamic_mcp_config",
+    "get_dynamic_mcp_configs",
+    "get_managed_mcp_configs",
     "ConnectionAttemptResult",
     "get_mcp_tools_commands_and_resources",
     "prefetch_all_mcp_resources",
