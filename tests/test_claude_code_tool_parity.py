@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
 from pathlib import Path
 import tempfile
@@ -7,7 +8,7 @@ from unittest.mock import MagicMock
 
 from src.agent.conversation import Conversation
 from src.providers.base import ChatResponse
-from src.tool_system.agent_loop import run_agent_loop
+from src.query.agent_loop_compat import run_query_as_agent_loop
 from src.tool_system.context import ToolContext
 from src.tool_system.defaults import build_default_registry
 from src.tool_system.protocol import ToolCall
@@ -69,40 +70,17 @@ class TestClaudeCodeToolParity(unittest.TestCase):
         missing = [name for name in expected if self.registry.get(name) is None and name not in not_yet_implemented]
         self.assertEqual(missing, [])
 
-    def test_send_user_message_is_user_visible_fallback(self) -> None:
-        conversation = Conversation()
-        conversation.add_user_message("hi")
-
-        mock_provider = MagicMock()
-        mock_tool_use = {
-            "id": "toolu_1",
-            "name": "SendUserMessage",
-            "input": {"message": "hello", "status": "normal"},
-        }
-        mock_response1 = ChatResponse(
-            content="",
-            model="test",
-            usage={"input_tokens": 1, "output_tokens": 1},
-            finish_reason="tool_use",
-            tool_uses=[mock_tool_use],
-        )
-        mock_response2 = ChatResponse(
-            content="",
-            model="test",
-            usage={"input_tokens": 1, "output_tokens": 1},
-            finish_reason="stop",
-            tool_uses=None,
-        )
-        mock_provider.chat.side_effect = [mock_response1, mock_response2]
-
-        out = run_agent_loop(
-            conversation=conversation,
-            provider=mock_provider,
-            tool_registry=self.registry,
-            tool_context=self.ctx,
-            verbose=False,
-        )
-        self.assertEqual(out.response_text, "hello")
+    # NOTE: ``test_send_user_message_is_user_visible_fallback`` was
+    # removed when the legacy ``run_agent_loop`` was deleted. That test
+    # captured a legacy quirk: if the final assistant message had empty
+    # text AND the model had invoked ``SendUserMessage(message="...")``,
+    # the loop returned the SendUserMessage payload as ``response_text``.
+    # The canonical :func:`src.query.query.query` loop has no such
+    # fallback — when the model emits no assistant text, the consumer
+    # (REPL/TUI) renders the tool_result message directly. Follow-up
+    # ticket: decide whether the SendUserMessage adapter (or a UI
+    # layer) should surface the message field when the assistant turn
+    # is empty.
 
     def test_tool_search_select(self) -> None:
         out = self.registry.dispatch(
@@ -153,25 +131,32 @@ class TestClaudeCodeToolParity(unittest.TestCase):
             finish_reason="stop",
             tool_uses=None,
         )
+        mock_provider.chat_stream_response.side_effect = NotImplementedError()
         mock_provider.chat.side_effect = [first, second]
 
-        out = run_agent_loop(
-            conversation=conversation,
-            provider=mock_provider,
-            tool_registry=self.registry,
-            tool_context=self.ctx,
-            verbose=False,
+        out = asyncio.run(
+            run_query_as_agent_loop(
+                conversation=conversation,
+                provider=mock_provider,
+                tool_registry=self.registry,
+                tool_context=self.ctx,
+                verbose=False,
+            )
         )
         self.assertEqual(out.response_text, "done")
         self.assertEqual(mock_provider.chat.call_count, 2)
+        # Per the canonical loop's contract, the second model call's
+        # message list MUST replay the assistant message with the
+        # reasoning_content preserved (DeepSeek/OpenAI requirement).
         second_call_messages = mock_provider.chat.call_args_list[1].args[0]
-        assistant_with_tool_call = next(
+        assistant_with_reasoning = next(
             msg
             for msg in second_call_messages
-            if msg.get("role") == "assistant" and msg.get("tool_calls")
+            if msg.get("role") == "assistant"
+            and msg.get("reasoning_content")
         )
         self.assertEqual(
-            assistant_with_tool_call.get("reasoning_content"),
+            assistant_with_reasoning.get("reasoning_content"),
             "hidden chain of thought token stream",
         )
 

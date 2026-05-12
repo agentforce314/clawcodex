@@ -53,9 +53,10 @@ logger = logging.getLogger(__name__)
 
 
 # Re-export ToolEvent + handlers so adapter consumers can keep
-# importing from a single location.
+# importing from a single location.  AgentLoopResult is deliberately
+# NOT re-exported — the legacy dataclass was deleted with
+# run_agent_loop in PR 5; use AgentLoopRunResult (below) instead.
 from ..tool_system.agent_loop import (  # noqa: E402  (intentional re-export)
-    AgentLoopResult,
     TextChunkHandler,
     ToolEvent,
     ToolEventHandler,

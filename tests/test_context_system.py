@@ -12,7 +12,7 @@ from src.context_system import build_context_prompt
 from src.context_system.claude_md import clear_memory_file_caches
 from src.context_system.git_context import clear_git_caches, collect_git_context
 from src.providers.base import ChatResponse
-from src.tool_system.agent_loop import run_agent_loop
+from src.query.agent_loop_compat import run_query_as_agent_loop
 from src.tool_system.context import ToolContext
 from src.tool_system.defaults import build_default_registry
 
@@ -68,6 +68,9 @@ class TestContextSystem(unittest.TestCase):
             conversation.add_user_message("hello")
 
             provider = MagicMock()
+            # Force chat() (non-streaming) so the MagicMock doesn't
+            # synthesize a Mock response from chat_stream_response.
+            provider.chat_stream_response.side_effect = NotImplementedError()
             provider.chat.return_value = ChatResponse(
                 content="ok",
                 model="test",
@@ -76,7 +79,11 @@ class TestContextSystem(unittest.TestCase):
                 tool_uses=None,
             )
 
-            out = run_agent_loop(conversation, provider, registry, ctx, verbose=False)
+            out = asyncio.run(
+                run_query_as_agent_loop(
+                    conversation, provider, registry, ctx, verbose=False,
+                )
+            )
             self.assertEqual(out.response_text, "ok")
             system_message = provider.chat.call_args.args[0][0]
             self.assertEqual(system_message["role"], "system")
