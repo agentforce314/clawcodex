@@ -110,10 +110,17 @@ def is_invalid_api_key(error: Exception) -> bool:
 
 
 def is_media_size_error(raw: str) -> bool:
+    """Case-insensitive media-size-error detector.
+
+    Substring checks are normalized to lowercase; the PDF regex
+    uses ``re.IGNORECASE`` so capitalization in provider messages
+    doesn't change the outcome.
+    """
+    lowered = raw.lower()
     return (
-        ("image exceeds" in raw and "maximum" in raw)
-        or ("image dimensions exceed" in raw and "many-image" in raw)
-        or bool(re.search(r"maximum of \d+ PDF pages", raw))
+        ("image exceeds" in lowered and "maximum" in lowered)
+        or ("image dimensions exceed" in lowered and "many-image" in lowered)
+        or bool(re.search(r"maximum of \d+ PDF pages", raw, re.IGNORECASE))
     )
 
 
