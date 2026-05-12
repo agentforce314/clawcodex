@@ -1,3 +1,25 @@
+"""SSE event-stream agent loop (Ch5/F.5 migration target).
+
+This module is a **migration target** for future SSE-based agent
+loops, not the canonical loop. It is consumed only by
+``tests/test_streaming_query_loop.py``,
+``tests/test_phase_a_integration.py``, and
+``tests/parity/test_structural_parity_r2.py``.
+
+CRITICAL: this loop does NOT yet wire up the recovery infrastructure
+that the canonical :func:`src.query.query.query` carries:
+
+  * No stop hooks (Ch5/C)
+  * No token-budget enforcement (Ch5/D)
+  * No model fallback (Ch5/E.2-E.3)
+  * No continuation nudge (Ch5/E.4)
+  * No blocking-limit pre-emption (Ch5/B.4)
+  * No autocompact circuit-breaker guard (Ch5/B.5)
+
+Until the chapter-5 work is ported into this module, do NOT route
+production traffic here. Use ``src.query.query.query`` or
+``src.query.agent_loop_compat.run_query_as_agent_loop`` instead.
+"""
 from __future__ import annotations
 
 import asyncio
