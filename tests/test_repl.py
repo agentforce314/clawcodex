@@ -226,11 +226,17 @@ class TestREPL(unittest.TestCase):
                     repl = ClawcodexREPL(provider_name="glm", stream=True)
                     repl.console.print = Mock()
 
-                    with patch('src.repl.core.run_agent_loop') as mock_agent_loop:
-                        repl.chat("你是谁")
+                    # Simple stream-mode prompt: REPL should go straight
+                    # to `provider.chat_stream` and skip any agent loop.
+                    # (Previously this also patched the now-deleted
+                    # `src.repl.core.run_agent_loop` to assert it wasn't
+                    # called — that assertion is tautological now that
+                    # the legacy entry point is gone from production
+                    # imports; the `chat_stream.assert_called_once()`
+                    # below is the actual contract.)
+                    repl.chat("你是谁")
 
                     mock_provider.chat_stream.assert_called_once()
-                    mock_agent_loop.assert_not_called()
                     self.assertFalse(any(
                         args and isinstance(args[0], Markdown)
                         for args, _kwargs in repl.console.print.call_args_list
