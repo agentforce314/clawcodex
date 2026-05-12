@@ -70,7 +70,13 @@ async def handle_stop_hooks_streaming(
     tool_use_context: Any,
     query_source: str,
     stop_hook_active: bool | None = None,
+    **_future_kwargs: Any,  # Ch5/C.1: user_context/system_context etc.
 ) -> AsyncGenerator[Message | StopHookResult, None]:
+    # ``_future_kwargs`` captures user_context/system_context (and any
+    # similar additions) so callers can pass them for signature
+    # symmetry with handle_stop_hooks (non-streaming). The underlying
+    # _handle_stop_hooks_generator does not consume them today; they
+    # are reserved for future template-aware hooks.
     result = StopHookResult()
 
     async for msg in _handle_stop_hooks_generator(
