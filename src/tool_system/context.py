@@ -187,6 +187,29 @@ class ToolContext:
             self.cwd = self.workspace_root
         else:
             self.cwd = Path(self.cwd).resolve()
+        # Plan-phase-2 wiring (ch02-bootstrap-refactoring-plan.md):
+        # auto-populate ``hook_config_manager`` and ``workspace_trusted``
+        # from bootstrap state when the caller hasn't set them. This
+        # makes every ToolContext construction site read from the frozen
+        # snapshot captured by ``run_production_setup`` — closing the
+        # critic-flagged "captured snapshot is dead infrastructure" gap.
+        # Lazy imports avoid a startup import cycle (tool_system →
+        # bootstrap is allowed; bootstrap is a DAG leaf).
+        if self.hook_config_manager is None:
+            try:
+                from src.hooks.snapshot import get_active_hook_config_manager
+                self.hook_config_manager = get_active_hook_config_manager()
+            except Exception:
+                # If the snapshot module isn't importable (e.g., test
+                # harness), leave hook_config_manager as None and let the
+                # legacy ``options.hooks`` path handle it.
+                pass
+        if self.workspace_trusted is False:
+            try:
+                from src.bootstrap.state import get_session_trust_accepted
+                self.workspace_trusted = get_session_trust_accepted()
+            except Exception:
+                pass
 
     def mark_file_read(self, path: Path, *, partial: bool = False) -> None:
         stat = path.stat()
