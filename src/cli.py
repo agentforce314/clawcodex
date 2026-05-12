@@ -132,38 +132,14 @@ def main():
     run_production_setup(args)
     profile_checkpoint("phase3_end_phase4_start")
 
-    if args.print:
-        profile_checkpoint("mode_dispatch_print")
-        # ``phase4_dispatch``: launcher has chosen a mode and is about
-        # to call the mode runner. Not the same as "first render" — the
-        # mode runner is the one that paints. Per-mode first-render
-        # checkpoints are plan phase 2 work (would need a callback
-        # inside each runner).
-        profile_checkpoint("phase4_dispatch")
-        return _run_print_mode(args)
-
-    # Interactive path: decide between the Textual TUI (new default) and the
-    # legacy Rich REPL. Explicit flags win; otherwise auto-detect a compatible TTY.
-    explicit_tui: bool | None = None
-    if args.tui:
-        explicit_tui = True
-    elif getattr(args, 'legacy_repl', False) or args.no_tui:
-        explicit_tui = False
-
-    from src.entrypoints.tui import should_use_tui
-
-    if should_use_tui(explicit_tui):
-        profile_checkpoint("mode_dispatch_tui")
-        profile_checkpoint("phase4_dispatch")
-        return _run_tui_mode(args)
-
-    profile_checkpoint("mode_dispatch_repl")
-    profile_checkpoint("phase4_dispatch")
-    return start_repl(
-        stream=args.stream,
-        permission_mode=args._resolved_permission_mode,
-        is_bypass_permissions_mode_available=args._resolved_is_bypass_available,
-    )
+    # Plan-phase-3 wiring (ch02-bootstrap-refactoring-plan.md Phase 3):
+    # Chapter phase 4 — mode dispatch. Previously this was three
+    # inline if-branches in cli.main(); ``replLauncher.launch_repl(args)``
+    # now owns the dispatch decision so all paths flow through one
+    # router. Each launcher branch emits its own
+    # mode_dispatch_* + phase4_dispatch checkpoints before delegating.
+    from src.replLauncher import launch_repl
+    return launch_repl(args)
 
 
 def _build_parser() -> argparse.ArgumentParser:
