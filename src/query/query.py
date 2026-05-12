@@ -74,6 +74,10 @@ class QueryParams:
     # `check_token_budget` after each completion and may continue
     # with a nudge message until 90% of `total` is reached.
     task_budget: dict[str, int] | None = None
+    # Ch5/E.2: Fallback model for FallbackTriggeredError recovery.
+    # When the provider raises FallbackTriggeredError and this is
+    # set, the loop switches to this model and retries the request.
+    fallback_model: str | None = None
 
 
 @dataclass
@@ -226,6 +230,35 @@ def _get_context_window(provider: Any, model: str) -> int:
     return getattr(provider, "context_window", None) or 200_000
 
 
+def _extract_text(msg: AssistantMessage) -> str:
+    """Ch5/E.4: Join the text blocks of an AssistantMessage into a
+    single string. Used by the continuation-nudge detector."""
+    content = msg.content
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            text = getattr(block, "text", None)
+            if isinstance(text, str):
+                parts.append(text)
+        return " ".join(parts)
+    return ""
+
+
+def _matches_continuation_signal(text: str) -> bool:
+    """Indirection so tests / monkeypatching can override per-test."""
+    from .continuation_signals import matches_continuation_signal
+    return matches_continuation_signal(text)
+
+
+def _continuation_max_nudges() -> int:
+    """Module-level cap. Indirection lets a test bump or zero the cap
+    without monkeypatching the chapter-faithful constant."""
+    from .continuation_signals import MAX_CONTINUATION_NUDGES
+    return MAX_CONTINUATION_NUDGES
+
+
 async def _call_model_sync(
     *,
     provider: BaseProvider,
@@ -233,7 +266,11 @@ async def _call_model_sync(
     system_prompt: str,
     tools: Tools,
     max_output_tokens_override: int | None = None,
+    model: str | None = None,
 ) -> tuple[list[AssistantMessage], list[ToolUseBlock]]:
+    # Ch5/E.2: optional `model` override. When set, passed through to
+    # the provider as a `model` kwarg so the attempt-with-fallback
+    # loop can switch backends without rebuilding the provider.
     from ..types.messages import normalize_messages_for_api
 
     api_messages = normalize_messages_for_api(messages)
@@ -326,6 +363,11 @@ async def _call_model_sync(
     if max_output_tokens_override is not None:
         call_kwargs["max_tokens"] = max_output_tokens_override
 
+    if model is not None:
+        # Ch5/E.2: backend model override. Providers that don't
+        # consume `model` will ignore the kwarg via **kwargs.
+        call_kwargs["model"] = model
+
     # TS callModel() uses SSE streaming for faster first-byte latency and
     # progressive text display.  Use chat_stream_response() which streams
     # internally and reassembles the full ChatResponse.  Fall back to the
@@ -342,6 +384,12 @@ async def _call_model_sync(
     except Exception as e:
         if _diag:
             logger.warning("[DIAG] _call_model_sync: EXCEPTION after %.1fs: %s", time.monotonic() - _t0, e)
+        # FallbackTriggeredError must propagate so the outer loop's
+        # attempt-with-fallback catch site can switch the model and retry.
+        from ..services.api.errors import FallbackTriggeredError
+        if isinstance(e, FallbackTriggeredError):
+            raise
+
         error_str = str(e)
         # Ch5/B.1: route through the typed helpers so PTL / media-size
         # detection is consistent with the rest of the codebase.
@@ -842,14 +890,48 @@ async def query(
         tool_use_blocks: list[ToolUseBlock] = []
         needs_follow_up = False
 
+        # Ch5/E.2: attempt-with-fallback loop. If the provider raises
+        # FallbackTriggeredError and params.fallback_model is set,
+        # switch model and retry. Mirrors TS query.ts:727-1029.
+        attempt_with_fallback = True
+        current_model: str | None = None  # provider's default on first try
         try:
-            returned_assistants, returned_tool_blocks = await _call_model_sync(
-                provider=params.provider,
-                messages=messages,
-                system_prompt=params.system_prompt,
-                tools=params.tools,
-                max_output_tokens_override=max_output_tokens_override,
-            )
+            while attempt_with_fallback:
+                attempt_with_fallback = False
+                try:
+                    returned_assistants, returned_tool_blocks = await _call_model_sync(
+                        provider=params.provider,
+                        messages=messages,
+                        system_prompt=params.system_prompt,
+                        tools=params.tools,
+                        max_output_tokens_override=max_output_tokens_override,
+                        model=current_model,
+                    )
+                except Exception as inner_e:
+                    from ..services.api.errors import FallbackTriggeredError
+                    if (
+                        isinstance(inner_e, FallbackTriggeredError)
+                        and params.fallback_model
+                    ):
+                        current_model = params.fallback_model
+                        attempt_with_fallback = True
+                        # Ch5/E.5: _call_model_sync is sync-from-the-loop's-POV
+                        # (returns a complete list) and does not stream
+                        # partial assistants. There's nothing to tombstone
+                        # here; clear local state and emit the warning.
+                        # (Full streaming-executor port is a separate ticket.)
+                        assistant_messages = []
+                        tool_use_blocks = []
+                        needs_follow_up = False
+                        from ..types.messages import create_system_message
+                        yield create_system_message(
+                            f"Switched to {inner_e.fallback_model} due to "
+                            f"high demand for {inner_e.original_model}",
+                            level="warning",
+                        )
+                        continue  # while attempt_with_fallback
+                    raise
+
             assistant_messages = returned_assistants
             tool_use_blocks = returned_tool_blocks
             needs_follow_up = len(tool_use_blocks) > 0
@@ -1047,12 +1129,93 @@ async def query(
                 yield last_message  # type: ignore[arg-type]
 
             if last_message and getattr(last_message, "isApiErrorMessage", False):
-                # Death-spiral guard: when the last message is an API
-                # error, do NOT run any subsequent hooks/checks (the
-                # model never produced a real response). Mirrors TS
+                # Ch5/C.3 death-spiral guard: skip stop hooks when the
+                # last message is an API error. The model never produced
+                # a real response — hooks evaluating it create a death
+                # spiral: error → hook blocking → retry → error → … (the
+                # hook injects more tokens each cycle). Mirrors TS
                 # query.ts:1341-1344.
                 set_terminal(holder, natural_termination, Terminal(reason="completed"))
                 return
+
+            # Ch5/C.1: Stop hooks. Fire only when the model finished
+            # without tool use AND not on an API-error short-circuit.
+            # Uses the streaming variant so progress/attachment messages
+            # reach the consumer in real time, matching TS query.ts:1346-1355.
+            if config.stop_hooks_enabled:
+                try:
+                    from .stop_hooks import (
+                        StopHookResult as _StopHookResult,
+                        handle_stop_hooks_streaming,
+                    )
+
+                    # Coerce block-list system_prompt to str for the
+                    # hook context (hook executors don't consume the
+                    # cache-control markers — they just see the text).
+                    sp_for_hook: str
+                    if isinstance(params.system_prompt, str):
+                        sp_for_hook = params.system_prompt
+                    elif isinstance(params.system_prompt, list):
+                        sp_for_hook = "\n\n".join(
+                            str(b.get("text", "")) for b in params.system_prompt
+                            if isinstance(b, dict)
+                        )
+                    else:
+                        sp_for_hook = str(params.system_prompt)
+
+                    stop_result: _StopHookResult | None = None
+                    async for emitted in handle_stop_hooks_streaming(
+                        messages_for_query=messages,
+                        assistant_messages=assistant_messages,
+                        system_prompt=sp_for_hook,
+                        tool_use_context=tool_use_context,
+                        query_source=params.query_source,
+                        stop_hook_active=state.stop_hook_active,
+                        user_context=params.user_context,
+                        system_context=params.system_context,
+                    ):
+                        if isinstance(emitted, _StopHookResult):
+                            stop_result = emitted
+                        else:
+                            yield emitted
+                except Exception:
+                    logger.exception("Stop hook integration failed; treating as no-op")
+                    stop_result = None
+
+                if stop_result is not None:
+                    if stop_result.prevent_continuation:
+                        set_terminal(
+                            holder,
+                            natural_termination,
+                            Terminal(reason="stop_hook_prevented"),
+                        )
+                        return
+
+                    if stop_result.blocking_errors:
+                        # Ch5/C.4: Preserve has_attempted_reactive_compact
+                        # across stop-hook retries. Resetting to False
+                        # caused an infinite loop in TS (chapter line 337):
+                        # compact → still too long → error → stop hook
+                        # blocking → compact → ... burning thousands of
+                        # API calls.
+                        state = QueryState(
+                            messages=[
+                                *messages,
+                                *assistant_messages,
+                                *stop_result.blocking_errors,
+                            ],
+                            tool_use_context=tool_use_context,
+                            auto_compact_tracking=state.auto_compact_tracking,
+                            max_output_tokens_recovery_count=0,
+                            has_attempted_reactive_compact=has_attempted_reactive_compact,
+                            max_output_tokens_override=None,
+                            stop_hook_active=True,  # Ch5/C.2: suppress re-firing
+                            turn_count=turn_count,
+                            continuation_nudge_count=state.continuation_nudge_count,
+                            pending_tool_use_summary=None,
+                            transition=Transition(reason="stop_hook_blocking"),
+                        )
+                        continue
 
             # Ch5/D.2: Token budget check. If task_budget is set and we
             # haven't yet exhausted 90% of `total`, inject a nudge
@@ -1086,6 +1249,36 @@ async def query(
                         continuation_nudge_count=state.continuation_nudge_count,
                         pending_tool_use_summary=None,
                         transition=Transition(reason="token_budget_continuation"),
+                    )
+                    continue
+
+            # Ch5/E.4: continuation nudge. Runs AFTER the budget check
+            # declined to continue. Detects "I'll do X" / "let me Y"
+            # signals when the model returned no tool calls, and injects
+            # a polite nudge to keep working. Capped at
+            # MAX_CONTINUATION_NUDGES per turn to prevent infinite loops.
+            if (
+                assistant_messages
+                and turn_count < (params.max_turns or float("inf"))
+                and state.continuation_nudge_count
+                < _continuation_max_nudges()
+            ):
+                last_text = _extract_text(assistant_messages[-1]).lower()
+                if _matches_continuation_signal(last_text):
+                    from .continuation_signals import NUDGE_MESSAGE
+                    nudge = _create_user_message(NUDGE_MESSAGE, is_meta=True)
+                    state = QueryState(
+                        messages=[*messages, *assistant_messages, nudge],
+                        tool_use_context=tool_use_context,
+                        auto_compact_tracking=state.auto_compact_tracking,
+                        max_output_tokens_recovery_count=0,
+                        has_attempted_reactive_compact=False,
+                        max_output_tokens_override=None,
+                        stop_hook_active=None,
+                        turn_count=turn_count,
+                        continuation_nudge_count=state.continuation_nudge_count + 1,
+                        pending_tool_use_summary=None,
+                        transition=Transition(reason="continuation_nudge"),
                     )
                     continue
 
