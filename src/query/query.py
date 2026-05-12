@@ -78,6 +78,11 @@ class QueryParams:
     # When the provider raises FallbackTriggeredError and this is
     # set, the loop switches to this model and retries the request.
     fallback_model: str | None = None
+    # Ch5/G.1: Injectable I/O dependencies (call_model, microcompact,
+    # autocompact, uuid). Tests pass a custom QueryDeps to swap
+    # specific call sites without monkey-patching imports. None →
+    # production_deps() is used by the loop.
+    deps: Any | None = None  # QueryDeps; Any to avoid circular import
 
 
 @dataclass
@@ -257,6 +262,48 @@ def _continuation_max_nudges() -> int:
     without monkeypatching the chapter-faithful constant."""
     from .continuation_signals import MAX_CONTINUATION_NUDGES
     return MAX_CONTINUATION_NUDGES
+
+
+# Ch5/G.3: Command-lifecycle notifications. Mirrors TS
+# `notifyCommandLifecycle` at query.ts:77. The Python implementation
+# is a stub that logs to the diagnostic logger — consumers (REPL,
+# headless) can install a real subscriber via
+# `set_command_lifecycle_notifier`. The outer two-layer wrapper only
+# fires `completed` on natural termination, never on .aclose() or
+# exception unwind — that asymmetric signal is the chapter's
+# "failed turn does not declare its commands successful" contract.
+_lifecycle_subscribers: list[Callable[[str, str], None]] = []
+
+
+def set_command_lifecycle_notifier(
+    callback: Callable[[str, str], None],
+) -> Callable[[], None]:
+    """Install a subscriber for command-lifecycle events. The callback
+    is invoked with (uuid, status) for each event. Multiple
+    subscribers compose additively.
+
+    Returns a remover function — call it to deregister this specific
+    subscriber. Removing is idempotent: calling more than once is a
+    no-op.
+    """
+    _lifecycle_subscribers.append(callback)
+
+    def _remove() -> None:
+        try:
+            _lifecycle_subscribers.remove(callback)
+        except ValueError:
+            # Already removed — idempotent.
+            pass
+
+    return _remove
+
+
+def _notify_command_lifecycle(uuid: str, status: str) -> None:
+    for subscriber in list(_lifecycle_subscribers):
+        try:
+            subscriber(uuid, status)
+        except Exception:
+            logger.exception("command lifecycle subscriber raised")
 
 
 async def _call_model_sync(
@@ -686,7 +733,9 @@ async def query(
     *,
     terminal_holder: TerminalHolder | None = None,
 ) -> AsyncGenerator[Message | StreamEvent, None]:
-    """Canonical agent loop (chapter 5, Phase A foundation).
+    """Outer entry point — two-layer wrapper per chapter §"Two-Layer
+    Entry Point". Delegates to ``_query_loop_inner`` and tracks
+    ``consumed_command_uuids`` lifecycle.
 
     The async generator yields messages and stream events to the consumer.
     The final ``Terminal`` is written to ``terminal_holder.value`` just
@@ -694,25 +743,58 @@ async def query(
     values: PEP 525). Callers who care about the terminal pass their own
     ``TerminalHolder`` and read its ``.value`` after iteration.
 
+    On NATURAL termination (inner loop ran to completion and set its
+    Terminal), all consumed command UUIDs are marked ``completed`` via
+    the lifecycle notifier. On ``.aclose()`` or exception unwind, the
+    completion notifications are SKIPPED — a failed turn does not
+    declare its commands successful. Mirrors TS query.ts:224-243.
+
     See :func:`run_query` for a convenience helper that consumes the
     generator and returns ``(messages, terminal)``.
+    """
+    holder = terminal_holder or TerminalHolder()
+    consumed_command_uuids: list[str] = []
+    natural_termination: list[bool] = [False]
 
-    This PR (Phase A) introduces the typed Terminal infrastructure;
-    recovery integration, stop hooks, token budget, model fallback,
-    and continuation nudge land in subsequent PRs.
+    inner = _query_loop_inner(
+        params,
+        consumed_command_uuids,
+        holder,
+        natural_termination,
+    )
+    try:
+        async for msg in inner:
+            yield msg
+    finally:
+        if natural_termination[0]:
+            for uuid in consumed_command_uuids:
+                _notify_command_lifecycle(uuid, "completed")
+
+
+async def _query_loop_inner(
+    params: QueryParams,
+    consumed_command_uuids: list[str],
+    holder: TerminalHolder,
+    natural_termination: list[bool],
+) -> AsyncGenerator[Message | StreamEvent, None]:
+    """Inner agent loop. The outer ``query()`` wrapper tracks
+    consumed command UUIDs and fires the natural-termination lifecycle
+    after this generator exits.
     """
     _diag = os.environ.get("CLAWCODEX_DEBUG", "").lower() in ("1", "true", "yes")
-    holder = terminal_holder or TerminalHolder()
-    # Inner-only flag for the future outer two-layer wrapper (Phase G).
-    # Until that lands, the flag is local; set_terminal still writes it
-    # so every exit site uses the canonical helper.
-    natural_termination: list[bool] = [False]
     state = QueryState(
         messages=list(params.messages),
         tool_use_context=params.tool_use_context,
         max_output_tokens_override=params.max_output_tokens_override,
     )
     config = build_query_config()
+    # Ch5/G.1: resolve deps once at entry. params.deps overrides
+    # the production factory if set.
+    if params.deps is not None:
+        deps = params.deps
+    else:
+        from .deps import production_deps
+        deps = production_deps()
     # Ch5/D.1: budget tracker is created only when both the runtime
     # feature flag and the per-request task_budget are set. No prompt
     # marker → no tracker → no overhead. Mirrors TS query.ts:295.
@@ -899,14 +981,28 @@ async def query(
             while attempt_with_fallback:
                 attempt_with_fallback = False
                 try:
-                    returned_assistants, returned_tool_blocks = await _call_model_sync(
-                        provider=params.provider,
-                        messages=messages,
-                        system_prompt=params.system_prompt,
-                        tools=params.tools,
-                        max_output_tokens_override=max_output_tokens_override,
-                        model=current_model,
-                    )
+                    # Ch5/G.2: if deps.call_model is set, use it
+                    # instead of _call_model_sync. The signature must
+                    # match — tests inject fakes that return
+                    # (list[AssistantMessage], list[ToolUseBlock]).
+                    if deps.call_model is not None:
+                        returned_assistants, returned_tool_blocks = await deps.call_model(
+                            provider=params.provider,
+                            messages=messages,
+                            system_prompt=params.system_prompt,
+                            tools=params.tools,
+                            max_output_tokens_override=max_output_tokens_override,
+                            model=current_model,
+                        )
+                    else:
+                        returned_assistants, returned_tool_blocks = await _call_model_sync(
+                            provider=params.provider,
+                            messages=messages,
+                            system_prompt=params.system_prompt,
+                            tools=params.tools,
+                            max_output_tokens_override=max_output_tokens_override,
+                            model=current_model,
+                        )
                 except Exception as inner_e:
                     from ..services.api.errors import FallbackTriggeredError
                     if (
