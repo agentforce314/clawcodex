@@ -16,6 +16,7 @@ from src.query.transitions import (
     ContinueReason,
     QueryState,
     Terminal,
+    TerminalReason,
     Transition,
 )
 from src.query.config import QueryConfig, build_query_config
@@ -94,8 +95,20 @@ class TestTransitionReasonsParity(unittest.TestCase):
             t.reason = "max_output_tokens_recovery"  # type: ignore
 
     def test_terminal_has_reason_field(self) -> None:
-        term = Terminal(reason="end_turn")
-        self.assertEqual(term.reason, "end_turn")
+        term = Terminal(reason="completed")
+        self.assertEqual(term.reason, "completed")
+
+    def test_all_terminal_reasons_match_ts(self) -> None:
+        """The 10 chapter §'Terminal States' reasons must round-trip."""
+        ts_reasons = set(self.snapshot["terminal_reasons"])
+        import typing as _typing
+        py_reasons = set(_typing.get_args(TerminalReason))
+        self.assertEqual(ts_reasons, py_reasons)
+
+    def test_terminal_can_be_created_for_each_reason(self) -> None:
+        for reason in self.snapshot["terminal_reasons"]:
+            t = Terminal(reason=reason)
+            self.assertEqual(t.reason, reason)
 
 
 class TestRecoveryConstantsParity(unittest.TestCase):
