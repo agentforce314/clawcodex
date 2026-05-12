@@ -1,9 +1,11 @@
-"""Bridge between the synchronous agent loop and the Textual UI.
+"""Bridge between the agent loop and the Textual UI.
 
-The agent loop (:func:`src.tool_system.agent_loop.run_agent_loop`) is
-synchronous and performs blocking HTTP calls, so it runs on a worker
-thread. This module owns that thread plus the translation layer that
-marshals events back to the Textual screen:
+The TUI worker drives the canonical query() loop via
+:func:`src.query.agent_loop_compat.run_query_as_agent_loop`. That
+adapter is ``async``; we run it inside this worker thread with
+``asyncio.run`` (the thread has no outer event loop). This module
+owns that thread plus the translation layer that marshals events
+back to the Textual screen:
 
 * ``on_event(ToolEvent)``   → :class:`ToolEventMessage`.
 * ``on_text_chunk(str)``    → :class:`AssistantChunk` (live streaming).
@@ -19,13 +21,15 @@ tests drive :class:`AgentBridge` with a fake agent loop (see
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import uuid
 from pathlib import Path
 from typing import Any, Callable
 
 from src.agent import Session
-from src.tool_system.agent_loop import ToolEvent, run_agent_loop
+from src.query.agent_loop_compat import run_query_as_agent_loop
+from src.tool_system.agent_loop import ToolEvent
 from src.tool_system.context import ToolContext
 from src.tool_system.registry import ToolRegistry
 from src.utils.abort_controller import AbortController, AbortError
@@ -152,8 +156,12 @@ class AgentBridge:
             self._state.append_streaming_text(chunk)
             self._post(AssistantChunk(text=chunk))
 
+        # Ch5/F.3: TUI drives the canonical query() loop via the
+        # run_query_as_agent_loop adapter. The adapter is async, so
+        # we wrap with asyncio.run() — safe inside this worker thread
+        # (no outer event loop is running here).
         try:
-            result = run_agent_loop(
+            result = asyncio.run(run_query_as_agent_loop(
                 conversation=self._session.conversation,
                 provider=self._provider,
                 tool_registry=self._tool_registry,
@@ -164,7 +172,7 @@ class AgentBridge:
                 on_event=_on_event,
                 on_text_chunk=_on_text if self._stream else None,
                 cancel_signal=controller.signal if controller is not None else None,
-            )
+            ))
         except AbortError:
             self._post(
                 AgentRunFinished(
