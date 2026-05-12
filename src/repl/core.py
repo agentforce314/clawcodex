@@ -270,13 +270,13 @@ class ClawcodexREPL:
         permission_mode: str = "default",
         is_bypass_permissions_mode_available: bool = False,
     ):
-        # Mark this process as running an interactive session BEFORE we build
-        # the tool registry. Tools like TaskCreate / TaskUpdate / TodoWrite
-        # toggle themselves on/off via ``is_todo_v2_enabled()`` which reads
-        # this flag (mirroring ``typescript/src/bootstrap/state.ts``).
-        from src.bootstrap.state import set_is_interactive
-
-        set_is_interactive(True)
+        # ``is_interactive`` is set during bootstrap phase 2 by
+        # ``src.init.run_pre_action`` (called from ``cli.main``) before
+        # the REPL constructor runs. Previously we set it here too,
+        # but that was the M7.1 gap closed in plan phase 1 of
+        # ch02-bootstrap. The REPL can rely on
+        # ``get_is_interactive()`` already being ``True`` by the time
+        # this constructor runs.
 
         # Stash the resolved permission state so ``ToolContext`` honors
         # ``--dangerously-skip-permissions`` / ``--permission-mode`` flags

@@ -58,13 +58,12 @@ def run_tui(options: TUIOptions) -> int:
             2,
         )
 
-    # Match typescript/src/bootstrap/state.ts: tool gating like
-    # ``isTodoV2Enabled()`` reads this flag, so set it BEFORE we build the
-    # registry.
-    from src.bootstrap.state import set_is_interactive
-
-    set_is_interactive(True)
-
+    # ``is_interactive`` is set during bootstrap phase 2 by
+    # ``src.init.run_pre_action`` (called from ``cli.main``) before any
+    # entry point runs. Previously we set it here too, but that was the
+    # M7.1 gap closed in plan phase 1 of ch02-bootstrap. The TUI
+    # entrypoint can rely on ``get_is_interactive()`` already being
+    # ``True`` by the time this function runs.
     workspace_root = options.workspace_root or Path.cwd()
 
     # Build provider ------------------------------------------------------

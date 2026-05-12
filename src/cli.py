@@ -97,24 +97,40 @@ def main():
     if args.config:
         return show_config()
 
+    # Plan-phase-1 wiring (ch02-bootstrap-refactoring-plan.md P1.5):
+    # ``run_pre_action(args)`` is the Python analog of Commander's
+    # ``preAction`` hook. It runs the memoized ``init()`` (chapter
+    # phase 2 — safe env vars + graceful-shutdown + API preconnect)
+    # and mutates interactive bootstrap state.
+    #
+    # MUST PRECEDE ``_resolve_permission_state`` so init-side env-var
+    # application can affect permission resolution. ``--version`` /
+    # ``--config`` short-circuit above, so the chapter's
+    # "fast paths skip init" property is preserved.
+    #
+    # The API-preconnect call previously lived here at module level;
+    # it now runs inside ``init()`` so it overlaps with any callers
+    # of ``init()`` (REPL, headless, etc.), not just the cli.py path.
+    profile_checkpoint("phase0_end_phase2_start")
+    from src.init import run_pre_action
+    run_pre_action(args)
+    profile_checkpoint("phase2_end_phase3_start")
+
     # Resolve permission state ONCE here so all modes (print/TUI/REPL) honor
     # ``--dangerously-skip-permissions`` consistently. Mirrors
     # ``typescript/src/main.tsx:1383-1389``.
     _resolve_permission_state(args)
     profile_checkpoint("permissions_resolved")
-
-    # WI-4.5: fire a HEAD request to the Anthropic API endpoint in the
-    # background to warm DNS/TLS while we finish CLI setup. Mirrors TS's
-    # ``preconnectAnthropicApi()`` early-call in ``main.tsx``. Skipped when
-    # a proxy or custom base URL is configured (see
-    # ``utils/api_preconnect.py:should_skip_preconnect``). The worker
-    # thread has its own try/except, so we don't wrap the call here —
-    # ``ImportError`` should surface visibly during dev.
-    from src.utils.api_preconnect import start_api_preconnect
-    start_api_preconnect()
+    profile_checkpoint("phase3_end_phase4_start")
 
     if args.print:
         profile_checkpoint("mode_dispatch_print")
+        # ``phase4_dispatch``: launcher has chosen a mode and is about
+        # to call the mode runner. Not the same as "first render" — the
+        # mode runner is the one that paints. Per-mode first-render
+        # checkpoints are plan phase 2 work (would need a callback
+        # inside each runner).
+        profile_checkpoint("phase4_dispatch")
         return _run_print_mode(args)
 
     # Interactive path: decide between the Textual TUI (new default) and the
@@ -129,9 +145,11 @@ def main():
 
     if should_use_tui(explicit_tui):
         profile_checkpoint("mode_dispatch_tui")
+        profile_checkpoint("phase4_dispatch")
         return _run_tui_mode(args)
 
     profile_checkpoint("mode_dispatch_repl")
+    profile_checkpoint("phase4_dispatch")
     return start_repl(
         stream=args.stream,
         permission_mode=args._resolved_permission_mode,
