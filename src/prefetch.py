@@ -35,6 +35,8 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
+from src.utils.bare_mode import is_bare_mode
+
 
 @dataclass(frozen=True)
 class PrefetchHandle:
@@ -124,7 +126,13 @@ def start_keychain_prefetch() -> PrefetchHandle:
     it on a 64 KB pipe could block the child if ``security`` were verbose
     (failure logs etc.). The keychain stdout payload is a short single
     line; PIPE is safe.
+
+    Plan-phase-4: skipped in bare mode (CLAUDE_CODE_SIMPLE=1). Mirrors
+    TS reference at ``typescript/src/utils/secureStorage/keychainPrefetch.ts``
+    which checks ``isBareMode()``.
     """
+    if is_bare_mode():
+        return PrefetchHandle(process=None, label="keychain_prefetch")
     if sys.platform != "darwin":
         return PrefetchHandle(process=None, label="keychain_prefetch")
     try:
@@ -188,7 +196,13 @@ def start_mdm_raw_read() -> PrefetchHandle:
     in parallel for managed-config plists. Non-macOS platforms get a
     sentinel handle. ``stderr`` is discarded — see the keychain note for
     rationale.
+
+    Plan-phase-4: skipped in bare mode. Same reasoning as keychain
+    prefetch (MDM config is interactive-management policy, not relevant
+    in scripted use).
     """
+    if is_bare_mode():
+        return PrefetchHandle(process=None, label="mdm_raw_read")
     if sys.platform != "darwin":
         return PrefetchHandle(process=None, label="mdm_raw_read")
     # Read the managed-app plist for clawcodex if it exists; ignore

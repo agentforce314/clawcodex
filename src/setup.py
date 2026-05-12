@@ -201,10 +201,17 @@ def _capture_hook_snapshot() -> None:
     ``src/hooks/config_manager.py`` and was already a load-once-on-init
     design; this just ensures it gets called from setup.
 
+    Plan-phase-4: skipped in bare mode. Bare mode users don't have
+    hooks fire (the TS reference's ``executeHooks`` early-returns
+    under SIMPLE), so loading them is wasted work.
+
     Best-effort: any exception is logged but doesn't crash startup
     (matches TS behavior — a malformed settings.json shouldn't break
     the CLI; it just means no hooks).
     """
+    from src.utils.bare_mode import is_bare_mode  # leaf import
+    if is_bare_mode():
+        return
     try:
         from src.hooks.snapshot import capture_hooks_config_snapshot
         capture_hooks_config_snapshot()
