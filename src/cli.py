@@ -3,8 +3,22 @@
 from __future__ import annotations
 
 import argparse
+import os as _os
 import sys
+import sys as _sys
 from pathlib import Path
+
+# Plan-phase-4: pre-argparse ``--bare`` detection. The prefetch import
+# below fires keychain/MDM subprocesses at module-import time — long
+# before argparse runs. To make the ``--bare`` flag actually skip
+# those prefetches (matching the chapter §"Phase 0: Fast-Path Dispatch"
+# property and the TS reference at cli.tsx:391-393), we must set the
+# ``CLAUDE_CODE_SIMPLE`` env var BEFORE the prefetch import. A 3-line
+# argv scan is sufficient. ``setdefault`` is intentional — if the env
+# var was already set externally (CI scripts, parent process), we
+# don't clobber it.
+if "--bare" in _sys.argv[1:]:
+    _os.environ.setdefault("CLAUDE_CODE_SIMPLE", "1")
 
 from rich.console import Console
 from rich.prompt import Prompt
@@ -18,8 +32,10 @@ from rich.table import Table
 # the actual subprocess work overlaps with the heavyweight imports the
 # CLI is about to do. On non-macOS platforms these are no-ops
 # (``process=None`` sentinels) so call sites don't need to special-case
-# the platform.
-from src.prefetch import (
+# the platform. Bare-mode (``CLAUDE_CODE_SIMPLE=1``, set by the pre-
+# argparse scan above when ``--bare`` is on argv) makes the prefetches
+# skip the subprocess spawn entirely.
+from src.prefetch import (  # noqa: E402 — must follow the --bare env-set above
     get_or_start_keychain_prefetch,
     get_or_start_mdm_raw_read,
 )
@@ -96,6 +112,14 @@ def main():
 
     if args.config:
         return show_config()
+
+    # Plan-phase-4: ``--bare`` is the one-switch minimal mode (mirrors
+    # TS main.tsx:1009-1013). MUST run BEFORE ``run_pre_action`` so
+    # init's substeps and downstream setup substeps see the env var
+    # and can early-return when bare. See ``src/utils/bare_mode.py``.
+    if getattr(args, "bare", False):
+        from src.utils.bare_mode import set_bare_mode_env
+        set_bare_mode_env()
 
     # Plan-phase-1 wiring (ch02-bootstrap-refactoring-plan.md P1.5):
     # ``run_pre_action(args)`` is the Python analog of Commander's
@@ -283,6 +307,23 @@ Examples:
         choices=('default', 'plan', 'acceptEdits', 'bypassPermissions', 'dontAsk'),
         default=None,
         help='Initial permission mode (default: default)',
+    )
+
+    # ---- Performance modes ----
+    # ``--bare`` is the equivalent of TS's CLAUDE_CODE_SIMPLE one-switch
+    # minimal mode. It sets the env var early so subsystems gate on
+    # ``is_bare_mode()`` without needing args. See ``src/utils/bare_mode.py``.
+    # Mirrors TS reference at ``typescript/src/main.tsx:1009-1013``.
+    perf_group = parser.add_argument_group("performance modes")
+    perf_group.add_argument(
+        '--bare',
+        action='store_true',
+        help=(
+            'Minimal mode: skip hooks, plugin sync, attribution, auto-memory, '
+            'background prefetches, and keychain reads. Sets CLAUDE_CODE_SIMPLE=1. '
+            'Use for scripted/CI invocations where the heavy interactive '
+            'machinery is wasted.'
+        ),
     )
 
     # Subcommands are intercepted in ``main`` before argparse runs so that a
