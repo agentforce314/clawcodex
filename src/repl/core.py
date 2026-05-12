@@ -202,7 +202,7 @@ from src.providers.minimax_provider import MinimaxProvider
 from src.tool_system.context import ToolContext
 from src.tool_system.defaults import build_default_registry
 from src.tool_system.protocol import ToolCall
-from src.tool_system.agent_loop import ToolEvent, run_agent_loop, summarize_tool_result, summarize_tool_use
+from src.tool_system.agent_loop import ToolEvent, summarize_tool_result, summarize_tool_use
 from src.query.engine import QueryEngine, QueryEngineConfig
 from src.query.query import StreamEvent
 from src.types.messages import AssistantMessage, SystemMessage, UserMessage

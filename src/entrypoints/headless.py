@@ -4,10 +4,12 @@ Port of ``typescript/src/cli/print.ts``, scoped to the slice that matters for
 Phase 1: run a single prompt (or a stream of prompts via stream-json stdin)
 through the agent loop and emit the response in the requested output format.
 
-The heavy lifting lives in :mod:`src.tool_system.agent_loop` which already
-understands Anthropic + OpenAI-compatible providers and emits structured tool
-events. This module adapts those events to the CLI protocol in
-:mod:`src.cli_core`.
+The heavy lifting lives in :mod:`src.query.agent_loop_compat`, which
+drives the canonical :func:`src.query.query.query` async generator via
+:func:`run_query_as_agent_loop`. That path carries the full chapter 5
+recovery stack (PTL recovery, stop hooks, token budget, model fallback,
+typed Terminal). This module adapts the per-message tool events to the
+CLI protocol in :mod:`src.cli_core`.
 
 Design notes
 ------------
@@ -17,12 +19,13 @@ Design notes
   when set, tools run without gating; otherwise the default ``ToolContext``
   mode (``bypassPermissions``) still applies but *interactive* permission
   prompts auto-deny — we never ``input()`` in headless mode.
-* The agent loop is synchronous; we call it inside ``run_headless`` and
-  translate events to NDJSON on the fly.
+* The agent loop is async; we drive it inside ``run_headless`` with
+  ``asyncio.run`` and translate per-message events to NDJSON on the fly.
 """
 
 from __future__ import annotations
 
+import asyncio
 import io
 import os
 import sys
@@ -47,7 +50,8 @@ from src.cli_core import (
 )
 from src.config import get_default_provider, get_provider_config
 from src.providers import get_provider_class
-from src.tool_system.agent_loop import ToolEvent, run_agent_loop
+from src.query.agent_loop_compat import run_query_as_agent_loop
+from src.tool_system.agent_loop import ToolEvent
 from src.tool_system.context import ToolContext
 from src.tool_system.defaults import build_default_registry
 
@@ -224,8 +228,13 @@ def run_headless(options: HeadlessOptions) -> int:
 
             on_text_chunk = _emit_partial
 
+        # Ch5/F.2: Headless drives the canonical query() loop via
+        # the run_query_as_agent_loop adapter. The adapter surfaces
+        # PTL/media recovery, stop hooks, token budget, model
+        # fallback, and the typed Terminal value — all chapter 5
+        # features that the legacy run_agent_loop lacks.
         try:
-            result = run_agent_loop(
+            result = asyncio.run(run_query_as_agent_loop(
                 conversation=session.conversation,
                 provider=provider,
                 tool_registry=tool_registry,
@@ -235,7 +244,7 @@ def run_headless(options: HeadlessOptions) -> int:
                 verbose=options.verbose,
                 on_event=on_event,
                 on_text_chunk=on_text_chunk,
-            )
+            ))
         except KeyboardInterrupt:
             exit_code = 130
             break

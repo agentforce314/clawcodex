@@ -236,30 +236,35 @@ def test_headless_stream_json_multi_turn_from_stdin(fake_wiring, tmp_path):
 # permission handling in headless mode
 
 
-def test_headless_without_skip_permissions_installs_auto_deny_handler(fake_wiring, tmp_path):
+def _spy_canonical_adapter_capture_tool_context(monkeypatch, captured: dict):
+    """Helper: spy on run_query_as_agent_loop to capture the
+    tool_context kwarg, then delegate to the real adapter so the
+    test still exercises the full headless path.
+    """
+    original = headless_mod.run_query_as_agent_loop
+
+    async def _capture(*args, **kwargs):
+        captured["tool_context"] = kwargs["tool_context"]
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(headless_mod, "run_query_as_agent_loop", _capture)
+
+
+def test_headless_without_skip_permissions_installs_auto_deny_handler(fake_wiring, tmp_path, monkeypatch):
     fake_wiring.append(_text_response("ok"))
 
     captured: dict = {}
-    original = headless_mod.run_agent_loop
+    _spy_canonical_adapter_capture_tool_context(monkeypatch, captured)
 
-    def _capture(*args, **kwargs):
-        captured["tool_context"] = kwargs["tool_context"]
-        return original(*args, **kwargs)
-
-    import src.entrypoints.headless as mod
-    mod.run_agent_loop = _capture  # type: ignore[assignment]
-    try:
-        code = run_headless(
-            HeadlessOptions(
-                prompt="hi",
-                output_format="text",
-                stdout=io.StringIO(),
-                stderr=io.StringIO(),
-                workspace_root=tmp_path,
-            )
+    code = run_headless(
+        HeadlessOptions(
+            prompt="hi",
+            output_format="text",
+            stdout=io.StringIO(),
+            stderr=io.StringIO(),
+            workspace_root=tmp_path,
         )
-    finally:
-        mod.run_agent_loop = original  # type: ignore[assignment]
+    )
 
     assert code == 0
     ctx = captured["tool_context"]
@@ -269,36 +274,60 @@ def test_headless_without_skip_permissions_installs_auto_deny_handler(fake_wirin
     assert allowed is False
 
 
-def test_headless_with_skip_permissions_clears_handler(fake_wiring, tmp_path):
+def test_headless_with_skip_permissions_clears_handler(fake_wiring, tmp_path, monkeypatch):
     fake_wiring.append(_text_response("ok"))
 
     captured: dict = {}
-    original = headless_mod.run_agent_loop
+    _spy_canonical_adapter_capture_tool_context(monkeypatch, captured)
 
-    def _capture(*args, **kwargs):
-        captured["tool_context"] = kwargs["tool_context"]
-        return original(*args, **kwargs)
-
-    import src.entrypoints.headless as mod
-    mod.run_agent_loop = _capture  # type: ignore[assignment]
-    try:
-        run_headless(
-            HeadlessOptions(
-                prompt="hi",
-                output_format="text",
-                skip_permissions=True,
-                stdout=io.StringIO(),
-                stderr=io.StringIO(),
-                workspace_root=tmp_path,
-            )
+    run_headless(
+        HeadlessOptions(
+            prompt="hi",
+            output_format="text",
+            skip_permissions=True,
+            stdout=io.StringIO(),
+            stderr=io.StringIO(),
+            workspace_root=tmp_path,
         )
-    finally:
-        mod.run_agent_loop = original  # type: ignore[assignment]
+    )
 
     ctx = captured["tool_context"]
     assert ctx.permission_handler is None
     assert ctx.allow_docs is True
     assert ctx.options.is_non_interactive_session is True
+
+
+def test_headless_routes_through_canonical_loop(fake_wiring, tmp_path, monkeypatch):
+    """Headless drives the canonical query() loop via
+    run_query_as_agent_loop. Verified by spying on the binding inside
+    headless_mod — the assertion fails if the call site ever drops
+    the adapter (or routes elsewhere).
+    """
+    fake_wiring.append(_text_response("Hello from the canonical loop."))
+
+    adapter_calls = {"n": 0}
+    real_adapter = headless_mod.run_query_as_agent_loop
+
+    async def spy_adapter(**kwargs):
+        adapter_calls["n"] += 1
+        return await real_adapter(**kwargs)
+
+    monkeypatch.setattr(headless_mod, "run_query_as_agent_loop", spy_adapter)
+
+    stdout = io.StringIO()
+    code = run_headless(
+        HeadlessOptions(
+            prompt="hi",
+            output_format="text",
+            stdout=stdout,
+            stderr=io.StringIO(),
+            workspace_root=tmp_path,
+        )
+    )
+
+    assert code == 0
+    assert "Hello from the canonical loop." in stdout.getvalue()
+    assert adapter_calls["n"] == 1
 
 
 # ---------------------------------------------------------------------------

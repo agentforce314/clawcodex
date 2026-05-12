@@ -13,9 +13,11 @@ from unittest.mock import patch
 
 import pytest
 
+import asyncio
+
 from src.agent.conversation import Conversation
 from src.providers.base import ChatResponse
-from src.tool_system.agent_loop import run_agent_loop, AgentLoopResult
+from src.query.agent_loop_compat import AgentLoopRunResult, run_query_as_agent_loop
 from src.tool_system.context import ToolContext
 from src.tool_system.defaults import build_default_registry
 
@@ -327,7 +329,7 @@ class _PermissionDeniedWriteProvider:
 # Helper
 # ---------------------------------------------------------------------------
 
-def _run(provider, workspace: Path, query: str, max_turns: int = 10, mode: str = "bypassPermissions") -> AgentLoopResult:
+def _run(provider, workspace: Path, query: str, max_turns: int = 10, mode: str = "bypassPermissions") -> AgentLoopRunResult:
     from src.permissions.types import ToolPermissionContext
     registry = build_default_registry(include_user_tools=False)
     ctx = ToolContext(
@@ -336,7 +338,11 @@ def _run(provider, workspace: Path, query: str, max_turns: int = 10, mode: str =
     )
     conv = Conversation()
     conv.add_user_message(query)
-    return run_agent_loop(conv, provider, registry, ctx, max_turns=max_turns)
+    return asyncio.run(
+        run_query_as_agent_loop(
+            conv, provider, registry, ctx, max_turns=max_turns,
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -451,7 +457,11 @@ class TestIntegrationMaxTurns:
 
         result = _run(_InfiniteToolProvider(), tmp_path, "Loop", max_turns=3)
         assert result.num_turns == 3
-        assert result.response_text == "[Max tool turns reached]"
+        # Canonical loop signals max_turns via the typed Terminal
+        # instead of synthesizing a sentinel response_text. The
+        # response_text is the partial assistant output from the
+        # final turn.
+        assert result.terminal.reason == "max_turns"
 
 
 class TestIntegrationUsageTracking:
