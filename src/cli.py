@@ -121,6 +121,15 @@ def main():
     # ``typescript/src/main.tsx:1383-1389``.
     _resolve_permission_state(args)
     profile_checkpoint("permissions_resolved")
+
+    # Plan-phase-2 wiring (ch02-bootstrap-refactoring-plan.md Phase 2):
+    # ``run_production_setup(args)`` is chapter phase 3 — Python-version
+    # check, hook snapshot freeze, tengu_started beacon, tengu_exit
+    # previous-session log. Runs after init (phase 2) and the bypass-
+    # permissions safety gate (which lives inside _resolve_permission_state)
+    # but before mode dispatch (phase 4).
+    from src.setup import run_production_setup
+    run_production_setup(args)
     profile_checkpoint("phase3_end_phase4_start")
 
     if args.print:
