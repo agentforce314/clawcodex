@@ -70,6 +70,10 @@ class QueryParams:
     user_context: dict[str, str] | None = None
     system_context: dict[str, str] | None = None
     pipeline_config: PipelineConfig | None = None
+    # Ch5/D.1: Task-level token budget. When set, the loop checks
+    # `check_token_budget` after each completion and may continue
+    # with a nudge message until 90% of `total` is reached.
+    task_budget: dict[str, int] | None = None
 
 
 @dataclass
@@ -192,6 +196,36 @@ def _is_withheld_max_output_tokens(msg: Message | None) -> bool:
     return getattr(msg, "_api_error", None) == "max_output_tokens"
 
 
+def _is_withheld_prompt_too_long(msg: Message | None) -> bool:
+    """Ch5/B.1: PTL withholding detector. Mirrors TS isWithheldPromptTooLong."""
+    if msg is None:
+        return False
+    if not isinstance(msg, AssistantMessage):
+        return False
+    if not getattr(msg, "isApiErrorMessage", False):
+        return False
+    return getattr(msg, "_api_error", None) == "prompt_too_long"
+
+
+def _is_withheld_media_size(msg: Message | None) -> bool:
+    """Ch5/B.1: Media-size withholding detector. Mirrors TS isWithheldMediaSizeError."""
+    if msg is None:
+        return False
+    if not isinstance(msg, AssistantMessage):
+        return False
+    return getattr(msg, "_api_error", None) == "media_size"
+
+
+def _get_context_window(provider: Any, model: str) -> int:
+    """Ch5/B.4: Best-effort context-window lookup for the blocking-limit guard.
+
+    Defaults to 200_000 if unknown. A follow-up ticket can replace
+    this with proper per-model config; for now the goal is to make
+    the guard work for the common cases (Sonnet/Opus = 200k).
+    """
+    return getattr(provider, "context_window", None) or 200_000
+
+
 async def _call_model_sync(
     *,
     provider: BaseProvider,
@@ -309,7 +343,13 @@ async def _call_model_sync(
         if _diag:
             logger.warning("[DIAG] _call_model_sync: EXCEPTION after %.1fs: %s", time.monotonic() - _t0, e)
         error_str = str(e)
-        if "prompt is too long" in error_str.lower() or "prompt_too_long" in error_str.lower():
+        # Ch5/B.1: route through the typed helpers so PTL / media-size
+        # detection is consistent with the rest of the codebase.
+        from ..services.api.errors import (
+            is_media_size_error,
+            is_prompt_too_long_error,
+        )
+        if is_prompt_too_long_error(e):
             err_msg = _create_assistant_api_error_message(
                 PROMPT_TOO_LONG_ERROR_MESSAGE,
                 error="prompt_too_long",
@@ -323,6 +363,17 @@ async def _call_model_sync(
                 error="max_output_tokens",
             )
             err_msg._api_error = "max_output_tokens"  # type: ignore[attr-defined]
+            return [err_msg], []
+
+        # is_media_size_error takes str (not Exception) and handles
+        # case internally — pass the raw message body so the PDF-page
+        # regex (which expects the literal "PDF") can match.
+        if is_media_size_error(error_str):
+            err_msg = _create_assistant_api_error_message(
+                f"Media too large: {error_str}",
+                error="media_size",
+            )
+            err_msg._api_error = "media_size"  # type: ignore[attr-defined]
             return [err_msg], []
 
         raise
@@ -614,6 +665,14 @@ async def query(
         max_output_tokens_override=params.max_output_tokens_override,
     )
     config = build_query_config()
+    # Ch5/D.1: budget tracker is created only when both the runtime
+    # feature flag and the per-request task_budget are set. No prompt
+    # marker → no tracker → no overhead. Mirrors TS query.ts:295.
+    if params.task_budget and getattr(config, "token_budget_enabled", True):
+        from .token_budget import create_budget_tracker
+        budget_tracker = create_budget_tracker()
+    else:
+        budget_tracker = None
 
     while True:
         messages = state.messages
@@ -647,11 +706,31 @@ async def query(
                 # whether to fire. Without this the MIN_INPUT_TOKENS_FOR_AUTOCOMPACT
                 # guard short-circuits and auto-compact never triggers.
                 est_input_tokens = rough_token_count_estimation_for_messages(messages)
+
+                # Ch5/B.5 prereq: thread the caller-owned
+                # AutoCompactTracking instance into the pipeline before
+                # the call so auto_compact_if_needed mutates the same
+                # object the query loop holds via state.auto_compact_tracking.
+                # If the loop has no tracking yet, the pipeline creates
+                # a default one — capture it back into state below.
+                if state.auto_compact_tracking is not None:
+                    params.pipeline_config.autocompact_tracking = (
+                        state.auto_compact_tracking
+                    )
+
                 pipeline_result = await run_compression_pipeline(
                     messages,
                     input_token_count=est_input_tokens,
                     config=params.pipeline_config,
                 )
+
+                # Read the (possibly mutated) tracking object back into
+                # state for the next iteration. The pipeline's
+                # autocompact_tracking is now authoritative.
+                state.auto_compact_tracking = (
+                    params.pipeline_config.autocompact_tracking
+                )
+
                 if pipeline_result.tokens_saved > 0:
                     messages = pipeline_result.messages
                     if _diag:
@@ -662,6 +741,101 @@ async def query(
                         )
             except Exception:
                 logger.warning("Compression pipeline failed, continuing with original messages", exc_info=True)
+
+        # Ch5/B.4: Blocking-limit pre-emption guard.
+        # If the context is at the hard blocking limit, fail fast with
+        # a clear message instead of burning an API call that will 500.
+        # Mirrors TS query.ts:683-696.
+        try:
+            from ..services.compact.autocompact import (
+                calculate_token_warning_state,
+            )
+            # Skip cases (mirrors TS query.ts:644-660):
+            #   - compact/session_memory forked queries (deadlock risk —
+            #     the compact agent must run to REDUCE token count)
+            #   - the previous iteration was a recovery retry whose
+            #     messages were already validated under the limit
+            # We deliberately DO NOT skip when reactive_compact +
+            # autocompact are both enabled. The TS guard at
+            # query.ts:683-696 fires unconditionally on the proactive
+            # path; reactive_compact catches the *real* 413 from the
+            # API later, but this guard pre-empts the call so we don't
+            # burn API budget on retries-to-500.
+            skip_blocking = (
+                params.query_source in ("compact", "session_memory")
+                or (
+                    state.transition is not None
+                    and state.transition.reason
+                    in ("collapse_drain_retry", "reactive_compact_retry")
+                )
+            )
+            if not skip_blocking:
+                context_window = _get_context_window(
+                    params.provider,
+                    getattr(config, "model", ""),
+                )
+                token_usage = rough_token_count_estimation_for_messages(messages)
+                warning = calculate_token_warning_state(
+                    token_usage,
+                    context_window,
+                )
+                if warning.get("is_at_blocking_limit"):
+                    yield _create_assistant_api_error_message(
+                        PROMPT_TOO_LONG_ERROR_MESSAGE,
+                        error="invalid_request",
+                    )
+                    set_terminal(
+                        holder,
+                        natural_termination,
+                        Terminal(reason="blocking_limit"),
+                    )
+                    return
+        except Exception:
+            if _diag:
+                logger.warning("blocking_limit pre-emption check failed", exc_info=True)
+
+        # Ch5/B.5: autocompact-circuit-breaker pre-emption.
+        # When autocompact has failed 3+ times in a row AND the context
+        # is still above the autocompact threshold, fail fast — sending
+        # this to the API would just 500. Mirrors TS query.ts:705-725.
+        try:
+            from ..services.compact.autocompact import (
+                MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES,
+                calculate_token_warning_state as _calc_warning,
+                is_auto_compact_enabled as _is_auto_enabled,
+            )
+            tracking = state.auto_compact_tracking
+            consec = getattr(tracking, "consecutive_failures", 0) if tracking else 0
+            if (
+                consec >= MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES
+                and _is_auto_enabled()
+            ):
+                ctx_window = _get_context_window(
+                    params.provider,
+                    getattr(config, "model", ""),
+                )
+                tok_usage = rough_token_count_estimation_for_messages(messages)
+                warn = _calc_warning(tok_usage, ctx_window)
+                if warn.get("is_above_auto_compact_threshold"):
+                    yield _create_assistant_api_error_message(
+                        "The conversation has exceeded the context limit "
+                        "and automatic compaction has failed. Press esc "
+                        "twice to go up a few messages and try again, or "
+                        "start a new session with /new.",
+                        error="invalid_request",
+                    )
+                    set_terminal(
+                        holder,
+                        natural_termination,
+                        Terminal(reason="blocking_limit"),
+                    )
+                    return
+        except Exception:
+            if _diag:
+                logger.warning(
+                    "autocompact-circuit-breaker guard failed",
+                    exc_info=True,
+                )
 
         assistant_messages: list[AssistantMessage] = []
         tool_results: list[UserMessage] = []
@@ -681,9 +855,16 @@ async def query(
             needs_follow_up = len(tool_use_blocks) > 0
 
             for msg in assistant_messages:
-                withheld = False
-                if _is_withheld_max_output_tokens(msg):
-                    withheld = True
+                # Ch5/B.1: Withhold PTL, media-size, and max-output-tokens
+                # errors from the stream so SDK consumers don't disconnect
+                # before the loop can attempt recovery. The withheld
+                # message is still in assistant_messages for the recovery
+                # dispatch below to find.
+                withheld = (
+                    _is_withheld_max_output_tokens(msg)
+                    or _is_withheld_prompt_too_long(msg)
+                    or _is_withheld_media_size(msg)
+                )
                 if not withheld:
                     yield msg
 
@@ -711,6 +892,117 @@ async def query(
 
         if not needs_follow_up:
             last_message = assistant_messages[-1] if assistant_messages else None
+
+            # Ch5/B.2: Prompt-too-long and media-size error recovery via
+            # reactive_compact. One-shot per error type
+            # (has_attempted_reactive_compact gate). If recovery succeeds,
+            # continue with the compacted messages. If it fails or has
+            # already been attempted, surface the withheld error and exit
+            # cleanly with the appropriate Terminal reason — do NOT fall
+            # through to the generic isApiErrorMessage branch (which
+            # would mis-report this as `completed`).
+            is_withheld_ptl = _is_withheld_prompt_too_long(last_message)
+            is_withheld_media = _is_withheld_media_size(last_message)
+
+            # Ch5/B.3: Context-collapse drain runs BEFORE reactive_compact
+            # for PTL only (media errors skip this — collapse can't
+            # shrink images). Guarded on the previous transition: if we
+            # already drained on the prior iteration, fall through to
+            # reactive_compact. Mirrors TS query.ts:1160-1193.
+            if is_withheld_ptl and (
+                state.transition is None
+                or state.transition.reason != "collapse_drain_retry"
+            ):
+                try:
+                    from ..services.compact.context_collapse import (
+                        is_context_collapse_enabled,
+                        recover_from_overflow,
+                    )
+                    if is_context_collapse_enabled():
+                        drained = recover_from_overflow(
+                            messages, params.query_source,
+                        )
+                        if drained.committed > 0:
+                            state = QueryState(
+                                messages=drained.messages,
+                                tool_use_context=tool_use_context,
+                                auto_compact_tracking=state.auto_compact_tracking,
+                                max_output_tokens_recovery_count=max_output_tokens_recovery_count,
+                                has_attempted_reactive_compact=has_attempted_reactive_compact,
+                                max_output_tokens_override=None,
+                                stop_hook_active=None,
+                                turn_count=turn_count,
+                                continuation_nudge_count=state.continuation_nudge_count,
+                                pending_tool_use_summary=None,
+                                transition=Transition(
+                                    reason="collapse_drain_retry",
+                                    committed=drained.committed,
+                                ),
+                            )
+                            continue
+                except Exception:
+                    # Best-effort. If staging isn't available or the
+                    # drain crashes, fall through to reactive_compact.
+                    # Always log at warning level (not just _diag) so a
+                    # broken store is observable in production telemetry.
+                    logger.warning(
+                        "collapse-drain recovery failed, falling through to reactive_compact",
+                        exc_info=True,
+                    )
+
+            if is_withheld_ptl or is_withheld_media:
+                if not has_attempted_reactive_compact:
+                    try:
+                        from ..services.compact.reactive_compact import (
+                            ReactiveCompactResult,
+                            reactive_compact,
+                        )
+                        from ..services.api.errors import PromptTooLongError
+                        synthetic_err = PromptTooLongError(
+                            "withheld during streaming, recovering",
+                        )
+                        rc_result: ReactiveCompactResult = await reactive_compact(
+                            messages=messages,
+                            error=synthetic_err,
+                            provider=params.provider,
+                            model=config.model,
+                        )
+                    except Exception as rc_err:
+                        logger.exception("reactive_compact recovery crashed: %s", rc_err)
+                        rc_result = None  # type: ignore[assignment]
+
+                    if rc_result is not None and rc_result.compacted:
+                        # Yield the new messages so the consumer sees the boundary.
+                        for cmsg in rc_result.messages:
+                            yield cmsg
+                        state = QueryState(
+                            messages=rc_result.messages,
+                            tool_use_context=tool_use_context,
+                            auto_compact_tracking=None,
+                            max_output_tokens_recovery_count=max_output_tokens_recovery_count,
+                            has_attempted_reactive_compact=True,  # one-shot
+                            max_output_tokens_override=None,
+                            stop_hook_active=None,
+                            turn_count=turn_count,
+                            continuation_nudge_count=state.continuation_nudge_count,
+                            pending_tool_use_summary=None,
+                            transition=Transition(reason="reactive_compact_retry"),
+                        )
+                        continue
+
+                # Either no recovery attempt (already ran) OR the attempt
+                # failed. Surface the withheld error and exit with the
+                # appropriate Terminal reason.
+                if last_message is not None:
+                    yield last_message
+                set_terminal(
+                    holder,
+                    natural_termination,
+                    Terminal(
+                        reason="image_error" if is_withheld_media else "prompt_too_long",
+                    ),
+                )
+                return
 
             if _is_withheld_max_output_tokens(last_message):
                 if (
@@ -755,8 +1047,47 @@ async def query(
                 yield last_message  # type: ignore[arg-type]
 
             if last_message and getattr(last_message, "isApiErrorMessage", False):
+                # Death-spiral guard: when the last message is an API
+                # error, do NOT run any subsequent hooks/checks (the
+                # model never produced a real response). Mirrors TS
+                # query.ts:1341-1344.
                 set_terminal(holder, natural_termination, Terminal(reason="completed"))
                 return
+
+            # Ch5/D.2: Token budget check. If task_budget is set and we
+            # haven't yet exhausted 90% of `total`, inject a nudge
+            # message and continue.
+            if params.task_budget and budget_tracker is not None:
+                from .token_budget import ContinueDecision, check_token_budget
+                global_turn_tokens = sum(
+                    int((getattr(m, "usage", None) or {}).get("output_tokens", 0))
+                    for m in assistant_messages
+                )
+                decision = check_token_budget(
+                    budget_tracker,
+                    getattr(tool_use_context, "agent_id", None),
+                    int((params.task_budget or {}).get("total") or 0),
+                    global_turn_tokens,
+                )
+                if isinstance(decision, ContinueDecision):
+                    nudge = _create_user_message(
+                        decision.nudge_message,
+                        is_meta=True,
+                    )
+                    state = QueryState(
+                        messages=[*messages, *assistant_messages, nudge],
+                        tool_use_context=tool_use_context,
+                        auto_compact_tracking=state.auto_compact_tracking,
+                        max_output_tokens_recovery_count=0,
+                        has_attempted_reactive_compact=False,
+                        max_output_tokens_override=None,
+                        stop_hook_active=None,
+                        turn_count=turn_count,
+                        continuation_nudge_count=state.continuation_nudge_count,
+                        pending_tool_use_summary=None,
+                        transition=Transition(reason="token_budget_continuation"),
+                    )
+                    continue
 
             set_terminal(holder, natural_termination, Terminal(reason="completed"))
             return

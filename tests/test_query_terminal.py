@@ -1,19 +1,16 @@
-"""Phase A acceptance tests: typed Terminal return values via the
-``run_query()`` helper and the ``TerminalHolder`` protocol.
+"""Phase A + B + D acceptance tests: typed Terminal return values
+plus recovery integration (PTL via reactive_compact, blocking-limit
+guard, autocompact circuit-breaker, token-budget continuation).
 
-Verifies the Phase A foundation — the 4 terminal reasons reachable
-on the un-extended loop body:
+PR 1 (Phase A) reached: completed, max_turns, aborted_streaming,
+aborted_tools, model_error.
 
-  * completed (normal completion)
-  * max_turns (max_turns limit hit)
-  * aborted_streaming (abort during model call)
-  * aborted_tools (abort during tool execution)
-  * model_error (unrecoverable exception in the model call)
+PR 2 adds: prompt_too_long, image_error, blocking_limit (with the
+autocompact-circuit-breaker variant), plus token-budget continuation
+behavior.
 
-The remaining 5 reasons (prompt_too_long, image_error,
-blocking_limit, stop_hook_prevented, hook_stopped) are reachable
-only after later phases land their recovery / hook / guard
-infrastructure.
+The remaining 2 reasons (stop_hook_prevented, hook_stopped) land
+when stop hooks are wired up in PR 3.
 """
 from __future__ import annotations
 
@@ -217,6 +214,309 @@ class TestTerminalModelError(unittest.TestCase):
         _, terminal = _run(run_query(params))
         self.assertEqual(terminal.reason, "model_error")
         self.assertIsNotNone(terminal.error)
+
+
+class TestTerminalPromptTooLong(unittest.TestCase):
+    """Ch5/B.2: PTL recovery exhausted → terminal `prompt_too_long`."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.workspace = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_ptl_with_no_recovery_returns_prompt_too_long(self):
+        provider = MagicMock()
+        provider.chat_stream_response.side_effect = NotImplementedError()
+        provider.chat.side_effect = RuntimeError("Prompt is too long.")
+
+        with patch(
+            "src.services.compact.reactive_compact.reactive_compact",
+            new=MagicMock(),
+        ) as mock_rc:
+            from src.services.compact.reactive_compact import ReactiveCompactResult
+
+            async def fail_rc(**kwargs):
+                return ReactiveCompactResult(
+                    compacted=False,
+                    messages=kwargs["messages"],
+                    tokens_before=1000,
+                    error="mocked: no compaction",
+                )
+            mock_rc.side_effect = fail_rc
+
+            params = _make_params(workspace=self.workspace, provider=provider)
+            _, terminal = _run(run_query(params))
+            self.assertEqual(terminal.reason, "prompt_too_long")
+
+
+class TestPTLAfterReactiveCompact(unittest.TestCase):
+    """Regression guard: if reactive_compact succeeds once but the
+    model returns PTL again on the retry, the loop MUST surface the
+    PTL and return Terminal(prompt_too_long). Previously fell through
+    to a fake `completed` terminal."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.workspace = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_second_ptl_after_recovery_surfaces_terminal(self):
+        provider = MagicMock()
+        provider.chat_stream_response.side_effect = NotImplementedError()
+        provider.chat.side_effect = RuntimeError("Prompt is too long.")
+
+        with patch(
+            "src.services.compact.reactive_compact.reactive_compact",
+            new=MagicMock(),
+        ) as mock_rc:
+            from src.services.compact.reactive_compact import ReactiveCompactResult
+
+            async def succeed_then_skip(**kwargs):
+                return ReactiveCompactResult(
+                    compacted=True,
+                    messages=[UserMessage(content="compacted summary")],
+                    tokens_before=1000,
+                    tokens_after=200,
+                )
+            mock_rc.side_effect = succeed_then_skip
+
+            params = _make_params(workspace=self.workspace, provider=provider)
+            _, terminal = _run(run_query(params))
+            self.assertEqual(terminal.reason, "prompt_too_long")
+            self.assertEqual(mock_rc.call_count, 1)
+
+
+class TestTerminalImageError(unittest.TestCase):
+    """Ch5/B.2: Media-size recovery exhausted → terminal `image_error`."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.workspace = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_media_size_with_no_recovery_returns_image_error(self):
+        provider = MagicMock()
+        provider.chat_stream_response.side_effect = NotImplementedError()
+        provider.chat.side_effect = RuntimeError(
+            "Image exceeds the maximum size",
+        )
+
+        with patch(
+            "src.services.compact.reactive_compact.reactive_compact",
+            new=MagicMock(),
+        ) as mock_rc:
+            from src.services.compact.reactive_compact import ReactiveCompactResult
+
+            async def fail_rc(**kwargs):
+                return ReactiveCompactResult(
+                    compacted=False,
+                    messages=kwargs["messages"],
+                    tokens_before=1000,
+                    error="mocked: no compaction",
+                )
+            mock_rc.side_effect = fail_rc
+
+            params = _make_params(workspace=self.workspace, provider=provider)
+            _, terminal = _run(run_query(params))
+            self.assertEqual(terminal.reason, "image_error")
+
+
+class TestTokenBudgetIntegration(unittest.TestCase):
+    """Ch5/D.2: token-budget continuation injects nudge and re-enters loop."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.workspace = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_under_budget_continues_with_nudge(self):
+        provider = MagicMock()
+        provider.chat_stream_response.side_effect = NotImplementedError()
+        provider.chat.return_value = ChatResponse(
+            content="Partial answer.",
+            model="test",
+            usage={"input_tokens": 5, "output_tokens": 100},
+            finish_reason="end_turn",
+            tool_uses=None,
+        )
+
+        params = _make_params(workspace=self.workspace, provider=provider, max_turns=3)
+        params.task_budget = {"total": 1000}
+
+        messages, terminal = _run(run_query(params))
+        self.assertGreaterEqual(provider.chat.call_count, 2)
+        second_call_messages = provider.chat.call_args_list[1].args[0]
+        nudges = [
+            msg for msg in second_call_messages
+            if msg.get("role") == "user"
+            and "token target" in str(msg.get("content", ""))
+        ]
+        self.assertGreaterEqual(
+            len(nudges), 1,
+            f"Expected at least 1 budget nudge in 2nd call messages; got: {second_call_messages}",
+        )
+        self.assertNotEqual(terminal.reason, "model_error")
+
+    def test_no_budget_keeps_single_turn_behavior(self):
+        provider = MagicMock()
+        provider.chat_stream_response.side_effect = NotImplementedError()
+        provider.chat.return_value = ChatResponse(
+            content="One shot answer.",
+            model="test",
+            usage={"input_tokens": 5, "output_tokens": 100},
+            finish_reason="end_turn",
+            tool_uses=None,
+        )
+
+        params = _make_params(workspace=self.workspace, provider=provider)
+        _, terminal = _run(run_query(params))
+        self.assertEqual(terminal.reason, "completed")
+        self.assertEqual(provider.chat.call_count, 1)
+
+    def test_subagent_does_not_continue(self):
+        provider = MagicMock()
+        provider.chat_stream_response.side_effect = NotImplementedError()
+        provider.chat.return_value = ChatResponse(
+            content="Subagent answer.",
+            model="test",
+            usage={"input_tokens": 5, "output_tokens": 100},
+            finish_reason="end_turn",
+            tool_uses=None,
+        )
+
+        params = _make_params(workspace=self.workspace, provider=provider)
+        params.task_budget = {"total": 1000}
+        params.tool_use_context.agent_id = "subagent_1"
+
+        _, terminal = _run(run_query(params))
+        self.assertEqual(terminal.reason, "completed")
+        self.assertEqual(provider.chat.call_count, 1)
+
+
+class TestBlockingLimitPreemption(unittest.TestCase):
+    """Ch5/B.4: when context is at the hard blocking limit, fail fast
+    with terminal `blocking_limit` instead of letting the API 500."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.workspace = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_blocking_limit_skips_api_call(self):
+        provider = MagicMock()
+        provider.chat_stream_response.side_effect = NotImplementedError()
+        provider.chat.return_value = ChatResponse(
+            content="Should not be called",
+            model="test",
+            usage={"input_tokens": 0, "output_tokens": 0},
+            finish_reason="end_turn",
+            tool_uses=None,
+        )
+
+        params = _make_params(workspace=self.workspace, provider=provider)
+
+        with (
+            patch(
+                "src.services.compact.autocompact.is_auto_compact_enabled",
+                return_value=False,
+            ),
+            patch(
+                "src.services.compact.autocompact.calculate_token_warning_state",
+                return_value={
+                    "percent_left": 0,
+                    "is_above_warning_threshold": True,
+                    "is_above_error_threshold": True,
+                    "is_above_auto_compact_threshold": True,
+                    "is_at_blocking_limit": True,
+                },
+            ),
+        ):
+            _, terminal = _run(run_query(params))
+
+        self.assertEqual(terminal.reason, "blocking_limit")
+        provider.chat.assert_not_called()
+
+
+class TestAutocompactCircuitBreaker(unittest.TestCase):
+    """Ch5/B.5: when autocompact has tripped its 3-failure circuit
+    breaker AND the context is still over the autocompact threshold,
+    the loop returns `blocking_limit` with the chapter-quoted message
+    instead of burning another API call."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.workspace = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_circuit_breaker_returns_blocking_limit(self):
+        from src.services.compact.autocompact import AutoCompactTracking
+
+        provider = MagicMock()
+        provider.chat_stream_response.side_effect = NotImplementedError()
+        provider.chat.return_value = ChatResponse(
+            content="Should not be called",
+            model="test",
+            usage={"input_tokens": 0, "output_tokens": 0},
+            finish_reason="end_turn",
+            tool_uses=None,
+        )
+
+        params = _make_params(workspace=self.workspace, provider=provider)
+
+        from src.query.query import query as query_gen
+        from src.query.transitions import TerminalHolder
+
+        async def consume_one_turn():
+            holder = TerminalHolder()
+            collected = []
+            with (
+                patch(
+                    "src.services.compact.autocompact.calculate_token_warning_state",
+                    return_value={
+                        "percent_left": 0,
+                        "is_above_warning_threshold": True,
+                        "is_above_error_threshold": True,
+                        "is_above_auto_compact_threshold": True,
+                        "is_at_blocking_limit": False,
+                    },
+                ),
+                patch(
+                    "src.services.compact.autocompact.is_auto_compact_enabled",
+                    return_value=True,
+                ),
+            ):
+                from src.services.compact.pipeline import PipelineConfig
+                params.pipeline_config = PipelineConfig(
+                    autocompact_tracking=AutoCompactTracking(
+                        consecutive_failures=3,
+                    ),
+                )
+                async for msg in query_gen(params, terminal_holder=holder):
+                    collected.append(msg)
+            return collected, holder.value
+
+        collected, terminal = _run(consume_one_turn())
+        self.assertEqual(terminal.reason, "blocking_limit")
+        api_errors = [
+            m for m in collected
+            if isinstance(m, AssistantMessage)
+            and getattr(m, "isApiErrorMessage", False)
+            and "automatic compaction" in str(getattr(m, "content", ""))
+        ]
+        self.assertGreaterEqual(len(api_errors), 1)
+        provider.chat.assert_not_called()
 
 
 class TestTerminalHolderDirectUsage(unittest.TestCase):
