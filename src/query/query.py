@@ -25,7 +25,13 @@ from ..utils.abort_controller import AbortController
 from ..providers.base import BaseProvider, ChatResponse
 
 from .config import QueryConfig, build_query_config
-from .transitions import QueryState, Terminal, Transition
+from .transitions import (
+    QueryState,
+    Terminal,
+    TerminalHolder,
+    Transition,
+    set_terminal,
+)
 from ..services.compact.pipeline import (
     CompressionPipeline,
     PipelineConfig,
@@ -576,15 +582,38 @@ def _run_tools_sync(
     return results
 
 
-async def query(params: QueryParams) -> AsyncGenerator[Message | StreamEvent, None]:
+async def query(
+    params: QueryParams,
+    *,
+    terminal_holder: TerminalHolder | None = None,
+) -> AsyncGenerator[Message | StreamEvent, None]:
+    """Canonical agent loop (chapter 5, Phase A foundation).
+
+    The async generator yields messages and stream events to the consumer.
+    The final ``Terminal`` is written to ``terminal_holder.value`` just
+    before the generator returns (Python async generators cannot return
+    values: PEP 525). Callers who care about the terminal pass their own
+    ``TerminalHolder`` and read its ``.value`` after iteration.
+
+    See :func:`run_query` for a convenience helper that consumes the
+    generator and returns ``(messages, terminal)``.
+
+    This PR (Phase A) introduces the typed Terminal infrastructure;
+    recovery integration, stop hooks, token budget, model fallback,
+    and continuation nudge land in subsequent PRs.
+    """
     _diag = os.environ.get("CLAWCODEX_DEBUG", "").lower() in ("1", "true", "yes")
+    holder = terminal_holder or TerminalHolder()
+    # Inner-only flag for the future outer two-layer wrapper (Phase G).
+    # Until that lands, the flag is local; set_terminal still writes it
+    # so every exit site uses the canonical helper.
+    natural_termination: list[bool] = [False]
     state = QueryState(
         messages=list(params.messages),
         tool_use_context=params.tool_use_context,
         max_output_tokens_override=params.max_output_tokens_override,
     )
     config = build_query_config()
-    terminal: Terminal | None = None
 
     while True:
         messages = state.messages
@@ -666,6 +695,7 @@ async def query(params: QueryParams) -> AsyncGenerator[Message | StreamEvent, No
                 yield err_msg
 
             yield _create_assistant_api_error_message(content=error_message)
+            set_terminal(holder, natural_termination, Terminal(reason="model_error", error=e))
             return
 
         if params.abort_controller.signal.aborted:
@@ -676,6 +706,7 @@ async def query(params: QueryParams) -> AsyncGenerator[Message | StreamEvent, No
 
             if params.abort_controller.signal.reason != "interrupt":
                 yield _create_user_interruption_message(tool_use=False)
+            set_terminal(holder, natural_termination, Terminal(reason="aborted_streaming"))
             return
 
         if not needs_follow_up:
@@ -724,8 +755,10 @@ async def query(params: QueryParams) -> AsyncGenerator[Message | StreamEvent, No
                 yield last_message  # type: ignore[arg-type]
 
             if last_message and getattr(last_message, "isApiErrorMessage", False):
+                set_terminal(holder, natural_termination, Terminal(reason="completed"))
                 return
 
+            set_terminal(holder, natural_termination, Terminal(reason="completed"))
             return
 
         for block in tool_use_blocks:
@@ -771,12 +804,18 @@ async def query(params: QueryParams) -> AsyncGenerator[Message | StreamEvent, No
         if params.abort_controller.signal.aborted:
             if params.abort_controller.signal.reason != "interrupt":
                 yield _create_user_interruption_message(tool_use=True)
+            set_terminal(holder, natural_termination, Terminal(reason="aborted_tools"))
             return
 
         next_turn_count = turn_count + 1
 
         if params.max_turns and next_turn_count > params.max_turns:
             yield _create_max_turns_attachment(params.max_turns, next_turn_count)
+            set_terminal(
+                holder,
+                natural_termination,
+                Terminal(reason="max_turns", turn_count=next_turn_count),
+            )
             return
 
         # Chapter-10 / Chunk D / WI-3.3 — pending-messages drain at the
@@ -799,5 +838,38 @@ async def query(params: QueryParams) -> AsyncGenerator[Message | StreamEvent, No
             has_attempted_reactive_compact=False,
             max_output_tokens_override=None,
             stop_hook_active=state.stop_hook_active,
+            # Phase A: reset per-turn counter; carry pending summary forward.
+            continuation_nudge_count=0,
+            pending_tool_use_summary=state.pending_tool_use_summary,
             transition=Transition(reason="next_turn"),
         )
+
+
+async def run_query(
+    params: QueryParams,
+) -> tuple[list[Message | StreamEvent], Terminal]:
+    """Ch5/A.4: Convenience helper for callers that want both the
+    yielded messages and the Terminal in one call.
+
+    Drives the canonical :func:`query` async generator, collects all
+    yielded messages into a list, and returns ``(messages, terminal)``.
+    The terminal's reason discriminates why the loop stopped (10
+    distinct reasons per chapter §"Terminal States").
+
+    Tests and convenience entry points should use this helper.
+    Streaming consumers (REPL, TUI) should keep using ``async for``
+    with their own ``TerminalHolder``.
+    """
+    holder = TerminalHolder()
+    messages: list[Message | StreamEvent] = []
+    async for msg in query(params, terminal_holder=holder):
+        messages.append(msg)
+    if holder.value is None:
+        # Contract violation — the loop returned without setting
+        # the terminal. Fall back to a model_error so callers don't
+        # see ``None`` and crash.
+        holder.value = Terminal(
+            reason="model_error",
+            error=RuntimeError("query() returned without setting Terminal"),
+        )
+    return messages, holder.value
