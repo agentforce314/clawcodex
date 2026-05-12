@@ -1,5 +1,5 @@
 {
-  "_comment": "Query state transitions from TS query.ts",
+  "_comment": "Query state transitions from TS query.ts (chapter 5)",
   "transition_reasons": [
     "next_turn",
     "max_output_tokens_recovery",
@@ -7,7 +7,20 @@
     "reactive_compact_retry",
     "collapse_drain_retry",
     "stop_hook_blocking",
-    "token_budget_continuation"
+    "token_budget_continuation",
+    "continuation_nudge"
+  ],
+  "terminal_reasons": [
+    "blocking_limit",
+    "image_error",
+    "model_error",
+    "aborted_streaming",
+    "prompt_too_long",
+    "completed",
+    "stop_hook_prevented",
+    "aborted_tools",
+    "hook_stopped",
+    "max_turns"
   ],
   "query_state_fields": [
     "messages",
@@ -18,11 +31,14 @@
     "max_output_tokens_override",
     "stop_hook_active",
     "turn_count",
+    "pending_tool_use_summary",
+    "continuation_nudge_count",
     "transition"
   ],
   "recovery_constants": {
     "ESCALATED_MAX_TOKENS": 64000,
-    "MAX_OUTPUT_TOKENS_RECOVERY_LIMIT": 3
+    "MAX_OUTPUT_TOKENS_RECOVERY_LIMIT": 3,
+    "MAX_CONTINUATION_NUDGES": 3
   },
   "query_config_fields": [
     "session_id",
