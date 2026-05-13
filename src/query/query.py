@@ -238,6 +238,43 @@ def _is_withheld_media_size(msg: Message | None) -> bool:
     return getattr(msg, "_api_error", None) == "media_size"
 
 
+def _is_hook_stopped_continuation(msg: Message | None) -> bool:
+    """Ch5/round2 — mirrors TS attachment scan at query.ts:1540-1545.
+
+    Returns True for an ``AttachmentMessage`` whose ``attachments`` list
+    contains an attachment with ``type == 'hook_stopped_continuation'``.
+    The query loop checks this after the tool batch completes; if any
+    tool_result carries the marker, the loop exits with
+    ``Terminal(reason='hook_stopped')`` instead of advancing to the
+    next turn — mirroring TS at query.ts:1698-1701.
+
+    The attachment is produced by ``PreToolUse`` / ``PostToolUse`` hooks
+    that set ``prevent_continuation`` — see
+    ``src/services/tool_execution/tool_execution.py:362-372`` and
+    ``src/services/tool_execution/tool_hooks.py:185-195``. The current
+    production dispatch path (``_run_tools_partitioned`` → registry
+    dispatch) does NOT route through those producers — that wiring is
+    the C7 architectural-unification gap, deferred. Landing the terminal
+    mapping here means the contract is in place the moment any future
+    change wires hook-aware dispatch into the loop.
+
+    Local import of ``AttachmentMessage`` matches the pattern at
+    ``_drain_pending_user_messages`` — keeps the top-level import list
+    lean and avoids a circular-import risk with future ``types.messages``
+    refactors.
+    """
+    if msg is None:
+        return False
+    from ..types.messages import AttachmentMessage
+    if not isinstance(msg, AttachmentMessage):
+        return False
+    attachments = getattr(msg, "attachments", None) or []
+    for att in attachments:
+        if isinstance(att, dict) and att.get("type") == "hook_stopped_continuation":
+            return True
+    return False
+
+
 async def _call_model_sync(
     *,
     provider: BaseProvider,
@@ -1094,6 +1131,27 @@ async def query(
             if params.abort_controller.signal.reason != "interrupt":
                 yield _create_user_interruption_message(tool_use=True)
             set_terminal(holder, natural_termination, Terminal(reason="aborted_tools"))
+            return
+
+        # Ch5/round2 — hook_stopped terminal mapping. Mirrors TS at
+        # query.ts:1698-1701. After tool execution, scan tool_results
+        # for any AttachmentMessage carrying a
+        # ``hook_stopped_continuation`` marker. If found, exit cleanly
+        # with Terminal(reason='hook_stopped') rather than advancing to
+        # the next turn.
+        #
+        # Order matters:
+        #   * AFTER abort check (above) — user-driven abort wins,
+        #     matching TS at query.ts:1665.
+        #   * BEFORE max_turns check (below) — a hook-stopped exit must
+        #     NOT also yield ``max_turns_reached``; the loop is exiting
+        #     for a different reason. Matches TS where the hook_stopped
+        #     return at :1701 precedes the max_turns check at :1885.
+        #   * BEFORE state reconstruction — no next iteration follows.
+        if any(_is_hook_stopped_continuation(msg) for msg in tool_results):
+            set_terminal(
+                holder, natural_termination, Terminal(reason="hook_stopped"),
+            )
             return
 
         next_turn_count = turn_count + 1
