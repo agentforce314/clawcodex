@@ -17,7 +17,14 @@ ARCHIVE_ROOT_FILES = {
     # ``is_terminal_task_status``, ``generate_task_id``). The legacy stub at
     # ``src/task.py`` remains for the moment as a re-export shim (PortingTask).
     'Task.ts': 'tasks_core.py',
-    'Tool.ts': 'Tool.py',
+    # ch01 refactor (P2.3): the legacy ``src/Tool.py`` stub
+    # (a 15-line placeholder dataclass with zero import consumers) was
+    # deleted. The canonical tool interface lives at
+    # ``src/tool_system/build_tool.py``; the rest of the tool surface
+    # lives in the ``src/tool_system/`` package. Mapped to the package
+    # directory name (same pattern as ``'tasks.ts': 'task_registry.py'``
+    # below and ``'dialogLaunchers.tsx': 'tui'`` above).
+    'Tool.ts': 'tool_system',
     'commands.ts': 'commands.py',
     'context.ts': 'context.py',
     'cost-tracker.ts': 'cost_tracker.py',
@@ -38,7 +45,13 @@ ARCHIVE_ROOT_FILES = {
     'interactiveHelpers.tsx': 'tui',
     'main.tsx': 'main.py',
     'projectOnboardingState.ts': 'projectOnboardingState.py',
-    'query.ts': 'query.py',
+    # ch01 refactor (P2.3): the legacy ``src/query.py`` stub
+    # (a 13-line placeholder pair of request/response dataclasses)
+    # was shadowed by ``src/query/__init__.py`` and had zero
+    # functional consumers. Deleted. Canonical async-generator query
+    # loop lives at ``src/query/query.py``; the rest of the loop's
+    # components live in the ``src/query/`` package.
+    'query.ts': 'query',
     'replLauncher.tsx': 'replLauncher.py',
     'setup.ts': 'setup.py',
     # Chapter-10 refactor (Chunk B / WI-1.0): the old ``tasks.py`` flat file
@@ -54,7 +67,15 @@ ARCHIVE_DIR_MAPPINGS = {
     'bootstrap': 'bootstrap',
     'bridge': 'bridge',
     'buddy': 'buddy',
-    'cli': 'cli',
+    # ch01 refactor (P2.3a): the production entry point
+    # (``pyproject.toml:68`` console-script ``clawcodex = "src.cli:main"``)
+    # is the file ``src/cli.py``, not a ``src/cli/`` directory. The
+    # earlier ``'cli': 'cli'`` row was a pre-existing baseline miss —
+    # ``run_parity_audit()`` reported it under
+    # ``missing_directory_targets``. Aligns with the existing
+    # ``'commands': 'commands.py'`` / ``'context': 'context.py'`` /
+    # ``'tools': 'tools.py'`` pattern.
+    'cli': 'cli.py',
     'commands': 'commands.py',
     'components': 'components',
     'constants': 'constants',
@@ -76,7 +97,9 @@ ARCHIVE_DIR_MAPPINGS = {
     'native-ts': 'native_ts',
     'outputStyles': 'outputStyles',
     'plugins': 'plugins',
-    'query': 'query.py',
+    # ch01 refactor (P2.3): TS ``query/`` directory → Python ``src/query/``
+    # package (was pointing at the deleted ``src/query.py`` decoy).
+    'query': 'query',
     'remote': 'remote',
     'schemas': 'schemas',
     'screens': 'screens',
