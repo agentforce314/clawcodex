@@ -235,6 +235,22 @@ class PortingWorkspaceTests(unittest.TestCase):
         self.assertIn('Mirrored command', registry.command('review').execute('review security'))
         self.assertIn('Mirrored tool', registry.tool('MCPTool').execute('fetch mcp resources'))
 
+    def test_architecture_stats_cli_runs(self) -> None:
+        """ch18 round-2: the six-abstraction inspector ships as an audit
+        subcommand. See ``my-docs/ch18-epilogue-plan.md``.
+        """
+        result = subprocess.run(
+            [sys.executable, '-m', 'scripts.audit.main', 'architecture-stats'],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertIn('Architecture Stats', result.stdout)
+        # Sanity-check the markdown contains the book's named abstractions.
+        for expected in ('Generator loop', 'Tools', 'Memory', 'Hooks',
+                         'Rendering engine', 'MCP'):
+            self.assertIn(expected, result.stdout)
+
     def test_bootstrap_graph_and_direct_modes_run(self) -> None:
         graph_result = subprocess.run([sys.executable, '-m', 'scripts.audit.main', 'bootstrap-graph'], check=True, capture_output=True, text=True)
         direct_result = subprocess.run([sys.executable, '-m', 'scripts.audit.main', 'direct-connect-mode', 'workspace'], check=True, capture_output=True, text=True)
