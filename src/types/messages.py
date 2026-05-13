@@ -112,6 +112,18 @@ class AttachmentMessage(UserMessage):
     attachments: list[dict[str, Any]] = field(default_factory=list)
 
 
+# Ch5/E.5 — tombstone signal. Emitted by query() on model-fallback retry
+# to tell consumers (QueryEngine, REPL, TUI) to REMOVE the matching
+# message from the transcript (rather than append the tombstone). The
+# fallback path also tombstones partial assistant messages from the
+# failed attempt so the UI's transcript reflects only the successful
+# fallback retry. Mirrors TS at query.ts:794.
+@dataclass
+class TombstoneMessage:
+    type: str = "tombstone"
+    message: Message | None = None
+
+
 MessageLike: TypeAlias = Message | Mapping[str, Any]
 
 TypedMessage: TypeAlias = (

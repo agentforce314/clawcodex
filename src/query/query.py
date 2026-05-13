@@ -188,6 +188,24 @@ def _yield_missing_tool_result_blocks(
     return results
 
 
+def _extract_assistant_text(msg: AssistantMessage) -> str:
+    """Ch5/E.4 — concatenate text from an assistant message's content.
+
+    The content may be a plain string or a list of blocks. This helper
+    joins all TextBlock text into a single string for regex matching
+    against continuation signals.
+    """
+    content = msg.content
+    if isinstance(content, str):
+        return content
+    parts: list[str] = []
+    for block in content:
+        text = getattr(block, "text", None)
+        if isinstance(text, str):
+            parts.append(text)
+    return " ".join(parts)
+
+
 def _get_context_window(provider: BaseProvider) -> int:
     """Ch5/B.4 — return the model's context-window size in tokens.
 
@@ -835,17 +853,57 @@ async def query(
         tool_use_blocks: list[ToolUseBlock] = []
         needs_follow_up = False
 
+        # Ch5/E.2 — attempt-with-fallback loop. On FallbackTriggeredError,
+        # swap to params.fallback_provider and retry. Mirrors TS at
+        # query.ts:727-1029. Per critic-revised plan, we swap the
+        # PROVIDER (not a model name kwarg), because the provider
+        # object IS the model in the existing dispatch.
+        current_provider = params.provider
+        attempt_with_fallback = True
+        from ..services.api.errors import FallbackTriggeredError
+        from ..types.messages import TombstoneMessage, create_system_message
+
         try:
-            returned_assistants, returned_tool_blocks = await _call_model_sync(
-                provider=params.provider,
-                messages=messages,
-                system_prompt=params.system_prompt,
-                tools=params.tools,
-                max_output_tokens_override=max_output_tokens_override,
-            )
-            assistant_messages = returned_assistants
-            tool_use_blocks = returned_tool_blocks
-            needs_follow_up = len(tool_use_blocks) > 0
+            while attempt_with_fallback:
+                attempt_with_fallback = False
+                try:
+                    returned_assistants, returned_tool_blocks = await _call_model_sync(
+                        provider=current_provider,
+                        messages=messages,
+                        system_prompt=params.system_prompt,
+                        tools=params.tools,
+                        max_output_tokens_override=max_output_tokens_override,
+                    )
+                    assistant_messages = returned_assistants
+                    tool_use_blocks = returned_tool_blocks
+                    needs_follow_up = len(tool_use_blocks) > 0
+                except FallbackTriggeredError as fb:
+                    if params.fallback_provider is None:
+                        # No fallback configured — re-raise into outer
+                        # exception handler below (Terminal(model_error)).
+                        raise
+                    # Tombstone any partial assistant messages from the
+                    # failed attempt so the UI removes them from the
+                    # transcript. Yield orphaned-tool-result blocks so
+                    # the API protocol invariant (every tool_use has a
+                    # tool_result) holds for the partial state we're
+                    # discarding. Mirrors TS at query.ts:978-1005.
+                    for orphan_msg in _yield_missing_tool_result_blocks(
+                        assistant_messages, "Model fallback triggered",
+                    ):
+                        yield orphan_msg
+                    for partial in assistant_messages:
+                        yield TombstoneMessage(message=partial)
+                    assistant_messages = []
+                    tool_use_blocks = []
+                    # Swap provider and retry.
+                    current_provider = params.fallback_provider
+                    yield create_system_message(
+                        f"Switched to {fb.fallback_model} due to high "
+                        f"demand for {fb.original_model}",
+                        level="warning",
+                    )
+                    attempt_with_fallback = True
 
             for msg in assistant_messages:
                 # Ch5/B.1 — three-source withholding pattern.
@@ -1174,6 +1232,48 @@ async def query(
                 # else: StopDecision — fall through to completion. The
                 # decision.completion_event is logged by callers when
                 # diminishing-returns early-stop fires.
+
+            # Ch5/E.4 — continuation nudge. After the token-budget check
+            # declines to continue (or no budget was set), inspect the
+            # last assistant text. If it signals intent to continue
+            # ("Let me now create the file"), inject a nudge user
+            # message and re-enter the loop. Capped at
+            # MAX_CONTINUATION_NUDGES=3 to prevent infinite nudge loops.
+            # Mirrors TS query.ts:1444-1505.
+            from .continuation_signals import (
+                MAX_CONTINUATION_NUDGES,
+                NUDGE_MESSAGE,
+                matches_continuation_signal,
+            )
+
+            if (
+                assistant_messages
+                and (params.max_turns is None or turn_count < params.max_turns)
+                and state.continuation_nudge_count < MAX_CONTINUATION_NUDGES
+            ):
+                last_text = _extract_assistant_text(
+                    assistant_messages[-1]
+                )
+                if matches_continuation_signal(last_text):
+                    nudge_msg = _create_user_message(
+                        NUDGE_MESSAGE, is_meta=True,
+                    )
+                    state = QueryState(
+                        messages=[*messages, *assistant_messages, nudge_msg],
+                        tool_use_context=tool_use_context,
+                        auto_compact_tracking=state.auto_compact_tracking,
+                        max_output_tokens_recovery_count=0,
+                        has_attempted_reactive_compact=False,
+                        max_output_tokens_override=None,
+                        stop_hook_active=None,
+                        turn_count=turn_count,
+                        pending_tool_use_summary=state.pending_tool_use_summary,
+                        continuation_nudge_count=(
+                            state.continuation_nudge_count + 1
+                        ),
+                        transition=Transition(reason="continuation_nudge"),
+                    )
+                    continue
 
             set_terminal(holder, natural_termination, Terminal(reason="completed"))
             return
