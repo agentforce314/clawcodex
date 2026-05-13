@@ -170,5 +170,415 @@ class TestRecoveryExhaustion(unittest.TestCase):
         self.assertLessEqual(provider.chat.call_count, 6)
 
 
+class TestPhaseBPromptTooLongRecovery(unittest.TestCase):
+    """Ch5/B.1+B.2 — withholding + reactive_compact recovery for PTL."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.workspace = Path(self.temp_dir.name)
+        self.registry = build_default_registry()
+        self.context = ToolContext(workspace_root=self.workspace)
+        self.abort = AbortController()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def _build_params(self, provider):
+        from src.query.transitions import TerminalHolder
+        params = QueryParams(
+            messages=[UserMessage(content="Long task")],
+            system_prompt="You are helpful.",
+            tools=self.registry.list_tools(),
+            tool_registry=self.registry,
+            tool_use_context=self.context,
+            provider=provider,
+            abort_controller=self.abort,
+            max_turns=10,
+        )
+        return params, TerminalHolder()
+
+    def test_ptl_message_withheld_from_stream(self):
+        """B.1: PTL error tagged in _call_model_sync should NOT yield
+        through to the consumer; recovery (B.2) replaces it."""
+        from unittest.mock import MagicMock
+        provider = MagicMock()
+        provider.chat_stream_response.side_effect = NotImplementedError()
+
+        # First call: simulate PTL error from the API
+        provider.chat.side_effect = [
+            Exception("Prompt is too long: 250000 tokens > 200000"),
+            ChatResponse(
+                content="Recovered output",
+                model="test",
+                usage={"input_tokens": 100, "output_tokens": 50},
+                finish_reason="end_turn",
+                tool_uses=None,
+            ),
+        ]
+
+        # Mock reactive_compact to return success (so the recovery path
+        # fires and the loop continues to the second model call).
+        from src.services.compact.reactive_compact import ReactiveCompactResult
+
+        async def fake_reactive_compact(messages, error, provider, model, **kw):
+            return ReactiveCompactResult(
+                compacted=True,
+                messages=[UserMessage(content="[summary]")],
+                tokens_before=250_000,
+                tokens_after=10_000,
+            )
+
+        params, holder = self._build_params(provider)
+        collected = []
+
+        async def run():
+            from src.query.query import query
+            with unittest.mock.patch(
+                "src.services.compact.reactive_compact.reactive_compact",
+                side_effect=fake_reactive_compact,
+            ):
+                async for msg in query(params, terminal_holder=holder):
+                    collected.append(msg)
+
+        _run(run())
+
+        # No assistant message in the stream should carry the PTL error tag —
+        # the withheld message was suppressed and replaced by the recovery
+        # output.
+        ptl_messages = [
+            m for m in collected
+            if isinstance(m, AssistantMessage)
+            and getattr(m, "_api_error", None) == "prompt_too_long"
+        ]
+        self.assertEqual(
+            ptl_messages, [],
+            "PTL message must be withheld from stream during recovery",
+        )
+
+    def test_ptl_triggers_reactive_compact_and_terminal_completed(self):
+        """B.2: when reactive_compact succeeds, the loop continues and
+        terminates as `completed` (not `prompt_too_long`)."""
+        from unittest.mock import MagicMock
+        provider = MagicMock()
+        provider.chat_stream_response.side_effect = NotImplementedError()
+        provider.chat.side_effect = [
+            Exception("Prompt is too long"),
+            ChatResponse(
+                content="Done.",
+                model="test",
+                usage={"input_tokens": 100, "output_tokens": 20},
+                finish_reason="end_turn",
+                tool_uses=None,
+            ),
+        ]
+
+        from src.services.compact.reactive_compact import ReactiveCompactResult
+
+        async def fake_reactive_compact(messages, error, provider, model, **kw):
+            return ReactiveCompactResult(
+                compacted=True,
+                messages=[UserMessage(content="[summary]")],
+                tokens_before=250_000,
+                tokens_after=5_000,
+            )
+
+        params, holder = self._build_params(provider)
+
+        async def run():
+            from src.query.query import query
+            with unittest.mock.patch(
+                "src.services.compact.reactive_compact.reactive_compact",
+                side_effect=fake_reactive_compact,
+            ):
+                async for _ in query(params, terminal_holder=holder):
+                    pass
+
+        _run(run())
+
+        self.assertIsNotNone(holder.value, "Terminal must be set")
+        self.assertEqual(holder.value.reason, "completed")
+        self.assertEqual(provider.chat.call_count, 2)
+
+    def test_ptl_compact_failure_surfaces_terminal(self):
+        """B.2: when reactive_compact returns compacted=False, the loop
+        surfaces the PTL message and exits with terminal `prompt_too_long`.
+        (Single-iteration exit; covers the no-recovery-available path.)"""
+        from unittest.mock import MagicMock
+        provider = MagicMock()
+        provider.chat_stream_response.side_effect = NotImplementedError()
+        provider.chat.side_effect = lambda *a, **kw: (_ for _ in ()).throw(
+            Exception("Prompt is too long")
+        )
+
+        from src.services.compact.reactive_compact import ReactiveCompactResult
+
+        compact_calls = []
+
+        async def fake_reactive_compact(messages, error, provider, model, **kw):
+            compact_calls.append(1)
+            return ReactiveCompactResult(
+                compacted=False,
+                messages=list(messages),
+                tokens_before=250_000,
+                error="Failed to reduce context",
+            )
+
+        params, holder = self._build_params(provider)
+        collected = []
+
+        async def run():
+            from src.query.query import query
+            with unittest.mock.patch(
+                "src.services.compact.reactive_compact.reactive_compact",
+                side_effect=fake_reactive_compact,
+            ):
+                async for msg in query(params, terminal_holder=holder):
+                    collected.append(msg)
+
+        _run(run())
+
+        self.assertIsNotNone(holder.value)
+        self.assertEqual(holder.value.reason, "prompt_too_long")
+        self.assertEqual(len(compact_calls), 1)
+        # Last assistant message must be the surfaced PTL error.
+        ptl = [m for m in collected if isinstance(m, AssistantMessage)
+               and getattr(m, "_api_error", None) == "prompt_too_long"]
+        self.assertEqual(len(ptl), 1)
+
+    def test_ptl_one_shot_guard_post_compact_does_not_retry(self):
+        """B.2 ONE-SHOT GUARD (post-critic-strengthening): reactive_compact
+        succeeds first; the post-compact retry then ALSO raises PTL; the
+        guard (``has_attempted_reactive_compact=True`` carried in
+        ``QueryState``) prevents a second reactive_compact attempt; the
+        terminal is `prompt_too_long` and the second PTL message IS
+        surfaced (first one was withheld during the recovery attempt)."""
+        from unittest.mock import MagicMock
+        provider = MagicMock()
+        provider.chat_stream_response.side_effect = NotImplementedError()
+        # Both calls raise PTL — first triggers reactive_compact (which
+        # succeeds), second still raises after compaction.
+        provider.chat.side_effect = lambda *a, **kw: (_ for _ in ()).throw(
+            Exception("Prompt is too long")
+        )
+
+        from src.services.compact.reactive_compact import ReactiveCompactResult
+
+        compact_calls = []
+
+        async def fake_reactive_compact(messages, error, provider, model, **kw):
+            compact_calls.append(1)
+            return ReactiveCompactResult(
+                compacted=True,
+                messages=[UserMessage(content="[summary]")],
+                tokens_before=250_000,
+                tokens_after=10_000,
+            )
+
+        params, holder = self._build_params(provider)
+
+        async def run():
+            from src.query.query import query
+            with unittest.mock.patch(
+                "src.services.compact.reactive_compact.reactive_compact",
+                side_effect=fake_reactive_compact,
+            ):
+                async for _ in query(params, terminal_holder=holder):
+                    pass
+
+        _run(run())
+
+        self.assertIsNotNone(holder.value)
+        self.assertEqual(holder.value.reason, "prompt_too_long")
+        # One-shot guard: reactive_compact called EXACTLY ONCE even though
+        # the second model call ALSO raised PTL. Without the guard, the
+        # loop would attempt reactive_compact a second time and burn API
+        # budget in the death-spiral pattern documented in chapter §"Death
+        # Spiral Guard" point 1.
+        self.assertEqual(
+            len(compact_calls), 1,
+            "has_attempted_reactive_compact one-shot guard must prevent "
+            "a second reactive_compact attempt within the same loop turn",
+        )
+        # Two model calls: first raised PTL (triggered recovery), second
+        # raised PTL (post-recovery, surfaced as Terminal).
+        self.assertEqual(provider.chat.call_count, 2)
+
+    def test_media_size_message_withheld_and_recovers(self):
+        """B.1: media-size errors are tagged and withheld;
+        B.2: recovery via reactive_compact succeeds, terminal `completed`."""
+        from unittest.mock import MagicMock
+        provider = MagicMock()
+        provider.chat_stream_response.side_effect = NotImplementedError()
+        provider.chat.side_effect = [
+            Exception("image exceeds the maximum allowed dimensions"),
+            ChatResponse(
+                content="Done.",
+                model="test",
+                usage={"input_tokens": 100, "output_tokens": 20},
+                finish_reason="end_turn",
+                tool_uses=None,
+            ),
+        ]
+
+        from src.services.compact.reactive_compact import ReactiveCompactResult
+
+        async def fake_reactive_compact(messages, error, provider, model, **kw):
+            return ReactiveCompactResult(
+                compacted=True,
+                messages=[UserMessage(content="[summary]")],
+                tokens_before=10_000,
+                tokens_after=5_000,
+            )
+
+        params, holder = self._build_params(provider)
+        collected = []
+
+        async def run():
+            from src.query.query import query
+            with unittest.mock.patch(
+                "src.services.compact.reactive_compact.reactive_compact",
+                side_effect=fake_reactive_compact,
+            ):
+                async for msg in query(params, terminal_holder=holder):
+                    collected.append(msg)
+
+        _run(run())
+
+        media_msgs = [
+            m for m in collected
+            if isinstance(m, AssistantMessage)
+            and getattr(m, "_api_error", None) == "media_size"
+        ]
+        self.assertEqual(media_msgs, [], "media-size message must be withheld")
+        self.assertEqual(holder.value.reason, "completed")
+
+
+class TestPhaseBBlockingLimitPreemption(unittest.TestCase):
+    """Ch5/B.4 + B.5 — pre-emption guards before the API call."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.workspace = Path(self.temp_dir.name)
+        self.registry = build_default_registry()
+        self.context = ToolContext(workspace_root=self.workspace)
+        self.abort = AbortController()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_blocking_limit_preemption(self):
+        """B.4: when context is past blocking limit AND no recovery is
+        available (autocompact off), yield blocking_limit terminal
+        without calling the provider."""
+        import os
+        from unittest.mock import MagicMock, patch
+        from src.query.transitions import TerminalHolder
+
+        provider = MagicMock()
+        provider.context_window = 10_000  # tiny window
+
+        # With cw=10_000 the effective window floors at 33_000 (reserved
+        # 20k + AUTOCOMPACT_BUFFER 13k), so blocking_limit ~= 30_000.
+        # "x " * 200_000 yields ~50k estimated tokens, comfortably over.
+        big_text = "x " * 200_000  # ~50k tokens
+        messages = [UserMessage(content=big_text)]
+
+        params = QueryParams(
+            messages=messages,
+            system_prompt="You are helpful.",
+            tools=self.registry.list_tools(),
+            tool_registry=self.registry,
+            tool_use_context=self.context,
+            provider=provider,
+            abort_controller=self.abort,
+            max_turns=10,
+        )
+        holder = TerminalHolder()
+
+        async def run():
+            from src.query.query import query
+            with patch.dict(os.environ, {"DISABLE_AUTO_COMPACT": "1"}):
+                async for _ in query(params, terminal_holder=holder):
+                    pass
+
+        _run(run())
+
+        self.assertIsNotNone(holder.value)
+        self.assertEqual(holder.value.reason, "blocking_limit")
+        # Provider was never called (this is the whole point of the guard).
+        provider.chat.assert_not_called()
+        provider.chat_stream_response.assert_not_called()
+
+    def test_autocompact_circuit_breaker_returns_blocking_limit(self):
+        """B.5: when autocompact has failed 3 times AND we're still
+        above the threshold, return blocking_limit cleanly (vs.
+        burning another 500)."""
+        import os
+        from unittest.mock import MagicMock, patch
+        from src.query.transitions import TerminalHolder
+        from src.services.compact.autocompact import AutoCompactTracking
+        from src.services.compact.pipeline import PipelineConfig
+
+        provider = MagicMock()
+        provider.context_window = 100_000
+        # If the guard fires, the provider is never called. We add a
+        # canned response just in case the guard misses, so the test
+        # fails loudly with a different message.
+        provider.chat_stream_response.side_effect = NotImplementedError()
+        provider.chat.return_value = ChatResponse(
+            content="Should not be reached",
+            model="test",
+            usage={"input_tokens": 10, "output_tokens": 5},
+            finish_reason="end_turn",
+            tool_uses=None,
+        )
+
+        big_text = "y " * 200_000  # ~100k tokens, well above autocompact threshold
+        messages = [UserMessage(content=big_text)]
+
+        tracking = AutoCompactTracking(consecutive_failures=3)
+
+        # Pipeline config carries the tripped tracking. The pipeline
+        # itself will short-circuit autocompact (since failures>=3),
+        # so the breaker stays tripped and the B.5 guard fires.
+        pipeline_config = PipelineConfig(
+            provider=provider,
+            model="test",
+            autocompact_tracking=tracking,
+        )
+
+        params = QueryParams(
+            messages=messages,
+            system_prompt="You are helpful.",
+            tools=self.registry.list_tools(),
+            tool_registry=self.registry,
+            tool_use_context=self.context,
+            provider=provider,
+            abort_controller=self.abort,
+            max_turns=10,
+            pipeline_config=pipeline_config,
+        )
+        holder = TerminalHolder()
+
+        collected = []
+
+        async def run():
+            from src.query.query import query
+            async for msg in query(params, terminal_holder=holder):
+                collected.append(msg)
+
+        _run(run())
+
+        self.assertIsNotNone(holder.value)
+        self.assertEqual(holder.value.reason, "blocking_limit")
+        # Verify the user-visible message mentions automatic compaction.
+        msgs = [m for m in collected if isinstance(m, AssistantMessage)]
+        self.assertTrue(
+            any("automatic compaction" in str(getattr(m, "content", ""))
+                for m in msgs),
+            f"Expected 'automatic compaction' in surfaced message, got {msgs}",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
