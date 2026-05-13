@@ -403,6 +403,21 @@ Want to see how it's done? Open ClawCodex in any empty directory and ask it to b
 
 ***
 
+## Architecture
+
+For the six core abstractions (query loop, tools, tasks, two-tier state,
+memory, hooks) and the golden path from user input to model output,
+see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). It is the recommended
+starting point for new contributors.
+
+The reference for the original Claude Code architecture is at
+`claude-code-from-source/book/ch01-architecture.md`; the
+chapter-by-chapter port gap analyses and refactoring plans live under
+`my-docs/`.
+
+***
+
+
 ## 📦 Project Structure
 
 ```text
