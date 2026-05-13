@@ -154,4 +154,11 @@ def find_token_budget_positions(text: str) -> list[BudgetPosition]:
     for match in VERBOSE_RE.finditer(text):
         positions.append(BudgetPosition(start=match.start(), end=match.end()))
 
+    # Critic-flagged: callers that walk positions to strip markers
+    # (e.g. QueryEngine.submit_message) assume ascending order. The
+    # regex-emission order above can produce out-of-order entries for
+    # inputs like "work use 500k tokens +250k" where SHORTHAND_END
+    # is appended before VERBOSE_RE finditer reaches the earlier
+    # match. Sort defensively.
+    positions.sort(key=lambda p: p.start)
     return positions

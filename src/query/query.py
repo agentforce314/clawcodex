@@ -90,14 +90,6 @@ class StreamEvent:
     data: Any = None
 
 
-def _is_prompt_too_long_message(msg: Message) -> bool:
-    if not isinstance(msg, AssistantMessage):
-        return False
-    if not hasattr(msg, "_api_error"):
-        return False
-    return getattr(msg, "_api_error", None) == "prompt_too_long"
-
-
 def _create_user_message(content: str, *, is_meta: bool = False) -> UserMessage:
     return UserMessage(
         content=content,

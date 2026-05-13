@@ -103,6 +103,28 @@ class TestTokenBudgetParse(unittest.TestCase):
                 f"parsed={parsed}, positions={positions}",
             )
 
+    def test_positions_returned_sorted_by_start(self):
+        """Critic-flagged: ``find_token_budget_positions`` returns its
+        list in regex order (SHORTHAND_START → SHORTHAND_END → VERBOSE),
+        which can produce out-of-order entries for adversarial input
+        like ``"work use 500k tokens +250k"`` where VERBOSE_RE matches
+        EARLIER than SHORTHAND_END_RE. The strip walk in
+        ``QueryEngine.submit_message`` assumes ascending order — without
+        the sort, ``prompt[high:low]`` silently produces wrong output.
+        """
+        from src.query.token_budget import find_token_budget_positions
+        text = "work use 500k tokens +250k"
+        positions = find_token_budget_positions(text)
+        # Multiple matches expected — at least the VERBOSE and the
+        # SHORTHAND_END.
+        self.assertGreaterEqual(len(positions), 2)
+        # Critical: positions must be sorted ASC by start offset.
+        starts = [p.start for p in positions]
+        self.assertEqual(
+            starts, sorted(starts),
+            f"Positions must be sorted ASC by start; got {starts}",
+        )
+
 
 class TestTokenBudgetContinuation(_Base):
     """D.2 — budget continuation triggers a re-entry with a nudge."""
