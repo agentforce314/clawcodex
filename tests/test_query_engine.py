@@ -125,6 +125,35 @@ class TestQueryEngine(unittest.TestCase):
         self.assertIsInstance(engine.session_id, str)
         self.assertGreater(len(engine.session_id), 0)
 
+    def test_last_terminal_starts_none(self):
+        """Ch5/A follow-up: before any submit_message, last_terminal is None."""
+        engine = self._make_engine(MagicMock())
+        self.assertIsNone(engine.last_terminal)
+
+    def test_last_terminal_set_after_submit_message(self):
+        """Ch5/A follow-up: after submit_message completes, the engine
+        exposes the Terminal so callers can discriminate why the loop
+        stopped."""
+        provider = MagicMock()
+        provider.chat_stream_response.side_effect = NotImplementedError()
+        provider.chat.return_value = ChatResponse(
+            content="Done.",
+            model="test",
+            usage={"input_tokens": 10, "output_tokens": 5},
+            finish_reason="end_turn",
+            tool_uses=None,
+        )
+        engine = self._make_engine(provider)
+
+        async def run():
+            async for _ in engine.submit_message("Hi"):
+                pass
+
+        _run(run())
+
+        self.assertIsNotNone(engine.last_terminal)
+        self.assertEqual(engine.last_terminal.reason, "completed")
+
 
 class TestEngineProducesCacheableSystemBlocks(unittest.TestCase):
     """Joint WI-1.1 + WI-1.2 acceptance: end-to-end engine produces blocks.

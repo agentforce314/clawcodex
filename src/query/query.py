@@ -25,6 +25,7 @@ from ..utils.abort_controller import AbortController
 from ..providers.base import BaseProvider, ChatResponse
 
 from .config import QueryConfig, build_query_config
+from .deps import QueryDeps
 from .transitions import (
     QueryState,
     Terminal,
@@ -82,6 +83,11 @@ class QueryParams:
     # provider-internal concern (rate-limit header parsing) that is
     # tracked as a separate ticket.
     fallback_provider: BaseProvider | None = None
+    # Ch5/G.1+G.2 — narrow dependency injection. Tests pass a custom
+    # ``QueryDeps`` to swap ``call_model`` for a fake without having
+    # to monkey-patch ``_call_model_sync`` at the module level. When
+    # ``deps`` is None, the loop falls back to ``production_deps()``.
+    deps: QueryDeps | None = None
 
 
 @dataclass
@@ -696,6 +702,16 @@ async def query(
     )
     config = build_query_config()
 
+    # Ch5/G.1+G.2 — resolve deps once per query() invocation. Tests
+    # pass their own QueryDeps to swap call_model for a fake; the
+    # production path uses production_deps() which wires
+    # _call_model_sync, microcompact_messages, and auto_compact_if_needed.
+    if params.deps is not None:
+        deps = params.deps
+    else:
+        from .deps import production_deps
+        deps = production_deps()
+
     # Ch5/D.1 — instantiate the budget tracker once per query() call
     # when both the config gate (token_budget_enabled) is on AND the
     # caller passed a task_budget. Mirrors TS query.ts:295. The tracker
@@ -867,7 +883,10 @@ async def query(
             while attempt_with_fallback:
                 attempt_with_fallback = False
                 try:
-                    returned_assistants, returned_tool_blocks = await _call_model_sync(
+                    # Ch5/G.2 — route through deps.call_model. The default
+                    # production deps wires this to _call_model_sync; tests
+                    # can pass a fake with the same signature.
+                    returned_assistants, returned_tool_blocks = await deps.call_model(
                         provider=current_provider,
                         messages=messages,
                         system_prompt=params.system_prompt,
