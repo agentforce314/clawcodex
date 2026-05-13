@@ -4,14 +4,26 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-ARCHIVE_ROOT = Path(__file__).resolve().parent.parent / 'archive' / 'claude_code_ts_snapshot' / 'src'
-CURRENT_ROOT = Path(__file__).resolve().parent
-REFERENCE_SURFACE_PATH = CURRENT_ROOT / 'reference_data' / 'archive_surface_snapshot.json'
-COMMAND_SNAPSHOT_PATH = CURRENT_ROOT / 'reference_data' / 'commands_snapshot.json'
-TOOL_SNAPSHOT_PATH = CURRENT_ROOT / 'reference_data' / 'tools_snapshot.json'
+# ch01 round-2 P3: this module was relocated from src/parity_audit.py to
+# scripts/audit/parity_audit.py. The audit still measures the production
+# tree at <repo>/src, while its own reference_data sits alongside it.
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent  # scripts/audit -> scripts -> repo root
+ARCHIVE_ROOT = _REPO_ROOT / 'archive' / 'claude_code_ts_snapshot' / 'src'
+CURRENT_ROOT = _REPO_ROOT / 'src'  # what we audit (NOT where we live)
+# Reference data stays at src/reference_data/ because the production
+# subsystem __init__.py files (src/bridge, src/server, ~20 more) read
+# their JSON snapshots from there.
+_DATA_ROOT = CURRENT_ROOT / 'reference_data'
+REFERENCE_SURFACE_PATH = _DATA_ROOT / 'archive_surface_snapshot.json'
+COMMAND_SNAPSHOT_PATH = _DATA_ROOT / 'commands_snapshot.json'
+TOOL_SNAPSHOT_PATH = _DATA_ROOT / 'tools_snapshot.json'
 
 ARCHIVE_ROOT_FILES = {
-    'QueryEngine.ts': 'QueryEngine.py',
+    # ch01 round-2 P3: legacy ``src/QueryEngine.py`` shim deleted —
+    # ``QueryEngineRuntime`` had zero callers. Production ``QueryEngine``
+    # lives at ``src/query/engine.py``; this row redirects to the
+    # ``query`` package (same pattern as the ``query.ts`` row below).
+    'QueryEngine.ts': 'query',
     # Chapter-10 refactor (Chunk B / WI-1.1): the TS ``Task.ts`` file now maps
     # to ``src/tasks_core.py`` (TaskType union, TaskStatus union, TaskStateBase,
     # ``is_terminal_task_status``, ``generate_task_id``). The legacy stub at
@@ -25,8 +37,14 @@ ARCHIVE_ROOT_FILES = {
     # directory name (same pattern as ``'tasks.ts': 'task_registry.py'``
     # below and ``'dialogLaunchers.tsx': 'tui'`` above).
     'Tool.ts': 'tool_system',
-    'commands.ts': 'commands.py',
-    'context.ts': 'context.py',
+    # ch01 round-2 P3: ``src/commands.py`` was an audit snapshot, relocated
+    # to ``scripts/audit/commands.py``. The production command surface lives
+    # under the ``src/command_system/`` package.
+    'commands.ts': 'command_system',
+    # ch01 round-2 P3: ``src/context.py`` was audit scaffolding, relocated
+    # to ``scripts/audit/context.py``. Production context lives at
+    # ``src/context_system/``.
+    'context.ts': 'context_system',
     'cost-tracker.ts': 'cost_tracker.py',
     'costHook.ts': 'costHook.py',
     # Chapter-13 Phase-0 hygiene: ``dialogLaunchers.tsx``, ``ink.ts``, and
@@ -43,7 +61,10 @@ ARCHIVE_ROOT_FILES = {
     'history.ts': 'history.py',
     'ink.ts': 'tui',
     'interactiveHelpers.tsx': 'tui',
-    'main.tsx': 'main.py',
+    # ch01 round-2 P3: ``src/main.py`` was the audit CLI, relocated to
+    # ``scripts/audit/main.py``. Production entry is ``src/cli.py``
+    # (``pyproject.toml`` console-script).
+    'main.tsx': 'cli.py',
     'projectOnboardingState.ts': 'projectOnboardingState.py',
     # ch01 refactor (P2.3): the legacy ``src/query.py`` stub
     # (a 13-line placeholder pair of request/response dataclasses)
@@ -53,13 +74,19 @@ ARCHIVE_ROOT_FILES = {
     # components live in the ``src/query/`` package.
     'query.ts': 'query',
     'replLauncher.tsx': 'replLauncher.py',
-    'setup.ts': 'setup.py',
+    # ch01 round-2 P3: ``src/setup.py`` was audit scaffolding, relocated to
+    # ``scripts/audit/setup.py``. Production initialization lives under
+    # ``src/bootstrap/``.
+    'setup.ts': 'bootstrap',
     # Chapter-10 refactor (Chunk B / WI-1.0): the old ``tasks.py`` flat file
     # was deleted in favor of a real ``src/tasks/`` package. The TS root file
     # ``tasks.ts`` now maps to ``src/task_registry.py`` (which holds
     # ``RuntimeTaskRegistry``, ``Task`` Protocol, and ``get_all_tasks``).
     'tasks.ts': 'task_registry.py',
-    'tools.ts': 'tools.py',
+    # ch01 round-2 P3: ``src/tools.py`` was a ``PortingModule`` snapshot,
+    # relocated to ``scripts/audit/tools.py``. Production tools live under
+    # the ``src/tool_system/`` package (same target as ``Tool.ts`` above).
+    'tools.ts': 'tool_system',
 }
 
 ARCHIVE_DIR_MAPPINGS = {
@@ -76,10 +103,16 @@ ARCHIVE_DIR_MAPPINGS = {
     # ``'commands': 'commands.py'`` / ``'context': 'context.py'`` /
     # ``'tools': 'tools.py'`` pattern.
     'cli': 'cli.py',
-    'commands': 'commands.py',
+    # ch01 round-2 P3: the audit ``src/commands.py`` snapshot was relocated
+    # to ``scripts/audit/commands.py``; production commands live under
+    # ``src/command_system/``.
+    'commands': 'command_system',
     'components': 'components',
     'constants': 'constants',
-    'context': 'context.py',
+    # ch01 round-2 P3: the audit ``src/context.py`` scaffolding was relocated
+    # to ``scripts/audit/context.py``; production context lives under
+    # ``src/context_system/``.
+    'context': 'context_system',
     'coordinator': 'coordinator',
     'entrypoints': 'entrypoints',
     'hooks': 'hooks',
@@ -111,7 +144,10 @@ ARCHIVE_DIR_MAPPINGS = {
     # maps to a real ``src/tasks/`` Python package (was a flat
     # ``src/tasks.py`` stub before the refactor).
     'tasks': 'tasks',
-    'tools': 'tools.py',
+    # ch01 round-2 P3: production tools live under ``src/tool_system/``;
+    # the legacy audit snapshot at ``src/tools.py`` was relocated to
+    # ``scripts/audit/tools.py``.
+    'tools': 'tool_system',
     'types': 'types',
     'upstreamproxy': 'upstreamproxy',
     'utils': 'utils',

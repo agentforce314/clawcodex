@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .commands import get_commands
-from .models import PortingModule
+from src.models import PortingModule
 
 
 @dataclass(frozen=True)
