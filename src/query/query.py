@@ -428,82 +428,103 @@ def _partition_tool_calls(
     return batches
 
 
+def _find_assistant_message_for_block(
+    block: ToolUseBlock,
+    assistant_messages: list[AssistantMessage],
+) -> AssistantMessage | None:
+    """Find the AssistantMessage that emitted ``block.id``.
+
+    Tool calls always live inside the assistant turn that produced them;
+    hooks may need access to that surrounding turn. Returns None if no
+    match (the adapter can use a stub).
+    """
+    for msg in assistant_messages:
+        content = msg.content
+        if not isinstance(content, list):
+            continue
+        for content_block in content:
+            if isinstance(content_block, ToolUseBlock) and content_block.id == block.id:
+                return msg
+    return None
+
+
 def _dispatch_single_tool(
     block: ToolUseBlock,
     tool_registry: ToolRegistry,
     tool_use_context: ToolContext,
     tools: Tools | None = None,
-) -> UserMessage:
-    """Dispatch a single tool and return the UserMessage result.
+    assistant_message: AssistantMessage | None = None,
+) -> tuple[list[UserMessage], Any]:
+    """Dispatch a single tool through the full 13-step pipeline.
 
-    Routes through ``process_tool_result_block`` (mirrors TS Step 11 of
-    the execution pipeline at ``processToolResultBlock``) so the per-tool
-    persistence threshold AND the WI-5.1 per-message aggregate budget
-    both engage on the production path. The running aggregate is held on
-    ``tool_use_context.tool_result_chars_so_far`` (reset at the top of
-    each per-turn loop in :func:`query`).
+    Returns a ``(messages, context_modifier)`` tuple:
+
+    * ``messages`` -- the primary tool_result UserMessage plus any
+      auxiliary messages (sub-agent transcripts injected via
+      ``ToolResult.new_messages``, hook attachments) the pipeline
+      produced. Caller appends them all to the conversation in order.
+    * ``context_modifier`` -- optional callable returned by tools like
+      ``EnterPlanMode`` that mutates the ``ToolContext`` for
+      subsequent tool calls. Caller is responsible for applying it
+      (serial batches: apply immediately; concurrent batches: queue
+      until batch completes).
+
+    Routes through ``dispatch_full`` which internally runs the full
+    pipeline: schema/semantic validation, ``backfill_observable_input``,
+    PreToolUse hooks, permission resolution, tool execution, Step 11
+    result budgeting (per-tool ``max_result_size_chars`` AND aggregate
+    per-message cap), PostToolUse hooks, ``new_messages`` injection,
+    and telemetry-safe error classification. The previous implementation
+    bolted only Step 11 onto ``tool_registry.dispatch()`` and silently
+    skipped hooks, ``new_messages``, ``context_modifier``, and error
+    classification — see ``my-docs/ch06-tools-gap-analysis.md``.
+
+    ``tool_registry`` is kept as a parameter for back-compat / future
+    use; the dispatch lookup itself goes through the ``tools`` list.
+
+    **Abort handling.** ``dispatch_full → run_tool_use`` checks
+    ``tool_use_context.abort_controller.signal.aborted`` at the top
+    of every tool call (``tool_execution.py:99-105``) and yields a
+    ``CANCEL_MESSAGE`` tool_result if set. No additional check is
+    needed here — every dispatch inherits boundary-abort behavior
+    for free. Mid-tool-execution abort (e.g., interrupting a long
+    Bash command) is NOT yet supported; deferred to a follow-up that
+    moves Bash to ``asyncio.create_subprocess_exec`` with cancellation.
     """
+    from ..services.tool_execution import (
+        dispatch_full,
+        make_stub_assistant_message,
+    )
+
     try:
         call = ToolCall(
             name=block.name,
             input=block.input,
             tool_use_id=block.id,
         )
-        result = tool_registry.dispatch(call, tool_use_context)
 
-        tool = find_tool_by_name(tools, block.name) if tools else None
+        amsg = assistant_message or make_stub_assistant_message()
+        result = dispatch_full(
+            call,
+            tool_use_context,
+            amsg,
+            tools=list(tools) if tools else None,
+        )
+
+        # Extract content from the primary tool_result block produced
+        # by the pipeline. The block content is already mapped +
+        # budgeted by Step 11.
+        content_val = result.tool_result_block.get("content", "")
+        if not isinstance(content_val, str):
+            content_str = json.dumps(content_val, ensure_ascii=False)
+        else:
+            content_str = content_val
+
         metadata: dict[str, Any] = {}
         if isinstance(result.output, dict):
             metadata["tool_output"] = result.output
 
-        if tool is not None:
-            # WI-5.1: route through ``process_tool_result_block`` so the
-            # 200K per-message aggregate cap is enforced. Without this
-            # call the production REPL ran ``map_result_to_api`` directly
-            # and never engaged the gate (critic B2).
-            #
-            # The read-decide-write on ``tool_result_chars_so_far`` is
-            # serialized via ``_aggregate_lock`` because ``_run_tools_partitioned``
-            # dispatches concurrency-safe tools (Read/Grep/Glob) via
-            # ``asyncio.to_thread`` (critic B6). The decision MUST be
-            # made on a fresh snapshot of the counter — otherwise N
-            # threads racing the read all see 0, all decide "under cap"
-            # and the cap is silently bypassed. ``process_tool_result_block``
-            # is called inside the critical section: for small blocks
-            # under threshold it just returns the block (no I/O); the
-            # rare persist-to-disk path runs while serialized but those
-            # are at most O(1) per turn (typically <5%).
-            from ..services.tool_execution.tool_result_persistence import (
-                compute_block_chars,
-                process_tool_result_block,
-                resolve_tool_results_dir,
-            )
-            tool_results_dir = resolve_tool_results_dir(tool_use_context)
-            with tool_use_context._aggregate_lock:
-                aggregate_so_far = tool_use_context.tool_result_chars_so_far
-                api_block = process_tool_result_block(
-                    tool,
-                    result.output,
-                    block.id,
-                    tool_results_dir=tool_results_dir,
-                    aggregate_chars_so_far=aggregate_so_far,
-                )
-                # Update the running aggregate AFTER the block is
-                # finalized (post-persistence, so the wrapper message
-                # size is what counts toward the budget — not the
-                # original 200K output).
-                tool_use_context.tool_result_chars_so_far += compute_block_chars(api_block)
-            content_str = api_block.get("content", "")
-            if not isinstance(content_str, str):
-                content_str = json.dumps(content_str, ensure_ascii=False)
-        elif isinstance(result.output, str):
-            content_str = result.output
-        elif isinstance(result.output, dict):
-            content_str = json.dumps(result.output, ensure_ascii=False)
-        else:
-            content_str = str(result.output)
-
-        return UserMessage(
+        primary = UserMessage(
             content=[
                 ToolResultBlock(
                     tool_use_id=block.id,
@@ -513,9 +534,31 @@ def _dispatch_single_tool(
                 )
             ],
         )
+
+        # Surface new_messages (sub-agent transcripts, system reminders,
+        # hook attachments) as additional UserMessages appended after
+        # the primary result. The pipeline emits them as Message
+        # objects; the conversation accepts them as-is.
+        out_msgs: list[UserMessage] = [primary]
+        for extra in result.new_messages:
+            # The pipeline yields Message subclasses; coerce attachment
+            # / system messages into the UserMessage shape only when
+            # they aren't already a Message. Otherwise pass through.
+            if isinstance(extra, UserMessage):
+                out_msgs.append(extra)
+            elif isinstance(extra, AssistantMessage):
+                # Unusual but the pipeline could surface attachment-as-assistant
+                # in some hook configurations; emit it via wrap.
+                out_msgs.append(extra)  # type: ignore[arg-type]
+            else:
+                # Some hook outputs are AttachmentMessage / SystemMessage;
+                # keep them as-is. They share the Message base.
+                out_msgs.append(extra)  # type: ignore[arg-type]
+
+        return out_msgs, result.context_modifier
     except Exception as e:
         error_str = f"Error: {e}"
-        return UserMessage(
+        return ([UserMessage(
             content=[
                 ToolResultBlock(
                     tool_use_id=block.id,
@@ -523,7 +566,7 @@ def _dispatch_single_tool(
                     is_error=True,
                 )
             ],
-        )
+        )], None)
 
 
 async def _run_tools_partitioned(
@@ -531,6 +574,7 @@ async def _run_tools_partitioned(
     tool_registry: ToolRegistry,
     tool_use_context: ToolContext,
     tools: Tools,
+    assistant_messages: list[AssistantMessage] | None = None,
 ) -> list[UserMessage]:
     """Run tools with TS-matching concurrency: safe tools parallel, unsafe exclusive.
 
@@ -538,34 +582,102 @@ async def _run_tools_partitioned(
     ConcurrencySafe tools (Read, Grep, Glob, etc.) run in parallel up to
     MAX_TOOL_USE_CONCURRENCY.  Non-safe tools (Bash, Edit, Write) run
     exclusively one at a time.
+
+    ``context_modifier`` application order matches TS semantics:
+
+    * **Concurrent batches** (multiple parallel calls): queue per-tool
+      modifiers, then apply in submission order AFTER the batch
+      completes. This is the only safe choice because two parallel
+      tools both modifying the context have undefined interleaving.
+    * **Serial batches**: apply the modifier immediately after each
+      tool returns, so the next tool in the same batch sees the
+      mutated context. Without this, ``[EnterPlanMode, Edit(/src/x)]``
+      in one turn would run Edit with the pre-EnterPlanMode permission
+      mode.
+
+    The ``_aggregate_lock`` (for the per-message 200K budget) is held
+    inside ``run_tool_use`` at the narrow read-decide-write window,
+    NOT at this call site. Lock-at-call-site would serialize the
+    parallel I/O that concurrency-safe tools exist to enable
+    (Read/Grep/Glob in parallel).
+
+    ``context_modifier`` may legally return a new (cloned) context.
+    Both branches below assign the return value back to
+    ``current_context`` so a clone-style modifier propagates to
+    subsequent batches; the closure passed to ``asyncio.to_thread``
+    captures the latest ``current_context`` per dispatch.
     """
+    asst_msgs = assistant_messages or []
     batches = _partition_tool_calls(tool_use_blocks, tools)
     all_results: list[UserMessage] = []
+    current_context = tool_use_context
+
+    def _run_one(block: ToolUseBlock, ctx: ToolContext) -> tuple[list[UserMessage], Any]:
+        amsg = _find_assistant_message_for_block(block, asst_msgs)
+        return _dispatch_single_tool(
+            block, tool_registry, ctx, tools, amsg,
+        )
 
     for batch in batches:
         if batch.is_concurrent_safe and len(batch.blocks) > 1:
+            # Concurrent batch: queue context_modifiers; apply after.
+            # Snapshot the current context for the whole batch so every
+            # parallel call sees the same context (no mid-batch race).
+            batch_ctx = current_context
+            queued_modifiers: list[tuple[str, Any]] = []
             coros = [
-                asyncio.to_thread(
-                    _dispatch_single_tool, block, tool_registry, tool_use_context, tools,
-                )
+                asyncio.to_thread(_run_one, block, batch_ctx)
                 for block in batch.blocks[:MAX_TOOL_USE_CONCURRENCY]
             ]
             batch_results = await asyncio.gather(*coros)
-            all_results.extend(batch_results)
+            for block, (msgs, mod) in zip(
+                batch.blocks[:MAX_TOOL_USE_CONCURRENCY], batch_results,
+            ):
+                all_results.extend(msgs)
+                if mod is not None:
+                    queued_modifiers.append((block.id, mod))
             if len(batch.blocks) > MAX_TOOL_USE_CONCURRENCY:
-                overflow = [
-                    asyncio.to_thread(
-                        _dispatch_single_tool, block, tool_registry, tool_use_context, tools,
-                    )
+                overflow_coros = [
+                    asyncio.to_thread(_run_one, block, batch_ctx)
                     for block in batch.blocks[MAX_TOOL_USE_CONCURRENCY:]
                 ]
-                all_results.extend(await asyncio.gather(*overflow))
+                overflow_results = await asyncio.gather(*overflow_coros)
+                for block, (msgs, mod) in zip(
+                    batch.blocks[MAX_TOOL_USE_CONCURRENCY:], overflow_results,
+                ):
+                    all_results.extend(msgs)
+                    if mod is not None:
+                        queued_modifiers.append((block.id, mod))
+
+            # Apply queued context modifiers in submission order. The
+            # modifier may return a clone; capture the returned context
+            # so it propagates to subsequent batches.
+            for _, modifier in queued_modifiers:
+                try:
+                    new_ctx = modifier(current_context)
+                    if new_ctx is not None:
+                        current_context = new_ctx
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "context_modifier failed; continuing with prior context: %s",
+                        exc,
+                    )
         else:
+            # Serial batch: apply context_modifier immediately so the
+            # next tool in the batch sees the mutated context.
             for block in batch.blocks:
-                result = await asyncio.to_thread(
-                    _dispatch_single_tool, block, tool_registry, tool_use_context, tools,
-                )
-                all_results.append(result)
+                msgs, modifier = await asyncio.to_thread(_run_one, block, current_context)
+                all_results.extend(msgs)
+                if modifier is not None:
+                    try:
+                        new_ctx = modifier(current_context)
+                        if new_ctx is not None:
+                            current_context = new_ctx
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "context_modifier failed; continuing with prior context: %s",
+                            exc,
+                        )
 
     return all_results
 
@@ -575,10 +687,27 @@ def _run_tools_sync(
     tool_registry: ToolRegistry,
     tool_use_context: ToolContext,
 ) -> list[UserMessage]:
-    """Legacy synchronous tool execution (no partitioning)."""
+    """Legacy synchronous tool execution (no partitioning).
+
+    Currently has no production callers; kept for back-compat with any
+    SDK consumer that imports it. New callers should use
+    ``_run_tools_partitioned`` (async, partition-aware).
+    """
     results: list[UserMessage] = []
+    current_context = tool_use_context
     for block in tool_use_blocks:
-        results.append(_dispatch_single_tool(block, tool_registry, tool_use_context))
+        msgs, modifier = _dispatch_single_tool(block, tool_registry, current_context)
+        results.extend(msgs)
+        if modifier is not None:
+            try:
+                new_ctx = modifier(current_context)
+                if new_ctx is not None:
+                    current_context = new_ctx
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "context_modifier failed; continuing with prior context: %s",
+                    exc,
+                )
     return results
 
 
@@ -784,6 +913,7 @@ async def query(
             params.tool_registry,
             tool_use_context,
             params.tools,
+            assistant_messages=assistant_messages,
         )
 
         if _diag:
