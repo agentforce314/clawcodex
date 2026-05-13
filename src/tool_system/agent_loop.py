@@ -6,16 +6,26 @@ import json
 from dataclasses import dataclass
 from typing import Any, Callable
 
+import logging
+
 from .registry import ToolRegistry
 from .context import ToolContext
+from .protocol import ToolCall
 from ..agent.conversation import Conversation
+from ..services.tool_execution import (
+    dispatch_full,
+    make_stub_assistant_message,
+)
 from ..types.content_blocks import TextBlock, ToolUseBlock
+from ..types.messages import AssistantMessage as _AssistantMessage
 from ..context_system import build_context_prompt
 from ..outputStyles import resolve_output_style
 from ..providers.base import BaseProvider, ChatResponse
 from ..providers.anthropic_provider import AnthropicProvider
 from ..providers.minimax_provider import MinimaxProvider
 from ..utils.abort_controller import AbortError, AbortSignal
+
+logger = logging.getLogger(__name__)
 
 
 def _is_anthropic_provider(provider: BaseProvider) -> bool:
@@ -326,6 +336,15 @@ def run_agent_loop(
 
     for turn in range(max_turns):
         _check_cancel()
+        # WI-5.1: reset the per-message aggregate counter at each turn
+        # boundary. The 200K cap is PER USER MESSAGE (the next batch of
+        # tool results sent to the model), not cumulative across the
+        # whole session. Without this reset the counter grows
+        # monotonically and after ~200K of cumulative output every
+        # subsequent block force-persists regardless of its individual
+        # size. Mirrors ``query.py`` reset at the top of the per-turn
+        # loop.
+        tool_context.tool_result_chars_so_far = 0
         if _is_anthropic_provider(provider):
             api_messages = conversation.get_messages()
         else:
@@ -414,8 +433,54 @@ def run_agent_loop(
                 num_turns=turn_count,
             )
 
-        # Call each tool
+        # Build a real AssistantMessage carrying the just-emitted
+        # tool_use blocks so the full pipeline's hooks can see the
+        # originating assistant turn.
+        try:
+            _amsg_blocks: list = []
+            if final_assistant_content:
+                _amsg_blocks.append(TextBlock(type="text", text=final_assistant_content))
+            for _tu in tool_uses:
+                _amsg_blocks.append(ToolUseBlock(
+                    type="tool_use",
+                    id=_tu["id"],
+                    name=_tu["name"],
+                    input=_tu["input"],
+                ))
+            assistant_msg_for_dispatch = _AssistantMessage(content=_amsg_blocks)
+        except (TypeError, ValueError):
+            # Defense in depth: bug in block construction should fall
+            # back to a stub rather than crash the whole loop.
+            assistant_msg_for_dispatch = make_stub_assistant_message()
+
+        # Call each tool through the full 13-step pipeline via dispatch_full.
+        # This replaces the legacy ToolRegistry.dispatch() shortcut so:
+        # - PreToolUse/PostToolUse hooks fire.
+        # - Per-tool max_result_size_chars + 200K aggregate budget engage.
+        # - ToolResult.new_messages flow into the conversation.
+        # - ToolResult.context_modifier mutates tool_context for the
+        #   next tool call in this same turn (matches TS serial-batch
+        #   semantics — agent_loop runs one tool at a time).
+        # - Errors are telemetry-safe-classified into <tool_use_error>.
+
+        # ``current_tool_context`` is the local-mutable view that
+        # propagates context_modifier returns to the next tool in this
+        # turn. Most modifiers mutate in place and return None (no-op
+        # rebind); clone-style modifiers return a new context that we
+        # adopt for subsequent dispatches.
+        current_tool_context = tool_context
         for tool_use in tool_uses:
+            # Two-tier abort handling (Phase 6 audit):
+            # 1. ``_check_cancel()`` — agent_loop's caller-supplied
+            #    ``cancel_signal`` (e.g., REPL's Ctrl+C handler). Fires
+            #    BEFORE the next tool starts.
+            # 2. ``dispatch_full → run_tool_use`` checks
+            #    ``tool_use_context.abort_controller.signal.aborted`` at
+            #    ``tool_execution.py:99-105`` — separate signal that
+            #    may be set by hooks or external observers.
+            # Mid-execution abort (Ctrl+C while Bash subprocess is
+            # running) is NOT yet supported; deferred to a follow-up
+            # that moves Bash to ``asyncio.create_subprocess_exec``.
             _check_cancel()
             tool_id = tool_use["id"]
             tool_name = tool_use["name"]
@@ -431,11 +496,31 @@ def run_agent_loop(
                         tool_use_id=tool_id,
                     ),
                 )
-                # Use dispatch to get proper validation and result wrapping
-                from ..tool_system.protocol import ToolCall
                 call = ToolCall(name=tool_name, input=tool_input, tool_use_id=tool_id)
-                result = tool_registry.dispatch(call, tool_context)
-                result_output = result.output
+                dispatch_result = dispatch_full(
+                    call,
+                    current_tool_context,
+                    assistant_msg_for_dispatch,
+                    tools=list(tool_registry.list_tools()),
+                )
+                # ``result_output`` keeps the typed shape (dict / str /
+                # list) so the SendUserMessage / StructuredOutput
+                # special cases below continue to read ``.get(...)``
+                # from a dict, not a stringified blob.
+                result_output = dispatch_result.output
+                is_error = dispatch_result.is_error
+
+                # ``tool_result_content`` is the already-budgeted +
+                # mapped string that should reach the model.
+                # ``map_result_to_api`` + Step-11 persistence have
+                # already run inside the pipeline; we route this
+                # (not raw ``output``) into the conversation so
+                # oversized results carry the <persisted-output>
+                # wrapper and empty results carry the no-output marker.
+                tool_result_content = dispatch_result.tool_result_block.get(
+                    "content", "",
+                )
+
                 if tool_name.lower() == "sendusermessage" and isinstance(result_output, dict):
                     msg = result_output.get("message")
                     if isinstance(msg, str):
@@ -461,18 +546,69 @@ def run_agent_loop(
                         tool_name=tool_name,
                         tool_output=result_output,
                         tool_use_id=tool_id,
-                        is_error=result.is_error,
+                        is_error=is_error,
                     ),
                 )
                 if _is_anthropic_provider(provider):
-                    conversation.add_tool_result_message(tool_id, result_output)
+                    conversation.add_tool_result_message(
+                        tool_id, tool_result_content, is_error=is_error,
+                    )
                 else:
-                    # Add tool result in OpenAI format
+                    # Tool_result_content is already a string for the
+                    # OpenAI shape — no further json.dumps needed.
+                    if not isinstance(tool_result_content, str):
+                        tool_result_content = _build_openai_tool_result_content(
+                            tool_result_content,
+                        )
                     openai_messages.append({
                         "role": "tool",
                         "tool_call_id": tool_id,
-                        "content": _build_openai_tool_result_content(result_output)
+                        "content": tool_result_content,
                     })
+
+                # Append any new_messages from the pipeline (AgentTool
+                # sub-agent transcripts, hook attachments, system
+                # reminders, hook_stopped_continuation attachments)
+                # AFTER the primary tool result so they appear in
+                # submission order.
+                #
+                # Use ``append_raw_message`` (not ``add_message``) to
+                # preserve subclass-specific fields:
+                # - AttachmentMessage's ``attachments`` payload (hook
+                #   stop-continuation metadata, sub-agent transcripts)
+                # - SystemMessage's ``subtype``/``preventContinuation``
+                # - AssistantMessage's ``model``/``usage``/``stop_reason``
+                # ``add_message`` round-trips through ``create_message``
+                # which drops everything but ``role``+``content``.
+                for extra in dispatch_result.new_messages:
+                    if hasattr(extra, "role") and hasattr(extra, "content"):
+                        try:
+                            conversation.append_raw_message(extra)
+                        except Exception as extra_exc:  # noqa: BLE001
+                            logger.warning(
+                                "failed to append new_message after %s (%s): %s",
+                                tool_name, tool_id, extra_exc,
+                            )
+                            continue
+
+                # Apply context_modifier (serial — agent_loop runs one
+                # tool at a time, so the next iteration sees the
+                # mutated context). Clone-style modifiers return a new
+                # context; in-place modifiers return None.
+                if dispatch_result.context_modifier is not None:
+                    try:
+                        new_ctx = dispatch_result.context_modifier(current_tool_context)
+                        if new_ctx is not None:
+                            current_tool_context = new_ctx
+                    except Exception as mod_exc:  # noqa: BLE001
+                        # Failed modifier shouldn't crash the loop —
+                        # next tool gets the prior context. Log so the
+                        # bug is diagnosable.
+                        logger.warning(
+                            "context_modifier raised on %s (%s); "
+                            "continuing with prior context: %s",
+                            tool_name, tool_id, mod_exc,
+                        )
             except Exception as e:
                 error_str = f"Error: {e}"
                 if verbose:

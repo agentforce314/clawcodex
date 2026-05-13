@@ -49,6 +49,22 @@ class Conversation:
         )
         self.add_message("user", [block])
 
+    def append_raw_message(self, message: Message) -> None:
+        """Append a Message instance preserving its subclass identity.
+
+        ``add_message`` constructs a fresh ``Message`` via
+        ``create_message`` which drops subclass-specific fields
+        (AttachmentMessage's ``attachments``, SystemMessage's
+        ``subtype``/``preventContinuation``, AssistantMessage's
+        ``model``/``usage``, etc.). Use this method when routing
+        pipeline-yielded messages (sub-agent transcripts, hook
+        attachments, system reminders) where those fields carry
+        semantic payload.
+        """
+        if len(self.messages) >= self.max_history:
+            self.messages.pop(0)
+        self.messages.append(message)
+
     def get_messages(self) -> list[dict[str, Any]]:
         return normalize_messages_for_api(self.messages)
 
