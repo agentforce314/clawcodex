@@ -25,11 +25,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from src.agent import Session
-from src.tool_system.agent_loop import (
-    ToolEvent,
-    _build_effective_system_prompt,
-    run_agent_loop,
-)
+from src.tool_system.agent_loop import _build_effective_system_prompt
+from src.tool_system.renderers import ToolEvent
 from src.query.agent_loop_compat import run_query_as_agent_loop
 from src.tool_system.context import ToolContext
 from src.tool_system.registry import ToolRegistry
@@ -166,13 +163,23 @@ class AgentBridge:
             # on Textual's main event loop and block UI rendering
             # during model streams. Per F.3 critic-revised plan.
             import asyncio as _asyncio
-            from src.tool_system.agent_loop import AgentLoopResult
+            from src.tool_system.renderers import AgentLoopResult
 
             effective_system_prompt = _build_effective_system_prompt(
                 getattr(self._tool_context, "output_style_prompt", "")
                 or "You are a helpful assistant.",
                 self._tool_context,
             )
+
+            # Persist FULL Message objects (preserving tool_use and
+            # tool_result blocks) into the session conversation as
+            # they're yielded. Multi-submit TUI sessions otherwise
+            # lose Anthropic tool_use→tool_result pairings between
+            # turns, corrupting context.
+            def _persist_full_message(msg) -> None:
+                self._session.conversation.add_message(
+                    msg.role, msg.content,
+                )
 
             loop = _asyncio.new_event_loop()
             try:
@@ -188,6 +195,7 @@ class AgentBridge:
                         max_turns=self._max_turns,
                         on_event=_on_event,
                         on_text_chunk=_on_text if self._stream else None,
+                        on_message=_persist_full_message,
                         cancel_signal=(
                             controller.signal if controller is not None else None
                         ),
@@ -195,18 +203,14 @@ class AgentBridge:
                 )
             finally:
                 loop.close()
-
-            # The legacy run_agent_loop appended assistant messages
-            # into self._session.conversation in place. Replicate so
-            # subsequent prompts in the same TUI session see the
-            # full history.
-            if compat_result.response_text:
-                self._session.conversation.add_assistant_message(
-                    compat_result.response_text,
-                )
+            # Critic-flagged: ``compat_result.usage`` is always a dict
+            # (4 keys, possibly all-zero) so ``or None`` always
+            # resolved to the dict. Match the legacy ``usage: dict |
+            # None`` contract by setting None when no turns ran.
+            usage_dict = compat_result.usage if compat_result.num_turns > 0 else None
             result = AgentLoopResult(
                 response_text=compat_result.response_text,
-                usage=compat_result.usage or None,
+                usage=usage_dict,
                 num_turns=compat_result.num_turns,
             )
         except AbortError:

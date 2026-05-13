@@ -197,7 +197,7 @@ class TranscriptView(VerticalScroll):
             # No matching tool_use row; emit a standalone result row so
             # the event is not silently dropped.
             try:
-                from src.tui.tool_summary_renderers import summarize_tool_result
+                from src.tool_system.renderers import summarize_tool_result
 
                 summary = summarize_tool_result(tool_name, tool_output) or tool_name
             except Exception:

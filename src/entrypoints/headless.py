@@ -47,11 +47,8 @@ from src.cli_core import (
 )
 from src.config import get_default_provider, get_provider_config
 from src.providers import get_provider_class
-from src.tool_system.agent_loop import (
-    ToolEvent,
-    _build_effective_system_prompt,
-    run_agent_loop,
-)
+from src.tool_system.agent_loop import _build_effective_system_prompt
+from src.tool_system.renderers import ToolEvent
 from src.query.agent_loop_compat import run_query_as_agent_loop
 from src.tool_system.context import ToolContext
 from src.tool_system.defaults import build_default_registry
@@ -244,6 +241,19 @@ def run_headless(options: HeadlessOptions) -> int:
                 or "You are a helpful assistant.",
                 tool_context,
             )
+            # Persist FULL Message objects (preserving tool_use and
+            # tool_result blocks) into the session conversation as
+            # they're yielded. The legacy run_agent_loop mutated
+            # session.conversation in place; we replicate that here
+            # via on_message instead of post-hoc text append, so
+            # multi-prompt headless sessions don't lose tool
+            # structure between turns.
+            def _persist_full_message(msg) -> None:
+                # Reuse the conversation's add_message so the
+                # max_history bookkeeping applies. content can be
+                # str or list[ContentBlock]; both shapes are valid.
+                session.conversation.add_message(msg.role, msg.content)
+
             compat_result = _asyncio.run(run_query_as_agent_loop(
                 initial_messages=list(session.conversation.messages),
                 provider=provider,
@@ -253,22 +263,21 @@ def run_headless(options: HeadlessOptions) -> int:
                 max_turns=options.max_turns,
                 on_event=on_event,
                 on_text_chunk=on_text_chunk,
+                on_message=_persist_full_message,
             ))
-            # The legacy run_agent_loop mutated session.conversation
-            # in place (appending assistant messages). Replicate that
-            # so subsequent inputs in the same headless session see
-            # the full history.
-            if compat_result.response_text:
-                session.conversation.add_assistant_message(
-                    compat_result.response_text,
-                )
             # Re-wrap into the legacy AgentLoopResult shape so the
             # downstream code (lines summarising num_turns/usage)
             # stays untouched.
-            from src.tool_system.agent_loop import AgentLoopResult
+            from src.tool_system.renderers import AgentLoopResult
+            # Critic-flagged: ``compat_result.usage`` is always a dict
+            # (4 keys, possibly all-zero) so ``or None`` always
+            # resolves to the dict. Map the legacy ``usage: dict |
+            # None`` contract by setting None when the loop produced
+            # no AssistantMessage (no real usage observed).
+            usage_dict = compat_result.usage if compat_result.num_turns > 0 else None
             result = AgentLoopResult(
                 response_text=compat_result.response_text,
-                usage=compat_result.usage or None,
+                usage=usage_dict,
                 num_turns=compat_result.num_turns,
             )
         except KeyboardInterrupt:
