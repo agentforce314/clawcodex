@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 
+from .architecture_stats import build_architecture_stats
 from .bootstrap_graph import build_bootstrap_graph
 from .command_graph import build_command_graph
 from .commands import execute_command, get_command, get_commands, render_command_index
@@ -28,6 +29,11 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser('command-graph', help='show command graph segmentation')
     subparsers.add_parser('tool-pool', help='show assembled tool pool with default settings')
     subparsers.add_parser('bootstrap-graph', help='show the mirrored bootstrap/runtime graph stages')
+    subparsers.add_parser(
+        'architecture-stats',
+        help="map the book's six core abstractions (ch18 §Closing) to their "
+             "Python package footprints and surface high-density files",
+    )
     list_parser = subparsers.add_parser('subsystems', help='list the current Python modules in the workspace')
     list_parser.add_argument('--limit', type=int, default=32)
 
@@ -115,6 +121,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == 'bootstrap-graph':
         print(build_bootstrap_graph().as_markdown())
+        return 0
+    if args.command == 'architecture-stats':
+        print(build_architecture_stats().as_markdown())
         return 0
     if args.command == 'subsystems':
         for subsystem in manifest.top_level_modules[: args.limit]:
