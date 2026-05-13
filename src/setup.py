@@ -157,9 +157,10 @@ def run_production_setup(args: Any = None) -> None:
     session-memory) and are scoped for later plan phases.
 
     1. Python-version check (>=3.10 per pyproject.toml).
-    2. Hook config snapshot freeze (``captureHooksConfigSnapshot``).
-    3. ``tengu_started`` beacon (success-rate denominator).
-    4. ``tengu_exit`` previous-session metrics log (if available).
+    2. Schema migration runner (``run_pending_migrations``).
+    3. Hook config snapshot freeze (``captureHooksConfigSnapshot``).
+    4. ``tengu_started`` beacon (success-rate denominator).
+    5. ``tengu_exit`` previous-session metrics log (if available).
 
     Raises ``SystemExit(1)`` if the Python version is below the
     supported minimum — matches TS behavior at setup.ts:71-78.
@@ -170,6 +171,9 @@ def run_production_setup(args: Any = None) -> None:
 
     _check_python_version()
     profile_checkpoint("setup_python_version_checked")
+
+    _run_pending_migrations()
+    profile_checkpoint("setup_migrations_run")
 
     _capture_hook_snapshot()
     profile_checkpoint("setup_hook_snapshot_captured")
@@ -191,6 +195,26 @@ def _check_python_version() -> None:
             f"Found Python {actual}.\n"
         )
         raise SystemExit(1)
+
+
+def _run_pending_migrations() -> None:
+    """Run schema migrations registered via ``src.migrations``.
+
+    Plan phase 5: mirrors the chapter §"The Migration System". For
+    plan phase 5 the registry is empty (no migrations ported yet);
+    this substep is the seam where future migrations plug in.
+
+    Best-effort: failures are logged inside the runner and don't
+    crash setup. Matches the chapter's "availability beats strict
+    consistency" stance.
+    """
+    try:
+        from src.migrations import run_pending_migrations
+        ran = run_pending_migrations()
+        if ran:
+            _logger.info("ran %d migration(s) at startup", ran)
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        _logger.warning("migrations runner failed: %s", exc)
 
 
 def _capture_hook_snapshot() -> None:
