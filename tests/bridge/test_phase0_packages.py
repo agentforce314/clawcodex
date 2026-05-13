@@ -38,18 +38,19 @@ def test_legacy_services_bridge_emits_deprecation_warning() -> None:
 
 
 def test_legacy_remote_runtime_emits_deprecation_warning() -> None:
-    """WI-0.3: importing src.remote_runtime fires a DeprecationWarning."""
+    """WI-0.3 + ch01 round-2 P3: importing scripts.audit.remote_runtime
+    (formerly src.remote_runtime) fires a DeprecationWarning."""
     import importlib
     import sys
     import warnings
 
-    sys.modules.pop('src.remote_runtime', None)
+    sys.modules.pop('scripts.audit.remote_runtime', None)
     with warnings.catch_warnings(record=True) as captured:
         warnings.simplefilter('always')
-        importlib.import_module('src.remote_runtime')
+        importlib.import_module('scripts.audit.remote_runtime')
 
     assert any(
         issubclass(w.category, DeprecationWarning)
-        and 'src.remote_runtime is a placeholder' in str(w.message)
+        and 'scripts.audit.remote_runtime is a placeholder' in str(w.message)
         for w in captured
-    ), 'expected DeprecationWarning from src.remote_runtime import'
+    ), 'expected DeprecationWarning from scripts.audit.remote_runtime import'

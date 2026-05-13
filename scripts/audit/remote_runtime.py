@@ -13,7 +13,7 @@ import warnings
 from dataclasses import dataclass
 
 warnings.warn(
-    'src.remote_runtime is a placeholder; CCR remote execution lives at src/remote/ and src/bridge/.',
+    'scripts.audit.remote_runtime is a placeholder; CCR remote execution lives at src/remote/ and src/bridge/.',
     DeprecationWarning,
     stacklevel=2,
 )

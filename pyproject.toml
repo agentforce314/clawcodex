@@ -82,13 +82,14 @@ markers = [
     "linux_only: marks tests that require Linux (auto-skipped on macOS/Windows)",
 ]
 filterwarnings = [
-    # Ch16 Phase 0 (WI-0.2/0.3): the legacy CCR-named stubs at
-    # src/services/bridge and src/remote_runtime emit DeprecationWarnings on
-    # import to surface the rename to src/bridge etc. Existing tests still
+    # Ch16 Phase 0 (WI-0.2/0.3) + ch01 round-2 P3: legacy CCR-named stubs at
+    # src/services/bridge and scripts/audit/remote_runtime emit DeprecationWarnings
+    # on import to surface the rename to src/bridge etc. Existing tests still
     # exercise those modules; suppress so ``pytest -W error::DeprecationWarning``
-    # doesn't break the pre-existing test suite.
+    # doesn't break the pre-existing test suite. (The remote_runtime stub was
+    # relocated from src/ to scripts/audit/ when audit scaffolding moved.)
     "ignore::DeprecationWarning:src.services.bridge",
-    "ignore::DeprecationWarning:src.remote_runtime",
+    "ignore::DeprecationWarning:scripts.audit.remote_runtime",
 ]
 
 [tool.setuptools.packages.find]
@@ -129,9 +130,11 @@ forbidden_modules = [
     "src.tasks",
     "src.bridge",
     "src.remote",
-    "src.commands",
     "src.skills",
 ]
+# ch01 round-2 P3: ``src.commands`` was removed (audit-only module relocated
+# to ``scripts/audit/commands.py``). The production command surface is
+# ``src/command_system/`` which is already covered by ``src.command_system``.
 
 # TODO: add a positive-allowlist (kept) contract restricting bootstrap to
 # import only from ``src.utils.signal`` and a small set of leaf utilities.
