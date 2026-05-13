@@ -4,18 +4,18 @@ import argparse
 
 from .bootstrap_graph import build_bootstrap_graph
 from .command_graph import build_command_graph
-from .commands import execute_command, get_command, get_commands, render_command_index
-from .direct_modes import run_deep_link, run_direct_connect
+from .commands_snapshot import execute_command, get_command, get_commands, render_command_index
+from src.direct_modes import run_deep_link, run_direct_connect
 from .parity_audit import run_parity_audit
-from .permissions import ToolPermissionContext
+from src.permissions import ToolPermissionContext
 from .port_manifest import build_port_manifest
 from .query_engine import QueryEnginePort
-from .remote_runtime import run_remote_mode, run_ssh_mode, run_teleport_mode
+from src.remote_runtime import run_remote_mode, run_ssh_mode, run_teleport_mode
 from .runtime import PortRuntime
-from .session_store import load_session
-from .setup import run_setup
+from src.session_store import load_session
+from .setup_report import run_setup
 from .tool_pool import assemble_tool_pool
-from .tools import execute_tool, get_tool, get_tools, render_tool_index
+from .tools_snapshot import execute_tool, get_tool, get_tools, render_tool_index
 
 
 def build_parser() -> argparse.ArgumentParser:

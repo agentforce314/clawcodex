@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .models import PortingModule
-from .permissions import ToolPermissionContext
-from .tools import get_tools
+from src.models import PortingModule
+from src.permissions import ToolPermissionContext
+from .tools_snapshot import get_tools
 
 
 @dataclass(frozen=True)

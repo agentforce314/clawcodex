@@ -5,9 +5,15 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
-from .models import PortingBacklog, PortingModule
+from src.models import PortingBacklog, PortingModule
 
-SNAPSHOT_PATH = Path(__file__).resolve().parent / 'reference_data' / 'commands_snapshot.json'
+# ch01 P3: file moved from ``src/commands.py`` to
+# ``scripts/audit/commands_snapshot.py``. The JSON snapshot stays in
+# ``src/reference_data/`` (it is also consumed by ``src/*`` subpackages).
+SNAPSHOT_PATH = (
+    Path(__file__).resolve().parent.parent.parent
+    / 'src' / 'reference_data' / 'commands_snapshot.json'
+)
 
 
 @dataclass(frozen=True)

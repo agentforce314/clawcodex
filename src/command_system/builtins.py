@@ -21,7 +21,6 @@ from ..context_system.microcompact import microcompact_messages, strip_images_fr
 from ..cost_tracker import CostTracker
 from ..history import HistoryLog
 from ..providers.base import BaseProvider
-from ..setup import run_setup
 from .engine import CommandContext, CommandResult, LocalCommandResult
 from .registry import CommandRegistry, get_command_registry, list_commands
 from .types import Command, CommandType, CompactionResult, LocalCommand, PromptCommand

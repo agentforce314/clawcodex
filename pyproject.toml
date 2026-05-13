@@ -129,7 +129,10 @@ forbidden_modules = [
     "src.tasks",
     "src.bridge",
     "src.remote",
-    "src.commands",
+    # ch01 P3: ``src.commands`` was relocated to
+    # ``scripts.audit.commands_snapshot``. The import-linter contract
+    # now relies on the module-not-existing fact rather than the
+    # forbidden-import rule, so this entry has been removed.
     "src.skills",
 ]
 
