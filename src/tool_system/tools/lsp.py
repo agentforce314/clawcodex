@@ -42,4 +42,7 @@ LSPTool: Tool = build_tool(
     max_result_size_chars=100_000,
     is_read_only=lambda _input: True,
     is_concurrency_safe=lambda _input: True,
+    # LSP has no direct TS analogue but the security-relevant axis is
+    # the LSP method name; surface it for the classifier.
+    to_auto_classifier_input=lambda input_data: (input_data or {}).get("method", "") or "",
 )

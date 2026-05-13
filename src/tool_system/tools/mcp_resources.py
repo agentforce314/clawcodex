@@ -158,6 +158,8 @@ ListMcpResourcesTool: Tool = build_tool(
     is_concurrency_safe=lambda _input: True,
     is_mcp=True,
     search_hint="list resources from connected MCP servers",
+    # Mirrors TS ListMcpResourcesTool.toAutoClassifierInput.
+    to_auto_classifier_input=lambda input_data: (input_data or {}).get("server", "") or "",
 )
 
 
@@ -206,4 +208,8 @@ ReadMcpResourceTool: Tool = build_tool(
     is_concurrency_safe=lambda _input: True,
     is_mcp=True,
     search_hint="read a specific MCP resource by URI",
+    # Mirrors TS ReadMcpResourceTool.toAutoClassifierInput.
+    to_auto_classifier_input=lambda input_data: (
+        f"{(input_data or {}).get('server', '')} {(input_data or {}).get('uri', '')}"
+    ),
 )

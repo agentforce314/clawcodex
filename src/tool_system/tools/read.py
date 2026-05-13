@@ -528,4 +528,9 @@ ReadTool: Tool = build_tool(
     search_hint="read file cat view open",
     is_search_or_read_command=lambda _input: SearchOrReadResult(is_read=True),
     get_activity_description=lambda input_data: f"Reading {(input_data or {}).get('file_path', '')}" if input_data else None,
+    # Mirrors TS FileReadTool.toAutoClassifierInput -- returns the
+    # file_path verbatim. The auto-mode classifier sees the path
+    # being read, which is sufficient context for the read-vs-leak
+    # decision. See ch06-tools.md "Apply This".
+    to_auto_classifier_input=lambda input_data: (input_data or {}).get("file_path", ""),
 )
