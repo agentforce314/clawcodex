@@ -234,12 +234,54 @@ class StreamingToolExecutor:
             return f"{tool.block.name}({truncated})"
         return tool.block.name
 
+    def _update_interruptible_state(self) -> None:
+        """Publish whether the currently executing tool set supports interrupt.
+
+        Mirrors TS ``updateInterruptibleState`` at
+        ``StreamingToolExecutor.ts:254``. Called on every transition into or
+        out of ``executing`` status. The flag is ``True`` only when at least
+        one tool is executing AND every executing tool's
+        ``interrupt_behavior()`` returns ``"cancel"``. An empty executing
+        set yields ``False`` -- the UI shouldn't suggest "press ESC" when
+        nothing is running. The context's setter is optional; ``None``
+        (the SDK/test default) makes this a no-op, matching TS's optional
+        chaining call ``setHasInterruptibleToolInProgress?.(...)``.
+        """
+        setter = self._tool_use_context.set_has_interruptible_tool_in_progress
+        if setter is None:
+            return
+        executing = [t for t in self._tools if t.status == "executing"]
+        interruptible = (
+            len(executing) > 0
+            and all(
+                self._get_tool_interrupt_behavior(t) == "cancel"
+                for t in executing
+            )
+        )
+        try:
+            setter(interruptible)
+        except Exception as exc:
+            # Setter failures must not poison the executor \u2014 UI bugs
+            # shouldn't break tool dispatch. TS's optional-chain call
+            # would let an exception propagate, but in practice the only
+            # production setter is a ref-assignment that cannot throw.
+            # In Python we suppress + log to match the spirit of "the UI
+            # cannot abort the tool runtime."
+            logger.warning(
+                "set_has_interruptible_tool_in_progress raised: %s", exc
+            )
+
     async def _execute_tool(self, tool: TrackedTool) -> None:
         tool.status = "executing"
         if self._tool_use_context.set_in_progress_tool_use_ids:
             self._tool_use_context.set_in_progress_tool_use_ids(
                 lambda prev: prev | {tool.id}
             )
+        # Site 1 of 3 — mirrors TS StreamingToolExecutor.ts:270.
+        # Publish that the executing set grew; the UI may now want to
+        # show an "interruptible" indicator (or hide it if this tool's
+        # interrupt_behavior is "block").
+        self._update_interruptible_state()
 
         messages: list[Message] = []
         context_modifiers: list[Any] = []
@@ -255,6 +297,9 @@ class StreamingToolExecutor:
                 tool.results = messages
                 tool.context_modifiers = context_modifiers
                 tool.status = "completed"
+                # Site 2 of 3 — mirrors TS line 290 (early-return after
+                # synthetic error). Executing set shrank by one.
+                self._update_interruptible_state()
                 return
 
             tool_abort_controller = create_child_abort_controller(
@@ -355,6 +400,11 @@ class StreamingToolExecutor:
             tool.results = messages
             tool.context_modifiers = context_modifiers
             tool.status = "completed"
+            # Site 3 of 3 — mirrors TS line 386 (normal completion path).
+            # Executing set shrank by one; UI may want to flip the
+            # interruptible indicator off (or back on if a previously
+            # blocking tool was the only non-cancellable member).
+            self._update_interruptible_state()
 
             if not tool.is_concurrency_safe and context_modifiers:
                 for modifier in context_modifiers:
