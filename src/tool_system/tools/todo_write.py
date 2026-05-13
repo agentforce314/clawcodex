@@ -72,4 +72,8 @@ TodoWriteTool: Tool = build_tool(
     is_read_only=lambda _input: True,
     is_concurrency_safe=lambda _input: True,
     is_enabled=lambda: not is_todo_v2_enabled(),
+    # Mirrors TS TodoWriteTool.toAutoClassifierInput -- compact count
+    # so the classifier sees the size, not the content (which is
+    # often verbose plan text).
+    to_auto_classifier_input=lambda input_data: f"{len(((input_data or {}).get('todos') or []))} items",
 )

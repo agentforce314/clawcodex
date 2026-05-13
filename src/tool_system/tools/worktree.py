@@ -52,6 +52,8 @@ EnterWorktreeTool: Tool = build_tool(
     strict=True,
     max_result_size_chars=100_000,
     is_destructive=lambda _input: True,
+    # Mirrors TS EnterWorktreeTool.toAutoClassifierInput.
+    to_auto_classifier_input=lambda input_data: (input_data or {}).get("name", "") or "",
 )
 
 
@@ -76,4 +78,9 @@ ExitWorktreeTool: Tool = build_tool(
     strict=True,
     max_result_size_chars=100_000,
     is_destructive=lambda _input: True,
+    # Mirrors TS ExitWorktreeTool.toAutoClassifierInput -- returns
+    # input.action. Python's ExitWorktree schema does not yet model
+    # action=remove vs keep; fall through gracefully to "" until the
+    # schema catches up.
+    to_auto_classifier_input=lambda input_data: (input_data or {}).get("action", "") or "",
 )
