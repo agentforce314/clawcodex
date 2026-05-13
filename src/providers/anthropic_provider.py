@@ -2,10 +2,54 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from typing import Generator, Optional, Any
 
 from .base import BaseProvider, ChatResponse, MessageInput, TextChunkCallback
+
+
+def _translate_tool_schemas_for_anthropic(
+    tools: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]] | None:
+    """Translate ``_defer_loading`` markers into Anthropic API fields.
+
+    The query / agent_loop schema-build sites tag deferred tools with
+    ``_defer_loading=True`` (underscore prefix indicates "internal"
+    metadata, not an API field). The Anthropic API expects
+    ``defer_loading=True`` (no prefix). Translate before sending so
+    the API server omits the full schema and the model discovers
+    these tools via ``ToolSearchTool``.
+
+    The translation is gated by ``CLAWCODEX_DEFER_LOADING`` (default
+    on). Setting it to ``0`` strips ``_defer_loading`` markers without
+    translating, restoring the pre-Phase-5 behavior of always sending
+    full schemas. Useful as an emergency rollback if a future
+    Anthropic API version changes the field name.
+
+    Returns a new list (does not mutate the caller's). Non-dict items
+    pass through unchanged.
+    """
+    if not tools:
+        return tools
+
+    flag = os.environ.get("CLAWCODEX_DEFER_LOADING", "1").lower()
+    enabled = flag not in ("0", "false", "no")
+
+    out: list[dict[str, Any]] = []
+    for t in tools:
+        if not isinstance(t, dict):
+            out.append(t)
+            continue
+        if "_defer_loading" not in t:
+            out.append(t)
+            continue
+        # Copy so we don't mutate the caller's dict.
+        new_t = {k: v for k, v in t.items() if k != "_defer_loading"}
+        if enabled and t["_defer_loading"]:
+            new_t["defer_loading"] = True
+        out.append(new_t)
+    return out
 
 
 # WI-4.4 (ch17 Phase 4): defer the ``import anthropic`` call. The SDK
@@ -192,7 +236,7 @@ class AnthropicProvider(BaseProvider):
         client = self._ensure_client()
         extra_kwargs: dict[str, Any] = {}
         if tools:
-            extra_kwargs["tools"] = tools
+            extra_kwargs["tools"] = _translate_tool_schemas_for_anthropic(tools)
 
         response = client.messages.create(
             model=model,
@@ -231,7 +275,7 @@ class AnthropicProvider(BaseProvider):
         client = self._ensure_client()
         extra_kwargs: dict[str, Any] = {}
         if tools:
-            extra_kwargs["tools"] = tools
+            extra_kwargs["tools"] = _translate_tool_schemas_for_anthropic(tools)
 
         with client.messages.stream(
             model=model,
@@ -268,7 +312,7 @@ class AnthropicProvider(BaseProvider):
         client = self._ensure_client()
         extra_kwargs: dict[str, Any] = {}
         if tools:
-            extra_kwargs["tools"] = tools
+            extra_kwargs["tools"] = _translate_tool_schemas_for_anthropic(tools)
 
         def _fallback_to_chat() -> ChatResponse:
             """Re-issue the request without streaming (WI-5.2 recovery path).
