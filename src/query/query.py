@@ -1043,9 +1043,82 @@ async def query(
                 )
                 return
 
+            # Ch5/C.3 — death-spiral guard. Skip stop hooks when the last
+            # message is an API error. Mirrors TS query.ts:1340-1345
+            # ("error → hook blocking → retry → error → ... the hook
+            # injects more tokens each cycle"). Without this guard, a
+            # blocking Stop hook on an API-error turn would force a
+            # retry that just produces another API error in a loop.
             if last_message and getattr(last_message, "isApiErrorMessage", False):
                 set_terminal(holder, natural_termination, Terminal(reason="completed"))
                 return
+
+            # Ch5/C.1 — stop-hooks dispatch at no-tool-use exit.
+            # Mirrors TS query.ts:1346-1386. Stop hooks evaluate whether
+            # the model is actually done. If a hook returns
+            # `prevent_continuation`, exit with `stop_hook_prevented`.
+            # If a hook returns blocking errors, inject them and loop
+            # once more with `stop_hook_active=True` (Ch5/C.2) and
+            # `has_attempted_reactive_compact` preserved (Ch5/C.4).
+            if config.stop_hooks_enabled:
+                from .stop_hooks import (
+                    handle_stop_hooks_streaming,
+                    StopHookResult,
+                )
+
+                stop_result: StopHookResult | None = None
+                async for emitted in handle_stop_hooks_streaming(
+                    messages_for_query=messages,
+                    assistant_messages=assistant_messages,
+                    system_prompt=params.system_prompt,
+                    tool_use_context=tool_use_context,
+                    query_source=params.query_source,
+                    stop_hook_active=state.stop_hook_active,
+                ):
+                    if isinstance(emitted, StopHookResult):
+                        stop_result = emitted
+                    else:
+                        yield emitted
+
+                if stop_result is not None:
+                    if stop_result.prevent_continuation:
+                        set_terminal(
+                            holder,
+                            natural_termination,
+                            Terminal(reason="stop_hook_prevented"),
+                        )
+                        return
+
+                    if stop_result.blocking_errors:
+                        # Ch5/C.2 + C.4 — blocking-retry path. Inject the
+                        # hook errors as user messages, set
+                        # `stop_hook_active=True` to suppress re-firing
+                        # the same hooks on the next iteration, AND
+                        # preserve `has_attempted_reactive_compact` so a
+                        # prior PTL recovery is not retried in the loop
+                        # (chapter §"Death Spiral Guard" point 5 —
+                        # "Resetting to false here caused an infinite
+                        # loop burning thousands of API calls").
+                        state = QueryState(
+                            messages=[
+                                *messages,
+                                *assistant_messages,
+                                *stop_result.blocking_errors,
+                            ],
+                            tool_use_context=tool_use_context,
+                            auto_compact_tracking=state.auto_compact_tracking,
+                            max_output_tokens_recovery_count=0,
+                            has_attempted_reactive_compact=(
+                                has_attempted_reactive_compact
+                            ),
+                            max_output_tokens_override=None,
+                            stop_hook_active=True,  # Ch5/C.2 suppress refire
+                            turn_count=turn_count,
+                            pending_tool_use_summary=state.pending_tool_use_summary,
+                            continuation_nudge_count=state.continuation_nudge_count,
+                            transition=Transition(reason="stop_hook_blocking"),
+                        )
+                        continue
 
             set_terminal(holder, natural_termination, Terminal(reason="completed"))
             return
