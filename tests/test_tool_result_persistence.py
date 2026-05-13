@@ -349,6 +349,51 @@ class TestProcessToolResultBlock(unittest.TestCase):
             "(QuietTool completed with no output)",
         )
 
+    def test_infinity_opt_out_does_not_persist_large_output(self) -> None:
+        """A tool that declares max_result_size_chars=float("inf") must
+        never trigger persistence regardless of output size.
+
+        Ports TS FileReadTool.ts ``maxResultSizeChars: Infinity`` rule:
+        persisting Read output would create a circular Read loop
+        because the model would Read the persisted file, hitting the
+        same threshold. See ch06-tools.md "FileReadTool: The Versatile
+        Reader".
+        """
+        from src.tool_system.build_tool import build_tool
+        from src.tool_system.protocol import ToolResult
+
+        # 500K characters -- well above DEFAULT_MAX_RESULT_SIZE_CHARS (50K).
+        # Without the Infinity opt-out, this would be persisted.
+        huge_output = "X" * 500_000
+
+        def _call(_inp: dict[str, Any], _ctx: Any) -> ToolResult:
+            return ToolResult(name="ReadLike", output=huge_output)
+
+        tool = build_tool(
+            name="ReadLike",
+            input_schema={"type": "object", "properties": {}},
+            call=_call,
+            max_result_size_chars=float("inf"),
+        )
+        out = process_tool_result_block(
+            tool, huge_output, "tu-inf",
+            tool_results_dir=self.results_dir,
+        )
+        # The persisted-output wrapper must NOT appear -- content passes through.
+        self.assertNotIn(PERSISTED_OUTPUT_TAG, out["content"])
+        self.assertEqual(out["content"], huge_output)
+        # No file should have been written.
+        self.assertFalse((self.results_dir / "tu-inf.txt").exists())
+
+    def test_real_read_tool_has_infinity_max_chars(self) -> None:
+        """Regression check: the production FileReadTool must declare
+        ``max_result_size_chars == float("inf")`` so its output is never
+        persisted (would cause circular Read loop)."""
+        import math
+        from src.tool_system.tools.read import ReadTool
+
+        self.assertTrue(math.isinf(float(ReadTool.max_result_size_chars)))
+
 
 if __name__ == "__main__":
     unittest.main()

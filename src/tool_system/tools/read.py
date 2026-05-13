@@ -512,7 +512,15 @@ ReadTool: Tool = build_tool(
     prompt=_render_prompt(),
     description="Read a file from the local filesystem.",
     map_result_to_api=_read_map_result_to_api,
-    max_result_size_chars=100_000,
+    # Hard opt-out from result-persistence. Persisting Read output to
+    # disk would create a circular loop (the model would Read the
+    # persisted file, hitting the same size cap, persisting again).
+    # The Read tool self-bounds via MAX_LINES_TO_READ + token
+    # estimation; the persistence module special-cases ``math.inf``.
+    # Mirrors TS ``maxResultSizeChars: Infinity`` in
+    # ``FileReadTool.ts``. See ch06-tools.md "FileReadTool: The
+    # Versatile Reader".
+    max_result_size_chars=float("inf"),
     is_read_only=lambda _input: True,
     is_concurrency_safe=lambda _input: True,
     get_path=lambda input_data: input_data.get("file_path", ""),
