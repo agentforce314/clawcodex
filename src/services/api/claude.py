@@ -131,6 +131,109 @@ def _build_tool_schemas(tools: list[Any]) -> list[dict[str, Any]]:
     return [tool_to_api_schema(t) for t in tools]
 
 
+def add_cache_breakpoints(
+    messages: list[dict[str, Any]],
+    *,
+    enable_prompt_caching: bool = True,
+    skip_cache_write: bool = False,
+) -> list[dict[str, Any]]:
+    """Place exactly one ``cache_control`` marker on the last message.
+
+    Mirrors the load-bearing invariant of TS ``addCacheBreakpoints``
+    (``services/api/claude.ts:3107``): one and only one ``cache_control``
+    marker per request, attached to the last block of the marker message.
+    Two markers would extend a doomed cache prefix by one turn and waste
+    storage on mycro's KVCC; zero markers leave every multi-turn
+    conversation re-billing its history at full rate.
+
+    The marker lands on the last message by default. When ``skip_cache_write``
+    is True it shifts to the second-to-last message — the fire-and-forget
+    fork pattern from TS line 3127-3132. With fewer than two messages and
+    ``skip_cache_write=True`` the call is a graceful no-op (no negative
+    indexing).
+
+    The mycro-internal ``useCachedMC`` / ``cache_edits`` / ``cache_reference``
+    machinery from TS is intentionally omitted — those are backend-specific
+    features with no public API contract.
+
+    The function never mutates its input. The marker message is shallow-
+    cloned, its content list is shallow-cloned, and the final block is
+    shallow-cloned before ``cache_control`` is attached. Earlier messages
+    and earlier blocks in the marker message are passed through by
+    reference so the cost is O(1) extra allocations regardless of history
+    length.
+
+    Args:
+        messages: API-shape message list (each ``{"role": ..., "content": ...}``).
+        enable_prompt_caching: When False, returns ``messages`` unchanged
+            (round-1 follow-up: model-aware disable lives elsewhere; this
+            is the request-level kill switch).
+        skip_cache_write: When True, place the marker on the SECOND-to-last
+            message.
+
+    Returns:
+        A new list with at most one message shallow-cloned. The marker is a
+        plain ``{"type": "ephemeral"}`` dict — TTL/scope upgrades happen on
+        the system-prompt array, not at the message level.
+    """
+    if not enable_prompt_caching:
+        return messages
+    if not messages:
+        return list(messages)
+
+    marker_index = len(messages) - 2 if skip_cache_write else len(messages) - 1
+    if marker_index < 0:
+        # skip_cache_write with one message — graceful no-op.
+        return list(messages)
+
+    out: list[dict[str, Any]] = list(messages)
+    msg = out[marker_index]
+    content = msg.get("content")
+    cache_control = {"type": "ephemeral"}
+
+    if isinstance(content, str):
+        new_content: list[dict[str, Any]] = [
+            {"type": "text", "text": content, "cache_control": cache_control}
+        ]
+    elif isinstance(content, list):
+        if not content:
+            # Empty block list — wrap an empty text block so the marker
+            # has somewhere to live. Matches TS, which always emits at
+            # least one block for the marker message.
+            new_content = [
+                {"type": "text", "text": "", "cache_control": cache_control}
+            ]
+        else:
+            new_content = list(content[:-1])
+            last_block = content[-1]
+            if isinstance(last_block, dict):
+                cloned_block = dict(last_block)
+                cloned_block["cache_control"] = cache_control
+            else:
+                cloned_block = {
+                    "type": "text",
+                    "text": str(last_block),
+                    "cache_control": cache_control,
+                }
+            new_content.append(cloned_block)
+    else:
+        # Unknown content shape (None, int, ...). Coerce to a single text
+        # block so we still emit a marker. This matches TS's "always wrap"
+        # behaviour for stringy content.
+        new_content = [
+            {
+                "type": "text",
+                "text": "" if content is None else str(content),
+                "cache_control": cache_control,
+            }
+        ]
+
+    cloned_msg = dict(msg)
+    cloned_msg["content"] = new_content
+    out[marker_index] = cloned_msg
+    return out
+
+
 @dataclass
 class CallModelOptions:
     model: str = "claude-sonnet-4-6"
@@ -145,6 +248,11 @@ class CallModelOptions:
     structured_output: dict[str, Any] | None = None
     extra_headers: dict[str, str] | None = None
     extra_body: dict[str, Any] | None = None
+    # Round-2 (ch04): message-level prompt caching.
+    # Mirrors TS ``enablePromptCaching`` / ``skipCacheWrite`` args to
+    # ``addCacheBreakpoints``. Default True matches TS production default.
+    enable_prompt_caching: bool = True
+    skip_cache_write: bool = False
 
 
 async def call_model(
@@ -169,10 +277,20 @@ async def call_model(
         system_blocks = _build_system_blocks(opts.system_prompt)
         tool_schemas = _build_tool_schemas(opts.tools)
 
+        # Round-2 (ch04): attach one message-level cache_control marker so
+        # multi-turn conversations benefit from server-side ephemeral
+        # prompt caching. See ``add_cache_breakpoints`` docstring for the
+        # invariant being maintained.
+        api_messages = add_cache_breakpoints(
+            messages,
+            enable_prompt_caching=opts.enable_prompt_caching,
+            skip_cache_write=opts.skip_cache_write,
+        )
+
         create_kwargs: dict[str, Any] = {
             "model": opts.model,
             "max_tokens": opts.max_tokens,
-            "messages": messages,
+            "messages": api_messages,
         }
 
         if system_blocks:
