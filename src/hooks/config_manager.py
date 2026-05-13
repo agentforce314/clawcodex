@@ -11,6 +11,7 @@ from typing import Any
 
 from .hook_types import HookConfig, HookEvent, HookSource, ALL_HOOK_EVENTS
 from .registry import AsyncHookRegistry
+from .shell_invocation import SHELL_TYPES, ShellType
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,17 @@ def _get_settings_path() -> Path:
 
 def _parse_hook_config(raw: dict[str, Any], source: HookSource | None = None) -> HookConfig:
     hook_type = raw.get("type", "command")
+
+    # Round-2 / Ch12 — per-hook shell selection. Only meaningful for
+    # ``type == "command"`` (matches TS schema where ``shell`` only appears on
+    # BashCommandHookSchema). Unknown values are dropped here and recorded as
+    # validator errors by ``validate_hook_configs``; the parser stays
+    # permissive so a single bad entry doesn't black-hole the whole snapshot.
+    shell_raw = raw.get("shell")
+    shell: ShellType | None = (
+        shell_raw if isinstance(shell_raw, str) and shell_raw in SHELL_TYPES else None  # type: ignore[assignment]
+    )
+
     return HookConfig(
         type=hook_type,
         command=raw.get("command", ""),
@@ -59,6 +71,7 @@ def _parse_hook_config(raw: dict[str, Any], source: HookSource | None = None) ->
         # skill-hook registration time (Phase 3).
         if_condition=raw.get("if_condition") or raw.get("if"),
         once=bool(raw.get("once", False)),
+        shell=shell,
         source=source if source is not None else HookSource.USER_SETTINGS,
     )
 
@@ -129,6 +142,24 @@ def validate_hook_configs(
                         index=i,
                         field="command",
                         message="Command hook must have a 'command' field",
+                    ))
+                # Round-2 / Ch12 — validate ``shell`` for command hooks only.
+                # TS ``BashCommandHookSchema.shell`` enforces ``z.enum(SHELL_TYPES)``;
+                # we surface unknown values here so settings authors see them.
+                # Mirrors TS where ``parseSettingsFile`` would reject the entry
+                # whole; we keep the parser permissive (drop the bad value)
+                # but flag the error so the failure is visible in the
+                # ``/hooks`` UI / logs.
+                shell_raw = hook_raw.get("shell")
+                if shell_raw is not None and shell_raw not in SHELL_TYPES:
+                    errors.append(HookValidationError(
+                        event=event_name,
+                        index=i,
+                        field="shell",
+                        message=(
+                            f"Unknown shell type: {shell_raw!r}. "
+                            f"Must be one of {SHELL_TYPES}."
+                        ),
                     ))
             elif hook_type == "http":
                 if not hook_raw.get("url"):

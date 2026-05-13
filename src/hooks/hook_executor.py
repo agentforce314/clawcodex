@@ -216,13 +216,52 @@ async def _execute_command_hook(
     try:
         stdin_json = json.dumps(stdin_data, default=str)
 
-        process = await asyncio.create_subprocess_shell(
-            command,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=_build_hook_env(hook, stdin_data, tool_use_context),
-        )
+        # Round-2 / Ch12 — per-hook shell selection. ``shell="powershell"``
+        # spawns ``pwsh`` with explicit argv and skips the bash-shell path.
+        # ``None`` / ``"bash"`` keeps the historical ``create_subprocess_shell``
+        # invocation. Mirrors the TS branch at
+        # ``typescript/src/utils/hooks.ts:1098-1125``.
+        if hook.shell == "powershell":
+            from .shell_invocation import build_powershell_args, find_powershell_path
+
+            pwsh_path = find_powershell_path()
+            if pwsh_path is None:
+                duration_ms = int((time.monotonic() - start_time) * 1000)
+                # Error string mirrors TS at typescript/src/utils/hooks.ts:1102-1106
+                # verbatim (single quotes around 'powershell' as in the TS source)
+                # so log scrapers / regression tests written against TS messages
+                # transfer unchanged.
+                return HookResult(
+                    blocking_error=(
+                        f"Hook \"{command}\" has shell: 'powershell' but no "
+                        "PowerShell executable (pwsh or powershell) was found "
+                        "on PATH. Install PowerShell, or remove "
+                        "\"shell\": \"powershell\" to use bash."
+                    ),
+                    exit_code=-1,
+                    duration_ms=duration_ms,
+                    command=command,
+                )
+            process = await asyncio.create_subprocess_exec(
+                pwsh_path,
+                *build_powershell_args(command),
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=_build_hook_env(hook, stdin_data, tool_use_context),
+            )
+        else:
+            # Default (bash on POSIX via /bin/sh, the historical path).
+            # An explicit ``shell="bash"`` lands here too — it's a no-op
+            # alias for ``None`` per the chapter's "defaults to bash"
+            # contract.
+            process = await asyncio.create_subprocess_shell(
+                command,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=_build_hook_env(hook, stdin_data, tool_use_context),
+            )
 
         try:
             stdout_bytes, stderr_bytes = await asyncio.wait_for(

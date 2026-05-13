@@ -20,6 +20,7 @@ from .hook_types import (
     PostSamplingHookInput,
     PostToolUseHookInput,
     PreToolUseHookInput,
+    ShellType,
     StopHookInput,
     UserPromptSubmitHookInput,
 )
@@ -30,6 +31,12 @@ from .registry import (
     get_global_hook_registry,
     reset_global_hook_registry,
 )
+from .shell_invocation import (
+    DEFAULT_HOOK_SHELL,
+    SHELL_TYPES,
+    build_powershell_args,
+    find_powershell_path,
+)
 
 __all__ = [
     "ALL_HOOK_EVENTS",
@@ -37,6 +44,7 @@ __all__ = [
     "HTTP_HOOK_TIMEOUT_MS",
     "TOOL_HOOK_EXECUTION_TIMEOUT_MS",
     "AsyncHookRegistry",
+    "DEFAULT_HOOK_SHELL",
     "HookConfig",
     "HookEvent",
     "HookProgress",
@@ -48,8 +56,12 @@ __all__ = [
     "PostToolUseHookInput",
     "PreToolUseHookInput",
     "RegisteredHook",
+    "SHELL_TYPES",
+    "ShellType",
     "StopHookInput",
     "UserPromptSubmitHookInput",
+    "build_powershell_args",
+    "find_powershell_path",
     "get_global_hook_registry",
     "reset_global_hook_registry",
     "HookConfigManager",
