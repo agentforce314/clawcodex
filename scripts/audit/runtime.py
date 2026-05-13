@@ -4,8 +4,8 @@ from dataclasses import dataclass
 
 from .commands import PORTED_COMMANDS
 from .context import PortContext, build_port_context, render_context
-from .history import HistoryLog
-from .models import PermissionDenial, PortingModule
+from src.history import HistoryLog
+from src.models import PermissionDenial, PortingModule
 from .query_engine import QueryEngineConfig, QueryEnginePort, TurnResult
 from .setup import SetupReport, WorkspaceSetup, run_setup
 from .system_init import build_system_init_message

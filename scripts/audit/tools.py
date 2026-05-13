@@ -5,10 +5,11 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
-from .models import PortingBacklog, PortingModule
-from .permissions import ToolPermissionContext
+from src.models import PortingBacklog, PortingModule
+from src.permissions import ToolPermissionContext
 
-SNAPSHOT_PATH = Path(__file__).resolve().parent / 'reference_data' / 'tools_snapshot.json'
+# ch01 round-2 P3: reference_data stays at src/reference_data/ (see commands.py note).
+SNAPSHOT_PATH = Path(__file__).resolve().parent.parent.parent / 'src' / 'reference_data' / 'tools_snapshot.json'
 
 
 @dataclass(frozen=True)

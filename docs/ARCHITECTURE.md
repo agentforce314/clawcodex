@@ -175,15 +175,13 @@ The ch01 (this chapter) gap analysis and plan live at
 
 ## Audit-only scaffolding (not on the golden path)
 
-A set of audit-only Python files lives at the top of `src/` to support
-TS↔Python parity reporting. They are reachable **only** via
-`python -m src.main <sub>` (exercised by
-`tests/test_porting_workspace.py`) and are not touched by the
-production `clawcodex` console script. The list and the rationale for
-their relocation under `scripts/audit/` is in
-[my-docs/ch01-architecture-refactoring-plan.md §P3](../my-docs/ch01-architecture-refactoring-plan.md).
+The TS↔Python parity-reporting CLI lives at `scripts/audit/`
+(relocated from `src/` top level in ch01 round-2 P3). Run it via
+`python -m scripts.audit.main <sub>` (exercised by
+`tests/test_porting_workspace.py`); the production `clawcodex`
+console script never touches any of it. The relocation rationale
+is in
+[my-docs/ch01-architecture-round2-plan.md](../my-docs/ch01-architecture-round2-plan.md).
 
-If you are reading source for the first time and see files like
-`src/main.py`, `src/runtime.py`, or `src/tools.py`, they are NOT the
-canonical implementations of their apparent abstraction. Use this doc's
-six-abstraction map (above) to find the real entry points.
+Nothing remaining at `src/` top level is audit-only. If you see a
+top-level `src/<name>.py`, it is on the production path.

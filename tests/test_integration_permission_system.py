@@ -304,7 +304,7 @@ class TestBuildAppSmoke(unittest.TestCase):
 
     def test_main_cli_tools_command(self) -> None:
         result = subprocess.run(
-            [sys.executable, "-m", "src.main", "tools", "--limit", "5"],
+            [sys.executable, "-m", "scripts.audit.main", "tools", "--limit", "5"],
             capture_output=True,
             text=True,
             timeout=30,
