@@ -41,6 +41,13 @@ from .transitions import Terminal, TerminalHolder
 
 # Re-use the existing ToolEvent + handler typedefs so callers don't
 # have to refactor their event-handling code.
+#
+# IMPORTANT: import from ``src.tool_system.agent_loop`` directly,
+# NOT from ``src.tui.tool_summary_renderers`` — that path causes a
+# circular import (src/tui/__init__.py imports app → agent_bridge →
+# agent_loop_compat). The TUI re-export module is the canonical
+# import path for non-TUI/non-loop callers; for the loop adapter
+# itself we go directly to the source.
 from ..tool_system.agent_loop import (
     ToolEvent,
     ToolEventHandler,

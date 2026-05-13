@@ -239,15 +239,18 @@ def test_headless_stream_json_multi_turn_from_stdin(fake_wiring, tmp_path):
 def test_headless_without_skip_permissions_installs_auto_deny_handler(fake_wiring, tmp_path):
     fake_wiring.append(_text_response("ok"))
 
+    # Ch5/F.2 migration — headless now calls run_query_as_agent_loop,
+    # so the patch target is the adapter, not the legacy
+    # run_agent_loop. Capture tool_context from the adapter's kwargs.
     captured: dict = {}
-    original = headless_mod.run_agent_loop
-
-    def _capture(*args, **kwargs):
-        captured["tool_context"] = kwargs["tool_context"]
-        return original(*args, **kwargs)
-
     import src.entrypoints.headless as mod
-    mod.run_agent_loop = _capture  # type: ignore[assignment]
+    original = mod.run_query_as_agent_loop
+
+    async def _capture(*args, **kwargs):
+        captured["tool_context"] = kwargs["tool_context"]
+        return await original(*args, **kwargs)
+
+    mod.run_query_as_agent_loop = _capture  # type: ignore[assignment]
     try:
         code = run_headless(
             HeadlessOptions(
@@ -259,7 +262,7 @@ def test_headless_without_skip_permissions_installs_auto_deny_handler(fake_wirin
             )
         )
     finally:
-        mod.run_agent_loop = original  # type: ignore[assignment]
+        mod.run_query_as_agent_loop = original  # type: ignore[assignment]
 
     assert code == 0
     ctx = captured["tool_context"]
@@ -273,14 +276,14 @@ def test_headless_with_skip_permissions_clears_handler(fake_wiring, tmp_path):
     fake_wiring.append(_text_response("ok"))
 
     captured: dict = {}
-    original = headless_mod.run_agent_loop
-
-    def _capture(*args, **kwargs):
-        captured["tool_context"] = kwargs["tool_context"]
-        return original(*args, **kwargs)
-
     import src.entrypoints.headless as mod
-    mod.run_agent_loop = _capture  # type: ignore[assignment]
+    original = mod.run_query_as_agent_loop
+
+    async def _capture(*args, **kwargs):
+        captured["tool_context"] = kwargs["tool_context"]
+        return await original(*args, **kwargs)
+
+    mod.run_query_as_agent_loop = _capture  # type: ignore[assignment]
     try:
         run_headless(
             HeadlessOptions(
@@ -293,7 +296,7 @@ def test_headless_with_skip_permissions_clears_handler(fake_wiring, tmp_path):
             )
         )
     finally:
-        mod.run_agent_loop = original  # type: ignore[assignment]
+        mod.run_query_as_agent_loop = original  # type: ignore[assignment]
 
     ctx = captured["tool_context"]
     assert ctx.permission_handler is None

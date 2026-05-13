@@ -274,6 +274,21 @@ def run_agent_loop(
 ) -> AgentLoopResult:
     """Run agent loop: LLM -> tools -> LLM until no more tools or max turns.
 
+    .. deprecated:: ch5/F (post-migration)
+       The Python port's chapter-5 refactor migrated the production
+       headless (:mod:`src.entrypoints.headless`) and TUI
+       (:mod:`src.tui.agent_bridge`) paths to the canonical
+       :func:`src.query.query.query` async generator via the F.1
+       adapter at :func:`src.query.agent_loop_compat.run_query_as_agent_loop`.
+       That adapter exposes the chapter-5 recovery infrastructure
+       (PTL reactive-compact, blocking-limit pre-emption, stop
+       hooks, token budget, model fallback, continuation nudge) that
+       ``run_agent_loop`` does NOT have.
+
+       New callers should use ``run_query_as_agent_loop``.
+       ``run_agent_loop`` is preserved for back-compat with any test
+       fixtures still importing it directly.
+
     Args:
         conversation: Conversation with initial user message
         provider: LLM provider
