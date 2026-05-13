@@ -62,7 +62,16 @@ class QueryEngine:
         self._config = config
         self._mutable_messages: list[Message] = list(config.initial_messages or [])
         self._abort_controller = config.abort_controller or create_abort_controller()
-        self._total_usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
+        # Critic-flagged cache-token gap — track all four usage fields
+        # the Anthropic API surfaces. Cache fields are zero on
+        # non-Anthropic providers (GLM, OpenAI compat) and on
+        # cold-cache turns.
+        self._total_usage: dict[str, int] = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+        }
         self._session_id: str = uuid4().hex
         # Ch5/B.5 prereq — the autocompact circuit-breaker counter must
         # survive across submit_message calls so 3 consecutive failures
