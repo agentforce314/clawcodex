@@ -32,8 +32,16 @@ from functools import cache
 
 from src.permissions.trust_boundary import (
     apply_safe_config_environment_variables,
+    extract_mdm_safe_env,
+)
+from src.prefetch import (
+    get_or_start_keychain_prefetch,
+    get_or_start_mdm_raw_read,
+    wait_and_read_keychain,
+    wait_and_read_mdm,
 )
 from src.utils.api_preconnect import start_api_preconnect
+from src.utils.keychain_stash import stash_keychain_credentials
 from src.utils.graceful_shutdown import (
     register_cleanup,  # noqa: F401 — exposed for callers to register cleanups
     setup_graceful_shutdown,
@@ -65,8 +73,22 @@ def init() -> None:
     to mark the seam where future work plugs in.
     """
     profile_checkpoint("init_function_start")
+
+    # ch02 round-2 PR-1 (G1): consume the keychain + MDM prefetches that
+    # ``src/cli.py`` fires at module import. The Popens are already
+    # running; ``wait_and_read_*`` blocks for at most the supplied
+    # timeout. Both helpers return ``None`` on any failure — silent
+    # degrade is intentional (TS behavior).
+    _logger.info("init: consuming keychain + MDM prefetches")
+    stash_keychain_credentials(
+        wait_and_read_keychain(get_or_start_keychain_prefetch(), timeout=5.0)
+    )
+    mdm_payload = wait_and_read_mdm(get_or_start_mdm_raw_read(), timeout=2.0)
+    mdm_safe_env = extract_mdm_safe_env(mdm_payload)
+    profile_checkpoint("init_after_prefetch_consumption")
+
     _logger.info("init: applying safe env vars")
-    apply_safe_config_environment_variables()
+    apply_safe_config_environment_variables(extra_env=mdm_safe_env)
     profile_checkpoint("init_safe_env_vars_applied")
 
     _logger.info("init: setting up graceful shutdown")
