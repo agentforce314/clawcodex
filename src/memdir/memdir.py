@@ -291,15 +291,35 @@ def build_memory_prompt(
 def load_memory_prompt() -> str | None:
     """Top-level dispatch for the auto-memory system prompt section.
 
-    Returns ``None`` when auto-memory is disabled. Otherwise creates the
-    memory directory if it does not exist and returns the assembled
-    prompt section.
+    Returns ``None`` when auto-memory is disabled. Otherwise creates
+    the memory directory(ies) if they do not exist and returns the
+    assembled prompt section.
 
-    KAIROS daily-log mode and team-memory combined mode are deferred
-    (Slice D in the refactor plan).
+    Dispatch order matches TS ``loadMemoryPrompt``:
+
+    1. Auto-memory disabled → ``None``.
+    2. Team memory enabled → combined private + team prompt.
+    3. Else → single-directory auto-memory prompt.
+
+    KAIROS daily-log mode is still deferred (Slice D in the refactor
+    plan).
     """
     if not is_auto_memory_enabled():
         return None
+
+    # Lazy import to avoid a circular import at module load time
+    # (team_mem_prompts imports from this module).
+    from .team_mem_paths import get_team_mem_path, is_team_memory_enabled
+
+    if is_team_memory_enabled():
+        from .team_mem_prompts import build_combined_memory_prompt
+
+        # team_dir is nested under auto_dir, so creating team_dir with
+        # parents=True creates auto_dir as a side effect.
+        team_dir = get_team_mem_path()
+        ensure_memory_dir_exists(team_dir)
+        return build_combined_memory_prompt()
+
     auto_dir = get_auto_mem_path()
     ensure_memory_dir_exists(auto_dir)
     return build_memory_prompt(
