@@ -48,17 +48,32 @@ async def run_tool_use(
     assistant_message: AssistantMessage,
     can_use_tool: Any,
     tool_use_context: ToolContext,
+    *,
+    tools: "list[Any] | None" = None,
 ) -> AsyncGenerator[MessageUpdateLazy, None]:
+    """Run a single tool call through the full 13-step pipeline.
+
+    ``tools`` (optional) overrides ``tool_use_context.options.tools``
+    for the tool-name lookup. Useful for the sync adapter
+    (``dispatch_full``) which is given the tool list explicitly and
+    cannot rely on the context's ``options.tools`` being populated.
+    Defaults to None, in which case ``options.tools`` is used (legacy
+    behavior preserved).
+    """
     from src.tool_system.build_tool import find_tool_by_name
     from src.tool_system.registry import get_all_base_tools
 
     tool_name = tool_use.name
-    tool = find_tool_by_name(tool_use_context.options.tools, tool_name)
+    # ``options.tools`` defaults to ``[]`` via dataclass factory, but be
+    # defensive against future None-defaults (would yield a TypeError
+    # from find_tool_by_name's iteration over None).
+    lookup_tools = tools if tools is not None else (tool_use_context.options.tools or [])
+    tool = find_tool_by_name(lookup_tools, tool_name)
 
     if tool is None:
         try:
             from src.tool_system.registry import ToolRegistry
-            fallback_registry = ToolRegistry(tool_use_context.options.tools)
+            fallback_registry = ToolRegistry(lookup_tools)
             tool = fallback_registry.get(tool_name)
         except Exception:
             pass
