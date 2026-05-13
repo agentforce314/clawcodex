@@ -8,10 +8,14 @@ Covers:
   everything else (incl. MCP).
 * ``get_coordinator_user_context`` activation gate + content shape.
 * ``is_fork_subagent_enabled`` is False under coordinator mode (WI-8.6).
+* Round-2: ``get_coordinator_user_context`` honors ``CLAUDE_CODE_SIMPLE``
+  branch and renders ``ASYNC_AGENT_ALLOWED_TOOLS - INTERNAL_WORKER_TOOLS``
+  sorted (parity with ``coordinatorMode.ts:88-95``).
 """
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -248,6 +252,151 @@ def test_user_context_worker_tools_matches_async_allowed_tools(
             f"ASYNC_AGENT_ALLOWED_TOOLS — update prompt.py / mode.py "
             f"to keep them in sync."
         )
+
+
+# ---------------------------------------------------------------------------
+# Round-2 — CLAUDE_CODE_SIMPLE branch + sort-order parity with TS
+# (``coordinatorMode.ts:88-95``)
+# ---------------------------------------------------------------------------
+
+
+def test_user_context_simple_branch_three_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SIMPLE branch returns exactly ``Bash, Edit, Read`` (sorted)
+    — the literal three-tool list from TS ``coordinatorMode.ts:88-91``.
+    Larger-list tools must NOT appear in SIMPLE mode."""
+    monkeypatch.setenv("CLAUDE_CODE_COORDINATOR_MODE", "1")
+    monkeypatch.setenv("CLAUDE_CODE_SIMPLE", "1")
+    ctx = get_coordinator_user_context()
+    body = ctx["workerToolsContext"]
+    assert "Bash, Edit, Read" in body
+    # Tools that exist in ASYNC_AGENT_ALLOWED_TOOLS but not SIMPLE must
+    # NOT leak through.
+    assert "WebSearch" not in body
+    assert "TodoWrite" not in body
+    assert "Glob" not in body
+
+
+def test_user_context_default_branch_sorted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Default branch must render tools alphabetically sorted —
+    matches TS ``.sort().join(', ')`` at ``coordinatorMode.ts:94``."""
+    monkeypatch.setenv("CLAUDE_CODE_COORDINATOR_MODE", "1")
+    monkeypatch.delenv("CLAUDE_CODE_SIMPLE", raising=False)
+    ctx = get_coordinator_user_context()
+    body = ctx["workerToolsContext"]
+    line = next(l for l in body.splitlines() if "Workers spawned" in l)
+    tools_part = line.split(":", 1)[1].strip()
+    tools = [t.strip() for t in tools_part.split(",")]
+    assert tools == sorted(tools), (
+        f"Worker tools must be alphabetically sorted; got: {tools}"
+    )
+
+
+def test_user_context_default_branch_matches_async_allowed_exactly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Inverse of the existing N1 guard
+    (``test_user_context_worker_tools_matches_async_allowed_tools``).
+
+    N1 checks every ASYNC tool appears in the rendered context. This
+    test checks the rendered context contains EXACTLY
+    ``ASYNC_AGENT_ALLOWED_TOOLS - INTERNAL_WORKER_TOOLS`` — catching
+    both drift directions:
+
+    * Tool added to ASYNC_AGENT_ALLOWED_TOOLS but not coordinator → N1
+      catches it.
+    * Tool added to coordinator user context but not ASYNC list →
+      this test catches it.
+    """
+    from src.agent.constants import ASYNC_AGENT_ALLOWED_TOOLS
+
+    monkeypatch.setenv("CLAUDE_CODE_COORDINATOR_MODE", "1")
+    monkeypatch.delenv("CLAUDE_CODE_SIMPLE", raising=False)
+    ctx = get_coordinator_user_context()
+    body = ctx["workerToolsContext"]
+    line = next(l for l in body.splitlines() if "Workers spawned" in l)
+    rendered = set(t.strip() for t in line.split(":", 1)[1].strip().split(","))
+    expected = ASYNC_AGENT_ALLOWED_TOOLS - INTERNAL_WORKER_TOOLS
+    assert rendered == expected, (
+        f"Worker tools drift detected.\n"
+        f"  Rendered: {sorted(rendered)}\n"
+        f"  Expected: {sorted(expected)}\n"
+        f"  Missing : {sorted(expected - rendered)}\n"
+        f"  Extra   : {sorted(rendered - expected)}"
+    )
+
+
+def test_user_context_simple_off_returns_full_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sanity: flipping ``CLAUDE_CODE_SIMPLE`` off reverts to the full
+    async-allowed list — confirms the branch is live, not stuck."""
+    monkeypatch.setenv("CLAUDE_CODE_COORDINATOR_MODE", "1")
+    monkeypatch.setenv("CLAUDE_CODE_SIMPLE", "1")
+    ctx_simple = get_coordinator_user_context()
+    monkeypatch.delenv("CLAUDE_CODE_SIMPLE", raising=False)
+    ctx_default = get_coordinator_user_context()
+    assert ctx_simple != ctx_default
+    assert "WebSearch" not in ctx_simple["workerToolsContext"]
+    assert "WebSearch" in ctx_default["workerToolsContext"]
+
+
+def test_user_context_simple_snapshot(
+    monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest,
+) -> None:
+    """Byte-exact snapshot pin for SIMPLE branch. Breaking this test
+    is the deliberate review gate for any change to the SIMPLE-mode
+    worker tools list — same pattern the prompt.py snapshots use."""
+    monkeypatch.setenv("CLAUDE_CODE_COORDINATOR_MODE", "1")
+    monkeypatch.setenv("CLAUDE_CODE_SIMPLE", "1")
+    body = get_coordinator_user_context()["workerToolsContext"]
+    snap_path = (
+        Path(request.path).parent / "__snapshots__" / "user_context_simple.snap.txt"
+    )
+    expected = snap_path.read_text().rstrip("\n")
+    assert body == expected
+
+
+def test_user_context_default_snapshot(
+    monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest,
+) -> None:
+    """Byte-exact snapshot pin for the default branch. Updates require
+    a deliberate snapshot refresh (mirrors the prompt.py snapshot
+    discipline at ``test_prompt.py``)."""
+    monkeypatch.setenv("CLAUDE_CODE_COORDINATOR_MODE", "1")
+    monkeypatch.delenv("CLAUDE_CODE_SIMPLE", raising=False)
+    body = get_coordinator_user_context()["workerToolsContext"]
+    snap_path = (
+        Path(request.path).parent / "__snapshots__" / "user_context_default.snap.txt"
+    )
+    expected = snap_path.read_text().rstrip("\n")
+    assert body == expected
+
+
+def test_user_context_simple_with_mcp_and_scratchpad(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SIMPLE branch composes correctly with MCP servers + scratchpad —
+    confirms the SIMPLE branch only swaps the tools list and leaves
+    the rest of the structure intact."""
+    monkeypatch.setenv("CLAUDE_CODE_COORDINATOR_MODE", "1")
+    monkeypatch.setenv("CLAUDE_CODE_SIMPLE", "1")
+
+    class _MCPClient:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+    ctx = get_coordinator_user_context(
+        [_MCPClient("github")], scratchpad_dir="/tmp/scratch"
+    )
+    body = ctx["workerToolsContext"]
+    assert "Bash, Edit, Read" in body
+    assert "WebSearch" not in body  # SIMPLE doesn't leak default tools
+    assert "github" in body
+    assert "/tmp/scratch" in body
 
 
 # ---------------------------------------------------------------------------

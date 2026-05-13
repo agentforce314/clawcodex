@@ -22,6 +22,7 @@ import logging
 import os
 from typing import Final, Iterable, Literal, TYPE_CHECKING
 
+from src.agent.constants import ASYNC_AGENT_ALLOWED_TOOLS
 from src.utils.env import is_env_truthy
 
 if TYPE_CHECKING:
@@ -130,6 +131,36 @@ def filter_worker_tools(all_tools: Iterable["Tool"]) -> list["Tool"]:
 # ---------------------------------------------------------------------------
 
 
+# Tools surfaced in SIMPLE mode. Mirrors the literal list at
+# ``coordinatorMode.ts:88-91`` (``[BASH_TOOL_NAME, FILE_READ_TOOL_NAME,
+# FILE_EDIT_TOOL_NAME]``). Kept as a module-level tuple so the
+# round-2 ch10 sort-and-render path has one source of truth.
+_SIMPLE_MODE_WORKER_TOOLS: Final[tuple[str, ...]] = ("Bash", "Read", "Edit")
+
+
+def _build_worker_tools_string() -> str:
+    """Build the comma-separated worker tools list for the coordinator
+    user context. Mirrors ``coordinatorMode.ts:88-95``.
+
+    SIMPLE branch (``CLAUDE_CODE_SIMPLE`` truthy): the literal three
+    tools ``[Bash, Read, Edit]``, sorted alphabetically. This matches
+    the SIMPLE worker-capabilities sentence in the coordinator system
+    prompt (``prompt.py:78-81``) so the coordinator's prompt and
+    user-context agree on what workers can do.
+
+    Default branch: ``ASYNC_AGENT_ALLOWED_TOOLS - INTERNAL_WORKER_TOOLS``
+    sorted alphabetically. Reading from ``ASYNC_AGENT_ALLOWED_TOOLS``
+    rather than hardcoding the list ties the rendered context to the
+    same source of truth as the actual runtime tool filter — adding
+    or removing a tool from the async-allowed set automatically
+    flows through to the coordinator's user context.
+    """
+    if is_env_truthy("CLAUDE_CODE_SIMPLE"):
+        return ", ".join(sorted(_SIMPLE_MODE_WORKER_TOOLS))
+    eligible = ASYNC_AGENT_ALLOWED_TOOLS - INTERNAL_WORKER_TOOLS
+    return ", ".join(sorted(eligible))
+
+
 def get_coordinator_user_context(
     mcp_clients: Iterable[object] | None = None,
     *,
@@ -142,25 +173,22 @@ def get_coordinator_user_context(
     not in coordinator mode (the section is gated on mode, not on
     tools-list shape — non-coordinator agents shouldn't see it). When
     coordinator mode is active, returns ``{"workerToolsContext": "..."}``
-    with the three tool names + optional MCP server names + optional
-    scratchpad note.
+    with the appropriate tool names + optional MCP server names +
+    optional scratchpad note.
 
-    The scratchpad block is gated by the ``tengu_scratch`` feature
-    flag in TS; for chapter-10 we surface the note only when
-    ``scratchpad_dir`` is supplied (the actual scratchpad creation
-    is out-of-scope per plan §3 — wire-up only).
+    The worker tools list now branches on ``CLAUDE_CODE_SIMPLE`` to
+    match TS exactly (round-2 fix); see ``_build_worker_tools_string``.
+
+    The scratchpad block is gated by the ``tengu_scratch`` Statsig
+    feature flag in TS; Python has no Statsig infra yet (backlog
+    item #5 in ``ch10-phase11-backlog.md``), so for now we surface
+    the note unconditionally when ``scratchpad_dir`` is supplied.
+    The actual scratchpad creation is out-of-scope per plan §3.
     """
     if not is_coordinator_mode():
         return {}
 
-    # Pre-compute the worker tools list. We can't import the full
-    # registry here (would circular), so we list the canonical names
-    # the chapter mentions and let the actual tool filter at the
-    # registry level decide what the worker actually has.
-    worker_tools = (
-        "Read, Bash, Edit, Glob, Grep, Write, WebSearch, WebFetch, "
-        "TodoWrite, Skill, EnterWorktree, ExitWorktree"
-    )
+    worker_tools = _build_worker_tools_string()
 
     parts = [f"Workers spawned via Agent have access to these tools: {worker_tools}"]
 
