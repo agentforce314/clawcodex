@@ -2700,21 +2700,33 @@ class ClawcodexREPL:
     def load_session(self, session_id: str):
         """Load a previous session.
 
+        Ch03 round-2 (R2.2): delegates to ``Session.resume`` so the
+        bootstrap singleton's session id and cost counters are updated
+        in lockstep with the on-disk reconstruction. Without this
+        wiring the loaded conversation persists under the loaded id
+        but every bootstrap reader still sees the bootstrap-generated
+        UUID, and ``total_cost_usd`` restarts at 0.
+
         Args:
             session_id: Session ID to load
         """
         from src.agent import Session
+        from src.bootstrap.state import get_total_cost_usd
 
-        loaded_session = Session.load(session_id)
+        loaded_session = Session.resume(session_id)
         if loaded_session is None:
             self.console.print(f"[red]Session not found: {session_id}[/red]")
             return
 
-        # Replace current session
+        # Replace current session (bootstrap id + cost already restored
+        # by Session.resume).
         self.session = loaded_session
         self.console.print(f"[green]Session loaded: {session_id}[/green]")
         self.console.print(f"[dim]Provider: {loaded_session.provider}, Model: {loaded_session.model}[/dim]")
         self.console.print(f"[dim]Messages: {len(loaded_session.conversation.messages)}[/dim]")
+        restored_cost = get_total_cost_usd()
+        if restored_cost > 0:
+            self.console.print(f"[dim]Restored cost: ${restored_cost:.4f}[/dim]")
 
         # Show conversation history
         if loaded_session.conversation.messages:
