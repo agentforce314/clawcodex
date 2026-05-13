@@ -18,6 +18,41 @@ def _new_task_id() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Auto-mode classifier helpers — mirror TS Task{Create,Get,Update,Output}
+# ``toAutoClassifierInput``. The classifier never sees the full task body;
+# it sees a compact identity/intent line so any future LLM classifier can
+# focus on shape over content.
+# ---------------------------------------------------------------------------
+
+
+def _task_create_classifier_input(input_data: dict) -> str:
+    return (input_data or {}).get("subject", "") or ""
+
+
+def _task_get_classifier_input(input_data: dict) -> str:
+    return (input_data or {}).get("taskId", "") or ""
+
+
+def _task_update_classifier_input(input_data: dict) -> str:
+    d = input_data or {}
+    parts: list[str] = []
+    tid = d.get("taskId")
+    if tid:
+        parts.append(str(tid))
+    status = d.get("status")
+    if status:
+        parts.append(str(status))
+    subject = d.get("subject")
+    if subject:
+        parts.append(str(subject))
+    return " ".join(parts)
+
+
+def _task_output_classifier_input(input_data: dict) -> str:
+    return (input_data or {}).get("task_id", "") or ""
+
+
+# ---------------------------------------------------------------------------
 # Result formatting helpers (port of TS mapToolResultToToolResultBlockParam)
 # ---------------------------------------------------------------------------
 
@@ -190,6 +225,7 @@ All tasks are created with status `pending`.
     is_read_only=lambda _input: True,
     is_concurrency_safe=lambda _input: True,
     is_enabled=is_todo_v2_enabled,
+    to_auto_classifier_input=_task_create_classifier_input,
 )
 
 
@@ -252,6 +288,7 @@ Returns full task details:
     is_read_only=lambda _input: True,
     is_concurrency_safe=lambda _input: True,
     is_enabled=is_todo_v2_enabled,
+    to_auto_classifier_input=_task_get_classifier_input,
 )
 
 
@@ -500,6 +537,7 @@ Set up task dependencies:
     is_read_only=lambda _input: True,
     is_concurrency_safe=lambda _input: True,
     is_enabled=is_todo_v2_enabled,
+    to_auto_classifier_input=_task_update_classifier_input,
 )
 
 
@@ -743,4 +781,5 @@ Get the output of a running or completed background task.
     max_result_size_chars=100_000,
     is_read_only=lambda _input: True,
     is_concurrency_safe=lambda _input: True,
+    to_auto_classifier_input=_task_output_classifier_input,
 )
