@@ -184,12 +184,58 @@ def _yield_missing_tool_result_blocks(
     return results
 
 
+def _get_context_window(provider: BaseProvider) -> int:
+    """Ch5/B.4 — return the model's context-window size in tokens.
+
+    Defaults to 200_000 (the Claude family default) when the provider
+    doesn't expose a real integer ``context_window`` attribute.
+
+    The ``isinstance(_, int)`` guard handles MagicMock test fixtures:
+    a MagicMock returns another mock for unset attributes, so a naive
+    ``getattr(..., None) or default`` would short-circuit past the
+    default. Be explicit about the type so the loop is robust to test
+    doubles.
+    """
+    cw = getattr(provider, "context_window", None)
+    if isinstance(cw, int) and cw > 0:
+        return cw
+    return 200_000
+
+
 def _is_withheld_max_output_tokens(msg: Message | None) -> bool:
     if msg is None:
         return False
     if not isinstance(msg, AssistantMessage):
         return False
     return getattr(msg, "_api_error", None) == "max_output_tokens"
+
+
+def _is_withheld_prompt_too_long(msg: Message | None) -> bool:
+    """Ch5/B.1 — mirrors TS ``isWithheldPromptTooLong`` at query.ts:877.
+
+    Returns True for an assistant message that carries an
+    ``_api_error == "prompt_too_long"`` tag. The query loop checks this
+    after streaming to suppress the message from the yield stream until
+    PTL recovery (reactive_compact) has been attempted (B.2).
+    """
+    if msg is None:
+        return False
+    if not isinstance(msg, AssistantMessage):
+        return False
+    return getattr(msg, "_api_error", None) == "prompt_too_long"
+
+
+def _is_withheld_media_size(msg: Message | None) -> bool:
+    """Ch5/B.1 — mirrors TS ``isWithheldMediaSizeError`` at query.ts:892.
+
+    Returns True for an assistant message that carries an
+    ``_api_error == "media_size"`` tag.
+    """
+    if msg is None:
+        return False
+    if not isinstance(msg, AssistantMessage):
+        return False
+    return getattr(msg, "_api_error", None) == "media_size"
 
 
 async def _call_model_sync(
@@ -323,6 +369,19 @@ async def _call_model_sync(
                 error="max_output_tokens",
             )
             err_msg._api_error = "max_output_tokens"  # type: ignore[attr-defined]
+            return [err_msg], []
+
+        # Ch5/B.1 — tag media-size errors so the loop can withhold them
+        # and (in B.2) route through reactive-compact recovery. Mirrors
+        # TS `isWithheldMediaSizeError` at query.ts:892. `is_media_size_error`
+        # expects a str (substring match), so pass error_str explicitly.
+        from ..services.api.errors import is_media_size_error
+        if is_media_size_error(error_str):
+            err_msg = _create_assistant_api_error_message(
+                f"Media too large: {error_str}",
+                error="media_size",
+            )
+            err_msg._api_error = "media_size"  # type: ignore[attr-defined]
             return [err_msg], []
 
         raise
@@ -641,6 +700,7 @@ async def query(
 
         # --- Phase 0: Compression Pipeline ---
         # Mirrors TS query loop Phase 0: toolResultBudget → snip → microcompact → collapse → autocompact
+        snip_tokens_freed = 0
         if params.pipeline_config is not None:
             try:
                 # Estimate input tokens so layer 5 (autocompact) can decide
@@ -654,6 +714,7 @@ async def query(
                 )
                 if pipeline_result.tokens_saved > 0:
                     messages = pipeline_result.messages
+                    snip_tokens_freed = pipeline_result.tokens_saved
                     if _diag:
                         logger.warning(
                             "[DIAG] Compression pipeline saved %d tokens (layers: %s)",
@@ -662,6 +723,99 @@ async def query(
                         )
             except Exception:
                 logger.warning("Compression pipeline failed, continuing with original messages", exc_info=True)
+
+        # Ch5/B.4 + B.5 — pre-emption guards before the API call.
+        # Two distinct guards:
+        #   B.4: hard blocking limit (auto-compact off OR no other
+        #        recovery available) — saves the 500 the API would
+        #        return anyway.
+        #   B.5: autocompact circuit-breaker tripped (3 consecutive
+        #        failures) AND we're still over the autocompact
+        #        threshold — gives the user an actionable message
+        #        instead of an opaque 500.
+        # Skip when this iteration is a recovery retry (the messages
+        # were already validated under the limit), or when this is a
+        # compact/session_memory forked query (those need to run to
+        # REDUCE the token count, blocking would deadlock).
+        from ..services.compact.autocompact import (
+            MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES,
+            calculate_token_warning_state,
+            is_auto_compact_enabled,
+        )
+
+        skip_blocking_guards = (
+            params.query_source in ("compact", "session_memory")
+            or (
+                state.transition is not None
+                and state.transition.reason
+                in ("collapse_drain_retry", "reactive_compact_retry")
+            )
+        )
+
+        if not skip_blocking_guards:
+            context_window = _get_context_window(params.provider)
+            # NB: ``messages`` here is already the post-pipeline list (we
+            # reassigned ``messages = pipeline_result.messages`` above when
+            # the pipeline freed tokens). So ``rough_token_count_estimation``
+            # already reflects all compression-layer savings; subtracting
+            # ``snip_tokens_freed`` again would double-count. The variable
+            # is retained for B.5 logging / future TS-style snip-only
+            # measurement, but the guard math uses the post-pipeline count
+            # directly.
+            token_usage = rough_token_count_estimation_for_messages(messages)
+            warning = calculate_token_warning_state(token_usage, context_window)
+
+            # B.5 (checked first — gives the more actionable message
+            # when the breaker has tripped). Mirrors TS query.ts:705-725.
+            tracking = state.auto_compact_tracking or (
+                params.pipeline_config.autocompact_tracking
+                if params.pipeline_config is not None
+                else None
+            )
+            consec = (
+                getattr(tracking, "consecutive_failures", 0)
+                if tracking is not None
+                else 0
+            )
+            if (
+                consec >= MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES
+                and is_auto_compact_enabled()
+                and warning["is_above_auto_compact_threshold"]
+            ):
+                yield _create_assistant_api_error_message(
+                    content=(
+                        "The conversation has exceeded the context limit "
+                        "and automatic compaction has failed. Press esc twice "
+                        "to go up a few messages and try again, or start a "
+                        "new session with /new."
+                    ),
+                    error="invalid_request",
+                )
+                set_terminal(
+                    holder, natural_termination, Terminal(reason="blocking_limit"),
+                )
+                return
+
+            # B.4 (hard blocking limit). Mirrors TS query.ts:683-696.
+            # Only fires when reactive-compact recovery is NOT available
+            # — otherwise we let the API 413 and the B.2 recovery path
+            # handle it. This matches TS: the guard exists to short-
+            # circuit only when no recovery would catch the 500 anyway.
+            elif (
+                warning["is_at_blocking_limit"]
+                and not (
+                    config.reactive_compact_enabled
+                    and is_auto_compact_enabled()
+                )
+            ):
+                yield _create_assistant_api_error_message(
+                    content=PROMPT_TOO_LONG_ERROR_MESSAGE,
+                    error="invalid_request",
+                )
+                set_terminal(
+                    holder, natural_termination, Terminal(reason="blocking_limit"),
+                )
+                return
 
         assistant_messages: list[AssistantMessage] = []
         tool_results: list[UserMessage] = []
@@ -681,9 +835,17 @@ async def query(
             needs_follow_up = len(tool_use_blocks) > 0
 
             for msg in assistant_messages:
-                withheld = False
-                if _is_withheld_max_output_tokens(msg):
-                    withheld = True
+                # Ch5/B.1 — three-source withholding pattern.
+                # Mirrors TS query.ts:866-903. Recoverable errors are
+                # suppressed from the yield stream so SDK consumers
+                # (Cowork, the desktop app) don't disconnect mid-recovery.
+                # If recovery exhausts, the message is surfaced later by
+                # the dispatch code in the no-follow-up branch (B.2).
+                withheld = (
+                    _is_withheld_max_output_tokens(msg)
+                    or _is_withheld_prompt_too_long(msg)
+                    or _is_withheld_media_size(msg)
+                )
                 if not withheld:
                     yield msg
 
@@ -753,6 +915,133 @@ async def query(
                     continue
 
                 yield last_message  # type: ignore[arg-type]
+
+            # Ch5/B.2 — PTL / media-size recovery via reactive_compact.
+            # Mirrors TS query.ts:1195-1260. When the streaming model
+            # returned a withheld PTL or media-size error AND we have
+            # not yet attempted reactive_compact in this loop iteration,
+            # try to compact and retry. The one-shot guard
+            # (``has_attempted_reactive_compact``) prevents the
+            # death-spiral failure mode documented in chapter §"Death
+            # Spiral Guard": without it, a compact-then-still-413 loop
+            # burns thousands of API calls.
+            is_withheld_ptl = _is_withheld_prompt_too_long(last_message)
+            is_withheld_media = _is_withheld_media_size(last_message)
+
+            # Phase B post-critic: if the guard ALREADY tripped (we tried
+            # reactive_compact this turn and the post-compact retry STILL
+            # raised PTL/media), surface the withheld error and emit the
+            # appropriate Terminal — do NOT fall through to the
+            # "API error → Terminal(completed)" path. Mirrors TS at
+            # query.ts:1244-1252.
+            if (
+                (is_withheld_ptl or is_withheld_media)
+                and has_attempted_reactive_compact
+            ):
+                if last_message is not None:
+                    yield last_message
+                set_terminal(
+                    holder,
+                    natural_termination,
+                    Terminal(
+                        reason="image_error"
+                        if is_withheld_media
+                        else "prompt_too_long"
+                    ),
+                )
+                return
+
+            if (
+                (is_withheld_ptl or is_withheld_media)
+                and not has_attempted_reactive_compact
+                and config.reactive_compact_enabled
+            ):
+                from ..services.compact.reactive_compact import (
+                    ReactiveCompactResult,
+                    reactive_compact,
+                )
+                from ..services.api.errors import PromptTooLongError
+
+                # Synthesize an exception for reactive_compact's
+                # is_prompt_too_long_error check. The withheld
+                # message holds the original error string; we don't
+                # need to round-trip it precisely because
+                # reactive_compact only uses the exception for
+                # classification.
+                synthetic_err = PromptTooLongError(
+                    "withheld during streaming, recovering"
+                )
+                result: ReactiveCompactResult = await reactive_compact(
+                    messages=messages,
+                    error=synthetic_err,
+                    provider=params.provider,
+                    model=config.model,
+                )
+                if result.compacted:
+                    # ReactiveCompactResult.messages is list[Message]
+                    # (verified 2026-05-12 against reactive_compact.py
+                    # :33-39, :205-210, :230-236; the field
+                    # concatenates CompactionResult.summary_messages
+                    # which is list[UserMessage], with
+                    # messages_to_keep which is list[Message]).
+                    post_compact_messages: list[Message] = result.messages
+                    for msg in post_compact_messages:
+                        yield msg
+                    # Critic finding (Phase B post-review): a successful
+                    # reactive_compact MUST reset the engine's autocompact
+                    # circuit-breaker counter. Otherwise the next iteration's
+                    # B.5 guard re-reads the engine's persistent
+                    # ``consecutive_failures`` (still ≥3 if the breaker
+                    # tripped earlier in the session) and would trip
+                    # ``Terminal(blocking_limit)`` immediately even though
+                    # we just successfully compacted. Mirrors TS query.ts
+                    # auto-compact success path (resets failures to 0).
+                    if (
+                        params.pipeline_config is not None
+                        and params.pipeline_config.autocompact_tracking is not None
+                    ):
+                        params.pipeline_config.autocompact_tracking.consecutive_failures = 0
+                    state = QueryState(
+                        messages=post_compact_messages,
+                        tool_use_context=tool_use_context,
+                        # Carry the engine's tracking through the retry so
+                        # next iteration's B.5 reads the post-reset count.
+                        auto_compact_tracking=(
+                            params.pipeline_config.autocompact_tracking
+                            if params.pipeline_config is not None
+                            else None
+                        ),
+                        max_output_tokens_recovery_count=max_output_tokens_recovery_count,
+                        has_attempted_reactive_compact=True,  # one-shot
+                        max_output_tokens_override=None,
+                        stop_hook_active=state.stop_hook_active,
+                        turn_count=turn_count,
+                        pending_tool_use_summary=state.pending_tool_use_summary,
+                        continuation_nudge_count=state.continuation_nudge_count,
+                        transition=Transition(reason="reactive_compact_retry"),
+                    )
+                    continue
+
+                # No recovery — surface the (until-now withheld) error
+                # and exit with the appropriate Terminal reason.
+                # DEATH-SPIRAL GUARD: do NOT fall through to a future
+                # stop-hooks call here. Mirrors TS query.ts:1244-1252
+                # ("error -> hook blocking -> retry -> error -> ...
+                # the hook injects more tokens each cycle"). When C.1
+                # lands the stop-hooks dispatch, this early return
+                # must remain.
+                if last_message is not None:
+                    yield last_message
+                set_terminal(
+                    holder,
+                    natural_termination,
+                    Terminal(
+                        reason="image_error"
+                        if is_withheld_media
+                        else "prompt_too_long"
+                    ),
+                )
+                return
 
             if last_message and getattr(last_message, "isApiErrorMessage", False):
                 set_terminal(holder, natural_termination, Terminal(reason="completed"))

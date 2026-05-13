@@ -28,6 +28,7 @@ from ..context_system.prompt_assembly import (
 
 from .query import QueryParams, StreamEvent, query
 from ..services.compact.pipeline import PipelineConfig
+from ..services.compact.autocompact import AutoCompactTracking
 
 
 @dataclass
@@ -61,6 +62,12 @@ class QueryEngine:
         self._abort_controller = config.abort_controller or create_abort_controller()
         self._total_usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
         self._session_id: str = uuid4().hex
+        # Ch5/B.5 prereq — the autocompact circuit-breaker counter must
+        # survive across submit_message calls so 3 consecutive failures
+        # actually trip the breaker. A fresh PipelineConfig per submit
+        # would reset the counter every prompt. Hold the SAME tracking
+        # instance on the engine and reuse it.
+        self._auto_compact_tracking: AutoCompactTracking = AutoCompactTracking()
 
     @property
     def mutable_messages(self) -> list[Message]:
@@ -211,6 +218,11 @@ class QueryEngine:
             provider=self._config.provider,
             model=getattr(self._config.provider, 'model', '') or '',
             read_file_state=read_file_state or None,
+            # Ch5/B.5 — thread the session-scoped tracking instance so
+            # the autocompact circuit-breaker can count consecutive
+            # failures across user prompts. ``auto_compact_if_needed``
+            # mutates ``tracking.consecutive_failures`` in place.
+            autocompact_tracking=self._auto_compact_tracking,
         )
 
         params = QueryParams(
