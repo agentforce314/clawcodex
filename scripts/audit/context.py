@@ -17,7 +17,10 @@ class PortContext:
 
 
 def build_port_context(base: Path | None = None) -> PortContext:
-    root = base or Path(__file__).resolve().parent.parent
+    # ch01 P3: file moved from ``src/context.py`` to
+    # ``scripts/audit/context.py`` — the repo root is now three levels
+    # up from this file instead of two.
+    root = base or Path(__file__).resolve().parent.parent.parent
     source_root = root / 'src'
     tests_root = root / 'tests'
     assets_root = root / 'assets'

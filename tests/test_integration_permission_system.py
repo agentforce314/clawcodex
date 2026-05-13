@@ -303,8 +303,9 @@ class TestBuildAppSmoke(unittest.TestCase):
         self.assertEqual(result.returncode, 0, f"pip install failed: {result.stderr}")
 
     def test_main_cli_tools_command(self) -> None:
+        # ch01 P3: ``src/main.py`` moved to ``scripts/audit/cli.py``.
         result = subprocess.run(
-            [sys.executable, "-m", "src.main", "tools", "--limit", "5"],
+            [sys.executable, "-m", "scripts.audit.cli", "tools", "--limit", "5"],
             capture_output=True,
             text=True,
             timeout=30,
