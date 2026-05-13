@@ -518,6 +518,8 @@ async def execute_stop_hooks(
     tool_use_context: Any = None,
     messages: list[Any] | None = None,
     agent_type: str | None = None,
+    user_context: dict[str, str] | None = None,
+    system_context: dict[str, str] | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     event = "SubagentStop" if subagent_id else "Stop"
 
@@ -529,6 +531,14 @@ async def execute_stop_hooks(
         stdin_data["subagent_id"] = subagent_id
     if agent_type:
         stdin_data["agent_type"] = agent_type
+    # Ch5/C.1 follow-up — surface user_context (CLAUDE.md, date) and
+    # system_context (git status, etc.) to Stop hooks so a hook script
+    # can make decisions based on per-session context. Mirrors the TS
+    # forwarding that lands these in the hook's stdin payload.
+    if user_context:
+        stdin_data["user_context"] = dict(user_context)
+    if system_context:
+        stdin_data["system_context"] = dict(system_context)
 
     async for result in _run_hooks_for_event(
         event,

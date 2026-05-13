@@ -39,7 +39,7 @@ class StopHookResult:
 async def handle_stop_hooks(
     messages_for_query: list[Message],
     assistant_messages: list[AssistantMessage],
-    system_prompt: str,
+    system_prompt: str | list[dict[str, Any]],
     tool_use_context: Any,
     query_source: str,
     stop_hook_active: bool | None = None,
@@ -57,6 +57,8 @@ async def handle_stop_hooks(
         query_source,
         stop_hook_active,
         result,
+        user_context=user_context,
+        system_context=system_context,
     ):
         emitted.append(msg_or_result)
 
@@ -66,10 +68,12 @@ async def handle_stop_hooks(
 async def handle_stop_hooks_streaming(
     messages_for_query: list[Message],
     assistant_messages: list[AssistantMessage],
-    system_prompt: str,
+    system_prompt: str | list[dict[str, Any]],
     tool_use_context: Any,
     query_source: str,
     stop_hook_active: bool | None = None,
+    user_context: dict[str, str] | None = None,
+    system_context: dict[str, str] | None = None,
 ) -> AsyncGenerator[Message | StopHookResult, None]:
     result = StopHookResult()
 
@@ -81,6 +85,8 @@ async def handle_stop_hooks_streaming(
         query_source,
         stop_hook_active,
         result,
+        user_context=user_context,
+        system_context=system_context,
     ):
         yield msg
 
@@ -90,11 +96,13 @@ async def handle_stop_hooks_streaming(
 async def _handle_stop_hooks_generator(
     messages_for_query: list[Message],
     assistant_messages: list[AssistantMessage],
-    system_prompt: str,
+    system_prompt: str | list[dict[str, Any]],
     tool_use_context: Any,
     query_source: str,
     stop_hook_active: bool | None,
     result_out: StopHookResult,
+    user_context: dict[str, str] | None = None,
+    system_context: dict[str, str] | None = None,
 ) -> AsyncGenerator[Message, None]:
     hook_start_time = time.time()
 
@@ -128,6 +136,8 @@ async def _handle_stop_hooks_generator(
             tool_use_context=tool_use_context,
             messages=all_messages,
             agent_type=agent_type,
+            user_context=user_context,
+            system_context=system_context,
         ):
             if hook_result.get("message"):
                 msg = hook_result["message"]

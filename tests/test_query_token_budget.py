@@ -263,5 +263,116 @@ class TestTokenBudgetContinuation(_Base):
         self.assertEqual(provider.chat.call_count, 1)
 
 
+class TestEngineSubmitMessageStripsBudgetMarker(unittest.TestCase):
+    """D.3 integration — QueryEngine.submit_message strips the +500k
+    marker from the user prompt AND sets task_budget on QueryParams."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.workspace = Path(self.temp_dir.name)
+        self.registry = build_default_registry()
+        self.context = ToolContext(workspace_root=self.workspace)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_engine_strips_plus_marker_and_engages_budget(self):
+        """When the user prompt starts with +500k, the engine strips
+        the marker before storing the user message AND the budget
+        tracker is engaged inside query() (proven by a continuation
+        nudge being injected when output is below the 90% threshold)."""
+        from src.providers.base import ChatResponse
+        from src.query.engine import QueryEngine, QueryEngineConfig
+
+        provider = MagicMock()
+        provider.chat_stream_response.side_effect = NotImplementedError()
+        provider.chat.side_effect = [
+            ChatResponse(
+                content="Working on it.",
+                model="test",
+                usage={"input_tokens": 10, "output_tokens": 100},
+                finish_reason="end_turn",
+                tool_uses=None,
+            ),
+            ChatResponse(
+                content="Final.",
+                model="test",
+                usage={"input_tokens": 30, "output_tokens": 470_000},
+                finish_reason="end_turn",
+                tool_uses=None,
+            ),
+        ]
+
+        engine = QueryEngine(QueryEngineConfig(
+            cwd=self.workspace,
+            provider=provider,
+            tool_registry=self.registry,
+            tools=self.registry.list_tools(),
+            tool_context=self.context,
+            system_prompt="You are helpful.",
+            max_turns=10,
+        ))
+
+        async def run():
+            async for _ in engine.submit_message(
+                "+500k continue refactoring the auth module",
+            ):
+                pass
+
+        asyncio.run(run())
+
+        # The stored user message must NOT contain "+500k" — the
+        # engine stripped it before append.
+        stored_users = [
+            m for m in engine.get_messages() if isinstance(m, UserMessage)
+        ]
+        self.assertGreaterEqual(len(stored_users), 1)
+        first_user_text = str(stored_users[0].content)
+        self.assertNotIn("+500k", first_user_text)
+        self.assertIn("continue refactoring", first_user_text)
+
+        # Budget engaged → loop continued past turn 1 (100 tokens, under
+        # 90% threshold), then stopped on turn 2 (470k tokens, over).
+        self.assertEqual(provider.chat.call_count, 2)
+        self.assertIsNotNone(engine.last_terminal)
+        self.assertEqual(engine.last_terminal.reason, "completed")
+
+    def test_engine_no_marker_does_not_engage_budget(self):
+        """When the user prompt has no +500k marker, the budget
+        tracker is NOT engaged — the loop exits after the first turn
+        regardless of token count."""
+        from src.providers.base import ChatResponse
+        from src.query.engine import QueryEngine, QueryEngineConfig
+
+        provider = MagicMock()
+        provider.chat_stream_response.side_effect = NotImplementedError()
+        provider.chat.return_value = ChatResponse(
+            content="Done.",
+            model="test",
+            usage={"input_tokens": 10, "output_tokens": 100},
+            finish_reason="end_turn",
+            tool_uses=None,
+        )
+
+        engine = QueryEngine(QueryEngineConfig(
+            cwd=self.workspace,
+            provider=provider,
+            tool_registry=self.registry,
+            tools=self.registry.list_tools(),
+            tool_context=self.context,
+            system_prompt="You are helpful.",
+            max_turns=10,
+        ))
+
+        async def run():
+            async for _ in engine.submit_message("just do it"):
+                pass
+
+        asyncio.run(run())
+
+        self.assertEqual(provider.chat.call_count, 1)
+        self.assertEqual(engine.last_terminal.reason, "completed")
+
+
 if __name__ == "__main__":
     unittest.main()

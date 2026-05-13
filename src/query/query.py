@@ -270,7 +270,7 @@ async def _call_model_sync(
     *,
     provider: BaseProvider,
     messages: list[Message],
-    system_prompt: str,
+    system_prompt: str | list[dict[str, Any]],
     tools: Tools,
     max_output_tokens_override: int | None = None,
 ) -> tuple[list[AssistantMessage], list[ToolUseBlock]]:
@@ -942,12 +942,20 @@ async def _query_loop_inner(
                         # No fallback configured — re-raise into outer
                         # exception handler below (Terminal(model_error)).
                         raise
-                    # Tombstone any partial assistant messages from the
-                    # failed attempt so the UI removes them from the
-                    # transcript. Yield orphaned-tool-result blocks so
-                    # the API protocol invariant (every tool_use has a
-                    # tool_result) holds for the partial state we're
-                    # discarding. Mirrors TS at query.ts:978-1005.
+                    # Both blocks below are no-ops in the current
+                    # non-streaming Python loop (``deps.call_model``
+                    # returns the full response or raises; partial
+                    # ``assistant_messages`` is always [] when this
+                    # except fires). They are wired anyway so a future
+                    # streaming-provider port — where the model can
+                    # emit partial tool_use blocks before raising —
+                    # gets protocol-correct behavior for free:
+                    #   1. Orphaned-tool-result blocks pair every
+                    #      tool_use with a tool_result so the next API
+                    #      call doesn't 400 on a half-written turn.
+                    #   2. Tombstones tell the UI to remove the partial
+                    #      messages from the transcript.
+                    # Mirrors TS at query.ts:978-1005.
                     for orphan_msg in _yield_missing_tool_result_blocks(
                         assistant_messages, "Model fallback triggered",
                     ):
@@ -1252,6 +1260,11 @@ async def _query_loop_inner(
                     tool_use_context=tool_use_context,
                     query_source=params.query_source,
                     stop_hook_active=state.stop_hook_active,
+                    # Ch5/C.1 follow-up — thread user/system context through
+                    # to the hook executor so Stop hooks see the same
+                    # per-session context blocks the model received.
+                    user_context=params.user_context,
+                    system_context=params.system_context,
                 ):
                     if isinstance(emitted, StopHookResult):
                         stop_result = emitted
