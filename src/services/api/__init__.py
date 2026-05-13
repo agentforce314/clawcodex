@@ -1,4 +1,4 @@
-from .claude import StreamEvent, call_model, tool_to_api_schema
+from .claude import StreamEvent, add_cache_breakpoints, call_model, tool_to_api_schema
 from .errors import (
     FallbackTriggeredError,
     MaxOutputTokensError,
@@ -24,6 +24,7 @@ __all__ = [
     "RetryContext",
     "StreamEvent",
     "accumulate_usage",
+    "add_cache_breakpoints",
     "call_model",
     "categorize_retryable_api_error",
     "normalize_tool_arguments",
