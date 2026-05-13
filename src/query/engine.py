@@ -28,6 +28,7 @@ from ..context_system.prompt_assembly import (
 )
 
 from .query import QueryParams, StreamEvent, query
+from .transitions import Terminal, TerminalHolder
 from ..services.compact.pipeline import PipelineConfig
 from ..services.compact.autocompact import AutoCompactTracking
 
@@ -69,6 +70,12 @@ class QueryEngine:
         # would reset the counter every prompt. Hold the SAME tracking
         # instance on the engine and reuse it.
         self._auto_compact_tracking: AutoCompactTracking = AutoCompactTracking()
+        # Ch5/A follow-up — the canonical query() loop writes a Terminal
+        # to its TerminalHolder just before exit. Expose the most recent
+        # Terminal so wrapper callers (REPL, headless, SDK) can
+        # discriminate why a turn stopped: ``completed``, ``aborted_*``,
+        # ``max_turns``, ``stop_hook_prevented``, etc.
+        self._last_terminal: Terminal | None = None
 
     @property
     def mutable_messages(self) -> list[Message]:
@@ -81,6 +88,22 @@ class QueryEngine:
     @property
     def total_usage(self) -> dict[str, int]:
         return dict(self._total_usage)
+
+    @property
+    def last_terminal(self) -> Terminal | None:
+        """Ch5/A follow-up — most recent Terminal yielded by query().
+
+        Set by submit_message() at the end of each turn. Callers can
+        switch on ``last_terminal.reason`` to discriminate why the
+        turn stopped (10 distinct reasons per chapter §"Terminal
+        States": ``completed``, ``aborted_streaming``, ``aborted_tools``,
+        ``max_turns``, ``stop_hook_prevented``, ``hook_stopped``,
+        ``prompt_too_long``, ``image_error``, ``blocking_limit``,
+        ``model_error``).
+
+        Returns None before the first ``submit_message`` has finished.
+        """
+        return self._last_terminal
 
     async def _build_system_prompt_parts(
         self,
@@ -268,7 +291,13 @@ class QueryEngine:
             task_budget=task_budget,
         )
 
-        async for message in query(params):
+        # Ch5/A follow-up — thread a TerminalHolder through query() so
+        # we can read the typed Terminal value after iteration. Without
+        # this the engine drops the terminal silently and callers cannot
+        # discriminate exit reason.
+        terminal_holder = TerminalHolder()
+
+        async for message in query(params, terminal_holder=terminal_holder):
             if isinstance(message, StreamEvent):
                 if on_message:
                     on_message(message)
@@ -306,6 +335,10 @@ class QueryEngine:
                 on_message(message)
 
             yield message
+
+        # Persist the Terminal so callers can inspect it via the
+        # ``last_terminal`` property after the generator is exhausted.
+        self._last_terminal = terminal_holder.value
 
     def interrupt(self) -> None:
         self._abort_controller.abort("user_interrupt")

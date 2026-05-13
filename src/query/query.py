@@ -25,6 +25,7 @@ from ..utils.abort_controller import AbortController
 from ..providers.base import BaseProvider, ChatResponse
 
 from .config import QueryConfig, build_query_config
+from .deps import QueryDeps
 from .transitions import (
     QueryState,
     Terminal,
@@ -82,6 +83,11 @@ class QueryParams:
     # provider-internal concern (rate-limit header parsing) that is
     # tracked as a separate ticket.
     fallback_provider: BaseProvider | None = None
+    # Ch5/G.1+G.2 — narrow dependency injection. Tests pass a custom
+    # ``QueryDeps`` to swap ``call_model`` for a fake without having
+    # to monkey-patch ``_call_model_sync`` at the module level. When
+    # ``deps`` is None, the loop falls back to ``production_deps()``.
+    deps: QueryDeps | None = None
 
 
 @dataclass
@@ -668,33 +674,84 @@ async def query(
     *,
     terminal_holder: TerminalHolder | None = None,
 ) -> AsyncGenerator[Message | StreamEvent, None]:
-    """Canonical agent loop (chapter 5, Phase A foundation).
+    """Canonical agent loop — outer two-layer entry point (Ch5/G.3).
 
-    The async generator yields messages and stream events to the consumer.
+    Mirrors TS ``query.ts:224-243``. The outer wrapper delegates to
+    :func:`_query_loop_inner` while tracking the UUIDs of slash
+    commands and task notifications consumed during the turn. AFTER
+    the inner loop completes naturally (not via ``.aclose()`` or
+    exception), the outer fires
+    ``notify_command_lifecycle(uuid, "completed")`` for every consumed
+    UUID. If the inner crashes or is closed mid-iteration, the
+    completion notifications are skipped — a failed turn does not
+    declare its commands successful.
+
     The final ``Terminal`` is written to ``terminal_holder.value`` just
-    before the generator returns (Python async generators cannot return
-    values: PEP 525). Callers who care about the terminal pass their own
-    ``TerminalHolder`` and read its ``.value`` after iteration.
+    before the generator returns (Python async generators cannot
+    return values: PEP 525). Callers who care about the terminal pass
+    their own ``TerminalHolder`` and read its ``.value`` after
+    iteration. See :func:`run_query` for a convenience helper that
+    returns ``(messages, terminal)``.
+    """
+    holder = terminal_holder or TerminalHolder()
+    consumed_command_uuids: list[str] = []
+    natural_termination: list[bool] = [False]
 
-    See :func:`run_query` for a convenience helper that consumes the
-    generator and returns ``(messages, terminal)``.
+    inner = _query_loop_inner(
+        params,
+        terminal_holder=holder,
+        consumed_command_uuids=consumed_command_uuids,
+        natural_termination=natural_termination,
+    )
+    try:
+        async for msg in inner:
+            yield msg
+    finally:
+        # Fire completed-lifecycle ONLY on natural termination. If we
+        # got here via .aclose() or an unhandled exception bubbling
+        # up, ``natural_termination[0]`` is still False and we
+        # silently drop the completion notifications. Mirrors TS at
+        # query.ts:240-243 ("a failed turn should not mark commands
+        # as successfully processed").
+        if natural_termination[0] and consumed_command_uuids:
+            from .command_lifecycle import notify_command_lifecycle
+            for uuid in consumed_command_uuids:
+                notify_command_lifecycle(uuid, "completed")
 
-    This PR (Phase A) introduces the typed Terminal infrastructure;
-    recovery integration, stop hooks, token budget, model fallback,
-    and continuation nudge land in subsequent PRs.
+
+async def _query_loop_inner(
+    params: QueryParams,
+    *,
+    terminal_holder: TerminalHolder,
+    consumed_command_uuids: list[str],
+    natural_termination: list[bool],
+) -> AsyncGenerator[Message | StreamEvent, None]:
+    """Inner agent loop — does all the real work (chapter 5).
+
+    Separated from the outer ``query()`` wrapper so the outer can
+    gate command-lifecycle dispatch on natural termination. The
+    ``consumed_command_uuids`` list is shared-mutable — when the
+    inner consumes a slash command, it appends the UUID; the outer
+    reads the final list after iteration.
     """
     _diag = os.environ.get("CLAWCODEX_DEBUG", "").lower() in ("1", "true", "yes")
-    holder = terminal_holder or TerminalHolder()
-    # Inner-only flag for the future outer two-layer wrapper (Phase G).
-    # Until that lands, the flag is local; set_terminal still writes it
-    # so every exit site uses the canonical helper.
-    natural_termination: list[bool] = [False]
+    holder = terminal_holder
     state = QueryState(
         messages=list(params.messages),
         tool_use_context=params.tool_use_context,
         max_output_tokens_override=params.max_output_tokens_override,
     )
     config = build_query_config()
+
+    # Ch5/G.1+G.2 — resolve deps once per query() invocation. Tests
+    # pass their own QueryDeps to swap call_model for a fake; the
+    # production path uses production_deps() which wires
+    # _call_model_sync, microcompact_messages, and auto_compact_if_needed.
+    if params.deps is not None:
+        deps = params.deps
+    else:
+        from .deps import production_deps
+        deps = production_deps()
 
     # Ch5/D.1 — instantiate the budget tracker once per query() call
     # when both the config gate (token_budget_enabled) is on AND the
@@ -867,7 +924,10 @@ async def query(
             while attempt_with_fallback:
                 attempt_with_fallback = False
                 try:
-                    returned_assistants, returned_tool_blocks = await _call_model_sync(
+                    # Ch5/G.2 — route through deps.call_model. The default
+                    # production deps wires this to _call_model_sync; tests
+                    # can pass a fake with the same signature.
+                    returned_assistants, returned_tool_blocks = await deps.call_model(
                         provider=current_provider,
                         messages=messages,
                         system_prompt=params.system_prompt,
