@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, get_args
 
 ConfigScope = Literal[
     "local", "user", "project", "dynamic", "enterprise", "claudeai", "managed"
@@ -197,42 +197,169 @@ class MCPCliState:
     normalized_names: dict[str, str] | None = None
 
 
-def parse_server_config(data: dict[str, Any]) -> McpServerConfig | None:
-    server_type = data.get("type")
+# Derived from ``TransportType`` so the validator (and any caller that
+# needs the enumerated list, e.g. for error suggestions) stays in sync
+# if the Literal gains a new entry.
+KNOWN_TRANSPORT_TYPES: tuple[str, ...] = get_args(TransportType)
+
+
+def _validate_str_str_dict(
+    value: Any, field_name: str, errors: list[str]
+) -> dict[str, str] | None:
+    """Validate that ``value`` is a ``dict[str, str]``; append errors and return None on failure."""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        errors.append(f"{field_name} must be an object mapping strings to strings")
+        return None
+    cleaned: dict[str, str] = {}
+    ok = True
+    for k, v in value.items():
+        if not isinstance(k, str):
+            errors.append(f"{field_name} key {k!r} must be a string")
+            ok = False
+            continue
+        if not isinstance(v, str):
+            errors.append(f"{field_name} value for {k!r} must be a string")
+            ok = False
+            continue
+        cleaned[k] = v
+    return cleaned if ok else None
+
+
+def _validate_string_field(
+    value: Any,
+    field_name: str,
+    errors: list[str],
+    *,
+    required: bool = False,
+    allow_empty: bool = True,
+) -> str | None:
+    """Validate that ``value`` is a string. Append errors as needed."""
+    if value is None:
+        if required:
+            errors.append(f"{field_name} is required")
+        return None
+    if not isinstance(value, str):
+        errors.append(f"{field_name} must be a string")
+        return None
+    if not allow_empty and value == "":
+        errors.append(f"{field_name} cannot be empty")
+        return None
+    return value
+
+
+def validate_server_config(data: Any) -> tuple[McpServerConfig | None, list[str]]:
+    """Validate raw MCP server config data with rich error messages.
+
+    Mirrors the Zod schemas in ``typescript/src/services/mcp/types.ts``
+    (``McpStdioServerConfigSchema`` and friends, lines 28-122). Returns a
+    ``(config, errors)`` tuple: on success ``config`` is the parsed dataclass
+    and ``errors`` is empty; on failure ``config`` is ``None`` and ``errors``
+    is a list of human-readable validation messages.
+
+    Unlike the older ``parse_server_config()`` (which silently returned
+    ``None`` on bad input and *raised* ``KeyError`` for missing ``url`` / ``name``
+    on remote/sdk configs), this function never raises on user-supplied data
+    and surfaces every per-field violation. Callers that want the legacy
+    ``Optional[McpServerConfig]`` return type can call ``parse_server_config``
+    which delegates here and discards the messages.
+    """
+    errors: list[str] = []
+
+    if not isinstance(data, dict):
+        return None, ["server config must be an object"]
+
+    server_type_raw = data.get("type")
+    if server_type_raw is not None and not isinstance(server_type_raw, str):
+        return None, [f"type must be a string, got {type(server_type_raw).__name__}"]
+
+    server_type: str | None = server_type_raw
+    if server_type is not None and server_type not in KNOWN_TRANSPORT_TYPES:
+        expected = ", ".join(KNOWN_TRANSPORT_TYPES)
+        return None, [
+            f"unknown transport type: {server_type!r}. Expected one of: {expected}"
+        ]
+
     # ``authServerMetadataUrl`` is the camelCase JSON key (Phase 4 WI-4.1
     # escape hatch). Accept both spellings so existing configs work either way.
-    asm_url = data.get("authServerMetadataUrl") or data.get("auth_server_metadata_url")
-    if server_type == "sse":
-        return McpSSEServerConfig(
-            url=data["url"],
-            headers=data.get("headers"),
-            headers_helper=data.get("headersHelper"),
+    asm_raw = data.get("authServerMetadataUrl")
+    if asm_raw is None:
+        asm_raw = data.get("auth_server_metadata_url")
+    asm_url: str | None = None
+    if asm_raw is not None:
+        asm_url = _validate_string_field(asm_raw, "authServerMetadataUrl", errors)
+        if asm_url is not None and not asm_url.startswith("https://"):
+            errors.append("authServerMetadataUrl must use https://")
+            asm_url = None
+
+    if server_type in ("sse", "http", "ws"):
+        url = _validate_string_field(
+            data.get("url"), "url", errors, required=True, allow_empty=False
+        )
+        headers = _validate_str_str_dict(data.get("headers"), "headers", errors)
+        headers_helper = _validate_string_field(
+            data.get("headersHelper"), "headersHelper", errors
+        )
+        if errors or url is None:
+            return None, errors
+        remote_ctor = {
+            "sse": McpSSEServerConfig,
+            "http": McpHTTPServerConfig,
+            "ws": McpWebSocketServerConfig,
+        }[server_type]
+        return remote_ctor(
+            url=url,
+            headers=headers,
+            headers_helper=headers_helper,
             auth_server_metadata_url=asm_url,
+        ), errors
+
+    if server_type == "sdk":
+        name = _validate_string_field(
+            data.get("name"), "name", errors, required=True, allow_empty=False
         )
-    elif server_type == "http":
-        return McpHTTPServerConfig(
-            url=data["url"],
-            headers=data.get("headers"),
-            headers_helper=data.get("headersHelper"),
-            auth_server_metadata_url=asm_url,
-        )
-    elif server_type == "ws":
-        return McpWebSocketServerConfig(
-            url=data["url"],
-            headers=data.get("headers"),
-            headers_helper=data.get("headersHelper"),
-            auth_server_metadata_url=asm_url,
-        )
-    elif server_type == "sdk":
-        return McpSdkServerConfig(name=data["name"])
-    elif server_type == "stdio" or server_type is None:
-        command = data.get("command")
-        if not command:
-            return None
-        return McpStdioServerConfig(
-            command=command,
-            args=data.get("args", []),
-            env=data.get("env"),
-            type=server_type,
-        )
-    return None
+        if errors or name is None:
+            return None, errors
+        return McpSdkServerConfig(name=name), errors
+
+    # stdio (default branch — type is "stdio" or omitted)
+    command = _validate_string_field(
+        data.get("command"), "command", errors, required=True, allow_empty=False
+    )
+
+    args_raw = data.get("args")
+    args: list[str] = []
+    if args_raw is not None:
+        if not isinstance(args_raw, list):
+            errors.append("args must be a list of strings")
+        else:
+            invalid_indices = [
+                i for i, v in enumerate(args_raw) if not isinstance(v, str)
+            ]
+            if invalid_indices:
+                errors.append(
+                    f"args[{invalid_indices[0]}] must be a string"
+                )
+            else:
+                args = list(args_raw)
+
+    env = _validate_str_str_dict(data.get("env"), "env", errors)
+
+    if errors or command is None:
+        return None, errors
+    return McpStdioServerConfig(
+        command=command,
+        args=args,
+        env=env,
+        type=server_type,  # preserves "stdio" if explicitly set, else None
+    ), errors
+
+
+def parse_server_config(data: dict[str, Any]) -> McpServerConfig | None:
+    """Back-compat wrapper. Returns the parsed config or ``None`` on any failure.
+
+    Prefer :func:`validate_server_config` when you want the error messages.
+    """
+    config, _errors = validate_server_config(data)
+    return config

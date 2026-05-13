@@ -117,6 +117,7 @@ from .types import (
     ServerCapabilities,
     ServerInfo,
     parse_server_config,
+    validate_server_config,
 )
 
 __all__ = [
@@ -181,6 +182,7 @@ __all__ = [
     "get_mcp_tools_commands_and_resources",
     "prefetch_all_mcp_resources",
     "parse_server_config",
+    "validate_server_config",
     "expand_env_vars_in_string",
     "build_mcp_http_client",
     "build_mcp_timeout",
