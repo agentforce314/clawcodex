@@ -369,6 +369,19 @@ Usage notes:
   - For GitHub URLs, prefer using the gh CLI via Bash instead (e.g., gh pr view, gh issue view, gh api)."""
 
 
+def _web_fetch_classifier_input(input_data: dict) -> str:
+    """Mirror TS ``WebFetchTool.toAutoClassifierInput`` -- include the
+    secondary-model prompt when present so the classifier can spot
+    URL-as-data-exfiltration patterns where the URL is innocuous but
+    the prompt does the work."""
+    d = input_data or {}
+    url = d.get("url", "")
+    prompt = d.get("prompt")
+    if prompt:
+        return f"{url}: {prompt}"
+    return url
+
+
 # -- Tool Definition -----------------------------------------------------------
 
 WebFetchTool: Tool = build_tool(
@@ -398,4 +411,5 @@ WebFetchTool: Tool = build_tool(
     check_permissions=_check_permissions,
     search_hint="web fetch url http download",
     get_activity_description=lambda input_data: f"Fetching {(input_data or {}).get('url', '')}..." if input_data else None,
+    to_auto_classifier_input=_web_fetch_classifier_input,
 )

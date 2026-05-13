@@ -76,4 +76,8 @@ SendUserMessageTool: Tool = build_tool(
     max_result_size_chars=100_000,
     is_read_only=lambda _input: True,
     is_concurrency_safe=lambda _input: True,
+    # Surface the user-facing message body to the classifier so any
+    # future LLM classifier can spot prompt-injection attempts via
+    # this channel.
+    to_auto_classifier_input=lambda input_data: (input_data or {}).get("message", "") or "",
 )

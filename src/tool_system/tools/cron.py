@@ -47,6 +47,10 @@ CronCreateTool: Tool = build_tool(
     max_result_size_chars=100_000,
     is_read_only=lambda _input: True,
     is_concurrency_safe=lambda _input: True,
+    # Mirrors TS CronCreateTool.toAutoClassifierInput.
+    to_auto_classifier_input=lambda input_data: (
+        f"{(input_data or {}).get('cron', '')}: {(input_data or {}).get('prompt', '')}"
+    ),
 )
 
 
@@ -93,4 +97,6 @@ CronDeleteTool: Tool = build_tool(
     max_result_size_chars=100_000,
     is_read_only=lambda _input: True,
     is_concurrency_safe=lambda _input: True,
+    # Mirrors TS CronDeleteTool.toAutoClassifierInput.
+    to_auto_classifier_input=lambda input_data: (input_data or {}).get("id", "") or "",
 )

@@ -97,4 +97,10 @@ ExitPlanModeTool: Tool = build_tool(
     description="Exit plan mode after writing a plan; may persist plan to disk.",
     max_result_size_chars=100_000,
     is_destructive=lambda _input: True,
+    # Surface the first ~200 chars of the proposed plan so a future
+    # classifier can spot prompt-injection text being shipped through
+    # plan-mode exit.
+    to_auto_classifier_input=lambda input_data: (
+        ((input_data or {}).get("plan") or "")[:200]
+    ),
 )

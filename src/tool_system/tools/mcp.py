@@ -214,4 +214,11 @@ MCPTool: Tool = build_tool(
     max_result_size_chars=100_000,
     is_destructive=lambda _input: True,
     is_mcp=True,
+    # No direct TS analogue (per-server MCP wrappers each carry their
+    # own classifier helper). Surface server + tool name so a future
+    # LLM classifier has the identity pair to match deny rules
+    # against.
+    to_auto_classifier_input=lambda input_data: (
+        f"{(input_data or {}).get('server', '')} {(input_data or {}).get('tool', '')}".strip()
+    ),
 )

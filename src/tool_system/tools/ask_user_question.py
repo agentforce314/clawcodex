@@ -8,6 +8,22 @@ from ..errors import ToolInputError
 from ..protocol import ToolResult
 
 
+def _ask_user_question_classifier_input(input_data: dict) -> str:
+    """Mirror TS ``AskUserQuestionTool.toAutoClassifierInput`` --
+    join the question text from each question entry. Each entry may be
+    a string or a dict with a ``question`` field; tolerate both."""
+    qs = (input_data or {}).get("questions") or []
+    parts: list[str] = []
+    for q in qs:
+        if isinstance(q, str):
+            parts.append(q)
+        elif isinstance(q, dict):
+            text = q.get("question")
+            if isinstance(text, str):
+                parts.append(text)
+    return " | ".join(parts)
+
+
 def _ask_user_question_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
     questions = tool_input.get("questions")
     if not isinstance(questions, list) or not questions:
@@ -73,4 +89,5 @@ AskUserQuestionTool: Tool = build_tool(
     is_read_only=lambda _input: True,
     is_concurrency_safe=lambda _input: True,
     search_hint="ask question user input",
+    to_auto_classifier_input=_ask_user_question_classifier_input,
 )

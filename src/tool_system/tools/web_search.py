@@ -386,4 +386,6 @@ WebSearchTool: Tool = build_tool(
     get_activity_description=lambda input_data: (
         f"Searching for {(input_data or {}).get('query', '')!r}" if input_data else None
     ),
+    # Mirrors TS WebSearchTool.toAutoClassifierInput (returns the query).
+    to_auto_classifier_input=lambda input_data: (input_data or {}).get("query", ""),
 )

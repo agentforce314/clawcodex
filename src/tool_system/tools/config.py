@@ -33,6 +33,15 @@ def _set_setting(cfg: dict[str, Any], key: str, value: Any) -> None:
     cur[last] = value
 
 
+def _config_classifier_input(input_data: dict) -> str:
+    """Mirror TS ``ConfigTool.toAutoClassifierInput`` -- return just the
+    setting key for reads, ``"setting = value"`` for writes."""
+    d = input_data or {}
+    if "value" in d:
+        return f"{d.get('setting', '')} = {d.get('value')}"
+    return d.get("setting", "") or ""
+
+
 def _config_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
     from src import config as config_mod
 
@@ -82,4 +91,5 @@ ConfigTool: Tool = build_tool(
     description='Get or set Clawcodex configuration values.',
     max_result_size_chars=100_000,
     is_destructive=lambda _input: "value" in _input,
+    to_auto_classifier_input=_config_classifier_input,
 )

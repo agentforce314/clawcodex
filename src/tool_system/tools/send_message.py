@@ -515,6 +515,22 @@ async def _send_message_call(tool_input: dict[str, Any], context: ToolContext) -
     )
 
 
+def _send_message_classifier_input(input_data: dict) -> str:
+    """Mirror TS ``SendMessageTool.toAutoClassifierInput``. The TS
+    classifier collapses string and structured envelope messages into
+    a single line: ``to {to}: {message}`` for plain text, ``to {to}:
+    <{type}>`` for structured envelopes."""
+    d = input_data or {}
+    to = d.get("to", "")
+    msg = d.get("message", "")
+    if isinstance(msg, str):
+        return f"to {to}: {msg}"
+    if isinstance(msg, dict):
+        t = msg.get("type", "structured")
+        return f"to {to}: <{t}>"
+    return f"to {to}"
+
+
 SendMessageTool: Tool = build_tool(
     name=SEND_MESSAGE_TOOL_NAME,
     input_schema=SEND_MESSAGE_INPUT_SCHEMA,
@@ -535,6 +551,7 @@ SendMessageTool: Tool = build_tool(
     # mailbox writes are thread-safe (per A6/C5), but TS doesn't
     # declare the tool as concurrency-safe either; mirror that until
     # there's a demonstrated need.
+    to_auto_classifier_input=_send_message_classifier_input,
 )
 
 

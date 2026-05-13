@@ -33,4 +33,7 @@ SleepTool: Tool = build_tool(
     max_result_size_chars=1000,
     is_read_only=lambda _input: True,
     is_concurrency_safe=lambda _input: True,
+    # Sleep has no TS counterpart toAutoClassifierInput; surface the
+    # duration since that is the only meaningful axis.
+    to_auto_classifier_input=lambda input_data: f"{(input_data or {}).get('seconds', 0)}s",
 )
