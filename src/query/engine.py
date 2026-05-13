@@ -186,6 +186,32 @@ class QueryEngine:
         *,
         on_message: Callable[[Message | StreamEvent], None] | None = None,
     ) -> AsyncGenerator[Message | StreamEvent, None]:
+        # Ch5/D.3 — parse and strip the +500k-style token budget marker
+        # from the user prompt. Per critic-revised contract, both
+        # parse_token_budget and find_token_budget_positions must agree
+        # (they share the same regexes at token_budget.py:23-25).
+        from .token_budget import (
+            find_token_budget_positions,
+            parse_token_budget,
+        )
+
+        parsed_budget = parse_token_budget(prompt)
+        positions = find_token_budget_positions(prompt)
+        assert (parsed_budget is None) == (not positions), (
+            "parse_token_budget and find_token_budget_positions disagree "
+            "on input — regex drift?"
+        )
+        task_budget: dict[str, int] | None = None
+        if parsed_budget is not None and positions:
+            cleaned: list[str] = []
+            cursor = 0
+            for pos in positions:
+                cleaned.append(prompt[cursor:pos.start])
+                cursor = pos.end
+            cleaned.append(prompt[cursor:])
+            prompt = "".join(cleaned).strip()
+            task_budget = {"total": parsed_budget}
+
         user_msg = UserMessage(content=prompt)
         self._mutable_messages.append(user_msg)
 
@@ -238,6 +264,7 @@ class QueryEngine:
             user_context=user_context,
             system_context=system_context,
             pipeline_config=pipeline_config,
+            task_budget=task_budget,
         )
 
         async for message in query(params):
