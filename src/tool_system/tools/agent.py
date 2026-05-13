@@ -41,6 +41,7 @@ from src.agent.constants import (
 )
 from src.agent.fork_subagent import (
     build_forked_messages,
+    build_worktree_notice,
     is_fork_subagent_enabled,
     is_in_fork_child,
 )
@@ -241,7 +242,7 @@ def make_agent_tool(
         fork_prompt = prompt
 
         if is_fork_path:
-            from src.types.messages import AssistantMessage
+            from src.types.messages import AssistantMessage, create_user_message
 
             parent_assistant: AssistantMessage | None = None
             for msg in reversed(context.messages):
@@ -250,12 +251,30 @@ def make_agent_tool(
                     break
 
             forked_pair = build_forked_messages(prompt, parent_assistant)
+
+            # Fork + worktree: append the translation notice as a trailing
+            # user message so it appears as the most recent guidance the
+            # child sees. Mirrors
+            # ``typescript/src/tools/AgentTool/AgentTool.tsx:610-614``. The
+            # notice is plain text — it does NOT contain the
+            # ``<fork-boilerplate>`` tag, so the message-scan recursion guard
+            # is unaffected.
+            worktree_cwd = _resolve_fork_worktree_cwd(context)
+            if worktree_cwd is not None:
+                parent_cwd_str = str(context.cwd or context.workspace_root)
+                notice_text = build_worktree_notice(parent_cwd_str, worktree_cwd)
+                forked_pair = list(forked_pair) + [
+                    create_user_message(content=notice_text)
+                ]
+
             fork_context_messages = list(context.messages) + forked_pair
             fork_use_exact_tools = True
             fork_query_source = f"agent:builtin:{FORK_SUBAGENT_TYPE}"
-            # Best-effort parent system prompt: derived from the active
-            # agent definition or falling back to None. Threading the
-            # exact rendered bytes from the main loop is a follow-up.
+            # Parent system prompt: prefers ``context.rendered_system_prompt``
+            # (byte-identical to the parent's last API call) and falls back
+            # to recomputing via the active agent def. See
+            # ``_resolve_parent_system_prompt`` docstring for the full
+            # cascade, which mirrors ``AgentTool.tsx:495-511``.
             fork_parent_system_prompt = _resolve_parent_system_prompt(context, agent_definitions)
             # ``run_agent`` will append a UserMessage built from ``prompt``
             # to whatever ``context_messages`` it receives. We have already
@@ -639,20 +658,30 @@ def _resolve_parent_system_prompt(
     context: ToolContext,
     agent_definitions: list[AgentDefinition],
 ) -> str | None:
-    """Best-effort parent-system-prompt resolution for fork children.
+    """Resolve the parent system prompt for fork children.
 
-    The TS implementation threads the parent's already-rendered
-    ``renderedSystemPrompt`` so the bytes are identical to the parent's
-    last API call. We do not yet propagate the rendered bytes from the
-    main loop, so this helper falls back to:
+    Mirrors the layered fallback in
+    ``typescript/src/tools/AgentTool/AgentTool.tsx:495-511``:
 
-    1. ``context.options.custom_system_prompt`` if provided.
-    2. The active agent definition's ``get_system_prompt()`` output.
-    3. ``None`` (let the FORK_AGENT empty prompt fall through to the
-       default).
+    1. ``context.rendered_system_prompt`` — the bytes captured from the
+       parent's most recent API call. Preferred path: identical to the
+       parent's cached prefix, so the fork child's API request hits the
+       prompt cache without recomputing anything that might have shifted
+       (chapter 9 §"The Byte-Identical Prefix Trick", Layer 1).
+    2. ``context.options.custom_system_prompt`` — explicit caller
+       override.
+    3. The active agent definition's ``get_system_prompt()`` output —
+       recompute fallback. Useful for tests and SDK callers that never
+       populated the rendered field but still want a coherent prompt.
+    4. ``None`` — let ``get_agent_system_prompt`` fall through to
+       ``DEFAULT_AGENT_PROMPT``.
 
     Returns ``None`` when no candidate is available.
     """
+    rendered = getattr(context, "rendered_system_prompt", None)
+    if isinstance(rendered, str) and rendered.strip():
+        return rendered
+
     custom = getattr(context.options, "custom_system_prompt", None)
     if isinstance(custom, str) and custom.strip():
         return custom
@@ -667,6 +696,26 @@ def _resolve_parent_system_prompt(
                 return None
 
     return None
+
+
+def _resolve_fork_worktree_cwd(context: ToolContext) -> str | None:
+    """Return the worktree cwd string for a fork child, or ``None``.
+
+    Mirrors the ``isForkPath && worktreeInfo`` branch in
+    ``typescript/src/tools/AgentTool/AgentTool.tsx:610-614``. Only return
+    a non-None value when the active context has a worktree root that
+    differs from the parent's working directory — otherwise the notice
+    would be misleading ("you are operating in an isolated worktree at
+    /same/path").
+    """
+    wt_root = getattr(context, "worktree_root", None)
+    if wt_root is None:
+        return None
+    wt_path = str(wt_root)
+    parent_cwd = str(context.cwd or context.workspace_root)
+    if not wt_path or wt_path == parent_cwd:
+        return None
+    return wt_path
 
 
 def _sync_collect_agent_messages(params: RunAgentParams) -> list[Any]:
