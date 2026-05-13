@@ -115,6 +115,12 @@ ALL_HOOK_EVENTS: list[HookEvent] = [
 HookType = Literal["command", "agent", "http", "prompt"]
 
 
+# Re-exported here so callers can ``from src.hooks.hook_types import ShellType``
+# without pulling in ``shell_invocation`` (which would import ``shutil``).
+# The canonical definition lives in ``src/hooks/shell_invocation.py``.
+ShellType = Literal["bash", "powershell"]
+
+
 # ---------------------------------------------------------------------------
 # Hook source — Chapter-12 / Phase-1 / WI-1.2
 # ---------------------------------------------------------------------------
@@ -250,6 +256,16 @@ class HookConfig:
     # registration → execution; not parsed from settings.json (only set at
     # skill-hook registration time in Phase 3).
     skill_root: str | None = None
+
+    # Round-2 / Ch12 — per-hook shell selection. ``None`` means "use the
+    # platform default" (bash on POSIX via /bin/sh); ``"bash"`` is an
+    # explicit alias for that same path; ``"powershell"`` spawns ``pwsh``
+    # with the canonical ``-NoProfile -NonInteractive -Command <cmd>`` argv.
+    # Mirrors TS ``BashCommandHookSchema.shell`` at
+    # ``typescript/src/schemas/hooks.ts:36-41``. Only meaningful for
+    # ``type == "command"`` — non-command hooks ignore this field (matches
+    # TS where ``shell`` only appears on the command schema).
+    shell: ShellType | None = None
 
 
 # ---------------------------------------------------------------------------
