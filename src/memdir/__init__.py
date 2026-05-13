@@ -60,6 +60,21 @@ from .paths import (
     is_auto_memory_enabled,
     sanitize_path,
 )
+from .team_mem_paths import (
+    PathTraversalError,
+    get_team_mem_entrypoint,
+    get_team_mem_path,
+    is_team_mem_file,
+    is_team_mem_path,
+    is_team_memory_enabled,
+    validate_team_mem_key,
+    validate_team_mem_write_path,
+)
+from .team_mem_prompts import (
+    DIRS_EXIST_GUIDANCE,
+    TYPES_SECTION_COMBINED,
+    build_combined_memory_prompt,
+)
 
 __all__ = [
     # paths
@@ -108,4 +123,16 @@ __all__ = [
     "memory_age_days",
     "memory_freshness_note",
     "memory_freshness_text",
+    # team memory
+    "DIRS_EXIST_GUIDANCE",
+    "PathTraversalError",
+    "TYPES_SECTION_COMBINED",
+    "build_combined_memory_prompt",
+    "get_team_mem_entrypoint",
+    "get_team_mem_path",
+    "is_team_mem_file",
+    "is_team_mem_path",
+    "is_team_memory_enabled",
+    "validate_team_mem_key",
+    "validate_team_mem_write_path",
 ]
