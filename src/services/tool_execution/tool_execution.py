@@ -328,19 +328,36 @@ async def _check_permissions_and_call_tool(
         # block that would push the running total past the cap. We then
         # update the counter with the post-decision block size via
         # ``compute_block_chars``.
+        #
+        # ``_aggregate_lock`` serializes the read-decide-write across
+        # threads. Multiple ``asyncio.to_thread`` workers may invoke
+        # ``run_tool_use`` concurrently on the same ToolContext (the
+        # query loop's ``_run_tools_partitioned`` fans concurrency-safe
+        # tools out across worker threads). Without the lock, N
+        # threads all read 0, all decide "under cap", and the
+        # per-message budget is silently bypassed.
+        #
+        # The lock spans ONLY this 3-step sequence (read counter →
+        # decide via process_tool_result_block → increment counter)
+        # rather than the whole pipeline. Earlier draft put the lock
+        # at the call site (around the whole dispatch) which serialized
+        # parallel I/O-bound tools (Read, Grep) and produced a 5×
+        # latency regression. The narrow scope here keeps the parallel
+        # work parallel while preserving budget correctness.
         from src.services.tool_execution.tool_result_persistence import (
             compute_block_chars,
         )
-        tool_result_block = process_tool_result_block(
-            tool,
-            result.data,
-            tool_use_id,
-            tool_results_dir=tool_results_dir,
-            aggregate_chars_so_far=tool_use_context.tool_result_chars_so_far,
-        )
-        tool_use_context.tool_result_chars_so_far += compute_block_chars(
-            tool_result_block,
-        )
+        with tool_use_context._aggregate_lock:
+            tool_result_block = process_tool_result_block(
+                tool,
+                result.data,
+                tool_use_id,
+                tool_results_dir=tool_results_dir,
+                aggregate_chars_so_far=tool_use_context.tool_result_chars_so_far,
+            )
+            tool_use_context.tool_result_chars_so_far += compute_block_chars(
+                tool_result_block,
+            )
 
         resulting_messages.append(MessageUpdateLazy(
             message=create_user_message(
