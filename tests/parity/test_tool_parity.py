@@ -205,8 +205,10 @@ class TestToolPropertyParity(unittest.TestCase):
     def test_max_result_size_chars_default(self) -> None:
         expected_default = self.props_snapshot["defaults"]["max_result_size_chars"]
         for tool in self.registry.list_tools():
-            # Some tools override, just check the attribute exists and is int
-            self.assertIsInstance(tool.max_result_size_chars, int)
+            # ``max_result_size_chars`` is ``int | float`` since the
+            # FileReadTool opt-out uses ``float("inf")`` (ch06-tools.md:
+            # "FileReadTool: The Versatile Reader"). Accept either.
+            self.assertIsInstance(tool.max_result_size_chars, (int, float))
 
     def test_overridden_tools_match_snapshot(self) -> None:
         overrides = self.props_snapshot["tool_overrides"]

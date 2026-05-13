@@ -370,6 +370,16 @@ def maybe_persist_large_tool_result(
 
     size = _content_size(content)
 
+    # ``threshold == inf`` is a hard opt-out — the tool author has
+    # declared this output must never be persisted (circular-Read
+    # case for FileReadTool, see ch06-tools.md). Skip both the
+    # per-tool threshold check AND the aggregate gate; trust the
+    # tool to self-bound its output. Without this guard, a large
+    # Read still gets persisted whenever the running aggregate is
+    # close to the cap.
+    if threshold == float("inf"):
+        return tool_result_block
+
     # WI-5.1: per-message aggregate gate. Even when this block alone is
     # under ``threshold``, if adding it would push the running total
     # over ``aggregate_cap`` we persist it to disk to keep the message
