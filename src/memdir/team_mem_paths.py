@@ -237,14 +237,15 @@ def _is_real_path_within_team_dir(real_candidate: str) -> bool:
 def is_team_mem_path(file_path: str) -> bool:
     """String-level prefix check: is *file_path* under the team dir?
 
-    ``os.path.normpath`` eliminates ``..`` segments so ``team/../etc``
-    is rejected. Does NOT resolve symlinks — use
+    Uses ``os.path.abspath`` (mirrors TS ``path.resolve``) to convert
+    relative paths to absolute and eliminate ``..`` segments so
+    ``team/../etc`` is rejected. Does NOT resolve symlinks — use
     :func:`validate_team_mem_write_path` or :func:`validate_team_mem_key`
     for write-side validation, which add symlink resolution.
     """
     if not file_path:
         return False
-    resolved = os.path.normpath(file_path)
+    resolved = os.path.abspath(file_path)
     team_dir = get_team_mem_path()
     # team_dir already ends with os.sep (from get_team_mem_path).
     # Also accept exact match (resolved + sep == team_dir).
