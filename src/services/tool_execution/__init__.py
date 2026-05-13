@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from .sync_adapter import (
+    ToolDispatchResult,
+    dispatch_full,
+    make_stub_assistant_message,
+)
 from .tool_execution import (
     MessageUpdateLazy,
     classify_tool_error,
@@ -35,12 +40,15 @@ __all__ = [
     "PersistResult",
     "PersistToolResultError",
     "PersistedToolResult",
+    "ToolDispatchResult",
     "build_large_tool_result_message",
     "classify_tool_error",
+    "dispatch_full",
     "generate_preview",
     "get_persistence_threshold",
     "is_persist_error",
     "is_tool_result_content_empty",
+    "make_stub_assistant_message",
     "maybe_persist_large_tool_result",
     "persist_tool_result",
     "process_tool_result_block",
