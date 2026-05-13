@@ -110,8 +110,45 @@ def _build_permission_context(
     effective_mode: PermissionMode,
     is_async: bool,
 ) -> ToolPermissionContext:
-    """Build the permission context for the subagent."""
+    """Build the permission context for the subagent.
+
+    Mirrors the prompt-avoidance cascade in
+    ``typescript/src/tools/AgentTool/runAgent.ts:449-476``:
+
+    1. ``should_avoid_permission_prompts`` is True iff the parent already
+       avoids prompts OR the agent is async AND its effective mode is
+       not ``bubble``. Bubble mode preserves prompts even when async,
+       because the bubble path surfaces them to the parent terminal.
+    2. ``await_automated_checks_before_dialog`` is True for async agents
+       whose prompts are still enabled — today that means bubble mode.
+       It signals the permission system to run the classifier / hooks
+       before interrupting the user.
+
+    The TS implementation also reads ``canShowPermissionPrompts`` as an
+    explicit caller override. The Python ``RunAgentParams`` does not yet
+    plumb that flag, so the cascade reduces to the ``isAsync`` /
+    ``agentPermissionMode === 'bubble'`` branch. Round-2 docs flag the
+    full ``canShowPermissionPrompts`` thread-through as out-of-scope.
+    """
     parent_perm = parent_context.permission_context
+
+    # TS cascade: bubble mode is the only async mode that can still
+    # show prompts (they bubble to the parent terminal). Every other
+    # async agent must auto-deny rather than block on a missing UI.
+    if effective_mode == "bubble":
+        avoid_for_isolation = False
+    else:
+        avoid_for_isolation = is_async
+    should_avoid = (
+        parent_perm.should_avoid_permission_prompts or avoid_for_isolation
+    )
+
+    # Async-but-can-prompt agents wait for classifier / hooks before
+    # interrupting the user. Sync agents and prompt-avoiding agents
+    # skip this — there is either no async to wait inside of, or no
+    # dialog to delay.
+    await_automated = is_async and not should_avoid
+
     return ToolPermissionContext(
         mode=effective_mode,
         additional_working_directories=parent_perm.additional_working_directories,
@@ -119,9 +156,8 @@ def _build_permission_context(
         always_deny_rules=parent_perm.always_deny_rules,
         always_ask_rules=parent_perm.always_ask_rules,
         is_bypass_permissions_mode_available=parent_perm.is_bypass_permissions_mode_available,
-        should_avoid_permission_prompts=(
-            parent_perm.should_avoid_permission_prompts or is_async
-        ),
+        should_avoid_permission_prompts=should_avoid,
+        await_automated_checks_before_dialog=await_automated,
     )
 
 
