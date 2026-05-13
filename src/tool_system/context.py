@@ -181,6 +181,21 @@ class ToolContext:
     # untrusted, mirroring TS' ``shouldSkipHookDueToTrust`` gate.
     workspace_trusted: bool = False
 
+    # Chapter-9 / Fork Agents — captured bytes of the system prompt used on
+    # the parent's most recent API call. Threaded into fork children so the
+    # API request prefix is byte-identical across all parallel children
+    # (chapter 9 §"The Byte-Identical Prefix Trick", Layer 1). Mirrors
+    # ``toolUseContext.renderedSystemPrompt`` from
+    # ``typescript/src/tools/AgentTool/AgentTool.tsx:496``.
+    #
+    # When ``None``, the fork path falls back to recomputing the parent
+    # system prompt from ``options.custom_system_prompt`` or the active
+    # agent definition. That fallback can diverge under feature-flag
+    # transitions (GrowthBook cold→warm) and bust the prompt cache; the
+    # main loop should populate this field whenever it has the rendered
+    # bytes on hand for the parent's last turn.
+    rendered_system_prompt: str | None = None
+
     def __post_init__(self) -> None:
         self.workspace_root = Path(self.workspace_root).resolve()
         if self.cwd is None:
