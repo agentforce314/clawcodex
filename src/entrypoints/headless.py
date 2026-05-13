@@ -47,7 +47,12 @@ from src.cli_core import (
 )
 from src.config import get_default_provider, get_provider_config
 from src.providers import get_provider_class
-from src.tool_system.agent_loop import ToolEvent, run_agent_loop
+from src.tool_system.agent_loop import (
+    ToolEvent,
+    _build_effective_system_prompt,
+    run_agent_loop,
+)
+from src.query.agent_loop_compat import run_query_as_agent_loop
 from src.tool_system.context import ToolContext
 from src.tool_system.defaults import build_default_registry
 
@@ -225,16 +230,46 @@ def run_headless(options: HeadlessOptions) -> int:
             on_text_chunk = _emit_partial
 
         try:
-            result = run_agent_loop(
-                conversation=session.conversation,
+            # Ch5/F.2 — route headless through the canonical query()
+            # via the F.1 adapter. Headless is single-shot and starts
+            # its own event loop, so `asyncio.run` is the right
+            # wrapper. The adapter takes the conversation's typed
+            # messages directly; we re-build the effective system
+            # prompt the same way run_agent_loop did so the cold-start
+            # context (CLAUDE.md, style guide, git status) reaches
+            # query() unchanged.
+            import asyncio as _asyncio
+            effective_system_prompt = _build_effective_system_prompt(
+                getattr(tool_context, "output_style_prompt", "")
+                or "You are a helpful assistant.",
+                tool_context,
+            )
+            compat_result = _asyncio.run(run_query_as_agent_loop(
+                initial_messages=list(session.conversation.messages),
                 provider=provider,
                 tool_registry=tool_registry,
                 tool_context=tool_context,
+                system_prompt=effective_system_prompt,
                 max_turns=options.max_turns,
-                stream=bool(on_text_chunk),
-                verbose=options.verbose,
                 on_event=on_event,
                 on_text_chunk=on_text_chunk,
+            ))
+            # The legacy run_agent_loop mutated session.conversation
+            # in place (appending assistant messages). Replicate that
+            # so subsequent inputs in the same headless session see
+            # the full history.
+            if compat_result.response_text:
+                session.conversation.add_assistant_message(
+                    compat_result.response_text,
+                )
+            # Re-wrap into the legacy AgentLoopResult shape so the
+            # downstream code (lines summarising num_turns/usage)
+            # stays untouched.
+            from src.tool_system.agent_loop import AgentLoopResult
+            result = AgentLoopResult(
+                response_text=compat_result.response_text,
+                usage=compat_result.usage or None,
+                num_turns=compat_result.num_turns,
             )
         except KeyboardInterrupt:
             exit_code = 130

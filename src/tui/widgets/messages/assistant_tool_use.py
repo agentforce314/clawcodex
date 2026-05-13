@@ -125,7 +125,7 @@ def _summarise_input(tool_name: str, tool_input: dict) -> str:
     """
 
     try:
-        from src.tool_system.agent_loop import summarize_tool_use
+        from src.tui.tool_summary_renderers import summarize_tool_use
 
         return summarize_tool_use(tool_name, tool_input or {}) or ""
     except Exception:
