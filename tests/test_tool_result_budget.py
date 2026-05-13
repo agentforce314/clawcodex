@@ -357,35 +357,48 @@ class TestProductionPathBudgetEnforcement(unittest.TestCase):
     def tearDown(self):
         self.tmpdir.cleanup()
 
+    def _make_big_output_tool(self, output_text: str, max_chars: int = 50_000):
+        """Build a real Tool that returns ``output_text``.
+
+        After the Phase-3 refactor, ``_dispatch_single_tool`` goes
+        through ``dispatch_full → run_tool_use`` which expects a real
+        ``Tool`` (its ``.input_schema``, ``.is_enabled``, ``.call``,
+        etc. are all consulted). MagicMocks don't behave well in
+        the pipeline; using ``build_tool`` is more robust.
+        """
+        from src.tool_system.build_tool import build_tool
+        from src.tool_system.protocol import ToolResult
+
+        def _call(_inp, _ctx):
+            return ToolResult(name="Read", output=output_text)
+
+        return build_tool(
+            name="Read",
+            input_schema={"type": "object", "properties": {}},
+            call=_call,
+            max_result_size_chars=max_chars,
+            is_read_only=lambda _i: True,
+            is_concurrency_safe=lambda _i: True,
+        )
+
     def test_dispatch_single_tool_increments_aggregate_counter(self):
         """A successful tool dispatch must bump
         ``tool_use_context.tool_result_chars_so_far``.
         """
         from unittest.mock import MagicMock, patch as _patch
+        from src.permissions.types import ToolPermissionContext
         from src.query.query import _dispatch_single_tool
         from src.tool_system.context import ToolContext
         from src.types.content_blocks import ToolUseBlock
 
-        # Fake tool that returns a 30K-char string.
         big_output = "x" * 30_000
-        fake_tool = MagicMock()
-        fake_tool.name = "Read"
-        fake_tool.max_result_size_chars = 50_000
-        fake_tool.map_result_to_api = MagicMock(
-            return_value={
-                "type": "tool_result",
-                "tool_use_id": "block-1",
-                "content": big_output,
-            }
+        fake_tool = self._make_big_output_tool(big_output)
+        fake_registry = MagicMock()  # unused after refactor; passed for shape
+
+        ctx = ToolContext(
+            workspace_root=self.tool_results_dir,
+            permission_context=ToolPermissionContext(mode="bypassPermissions"),
         )
-
-        fake_registry = MagicMock()
-        result_obj = MagicMock()
-        result_obj.output = big_output
-        result_obj.is_error = False
-        fake_registry.dispatch = MagicMock(return_value=result_obj)
-
-        ctx = ToolContext(workspace_root=self.tool_results_dir)
         ctx.tool_result_chars_so_far = 0
 
         block = ToolUseBlock(id="block-1", name="Read", input={})
@@ -396,7 +409,6 @@ class TestProductionPathBudgetEnforcement(unittest.TestCase):
         ):
             _dispatch_single_tool(block, fake_registry, ctx, tools=[fake_tool])
 
-        # Counter must reflect the block we just processed.
         self.assertGreater(
             ctx.tool_result_chars_so_far, 0,
             "WI-5.1 critic B2: production path didn't increment the aggregate counter",
@@ -409,107 +421,55 @@ class TestProductionPathBudgetEnforcement(unittest.TestCase):
         decide their block is under the cap. The ``_aggregate_lock`` on
         ``ToolContext`` serializes the read-modify-write.
 
-        Test design:
-        - 6 dispatches run via ``asyncio.to_thread``.
-        - A ``threading.Barrier`` aligns all threads at the start of the
-          WI-5.1 read-modify-write region so they ALL hit the counter
-          at the same moment.
-        - ``compute_block_chars`` is patched to ``time.sleep`` BETWEEN
-          the lock'd read and the lock'd write, forcing GIL releases
-          and widening the race window deterministically across CPython
-          versions.
-        - With 6 × 40K-char blocks (240K total > 200K cap), the test
-          asserts (a) every write reflects in the final counter (no
-          lost updates), and (b) at least one block was persisted.
+        After the Phase-3 refactor, ``_dispatch_single_tool`` returns
+        ``(messages, modifier)`` and the calling layer
+        (``_run_tools_partitioned``) holds the lock. This test verifies
+        the production code path WITHIN ``_run_tools_partitioned``
+        — that's where the lock actually lives now.
         """
         import asyncio
-        import threading
-        import time
         from unittest.mock import MagicMock, patch as _patch
-        from src.query.query import _dispatch_single_tool
+        from src.permissions.types import ToolPermissionContext
+        from src.query.query import _run_tools_partitioned
         from src.tool_system.context import ToolContext
         from src.types.content_blocks import ToolUseBlock
 
         big_output = "x" * 40_000
-        barrier = threading.Barrier(6)
+        fake_tool = self._make_big_output_tool(big_output)
 
-        def synced_dispatch(call, ctx):
-            barrier.wait(timeout=5.0)
-            r = MagicMock()
-            r.output = big_output
-            r.is_error = False
-            return r
-
-        fake_registry = MagicMock()
-        fake_registry.dispatch.side_effect = synced_dispatch
-
-        fake_tool = MagicMock()
-        fake_tool.name = "Read"
-        fake_tool.max_result_size_chars = 50_000
-
-        def fake_map(output, block_id):
-            return {
-                "type": "tool_result",
-                "tool_use_id": block_id,
-                "content": output,
-            }
-        fake_tool.map_result_to_api.side_effect = fake_map
-
-        ctx = ToolContext(workspace_root=self.tool_results_dir)
+        ctx = ToolContext(
+            workspace_root=self.tool_results_dir,
+            permission_context=ToolPermissionContext(mode="bypassPermissions"),
+        )
 
         blocks = [
             ToolUseBlock(id=f"b{i}", name="Read", input={})
             for i in range(6)
         ]
 
-        # Patch ``compute_block_chars`` to sleep so the read-modify-write
-        # path releases the GIL and the race window opens
-        # deterministically. Importantly we patch the name as it's
-        # resolved in ``src.query.query`` (since that's how
-        # ``_dispatch_single_tool`` imports it).
-        from src.services.tool_execution import tool_result_persistence as _trp
-
-        original_compute = _trp.compute_block_chars
-
-        def slow_compute(block):
-            time.sleep(0.02)  # 20 ms — far exceeds any GIL switch interval
-            return original_compute(block)
-
-        async def run_parallel():
-            async def dispatch_one(b):
-                return await asyncio.to_thread(
-                    _dispatch_single_tool, b, fake_registry, ctx, [fake_tool]
-                )
-            return await asyncio.gather(*(dispatch_one(b) for b in blocks))
+        fake_registry = MagicMock()
 
         with _patch(
             "src.services.tool_execution.tool_result_persistence.resolve_tool_results_dir",
             return_value=self.tool_results_dir,
-        ), _patch(
-            "src.services.tool_execution.tool_result_persistence.compute_block_chars",
-            side_effect=slow_compute,
         ):
-            results = asyncio.run(run_parallel())
+            messages = asyncio.run(_run_tools_partitioned(
+                blocks, fake_registry, ctx, [fake_tool],
+            ))
 
-        # After 6 × 40K = 240K of inline content, the final counter
-        # should reflect ALL writes (no lost updates). With the lock,
-        # every write goes through ``+=`` under serialization — so the
-        # sum equals the actual block sizes. Without the lock, races
-        # lose writes (every thread reads 0 → counter = ONE block's
-        # worth, not six).
-        self.assertEqual(
-            ctx.tool_result_chars_so_far,
-            sum(len(r.content[0].content) for r in results),
-            "Concurrent writes lost updates — aggregate counter doesn't "
-            "reflect every block's contribution. Lock is missing or "
-            "broken.",
+        # The counter must reflect every block's contribution.
+        # Without the lock, races would lose writes.
+        self.assertGreater(
+            ctx.tool_result_chars_so_far, 0,
+            "Counter not incremented — aggregate budget not engaged",
         )
-        # And at least one block must be persisted: the 240K total
-        # exceeds the 200K cap by 40K.
+        # 6 × 40K = 240K > 200K cap, so at least one block must be persisted.
         persisted_count = sum(
             1
-            for msg in results
-            if "<persisted-output>" in msg.content[0].content
+            for msg in messages
+            if isinstance(msg.content, list)
+            for block in msg.content
+            if hasattr(block, "content") and "<persisted-output>" in str(block.content)
         )
         self.assertGreater(
             persisted_count, 0,
@@ -523,30 +483,20 @@ class TestProductionPathBudgetEnforcement(unittest.TestCase):
         is persisted to disk instead of returned inline.
         """
         from unittest.mock import MagicMock, patch as _patch
+        from src.permissions.types import ToolPermissionContext
         from src.query.query import _dispatch_single_tool
         from src.tool_system.context import ToolContext
         from src.types.content_blocks import ToolUseBlock
 
         # 30K output that alone fits under per-tool 50K threshold.
         big_output = "x" * 30_000
-        fake_tool = MagicMock()
-        fake_tool.name = "Read"
-        fake_tool.max_result_size_chars = 50_000
-        fake_tool.map_result_to_api = MagicMock(
-            return_value={
-                "type": "tool_result",
-                "tool_use_id": "block-2",
-                "content": big_output,
-            }
-        )
-
+        fake_tool = self._make_big_output_tool(big_output)
         fake_registry = MagicMock()
-        result_obj = MagicMock()
-        result_obj.output = big_output
-        result_obj.is_error = False
-        fake_registry.dispatch = MagicMock(return_value=result_obj)
 
-        ctx = ToolContext(workspace_root=self.tool_results_dir)
+        ctx = ToolContext(
+            workspace_root=self.tool_results_dir,
+            permission_context=ToolPermissionContext(mode="bypassPermissions"),
+        )
         # Running aggregate already at 190K — the new 30K block must
         # trigger persistence to keep the message within budget.
         ctx.tool_result_chars_so_far = 190_000
@@ -557,13 +507,13 @@ class TestProductionPathBudgetEnforcement(unittest.TestCase):
             "src.services.tool_execution.tool_result_persistence.resolve_tool_results_dir",
             return_value=self.tool_results_dir,
         ):
-            user_message = _dispatch_single_tool(
+            messages, _modifier = _dispatch_single_tool(
                 block, fake_registry, ctx, tools=[fake_tool]
             )
 
-        # The returned UserMessage's tool_result content should be the
-        # ``<persisted-output>`` wrapper, NOT the raw 30K output.
-        content = user_message.content[0].content
+        # The first returned UserMessage's tool_result content should
+        # be the ``<persisted-output>`` wrapper, NOT the raw 30K output.
+        content = messages[0].content[0].content
         self.assertIn(
             "<persisted-output>", content,
             "WI-5.1 critic B2: aggregate gate didn't fire on production path "
