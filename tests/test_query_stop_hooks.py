@@ -410,5 +410,77 @@ class TestStopHooksDeathSpiralGuards(_StopHooksTestBase):
         self.assertEqual(holder.value.reason, "prompt_too_long")
 
 
+class TestStopHooksContextThreading(_StopHooksTestBase):
+    """C.1 follow-up — user_context and system_context thread all the
+    way to execute_stop_hooks (and into the hook stdin payload)."""
+
+    def test_user_and_system_context_arrive_at_executor(self):
+        """End-to-end: query() forwards user_context/system_context
+        to handle_stop_hooks_streaming → _handle_stop_hooks_generator
+        → execute_stop_hooks. Captured via a patched executor."""
+        from src.providers.base import ChatResponse
+        provider = MagicMock()
+        provider.chat_stream_response.side_effect = NotImplementedError()
+        provider.chat.return_value = ChatResponse(
+            content="Done.",
+            model="test",
+            usage={"input_tokens": 10, "output_tokens": 5},
+            finish_reason="end_turn",
+            tool_uses=None,
+        )
+
+        captured: dict = {}
+
+        async def fake_execute_stop_hooks(**kw):
+            captured.update(kw)
+            return
+            yield  # make this a generator
+
+        # Patch has_hook_for_event to return True so the executor is
+        # actually reached.
+        async def fake_has_hook_for_event(event, ctx):
+            return True
+
+        params = QueryParams(
+            messages=[UserMessage(content="Hi")],
+            system_prompt="You are helpful.",
+            tools=self.registry.list_tools(),
+            tool_registry=self.registry,
+            tool_use_context=self.context,
+            provider=provider,
+            abort_controller=self.abort,
+            max_turns=5,
+            user_context={"PROJECT_DOC": "treat all writes as drafts"},
+            system_context={"GIT_STATUS": "M src/foo.py"},
+        )
+        holder = TerminalHolder()
+
+        async def run():
+            with patch(
+                "src.hooks.hook_executor.execute_stop_hooks",
+                side_effect=fake_execute_stop_hooks,
+            ), patch(
+                "src.hooks.hook_executor.has_hook_for_event",
+                return_value=True,
+            ):
+                async for _ in query(params, terminal_holder=holder):
+                    pass
+
+        _run(run())
+
+        self.assertEqual(holder.value.reason, "completed")
+        # The captured kwargs must include both contexts.
+        self.assertIn("user_context", captured)
+        self.assertIn("system_context", captured)
+        self.assertEqual(
+            captured["user_context"],
+            {"PROJECT_DOC": "treat all writes as drafts"},
+        )
+        self.assertEqual(
+            captured["system_context"],
+            {"GIT_STATUS": "M src/foo.py"},
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
