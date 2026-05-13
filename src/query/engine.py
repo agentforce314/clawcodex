@@ -9,6 +9,7 @@ from ..types.messages import (
     AssistantMessage,
     Message,
     SystemMessage,
+    TombstoneMessage,
     UserMessage,
 )
 from ..tool_system.build_tool import Tools
@@ -269,6 +270,25 @@ class QueryEngine:
 
         async for message in query(params):
             if isinstance(message, StreamEvent):
+                if on_message:
+                    on_message(message)
+                yield message
+                continue
+
+            # Ch5/E.5 — handle tombstones. A TombstoneMessage signals
+            # that a previous message (carried by ``message.message``)
+            # should be REMOVED from the transcript, not appended. The
+            # query loop emits these on the fallback path so the UI
+            # discards partial assistant messages from the failed
+            # attempt. Mirrors TS at query.ts:794 + UI listener.
+            if isinstance(message, TombstoneMessage):
+                if message.message is not None:
+                    target_uuid = getattr(message.message, "uuid", None)
+                    if target_uuid is not None:
+                        self._mutable_messages = [
+                            m for m in self._mutable_messages
+                            if getattr(m, "uuid", None) != target_uuid
+                        ]
                 if on_message:
                     on_message(message)
                 yield message
