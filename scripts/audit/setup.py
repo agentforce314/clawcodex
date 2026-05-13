@@ -5,8 +5,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from .deferred_init import DeferredInitResult, run_deferred_init
-from .prefetch import (
+from src.deferred_init import DeferredInitResult, run_deferred_init
+from src.prefetch import (
     PrefetchResult,
     get_or_start_keychain_prefetch,
     get_or_start_mdm_raw_read,

@@ -5,9 +5,12 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
-from .models import PortingBacklog, PortingModule
+from src.models import PortingBacklog, PortingModule
 
-SNAPSHOT_PATH = Path(__file__).resolve().parent / 'reference_data' / 'commands_snapshot.json'
+# ch01 round-2 P3: reference_data stays at src/reference_data/ because
+# ~20 production subsystem __init__.py files load JSON snapshots from there.
+# scripts/audit/commands.py -> scripts/audit -> scripts -> <repo>; then /src/reference_data
+SNAPSHOT_PATH = Path(__file__).resolve().parent.parent.parent / 'src' / 'reference_data' / 'commands_snapshot.json'
 
 
 @dataclass(frozen=True)

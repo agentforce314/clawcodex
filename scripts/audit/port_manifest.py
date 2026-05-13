@@ -4,9 +4,10 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
-from .models import Subsystem
+from src.models import Subsystem
 
-DEFAULT_SRC_ROOT = Path(__file__).resolve().parent
+# scripts/audit/port_manifest.py → scripts/audit → scripts → <repo>; then <repo>/src
+DEFAULT_SRC_ROOT = Path(__file__).resolve().parent.parent.parent / 'src'
 
 
 @dataclass(frozen=True)

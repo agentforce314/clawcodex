@@ -8,16 +8,15 @@ consumers:
     src/Tool.py      (zero consumers; not shadowed)
     src/models.py    (shadowed by src/models/)
 
-Re-introducing any of them — or adding a *new* same-name-as-package
+Round-2 P3 then relocated all audit-only scaffolding to
+``scripts/audit/``, eliminating the final shadow pair
+(``src/repl.py`` ↔ ``src/repl/``). The ``KNOWN_SHADOWS_PENDING_P3``
+allowlist below is now empty.
+
+Re-introducing any decoy — or adding a *new* same-name-as-package
 module — would re-create the architectural fog the ch01 gap analysis
 surfaced (see ``my-docs/ch01-architecture-gap-analysis.md`` §1 TL;DR
 item 1).
-
-The one remaining shadow pair (``src/repl.py`` ↔ ``src/repl/``) is
-in the ``KNOWN_SHADOWS_PENDING_P3`` allowlist below; it is part of
-the audit-only scaffolding scheduled for relocation in Phase 3 of
-the same plan. When P3 lands, ``src/repl.py`` moves under
-``scripts/audit/`` and the entry is removed from the allowlist.
 """
 
 from pathlib import Path
@@ -73,14 +72,7 @@ PACKAGE_NAMES = (
 )
 
 
-KNOWN_SHADOWS_PENDING_P3: dict[str, str] = {
-    "repl": (
-        "src/repl.py serves the audit-only ClawcodexCLI; production uses "
-        "src/repl/. Scheduled for relocation in Phase 3 of "
-        "my-docs/ch01-architecture-refactoring-plan.md (move to "
-        "scripts/audit/legacy_cli_repl.py)."
-    ),
-}
+KNOWN_SHADOWS_PENDING_P3: dict[str, str] = {}
 
 
 @pytest.mark.parametrize("filename", SHADOWED_DEAD_FORBIDDEN)
@@ -115,8 +107,10 @@ def test_no_module_shadows_package(pkg: str) -> None:
 
 def test_known_shadow_allowlist_is_tight() -> None:
     """Every entry in ``KNOWN_SHADOWS_PENDING_P3`` must correspond to a
-    real shadow on disk. Stale entries hide future regressions; tighten
-    the list when P3 lands."""
+    real shadow on disk. Round-2 P3 landed: the dict is now empty and
+    must stay empty unless a future plan introduces a transitional
+    shadow.
+    """
     for pkg in KNOWN_SHADOWS_PENDING_P3:
         package_init = SRC / pkg / "__init__.py"
         same_name_module = SRC / f"{pkg}.py"

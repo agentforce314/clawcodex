@@ -7,7 +7,7 @@ from .command_graph import build_command_graph
 from .commands import execute_command, get_command, get_commands, render_command_index
 from .direct_modes import run_deep_link, run_direct_connect
 from .parity_audit import run_parity_audit
-from .permissions import ToolPermissionContext
+from src.permissions import ToolPermissionContext
 from .port_manifest import build_port_manifest
 from .query_engine import QueryEnginePort
 from .remote_runtime import run_remote_mode, run_ssh_mode, run_teleport_mode
