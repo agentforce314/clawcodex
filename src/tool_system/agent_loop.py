@@ -302,13 +302,41 @@ def run_agent_loop(
     Returns:
         AgentLoopResult with final text response, usage info, and turn count
     """
+    # Assemble the tool pool through ``assemble_tool_pool`` so deny
+    # rules + the prompt-cache-stable sort + (when wired) MCP merge
+    # all apply. ``filter_tools_for_request`` then strips deferred
+    # tools that haven't been discovered via ToolSearch.
+    from .registry import assemble_tool_pool
+    from .tool_search import filter_tools_for_request
+
+    permission_context = tool_context.permission_context
+    # ``assemble_tool_pool`` returns built-ins (alphabetized) + MCP
+    # tools (alphabetized) concatenated. The order is intentional
+    # for prompt-cache stability — see ``registry.py:assemble_tool_pool``.
+    assembled_tools = assemble_tool_pool(
+        tool_registry,
+        permission_context,
+        mcp_tools=None,  # agent_loop doesn't currently merge MCP
+    )
+
+    # ``filter_tools_for_request`` removes deferred-not-discovered
+    # tools so their full schemas don't ship on every turn. With
+    # ToolSearch disabled, returns the input unchanged.
+    model_name = getattr(provider, "model", None) or ""
+    tools_for_api = filter_tools_for_request(
+        assembled_tools, model_name, messages=conversation.messages,
+    )
+
     tool_schemas = []
-    for tool in tool_registry.list_tools():
-        tool_schemas.append({
+    for tool in tools_for_api:
+        schema_dict: dict[str, Any] = {
             "name": tool.name,
             "description": tool.prompt(),
             "input_schema": dict(tool.input_schema),
-        })
+        }
+        if getattr(tool, "should_defer", False) or getattr(tool, "is_mcp", False):
+            schema_dict["_defer_loading"] = True
+        tool_schemas.append(schema_dict)
 
     # For OpenAI/GLM, keep separate message list in OpenAI format
     openai_messages: list[dict[str, Any]] = []
@@ -497,11 +525,19 @@ def run_agent_loop(
                     ),
                 )
                 call = ToolCall(name=tool_name, input=tool_input, tool_use_id=tool_id)
+                # Dispatch lookup must see ALL registered tools (not
+                # just the API-filtered list ``tools_for_api``), because
+                # the model can legitimately call a deferred tool that
+                # was just discovered via ``ToolSearchTool`` even if the
+                # filter excluded it from the schema list this turn.
+                # ``assembled_tools`` already includes deny-rule
+                # filtering + ordering; we pass that, not the post-
+                # filter slice.
                 dispatch_result = dispatch_full(
                     call,
                     current_tool_context,
                     assistant_msg_for_dispatch,
-                    tools=list(tool_registry.list_tools()),
+                    tools=list(assembled_tools),
                 )
                 # ``result_output`` keeps the typed shape (dict / str /
                 # list) so the SendUserMessage / StructuredOutput

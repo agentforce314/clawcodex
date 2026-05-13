@@ -109,7 +109,8 @@ class MinimaxProvider(BaseProvider):
         client = self._ensure_client()
         extra_kwargs: dict[str, Any] = {}
         if tools:
-            extra_kwargs["tools"] = tools
+            from .anthropic_provider import _translate_tool_schemas_for_anthropic
+            extra_kwargs["tools"] = _translate_tool_schemas_for_anthropic(tools)
 
         response = client.messages.create(
             model=model,
@@ -148,7 +149,8 @@ class MinimaxProvider(BaseProvider):
         client = self._ensure_client()
         extra_kwargs: dict[str, Any] = {}
         if tools:
-            extra_kwargs["tools"] = tools
+            from .anthropic_provider import _translate_tool_schemas_for_anthropic
+            extra_kwargs["tools"] = _translate_tool_schemas_for_anthropic(tools)
 
         with client.messages.stream(
             model=model,
@@ -175,7 +177,8 @@ class MinimaxProvider(BaseProvider):
         client = self._ensure_client()
         extra_kwargs: dict[str, Any] = {}
         if tools:
-            extra_kwargs["tools"] = tools
+            from .anthropic_provider import _translate_tool_schemas_for_anthropic
+            extra_kwargs["tools"] = _translate_tool_schemas_for_anthropic(tools)
 
         streamed_text = ""
         with client.messages.stream(

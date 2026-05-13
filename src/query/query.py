@@ -246,13 +246,36 @@ async def _call_model_sync(
                         block_types.append(str(type(b).__name__))
                 logger.warning("[DIAG]   msg[%d] role=%s  blocks=%s", i, role, block_types)
     _t0 = time.monotonic()
+
+    # Filter out deferred tools (MCP + should_defer) that haven't yet
+    # been discovered via ToolSearchTool. Without this filter every
+    # deferred tool's full schema is sent on every turn — exactly what
+    # ToolSearch was designed to avoid. The function returns the
+    # original list when tool-search is disabled (no behavior change
+    # for non-MCP / non-deferred environments).
+    #
+    # ``provider.model`` may be unset (mock providers in tests); guard
+    # with ``""`` so ``filter_tools_for_request`` doesn't NPE.
+    from ..tool_system.tool_search import filter_tools_for_request
+    model_name = getattr(provider, "model", None) or ""
+    tools_for_api = filter_tools_for_request(
+        list(tools), model_name, messages=messages,
+    )
+
     tool_schemas = []
-    for tool in tools:
-        tool_schemas.append({
+    for tool in tools_for_api:
+        schema_dict: dict[str, Any] = {
             "name": tool.name,
             "description": tool.prompt(),
             "input_schema": dict(tool.input_schema),
-        })
+        }
+        # Mark deferred tools so the provider adapter can translate to
+        # the Anthropic API's ``defer_loading: true`` field. Non-
+        # Anthropic providers drop this silently — they don't support
+        # the feature.
+        if getattr(tool, "should_defer", False) or getattr(tool, "is_mcp", False):
+            schema_dict["_defer_loading"] = True
+        tool_schemas.append(schema_dict)
 
     call_kwargs: dict[str, Any] = {"tools": tool_schemas}
 
