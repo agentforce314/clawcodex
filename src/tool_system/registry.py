@@ -216,6 +216,22 @@ def assemble_tool_pool(
     permission_context: ToolPermissionContext,
     mcp_tools: Tools | None = None,
 ) -> Tools:
+    """Assemble the full tool pool sent to the API.
+
+    Built-ins are sorted and concatenated FIRST, then MCP tools sorted
+    and concatenated AFTER. Built-ins win on name collision (insertion
+    order preserved).
+
+    The split is not aesthetic: the API server places its prompt-cache
+    breakpoint after the last built-in tool. A flat sort across all
+    tools would interleave MCP tools mid-list, and adding or removing
+    one MCP tool would shift the position of every built-in that sorts
+    after it -- invalidating the cache key for the whole tool block.
+    Keeping built-ins as a contiguous prefix means MCP churn doesn't
+    cost a cache miss on the built-in schemas. See
+    ``claude-code-from-source/book/ch06-tools.md`` section
+    "assembleToolPool: Merging Built-in and MCP Tools".
+    """
     builtin_tools = get_tools(registry, permission_context)
     if not mcp_tools:
         builtin_tools.sort(key=lambda t: t.name)

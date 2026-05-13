@@ -58,7 +58,12 @@ class Tool:
 
     aliases: tuple[str, ...] = ()
     search_hint: str | None = None
-    max_result_size_chars: int = 20_000
+    # ``int | float`` because FileReadTool declares ``float("inf")`` to
+    # opt out of result persistence (see ch06-tools.md "FileReadTool:
+    # The Versatile Reader" -- persisting Read output would create a
+    # circular Read loop). ``get_persistence_threshold`` special-cases
+    # ``math.inf`` to pass it through unchanged.
+    max_result_size_chars: int | float = 20_000
     strict: bool = False
     should_defer: bool = False
     always_load: bool = False
@@ -124,7 +129,7 @@ def build_tool(
     map_result_to_api: Callable[[Any, str], dict[str, Any]] | None = None,
     aliases: tuple[str, ...] | list[str] = (),
     search_hint: str | None = None,
-    max_result_size_chars: int = 20_000,
+    max_result_size_chars: int | float = 20_000,
     strict: bool = False,
     should_defer: bool = False,
     always_load: bool = False,
