@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from .env_expansion import expand_env_vars_in_string
 from .types import (
+    KNOWN_TRANSPORT_TYPES,
     ConfigScope,
     McpHTTPServerConfig,
     McpSSEServerConfig,
@@ -21,6 +22,7 @@ from .types import (
     McpWebSocketServerConfig,
     ScopedMcpServerConfig,
     parse_server_config,
+    validate_server_config,
 )
 
 logger = logging.getLogger(__name__)
@@ -267,17 +269,22 @@ def parse_mcp_config(
             )
             continue
 
-        parsed = parse_server_config(raw_config)
+        parsed, validation_messages = validate_server_config(raw_config)
         if parsed is None:
-            errors.append(
-                ValidationError(
-                    path=f"mcpServers.{name}",
-                    message="Invalid server configuration",
-                    file=file_path,
-                    scope=scope,
-                    server_name=name,
+            # validate_server_config always populates at least one message
+            # when it returns None; fall back is defensive only.
+            messages = validation_messages or ["Invalid server configuration"]
+            for msg in messages:
+                errors.append(
+                    ValidationError(
+                        path=f"mcpServers.{name}",
+                        message=msg,
+                        suggestion=_suggestion_for_message(msg),
+                        file=file_path,
+                        scope=scope,
+                        server_name=name,
+                    )
                 )
-            )
             continue
 
         if expand_vars:
@@ -673,6 +680,35 @@ def _notices_to_validation_errors(notices: list[str]) -> list[ValidationError]:
         )
         for msg in notices
     ]
+
+
+def _suggestion_for_message(message: str) -> str | None:
+    """Derive a friendly remediation hint from a validator message.
+
+    Round-2 polish for ``parse_mcp_config()`` — keeps the validator pure
+    (just messages) while surfacing actionable next steps via the
+    ``ValidationError.suggestion`` channel that existing UI / doctor
+    callers already render. Returns ``None`` when no specific suggestion
+    applies (the message alone is self-explanatory).
+    """
+    if "is required" in message:
+        # "url is required" -> "Add a `url` field to the server config"
+        field = message.split(" is required", 1)[0].strip()
+        return f"Add a `{field}` field to the server config"
+    if "cannot be empty" in message:
+        field = message.split(" cannot be empty", 1)[0].strip()
+        return f"Set `{field}` to a non-empty string"
+    if "must use https://" in message:
+        return "Use an https:// URL for OAuth metadata discovery"
+    if "unknown transport type" in message:
+        return f"Use one of: {', '.join(KNOWN_TRANSPORT_TYPES)}"
+    if "must be a list of strings" in message:
+        return "Provide `args` as a JSON array of strings"
+    if "must be an object mapping strings to strings" in message:
+        return "Provide a JSON object whose values are all strings"
+    if "must be a string" in message:
+        return "Wrap the value in quotes so it parses as a string"
+    return None
 
 
 _enterprise_exists_cache: bool | None = None
