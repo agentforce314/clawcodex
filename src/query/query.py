@@ -1087,6 +1087,53 @@ async def _query_loop_inner(
                 and not has_attempted_reactive_compact
                 and config.reactive_compact_enabled
             ):
+                # Ch5/B.3 — context-collapse drain runs FIRST. Mirrors
+                # TS query.ts:1160-1193. If the agent had been holding
+                # back staged collapses, an overflow forces them now.
+                # The drain is one-shot per recovery attempt: if the
+                # previous transition already drained and we're STILL
+                # 413'ing, fall through to reactive_compact.
+                if (
+                    is_withheld_ptl
+                    and config.context_collapse_enabled
+                    and (
+                        state.transition is None
+                        or state.transition.reason != "collapse_drain_retry"
+                    )
+                ):
+                    from ..services.compact.context_collapse import (
+                        is_context_collapse_enabled,
+                        recover_from_overflow,
+                    )
+                    if is_context_collapse_enabled():
+                        drained = recover_from_overflow(
+                            messages, params.query_source,
+                        )
+                        if drained.committed > 0:
+                            for msg in drained.messages:
+                                yield msg
+                            state = QueryState(
+                                messages=drained.messages,
+                                tool_use_context=tool_use_context,
+                                auto_compact_tracking=state.auto_compact_tracking,
+                                max_output_tokens_recovery_count=max_output_tokens_recovery_count,
+                                # Don't set has_attempted yet — drain is
+                                # a separate recovery layer; reactive
+                                # compact still gets its one shot if
+                                # the drain doesn't free enough tokens.
+                                has_attempted_reactive_compact=has_attempted_reactive_compact,
+                                max_output_tokens_override=None,
+                                stop_hook_active=state.stop_hook_active,
+                                turn_count=turn_count,
+                                pending_tool_use_summary=state.pending_tool_use_summary,
+                                continuation_nudge_count=state.continuation_nudge_count,
+                                transition=Transition(
+                                    reason="collapse_drain_retry",
+                                    committed=drained.committed,
+                                ),
+                            )
+                            continue
+
                 from ..services.compact.reactive_compact import (
                     ReactiveCompactResult,
                     reactive_compact,
