@@ -30,6 +30,7 @@ __all__ = [
     "is_safe_env_key",
     "apply_safe_config_environment_variables",
     "apply_full_config_environment_variables",
+    "extract_mdm_safe_env",
 ]
 
 
@@ -186,6 +187,7 @@ def is_safe_env_key(key: str) -> bool:
 
 def apply_safe_config_environment_variables(
     config_env: Mapping[str, str] | None = None,
+    extra_env: Mapping[str, str] | None = None,
 ) -> None:
     """Apply only the safe subset of config.env to os.environ.
 
@@ -194,7 +196,18 @@ def apply_safe_config_environment_variables(
     NOT overwrite pre-existing process env (matches TS behavior at
     managedEnv.ts:60-65 which checks ``process.env[key] === undefined``
     before writing).
+
+    ``extra_env`` carries managed-config (MDM) values; ch02 round-2 PR-1
+    (G1) consumes the MDM prefetch this way. Order matters: MDM values
+    apply FIRST (lowest precedence — they are defaults), then config-file
+    values via ``setdefault`` so any prior environment OR earlier MDM
+    value wins over a later config-file write. This matches TS where the
+    union is built before any single application.
     """
+    if extra_env:
+        for key, value in extra_env.items():
+            if is_safe_env_key(key):
+                os.environ.setdefault(key, value)
     if config_env is None:
         config_env = _load_config_env()
     for key, value in config_env.items():
@@ -215,6 +228,38 @@ def apply_full_config_environment_variables(
         config_env = _load_config_env()
     for key, value in config_env.items():
         os.environ[key] = value  # full apply: overwrites
+
+
+def extract_mdm_safe_env(payload: str | None) -> dict[str, str]:
+    """Parse an MDM plist-as-JSON payload and return the safe env subset.
+
+    ``payload`` is the stdout from ``plutil -convert json -o -
+    /Library/Managed Preferences/com.anthropic.claude-code.plist`` (see
+    ``src/prefetch.py:start_mdm_raw_read``). Failure modes (None, empty,
+    malformed JSON, missing ``env`` key, non-dict ``env``) all silently
+    return ``{}`` — init() must never raise due to MDM failures.
+
+    Only keys passing ``is_safe_env_key`` survive; values are coerced
+    to strings (matching the env-var contract).
+    """
+    if not payload:
+        return {}
+    import json
+
+    try:
+        parsed = json.loads(payload)
+    except (json.JSONDecodeError, ValueError):
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    env = parsed.get("env")
+    if not isinstance(env, dict):
+        return {}
+    return {
+        str(k): str(v)
+        for k, v in env.items()
+        if v is not None and is_safe_env_key(str(k))
+    }
 
 
 def _load_config_env() -> dict[str, str]:
