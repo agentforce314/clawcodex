@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .commands import get_commands
-from .models import PortingModule
+from .commands_snapshot import get_commands
+from src.models import PortingModule
 
 
 @dataclass(frozen=True)

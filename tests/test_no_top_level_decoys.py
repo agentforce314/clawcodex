@@ -8,16 +8,16 @@ consumers:
     src/Tool.py      (zero consumers; not shadowed)
     src/models.py    (shadowed by src/models/)
 
-Re-introducing any of them — or adding a *new* same-name-as-package
+Phase 3 of the same refactor then relocated the remaining audit-only
+scaffolding (``src/main.py``, ``src/repl.py``, ``src/runtime.py``,
+and 13 more) to ``scripts/audit/`` and deleted ``src/QueryEngine.py``.
+After P3, no top-level Python module under ``src/`` shadows a
+same-named package — the allowlist is empty.
+
+Re-introducing any of these — or adding a *new* same-name-as-package
 module — would re-create the architectural fog the ch01 gap analysis
 surfaced (see ``my-docs/ch01-architecture-gap-analysis.md`` §1 TL;DR
 item 1).
-
-The one remaining shadow pair (``src/repl.py`` ↔ ``src/repl/``) is
-in the ``KNOWN_SHADOWS_PENDING_P3`` allowlist below; it is part of
-the audit-only scaffolding scheduled for relocation in Phase 3 of
-the same plan. When P3 lands, ``src/repl.py`` moves under
-``scripts/audit/`` and the entry is removed from the allowlist.
 """
 
 from pathlib import Path
@@ -31,6 +31,24 @@ SHADOWED_DEAD_FORBIDDEN = (
     "query.py",
     "Tool.py",
     "models.py",
+    # ch01 P3 additions — these were also relocated out of ``src/``
+    # and must not reappear at the top level.
+    "main.py",
+    "repl.py",
+    "runtime.py",
+    "query_engine.py",
+    "QueryEngine.py",
+    "commands.py",
+    "setup.py",
+    "system_init.py",
+    "parity_audit.py",
+    "bootstrap_graph.py",
+    "command_graph.py",
+    "tool_pool.py",
+    "port_manifest.py",
+    "context.py",
+    "execution_registry.py",
+    "tools.py",
 )
 
 
@@ -73,14 +91,10 @@ PACKAGE_NAMES = (
 )
 
 
-KNOWN_SHADOWS_PENDING_P3: dict[str, str] = {
-    "repl": (
-        "src/repl.py serves the audit-only ClawcodexCLI; production uses "
-        "src/repl/. Scheduled for relocation in Phase 3 of "
-        "my-docs/ch01-architecture-refactoring-plan.md (move to "
-        "scripts/audit/legacy_cli_repl.py)."
-    ),
-}
+# ch01 P3 landed; the allowlist is now empty. Any future shadow pair
+# needs an explicit entry here with a forward-link explaining why it
+# must stay shadowed (and when it will be cleaned up).
+KNOWN_SHADOWS_PENDING_P3: dict[str, str] = {}
 
 
 @pytest.mark.parametrize("filename", SHADOWED_DEAD_FORBIDDEN)

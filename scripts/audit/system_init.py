@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from .commands import built_in_command_names, get_commands
-from .setup import run_setup
-from .tools import get_tools
+from .commands_snapshot import built_in_command_names, get_commands
+from .setup_report import run_setup
+from .tools_snapshot import get_tools
 
 
 def build_system_init_message(trusted: bool = True) -> str:

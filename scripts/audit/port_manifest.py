@@ -4,9 +4,13 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
-from .models import Subsystem
+from src.models import Subsystem
 
-DEFAULT_SRC_ROOT = Path(__file__).resolve().parent
+# ch01 P3: file moved from ``src/port_manifest.py`` to
+# ``scripts/audit/port_manifest.py``. ``DEFAULT_SRC_ROOT`` used to be
+# the file's own parent (``src/``); after the move it must point at
+# the sibling ``src/`` package three levels up.
+DEFAULT_SRC_ROOT = Path(__file__).resolve().parent.parent.parent / 'src'
 
 
 @dataclass(frozen=True)
