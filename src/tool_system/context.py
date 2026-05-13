@@ -147,6 +147,17 @@ class ToolContext:
     messages: list[Any] = field(default_factory=list)
     set_response_length: Callable[[Callable[[int], int]], None] | None = None
     set_in_progress_tool_use_ids: Callable[[Callable[[set[str]], set[str]]], None] | None = None
+    # Mirrors TS Tool.ts:231
+    # ``setHasInterruptibleToolInProgress?: (v: boolean) => void``.
+    # Optional callback wired only in interactive (REPL/TUI) contexts; SDK
+    # and unit-test paths leave it ``None`` and
+    # ``StreamingToolExecutor._update_interruptible_state`` will skip the
+    # call. The flag drives the UI's "press ESC to interrupt" indicator:
+    # ``True`` only when at least one tool is currently executing AND every
+    # executing tool's ``interrupt_behavior()`` returns ``"cancel"``. Fired
+    # from ``StreamingToolExecutor._execute_tool`` on every transition into
+    # or out of the ``executing`` status, matching TS lines 270, 290, 386.
+    set_has_interruptible_tool_in_progress: Callable[[bool], None] | None = None
     query_tracking: QueryChainTracking | None = None
     file_reading_limits: FileReadingLimits | None = None
     glob_limits: GlobLimits | None = None
