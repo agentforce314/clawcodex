@@ -121,8 +121,13 @@ class TestBuildPermissionContext:
 
         assert perm.should_avoid_permission_prompts is False
 
-    def test_async_always_avoids_prompts(self):
-        """Async agents always suppress permission prompts."""
+    def test_async_default_mode_avoids_prompts(self):
+        """Async agents in non-bubble modes suppress permission prompts.
+
+        Bubble mode is exempted because its prompts surface to the
+        parent terminal (covered by the bubble tests below). Mirrors
+        ``typescript/src/tools/AgentTool/runAgent.ts:449-464``.
+        """
         ctx = _make_context(
             "default",
             should_avoid_permission_prompts=False,
@@ -131,6 +136,69 @@ class TestBuildPermissionContext:
         perm = _build_permission_context(ctx, "default", is_async=True)
 
         assert perm.should_avoid_permission_prompts is True
+        # default + async does NOT wait for automated checks — there is
+        # no dialog to delay because prompts are off.
+        assert perm.await_automated_checks_before_dialog is False
+
+    def test_async_bubble_keeps_prompts_enabled(self):
+        """Async bubble agents bubble prompts up to the parent terminal.
+
+        ``shouldAvoidPermissionPrompts`` stays False so the bubble path
+        in ``permissions/check.py:183`` can produce an escalation deny
+        rather than a generic headless deny. Mirrors
+        ``typescript/src/tools/AgentTool/runAgent.ts:453-458``.
+        """
+        ctx = _make_context(
+            "default",
+            should_avoid_permission_prompts=False,
+        )
+
+        perm = _build_permission_context(ctx, "bubble", is_async=True)
+
+        assert perm.should_avoid_permission_prompts is False
+
+    def test_async_bubble_sets_await_automated_checks(self):
+        """Async-but-promptable agents wait for classifier / hooks.
+
+        Mirrors ``typescript/src/tools/AgentTool/runAgent.ts:471-475``.
+        """
+        ctx = _make_context("default")
+
+        perm = _build_permission_context(ctx, "bubble", is_async=True)
+
+        assert perm.await_automated_checks_before_dialog is True
+
+    def test_sync_bubble_no_await_flag(self):
+        """Sync bubble agents do not need the await-checks signal.
+
+        The flag is for *async* agents that still allow prompts. Sync
+        agents always prompt directly.
+        """
+        ctx = _make_context("default")
+
+        perm = _build_permission_context(ctx, "bubble", is_async=False)
+
+        assert perm.should_avoid_permission_prompts is False
+        assert perm.await_automated_checks_before_dialog is False
+
+    def test_parent_avoids_prompts_propagates_even_for_bubble(self):
+        """Headless parent forces avoidance regardless of agent mode.
+
+        If the parent (or SDK consumer) already configured
+        ``should_avoid_permission_prompts=True``, the agent cannot
+        re-enable prompts by being in bubble mode — the parent's
+        explicit policy wins.
+        """
+        ctx = _make_context(
+            "default",
+            should_avoid_permission_prompts=True,
+        )
+
+        perm = _build_permission_context(ctx, "bubble", is_async=True)
+
+        assert perm.should_avoid_permission_prompts is True
+        # No dialog will fire, so no need to wait for automated checks.
+        assert perm.await_automated_checks_before_dialog is False
 
     def test_effective_mode_applied(self):
         """Effective mode is set on the built permission context."""
