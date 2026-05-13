@@ -331,6 +331,14 @@ class ToolPermissionContext:
     )
     is_bypass_permissions_mode_available: bool = False
     should_avoid_permission_prompts: bool = False
+    # When True, async sub-agents that can still surface prompts (today:
+    # bubble mode) wait for the classifier / permission hooks to run
+    # before interrupting the user. Mirrors TS
+    # ``awaitAutomatedChecksBeforeDialog`` set in
+    # ``typescript/src/tools/AgentTool/runAgent.ts:471-475``. Defaulting
+    # to ``False`` keeps existing call sites unchanged; the field is
+    # set only by ``run_agent._build_permission_context`` for now.
+    await_automated_checks_before_dialog: bool = False
 
     @classmethod
     def from_iterables(

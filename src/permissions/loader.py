@@ -55,4 +55,5 @@ def apply_rules_to_context(
         always_ask_rules=ask_rules,
         is_bypass_permissions_mode_available=context.is_bypass_permissions_mode_available,
         should_avoid_permission_prompts=context.should_avoid_permission_prompts,
+        await_automated_checks_before_dialog=context.await_automated_checks_before_dialog,
     )
