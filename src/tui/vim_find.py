@@ -1,0 +1,83 @@
+"""Vim find/till motions (``f`` / ``F`` / ``t`` / ``T``).
+
+Ch14 phase 3: ports the find-motion semantics from
+``typescript/src/utils/Cursor.ts:findCharacter`` plus the
+``OperatorFindState`` execution from ``typescript/src/vim/operators.ts:executeOperatorFind``.
+
+Find type semantics:
+
+* ``f<c>`` — forward search; cursor lands ON the next ``<c>``.
+* ``F<c>`` — backward search; cursor lands ON the previous ``<c>``.
+* ``t<c>`` — forward; cursor lands ONE BEFORE the next ``<c>``.
+* ``T<c>`` — backward; cursor lands ONE AFTER the previous ``<c>``.
+
+Count semantics: ``count`` repeats the search ``count`` times. ``3fa``
+finds the third 'a' forward.
+
+Boundary behaviour: searches operate on a single line (the row the
+cursor is on). Returns ``None`` if no match within the line.
+"""
+
+from __future__ import annotations
+
+from .vim_state import FindType
+
+
+def find_char(
+    line: str,
+    start_col: int,
+    char: str,
+    find_type: FindType,
+    count: int = 1,
+) -> int | None:
+    """Return the column of the ``count``-th ``char`` from ``start_col``.
+
+    ``find_type`` determines direction and exclusivity:
+
+    * ``f`` — forward, inclusive (land ON char)
+    * ``F`` — backward, inclusive (land ON char)
+    * ``t`` — forward, exclusive (land ONE BEFORE char)
+    * ``T`` — backward, exclusive (land ONE AFTER char)
+
+    Returns ``None`` if no match within the line. Returns ``None`` for
+    empty lines regardless of inputs.
+    """
+
+    if not line or not char:
+        return None
+    count = max(1, count)
+
+    if find_type in ("f", "t"):
+        # Forward: start AFTER the cursor cell.
+        idx = start_col + 1
+        last_found = -1
+        for _ in range(count):
+            idx = line.find(char, idx)
+            if idx < 0:
+                return None
+            last_found = idx
+            idx += 1
+        # ``f`` lands on char; ``t`` lands one before.
+        if find_type == "f":
+            return last_found
+        return max(start_col, last_found - 1)
+
+    # Backward branches: F / T.
+    # Start BEFORE the cursor cell.
+    idx = start_col - 1
+    last_found = -1
+    for _ in range(count):
+        if idx < 0:
+            return None
+        idx = line.rfind(char, 0, idx + 1)
+        if idx < 0:
+            return None
+        last_found = idx
+        idx -= 1
+    if find_type == "F":
+        return last_found
+    # T: one after.
+    return min(len(line) - 1, last_found + 1)
+
+
+__all__ = ["find_char"]
