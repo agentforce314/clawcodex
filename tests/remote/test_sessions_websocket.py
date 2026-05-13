@@ -303,3 +303,245 @@ async def test_send_control_request_wraps_in_envelope():
     finally:
         ws_server.close()
         await ws_server.wait_closed()
+
+
+# ─── Round-2: state-machine / re-entrancy tests ────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_concurrent_connect_is_singleflight():
+    """Two ``connect()`` calls in flight must produce only one WS handshake.
+
+    Round-2 fix: the second call enters ``connect()``, sees state is
+    ``"connecting"``, and bails immediately.
+    """
+    class _SlowAcceptServer:
+        def __init__(self) -> None:
+            self.connection_count = 0
+            self._lock = asyncio.Lock()
+
+        async def handler(self, ws):
+            async with self._lock:
+                self.connection_count += 1
+            try:
+                await asyncio.sleep(0.3)
+            except asyncio.CancelledError:
+                pass
+
+    server = _SlowAcceptServer()
+    port = _free_port()
+    ws_server = await ws_serve(server.handler, '127.0.0.1', port)
+    try:
+        callbacks = SessionsWebSocketCallbacks(on_message=lambda m: None)
+        ws = SessionsWebSocket(
+            'sid', 'org', lambda: 'tok', callbacks,
+            base_url=f'ws://127.0.0.1:{port}',
+        )
+        task_a = asyncio.create_task(ws.connect())
+        task_b = asyncio.create_task(ws.connect())
+        await asyncio.gather(task_a, task_b)
+        await asyncio.sleep(0.1)
+        assert server.connection_count == 1, (
+            f'expected single-flight connect, got {server.connection_count} '
+            'WS handshakes'
+        )
+        assert ws.is_connected()
+        assert ws.state == 'connected'
+        await ws.disconnect()
+    finally:
+        ws_server.close()
+        await ws_server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_send_before_connected_is_dropped():
+    """Send during the ``connecting`` window is dropped, not transmitted.
+
+    Round-2 fix: ``send_control_response`` and ``send_control_request``
+    gate strictly on ``state == 'connected'``.
+    """
+    class _EchoServer:
+        async def handler(self, ws):
+            try:
+                async for raw in ws:
+                    pass
+            except websockets.exceptions.ConnectionClosed:
+                pass
+
+    server = _EchoServer()
+    port = _free_port()
+    ws_server = await ws_serve(server.handler, '127.0.0.1', port)
+    try:
+        callbacks = SessionsWebSocketCallbacks(on_message=lambda m: None)
+        ws = SessionsWebSocket(
+            'sid', 'org', lambda: 'tok', callbacks,
+            base_url=f'ws://127.0.0.1:{port}',
+        )
+        # Simulate the in-handshake window directly: state is "connecting"
+        # but no WS is assigned. Both send paths must early-return rather
+        # than raising on ``self._ws.send`` (which would AttributeError).
+        ws._state = 'connecting'  # type: ignore[assignment]
+        ws._ws = None
+        await ws.send_control_response({'type': 'control_response', 'response': {}})
+        await ws.send_control_request({'subtype': 'interrupt'})
+        assert ws.is_connected() is False
+        ws._state = 'closed'  # type: ignore[assignment]
+    finally:
+        ws_server.close()
+        await ws_server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_disconnect_during_handshake_unwinds_cleanly():
+    """``disconnect()`` mid ``connect()`` transitions to closed and closes
+    the orphan WS that ``ws_connect`` returns after disconnect.
+    """
+    connections_seen: list[object] = []
+    closed_event = asyncio.Event()
+
+    class _SlowAcceptServer:
+        async def handler(self, ws):
+            connections_seen.append(ws)
+            try:
+                async for _ in ws:
+                    pass
+            except websockets.exceptions.ConnectionClosed:
+                pass
+            closed_event.set()
+
+    server = _SlowAcceptServer()
+    port = _free_port()
+    ws_server = await ws_serve(server.handler, '127.0.0.1', port)
+    try:
+        callbacks = SessionsWebSocketCallbacks(on_message=lambda m: None)
+        ws = SessionsWebSocket(
+            'sid', 'org', lambda: 'tok', callbacks,
+            base_url=f'ws://127.0.0.1:{port}',
+        )
+        connect_task = asyncio.create_task(ws.connect())
+        await asyncio.sleep(0.0)
+        await ws.disconnect()
+        await connect_task
+        assert ws.state == 'closed'
+        assert ws.is_connected() is False
+        if connections_seen:
+            await asyncio.wait_for(closed_event.wait(), timeout=2.0)
+    finally:
+        ws_server.close()
+        await ws_server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_state_progresses_through_connecting_to_connected():
+    """Observable state machine: closed → connecting → connected on success."""
+    states: list[str] = []
+
+    class _Server:
+        async def handler(self, ws):
+            try:
+                await asyncio.sleep(0.2)
+            except asyncio.CancelledError:
+                pass
+
+    server = _Server()
+    port = _free_port()
+    ws_server = await ws_serve(server.handler, '127.0.0.1', port)
+    try:
+        callbacks = SessionsWebSocketCallbacks(on_message=lambda m: None)
+        ws = SessionsWebSocket(
+            'sid', 'org', lambda: 'tok', callbacks,
+            base_url=f'ws://127.0.0.1:{port}',
+        )
+        assert ws.state == 'closed'
+        states.append(ws.state)
+
+        connect_task = asyncio.create_task(ws.connect())
+        for _ in range(50):
+            if ws.state == 'connecting':
+                states.append('connecting')
+                break
+            await asyncio.sleep(0)
+        await connect_task
+        states.append(ws.state)
+        assert ws.state == 'connected'
+        assert ws.is_connected() is True
+        assert states[0] == 'closed'
+        assert 'connecting' in states
+        assert states[-1] == 'connected'
+        await ws.disconnect()
+        assert ws.state == 'closed'
+    finally:
+        ws_server.close()
+        await ws_server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_double_disconnect_is_idempotent():
+    """``disconnect()`` after ``disconnect()`` must be a no-op."""
+    class _Server:
+        async def handler(self, ws):
+            try:
+                async for _ in ws:
+                    pass
+            except websockets.exceptions.ConnectionClosed:
+                pass
+
+    server = _Server()
+    port = _free_port()
+    ws_server = await ws_serve(server.handler, '127.0.0.1', port)
+    try:
+        callbacks = SessionsWebSocketCallbacks(on_message=lambda m: None)
+        ws = SessionsWebSocket(
+            'sid', 'org', lambda: 'tok', callbacks,
+            base_url=f'ws://127.0.0.1:{port}',
+        )
+        await ws.connect()
+        assert ws.is_connected()
+        await ws.disconnect()
+        assert ws.state == 'closed'
+        await ws.disconnect()
+        assert ws.state == 'closed'
+        assert ws.is_connected() is False
+    finally:
+        ws_server.close()
+        await ws_server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_reconnect_clears_user_disconnected_latch():
+    """``reconnect()`` after ``disconnect()`` re-arms the WS."""
+    class _Server:
+        def __init__(self) -> None:
+            self.connection_count = 0
+
+        async def handler(self, ws):
+            self.connection_count += 1
+            try:
+                async for _ in ws:
+                    pass
+            except websockets.exceptions.ConnectionClosed:
+                pass
+
+    server = _Server()
+    port = _free_port()
+    ws_server = await ws_serve(server.handler, '127.0.0.1', port)
+    try:
+        callbacks = SessionsWebSocketCallbacks(on_message=lambda m: None)
+        ws = SessionsWebSocket(
+            'sid', 'org', lambda: 'tok', callbacks,
+            base_url=f'ws://127.0.0.1:{port}',
+        )
+        await ws.connect()
+        await ws.disconnect()
+        # connect() after disconnect must be rejected.
+        await ws.connect()
+        assert ws.state == 'closed'
+        assert server.connection_count == 1
+        # reconnect() clears the latch and re-arms.
+        await ws.reconnect()
+        assert ws.is_connected()
+        assert server.connection_count == 2
+        await ws.disconnect()
+    finally:
+        ws_server.close()
+        await ws_server.wait_closed()
