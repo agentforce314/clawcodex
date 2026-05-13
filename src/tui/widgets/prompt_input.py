@@ -29,7 +29,8 @@ from textual.message import Message
 from textual.widgets import Input, OptionList
 from textual.widgets.option_list import Option
 
-from ..messages import CancelRequested
+from ..messages import CancelRequested, PromptPasted
+from ..paste import PasteInfo, classify_paste
 from ..vim import VimState
 from .prompt_input_footer import PromptInputFooter
 from .prompt_input_mode_indicator import PromptInputModeIndicator
@@ -40,6 +41,50 @@ class PromptSubmitted(Message):
     """User pressed Enter on a non-empty prompt."""
 
     text: str
+
+
+class _PasteAwareInput(Input):
+    """``Input`` subclass that routes bracketed paste through the host.
+
+    The stock Textual ``Input._on_paste`` truncates the payload to the
+    first line and bypasses any custom paste handler on the parent
+    widget. That destroys the very property chapter 14 calls out as
+    "critical for security" — the bracketed-paste envelope must travel
+    intact so the host can decide whether it is a literal text insert,
+    an image-file drag, or an empty-paste image-clipboard sentinel.
+
+    This subclass intercepts ``events.Paste`` before the stock handler
+    runs and forwards it to the surrounding :class:`PromptInput` via
+    ``parent.handle_paste``. The Input itself does not insert anything;
+    the host owns the buffer mutation so vim-mode shims, slash-popup
+    suppression, and history-pointer hygiene all happen in one place.
+    """
+
+    def _on_paste(self, event: events.Paste) -> None:  # type: ignore[override]
+        # Walk up the widget tree looking for a parent that knows how
+        # to absorb a bracketed paste. ``hasattr`` avoids a forward
+        # reference to :class:`PromptInput` (which is declared below
+        # to keep the file readable top-down).
+        node = self.parent
+        for _ in range(8):  # bounded walk; the tree is always shallow.
+            if node is None:
+                break
+            handler = getattr(node, "handle_paste", None)
+            if callable(handler):
+                handler(event.text)
+                # ``prevent_default`` is what stops Textual's MRO
+                # walker from also invoking the stock
+                # ``Input._on_paste`` (which would truncate the
+                # payload to the first line and double-insert).
+                # ``stop`` then halts bubbling to ancestor widgets so
+                # the host does not see the raw Paste twice.
+                event.prevent_default()
+                event.stop()
+                return
+            node = getattr(node, "parent", None)
+        # Fallback to the stock behaviour if we've been re-parented
+        # outside a :class:`PromptInput` host.
+        super()._on_paste(event)
 
 
 class _SlashSuggestions(OptionList):
@@ -83,10 +128,13 @@ class PromptInput(Vertical):
         self._words_provider = words_provider
         self._history: list[str] = []
         self._history_pos: int | None = None
-        self._input = Input(placeholder="Type a prompt, or / for commands")
+        self._input = _PasteAwareInput(placeholder="Type a prompt, or / for commands")
         self._suggestions = _SlashSuggestions(classes="-hidden")
         self._vim = VimState(enabled=vim_mode)
         self._yank_buffer: str = ""
+        # Round 2 / WI-R2.5: most-recent bracketed paste classification.
+        # Test seam — the host reads :class:`PromptPasted` instead.
+        self._last_paste: PasteInfo | None = None
         # Round 2 / WI-R2.4: passive status surfaces around the input.
         # The mode indicator subscribes to ``VimState`` directly; the
         # footer reads ``VimState.enabled`` lazily. Both mounted as
@@ -116,6 +164,46 @@ class PromptInput(Vertical):
 
         self._input.value = value or ""
         self._hide_suggestions()
+
+    # ---- bracketed paste ----
+    def handle_paste(self, text: str) -> PasteInfo:
+        """Insert a bracketed-paste payload as a single atomic operation.
+
+        Bypasses the slash-popup recomputer, the history pointer, and
+        the vim chord tracker — pasted characters must always reach the
+        buffer literally even when they happen to spell a chord prefix.
+        Chapter 14 calls this the ``isPasted`` invariant; the Python
+        port honours it by funnelling every bracketed paste through
+        this single entry point.
+
+        Returns the :class:`PasteInfo` so callers (typically tests) can
+        assert on classification without having to listen for the
+        :class:`PromptPasted` message.
+        """
+
+        info = classify_paste(text)
+        self._last_paste = info
+        if not info.is_empty:
+            inp = self._input
+            value = inp.value or ""
+            pos = max(0, min(inp.cursor_position, len(value)))
+            new_value = value[:pos] + info.text + value[pos:]
+            inp.value = new_value
+            inp.cursor_position = pos + info.length
+        # Pasted content must never reopen the slash palette; the user
+        # paste-bombed the prompt and likely wants to keep typing or
+        # submit. Same rationale as the TS ``usePasteHandler`` reset.
+        self._hide_suggestions()
+        # Paste must never disturb the history cursor — leaving
+        # ``_history_pos`` untouched here is the explicit contract.
+        self.post_message(PromptPasted(info=info))
+        return info
+
+    @property
+    def last_paste(self) -> PasteInfo | None:
+        """Most recent classified paste (test seam)."""
+
+        return self._last_paste
 
     def action_clear_draft(self) -> None:
         self.clear()
