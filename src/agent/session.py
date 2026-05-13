@@ -15,12 +15,23 @@ to reconstruct the per-conversation Persistence record.
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
 from dataclasses import dataclass, field
 
-from src.bootstrap.state import get_session_id
+from src.bootstrap.state import (
+    get_model_usage,
+    get_session_id,
+    get_start_time,
+    get_total_api_duration,
+    get_total_api_duration_without_retries,
+    get_total_cost_usd,
+    get_total_lines_added,
+    get_total_lines_removed,
+    get_total_tool_duration,
+)
 
 from .conversation import Conversation
 
@@ -36,11 +47,21 @@ class Session:
     updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
 
     def save(self):
-        """Save session to disk."""
+        """Save session to disk including a cost block.
+
+        Ch03 round-2 (R2.1): the ``cost`` key matches the schema read by
+        ``src/services/cost_restore.py:restore_cost_state_for_session``
+        so a save → load round-trip restores bootstrap counters
+        (`total_cost_usd`, durations, lines added/removed, per-model
+        usage). Previously this method emitted no cost block; the
+        restore reader hit defaults of 0 unconditionally.
+        """
         session_dir = Path.home() / ".clawcodex" / "sessions"
         session_dir.mkdir(parents=True, exist_ok=True)
 
         session_file = session_dir / f"{self.session_id}.json"
+
+        cost_block = _snapshot_cost_block()
 
         session_data = {
             "session_id": self.session_id,
@@ -48,7 +69,8 @@ class Session:
             "model": self.model,
             "conversation": self.conversation.to_dict(),
             "created_at": self.created_at,
-            "updated_at": datetime.now().isoformat()
+            "updated_at": datetime.now().isoformat(),
+            "cost": cost_block,
         }
 
         with open(session_file, 'w') as f:
@@ -92,3 +114,61 @@ class Session:
             provider=provider,
             model=model,
         )
+
+    @classmethod
+    def resume(cls, session_id: str) -> Optional['Session']:
+        """Resume a session: update bootstrap identity, restore cost,
+        reconstruct the per-conversation record from disk.
+
+        Ch03 round-2 (R2.2): single entry point that keeps the three
+        operations in lockstep (CC-34 single-setter discipline at the
+        resume layer). Callers (REPL ``/resume``, headless / SDK)
+        should use this rather than calling ``Session.load`` plus
+        ``switch_session`` plus ``restore_cost_state_for_session``
+        independently.
+
+        Order matters: ``switch_session`` fires BEFORE
+        ``restore_cost_state_for_session`` so any subscriber that reads
+        ``get_session_id()`` during the cost restore sees the loaded id.
+        """
+        from src.bootstrap.state import SessionId, switch_session
+        from src.services.cost_restore import restore_cost_state_for_session
+
+        loaded = cls.load(session_id)
+        if loaded is None:
+            return None
+        switch_session(SessionId(session_id))
+        restore_cost_state_for_session(session_id)
+        return loaded
+
+
+def _snapshot_cost_block() -> dict:
+    """Build the cost block written by ``Session.save``.
+
+    Shape matches the reader at
+    ``src/services/cost_restore.py:restore_cost_state_for_session``.
+    Module-private; tests can call via the public ``Session.save``.
+    """
+    return {
+        "total_cost_usd": get_total_cost_usd(),
+        "total_api_duration": get_total_api_duration(),
+        "total_api_duration_without_retries":
+            get_total_api_duration_without_retries(),
+        "total_tool_duration": get_total_tool_duration(),
+        "total_lines_added": get_total_lines_added(),
+        "total_lines_removed": get_total_lines_removed(),
+        # last_duration = elapsed since start_time. cost_restore uses
+        # this to back-date the new session's start_time so post-resume
+        # duration accumulators continue from where they left off.
+        "last_duration": time.time() - get_start_time(),
+        "model_usage": {
+            model: {
+                "input_tokens": u.input_tokens,
+                "output_tokens": u.output_tokens,
+                "cache_creation_input_tokens": u.cache_creation_input_tokens,
+                "cache_read_input_tokens": u.cache_read_input_tokens,
+                "cost_usd": u.cost_usd,
+            }
+            for model, u in get_model_usage().items()
+        },
+    }
