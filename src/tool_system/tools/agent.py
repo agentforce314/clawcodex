@@ -191,8 +191,16 @@ def make_agent_tool(
             if agent_def is None:
                 raise ToolInputError("No agent definitions available")
 
-        # Resolve available tools
-        available_tools = registry.list_tools()
+        # Resolve available tools through ``assemble_tool_pool`` so
+        # deny rules + prompt-cache-stable sort apply for sub-agents.
+        # The sub-agent inherits the parent's permission context (a
+        # plan-mode parent yields a plan-mode child by default).
+        from ..registry import assemble_tool_pool
+        available_tools = list(assemble_tool_pool(
+            registry,
+            context.permission_context,
+            mcp_tools=None,
+        ))
 
         # Chapter-10 / WI-1.5: prefixed task id (``a<8 base36 chars>``)
         # mirroring TS Task.ts:79-105. Replaces the legacy 32-char
