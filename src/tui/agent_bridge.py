@@ -25,7 +25,9 @@ from pathlib import Path
 from typing import Any, Callable
 
 from src.agent import Session
-from src.tool_system.agent_loop import ToolEvent, run_agent_loop
+from src.tool_system.agent_loop import _build_effective_system_prompt
+from src.tool_system.renderers import ToolEvent
+from src.query.agent_loop_compat import run_query_as_agent_loop
 from src.tool_system.context import ToolContext
 from src.tool_system.registry import ToolRegistry
 from src.utils.abort_controller import AbortController, AbortError
@@ -153,17 +155,63 @@ class AgentBridge:
             self._post(AssistantChunk(text=chunk))
 
         try:
-            result = run_agent_loop(
-                conversation=self._session.conversation,
-                provider=self._provider,
-                tool_registry=self._tool_registry,
-                tool_context=self._tool_context,
-                max_turns=self._max_turns,
-                stream=self._stream,
-                verbose=False,
-                on_event=_on_event,
-                on_text_chunk=_on_text if self._stream else None,
-                cancel_signal=controller.signal if controller is not None else None,
+            # Ch5/F.3 — route the TUI worker through the canonical
+            # query() via the F.1 adapter. The worker is
+            # @work(thread=True), so we spin up a fresh event loop
+            # in this thread via asyncio.new_event_loop(). Do NOT
+            # switch to @work(thread=False): that would put the loop
+            # on Textual's main event loop and block UI rendering
+            # during model streams. Per F.3 critic-revised plan.
+            import asyncio as _asyncio
+            from src.tool_system.renderers import AgentLoopResult
+
+            effective_system_prompt = _build_effective_system_prompt(
+                getattr(self._tool_context, "output_style_prompt", "")
+                or "You are a helpful assistant.",
+                self._tool_context,
+            )
+
+            # Persist FULL Message objects (preserving tool_use and
+            # tool_result blocks) into the session conversation as
+            # they're yielded. Multi-submit TUI sessions otherwise
+            # lose Anthropic tool_use→tool_result pairings between
+            # turns, corrupting context.
+            def _persist_full_message(msg) -> None:
+                self._session.conversation.add_message(
+                    msg.role, msg.content,
+                )
+
+            loop = _asyncio.new_event_loop()
+            try:
+                compat_result = loop.run_until_complete(
+                    run_query_as_agent_loop(
+                        initial_messages=list(
+                            self._session.conversation.messages,
+                        ),
+                        provider=self._provider,
+                        tool_registry=self._tool_registry,
+                        tool_context=self._tool_context,
+                        system_prompt=effective_system_prompt,
+                        max_turns=self._max_turns,
+                        on_event=_on_event,
+                        on_text_chunk=_on_text if self._stream else None,
+                        on_message=_persist_full_message,
+                        cancel_signal=(
+                            controller.signal if controller is not None else None
+                        ),
+                    )
+                )
+            finally:
+                loop.close()
+            # Critic-flagged: ``compat_result.usage`` is always a dict
+            # (4 keys, possibly all-zero) so ``or None`` always
+            # resolved to the dict. Match the legacy ``usage: dict |
+            # None`` contract by setting None when no turns ran.
+            usage_dict = compat_result.usage if compat_result.num_turns > 0 else None
+            result = AgentLoopResult(
+                response_text=compat_result.response_text,
+                usage=usage_dict,
+                num_turns=compat_result.num_turns,
             )
         except AbortError:
             self._post(
