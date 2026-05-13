@@ -30,6 +30,8 @@ from typing import Any
 
 from textual.message import Message
 
+from .paste import PasteInfo
+
 
 @dataclass
 class AgentRunStarted(Message):
@@ -147,3 +149,24 @@ class CancelRequested(Message):
     """
 
     pass
+
+
+@dataclass
+class PromptPasted(Message):
+    """Bracketed-paste landed in the :class:`PromptInput` widget.
+
+    Mirrors :class:`PromptSubmitted` but fires *after* the paste has
+    already been inserted into the input buffer. The host listens to
+    decide whether to surface a "Pasted N chars" footer hint or, when
+    :attr:`PasteInfo.is_image_drag` is true, offer to attach the file
+    instead of submitting the path text.
+
+    See chapter 14 of ``claude-code-from-source/book`` — the chapter
+    calls out the ``isPasted`` discriminator as "critical for security",
+    because content inside a bracketed-paste envelope must not be
+    interpreted as commands. This message is the round-2 carrier for
+    that flag on the Python side; downstream rounds will fan out to the
+    footer/status surfaces.
+    """
+
+    info: PasteInfo
