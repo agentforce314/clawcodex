@@ -3,12 +3,24 @@
 Provides rough token counting for messages and content blocks, plus
 accurate tiktoken-based counting when available. API-based counting
 is also supported for precise results.
+
+Ch17 round-2: text- and block-level memoization layer. The compact
+pipeline (`services/compact/compact.py:319,453,512`), reactive compact
+(`services/compact/reactive_compact.py:183,223`), and context analyzer
+(`context_system/context_analyzer.py`) call ``count_tokens`` /
+``count_messages_tokens`` repeatedly against largely-overlapping
+content within a single turn. Each tiktoken ``encode`` call is
+~100 us–10 ms; without the cache, a single compaction event pays
+that cost 3-5× over the same message list. The cache key is the
+content's hash, so identical content always hits regardless of which
+caller invoked it.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+from collections import OrderedDict
 from typing import Any, Optional, Sequence
 
 logger = logging.getLogger(__name__)
@@ -33,16 +45,125 @@ def _get_encoder() -> Optional[object]:
     return _encoder_cache
 
 
+# ---------------------------------------------------------------------------
+# Memoization layer (ch17 round-2)
+# ---------------------------------------------------------------------------
+
+_MAX_TEXT_CACHE = 4096
+_MAX_BLOCK_CACHE = 4096
+
+
+class _TokenCountCache:
+    """Content-keyed LRU cache for token counts.
+
+    Backed by ``OrderedDict`` rather than ``functools.lru_cache`` so we
+    can:
+      - Reset for tests via ``reset_token_cache()``.
+      - Expose hit/miss counters via ``get_token_cache_stats()``.
+      - Bound by size, not by function-argument hashability quirks.
+
+    Keys are the content itself (a string or any hashable value),
+    NOT ``hash(content)`` — Python's ``hash()`` is a 64-bit integer
+    and collisions between distinct inputs are possible (birthday
+    paradox is real at 4096 entries). Using the content directly as
+    the dict key lets Python's dict implementation handle collisions
+    correctly via ``__eq__`` after hashing.
+
+    Thread safety: Python's GIL serializes simple ``__getitem__`` /
+    ``__setitem__`` operations. Failure mode under concurrent writes is
+    a missed cache hit or a stale eviction, never an incorrect token
+    count.
+    """
+
+    __slots__ = ("_cache", "_max_size", "hits", "misses")
+
+    def __init__(self, max_size: int) -> None:
+        self._cache: OrderedDict[Any, int] = OrderedDict()
+        self._max_size = max_size
+        self.hits = 0
+        self.misses = 0
+
+    def get(self, key: Any) -> Optional[int]:
+        # Sentinel pattern so that a legitimately-cached 0 is still a hit.
+        # (We don't store None, but a future caller might cache 0 if they
+        # bypass the count_tokens short-circuit.)
+        sentinel: Any = _CACHE_MISS_SENTINEL
+        cached = self._cache.get(key, sentinel)
+        if cached is sentinel:
+            self.misses += 1
+            return None
+        self.hits += 1
+        self._cache.move_to_end(key)
+        return cached  # type: ignore[return-value]
+
+    def put(self, key: Any, value: int) -> None:
+        if key in self._cache:
+            self._cache.move_to_end(key)
+            self._cache[key] = value
+            return
+        self._cache[key] = value
+        if len(self._cache) > self._max_size:
+            # Evict the least-recently used entry (front of the OrderedDict).
+            self._cache.popitem(last=False)
+
+    def reset(self) -> None:
+        self._cache.clear()
+        self.hits = 0
+        self.misses = 0
+
+    def size(self) -> int:
+        return len(self._cache)
+
+
+# Module-level sentinel for the cache-miss check. Defined as a module-level
+# object so equality is identity-based and never accidentally satisfied by
+# a stored value (no token count is this object).
+_CACHE_MISS_SENTINEL: object = object()
+
+
+_TEXT_CACHE = _TokenCountCache(_MAX_TEXT_CACHE)
+_BLOCK_CACHE = _TokenCountCache(_MAX_BLOCK_CACHE)
+
+
+def get_token_cache_stats() -> dict[str, int]:
+    """Return hit/miss counters and current cache sizes.
+
+    Useful for observability (e.g., a future ``/tokens`` debug command)
+    and for tests that need to verify cache behaviour without timing.
+    """
+    return {
+        "text_cache_hits": _TEXT_CACHE.hits,
+        "text_cache_misses": _TEXT_CACHE.misses,
+        "block_cache_hits": _BLOCK_CACHE.hits,
+        "block_cache_misses": _BLOCK_CACHE.misses,
+        "text_cache_size": _TEXT_CACHE.size(),
+        "block_cache_size": _BLOCK_CACHE.size(),
+    }
+
+
+def reset_token_cache() -> None:
+    """Clear both caches and reset counters. Primarily for test isolation."""
+    _TEXT_CACHE.reset()
+    _BLOCK_CACHE.reset()
+
+
 def count_tokens(text: str) -> int:
     if not text:
         return 0
+    cached = _TEXT_CACHE.get(text)
+    if cached is not None:
+        return cached
     encoder = _get_encoder()
     if encoder is not None:
         try:
-            return len(encoder.encode(text))
+            result = len(encoder.encode(text))
+            _TEXT_CACHE.put(text, result)
+            return result
         except Exception:
             pass
-    return max(1, len(text) // 4)
+    result = max(1, len(text) // 4)
+    _TEXT_CACHE.put(text, result)
+    return result
 
 
 def rough_token_count_estimation(content: str, bytes_per_token: int = 4) -> int:
@@ -105,7 +226,36 @@ def rough_token_count_estimation_for_content(
     return total
 
 
-def rough_token_count_estimation_for_block(block: Any) -> int:
+def _block_cache_key(block: Any) -> Optional[tuple]:
+    """Stable cache key for a content block.
+
+    Returns ``None`` when the block isn't cacheable (e.g., a custom
+    object whose JSON-serialisation raises). Returning ``None`` short-
+    circuits the cache lookup; the caller falls through to the
+    uncached compute path. No exception ever propagates to the caller.
+
+    Key shape (used as a dict key — Python's dict handles hash
+    collisions correctly via ``__eq__``):
+      - ``str`` blocks → ``("str", text)``
+      - ``dict`` blocks → ``(block_type, json_str)`` where
+        ``json_str`` is the deterministic JSON projection of the dict.
+        Dict insertion order is preserved in Python 3.7+, so two
+        structurally-identical dicts produce byte-identical JSON.
+      - other → ``None``
+    """
+    if isinstance(block, str):
+        return ("str", block)
+    if isinstance(block, dict):
+        block_type = block.get("type", "")
+        try:
+            payload = _json_stringify(block)
+        except Exception:
+            return None
+        return (block_type, payload)
+    return None
+
+
+def _rough_token_count_estimation_for_block_impl(block: Any) -> int:
     if isinstance(block, str):
         return rough_token_count_estimation(block)
 
@@ -136,6 +286,18 @@ def rough_token_count_estimation_for_block(block: Any) -> int:
         return rough_token_count_estimation(str(data))
 
     return rough_token_count_estimation(_json_stringify(block))
+
+
+def rough_token_count_estimation_for_block(block: Any) -> int:
+    key = _block_cache_key(block)
+    if key is not None:
+        cached = _BLOCK_CACHE.get(key)
+        if cached is not None:
+            return cached
+    result = _rough_token_count_estimation_for_block_impl(block)
+    if key is not None:
+        _BLOCK_CACHE.put(key, result)
+    return result
 
 
 def count_messages_tokens(messages: list[dict[str, Any]]) -> int:
