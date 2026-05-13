@@ -130,6 +130,39 @@ class TestQueryEngine(unittest.TestCase):
         engine = self._make_engine(MagicMock())
         self.assertIsNone(engine.last_terminal)
 
+    def test_total_usage_accumulates_per_turn(self):
+        """Critic-flagged: engine.total_usage must accumulate
+        input_tokens, output_tokens, cache_creation_input_tokens,
+        cache_read_input_tokens per turn — pre-existing gap before
+        the cache-token follow-up."""
+        provider = MagicMock()
+        provider.chat_stream_response.side_effect = NotImplementedError()
+        provider.chat.return_value = ChatResponse(
+            content="Done.",
+            model="test",
+            usage={
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "cache_creation_input_tokens": 1000,
+                "cache_read_input_tokens": 200,
+            },
+            finish_reason="end_turn",
+            tool_uses=None,
+        )
+        engine = self._make_engine(provider)
+
+        async def run():
+            async for _ in engine.submit_message("Hi"):
+                pass
+
+        _run(run())
+
+        # All four fields must have accumulated.
+        self.assertEqual(engine.total_usage["input_tokens"], 100)
+        self.assertEqual(engine.total_usage["output_tokens"], 50)
+        self.assertEqual(engine.total_usage["cache_creation_input_tokens"], 1000)
+        self.assertEqual(engine.total_usage["cache_read_input_tokens"], 200)
+
     def test_last_terminal_set_after_submit_message(self):
         """Ch5/A follow-up: after submit_message completes, the engine
         exposes the Terminal so callers can discriminate why the loop

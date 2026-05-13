@@ -340,6 +340,24 @@ class QueryEngine:
 
             self._mutable_messages.append(message)
 
+            # Critic-flagged: accumulate per-turn usage into
+            # self._total_usage so callers can read total token spend
+            # via the ``total_usage`` property. Pre-existing gap —
+            # the dict was initialized but never written to.
+            # Anthropic prompt-cache fields are summed too; non-
+            # Anthropic providers contribute 0 to the cache fields.
+            if isinstance(message, AssistantMessage):
+                mu = getattr(message, "usage", None) or {}
+                for k in (
+                    "input_tokens",
+                    "output_tokens",
+                    "cache_creation_input_tokens",
+                    "cache_read_input_tokens",
+                ):
+                    self._total_usage[k] = (
+                        self._total_usage.get(k, 0) + mu.get(k, 0)
+                    )
+
             if on_message:
                 on_message(message)
 

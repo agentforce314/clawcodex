@@ -202,7 +202,7 @@ from src.providers.minimax_provider import MinimaxProvider
 from src.tool_system.context import ToolContext
 from src.tool_system.defaults import build_default_registry
 from src.tool_system.protocol import ToolCall
-from src.tui.tool_summary_renderers import (
+from src.tool_system.renderers import (
     ToolEvent,
     summarize_tool_result,
     summarize_tool_use,
