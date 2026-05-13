@@ -88,6 +88,16 @@ class QueryParams:
     # to monkey-patch ``_call_model_sync`` at the module level. When
     # ``deps`` is None, the loop falls back to ``production_deps()``.
     deps: QueryDeps | None = None
+    # Ch5/F-followup: live streaming text callback. When set, the
+    # provider's chat_stream_response receives this callback so each
+    # SSE text-delta drives the UI in real time. Critical for TUI
+    # streaming AND for the ESC-mid-stream-cancel path: the callback
+    # raises AbortError from inside the SDK's stream context manager
+    # to tear down the HTTP socket. Without this wiring, callers see
+    # the entire response materialize at once after the model turn
+    # completes (regression introduced when F.1/F.3 migrated TUI off
+    # run_agent_loop).
+    on_text_chunk: Callable[[str], None] | None = None
 
 
 @dataclass
@@ -273,6 +283,7 @@ async def _call_model_sync(
     system_prompt: str | list[dict[str, Any]],
     tools: Tools,
     max_output_tokens_override: int | None = None,
+    on_text_chunk: Callable[[str], None] | None = None,
 ) -> tuple[list[AssistantMessage], list[ToolUseBlock]]:
     from ..types.messages import normalize_messages_for_api
 
@@ -374,7 +385,23 @@ async def _call_model_sync(
         logger.warning("[DIAG] _call_model_sync: calling provider (streaming)...")
     try:
         try:
-            response = provider.chat_stream_response(api_messages, **call_kwargs)
+            # Forward on_text_chunk so the SDK fires chunks live (and
+            # the chunk callback can raise AbortError to tear down
+            # the stream mid-flight). Falls back to a no-op when the
+            # provider's signature doesn't accept the kwarg.
+            if on_text_chunk is not None:
+                try:
+                    response = provider.chat_stream_response(
+                        api_messages,
+                        on_text_chunk=on_text_chunk,
+                        **call_kwargs,
+                    )
+                except TypeError:
+                    response = provider.chat_stream_response(
+                        api_messages, **call_kwargs,
+                    )
+            else:
+                response = provider.chat_stream_response(api_messages, **call_kwargs)
         except (NotImplementedError, AttributeError):
             if _diag:
                 logger.warning("[DIAG] _call_model_sync: streaming not supported, falling back to chat()")
@@ -938,6 +965,7 @@ async def _query_loop_inner(
                     system_prompt=params.system_prompt,
                     tools=params.tools,
                     max_output_tokens_override=max_output_tokens_override,
+                    on_text_chunk=params.on_text_chunk,
                 )
             except FallbackTriggeredError:
                 # Already a fallback signal — let it through unchanged.
