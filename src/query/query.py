@@ -70,6 +70,18 @@ class QueryParams:
     user_context: dict[str, str] | None = None
     system_context: dict[str, str] | None = None
     pipeline_config: PipelineConfig | None = None
+    # Ch5/D.1 — token budget for the whole agentic turn. The shape
+    # ``{"total": int}`` mirrors TS ``output_config.task_budget``. When
+    # set, the no-tool-use exit path calls ``check_token_budget``; on
+    # a ContinueDecision, a nudge message is injected and the loop
+    # re-enters with ``transition.reason="token_budget_continuation"``.
+    task_budget: dict[str, int] | None = None
+    # Ch5/E.2 — provider to swap to on FallbackTriggeredError. The loop
+    # uses the provider as-is until the exception fires; per critic
+    # review the actual *triggering* of FallbackTriggeredError is a
+    # provider-internal concern (rate-limit header parsing) that is
+    # tracked as a separate ticket.
+    fallback_provider: BaseProvider | None = None
 
 
 @dataclass
@@ -674,6 +686,15 @@ async def query(
     )
     config = build_query_config()
 
+    # Ch5/D.1 — instantiate the budget tracker once per query() call
+    # when both the config gate (token_budget_enabled) is on AND the
+    # caller passed a task_budget. Mirrors TS query.ts:295. The tracker
+    # is mutated in place by check_token_budget across iterations.
+    budget_tracker = None
+    if config.token_budget_enabled and params.task_budget:
+        from .token_budget import create_budget_tracker
+        budget_tracker = create_budget_tracker()
+
     while True:
         messages = state.messages
         if _diag:
@@ -1119,6 +1140,48 @@ async def query(
                             transition=Transition(reason="stop_hook_blocking"),
                         )
                         continue
+
+            # Ch5/D.2 — token budget continuation check. Runs AFTER
+            # stop hooks pass and BEFORE the continuation-nudge (E.4).
+            # When the budget says "continue", inject a meta nudge with
+            # remaining-budget info and re-enter the loop. Mirrors TS
+            # query.ts:1388-1436.
+            if budget_tracker is not None and params.task_budget is not None:
+                from .token_budget import (
+                    ContinueDecision,
+                    check_token_budget,
+                )
+                global_turn_tokens = sum(
+                    (m.usage or {}).get("output_tokens", 0)
+                    for m in assistant_messages
+                )
+                decision = check_token_budget(
+                    budget_tracker,
+                    getattr(tool_use_context, "agent_id", None),
+                    params.task_budget.get("total"),
+                    global_turn_tokens,
+                )
+                if isinstance(decision, ContinueDecision):
+                    nudge = _create_user_message(
+                        decision.nudge_message, is_meta=True,
+                    )
+                    state = QueryState(
+                        messages=[*messages, *assistant_messages, nudge],
+                        tool_use_context=tool_use_context,
+                        auto_compact_tracking=state.auto_compact_tracking,
+                        max_output_tokens_recovery_count=0,
+                        has_attempted_reactive_compact=False,
+                        max_output_tokens_override=None,
+                        stop_hook_active=None,
+                        turn_count=turn_count,
+                        pending_tool_use_summary=state.pending_tool_use_summary,
+                        continuation_nudge_count=state.continuation_nudge_count,
+                        transition=Transition(reason="token_budget_continuation"),
+                    )
+                    continue
+                # else: StopDecision — fall through to completion. The
+                # decision.completion_event is logged by callers when
+                # diminishing-returns early-stop fires.
 
             set_terminal(holder, natural_termination, Terminal(reason="completed"))
             return
