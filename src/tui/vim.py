@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Literal
+from typing import Callable, Literal
 
 
 class Mode(str, Enum):
@@ -83,6 +83,12 @@ class VimState:
         self._enabled = enabled
         self._mode: Mode = Mode.INSERT
         self._pending: str = ""  # for two-char chords (dd, yy)
+        # Mode-change subscribers (Round 2 / WI-R2.1). Listeners fire
+        # synchronously when the active mode actually changes; redundant
+        # transitions (NORMAL → NORMAL) do not re-notify. Keeping the
+        # subscriber list inside ``VimState`` avoids leaking widget
+        # references into module-level globals.
+        self._mode_listeners: list[Callable[[Mode], None]] = []
 
     # ---- public control ----
     @property
@@ -90,18 +96,63 @@ class VimState:
         return self._enabled
 
     def set_enabled(self, enabled: bool) -> None:
+        previous_mode = self._mode
         self._enabled = enabled
         if not enabled:
             self._mode = Mode.INSERT
             self._pending = ""
+        if self._mode is not previous_mode:
+            self._notify_mode_listeners()
 
     @property
     def mode(self) -> Mode:
         return self._mode
 
     def reset(self) -> None:
+        previous_mode = self._mode
         self._pending = ""
         self._mode = Mode.INSERT
+        if self._mode is not previous_mode:
+            self._notify_mode_listeners()
+
+    # ---- mode change subscription (Round 2 / WI-R2.1) ----
+    def add_mode_listener(
+        self, callback: Callable[[Mode], None]
+    ) -> Callable[[], None]:
+        """Subscribe to mode changes.
+
+        Returns an unsubscribe callable; calling it removes the listener.
+        The callback fires synchronously inside :meth:`handle` (or
+        :meth:`set_enabled` / :meth:`reset`) whenever the active mode
+        actually changes. Redundant transitions (e.g. ``NORMAL`` →
+        ``NORMAL`` via a no-op key) do not re-notify.
+        """
+
+        self._mode_listeners.append(callback)
+
+        def unsubscribe() -> None:
+            try:
+                self._mode_listeners.remove(callback)
+            except ValueError:
+                pass
+
+        return unsubscribe
+
+    def _notify_mode_listeners(self) -> None:
+        """Fire all registered mode listeners with the current mode.
+
+        Iterates over a defensive copy so a listener that calls
+        :meth:`add_mode_listener` or :meth:`unsubscribe` during the
+        callback does not mutate the list mid-iteration.
+        """
+
+        for callback in list(self._mode_listeners):
+            try:
+                callback(self._mode)
+            except Exception:
+                # Listener errors must not break the input pipeline;
+                # the indicator/footer widgets are non-critical UI.
+                pass
 
     # ---- key handling ----
     def handle(self, key: str) -> VimResult:
@@ -113,8 +164,11 @@ class VimState:
         # Escape always returns to Normal.
         if key == "escape":
             was_insert = self._mode is Mode.INSERT
+            previous_mode = self._mode
             self._mode = Mode.NORMAL
             self._pending = ""
+            if self._mode is not previous_mode:
+                self._notify_mode_listeners()
             return VimResult(
                 consumed=was_insert,
                 action="enter-normal",
@@ -185,7 +239,10 @@ class VimState:
             # into the buffer.
             return VimResult(consumed=True, mode=self._mode)
 
+        previous_mode = self._mode
         self._mode = next_mode
+        if self._mode is not previous_mode:
+            self._notify_mode_listeners()
         return VimResult(consumed=True, action=action, mode=self._mode)
 
 
