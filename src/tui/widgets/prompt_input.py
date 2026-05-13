@@ -31,6 +31,8 @@ from textual.widgets.option_list import Option
 
 from ..messages import CancelRequested
 from ..vim import VimState
+from .prompt_input_footer import PromptInputFooter
+from .prompt_input_mode_indicator import PromptInputModeIndicator
 
 
 @dataclass
@@ -85,10 +87,18 @@ class PromptInput(Vertical):
         self._suggestions = _SlashSuggestions(classes="-hidden")
         self._vim = VimState(enabled=vim_mode)
         self._yank_buffer: str = ""
+        # Round 2 / WI-R2.4: passive status surfaces around the input.
+        # The mode indicator subscribes to ``VimState`` directly; the
+        # footer reads ``VimState.enabled`` lazily. Both mounted as
+        # siblings of the existing ``Input`` + ``OptionList`` pair.
+        self._mode_indicator = PromptInputModeIndicator(vim_state=self._vim)
+        self._footer = PromptInputFooter(vim_state=self._vim)
 
     def compose(self) -> ComposeResult:
+        yield self._mode_indicator
         yield self._input
         yield self._suggestions
+        yield self._footer
 
     def on_mount(self) -> None:
         self._input.focus()
@@ -122,6 +132,15 @@ class PromptInput(Vertical):
         """Toggle vim-mode on the prompt."""
 
         self._vim.set_enabled(enabled)
+        # ``VimState`` listeners only fire on actual mode transitions
+        # (Round 2 / WI-R2.1), so the enable/disable flip itself needs
+        # an explicit refresh on the surrounding status surfaces.
+        try:
+            self._mode_indicator.refresh_mode()
+            self._footer.refresh_hints()
+        except Exception:
+            # Pre-mount: ``compose`` will render with the right state.
+            pass
 
     @property
     def vim_mode(self) -> bool:
