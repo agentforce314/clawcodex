@@ -1,7 +1,15 @@
-"""
-Claw Codex - Interactive CLI
+"""Audit-only legacy CLI demo (formerly ``src/repl.py``).
 
-A complete reimplementation of Claude Code with interactive terminal interface.
+This is NOT the production REPL — production users get
+``src/repl/core.py:ClawcodexREPL`` via ``src.cli:main``. This module
+predates the real REPL implementation and is preserved here under
+``scripts/audit/`` solely so the
+``python -m scripts.audit.cli interactive`` audit demo continues to
+function (and so historical demos in
+``tests/test_porting_workspace.py`` can exercise the legacy
+``PortRuntime`` path).
+
+Moved from ``src/repl.py`` in ch01 P3 of the architecture refactor.
 """
 
 from __future__ import annotations
@@ -22,15 +30,15 @@ except ImportError:
     HAS_RICH = False
     Console = None  # type: ignore
 
-from .commands import get_commands, get_command
-from .tools import get_tools, get_tool
+from .commands_snapshot import get_commands, get_command
+from .tools_snapshot import get_tools, get_tool
 from .runtime import PortRuntime
 from .port_manifest import build_port_manifest
 from .query_engine import QueryEnginePort
 
 
 from .parity_audit import run_parity_audit
-from .setup import run_setup
+from .setup_report import run_setup
 
 
 from .bootstrap_graph import build_bootstrap_graph
@@ -153,7 +161,7 @@ class ClawcodexCLI:
         elif cmd == 'commands':
             query = args[0] if args else None
             if query:
-                from .commands import render_command_index
+                from .commands_snapshot import render_command_index
                 print()
                 print(render_command_index(limit=20, query=query))
             else:
@@ -166,7 +174,7 @@ class ClawcodexCLI:
         elif cmd == 'tools':
             query = args[0] if args else None
             if query:
-                from .tools import render_tool_index
+                from .tools_snapshot import render_tool_index
                 print()
                 print(render_tool_index(limit=20, query=query))
             else:

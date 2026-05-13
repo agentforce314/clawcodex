@@ -175,15 +175,20 @@ The ch01 (this chapter) gap analysis and plan live at
 
 ## Audit-only scaffolding (not on the golden path)
 
-A set of audit-only Python files lives at the top of `src/` to support
-TS↔Python parity reporting. They are reachable **only** via
-`python -m src.main <sub>` (exercised by
-`tests/test_porting_workspace.py`) and are not touched by the
-production `clawcodex` console script. The list and the rationale for
-their relocation under `scripts/audit/` is in
-[my-docs/ch01-architecture-refactoring-plan.md §P3](../my-docs/ch01-architecture-refactoring-plan.md).
+A set of audit-only Python files supports TS↔Python parity reporting
+(see `scripts/audit/parity_audit.py`, `scripts/audit/port_manifest.py`,
+and the `scripts/audit/cli.py` argparse driver). After Phase 3 of the
+ch01 architecture refactor, these all live under `scripts/audit/`,
+not at the top of `src/`. The production `clawcodex` console script
+(`pyproject.toml:68` → `src.cli:main`) does not touch any of them.
 
-If you are reading source for the first time and see files like
-`src/main.py`, `src/runtime.py`, or `src/tools.py`, they are NOT the
-canonical implementations of their apparent abstraction. Use this doc's
-six-abstraction map (above) to find the real entry points.
+Invoke the audit subcommands with:
+
+```bash
+python -m scripts.audit.cli summary
+python -m scripts.audit.cli parity-audit
+python -m scripts.audit.cli route 'review MCP tool'
+# ... see `python -m scripts.audit.cli --help` for the full list.
+```
+
+`tests/test_porting_workspace.py` exercises them end-to-end.
