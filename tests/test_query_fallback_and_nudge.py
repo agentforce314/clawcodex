@@ -249,6 +249,93 @@ class TestModelFallback(_Base):
 
         self.assertEqual(holder.value.reason, "model_error")
 
+    def test_overloaded_error_translates_to_fallback_when_provider_set(self):
+        """E.2 production trigger: when the primary provider raises an
+        OverloadedError (529) AND a fallback_provider is configured,
+        the loop's _call_model_with_fallback_signal closure translates
+        the 529 into a FallbackTriggeredError, which the existing
+        fallback handler catches and swaps providers for. The user
+        sees a "Switched to ..." system message."""
+        from src.services.api.errors import OverloadedError
+
+        primary = MagicMock()
+        primary.model = "opus-1"
+        primary.chat_stream_response.side_effect = NotImplementedError()
+        primary.chat.side_effect = OverloadedError("529 overloaded")
+
+        fallback = MagicMock()
+        fallback.model = "sonnet-1"
+        fallback.chat_stream_response.side_effect = NotImplementedError()
+        fallback.chat.return_value = ChatResponse(
+            content="OK on fallback.",
+            model="sonnet-1",
+            usage={"input_tokens": 50, "output_tokens": 30},
+            finish_reason="end_turn",
+            tool_uses=None,
+        )
+
+        params = QueryParams(
+            messages=[UserMessage(content="Long prompt")],
+            system_prompt="You are helpful.",
+            tools=self.registry.list_tools(),
+            tool_registry=self.registry,
+            tool_use_context=self.context,
+            provider=primary,
+            abort_controller=self.abort,
+            max_turns=5,
+            fallback_provider=fallback,
+        )
+        holder = TerminalHolder()
+        collected: list = []
+
+        async def run():
+            async for msg in query(params, terminal_holder=holder):
+                collected.append(msg)
+
+        _run(run())
+
+        self.assertEqual(holder.value.reason, "completed")
+        self.assertEqual(primary.chat.call_count, 1)
+        self.assertEqual(fallback.chat.call_count, 1)
+        switch_msgs = [
+            m for m in collected
+            if isinstance(m, SystemMessage)
+            and "Switched to" in str(getattr(m, "content", ""))
+        ]
+        self.assertEqual(len(switch_msgs), 1)
+
+    def test_overloaded_error_no_fallback_propagates(self):
+        """E.2 production trigger negative case: when no fallback_provider
+        is set, an OverloadedError propagates as Terminal(model_error)
+        — the closure does NOT translate it."""
+        from src.services.api.errors import OverloadedError
+
+        primary = MagicMock()
+        primary.model = "opus-1"
+        primary.chat_stream_response.side_effect = NotImplementedError()
+        primary.chat.side_effect = OverloadedError("529 overloaded")
+
+        params = QueryParams(
+            messages=[UserMessage(content="Long prompt")],
+            system_prompt="You are helpful.",
+            tools=self.registry.list_tools(),
+            tool_registry=self.registry,
+            tool_use_context=self.context,
+            provider=primary,
+            abort_controller=self.abort,
+            max_turns=5,
+            fallback_provider=None,
+        )
+        holder = TerminalHolder()
+
+        async def run():
+            async for _ in query(params, terminal_holder=holder):
+                pass
+
+        _run(run())
+
+        self.assertEqual(holder.value.reason, "model_error")
+
     def test_fallback_swaps_provider_and_retries(self):
         """E.2: FallbackTriggeredError on the primary provider swaps
         to params.fallback_provider, emits a 'Switched to ...' system

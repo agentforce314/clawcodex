@@ -920,20 +920,49 @@ async def _query_loop_inner(
         from ..services.api.errors import FallbackTriggeredError
         from ..types.messages import TombstoneMessage, create_system_message
 
+        # Ch5/E.2 production trigger — translate provider 529 errors
+        # into FallbackTriggeredError when a fallback provider is
+        # configured. Wrapped here as a small closure so the
+        # while-attempt loop's exception handling stays clean (Python
+        # except clauses don't re-evaluate after one matches, so
+        # mixing the translator and the handler in sibling clauses is
+        # error-prone). Without this, a provider 529 would propagate
+        # out of the inner try as a generic exception → outer handler
+        # → Terminal(model_error), missing the fallback path.
+        async def _call_model_with_fallback_signal():
+            from ..services.api.errors import is_overloaded_error
+            try:
+                return await deps.call_model(
+                    provider=current_provider,
+                    messages=messages,
+                    system_prompt=params.system_prompt,
+                    tools=params.tools,
+                    max_output_tokens_override=max_output_tokens_override,
+                )
+            except FallbackTriggeredError:
+                # Already a fallback signal — let it through unchanged.
+                raise
+            except Exception as e:
+                if (
+                    params.fallback_provider is not None
+                    and is_overloaded_error(e)
+                ):
+                    raise FallbackTriggeredError(
+                        original_model=getattr(current_provider, "model", "?"),
+                        fallback_model=getattr(params.fallback_provider, "model", "?"),
+                    ) from e
+                raise
+
         try:
             while attempt_with_fallback:
                 attempt_with_fallback = False
                 try:
-                    # Ch5/G.2 — route through deps.call_model. The default
-                    # production deps wires this to _call_model_sync; tests
-                    # can pass a fake with the same signature.
-                    returned_assistants, returned_tool_blocks = await deps.call_model(
-                        provider=current_provider,
-                        messages=messages,
-                        system_prompt=params.system_prompt,
-                        tools=params.tools,
-                        max_output_tokens_override=max_output_tokens_override,
-                    )
+                    # Ch5/G.2 — route through deps.call_model (wrapped
+                    # in the fallback-signal closure above). The
+                    # default production deps wires call_model to
+                    # _call_model_sync; tests can pass a fake with
+                    # the same signature.
+                    returned_assistants, returned_tool_blocks = await _call_model_with_fallback_signal()
                     assistant_messages = returned_assistants
                     tool_use_blocks = returned_tool_blocks
                     needs_follow_up = len(tool_use_blocks) > 0
