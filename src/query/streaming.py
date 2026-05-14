@@ -96,7 +96,15 @@ async def streaming_query(
         yield QueryEvent(type="turn_start", data={"turn": state.turn_count})
 
         try:
-            async for event in _run_model_turn(state, turn, client):
+            async for event in _run_model_turn(state, turn, client, abort_signal=abort_signal):
+                # Per-event abort check: between each chunk from
+                # ``call_model`` we re-poll the signal so ESC during a
+                # long model response interrupts within one chunk, not
+                # at the next turn boundary. Mirrors the SDK-callback
+                # poll in ``typescript/src/services/api/claude.ts``.
+                if abort_signal and getattr(abort_signal, "aborted", False):
+                    yield QueryEvent(type="aborted")
+                    return
                 yield event
         except PromptTooLongError as e:
             if cfg.reactive_compact_enabled and state.compact_retries < MAX_REACTIVE_COMPACT_RETRIES:
@@ -120,6 +128,14 @@ async def streaming_query(
                 yield QueryEvent(type="error", data={"error": str(e)})
                 state.is_done = True
                 return
+
+        # If ``_run_model_turn`` returned early because its own per-event
+        # abort check fired, the ``async for`` above exits cleanly — we
+        # must re-check the signal here, otherwise we'd fall through to
+        # ``turn_complete`` and the consumer would never see ``aborted``.
+        if abort_signal and getattr(abort_signal, "aborted", False):
+            yield QueryEvent(type="aborted")
+            return
 
         update_usage(state.total_usage, turn.usage)
 
@@ -192,6 +208,8 @@ async def _run_model_turn(
     state: StreamingQueryState,
     turn: QueryTurn,
     client: Any = None,
+    *,
+    abort_signal: Any | None = None,
 ) -> AsyncGenerator[QueryEvent, None]:
     options = CallModelOptions(
         model=state.config.model,
@@ -212,6 +230,13 @@ async def _run_model_turn(
     tool_use_json_parts: list[str] = []
 
     async for event in call_model(state.messages, options, client):
+        # Bail at the first chunk that arrives after ESC. We can't tear
+        # down the underlying SSE connection from here (``call_model``
+        # doesn't accept an abort signal yet), but returning early stops
+        # us from accumulating text/tool_uses into the turn and lets the
+        # outer loop yield ``aborted`` immediately.
+        if abort_signal is not None and getattr(abort_signal, "aborted", False):
+            return
         if isinstance(event, MessageStart):
             yield QueryEvent(type="message_start", data={
                 "model": event.model,
