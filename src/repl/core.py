@@ -162,6 +162,7 @@ class _SlashOnlyCompleter(Completer):
         return None, 0
 
 try:
+    from rich.cells import cell_len
     from rich.console import Console, Group
     from rich.align import Align
     from rich.panel import Panel
@@ -173,6 +174,9 @@ except ModuleNotFoundError:  # pragma: no cover
     class Console:  # type: ignore
         def print(self, *args, **kwargs):
             return None
+
+    def cell_len(s):  # type: ignore
+        return len(s)
 
     Group = None  # type: ignore
     Align = None  # type: ignore
@@ -1004,6 +1008,11 @@ class ClawcodexREPL:
         summary = _format_edit_summary_text(adds, removes) or "no changes"
         summary_text = Text(summary, style="dim")
 
+        # Snap to a sane width: ``self.console.width`` falls back to 80
+        # when stdout is not a TTY. Fenced to 1 so degenerate widths don't
+        # produce negative padding.
+        console_width = max(1, getattr(self.console, "width", 0) or 80)
+
         diff = Text()
         rendered = 0
         truncated = False
@@ -1022,25 +1031,40 @@ class ClawcodexREPL:
                 # on newlines and produce blank rows between every entry.
                 stripped = raw.rstrip("\n").rstrip("\r")
                 if stripped.startswith("+"):
-                    # Match Claude Code's TUI: default terminal foreground
-                    # on an ANSI ``green`` / ``red`` background, so added
-                    # and removed lines read as solid bars regardless of
-                    # the user's terminal theme. Mirrors
-                    # ``typescript/src/utils/theme.ts``'s ANSI themes —
-                    # ``diffAdded: 'ansi:green'``, ``diffRemoved: 'ansi:red'``.
-                    diff.append(f"     {new_lineno:>4}  ", style="on green")
-                    diff.append("+ ", style="bold on green")
-                    diff.append(stripped[1:] + "\n", style="on green")
+                    # Match Claude Code's truecolor dark theme. Background
+                    # starts at the line-number column and extends to the
+                    # right edge by padding the trailing space with the
+                    # same bg, so added/removed rows read as solid bars
+                    # across the full width. Mirrors
+                    # ``typescript/src/components/StructuredDiff/Fallback.tsx:331-346``
+                    # (lineNumStr + sigil + content + ' '.repeat(padding))
+                    # and ``typescript/src/utils/theme.ts darkTheme``
+                    # (``diffAdded: 'rgb(34,92,43)'``,
+                    # ``diffRemoved: 'rgb(122,41,54)'``).
+                    body = stripped[1:]
+                    gutter = f"{new_lineno:>4} "
+                    visible = len(gutter) + 1 + cell_len(body)
+                    padding = max(0, console_width - visible)
+                    diff.append(gutter, style="on rgb(34,92,43)")
+                    diff.append("+", style="bold on rgb(34,92,43)")
+                    diff.append(body + " " * padding, style="on rgb(34,92,43)")
+                    diff.append("\n")
                     new_lineno += 1
                 elif stripped.startswith("-"):
-                    diff.append(f"     {old_lineno:>4}  ", style="on red")
-                    diff.append("- ", style="bold on red")
-                    diff.append(stripped[1:] + "\n", style="on red")
+                    body = stripped[1:]
+                    gutter = f"{old_lineno:>4} "
+                    visible = len(gutter) + 1 + cell_len(body)
+                    padding = max(0, console_width - visible)
+                    diff.append(gutter, style="on rgb(122,41,54)")
+                    diff.append("-", style="bold on rgb(122,41,54)")
+                    diff.append(body + " " * padding, style="on rgb(122,41,54)")
+                    diff.append("\n")
                     old_lineno += 1
                 else:
                     body = stripped[1:] if stripped.startswith(" ") else stripped
-                    diff.append(f"     {old_lineno:>4}    ", style="dim")
-                    diff.append(body + "\n", style="dim")
+                    # Context lines have no bg; keep gutter width aligned
+                    # with add/remove rows so columns line up.
+                    diff.append(f"{old_lineno:>4}  " + body + "\n", style="dim")
                     old_lineno += 1
                     new_lineno += 1
                 rendered += 1

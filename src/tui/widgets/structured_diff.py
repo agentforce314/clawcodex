@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable
 
+from rich.cells import cell_len
 from rich.text import Text
 from textual.widgets import Static
 
@@ -191,39 +192,42 @@ def render_diff(lines: Iterable[DiffLine], *, width_hint: int = 100) -> Text:
             out.append("\n")
             continue
         if line.kind == "add":
-            # Match Claude Code's TUI: default terminal foreground on an
-            # ANSI ``green`` background so the entire row reads as a solid
-            # bar. Mirrors ``typescript/src/utils/theme.ts``'s ANSI themes
-            # (``diffAdded: 'ansi:green'``).
-            prefix = _fmt_line_no(None, line.new_lineno)
-            out.append(prefix, style="on green")
-            out.append("+ ", style="bold on green")
-            out.append(line.text, style="on green")
+            # Match Claude Code: bg starts at the line-number column and
+            # extends to ``width_hint`` so the row reads as a solid bar
+            # across the full width. Mirrors
+            # ``typescript/src/components/StructuredDiff/Fallback.tsx:331-346``
+            # and ``typescript/src/utils/theme.ts darkTheme.diffAdded
+            # 'rgb(34,92,43)'``.
+            gutter = _fmt_line_no(line.new_lineno)
+            visible = len(gutter) + 1 + cell_len(line.text)
+            padding = max(0, width_hint - visible)
+            out.append(gutter, style="on rgb(34,92,43)")
+            out.append("+", style="bold on rgb(34,92,43)")
+            out.append(line.text + " " * padding, style="on rgb(34,92,43)")
             out.append("\n")
         elif line.kind == "remove":
-            prefix = _fmt_line_no(line.old_lineno, None)
-            out.append(prefix, style="on red")
-            out.append("- ", style="bold on red")
-            out.append(line.text, style="on red")
+            # Mirrors ``darkTheme.diffRemoved: 'rgb(122,41,54)'``.
+            gutter = _fmt_line_no(line.old_lineno)
+            visible = len(gutter) + 1 + cell_len(line.text)
+            padding = max(0, width_hint - visible)
+            out.append(gutter, style="on rgb(122,41,54)")
+            out.append("-", style="bold on rgb(122,41,54)")
+            out.append(line.text + " " * padding, style="on rgb(122,41,54)")
             out.append("\n")
         else:  # context
-            prefix = _fmt_line_no(line.old_lineno, line.new_lineno)
-            out.append(prefix, style="dim")
-            out.append("  ", style="dim")
+            # No bg on context rows; pad gutter to the same column width
+            # as add/remove so the content aligns vertically.
+            gutter = _fmt_line_no(line.new_lineno or line.old_lineno)
+            out.append(gutter + " ", style="dim")
             out.append(line.text, style="")
             out.append("\n")
     return out
 
 
-def _fmt_line_no(old: int | None, new: int | None) -> str:
-    """Return a 9-char gutter ``'  12  15 '`` / ``'      15 '`` etc."""
+def _fmt_line_no(n: int | None) -> str:
+    """Return a 5-char gutter ``'  12 '`` (right-padded line number + space)."""
 
-    def _cell(n: int | None) -> str:
-        if n is None:
-            return "    "
-        return f"{n:4d}"
-
-    return f"{_cell(old)} {_cell(new)} "
+    return f"{0 if n is None else n:>4} "
 
 
 class StructuredDiff(Static):
