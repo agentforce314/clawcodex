@@ -438,7 +438,13 @@ async def _call_tool(tool: Tool, tool_input: dict[str, Any], context: ToolContex
     if inspect.iscoroutinefunction(call_fn):
         result = await call_fn(tool_input, context)
     else:
-        result = call_fn(tool_input, context)
+        # Offload sync tools to a worker thread so they don't block the
+        # event loop. Without this, a long Bash command holds the loop
+        # for its entire duration — ESC key presses and abort_controller
+        # listeners can't fire because no other task gets to run. Mirrors
+        # the responsiveness TS gets "for free" from Node's
+        # callback-driven I/O.
+        result = await asyncio.to_thread(call_fn, tool_input, context)
 
     if not isinstance(result, ToolResult):
         result = ToolResult(name=tool.name, output=result)
