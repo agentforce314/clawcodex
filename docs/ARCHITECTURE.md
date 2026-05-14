@@ -148,31 +148,6 @@ gap if/when it becomes a product priority.
 
 ---
 
-## What this doc is NOT
-
-This file is the **architectural map**. It does not duplicate per-chapter
-detail. For depth, follow the link:
-
-| Chapter | Gap analysis | Refactoring plan |
-|---|---|---|
-| ch03 — State | `my-docs/ch03-state-gap-analysis.md` | `my-docs/ch03-state-refactoring-plan.md` |
-| ch04 — API Layer | `my-docs/ch04-api-layer-gap-analysis.md` | `my-docs/ch04-api-layer-refactoring-plan.md` |
-| ch05 — Agent Loop | `my-docs/ch05-agent-loop-gap-analysis.md` | `my-docs/ch05-agent-loop-refactoring-plan.md` |
-| ch06 — Tools | `my-docs/ch06-tools-gap-analysis.md` | `my-docs/ch06-tools-refactoring-plan.md` |
-| ch07 — Concurrency | `my-docs/ch07-concurrency-gap-analysis.md` | `my-docs/ch07-concurrency-refactoring-plan.md` |
-| ch10 — Coordination | `my-docs/ch10-coordination-gap-analysis.md` | `my-docs/ch10-coordination-refactoring-plan.md` |
-| ch12 — Extensibility | `my-docs/ch12-extensibility-gap-analysis.md` | `my-docs/ch12-extensibility-refactoring-plan.md` |
-| ch13 — Terminal UI | `my-docs/ch13-terminal-ui-gap-analysis.md` | `my-docs/ch13-terminal-ui-refactoring-plan.md` |
-| ch15 — MCP | `my-docs/ch15-mcp-gap-analysis.md` | `my-docs/ch15-mcp-refactoring-plan.md` |
-| ch16 — Remote | `my-docs/ch16-remote-gap-analysis.md` | `my-docs/ch16-remote-refactoring-plan.md` |
-| ch17 — Performance | `my-docs/ch17-performance-gap-analysis.md` | `my-docs/ch17-performance-refactoring-plan.md` |
-
-The ch01 (this chapter) gap analysis and plan live at
-`my-docs/ch01-architecture-gap-analysis.md` and
-`my-docs/ch01-architecture-refactoring-plan.md`.
-
----
-
 ## Audit-only scaffolding (not on the golden path)
 
 The TS↔Python parity-reporting CLI lives at `scripts/audit/`
