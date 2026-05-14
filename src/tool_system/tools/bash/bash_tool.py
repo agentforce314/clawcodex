@@ -3,11 +3,130 @@
 from __future__ import annotations
 
 import json
+import os as _os_mod
 import re
 import shlex
+import signal as _signal_mod
 import subprocess
+import sys as _sys_mod
+import time as _time_mod
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+
+# Poll interval for the abort/timeout watcher. 50 ms keeps ESC perceptibly
+# instant (well under the ~100 ms threshold where humans notice latency)
+# while costing ~20 wakeups/sec for a long-running command — negligible.
+_ABORT_POLL_INTERVAL_S = 0.05
+
+# Grace period between SIGTERM and SIGKILL after an abort. Lets the
+# subprocess flush stdio + run cleanup handlers (TS ShellCommand grants
+# a similar window via ``tree-kill``).
+_KILL_GRACE_S = 2.0
+
+
+@dataclass
+class _BashRunResult:
+    returncode: int
+    stdout: str
+    stderr: str
+    interrupted: bool = False
+    timed_out: bool = False
+
+
+def _get_abort_signal(context: ToolContext) -> Any | None:
+    controller = getattr(context, "abort_controller", None)
+    return getattr(controller, "signal", None) if controller else None
+
+
+def _kill_process_group(pid: int, sig: int) -> None:
+    try:
+        if _sys_mod.platform == "win32":
+            # No setpgid on Windows; just kill the process itself.
+            _os_mod.kill(pid, sig)
+        else:
+            _os_mod.killpg(_os_mod.getpgid(pid), sig)
+    except (ProcessLookupError, PermissionError, OSError):
+        # Already gone (race vs. natural exit) or insufficient
+        # privileges — fall through to subprocess.wait() which will
+        # surface the right state.
+        pass
+
+
+def _run_bash_with_abort(
+    argv: list[str],
+    *,
+    cwd: str,
+    timeout_s: int,
+    abort_signal: Any | None,
+) -> _BashRunResult:
+    """Run ``argv`` with abort + timeout supervision.
+
+    Replaces ``subprocess.run(..., timeout=...)``: launches the
+    subprocess in its own session/process group, polls for completion
+    while watching ``abort_signal.aborted`` and the timeout, and kills
+    the whole group (SIGTERM → grace → SIGKILL) when either fires.
+    Returning quickly on abort is what makes ESC feel instant — the
+    previous ``subprocess.run`` had to wait the entire timeout.
+    """
+
+    popen_kwargs: dict[str, Any] = {
+        "cwd": cwd,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "text": True,
+    }
+    if _sys_mod.platform == "win32":
+        popen_kwargs["creationflags"] = getattr(
+            subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+        )
+    else:
+        popen_kwargs["start_new_session"] = True
+
+    proc = subprocess.Popen(argv, **popen_kwargs)
+
+    deadline = _time_mod.monotonic() + timeout_s
+    interrupted = False
+    timed_out = False
+
+    while True:
+        if proc.poll() is not None:
+            break
+        if abort_signal is not None and getattr(abort_signal, "aborted", False):
+            interrupted = True
+            break
+        if _time_mod.monotonic() >= deadline:
+            interrupted = True
+            timed_out = True
+            break
+        _time_mod.sleep(_ABORT_POLL_INTERVAL_S)
+
+    if interrupted:
+        _kill_process_group(proc.pid, _signal_mod.SIGTERM)
+        try:
+            proc.wait(timeout=_KILL_GRACE_S)
+        except subprocess.TimeoutExpired:
+            _kill_process_group(proc.pid, _signal_mod.SIGKILL)
+            try:
+                proc.wait(timeout=_KILL_GRACE_S)
+            except subprocess.TimeoutExpired:
+                pass
+
+    # ``communicate()`` after a kill is safe and gathers any pending
+    # output that buffered before the signal landed.
+    try:
+        stdout, stderr = proc.communicate(timeout=_KILL_GRACE_S)
+    except subprocess.TimeoutExpired:
+        stdout, stderr = "", ""
+
+    return _BashRunResult(
+        returncode=proc.returncode if proc.returncode is not None else -1,
+        stdout=stdout or "",
+        stderr=stderr or "",
+        interrupted=interrupted,
+        timed_out=timed_out,
+    )
 
 _HARDCODED_DANGEROUS_PATTERNS = [
     re.compile(r"\bsudo\b", re.IGNORECASE),
@@ -180,26 +299,40 @@ def _bash_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
     _os.close(cwd_fd)
     try:
         wrapped = f"{{ {command}\n}}; __rc=$?; pwd > {shlex.quote(cwd_path)} 2>/dev/null; exit $__rc"
-        try:
-            completed = subprocess.run(
-                ["bash", "-lc", wrapped],
-                cwd=str(cwd),
-                capture_output=True,
-                text=True,
-                timeout=timeout_s,
-            )
-        except subprocess.TimeoutExpired:
+        # Spawn bash in its own session/process group so we can kill the
+        # whole subtree (e.g. ``find /`` that itself forks helpers) when
+        # ESC fires. Mirrors TS ``ShellCommand`` (typescript/src/utils/
+        # ShellCommand.ts:187-192,345) which uses ``tree-kill`` for the
+        # same reason. ``start_new_session=True`` is ``setsid()`` on
+        # POSIX; on Windows it falls back to a process group via
+        # ``CREATE_NEW_PROCESS_GROUP``.
+        run_result = _run_bash_with_abort(
+            ["bash", "-lc", wrapped],
+            cwd=str(cwd),
+            timeout_s=timeout_s,
+            abort_signal=_get_abort_signal(context),
+        )
+
+        if run_result.interrupted:
             return ToolResult(
                 name=BASH_TOOL_NAME,
                 output={
                     "cwd": str(cwd),
                     "exit_code": -1,
-                    "stdout": "",
-                    "stderr": f"Command timed out after {timeout_s} seconds",
+                    "stdout": truncate_output(run_result.stdout or ""),
+                    "stderr": (
+                        truncate_output(run_result.stderr or "")
+                        if not run_result.timed_out
+                        else f"Command timed out after {timeout_s} seconds"
+                    ),
                     "interrupted": True,
                 },
                 is_error=True,
             )
+
+        completed_returncode = run_result.returncode
+        completed_stdout = run_result.stdout or ""
+        completed_stderr = run_result.stderr or ""
 
         # If the command succeeded in changing directory, promote the new cwd
         # into the shared ToolContext so follow-up Bash invocations start
@@ -228,16 +361,16 @@ def _bash_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
             # roam freely but the UI cwd clamps to the workspace).
             pass
 
-    stdout = truncate_output(completed.stdout or "")
-    stderr = truncate_output(completed.stderr or "")
+    stdout = truncate_output(completed_stdout)
+    stderr = truncate_output(completed_stderr)
 
     interpretation = interpret_command_result(
-        command, completed.returncode, completed.stdout or "", completed.stderr or "",
+        command, completed_returncode, completed_stdout, completed_stderr,
     )
 
     output: dict[str, Any] = {
         "cwd": str(cwd),
-        "exit_code": completed.returncode,
+        "exit_code": completed_returncode,
         "stdout": stdout,
         "stderr": stderr,
     }
