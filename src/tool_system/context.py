@@ -261,6 +261,18 @@ class ToolContext:
             p = (base / p).resolve()
         else:
             p = p.resolve()
+        # Mirror TS ``shouldBypassPermissions`` at
+        # ``typescript/src/utils/permissions/permissions.ts:1268-1281``:
+        # bypassPermissions mode (set by --dangerously-skip-permissions),
+        # or plan mode when the user started with bypass available,
+        # short-circuits the working-directory allowlist so the tool can
+        # operate outside ``workspace_root``.
+        mode = self.permission_context.mode
+        if mode == "bypassPermissions" or (
+            mode == "plan"
+            and self.permission_context.is_bypass_permissions_mode_available
+        ):
+            return p
         roots = self.allowed_roots()
         if any(_is_within(p, root) for root in roots):
             return p
