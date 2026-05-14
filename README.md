@@ -41,7 +41,8 @@ python -m src.cli         # start the REPL
 
 ## 📰 News
 
-- **2026-05-14:** **ESC cancellation latency fix (#130)** — pressing ESC now cancels in-flight Bash commands and streaming responses within ~50ms, on top of the diff color-bar full-width render fix (#129) and the bypass-permissions outside-paths fix (#128). _Project Python: 857 files, 167,034 lines._
+- **2026-05-14:** **Codebase stats** — Total Python files: 837 files; Total Lines of Python Code: **167,034 lines**.
+- **2026-05-14:** **ESC cancellation latency fix (#130)** — pressing ESC now cancels in-flight Bash commands and streaming responses within ~50ms, on top of the diff color-bar full-width render fix (#129) and the bypass-permissions outside-paths fix (#128).
 - **2026-05-12:** **Bootstrap + architecture docs** — new architecture overview at [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md); production bootstrap port (memoized `init()`, trust boundary, unified `launch_repl(args)`, `--bare` fast path, schema migration runner); main query loop and agent loop routed through `dispatch_full` with deferred tool loading.
 - **2026-05-11 (v0.5.0):** **ClawCodex v0.5.0 released** — rebrand to ClawCodex across user-visible UI; reactive state subsystem ported (signals, store, session context, cost tracker, 1h cache eligibility); API layer hardened (output-token cap, request-id injection, message-level cache breakpoints, Haiku fast path, watchdog + non-streaming fallback, retry-with-stream); agent loop foundation (typed terminal, media recovery, blocking-limit guards, token budget, stop hooks, model fallback, continuation nudge); refreshed README screenshot.
 - **2026-05-10:** **MCP subsystem landed** — full Model Context Protocol support with OAuth wiring, HTTPS, XSS hardening, and async I/O; passed a multi-pass security review.
