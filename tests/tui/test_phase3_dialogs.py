@@ -231,8 +231,11 @@ def test_edit_activity_result_body_renders_summary_and_diff():
     assert body is not None
     rendered = "".join(part.plain for part in body.renderables)
     assert "Added 2 lines, removed 2 lines" in rendered
-    assert "+ new line" in rendered
-    assert "- old line" in rendered
+    # Single-char sigil immediately followed by the source line, matching
+    # ``typescript/src/components/StructuredDiff/Fallback.tsx`` (no trailing
+    # space after ``+``/``-``).
+    assert "+new line" in rendered
+    assert "-old line" in rendered
 
 
 def test_edit_activity_result_body_create_fallback():
