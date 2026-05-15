@@ -168,14 +168,21 @@ class MinimaxProvider(BaseProvider):
         abort_signal: Any = None,
         **kwargs
     ) -> ChatResponse:
+        """Stream Minimax response with abort-signal-aware cancellation.
+
+        Minimax wraps the anthropic SDK against its compatible endpoint,
+        so the response-close listener pattern AnthropicProvider uses
+        works here too. Same contract: pre-call fast-path, register-
+        then-recheck listener that closes the underlying HTTP response,
+        signal-state-authoritative abort detection in the exception
+        handler, post-with-block recheck, ``finally`` detaches the
+        listener.
+        """
+        from src.utils.abort_controller import AbortError
+
         # Pre-call fast-path: matches AnthropicProvider. A signal that
         # tripped at a turn boundary skips the API round-trip entirely.
-        # Mid-stream cancellation isn't implemented yet — that needs the
-        # same response-close listener pattern AnthropicProvider uses,
-        # which the Minimax/anthropic-compatible SDK should support
-        # (it's the same underlying ``anthropic`` package) — future PR.
         if abort_signal is not None and getattr(abort_signal, "aborted", False):
-            from src.utils.abort_controller import AbortError
             raise AbortError(getattr(abort_signal, "reason", None) or "user_interrupt")
         model = self._get_model(**kwargs)
         max_tokens = kwargs.get("max_tokens", 4096)
@@ -188,24 +195,72 @@ class MinimaxProvider(BaseProvider):
             extra_kwargs["tools"] = tools
 
         streamed_text = ""
-        with client.messages.stream(
-            model=model,
-            max_tokens=max_tokens,
-            messages=minimax_messages,
-            **({"system": system} if system else {}),
-            **extra_kwargs,
-            **{k: v for k, v in kwargs.items() if k not in ["model", "max_tokens", "tools"]},
-        ) as stream:
-            for text in stream.text_stream:
-                if not text:
-                    continue
-                streamed_text += text
-                if on_text_chunk is not None:
-                    on_text_chunk(text)
-            try:
-                final_message = stream.get_final_message()
-            except Exception:
-                final_message = None
+        final_message: Any = None
+        abort_listener: Any = None
+        try:
+            with client.messages.stream(
+                model=model,
+                max_tokens=max_tokens,
+                messages=minimax_messages,
+                **({"system": system} if system else {}),
+                **extra_kwargs,
+                **{k: v for k, v in kwargs.items() if k not in ["model", "max_tokens", "tools"]},
+            ) as stream:
+                if abort_signal is not None:
+                    def _close_stream_on_abort() -> None:
+                        try:
+                            response = getattr(stream, "response", None)
+                            if response is not None:
+                                close = getattr(response, "close", None)
+                                if callable(close):
+                                    close()
+                        except Exception:
+                            pass
+
+                    # Register-then-recheck: see AnthropicProvider for the
+                    # full race analysis. ``_fire`` snapshots the listener
+                    # list before iterating, so a listener appended after
+                    # the snapshot is silently dropped; the post-add
+                    # ``aborted`` read closes the gap.
+                    abort_listener = abort_signal.add_listener(
+                        _close_stream_on_abort, once=True,
+                    )
+                    if abort_signal.aborted:
+                        _close_stream_on_abort()
+
+                for text in stream.text_stream:
+                    if not text:
+                        continue
+                    streamed_text += text
+                    if on_text_chunk is not None:
+                        on_text_chunk(text)
+                try:
+                    final_message = stream.get_final_message()
+                except Exception:
+                    final_message = None
+        except Exception as streaming_exc:
+            # Abort path: signal state is authoritative — different SDK
+            # versions raise different exception types when the response
+            # is closed mid-read.
+            if abort_signal is not None and getattr(abort_signal, "aborted", False):
+                raise AbortError(
+                    getattr(abort_signal, "reason", None) or "user_interrupt"
+                ) from streaming_exc
+            raise
+        finally:
+            if abort_listener is not None and abort_signal is not None:
+                try:
+                    abort_signal.remove_listener(abort_listener)
+                except Exception:
+                    pass
+
+        # Stream completed normally but abort may have fired between
+        # ``__exit__`` and here. Surface it at the same boundary every
+        # other path uses.
+        if abort_signal is not None and getattr(abort_signal, "aborted", False):
+            raise AbortError(
+                getattr(abort_signal, "reason", None) or "user_interrupt"
+            )
 
         if final_message is not None:
             return self._build_chat_response(final_message)
