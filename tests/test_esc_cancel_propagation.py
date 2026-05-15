@@ -282,8 +282,13 @@ def test_query_engine_plumbs_abort_controller_into_tool_context(
     from src.query.engine import QueryEngine, QueryEngineConfig
 
     context = ToolContext(workspace_root=tmp_path)
-    # Pre-condition: a freshly constructed context has no abort controller.
-    assert context.abort_controller is None
+    # Pre-condition: a freshly constructed context now carries a default
+    # (untripped) controller from the dataclass factory. The engine must
+    # OVERWRITE this with its own controller — otherwise the engine's
+    # ``interrupt()`` would trip a controller no tool can see.
+    default_ctrl = context.abort_controller
+    assert default_ctrl is not None
+    assert default_ctrl.signal.aborted is False
 
     cfg = QueryEngineConfig(
         cwd=tmp_path,
@@ -294,12 +299,12 @@ def test_query_engine_plumbs_abort_controller_into_tool_context(
     )
     engine = QueryEngine(cfg)
 
-    # Post-fix: the engine's controller is now visible on the context.
+    # Post-fix: the engine's controller has replaced the dataclass default.
     assert context.abort_controller is engine._abort_controller
+    assert context.abort_controller is not default_ctrl
 
     # Interrupting the engine trips the context-visible signal.
     engine.interrupt()
-    assert context.abort_controller is not None
     assert context.abort_controller.signal.aborted is True
 
     # Reset replaces the controller on both the engine and the context.
@@ -334,7 +339,11 @@ def test_agent_bridge_plumbs_abort_controller_into_tool_context(
         return None
 
     context = ToolContext(workspace_root=tmp_path)
-    assert context.abort_controller is None
+    # The dataclass factory always installs a default (untripped)
+    # controller; the bridge replaces it on each ``submit()``.
+    default_ctrl = context.abort_controller
+    assert default_ctrl is not None
+    assert default_ctrl.signal.aborted is False
 
     bridge = AgentBridge(
         post_message=_post,
@@ -351,16 +360,21 @@ def test_agent_bridge_plumbs_abort_controller_into_tool_context(
 
     # The controller created inside submit() must be visible on the
     # shared tool context — this is the wiring that lets subagents
-    # honour ESC.
+    # honour ESC. It must REPLACE the dataclass default (otherwise the
+    # bridge's ``cancel()`` would trip a controller no tool can see).
     assert context.abort_controller is bridge._abort_controller
+    assert context.abort_controller is not default_ctrl
 
     # Cancelling trips both objects (they are the same controller).
+    aborted_ctrl = context.abort_controller
     assert bridge.cancel() is True
-    assert context.abort_controller is not None
-    assert context.abort_controller.signal.aborted is True
+    assert aborted_ctrl.signal.aborted is True
 
-    # Finishing a run clears the per-run controller from the shared
-    # context so the next prompt doesn't start with a stale aborted
-    # signal that would short-circuit every tool dispatch.
+    # Finishing a run swaps in a FRESH (untripped) controller so the
+    # next prompt doesn't start with a stale aborted signal that would
+    # short-circuit every tool dispatch. The field is non-optional, so
+    # we install a new controller rather than clearing to ``None``.
     bridge._finish()
-    assert context.abort_controller is None
+    assert context.abort_controller is not None
+    assert context.abort_controller is not aborted_ctrl
+    assert context.abort_controller.signal.aborted is False

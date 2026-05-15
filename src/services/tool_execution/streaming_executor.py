@@ -24,7 +24,6 @@ from src.types.messages import (
     create_user_message,
 )
 from src.utils.abort_controller import (
-    AbortController,
     AbortError,
     create_child_abort_controller,
 )
@@ -79,8 +78,14 @@ class StreamingToolExecutor:
         self._tool_use_context = tool_use_context
         self._has_errored = False
         self._errored_tool_description = ""
+        # ``tool_use_context.abort_controller`` is non-optional on
+        # ``ToolContext`` — the previous defensive ``or AbortController()``
+        # papered over the "field is None" hazard class that broke ESC
+        # propagation into subagents. Now that the field is guaranteed,
+        # the sibling controller always parents on the real per-run
+        # controller and ESC reaches every executing tool.
         self._sibling_abort_controller = create_child_abort_controller(
-            tool_use_context.abort_controller or AbortController()
+            tool_use_context.abort_controller
         )
         self._discarded = False
         self._progress_available_event = asyncio.Event()
@@ -207,8 +212,10 @@ class StreamingToolExecutor:
             return "streaming_fallback"
         if self._has_errored:
             return "sibling_error"
+        # ``abort_controller`` is non-optional on ``ToolContext`` — no
+        # need to guard truthiness before reading ``.signal.aborted``.
         ctx_abort = self._tool_use_context.abort_controller
-        if ctx_abort and ctx_abort.signal.aborted:
+        if ctx_abort.signal.aborted:
             if ctx_abort.signal.reason == "interrupt":
                 behavior = self._get_tool_interrupt_behavior(tool)
                 return "user_interrupted" if behavior == "cancel" else None
@@ -307,9 +314,12 @@ class StreamingToolExecutor:
             )
 
             def _on_tool_abort() -> None:
+                # ``abort_controller`` is non-optional on the context, so
+                # the historical truthiness check is gone — we only need
+                # to guard against re-entering the parent's already-fired
+                # abort and against discarded executors.
                 if (
                     tool_abort_controller.signal.reason != "sibling_error"
-                    and self._tool_use_context.abort_controller
                     and not self._tool_use_context.abort_controller.signal.aborted
                     and not self._discarded
                 ):
