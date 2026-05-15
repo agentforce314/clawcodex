@@ -73,9 +73,13 @@ def spawn_background_bash(
         f"exit $__rc"
     )
 
+    # ``stdin=DEVNULL`` mirrors the foreground bash path: prevents background
+    # commands that read fd 0 from blocking on a TTY inherited from clawcodex's
+    # REPL (see bash_tool.py:_run_bash_with_abort for the same reasoning).
     proc = subprocess.Popen(
         ["bash", "-lc", wrapped],
         cwd=str(cwd),
+        stdin=subprocess.DEVNULL,
         stdout=output_handle,
         stderr=subprocess.STDOUT,
         start_new_session=True,

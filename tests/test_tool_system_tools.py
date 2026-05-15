@@ -193,6 +193,75 @@ class TestBashTool(ToolSystemTests):
         with self.assertRaises(Exception):
             BashTool.call({"command": "sudo echo nope"}, self.ctx)
 
+    def _run_bash_with_pty_parent_stdin(self, tool_input: dict) -> dict:
+        # Dup a real pty over fd 0 for the duration of one BashTool.call to
+        # simulate clawcodex's REPL inheriting a terminal -- the failure mode
+        # the ``stdin=DEVNULL`` fix prevents. Returns the call's output dict.
+        import os
+        import pty
+        if not hasattr(pty, "openpty"):  # pragma: no cover - non-POSIX
+            self.skipTest("openpty unavailable")
+        master, slave = pty.openpty()
+        saved_stdin = os.dup(0)
+        try:
+            os.dup2(slave, 0)
+            return BashTool.call(tool_input, self.ctx).output
+        finally:
+            os.dup2(saved_stdin, 0)
+            os.close(saved_stdin)
+            os.close(slave)
+            os.close(master)
+
+    def test_bash_child_stdin_is_not_a_tty(self) -> None:
+        # Regression for the ``npm create vite`` hang: child commands must
+        # see ``isatty(0) == false`` even when clawcodex itself was launched
+        # from a terminal. With ``stdin=DEVNULL`` on the spawn, the child
+        # reports NOTTY despite the parent's fd 0 being a real pty.
+        out = self._run_bash_with_pty_parent_stdin(
+            {"command": "if [ -t 0 ]; then echo TTY; else echo NOTTY; fi"},
+        )
+        self.assertEqual(out["exit_code"], 0)
+        self.assertEqual(out["stdout"].strip(), "NOTTY")
+
+    def test_bash_child_stdin_reads_eof(self) -> None:
+        # ``DEVNULL`` (not ``PIPE`` without writes) means a child that
+        # actually reads from fd 0 gets EOF immediately rather than blocking
+        # forever. Run under a pty parent stdin so we're actually testing
+        # DEVNULL vs inherited-TTY -- under bare pytest fd 0 is already a
+        # pipe so this would pass spuriously without the pty trick.
+        out = self._run_bash_with_pty_parent_stdin(
+            {"command": "cat; echo done=$?", "timeout_s": 5},
+        )
+        self.assertEqual(out["exit_code"], 0)
+        self.assertIn("done=0", out["stdout"])
+
+    def test_bash_background_child_stdin_is_not_a_tty(self) -> None:
+        # Same regression as the foreground path -- a backgrounded
+        # ``npm create vite`` would otherwise hang waiting on the inherited
+        # TTY. Verify by reading the captured log after the bg task reaps.
+        import time
+        res = self._run_bash_with_pty_parent_stdin(
+            {
+                "command": "if [ -t 0 ]; then echo TTY; else echo NOTTY; fi",
+                "run_in_background": True,
+            },
+        )
+        task_id = res["backgroundTaskId"]
+        log_path = Path(res["outputFilePath"])
+        deadline = time.time() + 5.0
+        log_contents = ""
+        while time.time() < deadline:
+            entry = self.ctx.background_bash_tasks.get(task_id, {})
+            if entry.get("exit_code") is not None:
+                log_contents = log_path.read_text(encoding="utf-8", errors="replace")
+                break
+            time.sleep(0.05)
+        # First non-empty log line is the command's output; trailing lines are
+        # the background wrapper's ``__CLAWCODEX_EXIT__=0`` marker.
+        stripped = log_contents.strip()
+        first_line = stripped.splitlines()[0] if stripped else ""
+        self.assertEqual(first_line, "NOTTY")
+
 
 class TestWebFetchTool(ToolSystemTests):
     def test_web_fetch_blocks_file_scheme(self) -> None:
