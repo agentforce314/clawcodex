@@ -21,7 +21,7 @@ from ..tool_system.build_tool import Tool, Tools, find_tool_by_name
 from ..tool_system.context import ToolContext
 from ..tool_system.protocol import ToolCall, ToolResult
 from ..tool_system.registry import ToolRegistry
-from ..utils.abort_controller import AbortController
+from ..utils.abort_controller import AbortController, AbortError
 from ..providers.base import BaseProvider, ChatResponse
 
 from .config import QueryConfig, build_query_config
@@ -282,6 +282,7 @@ async def _call_model_sync(
     system_prompt: str,
     tools: Tools,
     max_output_tokens_override: int | None = None,
+    abort_signal: Any = None,
 ) -> tuple[list[AssistantMessage], list[ToolUseBlock]]:
     from ..types.messages import normalize_messages_for_api
 
@@ -383,11 +384,27 @@ async def _call_model_sync(
         logger.warning("[DIAG] _call_model_sync: calling provider (streaming)...")
     try:
         try:
-            response = provider.chat_stream_response(api_messages, **call_kwargs)
+            # ``abort_signal`` reaches the provider so a tripped controller
+            # can close the streaming HTTP response immediately rather than
+            # waiting for the model to finish generating. Without this
+            # plumb, ESC during a tool-use-only response (no intermediate
+            # text chunks for an ``on_text_chunk`` to observe) waits the
+            # full model latency before the outer query loop bails.
+            response = provider.chat_stream_response(
+                api_messages, abort_signal=abort_signal, **call_kwargs,
+            )
         except (NotImplementedError, AttributeError):
             if _diag:
                 logger.warning("[DIAG] _call_model_sync: streaming not supported, falling back to chat()")
             response = provider.chat(api_messages, **call_kwargs)
+    except AbortError:
+        # User-initiated cancel — propagate so the query loop's
+        # ``except AbortError: pass`` boundary unwinds to the
+        # post-API abort-check block. We do NOT route this through
+        # the error-message classification below: a future addition
+        # to those substring checks could accidentally match an abort
+        # reason and convert the cancel into a model-error reply.
+        raise
     except Exception as e:
         if _diag:
             logger.warning("[DIAG] _call_model_sync: EXCEPTION after %.1fs: %s", time.monotonic() - _t0, e)
@@ -866,6 +883,7 @@ async def query(
                 system_prompt=params.system_prompt,
                 tools=params.tools,
                 max_output_tokens_override=max_output_tokens_override,
+                abort_signal=params.abort_controller.signal,
             )
             assistant_messages = returned_assistants
             tool_use_blocks = returned_tool_blocks
@@ -885,6 +903,15 @@ async def query(
                 )
                 if not withheld:
                     yield msg
+
+        except AbortError:
+            # The provider's abort listener closed the streaming HTTP
+            # response mid-flight (ESC pressed while the model was still
+            # generating). The signal is already tripped, so let the
+            # ``if params.abort_controller.signal.aborted`` block right
+            # below us do the cancellation processing in exactly one
+            # place — anything we did here would duplicate that work.
+            pass
 
         except Exception as e:
             logger.error("Query error: %s", e)
