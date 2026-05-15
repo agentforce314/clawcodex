@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import sys
-from typing import Generator, Optional, Any
+from typing import Generator, Optional, Any, TYPE_CHECKING
 
 from .base import BaseProvider, ChatResponse, MessageInput, TextChunkCallback
+
+if TYPE_CHECKING:
+    from src.utils.abort_controller import AbortSignal
 
 
 # WI-4.4 (ch17 Phase 4): defer the ``import anthropic`` call. The SDK
@@ -248,6 +251,7 @@ class AnthropicProvider(BaseProvider):
         messages: list[MessageInput],
         tools: Optional[list[dict[str, Any]]] = None,
         on_text_chunk: TextChunkCallback | None = None,
+        abort_signal: "AbortSignal | None" = None,
         **kwargs
     ) -> ChatResponse:
         """Stream Anthropic text chunks and return the final structured response.
@@ -257,8 +261,25 @@ class AnthropicProvider(BaseProvider):
         ``CLAUDE_STREAM_IDLE_TIMEOUT_MS`` (default 90 s). On timeout the
         iterator raises; we catch it and fall back to the non-streaming
         ``chat()`` path so the user gets an answer rather than a hung session.
+
+        ESC-cancellation: when ``abort_signal`` is provided, a listener is
+        registered that calls ``stream.response.close()`` when the signal
+        fires. The close interrupts the SDK's blocking socket read so the
+        ``for text in stream.text_stream`` iterator raises immediately —
+        without it, ESC during a tool-use-only response (no intervening
+        text chunks for ``on_text_chunk`` to observe) waits for the model
+        to finish generating before the outer query loop can bail. We
+        translate the raise into ``AbortError`` so callers can distinguish
+        a user-initiated cancel from the watchdog's idle-timeout fallback.
         """
+        from src.utils.abort_controller import AbortError
         from src.utils.stream_watchdog import StreamWatchdog
+
+        # Fast-path: if abort fired before we even build the request, don't
+        # spend the round-trip — raise directly so the caller's cancel
+        # boundary unwinds at the same place the mid-stream path lands.
+        if abort_signal is not None and abort_signal.aborted:
+            raise AbortError(abort_signal.reason or "user_interrupt")
 
         model = self._get_model(**kwargs)
         max_tokens = kwargs.get("max_tokens", 4096)
@@ -294,6 +315,7 @@ class AnthropicProvider(BaseProvider):
         streamed_text = ""
         watchdog_fired = False
         final_message = None
+        abort_listener: Any = None
         try:
             with client.messages.stream(
                 model=model,
@@ -303,6 +325,44 @@ class AnthropicProvider(BaseProvider):
                 **extra_kwargs,
                 **{k: v for k, v in kwargs.items() if k not in ["model", "max_tokens", "tools"]},
             ) as stream:
+                # Register the abort listener BEFORE the iterator pulls
+                # its first chunk, so a signal that fires between context
+                # entry and the first ``text_stream.__next__`` still wins
+                # the race. Mirrors ``StreamWatchdog``'s close pattern:
+                # close the underlying HTTP response from another thread,
+                # which raises in the consumer thread on the next pull.
+                if abort_signal is not None:
+                    def _close_stream_on_abort() -> None:
+                        try:
+                            response = getattr(stream, "response", None)
+                            if response is not None:
+                                close = getattr(response, "close", None)
+                                if callable(close):
+                                    close()
+                        except Exception:
+                            # Best-effort — never let the close
+                            # propagate out of the listener thread.
+                            pass
+
+                    # Register-then-recheck (NOT check-then-register):
+                    # the naive ordering has a sub-microsecond race
+                    # where another thread can call ``_fire`` between
+                    # our ``aborted`` read and the ``add_listener``
+                    # append. ``_fire`` snapshots the listener list
+                    # before iterating, so any listener appended after
+                    # that snapshot is silently dropped.
+                    # Register-then-recheck closes the gap: ``aborted``
+                    # is sticky-True after ``_fire`` runs, so the
+                    # post-add read catches any concurrent fire, and
+                    # ``_close_stream_on_abort`` is idempotent so a
+                    # double-call (listener fires AND we call directly)
+                    # is harmless.
+                    abort_listener = abort_signal.add_listener(
+                        _close_stream_on_abort, once=True,
+                    )
+                    if abort_signal.aborted:
+                        _close_stream_on_abort()
+
                 watchdog = StreamWatchdog(stream)
                 watchdog.arm()
                 try:
@@ -329,10 +389,22 @@ class AnthropicProvider(BaseProvider):
                     watchdog_fired = watchdog.fired
                     watchdog.disarm()
         except Exception as streaming_exc:
-            # WI-5.2 fallback path: stream interrupted. If our watchdog
-            # triggered the interruption, fall back to non-streaming so
-            # the user still gets an answer. If the failure is something
-            # else (network/auth/etc.), re-raise the original.
+            # Abort path: the abort listener closed the stream's response,
+            # which raised in the consumer thread. Translate to
+            # ``AbortError`` so the query loop's
+            # ``except AbortError: raise`` cancel boundary unwinds
+            # cleanly. We check the signal AFTER the catch (not the
+            # exception type) because the SDK can raise several different
+            # exception classes depending on which socket operation was
+            # in flight when we closed; the abort_signal state is the
+            # authoritative source of truth.
+            if abort_signal is not None and abort_signal.aborted:
+                raise AbortError(abort_signal.reason or "user_interrupt") from streaming_exc
+
+            # WI-5.2 fallback path: stream interrupted by the idle
+            # watchdog. Fall back to non-streaming so the user still
+            # gets an answer. If the failure is something else
+            # (network/auth/etc.), re-raise the original.
             if watchdog_fired:
                 try:
                     return _fallback_to_chat()
@@ -344,6 +416,17 @@ class AnthropicProvider(BaseProvider):
                     # error and re-raised only the streaming one.
                     raise fallback_exc from streaming_exc
             raise
+        finally:
+            # Always detach the abort listener so it doesn't pin the
+            # provider alive past one call.
+            if abort_listener is not None and abort_signal is not None:
+                abort_signal.remove_listener(abort_listener)
+
+        # Stream completed normally but abort may have fired between
+        # ``stream.__exit__`` and here. Surface it now so the caller
+        # bails at the same place every other path does.
+        if abort_signal is not None and abort_signal.aborted:
+            raise AbortError(abort_signal.reason or "user_interrupt")
 
         if watchdog_fired:
             # Stream got interrupted but no exception escaped the
