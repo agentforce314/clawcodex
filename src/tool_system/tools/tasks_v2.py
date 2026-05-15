@@ -648,9 +648,10 @@ async def _poll_runtime_until_terminal(
 
         # Abort fast-path — if the parent's controller is signalled,
         # exit with the current snapshot rather than waiting out the
-        # remaining timeout.
-        abort_signal = getattr(context.abort_controller, "signal", None) if context.abort_controller else None
-        if abort_signal is not None and getattr(abort_signal, "aborted", False):
+        # remaining timeout. ``abort_controller`` is non-optional on
+        # ``ToolContext`` so the historical truthiness/getattr indirection
+        # is gone.
+        if context.abort_controller.signal.aborted:
             return _runtime_task_to_output(task_id, runtime, context)
 
         remaining = deadline - time.monotonic()

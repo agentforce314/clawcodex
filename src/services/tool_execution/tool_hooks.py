@@ -130,8 +130,10 @@ async def run_pre_tool_use_hooks(
             if result.get("message"):
                 yield {"type": "message", "message": {"message": result["message"]}}
 
-            abort_ctrl = tool_use_context.abort_controller
-            if abort_ctrl and abort_ctrl.signal.aborted:
+            # ``abort_controller`` is non-optional on ``ToolContext``;
+            # the truthiness guard used to paper over the field-is-None
+            # hazard class.
+            if tool_use_context.abort_controller.signal.aborted:
                 yield {
                     "type": "message",
                     "message": {
