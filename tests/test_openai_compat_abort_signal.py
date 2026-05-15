@@ -209,6 +209,13 @@ def test_in_loop_check_catches_abort_between_chunks() -> None:
     # back to the original "ESC waits for the model to finish
     # generating" behaviour.
     assert seen == ["first"], f"in-loop check leaked second chunk: {seen}"
+    # And on the in-loop-break path, the underlying httpx response
+    # must still be closed (otherwise the socket leaks). The
+    # listener fired during the synchronous ``controller.abort()``
+    # call inside the iterator, so close() was already invoked once
+    # there; the helper's ``__exit__`` close-on-abort guarantee adds
+    # a second idempotent call. We just assert at-least-once.
+    assert stream.response.close.called, "stream.response was not closed on in-loop break"
 
 
 def test_uncancelled_stream_returns_normally() -> None:
