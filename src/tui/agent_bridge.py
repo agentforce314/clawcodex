@@ -91,6 +91,17 @@ class AgentBridge:
                 return False
             self._busy = True
             self._abort_controller = AbortController()
+            # Plumb the controller onto the tool context BEFORE we spawn
+            # the worker. Tools (Bash supervisor, Agent subagents, the
+            # streaming executor, tool hooks) read
+            # ``context.abort_controller`` to learn whether the user has
+            # asked to interrupt; without this assignment they see
+            # ``None`` and run to completion regardless of ESC. The Agent
+            # subagent path is the worst case — ``run_agent`` inherits
+            # the parent's controller via ``parent_context.abort_controller``,
+            # so a missing field here forces the subagent to mint a fresh
+            # controller that is never tripped by ESC.
+            self._tool_context.abort_controller = self._abort_controller
 
         self._session.conversation.add_user_message(prompt)
         self._post(AgentRunStarted(prompt=prompt))
@@ -215,6 +226,21 @@ class AgentBridge:
         self._state.clear_streaming_text()
         with self._busy_lock:
             self._busy = False
+            # Drop the per-run controller from the shared tool context so
+            # the next ``submit()`` starts from a clean state. Leaving an
+            # aborted controller in place would cause the next prompt's
+            # first tool dispatch to see ``signal.aborted == True`` and
+            # short-circuit before the user has even pressed ESC.
+            #
+            # Safety note: ``_finish`` runs on the worker thread *after*
+            # ``run_agent_loop`` has returned or raised, so no in-flight
+            # tool can be reading ``context.abort_controller`` from this
+            # thread at the moment we clear it. Detached background
+            # processes (e.g. ``spawn_background_bash``) capture their
+            # own controller reference at spawn time rather than re-
+            # reading the context field, so clearing here doesn't orphan
+            # them either.
+            self._tool_context.abort_controller = None
 
     # ---- permission bridge ----
     def _permission_handler(

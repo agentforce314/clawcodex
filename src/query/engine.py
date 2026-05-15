@@ -60,6 +60,14 @@ class QueryEngine:
         self._config = config
         self._mutable_messages: list[Message] = list(config.initial_messages or [])
         self._abort_controller = config.abort_controller or create_abort_controller()
+        # Mirror the controller onto the tool context. The query loop already
+        # reads ``params.abort_controller`` at turn boundaries, but the
+        # streaming tool executor, Bash supervisor, tool hooks and — most
+        # importantly — Agent subagents read ``context.abort_controller``
+        # to learn about ESC. Leaving the field ``None`` lets long-running
+        # tools (especially subagent dispatches) ignore the user's
+        # interrupt until they finish naturally.
+        self._config.tool_context.abort_controller = self._abort_controller
         self._total_usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
         self._session_id: str = uuid4().hex
         # Ch5/B.5 prereq — the autocompact circuit-breaker counter must
@@ -271,3 +279,7 @@ class QueryEngine:
 
     def reset_abort_controller(self) -> None:
         self._abort_controller = create_abort_controller()
+        # Keep the tool context's controller in sync with the engine's —
+        # otherwise the next turn's subagents and Bash commands would still
+        # be carrying the previous (possibly aborted) controller.
+        self._config.tool_context.abort_controller = self._abort_controller
