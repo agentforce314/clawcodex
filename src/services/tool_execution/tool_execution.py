@@ -81,8 +81,10 @@ async def run_tool_use(
     tool_input = tool_use.input if isinstance(tool_use.input, dict) else {}
 
     try:
-        abort_ctrl = tool_use_context.abort_controller
-        if abort_ctrl and abort_ctrl.signal.aborted:
+        # ``abort_controller`` is non-optional on ``ToolContext`` — the
+        # historical ``if abort_ctrl and …`` guard masked the field-is-None
+        # hazard class that broke ESC propagation into subagents.
+        if tool_use_context.abort_controller.signal.aborted:
             content = _create_tool_result_stop(tool_use.id)
             yield MessageUpdateLazy(
                 message=create_user_message(

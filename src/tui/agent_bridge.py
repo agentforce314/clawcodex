@@ -226,21 +226,26 @@ class AgentBridge:
         self._state.clear_streaming_text()
         with self._busy_lock:
             self._busy = False
-            # Drop the per-run controller from the shared tool context so
-            # the next ``submit()`` starts from a clean state. Leaving an
-            # aborted controller in place would cause the next prompt's
-            # first tool dispatch to see ``signal.aborted == True`` and
-            # short-circuit before the user has even pressed ESC.
+            # Replace the per-run controller on the shared tool context
+            # with a fresh one so the next ``submit()`` starts from a
+            # clean state. Leaving an aborted controller in place would
+            # cause the next prompt's first tool dispatch to see
+            # ``signal.aborted == True`` and short-circuit before the
+            # user has even pressed ESC.
+            #
+            # The dataclass field is non-optional, so we can't simply
+            # clear to ``None`` — we install an untripped controller
+            # that mirrors the dataclass default.
             #
             # Safety note: ``_finish`` runs on the worker thread *after*
             # ``run_agent_loop`` has returned or raised, so no in-flight
             # tool can be reading ``context.abort_controller`` from this
-            # thread at the moment we clear it. Detached background
+            # thread at the moment we replace it. Detached background
             # processes (e.g. ``spawn_background_bash``) capture their
             # own controller reference at spawn time rather than re-
-            # reading the context field, so clearing here doesn't orphan
-            # them either.
-            self._tool_context.abort_controller = None
+            # reading the context field, so replacing here doesn't
+            # orphan them either.
+            self._tool_context.abort_controller = AbortController()
 
     # ---- permission bridge ----
     def _permission_handler(
