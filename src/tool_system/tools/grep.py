@@ -15,11 +15,13 @@ from ..errors import ToolInputError
 from ..protocol import ToolResult
 from ..utils.path_utils import suggest_path_under_cwd, to_relative_path
 from ..utils.ripgrep import (
+    RipgrepAbortedError,
     RipgrepTimeoutError,
     RipgrepUnavailableError,
     find_ripgrep,
     ripgrep,
 )
+from ...utils.abort_controller import AbortError, AbortSignal
 
 
 _VCS_DIRS = {".git", ".svn", ".hg", ".bzr", ".jj", ".sl"}
@@ -206,6 +208,7 @@ def _grep_via_ripgrep(
     show_line_numbers: bool,
     context_before: int,
     context_after: int,
+    abort_signal: AbortSignal | None = None,
 ) -> list[str]:
     """Build ripgrep args and execute."""
     args = ["--hidden"]
@@ -250,7 +253,7 @@ def _grep_via_ripgrep(
         for pat in _split_glob_patterns(glob_pattern):
             args.extend(["--glob", pat])
 
-    return ripgrep(args, base_path)
+    return ripgrep(args, base_path, abort_signal=abort_signal)
 
 
 # -- Pagination ----------------------------------------------------------------
@@ -370,6 +373,7 @@ def _grep_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
 
     cwd = context.cwd
     use_ripgrep = find_ripgrep() is not None
+    abort_signal = context.abort_controller.signal
 
     if use_ripgrep:
         try:
@@ -384,7 +388,17 @@ def _grep_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
                 show_line_numbers=show_line_numbers,
                 context_before=ctx_before,
                 context_after=ctx_after,
+                abort_signal=abort_signal,
             )
+        except RipgrepAbortedError as e:
+            # User pressed ESC mid-search. Re-raise as ``AbortError`` so
+            # the agent loop's ``except AbortError: raise`` branch
+            # unwinds to the outer cancel boundary. Partial results are
+            # dropped — the caller already cancelled, surfacing them
+            # would be noise the agent has to dismiss.
+            # ``abort_signal`` is non-None: ``ToolContext.abort_controller``
+            # is non-optional after PR #137.
+            raise AbortError(abort_signal.reason or "user_interrupt") from e
         except RipgrepTimeoutError as e:
             results = e.partial_results
         except RipgrepUnavailableError:
