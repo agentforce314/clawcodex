@@ -25,11 +25,12 @@ from __future__ import annotations
 
 import io
 import os
+import signal as _signal
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, Iterable, Optional
+from typing import IO, Callable, Iterable, Optional
 
 from src.agent import Session
 from src.cli_core import (
@@ -50,6 +51,7 @@ from src.providers import get_provider_class
 from src.tool_system.agent_loop import ToolEvent, run_agent_loop
 from src.tool_system.context import ToolContext
 from src.tool_system.defaults import build_default_registry
+from src.utils.abort_controller import AbortController, AbortError
 
 
 OUTPUT_FORMATS = ("text", "json", "stream-json")
@@ -161,12 +163,20 @@ def run_headless(options: HeadlessOptions) -> int:
         effective_mode = options.permission_mode or "default"
         bypass_available = bool(options.is_bypass_permissions_mode_available)
 
+    # Per-session abort controller. SIGINT trips this so the running
+    # tool (Bash supervisor, Agent subagent) unwinds immediately rather
+    # than waiting for the next safe interpreter bytecode boundary.
+    # Without this wiring, Ctrl-C only fires ``KeyboardInterrupt`` at
+    # the next safe boundary — which can be several minutes for a
+    # subprocess.wait() or an in-flight subagent.
+    abort_controller = AbortController()
     tool_context = ToolContext(
         workspace_root=workspace_root,
         permission_context=ToolPermissionContext(
             mode=effective_mode,  # type: ignore[arg-type]
             is_bypass_permissions_mode_available=bypass_available,
         ),
+        abort_controller=abort_controller,
     )
     tool_context.options.is_non_interactive_session = True
     if options.skip_permissions or effective_mode == "bypassPermissions":
@@ -213,58 +223,124 @@ def run_headless(options: HeadlessOptions) -> int:
     exit_code = 0
     start = time.monotonic()
 
-    for user_msg in inputs:
-        session.conversation.add_user_message(user_msg.text)
-
-        on_event = _build_event_bridge(writer, aggregate_tool_events)
-        on_text_chunk = None
-        if writer is not None and options.include_partial_messages:
-            def _emit_partial(chunk: str) -> None:
-                writer.write(PartialTextEvent(text=chunk))
-
-            on_text_chunk = _emit_partial
-
+    # Two-mode SIGINT handler:
+    # * Idle (waiting on stdin for the next stream-json input) → raise
+    #   ``KeyboardInterrupt`` immediately so the blocking read returns.
+    # * In-flight ``run_agent_loop`` → first strike trips the controller
+    #   (cooperative unwind), second strike force-quits via
+    #   ``KeyboardInterrupt``. Both map to exit 130.
+    # See ``_install_sigint_handler`` for the full handler logic; the
+    # for-loop's outer ``except (AbortError, KeyboardInterrupt)`` is the
+    # single chokepoint that catches whatever the handler raises.
+    # ``restore_sigint`` runs in the ``finally`` so we don't leak global
+    # signal state to embedders.
+    in_agent_loop = _InAgentLoopFlag()
+    restore_sigint = _install_sigint_handler(
+        abort_controller, in_agent_loop, stderr
+    )
+    try:
+        # Cancellation is caught at the for-loop level (not per-iteration)
+        # so that a SIGINT landing on ANY cancellation point unwinds to one
+        # place that emits the cancelled ResultEvent: the iterator step
+        # (``StreamJsonReader``'s blocking stdin read in idle mode), the
+        # agent loop itself, or the post-success accounting between them.
+        # The inner per-iteration ``except Exception`` keeps per-turn
+        # tool/provider error handling local — it must NOT catch
+        # ``AbortError``/``KeyboardInterrupt`` (Python catches them via
+        # ``Exception`` only when they inherit from it; ``AbortError`` does
+        # but ``KeyboardInterrupt`` does not, so we exclude AbortError
+        # explicitly).
         try:
-            result = run_agent_loop(
-                conversation=session.conversation,
-                provider=provider,
-                tool_registry=tool_registry,
-                tool_context=tool_context,
-                max_turns=options.max_turns,
-                stream=bool(on_text_chunk),
-                verbose=options.verbose,
-                on_event=on_event,
-                on_text_chunk=on_text_chunk,
-            )
-        except KeyboardInterrupt:
+            for user_msg in inputs:
+                session.conversation.add_user_message(user_msg.text)
+
+                on_event = _build_event_bridge(writer, aggregate_tool_events)
+                on_text_chunk = None
+                if writer is not None and options.include_partial_messages:
+                    def _emit_partial(chunk: str) -> None:
+                        writer.write(PartialTextEvent(text=chunk))
+
+                    on_text_chunk = _emit_partial
+
+                try:
+                    in_agent_loop.value = True
+                    try:
+                        result = run_agent_loop(
+                            conversation=session.conversation,
+                            provider=provider,
+                            tool_registry=tool_registry,
+                            tool_context=tool_context,
+                            max_turns=options.max_turns,
+                            stream=bool(on_text_chunk),
+                            verbose=options.verbose,
+                            on_event=on_event,
+                            on_text_chunk=on_text_chunk,
+                            cancel_signal=abort_controller.signal,
+                        )
+                    finally:
+                        # Flip BEFORE the outer except block can run so a
+                        # SIGINT landing between ``run_agent_loop`` returning
+                        # and the next iterator step is correctly classified
+                        # as idle. (``AbortError`` is a subclass of
+                        # ``Exception`` and would otherwise be re-raised
+                        # through this finally too — so we set the flag
+                        # back to False regardless of how we leave.)
+                        in_agent_loop.value = False
+                except AbortError:
+                    # Re-raise to the outer ``except`` so the cancelled
+                    # ResultEvent is emitted in exactly one place.
+                    raise
+                except Exception as exc:
+                    exit_code = 1
+                    if writer is not None:
+                        writer.write(
+                            ResultEvent(
+                                subtype="error",
+                                session_id=session.session_id,
+                                num_turns=num_turns_total,
+                                result=str(exc),
+                                duration_ms=int((time.monotonic() - start) * 1000),
+                                is_error=True,
+                                error=str(exc),
+                            )
+                        )
+                    else:
+                        print(f"error: {exc}", file=stderr)
+                    break
+
+                num_turns_total += result.num_turns
+                if result.usage:
+                    for key, value in result.usage.items():
+                        usage_total[key] = usage_total.get(key, 0) + int(value)
+
+                if writer is not None:
+                    writer.write(AssistantEvent(text=result.response_text))
+                aggregate_text.append(result.response_text)
+        except (AbortError, KeyboardInterrupt):
+            # Cancellation from ANY point in the loop body lands here:
+            # * ``AbortError`` from a cooperative unwind inside
+            #   ``run_agent_loop`` (first SIGINT, in-flight mode).
+            # * ``KeyboardInterrupt`` from the SIGINT handler's idle
+            #   branch (raised mid-``inputs.__iter__()`` while blocked on
+            #   stdin), or from the in-flight second-strike force-quit.
+            # All map to exit 130 for shell parity. ``error`` is left
+            # unset — ``subtype: "cancelled"`` already carries the
+            # signal, and pairing ``is_error=False`` with a populated
+            # ``error`` field would confuse consumers.
             exit_code = 130
-            break
-        except Exception as exc:
-            exit_code = 1
             if writer is not None:
                 writer.write(
                     ResultEvent(
-                        subtype="error",
+                        subtype="cancelled",
                         session_id=session.session_id,
                         num_turns=num_turns_total,
-                        result=str(exc),
+                        result="",
                         duration_ms=int((time.monotonic() - start) * 1000),
-                        is_error=True,
-                        error=str(exc),
+                        is_error=False,
                     )
                 )
-            else:
-                print(f"error: {exc}", file=stderr)
-            break
-
-        num_turns_total += result.num_turns
-        if result.usage:
-            for key, value in result.usage.items():
-                usage_total[key] = usage_total.get(key, 0) + int(value)
-
-        if writer is not None:
-            writer.write(AssistantEvent(text=result.response_text))
-        aggregate_text.append(result.response_text)
+    finally:
+        restore_sigint()
 
     duration_ms = int((time.monotonic() - start) * 1000)
     final_text = "\n\n".join(t for t in aggregate_text if t).strip()
@@ -274,9 +350,15 @@ def run_headless(options: HeadlessOptions) -> int:
             stdout.write(final_text + "\n")
             stdout.flush()
     elif options.output_format == "json":
+        if exit_code == 0:
+            json_subtype = "success"
+        elif exit_code == 130:
+            json_subtype = "cancelled"
+        else:
+            json_subtype = "error"
         payload = {
             "type": "result",
-            "subtype": "error" if exit_code not in (0, 130) else "success",
+            "subtype": json_subtype,
             "session_id": session.session_id,
             "provider": provider_name,
             "model": getattr(provider, "model", None),
@@ -306,6 +388,118 @@ def run_headless(options: HeadlessOptions) -> int:
 
 # ---------------------------------------------------------------------------
 # Helpers
+
+
+class _InAgentLoopFlag:
+    """Mutable shared flag indicating whether ``run_agent_loop`` is in flight.
+
+    Read by the SIGINT handler to decide between cooperative abort
+    (in-flight: trip the controller, let the loop unwind at the next
+    safe boundary) and immediate raise (idle, e.g. blocked on
+    ``StreamJsonReader``'s stdin read: the only way to make the read
+    return is to actually raise ``KeyboardInterrupt`` on the same
+    thread — Python 3 auto-retries EINTR'd reads when the handler
+    didn't raise, per PEP 475).
+    """
+
+    __slots__ = ("value",)
+
+    def __init__(self) -> None:
+        self.value = False
+
+
+def _install_sigint_handler(
+    controller: AbortController,
+    in_agent_loop: _InAgentLoopFlag,
+    stderr: IO[str],
+) -> Callable[[], None]:
+    """Install a context-aware SIGINT handler.
+
+    - **Idle** (``in_agent_loop.value`` is False, e.g. blocked on
+      stdin reading the next stream-json input): raise
+      ``KeyboardInterrupt`` immediately. Python 3 PEP 475 retries
+      EINTR'd ``read()`` calls when the signal handler did NOT raise,
+      so a cooperative abort here would *hang the stdin read* until
+      the user hit Ctrl-C a second time — a UX regression vs. the
+      pre-fix behaviour where the first Ctrl-C raised at the next
+      bytecode boundary and exited the program. Raising on the first
+      strike restores parity with that pre-fix path.
+
+    - **Cooperative** (in-flight ``run_agent_loop``, first strike):
+      trip ``controller``. Every abort-aware site — the agent loop's
+      ``_check_cancel`` boundaries, the Bash supervisor's poll loop,
+      the subagent query loop, the streaming executor's per-tool
+      controller, hook gates — sees the signal and unwinds gracefully
+      with a partial result that's appended to the conversation. A
+      message is printed to stderr so the user knows the request was
+      received but unwind may take a moment.
+
+    - **Cooperative** (in-flight, second strike): re-install the
+      platform default handler (defense-in-depth against a possible
+      third strike landing during unwind) and raise
+      ``KeyboardInterrupt`` directly. This is the force-quit escape
+      hatch for the rare case where a tool doesn't honour the abort.
+
+    Returns a callable that restores whatever handler was installed
+    before us, so embedders that drive ``run_headless`` from inside a
+    larger program don't have their global signal state mutated.
+
+    ``signal.signal`` is only callable from the main thread; if we are
+    not the main thread (e.g. an SDK harness that runs headless in a
+    worker thread), the install is skipped and the returned restore is
+    a no-op. Cancellation in that case falls back to the agent loop's
+    natural turn-boundary checks via ``KeyboardInterrupt`` propagation
+    from whatever signal facility the embedder is using.
+    """
+
+    previous = _signal.getsignal(_signal.SIGINT)
+
+    def _handler(signum, frame):
+        if not in_agent_loop.value:
+            # Idle on input — raise so the blocking stdin read returns.
+            # No need to swap to ``default_int_handler``: there's no
+            # cooperative-unwind escalation state to escalate from, and
+            # ``restore_sigint()`` in the ``finally`` block will revert
+            # the user's pre-existing handler shortly after the raise
+            # unwinds out of ``run_headless``. A second SIGINT before
+            # that finally runs would just re-enter this handler and
+            # raise again — fine.
+            raise KeyboardInterrupt
+        if controller.signal.aborted:
+            # Second strike during cooperative unwind: re-arm the
+            # platform default handler (so any third strike terminates
+            # the process the usual way) and raise the force-quit.
+            _signal.signal(_signal.SIGINT, _signal.default_int_handler)
+            raise KeyboardInterrupt
+        controller.abort("user_interrupt")
+        try:
+            # Plain ASCII for portability — some legacy Windows code
+            # pages can't encode U+2026 and would silently drop the
+            # message via the outer except.
+            stderr.write("\nCancelling... (Ctrl-C again to force quit)\n")
+            stderr.flush()
+        except Exception:
+            # A broken stderr (closed pipe etc.) must not stop the
+            # cancellation from propagating — the controller is already
+            # tripped, the agent loop will unwind regardless.
+            pass
+
+    try:
+        _signal.signal(_signal.SIGINT, _handler)
+    except (ValueError, OSError):
+        # Not in main thread (ValueError) or SIGINT not supported on
+        # this platform (OSError on some Windows configurations).
+        # Fall back to the agent loop's natural turn-boundary cancel
+        # checks via ``KeyboardInterrupt`` — the pre-fix behaviour.
+        return lambda: None
+
+    def _restore() -> None:
+        try:
+            _signal.signal(_signal.SIGINT, previous)
+        except (ValueError, OSError):
+            pass
+
+    return _restore
 
 
 def _filter_registry(registry, *, keep) -> None:
