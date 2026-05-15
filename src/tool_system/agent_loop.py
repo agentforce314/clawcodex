@@ -435,6 +435,13 @@ def run_agent_loop(
                 from ..tool_system.protocol import ToolCall
                 call = ToolCall(name=tool_name, input=tool_input, tool_use_id=tool_id)
                 result = tool_registry.dispatch(call, tool_context)
+                # Check immediately after dispatch. Most cancellable tools
+                # (Bash supervisor, Agent subagents) honour the abort signal
+                # by returning a partial/synthetic result rather than
+                # raising — so if we don't re-check here, the loop happily
+                # proceeds to the next tool (or burns an API turn) after
+                # the user has already pressed ESC.
+                _check_cancel()
                 result_output = result.output
                 if tool_name.lower() == "sendusermessage" and isinstance(result_output, dict):
                     msg = result_output.get("message")
@@ -473,6 +480,15 @@ def run_agent_loop(
                         "tool_call_id": tool_id,
                         "content": _build_openai_tool_result_content(result_output)
                     })
+            except AbortError:
+                # Never bury a user interrupt inside a tool-result message:
+                # the outer ``run_agent_loop`` caller (TUI bridge / REPL /
+                # headless) needs the exception to propagate so it can post
+                # ``Cancelled by user`` and unwind the worker thread.
+                # Swallowing it as a tool error would convert the abort
+                # into a synthetic error result and let the next API turn
+                # fire, defeating the whole purpose of ESC.
+                raise
             except Exception as e:
                 error_str = f"Error: {e}"
                 if verbose:
