@@ -71,8 +71,14 @@ def _run_bash_with_abort(
     previous ``subprocess.run`` had to wait the entire timeout.
     """
 
+    # ``stdin=DEVNULL`` matches TS ``Shell.ts`` (stdio[0] = 'pipe' with the
+    # writable end never written to). Without this the child inherits the
+    # parent's stdin -- when clawcodex runs in a terminal, that's a TTY, and
+    # scaffolders like ``npm create vite`` see ``isatty(0)`` and try to prompt
+    # for confirmation, hanging the command until timeout.
     popen_kwargs: dict[str, Any] = {
         "cwd": cwd,
+        "stdin": subprocess.DEVNULL,
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
         "text": True,
