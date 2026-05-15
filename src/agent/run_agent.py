@@ -269,18 +269,22 @@ async def run_agent(params: RunAgentParams) -> AsyncGenerator[Message, None]:
         or get_agent_system_prompt(agent_def, params.parent_system_prompt)
     )
 
-    # Determine abort controller
+    # Determine abort controller.
+    # ``params.parent_context.abort_controller`` is now non-optional on
+    # the ``ToolContext`` dataclass, so the legacy "parent has no
+    # controller → mint a fresh one" branch is gone. The remaining
+    # priority order is: explicit caller override → fresh controller
+    # for async (so background agents survive parent cancel) →
+    # share with parent for sync (so parent ESC propagates).
     if params.abort_controller is not None:
         abort_controller = params.abort_controller
     elif params.is_async:
         # Async agents run independently in the background and should survive
         # parent cancellation events.
         abort_controller = AbortController()
-    elif params.parent_context.abort_controller is not None:
+    else:
         # Sync agents share abort with parent
         abort_controller = params.parent_context.abort_controller
-    else:
-        abort_controller = AbortController()
 
     # Build permission context
     perm_context = _build_permission_context(
