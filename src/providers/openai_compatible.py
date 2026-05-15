@@ -328,14 +328,34 @@ class OpenAICompatibleProvider(BaseProvider):
         abort_signal: Any = None,
         **kwargs
     ) -> ChatResponse:
-        """Stream OpenAI-compatible chunks while rebuilding the final response."""
+        """Stream OpenAI-compatible chunks while rebuilding the final response.
+
+        ESC-cancellation: when ``abort_signal`` is provided, two defenses
+        cooperate so ESC unwinds the stream promptly regardless of the
+        provider's chunk cadence:
+
+        * **Response-close listener** registered on the abort signal —
+          calls ``stream.response.close()``. Closes the underlying HTTP
+          socket so the SDK's blocking next-chunk read raises
+          immediately, even when the model is in a long gap between
+          chunks (extended thinking, tool_use generation).
+        * **In-loop abort check** at the top of each ``for chunk in
+          stream`` iteration — catches the case where chunks arrive
+          back-to-back and the listener's close lands one iteration
+          late, so we stop iterating before the next read.
+
+        Mirrors the contract ``AnthropicProvider.chat_stream_response``
+        established for the Anthropic SDK; same correctness arguments
+        apply (signal state is authoritative for abort detection;
+        register-then-recheck closes the registration race; listener
+        is detached in a ``finally`` so long-lived controllers don't
+        accumulate dead listeners).
+        """
+        from src.utils.abort_controller import AbortError
+
         # Pre-call fast-path: matches AnthropicProvider. A signal that
         # tripped at a turn boundary skips the API round-trip entirely.
-        # Mid-stream cancellation isn't implemented yet — that needs a
-        # response-close listener around the OpenAI SDK's stream
-        # iterator — future PR.
         if abort_signal is not None and getattr(abort_signal, "aborted", False):
-            from src.utils.abort_controller import AbortError
             raise AbortError(getattr(abort_signal, "reason", None) or "user_interrupt")
         model = self._get_model(**kwargs)
         provider_messages = self._prepare_messages(messages)
@@ -372,51 +392,122 @@ class OpenAICompatibleProvider(BaseProvider):
         usage_obj: Any = None
         tool_calls_by_index: dict[int, dict[str, str]] = {}
 
-        for chunk in stream:
-            response_model = getattr(chunk, "model", response_model)
-            usage_candidate = getattr(chunk, "usage", None)
-            if usage_candidate is not None:
-                usage_obj = usage_candidate
+        # --- Abort-listener wiring ---
+        # Close the underlying HTTP response when the signal trips so a
+        # blocking next-chunk read raises immediately. The OpenAI Python
+        # SDK 1.x and 2.x both expose the underlying httpx Response as
+        # ``stream.response`` (see ``openai/_streaming.py``).
+        # ``httpx.Response.close()`` is idempotent (guarded by
+        # ``if not self.is_closed``), so a double-close — e.g., the
+        # listener fires AND the post-loop path explicitly closes — is
+        # harmless.
+        def _close_stream_on_abort() -> None:
+            try:
+                response = getattr(stream, "response", None)
+                if response is not None:
+                    close = getattr(response, "close", None)
+                    if callable(close):
+                        close()
+            except Exception:
+                # Best-effort — never let close() propagate out of the
+                # listener thread.
+                pass
 
-            choices = getattr(chunk, "choices", None) or []
-            if not choices:
-                continue
-            choice = choices[0]
-            if getattr(choice, "finish_reason", None):
-                finish_reason = choice.finish_reason
+        abort_listener: Any = None
+        if abort_signal is not None:
+            # Register-then-recheck: see the Anthropic provider for the
+            # full race analysis. The TL;DR is that ``_fire`` snapshots
+            # the listener list before iterating, so a listener appended
+            # after that snapshot is silently dropped; the post-add
+            # ``aborted`` read closes the gap (signal state is sticky).
+            abort_listener = abort_signal.add_listener(
+                _close_stream_on_abort, once=True,
+            )
+            if abort_signal.aborted:
+                _close_stream_on_abort()
 
-            delta = getattr(choice, "delta", None)
-            if delta is None:
-                continue
+        try:
+            for chunk in stream:
+                # In-loop abort check: even when the listener fires
+                # mid-stream, chunks already buffered by the SDK can
+                # still get yielded before the closed-socket raise lands.
+                # The in-loop check makes the abort observable on the
+                # very next chunk boundary regardless of buffering.
+                if abort_signal is not None and abort_signal.aborted:
+                    break
 
-            content_piece = getattr(delta, "content", None)
-            if content_piece:
-                piece = str(content_piece)
-                content_parts.append(piece)
-                if on_text_chunk is not None:
-                    on_text_chunk(piece)
+                response_model = getattr(chunk, "model", response_model)
+                usage_candidate = getattr(chunk, "usage", None)
+                if usage_candidate is not None:
+                    usage_obj = usage_candidate
 
-            reasoning_piece = getattr(delta, "reasoning_content", None)
-            if reasoning_piece:
-                reasoning_parts.append(str(reasoning_piece))
+                choices = getattr(chunk, "choices", None) or []
+                if not choices:
+                    continue
+                choice = choices[0]
+                if getattr(choice, "finish_reason", None):
+                    finish_reason = choice.finish_reason
 
-            tool_call_deltas = getattr(delta, "tool_calls", None) or []
-            for tc in tool_call_deltas:
-                idx = getattr(tc, "index", 0)
-                entry = tool_calls_by_index.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+                delta = getattr(choice, "delta", None)
+                if delta is None:
+                    continue
 
-                tc_id = getattr(tc, "id", None)
-                if tc_id:
-                    entry["id"] = str(tc_id)
+                content_piece = getattr(delta, "content", None)
+                if content_piece:
+                    piece = str(content_piece)
+                    content_parts.append(piece)
+                    if on_text_chunk is not None:
+                        on_text_chunk(piece)
 
-                function = getattr(tc, "function", None)
-                if function is not None:
-                    fn_name = getattr(function, "name", None)
-                    if fn_name:
-                        entry["name"] += str(fn_name)
-                    fn_args = getattr(function, "arguments", None)
-                    if fn_args:
-                        entry["arguments"] += str(fn_args)
+                reasoning_piece = getattr(delta, "reasoning_content", None)
+                if reasoning_piece:
+                    reasoning_parts.append(str(reasoning_piece))
+
+                tool_call_deltas = getattr(delta, "tool_calls", None) or []
+                for tc in tool_call_deltas:
+                    idx = getattr(tc, "index", 0)
+                    entry = tool_calls_by_index.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+
+                    tc_id = getattr(tc, "id", None)
+                    if tc_id:
+                        entry["id"] = str(tc_id)
+
+                    function = getattr(tc, "function", None)
+                    if function is not None:
+                        fn_name = getattr(function, "name", None)
+                        if fn_name:
+                            entry["name"] += str(fn_name)
+                        fn_args = getattr(function, "arguments", None)
+                        if fn_args:
+                            entry["arguments"] += str(fn_args)
+        except Exception as streaming_exc:
+            # Abort path: the listener closed the underlying HTTP
+            # response, which raised on the SDK's next read in the
+            # consumer thread. Detect via signal state (not exception
+            # class — the OpenAI/httpx layer can raise several different
+            # exception types depending on which syscall was in flight).
+            if abort_signal is not None and getattr(abort_signal, "aborted", False):
+                raise AbortError(
+                    getattr(abort_signal, "reason", None) or "user_interrupt"
+                ) from streaming_exc
+            raise
+        finally:
+            if abort_listener is not None and abort_signal is not None:
+                try:
+                    abort_signal.remove_listener(abort_listener)
+                except Exception:
+                    pass
+
+        # The stream may have completed naturally OR we broke out of
+        # the loop because the in-loop abort check fired. Surface the
+        # abort here so the caller bails at the same place every other
+        # path does. ``stream.close()`` after a clean exit is a no-op
+        # on httpx, so this stays safe.
+        if abort_signal is not None and getattr(abort_signal, "aborted", False):
+            _close_stream_on_abort()
+            raise AbortError(
+                getattr(abort_signal, "reason", None) or "user_interrupt"
+            )
 
         tool_uses: list[dict[str, Any]] = []
         for idx in sorted(tool_calls_by_index.keys()):
