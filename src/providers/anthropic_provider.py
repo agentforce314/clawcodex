@@ -272,14 +272,15 @@ class AnthropicProvider(BaseProvider):
         translate the raise into ``AbortError`` so callers can distinguish
         a user-initiated cancel from the watchdog's idle-timeout fallback.
         """
-        from src.utils.abort_controller import AbortError
         from src.utils.stream_watchdog import StreamWatchdog
 
-        # Fast-path: if abort fired before we even build the request, don't
-        # spend the round-trip — raise directly so the caller's cancel
-        # boundary unwinds at the same place the mid-stream path lands.
-        if abort_signal is not None and abort_signal.aborted:
-            raise AbortError(abort_signal.reason or "user_interrupt")
+        from ._stream_abort import StreamAbortGuard
+
+        guard = StreamAbortGuard(abort_signal)
+        # Fast-path: if abort fired before we even build the request,
+        # raise directly so the caller's cancel boundary unwinds at
+        # the same place the mid-stream path lands.
+        guard.raise_if_pre_aborted()
 
         model = self._get_model(**kwargs)
         max_tokens = kwargs.get("max_tokens", 4096)
@@ -315,7 +316,6 @@ class AnthropicProvider(BaseProvider):
         streamed_text = ""
         watchdog_fired = False
         final_message = None
-        abort_listener: Any = None
         try:
             with client.messages.stream(
                 model=model,
@@ -324,45 +324,12 @@ class AnthropicProvider(BaseProvider):
                 **({"system": system} if system else {}),
                 **extra_kwargs,
                 **{k: v for k, v in kwargs.items() if k not in ["model", "max_tokens", "tools"]},
-            ) as stream:
-                # Register the abort listener BEFORE the iterator pulls
-                # its first chunk, so a signal that fires between context
-                # entry and the first ``text_stream.__next__`` still wins
-                # the race. Mirrors ``StreamWatchdog``'s close pattern:
-                # close the underlying HTTP response from another thread,
-                # which raises in the consumer thread on the next pull.
-                if abort_signal is not None:
-                    def _close_stream_on_abort() -> None:
-                        try:
-                            response = getattr(stream, "response", None)
-                            if response is not None:
-                                close = getattr(response, "close", None)
-                                if callable(close):
-                                    close()
-                        except Exception:
-                            # Best-effort — never let the close
-                            # propagate out of the listener thread.
-                            pass
-
-                    # Register-then-recheck (NOT check-then-register):
-                    # the naive ordering has a sub-microsecond race
-                    # where another thread can call ``_fire`` between
-                    # our ``aborted`` read and the ``add_listener``
-                    # append. ``_fire`` snapshots the listener list
-                    # before iterating, so any listener appended after
-                    # that snapshot is silently dropped.
-                    # Register-then-recheck closes the gap: ``aborted``
-                    # is sticky-True after ``_fire`` runs, so the
-                    # post-add read catches any concurrent fire, and
-                    # ``_close_stream_on_abort`` is idempotent so a
-                    # double-call (listener fires AND we call directly)
-                    # is harmless.
-                    abort_listener = abort_signal.add_listener(
-                        _close_stream_on_abort, once=True,
-                    )
-                    if abort_signal.aborted:
-                        _close_stream_on_abort()
-
+            ) as stream, guard.attach(stream):
+                # ``guard.attach`` registered the close-on-abort listener
+                # (see ``_stream_abort.py`` for the race-safe ordering
+                # and the close-via-stream.response.close mechanism).
+                # The provider keeps the watchdog and fallback logic
+                # local: they aren't abort-related.
                 watchdog = StreamWatchdog(stream)
                 watchdog.arm()
                 try:
@@ -389,17 +356,12 @@ class AnthropicProvider(BaseProvider):
                     watchdog_fired = watchdog.fired
                     watchdog.disarm()
         except Exception as streaming_exc:
-            # Abort path: the abort listener closed the stream's response,
-            # which raised in the consumer thread. Translate to
-            # ``AbortError`` so the query loop's
-            # ``except AbortError: raise`` cancel boundary unwinds
-            # cleanly. We check the signal AFTER the catch (not the
-            # exception type) because the SDK can raise several different
-            # exception classes depending on which socket operation was
-            # in flight when we closed; the abort_signal state is the
-            # authoritative source of truth.
-            if abort_signal is not None and abort_signal.aborted:
-                raise AbortError(abort_signal.reason or "user_interrupt") from streaming_exc
+            # Abort path FIRST: a user cancel must win over the
+            # watchdog fallback (the abort listener may also have
+            # tripped the watchdog's race, so we'd otherwise route a
+            # user cancel through non-streaming recovery and burn
+            # another round-trip).
+            guard.reraise_if_aborted(streaming_exc)
 
             # WI-5.2 fallback path: stream interrupted by the idle
             # watchdog. Fall back to non-streaming so the user still
@@ -416,17 +378,11 @@ class AnthropicProvider(BaseProvider):
                     # error and re-raised only the streaming one.
                     raise fallback_exc from streaming_exc
             raise
-        finally:
-            # Always detach the abort listener so it doesn't pin the
-            # provider alive past one call.
-            if abort_listener is not None and abort_signal is not None:
-                abort_signal.remove_listener(abort_listener)
 
         # Stream completed normally but abort may have fired between
-        # ``stream.__exit__`` and here. Surface it now so the caller
-        # bails at the same place every other path does.
-        if abort_signal is not None and abort_signal.aborted:
-            raise AbortError(abort_signal.reason or "user_interrupt")
+        # ``stream.__exit__`` and here. Surface it at the same boundary
+        # the mid-stream path uses.
+        guard.raise_if_post_aborted()
 
         if watchdog_fired:
             # Stream got interrupted but no exception escaped the
