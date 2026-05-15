@@ -74,15 +74,16 @@ def create_subagent_context(
         overrides = SubagentContextOverrides()
 
     # --- Abort controller ---
-    # Priority: explicit override > share parent's > new child linked to parent
+    # Priority: explicit override > share parent's > new child linked to parent.
+    # ``parent_context.abort_controller`` is now non-optional on the
+    # ``ToolContext`` dataclass, so the legacy "parent has no controller"
+    # branch is gone — every parent context carries a real controller.
     if overrides.abort_controller is not None:
         abort_controller = overrides.abort_controller
-    elif overrides.share_abort_controller and parent_context.abort_controller is not None:
+    elif overrides.share_abort_controller:
         abort_controller = parent_context.abort_controller
-    elif parent_context.abort_controller is not None:
-        abort_controller = create_child_abort_controller(parent_context.abort_controller)
     else:
-        abort_controller = AbortController()
+        abort_controller = create_child_abort_controller(parent_context.abort_controller)
 
     # --- Permission context ---
     # If sharing abort controller, it's interactive and can show UI.

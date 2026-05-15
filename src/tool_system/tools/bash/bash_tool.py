@@ -35,9 +35,11 @@ class _BashRunResult:
     timed_out: bool = False
 
 
-def _get_abort_signal(context: ToolContext) -> Any | None:
-    controller = getattr(context, "abort_controller", None)
-    return getattr(controller, "signal", None) if controller else None
+def _get_abort_signal(context: ToolContext) -> Any:
+    # ``abort_controller`` is non-optional on ``ToolContext``; the
+    # ``getattr(..., None)`` indirection used to paper over the
+    # historical "field is None" hazard class.
+    return context.abort_controller.signal
 
 
 def _kill_process_group(pid: int, sig: int) -> None:
