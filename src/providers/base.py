@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Callable, Generator, Optional, TypeAlias
+from typing import Any, Callable, Generator, Optional, TYPE_CHECKING, TypeAlias
+
+if TYPE_CHECKING:
+    from src.utils.abort_controller import AbortSignal
 
 
 @dataclass
@@ -95,9 +98,18 @@ class BaseProvider(ABC):
         messages: list[MessageInput],
         tools: Optional[list[dict[str, Any]]] = None,
         on_text_chunk: TextChunkCallback | None = None,
+        abort_signal: "AbortSignal | None" = None,
         **kwargs
     ) -> ChatResponse:
         """Stream a response while also returning the final structured ChatResponse.
+
+        When ``abort_signal`` is provided, a provider implementation should
+        register a listener on it that forcibly closes the underlying HTTP
+        stream when the signal fires. Without this, a tripped abort can only
+        be observed between chunks via ``on_text_chunk`` — which never fires
+        for a turn that emits tool_use blocks without intervening text, so
+        ESC ends up waiting for the model to finish generating before the
+        outer query loop can bail.
 
         Providers may override this to support tool-aware streaming. The default
         implementation signals that rich streamed responses are unavailable.

@@ -165,8 +165,18 @@ class MinimaxProvider(BaseProvider):
         messages: list[MessageInput],
         tools: Optional[list[dict[str, Any]]] = None,
         on_text_chunk: TextChunkCallback | None = None,
+        abort_signal: Any = None,
         **kwargs
     ) -> ChatResponse:
+        # Pre-call fast-path: matches AnthropicProvider. A signal that
+        # tripped at a turn boundary skips the API round-trip entirely.
+        # Mid-stream cancellation isn't implemented yet — that needs the
+        # same response-close listener pattern AnthropicProvider uses,
+        # which the Minimax/anthropic-compatible SDK should support
+        # (it's the same underlying ``anthropic`` package) — future PR.
+        if abort_signal is not None and getattr(abort_signal, "aborted", False):
+            from src.utils.abort_controller import AbortError
+            raise AbortError(getattr(abort_signal, "reason", None) or "user_interrupt")
         model = self._get_model(**kwargs)
         max_tokens = kwargs.get("max_tokens", 4096)
         system = kwargs.pop("system", None)
