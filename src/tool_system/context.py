@@ -10,6 +10,7 @@ from .task_manager import TaskManager
 from src.permissions.types import ToolPermissionContext
 from src.services.swarm.agent_name_registry import AgentNameRegistry
 from src.task_registry import RuntimeTaskRegistry
+from src.utils.abort_controller import AbortController
 
 
 def _resolve_path(p: str | Path) -> Path:
@@ -143,7 +144,15 @@ class ToolContext:
     permission_handler: Callable[[str, str, Optional[str]], tuple[bool, bool]] | None = None
 
     options: ToolUseOptions = field(default_factory=ToolUseOptions)
-    abort_controller: Any | None = None
+    # Always present; callers that own the per-run cancellation lifecycle
+    # (TUI bridge, REPL engine) overwrite this with their own controller
+    # in ``submit()`` / ``__init__`` so tools, hooks, and subagents see
+    # the same signal the UI trips. The default factory keeps the field
+    # non-``None`` for unit tests and SDK callers that never explicitly
+    # set it — readers can drop the historical ``if ctrl and …`` /
+    # ``or AbortController()`` defensive checks that masked the "field
+    # is None" hazard class.
+    abort_controller: AbortController = field(default_factory=AbortController)
     messages: list[Any] = field(default_factory=list)
     set_response_length: Callable[[Callable[[int], int]], None] | None = None
     set_in_progress_tool_use_ids: Callable[[Callable[[set[str]], set[str]]], None] | None = None
