@@ -147,16 +147,24 @@ def _call_provider_for_turn(
     call_kwargs: dict[str, Any],
     stream: bool,
     on_text_chunk: TextChunkHandler | None,
+    cancel_signal: AbortSignal | None = None,
 ) -> tuple[Any, bool]:
     """Call the provider, preferring structured streaming when available.
 
     Returns (response, streamed_live_text).
+
+    ``cancel_signal`` is forwarded to the provider so a tripped signal can
+    close the streaming HTTP response immediately rather than waiting for
+    the model to finish generating. Without this plumb, ESC during a
+    tool-use-only turn (no intervening text chunks for ``on_text_chunk``
+    to observe) waits the full model latency before the agent loop bails.
     """
     if stream:
         try:
             response = provider.chat_stream_response(
                 api_messages,
                 on_text_chunk=on_text_chunk,
+                abort_signal=cancel_signal,
                 **call_kwargs,
             )
             if not isinstance(response, ChatResponse):
@@ -344,6 +352,7 @@ def run_agent_loop(
             call_kwargs=call_kwargs,
             stream=stream,
             on_text_chunk=on_text_chunk,
+            cancel_signal=cancel_signal,
         )
         turn_count += 1
 
