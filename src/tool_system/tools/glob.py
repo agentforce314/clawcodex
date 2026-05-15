@@ -13,24 +13,26 @@ from ..errors import ToolInputError
 from ..protocol import ToolResult
 from ..utils.path_utils import suggest_path_under_cwd, to_relative_path
 from ..utils.ripgrep import (
+    RipgrepAbortedError,
     RipgrepTimeoutError,
     RipgrepUnavailableError,
     find_ripgrep,
     ripgrep,
 )
+from ...utils.abort_controller import AbortError, AbortSignal
 
 
 _VCS_DIRS = {".git", ".svn", ".hg", ".bzr", ".jj", ".sl"}
 
 
 def _glob_via_ripgrep(
-    pattern: str, base_dir: str
+    pattern: str, base_dir: str, abort_signal: AbortSignal | None = None,
 ) -> list[str]:
     """Use ripgrep --files --glob for fast file discovery."""
     args = ["--files", "--hidden", "--glob", pattern]
     for d in _VCS_DIRS:
         args.extend(["--glob", f"!{d}"])
-    return ripgrep(args, base_dir)
+    return ripgrep(args, base_dir, abort_signal=abort_signal)
 
 
 def _glob_fallback(pattern: str, base_dir: Path) -> list[str]:
@@ -93,9 +95,20 @@ def _glob_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
     cwd = context.cwd
     use_ripgrep = find_ripgrep() is not None
 
+    abort_signal = context.abort_controller.signal
     if use_ripgrep:
         try:
-            files = _glob_via_ripgrep(pattern, str(base_dir))
+            files = _glob_via_ripgrep(pattern, str(base_dir), abort_signal=abort_signal)
+        except RipgrepAbortedError as e:
+            # User pressed ESC mid-search. Convert into the canonical
+            # ``AbortError`` so the agent loop's
+            # ``except AbortError: raise`` branch unwinds cleanly to the
+            # outer cancel boundary. Partial results are dropped — the
+            # caller has decided to cancel, so surfacing them would be
+            # noise the agent has to re-read and dismiss.
+            # ``abort_signal`` is non-None: ``ToolContext.abort_controller``
+            # is non-optional after PR #137.
+            raise AbortError(abort_signal.reason or "user_interrupt") from e
         except RipgrepTimeoutError as e:
             files = e.partial_results
         except (RipgrepUnavailableError, RuntimeError):
