@@ -185,18 +185,276 @@ class TestE2EFileRead(unittest.TestCase):
         self.assertFalse(result2.is_error)
         self.assertEqual(result2.output["file"]["type"], "image/jpeg")
 
-    def test_read_oversized_image_rejected(self) -> None:
-        """Image > 3.75 MB (TS IMAGE_TARGET_RAW_SIZE) must be rejected so the
-        base64 payload stays under Anthropic's 5 MB API image limit."""
-        from src.tool_system.tools.read import MAX_IMAGE_SIZE_BYTES
+    def test_read_oversized_image_downscales_to_fit(self) -> None:
+        """Oversized real images get downscaled to fit IMAGE_TARGET_RAW_SIZE
+        rather than rejected. Mirrors TS readImageWithTokenBudget which
+        always returns something readable. Regression for the pre-Tier-C
+        behavior that raised ToolInputError on anything > 3.75 MB."""
+        import base64
+        import io
+        from PIL import Image
+        from src.utils.image_processor import IMAGE_TARGET_RAW_SIZE
+        # 3500x2500 noise PNG -> ~14 MB raw, well over 3.75 MB cap
+        img = Image.effect_noise((3500, 2500), 64).convert("RGB")
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        big_bytes = buf.getvalue()
+        self.assertGreater(len(big_bytes), IMAGE_TARGET_RAW_SIZE,
+                           "test image must be over the cap to exercise resize")
         big = self.root / "huge.png"
-        big.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * (MAX_IMAGE_SIZE_BYTES + 1))
-        with self.assertRaises(ToolInputError) as cm:
-            self.registry.dispatch(
-                ToolCall(name="Read", input={"file_path": str(big)}),
-                self.ctx,
-            )
-        self.assertIn("exceeds maximum", str(cm.exception).lower())
+        big.write_bytes(big_bytes)
+        result = self.registry.dispatch(
+            ToolCall(name="Read", input={"file_path": str(big)}),
+            self.ctx,
+        )
+        self.assertFalse(result.is_error)
+        self.assertEqual(result.output["type"], "image")
+        # Downscaled bytes fit under the cap.
+        decoded = base64.b64decode(result.output["file"]["base64"])
+        self.assertLessEqual(len(decoded), IMAGE_TARGET_RAW_SIZE)
+        # Dimensions metadata recorded the resize.
+        dims = result.output["file"]["dimensions"]
+        self.assertIsNotNone(dims)
+        self.assertEqual(dims["originalWidth"], 3500)
+        self.assertEqual(dims["originalHeight"], 2500)
+        self.assertLessEqual(dims["displayWidth"], 1568)
+        self.assertLessEqual(dims["displayHeight"], 1568)
+
+    def test_read_misnamed_jpeg_as_png_uses_correct_media_type(self) -> None:
+        """Magic-byte format detection trumps the file extension. A file
+        named foo.png containing JPEG bytes must report media_type=image/jpeg
+        so the Anthropic API doesn't reject the wrong-typed image. Mirrors
+        TS detectImageFormatFromBuffer at imageResizer.ts:769-812."""
+        import io
+        from PIL import Image
+        # Real JPEG bytes saved under .png extension
+        img = Image.new("RGB", (50, 50), color="green")
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG")
+        liar = self.root / "liar.png"
+        liar.write_bytes(buf.getvalue())
+        result = self.registry.dispatch(
+            ToolCall(name="Read", input={"file_path": str(liar)}),
+            self.ctx,
+        )
+        self.assertFalse(result.is_error)
+        self.assertEqual(result.output["type"], "image")
+        self.assertEqual(result.output["file"]["type"], "image/jpeg")
+
+    def test_read_resized_image_emits_metadata_user_message(self) -> None:
+        """When an image gets resized, the Read tool emits a second isMeta
+        UserMessage with dimensions text for coordinate-mapping prompts.
+        Mirrors TS FileReadTool.ts:882-893 createImageMetadataText flow."""
+        import io
+        from PIL import Image
+        from src.types.messages import UserMessage
+        img = Image.new("RGB", (4000, 3000), color="white")
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=80)
+        big = self.root / "big.jpg"
+        big.write_bytes(buf.getvalue())
+        result = self.registry.dispatch(
+            ToolCall(name="Read", input={"file_path": str(big)}),
+            self.ctx,
+        )
+        self.assertFalse(result.is_error)
+        self.assertIsNotNone(result.new_messages)
+        self.assertEqual(len(result.new_messages), 1)
+        meta = result.new_messages[0]
+        self.assertIsInstance(meta, UserMessage)
+        self.assertTrue(meta.isMeta)
+        body = meta.content
+        self.assertIn("original 4000x3000", body)
+        self.assertIn("displayed at", body)
+        self.assertIn("Multiply coordinates by", body)
+        self.assertIn(str(big), body)
+
+    def test_read_small_image_emits_source_only_metadata(self) -> None:
+        """A small image that passes through without resize still emits a
+        ``[Image: source: <path>]`` metadata message so the model knows the
+        source path. Matches TS createImageMetadataText behavior."""
+        import io
+        from PIL import Image
+        from src.types.messages import UserMessage
+        img = Image.new("RGB", (50, 50), color="red")
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        small = self.root / "small.png"
+        small.write_bytes(buf.getvalue())
+        result = self.registry.dispatch(
+            ToolCall(name="Read", input={"file_path": str(small)}),
+            self.ctx,
+        )
+        self.assertFalse(result.is_error)
+        self.assertIsNotNone(result.new_messages)
+        self.assertEqual(len(result.new_messages), 1)
+        meta = result.new_messages[0]
+        self.assertIsInstance(meta, UserMessage)
+        self.assertTrue(meta.isMeta)
+        self.assertIn(str(small), meta.content)
+        # No "Multiply coordinates by" since no resize
+        self.assertNotIn("Multiply coordinates by", meta.content)
+
+    def test_production_dispatch_returns_primary_and_extras(self) -> None:
+        """``_dispatch_single_tool`` returns ``(primary, extras)`` where
+        primary is the tool_result and extras are any supplemental new_messages.
+        Locks in the plumbing fix: a resized image must yield BOTH so the
+        dimensions metadata reaches the model."""
+        import io
+        from PIL import Image
+        from src.query.query import _dispatch_single_tool
+        from src.types.messages import UserMessage
+        from src.types.content_blocks import ToolUseBlock
+
+        img = Image.new("RGB", (3000, 2000), color="blue")
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=80)
+        big = self.root / "dispatch.jpg"
+        big.write_bytes(buf.getvalue())
+
+        block = ToolUseBlock(id="tu_pd_1", name="Read", input={"file_path": str(big)})
+        primary, extras = _dispatch_single_tool(block, self.registry, self.ctx)
+
+        # Primary is the tool_result carrying tu_pd_1.
+        self.assertIsInstance(primary, UserMessage)
+        self.assertEqual(primary.content[0].tool_use_id, "tu_pd_1")
+        self.assertFalse(primary.content[0].is_error)
+        # Exactly one supplemental (dimensions) message, flagged as meta.
+        self.assertEqual(len(extras), 1)
+        self.assertIsInstance(extras[0], UserMessage)
+        self.assertTrue(extras[0].isMeta)
+        self.assertIn("original 3000x2000", extras[0].content)
+        self.assertIn("Multiply coordinates by", extras[0].content)
+
+    def test_production_dispatch_no_extras_for_text_read(self) -> None:
+        """A plain text read produces a tool_result and no extras."""
+        from src.query.query import _dispatch_single_tool
+        from src.types.content_blocks import ToolUseBlock
+
+        text = self.root / "plain.txt"
+        text.write_text("hello\nworld\n")
+        block = ToolUseBlock(id="tu_pd_2", name="Read", input={"file_path": str(text)})
+        primary, extras = _dispatch_single_tool(block, self.registry, self.ctx)
+        self.assertEqual(extras, [])
+        # Verify the right tool_use_id and non-error status.
+        self.assertEqual(primary.content[0].tool_use_id, "tu_pd_2")
+        self.assertFalse(primary.content[0].is_error)
+
+    def test_multi_tool_batch_preserves_tool_result_pairing(self) -> None:
+        """Regression test for the critic-flagged bug where multi-tool batches
+        with supplemental new_messages broke tool_result pairing.
+
+        Pre-fix: ``_run_tools_partitioned`` interleaved
+        ``[a_result, a_meta, b_result]``. The merge guard refused to combine
+        a_result+a_meta, so ``ensure_tool_result_pairing`` saw a_result then
+        a_meta (no tool_result for b), decided tu_b was missing, and injected
+        a synthetic "[Tool result missing due to internal error]" placeholder.
+
+        Post-fix: primaries-first ordering yields ``[a_result, b_result, a_meta]``
+        so pairing succeeds for both. This test drives two image Reads
+        concurrently through ``_run_tools_partitioned`` and verifies both
+        tool_results survive the normalize+pairing pipeline."""
+        import asyncio
+        import io
+        from PIL import Image
+        from src.query.query import _run_tools_partitioned
+        from src.types.content_blocks import ToolUseBlock
+        from src.types.messages import normalize_messages_for_api, AssistantMessage
+
+        # Two real images that will resize and emit metadata extras.
+        img_a = Image.new("RGB", (2000, 1500), color="red")
+        img_b = Image.new("RGB", (3000, 2000), color="green")
+        path_a = self.root / "img_a.jpg"
+        path_b = self.root / "img_b.jpg"
+        for img, p in [(img_a, path_a), (img_b, path_b)]:
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=80)
+            p.write_bytes(buf.getvalue())
+
+        block_a = ToolUseBlock(id="tu_a", name="Read", input={"file_path": str(path_a)})
+        block_b = ToolUseBlock(id="tu_b", name="Read", input={"file_path": str(path_b)})
+
+        # Read is concurrency-safe so this exercises the parallel path.
+        from src.tool_system.registry import get_all_base_tools
+        tools = get_all_base_tools(self.registry)
+        results = asyncio.run(_run_tools_partitioned(
+            [block_a, block_b], self.registry, self.ctx, tools,
+        ))
+
+        # Primaries first, then extras: [a_result, b_result, a_meta, b_meta].
+        # Both tool_results land before any meta message.
+        tool_result_msgs = [
+            m for m in results
+            if m.content and hasattr(m.content[0], "tool_use_id")
+        ]
+        self.assertEqual(len(tool_result_msgs), 2)
+        ids = {m.content[0].tool_use_id for m in tool_result_msgs}
+        self.assertEqual(ids, {"tu_a", "tu_b"})
+        for m in tool_result_msgs:
+            self.assertFalse(m.content[0].is_error,
+                             f"tu_{m.content[0].tool_use_id} regression: "
+                             f"got error placeholder instead of real result")
+
+        # End-to-end: feed through normalize_messages_for_api with an
+        # assistant message carrying both tool_uses, and verify both
+        # tool_results are present, non-error, and contain real content.
+        from src.types.content_blocks import ToolUseBlock as TUB
+        asst = AssistantMessage(
+            content=[
+                TUB(id="tu_a", name="Read", input={"file_path": str(path_a)}),
+                TUB(id="tu_b", name="Read", input={"file_path": str(path_b)}),
+            ],
+        )
+        normalized = normalize_messages_for_api([asst, *results])
+        # Find every tool_result in the normalized output.
+        found_ids = set()
+        for m in normalized:
+            content = m.get("content") if isinstance(m, dict) else getattr(m, "content", None)
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "tool_result":
+                    tu_id = block.get("tool_use_id")
+                    body = block.get("content")
+                    # Reject the synthetic-error placeholder.
+                    self.assertNotIn(
+                        "Tool result missing", str(body),
+                        f"{tu_id}: API would receive synthetic placeholder "
+                        f"instead of the real tool_result",
+                    )
+                    found_ids.add(tu_id)
+        self.assertEqual(found_ids, {"tu_a", "tu_b"},
+                         "API payload missing one or both tool_results")
+
+    def test_pdf_pages_parser_accepts_single_page(self) -> None:
+        from src.tool_system.tools.read import _parse_pdf_pages
+        self.assertEqual(_parse_pdf_pages("3"), (3, 3))
+
+    def test_pdf_pages_parser_accepts_range(self) -> None:
+        from src.tool_system.tools.read import _parse_pdf_pages
+        self.assertEqual(_parse_pdf_pages("1-5"), (1, 5))
+        self.assertEqual(_parse_pdf_pages("10-20"), (10, 20))
+
+    def test_pdf_pages_parser_rejects_malformed(self) -> None:
+        from src.tool_system.tools.read import _parse_pdf_pages
+        with self.assertRaises(ToolInputError):
+            _parse_pdf_pages("abc")
+        with self.assertRaises(ToolInputError):
+            _parse_pdf_pages("")
+        with self.assertRaises(ToolInputError):
+            _parse_pdf_pages("5-3")  # reversed
+        with self.assertRaises(ToolInputError):
+            _parse_pdf_pages("0-2")  # 1-indexed
+
+    def test_pdf_pages_parser_rejects_oversized_range(self) -> None:
+        from src.tool_system.tools.read import (
+            PDF_MAX_PAGES_PER_READ,
+            _parse_pdf_pages,
+        )
+        with self.assertRaises(ToolInputError):
+            _parse_pdf_pages(f"1-{PDF_MAX_PAGES_PER_READ + 1}")
 
     def test_read_exe_still_blocked(self) -> None:
         """The extension blocklist still rejects truly binary files after the
