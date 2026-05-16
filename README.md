@@ -41,7 +41,10 @@ python -m src.cli         # start the REPL
 
 ## 📰 News
 
-- **2026-05-14:** **Codebase stats** — Total Python files: 837 files; Total Lines of Python Code: **167,034 lines**.
+- **2026-05-16:** **Codebase stats** — Total Python files: 894 files; Total Lines of Python Code: **177,428 lines** (up from 167,034 lines on 2026-05-14; ~+10.4k lines in two days, mostly ESC-cancellation hardening + image-handling parity).
+- **2026-05-16:** **Image-handling parity (Tier C, #149/#154/#155/#156)** — Read tool ported the TS image pipeline (magic-byte format sniff, bounded byte read, resize/compress to the 3.75 MB / 1568 px envelope, base64 size validation); `@image.png` @-mentions now inline as real `ImageBlock` content (the prior text-mode read shipped mojibake the model latched onto); image `tool_result` list shape preserved end-to-end through `_dispatch_single_tool`; OpenAI-compat / GLM / Minimax / DeepSeek / OpenRouter now translate Anthropic `image` and `document` blocks into `image_url` / `file` shapes (with `tool_use_id` correlation across the tool→user split); `validate_images_for_api` promoted into `BaseProvider._prepare_messages` so every provider validates client-side; BOM-aware text decoding (`utf-16` / `utf-32` / `utf-8-sig`) handles Windows-emitted Unicode files without mojibake.
+- **2026-05-16:** **Subagent + Bash reliability** — custom subagents now discovered from `.claude/agents/` (#151); Bash `tool_result` distinguishes timeout from ESC-abort so the model can tell the two apart (#152); async-subagent `AbortController` isolation pinned by regression tests so a parent's ESC doesn't fire a sibling's abort listeners (#153); cancelled `tool_result` reliably surfaces `REJECT_MESSAGE` on the production path (#150).
+- **2026-05-15 to 2026-05-16:** **ESC cancellation hardening across providers (#144–#148)** — mid-stream cancellation closes the streaming HTTP response within ~50ms for every supported provider (Anthropic, OpenAI, GLM, Minimax, DeepSeek, OpenRouter); shared `StreamAbortGuard` helper extracted; LiteLLM worker-thread iteration fixes long-tail hangs on OpenAI-compat backends.
 - **2026-05-14:** **ESC cancellation latency fix (#130)** — pressing ESC now cancels in-flight Bash commands and streaming responses within ~50ms, on top of the diff color-bar full-width render fix (#129) and the bypass-permissions outside-paths fix (#128).
 - **2026-05-12:** **Bootstrap + architecture docs** — new architecture overview at [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md); production bootstrap port (memoized `init()`, trust boundary, unified `launch_repl(args)`, `--bare` fast path, schema migration runner); main query loop and agent loop routed through `dispatch_full` with deferred tool loading.
 - **2026-05-11 (v0.5.0):** **ClawCodex v0.5.0 released** — rebrand to ClawCodex across user-visible UI; reactive state subsystem ported (signals, store, session context, cost tracker, 1h cache eligibility); API layer hardened (output-token cap, request-id injection, message-level cache breakpoints, Haiku fast path, watchdog + non-streaming fallback, retry-with-stream); agent loop foundation (typed terminal, media recovery, blocking-limit guards, token budget, stop hooks, model fallback, continuation nudge); refreshed README screenshot.
@@ -194,10 +197,12 @@ clawcodex --allow-dangerously-skip-permissions         # allow /permission-mode 
 |--------|--------|-------------|
 | CLI Entry | ✅ | `clawcodex`, `login`, `config`, `-p` / `--print`, `--tui`, `--stream`, `--version` |
 | Interactive REPL | ✅ | Default inline REPL; optional Textual TUI; history, tab completion, multiline |
-| Multi-Provider | ✅ | Anthropic, OpenAI, Zhipu GLM, Minimax, OpenRouter, DeepSeek |
+| Multi-Provider | ✅ | Anthropic, OpenAI, Zhipu GLM, Minimax, OpenRouter, DeepSeek — including Anthropic→OpenAI image / document block translation for vision-capable OpenAI-compat backends |
 | Session Persistence | ✅ | Save/load sessions locally |
 | Agent Loop | ✅ | Tool calling loop with streaming and headless mode |
 | Skill System | ✅ | SKILL.md-based slash-command skills with args + tool limits |
+| Cancellation / Abort | ✅ | ESC closes in-flight Bash, Grep/Glob, and streaming HTTP within ~50ms across every provider; subagents get isolated `AbortController`s; `Bash` `tool_result` distinguishes timeout from ESC-abort |
+| Image Handling | ✅ | TS-parity Read pipeline (magic-byte sniff, resize/compress to API limits); `@image.png` @-mentions inline as `ImageBlock`; pre-API base64 size validation in `BaseProvider._prepare_messages`; binary @-mentions (PDF/zip/docx/...) routed to a Read-tool hint instead of mojibake |
 | Context Building | 🟡 | Workspace / git / `CLAUDE.md` injection; richer summaries and memory still evolving |
 | Permission System | 🟡 | Framework and checks; full integration still in progress |
 | MCP | 🟡 | MCP-oriented tools and wiring; full protocol/runtime polish ongoing |
