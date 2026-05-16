@@ -10,7 +10,9 @@ from typing import Any, Callable, Literal
 from ..permissions.types import PermissionMode
 
 
-AgentSource = Literal["built-in", "user", "project", "managed", "plugin", "dynamic"]
+AgentSource = Literal[
+    "built-in", "user", "project", "managed", "plugin", "flag", "dynamic",
+]
 
 
 @dataclass
@@ -248,27 +250,37 @@ FORK_AGENT = AgentDefinition(
 def _builtins_disabled_for_sdk() -> bool:
     """Honor TS ``CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS``.
 
-    The env var only takes effect for SDK / non-interactive entrypoints
-    (``CLAUDE_CODE_ENTRYPOINT`` starts with ``sdk-``) — interactive REPL
-    users must not lose ``Explore`` / ``Plan`` from an env-var
-    misconfiguration. Matches builtInAgents.ts gating.
+    The env var only takes effect in non-interactive sessions — matches
+    TS ``builtInAgents.ts:25-30`` which gates on
+    ``getIsNonInteractiveSession()`` (= ``!STATE.isInteractive``). An
+    interactive REPL must not lose ``Explore`` / ``Plan`` from an
+    env-var misconfiguration. ``STATE.isInteractive`` is set by
+    ``src/init.py:_determine_is_interactive`` based on stdout TTY + SSH +
+    ``--print``/``--init-only``/``--sdk-url`` flags.
     """
     import os
     if os.environ.get("CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS", "").lower() not in (
         "1", "true", "yes",
     ):
         return False
-    entrypoint = os.environ.get("CLAUDE_CODE_ENTRYPOINT", "")
-    return entrypoint.startswith("sdk-")
+    try:
+        from src.bootstrap.state import get_is_interactive
+        return not get_is_interactive()
+    except Exception:
+        # Bootstrap not initialized — fall back to TTY heuristic so SDK
+        # callers that import directly (no init.py) still see the gate.
+        import sys
+        return not sys.stdout.isatty()
 
 
 def get_built_in_agents() -> list[AgentDefinition]:
     """Return the list of active built-in agent definitions.
 
     Mirrors getBuiltInAgents() from typescript/src/tools/AgentTool/builtInAgents.ts.
-    When ``CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS=true`` AND the entrypoint
-    is an SDK one, returns ``[]`` so programmatic callers can build the
-    available-agent set from scratch via the SDK initialize control request.
+    When ``CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS=true`` AND the session is
+    non-interactive (see ``_builtins_disabled_for_sdk`` — gates on
+    ``get_is_interactive()``), returns ``[]`` so programmatic callers can build
+    the available-agent set from scratch via the SDK initialize control request.
     """
     if _builtins_disabled_for_sdk():
         return []

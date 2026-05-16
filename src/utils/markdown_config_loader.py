@@ -75,45 +75,106 @@ def _find_git_root(cwd: Path) -> Path | None:
 def _find_canonical_git_root(cwd: Path) -> Path | None:
     """Return the *main* repo root, resolving worktree ``.git`` files.
 
-    Mirrors TS ``findCanonicalGitRoot``. In a regular git checkout this is
-    the same as ``_find_git_root``. In a worktree the worktree root holds a
-    ``.git`` *file* of the form ``gitdir: /path/to/main/.git/worktrees/<name>``;
-    we follow that pointer back to the main repo root (``/path/to/main``).
-    Returns ``None`` outside any git repo, or when the gitdir pointer is
-    malformed / unreadable.
+    Direct port of TS ``resolveCanonicalRoot`` in ``utils/git.ts:122-180``,
+    including the security validation. Returns ``None`` outside any git
+    repo. For a regular checkout returns the same path as ``_find_git_root``.
+    For a worktree, follows the chain:
+
+        gitRoot/.git  → "gitdir: <worktreeGitDir>"
+        worktreeGitDir/commondir → "<relative path to main .git>"
+
+    and validates both back-links before trusting them. **The ``.git`` file
+    and ``commondir`` are attacker-controlled** in any cloned repo; without
+    these checks a hostile repo could point ``commondir`` at any path the
+    victim has trusted and bypass the trust dialog. We require:
+
+      1. ``realpath(dirname(worktreeGitDir))`` equals
+         ``commonDir / "worktrees"`` — ensures the ``commondir`` file we
+         read lives inside the resolved common dir, not inside the
+         attacker's repo.
+      2. ``realpath(worktreeGitDir/gitdir)`` equals
+         ``realpath(gitRoot) / ".git"`` — ensures an attacker can't borrow
+         a victim's existing worktree entry by guessing its path.
+
+    Any check failure or unexpected error → return the input ``gitRoot``
+    (treat as a standalone repo, no fallback).
+
+    **Known limitation (matches TS):** these checks raise the bar but do
+    not constitute a hard sandbox. An attacker who controls both the
+    worktree gitdir layout AND can write a back-link pointing at the
+    victim's ``gitRoot/.git`` (e.g., a guessed path) can still pass both
+    checks. The TS reference has the same residual hole — a fuller fix
+    would require a trust-list of canonical repo roots maintained by the
+    caller. Track future hardening separately.
     """
-    repo_root = _find_git_root(cwd)
-    if repo_root is None:
+    git_root = _find_git_root(cwd)
+    if git_root is None:
         return None
-    git_path = repo_root / ".git"
+    git_path = git_root / ".git"
     if git_path.is_dir():
-        return repo_root  # regular checkout
+        return git_root  # regular checkout
     try:
-        text = git_path.read_text(encoding="utf-8")
+        git_contents = git_path.read_text(encoding="utf-8").strip()
     except (OSError, UnicodeDecodeError):
-        return repo_root
-    gitdir: Path | None = None
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("gitdir:"):
-            target = stripped.split(":", 1)[1].strip()
-            if not target:
-                return repo_root
-            target_path = Path(target)
-            if not target_path.is_absolute():
-                target_path = (repo_root / target_path).resolve()
-            gitdir = target_path
-            break
-    if gitdir is None:
-        return repo_root
-    # Worktree gitdir looks like ``<main>/.git/worktrees/<name>``. The main
-    # repo root is two parents up (``<main>/.git`` → ``<main>``).
+        return git_root
+    if not git_contents.startswith("gitdir:"):
+        return git_root
+    target = git_contents[len("gitdir:"):].strip()
+    if not target:
+        return git_root
+    worktree_gitdir_raw = Path(target)
+    if not worktree_gitdir_raw.is_absolute():
+        worktree_gitdir_raw = (git_root / worktree_gitdir_raw)
     try:
-        if gitdir.parent.name == "worktrees" and gitdir.parent.parent.name == ".git":
-            return gitdir.parent.parent.parent
+        worktree_gitdir = worktree_gitdir_raw.resolve(strict=False)
     except (OSError, ValueError):
-        return repo_root
-    return repo_root
+        return git_root
+
+    # Read commondir back-link (relative path to the shared ``.git`` dir).
+    # Submodules have no ``commondir`` and fall through to git_root.
+    commondir_path = worktree_gitdir / "commondir"
+    try:
+        commondir_rel = commondir_path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return git_root
+    if not commondir_rel:
+        return git_root
+    try:
+        common_dir = (worktree_gitdir / commondir_rel).resolve(strict=False)
+    except (OSError, ValueError):
+        return git_root
+
+    # SECURITY check 1: worktree gitdir must be a direct child of
+    # ``<commonDir>/worktrees``. Realpath dirname so symlinked /tmp →
+    # /private/tmp doesn't break the check.
+    try:
+        parent_real = worktree_gitdir.parent.resolve(strict=False)
+    except (OSError, ValueError):
+        return git_root
+    expected_parent = common_dir / "worktrees"
+    if parent_real != expected_parent:
+        return git_root
+
+    # SECURITY check 2: ``<worktreeGitDir>/gitdir`` back-link must
+    # realpath-equal ``realpath(git_root) / ".git"``. Realpath the dir
+    # then join '.git' — realpathing the .git file itself would follow
+    # an attacker's symlinked .git and let them borrow a victim's
+    # back-link.
+    backlink_path = worktree_gitdir / "gitdir"
+    try:
+        backlink_target = Path(backlink_path.read_text(encoding="utf-8").strip())
+        backlink_real = backlink_target.resolve(strict=False)
+        git_root_real = git_root.resolve(strict=False) / ".git"
+    except (OSError, UnicodeDecodeError, ValueError):
+        return git_root
+    if backlink_real != git_root_real:
+        return git_root
+
+    # Bare-repo worktrees: common_dir isn't inside a working directory;
+    # use common_dir itself as the stable identity.
+    if common_dir.name != ".git":
+        return common_dir
+    return common_dir.parent
 
 
 def _get_project_subdir_paths(cwd: str, subdir: str) -> list[str]:
