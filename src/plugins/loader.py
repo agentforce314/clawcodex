@@ -77,6 +77,23 @@ def load_plugin_from_directory(
         version=raw.get("version", "1.0.0"),
     )
 
+    agents_paths: list[str] = []
+    single = raw.get("agentsPath")
+    if isinstance(single, str) and single.strip():
+        agents_paths.append(single.strip())
+    multi = raw.get("agentsPaths")
+    if isinstance(multi, list):
+        for item in multi:
+            if isinstance(item, str) and item.strip():
+                agents_paths.append(item.strip())
+
+    resolved_agents_paths: list[str] = []
+    for entry in agents_paths:
+        p = Path(entry)
+        resolved = str(p) if p.is_absolute() else str(plugin_dir / entry)
+        if resolved not in resolved_agents_paths:
+            resolved_agents_paths.append(resolved)
+
     plugin = LoadedPlugin(
         name=manifest.name,
         manifest=manifest,
@@ -86,6 +103,7 @@ def load_plugin_from_directory(
         enabled=raw.get("enabled", True),
         hooks_config=raw.get("hooks"),
         mcp_servers=raw.get("mcp_servers"),
+        agents_paths=resolved_agents_paths,
     )
 
     return plugin

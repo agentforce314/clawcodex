@@ -22,6 +22,10 @@ class LoadedPlugin:
     is_builtin: bool = False
     hooks_config: dict[str, Any] | None = None
     mcp_servers: dict[str, Any] | None = None
+    # Directories (relative to ``path`` or absolute) holding ``*.md`` agent
+    # definitions exposed by this plugin. Populated from the manifest's
+    # ``agentsPath`` (single) and ``agentsPaths`` (list) keys.
+    agents_paths: list[str] = field(default_factory=list)
 
 
 @dataclass
