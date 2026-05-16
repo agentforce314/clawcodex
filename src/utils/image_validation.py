@@ -76,11 +76,56 @@ def _get_image_source_data(block: Any) -> str | None:
     return data if isinstance(data, str) else None
 
 
+# Cap on nested tool_result depth the walker will descend into. The
+# Anthropic API doesn't accept arbitrarily deep nesting in production
+# (tool_result content is normally one level deep); the limit guards a
+# pathologically constructed message from blowing Python's recursion
+# limit. Pick a value comfortably above any realistic depth.
+_MAX_TOOL_RESULT_DEPTH = 32
+
+
+def _iter_image_blocks(content: Any, _depth: int = 0):
+    """Yield every image block reachable from ``content``.
+
+    Walks top-level blocks AND descends into ``tool_result`` block content
+    lists. Required because the Read tool now returns images inside a
+    tool_result's ``content`` (post-#154/#155 image-handling parity); a
+    walker that only looks at the outer user message would miss them and
+    let an oversized base64 reach the API.
+
+    Recursion is bounded by ``_MAX_TOOL_RESULT_DEPTH`` so an adversarial
+    or accidentally over-nested message cannot hit Python's default
+    recursion limit (typically ~1000). Production tool_result nesting is
+    single-digit; the cap is generous defense-in-depth. Depth-first
+    yield order matches a reader's mental model of the message: for
+    ``[ImgA, ToolResult(ImgB), ImgC]`` the walker yields A, B, C, which
+    matches the index numbering used in ``ImageSizeError``.
+    """
+    if _depth > _MAX_TOOL_RESULT_DEPTH:
+        return
+    for block in _iter_content_blocks(content):
+        btype = _get_block_type(block)
+        if btype == "image":
+            yield block
+        elif btype == "tool_result":
+            # tool_result.content is either a string (no images) or a
+            # list of blocks; recurse so we descend in document order.
+            if isinstance(block, dict):
+                inner = block.get("content")
+            else:
+                inner = getattr(block, "content", None)
+            if isinstance(inner, list):
+                yield from _iter_image_blocks(inner, _depth + 1)
+
+
 def validate_images_for_api(messages: list[Any]) -> None:
     """Walk ``messages`` and raise ImageSizeError if any image is too large.
 
     Each image block's base64 string length is compared to
     ``API_IMAGE_MAX_BASE64_SIZE`` (5 MB). Mirrors TS imageValidation.ts:52-105.
+
+    Recursion covers tool_result-nested images so the Read tool's image
+    return path is also guarded; see ``_iter_image_blocks``.
     """
     oversized: list[tuple[int, int]] = []
     for msg in messages:
@@ -89,9 +134,7 @@ def validate_images_for_api(messages: list[Any]) -> None:
             content = msg.get("content")
         else:
             content = getattr(msg, "content", None)
-        for block in _iter_content_blocks(content):
-            if _get_block_type(block) != "image":
-                continue
+        for block in _iter_image_blocks(content):
             data = _get_image_source_data(block)
             if data is None:
                 continue

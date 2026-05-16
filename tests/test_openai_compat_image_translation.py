@@ -155,10 +155,19 @@ class TestConvertToolResultWithImage(unittest.TestCase):
         self.assertEqual(out[1]["role"], "tool")
         self.assertEqual(out[1]["tool_call_id"], "tu_1")
         self.assertTrue(out[1]["content"], "tool message content must be non-empty")
-        # 3) synthetic user message carrying the image_url
+        # Placeholder must reference the tool_use_id so the model can
+        # mentally correlate the synthetic ``role=user`` follow-up message
+        # back to *this* tool_call (known OpenAI-API limitation: there's
+        # no wire-level link between tool_call_id and a user message).
+        self.assertIn("tu_1", out[1]["content"])
+        # 3) synthetic user message: leads with a correlation text block
+        # naming the same tool_use_id (so the link is visible from both
+        # directions), followed by the image_url block.
         self.assertEqual(out[2]["role"], "user")
-        self.assertEqual(out[2]["content"][0]["type"], "image_url")
-        self.assertIn("png;base64,XYZ", out[2]["content"][0]["image_url"]["url"])
+        self.assertEqual(out[2]["content"][0]["type"], "text")
+        self.assertIn("tu_1", out[2]["content"][0]["text"])
+        self.assertEqual(out[2]["content"][1]["type"], "image_url")
+        self.assertIn("png;base64,XYZ", out[2]["content"][1]["image_url"]["url"])
 
     def test_tool_result_with_text_and_image_splits_text_to_tool_image_to_user(self) -> None:
         messages = [
@@ -177,10 +186,42 @@ class TestConvertToolResultWithImage(unittest.TestCase):
         tool_msgs = [m for m in out if m.get("role") == "tool"]
         self.assertEqual(len(tool_msgs), 1)
         self.assertIn("Here is the image", tool_msgs[0]["content"])
-        # The image becomes its own following user message.
+        # Tool message must ALSO carry the tool_use_id correlation marker,
+        # symmetric with the image-only branch. Without it the text+image
+        # case would have no correlation hint and the synthetic user
+        # message could be misread as a new prompt.
+        self.assertIn("tu_2", tool_msgs[0]["content"])
+        # The image becomes its own following user message. Leads with a
+        # text correlation marker, then the image_url block.
         idx = out.index(tool_msgs[0])
         self.assertEqual(out[idx + 1]["role"], "user")
-        self.assertEqual(out[idx + 1]["content"][0]["type"], "image_url")
+        self.assertEqual(out[idx + 1]["content"][0]["type"], "text")
+        self.assertIn("tu_2", out[idx + 1]["content"][0]["text"])
+        self.assertEqual(out[idx + 1]["content"][1]["type"], "image_url")
+
+    def test_tool_result_with_empty_list_content_emits_non_empty_tool_message(self) -> None:
+        """Defensive sentinel: an empty tool_result content list (or a list
+        of block types the converter doesn't recognise) must NOT emit a
+        ``role=tool`` with empty content — OpenAI rejects that. The
+        converter falls back to a literal ``[empty tool result]`` so the
+        invariant documented in the split comment is enforced by code,
+        not just by docstring."""
+        messages = [
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "tu_e", "name": "Bash", "input": {}},
+            ]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "tu_e", "content": []},
+            ]},
+        ]
+        out = _convert_anthropic_messages_to_openai(messages)
+        tool_msgs = [m for m in out if m.get("role") == "tool"]
+        self.assertEqual(len(tool_msgs), 1)
+        self.assertTrue(tool_msgs[0]["content"])
+        # No synthetic user message should follow when there were no
+        # multimodal blocks (only the empty-content sentinel applies).
+        idx = out.index(tool_msgs[0])
+        self.assertEqual(idx + 1, len(out), "no synthetic user message expected")
 
     def test_tool_result_text_only_unchanged_no_extra_user_message(self) -> None:
         """A text-only tool_result must NOT spawn an extra synthetic user

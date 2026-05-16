@@ -2316,6 +2316,14 @@ class ClawcodexREPL:
                     self.console.print(
                         f"[dim]  ⎿  Read image {att['display_path']}[/dim]"
                     )
+                elif kind == "binary":
+                    # Binary file (PDF, archive, ...) — show what happened
+                    # so the user isn't surprised that no content was
+                    # inlined. The reminder text already nudges the model
+                    # toward the Read tool.
+                    self.console.print(
+                        f"[dim]  ⎿  Skipped binary file {att['display_path']}[/dim]"
+                    )
                 else:
                     label = "directory" if kind == "directory" else "file"
                     self.console.print(
