@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import unittest
+from typing import Any
 
 from src.utils.image_processor import API_IMAGE_MAX_BASE64_SIZE
 from src.utils.image_validation import ImageSizeError, validate_images_for_api
@@ -59,6 +60,86 @@ class TestValidateImagesForAPI(unittest.TestCase):
         """Image blocks inside content lists are detected regardless of where
         they sit (e.g. inside an arbitrary block list)."""
         msgs = [_msg([_img_block(API_IMAGE_MAX_BASE64_SIZE + 1)])]
+        with self.assertRaises(ImageSizeError):
+            validate_images_for_api(msgs)
+
+    def test_oversize_image_inside_tool_result_content_raises(self) -> None:
+        """Read tool returns image blocks inside ``tool_result.content``
+        (post-#154/#155). Validator must recurse so it sees them, otherwise
+        an oversized base64 reaches the API and surfaces as an opaque error.
+        """
+        nested = {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "tu_1",
+                    "content": [
+                        {"type": "text", "text": "image content:"},
+                        _img_block(API_IMAGE_MAX_BASE64_SIZE + 1),
+                    ],
+                }
+            ],
+        }
+        with self.assertRaises(ImageSizeError) as cm:
+            validate_images_for_api([nested])
+        self.assertEqual(len(cm.exception.oversized), 1)
+
+    def test_in_limit_image_inside_tool_result_passes(self) -> None:
+        nested = {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "tu_1",
+                    "content": [_img_block(1024)],
+                }
+            ],
+        }
+        validate_images_for_api([nested])  # should not raise
+
+    def test_tool_result_with_string_content_does_not_crash(self) -> None:
+        """Defensive: a tool_result whose ``content`` is a plain string
+        (no images) must not trip the new recursion."""
+        msgs = [{
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "x", "content": "ok"}],
+        }]
+        validate_images_for_api(msgs)  # should not raise
+
+    def test_deeply_nested_tool_results_hit_depth_limit_not_recursion_error(self) -> None:
+        """Pathological nesting must NOT raise ``RecursionError``. The
+        walker has a soft depth cap (``_MAX_TOOL_RESULT_DEPTH``) and
+        stops descending past it. Beyond-the-cap images are skipped
+        silently (a wider validator could log a warning, but raising
+        would convert a defensive guard into a crash for any
+        adversarial input).
+        """
+        # Build a chain 5000-deep — well above Python's default
+        # recursion limit (~1000), guaranteeing the unbounded form
+        # would crash.
+        innermost = _img_block(API_IMAGE_MAX_BASE64_SIZE + 1)
+        node: Any = [innermost]
+        for _ in range(5000):
+            node = [{"type": "tool_result", "tool_use_id": "x", "content": node}]
+        msgs = [{"role": "user", "content": node}]
+        # Should NOT raise RecursionError. Deep image is past the
+        # depth cap so it's silently skipped. Important: this means
+        # validate_images_for_api returns without finding an oversize
+        # image — the depth cap is a safety net, not a strict
+        # invariant. Real-world tool_result nesting is single-digit.
+        validate_images_for_api(msgs)
+
+    def test_within_depth_limit_image_still_caught(self) -> None:
+        """Sanity check the depth cap doesn't reject normal-depth tool_results."""
+        # Realistic shape: single tool_result containing an image.
+        msgs = [{
+            "role": "user",
+            "content": [{
+                "type": "tool_result", "tool_use_id": "x",
+                "content": [_img_block(API_IMAGE_MAX_BASE64_SIZE + 1)],
+            }],
+        }]
         with self.assertRaises(ImageSizeError):
             validate_images_for_api(msgs)
 

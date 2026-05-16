@@ -22,6 +22,7 @@ from ..tool_system.context import ToolContext
 from ..tool_system.protocol import ToolCall, ToolResult
 from ..tool_system.registry import ToolRegistry
 from ..utils.abort_controller import AbortController, AbortError
+from ..utils.image_validation import ImageSizeError
 from ..providers.base import BaseProvider, ChatResponse
 
 from .config import QueryConfig, build_query_config
@@ -405,6 +406,17 @@ async def _call_model_sync(
         # to those substring checks could accidentally match an abort
         # reason and convert the cancel into a model-error reply.
         raise
+    except ImageSizeError as e:
+        # Client-side pre-API validation tripped (BaseProvider._prepare_messages).
+        # Surface as a media_size error with the same classification the
+        # server-side guard uses, so the reactive-compact recovery path
+        # (Ch5/B.2) treats them identically.
+        err_msg = _create_assistant_api_error_message(
+            f"Media too large: {e}",
+            error="media_size",
+        )
+        err_msg._api_error = "media_size"  # type: ignore[attr-defined]
+        return [err_msg], []
     except Exception as e:
         if _diag:
             logger.warning("[DIAG] _call_model_sync: EXCEPTION after %.1fs: %s", time.monotonic() - _t0, e)
