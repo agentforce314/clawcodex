@@ -164,7 +164,7 @@ def handle_server_control_request(
             try:
                 from src.agent.load_agents_dir import register_sdk_agents
                 from src.agent.parse_agent_json import parse_agents_from_json
-                parsed_agents = parse_agents_from_json(agents_json, source='user')
+                parsed_agents = parse_agents_from_json(agents_json, source='flag')
                 register_sdk_agents(parsed_agents)
             except Exception:
                 logger.exception(

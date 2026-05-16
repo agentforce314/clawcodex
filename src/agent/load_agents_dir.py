@@ -181,17 +181,22 @@ def get_agent_definitions_with_overrides(cwd: str) -> list[AgentDefinition]:
             plugin_agents = []
 
         custom = _load_custom_agents(cwd)
+        # Policy gate only blocks the disk loaders (user / project) — matches
+        # TS markdownConfigLoader.ts:354,365 where isRestrictedToPluginOnly
+        # is checked at the disk-walk site. SDK ``flag`` agents pass through
+        # the policy because they're an explicit caller decision; if the
+        # policy later wants to gate them too, that belongs in a runtime
+        # check (isSourceAdminTrusted equivalent), not the loader.
         plugin_only = _is_restricted_to_plugin_only("agents")
         user_agents = [] if plugin_only else custom[SOURCE_USER]
         project_agents = [] if plugin_only else custom[SOURCE_PROJECT]
-        flag_agents = [] if plugin_only else list(_sdk_flag_agents)
 
         sources_in_order: dict[str, list[AgentDefinition]] = {
             "built-in": builtins,
             "plugin": plugin_agents,
             SOURCE_USER: user_agents,
             SOURCE_PROJECT: project_agents,
-            "flag": flag_agents,
+            "flag": list(_sdk_flag_agents),
             SOURCE_MANAGED: custom[SOURCE_MANAGED],
         }
         flat: list[AgentDefinition] = []

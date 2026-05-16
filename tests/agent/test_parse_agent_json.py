@@ -14,10 +14,12 @@ def test_minimal_json_definition_round_trip():
     assert agent.when_to_use == "Senior code critic"
     assert agent.get_system_prompt() == "You are a critic."
     assert agent.tools is None  # default = all tools
-    assert agent.source == "user"
+    assert agent.source == "flag"
 
 
 def test_full_field_mapping():
+    """All TS JSON schema fields round-trip. ``requiredMcpServers`` is NOT
+    in the JSON schema (markdown-only) — dropped silently for parity."""
     agent = parse_agent_from_json(
         "kitchen-sink",
         {
@@ -33,11 +35,10 @@ def test_full_field_mapping():
             "memory": "project",
             "skills": ["my-skill"],
             "isolation": "worktree",
-            "requiredMcpServers": ["slack"],
             "mcpServers": [{"slack": {"type": "stdio", "command": "x"}}],
             "effort": "high",
         },
-        source="user",
+        source="flag",
     )
     assert agent is not None
     assert agent.tools == ["Read", "Grep"]
@@ -50,29 +51,9 @@ def test_full_field_mapping():
     assert agent.memory == "project"
     assert agent.skills == ["my-skill"]
     assert agent.isolation == "worktree"
-    assert agent.required_mcp_servers == ["slack"]
     assert agent.mcp_servers == [{"slack": {"type": "stdio", "command": "x"}}]
     assert agent.effort == "high"
-
-
-def test_kebab_case_keys_also_accepted():
-    agent = parse_agent_from_json(
-        "kebab",
-        {
-            "description": "k",
-            "prompt": "p",
-            "disallowed-tools": ["Write"],
-            "permission-mode": "default",
-            "max-turns": 3,
-            "required-mcp-servers": ["foo"],
-            "mcp-servers": ["bar"],
-        },
-    )
-    assert agent is not None
-    assert agent.disallowed_tools == ["Write"]
-    assert agent.permission_mode == "default"
-    assert agent.max_turns == 3
-    assert agent.required_mcp_servers == ["foo"]
+    assert agent.source == "flag"
 
 
 def test_missing_description_returns_none():
@@ -111,3 +92,48 @@ def test_tools_star_means_all():
     )
     assert agent is not None
     assert agent.tools is None
+
+
+def test_scalar_tools_rejected_in_json():
+    """Wire format is typed; a string where a list is expected rejects the agent."""
+    assert parse_agent_from_json(
+        "c", {"description": "d", "prompt": "p", "tools": "Read"}
+    ) is None
+
+
+def test_kebab_keys_no_longer_accepted_in_json():
+    """JSON sticks to camelCase only (matches TS Zod schema)."""
+    agent = parse_agent_from_json(
+        "c",
+        {
+            "description": "d",
+            "prompt": "p",
+            "permission-mode": "acceptEdits",  # kebab key — should be ignored
+            "max-turns": 9,
+        },
+    )
+    assert agent is not None
+    assert agent.permission_mode is None
+    assert agent.max_turns is None
+
+
+def test_default_source_is_flag():
+    """Bridge-injected agents must land in the 'flag' source slot."""
+    agent = parse_agent_from_json("c", {"description": "d", "prompt": "p"})
+    assert agent is not None
+    assert agent.source == "flag"
+
+
+def test_non_string_dict_key_dropped():
+    from src.agent.parse_agent_json import parse_agents_from_json
+    agents = parse_agents_from_json({
+        None: {"description": "d", "prompt": "p"},  # type: ignore[dict-item]
+        "good": {"description": "d", "prompt": "p"},
+    })
+    assert [a.agent_type for a in agents] == ["good"]
+
+
+def test_non_list_disallowed_tools_rejects_agent():
+    assert parse_agent_from_json(
+        "c", {"description": "d", "prompt": "p", "disallowedTools": "Write"}
+    ) is None

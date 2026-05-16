@@ -6,6 +6,7 @@ Python-specific cache + MCP filter behaviours.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -43,6 +44,8 @@ def _write_agent(
 
 @pytest.fixture(autouse=True)
 def _isolated_config_dirs(tmp_path, monkeypatch):
+    from src.agent.load_agents_dir import clear_sdk_agents
+
     user_dir = tmp_path / "claude_home"
     managed_dir = tmp_path / "managed"
     user_dir.mkdir()
@@ -50,8 +53,10 @@ def _isolated_config_dirs(tmp_path, monkeypatch):
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(user_dir))
     monkeypatch.setenv("CLAUDE_MANAGED_CONFIG_DIR", str(managed_dir))
     clear_agent_definitions_cache()
+    clear_sdk_agents()
     yield {"user": user_dir, "managed": managed_dir, "tmp_path": tmp_path}
     clear_agent_definitions_cache()
+    clear_sdk_agents()
 
 
 def _by_type(agents: list[AgentDefinition]) -> dict[str, AgentDefinition]:
@@ -296,7 +301,7 @@ def test_sdk_register_agents_appears_in_discovery(_isolated_config_dirs, tmp_pat
     sdk_agent = AgentDefinition(
         agent_type="shared",
         when_to_use="from sdk flag",
-        source="user",
+        source="flag",
         base_dir="json",
         get_system_prompt=lambda **_kw: "sdk body",
     )
@@ -323,7 +328,7 @@ def test_managed_still_beats_sdk_flag(_isolated_config_dirs, tmp_path):
         AgentDefinition(
             agent_type="shared",
             when_to_use="from sdk",
-            source="user",
+            source="flag",
             base_dir="json",
             get_system_prompt=lambda **_kw: "",
         )
@@ -335,24 +340,44 @@ def test_managed_still_beats_sdk_flag(_isolated_config_dirs, tmp_path):
         clear_sdk_agents()
 
 
+def _git_worktree_add(main: Path, wt: Path) -> bool:
+    """Real ``git worktree add`` so the security-validated canonical resolver
+    sees a legitimate layout (with proper ``commondir`` + ``gitdir`` back-link).
+    Returns False (skipping the test) if git isn't on PATH."""
+    import shutil
+    import subprocess
+    if shutil.which("git") is None:
+        return False
+    main.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q", str(main)], check=True)
+    subprocess.run(
+        ["git", "-C", str(main), "commit", "-q", "--allow-empty", "-m", "init"],
+        check=True,
+        env={
+            **os.environ,
+            "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+        },
+    )
+    subprocess.run(
+        ["git", "-C", str(main), "worktree", "add", "-q", str(wt), "-b", "wt"],
+        check=True,
+    )
+    return True
+
+
 def test_worktree_fallback_uses_main_repo_agents(_isolated_config_dirs, tmp_path):
     """When a worktree lacks .claude/agents/, main repo's copy is used.
 
-    Layout:
-        tmp_path/main/.git/                       (real git dir)
-        tmp_path/main/.claude/agents/critic.md    (main-only agent)
-        tmp_path/main/.git/worktrees/wt/          (worktree's gitdir)
-        tmp_path/wt/.git                          (file: gitdir: <main>/.git/worktrees/wt)
-        # no tmp_path/wt/.claude/ at all → fallback kicks in
+    Uses a real ``git worktree add`` so the security-validated
+    ``_find_canonical_git_root`` accepts the layout (the manual
+    ``.git`` file form lacks the ``commondir`` + back-link the
+    validator requires).
     """
     main = tmp_path / "main"
     wt = tmp_path / "wt"
-    (main / ".git" / "worktrees" / "wt").mkdir(parents=True)
-    wt.mkdir()
-    (wt / ".git").write_text(
-        f"gitdir: {main / '.git' / 'worktrees' / 'wt'}\n",
-        encoding="utf-8",
-    )
+    if not _git_worktree_add(main, wt):
+        pytest.skip("git not available")
     _write_agent(
         main / ".claude" / "agents" / "critic.md",
         name="critic",
@@ -366,12 +391,8 @@ def test_worktree_no_fallback_when_worktree_has_agents(_isolated_config_dirs, tm
     """Worktree fallback skipped when the worktree already has its own agents/."""
     main = tmp_path / "main"
     wt = tmp_path / "wt"
-    (main / ".git" / "worktrees" / "wt").mkdir(parents=True)
-    wt.mkdir()
-    (wt / ".git").write_text(
-        f"gitdir: {main / '.git' / 'worktrees' / 'wt'}\n",
-        encoding="utf-8",
-    )
+    if not _git_worktree_add(main, wt):
+        pytest.skip("git not available")
     _write_agent(
         main / ".claude" / "agents" / "shared.md",
         name="shared",
@@ -386,29 +407,117 @@ def test_worktree_no_fallback_when_worktree_has_agents(_isolated_config_dirs, tm
     assert _by_type(agents)["shared"].when_to_use == "from worktree"
 
 
-def test_builtins_disabled_when_sdk_env_var_set(_isolated_config_dirs, tmp_path, monkeypatch):
-    """``CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS`` removes built-ins in SDK mode."""
-    from src.agent.load_agents_dir import clear_agent_definitions_cache
+def test_worktree_fallback_rejects_malicious_gitfile_no_commondir(
+    _isolated_config_dirs, tmp_path,
+):
+    """Security regression: hostile .git file with no commondir → rejected."""
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    attacker = tmp_path / "attacker"
+    (attacker / ".git" / "worktrees" / "x").mkdir(parents=True)
+    (victim / ".git").write_text(
+        f"gitdir: {attacker / '.git' / 'worktrees' / 'x'}\n",
+        encoding="utf-8",
+    )
+    _write_agent(
+        attacker / ".claude" / "agents" / "evil.md",
+        name="evil",
+        description="should NOT load",
+    )
+    agents = get_agent_definitions_with_overrides(str(victim))
+    assert "evil" not in _by_type(agents)
 
-    monkeypatch.setenv("CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS", "true")
-    monkeypatch.setenv("CLAUDE_CODE_ENTRYPOINT", "sdk-py")
-    clear_agent_definitions_cache()
-    agents = get_agent_definitions_with_overrides(str(tmp_path))
-    types = {a.agent_type for a in agents}
-    assert "general-purpose" not in types
-    assert "Explore" not in types
-    assert "Plan" not in types
+
+def test_worktree_fallback_rejects_bad_parent_structure(
+    _isolated_config_dirs, tmp_path,
+):
+    """Security regression: hostile commondir without the ``worktrees`` parent.
+
+    Layout designed to trip security check #1: ``worktreeGitDir.parent`` does
+    NOT equal ``commondir/"worktrees"``.
+        attacker/notworktrees/x/             ← worktree gitdir is here
+        attacker/notworktrees/x/commondir    → "../.." (resolves to attacker)
+        attacker/notworktrees/x/gitdir       → victim/.git (would match)
+        attacker/.claude/agents/evil.md      ← payload
+    Parent of worktreeGitDir is ``attacker/notworktrees``, not
+    ``attacker/worktrees`` — check #1 fails, fallback is skipped.
+    """
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    attacker = tmp_path / "attacker"
+    wt_gitdir = attacker / "notworktrees" / "x"
+    wt_gitdir.mkdir(parents=True)
+    (wt_gitdir / "commondir").write_text("../..\n", encoding="utf-8")
+    (wt_gitdir / "gitdir").write_text(str(victim / ".git") + "\n", encoding="utf-8")
+    (victim / ".git").write_text(f"gitdir: {wt_gitdir}\n", encoding="utf-8")
+    _write_agent(
+        attacker / ".claude" / "agents" / "evil.md",
+        name="evil",
+        description="should NOT load",
+    )
+    agents = get_agent_definitions_with_overrides(str(victim))
+    assert "evil" not in _by_type(agents)
 
 
-def test_builtins_kept_when_env_var_set_but_not_sdk_entrypoint(
+def test_worktree_fallback_rejects_backlink_mismatch(
+    _isolated_config_dirs, tmp_path,
+):
+    """Security regression: gitdir back-link doesn't point at victim's .git."""
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    attacker = tmp_path / "attacker"
+    wt_gitdir = attacker / ".git" / "worktrees" / "x"
+    wt_gitdir.mkdir(parents=True)
+    (wt_gitdir / "commondir").write_text("../..\n", encoding="utf-8")
+    # Back-link points at a different path than victim/.git → check #2 fails
+    (wt_gitdir / "gitdir").write_text(
+        str(tmp_path / "somewhere-else" / ".git") + "\n",
+        encoding="utf-8",
+    )
+    (victim / ".git").write_text(f"gitdir: {wt_gitdir}\n", encoding="utf-8")
+    _write_agent(
+        attacker / ".claude" / "agents" / "evil.md",
+        name="evil",
+        description="should NOT load",
+    )
+    agents = get_agent_definitions_with_overrides(str(victim))
+    assert "evil" not in _by_type(agents)
+
+
+def test_builtins_disabled_when_env_var_set_in_non_interactive(
     _isolated_config_dirs, tmp_path, monkeypatch
 ):
-    """Interactive REPL ignores the env var — only SDK entrypoints honor it."""
+    """``CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS`` removes built-ins when
+    the session is non-interactive (TS gates on ``!STATE.isInteractive``)."""
     from src.agent.load_agents_dir import clear_agent_definitions_cache
+    from src.bootstrap.state import set_is_interactive
 
     monkeypatch.setenv("CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS", "true")
-    monkeypatch.delenv("CLAUDE_CODE_ENTRYPOINT", raising=False)
+    set_is_interactive(False)
     clear_agent_definitions_cache()
-    agents = get_agent_definitions_with_overrides(str(tmp_path))
-    types = {a.agent_type for a in agents}
-    assert "general-purpose" in types
+    try:
+        agents = get_agent_definitions_with_overrides(str(tmp_path))
+        types = {a.agent_type for a in agents}
+        assert "general-purpose" not in types
+        assert "Explore" not in types
+        assert "Plan" not in types
+    finally:
+        set_is_interactive(False)  # reset for other tests
+
+
+def test_builtins_kept_when_env_var_set_but_interactive(
+    _isolated_config_dirs, tmp_path, monkeypatch
+):
+    """Interactive REPL ignores the env var — matches TS gating."""
+    from src.agent.load_agents_dir import clear_agent_definitions_cache
+    from src.bootstrap.state import set_is_interactive
+
+    monkeypatch.setenv("CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS", "true")
+    set_is_interactive(True)
+    clear_agent_definitions_cache()
+    try:
+        agents = get_agent_definitions_with_overrides(str(tmp_path))
+        types = {a.agent_type for a in agents}
+        assert "general-purpose" in types
+    finally:
+        set_is_interactive(False)
