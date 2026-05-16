@@ -34,6 +34,17 @@ from .constants import (
     LEGACY_AGENT_TOOL_NAME,
     ONE_SHOT_BUILTIN_AGENT_TYPES,
 )
+from .filter_agents_by_mcp import (
+    filter_agents_by_mcp_requirements,
+    has_required_mcp_servers,
+)
+from .load_agents_dir import (
+    clear_agent_definitions_cache,
+    get_active_agents_from_list,
+    get_agent_definitions_with_overrides,
+)
+from .load_plugin_agents import load_plugin_agents
+from .parse_agent_markdown import parse_agent_from_markdown
 from .prompt import (
     format_agent_line,
     get_agent_prompt,
@@ -97,4 +108,12 @@ __all__ = [
     # Subagent context
     "SubagentContextOverrides",
     "create_subagent_context",
+    # Custom-agent discovery
+    "clear_agent_definitions_cache",
+    "filter_agents_by_mcp_requirements",
+    "get_active_agents_from_list",
+    "get_agent_definitions_with_overrides",
+    "has_required_mcp_servers",
+    "load_plugin_agents",
+    "parse_agent_from_markdown",
 ]

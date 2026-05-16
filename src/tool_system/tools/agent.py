@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 import time
 from typing import Any
@@ -29,6 +30,8 @@ from src.agent.agent_definitions import (
     find_agent_by_type,
     get_built_in_agents,
 )
+from src.agent.filter_agents_by_mcp import filter_agents_by_mcp_requirements
+from src.agent.load_agents_dir import get_agent_definitions_with_overrides
 from src.agent.agent_tool_utils import (
     extract_partial_result,
     finalize_agent_tool,
@@ -112,6 +115,7 @@ AGENT_INPUT_SCHEMA: dict[str, Any] = {
 def make_agent_tool(
     registry: ToolRegistry,
     provider: Any | None = None,
+    get_available_mcp_servers: Any | None = None,
 ) -> Tool:
     """Build the Agent tool.
 
@@ -121,15 +125,31 @@ def make_agent_tool(
         registry: Tool registry providing the available tool pool.
         provider: BaseProvider for API calls. If None, agent execution is a no-op
                   (useful for testing tool registration only).
+        get_available_mcp_servers: Optional zero-arg callable returning the
+            currently-available MCP server names. Used by the prompt builder so
+            agents declaring ``required_mcp_servers`` not present in the live
+            inventory are hidden from the tool description (matching the
+            per-call resolver). When ``None`` the prompt advertises every
+            discovered agent unfiltered.
     """
     def _get_agent_definitions(context: ToolContext) -> list[AgentDefinition]:
-        """Get agent definitions from context options or built-in defaults."""
+        """Resolve agents visible to this call.
+
+        SDK / test callers can pre-populate ``options.agent_definitions
+        ["active_agents"]`` to override discovery. Otherwise we walk the
+        managed / user / project ``agents`` directories via
+        ``get_agent_definitions_with_overrides`` and apply the MCP filter
+        keyed on the context's available MCP server inventory.
+        """
         agent_defs = getattr(context.options, "agent_definitions", None)
         if agent_defs and isinstance(agent_defs, dict):
             active = agent_defs.get("active_agents")
             if active and isinstance(active, list):
                 return active
-        return get_built_in_agents()
+        cwd = str(context.cwd or context.workspace_root)
+        agents = get_agent_definitions_with_overrides(cwd)
+        available_mcp = list(context.mcp_clients.keys()) if context.mcp_clients else []
+        return filter_agents_by_mcp_requirements(agents, available_mcp)
 
     def _agent_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
         prompt = tool_input.get("prompt", "")
@@ -594,8 +614,30 @@ def make_agent_tool(
         )
 
     def _agent_prompt() -> str:
-        """Build the prompt for the Agent tool."""
-        agents = get_built_in_agents()
+        """Build the prompt for the Agent tool.
+
+        Includes built-in agents plus any custom agents discovered on
+        disk so the model sees the full set of valid ``subagent_type``
+        values in the tool description. When ``get_available_mcp_servers``
+        was supplied at tool construction, the MCP filter runs here too —
+        otherwise the prompt advertises every discovered agent and the
+        per-call resolver enforces availability at spawn time.
+        """
+        try:
+            agents = get_agent_definitions_with_overrides(os.getcwd())
+        except Exception:
+            logger.exception("agent discovery failed in tool prompt; using built-ins")
+            agents = list(get_built_in_agents())
+        if get_available_mcp_servers is not None:
+            try:
+                available = list(get_available_mcp_servers() or [])
+            except Exception:
+                logger.exception(
+                    "get_available_mcp_servers raised; treating as no MCPs "
+                    "available — agents requiring MCP servers will be hidden"
+                )
+                available = []
+            agents = filter_agents_by_mcp_requirements(agents, available)
         return get_agent_prompt(agents)
 
     def _map_result_to_api(result: Any, tool_use_id: str) -> dict[str, Any]:
