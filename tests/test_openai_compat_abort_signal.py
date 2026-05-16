@@ -266,3 +266,129 @@ def test_listener_detached_after_normal_completion() -> None:
     )
 
     assert controller.signal._listeners == []
+
+
+class _StuckStream:
+    """Mimic an OpenAI Stream whose iterator never honors ``response.close()``.
+
+    Models the LiteLLM/proxy scenario reported by the user: the
+    underlying socket is not interrupted when ``stream.response.close()``
+    is called from another thread, so the SDK iterator stays blocked
+    on the next chunk indefinitely. The worker-thread iteration in
+    ``OpenAICompatibleProvider.chat_stream_response`` must NOT rely on
+    the iterator unblocking — the main thread polls a queue with
+    timeout and bails on abort.
+
+    ``__iter__`` blocks on an ``Event`` that the test never sets, so
+    iteration would hang forever without the worker+queue decoupling.
+    """
+
+    def __init__(self) -> None:
+        self.response = MagicMock()
+        self._never_set = threading.Event()
+        self._iter_entered = threading.Event()
+
+    def __iter__(self):
+        self._iter_entered.set()
+        # Block forever — even if response.close() is called.
+        # ``_never_set`` is never set in this test.
+        self._never_set.wait()
+        # Unreachable. If we somehow get here, yield nothing so the
+        # iterator ends and the test doesn't go on forever.
+        return
+        yield  # pragma: no cover
+
+
+def test_abort_unwinds_promptly_even_when_iterator_never_returns() -> None:
+    """The user's bug: ESC must unwind in <1s even when the SDK never honors close().
+
+    Pre-fix (single-threaded ``for chunk in stream``): the main thread
+    was blocked on ``next(stream)`` waiting for a chunk the LiteLLM
+    proxy never delivered, ``response.close()`` from the listener
+    thread didn't propagate to the kernel socket read, and ESC waited
+    indefinitely.
+
+    Post-fix (worker thread + queue): the SDK iteration runs on a
+    daemon worker that gets orphaned on abort. The main thread polls
+    the queue with a 100 ms timeout and bails on ``guard.aborted``.
+    Total ESC-to-AbortError budget is one poll tick plus listener
+    cascade — well under 1 second on any reasonable machine.
+
+    Failure mode this regression-tests against: someone reverting the
+    worker+queue would make the main thread block on ``next(stream)``
+    again. With ``_StuckStream``'s never-set Event, the test would
+    hang forever (the assertion-failure form is a CI timeout, not a
+    fast fail — but a CI timeout is still loud).
+    """
+    controller = AbortController()
+    stream = _StuckStream()
+    provider = _provider_with_stream(stream)
+
+    def _trip_after_worker_starts() -> None:
+        # Wait for the worker thread to actually enter the iterator,
+        # so the test pins "abort during a stuck iteration" rather
+        # than "abort before the worker started".
+        assert stream._iter_entered.wait(timeout=2.0), "worker never entered iterator"
+        controller.abort("user_interrupt")
+
+    threading.Thread(target=_trip_after_worker_starts, daemon=True).start()
+
+    start = time.monotonic()
+    with pytest.raises(AbortError):
+        provider.chat_stream_response(
+            messages=[{"role": "user", "content": "hi"}],
+            abort_signal=controller.signal,
+        )
+    elapsed = time.monotonic() - start
+
+    # 100 ms poll tick + listener cascade + abort propagation. 1.5 s
+    # is comfortable headroom on slow CI; on a healthy laptop this is
+    # well under 300 ms.
+    assert elapsed < 1.5, f"abort took {elapsed:.2f}s — expected <1.5s"
+
+
+class _ContentThenUsageStream:
+    """Stream that yields one content chunk then a final usage-only chunk.
+
+    Mirrors OpenAI's streaming wire format when
+    ``stream_options.include_usage=True``: content/delta chunks first,
+    then a final chunk with empty ``choices`` and populated ``usage``.
+    """
+
+    def __init__(self) -> None:
+        self.response = MagicMock()
+
+    def __iter__(self):
+        # Regular content chunk.
+        yield _FakeChunk(content="hello")
+        # Final usage-only chunk: empty choices, populated usage.
+        final = MagicMock()
+        final.model = "test-model"
+        final.choices = []
+        final.usage = MagicMock(
+            prompt_tokens=10, completion_tokens=5, total_tokens=15,
+        )
+        yield final
+
+
+def test_normal_completion_still_captures_final_usage() -> None:
+    """The worker+queue path must not drop the final usage chunk.
+
+    OpenAI emits usage stats only in the last chunk (with empty
+    ``choices``). The main thread must drain every queued chunk
+    before breaking on ``_DONE`` — otherwise token counting would
+    silently regress for non-aborted streams.
+    """
+    controller = AbortController()
+    stream = _ContentThenUsageStream()
+    provider = _provider_with_stream(stream)
+
+    response = provider.chat_stream_response(
+        messages=[{"role": "user", "content": "hi"}],
+        abort_signal=controller.signal,
+    )
+    assert response.content == "hello"
+    # The final usage chunk made it through the queue; otherwise
+    # ``response.usage`` would be the default empty dict, and the
+    # ``↓ N tokens`` REPL spinner would silently lose count.
+    assert response.usage.get("total_tokens") == 15
