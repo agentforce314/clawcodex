@@ -144,5 +144,25 @@ class BaseProvider(ABC):
         return strip_1m_context_suffix(raw) if raw else raw
 
     def _prepare_messages(self, messages: list[MessageInput]) -> list[dict[str, Any]]:
-        """Convert provider messages to API dictionary format."""
-        return [msg if isinstance(msg, dict) else msg.to_dict() for msg in messages]
+        """Convert provider messages to API dictionary format.
+
+        Also runs ``validate_images_for_api`` so every provider — not just
+        the Anthropic-direct ``services/api/claude.py:call_model`` path —
+        rejects oversize base64 images before the network round trip.
+        Anthropic's 5 MB hard limit applies to its own provider; for
+        OpenAI-compatible providers the check runs on the still-Anthropic
+        shape (subclasses call ``super()._prepare_messages`` before
+        translating to ``image_url``), so the same client-side guard
+        applies. Providers without image support are unaffected: the
+        walker only inspects ``type=image`` blocks. Raises
+        ``ImageSizeError``; callers (``query._call_model_sync``,
+        ``tool_system.agent_loop._call_provider_for_turn``) translate it
+        into a media-size error message rather than letting it surface as
+        an opaque API failure.
+        """
+        prepared = [msg if isinstance(msg, dict) else msg.to_dict() for msg in messages]
+        # Local import to avoid a top-level dependency from base.py into
+        # the utils package, matching the style of ``_get_model``.
+        from src.utils.image_validation import validate_images_for_api
+        validate_images_for_api(prepared)
+        return prepared

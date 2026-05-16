@@ -47,12 +47,79 @@ def _anthropic_image_block_to_openai(block: dict[str, Any]) -> dict[str, Any] | 
     }
 
 
+def _anthropic_document_block_to_openai(block: dict[str, Any]) -> dict[str, Any] | None:
+    """Translate an Anthropic document content block (PDF) to OpenAI's
+    ``file`` content shape.
+
+    Anthropic: ``{"type": "document", "source": {"type": "base64",
+    "media_type": "application/pdf", "data": "..."}}``.
+    OpenAI:    ``{"type": "file", "file": {"filename": "document.pdf",
+    "file_data": "data:application/pdf;base64,..."}}``.
+
+    No production path currently produces ``DocumentBlock`` for an
+    OpenAI-compatible provider (PDFs flow through Read tool's
+    ``_read_map_result_to_api`` as text). This translator exists so that
+    if ``DocumentBlock`` ever shows up — e.g. a future @-mention path or
+    a third-party tool returning a PDF — it's converted to the closest
+    OpenAI shape instead of silently passing through as an unrecognised
+    Anthropic-shape block (which OpenAI-compat providers either reject
+    or drop). Mirrors the ``image`` translator's defensive contract.
+
+    Returns ``None`` when the block isn't a recognisable Anthropic
+    document block (caller should keep the original).
+    """
+    if not isinstance(block, dict) or block.get("type") != "document":
+        return None
+    source = block.get("source")
+    if not isinstance(source, dict):
+        return None
+    if source.get("type") != "base64":
+        return None
+    media_type = source.get("media_type") or "application/pdf"
+    data = source.get("data")
+    if not data or not isinstance(data, str):
+        # Same producer-bug guard as the image translator: an empty
+        # ``data`` field would produce ``data:application/pdf;base64,``
+        # which the server rejects. Return ``None`` so the caller keeps
+        # the original block and the upstream serializer surfaces the
+        # malformed shape instead of producing a request the server will
+        # fail confusingly.
+        return None
+    # OpenAI's ``file`` block accepts an optional ``filename``; many
+    # provider impls require it. Use a stable default since Anthropic's
+    # document source carries no filename hint.
+    return {
+        "type": "file",
+        "file": {
+            "filename": "document.pdf",
+            "file_data": f"data:{media_type};base64,{data}",
+        },
+    }
+
+
+def _translate_anthropic_multimodal_block(block: Any) -> dict[str, Any] | None:
+    """Try every Anthropic-shape multimodal translator on ``block``.
+
+    Returns the OpenAI-shape replacement, or ``None`` when the block isn't
+    a translatable multimodal type (text / unknown blocks pass through
+    untouched at the call site). Centralised so the converter doesn't
+    grow a long chain of ``if isinstance/elif`` branches as new
+    multimodal shapes appear.
+    """
+    if not isinstance(block, dict):
+        return None
+    translated = _anthropic_image_block_to_openai(block)
+    if translated is not None:
+        return translated
+    return _anthropic_document_block_to_openai(block)
+
+
 def _convert_anthropic_messages_to_openai(
     messages: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """Convert Anthropic-format messages to OpenAI chat-completion format.
 
-    Handles three transformations:
+    Handles four transformations:
     1. Assistant messages with tool_use content blocks → assistant + tool_calls
     2. User messages with tool_result content blocks → role=tool messages
     3. Anthropic image content blocks (in user messages or tool_result
@@ -60,6 +127,11 @@ def _convert_anthropic_messages_to_openai(
        both @image.png @-mentions and Read-tool image returns ship
        Anthropic-shape blocks; without translation, OpenAI-compatible
        providers either reject the request or silently drop the image.
+    4. Anthropic document content blocks → OpenAI ``file`` blocks.
+       Defensive translation: no production path currently produces
+       ``DocumentBlock`` for an OpenAI-compatible provider, but if one
+       ever appears it lands in the closest OpenAI shape rather than
+       passing through as an unrecognised Anthropic block.
     """
     result: list[dict[str, Any]] = []
     for msg in messages:
@@ -131,9 +203,10 @@ def _convert_anthropic_messages_to_openai(
                 if isinstance(block, dict) and block.get("type") == "tool_result":
                     tool_results.append(block)
                 else:
-                    # Translate Anthropic image blocks to OpenAI ``image_url``
-                    # shape; pass everything else through unchanged.
-                    translated = _anthropic_image_block_to_openai(block) if isinstance(block, dict) else None
+                    # Translate Anthropic multimodal blocks (image / document)
+                    # to their OpenAI shapes; pass everything else through
+                    # unchanged.
+                    translated = _translate_anthropic_multimodal_block(block)
                     non_tool_blocks.append(translated if translated is not None else block)
 
             # Emit non-tool content first as user message
@@ -151,17 +224,17 @@ def _convert_anthropic_messages_to_openai(
                 # blocks via ``image_url``. The model sees the image
                 # alongside the tool result, which is the closest semantic
                 # match to Anthropic's native multimodal tool_result.
-                image_blocks_from_tool: list[dict[str, Any]] = []
+                multimodal_blocks_from_tool: list[dict[str, Any]] = []
                 if isinstance(raw_content, list):
                     # Flatten nested content blocks to text
                     parts = []
                     for item in raw_content:
                         if isinstance(item, dict) and item.get("type") == "text":
                             parts.append(item.get("text", ""))
-                        elif isinstance(item, dict) and item.get("type") == "image":
-                            translated_img = _anthropic_image_block_to_openai(item)
-                            if translated_img is not None:
-                                image_blocks_from_tool.append(translated_img)
+                        elif isinstance(item, dict) and item.get("type") in ("image", "document"):
+                            translated_multimodal = _translate_anthropic_multimodal_block(item)
+                            if translated_multimodal is not None:
+                                multimodal_blocks_from_tool.append(translated_multimodal)
                         elif isinstance(item, str):
                             parts.append(item)
                         else:
@@ -172,30 +245,85 @@ def _convert_anthropic_messages_to_openai(
                 else:
                     flat_content = str(raw_content)
 
-                # OpenAI requires ``content`` to be a non-empty string on
-                # tool messages; if the original was image-only, leave a
-                # short pointer so the tool_call is paired with something.
-                # The follow-up ``role=user`` message carrying the
-                # ``image_url`` block is NOT linked to ``tool_call_id`` --
-                # OpenAI's wire format has no way to attach a tool_call_id
-                # to a user message. The model sees ``tool(text result)``
-                # followed by ``user(image)`` and may briefly treat the
-                # trailing user message as a new prompt. The placeholder
-                # text reduces that risk, but it's a known OpenAI-API
-                # limitation we cannot fully paper over; on Anthropic the
-                # equivalent stays as a single multimodal tool_result.
-                if not flat_content and image_blocks_from_tool:
-                    flat_content = "[image content delivered in the following message]"
+                # KNOWN OPENAI-API LIMITATION — tool→user split:
+                # ----------------------------------------------------
+                # OpenAI's wire format requires ``content`` on a tool
+                # message to be a non-empty string AND does not allow
+                # image_url / file blocks in a tool message. So when
+                # an Anthropic tool_result carries multimodal content,
+                # we must split it: emit ``role=tool`` with the text
+                # body (or a placeholder if none), then a synthetic
+                # ``role=user`` carrying the translated multimodal
+                # blocks. The synthetic user message CANNOT be linked
+                # back to its parent tool_call_id — OpenAI provides no
+                # wire-level mechanism for that. The model sees
+                # ``tool(text)`` followed by ``user(multimodal)`` and
+                # could briefly treat the trailing user message as a
+                # new prompt rather than the tool's payload.
+                #
+                # Mitigations applied here:
+                #   1. Tool message carries an explicit "see following
+                #      message" suffix (image-only) or a "see also next
+                #      message" line (text+image) referencing the
+                #      tool_use_id. This is symmetric across both the
+                #      image-only and text+image branches so the
+                #      correlation hint is always present when a split
+                #      happened.
+                #   2. Synthetic user message starts with a tiny text
+                #      block that names the tool_use_id. The image /
+                #      file blocks follow. The model now has the link
+                #      visible from BOTH directions even though
+                #      ``tool_call_id`` only exists on the tool message.
+                # On Anthropic the equivalent stays a single
+                # multimodal tool_result with no split; there is no
+                # equivalent Anthropic-side limitation.
+                tool_use_id = tr.get("tool_use_id", "")
+                if multimodal_blocks_from_tool:
+                    correlation = (
+                        f"[multimodal content for tool_use_id={tool_use_id} "
+                        "delivered in the following message]"
+                    )
+                    if flat_content:
+                        # Text + multimodal: append a one-line pointer so
+                        # the tool message carries the same correlation
+                        # marker the image-only branch produces.
+                        flat_content = f"{flat_content}\n\n{correlation}"
+                    else:
+                        # Image-only tool_result: the pointer is the
+                        # whole tool-message body. OpenAI rejects empty
+                        # tool-message content, so this also doubles as
+                        # the non-empty guard.
+                        flat_content = correlation
+                if not flat_content:
+                    # Defensive: if there were no multimodal blocks AND
+                    # no text body (e.g. ``content: []`` or ``content: ""``
+                    # — the converter's fallthrough JSON-dumps unknown
+                    # block types into ``flat_content`` so those don't
+                    # land here), emit a literal sentinel so OpenAI's
+                    # "tool message content must be non-empty"
+                    # requirement is honoured.
+                    flat_content = "[empty tool result]"
 
                 result.append({
                     "role": "tool",
-                    "tool_call_id": tr.get("tool_use_id", ""),
+                    "tool_call_id": tool_use_id,
                     "content": flat_content,
                 })
-                if image_blocks_from_tool:
+                if multimodal_blocks_from_tool:
+                    # Lead with a tiny text block naming the parent
+                    # tool_use_id so the model can correlate this
+                    # synthetic user message back to the prior
+                    # ``role=tool`` message even though OpenAI's wire
+                    # format gives no tool_call_id on user messages.
+                    correlation_text = {
+                        "type": "text",
+                        "text": (
+                            f"[content for tool_use_id={tool_use_id}]"
+                        ),
+                    }
                     result.append({
                         "role": "user",
-                        "content": image_blocks_from_tool,
+                        "content": [correlation_text, *multimodal_blocks_from_tool],
                     })
             continue
 

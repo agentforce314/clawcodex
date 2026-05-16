@@ -293,10 +293,11 @@ async def call_model(
         # instead of a generic API failure. Mirrors TS
         # validateImagesForAPI invocation at utils/imageValidation.ts.
         #
-        # TODO: only the Anthropic provider path runs this check.
-        # src/providers/{openai_compatible,anthropic_provider,minimax_provider}.py
-        # all bypass it. Promote validation into BaseProvider._prepare_messages
-        # if/when those providers grow image-content-block support.
+        # This path uses the anthropic SDK directly (not BaseProvider),
+        # so we still validate here. Provider-based paths
+        # (chat_stream_response / chat) validate inside
+        # BaseProvider._prepare_messages and surface ImageSizeError via
+        # query._call_model_sync's media_size handler.
         try:
             from src.utils.image_validation import ImageSizeError, validate_images_for_api
             validate_images_for_api(api_messages)
