@@ -10,7 +10,7 @@ from typing import Any, Callable, Literal
 from ..permissions.types import PermissionMode
 
 
-AgentSource = Literal["built-in", "user", "plugin", "dynamic"]
+AgentSource = Literal["built-in", "user", "project", "managed", "plugin", "dynamic"]
 
 
 @dataclass

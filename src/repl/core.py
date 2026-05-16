@@ -315,7 +315,20 @@ class ClawcodexREPL:
             self.provider.model
         )
 
-        self.tool_registry = build_default_registry(provider=self.provider)
+        # Late-binding closure: ``tool_context`` is built below, but the
+        # Agent tool's prompt builder won't read this until much later,
+        # so reading ``self.tool_context.mcp_clients`` lazily is safe.
+        def _get_mcp_servers_for_prompt() -> list[str]:
+            ctx = getattr(self, "tool_context", None)
+            if ctx is None:
+                return []
+            clients = getattr(ctx, "mcp_clients", None) or {}
+            return list(clients.keys())
+
+        self.tool_registry = build_default_registry(
+            provider=self.provider,
+            get_available_mcp_servers=_get_mcp_servers_for_prompt,
+        )
         self._engine_messages: list[Any] = []
         from src.permissions.types import ToolPermissionContext
 
@@ -1388,23 +1401,38 @@ class ClawcodexREPL:
     def _available_agents(self) -> list[Any]:
         """Return the list of agent definitions that can be invoked via ``@agent-...``.
 
-        Pulls built-in agents and merges any extras registered on
-        ``tool_context.options.agent_definitions`` so that user/plugin agents
-        participate in the same ``@agent-<type>`` lookup that the TypeScript
-        ``processAgentMentions`` uses.
+        Calls the on-disk loader so user / project / managed / plugin
+        agents participate in the same ``@agent-<type>`` lookup the
+        TypeScript ``processAgentMentions`` performs. ``options.agent_definitions``
+        is still honored as an SDK-side override and supports both the
+        canonical ``{"active_agents": [...]}`` shape and a legacy flat
+        list/dict form so existing harnesses keep working.
         """
         try:
             from src.agent.agent_definitions import get_built_in_agents
+            from src.agent.load_agents_dir import (
+                get_agent_definitions_with_overrides,
+            )
         except Exception:
             return []
 
-        agents = list(get_built_in_agents())
-        extra = getattr(getattr(self.tool_context, "options", None), "agent_definitions", None)
+        extra = getattr(
+            getattr(self.tool_context, "options", None),
+            "agent_definitions",
+            None,
+        )
         if isinstance(extra, dict):
-            agents.extend(extra.values())
-        elif isinstance(extra, list):
-            agents.extend(extra)
-        return agents
+            active = extra.get("active_agents")
+            if isinstance(active, list) and active:
+                return list(active)
+
+        try:
+            cwd = str(
+                self.tool_context.cwd or self.tool_context.workspace_root
+            )
+            return list(get_agent_definitions_with_overrides(cwd))
+        except Exception:
+            return list(get_built_in_agents())
 
     def _enqueue_prompt(self, text: str) -> None:
         """Append a user-typed prompt to the queue from any thread."""
@@ -2712,7 +2740,17 @@ class ClawcodexREPL:
         self.provider_name = provider
 
         # Rebuild tool registry with new provider so Agent tool works
-        self.tool_registry = build_default_registry(provider=self.provider)
+        def _get_mcp_servers_for_prompt() -> list[str]:
+            ctx = getattr(self, "tool_context", None)
+            if ctx is None:
+                return []
+            clients = getattr(ctx, "mcp_clients", None) or {}
+            return list(clients.keys())
+
+        self.tool_registry = build_default_registry(
+            provider=self.provider,
+            get_available_mcp_servers=_get_mcp_servers_for_prompt,
+        )
 
         self.console.print("[green]✓ Provider reinitialized. You can continue chatting![/green]\n")
 
