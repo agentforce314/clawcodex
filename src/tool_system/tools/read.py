@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import base64 as _base64
 import json as _json
 import os
-import mimetypes
 from pathlib import Path
 from typing import Any
 
@@ -110,6 +110,20 @@ _BINARY_EXTENSION_EXEMPTIONS = frozenset([".pdf", ".svg"])
 
 # Image extensions this tool can render natively.
 IMAGE_EXTENSIONS = frozenset(["png", "jpg", "jpeg", "gif", "webp"])
+
+# Map image extension -> API media_type. jpg/jpeg both → image/jpeg.
+IMAGE_MIME_TYPES = {
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "gif": "image/gif",
+    "webp": "image/webp",
+}
+
+# Cap raw image read at 3.75 MB so the base64 payload stays under Anthropic's
+# 5 MB API image limit (base64 inflates by 4/3). Mirrors TS IMAGE_TARGET_RAW_SIZE
+# in typescript/src/constants/apiLimits.ts.
+MAX_IMAGE_SIZE_BYTES = (5 * 1024 * 1024 * 3) // 4
 
 
 def _has_blocked_binary_extension(file_path: str) -> bool:
@@ -334,22 +348,40 @@ def _read_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
             },
         )
 
-    # --- Binary detection (MIME-based fallback for extensions not in the set) ---
-    mime, _ = mimetypes.guess_type(str(path))
-    is_binary = mime is not None and not mime.startswith("text/") and mime not in {
-        "application/json",
-        "application/xml",
-        "application/javascript",
-        "application/x-sh",
-        "application/x-python",
-        "application/toml",
-        "application/yaml",
-    }
-
-    if is_binary:
-        raise ToolInputError(
-            f"This tool cannot read binary files. The file '{path.name}' appears to be "
-            f"a binary file ({mime}). Please use appropriate tools for binary file analysis."
+    # --- Image ---
+    # Mirrors TS FileReadTool.ts: image extensions exempted from the binary
+    # blocklist are routed to the image reader here. Without this branch,
+    # IMAGE_EXTENSIONS files would fall through to the text reader and return
+    # garbage (UTF-8 replacement chars).
+    #
+    # NOTE: deliberately does NOT call context.mark_file_read(). The dedup
+    # path at lines 293-305 would otherwise replay subsequent image reads as
+    # a text "file_unchanged" stub, silently dropping the image content from
+    # the model's view. TS excludes images and PDFs from readFileState for
+    # the same reason -- see FileReadTool.ts:528-529.
+    ext_no_dot = suffix.lstrip(".")
+    if ext_no_dot in IMAGE_EXTENSIONS:
+        if stat.st_size == 0:
+            raise ToolInputError(f"Image file is empty: {path}")
+        if stat.st_size > MAX_IMAGE_SIZE_BYTES:
+            raise ToolInputError(
+                f"Image file ({stat.st_size:,} bytes) exceeds maximum allowed size "
+                f"({MAX_IMAGE_SIZE_BYTES:,} bytes). The Anthropic API rejects "
+                f"images whose base64 payload exceeds 5 MB."
+            )
+        img_bytes = path.read_bytes()
+        b64 = _base64.b64encode(img_bytes).decode("ascii")
+        return ToolResult(
+            name="Read",
+            output={
+                "type": "image",
+                "file": {
+                    "filePath": str(path),
+                    "base64": b64,
+                    "type": IMAGE_MIME_TYPES[ext_no_dot],
+                    "originalSize": stat.st_size,
+                },
+            },
         )
 
     # --- File size pre-check (prevents reading multi-GB files into memory) ---
@@ -454,6 +486,27 @@ def _read_map_result_to_api(output: Any, tool_use_id: str) -> dict[str, Any]:
                 "type": "tool_result",
                 "tool_use_id": tool_use_id,
                 "content": f"PDF file read: {file_path} ({size:,} bytes)",
+            }
+
+        if result_type == "image":
+            # _read_call always populates base64+type from IMAGE_MIME_TYPES; if
+            # they're missing here the producer is buggy and we want a loud
+            # KeyError rather than a silently mislabeled image (e.g. JPEG bytes
+            # tagged as PNG would be rejected by the API with a confusing error).
+            file_data = output["file"]
+            return {
+                "type": "tool_result",
+                "tool_use_id": tool_use_id,
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "data": file_data["base64"],
+                            "media_type": file_data["type"],
+                        },
+                    },
+                ],
             }
 
     # Fallback: serialize anything else
