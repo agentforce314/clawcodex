@@ -6,6 +6,27 @@ from typing import Any
 
 API_ERROR_MESSAGE_PREFIX = "API Error"
 PROMPT_TOO_LONG_ERROR_MESSAGE = "Prompt is too long"
+# Surfaced when the provider rejects an image because the selected model
+# does not accept image input (e.g. OpenRouter routing a request to a
+# text-only DeepSeek endpoint and returning
+# "No endpoints found that support image input" / 404).
+#
+# The user-facing wording follows the shape of TypeScript's friendly
+# error messages at typescript/src/services/api/errors.ts (e.g.
+# getPdfInvalidErrorMessage / getImageTooLargeErrorMessage) — clear
+# about what happened and what the user can do. The TypeScript code
+# has no dedicated handler for this specific capability rejection (the
+# error would land in the catch-all at typescript/src/query.ts:1065),
+# so this Python branch is genuinely new behaviour, not a port. We
+# additionally strip the offending image from history (see
+# QueryEngine.submit_message); TypeScript expects the user to manually
+# "Double press esc" via the Ink MessageSelector, which the Rich REPL
+# does not have.
+IMAGE_UNSUPPORTED_ERROR_MESSAGE = (
+    "The current model does not accept image input. The image has been "
+    "removed from conversation history so subsequent requests will work. "
+    "Switch to a vision-capable model to process images."
+)
 
 
 class PromptTooLongError(Exception):
@@ -117,6 +138,28 @@ def is_media_size_error(raw: str) -> bool:
     )
 
 
+def is_image_unsupported_error(raw: str) -> bool:
+    """Detect provider errors meaning "this model does not accept image input".
+
+    Distinct from ``is_media_size_error`` (image too large): the model
+    has zero image capability, so stripping or resizing won't help —
+    history must be sanitized so the request can be re-issued text-only.
+
+    Pattern set covers OpenRouter's real wording plus likely paraphrases
+    from other OpenAI-compatible providers. Match is case-insensitive
+    because providers paraphrase casing inconsistently.
+    """
+    low = raw.lower()
+    return (
+        "no endpoints found that support image" in low
+        or "does not support image" in low
+        or "doesn't support image" in low
+        or "image input is not supported" in low
+        or "image_input_not_supported" in low
+        or "model does not accept image" in low
+    )
+
+
 @dataclass(frozen=True)
 class ErrorClassification:
     retryable: bool
@@ -143,6 +186,17 @@ def categorize_retryable_api_error(error: Exception) -> ErrorClassification:
         return ErrorClassification(
             retryable=False,
             error_type="prompt_too_long",
+            message=str(error),
+        )
+
+    if is_image_unsupported_error(str(error)):
+        # Model-capability rejection — retrying won't help. The query
+        # layer tags it ``image_unsupported`` and the engine strips
+        # images from history; this classification keeps the retry
+        # layer from looping on a permanent failure.
+        return ErrorClassification(
+            retryable=False,
+            error_type="image_unsupported",
             message=str(error),
         )
 

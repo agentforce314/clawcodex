@@ -453,6 +453,93 @@ class TestPhaseBPromptTooLongRecovery(unittest.TestCase):
         self.assertEqual(holder.value.reason, "completed")
 
 
+class TestImageUnsupportedClassification(unittest.TestCase):
+    """Image-unsupported errors must be classified at _call_model_sync so
+    the engine can strip image history (instead of bubbling through the
+    generic catch-all that loses the tag)."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.workspace = Path(self.temp_dir.name)
+        self.registry = build_default_registry()
+        self.context = ToolContext(workspace_root=self.workspace)
+        self.abort = AbortController()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_openrouter_404_yields_tagged_api_error(self):
+        """OpenRouter's "No endpoints found that support image input"
+        must surface as a tagged ``_api_error == "image_unsupported"``
+        AssistantMessage — NOT a generic ``isApiErrorMessage`` with no
+        tag. The tag is what triggers the engine's strip-and-recover
+        path, so dropping it would re-introduce the context-stuck bug."""
+        from unittest.mock import MagicMock
+        from src.types.content_blocks import ImageBlock, TextBlock
+        from src.services.api.errors import IMAGE_UNSUPPORTED_ERROR_MESSAGE
+
+        provider = MagicMock()
+        # _call_model_sync prefers chat_stream_response; falling back to
+        # chat only on NotImplementedError. Raise the 404 from both so
+        # we don't depend on the streaming/sync code path.
+        err = Exception(
+            "Error code: 404 - {'error': {'message': "
+            "'No endpoints found that support image input', 'code': 404}}"
+        )
+        provider.chat_stream_response.side_effect = err
+        provider.chat.side_effect = err
+
+        messages = [
+            UserMessage(content=[
+                TextBlock(text="describe"),
+                ImageBlock(source={
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": "AAAA",
+                }),
+            ])
+        ]
+        params = QueryParams(
+            messages=messages,
+            system_prompt="You are helpful.",
+            tools=self.registry.list_tools(),
+            tool_registry=self.registry,
+            tool_use_context=self.context,
+            provider=provider,
+            abort_controller=self.abort,
+            max_turns=2,
+        )
+
+        collected = []
+
+        async def run():
+            async for msg in query(params):
+                collected.append(msg)
+
+        _run(run())
+
+        tagged = [
+            m for m in collected
+            if isinstance(m, AssistantMessage)
+            and getattr(m, "_api_error", None) == "image_unsupported"
+        ]
+        self.assertEqual(
+            len(tagged), 1,
+            "exactly one image_unsupported-tagged AssistantMessage must reach the consumer",
+        )
+        self.assertTrue(tagged[0].isApiErrorMessage)
+        # Message must be the user-friendly constant, not the raw 404.
+        self.assertEqual(tagged[0].content, IMAGE_UNSUPPORTED_ERROR_MESSAGE)
+        # errorDetails must preserve the raw provider payload — a
+        # future bug-reporter ("the fix didn't work for me") needs the
+        # actual 404 text to diagnose, not just the friendly message.
+        self.assertIsNotNone(tagged[0].errorDetails)
+        self.assertIn(
+            "No endpoints found that support image input",
+            tagged[0].errorDetails or "",
+        )
+
+
 class TestPhaseBBlockingLimitPreemption(unittest.TestCase):
     """Ch5/B.4 + B.5 — pre-emption guards before the API call."""
 

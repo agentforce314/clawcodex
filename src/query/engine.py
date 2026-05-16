@@ -269,7 +269,36 @@ class QueryEngine:
             self._mutable_messages.append(message)
 
             if on_message:
+                # Contract: on_message callbacks must NOT mirror engine
+                # state (read get_messages() / mutable_messages) — the
+                # image-unsupported strip below runs after on_message,
+                # so a mirror taken here may see un-stripped state for
+                # one frame. Production callers don't mirror here today
+                # (only legacy run_agent.py uses on_message at all, and
+                # it consumes content directly), so this is a contract
+                # note for future callers rather than a current defect.
                 on_message(message)
+
+            # Image-unsupported recovery: the provider rejected the
+            # request because the model has zero image capability. The
+            # user's image-bearing message is now in _mutable_messages
+            # and would re-trigger the same 404 on every subsequent
+            # submit_message() call. Strip image blocks (keeping the
+            # text intent) so text-only follow-ups work. The TypeScript
+            # reference expects the user to manually rewind via the Ink
+            # MessageSelector ("Double press esc to go back"); the Rich
+            # REPL has no equivalent UI, so we recover automatically
+            # here. Mirrored by repl/core.py for session.conversation.
+            if (
+                isinstance(message, AssistantMessage)
+                and getattr(message, "_api_error", None) == "image_unsupported"
+            ):
+                from ..context_system.microcompact import (
+                    strip_images_from_typed_messages,
+                )
+                self._mutable_messages = strip_images_from_typed_messages(
+                    self._mutable_messages
+                )
 
             yield message
 
