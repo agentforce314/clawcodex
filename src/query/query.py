@@ -450,6 +450,36 @@ async def _call_model_sync(
             err_msg._api_error = "media_size"  # type: ignore[attr-defined]
             return [err_msg], []
 
+        # Model-capability rejection: the selected model has zero image
+        # support, so the request can never succeed as long as the image
+        # stays in conversation context. Tag the error so the engine
+        # strips images from history (see QueryEngine.submit_message)
+        # and surfaces a clear user-facing message instead of the raw
+        # provider 404. The user-facing wording shape follows TS's
+        # friendly error messages (e.g. getPdfInvalidErrorMessage at
+        # typescript/src/services/api/errors.ts) but the case itself
+        # is Python-new — TS has no dedicated handler for this
+        # capability rejection, so don't grep TS for an analog branch.
+        # See IMAGE_UNSUPPORTED_ERROR_MESSAGE in services/api/errors.py
+        # for the longer rationale.
+        from ..services.api.errors import (
+            IMAGE_UNSUPPORTED_ERROR_MESSAGE,
+            is_image_unsupported_error,
+        )
+        if is_image_unsupported_error(error_str):
+            err_msg = _create_assistant_api_error_message(
+                IMAGE_UNSUPPORTED_ERROR_MESSAGE,
+                error="image_unsupported",
+            )
+            err_msg._api_error = "image_unsupported"  # type: ignore[attr-defined]
+            # Preserve raw provider wording so a future bug report
+            # ("the fix didn't work") has the actual 404 payload to
+            # debug against, instead of just the friendly message.
+            # Mirrors TS's ``errorDetails: error.message`` at
+            # typescript/src/services/api/errors.ts:752.
+            err_msg.errorDetails = error_str
+            return [err_msg], []
+
         raise
 
     assistant_blocks: list[Any] = []
