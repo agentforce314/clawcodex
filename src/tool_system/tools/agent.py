@@ -765,6 +765,40 @@ def _sync_collect_agent_messages(params: RunAgentParams) -> list[Any]:
     return asyncio.run(_collect_agent_messages(params))
 
 
+def _format_subagent_tool_use(agent_type: str, name: str, tool_input: Any) -> str:
+    """Format one nested tool_use into the ``⎿ [type] Name(args)`` line.
+
+    Parity gap fix: the original implementation hard-coded ``Name(...)`` which
+    discards the file path / command / pattern the user needs to follow what
+    the subagent is doing. TS's ``getActivityDescription`` (e.g.
+    ``FileReadTool.ts:369``) renders the same input data into a per-tool
+    sentence; the closest Python equivalent already exists in
+    ``summarize_tool_use``, so we route through it.
+
+    Empty summaries fall back to ``Name`` (no parens) so a tool whose summarizer
+    returned nothing still produces a clean line instead of literal ``Name()``.
+    """
+    from src.tool_system.agent_loop import summarize_tool_use
+
+    safe_input: dict[str, Any] = tool_input if isinstance(tool_input, dict) else {}
+    summary = ""
+    try:
+        summary = summarize_tool_use(name, safe_input) or ""
+    except Exception:
+        # A buggy summarizer must not poison live progress output.
+        summary = ""
+    if summary:
+        # Keep the line single-row even when summaries embed newlines (Bash
+        # ``$ cmd\ncmd2``) or are pathologically long.
+        flat = summary.replace("\n", " ").strip()
+        if len(flat) > 200:
+            flat = flat[:197] + "..."
+        call = f"{name}({flat})"
+    else:
+        call = name
+    return f"  ⎿ [{agent_type}] {call}\n"
+
+
 async def _collect_agent_messages(params: RunAgentParams) -> list[Any]:
     """Collect all messages from the run_agent generator.
 
@@ -791,6 +825,10 @@ async def _collect_agent_messages(params: RunAgentParams) -> list[Any]:
                         sys.stderr.write(f"  ⎿ [{agent_type}] {block.text.strip()[:200]}\n")
                         sys.stderr.flush()
                     elif isinstance(block, ToolUseBlock):
-                        sys.stderr.write(f"  ⎿ [{agent_type}] {block.name}(...)\n")
+                        sys.stderr.write(
+                            _format_subagent_tool_use(
+                                agent_type, block.name, getattr(block, "input", None)
+                            )
+                        )
                         sys.stderr.flush()
     return messages
