@@ -595,8 +595,15 @@ def _dispatch_single_tool(
     tool_registry: ToolRegistry,
     tool_use_context: ToolContext,
     tools: Tools | None = None,
-) -> UserMessage:
-    """Dispatch a single tool and return the UserMessage result.
+) -> tuple[UserMessage, list[UserMessage]]:
+    """Dispatch a single tool and return ``(primary, extras)``.
+
+    ``primary`` is always the tool_result UserMessage. ``extras`` is any
+    supplemental ``new_messages`` the tool returned (e.g. the image
+    dimensions metadata user message). Callers MUST emit all primaries
+    before any extras across a multi-tool batch — otherwise tool_result
+    pairing in ``ensure_tool_result_pairing`` mis-attributes the missing
+    pair and injects a synthetic error placeholder.
 
     Routes through ``process_tool_result_block`` (mirrors TS Step 11 of
     the execution pipeline at ``processToolResultBlock``) so the per-tool
@@ -612,7 +619,7 @@ def _dispatch_single_tool(
     # abort branch in ``StreamingToolExecutor.collectResults``
     # (typescript/src/services/tools/StreamingToolExecutor.ts:278-292).
     if _is_user_cancelled_abort(tool_use_context):
-        return _build_user_cancelled_result(block.id)
+        return _build_user_cancelled_result(block.id), []
 
     try:
         call = ToolCall(
@@ -627,7 +634,7 @@ def _dispatch_single_tool(
         # unambiguous "user rejected" signal. Mirrors TS at
         # ``StreamingToolExecutor.ts:332-345``.
         if _is_user_cancelled_abort(tool_use_context):
-            return _build_user_cancelled_result(block.id)
+            return _build_user_cancelled_result(block.id), []
 
         tool = find_tool_by_name(tools, block.name) if tools else None
         metadata: dict[str, Any] = {}
@@ -681,7 +688,7 @@ def _dispatch_single_tool(
         else:
             content_str = str(result.output)
 
-        return UserMessage(
+        result_msg = UserMessage(
             content=[
                 ToolResultBlock(
                     tool_use_id=block.id,
@@ -691,6 +698,25 @@ def _dispatch_single_tool(
                 )
             ],
         )
+        # Collect any supplemental messages the tool produced (e.g. the
+        # FileReadTool image-dimensions metadata user message and PDF
+        # page-image blocks). Mirrors TS messages flow where the Read
+        # tool's createUserMessage({isMeta:true}) returns are pushed
+        # into the conversation alongside the tool_result. Returned
+        # separately so callers can emit all primaries before any extras
+        # (see docstring).
+        extras: list[UserMessage] = []
+        if result.new_messages:
+            for msg in result.new_messages:
+                if isinstance(msg, UserMessage):
+                    extras.append(msg)
+                elif isinstance(msg, dict):
+                    # Defensive: accept the raw-dict form too.
+                    extras.append(UserMessage(
+                        content=msg.get("content", ""),
+                        isMeta=bool(msg.get("isMeta", False)),
+                    ))
+        return result_msg, extras
     except AbortError as abort_err:
         # AbortError today is only raised when the signal is already
         # tripped (grep/glob via the ripgrep guard, agent_loop on cancel,
@@ -699,7 +725,7 @@ def _dispatch_single_tool(
         # repurposes AbortError for its own internal cancellation
         # doesn't get silently relabelled as a user rejection.
         if _is_user_cancelled_abort(tool_use_context):
-            return _build_user_cancelled_result(block.id)
+            return _build_user_cancelled_result(block.id), []
         return UserMessage(
             content=[
                 ToolResultBlock(
@@ -708,7 +734,7 @@ def _dispatch_single_tool(
                     is_error=True,
                 )
             ],
-        )
+        ), []
     except Exception as e:
         # A late abort can still race the post-tool gate above (the
         # signal trips between the post-tool check and the exception).
@@ -716,7 +742,7 @@ def _dispatch_single_tool(
         # ESC landed doesn't get reported as a tool bug when the user
         # actually pressed ESC.
         if _is_user_cancelled_abort(tool_use_context):
-            return _build_user_cancelled_result(block.id)
+            return _build_user_cancelled_result(block.id), []
         error_str = f"Error: {e}"
         return UserMessage(
             content=[
@@ -726,7 +752,7 @@ def _dispatch_single_tool(
                     is_error=True,
                 )
             ],
-        )
+        ), []
 
 
 async def _run_tools_partitioned(
@@ -743,7 +769,18 @@ async def _run_tools_partitioned(
     exclusively one at a time.
     """
     batches = _partition_tool_calls(tool_use_blocks, tools)
-    all_results: list[UserMessage] = []
+    # Emit all primary tool_result messages first, then all supplemental
+    # (isMeta) messages. Interleaving (e.g. [a_result, a_meta, b_result])
+    # breaks ensure_tool_result_pairing because the merge guard refuses to
+    # combine tool_result-bearing user messages with text-only ones, so
+    # b_result becomes orphaned and the pairing logic injects a synthetic
+    # "[Tool result missing due to internal error]" placeholder.
+    primaries: list[UserMessage] = []
+    extras: list[UserMessage] = []
+
+    def _accumulate(pair: tuple[UserMessage, list[UserMessage]]) -> None:
+        primaries.append(pair[0])
+        extras.extend(pair[1])
 
     for batch in batches:
         if batch.is_concurrent_safe and len(batch.blocks) > 1:
@@ -753,8 +790,8 @@ async def _run_tools_partitioned(
                 )
                 for block in batch.blocks[:MAX_TOOL_USE_CONCURRENCY]
             ]
-            batch_results = await asyncio.gather(*coros)
-            all_results.extend(batch_results)
+            for pair in await asyncio.gather(*coros):
+                _accumulate(pair)
             if len(batch.blocks) > MAX_TOOL_USE_CONCURRENCY:
                 overflow = [
                     asyncio.to_thread(
@@ -762,15 +799,16 @@ async def _run_tools_partitioned(
                     )
                     for block in batch.blocks[MAX_TOOL_USE_CONCURRENCY:]
                 ]
-                all_results.extend(await asyncio.gather(*overflow))
+                for pair in await asyncio.gather(*overflow):
+                    _accumulate(pair)
         else:
             for block in batch.blocks:
-                result = await asyncio.to_thread(
+                pair = await asyncio.to_thread(
                     _dispatch_single_tool, block, tool_registry, tool_use_context, tools,
                 )
-                all_results.append(result)
+                _accumulate(pair)
 
-    return all_results
+    return [*primaries, *extras]
 
 
 def _run_tools_sync(
@@ -778,11 +816,17 @@ def _run_tools_sync(
     tool_registry: ToolRegistry,
     tool_use_context: ToolContext,
 ) -> list[UserMessage]:
-    """Legacy synchronous tool execution (no partitioning)."""
-    results: list[UserMessage] = []
+    """Legacy synchronous tool execution (no partitioning).
+
+    Same primaries-first invariant as :func:`_run_tools_partitioned`.
+    """
+    primaries: list[UserMessage] = []
+    extras: list[UserMessage] = []
     for block in tool_use_blocks:
-        results.append(_dispatch_single_tool(block, tool_registry, tool_use_context))
-    return results
+        primary, extras_for_block = _dispatch_single_tool(block, tool_registry, tool_use_context)
+        primaries.append(primary)
+        extras.extend(extras_for_block)
+    return [*primaries, *extras]
 
 
 async def query(

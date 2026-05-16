@@ -26,6 +26,10 @@ class EventType(str, Enum):
     MODEL_SWITCH = "model_switch"
     AGENT_SPAWN = "agent_spawn"
     AGENT_COMPLETE = "agent_complete"
+    # Image pipeline events (resize, compress, PDF extraction, pre-API
+    # validation). Subtype in data["subtype"] distinguishes specific
+    # operations; mirrors TS tengu_image_* events from imageResizer.ts.
+    IMAGE_PROCESSING = "image_processing"
 
 
 @dataclass

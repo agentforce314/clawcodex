@@ -444,6 +444,15 @@ def _bash_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
         "stderr": stderr,
     }
 
+    # Detect data-URI image output (e.g. matplotlib.savefig printed to stdout).
+    # Use the un-truncated stdout to avoid splitting a base64 string mid-stream.
+    # Matches TS BashTool isImage flag set in mapToolResultToToolResultBlockParam.
+    from .image_output import is_image_output as _is_image_output
+    if completed_stdout and _is_image_output(completed_stdout):
+        output["isImage"] = True
+        # Keep the raw data URI in stdout so the mapper can build the image block.
+        output["stdout"] = completed_stdout.strip()
+
     if interpretation.message:
         output["returnCodeInterpretation"] = interpretation.message
     if is_silent_command(command):
@@ -468,6 +477,18 @@ def _bash_map_result_to_api(output: Any, tool_use_id: str) -> dict[str, Any]:
                 "content": output.get("message", "")
                 or f"Background task started: {output['backgroundTaskId']}",
             }
+        # Image data-URI output: surface as an image content block so the
+        # model sees the rendered image (matplotlib, mermaid, etc.) instead
+        # of base64 noise. Mirrors TS BashTool/utils.ts buildImageToolResult.
+        if output.get("isImage"):
+            from .image_output import build_image_tool_result as _build_img
+            blocks = _build_img(output.get("stdout", ""))
+            if blocks is not None:
+                return {
+                    "type": "tool_result",
+                    "tool_use_id": tool_use_id,
+                    "content": blocks,
+                }
         stdout = output.get("stdout", "")
         stderr = output.get("stderr", "")
         interpretation = output.get("returnCodeInterpretation")
