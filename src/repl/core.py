@@ -2271,6 +2271,33 @@ class ClawcodexREPL:
         self.console.print()
         return True
 
+    def _sanitize_conversation_for_api_error(self, msg: Any) -> None:
+        """If the assistant message signals an API error that requires
+        history sanitization, mutate ``session.conversation.messages``
+        in place to match the engine's sanitized state.
+
+        Today only ``image_unsupported`` triggers a strip: the user's
+        image-bearing UserMessage stays in ``session.conversation``
+        otherwise, and the direct-stream path (line ~2186 of this file)
+        reads ``session.conversation.messages`` rather than
+        ``engine.get_messages()`` — so without this mirror, a short
+        text-only follow-up routed through ``_stream_direct_response``
+        would hit the same provider with the still-cached image.
+
+        Extracted into a method so the REPL handler stays terse AND so
+        this load-bearing behaviour has a direct unit-test surface
+        (test_repl_conversation_sanitization).
+        """
+        if getattr(msg, "_api_error", None) == "image_unsupported":
+            from src.context_system.microcompact import (
+                strip_images_from_typed_messages,
+            )
+            self.session.conversation.messages = (
+                strip_images_from_typed_messages(
+                    self.session.conversation.messages
+                )
+            )
+
     def chat(self, user_input: str, max_turns: int | None = None):
         """Send message to LLM and display response.
 
@@ -2492,6 +2519,14 @@ class ClawcodexREPL:
 
                     if isinstance(msg, AssistantMessage):
                         self.session.conversation.add_assistant_message(msg.content)
+                        # Engine-side mirror: the engine has just stripped
+                        # image blocks from _mutable_messages; keep
+                        # session.conversation in sync so the persisted
+                        # JSONL and the direct-stream path (which reads
+                        # session.conversation directly) don't carry stale
+                        # image content. See QueryEngine.submit_message for
+                        # the engine side of this pair.
+                        self._sanitize_conversation_for_api_error(msg)
                         usage = getattr(msg, "usage", None)
                         if isinstance(usage, dict):
                             in_toks = int(usage.get("input_tokens", 0) or 0)

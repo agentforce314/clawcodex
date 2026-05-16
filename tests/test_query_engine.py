@@ -125,6 +125,223 @@ class TestQueryEngine(unittest.TestCase):
         self.assertIsInstance(engine.session_id, str)
         self.assertGreater(len(engine.session_id), 0)
 
+    def test_image_unsupported_strips_images_from_mutable_messages(self):
+        """When the provider rejects images, the engine must strip
+        image blocks from history so the NEXT submit_message() call
+        doesn't re-trip the same error on an unrelated text-only
+        request. This is the engine-side mirror of the OpenRouter +
+        DeepSeek context-stuck loop.
+
+        Pins three invariants:
+        1. The user's text intent (TextBlock) survives — only the
+           rejected image bytes are dropped.
+        2. The placeholder text "[image]" appears so the model can
+           still see that an image WAS there.
+        3. No ImageBlock instances or dict-shape image blocks remain
+           anywhere in get_messages() — including ToolResultBlock-
+           nested image content (the realistic Read-tool case).
+        """
+        from src.types.content_blocks import (
+            ImageBlock, TextBlock, ToolResultBlock,
+        )
+
+        provider = MagicMock()
+        err = Exception(
+            "Error code: 404 - {'error': {'message': "
+            "'No endpoints found that support image input', 'code': 404}}"
+        )
+        provider.chat_stream_response.side_effect = err
+        provider.chat.side_effect = err
+
+        # Seed initial_messages with a tool_result-nested image (mirrors
+        # what the Read tool produces when reading an image file —
+        # src/tool_system/tools/read.py emits a ToolResultBlock whose
+        # content is a list containing a dict-shape image block). This
+        # is the realistic case that produced the original bug, in
+        # addition to direct @-mention images.
+        nested_image_dict = {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "BBBB",
+            },
+        }
+        prior_user_with_nested = UserMessage(content=[
+            TextBlock(text="prior turn"),
+            ToolResultBlock(
+                tool_use_id="tool_use_prior",
+                content=[nested_image_dict],
+            ),
+        ])
+
+        engine = QueryEngine(QueryEngineConfig(
+            cwd=self.workspace,
+            provider=provider,
+            tool_registry=self.registry,
+            tools=self.registry.list_tools(),
+            tool_context=self.context,
+            system_prompt="You are helpful.",
+            max_turns=10,
+            initial_messages=[prior_user_with_nested],
+        ))
+
+        async def run():
+            async for _ in engine.submit_message([
+                TextBlock(text="describe this picture"),
+                ImageBlock(source={
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": "AAAA",
+                }),
+            ]):
+                pass
+
+        _run(run())
+
+        msgs = engine.get_messages()
+        # Find the last user message we just submitted.
+        user_msgs = [m for m in msgs if isinstance(m, UserMessage)]
+        self.assertGreaterEqual(len(user_msgs), 2)
+        last_user = user_msgs[-1]
+        self.assertIsInstance(last_user.content, list)
+
+        text_blocks = [
+            b for b in last_user.content
+            if isinstance(b, TextBlock)
+        ]
+        # (1) text intent preserved
+        texts = [b.text for b in text_blocks]
+        self.assertIn("describe this picture", texts)
+        # (2) placeholder present
+        self.assertIn("[image]", texts)
+
+        # (3) no ImageBlock instances or dict-shape image blocks
+        # remain anywhere in get_messages — INCLUDING nested in
+        # ToolResultBlock.content. Recurses one level deep to mirror
+        # the realistic Read-tool case (a deeper nesting walker is
+        # bounded by strip_images_from_typed_messages itself; one
+        # level is the production shape).
+        def assert_no_images_in(blocks: list, where: str) -> None:
+            for block in blocks:
+                self.assertNotIsInstance(
+                    block, ImageBlock,
+                    f"ImageBlock must be stripped after image_unsupported error ({where})",
+                )
+                if isinstance(block, dict):
+                    self.assertNotEqual(
+                        block.get("type"), "image",
+                        f"dict-shape image block must be stripped ({where})",
+                    )
+                # Recurse into ToolResultBlock.content
+                if isinstance(block, ToolResultBlock) and isinstance(block.content, list):
+                    assert_no_images_in(block.content, f"{where} > tool_result")
+
+        for i, m in enumerate(msgs):
+            if isinstance(m.content, list):
+                assert_no_images_in(m.content, f"message[{i}]")
+
+    def test_image_unsupported_error_does_not_recur_on_next_submit(self):
+        """End-to-end regression for the user's reported bug: after the
+        image-unsupported error fires, a second submit_message() with a
+        text-only prompt must reach the provider WITHOUT any image
+        blocks in the messages payload. The strip step is what fixes
+        the original context-stuck loop, so the test must inspect the
+        actual provider call args (not just count) to demonstrate it."""
+        from src.types.content_blocks import ImageBlock, TextBlock
+
+        provider = MagicMock()
+        provider.chat_stream_response.side_effect = NotImplementedError()
+        # First call: provider rejects the image.
+        # Second call: provider succeeds (because images are stripped).
+        success = ChatResponse(
+            content="Here is your blog app plan...",
+            model="test",
+            usage={"input_tokens": 10, "output_tokens": 8},
+            finish_reason="end_turn",
+            tool_uses=None,
+        )
+        provider.chat.side_effect = [
+            Exception("No endpoints found that support image input"),
+            success,
+        ]
+
+        engine = self._make_engine(provider)
+
+        async def run():
+            # Turn 1: image-bearing message → error.
+            async for _ in engine.submit_message([
+                TextBlock(text="describe"),
+                ImageBlock(source={
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": "AAAA",
+                }),
+            ]):
+                pass
+            # Turn 2: unrelated text-only request — MUST succeed.
+            collected_text: list[str] = []
+            async for m in engine.submit_message("create a blog app"):
+                if isinstance(m, AssistantMessage):
+                    if isinstance(m.content, str):
+                        collected_text.append(m.content)
+                    elif isinstance(m.content, list):
+                        for b in m.content:
+                            if isinstance(b, TextBlock):
+                                collected_text.append(b.text)
+            return collected_text
+
+        result = _run(run())
+        self.assertIn("Here is your blog app plan...", result,
+                      "second turn must succeed after image strip")
+        # Provider was called twice (turn 1 errored, turn 2 succeeded).
+        self.assertEqual(provider.chat.call_count, 2)
+
+        # The bug fix is meaningful only if turn 2's API call carries
+        # NO image content. Inspect the actual messages payload sent
+        # to provider.chat on the second call. A regression that
+        # left the image in history would show up here as an
+        # ImageBlock instance or {"type": "image"} dict, even though
+        # the call still returned `success` because the mock is
+        # unconditional. This pins the real invariant: the wire
+        # payload no longer carries the offending image.
+        second_call_kwargs = provider.chat.call_args_list[1].kwargs
+        second_call_args = provider.chat.call_args_list[1].args
+        # The first positional arg or `messages=` kwarg holds the list.
+        messages_arg = (
+            second_call_kwargs.get("messages")
+            if "messages" in second_call_kwargs
+            else (second_call_args[0] if second_call_args else None)
+        )
+        self.assertIsNotNone(messages_arg, "provider.chat must be called with messages")
+
+        def _collect_images(content, into):
+            if not isinstance(content, list):
+                return
+            for block in content:
+                if isinstance(block, ImageBlock):
+                    into.append(block)
+                    continue
+                if isinstance(block, dict) and block.get("type") == "image":
+                    into.append(block)
+                    continue
+                # Recurse into tool_result content (dict or typed).
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    _collect_images(block.get("content"), into)
+                inner = getattr(block, "content", None)
+                if isinstance(inner, list):
+                    _collect_images(inner, into)
+
+        leaked: list = []
+        for m in messages_arg:
+            content = m.get("content") if isinstance(m, dict) else getattr(m, "content", None)
+            _collect_images(content, leaked)
+        self.assertEqual(
+            leaked, [],
+            "no image blocks may reach the provider on the post-strip turn; "
+            f"found {len(leaked)} leaked image block(s): {leaked!r}",
+        )
+
 
 class TestEngineProducesCacheableSystemBlocks(unittest.TestCase):
     """Joint WI-1.1 + WI-1.2 acceptance: end-to-end engine produces blocks.
