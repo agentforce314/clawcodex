@@ -330,13 +330,28 @@ class OpenAICompatibleProvider(BaseProvider):
     ) -> ChatResponse:
         """Stream OpenAI-compatible chunks while rebuilding the final response.
 
-        ESC-cancellation lives in ``StreamAbortGuard`` (see
-        ``_stream_abort.py``). This provider keeps the SDK-specific
-        iteration shape — bare ``for chunk in stream`` plus an
-        in-loop ``guard.aborted`` check that catches the case where
-        chunks arrive back-to-back fast enough that the listener's
-        close lands one iteration late (or where the SDK has already
-        prefetched chunks past the close point).
+        ESC-cancellation runs the SDK iteration on a daemon worker
+        thread that pushes chunks into a ``queue.Queue``. The main
+        thread polls the queue with a 100 ms timeout and re-checks
+        ``guard.aborted`` between ticks. On abort the main thread
+        raises ``AbortError`` immediately and orphans the worker —
+        the worker dies when the underlying connection eventually
+        closes.
+
+        Why the worker indirection (vs. the simpler in-loop check
+        used in earlier revisions): the OpenAI Python SDK uses sync
+        ``httpx`` for streaming, and ``response.close()`` from
+        another thread is purely advisory. For LiteLLM-proxied
+        connections (and certain other httpx + chunked-transfer
+        configurations) the SDK's blocking socket read doesn't
+        actually return when the response is "closed" — it keeps
+        consuming bytes. Unlike JavaScript's native ``fetch +
+        AbortSignal`` integration (which the TypeScript reference at
+        ``typescript/src/services/api/openaiShim.ts`` uses), Python
+        has no portable way to make a sync blocking read honor an
+        abort from another thread, so the worker exists to keep the
+        main thread's response time independent of the SDK's
+        cooperation.
         """
         from ._stream_abort import StreamAbortGuard
 
@@ -378,63 +393,128 @@ class OpenAICompatibleProvider(BaseProvider):
         usage_obj: Any = None
         tool_calls_by_index: dict[int, dict[str, str]] = {}
 
-        with guard.attach(stream):
+        # Worker-thread iteration. The OpenAI Python SDK uses sync
+        # ``httpx`` for streaming, and ``response.close()`` from another
+        # thread is best-effort — for LiteLLM-proxied connections (and
+        # some other httpx configurations) the SDK's blocking socket
+        # read doesn't actually return when the response is closed.
+        # Unlike JavaScript's native ``fetch + AbortSignal`` integration
+        # (which the TypeScript reference uses), Python has no portable
+        # way to make a sync blocking read honor an abort from another
+        # thread.
+        #
+        # Workaround: hoist the iteration onto a daemon worker thread
+        # that pushes chunks into a queue. The main thread polls the
+        # queue with a short timeout and re-checks ``guard.aborted``
+        # each tick. On abort we raise ``AbortError`` immediately and
+        # orphan the worker — it'll die when the underlying connection
+        # eventually closes (server-side, idle timeout, or the SDK's
+        # natural exhaustion). The cost is some wasted bandwidth on
+        # the orphaned read; the benefit is that the user's prompt
+        # comes back in ~100 ms regardless of LiteLLM/httpx behavior.
+        import queue as _queue
+        import threading as _threading
+
+        _DONE = object()
+        chunk_queue: _queue.Queue = _queue.Queue()
+
+        def _drain_stream() -> None:
             try:
-                for chunk in stream:
-                    # In-loop check catches the SDK-prefetched-chunks
-                    # case: the listener's close lands but the SDK has
-                    # already buffered several chunks ahead. We break
-                    # before consuming the next one.
+                for c in stream:
+                    chunk_queue.put(c)
+            except BaseException as exc:  # noqa: BLE001 — surface to consumer
+                chunk_queue.put(exc)
+            finally:
+                chunk_queue.put(_DONE)
+
+        worker = _threading.Thread(
+            target=_drain_stream,
+            daemon=True,
+            name=f"openai-stream-{id(stream)}",
+        )
+
+        with guard.attach(stream):
+            worker.start()
+            while True:
+                try:
+                    item = chunk_queue.get(timeout=0.1)
+                except _queue.Empty:
+                    # No chunk available right now — check abort and
+                    # loop. The 100 ms tick bounds how long the user
+                    # waits between pressing ESC and the prompt
+                    # returning, regardless of how slow / blocked the
+                    # underlying SDK iteration is.
                     if guard.aborted:
-                        break
+                        # Use ``raise_if_post_aborted`` so the abort
+                        # reason from the controller is preserved
+                        # (rather than hardcoding ``"user_interrupt"``,
+                        # which would silently downgrade a non-default
+                        # reason like a future ``"rate_limit_backoff"``).
+                        guard.raise_if_post_aborted()
+                    continue
 
-                    response_model = getattr(chunk, "model", response_model)
-                    usage_candidate = getattr(chunk, "usage", None)
-                    if usage_candidate is not None:
-                        usage_obj = usage_candidate
+                if item is _DONE:
+                    break
+                if isinstance(item, BaseException):
+                    if isinstance(item, Exception):
+                        guard.reraise_if_aborted(item)
+                        raise item
+                    # KeyboardInterrupt/SystemExit from the worker
+                    # path — re-raise as-is so the outer signal-
+                    # handling story stays intact.
+                    raise item
 
-                    choices = getattr(chunk, "choices", None) or []
-                    if not choices:
-                        continue
+                chunk = item
+                response_model = getattr(chunk, "model", response_model)
+                usage_candidate = getattr(chunk, "usage", None)
+                if usage_candidate is not None:
+                    usage_obj = usage_candidate
+
+                choices = getattr(chunk, "choices", None) or []
+                if choices:
                     choice = choices[0]
                     if getattr(choice, "finish_reason", None):
                         finish_reason = choice.finish_reason
 
                     delta = getattr(choice, "delta", None)
-                    if delta is None:
-                        continue
+                    if delta is not None:
+                        content_piece = getattr(delta, "content", None)
+                        if content_piece:
+                            piece = str(content_piece)
+                            content_parts.append(piece)
+                            if on_text_chunk is not None:
+                                on_text_chunk(piece)
 
-                    content_piece = getattr(delta, "content", None)
-                    if content_piece:
-                        piece = str(content_piece)
-                        content_parts.append(piece)
-                        if on_text_chunk is not None:
-                            on_text_chunk(piece)
+                        reasoning_piece = getattr(delta, "reasoning_content", None)
+                        if reasoning_piece:
+                            reasoning_parts.append(str(reasoning_piece))
 
-                    reasoning_piece = getattr(delta, "reasoning_content", None)
-                    if reasoning_piece:
-                        reasoning_parts.append(str(reasoning_piece))
+                        tool_call_deltas = getattr(delta, "tool_calls", None) or []
+                        for tc in tool_call_deltas:
+                            idx = getattr(tc, "index", 0)
+                            entry = tool_calls_by_index.setdefault(idx, {"id": "", "name": "", "arguments": ""})
 
-                    tool_call_deltas = getattr(delta, "tool_calls", None) or []
-                    for tc in tool_call_deltas:
-                        idx = getattr(tc, "index", 0)
-                        entry = tool_calls_by_index.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+                            tc_id = getattr(tc, "id", None)
+                            if tc_id:
+                                entry["id"] = str(tc_id)
 
-                        tc_id = getattr(tc, "id", None)
-                        if tc_id:
-                            entry["id"] = str(tc_id)
+                            function = getattr(tc, "function", None)
+                            if function is not None:
+                                fn_name = getattr(function, "name", None)
+                                if fn_name:
+                                    entry["name"] += str(fn_name)
+                                fn_args = getattr(function, "arguments", None)
+                                if fn_args:
+                                    entry["arguments"] += str(fn_args)
 
-                        function = getattr(tc, "function", None)
-                        if function is not None:
-                            fn_name = getattr(function, "name", None)
-                            if fn_name:
-                                entry["name"] += str(fn_name)
-                            fn_args = getattr(function, "arguments", None)
-                            if fn_args:
-                                entry["arguments"] += str(fn_args)
-            except Exception as streaming_exc:
-                guard.reraise_if_aborted(streaming_exc)
-                raise
+                # Check abort AFTER processing this chunk so any
+                # already-delivered content is preserved (matches the
+                # in-loop-check semantics from the old implementation:
+                # the chunk-list test pins that the chunk we received
+                # before the abort gets processed; we just don't take
+                # the next one).
+                if guard.aborted:
+                    guard.raise_if_post_aborted()
 
         # Stream completed naturally OR the in-loop check broke out.
         # In the latter case the signal is already tripped; raise so
