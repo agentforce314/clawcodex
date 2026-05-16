@@ -40,10 +40,14 @@ from .filter_agents_by_mcp import (
 )
 from .load_agents_dir import (
     clear_agent_definitions_cache,
+    clear_sdk_agents,
     get_active_agents_from_list,
     get_agent_definitions_with_overrides,
+    get_sdk_agents,
+    register_sdk_agents,
 )
 from .load_plugin_agents import load_plugin_agents
+from .parse_agent_json import parse_agent_from_json, parse_agents_from_json
 from .parse_agent_markdown import parse_agent_from_markdown
 from .prompt import (
     format_agent_line,
@@ -110,10 +114,15 @@ __all__ = [
     "create_subagent_context",
     # Custom-agent discovery
     "clear_agent_definitions_cache",
+    "clear_sdk_agents",
     "filter_agents_by_mcp_requirements",
     "get_active_agents_from_list",
     "get_agent_definitions_with_overrides",
+    "get_sdk_agents",
     "has_required_mcp_servers",
     "load_plugin_agents",
+    "parse_agent_from_json",
     "parse_agent_from_markdown",
+    "parse_agents_from_json",
+    "register_sdk_agents",
 ]

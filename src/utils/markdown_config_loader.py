@@ -72,6 +72,50 @@ def _find_git_root(cwd: Path) -> Path | None:
     return None
 
 
+def _find_canonical_git_root(cwd: Path) -> Path | None:
+    """Return the *main* repo root, resolving worktree ``.git`` files.
+
+    Mirrors TS ``findCanonicalGitRoot``. In a regular git checkout this is
+    the same as ``_find_git_root``. In a worktree the worktree root holds a
+    ``.git`` *file* of the form ``gitdir: /path/to/main/.git/worktrees/<name>``;
+    we follow that pointer back to the main repo root (``/path/to/main``).
+    Returns ``None`` outside any git repo, or when the gitdir pointer is
+    malformed / unreadable.
+    """
+    repo_root = _find_git_root(cwd)
+    if repo_root is None:
+        return None
+    git_path = repo_root / ".git"
+    if git_path.is_dir():
+        return repo_root  # regular checkout
+    try:
+        text = git_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return repo_root
+    gitdir: Path | None = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("gitdir:"):
+            target = stripped.split(":", 1)[1].strip()
+            if not target:
+                return repo_root
+            target_path = Path(target)
+            if not target_path.is_absolute():
+                target_path = (repo_root / target_path).resolve()
+            gitdir = target_path
+            break
+    if gitdir is None:
+        return repo_root
+    # Worktree gitdir looks like ``<main>/.git/worktrees/<name>``. The main
+    # repo root is two parents up (``<main>/.git`` → ``<main>``).
+    try:
+        if gitdir.parent.name == "worktrees" and gitdir.parent.parent.name == ".git":
+            return gitdir.parent.parent.parent
+    except (OSError, ValueError):
+        return repo_root
+    return repo_root
+
+
 def _get_project_subdir_paths(cwd: str, subdir: str) -> list[str]:
     """Walk from ``cwd`` upward, collecting ``.claude/<subdir>`` per level.
 
@@ -147,6 +191,32 @@ def load_markdown_files_for_subdir(subdir: str, cwd: str) -> list[MarkdownFile]:
     managed_dir = str(_get_managed_file_path() / ".claude" / subdir)
     user_dir = str(_get_global_config_dir() / subdir)
     project_dirs = _get_project_subdir_paths(cwd, subdir)
+
+    # Worktree fallback: when ``cwd`` is in a git worktree and the worktree's
+    # own ``.claude/<subdir>``/``.openclaude/<subdir>`` aren't checked out
+    # (e.g. sparse-checkout), append the *main* repo's copies so they remain
+    # reachable. Mirrors markdownConfigLoader.ts:324-341 — only triggers when
+    # the canonical (main) root differs from the worktree root.
+    cwd_path = Path(cwd).expanduser().resolve()
+    git_root = _find_git_root(cwd_path)
+    canonical_root = _find_canonical_git_root(cwd_path)
+    if (
+        git_root is not None
+        and canonical_root is not None
+        and canonical_root != git_root
+    ):
+        worktree_dirs = {
+            str(git_root / config_dir / subdir)
+            for config_dir in (".claude", ".openclaude")
+        }
+        worktree_has_subdir = any(
+            Path(d).is_dir() for d in project_dirs if d in worktree_dirs
+        )
+        if not worktree_has_subdir:
+            for config_dir_name in (".claude", ".openclaude"):
+                fallback = str(canonical_root / config_dir_name / subdir)
+                if fallback not in project_dirs:
+                    project_dirs.append(fallback)
 
     seen: set[str] = set()
     results: list[MarkdownFile] = []
