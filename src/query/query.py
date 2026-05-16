@@ -678,21 +678,31 @@ def _dispatch_single_tool(
                 # size is what counts toward the budget — not the
                 # original 200K output).
                 tool_use_context.tool_result_chars_so_far += compute_block_chars(api_block)
-            content_str = api_block.get("content", "")
-            if not isinstance(content_str, str):
-                content_str = json.dumps(content_str, ensure_ascii=False)
+            raw_content = api_block.get("content", "")
+            # Preserve list-of-content-blocks shape so multimodal tool_results
+            # (e.g. Read's image content blocks, bash data:image/... captures)
+            # reach the API as proper image/document blocks instead of being
+            # JSON-stringified into text. The Anthropic API rejects images
+            # delivered as text and the model just sees JSON gibberish in the
+            # tool_result content otherwise. ``ToolResultBlock.content`` and
+            # ``content_block_to_dict`` already handle list shape end-to-end
+            # (see content_blocks.py:159-173).
+            if isinstance(raw_content, (str, list)):
+                result_content: str | list[Any] = raw_content
+            else:
+                result_content = str(raw_content)
         elif isinstance(result.output, str):
-            content_str = result.output
+            result_content = result.output
         elif isinstance(result.output, dict):
-            content_str = json.dumps(result.output, ensure_ascii=False)
+            result_content = json.dumps(result.output, ensure_ascii=False)
         else:
-            content_str = str(result.output)
+            result_content = str(result.output)
 
         result_msg = UserMessage(
             content=[
                 ToolResultBlock(
                     tool_use_id=block.id,
-                    content=content_str,
+                    content=result_content,
                     is_error=result.is_error,
                     metadata=metadata,
                 )

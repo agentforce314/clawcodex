@@ -35,8 +35,13 @@ class Conversation:
         normalized_content = _normalize_message_content(content)
         self.messages.append(create_message(role, normalized_content))
 
-    def add_user_message(self, text: str):
-        self.add_message("user", text)
+    def add_user_message(self, content: MessageContent):
+        # ``MessageContent = str | list[ContentBlock]``: ``add_message`` ->
+        # ``_normalize_message_content`` already handles both shapes, so
+        # callers can pass a multi-block content list (e.g. text + image
+        # blocks from @image.png @-mentions) the same way they pass a
+        # plain string.
+        self.add_message("user", content)
 
     def add_assistant_message(self, content: MessageContent):
         self.add_message("assistant", content)
