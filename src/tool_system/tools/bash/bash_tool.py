@@ -20,10 +20,13 @@ from typing import Any
 # while costing ~20 wakeups/sec for a long-running command — negligible.
 _ABORT_POLL_INTERVAL_S = 0.05
 
-# Grace period between SIGTERM and SIGKILL after an abort. Lets the
-# subprocess flush stdio + run cleanup handlers (TS ShellCommand grants
-# a similar window via ``tree-kill``).
-_KILL_GRACE_S = 2.0
+# Bound on how long we wait for the kernel to reap a SIGKILL'd process
+# before falling through to drain pipes via ``communicate()``. SIGKILL
+# itself is uncatchable; a non-trivial wait here only happens when the
+# child is stuck in an uninterruptible kernel wait (e.g. an NFS mount
+# that lost the server). Mirrors the spirit of TS's ``tree-kill`` reap
+# in that we bound the post-kill drain, not the pre-kill grace.
+_KILL_REAP_TIMEOUT_S = 2.0
 
 
 @dataclass
@@ -105,26 +108,35 @@ def _run_bash_with_abort(
             interrupted = True
             break
         if _time_mod.monotonic() >= deadline:
-            interrupted = True
             timed_out = True
             break
         _time_mod.sleep(_ABORT_POLL_INTERVAL_S)
 
-    if interrupted:
-        _kill_process_group(proc.pid, _signal_mod.SIGTERM)
+    # Mirrors TS ``ShellCommand.ts:337-343`` (``#doKill``): both the
+    # abort and timeout paths actually call ``treeKill(pid, 'SIGKILL')``
+    # — the SIGTERM passed into ``#doKill(SIGTERM)`` from the timeout
+    # handler is a *label* used downstream by ``#handleExit`` to choose
+    # the stderr prefix, not the signal actually sent. Send SIGKILL
+    # immediately in both cases for byte-for-byte parity and to keep
+    # ESC latency under the ~50ms target tracked by PR #130.
+    # ``interrupted`` / ``timed_out`` are the source-of-truth
+    # discriminator for downstream callers; the exit-code label is
+    # rewritten in ``_bash_call``.
+    if interrupted or timed_out:
+        _kill_process_group(proc.pid, _signal_mod.SIGKILL)
         try:
-            proc.wait(timeout=_KILL_GRACE_S)
+            proc.wait(timeout=_KILL_REAP_TIMEOUT_S)
         except subprocess.TimeoutExpired:
-            _kill_process_group(proc.pid, _signal_mod.SIGKILL)
-            try:
-                proc.wait(timeout=_KILL_GRACE_S)
-            except subprocess.TimeoutExpired:
-                pass
+            # SIGKILL is uncatchable, so this only happens when the
+            # process is in an uninterruptible kernel wait (e.g. stuck
+            # on an NFS mount). Nothing more we can do — fall through
+            # to ``communicate()`` to drain whatever pipes are open.
+            pass
 
     # ``communicate()`` after a kill is safe and gathers any pending
     # output that buffered before the signal landed.
     try:
-        stdout, stderr = proc.communicate(timeout=_KILL_GRACE_S)
+        stdout, stderr = proc.communicate(timeout=_KILL_REAP_TIMEOUT_S)
     except subprocess.TimeoutExpired:
         stdout, stderr = "", ""
 
@@ -153,6 +165,7 @@ from ...errors import ToolInputError, ToolPermissionError
 from ...protocol import ToolResult
 from src.permissions.bash_security import check_bash_command_safety
 from src.permissions.types import PermissionPassthroughResult, PermissionResult
+from src.utils.format import format_duration
 
 from .background import spawn_background_bash
 from .command_semantics import interpret_command_result
@@ -322,20 +335,68 @@ def _bash_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
         )
 
         if run_result.interrupted:
+            # ESC-abort path. Mirrors TS ``BashTool.tsx:610-630`` where
+            # ``interrupted=true`` triggers the ``<error>Command was
+            # aborted before completion</error>`` appendage and sets
+            # ``is_error=true`` on the API block.
             return ToolResult(
                 name=BASH_TOOL_NAME,
                 output={
                     "cwd": str(cwd),
                     "exit_code": -1,
                     "stdout": truncate_output(run_result.stdout or ""),
-                    "stderr": (
-                        truncate_output(run_result.stderr or "")
-                        if not run_result.timed_out
-                        else f"Command timed out after {timeout_s} seconds"
-                    ),
+                    "stderr": truncate_output(run_result.stderr or ""),
                     "interrupted": True,
                 },
                 is_error=True,
+            )
+
+        if run_result.timed_out:
+            # Timeout path. Mirrors TS ``ShellCommand.ts:323-328``:
+            # prepend the duration marker to whatever stderr was
+            # captured, leave ``interrupted=false``, and let
+            # ``_bash_map_result_to_api`` emit ``is_error=false`` — the
+            # duration string in stderr is the model-facing signal, the
+            # ``<error>`` tag is reserved for user-initiated abort.
+            # Without this split the timeout case looked identical to
+            # ESC and the model retried timed-out commands on resume.
+            #
+            # Formatting parity:
+            #   * ``format_duration`` is the Python port of TS
+            #     ``formatDuration`` (src/utils/format.py mirrors
+            #     typescript/src/utils/format.ts:34-95). It produces
+            #     ``30s`` / ``2m 0s`` / ``1h 5m 12s`` — exactly the
+            #     string TS embeds in the marker. ``timeout_s * 1000``
+            #     converts to ms because ``format_duration`` and the
+            #     TS reference both take ms.
+            #   * ``prepend_stderr`` mirrors TS ``ShellCommand.ts:56-58``
+            #     — a SINGLE SPACE separator (not newline), and the
+            #     existing stderr is passed through unmodified so a
+            #     trailing newline or leading whitespace the model
+            #     might use as a delimiter survives the prepend.
+            #   * ``exit_code = 143`` mirrors TS ``ShellCommand.ts:50``
+            #     (``SIGTERM = 143``) — the label for the timeout path,
+            #     decoupled from whatever signal Popen actually reports
+            #     (which would be ``-9`` on Unix after our SIGKILL).
+            existing_stderr = run_result.stderr or ""
+            timeout_marker = (
+                f"Command timed out after {format_duration(timeout_s * 1000)}"
+            )
+            stderr_with_marker = (
+                f"{timeout_marker} {existing_stderr}"
+                if existing_stderr
+                else timeout_marker
+            )
+            return ToolResult(
+                name=BASH_TOOL_NAME,
+                output={
+                    "cwd": str(cwd),
+                    "exit_code": 143,
+                    "stdout": truncate_output(run_result.stdout or ""),
+                    "stderr": truncate_output(stderr_with_marker),
+                    "timed_out": True,
+                },
+                is_error=False,
             )
 
         completed_returncode = run_result.returncode
