@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, AsyncGenerator, Callable
 from uuid import uuid4
 
+from ..types.content_blocks import ContentBlock
 from ..types.messages import (
     AssistantMessage,
     Message,
@@ -190,10 +191,14 @@ class QueryEngine:
 
     async def submit_message(
         self,
-        prompt: str,
+        prompt: str | list[ContentBlock],
         *,
         on_message: Callable[[Message | StreamEvent], None] | None = None,
     ) -> AsyncGenerator[Message | StreamEvent, None]:
+        # ``MessageContent = str | list[ContentBlock]`` already supports
+        # both shapes; the list form lets callers attach image/document
+        # content blocks alongside the text prompt (e.g. from @image.png
+        # @-mentions in the REPL).
         user_msg = UserMessage(content=prompt)
         self._mutable_messages.append(user_msg)
 

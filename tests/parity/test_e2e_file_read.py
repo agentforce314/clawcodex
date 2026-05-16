@@ -526,6 +526,126 @@ class TestE2EFileRead(unittest.TestCase):
         self.assertEqual(block["source"]["data"], "ABCD")
         self.assertEqual(block["source"]["media_type"], "image/png")
 
+    def test_dispatch_preserves_image_under_aggregate_threshold_pressure(self) -> None:
+        """The aggregate-budget gate must short-circuit on image content.
+
+        ``maybe_persist_large_tool_result``'s ``_has_image_block`` guard
+        is the load-bearing line that keeps image bytes from being
+        force-persisted to a wrapper-text message when the per-message
+        aggregate budget is nearly full. This test pre-loads the
+        running aggregate to one byte below
+        ``MAX_TOOL_RESULTS_PER_MESSAGE_CHARS`` and asserts the image
+        tool_result still arrives as a list of content blocks (not a
+        ``<persisted-output>`` wrapper)."""
+        from PIL import Image
+        from src.query.query import _dispatch_single_tool
+        from src.services.tool_execution.tool_result_persistence import (
+            MAX_TOOL_RESULTS_PER_MESSAGE_CHARS,
+        )
+        from src.tool_system.registry import get_all_base_tools
+        from src.types.content_blocks import ToolResultBlock, ToolUseBlock
+
+        png = self.root / "under_pressure.png"
+        Image.new("RGB", (48, 48), color="purple").save(png, format="PNG")
+
+        # Pre-load the running aggregate to within 1 byte of the cap.
+        # If ``_has_image_block`` didn't short-circuit, the image block
+        # would be force-persisted (persist_tool_result would refuse
+        # because of the non-text branch, and the original block would
+        # come back wrapped in a text marker).
+        self.ctx.tool_result_chars_so_far = MAX_TOOL_RESULTS_PER_MESSAGE_CHARS - 1
+
+        tools = get_all_base_tools(self.registry)
+        tu = ToolUseBlock(id="tu_agg", name="Read", input={"file_path": str(png)})
+        primary, _extras = _dispatch_single_tool(tu, self.registry, self.ctx, tools)
+
+        body = primary.content[0].content
+        self.assertIsInstance(body, list,
+            "Aggregate-pressure path collapsed image to text instead of "
+            "short-circuiting via _has_image_block")
+        self.assertEqual(body[0]["type"], "image")
+        # The aggregate counter must NOT have grown by the image bytes:
+        # ``_content_size`` returns 0 for image blocks
+        # (tool_result_persistence.py:159-163), and the dispatcher's
+        # ``+= compute_block_chars(api_block)`` therefore adds 0.
+        # Pins the "image bytes don't pollute the per-message budget"
+        # invariant so a future change to ``_content_size`` that started
+        # counting base64 length would fail loudly here.
+        self.assertEqual(
+            self.ctx.tool_result_chars_so_far,
+            MAX_TOOL_RESULTS_PER_MESSAGE_CHARS - 1,
+            "Image bytes leaked into tool_result_chars_so_far counter",
+        )
+
+    def test_dispatch_preserves_image_list_content_not_json_stringified(self) -> None:
+        """Regression for Bug B: ``_dispatch_single_tool`` must keep the
+        Read tool's image content as a LIST of content blocks, not
+        ``json.dumps`` it into a string.
+
+        Before the fix, ``query.py:_dispatch_single_tool`` ran
+        ``json.dumps(content)`` on any non-string content, which turned
+        ``[{"type": "image", "source": ...}]`` into the literal text
+        ``'[{"type": "image", "source": ...}]'``. The Anthropic API then
+        received an image tool_result whose content was text JSON; the
+        model couldn't see the actual image and would hallucinate.
+
+        This test drives a real PNG through ``_dispatch_single_tool``
+        AND then through ``normalize_messages_for_api`` to lock in the
+        full wire shape: the API payload's tool_result content must be
+        a list whose first element is an ``image`` content block."""
+        from PIL import Image
+        from src.query.query import _dispatch_single_tool
+        from src.tool_system.registry import get_all_base_tools
+        from src.types.content_blocks import ToolResultBlock, ToolUseBlock
+        from src.types.messages import AssistantMessage, normalize_messages_for_api
+
+        png = self.root / "regression.png"
+        # Tiny so no resize kicks in -- we want the raw image block path.
+        Image.new("RGB", (32, 32), color="red").save(png, format="PNG")
+
+        # Production callers always pass ``tools``; without it the
+        # dispatcher takes the legacy fallback branch and JSON-dumps the
+        # raw output dict. Pass it explicitly so we exercise the
+        # ``process_tool_result_block`` branch where Bug B lived.
+        tools = get_all_base_tools(self.registry)
+        tu = ToolUseBlock(id="tu_regress_b", name="Read", input={"file_path": str(png)})
+        primary, _extras = _dispatch_single_tool(tu, self.registry, self.ctx, tools)
+
+        # Direct check on the ToolResultBlock the dispatcher built.
+        self.assertIsInstance(primary.content[0], ToolResultBlock)
+        body = primary.content[0].content
+        self.assertIsInstance(
+            body, list,
+            "Bug B regression: tool_result.content is a string instead of "
+            "a list of content blocks — image was JSON-stringified.",
+        )
+        self.assertEqual(body[0]["type"], "image")
+        self.assertEqual(body[0]["source"]["type"], "base64")
+        self.assertEqual(body[0]["source"]["media_type"], "image/png")
+        self.assertGreater(len(body[0]["source"]["data"]), 0)
+
+        # End-to-end through normalize_messages_for_api: the API would
+        # receive an image content block, not a text JSON blob.
+        asst = AssistantMessage(content=[tu])
+        normalized = normalize_messages_for_api([asst, primary])
+        # Find the tool_result block in the normalized output
+        api_tool_results = []
+        for m in normalized:
+            content = m.get("content") if isinstance(m, dict) else None
+            if not isinstance(content, list):
+                continue
+            for blk in content:
+                if isinstance(blk, dict) and blk.get("type") == "tool_result":
+                    api_tool_results.append(blk)
+        self.assertEqual(len(api_tool_results), 1)
+        api_body = api_tool_results[0]["content"]
+        self.assertIsInstance(
+            api_body, list,
+            "API payload regressed: tool_result.content arrived as a string",
+        )
+        self.assertEqual(api_body[0]["type"], "image")
+        self.assertEqual(api_body[0]["source"]["media_type"], "image/png")
+
 
 class TestE2EGlobGrep(unittest.TestCase):
     """End-to-end Glob and Grep search flows."""

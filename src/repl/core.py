@@ -2285,10 +2285,12 @@ class ClawcodexREPL:
         # sees the message. Port of
         # ``typescript/src/utils/attachments.ts#processAtMentionedFiles``.
         from src.command_system.input_processing import (
+            build_image_content_blocks,
             expand_agent_mentions,
             expand_at_mentions,
             format_at_mention_attachments,
         )
+        from src.types.content_blocks import TextBlock
 
         cwd_for_mentions = str(self.tool_context.cwd or self.tool_context.workspace_root)
         _, at_attachments = expand_at_mentions(user_input, cwd=cwd_for_mentions)
@@ -2306,16 +2308,43 @@ class ClawcodexREPL:
             attachment_text = format_at_mention_attachments(all_attachments)
             user_input = f"{attachment_text}\n\n{user_input}" if attachment_text else user_input
             for att in at_attachments:
-                kind = "directory" if att["kind"] == "directory" else "file"
-                self.console.print(
-                    f"[dim]  ⎿  Listed {kind} {att['display_path']}{'/' if kind == 'directory' else ''}[/dim]"
-                )
+                kind = att.get("kind")
+                if kind == "image":
+                    # TS shows "Read 1 file (ctrl+o to expand)" for image
+                    # @-mentions; we mirror the user-facing intent without
+                    # the count (one mention -> one line).
+                    self.console.print(
+                        f"[dim]  ⎿  Read image {att['display_path']}[/dim]"
+                    )
+                else:
+                    label = "directory" if kind == "directory" else "file"
+                    self.console.print(
+                        f"[dim]  ⎿  Listed {label} {att['display_path']}{'/' if kind == 'directory' else ''}[/dim]"
+                    )
             for att in agent_attachments:
                 self.console.print(
                     f"[dim]  ⎿  Invoking agent @{att['agent_type']}[/dim]"
                 )
 
-        self.session.conversation.add_user_message(user_input)
+        # Image @-mentions become real image content blocks on the user
+        # message so the model sees the image directly (matches TS's
+        # auto-Read-on-@image behaviour, and stops the model from
+        # hallucinating about mojibake'd PNG bytes in a system-reminder).
+        # When images are present, ``user_message_content`` is a mixed
+        # ``[TextBlock, ImageBlock, ...]`` list; otherwise it is just the
+        # text string. Both shapes are accepted by ``add_user_message``
+        # and ``engine.submit_message`` (``MessageContent = str |
+        # list[ContentBlock]``).
+        image_blocks = build_image_content_blocks(at_attachments)
+        if image_blocks:
+            user_message_content: str | list[Any] = [
+                TextBlock(text=user_input),
+                *image_blocks,
+            ]
+        else:
+            user_message_content = user_input
+
+        self.session.conversation.add_user_message(user_message_content)
 
         try:
             self.console.print("\n[bold]Assistant[/bold]")
@@ -2331,7 +2360,10 @@ class ClawcodexREPL:
                         pass
                 stream_started = True
 
-            if self._should_try_direct_stream(user_input):
+            # Direct-stream skips the tool loop; it can only carry plain
+            # text. If the user attached an image, fall through to the
+            # full engine path so the image content block survives.
+            if not image_blocks and self._should_try_direct_stream(user_input):
                 def on_text_chunk_direct(chunk: str) -> None:
                     if not chunk:
                         return
@@ -2438,7 +2470,7 @@ class ClawcodexREPL:
                     pending_task_flush = False
                     self._render_task_snapshot()
 
-                async for msg in engine.submit_message(user_input):
+                async for msg in engine.submit_message(user_message_content):
                     if isinstance(msg, StreamEvent):
                         if msg.type == "stream_request_start":
                             api_call_count += 1

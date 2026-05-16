@@ -13,14 +13,53 @@ from typing import Any, Generator, Optional
 from .base import BaseProvider, ChatResponse, MessageInput, TextChunkCallback
 
 
+def _anthropic_image_block_to_openai(block: dict[str, Any]) -> dict[str, Any] | None:
+    """Translate an Anthropic image content block to OpenAI's
+    ``image_url`` shape.
+
+    Anthropic: ``{"type": "image", "source": {"type": "base64",
+    "media_type": "image/png", "data": "..."}}``.
+    OpenAI:    ``{"type": "image_url", "image_url": {"url":
+    "data:image/png;base64,..."}}``.
+
+    Returns ``None`` when the block isn't a recognisable Anthropic image
+    block (caller should keep the original).
+    """
+    if not isinstance(block, dict) or block.get("type") != "image":
+        return None
+    source = block.get("source")
+    if not isinstance(source, dict):
+        return None
+    if source.get("type") != "base64":
+        return None
+    media_type = source.get("media_type") or "image/png"
+    data = source.get("data")
+    if not data or not isinstance(data, str):
+        # Producer-bug guard: an empty/missing data field would generate
+        # ``data:image/png;base64,`` which OpenAI rejects with a confusing
+        # error. Return ``None`` so the caller keeps the original block --
+        # the upstream serializer will surface the malformed shape instead
+        # of silently producing a request the server will fail.
+        return None
+    return {
+        "type": "image_url",
+        "image_url": {"url": f"data:{media_type};base64,{data}"},
+    }
+
+
 def _convert_anthropic_messages_to_openai(
     messages: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """Convert Anthropic-format messages to OpenAI chat-completion format.
 
-    Handles two transformations:
+    Handles three transformations:
     1. Assistant messages with tool_use content blocks → assistant + tool_calls
     2. User messages with tool_result content blocks → role=tool messages
+    3. Anthropic image content blocks (in user messages or tool_result
+       payloads) → OpenAI ``image_url`` data-URI blocks. Required because
+       both @image.png @-mentions and Read-tool image returns ship
+       Anthropic-shape blocks; without translation, OpenAI-compatible
+       providers either reject the request or silently drop the image.
     """
     result: list[dict[str, Any]] = []
     for msg in messages:
@@ -92,7 +131,10 @@ def _convert_anthropic_messages_to_openai(
                 if isinstance(block, dict) and block.get("type") == "tool_result":
                     tool_results.append(block)
                 else:
-                    non_tool_blocks.append(block)
+                    # Translate Anthropic image blocks to OpenAI ``image_url``
+                    # shape; pass everything else through unchanged.
+                    translated = _anthropic_image_block_to_openai(block) if isinstance(block, dict) else None
+                    non_tool_blocks.append(translated if translated is not None else block)
 
             # Emit non-tool content first as user message
             if non_tool_blocks:
@@ -101,12 +143,25 @@ def _convert_anthropic_messages_to_openai(
             # Emit each tool_result as a separate role=tool message
             for tr in tool_results:
                 raw_content = tr.get("content", "")
+                # Collect any image blocks separately. OpenAI's ``role=tool``
+                # message only accepts a text ``content`` string -- it
+                # rejects multimodal content. So we split: emit the text
+                # body as the tool message, then immediately follow with a
+                # synthetic ``role=user`` message that carries the image
+                # blocks via ``image_url``. The model sees the image
+                # alongside the tool result, which is the closest semantic
+                # match to Anthropic's native multimodal tool_result.
+                image_blocks_from_tool: list[dict[str, Any]] = []
                 if isinstance(raw_content, list):
                     # Flatten nested content blocks to text
                     parts = []
                     for item in raw_content:
                         if isinstance(item, dict) and item.get("type") == "text":
                             parts.append(item.get("text", ""))
+                        elif isinstance(item, dict) and item.get("type") == "image":
+                            translated_img = _anthropic_image_block_to_openai(item)
+                            if translated_img is not None:
+                                image_blocks_from_tool.append(translated_img)
                         elif isinstance(item, str):
                             parts.append(item)
                         else:
@@ -117,11 +172,31 @@ def _convert_anthropic_messages_to_openai(
                 else:
                     flat_content = str(raw_content)
 
+                # OpenAI requires ``content`` to be a non-empty string on
+                # tool messages; if the original was image-only, leave a
+                # short pointer so the tool_call is paired with something.
+                # The follow-up ``role=user`` message carrying the
+                # ``image_url`` block is NOT linked to ``tool_call_id`` --
+                # OpenAI's wire format has no way to attach a tool_call_id
+                # to a user message. The model sees ``tool(text result)``
+                # followed by ``user(image)`` and may briefly treat the
+                # trailing user message as a new prompt. The placeholder
+                # text reduces that risk, but it's a known OpenAI-API
+                # limitation we cannot fully paper over; on Anthropic the
+                # equivalent stays as a single multimodal tool_result.
+                if not flat_content and image_blocks_from_tool:
+                    flat_content = "[image content delivered in the following message]"
+
                 result.append({
                     "role": "tool",
                     "tool_call_id": tr.get("tool_use_id", ""),
                     "content": flat_content,
                 })
+                if image_blocks_from_tool:
+                    result.append({
+                        "role": "user",
+                        "content": image_blocks_from_tool,
+                    })
             continue
 
         # Fallback

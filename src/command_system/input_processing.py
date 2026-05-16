@@ -11,6 +11,7 @@ Handles:
 
 from __future__ import annotations
 
+import base64 as _base64
 import os
 import re
 from dataclasses import dataclass, field
@@ -46,7 +47,12 @@ _URL_RE = re.compile(
     r"https?://[^\s<>\"'`\[\](){}]+",
     re.IGNORECASE,
 )
-_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
+# Extensions ``_extract_image_paths`` treats as images for ``ParsedInput.
+# image_paths``. Aligned with the Read tool's ``IMAGE_EXTENSIONS`` so the
+# parse-time hint and the @-mention expansion agree on what counts as an
+# image. SVG and BMP are intentionally excluded: the API doesn't accept
+# SVG, and Pillow's BMP path isn't part of the parity surface.
+_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 _ESCAPE_RE = re.compile(r"^\\(/)")  # Escaped slash
 
 
@@ -160,24 +166,143 @@ def _extract_urls(text: str) -> list[str]:
 
 _MAX_DIR_ENTRIES = 1000
 
+# Image extensions handled as inline image content blocks (not text). Must
+# match ``IMAGE_EXTENSIONS`` in ``src/tool_system/tools/read.py`` so the
+# @-mention pipeline and the Read tool agree on what counts as an image.
+_AT_MENTION_IMAGE_EXTENSIONS = frozenset({"png", "jpg", "jpeg", "gif", "webp"})
+
+
+def _try_build_image_attachment(
+    expanded: str,
+    display_path: str,
+) -> dict[str, Any] | None:
+    """Try to build an ``image`` attachment from a file path.
+
+    Returns ``None`` if the file is empty, unreadable, or Pillow can't
+    decode it. On ``None`` the caller drops the attachment silently: the
+    user still sees the path in their prompt text, and the model can call
+    ``Read`` explicitly to surface a real error.
+
+    Mirrors the Read tool's image branch (``src/tool_system/tools/read.py``):
+    bounded byte read, magic-byte format sniff, resize to the 3.75 MB /
+    1568 px envelope, return base64 + media_type. Using the same pipeline
+    means a misnamed ``.png`` containing JPEG bytes gets
+    ``media_type=image/jpeg`` the same way the Read tool reports it.
+    """
+    try:
+        st = os.stat(expanded)
+    except OSError:
+        return None
+    if st.st_size == 0:
+        return None
+
+    # Lazy import keeps this module's import cheap when the user never
+    # uses image @-mentions (Pillow takes ~25 ms to import).
+    from ..utils.image_processor import (
+        API_IMAGE_MAX_BASE64_SIZE,
+        IMAGE_READ_SAFETY_CAP,
+        ImageProcessingError,
+        compress_image_to_token_budget,
+        detect_image_format_from_buffer,
+        estimate_image_tokens_from_base64_length,
+        maybe_resize_image,
+        read_file_bytes,
+    )
+
+    try:
+        buf = read_file_bytes(Path(expanded), IMAGE_READ_SAFETY_CAP)
+    except OSError:
+        return None
+    if not buf:
+        return None
+
+    detected_media = detect_image_format_from_buffer(buf)
+    try:
+        result = maybe_resize_image(buf, st.st_size, format_hint=detected_media)
+    except ImageProcessingError:
+        # Pillow couldn't decode: bytes aren't a real image despite the
+        # extension. Skip rather than ship corrupt bytes the API would
+        # reject.
+        return None
+
+    # Token-budget fallback. ``maybe_resize_image`` may return a still-
+    # oversize buffer when even q=20 JPEG at 1568px doesn't fit the 3.75
+    # MB envelope (see image_processor.maybe_resize_image:331-350). The
+    # Read tool runs a final ``compress_image_to_token_budget`` step from
+    # the ORIGINAL buffer to force the payload under the API's 5 MB
+    # base64 cap (read.py:506-518). Without that step, oversize image
+    # @-mentions land a too-large base64 on the conversation and the
+    # Anthropic provider rejects the entire turn via
+    # ``validate_images_for_api``.
+    base64_len = ((len(result.data) + 2) // 3) * 4
+    if base64_len > API_IMAGE_MAX_BASE64_SIZE:
+        # Pick the same token budget the Read tool would use so we
+        # produce identically-sized payloads either way.
+        max_tokens = _get_read_max_output_tokens()
+        try:
+            compressed = compress_image_to_token_budget(buf, max_tokens, detected_media)
+            # Only adopt the compressed result if it actually fits under
+            # the API limit. If both attempts are oversize, drop the
+            # attachment rather than ship a payload the API will reject
+            # at the next turn -- the user's path is still in the text
+            # prompt and they can call Read explicitly for an error.
+            comp_b64_len = ((len(compressed.data) + 2) // 3) * 4
+            if comp_b64_len <= API_IMAGE_MAX_BASE64_SIZE:
+                result = compressed
+            else:
+                return None
+        except ImageProcessingError:
+            return None
+
+    b64 = _base64.b64encode(result.data).decode("ascii")
+    return {
+        "kind": "image",
+        "path": expanded,
+        "display_path": display_path,
+        "base64": b64,
+        "media_type": result.media_type,
+    }
+
+
+def _get_read_max_output_tokens() -> int:
+    """Return the Read tool's max-output-tokens budget.
+
+    Centralised so the @-mention image branch and the Read tool agree on
+    the compression target. Mirrors ``_get_max_output_tokens`` in
+    ``src/tool_system/tools/read.py``.
+    """
+    override = os.environ.get("CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS")
+    if override:
+        try:
+            val = int(override)
+            if val > 0:
+                return val
+        except ValueError:
+            pass
+    return 25_000
+
 
 def expand_at_mentions(
     text: str,
     *,
     cwd: str | None = None,
-) -> tuple[str, list[dict[str, str]]]:
+) -> tuple[str, list[dict[str, Any]]]:
     """Resolve ``@path`` mentions and build context attachments.
 
     Mirrors ``processAtMentionedFiles`` in
     ``typescript/src/utils/attachments.ts``: if a mention resolves to a
     directory we build a ``Listed directory`` attachment containing its
-    entries (up to 1000); if it resolves to a readable file we attach the
+    entries (up to 1000); if it resolves to a readable image file
+    (png/jpg/jpeg/gif/webp) we attach a ``kind="image"`` attachment with
+    base64 + media_type via the image pipeline, so the REPL can inline it
+    as a real image content block in the user message instead of mojibake
+    in a system-reminder. Other readable files we attach the
     file's contents verbatim. The returned ``text`` is left unchanged — the
     caller prepends / appends the attachments before sending to the model.
     """
     cwd = cwd or os.getcwd()
     seen: set[str] = set()
-    attachments: list[dict[str, str]] = []
+    attachments: list[dict[str, Any]] = []
 
     for match in _FILE_MENTION_RE.finditer(text):
         raw = match.group(1).rstrip(".,!?:;\"'`)]}")
@@ -217,12 +342,28 @@ def expand_at_mentions(
                     }
                 )
             elif os.path.isfile(expanded):
+                display_path = os.path.relpath(expanded, cwd)
+                # Image branch FIRST -- opening a PNG/JPEG in text mode
+                # produces mojibake (utf-8 replacement chars over the binary
+                # bytes), and the old wrapper shipped that garbage to the
+                # model inside a ``<system-reminder>Contents of foo.png:``
+                # block. The model would latch onto any ASCII fragments
+                # (XMP metadata, type tags) and hallucinate the rest.
+                ext = os.path.splitext(expanded)[1].lstrip(".").lower()
+                if ext in _AT_MENTION_IMAGE_EXTENSIONS:
+                    img_att = _try_build_image_attachment(expanded, display_path)
+                    if img_att is not None:
+                        attachments.append(img_att)
+                    # Image read failed (empty, undecodable, ...): drop the
+                    # attachment silently. The user's prompt text still
+                    # contains the path, so the model can call ``Read``
+                    # explicitly to see a real error.
+                    continue
                 try:
                     with open(expanded, "r", encoding="utf-8", errors="replace") as fh:
                         data = fh.read()
                 except OSError:
                     continue
-                display_path = os.path.relpath(expanded, cwd)
                 attachments.append(
                     {
                         "kind": "file",
@@ -237,10 +378,17 @@ def expand_at_mentions(
     return text, attachments
 
 
-def format_at_mention_attachments(attachments: list[dict[str, str]]) -> str:
+def format_at_mention_attachments(attachments: list[dict[str, Any]]) -> str:
     """Render attachments produced by :func:`expand_at_mentions` and
     :func:`expand_agent_mentions` as a single string ready to be prepended to
     the user message. Empty input returns ``""``.
+
+    Image attachments (``kind="image"``) are intentionally skipped here:
+    they carry binary base64 data that must reach the model as an actual
+    image content block (via :func:`build_image_content_blocks`), not as
+    text inside a ``<system-reminder>``. Rendering them as text would
+    reintroduce the mojibake/hallucination failure mode this module was
+    rewritten to prevent.
     """
     if not attachments:
         return ""
@@ -261,6 +409,9 @@ def format_at_mention_attachments(attachments: list[dict[str, str]]) -> str:
                 f"```\n{att['content']}\n```\n"
                 f"</system-reminder>"
             )
+        elif kind == "image":
+            # See docstring -- handled separately as a content block.
+            continue
         elif kind == "agent_mention":
             # Mirrors ``typescript/src/utils/messages.ts`` ``agent_mention``
             # case: the reminder nudges the model to delegate to the named
@@ -274,6 +425,37 @@ def format_at_mention_attachments(attachments: list[dict[str, str]]) -> str:
                 f"</system-reminder>"
             )
     return "\n\n".join(blocks)
+
+
+def build_image_content_blocks(
+    attachments: list[dict[str, Any]],
+) -> list["ImageBlock"]:
+    """Build ``ImageBlock`` instances from ``kind="image"`` attachments.
+
+    The REPL appends these after the text portion of the user message so
+    the API receives a mixed text+image content list, matching the TS
+    @-mention flow which auto-Reads the image and inlines it.
+    """
+    from ..types.content_blocks import ImageBlock
+
+    blocks: list[ImageBlock] = []
+    for att in attachments:
+        if att.get("kind") != "image":
+            continue
+        b64 = att.get("base64")
+        media_type = att.get("media_type")
+        if not b64 or not media_type:
+            continue
+        blocks.append(
+            ImageBlock(
+                source={
+                    "type": "base64",
+                    "media_type": media_type,
+                    "data": b64,
+                },
+            )
+        )
+    return blocks
 
 
 def expand_agent_mentions(
