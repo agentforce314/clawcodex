@@ -497,9 +497,11 @@ class TestProductionPathBudgetEnforcement(unittest.TestCase):
         # sum equals the actual block sizes. Without the lock, races
         # lose writes (every thread reads 0 → counter = ONE block's
         # worth, not six).
+        # results is now list[(primary, extras)] tuples; sum the primary
+        # tool_result content lengths.
         self.assertEqual(
             ctx.tool_result_chars_so_far,
-            sum(len(r.content[0].content) for r in results),
+            sum(len(pair[0].content[0].content) for pair in results),
             "Concurrent writes lost updates — aggregate counter doesn't "
             "reflect every block's contribution. Lock is missing or "
             "broken.",
@@ -508,8 +510,8 @@ class TestProductionPathBudgetEnforcement(unittest.TestCase):
         # exceeds the 200K cap by 40K.
         persisted_count = sum(
             1
-            for msg in results
-            if "<persisted-output>" in msg.content[0].content
+            for pair in results
+            if "<persisted-output>" in pair[0].content[0].content
         )
         self.assertGreater(
             persisted_count, 0,
@@ -557,13 +559,15 @@ class TestProductionPathBudgetEnforcement(unittest.TestCase):
             "src.services.tool_execution.tool_result_persistence.resolve_tool_results_dir",
             return_value=self.tool_results_dir,
         ):
-            user_message = _dispatch_single_tool(
+            primary, extras = _dispatch_single_tool(
                 block, fake_registry, ctx, tools=[fake_tool]
             )
 
+        # No supplemental messages expected for this test.
+        self.assertEqual(extras, [])
         # The returned UserMessage's tool_result content should be the
         # ``<persisted-output>`` wrapper, NOT the raw 30K output.
-        content = user_message.content[0].content
+        content = primary.content[0].content
         self.assertIn(
             "<persisted-output>", content,
             "WI-5.1 critic B2: aggregate gate didn't fire on production path "

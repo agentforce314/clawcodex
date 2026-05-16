@@ -50,6 +50,10 @@ def _make_ctx(workspace: Path) -> ToolContext:
 
 
 def _extract_tool_result(msg: Any) -> ToolResultBlock:
+    # _dispatch_single_tool returns (primary: UserMessage, extras: list[UserMessage]).
+    # Accept either the tuple form or a bare UserMessage for back-compat.
+    if isinstance(msg, tuple):
+        msg = msg[0]
     assert isinstance(msg.content, list)
     assert len(msg.content) == 1
     block = msg.content[0]

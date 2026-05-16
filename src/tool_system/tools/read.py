@@ -120,12 +120,6 @@ IMAGE_MIME_TYPES = {
     "webp": "image/webp",
 }
 
-# Cap raw image read at 3.75 MB so the base64 payload stays under Anthropic's
-# 5 MB API image limit (base64 inflates by 4/3). Mirrors TS IMAGE_TARGET_RAW_SIZE
-# in typescript/src/constants/apiLimits.ts.
-MAX_IMAGE_SIZE_BYTES = (5 * 1024 * 1024 * 3) // 4
-
-
 def _has_blocked_binary_extension(file_path: str) -> bool:
     """Return True if file_path has a known binary extension that this tool cannot read.
 
@@ -218,6 +212,46 @@ Usage:
 - This tool can only read files, not directories. To read a directory, use an ls command via the Bash tool.
 - You will regularly be asked to read screenshots. If the user provides a path to a screenshot, ALWAYS use this tool to view the file at the path. This tool will work with all temporary file paths.
 - If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents."""
+
+
+# ---------------------------------------------------------------------------
+# PDF pages parameter parsing (TS pdfUtils.ts parsePDFPageRange equivalent)
+# ---------------------------------------------------------------------------
+
+PDF_MAX_PAGES_PER_READ = 20
+
+
+def _parse_pdf_pages(pages: str) -> tuple[int | None, int | None]:
+    """Parse the ``pages`` parameter (e.g. ``"1-5"``, ``"3"``, ``"10-20"``).
+
+    Returns ``(first_page, last_page)``. Raises ToolInputError on malformed
+    input or a range exceeding ``PDF_MAX_PAGES_PER_READ``.
+    """
+    if not isinstance(pages, str) or not pages.strip():
+        raise ToolInputError(
+            f'Invalid pages parameter: "{pages}". Use formats like "1-5", "3", or "10-20".'
+        )
+    s = pages.strip()
+    try:
+        if "-" in s:
+            first_str, last_str = s.split("-", 1)
+            first, last = int(first_str), int(last_str)
+        else:
+            first = last = int(s)
+    except ValueError as e:
+        raise ToolInputError(
+            f'Invalid pages parameter: "{pages}". Use formats like "1-5", "3", or "10-20".'
+        ) from e
+    if first < 1 or last < first:
+        raise ToolInputError(
+            f'Invalid pages range "{pages}": pages are 1-indexed and last must be >= first.'
+        )
+    if last - first + 1 > PDF_MAX_PAGES_PER_READ:
+        raise ToolInputError(
+            f'Page range "{pages}" exceeds maximum of {PDF_MAX_PAGES_PER_READ} '
+            f"pages per request. Please use a smaller range."
+        )
+    return first, last
 
 
 # ---------------------------------------------------------------------------
@@ -336,6 +370,83 @@ def _read_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
 
     # --- PDF ---
     if suffix == ".pdf":
+        pages_param = tool_input.get("pages")
+        if pages_param:
+            # User asked for specific pages -> extract them via poppler and
+            # return as image blocks. Mirrors TS FileReadTool.ts:898-948 PDF
+            # page-extraction flow.
+            first_page, last_page = _parse_pdf_pages(pages_param)
+            from src.utils.pdf_extraction import (
+                PdfExtractionFailed as _PdfErr,
+                PdfExtractionUnavailable as _PdfMissing,
+                extract_pdf_pages as _extract_pages,
+            )
+            try:
+                ext_result = _extract_pages(resolved, first_page, last_page)
+            except _PdfMissing as e:
+                raise ToolInputError(str(e)) from e
+            except _PdfErr as e:
+                raise ToolInputError(f"PDF page extraction failed: {e}") from e
+            # Read each page through the image pipeline so dimensions /
+            # downscaling apply uniformly. The tempdir is always cleaned
+            # up after we've base64-encoded the bytes -- they're in memory
+            # now, the JPEGs on disk are no longer needed.
+            from src.utils.image_processor import (
+                ImageProcessingError as _ImgErr,
+                ResizeResult as _ResizeResult,
+                detect_image_format_from_buffer as _sniff_format,
+                maybe_resize_image as _maybe_resize,
+            )
+            import shutil as _shutil
+            image_blocks: list[dict[str, Any]] = []
+            try:
+                for page_path in ext_result.image_paths:
+                    try:
+                        page_bytes = page_path.read_bytes()
+                    except OSError:
+                        # Truncated/corrupted page write — skip this page rather
+                        # than fail the whole extraction.
+                        continue
+                    if not page_bytes:
+                        continue
+                    detected = _sniff_format(page_bytes)
+                    try:
+                        page_result = _maybe_resize(page_bytes, len(page_bytes), format_hint=detected)
+                    except _ImgErr:
+                        page_result = _ResizeResult(data=page_bytes, media_type=detected, dimensions=None)
+                    image_blocks.append({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": page_result.media_type,
+                            "data": _base64.b64encode(page_result.data).decode("ascii"),
+                        },
+                    })
+            finally:
+                # Always clean up the tempdir, even on exception. The image
+                # bytes are already in image_blocks, so the on-disk JPEGs
+                # are garbage at this point.
+                _shutil.rmtree(ext_result.output_dir, ignore_errors=True)
+            # Emit a separate user message carrying the extracted pages,
+            # mirroring TS FileReadTool.ts:941-948.
+            new_messages = None
+            if image_blocks:
+                from src.types.messages import create_user_message
+                new_messages = [create_user_message(image_blocks, isMeta=True)]
+            return ToolResult(
+                name="Read",
+                output={
+                    "type": "pdf_pages",
+                    "file": {
+                        "filePath": str(path),
+                        "originalSize": ext_result.file_size,
+                        "pageCount": len(image_blocks),
+                    },
+                },
+                new_messages=new_messages,
+            )
+        # No pages param: TS behavior is to return raw PDF for first-party
+        # models. Python doesn't differentiate, so we keep today's stub.
         context.mark_file_read(path)
         return ToolResult(
             name="Read",
@@ -349,10 +460,10 @@ def _read_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
         )
 
     # --- Image ---
-    # Mirrors TS FileReadTool.ts: image extensions exempted from the binary
-    # blocklist are routed to the image reader here. Without this branch,
-    # IMAGE_EXTENSIONS files would fall through to the text reader and return
-    # garbage (UTF-8 replacement chars).
+    # Mirrors TS FileReadTool.ts readImageWithTokenBudget (lines 1100-1186):
+    # bounded read -> magic-byte format detection -> resize-to-envelope ->
+    # token-budget compression fallback. Oversized images get downscaled
+    # rather than rejected outright.
     #
     # NOTE: deliberately does NOT call context.mark_file_read(). The dedup
     # path at lines 293-305 would otherwise replay subsequent image reads as
@@ -363,14 +474,65 @@ def _read_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
     if ext_no_dot in IMAGE_EXTENSIONS:
         if stat.st_size == 0:
             raise ToolInputError(f"Image file is empty: {path}")
-        if stat.st_size > MAX_IMAGE_SIZE_BYTES:
-            raise ToolInputError(
-                f"Image file ({stat.st_size:,} bytes) exceeds maximum allowed size "
-                f"({MAX_IMAGE_SIZE_BYTES:,} bytes). The Anthropic API rejects "
-                f"images whose base64 payload exceeds 5 MB."
+        # Lazy import keeps the read.py import cheap for non-image paths.
+        from src.utils.image_processor import (
+            IMAGE_READ_SAFETY_CAP as _IMG_READ_CAP,
+            ImageProcessingError as _ImgErr,
+            ResizeResult as _ResizeResult,
+            compress_image_to_token_budget as _compress_to_tokens,
+            create_image_metadata_text as _make_meta_text,
+            detect_image_format_from_buffer as _sniff_format,
+            estimate_image_tokens_from_base64_length as _est_tokens,
+            maybe_resize_image as _maybe_resize,
+            read_file_bytes as _bounded_read,
+        )
+        # Bounded read at the safety cap (50 MB): protects against symlinked
+        # /dev/zero / TOCTOU-grown files without truncating real images, which
+        # Pillow then resizes down to IMAGE_TARGET_RAW_SIZE in memory.
+        img_bytes = _bounded_read(path, _IMG_READ_CAP)
+        detected_media = _sniff_format(img_bytes)
+        # Trust magic bytes over extension; matches TS detectImageFormatFromBuffer.
+        try:
+            result = _maybe_resize(img_bytes, stat.st_size, format_hint=detected_media)
+        except _ImgErr:
+            # Pillow couldn't decode (corrupt / non-image bytes). Fall back to
+            # sending raw bytes so the model at least sees something. Matches
+            # TS FileReadTool.ts:1133-1137 logError-and-continue path.
+            result = _ResizeResult(
+                data=img_bytes,
+                media_type=detected_media,
+                dimensions=None,
             )
-        img_bytes = path.read_bytes()
-        b64 = _base64.b64encode(img_bytes).decode("ascii")
+        # Token-budget fallback (TS FileReadTool.ts:1140-1183). Compress from
+        # the ORIGINAL buffer, not the already-resized one — re-encoding a
+        # lossy JPEG twice produces worse quality than going back to source.
+        # The compressor will rediscover the original dims on its own.
+        max_tokens = _get_max_output_tokens()
+        base64_len = ((len(result.data) + 2) // 3) * 4
+        if _est_tokens(base64_len) > max_tokens:
+            try:
+                compressed = _compress_to_tokens(img_bytes, max_tokens, detected_media)
+                result = compressed
+            except _ImgErr:
+                # Already-resized version is the best we have.
+                pass
+        b64 = _base64.b64encode(result.data).decode("ascii")
+        dims = result.dimensions
+        dims_dict = (
+            {
+                "originalWidth": dims.original_width,
+                "originalHeight": dims.original_height,
+                "displayWidth": dims.display_width,
+                "displayHeight": dims.display_height,
+            }
+            if dims is not None
+            else None
+        )
+        metadata_text = _make_meta_text(dims, str(path))
+        new_messages = None
+        if metadata_text:
+            from src.types.messages import create_user_message
+            new_messages = [create_user_message(metadata_text, isMeta=True)]
         return ToolResult(
             name="Read",
             output={
@@ -378,10 +540,12 @@ def _read_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
                 "file": {
                     "filePath": str(path),
                     "base64": b64,
-                    "type": IMAGE_MIME_TYPES[ext_no_dot],
+                    "type": result.media_type,
                     "originalSize": stat.st_size,
+                    "dimensions": dims_dict,
                 },
             },
+            new_messages=new_messages,
         )
 
     # --- File size pre-check (prevents reading multi-GB files into memory) ---
@@ -486,6 +650,19 @@ def _read_map_result_to_api(output: Any, tool_use_id: str) -> dict[str, Any]:
                 "type": "tool_result",
                 "tool_use_id": tool_use_id,
                 "content": f"PDF file read: {file_path} ({size:,} bytes)",
+            }
+
+        if result_type == "pdf_pages":
+            file_data = output.get("file", {})
+            file_path = file_data.get("filePath", "")
+            size = file_data.get("originalSize", 0)
+            page_count = file_data.get("pageCount", 0)
+            # Image blocks are carried out-of-band via new_messages; this
+            # tool_result is just the human-readable acknowledgement.
+            return {
+                "type": "tool_result",
+                "tool_use_id": tool_use_id,
+                "content": f"PDF pages extracted: {page_count} page(s) from {file_path} ({size:,} bytes)",
             }
 
         if result_type == "image":

@@ -287,6 +287,23 @@ async def call_model(
             skip_cache_write=opts.skip_cache_write,
         )
 
+        # Pre-API image validation: reject any base64 image larger than
+        # Anthropic's 5 MB limit before the round trip. Surfaces as a
+        # readable error event so the model/user sees what happened
+        # instead of a generic API failure. Mirrors TS
+        # validateImagesForAPI invocation at utils/imageValidation.ts.
+        #
+        # TODO: only the Anthropic provider path runs this check.
+        # src/providers/{openai_compatible,anthropic_provider,minimax_provider}.py
+        # all bypass it. Promote validation into BaseProvider._prepare_messages
+        # if/when those providers grow image-content-block support.
+        try:
+            from src.utils.image_validation import ImageSizeError, validate_images_for_api
+            validate_images_for_api(api_messages)
+        except ImageSizeError as e:
+            yield ErrorEvent(error=str(e))
+            return
+
         create_kwargs: dict[str, Any] = {
             "model": opts.model,
             "max_tokens": opts.max_tokens,
