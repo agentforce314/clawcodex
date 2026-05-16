@@ -638,5 +638,224 @@ class TestSession(unittest.TestCase):
                 self.assertEqual(loaded.conversation.messages[0].content, "Test message")
 
 
+class TestREPLConversationSanitization(unittest.TestCase):
+    """Pins the REPL-side mirror of the engine's image-strip recovery.
+
+    The bug: an image-bearing UserMessage that triggered an
+    `image_unsupported` API error stays in `session.conversation` after
+    the engine strips its own `_mutable_messages`. The direct-stream
+    path (_build_direct_stream_payload) reads
+    `session.conversation.messages` directly — so without this mirror,
+    a short text-only follow-up routed through `_stream_direct_response`
+    would re-trigger the same 404 against Anthropic/Minimax providers.
+
+    Tests `_sanitize_conversation_for_api_error` directly (extracted
+    from the engine-loop handler for testability) so a regression
+    that removes the strip call or breaks the tag check is caught.
+    """
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.config_dir = Path(self.temp_dir) / ".clawcodex"
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        self.config_file = self.config_dir / "config.json"
+        test_config = {
+            "default_provider": "openrouter",
+            "providers": {
+                "openrouter": {
+                    "api_key": "sk-or-test-key-12345678",
+                    "base_url": "https://openrouter.ai/api/v1",
+                    "default_model": "deepseek/deepseek-v4-pro",
+                }
+            }
+        }
+        with open(self.config_file, 'w') as f:
+            json.dump(test_config, f)
+        self._global_config_patcher = patch.object(
+            config_module, "GLOBAL_CONFIG_FILE", self.config_file
+        )
+        self._global_config_patcher.start()
+        config_module._default_manager = None
+
+    def tearDown(self):
+        self._global_config_patcher.stop()
+        config_module._default_manager = None
+
+    def _make_repl(self):
+        # Build the smallest valid REPL fixture for unit-level testing
+        # of the sanitization helper. We need a real `session.conversation`
+        # (so the helper has something to mutate); everything else is mocked.
+        with patch('src.repl.core.Session.create') as mock_session_create:
+            session = Mock()
+            session.conversation = Conversation()
+            session.session_id = "test-session"
+            session.provider = "openrouter"
+            session.model = "deepseek/deepseek-v4-pro"
+            mock_session_create.return_value = session
+
+            with patch('src.repl.core.get_provider_class') as mock_provider_class:
+                mock_provider = Mock()
+                mock_provider.model = "deepseek/deepseek-v4-pro"
+                mock_provider_class.return_value = mock_provider
+
+                repl = ClawcodexREPL(provider_name="openrouter")
+                repl.session = session
+                return repl
+
+    def test_image_unsupported_strips_images_from_conversation(self):
+        """When an image_unsupported AssistantMessage is passed to the
+        sanitizer, image blocks must be removed from
+        session.conversation.messages — direct-stream path correctness
+        depends on this."""
+        from src.types.content_blocks import ImageBlock, TextBlock
+        from src.types.messages import AssistantMessage
+
+        repl = self._make_repl()
+
+        repl.session.conversation.add_user_message([
+            TextBlock(text="describe this image"),
+            ImageBlock(source={
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "AAAA",
+            }),
+        ])
+
+        err_msg = AssistantMessage(
+            content="image not supported text",
+            isApiErrorMessage=True,
+        )
+        err_msg._api_error = "image_unsupported"  # type: ignore[attr-defined]
+
+        repl._sanitize_conversation_for_api_error(err_msg)
+
+        # User's text intent must survive; the image bytes get the
+        # "[image]" placeholder (matches strip_images_from_typed_messages
+        # contract).
+        user_msgs = [m for m in repl.session.conversation.messages
+                     if m.role == "user"]
+        self.assertEqual(len(user_msgs), 1)
+        content = user_msgs[0].content
+        self.assertIsInstance(content, list)
+        texts = [b.text for b in content if isinstance(b, TextBlock)]
+        self.assertIn("describe this image", texts)
+        self.assertIn("[image]", texts)
+        for block in content:
+            self.assertNotIsInstance(block, ImageBlock)
+
+    def test_no_strip_when_error_tag_absent(self):
+        """A regular assistant message (or one with a different
+        _api_error tag) must NOT strip images — the strip is gated on
+        the specific image_unsupported tag, so adjacent errors
+        (prompt_too_long, etc.) keep their own recovery semantics."""
+        from src.types.content_blocks import ImageBlock, TextBlock
+        from src.types.messages import AssistantMessage
+
+        repl = self._make_repl()
+        repl.session.conversation.add_user_message([
+            TextBlock(text="describe"),
+            ImageBlock(source={
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "AAAA",
+            }),
+        ])
+
+        # Non-error success message: no-op.
+        ok_msg = AssistantMessage(content="here is the description")
+        repl._sanitize_conversation_for_api_error(ok_msg)
+        user_content = repl.session.conversation.messages[0].content
+        self.assertTrue(
+            any(isinstance(b, ImageBlock) for b in user_content),
+            "image must survive when no _api_error tag is set",
+        )
+
+        # Different error tag: no-op too (prompt_too_long has its own
+        # recovery via reactive_compact and must not trip image strip).
+        ptl_msg = AssistantMessage(
+            content="prompt too long",
+            isApiErrorMessage=True,
+        )
+        ptl_msg._api_error = "prompt_too_long"  # type: ignore[attr-defined]
+        repl._sanitize_conversation_for_api_error(ptl_msg)
+        user_content = repl.session.conversation.messages[0].content
+        self.assertTrue(
+            any(isinstance(b, ImageBlock) for b in user_content),
+            "image must survive when a non-image_unsupported tag is set",
+        )
+
+    def test_chat_invokes_sanitization_for_image_unsupported(self):
+        """Wiring test: the engine-loop handler in REPL.chat MUST call
+        ``_sanitize_conversation_for_api_error`` when the engine yields
+        an image_unsupported AssistantMessage. Without this test, the
+        helper could exist + be unit-tested while the call site is
+        silently removed — and the bug would re-appear only at runtime
+        on the direct-stream path."""
+        from src.types.content_blocks import ImageBlock, TextBlock
+        from src.types.messages import AssistantMessage
+
+        repl = self._make_repl()
+
+        # Seed the conversation with an image-bearing user message so
+        # if the strip is invoked, we have something to strip.
+        repl.session.conversation.add_user_message([
+            TextBlock(text="describe"),
+            ImageBlock(source={
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "AAAA",
+            }),
+        ])
+
+        # Mock the engine's submit_message to yield exactly one
+        # AssistantMessage tagged image_unsupported. This is the
+        # message-shape the production query() function yields for the
+        # OpenRouter 404.
+        async def fake_submit_message(content):
+            err_msg = AssistantMessage(
+                content="image not supported text",
+                isApiErrorMessage=True,
+            )
+            err_msg._api_error = "image_unsupported"  # type: ignore[attr-defined]
+            yield err_msg
+
+        sanitize_spy = Mock(wraps=repl._sanitize_conversation_for_api_error)
+        repl._sanitize_conversation_for_api_error = sanitize_spy  # type: ignore[method-assign]
+
+        # Patch QueryEngine.__init__ -> .submit_message to use our fake.
+        # ``chat()`` constructs a QueryEngine inline, so we patch the
+        # class to return a mock with our fake_submit_message.
+        with patch('src.repl.core.QueryEngine') as mock_engine_class:
+            mock_engine = Mock()
+            mock_engine.submit_message = fake_submit_message
+            mock_engine.reset_abort_controller = Mock()
+            mock_engine.get_messages = Mock(return_value=[])
+            mock_engine_class.return_value = mock_engine
+
+            # Suppress console output so the test runs silently.
+            repl.console.print = Mock()
+            # Ensure the test's prompt routes through the QueryEngine
+            # path (the direct-stream path doesn't go through the
+            # handler we're testing). A long-enough prompt with a
+            # code keyword forces _should_try_direct_stream to return
+            # False; see core.py:2199-2238.
+            repl.chat("please read README.md and summarize it for me carefully")
+
+        sanitize_spy.assert_called()
+        # And it must have been called with the tagged AssistantMessage,
+        # not some other message — pinning the call-site code path.
+        call_args_list = sanitize_spy.call_args_list
+        self.assertTrue(
+            any(
+                len(call.args) >= 1
+                and isinstance(call.args[0], AssistantMessage)
+                and getattr(call.args[0], "_api_error", None) == "image_unsupported"
+                for call in call_args_list
+            ),
+            "sanitization must be called with the image_unsupported AssistantMessage; "
+            f"got call_args_list={call_args_list!r}",
+        )
+
+
 if __name__ == '__main__':
     unittest.main()
