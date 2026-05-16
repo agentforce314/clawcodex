@@ -16,6 +16,7 @@ from ..providers.base import BaseProvider, ChatResponse
 from ..providers.anthropic_provider import AnthropicProvider
 from ..providers.minimax_provider import MinimaxProvider
 from ..utils.abort_controller import AbortError, AbortSignal
+from ..utils.image_validation import ImageSizeError
 
 
 def _is_anthropic_provider(provider: BaseProvider) -> bool:
@@ -175,6 +176,12 @@ def _call_provider_for_turn(
         except AbortError:
             # User-initiated cancel must propagate; do not fall through
             # to the non-streaming code path.
+            raise
+        except ImageSizeError:
+            # Pre-API client-side validation tripped — falling back to
+            # the non-streaming path would re-run ``_prepare_messages``
+            # and raise the same error. Propagate so the outer loop can
+            # surface a media_size error message instead of double-call.
             raise
         except Exception:
             # Preserve existing stable behavior if streaming is unsupported or fails.

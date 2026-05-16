@@ -284,5 +284,66 @@ class TestQueryLoopAbort(unittest.TestCase):
         self.assertGreaterEqual(len(interruptions), 1)
 
 
+class TestQueryLoopImageSizeError(unittest.TestCase):
+    """ImageSizeError raised by ``BaseProvider._prepare_messages`` must be
+    translated by ``_call_model_sync`` into a media_size assistant error
+    rather than crashing the query loop. Pins the contract between the
+    provider-layer pre-API guard and the higher-level recovery path."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.workspace = Path(self.temp_dir.name)
+        self.registry = build_default_registry()
+        self.context = ToolContext(workspace_root=self.workspace)
+        self.abort = AbortController()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_image_size_error_from_provider_yields_media_size_assistant_message(self):
+        from src.utils.image_validation import ImageSizeError
+
+        provider = MagicMock()
+        # Both streaming and non-streaming code paths share _prepare_messages,
+        # so both surface ImageSizeError. Simulate that here.
+        oversize_exc = ImageSizeError([(6 * 1024 * 1024, 5 * 1024 * 1024)])
+        provider.chat_stream_response.side_effect = oversize_exc
+        provider.chat.side_effect = oversize_exc
+
+        messages = [UserMessage(content="Describe this oversized image")]
+        params = QueryParams(
+            messages=messages,
+            system_prompt="You are helpful.",
+            tools=self.registry.list_tools(),
+            tool_registry=self.registry,
+            tool_use_context=self.context,
+            provider=provider,
+            abort_controller=self.abort,
+            max_turns=10,
+        )
+
+        collected = []
+
+        async def run():
+            async for msg in query(params):
+                collected.append(msg)
+
+        _run(run())
+
+        assistants = [m for m in collected if isinstance(m, AssistantMessage)]
+        self.assertEqual(len(assistants), 1)
+        err = assistants[0]
+        # The assistant message must be flagged as an API-error and carry
+        # the ``media_size`` classification so the reactive-compact recovery
+        # path can match on it.
+        self.assertTrue(getattr(err, "isApiErrorMessage", False))
+        self.assertEqual(getattr(err, "_api_error", None), "media_size")
+        content = err.content
+        text = content if isinstance(content, str) else "".join(
+            b.text for b in content if isinstance(b, TextBlock)
+        )
+        self.assertIn("Media too large", text)
+
+
 if __name__ == "__main__":
     unittest.main()
