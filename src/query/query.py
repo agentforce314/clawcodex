@@ -541,6 +541,55 @@ def _partition_tool_calls(
     return batches
 
 
+def _is_user_cancelled_abort(tool_use_context: ToolContext) -> bool:
+    """True iff the abort signal fired with a user-initiated reason.
+
+    ``sibling_error`` is the streaming-executor's parallel-tool cascade
+    and is NOT a user-rejected signal — surfacing REJECT_MESSAGE for it
+    would mask the real underlying failure. Every other abort reason in
+    the Python runtime (``user_interrupt`` from ESC, ``interrupt`` held
+    in reserve for TS parity) is collapsed into the user-cancelled
+    bucket here.
+
+    Divergence vs TS: ``StreamingToolExecutor.ts:219-229`` treats
+    ``'interrupt'`` (user typed mid-stream) and ``'user_interrupted'``
+    (ESC) differently — for ``'interrupt'`` it only synthesizes
+    REJECT_MESSAGE on tools whose ``interruptBehavior() === 'cancel'``.
+    Python today emits neither ``'interrupt'`` nor any per-tool
+    ``interrupt_behavior`` override on the production path, so the
+    collapsed check is sound. If a future change wires up
+    ``'interrupt'`` as a real reason, the per-tool gate must land first.
+    """
+    ctrl = tool_use_context.abort_controller
+    if not ctrl.signal.aborted:
+        return False
+    return ctrl.signal.reason != "sibling_error"
+
+
+def _build_user_cancelled_result(tool_use_id: str) -> UserMessage:
+    """Synthetic tool_result returned when the user aborts mid-run.
+
+    The bash tool's interrupted path emits
+    ``<error>Command was aborted before completion</error>``, which the
+    model reads as a generic command failure — on the next turn it tends
+    to retry the command rather than honour the user's cancel. Replacing
+    the tool_result with REJECT_MESSAGE makes the cancellation
+    unambiguous. Mirrors
+    ``typescript/src/services/tools/StreamingToolExecutor.ts:153-205``
+    (``createSyntheticErrorMessage`` for ``user_interrupted``).
+    """
+    from ..types.messages import REJECT_MESSAGE
+    return UserMessage(
+        content=[
+            ToolResultBlock(
+                tool_use_id=tool_use_id,
+                content=REJECT_MESSAGE,
+                is_error=True,
+            )
+        ],
+    )
+
+
 def _dispatch_single_tool(
     block: ToolUseBlock,
     tool_registry: ToolRegistry,
@@ -556,6 +605,15 @@ def _dispatch_single_tool(
     ``tool_use_context.tool_result_chars_so_far`` (reset at the top of
     each per-turn loop in :func:`query`).
     """
+    # Pre-tool gate: ESC may trip after the model picked this tool but
+    # before we entered dispatch (e.g. between the post-streaming abort
+    # check and the head of the partition loop). Hand back the
+    # synthetic result instead of running the tool. Mirrors the initial-
+    # abort branch in ``StreamingToolExecutor.collectResults``
+    # (typescript/src/services/tools/StreamingToolExecutor.ts:278-292).
+    if _is_user_cancelled_abort(tool_use_context):
+        return _build_user_cancelled_result(block.id)
+
     try:
         call = ToolCall(
             name=block.name,
@@ -563,6 +621,13 @@ def _dispatch_single_tool(
             tool_use_id=block.id,
         )
         result = tool_registry.dispatch(call, tool_use_context)
+
+        # Post-tool override: bash's interrupted payload reads as a
+        # generic failure; replace it so the resume turn sees an
+        # unambiguous "user rejected" signal. Mirrors TS at
+        # ``StreamingToolExecutor.ts:332-345``.
+        if _is_user_cancelled_abort(tool_use_context):
+            return _build_user_cancelled_result(block.id)
 
         tool = find_tool_by_name(tools, block.name) if tools else None
         metadata: dict[str, Any] = {}
@@ -626,7 +691,32 @@ def _dispatch_single_tool(
                 )
             ],
         )
+    except AbortError as abort_err:
+        # AbortError today is only raised when the signal is already
+        # tripped (grep/glob via the ripgrep guard, agent_loop on cancel,
+        # the streaming-abort helper). Gate on the same user-cancel
+        # check the other override sites use so a future tool that
+        # repurposes AbortError for its own internal cancellation
+        # doesn't get silently relabelled as a user rejection.
+        if _is_user_cancelled_abort(tool_use_context):
+            return _build_user_cancelled_result(block.id)
+        return UserMessage(
+            content=[
+                ToolResultBlock(
+                    tool_use_id=block.id,
+                    content=f"Error: Tool execution aborted ({abort_err})",
+                    is_error=True,
+                )
+            ],
+        )
     except Exception as e:
+        # A late abort can still race the post-tool gate above (the
+        # signal trips between the post-tool check and the exception).
+        # Honour it here so a tool that raises an unrelated error AFTER
+        # ESC landed doesn't get reported as a tool bug when the user
+        # actually pressed ESC.
+        if _is_user_cancelled_abort(tool_use_context):
+            return _build_user_cancelled_result(block.id)
         error_str = f"Error: {e}"
         return UserMessage(
             content=[
