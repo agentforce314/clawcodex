@@ -7,7 +7,11 @@ typescript/src/tools/AgentTool/loadAgentsDir.ts. Combines built-in agents
 user / project directories (via ``load_markdown_files_for_subdir``).
 
 Last-wins merge order on duplicate ``agent_type``:
-    [built-in, plugin, user, project, managed]
+    [built-in, plugin, user, project, flag, managed]
+
+``flag`` agents come from the SDK ``initialize`` control request, via
+``register_sdk_agents`` — they're the Python equivalent of TS's
+``flagSettings`` source.
 
 A module-level cache keyed on cwd avoids re-walking the filesystem on
 every prompt build. Call ``clear_agent_definitions_cache()`` after a
@@ -42,14 +46,54 @@ _SOURCE_TO_AGENT_SOURCE: dict[str, str] = {
 }
 
 # Priority order for last-wins merge — earlier entries are overridden by
-# later ones if they share an agent_type.
+# later ones if they share an agent_type. ``flag`` agents come from the
+# SDK ``initialize`` control request (mirrors TS ``flagSettings``).
 _MERGE_ORDER: tuple[str, ...] = (
     "built-in",
     "plugin",
     SOURCE_USER,
     SOURCE_PROJECT,
+    "flag",
     SOURCE_MANAGED,
 )
+
+
+# Agents registered programmatically by the SDK bridge's ``initialize``
+# handler. Treated as ``flagSettings`` source in TS terms — they can
+# override built-ins / plugin / user / project agents but not policy.
+_sdk_flag_agents: list[AgentDefinition] = []
+
+
+def register_sdk_agents(agents: list[AgentDefinition]) -> None:
+    """Replace the SDK-injected agent set (clears the cache as a side effect)."""
+    _sdk_flag_agents[:] = list(agents)
+    clear_agent_definitions_cache()
+
+
+def get_sdk_agents() -> list[AgentDefinition]:
+    return list(_sdk_flag_agents)
+
+
+def clear_sdk_agents() -> None:
+    _sdk_flag_agents.clear()
+    clear_agent_definitions_cache()
+
+
+def _is_restricted_to_plugin_only(scope: str) -> bool:
+    """Stub for TS ``isRestrictedToPluginOnly(scope)`` policy gate.
+
+    TS reads ``policySettings.strictPluginOnlyCustomization`` (boolean or
+    list of scopes) to decide whether user/project agents are loaded.
+    When the policy is set for ``agents``, only built-in / plugin /
+    managed sources contribute — user and project are skipped.
+
+    The Python settings layer doesn't surface that policy yet; this stub
+    returns False so behaviour matches today's loader. Plumbing future
+    policy reads through here means call sites won't change when the
+    real check lands.
+    """
+    _ = scope  # documented hook for the future policy reader
+    return False
 
 
 # Cache is keyed on ``os.path.realpath(cwd)`` so symlinked / trailing-slash
@@ -137,12 +181,17 @@ def get_agent_definitions_with_overrides(cwd: str) -> list[AgentDefinition]:
             plugin_agents = []
 
         custom = _load_custom_agents(cwd)
+        plugin_only = _is_restricted_to_plugin_only("agents")
+        user_agents = [] if plugin_only else custom[SOURCE_USER]
+        project_agents = [] if plugin_only else custom[SOURCE_PROJECT]
+        flag_agents = [] if plugin_only else list(_sdk_flag_agents)
 
         sources_in_order: dict[str, list[AgentDefinition]] = {
             "built-in": builtins,
             "plugin": plugin_agents,
-            SOURCE_USER: custom[SOURCE_USER],
-            SOURCE_PROJECT: custom[SOURCE_PROJECT],
+            SOURCE_USER: user_agents,
+            SOURCE_PROJECT: project_agents,
+            "flag": flag_agents,
             SOURCE_MANAGED: custom[SOURCE_MANAGED],
         }
         flat: list[AgentDefinition] = []

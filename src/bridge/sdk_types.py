@@ -125,6 +125,13 @@ class StreamlinedToolUseSummaryMessage(TypedDict, total=False):
 
 class InitializeRequest(TypedDict, total=False):
     subtype: Literal['initialize']
+    # Optional inline agent definitions supplied by the SDK caller. Maps
+    # agent_type → definition dict (description, prompt, tools, …). Parsed
+    # via ``src.agent.parse_agent_json.parse_agents_from_json`` and
+    # registered with ``src.agent.load_agents_dir.register_sdk_agents``.
+    # Mirrors TS ``controlSchemas.ts:68``: ``agents: z.record(z.string(),
+    # AgentDefinitionSchema()).optional()``.
+    agents: dict[str, dict[str, Any]]
 
 
 class SetModelRequest(TypedDict, total=False):
