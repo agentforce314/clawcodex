@@ -129,8 +129,9 @@ src/
 
 | 功能 | 优先级 | 说明 |
 |------|--------|------|
-| 多 Tracker 支持 | P2 | 除 Linear 外支持其他 Tracker |
-| 重试队列 + 退避 | P2 | 失败任务自动重试 |
+| 多 Tracker 支持 | P2 | 已实现 TrackerAdapter 协议抽象，可扩展新 Tracker |
+| CLI 集成 | ✅ 已完成 | `cli.py:596-666` 已实现 `--workflow`、`--dashboard`、`--port` |
+| 重试队列 + 退避 | ✅ 已完成 | `orchestrator.py:205-298` 实现指数退避重试 |
 | SSH 远程执行 | P3 | 远程工作区支持 |
 | 可观测性集成 | P3 | Langfuse/Sentry 集成 |
 

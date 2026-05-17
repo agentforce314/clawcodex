@@ -313,7 +313,8 @@ LiteLLM (开源依赖)
 |------|--------|------|
 | 多 Tracker 支持 | P2 | 除 Linear 外支持其他 Tracker |
 | 重试队列 + 退避 | P2 | 失败任务自动重试 |
-| CLI 集成 | P1 | `--workflow` flag 集成到 cli.py |
+| CLI 集成 | ✅ 已完成 | `--workflow` flag 已集成到 cli.py |
+| 重试队列 + 退避 | ✅ 已完成 | 指数退避重试机制已实现 |
 | 可观测性集成 | P3 | Langfuse/Sentry 集成 |
 
 #### 实施阶段
@@ -368,9 +369,11 @@ LiteLLM (开源依赖)
 
 | 文件 | 状态 |
 |------|------|
-| `tool_system/tools/team.py` | ✅ 已实现基础 TeamCreate/TeamDelete |
-| `tool_system/tools/agent.py` | ⚠️ 待集成 TeammateInit |
+| `tool_system/tools/team.py` | ✅ 已实现 TeamCreate/TeamDelete，members 数组已支持 |
+| `services/swarm/team_file.py` | ✅ 已实现 TeamFile、TeamMember 数据模型 |
+| `services/swarm/team_membership.py` | ✅ 已实现 is_team_lead() 函数 |
 | `services/swarm/agent_name_registry.py` | ✅ 已实现名称注册表 |
+| `tool_system/tools/agent.py` | ✅ 基础完成，TeammateInit 机制就绪 |
 
 #### 测试覆盖
 
