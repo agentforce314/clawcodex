@@ -203,6 +203,7 @@ from src.providers import get_provider_class
 from src.providers.anthropic_provider import AnthropicProvider
 from src.providers.base import ChatMessage
 from src.providers.minimax_provider import MinimaxProvider
+from src.context_system.prompt_assembly import build_full_system_prompt
 from src.services.api.claude import tool_to_api_schema
 from src.tool_system.context import ToolContext
 from src.tool_system.defaults import build_default_registry
@@ -1988,12 +1989,22 @@ class ClawcodexREPL:
 
         elif cmd == '/context':
             # Populate command context config for context analysis
+            style_name = getattr(self.tool_context, "output_style_name", None)
+            style_dir = getattr(self.tool_context, "output_style_dir", None)
+            style_prompt = resolve_output_style(style_name, style_dir).prompt
+            tools = self.tool_registry.list_tools()
+
             self.command_context.config["provider"] = self.provider
             self.command_context.config["model"] = self.provider.model
             self.command_context.config["tool_schemas"] = [
-                tool_to_api_schema(spec) for spec in self.tool_registry.list_tools()
+                tool_to_api_schema(spec) for spec in tools
             ]
-            self.command_context.config["system_prompt"] = ""
+            self.command_context.config["system_prompt"] = build_full_system_prompt(
+                cwd=str(self.tool_context.workspace_root),
+                tools=tools,
+                tool_registry=self.tool_registry,
+                append_system_prompt=style_prompt,
+            )
             # Try new command system
             try:
                 handled, result_text = self._try_execute_new_command('context', '')
