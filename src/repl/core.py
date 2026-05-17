@@ -190,11 +190,14 @@ except ModuleNotFoundError:  # pragma: no cover
             self.text = text
 from pathlib import Path
 import asyncio
+import logging
 import sys
 import json
 import threading
 from collections import deque
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from src.agent import Session
 from src.config import get_provider_config
@@ -1989,9 +1992,7 @@ class ClawcodexREPL:
 
         elif cmd == '/context':
             # Populate command context config for context analysis
-            style_name = getattr(self.tool_context, "output_style_name", None)
-            style_dir = getattr(self.tool_context, "output_style_dir", None)
-            style_prompt = resolve_output_style(style_name, style_dir).prompt
+            style_prompt = self._resolve_active_style_prompt()
             tools = self.tool_registry.list_tools()
 
             self.command_context.config["provider"] = self.provider
@@ -2005,14 +2006,13 @@ class ClawcodexREPL:
                 tool_registry=self.tool_registry,
                 append_system_prompt=style_prompt,
             )
-            # Try new command system
             try:
                 handled, result_text = self._try_execute_new_command('context', '')
                 if handled and result_text:
                     self.console.print(Markdown(result_text))
                     return
             except Exception:
-                pass
+                logger.exception("/context dispatch failed")
             self.console.print("[yellow]/context analysis unavailable in this context.[/yellow]")
 
         elif cmd == '/compact':
@@ -2020,14 +2020,13 @@ class ClawcodexREPL:
             self.command_context.config["provider"] = self.provider
             self.command_context.config["model"] = self.provider.model
             self.command_context.config["system_prompt"] = ""
-            # Try new command system
             try:
                 handled, result_text = self._try_execute_new_command('compact', '')
                 if handled and result_text:
                     self.console.print("\n[green]" + result_text + "[/green]")
                     return
             except Exception:
-                pass
+                logger.exception("/compact dispatch failed")
             # Simple fallback: just clear conversation
             self.session.conversation.clear()
             self._engine_messages = []
@@ -2180,10 +2179,13 @@ class ClawcodexREPL:
     def _provider_uses_system_kwarg(self) -> bool:
         return isinstance(self.provider, (AnthropicProvider, MinimaxProvider))
 
-    def _build_direct_stream_payload(self) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    def _resolve_active_style_prompt(self) -> str:
         style_name = getattr(self.tool_context, "output_style_name", None)
         style_dir = getattr(self.tool_context, "output_style_dir", None)
-        style_prompt = resolve_output_style(style_name, style_dir).prompt
+        return resolve_output_style(style_name, style_dir).prompt
+
+    def _build_direct_stream_payload(self) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        style_prompt = self._resolve_active_style_prompt()
 
         if self._provider_uses_system_kwarg():
             return self.session.conversation.get_messages(), (
@@ -2444,11 +2446,7 @@ class ClawcodexREPL:
                     self.console.print("\n")
                     return
 
-            from src.outputStyles import resolve_output_style
-
-            style_name = getattr(self.tool_context, "output_style_name", None)
-            style_dir = getattr(self.tool_context, "output_style_dir", None)
-            style_prompt = resolve_output_style(style_name, style_dir).prompt
+            style_prompt = self._resolve_active_style_prompt()
 
             tools = self.tool_registry.list_tools()
 
