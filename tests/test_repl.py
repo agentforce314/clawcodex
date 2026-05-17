@@ -209,6 +209,37 @@ class TestREPL(unittest.TestCase):
                         for args, _kwargs in repl.console.print.call_args_list
                     ))
 
+    def test_handle_command_tools_lists_registered_tools(self):
+        """/tools must call ToolRegistry.list_tools() and print each name.
+
+        Regression: the handler previously called the non-existent
+        ``list_specs()`` and crashed with AttributeError on every invocation.
+        """
+        from types import SimpleNamespace
+        with patch('src.config.get_config_path', return_value=self.config_dir / "config.json"):
+            with patch('src.repl.core.Session.create'):
+                with patch('src.repl.core.get_provider_class') as mock_provider_class:
+                    mock_provider = Mock()
+                    mock_provider.model = "glm-4.5"
+                    mock_provider_class.return_value = mock_provider
+
+                    repl = ClawcodexREPL(provider_name="glm")
+                    repl.tool_registry = SimpleNamespace(
+                        list_tools=lambda: [
+                            SimpleNamespace(name="Bash"),
+                            SimpleNamespace(name="Read"),
+                        ]
+                    )
+                    repl.console.print = Mock()
+                    repl.handle_command("/tools")
+
+                    printed = " ".join(
+                        str(args[0]) for args, _ in repl.console.print.call_args_list if args
+                    )
+                    self.assertIn("Available tools:", printed)
+                    self.assertIn("Bash", printed)
+                    self.assertIn("Read", printed)
+
     def test_chat_uses_true_api_stream_for_simple_prompt(self):
         """Simple prompts should use provider.chat_stream when stream mode is enabled."""
         with patch('src.config.get_config_path', return_value=self.config_dir / "config.json"):
