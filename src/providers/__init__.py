@@ -119,6 +119,16 @@ PROVIDER_INFO: dict[str, ProviderInfo] = {
             "deepseek-reasoner",
         ],
     },
+    "gemini": {
+        "label": "Google Gemini",
+        "default_base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+        "default_model": "gemini-2.5-pro",
+        "available_models": [
+            "gemini-2.5-pro",
+            "gemini-2.5-flash",
+            "gemini-2.0-flash",
+        ],
+    },
     "openrouter": {
         "label": "OpenRouter (multi-vendor proxy)",
         "default_base_url": "https://openrouter.ai/api/v1",
@@ -196,6 +206,10 @@ def get_provider_class(provider_name: str):
         from .deepseek_provider import DeepSeekProvider
 
         return DeepSeekProvider
+    if provider_name == "gemini":
+        from .gemini_provider import GeminiProvider
+
+        return GeminiProvider
     raise ValueError(f"Unknown provider: {provider_name}")
 
 
