@@ -97,6 +97,10 @@ def main():
     if args.config:
         return show_config()
 
+    # Autonomous mode — load workflow and run orchestration
+    if args.workflow:
+        return _run_autonomous_mode(args)
+
     # Plan-phase-1 wiring (ch02-bootstrap-refactoring-plan.md P1.5):
     # ``run_pre_action(args)`` is the Python analog of Commander's
     # ``preAction`` hook. It runs the memoized ``init()`` (chapter
@@ -179,6 +183,27 @@ Examples:
     parser.add_argument('--version', action='store_true', help='Show version information')
     parser.add_argument('--config', action='store_true', help='Show current configuration')
     parser.add_argument('--stream', action='store_true', help='Enable live rendering in REPL')
+
+    # ---- Autonomous / workflow mode (NEW) ----
+    workflow_group = parser.add_argument_group("autonomous mode")
+    workflow_group.add_argument(
+        '--workflow',
+        type=str,
+        default=None,
+        metavar='PATH',
+        help='Run in autonomous mode using the specified WORKFLOW.md',
+    )
+    workflow_group.add_argument(
+        '--dashboard',
+        action='store_true',
+        help='Show status dashboard in autonomous mode (Phase 4)',
+    )
+    workflow_group.add_argument(
+        '--port',
+        type=int,
+        default=None,
+        help='Observability dashboard port in autonomous mode (Phase 4)',
+    )
 
     # ---- Interactive UI selection ----
     #
@@ -566,6 +591,108 @@ def start_repl(
     )
     repl.run()
     return 0
+
+
+def _run_autonomous_mode(args) -> int:
+    """Run in autonomous mode using a WORKFLOW.md file."""
+    import asyncio
+    import logging
+
+    from src.api.orchestration import OrchestrationSubsystem
+    from src.orchestrator.workflow import WorkflowLoader, WorkflowParseError
+
+    workflow_path = args.workflow
+    if not workflow_path:
+        print("error: --workflow requires a path to a WORKFLOW.md file", file=sys.stderr)
+        return 2
+
+    try:
+        config, prompt = WorkflowLoader.load(workflow_path)
+    except WorkflowParseError as exc:
+        print(f"error: failed to parse workflow: {exc}", file=sys.stderr)
+        return 2
+    except FileNotFoundError:
+        print(f"error: workflow file not found: {workflow_path}", file=sys.stderr)
+        return 2
+
+    # Validate required tracker config
+    if config.tracker.kind == "linear" and not config.tracker.api_key:
+        print(
+            "error: Linear API key not configured. Set LINEAR_API_KEY env var "
+            "or tracker.api_key in WORKFLOW.md",
+            file=sys.stderr,
+        )
+        return 2
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        stream=sys.stderr,
+    )
+
+    subsystem = OrchestrationSubsystem(config)
+
+    async def _run() -> None:
+        try:
+            await subsystem.run()
+        except asyncio.CancelledError:
+            await subsystem.shutdown()
+            raise
+
+    async def _run_with_dashboard() -> None:
+        """Run orchestrator with a periodic dashboard print task."""
+        dashboard_task = asyncio.create_task(
+            _dashboard_loop(subsystem.status_dashboard, args.port)
+        )
+        try:
+            await _run()
+        finally:
+            dashboard_task.cancel()
+            try:
+                await dashboard_task
+            except asyncio.CancelledError:
+                pass
+
+    try:
+        if args.dashboard:
+            asyncio.run(_run_with_dashboard())
+        else:
+            asyncio.run(_run())
+    except KeyboardInterrupt:
+        print("\nShutting down orchestrator...", file=sys.stderr)
+        # asyncio.run already cleaned up; shutdown was signalled
+        return 130
+
+    return 0
+
+
+async def _dashboard_loop(dashboard: Any, port: int | None) -> None:
+    """Periodic dashboard status print loop.
+
+    Phase 4 will replace this with a rich terminal UI or optional
+    Phoenix/LiveView sidecar dashboard.
+    """
+    while True:
+        try:
+            await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            raise
+
+        state = dashboard.state()
+        running_ids = [s.issue_identifier for s in state.running.values()]
+        completed_count = len(state.completed)
+        retry_count = len(state.retry_queue)
+        poll_active = state.poll_check_in_progress
+
+        status_line = (
+            f"[dashboard] running={len(running_ids)} "
+            f"completed={completed_count} retry_queue={retry_count} "
+            f"poll={'active' if poll_active else 'idle'}"
+        )
+        if running_ids:
+            status_line += f"  active={','.join(running_ids[:5])}"
+        print(status_line, file=sys.stderr)
+        sys.stderr.flush()
 
 
 if __name__ == '__main__':

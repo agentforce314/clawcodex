@@ -1,0 +1,68 @@
+"""Workflow singleton store.
+
+Port of Symphony's WorkflowStore.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from .config.schema import WorkflowConfig
+from .workflow import WorkflowLoader
+
+
+class WorkflowStore:
+    """Singleton store for the currently-loaded workflow."""
+
+    _instance: "WorkflowStore | None" = None
+    _config: WorkflowConfig | None = None
+    _prompt_template: str | None = None
+    _workflow_path: str | None = None
+
+    def __new__(cls) -> "WorkflowStore":
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def load(self, path: str) -> None:
+        """Load a workflow file into the store."""
+        config, prompt = WorkflowLoader.load(path)
+        self._config = config
+        self._prompt_template = prompt
+        self._workflow_path = path
+
+    @property
+    def config(self) -> WorkflowConfig | None:
+        return self._config
+
+    @property
+    def prompt_template(self) -> str | None:
+        return self._prompt_template
+
+    @property
+    def workflow_path(self) -> str | None:
+        return self._workflow_path
+
+    def force_reload(self) -> None:
+        """Reload the current workflow file."""
+        if self._workflow_path:
+            self.load(self._workflow_path)
+
+    def current(self) -> tuple[WorkflowConfig, str] | None:
+        """Return (config, prompt_template) if loaded."""
+        if self._config is None or self._prompt_template is None:
+            return None
+        return self._config, self._prompt_template
+
+    @classmethod
+    def reset(cls) -> None:
+        """Reset the singleton (mainly for tests)."""
+        cls._instance = None
+        cls._config = None
+        cls._prompt_template = None
+        cls._workflow_path = None
+
+
+def get_workflow_store() -> WorkflowStore:
+    """Get the global WorkflowStore singleton."""
+    return WorkflowStore()

@@ -1,0 +1,165 @@
+"""Public Python API for running a single query.
+
+Wraps the headless entrypoint for programmatic use.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import io
+import queue
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, AsyncIterator
+
+
+@dataclass
+class QueryConfig:
+    """Configuration for a single query run."""
+
+    prompt: str
+    workspace: str | Path
+    provider: str = "anthropic"
+    model: str | None = None
+    tools: list[str] | None = None  # tool names to enable; None = all
+    permission_mode: str = "dontAsk"
+    max_turns: int = 20
+
+
+@dataclass
+class TextDelta:
+    """Streaming text chunk."""
+
+    content: str
+
+
+@dataclass
+class ToolCallEvent:
+    """Tool call event from the agent."""
+
+    tool_name: str
+    params: dict[str, Any]
+
+
+@dataclass
+class ToolResultEvent:
+    """Tool result event from the agent."""
+
+    tool_name: str
+    result: dict[str, Any]
+
+
+@dataclass
+class TurnComplete:
+    """One turn finished."""
+
+    turn: int
+
+
+@dataclass
+class SessionComplete:
+    """Session finished."""
+
+    reason: str
+
+
+QueryEvent = TextDelta | ToolCallEvent | ToolResultEvent | TurnComplete | SessionComplete
+
+
+class QueryRunner:
+    """Execute a single prompt through ClawCodex query engine."""
+
+    def __init__(self, config: QueryConfig) -> None:
+        self.config = config
+
+    async def stream(self) -> AsyncIterator[QueryEvent]:
+        """Yield query events as they occur.
+
+        Uses the headless entrypoint under the hood, but intercepts tool
+        events via the ``on_event`` callback so callers can observe (and
+        optionally gate) individual tool calls without parsing stdout.
+        """
+        from ..entrypoints.headless import HeadlessOptions, run_headless
+        from ..tool_system.agent_loop import ToolEvent
+
+        event_queue: queue.Queue[ToolEvent] = queue.Queue()
+
+        def on_event(tool_event: ToolEvent) -> None:
+            try:
+                event_queue.put(tool_event)
+            except Exception:
+                pass
+
+        stdout = io.StringIO()
+        options = HeadlessOptions(
+            prompt=self.config.prompt,
+            output_format="text",
+            provider_name=self.config.provider,
+            model=self.config.model,
+            max_turns=self.config.max_turns,
+            permission_mode=self.config.permission_mode,
+            workspace_root=Path(self.config.workspace),
+            stdout=stdout,
+            stderr=stdout,
+            on_event=on_event,
+        )
+
+        loop = asyncio.get_running_loop()
+        future = loop.run_in_executor(None, run_headless, options)
+
+        # Drain the event queue while headless runs in the background.
+        # A short timeout lets us poll for completion without busy-waiting.
+        while True:
+            try:
+                ev = event_queue.get(timeout=0.05)
+                if ev.kind == "tool_use":
+                    yield ToolCallEvent(
+                        tool_name=ev.tool_name,
+                        params=ev.tool_input or {},
+                    )
+                elif ev.kind == "tool_result":
+                    yield ToolResultEvent(
+                        tool_name=ev.tool_name,
+                        result={
+                            "output": ev.tool_output,
+                            "is_error": False,
+                        },
+                    )
+                elif ev.kind == "tool_error":
+                    yield ToolResultEvent(
+                        tool_name=ev.tool_name,
+                        result={
+                            "output": ev.tool_output,
+                            "error": ev.error,
+                            "is_error": True,
+                        },
+                    )
+            except queue.Empty:
+                if future.done():
+                    break
+                await asyncio.sleep(0.01)
+
+        exit_code = await future
+        result_text = stdout.getvalue()
+        if result_text:
+            yield TextDelta(content=result_text)
+
+        reason = "success" if exit_code == 0 else f"exit_code={exit_code}"
+        yield SessionComplete(reason=reason)
+
+    async def run(self) -> dict[str, Any]:
+        """Run to completion, return final result."""
+        text_parts: list[str] = []
+        tool_calls: list[dict[str, Any]] = []
+        async for event in self.stream():
+            if isinstance(event, TextDelta):
+                text_parts.append(event.content)
+            elif isinstance(event, ToolCallEvent):
+                tool_calls.append({"name": event.tool_name, "params": event.params})
+            elif isinstance(event, SessionComplete):
+                return {
+                    "text": "".join(text_parts),
+                    "reason": event.reason,
+                    "tool_calls": tool_calls,
+                }
+        return {"text": "".join(text_parts), "reason": "unknown", "tool_calls": tool_calls}

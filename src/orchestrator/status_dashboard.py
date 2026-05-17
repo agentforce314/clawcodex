@@ -1,0 +1,297 @@
+"""Status dashboard for orchestrator.
+
+Port of Symphony's StatusDashboard — renders a terminal UI with running
+sessions, throughput, TPS sparkline, and retry queue. Phase 4 of the
+INTEGRATION.md roadmap.
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from collections import deque
+from dataclasses import dataclass, field
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+_SPARKLINE_BLOCKS = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
+_RUNNING_EVENT_DEFAULT_WIDTH = 44
+_RUNNING_EVENT_MIN_WIDTH = 12
+_RUNNING_ROW_CHROME_WIDTH = 10
+
+
+@dataclass
+class SessionStatus:
+    """Status of one agent session."""
+
+    issue_id: str
+    issue_identifier: str
+    status: str = "running"  # running, completed, failed, retrying
+    turn_count: int = 0
+    max_turns: int = 0
+    workspace_path: str = ""
+    worker_host: str | None = None
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    seconds_running: int = 0
+    last_event: str = ""
+
+    def age_display(self) -> str:
+        secs = self.seconds_running
+        if secs < 60:
+            return f"{secs}s"
+        if secs < 3600:
+            return f"{secs // 60}m {secs % 60}s"
+        return f"{secs // 3600}h {(secs % 3600) // 60}m"
+
+    def tokens_display(self) -> str:
+        total = self.total_tokens
+        if total < 1000:
+            return str(total)
+        if total < 1_000_000:
+            return f"{total // 1000}k"
+        return f"{total // 1_000_000}M"
+
+    def event_truncated(self, width: int | None = None) -> str:
+        w = width or _RUNNING_EVENT_DEFAULT_WIDTH
+        w = max(w, _RUNNING_EVENT_MIN_WIDTH)
+        ev = self.last_event or ""
+        if len(ev) <= w:
+            return ev
+        return ev[: w - 3] + "..."
+
+
+@dataclass
+class DashboardState:
+    """Full dashboard state."""
+
+    running: dict[str, SessionStatus] = field(default_factory=dict)
+    completed: set[str] = field(default_factory=set)
+    failed: set[str] = field(default_factory=set)
+    retry_queue: list[dict[str, Any]] = field(default_factory=list)
+    poll_check_in_progress: bool = False
+    next_poll_due_at_ms: int | None = None
+
+
+class StatusDashboard:
+    """Terminal status dashboard for autonomous orchestrator.
+
+    Renders a live table of running sessions with age, tokens, and last
+    event. Shows throughput sparkline, completed count, and retry queue.
+    """
+
+    def __init__(
+        self,
+        refresh_ms: int = 1_000,
+        render_interval_ms: int = 16,
+        enabled: bool = True,
+    ) -> None:
+        self._state = DashboardState()
+        self._enabled = enabled
+        self._refresh_ms = refresh_ms
+        self._render_interval_ms = render_interval_ms
+        self._token_samples: deque[int] = deque(maxlen=24)
+        self._last_tps_value: float = 0.0
+        self._last_rendered_at: float = 0.0
+        self._pending_lines: list[str] = []
+        self._last_snapshot_fingerprint: str = ""
+
+    def on_session_start(self, session_status: SessionStatus) -> None:
+        self._state.running[session_status.issue_id] = session_status
+        if self._enabled:
+            logger.info(
+                "[dashboard] session start: %s (%s)",
+                session_status.issue_identifier,
+                session_status.issue_id,
+            )
+
+    def on_session_complete(self, issue_id: str) -> None:
+        if issue_id in self._state.running:
+            del self._state.running[issue_id]
+        self._state.completed.add(issue_id)
+        if self._enabled:
+            logger.info("[dashboard] session complete: %s", issue_id)
+
+    def on_session_failed(self, issue_id: str, error: str) -> None:
+        if issue_id in self._state.running:
+            del self._state.running[issue_id]
+        self._state.failed.add(issue_id)
+        if self._enabled:
+            logger.info("[dashboard] session failed: %s error=%s", issue_id, error)
+
+    def on_event(self, event: Any, session: Any) -> None:
+        """Handle a streaming event from the agent."""
+        if not self._enabled:
+            return
+
+        issue_id = getattr(session.issue, "id", None) if session else None
+        if issue_id and issue_id in self._state.running:
+            status = self._state.running[issue_id]
+            # Update last event display
+            from ..api.query import TextDelta, ToolCallEvent, ToolResultEvent
+
+            if isinstance(event, TextDelta):
+                status.last_event = f"text: {event.content[-50:]}"
+            elif isinstance(event, ToolCallEvent):
+                status.last_event = f"tool: {event.tool_name}"
+            elif isinstance(event, ToolResultEvent):
+                status.last_event = f"result: {event.tool_name}"
+                if event.result.get("is_error"):
+                    status.last_event += " [ERR]"
+            elif hasattr(event, "type"):
+                status.last_event = f"event: {event.type}"
+
+    def on_poll_start(self) -> None:
+        self._state.poll_check_in_progress = True
+        logger.debug("[dashboard] poll started")
+
+    def on_poll_end(self) -> None:
+        self._state.poll_check_in_progress = False
+        logger.debug("[dashboard] poll ended")
+
+    def on_retry_queue_update(self, retry_items: list[dict[str, Any]]) -> None:
+        self._state.retry_queue = retry_items
+
+    def state(self) -> DashboardState:
+        return self._state
+
+    def tokens(self) -> dict[str, int]:
+        """Return aggregate token counts across all sessions."""
+        running = self._state.running
+        totals = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        for sess in running.values():
+            totals["input_tokens"] += sess.input_tokens
+            totals["output_tokens"] += sess.output_tokens
+            totals["total_tokens"] += sess.total_tokens
+        return totals
+
+    def tps(self, window_ms: int = 5_000) -> float:
+        """Tokens per second averaged over the given window."""
+        tokens = sum(s.total_tokens for s in self._state.running.values())
+        now = time.time()
+        self._token_samples.append(tokens)
+        if len(self._token_samples) < 2:
+            return 0.0
+        elapsed = window_ms / 1000.0
+        current = self._token_samples[-1]
+        oldest = self._token_samples[0]
+        delta = current - oldest
+        return delta / elapsed if elapsed > 0 else 0.0
+
+    def throughput_sparkline(self) -> str:
+        """Build throughput sparkline from recent TPS samples."""
+        samples = list(self._token_samples)
+        if len(samples) < 2:
+            return ""
+
+        min_s = min(samples)
+        max_s = max(samples)
+        range_s = max_s - min_s
+        blocks = _SPARKLINE_BLOCKS
+        n = len(blocks)
+
+        line = []
+        for s in samples[-24:]:
+            if range_s == 0:
+                idx = n // 2
+            else:
+                idx = int((s - min_s) / range_s * (n - 1))
+            idx = max(0, min(n - 1, idx))
+            line.append(blocks[idx])
+        return "".join(line)
+
+    def _running_table_row(self, status: SessionStatus) -> str:
+        """Render one row of the running sessions table."""
+        id_str = status.issue_identifier[-_RUNNING_EVENT_DEFAULT_WIDTH:]
+        age = status.age_display()
+        tokens = status.tokens_display()
+        last = status.event_truncated(40)
+
+        return (
+            f"  {id_str:<20} "
+            f"{status.status:<8} "
+            f"{age:<10} "
+            f"{tokens:>8} "
+            f"{last}"
+        )
+
+    def render(self) -> str:
+        """Render the full dashboard as a multi-line string."""
+        lines: list[str] = []
+        now = time.time()
+
+        # Header
+        lines.append("─" * 80)
+        poll_str = "checking..." if self._state.poll_check_in_progress else "idle"
+        running_count = len(self._state.running)
+        completed_count = len(self._state.completed)
+        failed_count = len(self._state.failed)
+        retry_count = len(self._state.retry_queue)
+        tps_spark = self.throughput_sparkline()
+        tps_val = self.tps()
+
+        header = (
+            f"  [Symphony] running={running_count} "
+            f"completed={completed_count} "
+            f"failed={failed_count} "
+            f"retry={retry_count} "
+            f"poll={poll_str}"
+        )
+        if tps_spark:
+            header += f"  tps={tps_spark}"
+        lines.append(header)
+        lines.append("─" * 80)
+
+        # Running sessions
+        if self._state.running:
+            lines.append("  RUNNING SESSIONS")
+            lines.append(
+                f"  {'identifier':<20} {'status':<8} {'age':<10} {'tokens':>8}  last_event"
+            )
+            lines.append("  " + "-" * 72)
+            for sess in self._state.running.values():
+                lines.append(self._running_table_row(sess))
+        else:
+            lines.append("  [no running sessions]")
+
+        # Failed sessions
+        if self._state.failed:
+            lines.append("")
+            lines.append("  FAILED SESSIONS")
+            lines.append(
+                f"  {len(self._state.failed)} session(s) failed"
+            )
+
+        # Retry queue
+        if self._state.retry_queue:
+            lines.append("")
+            lines.append("  RETRY QUEUE")
+            for retry in self._state.retry_queue[:10]:
+                lines.append(
+                    f"  {retry.get('identifier', '?') or retry.get('issue_id', '?')}"
+                    f"  attempt={retry.get('attempt', '?')}"
+                    f"  delay={retry.get('delay_seconds', 0):.1f}s"
+                    f"  error={retry.get('error', '')[:40]}"
+                )
+
+        self._last_rendered_at = now
+        return "\n".join(lines)
+
+    def render_line(self) -> str:
+        """Render a single-line summary for logging/metrics."""
+        running = len(self._state.running)
+        completed = len(self._state.completed)
+        retry = len(self._state.retry_queue)
+        poll = "active" if self._state.poll_check_in_progress else "idle"
+        spark = self.throughput_sparkline()
+        parts = [
+            f"running={running}",
+            f"completed={completed}",
+            f"retry_queue={retry}",
+            f"poll={poll}",
+        ]
+        if spark:
+            parts.append(f"tps={spark}")
+        return f"[dashboard] {' '.join(parts)}"

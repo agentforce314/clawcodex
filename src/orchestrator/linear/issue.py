@@ -1,0 +1,40 @@
+"""Normalized Linear issue representation."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Any
+
+
+@dataclass
+class Issue:
+    """Normalized Linear issue used by the orchestrator."""
+
+    id: str | None = None
+    identifier: str | None = None
+    title: str | None = None
+    description: str | None = None
+    priority: int | None = None
+    state: str | None = None
+    branch_name: str | None = None
+    url: str | None = None
+    assignee_id: str | None = None
+    blocked_by: list[dict[str, Any]] = field(default_factory=list)
+    labels: list[str] = field(default_factory=list)
+    assigned_to_worker: bool = True
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dict for template rendering."""
+        result: dict[str, Any] = {}
+        for key, value in self.__dict__.items():
+            if isinstance(value, datetime):
+                result[key] = value.isoformat()
+            else:
+                result[key] = value
+        return result
+
+    def label_names(self) -> list[str]:
+        return list(self.labels)
