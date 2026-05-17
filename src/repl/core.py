@@ -2035,15 +2035,7 @@ class ClawcodexREPL:
         provider_label = f"{self.provider_name.upper()} Provider"
         model_label = self.provider.model or "Unknown model"
 
-        mascot_ascii = "\n".join([
-            "  /\\__/\\",
-            " / o  o \\",
-            "(  __  )",
-            " \\/__/  ",
-        ])
-
         if Panel is None or Group is None or Align is None or Table is None or Text is None or Columns is None:
-            print(mascot_ascii)
             print(f"ClawCodex v{__version__}")
             print(f"{model_label} · {provider_label}")
             print(f"{display_path}\n")
@@ -2060,9 +2052,8 @@ class ClawcodexREPL:
         table.add_row("Workspace", Text(self._truncate_middle(display_path, content_width - 12), style="bold blue"))
 
         footer = Text("/help  •  /tools  •  /tui  •  /stream  •  /exit", style="dim")
-        mascot_block = Text(mascot_ascii, style="bold orange3", no_wrap=True)
         body = Group(
-            Columns([mascot_block, table], align="center", expand=False),
+            table,
             Text(""),
             Align.center(footer),
         )
