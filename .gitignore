@@ -125,6 +125,23 @@ out/
 /screenshots_work/
 /claude-code-from-source/
 
+# SWE-bench eval — sibling repos cloned next to clawcodex for the eval harness;
+# kept untracked because they are separate projects with their own histories.
+/SWE-bench-dev/
+/openclaude/
+
+# SWE-bench eval — generated data (predictions, traces, harness logs, charts);
+# the scripts under eval/ are tracked, but eval/runs/ contains per-run output
+# that can be GBs and is reproducible.
+/eval/runs/
+/eval/__pycache__/
+
+# Stray *.patch / *.diff artifacts the agent occasionally writes via its
+# Write tool during SWE-bench eval (we disable Write/Edit in the wrapper
+# now but old artifacts may persist).
+/*.patch
+/*.diff
+
 # Logs
 npm-debug.log*
 yarn-debug.log*
