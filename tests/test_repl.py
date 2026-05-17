@@ -240,6 +240,49 @@ class TestREPL(unittest.TestCase):
                     self.assertIn("Bash", printed)
                     self.assertIn("Read", printed)
 
+    def test_handle_command_context_resolves_tool_descriptions_to_strings(self):
+        """/context must populate tool_schemas with string descriptions.
+
+        Regression: Tool.description is a Callable[[dict], str], not a string.
+        The handler previously stuffed the callable straight into the
+        ``tool_schemas`` payload; downstream consumers expecting a string
+        would receive a function reference.
+        """
+        from types import SimpleNamespace
+        from src.tool_system.build_tool import build_tool
+        from src.tool_system.protocol import ToolResult
+
+        def _noop(_input, _ctx):
+            return ToolResult(name="X", output={}, is_error=False)
+
+        real_tool = build_tool(
+            name="Bash",
+            input_schema={"type": "object"},
+            call=_noop,
+            description=lambda _i: "Run a shell command",
+        )
+
+        with patch('src.config.get_config_path', return_value=self.config_dir / "config.json"):
+            with patch('src.repl.core.Session.create'):
+                with patch('src.repl.core.get_provider_class') as mock_provider_class:
+                    mock_provider = Mock()
+                    mock_provider.model = "glm-4.5"
+                    mock_provider_class.return_value = mock_provider
+
+                    repl = ClawcodexREPL(provider_name="glm")
+                    repl.tool_registry = SimpleNamespace(list_tools=lambda: [real_tool])
+                    repl._try_execute_new_command = Mock(return_value=(False, None))
+                    repl.console.print = Mock()
+
+                    repl.handle_command("/context")
+
+                    schemas = repl.command_context.config["tool_schemas"]
+                    self.assertEqual(len(schemas), 1)
+                    self.assertEqual(schemas[0]["name"], "Bash")
+                    self.assertIsInstance(schemas[0]["description"], str)
+                    self.assertEqual(schemas[0]["description"], "Run a shell command")
+                    self.assertEqual(schemas[0]["input_schema"], {"type": "object"})
+
     def test_chat_uses_true_api_stream_for_simple_prompt(self):
         """Simple prompts should use provider.chat_stream when stream mode is enabled."""
         with patch('src.config.get_config_path', return_value=self.config_dir / "config.json"):
