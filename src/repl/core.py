@@ -203,6 +203,7 @@ from src.providers import get_provider_class
 from src.providers.anthropic_provider import AnthropicProvider
 from src.providers.base import ChatMessage
 from src.providers.minimax_provider import MinimaxProvider
+from src.services.api.claude import tool_to_api_schema
 from src.tool_system.context import ToolContext
 from src.tool_system.defaults import build_default_registry
 from src.tool_system.protocol import ToolCall
@@ -1990,12 +1991,7 @@ class ClawcodexREPL:
             self.command_context.config["provider"] = self.provider
             self.command_context.config["model"] = self.provider.model
             self.command_context.config["tool_schemas"] = [
-                spec.to_dict() if hasattr(spec, "to_dict") else {
-                    "name": spec.name,
-                    "description": spec.description,
-                    "input_schema": dict(spec.input_schema) if hasattr(spec.input_schema, "keys") else spec.input_schema,
-                }
-                for spec in self.tool_registry.list_tools()
+                tool_to_api_schema(spec) for spec in self.tool_registry.list_tools()
             ]
             self.command_context.config["system_prompt"] = ""
             # Try new command system
