@@ -296,6 +296,66 @@ class TestREPL(unittest.TestCase):
                     self.assertIsInstance(system_prompt, str)
                     self.assertIn(sentinel, system_prompt)
 
+    def test_handle_command_context_logs_dispatch_failure(self):
+        """A failure inside _try_execute_new_command must be logged, not silently swallowed."""
+        with patch('src.config.get_config_path', return_value=self.config_dir / "config.json"):
+            with patch('src.repl.core.Session.create'):
+                with patch('src.repl.core.get_provider_class') as mock_provider_class:
+                    mock_provider = Mock()
+                    mock_provider.model = "glm-4.5"
+                    mock_provider_class.return_value = mock_provider
+
+                    repl = ClawcodexREPL(provider_name="glm")
+                    repl._try_execute_new_command = Mock(
+                        side_effect=RuntimeError("analyzer exploded")
+                    )
+                    repl.console.print = Mock()
+
+                    with self.assertLogs("src.repl.core", level="ERROR") as cm:
+                        repl.handle_command("/context")
+
+                    self.assertTrue(any(
+                        "/context dispatch failed" in rec.getMessage()
+                        for rec in cm.records
+                    ))
+                    self.assertTrue(any(
+                        "analyzer exploded" in (rec.exc_text or "")
+                        for rec in cm.records
+                    ))
+
+    def test_handle_command_compact_logs_dispatch_failure(self):
+        """/compact must log dispatcher failures too — pins symmetry with /context."""
+        with patch('src.config.get_config_path', return_value=self.config_dir / "config.json"):
+            with patch('src.repl.core.Session.create') as mock_session_factory:
+                mock_session = Mock()
+                mock_session.conversation = Mock()
+                mock_session_factory.return_value = mock_session
+
+                with patch('src.repl.core.get_provider_class') as mock_provider_class:
+                    mock_provider = Mock()
+                    mock_provider.model = "glm-4.5"
+                    mock_provider_class.return_value = mock_provider
+
+                    repl = ClawcodexREPL(provider_name="glm")
+                    repl._try_execute_new_command = Mock(
+                        side_effect=RuntimeError("compactor exploded")
+                    )
+                    repl.console.print = Mock()
+
+                    with self.assertLogs("src.repl.core", level="ERROR") as cm:
+                        repl.handle_command("/compact")
+
+                    self.assertTrue(any(
+                        "/compact dispatch failed" in rec.getMessage()
+                        for rec in cm.records
+                    ))
+                    self.assertTrue(any(
+                        "compactor exploded" in (rec.exc_text or "")
+                        for rec in cm.records
+                    ))
+                    # Fallback path must still run after the failure.
+                    mock_session.conversation.clear.assert_called_once()
+
     def test_chat_uses_true_api_stream_for_simple_prompt(self):
         """Simple prompts should use provider.chat_stream when stream mode is enabled."""
         with patch('src.config.get_config_path', return_value=self.config_dir / "config.json"):
