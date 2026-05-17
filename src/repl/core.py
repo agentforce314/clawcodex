@@ -1902,7 +1902,7 @@ class ClawcodexREPL:
             self.show_help()
 
         elif cmd == '/tools':
-            names = [spec.name for spec in self.tool_registry.list_specs()]
+            names = [spec.name for spec in self.tool_registry.list_tools()]
             names.sort(key=str.lower)
             self.console.print("\n[bold]Available tools:[/bold]")
             for name in names:
@@ -1995,7 +1995,7 @@ class ClawcodexREPL:
                     "description": spec.description,
                     "input_schema": dict(spec.input_schema) if hasattr(spec.input_schema, "keys") else spec.input_schema,
                 }
-                for spec in self.tool_registry.list_specs()
+                for spec in self.tool_registry.list_tools()
             ]
             self.command_context.config["system_prompt"] = ""
             # Try new command system
