@@ -262,6 +262,9 @@ class TestREPL(unittest.TestCase):
             description=lambda _i: "Run a shell command",
         )
 
+        sentinel = "REGRESSION_SENTINEL_3F2A_style_prompt_was_plumbed_through"
+        style_stub = SimpleNamespace(prompt=sentinel)
+
         with patch('src.config.get_config_path', return_value=self.config_dir / "config.json"):
             with patch('src.repl.core.Session.create'):
                 with patch('src.repl.core.get_provider_class') as mock_provider_class:
@@ -274,7 +277,8 @@ class TestREPL(unittest.TestCase):
                     repl._try_execute_new_command = Mock(return_value=(False, None))
                     repl.console.print = Mock()
 
-                    repl.handle_command("/context")
+                    with patch('src.repl.core.resolve_output_style', return_value=style_stub):
+                        repl.handle_command("/context")
 
                     schemas = repl.command_context.config["tool_schemas"]
                     self.assertEqual(len(schemas), 1)
@@ -282,6 +286,15 @@ class TestREPL(unittest.TestCase):
                     self.assertIsInstance(schemas[0]["description"], str)
                     self.assertEqual(schemas[0]["description"], "Run a shell command")
                     self.assertEqual(schemas[0]["input_schema"], {"type": "object"})
+
+                    # Regression: system_prompt must reflect the real prompt,
+                    # not be hard-coded to "" (which made the analyzer's
+                    # token estimate silently miss the entire system prompt).
+                    # The sentinel proves the style_prompt was actually
+                    # threaded through build_full_system_prompt.
+                    system_prompt = repl.command_context.config["system_prompt"]
+                    self.assertIsInstance(system_prompt, str)
+                    self.assertIn(sentinel, system_prompt)
 
     def test_chat_uses_true_api_stream_for_simple_prompt(self):
         """Simple prompts should use provider.chat_stream when stream mode is enabled."""
