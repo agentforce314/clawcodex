@@ -45,6 +45,9 @@ python -m src.cli         # start the REPL
 - **2026-05-16:** **Image-handling parity (Tier C, #149/#154/#155/#156)** — Read tool TS image pipeline (sniff, resize/compress, base64 cap); `@image.png` mentions inline as real `ImageBlock`s instead of mojibake; cross-provider Anthropic `image`/`document` → OpenAI `image_url`/`file` translation; pre-API base64 size validation in `BaseProvider`.
 - **2026-05-16:** **Subagent + Bash reliability** — custom subagents now discovered from `.claude/agents/` (#151); Bash `tool_result` distinguishes timeout from ESC-abort so the model can tell the two apart (#152); async-subagent `AbortController` isolation pinned by regression tests so a parent's ESC doesn't fire a sibling's abort listeners (#153); cancelled `tool_result` reliably surfaces `REJECT_MESSAGE` on the production path (#150).
 - **2026-05-15 to 2026-05-16:** **ESC cancellation hardening across providers (#144–#148)** — mid-stream cancellation closes the streaming HTTP response within ~50ms for every supported provider (Anthropic, OpenAI, GLM, Minimax, DeepSeek, OpenRouter); shared `StreamAbortGuard` helper extracted; LiteLLM worker-thread iteration fixes long-tail hangs on OpenAI-compat backends.
+- **2026-05-15:** **SWE-bench Verified result** — `clawcodex` resolves **291/499 (58.2%)** vs `openclaude` **265/499 (53.0%)** on Gemini 2.5 Pro under the standardized harness (see [`eval/`](eval/) for the comparison framework — cumulative batching, parallel `--predict-workers`, full stream-json trace capture).
+- **2026-05-15:** **Native Gemini provider** — `src/providers/gemini_provider.py` via the `google-genai` SDK. Schema sanitization keeps OpenAI-style tool definitions compatible with Gemini's stricter `Schema` (`oneOf`/`additionalProperties` stripped, polymorphic params coerced to `string`).
+- **2026-05-14:** **Codebase stats** — Total Python files: 837 files; Total Lines of Python Code: **167,034 lines**.
 - **2026-05-14:** **ESC cancellation latency fix (#130)** — pressing ESC now cancels in-flight Bash commands and streaming responses within ~50ms, on top of the diff color-bar full-width render fix (#129) and the bypass-permissions outside-paths fix (#128).
 - **2026-05-12:** **Bootstrap + architecture docs** — new architecture overview at [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md); production bootstrap port (memoized `init()`, trust boundary, unified `launch_repl(args)`, `--bare` fast path, schema migration runner); main query loop and agent loop routed through `dispatch_full` with deferred tool loading.
 - **2026-05-11 (v0.5.0):** **ClawCodex v0.5.0 released** — rebrand to ClawCodex across user-visible UI; reactive state subsystem ported (signals, store, session context, cost tracker, 1h cache eligibility); API layer hardened (output-token cap, request-id injection, message-level cache breakpoints, Haiku fast path, watchdog + non-streaming fallback, retry-with-stream); agent loop foundation (typed terminal, media recovery, blocking-limit guards, token budget, stop hooks, model fallback, continuation nudge); refreshed README screenshot.
@@ -81,6 +84,23 @@ python -m src.cli         # start the REPL
 **A real Claude Code-style terminal workflow in Python: stream replies, call tools, fetch context, and extend behavior with skills.**
 
 **🚀 Try it now! Fork it, modify it, make it yours! Pull requests welcome!**
+
+***
+
+## 🏆 SWE-bench Verified — `clawcodex` outperforms `openclaude` on the same model
+
+![SWE-bench Verified — clawcodex vs openclaude on Gemini 2.5 Pro](assets/swebench-verified-gemini.png)
+
+On the full **SWE-bench Verified** split (499 instances, the public agent-coding leaderboard), both agents driven by **Gemini 2.5 Pro** under our standardized harness:
+
+| Agent | Resolved | Unresolved | Error |
+|---|---:|---:|---:|
+| **clawcodex** | **291 / 499 (58.2%)** | 124 | 84 |
+| openclaude | 265 / 499 (53.0%) | 144 | 90 |
+
+- ✅ **Both solved**: 241 &nbsp;&nbsp; 🟢 **Only clawcodex**: 50 &nbsp;&nbsp; 🔵 **Only openclaude**: 24 &nbsp;&nbsp; ❌ **Neither**: 184
+
+Reproduce locally — see [`eval/README.md`](eval/README.md) for the full workflow (cumulative batching, `--predict-workers N`, `--capture-traces`).
 
 ***
 
