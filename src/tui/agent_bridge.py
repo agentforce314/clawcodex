@@ -31,6 +31,7 @@ from src.tool_system.registry import ToolRegistry
 from src.utils.abort_controller import AbortController, AbortError
 
 from .messages import (
+    AdvisorEventMessage,
     AgentRunFinished,
     AgentRunStarted,
     AssistantChunk,
@@ -77,6 +78,36 @@ class AgentBridge:
         # Wire permission handler: the tool dispatcher calls this from
         # the worker thread, we post to the UI and block on an Event.
         tool_context.permission_handler = self._permission_handler
+        # Advisor IDs we've already mirrored to the UI. The high-level
+        # SDK stream doesn't give us per-event hooks for server tools,
+        # so the bridge inspects the assembled conversation after each
+        # turn — without dedup, every turn would re-emit the same
+        # events for blocks that landed in earlier turns.
+        #
+        # ``_last_scanned_msg_index`` is an optimization: iterating the
+        # full message list on every turn is O(N*B). Tracking how far
+        # we've scanned lets us start at the new tail instead. Reset
+        # together with ``_emitted_advisor_ids`` via
+        # ``reset_advisor_dedup`` whenever the message list is
+        # truncated or replaced.
+        self._emitted_advisor_ids: set[str] = set()
+        self._last_scanned_msg_index: int = 0
+
+    def reset_advisor_dedup(self) -> None:
+        """Drop the advisor-dedup state.
+
+        Call this when conversation history is wiped or summarized so
+        the IDs we tracked no longer correspond to anything in the
+        live message list — keeping them around leaks memory (bounded:
+        one UUID per advisor call ever made) and risks suppressing a
+        legitimate re-render if a post-compact replay reuses an ID.
+        The TUI wires this on ``/clear`` (``tui/app.py:__clear__`` and
+        the idle-return "clear" choice). Other reset paths
+        (``/compact``, programmatic message wipe) don't yet trigger it;
+        the leak is harmless until they do.
+        """
+        self._emitted_advisor_ids.clear()
+        self._last_scanned_msg_index = 0
 
     # ---- public API ----
     @property
@@ -200,6 +231,19 @@ class AgentBridge:
             return
 
         self._post(AssistantMessage(text=result.response_text))
+        # Surface any advisor activity from this run as transcript rows.
+        # The Python provider path doesn't emit per-event hooks for
+        # server tools (the SDK's high-level ``messages.stream`` only
+        # signals text deltas to ``on_text_chunk``), so the bridge
+        # inspects the final assembled assistant content. This is
+        # idempotent across turns: ``_emit_advisor_events`` only posts
+        # events for advisor blocks added during the current run.
+        try:
+            self._emit_advisor_events()
+        except Exception:
+            # Never let an advisor-rendering issue mask the model's
+            # actual response.
+            pass
         if result.usage:
             try:
                 self._state.usage.update(
@@ -246,6 +290,110 @@ class AgentBridge:
             # reading the context field, so replacing here doesn't
             # orphan them either.
             self._tool_context.abort_controller = AbortController()
+
+    # ---- advisor rendering ----
+    def _emit_advisor_events(self) -> None:
+        """Scan the conversation for advisor blocks and post UI events for new ones.
+
+        Iterates the assembled assistant messages (which now persist
+        advisor blocks via ``ChatResponse.raw_content_blocks`` — see
+        ``src/providers/anthropic_provider.py:_build_chat_response``)
+        and posts one ``AdvisorEventMessage(kind="start")`` and one
+        ``AdvisorEventMessage(kind="result")`` per advisor pair. Both
+        emit in order so the transcript can mount the row in its
+        running state before flipping it to done.
+
+        Starts iteration at ``self._last_scanned_msg_index`` and
+        advances the cursor at the end. This avoids the O(N×B) per-
+        turn cost that grows over a long session — we only scan
+        messages that landed since the last scan, which on a healthy
+        agentic loop is just the latest assistant turn.
+        """
+        from src.utils.advisor import (
+            extract_advisor_error_code,
+            extract_advisor_result_text,
+        )
+        messages = getattr(self._session.conversation, "messages", None)
+        if not messages:
+            return
+        # Defend against a wipe (e.g. /clear): if the conversation
+        # shrank since last scan, the index is stale. Start over.
+        start_idx = self._last_scanned_msg_index
+        if start_idx > len(messages):
+            start_idx = 0
+        # Read the active advisor model from settings; ``server_tool_use``
+        # blocks don't include it (it's parameterized on the schema, not
+        # echoed back), but the user-facing label is much friendlier
+        # with the model name attached.
+        try:
+            from src.settings.settings import get_settings
+            advisor_model = (get_settings().advisor_model or "") or None
+        except Exception:
+            advisor_model = None
+        for msg in messages[start_idx:]:
+            content = getattr(msg, "content", None)
+            if not isinstance(content, list):
+                continue
+            # Pair-finding pass: collect (use_id → use_block_index) and
+            # (use_id → result_content) within this assistant message.
+            for i, block in enumerate(content):
+                if not isinstance(block, dict):
+                    continue
+                btype = block.get("type")
+                bname = block.get("name")
+                bid = block.get("id") or block.get("tool_use_id")
+                if not isinstance(bid, str) or not bid:
+                    continue
+                if bid in self._emitted_advisor_ids:
+                    continue
+                if btype == "server_tool_use" and bname == "advisor":
+                    self._post(
+                        AdvisorEventMessage(
+                            kind="start",
+                            tool_use_id=bid,
+                            advisor_model=advisor_model,
+                        )
+                    )
+                    # Look for a matching advisor_tool_result anywhere
+                    # later in the same assistant message.
+                    result_block = None
+                    for later in content[i + 1:]:
+                        if (
+                            isinstance(later, dict)
+                            and later.get("type") == "advisor_tool_result"
+                            and later.get("tool_use_id") == bid
+                        ):
+                            result_block = later
+                            break
+                    if result_block is None:
+                        # No result on this assistant turn — the use was
+                        # interrupted. Synthesize an error event so the
+                        # UI doesn't leave the row spinning forever.
+                        self._post(
+                            AdvisorEventMessage(
+                                kind="result",
+                                tool_use_id=bid,
+                                advisor_model=advisor_model,
+                                error_code="interrupted",
+                            )
+                        )
+                        self._emitted_advisor_ids.add(bid)
+                        continue
+                    rcontent = result_block.get("content")
+                    text = extract_advisor_result_text(rcontent)
+                    err_code = extract_advisor_error_code(rcontent)
+                    self._post(
+                        AdvisorEventMessage(
+                            kind="result",
+                            tool_use_id=bid,
+                            advisor_model=advisor_model,
+                            text=text,
+                            error_code=err_code,
+                        )
+                    )
+                    self._emitted_advisor_ids.add(bid)
+        # Cursor forward so the next scan only inspects new messages.
+        self._last_scanned_msg_index = len(messages)
 
     # ---- permission bridge ----
     def _permission_handler(
