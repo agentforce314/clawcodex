@@ -90,6 +90,13 @@ class AppState:
     # to process at startup. TS: AppStateStore.ts:406.
     initial_message: str | None = None
 
+    # Advisor model (TS: AppStateStore.ts advisorModel). None = no /advisor.
+    # Writes here fire ``_on_advisor_model_change``, which persists into
+    # ``settings.advisor_model`` (the read channel — see
+    # ``src/utils/advisor.py`` and ``src/query/query.py``) and invalidates
+    # the settings cache so the next API call picks up the new value.
+    advisor_model: str | None = None
+
 
 def replace_state(state: AppState, **changes: Any) -> AppState:
     """Return a copy of ``state`` with ``changes`` applied. Equivalent
@@ -211,6 +218,55 @@ def _on_initial_message_change(old: AppState, new: AppState) -> None:
     return
 
 
+def _on_advisor_model_change(old: AppState, new: AppState) -> None:
+    """Persist advisor_model to user settings + invalidate the read cache.
+
+    Mirrors TS ``commands/advisor.ts:49`` (``updateSettingsForSource(
+    'userSettings', { advisorModel })``). The persistence pattern matches
+    the existing TODO on ``_on_main_loop_model_change`` — settings are
+    layered as ``global > project > local``; we write the user-scoped
+    global level only. After persisting, the in-memory settings cache must
+    be invalidated so the next ``get_settings()`` call (which
+    ``_call_model_sync`` makes per-turn) reflects the new value
+    immediately. Without the invalidate, mid-session toggles would only
+    take effect after a process restart.
+    """
+    if old.advisor_model == new.advisor_model:
+        return
+    # Local imports avoid making this module's import time pay for the
+    # settings stack on cold start. Use the SHARED default ConfigManager
+    # so callers reading via ``load_config()`` / the global cache see
+    # the new value, not a stale in-memory snapshot from before the
+    # write.
+    from src import config as cfg_mod
+    from src.settings.settings import invalidate_settings_cache
+    try:
+        mgr = cfg_mod._get_default_manager()
+        cfg = mgr.load_global()
+        settings_section = cfg.get("settings")
+        if not isinstance(settings_section, dict):
+            settings_section = {}
+        # None / "" both map to "unset" — write empty string for
+        # round-trip fidelity with the SettingsSchema default.
+        settings_section["advisor_model"] = new.advisor_model or ""
+        cfg["settings"] = settings_section
+        mgr.save_global(cfg)
+        invalidate_settings_cache()
+        logger.debug(
+            "AppState.advisor_model %s -> %s — persisted + cache invalidated",
+            old.advisor_model,
+            new.advisor_model,
+        )
+    except Exception:
+        # The slash command already reported success to the user based on
+        # the in-memory store update; surface persistence failures via the
+        # log but don't propagate (the in-memory change still works for
+        # the current process; only re-launches would lose the setting).
+        logger.exception(
+            "Failed to persist advisor_model to settings; in-memory value still active"
+        )
+
+
 # Registry. EVERY field in AppState must appear here as a handler
 # (function-form, including explicit no-ops). The coverage test enforces
 # this — adding a new AppState field without a handler entry fails
@@ -221,6 +277,7 @@ _FIELD_HANDLERS: dict[str, Callable[[AppState, AppState], None]] = {
     "expanded_view": _on_expanded_view_change,
     "permission_mode": _on_permission_mode_change,
     "initial_message": _on_initial_message_change,
+    "advisor_model": _on_advisor_model_change,
 }
 
 
