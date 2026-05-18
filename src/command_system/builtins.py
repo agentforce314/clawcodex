@@ -431,6 +431,197 @@ async def _compact_async(args: str, context: CommandContext) -> LocalCommandResu
         )
 
 
+def _read_current_advisor_model(context: CommandContext) -> str | None:
+    """Resolve the user's currently configured advisor model.
+
+    Prefers the reactive AppState store if the caller wired one (so a
+    just-issued ``/advisor`` from this session reads its own write
+    without a settings-cache roundtrip), and falls back to the
+    persisted settings — the source of truth on every restart.
+    """
+    store = getattr(context, "app_state_store", None)
+    if store is not None:
+        try:
+            state = store.get_state()
+            value = getattr(state, "advisor_model", None)
+            if value:
+                return value
+        except Exception:
+            pass
+    try:
+        from ..settings.settings import get_settings
+        configured = (get_settings().advisor_model or "").strip()
+        return configured or None
+    except Exception:
+        return None
+
+
+def _write_advisor_model(context: CommandContext, value: str | None) -> None:
+    """Persist a new advisor_model and update the reactive store if present.
+
+    Both writes are idempotent. When an AppState store is wired (e.g.
+    tests, future TUI wiring), ``replace_state`` fires
+    ``_on_advisor_model_change`` which itself writes to settings — so
+    we skip the direct settings write to avoid double-saving. When the
+    store is absent (the current TUI configuration), we update settings
+    directly via the same chokepoint the handler uses.
+    """
+    store = getattr(context, "app_state_store", None)
+    if store is not None:
+        from ..state.app_state import replace_state
+        store.set_state(lambda s: replace_state(s, advisor_model=value or None))
+        return
+    # No reactive store — write straight to settings + invalidate cache
+    # so the next API call picks up the change. Use the shared default
+    # ConfigManager (instead of a fresh one) so the in-process
+    # ``_global_cache`` field stays consistent for callers that read
+    # via ``load_config()`` / ``_get_default_manager().get_merged()``.
+    from .. import config as cfg_mod
+    from ..settings.settings import invalidate_settings_cache
+    mgr = cfg_mod._get_default_manager()
+    cfg = mgr.load_global()
+    settings_section = cfg.get("settings")
+    if not isinstance(settings_section, dict):
+        settings_section = {}
+    settings_section["advisor_model"] = value or ""
+    cfg["settings"] = settings_section
+    mgr.save_global(cfg)
+    invalidate_settings_cache()
+
+
+def advisor_command_call(args: str, context: CommandContext) -> LocalCommandResult:
+    """Handle /advisor — configure the server-side advisor reviewer model.
+
+    Python port of typescript/src/commands/advisor.ts. Branches:
+      * no args → report current state (set/unset/inactive). Inactive =
+        a model is set but the running main-loop model doesn't support
+        the advisor tool.
+      * ``unset`` | ``off`` → clear the advisor model.
+      * ``<model>`` → resolve + validate + set.
+
+    Writes go to the reactive AppState store if the caller wired one
+    via ``CommandContext.app_state_store``; otherwise they go straight
+    to the global settings file. Either path produces the same end
+    state (settings.advisor_model is the canonical source) — the
+    distinction is whether mid-session subscribers see the change as
+    an in-process event or have to re-read settings.
+    """
+    from ..models.model import canonical_model_name, resolve_model
+    from ..models.validation import validate_model_name
+    from ..utils.advisor import (
+        can_user_configure_advisor,
+        is_valid_advisor_model,
+        model_supports_advisor,
+    )
+
+    arg = (args or "").strip().lower()
+    provider = getattr(context, "provider", None)
+
+    # Reject hard when /advisor is disabled by env var or by a non-first-
+    # party provider — otherwise the user would silently configure a value
+    # that no future request can use.
+    if not can_user_configure_advisor(provider):
+        return LocalCommandResult(
+            type="text",
+            value=(
+                "Advisor is unavailable in this configuration. "
+                "It requires the first-party Anthropic API and is disabled by "
+                "the CLAUDE_CODE_DISABLE_ADVISOR_TOOL env var."
+            ),
+        )
+
+    current_advisor = _read_current_advisor_model(context)
+    # Resolve the active main-loop model. Prefer the provider's own
+    # ``.model`` attribute (mirrors TS ``options.model`` source of truth
+    # — the value the next API call will actually use). Fall back to
+    # AppState.main_loop_model when the provider isn't carrying one.
+    main_loop_model = ""
+    if provider is not None:
+        main_loop_model = getattr(provider, "model", "") or ""
+    if not main_loop_model:
+        store = getattr(context, "app_state_store", None)
+        if store is not None:
+            try:
+                main_loop_model = getattr(store.get_state(), "main_loop_model", "") or ""
+            except Exception:
+                pass
+
+    if not arg:
+        if not current_advisor:
+            return LocalCommandResult(
+                type="text",
+                value=(
+                    "Advisor: not set\n"
+                    'Use "/advisor <model>" to enable (e.g. "/advisor opus").'
+                ),
+            )
+        if main_loop_model and not model_supports_advisor(main_loop_model):
+            return LocalCommandResult(
+                type="text",
+                value=(
+                    f"Advisor: {current_advisor} (inactive)\n"
+                    f"The current model ({main_loop_model}) does not support advisors."
+                ),
+            )
+        return LocalCommandResult(
+            type="text",
+            value=(
+                f"Advisor: {current_advisor}\n"
+                'Use "/advisor unset" to disable or "/advisor <model>" to change.'
+            ),
+        )
+
+    if arg in ("unset", "off"):
+        previous = current_advisor
+        if previous is not None:
+            _write_advisor_model(context, None)
+        return LocalCommandResult(
+            type="text",
+            value=(
+                f"Advisor disabled (was {previous})." if previous
+                else "Advisor already unset."
+            ),
+        )
+
+    # Treat the rest as a model identifier.
+    raw = (args or "").strip()
+    try:
+        resolved = resolve_model(raw)
+    except Exception as e:
+        return LocalCommandResult(
+            type="text",
+            value=f"Invalid advisor model: {e}",
+        )
+    if not validate_model_name(resolved):
+        return LocalCommandResult(
+            type="text",
+            value=f"Unknown model: {raw} ({resolved})",
+        )
+    if not is_valid_advisor_model(resolved):
+        return LocalCommandResult(
+            type="text",
+            value=f"The model {raw} ({resolved}) cannot be used as an advisor",
+        )
+
+    normalized = canonical_model_name(resolved)
+    _write_advisor_model(context, normalized)
+
+    if main_loop_model and not model_supports_advisor(main_loop_model):
+        return LocalCommandResult(
+            type="text",
+            value=(
+                f"Advisor set to {normalized}.\n"
+                f"Note: Your current model ({main_loop_model}) does not support "
+                "advisors. Switch to a supported model to use the advisor."
+            ),
+        )
+
+    return LocalCommandResult(
+        type="text",
+        value=f"Advisor set to {normalized}.",
+    )
+
+
 def compact_command_call(args: str, context: CommandContext) -> LocalCommandResult:
     """
     Handle /compact command - compact conversation context.
@@ -609,6 +800,23 @@ COMPACT_COMMAND = LocalCommand(
     supports_non_interactive=True,
 )
 
+# /advisor — server-side reviewer tool. Python port of
+# typescript/src/commands/advisor.ts. The `is_enabled` callable is read by
+# the help-listing and command-availability checks. We pass ``provider=None``
+# at command-list time because the registry doesn't know what provider is
+# active; the env-disable check still applies. Per-request provider gating
+# is enforced inside ``_call_model_sync`` so the user can't accidentally
+# silence the API by toggling /advisor under a non-first-party provider.
+from ..utils.advisor import can_user_configure_advisor as _can_user_configure_advisor
+
+ADVISOR_COMMAND = LocalCommand(
+    name="advisor",
+    description="Configure the advisor model",
+    argument_hint="[<model>|off]",
+    supports_non_interactive=True,
+    is_enabled=lambda: _can_user_configure_advisor(None),
+)
+
 INIT_COMMAND = PromptCommand(
     name="init",
     description="Initialize new CLAUDE.md file(s) and optional skills/hooks with codebase documentation",
@@ -669,6 +877,7 @@ SKILLS_COMMAND.set_call(skills_command_call)
 COST_COMMAND.set_call(cost_command_call)
 CONTEXT_COMMAND.set_call(context_command_call)
 COMPACT_COMMAND.set_call(compact_command_call)
+ADVISOR_COMMAND.set_call(advisor_command_call)
 
 
 def get_builtin_commands() -> list[Command]:
@@ -681,6 +890,7 @@ def get_builtin_commands() -> list[Command]:
         COST_COMMAND,
         CONTEXT_COMMAND,
         COMPACT_COMMAND,
+        ADVISOR_COMMAND,
         INIT_COMMAND,
     ]
 
