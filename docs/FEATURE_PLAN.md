@@ -252,7 +252,7 @@ class TokenBudgetAnalysis(BaseModel):
 
 ---
 
-### 3.5 高级功能（对比 Claude Code Best）
+### 3.6 高级功能（对比 Claude Code Best）
 
 | 功能 | ClawCodex | Claude Code Best | 优先级 |
 |------|-----------|------------------|--------|
@@ -264,6 +264,160 @@ class TokenBudgetAnalysis(BaseModel):
 | ACP/Zed/Cursor 集成 | ❌ | ✅ | P3 |
 | Langfuse 监控 | ❌ | ✅ | P3 |
 | Feature Flags | ❌ | ✅ | P3 |
+
+---
+
+### 3.7 /goal 命令（目标管理）
+
+**状态**: ⏳ 待实现
+**目标**: 支持长时间运行任务的目标管理
+
+#### 3.7.1 功能说明
+
+支持长时间任务的目标状态管理与 token 用量追踪：
+
+| 子命令 | 功能 |
+|--------|------|
+| `/goal set <goal>` | 设置当前任务目标 |
+| `/goal clear` | 清除目标 |
+| `/goal pause` | 暂停目标追踪 |
+| `/goal resume` | 恢复目标追踪 |
+| `/goal complete` | 标记目标完成 |
+
+#### 3.7.2 核心机制
+
+| 机制 | 说明 |
+|------|------|
+| Goal 状态机 | `active` / `paused` / `budget_limited` / `complete` |
+| Token 用量追踪 | 自动追踪当前 session 的 token 消耗 |
+| Continuation Prompt | 目标状态自动注入到 continuation prompt |
+| session-scoped 隔离 | 按 sessionId 管理独立的目标状态 |
+
+#### 3.7.3 实现文件
+
+| 文件 | 位置 | 状态 |
+|------|------|------|
+| Goal 命令 | `commands/goal/goal.ts` | 待实现 |
+| Goal 状态管理 | `services/goal/goalState.ts` | 待实现 |
+| Goal 工具 | `packages/builtin-tools/src/tools/GoalTool/` | 待实现 |
+
+#### 3.7.4 数据模型
+
+```typescript
+interface GoalState {
+  sessionId: UUID
+  goal: string
+  status: 'active' | 'paused' | 'budget_limited' | 'complete'
+  createdAt: Date
+  updatedAt: Date
+  tokenUsage: {
+    current: number
+    threshold: number
+  }
+}
+```
+
+---
+
+### 3.8 ExecuteExtraTool 延迟工具系统
+
+**状态**: ⏳ 待实现
+**目标**: 按需加载延迟工具，支持语义搜索
+
+#### 3.8.1 功能说明
+
+完整的延迟工具按需加载系统，支持子代理（Async Agent）执行：
+
+| 组件 | 功能 |
+|------|------|
+| SearchExtraToolsTool | TF-IDF 工具索引语义搜索 |
+| ExecuteExtraTool | 通过名称和参数执行延迟工具 |
+| validateInput 校验 | 调用前校验防止崩溃 |
+| ASYNC_AGENT_ALLOWED_TOOLS | 子代理可执行延迟工具 |
+
+#### 3.8.2 核心机制
+
+| 机制 | 说明 |
+|------|------|
+| 工具延迟加载 | 工具按名称和参数动态执行，非预加载 |
+| 语义搜索 | TF-IDF 索引支持自然语言工具搜索 |
+| 子代理执行 | Async Agent 可调用延迟工具 |
+| 输入校验 | execute 前 validateInput 防止无效调用 |
+
+#### 3.8.3 实现文件
+
+| 文件 | 位置 | 状态 |
+|------|------|------|
+| ExecuteExtraTool | `packages/builtin-tools/src/tools/ExecuteTool/ExecuteTool.ts` | 待实现 |
+| SearchExtraToolsTool | `packages/builtin-tools/src/tools/SearchExtraToolsTool/` | 待实现 |
+| ASYNC_AGENT_ALLOWED_TOOLS | `constants/tools.ts` | 待配置 |
+| 延迟工具提示 | `constants/prompts.ts` | 待配置 |
+
+---
+
+### 3.9 sessionStorage 容量限制
+
+**状态**: ⏳ 待实现
+**目标**: 防止长时间运行的 daemon/swarm 会话导致内存泄漏
+
+#### 3.9.1 功能说明
+
+为 `existingSessionFiles` Map 设置容量上限，防止无限增长：
+
+```python
+MAX_CACHED_SESSION_FILES = 200
+
+def add_session_file(sessionId: UUID, filePath: str):
+    if len(existingSessionFiles) >= MAX_CACHED_SESSION_FILES:
+        oldest_key = next(iter(existingSessionFiles))
+        del existingSessionFiles[oldest_key]
+    existingSessionFiles[sessionId] = filePath
+```
+
+#### 3.9.2 问题场景
+
+- daemon/swarm 模式下长时间运行
+- sessionId 频繁创建销毁
+- Map 无限增长导致 OOM
+
+#### 3.9.3 实现文件
+
+| 文件 | 位置 | 状态 |
+|------|------|------|
+| sessionStorage | `utils/sessionStorage.ts` → `utils/session_storage.py` | 待实现 |
+
+---
+
+### 3.10 cacheWarning 容量限制
+
+**状态**: ⏳ 待实现
+**目标**: 防止 querySource 类型为 any 时内存泄漏
+
+#### 3.10.1 功能说明
+
+为 `cacheWarningStateBySource` Map 设置容量上限：
+
+```python
+MAX_SOURCE_ENTRIES = 50
+
+def update_cache_warning(source: str, state: CacheWarningState):
+    if len(cacheWarningStateBySource) >= MAX_SOURCE_ENTRIES:
+        oldest_key = next(iter(cacheWarningStateBySource))
+        del cacheWarningStateBySource[oldest_key]
+    cacheWarningStateBySource[source] = state
+```
+
+#### 3.10.2 问题场景
+
+- querySource 类型为 any
+- 长时间会话产生大量唯一 source 值
+- Map 无限增长导致内存泄漏
+
+#### 3.10.3 实现文件
+
+| 文件 | 位置 | 状态 |
+|------|------|------|
+| cacheWarning | `utils/cacheWarning.ts` → `utils/cache_warning.py` | 待实现 |
 
 ---
 

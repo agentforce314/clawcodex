@@ -39,6 +39,10 @@
 | F-6 | Computer Use | P3 | ⏳ 待开始 | 对标 CCB |
 | F-7 | Remote Control | P2 | ⏳ 待开始 | Docker + WebUI |
 | F-8 | ACP/Zed/Cursor 集成 | P3 | ⏳ 待开始 | IDE 集成 |
+| F-9 | /goal 命令 | P2 | ⏳ 待开始 | 长时间任务目标管理 |
+| F-10 | ExecuteExtraTool 延迟工具系统 | P2 | ⏳ 待开始 | TF-IDF 工具搜索 + 子代理执行 |
+| F-11 | sessionStorage 容量限制 | P2 | ⏳ 待开始 | 防止 daemon 会话内存泄漏 |
+| F-12 | cacheWarning 容量限制 | P2 | ⏳ 待开始 | 防止 source 类型内存泄漏 |
 
 ---
 
@@ -391,6 +395,167 @@ LiteLLM (开源依赖)
 | 工具语义搜索 | Qdrant | P2 | ⏳ 待开始 |
 | 权限规则引擎 | Casbin | P2 | ⏳ 待开始 |
 | 日志系统 | structlog | P2 | ⏳ 待开始 |
+
+---
+
+### F-9: /goal 命令（目标管理）
+
+**状态**: ⏳ 待实现
+**优先级**: P2
+
+#### 目标
+支持长时间运行任务的目标管理，包括 set/pause/resume/complete 子命令。
+
+#### 功能说明
+
+| 子命令 | 功能 |
+|--------|------|
+| `/goal set <goal>` | 设置当前任务目标 |
+| `/goal clear` | 清除目标 |
+| `/goal pause` | 暂停目标追踪 |
+| `/goal resume` | 恢复目标追踪 |
+| `/goal complete` | 标记目标完成 |
+
+#### 核心机制
+
+| 机制 | 说明 |
+|------|------|
+| Goal 状态机 | `active` / `paused` / `budget_limited` / `complete` |
+| Token 用量追踪 | 自动追踪当前 session 的 token 消耗 |
+| Continuation Prompt | 目标状态自动注入到 continuation prompt |
+| session-scoped 隔离 | 按 sessionId 管理独立的目标状态 |
+
+#### 参考实现
+
+- `commands/goal/goal.ts` - /goal 斜杠命令
+- `services/goal/goalState.ts` - Goal 状态管理
+- `packages/builtin-tools/src/tools/GoalTool/GoalTool.ts` - Goal 工具
+
+#### 数据模型
+
+```python
+class GoalState(BaseModel):
+    session_id: UUID
+    goal: str
+    status: Literal["active", "paused", "budget_limited", "complete"]
+    created_at: datetime
+    updated_at: datetime
+    token_usage: dict  # {current: int, threshold: int}
+```
+
+---
+
+### F-10: ExecuteExtraTool 延迟工具系统
+
+**状态**: ⏳ 待实现
+**优先级**: P2
+
+#### 目标
+实现完整的延迟工具按需加载系统，支持 TF-IDF 语义搜索和子代理执行。
+
+#### 功能说明
+
+| 组件 | 功能 |
+|------|------|
+| SearchExtraToolsTool | TF-IDF 工具索引语义搜索 |
+| ExecuteExtraTool | 通过名称和参数执行延迟工具 |
+| validateInput 校验 | 调用前校验防止崩溃 |
+| ASYNC_AGENT_ALLOWED_TOOLS | 子代理可执行延迟工具 |
+
+#### 核心机制
+
+| 机制 | 说明 |
+|------|------|
+| 工具延迟加载 | 工具按名称和参数动态执行，非预加载 |
+| 语义搜索 | TF-IDF 索引支持自然语言工具搜索 |
+| 子代理执行 | Async Agent 可调用延迟工具 |
+| 输入校验 | execute 前 validateInput 防止无效调用 |
+
+#### 参考实现
+
+- `packages/builtin-tools/src/tools/ExecuteTool/ExecuteTool.ts`
+- `packages/builtin-tools/src/tools/SearchExtraToolsTool/`
+- `constants/tools.ts` - ASYNC_AGENT_ALLOWED_TOOLS
+
+#### 现有基础
+
+clawcodex 已有 `tool_system/tool_search.py` 工具搜索实现，需扩展为 SearchExtraToolsTool 语义搜索。
+
+---
+
+### F-11: sessionStorage 容量限制
+
+**状态**: ⏳ 待实现
+**优先级**: P2
+
+#### 目标
+为 `existingSessionFiles` Map 设置容量上限，防止 daemon/swarm 会话内存泄漏。
+
+#### 问题场景
+
+- daemon/swarm 模式下长时间运行
+- sessionId 频繁创建销毁
+- Map 无限增长导致 OOM
+
+#### 实现方案
+
+```python
+MAX_CACHED_SESSION_FILES = 200
+
+class SessionStorage:
+    def __init__(self):
+        self.existing_session_files: dict[UUID, str] = {}
+
+    def add_session_file(self, session_id: UUID, file_path: str):
+        if len(self.existing_session_files) >= MAX_CACHED_SESSION_FILES:
+            oldest_key = next(iter(self.existing_session_files))
+            del self.existing_session_files[oldest_key]
+        self.existing_session_files[session_id] = file_path
+```
+
+#### 参考实现
+
+- `src/utils/sessionStorage.ts` - existingSessionFiles Map + MAX_CACHED_SESSION_FILES = 200
+
+---
+
+### F-12: cacheWarning 容量限制
+
+**状态**: ⏳ 待实现
+**优先级**: P2
+
+#### 目标
+为 `cacheWarningStateBySource` Map 设置容量上限，防止 querySource 类型为 any 时内存泄漏。
+
+#### 问题场景
+
+- querySource 类型为 any
+- 长时间会话产生大量唯一 source 值
+- Map 无限增长导致内存泄漏
+
+#### 实现方案
+
+```python
+MAX_SOURCE_ENTRIES = 50
+
+class CacheWarning:
+    def __init__(self):
+        self.cache_warning_state_by_source: dict[str, CacheWarningState] = {}
+
+    def update(self, source: str, state: CacheWarningState):
+        if len(self.cache_warning_state_by_source) >= MAX_SOURCE_ENTRIES:
+            oldest_key = next(iter(self.cache_warning_state_by_source))
+            del self.cache_warning_state_by_source[oldest_key]
+        self.cache_warning_state_by_source[source] = state
+
+    def reset_for_test(self):
+        """测试隔离用"""
+        self.cache_warning_state_by_source.clear()
+```
+
+#### 参考实现
+
+- `src/utils/cacheWarning.ts` - cacheWarningStateBySource Map + MAX_SOURCE_ENTRIES = 50
 
 ---
 
