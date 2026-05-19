@@ -1,0 +1,69 @@
+# .github/workflows/upstream-detect.yml
+name: Upstream Change Detection
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"   # Every Monday at 06:00 UTC
+  workflow_dispatch:        # Manual trigger
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install upstream-sync
+        run: pip install upstream-sync
+
+      - name: Fetch upstream
+        run: upstream-sync fetch
+
+      - name: Detect and analyse changes
+        run: |
+          # Auto-detect latest upstream tag or use main
+          FROM_REF="${FROM_REF:-upstream/v2025_01}"
+          TO_REF="${TO_REF:-upstream/main}"
+          upstream-sync analyze "$FROM_REF" "$TO_REF" --output-dir .upstream-sync
+        env:
+          FROM_REF: ${{ vars.UPSTREAM_FROM_REF }}
+          TO_REF: ${{ vars.UPSTREAM_TO_REF }}
+
+      - name: Upload JSON report
+        uses: actions/upload-artifact@v4
+        with:
+          name: sync-report-json
+          path: .upstream-sync/sync-report.json
+          retention-days: 30
+
+      - name: Upload Markdown report
+        uses: actions/upload-artifact@v4
+        with:
+          name: sync-report-markdown
+          path: .upstream-sync/sync-report.md
+          retention-days: 30
+
+      - name: Create issue on changes detected
+        if: ${{ github.event_name == 'schedule' }}
+        run: |
+          REPORT_PATH=".upstream-sync/sync-report.md"
+          if [ -f "$REPORT_PATH" ]; then
+            gh issue create \
+              --title "[UPSTREAM] New changes detected $(date +%Y-%m-%d)" \
+              --body-file "$REPORT_PATH" \
+              --label "upstream-sync"
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fail on high-impact changes (optional gate)
+        if: ${{ github.event_name == 'workflow_dispatch' && vars.ENFORCE_HIGH_IMPACT == 'true' }}
+        run: |
+          if grep -q "Overall Impact: high" .upstream-sync/sync-report.md; then
+            echo "High-impact upstream changes detected. Review required before merging."
+            exit 1
+          fi

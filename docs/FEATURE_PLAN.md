@@ -126,6 +126,9 @@ src/
 | ApprovalPolicy | `orchestrator/approval_policy.py` | ✅ 完成 | 工具调用审批策略 |
 | StatusDashboard | `orchestrator/status_dashboard.py` | ✅ 完成 | 终端 UI 状态面板 |
 | TrackerAdapter | `orchestrator/tracker.py` | ✅ 完成 | Tracker 协议抽象 |
+| IssueRegistry | `orchestrator/issue_registry.py` | ✅ 完成 | 持久化 issue→commit→PR 映射 |
+| ClarificationQueue | `orchestrator/clarification_queue.py` | ✅ 完成 | 操作员异步应答队列（Phase A） |
+| CLI orchestrator group | `orchestrator/cli/` | 🔄 进行中 | `clawcodex orchestrator` 统一入口 |
 
 #### 3.1.2 待完成功能
 
@@ -134,13 +137,12 @@ src/
 | 多 Tracker 支持 | ✅ 已完成 | GitHub/Gitee/GitCode 通用 REST 适配器已实现（`repo_tracker/adapter.py` + `repo_tracker/client.py`），TrackerAdapter 协议已完整，支持 `ensure_pull_request` |
 | CLI 集成 | ✅ 已完成 | `cli.py:596-666` 已实现 `--workflow`、`--dashboard`、`--port` |
 | 重试队列 + 退避 | ✅ 已完成 | `orchestrator.py:205-298` 实现指数退避重试 |
-| **重试上限保护** | P1 | `_schedule_retry` 增加最大重试次数限制，防止无限重试；超过上限后不再自动重试 |
-| **Issue State 前置检查** | P1 | `_poll_and_dispatch` 在 launch 前查 issue 最新 state，非 active 状态直接跳过 |
-| **已有 PR 跳过后续处理** | P1 | `_launch_issue` 前查 `find_pull_request`，已有 PR 则标记 completed 并跳过 |
-| **本地 Issue 注册表** | P1 | 持久化 issue→commit→PR 映射到 JSON，重启后可识别已处理 issue |
-| **Issue 语义澄清流程** | P1 | Agent 可通过 @mention 评论向作者请求澄清，轮询等待回复后继续处理 |
-| SSH 远程执行 | P3 | 远程工作区支持 |
-| 可观测性集成 | P3 | Langfuse/Sentry 集成 |
+| **重试上限保护** | ✅ 已完成 | `_schedule_retry` 增加最大重试次数限制，防止无限重试；超过上限后不再自动重试 |
+| **Issue State 前置检查** | ✅ 已完成 | `_poll_and_dispatch` 在 launch 前查 issue 最新 state，非 active 状态直接跳过 |
+| **已有 PR 跳过后续处理** | ✅ 已完成 | `_launch_issue` 前查 `find_pull_request`，已有 PR 则标记 completed 并跳过 |
+| **本地 Issue 注册表** | ✅ 已完成 | 持久化 issue→commit→PR 映射到 JSON，重启后可识别已处理 issue |
+| **Issue Clarification 流程** | 🔄 进行中 | 三通道 ClarificationQueue + TrackerAdapter 评论接口 + CLI `clarify`（Phase A-E） |
+| **Orchestrator CLI** | 🔄 进行中 | `clawcodex orchestrator` 统一入口（Phase O1-O8） |
 
 ---
 

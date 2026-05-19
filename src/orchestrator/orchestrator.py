@@ -72,6 +72,8 @@ class Orchestrator:
         self._semaphore = asyncio.Semaphore(workflow.agent.max_concurrent_agents)
         self._shutdown_event = asyncio.Event()
         self._tasks: set[asyncio.Task] = set()
+        # Workspace root for control command polling
+        self._workspace_root = workspace.config.root
         # Persistent issue→commit→PR mapping (persists across restarts)
         registry_path = workspace.config.root / ".clawcodex_issue_registry.json"
         self._registry = IssueRegistry(registry_path)
@@ -108,6 +110,9 @@ class Orchestrator:
         self._state.poll_check_in_progress = True
 
         try:
+            # Process lifecycle control commands (pause/resume/stop/takeover)
+            await self._process_control_commands()
+
             # Process retry queue first
             await self._process_retry_queue()
 
@@ -214,7 +219,11 @@ class Orchestrator:
                 exc,
             )
 
-        session = AgentSession(issue=issue, workspace=workspace)
+        session = AgentSession(
+            issue=issue,
+            workspace=workspace,
+            pause_resume_event=asyncio.Event(),
+        )
         self._state.running[issue.id] = session
 
         self.status_dashboard.on_session_start(
@@ -406,6 +415,67 @@ class Orchestrator:
                 retry.issue_id,
                 retry.attempt,
             )
+
+    async def _process_control_commands(self) -> None:
+        """Process lifecycle control commands from CLI.
+
+        Checks the control directory for pause/resume/stop/takeover commands
+        written by `clawcodex orchestrator pause/resume/stop/takeover`.
+        """
+        import os
+
+        control_dir = self._workspace_root / ".orchestrator_control"
+        if not control_dir.exists():
+            return
+
+        try:
+            for control_file in control_dir.iterdir():
+                if not control_file.name.endswith(".control"):
+                    continue
+                parts = control_file.read_text(encoding="utf-8").strip().split("\n")
+                if not parts:
+                    continue
+                cmd = parts[0].strip()
+                issue_id = parts[1].strip() if len(parts) > 1 else ""
+                extra = parts[2].strip() if len(parts) > 2 else ""
+
+                try:
+                    self._apply_control_command(cmd, issue_id, extra)
+                finally:
+                    # Clean up control file after processing
+                    try:
+                        control_file.unlink()
+                    except Exception:
+                        pass
+        except Exception as exc:
+            logger.warning("Failed to process control commands: %s", exc)
+
+    def _apply_control_command(self, cmd: str, issue_id: str, extra: str) -> None:
+        """Apply a single control command to a running session."""
+        if not issue_id or issue_id not in self._state.running:
+            logger.debug("Control %s for unknown issue %s", cmd, issue_id)
+            return
+
+        session = self._state.running[issue_id]
+        if cmd == "pause":
+            session.paused = True
+            session.pause_reason = extra or "operator requested pause"
+            session.pause_resume_event.clear()
+            logger.info("Paused issue %s: %s", issue_id, session.pause_reason)
+        elif cmd == "resume":
+            session.paused = False
+            session.pause_resume_event.set()
+            logger.info("Resumed issue %s", issue_id)
+        elif cmd == "stop":
+            # Request cancellation via task cancel
+            logger.info("Stop requested for issue %s", issue_id)
+            session.status = "failed"
+            session.pause_resume_event.set()  # Unblock if paused
+        elif cmd == "takeover":
+            logger.info("Takeover requested for issue %s", issue_id)
+            session.status = "failed"
+            session.pause_resume_event.set()  # Unblock if paused
+            # Note: REPL takeover requires full session context - handled separately
 
     async def _cancel_all_tasks(self) -> None:
         """Cancel all running agent tasks."""

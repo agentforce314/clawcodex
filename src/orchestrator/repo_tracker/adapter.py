@@ -6,6 +6,7 @@ import httpx
 
 from ..issue import Issue
 from ..tracker import (
+    Comment,
     PullRequestRef,
     TrackerAdapter,
     default_active_states_for_kind,
@@ -134,3 +135,61 @@ class RepositoryTrackerAdapter(TrackerAdapter):
             base_branch=base_branch,
             body=body,
         )
+
+    async def fetch_issue_comments(self, issue_id: str) -> list[Comment]:
+        raw_comments = await self.client.fetch_comments(issue_id)
+        return [
+            Comment(
+                id=str(c.get("id", "")),
+                body=c.get("body"),
+                author_login=_extract_comment_author(c),
+                created_at=c.get("created_at"),
+                updated_at=c.get("updated_at"),
+                in_reply_to_id=c.get("in_reply_to_id"),
+            )
+            for c in raw_comments
+            if c.get("body")
+        ]
+
+    async def fetch_new_comments_since(
+        self,
+        issue_id: str,
+        since_comment_id: str | None,
+    ) -> list[Comment]:
+        raw_comments = await self.client.fetch_comments_since(
+            issue_id,
+            since_comment_id,
+        )
+        return [
+            Comment(
+                id=str(c.get("id", "")),
+                body=c.get("body"),
+                author_login=_extract_comment_author(c),
+                created_at=c.get("created_at"),
+                updated_at=c.get("updated_at"),
+                in_reply_to_id=c.get("in_reply_to_id"),
+            )
+            for c in raw_comments
+            if c.get("body")
+        ]
+
+    async def create_clarification_comment(
+        self,
+        issue_id: str,
+        body: str,
+        mentions: list[str] | None = None,
+    ) -> Comment | None:
+        await self.client.create_comment(issue_id, body)
+        # Re-fetch to get the created comment's ID
+        comments = await self.client.fetch_comments(issue_id)
+        created = comments[-1] if comments else None
+        if created:
+            return Comment(
+                id=str(created.get("id", "")),
+                body=created.get("body"),
+                author_login=_extract_comment_author(created),
+                created_at=created.get("created_at"),
+                updated_at=created.get("updated_at"),
+                in_reply_to_id=created.get("in_reply_to_id"),
+            )
+        return None

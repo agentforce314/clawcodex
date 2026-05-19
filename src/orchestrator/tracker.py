@@ -12,6 +12,18 @@ if TYPE_CHECKING:
     import httpx
 
 
+@dataclass(frozen=True)
+class Comment:
+    """Normalized issue comment."""
+
+    id: str | None = None
+    body: str | None = None
+    author_login: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+    in_reply_to_id: str | None = None  # for threading
+
+
 SUPPORTED_TRACKERS = frozenset({"linear", "github", "gitee", "gitcode"})
 
 
@@ -60,6 +72,39 @@ class TrackerAdapter(ABC):
         """Check if a pull request already exists for the given branch.
 
         Used as a guard to skip already-handled issues before launching a new agent run.
+        """
+        return None
+
+    async def fetch_issue_comments(self, issue_id: str) -> list["Comment"]:
+        """Fetch all comments on an issue for clarification polling."""
+        return []
+
+    async def fetch_new_comments_since(
+        self,
+        issue_id: str,
+        since_comment_id: str | None,
+    ) -> list["Comment"]:
+        """Fetch comments newer than a given comment ID (for incremental polling).
+
+        Returns comments sorted oldest-first so the caller can process them in order.
+        """
+        return []
+
+    async def create_clarification_comment(
+        self,
+        issue_id: str,
+        body: str,
+        mentions: list[str] | None = None,
+    ) -> "Comment | None":
+        """Post a clarification request comment with @mention notifications.
+
+        Args:
+            issue_id: the issue to comment on
+            body: comment body (should include @mention for authors)
+            mentions: list of usernames to @mention
+
+        Returns:
+            The created comment, or None if not supported.
         """
         return None
 

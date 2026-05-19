@@ -368,8 +368,11 @@ LiteLLM (开源依赖)
 | GitSyncService | `orchestrator/git_sync.py` | ✅ 完成 |
 | GitHub/Gitee/GitCode Adapter | `orchestrator/repo_tracker/adapter.py` | ✅ 完成 |
 | Repository Issue Client | `orchestrator/repo_tracker/client.py` | ✅ 完成 |
-| **重试上限保护** | `orchestrator/orchestrator.py` | ⏳ 待实现 |
-| **Issue State 前置检查** | `orchestrator/orchestrator.py` | ⏳ 待实现 |
+| **重试上限保护** | `orchestrator/orchestrator.py` | ✅ 完成 |
+| **Issue State 前置检查** | `orchestrator/orchestrator.py` | ✅ 完成 |
+| **ClarificationQueue** | `orchestrator/clarification_queue.py` | ✅ 完成 |
+| **TrackerAdapter 评论接口** | `orchestrator/tracker.py` + `repo_tracker/adapter.py` | ✅ 完成 |
+| **Orchestrator CLI** | `orchestrator/cli/` | 🔄 进行中 |
 
 #### 待完成
 
@@ -378,11 +381,14 @@ LiteLLM (开源依赖)
 | 多 Tracker 支持 | ✅ 已完成 | GitHub/Gitee/GitCode REST 适配器已实现并通过实际测试（GitCode live test 完成 PR 创建） |
 | 重试队列 + 退避 | ✅ 已完成 | 失败任务自动重试，指数退避机制已实现 |
 | CLI 集成 | ✅ 已完成 | `--workflow` flag 已集成到 cli.py |
-| **重试上限保护** | P1 | `_schedule_retry` 增加最大重试次数限制（建议默认 5 次），超过后停止自动重试 |
-| **Issue State 前置检查** | P1 | `_launch_issue` 前调用 `tracker.fetch_issue_states_by_ids` 确认 issue 仍处于 active state，非 active 则跳过 |
-| **已有 PR 跳过后续处理** | P1 | `_launch_issue` 前调用 `tracker.find_pull_request`，若存在已关联 PR 则标记 completed 并跳过 |
-| **Issue 语义澄清流程** | P1 | 三通道优先机制：Dashboard交互 → ClarificationQueue → @mention作者（Phase 4） |
-| 可观测性集成 | P3 | Langfuse/Sentry 集成 |
+| **重试上限保护** | ✅ 已完成 | `_schedule_retry` 增加最大重试次数限制（建议默认 5 次），超过后停止自动重试 |
+| **Issue State 前置检查** | ✅ 已完成 | `_launch_issue` 前调用 `tracker.fetch_issue_states_by_ids` 确认 issue 仍处于 active state，非 active 则跳过 |
+| **已有 PR 跳过后续处理** | ✅ 已完成 | `_launch_issue` 前调用 `tracker.find_pull_request`，若存在已关联 PR 则标记 completed 并跳过 |
+| **ClarificationQueue 文件队列** | ✅ 已完成 | `orchestrator/clarification_queue.py:ClarificationQueue` |
+| **TrackerAdapter 评论接口** | ✅ 已完成 | `fetch_issue_comments()` / `fetch_new_comments_since()` / `create_clarification_comment()` |
+| **Orchestrator CLI 统一入口** | 🔄 进行中 | `clawcodex orchestrator run/status/issues/clarify/pause/resume/stop/takeover` |
+| **Issue Clarification 三通道** | 🔄 进行中 | Dashboard → ClarificationQueue → @mention 作者（Phase A-E） |
+| **Orchestrator CLI 生命周期控制** | 🔄 进行中 | pause/resume/stop/takeover + `_process_control_commands()` |
 
 #### Phase 3 生产强化详细设计
 

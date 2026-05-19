@@ -5,6 +5,7 @@ Port of Symphony's AgentRunner, replacing Codex JSON-RPC with QueryRunner.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
@@ -30,6 +31,11 @@ class AgentSession:
     turn_count: int = 0
     status: str = "running"  # running, completed, failed
     output_text: str = ""
+    # Lifecycle control
+    paused: bool = False
+    paused_at: float | None = None
+    pause_reason: str = ""
+    pause_resume_event: "asyncio.Event | None" = None
 
 
 @dataclass
@@ -159,6 +165,11 @@ class AgentRunner:
                 elif isinstance(event, ToolCallEvent):
                     turn_has_tool_calls = True
                     tool_count += 1
+
+                    # Pause support: wait for resume if session is paused
+                    if session.pause_resume_event is not None:
+                        await session.pause_resume_event.wait()
+
                     # In headless (orchestrator) mode the permission system
                     # is bypassed via ToolContext.approval_policy =
                     # "bypassPermissions" + permission_handler = None, so all

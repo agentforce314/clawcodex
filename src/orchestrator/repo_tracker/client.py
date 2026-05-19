@@ -159,6 +159,47 @@ class RepositoryIssueClient:
             data=data if self.platform.auth_mode != "bearer" else None,
         )
 
+    async def fetch_comments(self, issue_id: str) -> list[dict[str, Any]]:
+        """Fetch all comments on an issue."""
+        page = 1
+        comments: list[dict[str, Any]] = []
+        while True:
+            params = {"per_page": _PAGE_SIZE, "page": page}
+            payload = await self._request_json(
+                "GET",
+                f"/repos/{self.owner}/{self.repo}/issues/{issue_id}/comments",
+                params=params,
+            )
+            if not isinstance(payload, list):
+                break
+            comments.extend(payload)
+            if len(payload) < _PAGE_SIZE:
+                break
+            page += 1
+        return comments
+
+    async def fetch_comments_since(
+        self,
+        issue_id: str,
+        since_comment_id: str | None,
+    ) -> list[dict[str, Any]]:
+        """Fetch comments newer than since_comment_id for incremental polling."""
+        if since_comment_id is None:
+            return await self.fetch_comments(issue_id)
+
+        all_comments = await self.fetch_comments(issue_id)
+
+        # GitHub returns comments in chronological order (oldest first)
+        # Find the comment with since_comment_id and return newer ones
+        newer: list[dict[str, Any]] = []
+        found = since_comment_id is None  # if None, return all
+        for comment in all_comments:
+            if found:
+                newer.append(comment)
+            elif str(comment.get("id")) == str(since_comment_id):
+                found = True
+        return newer
+
     async def update_issue(
         self,
         issue_id: str,
@@ -462,3 +503,13 @@ def _summarize_body(response: httpx.Response) -> str:
 
 class RepositoryTrackerError(Exception):
     """Raised when repository issue tracker operations fail."""
+
+
+def _extract_comment_author(comment: dict[str, Any]) -> str | None:
+    """Extract author login from a comment payload."""
+    user = comment.get("user") or comment.get("author")
+    if isinstance(user, dict):
+        return user.get("login") or user.get("username") or user.get("name")
+    if isinstance(user, str) and user.strip():
+        return user
+    return None

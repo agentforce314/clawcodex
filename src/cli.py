@@ -86,6 +86,10 @@ def main():
             from src.entrypoints.doctor import run_doctor
             return run_doctor()
 
+        # Orchestrator subcommands (unified entry: clawcodex orchestrator <sub>)
+        if token == 'orchestrator':
+            return _run_orchestrator_subcommand(rest)
+
     parser = _build_parser()
     args = parser.parse_args(argv)
     profile_checkpoint("argparse_done")
@@ -592,6 +596,51 @@ def start_repl(
     )
     repl.run()
     return 0
+
+
+def _run_orchestrator_subcommand(argv: list[str]) -> int:
+    """Route `clawcodex orchestrator <sub> [args]` to the appropriate handler.
+
+    This is the unified entry point for all orchestrator operations,
+    replacing the legacy --workflow flag.
+    """
+    import argparse
+
+    # Build a minimal parser for the orchestrator subcommand tree
+    parser = argparse.ArgumentParser(
+        prog="clawcodex orchestrator",
+        description="Orchestrator operations",
+    )
+    subparsers = parser.add_subparsers(dest="subcommand", required=True)
+
+    # Import and register subcommands
+    from src.orchestrator.cli import run as run_cmd
+    from src.orchestrator.cli import status as status_cmd
+    from src.orchestrator.cli import issues as issues_cmd
+    from src.orchestrator.cli import clarify as clarify_cmd
+    from src.orchestrator.cli import lifecycle as lifecycle_cmd
+
+    run_cmd.add_run_parser(subparsers)
+    status_cmd.add_status_parser(subparsers)
+    issues_cmd.add_issues_parser(subparsers)
+    clarify_cmd.add_clarify_parser(subparsers)
+    lifecycle_cmd.add_lifecycle_parser(subparsers)
+
+    args = parser.parse_args(argv)
+
+    if args.subcommand == "run":
+        return run_cmd.run(args)
+    elif args.subcommand == "status":
+        return status_cmd.run(args)
+    elif args.subcommand == "issues":
+        return issues_cmd.run(args)
+    elif args.subcommand == "clarify":
+        return clarify_cmd.run(args)
+    elif args.subcommand in ("pause", "resume", "stop", "takeover"):
+        return lifecycle_cmd.run(args)
+    else:
+        parser.print_help()
+        return 1
 
 
 def _run_autonomous_mode(args) -> int:
