@@ -210,6 +210,20 @@ Goal: Complete Claude Code's engineering capabilities.
 - [ ] `/doctor`
 - [ ] Pre/post tool use hooks
 
+### Phase 3b: Orchestrator & Multi-Agent Coordination ✅
+
+Goal: Autonomous multi-issue handling with operator oversight.
+
+- [x] Orchestrator CLI with 11 subcommands (run, status, issues, clarify, pause, resume, stop, takeover, inject, workspace, dashboard)
+- [x] Issue Registry with JSON-based persistence, tracking status/branch/PR/attempts
+- [x] Clarification Queue with 13-state file-backed queue
+- [x] Clarification Resolver with three-channel flow (interactive → file → @mention)
+- [x] Lifecycle control via signal-free `.orchestrator_control/` control files
+- [x] Event streaming via `.event_logs/{issue_id}.ndjson`
+- [x] LiveView HTTP SSE dashboard
+- [x] Operator hints injection via `.operator_hints.md`
+- [x] Takeover: stop agent + spawn REPL subprocess in workspace directory
+
 ### Phase 4: MCP, Plugins, Extension Ecosystem
 
 Goal: Upgrade from a monolithic CLI to an extensible platform.
@@ -229,6 +243,40 @@ Goal: Build distinctive features unique to the Python reimplementation.
 - [ ] First-class support for Chinese model ecosystem
 - [ ] pytest / ruff / mypy / uv integration experience
 - [ ] Enterprise automation and workflow extension interfaces
+
+---
+
+## Orchestrator (Multi-Agent Coordination)
+
+| Capability | Status | Current State |
+|------------|--------|---------------|
+| Orchestrator CLI | ✅ | 11 subcommands: run, status, issues, clarify, pause, resume, stop, takeover, inject, workspace, dashboard |
+| Issue Registry | ✅ | JSON-based registry tracking all issues with status, branch, PR, attempts |
+| Clarification Queue | ✅ | File-backed queue with 13 states, supports local/author/escalation channels |
+| Clarification Resolver | ✅ | Three-channel flow: interactive → file → @mention, simultaneous answer detection |
+| Lifecycle Control | ✅ | Signal-free: pause/resume/stop via `.orchestrator_control/` control files |
+| Takeover | ✅ | Stop agent + spawn REPL subprocess in workspace directory |
+| Event Streaming | ✅ | ndjson event logs in `.event_logs/{issue_id}.ndjson`, polled by `issues tail` |
+| LiveView Dashboard | ✅ | HTTP SSE dashboard on port 8080 with embedded HTML/JS |
+| Operator Hints | ✅ | `.operator_hints.md` injection at tool call boundaries |
+| Workspace CLI | ✅ | `orchestrator workspace` for ls/cat/edit during agent runs |
+| `--workflow` Migration | ✅ | `workflow_deprecated` flag with deprecation warning, use `orchestrator run --workflow` |
+
+### Orchestrator CLI Subcommands
+
+| Command | Description |
+|---------|-------------|
+| `orchestrator run --workflow PATH` | Launch orchestrator with WORKFLOW.md |
+| `orchestrator status [--watch]` | Show running/completed/failed issue counts |
+| `orchestrator issues [list\|show\|tail]` | List, show, or tail issue event logs |
+| `orchestrator clarify --issue ID --answer TEXT` | Write operator answer to clarification queue |
+| `orchestrator pause <issue_id> [--reason]` | Pause agent at next tool call boundary |
+| `orchestrator resume <issue_id>` | Resume a paused agent |
+| `orchestrator stop <issue_id>` | Force-terminate a running agent |
+| `orchestrator takeover <issue_id>` | Stop agent + start REPL for manual intervention |
+| `orchestrator inject <issue_id> [hint]` | Inject operator hints via `.operator_hints.md` |
+| `orchestrator workspace <issue_id> [--ls\|--cat FILE\|--edit FILE]` | View/modify workspace files |
+| `orchestrator dashboard [--port PORT] [--host HOST]` | Start LiveView HTTP SSE dashboard |
 
 ---
 
@@ -520,6 +568,20 @@ You can introduce the project like this:
 - [ ] `/doctor`
 - [ ] pre/post tool use hooks
 
+## Phase 3b：Orchestrator 与多 Agent 协调 ✅
+
+目标：自主多 issue 处理与操作员监督。
+
+- [x] Orchestrator CLI，11 个子命令（run, status, issues, clarify, pause, resume, stop, takeover, inject, workspace, dashboard）
+- [x] Issue Registry，JSON 持久化，跟踪 status/branch/PR/attempts
+- [x] Clarification Queue，13 状态文件队列
+- [x] Clarification Resolver，三通道流程（交互式 → 文件 → @mention）
+- [x] 生命周期控制，通过 `.orchestrator_control/` 控制文件实现
+- [x] 事件流，`.event_logs/{issue_id}.ndjson`
+- [x] LiveView HTTP SSE dashboard
+- [x] Operator hints 通过 `.operator_hints.md` 注入
+- [x] Takeover：停止 agent + 在 workspace 中启动 REPL 子进程
+
 ## Phase 4：MCP、插件、扩展生态
 
 目标：把项目从单体 CLI 升级为可扩展平台。
@@ -539,6 +601,40 @@ You can introduce the project like this:
 - [ ] 中国模型生态一等公民支持
 - [ ] pytest / ruff / mypy / uv 集成体验
 - [ ] 面向企业内自动化与工作流的扩展接口
+
+---
+
+## Orchestrator（多 Agent 协调）
+
+| 能力 | 状态 | 当前情况 |
+|------|------|----------|
+| Orchestrator CLI | ✅ | 11 个子命令：run, status, issues, clarify, pause, resume, stop, takeover, inject, workspace, dashboard |
+| Issue Registry | ✅ | JSON 持久化，跟踪 status/branch/PR/attempts |
+| Clarification Queue | ✅ | 13 状态文件队列，支持 local/author/escalation 通道 |
+| Clarification Resolver | ✅ | 三通道流程：交互式 → 文件 → @mention，同时回答检测 |
+| 生命周期控制 | ✅ | 无信号：通过 `.orchestrator_control/` 控制文件实现 pause/resume/stop |
+| Takeover | ✅ | 停止 agent + 在 workspace 目录中启动 REPL 子进程 |
+| 事件流 | ✅ | `.event_logs/{issue_id}.ndjson` ndjson 事件日志，`issues tail` 轮询读取 |
+| LiveView Dashboard | ✅ | 端口 8080 HTTP SSE 仪表盘，内嵌 HTML/JS |
+| Operator Hints | ✅ | `.operator_hints.md` 在 tool call 边界注入 |
+| Workspace CLI | ✅ | `orchestrator workspace` 支持 ls/cat/edit |
+| `--workflow` 迁移 | ✅ | `workflow_deprecated` 标志 + 弃用警告，使用 `orchestrator run --workflow` |
+
+### Orchestrator CLI 子命令
+
+| 命令 | 描述 |
+|------|------|
+| `orchestrator run --workflow PATH` | 使用 WORKFLOW.md 启动 orchestrator |
+| `orchestrator status [--watch]` | 显示 running/completed/failed issue 数量 |
+| `orchestrator issues [list\|show\|tail]` | 列出、查看或尾部跟踪 issue 事件日志 |
+| `orchestrator clarify --issue ID --answer TEXT` | 向 clarification queue 写入 operator 答案 |
+| `orchestrator pause <issue_id> [--reason]` | 在下一个 tool call 边界暂停 agent |
+| `orchestrator resume <issue_id>` | 恢复已暂停的 agent |
+| `orchestrator stop <issue_id>` | 强制终止运行中的 agent |
+| `orchestrator takeover <issue_id>` | 停止 agent + 启动 REPL 手动干预 |
+| `orchestrator inject <issue_id> [hint]` | 通过 `.operator_hints.md` 注入 operator hints |
+| `orchestrator workspace <issue_id> [--ls\|--cat FILE\|--edit FILE]` | 查看/修改 workspace 文件 |
+| `orchestrator dashboard [--port PORT] [--host HOST]` | 启动 LiveView HTTP SSE 仪表盘 |
 
 ---
 
