@@ -599,6 +599,7 @@ def _run_autonomous_mode(args) -> int:
     import logging
 
     from src.api.orchestration import OrchestrationSubsystem
+    from src.orchestrator.tracker import TrackerConfigError, validate_tracker_config
     from src.orchestrator.workflow import WorkflowLoader, WorkflowParseError
 
     workflow_path = args.workflow
@@ -615,13 +616,10 @@ def _run_autonomous_mode(args) -> int:
         print(f"error: workflow file not found: {workflow_path}", file=sys.stderr)
         return 2
 
-    # Validate required tracker config
-    if config.tracker.kind == "linear" and not config.tracker.api_key:
-        print(
-            "error: Linear API key not configured. Set LINEAR_API_KEY env var "
-            "or tracker.api_key in WORKFLOW.md",
-            file=sys.stderr,
-        )
+    try:
+        validate_tracker_config(config.tracker)
+    except TrackerConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
         return 2
 
     logging.basicConfig(

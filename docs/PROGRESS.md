@@ -315,8 +315,8 @@ LiteLLM (开源依赖)
 
 | 功能 | 优先级 | 说明 |
 |------|--------|------|
-| 多 Tracker 支持 | P2 | 除 Linear 外支持其他 Tracker |
-| 重试队列 + 退避 | P2 | 失败任务自动重试 |
+| 多 Tracker 支持 | P2 | **前置依赖**: 需先实现 GitHub/Gitee/GitCode 等远程仓库适配器；TrackerAdapter 协议已抽象，可扩展新 Tracker |
+| 重试队列 + 退避 | ✅ 已完成 | 失败任务自动重试 |
 | CLI 集成 | ✅ 已完成 | `--workflow` flag 已集成到 cli.py |
 | 重试队列 + 退避 | ✅ 已完成 | 指数退避重试机制已实现 |
 | 可观测性集成 | P3 | Langfuse/Sentry 集成 |

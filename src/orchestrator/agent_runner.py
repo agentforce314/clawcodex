@@ -14,7 +14,7 @@ from ..api.query import QueryConfig, QueryRunner
 from ..api.query import SessionComplete, TextDelta, ToolCallEvent, ToolResultEvent
 from .approval_policy import ApprovalPolicy, get_approval_policy, ToolCallEvent as PolicyToolCallEvent
 from .config.schema import AgentConfig, CodexConfig, WorkflowConfig
-from .linear.issue import Issue
+from .issue import Issue
 from .prompt_builder import PromptBuilder
 from .workspace import Workspace
 
@@ -91,7 +91,7 @@ class AgentRunner:
         workflow: WorkflowConfig,
         status_dashboard: Any | None = None,
         tracker: Any = None,
-        linear_adapter: Any = None,
+        comment_tracker: Any = None,
     ) -> None:
         """Execute issue until completion or max_turns.
 
@@ -243,18 +243,18 @@ class AgentRunner:
 
         # Post completion summary to Linear
         await self._post_run_comment(
-            session, tool_count, linear_adapter, logger
+            session, tool_count, comment_tracker, logger
         )
 
     async def _post_run_comment(
         self,
         session: AgentSession,
         tool_count: int,
-        linear_adapter: Any,
+        comment_tracker: Any,
         logger: Any,
     ) -> None:
-        """Post a run summary comment to Linear after session completes."""
-        if linear_adapter is None or not session.issue.id:
+        """Post a run summary comment to the configured tracker."""
+        if comment_tracker is None or not session.issue.id:
             return
 
         identifier = session.issue.identifier or "unknown"
@@ -262,13 +262,13 @@ class AgentRunner:
         turns = session.turn_count
         output = session.output_text
 
-        # Truncate output excerpt to avoid exceeding Linear comment limits
+        # Truncate output excerpt to avoid exceeding tracker comment limits
         excerpt = output[-1500:] if len(output) > 1500 else output
         if excerpt and len(output) > 1500:
             excerpt = f"... (truncated from {len(output)} chars)\n{excerpt}"
 
         body = (
-            f"## Symphony Run Complete\n\n"
+            f"## ClawCodex Run Complete\n\n"
             f"**Status:** {status}\n"
             f"**Turns:** {turns}\n"
             f"**Tool calls:** {tool_count}\n\n"
@@ -277,7 +277,7 @@ class AgentRunner:
         )
 
         try:
-            await linear_adapter.create_comment(session.issue.id, body)
+            await comment_tracker.create_comment(session.issue.id, body)
             logger.info(
                 "Posted completion comment for issue_id=%s",
                 session.issue.id,

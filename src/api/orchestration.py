@@ -8,14 +8,16 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from ..orchestrator.agent_runner import AgentRunner
 from ..orchestrator.config.schema import WorkflowConfig
-from ..orchestrator.linear.adapter import LinearAdapter
 from ..orchestrator.orchestrator import Orchestrator
 from ..orchestrator.status_dashboard import StatusDashboard
-from ..orchestrator.tracker import TrackerAdapter
+from ..orchestrator.tracker import (
+    TrackerAdapter,
+    create_tracker_adapter,
+    repository_clone_url_for_tracker,
+)
 from ..orchestrator.workspace import WorkspaceConfig, WorkspaceManager
 
 logger = logging.getLogger(__name__)
@@ -31,7 +33,7 @@ class OrchestrationSubsystem:
 
     workflow: WorkflowConfig
     workspace_manager: WorkspaceManager
-    linear_adapter: LinearAdapter
+    tracker_adapter: TrackerAdapter
     agent_runner: AgentRunner
     status_dashboard: StatusDashboard
     _orchestrator: Orchestrator | None = None
@@ -42,15 +44,15 @@ class OrchestrationSubsystem:
             WorkspaceConfig(
                 root=Path(workflow_config.workspace.root),
                 hooks=workflow_config.workspace.hooks,
+                repo_clone_url=workflow_config.workspace.repo_clone_url
+                or repository_clone_url_for_tracker(workflow_config.tracker),
+                clone_depth=workflow_config.workspace.clone_depth,
+                checkout_issue_branch=(
+                    workflow_config.workspace.checkout_issue_branch
+                ),
             )
         )
-        self.linear_adapter = LinearAdapter(
-            api_key=workflow_config.tracker.api_key or "",
-            project_slug=workflow_config.tracker.project_slug,
-            endpoint=workflow_config.tracker.endpoint,
-            active_states=workflow_config.tracker.active_states,
-            assignee=workflow_config.tracker.assignee,
-        )
+        self.tracker_adapter = create_tracker_adapter(workflow_config.tracker)
         self.agent_runner = AgentRunner(
             agent_config=workflow_config.agent,
             codex_config=workflow_config.codex,
@@ -62,7 +64,7 @@ class OrchestrationSubsystem:
         """Start polling and issue execution. Runs until cancelled."""
         self._orchestrator = Orchestrator(
             workflow=self.workflow,
-            tracker=self.linear_adapter,
+            tracker=self.tracker_adapter,
             workspace=self.workspace_manager,
             agent_runner=self.agent_runner,
             status_dashboard=self.status_dashboard,

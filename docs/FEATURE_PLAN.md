@@ -129,7 +129,7 @@ src/
 
 | 功能 | 优先级 | 说明 |
 |------|--------|------|
-| 多 Tracker 支持 | P2 | 已实现 TrackerAdapter 协议抽象，可扩展新 Tracker |
+| 多 Tracker 支持 | P2 | **前置依赖**: 需先实现 GitHub/Gitee/GitCode 等远程仓库适配器；TrackerAdapter 协议已抽象，可扩展新 Tracker |
 | CLI 集成 | ✅ 已完成 | `cli.py:596-666` 已实现 `--workflow`、`--dashboard`、`--port` |
 | 重试队列 + 退避 | ✅ 已完成 | `orchestrator.py:205-298` 实现指数退避重试 |
 | SSH 远程执行 | P3 | 远程工作区支持 |

@@ -12,7 +12,8 @@ from typing import Any
 
 from .agent_runner import AgentRunner, AgentSession, RetryItem
 from .config.schema import WorkflowConfig
-from .linear.issue import Issue
+from .git_sync import GitSyncService
+from .issue import Issue
 from .status_dashboard import SessionStatus, StatusDashboard
 from .tracker import TrackerAdapter
 from .workspace import WorkspaceManager
@@ -62,6 +63,7 @@ class Orchestrator:
         self.workspace = workspace
         self.agent_runner = agent_runner
         self.status_dashboard = status_dashboard or StatusDashboard()
+        self.git_sync = GitSyncService(tracker)
         self._state = OrchestratorState(
             poll_interval_ms=workflow.polling.interval_ms,
             max_concurrent_agents=workflow.agent.max_concurrent_agents,
@@ -160,21 +162,37 @@ class Orchestrator:
     async def _run_issue(self, session: AgentSession) -> None:
         """Run agent for one issue with concurrency control."""
         async with self._semaphore:
+            ran_agent = False
             try:
-                await self.agent_runner.run(
-                    session,
-                    self.workflow,
-                    status_dashboard=self.status_dashboard,
-                    tracker=self.tracker,
-                    linear_adapter=self.tracker,
+                await self.workspace.run_before_run_hook(
+                    session.workspace,
+                    session.issue,
                 )
+                ran_agent = True
+                try:
+                    await self.agent_runner.run(
+                        session,
+                        self.workflow,
+                        status_dashboard=self.status_dashboard,
+                        tracker=self.tracker,
+                        comment_tracker=self.tracker,
+                    )
+                    if session.status == "completed":
+                        await self.git_sync.sync(session)
+                finally:
+                    await self.workspace.run_after_run_hook(
+                        session.workspace,
+                        session.issue,
+                    )
             except Exception as exc:
                 logger.exception(
                     "Agent run failed issue_id=%s: %s",
                     session.issue.id,
                     exc,
                 )
-                session.status = "failed"
+                session.status = (
+                    "before_run_failed" if not ran_agent else "failed"
+                )
             finally:
                 if session.issue.id in self._state.running:
                     del self._state.running[session.issue.id]

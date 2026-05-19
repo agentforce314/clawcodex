@@ -8,7 +8,7 @@ from typing import Any
 
 import aiohttp
 
-from .issue import Issue
+from ..issue import Issue
 
 logger = logging.getLogger(__name__)
 

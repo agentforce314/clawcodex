@@ -7,10 +7,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import re
 import shutil
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -33,6 +31,9 @@ class WorkspaceConfig:
 
     root: Path
     hooks: dict[str, Any] = None  # type: ignore[assignment]
+    repo_clone_url: str | None = None
+    clone_depth: int | None = 1
+    checkout_issue_branch: bool = True
 
     def __post_init__(self) -> None:
         if self.hooks is None:
@@ -56,7 +57,7 @@ class WorkspaceManager:
         safe_id = _safe_identifier(identifier)
 
         workspace_path = self._build_path(safe_id)
-        created = await self._ensure_workspace(workspace_path)
+        created = await self._prepare_workspace(workspace_path, issue)
 
         if created:
             hook = self.config.hooks.get("after_create")
@@ -107,6 +108,25 @@ class WorkspaceManager:
     def _build_path(self, safe_id: str) -> Path:
         return self._root / safe_id
 
+    async def _prepare_workspace(self, path: Path, issue: Any) -> bool:
+        created = False
+        if self.config.repo_clone_url:
+            if not path.exists():
+                await self._clone_repository(path)
+                created = True
+            elif not path.is_dir():
+                path.unlink(missing_ok=True)
+                await self._clone_repository(path)
+                created = True
+            elif not (path / ".git").exists():
+                shutil.rmtree(path, ignore_errors=True)
+                await self._clone_repository(path)
+                created = True
+            await self._checkout_issue_branch(path, issue)
+            return created
+
+        return await self._ensure_workspace(path)
+
     async def _ensure_workspace(self, path: Path) -> bool:
         """Ensure workspace exists. Returns True if newly created."""
         if path.is_dir():
@@ -115,6 +135,69 @@ class WorkspaceManager:
             shutil.rmtree(path)
         path.mkdir(parents=True, exist_ok=True)
         return True
+
+    async def _clone_repository(self, path: Path) -> None:
+        clone_url = self.config.repo_clone_url
+        if not clone_url:
+            raise WorkspaceHookError("Missing repo_clone_url")
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        command = ["git", "clone"]
+        if (
+            isinstance(self.config.clone_depth, int)
+            and self.config.clone_depth > 0
+        ):
+            command.extend(["--depth", str(self.config.clone_depth)])
+        command.extend([clone_url, str(path)])
+        await self._run_process(command, cwd=str(path.parent))
+
+    async def _checkout_issue_branch(self, path: Path, issue: Any) -> None:
+        if not self.config.checkout_issue_branch:
+            return
+        if not (path / ".git").exists():
+            return
+
+        branch_name = getattr(issue, "branch_name", None)
+        if not isinstance(branch_name, str) or not branch_name.strip():
+            return
+        branch_name = branch_name.strip()
+
+        if await self._try_process(
+            ["git", "checkout", branch_name],
+            cwd=str(path),
+        ):
+            return
+
+        await self._try_process(
+            [
+                "git",
+                "fetch",
+                "origin",
+                f"{branch_name}:refs/remotes/origin/{branch_name}",
+            ],
+            cwd=str(path),
+        )
+
+        if await self._try_process(
+            ["git", "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{branch_name}"],
+            cwd=str(path),
+        ):
+            if await self._try_process(
+                ["git", "checkout", "-b", branch_name, "--track", f"origin/{branch_name}"],
+                cwd=str(path),
+            ):
+                return
+
+        if not await self._try_process(
+            ["git", "checkout", "-b", branch_name],
+            cwd=str(path),
+        ):
+            logger.warning(
+                "Failed to checkout issue branch branch=%s workspace=%s",
+                branch_name,
+                path,
+            )
 
     async def _run_hook(
         self,
@@ -139,45 +222,20 @@ class WorkspaceManager:
         )
 
         try:
-            proc = await asyncio.create_subprocess_shell(
+            await self._run_process(
                 command,
                 cwd=str(workspace),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
+                timeout_sec=timeout_sec,
+                shell=True,
+                logger_context={
+                    "hook_name": hook_name,
+                    "issue_id": issue_id,
+                    "timeout_ms": timeout_ms,
+                },
             )
-            try:
-                stdout, _ = await asyncio.wait_for(
-                    proc.communicate(), timeout=timeout_sec
-                )
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
-                logger.warning(
-                    "Workspace hook timed out hook=%s issue_id=%s timeout_ms=%s",
-                    hook_name,
-                    issue_id,
-                    timeout_ms,
-                )
-                if not ignore_fail:
-                    raise WorkspaceHookError(
-                        f"Hook {hook_name} timed out after {timeout_ms}ms"
-                    )
-                return
-
-            if proc.returncode != 0:
-                output = stdout.decode("utf-8", errors="replace")[:2048]
-                logger.warning(
-                    "Workspace hook failed hook=%s issue_id=%s status=%s output=%s",
-                    hook_name,
-                    issue_id,
-                    proc.returncode,
-                    output,
-                )
-                if not ignore_fail:
-                    raise WorkspaceHookError(
-                        f"Hook {hook_name} failed with exit code {proc.returncode}"
-                    )
         except WorkspaceHookError:
+            if ignore_fail:
+                return
             raise
         except Exception as exc:
             logger.error(
@@ -202,6 +260,76 @@ class WorkspaceManager:
                     shutil.rmtree(entry)
                 except Exception as exc:
                     logger.warning("Failed to clean up workspace %s: %s", entry, exc)
+
+    async def _run_process(
+        self,
+        command: list[str] | str,
+        *,
+        cwd: str,
+        timeout_sec: float = 60.0,
+        shell: bool = False,
+        logger_context: dict[str, Any] | None = None,
+    ) -> bytes:
+        if shell:
+            proc = await asyncio.create_subprocess_shell(
+                str(command),
+                cwd=cwd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+        else:
+            assert isinstance(command, list)
+            proc = await asyncio.create_subprocess_exec(
+                *command,
+                cwd=cwd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+
+        try:
+            stdout, _ = await asyncio.wait_for(
+                proc.communicate(), timeout=timeout_sec
+            )
+        except asyncio.TimeoutError as exc:
+            proc.kill()
+            await proc.wait()
+            context = logger_context or {}
+            logger.warning(
+                "Workspace process timed out command=%s timeout_sec=%s context=%s",
+                command,
+                timeout_sec,
+                context,
+            )
+            raise WorkspaceHookError(
+                f"Workspace command timed out after {int(timeout_sec * 1000)}ms"
+            ) from exc
+
+        if proc.returncode != 0:
+            output = stdout.decode("utf-8", errors="replace")[:2048]
+            context = logger_context or {}
+            logger.warning(
+                "Workspace process failed command=%s status=%s context=%s output=%s",
+                command,
+                proc.returncode,
+                context,
+                output,
+            )
+            raise WorkspaceHookError(
+                f"Workspace command failed with exit code {proc.returncode}"
+            )
+        return stdout
+
+    async def _try_process(
+        self,
+        command: list[str],
+        *,
+        cwd: str,
+    ) -> bool:
+        try:
+            await self._run_process(command, cwd=cwd, timeout_sec=30.0)
+        except WorkspaceHookError:
+            return False
+        return True
 
 
 class WorkspaceHookError(Exception):

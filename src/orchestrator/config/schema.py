@@ -11,6 +11,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from ..tracker import (
+    default_active_states_for_kind,
+    default_terminal_states_for_kind,
+    normalize_tracker_kind,
+    tracker_kind_info,
+)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -92,6 +99,9 @@ class TrackerConfig:
     endpoint: str = "https://api.linear.app/graphql"
     api_key: str | None = None
     project_slug: str | None = None
+    owner: str | None = None
+    repo: str | None = None
+    clone_url: str | None = None
     assignee: str | None = None
     active_states: list[str] = field(
         default_factory=lambda: ["Todo", "In Progress"]
@@ -116,6 +126,9 @@ class PollingConfig:
 class WorkspaceConfig:
     root: str = field(default_factory=_default_tmp_workspace)
     hooks: dict[str, Any] = field(default_factory=dict)
+    repo_clone_url: str | None = None
+    clone_depth: int | None = 1
+    checkout_issue_branch: bool = True
 
 
 @dataclass
@@ -210,25 +223,34 @@ class WorkflowConfig:
         observability_raw = raw.get("observability", {})
         server_raw = raw.get("server", {})
 
+        tracker_kind = normalize_tracker_kind(tracker_raw.get("kind", "linear"))
+        tracker_info = tracker_kind_info(tracker_kind)
+        tracker_active_states = tracker_raw.get(
+            "active_states", default_active_states_for_kind(tracker_kind)
+        )
+        tracker_terminal_states = tracker_raw.get(
+            "terminal_states",
+            default_terminal_states_for_kind(tracker_kind),
+        )
+
         tracker = TrackerConfig(
-            kind=tracker_raw.get("kind", "linear"),
-            endpoint=tracker_raw.get(
-                "endpoint", "https://api.linear.app/graphql"
-            ),
+            kind=tracker_kind,
+            endpoint=_resolve_env_value(tracker_raw.get("endpoint"))
+            or tracker_info.default_endpoint,
             api_key=_normalize_secret_value(
                 _resolve_env_value(tracker_raw.get("api_key"))
             )
-            or _normalize_secret_value(os.environ.get("LINEAR_API_KEY")),
+            or _resolve_first_env(tracker_info.api_key_env_vars),
             project_slug=tracker_raw.get("project_slug"),
+            owner=_resolve_env_value(tracker_raw.get("owner"))
+            or _resolve_first_env(tracker_info.owner_env_vars),
+            repo=_resolve_env_value(tracker_raw.get("repo"))
+            or _resolve_first_env(tracker_info.repo_env_vars),
+            clone_url=_resolve_env_value(tracker_raw.get("clone_url")),
             assignee=_resolve_env_value(tracker_raw.get("assignee"))
-            or os.environ.get("LINEAR_ASSIGNEE"),
-            active_states=tracker_raw.get(
-                "active_states", ["Todo", "In Progress"]
-            ),
-            terminal_states=tracker_raw.get(
-                "terminal_states",
-                ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"],
-            ),
+            or _resolve_first_env(tracker_info.assignee_env_vars),
+            active_states=tracker_active_states,
+            terminal_states=tracker_terminal_states,
         )
 
         workspace_root = _expand_path(
@@ -237,6 +259,13 @@ class WorkflowConfig:
         workspace = WorkspaceConfig(
             root=workspace_root,
             hooks=workspace_raw.get("hooks", {}),
+            repo_clone_url=_resolve_env_value(
+                workspace_raw.get("repo_clone_url")
+            ),
+            clone_depth=workspace_raw.get("clone_depth", 1),
+            checkout_issue_branch=workspace_raw.get(
+                "checkout_issue_branch", True
+            ),
         )
 
         agent = AgentConfig(
@@ -316,3 +345,11 @@ class WorkflowConfig:
             "excludeTmpdirEnvVar": False,
             "excludeSlashTmp": False,
         }
+
+
+def _resolve_first_env(names: tuple[str, ...]) -> str | None:
+    for name in names:
+        value = _normalize_secret_value(os.environ.get(name))
+        if value:
+            return value
+    return None
