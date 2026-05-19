@@ -130,7 +130,35 @@ class AgentRunner:
         while turn_number < self.max_turns:
             # Build prompt for this turn
             if turn_number == 0:
-                prompt = PromptBuilder.render(issue)
+                # Build clarification context if issue is in clarification flow
+                clarification_context = ""
+                pending_question = None
+                options = None
+
+                if clarification_resolver is not None and issue.id:
+                    # Check if this issue has a pending clarification
+                    resolved = clarification_resolver.get_answer(issue.id)
+                    if resolved and resolved.status.value in (
+                        "pending",
+                        "awaiting_local",
+                        "awaiting_author",
+                    ):
+                        # Get the pending item from queue to retrieve question + options
+                        pending_item = clarification_resolver._queue.get(issue.id)
+                        if pending_item:
+                            pending_question = pending_item.question
+                            options = pending_item.options if pending_item.options else None
+                            clarification_context = PromptBuilder.build_clarification_context(
+                                pending_question=pending_question,
+                                options=options,
+                            )
+
+                prompt = PromptBuilder.render(
+                    issue,
+                    clarification_context=clarification_context,
+                    pending_question=pending_question,
+                    options=options,
+                )
             else:
                 prompt = PromptBuilder.build_continuation_prompt(
                     turn_number=turn_number,

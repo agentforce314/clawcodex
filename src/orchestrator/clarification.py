@@ -375,16 +375,50 @@ class ClarificationResolver:
         return body
 
     def _handle_escalation(self, issue_id: str) -> None:
-        """Handle escalation policy when all channels have timed out."""
+        """Handle escalation policy when all channels have timed out.
+
+        Policies:
+          skip      — mark as abandoned (orchestrator will skip on next poll)
+          mark_failed — mark as failed immediately
+          notify    — mark as failed and send notification
+        """
         policy = self._config.escalation
         logger.warning(
             "Clarification exhausted for issue %s — escalation policy: %s",
             issue_id,
             policy,
         )
-        # Note: Actual escalation (skip / mark_failed / notify) is handled
-        # by the Orchestrator based on ClarificationStatus.EXHAUSTED
         self._queue.mark_exhausted(issue_id)
+
+        if policy == "mark_failed":
+            # Mark the issue as failed so the orchestrator won't re-launch
+            self._queue.mark_issue_failed(issue_id)
+        elif policy == "notify":
+            # Mark failed + emit a notification event
+            self._queue.mark_issue_failed(issue_id)
+            self._emit_escalation_notification(issue_id)
+        # "skip" policy: just mark as EXHAUSTED, orchestrator will skip via registry check
+
+    def _emit_escalation_notification(self, issue_id: str) -> None:
+        """Emit an escalation notification event for external alerting."""
+        import json
+        from pathlib import Path
+
+        # Write notification to a well-known location for external monitors
+        notif_path = Path.home() / ".clawcodex" / ".escalation_notifications.json"
+        try:
+            notif_path.parent.mkdir(parents=True, exist_ok=True)
+            existing = []
+            if notif_path.exists():
+                existing = json.loads(notif_path.read_text())
+            existing.append({
+                "issue_id": issue_id,
+                "timestamp": __import__("time").time(),
+                "policy": self._config.escalation,
+            })
+            notif_path.write_text(json.dumps(existing, indent=2))
+        except Exception:
+            pass
 
     def _parse_comment_timestamp(self, created_at: str | None) -> float:
         """Parse comment created_at string to Unix timestamp."""

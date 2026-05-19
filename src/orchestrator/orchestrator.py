@@ -142,6 +142,9 @@ class Orchestrator:
             # Process retry queue first
             await self._process_retry_queue()
 
+            # Handle escalated (clarification-exhausted) issues
+            await self._process_escalated_issues()
+
             # Fetch new candidate issues
             try:
                 issues = await self.tracker.fetch_candidate_issues()
@@ -375,6 +378,58 @@ class Orchestrator:
             attempt,
             delay_ms,
         )
+
+    async def _process_escalated_issues(self) -> None:
+        """Check for clarification-exhausted issues and apply escalation policy.
+
+        When a clarification item is marked EXHAUSTED, the escalation policy
+        determines what happens next:
+          - skip: mark as ABANDONED so orchestrator skips it on next poll
+          - mark_failed: mark as FAILED
+          - notify: mark as FAILED + send notification
+        """
+        import json
+
+        sentinel_path = self._workspace_root / ".escalated_issues.json"
+        if not sentinel_path.exists():
+            return
+
+        try:
+            data = json.loads(sentinel_path.read_text())
+        except Exception:
+            return
+
+        if not data:
+            return
+
+        # Collect IDs to remove from sentinel
+        to_remove = []
+
+        for issue_id in data:
+            if issue_id in self._state.completed or issue_id in self._state.claimed:
+                to_remove.append(issue_id)
+                continue
+
+            policy = self._clarification_resolver._config.escalation
+            if policy == "mark_failed":
+                self._registry.mark_failed(issue_id)
+                self._state.completed.add(issue_id)
+            elif policy == "notify":
+                self._registry.mark_failed(issue_id)
+                self._state.completed.add(issue_id)
+                logger.warning("Escalation notify for issue %s", issue_id)
+            else:  # skip → mark as abandoned
+                self._registry.mark_abandoned(issue_id)
+                self._state.completed.add(issue_id)
+                logger.info("Escalation skip for issue %s", issue_id)
+
+            to_remove.append(issue_id)
+
+        # Prune processed entries from sentinel
+        if to_remove:
+            for issue_id in to_remove:
+                data.pop(issue_id, None)
+            sentinel_path.write_text(json.dumps(data, indent=2))
 
     async def _process_retry_queue(self) -> None:
         """Process retry queue with exponential backoff.

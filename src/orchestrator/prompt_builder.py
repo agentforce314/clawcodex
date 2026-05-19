@@ -32,7 +32,34 @@ State: {{ issue.state }}
 {% endif %}
 
 Please analyze the issue, implement the necessary changes, and ensure all tests pass.
+{% if clarification %}
+{{ clarification }}
+{% endif %}
 """
+
+
+# Jinja2 template for clarification guidance injected into the prompt.
+# Rendered when an issue is in the clarification flow.
+_CLARIFICATION_TEMPLATE = """
+---
+## Clarification Context
+
+This issue is currently awaiting clarification. When the answer is available,
+it will be provided below. If you are unsure about any aspect of the issue,
+use the `AskIssueAuthor` tool to request clarification from the issue author
+or local operator.
+
+When requesting clarification:
+- Be specific: ask exactly what is ambiguous (e.g., "Should this function be sync or async?")
+- Provide context: include relevant code snippets or error messages
+- Limit to one question at a time to avoid overwhelming responders
+{% if pending_question %}
+- Current pending question: "{{ pending_question }}"
+{% if options %}
+- Available options: {{ options|join(', ') }}
+{% endif %}
+{% endif %}
+---"""
 
 
 class PromptBuilder:
@@ -42,8 +69,19 @@ class PromptBuilder:
     def render(
         issue: Any,
         attempt: int | None = None,
+        clarification_context: str | None = None,
+        pending_question: str | None = None,
+        options: list[str] | None = None,
     ) -> str:
-        """Build prompt using workflow's WORKFLOW.md body template + issue data."""
+        """Build prompt using workflow's WORKFLOW.md body template + issue data.
+
+        Args:
+            issue: Issue object with to_dict() method or dict-like
+            attempt: Current attempt number (for retry tracking)
+            clarification_context: Pre-rendered clarification guidance block
+            pending_question: If issue is in clarification flow, the pending question
+            options: If in clarification flow, the available options for the question
+        """
         store = get_workflow_store()
         current = store.current()
 
@@ -61,9 +99,13 @@ class PromptBuilder:
             logger.error("Template parse error: %s", exc)
             template = _jinja_env.from_string(_DEFAULT_PROMPT)
 
+        issue_dict = issue.to_dict() if hasattr(issue, "to_dict") else issue
         context = {
             "attempt": attempt,
-            "issue": _to_jinja_value(issue.to_dict() if hasattr(issue, "to_dict") else issue),
+            "issue": _to_jinja_value(issue_dict),
+            "clarification": clarification_context,
+            "pending_question": pending_question,
+            "options": options,
         }
 
         try:
@@ -85,6 +127,45 @@ class PromptBuilder:
             f"- The original task instructions are already in this thread; do not restate them.\n"
             f"- Focus on remaining work and do not end the turn while the issue stays active.\n"
         )
+
+    @staticmethod
+    def build_clarification_context(
+        pending_question: str | None = None,
+        options: list[str] | None = None,
+    ) -> str:
+        """Build a clarification guidance block for the system prompt.
+
+        This text is injected into the agent's prompt when an issue is in
+        the clarification flow, guiding the agent to use AskIssueAuthor
+        correctly and informing it about any pending question.
+
+        Args:
+            pending_question: The pending clarification question, if any
+            options: Available options (for multiple-choice questions)
+
+        Returns:
+            A formatted clarification guidance block, or empty string if
+            clarification is not active
+        """
+        if not pending_question:
+            return ""
+
+        template_str = _CLARIFICATION_TEMPLATE.strip()
+        try:
+            template = _jinja_env.from_string(template_str)
+        except TemplateError as exc:
+            logger.error("Clarification template parse error: %s", exc)
+            return ""
+
+        context = {
+            "pending_question": pending_question,
+            "options": options or [],
+        }
+        try:
+            return template.render(context).strip()
+        except TemplateError as exc:
+            logger.error("Clarification template render error: %s", exc)
+            return ""
 
 
 def _to_jinja_value(value: Any) -> Any:

@@ -108,7 +108,7 @@ src/
 
 ### 3.1 Orchestrator 自主模式（Symphony 集成）
 
-**状态**: 实现中（Phase 1-2）
+**状态**: ✅ 完成（Symphony 集成）
 **目标**: 支持 `clawcodex --workflow WORKFLOW.md` 自主运行模式
 
 #### 3.1.1 核心组件
@@ -128,7 +128,7 @@ src/
 | TrackerAdapter | `orchestrator/tracker.py` | ✅ 完成 | Tracker 协议抽象 |
 | IssueRegistry | `orchestrator/issue_registry.py` | ✅ 完成 | 持久化 issue→commit→PR 映射 |
 | ClarificationQueue | `orchestrator/clarification_queue.py` | ✅ 完成 | 操作员异步应答队列（Phase A） |
-| CLI orchestrator group | `orchestrator/cli/` | 🔄 进行中 | `clawcodex orchestrator` 统一入口 |
+| CLI orchestrator group | `orchestrator/cli/` | ✅ 完成 | `clawcodex orchestrator` 统一入口 |
 
 #### 3.1.2 待完成功能
 
@@ -141,8 +141,8 @@ src/
 | **Issue State 前置检查** | ✅ 已完成 | `_poll_and_dispatch` 在 launch 前查 issue 最新 state，非 active 状态直接跳过 |
 | **已有 PR 跳过后续处理** | ✅ 已完成 | `_launch_issue` 前查 `find_pull_request`，已有 PR 则标记 completed 并跳过 |
 | **本地 Issue 注册表** | ✅ 已完成 | 持久化 issue→commit→PR 映射到 JSON，重启后可识别已处理 issue |
-| **Issue Clarification 流程** | 🔄 进行中 | 三通道 ClarificationQueue + TrackerAdapter 评论接口 + CLI `clarify`（Phase A-E） |
-| **Orchestrator CLI** | 🔄 进行中 | `clawcodex orchestrator` 统一入口（Phase O1-O8） |
+| **Issue Clarification 流程** | ✅ 完成 | 三通道 ClarificationQueue + TrackerAdapter 评论接口 + CLI `clarify`（Phase A-G） |
+| **Orchestrator CLI** | ✅ 完成 | `clawcodex orchestrator` 统一入口（Phase O1-O8） |
 
 ---
 
@@ -909,15 +909,18 @@ agent:
 
 #### 3.11.13 实施阶段
 
-| 阶段 | 内容 | 优先级 |
-|------|------|--------|
-| Phase A | ClarificationQueue 文件队列 + Orchestrator 轮询 | P1 |
-| Phase B | StatusDashboard 交互提示组件 | P1 |
-| Phase C | AskIssueAuthor 工具 + ClarificationResolver 状态机（三通道降级 + 冲突处理） | P1 |
-| Phase D | CLI `clarify` 子命令 + 操作员应答接口 | P1 |
-| Phase E | TrackerAdapter 评论接口（@mention 通道三） | P1 |
-| Phase F | IssueRegistry 澄清字段持久化 + PromptBuilder 集成 | P2 |
-| Phase G | escalation 策略实现（skip / mark_failed / notify） | P2 |
+| 阶段 | 内容 | 优先级 | 状态 |
+|------|------|--------|------|
+| Phase A | ClarificationQueue 文件队列 + Orchestrator 轮询 | P1 | ✅ 完成 |
+| Phase A | 冲突处理状态机（DUPLICATE_REJECTED / STALE_REJECTED / CONFLICT_RESOLVED） | P1 | ✅ 完成 |
+| Phase A | 超时告知机制（escalation_notified + stale_notification） | P1 | ✅ 完成 |
+| Phase A | 同时应答检测逻辑（simultaneous_grace_ms + operator_priority） | P1 | ✅ 完成 |
+| Phase B | StatusDashboard 交互提示组件 | P1 | ✅ 完成 |
+| Phase C | AskIssueAuthor 工具 + ClarificationResolver 状态机 | P1 | ✅ 完成 |
+| Phase D | CLI `clarify` 子命令 + 操作员应答接口 | P1 | ✅ 完成 |
+| Phase E | TrackerAdapter 评论接口（@mention 通道三） | P1 | ✅ 完成 |
+| Phase F | IssueRegistry 澄清字段持久化 + PromptBuilder 澄清内容注入 | P2 | ✅ 完成 |
+| Phase G | escalation 策略实现（skip / mark_failed / notify） | P2 | ✅ 完成 |
 
 ---
 
@@ -1090,16 +1093,16 @@ clawcodex orchestrator inject 42 --remove 1
 
 #### 3.12.8 实施阶段
 
-| 阶段 | 内容 | 优先级 |
-|------|------|--------|
-| Phase O1 | CLI `orchestrator` 子命令框架搭建（run / status / issues list） | P1 |
-| Phase O2 | `stop` / `pause` / `resume` agent 生命周期控制 | P1 |
-| Phase O3 | `issues tail` 实时 tool call 日志流 | P1 |
-| Phase O4 | `inject` 操作员 Hint 注入 | P1 |
-| Phase O5 | `workspace` 文件查看 / 修改 | P1 |
-| Phase O6 | `takeover` 会话接管 | P2 |
-| Phase O7 | `clarify` 澄清应答（与 Phase D/C 合并） | P1 |
-| Phase O8 | Dashboard LiveView 增强（event stream） | P2 |
+| 阶段 | 内容 | 优先级 | 状态 |
+|------|------|--------|------|
+| Phase O1 | CLI `orchestrator` 子命令框架搭建（run / status / issues list） | P1 | ✅ 完成 |
+| Phase O2 | `stop` / `pause` / `resume` agent 生命周期控制 | P1 | ✅ 完成 |
+| Phase O3 | `issues tail` 实时 tool call 日志流 | P1 | ✅ 完成 |
+| Phase O4 | `inject` 操作员 Hint 注入 | P1 | ✅ 完成 |
+| Phase O5 | `workspace` 文件查看 / 修改 | P1 | ✅ 完成 |
+| Phase O6 | `takeover` 会话接管 | P2 | ✅ 完成 |
+| Phase O7 | `clarify` 澄清应答（与 Phase D/C 合并） | P1 | ✅ 完成 |
+| Phase O8 | Dashboard LiveView 增强（event stream） | P2 | ✅ 完成 |
 
 ---
 
@@ -1264,4 +1267,4 @@ WORKFLOW.md → Orchestrator → LinearAdapter (轮询 Issue)
 
 ---
 
-*文档更新时间: 2026-05-19*
+*文档更新时间: 2026-05-20*

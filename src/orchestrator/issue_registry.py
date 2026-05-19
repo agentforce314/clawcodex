@@ -46,6 +46,14 @@ class IssueRecord:
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
     attempt_count: int = 0
+    # Clarification-related fields (for three-channel clarification flow)
+    clarification_status: str | None = None   # ClarificationStatus value
+    question_history: list[str] = field(default_factory=list)
+    author_login: str | None = None
+    local_answer: str | None = None
+    local_answer_source: str | None = None    # "dashboard" | "clarification_queue"
+    first_response_source: str | None = None  # "local" | "author"
+    stale_answers: list[str] = field(default_factory=list)
 
     def touch(self) -> None:
         self.updated_at = time.time()
@@ -190,6 +198,51 @@ class IssueRegistry:
         if record is None:
             return None
         record.branch_name = branch_name
+        record.touch()
+        self._save()
+        return record
+
+    # ------------------------------------------------------------------
+    # Clarification field mutations (for three-channel flow)
+    # ------------------------------------------------------------------
+
+    def update_clarification(
+        self,
+        issue_id: str,
+        *,
+        clarification_status: str | None = None,
+        question: str | None = None,
+        author_login: str | None = None,
+        local_answer: str | None = None,
+        local_answer_source: str | None = None,
+        first_response_source: str | None = None,
+    ) -> IssueRecord | None:
+        """Update clarification-related fields on an issue record."""
+        record = self._records.get(issue_id)
+        if record is None:
+            return None
+        if clarification_status is not None:
+            record.clarification_status = clarification_status
+        if question is not None:
+            record.question_history.append(question)
+        if author_login is not None:
+            record.author_login = author_login
+        if local_answer is not None:
+            record.local_answer = local_answer
+        if local_answer_source is not None:
+            record.local_answer_source = local_answer_source
+        if first_response_source is not None:
+            record.first_response_source = first_response_source
+        record.touch()
+        self._save()
+        return record
+
+    def add_stale_answer(self, issue_id: str, stale_answer: str) -> IssueRecord | None:
+        """Record a stale (rejected) answer for notification."""
+        record = self._records.get(issue_id)
+        if record is None:
+            return None
+        record.stale_answers.append(stale_answer)
         record.touch()
         self._save()
         return record

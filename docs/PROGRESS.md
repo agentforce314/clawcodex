@@ -31,7 +31,7 @@
 
 | ID | 模块 | 优先级 | 状态 | 备注 |
 |----|------|--------|------|------|
-| F-1 | Orchestrator 自主模式 | P0 | 🔄 进行中 | Symphony 集成 |
+| F-1 | Orchestrator 自主模式 | P0 | ✅ 完成 | Symphony 集成 |
 | F-2 | Team 成员管理 (Phase-7) | P1 | ⏳ 规划中 | members 数组 |
 | F-3 | MCP 协议扩展 | P1 | ✅ 基础完成 | Stdio/HTTP/SSE/WS |
 | F-4 | 结构化输出集成 | P2 | 🔄 进行中 | Outlines 适配器已就绪 |
@@ -344,7 +344,8 @@ LiteLLM (开源依赖)
 
 ### F-1: Orchestrator 自主模式
 
-**状态**: 🔄 进行中
+**状态**: ✅ 完成
+**完成日期**: 2026-05-20
 **优先级**: P0
 
 #### 目标
@@ -639,55 +640,41 @@ agent:
 
 **F-1.12: 实施检查清单**
 
-- [ ] Phase A: `ClarificationQueue` 文件队列 + Orchestrator 轮询逻辑（`orchestrator/clarification_queue.py`）
-- [ ] Phase A: 冲突处理状态机（`orchestrator/clarification.py`）：DUPLICATE_REJECTED / STALE_REJECTED / CONFLICT_RESOLVED
-- [ ] Phase A: 超时告知机制（escalation_notified + stale_notification）
-- [ ] Phase A: 同时应答检测逻辑（simultaneous_grace_ms + operator_priority）
-- [ ] Phase B: StatusDashboard 交互提示组件（`orchestrator/status_dashboard.py`）
-- [ ] Phase C: `AskIssueAuthor` 工具（`tool_system/tools/ask_issue_author.py`）
-- [ ] Phase C: `ClarificationResolver` 三通道降级 + 冲突裁决
-- [ ] Phase D: CLI `clarify` 子命令（`cli.py`：`clawcodex clarify --issue <id> --answer <text>`）
-- [ ] Phase E: `TrackerAdapter.fetch_issue_comments()` / `create_clarification_comment()` 接口
-- [ ] Phase E: `RepositoryTrackerAdapter` 实现（GitHub / Gitee / GitCode）
-- [ ] Phase F: IssueRegistry 澄清字段持久化（`clarification_status`、`local_answer`、`first_response_source`、`stale_answers`）
-- [ ] Phase F: PromptBuilder 澄清内容注入
-- [ ] Phase G: escalation 策略实现（skip / mark_failed / notify）
-
-- [ ] Phase A: `ClarificationQueue` 文件队列 + Orchestrator 轮询逻辑（`orchestrator/clarification_queue.py`）
-- [ ] Phase A: 冲突处理状态机（`orchestrator/clarification.py`）：DUPLICATE_REJECTED / STALE_REJECTED / CONFLICT_RESOLVED
-- [ ] Phase A: 超时告知机制（escalation_notified + stale_notification）
-- [ ] Phase A: 同时应答检测逻辑（simultaneous_grace_ms + operator_priority）
-- [ ] Phase B: StatusDashboard 交互提示组件（`orchestrator/status_dashboard.py`）
-- [ ] Phase C: `AskIssueAuthor` 工具（`tool_system/tools/ask_issue_author.py`）
-- [ ] Phase C: `ClarificationResolver` 三通道降级 + 冲突裁决
-- [ ] Phase D: CLI `clarify` 子命令（`orchestrator/cli/clarify.py`：`clawcodex orchestrator clarify --issue <id> --answer <text>`）
-- [ ] Phase E: `TrackerAdapter.fetch_issue_comments()` / `create_clarification_comment()` 接口
-- [ ] Phase E: `RepositoryTrackerAdapter` 实现（GitHub / Gitee / GitCode）
-- [ ] Phase F: IssueRegistry 澄清字段持久化（`clarification_status`、`local_answer`、`first_response_source`、`stale_answers`）
-- [ ] Phase F: PromptBuilder 澄清内容注入
-- [ ] Phase G: escalation 策略实现（skip / mark_failed / notify）
+- [x] Phase A: `ClarificationQueue` 文件队列 + Orchestrator 轮询逻辑（`orchestrator/clarification_queue.py`）
+- [x] Phase A: 冲突处理状态机（`orchestrator/clarification.py`）：DUPLICATE_REJECTED / STALE_REJECTED / CONFLICT_RESOLVED
+- [x] Phase A: 超时告知机制（escalation_notified + stale_notification）
+- [x] Phase A: 同时应答检测逻辑（simultaneous_grace_ms + operator_priority）
+- [x] Phase B: StatusDashboard 交互提示组件（`orchestrator/status_dashboard.py`）
+- [x] Phase C: `AskIssueAuthor` 工具（`tool_system/tools/ask_issue_author.py`）
+- [x] Phase C: `ClarificationResolver` 三通道降级 + 冲突裁决
+- [x] Phase D: CLI `clarify` 子命令（`orchestrator/cli/clarify.py`）
+- [x] Phase E: `TrackerAdapter.fetch_issue_comments()` / `create_clarification_comment()` 接口
+- [x] Phase E: `RepositoryTrackerAdapter` 实现（GitHub / Gitee / GitCode）
+- [x] Phase F: IssueRegistry 澄清字段持久化（`clarification_status`、`local_answer`、`first_response_source`、`stale_answers`）
+- [x] Phase F: PromptBuilder 澄清内容注入（`prompt_builder.py`：`build_clarification_context()` + AgentRunner 集成）
+- [x] Phase G: escalation 策略实现（skip / mark_failed / notify）
 
 **F-1.13: Orchestrator CLI 运维操作界面**
 
-| 命令 | 说明 | 优先级 |
-|------|------|--------|
-| `clawcodex orchestrator run` | 启动 orchestrator（替代 `--workflow`，**不兼容变更**） | P1 |
-| `clawcodex orchestrator status` | 全局 running/paused/completed/failed 状态 | P1 |
-| `clawcodex orchestrator issues list` | 列出所有 issue 及状态 | P1 |
-| `clawcodex orchestrator issues tail <id>` | 实时 tail tool call 日志 | P1 |
-| `clawcodex orchestrator issues show <id>` | 查看 issue 详情（理解上下文、token 用量） | P1 |
-| `clawcodex orchestrator pause <id>` | 暂停 agent（停在当前 tool call 边界） | P1 |
-| `clawcodex orchestrator resume <id>` | 恢复暂停中的 agent | P1 |
-| `clawcodex orchestrator stop <id>` | 强制终止 agent | P1 |
-| `clawcodex orchestrator inject <id> "text"` | 向运行中的 agent 注入提示 | P1 |
-| `clawcodex orchestrator inject <id> --list` | 查看已注入的提示 | P1 |
-| `clawcodex orchestrator inject <id> --remove <n>` | 删除某条提示 | P1 |
-| `clawcodex orchestrator clarify --issue <id> --answer <text>` | 操作员澄清应答 | P1 |
-| `clawcodex orchestrator workspace <id> --ls` | 列出 workspace 文件 | P1 |
-| `clawcodex orchestrator workspace <id> --cat <file>` | 查看文件内容 | P1 |
-| `clawcodex orchestrator workspace <id> --edit <file> --with <content>` | 修改文件 | P2 |
-| `clawcodex orchestrator takeover <id>` | 完全接管（终止 + REPL） | P2 |
-| `clawcodex orchestrator dashboard --port` | 独立 dashboard UI | P2 |
+| 命令 | 说明 | 优先级 | 状态 |
+|------|------|--------|------|
+| `clawcodex orchestrator run` | 启动 orchestrator（替代 `--workflow`，**不兼容变更**） | P1 | ✅ 完成 |
+| `clawcodex orchestrator status` | 全局 running/paused/completed/failed 状态 | P1 | ✅ 完成 |
+| `clawcodex orchestrator issues list` | 列出所有 issue 及状态 | P1 | ✅ 完成 |
+| `clawcodex orchestrator issues tail <id>` | 实时 tail tool call 日志 | P1 | ✅ 完成 |
+| `clawcodex orchestrator issues show <id>` | 查看 issue 详情（理解上下文、token 用量） | P1 | ✅ 完成 |
+| `clawcodex orchestrator pause <id>` | 暂停 agent（停在当前 tool call 边界） | P1 | ✅ 完成 |
+| `clawcodex orchestrator resume <id>` | 恢复暂停中的 agent | P1 | ✅ 完成 |
+| `clawcodex orchestrator stop <id>` | 强制终止 agent | P1 | ✅ 完成 |
+| `clawcodex orchestrator inject <id> "text"` | 向运行中的 agent 注入提示 | P1 | ✅ 完成 |
+| `clawcodex orchestrator inject <id> --list` | 查看已注入的提示 | P1 | ✅ 完成 |
+| `clawcodex orchestrator inject <id> --remove <n>` | 删除某条提示 | P1 | ✅ 完成 |
+| `clawcodex orchestrator clarify --issue <id> --answer <text>` | 操作员澄清应答 | P1 | ✅ 完成 |
+| `clawcodex orchestrator workspace <id> --ls` | 列出 workspace 文件 | P1 | ✅ 完成 |
+| `clawcodex orchestrator workspace <id> --cat <file>` | 查看文件内容 | P1 | ✅ 完成 |
+| `clawcodex orchestrator workspace <id> --edit <file> --with <content>` | 修改文件 | P2 | ✅ 完成 |
+| `clawcodex orchestrator takeover <id>` | 完全接管（终止 + REPL） | P2 | ✅ 完成 |
+| `clawcodex orchestrator dashboard --port` | 独立 dashboard UI | P2 | ✅ 完成 |
 
 **不兼容变更**：
 
@@ -703,19 +690,19 @@ agent:
 
 **实施检查清单**：
 
-- [ ] Phase O1: CLI `orchestrator` group 框架（`cli.py`：`clawcodex orchestrator`）
-- [ ] Phase O1: `orchestrator run`（替代 `--workflow`）
-- [ ] Phase O1: `orchestrator status` / `orchestrator issues list`
-- [ ] Phase O2: `orchestrator pause <id>` / `orchestrator resume <id>` / `orchestrator stop <id>`
-- [ ] Phase O2: Orchestrator pause/resume 状态支持（running → paused → running）
-- [ ] Phase O3: `orchestrator issues tail <id>`（AgentRunner event stream → 流式推送 tool calls）
-- [ ] Phase O3: StatusDashboard 实时渲染（event stream 消费）
-- [ ] Phase O4: `orchestrator inject` Hint 注入（`.operator_hints.md` 机制）
-- [ ] Phase O5: `orchestrator workspace --ls` / `--cat`（文件查看）
-- [ ] Phase O5: `orchestrator workspace --edit`（文件修改，协作场景）
-- [ ] Phase O6: `orchestrator takeover <id>`（终止 + REPL 接管）
-- [ ] Phase O7: `orchestrator clarify`（澄清应答，与 Phase D/C 澄清流程合并）
-- [ ] Phase O8: Dashboard LiveView 增强（event stream 完整推送 LLM 摘要 + tool calls）
+- [x] Phase O1: CLI `orchestrator` group 框架（`cli.py`：`clawcodex orchestrator`）
+- [x] Phase O1: `orchestrator run`（替代 `--workflow`）
+- [x] Phase O1: `orchestrator status` / `orchestrator issues list`
+- [x] Phase O2: `orchestrator pause <id>` / `orchestrator resume <id>` / `orchestrator stop <id>`
+- [x] Phase O2: Orchestrator pause/resume 状态支持（running → paused → running）
+- [x] Phase O3: `orchestrator issues tail <id>`（AgentRunner event stream → 流式推送 tool calls）
+- [x] Phase O3: StatusDashboard 实时渲染（event stream 消费）
+- [x] Phase O4: `orchestrator inject` Hint 注入（`.operator_hints.md` 机制）
+- [x] Phase O5: `orchestrator workspace --ls` / `--cat`（文件查看）
+- [x] Phase O5: `orchestrator workspace --edit`（文件修改，协作场景）
+- [x] Phase O6: `orchestrator takeover <id>`（终止 + REPL 接管）
+- [x] Phase O7: `orchestrator clarify`（澄清应答，与 Phase D/C 澄清流程合并）
+- [x] Phase O8: Dashboard LiveView 增强（event stream 完整推送 LLM 摘要 + tool calls）
 
 ---
 
@@ -1038,4 +1025,4 @@ def parse_command(command: str):
 
 ---
 
-*文档更新时间: 2026-05-19*
+*文档更新时间: 2026-05-20*

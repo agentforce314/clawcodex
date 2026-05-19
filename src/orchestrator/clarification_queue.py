@@ -339,6 +339,26 @@ class ClarificationQueue:
         self._save()
         return item
 
+    def mark_issue_failed(self, issue_id: str) -> None:
+        """Mark an issue as failed due to escalation policy.
+
+        Writes a sentinel file that the orchestrator reads to mark the
+        issue as failed on its next poll cycle.
+        """
+        import json
+        import time
+
+        sentinel_path = self._path.parent / ".escalated_issues.json"
+        try:
+            sentinel_path.parent.mkdir(parents=True, exist_ok=True)
+            existing = {}
+            if sentinel_path.exists():
+                existing = json.loads(sentinel_path.read_text())
+            existing[issue_id] = {"failed_at": time.time()}
+            sentinel_path.write_text(json.dumps(existing, indent=2))
+        except Exception:
+            pass
+
     def remove(self, issue_id: str) -> None:
         """Remove an item from the queue."""
         if issue_id in self._records:
