@@ -142,6 +142,7 @@ class AgentConfig:
     max_concurrent_agents: int = 10
     max_turns: int = 20
     max_retry_backoff_ms: int = 300_000
+    max_retry_attempts: int = 5
     max_concurrent_agents_by_state: dict[str, int] = field(default_factory=dict)
     # NEW: ClawCodex-specific fields
     provider: str = "anthropic"

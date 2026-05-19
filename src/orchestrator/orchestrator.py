@@ -14,6 +14,7 @@ from .agent_runner import AgentRunner, AgentSession, RetryItem
 from .config.schema import WorkflowConfig
 from .git_sync import GitSyncService
 from .issue import Issue
+from .issue_registry import IssueRegistry, IssueStatus
 from .status_dashboard import SessionStatus, StatusDashboard
 from .tracker import TrackerAdapter
 from .workspace import WorkspaceManager
@@ -71,6 +72,9 @@ class Orchestrator:
         self._semaphore = asyncio.Semaphore(workflow.agent.max_concurrent_agents)
         self._shutdown_event = asyncio.Event()
         self._tasks: set[asyncio.Task] = set()
+        # Persistent issue→commit→PR mapping (persists across restarts)
+        registry_path = workspace.config.root / ".clawcodex_issue_registry.json"
+        self._registry = IssueRegistry(registry_path)
 
     async def run(self) -> None:
         """Main polling loop. Runs until cancelled."""
@@ -123,6 +127,10 @@ class Orchestrator:
                     continue
                 if issue.id in self._state.claimed:
                     continue
+                # Skip if registry marks this issue as already completed or has a PR
+                if self._registry.is_completed(issue.id) or self._registry.has_pr(issue.id):
+                    logger.info("Issue %s already handled (registry), skipping", issue.id)
+                    continue
                 self._state.claimed.add(issue.id)
                 await self._launch_issue(issue)
 
@@ -142,6 +150,69 @@ class Orchestrator:
             )
             self._state.claimed.discard(issue.id)
             return
+
+        # Register as pending so restart won't re-launch this issue
+        branch_name = getattr(issue, "branch_name", None) or "main"
+        base_branch = getattr(issue, "base_branch", "main") or "main"
+        self._registry.register(
+            issue_id=issue.id or "",
+            issue_identifier=issue.identifier or "",
+            branch_name=branch_name,
+            base_branch=base_branch,
+        )
+
+        # Pre-check: verify issue is still in an active state and has no
+        # existing PR (which would mean it was already handled) before running agent
+        try:
+            refreshed = await self.tracker.fetch_issue_states_by_ids([issue.id])
+            refreshed_issue = refreshed.get(issue.id)
+            if refreshed_issue is None:
+                logger.info("Issue %s no longer exists, skipping", issue.id)
+                self._state.claimed.discard(issue.id)
+                return
+            active_states = [
+                s.strip().lower()
+                for s in (getattr(self.tracker, "active_states", None) or [])
+            ]
+            is_active = (
+                refreshed_issue.state is not None
+                and refreshed_issue.state.strip().lower() in active_states
+            )
+            if not is_active:
+                logger.info(
+                    "Issue %s is no longer active (state=%r), skipping",
+                    issue.id,
+                    refreshed_issue.state,
+                )
+                self._state.claimed.discard(issue.id)
+                return
+            # Check for existing PR (only for repository-backed trackers)
+            branch_name = refreshed_issue.branch_name
+            if branch_name and hasattr(self.tracker, "find_pull_request"):
+                base_branch = getattr(refreshed_issue, "base_branch", "main") or "main"
+                existing_pr = await self.tracker.find_pull_request(
+                    head_branch=branch_name,
+                    base_branch=base_branch,
+                )
+                if existing_pr is not None:
+                    logger.info(
+                        "Issue %s already has PR %s (%s), skipping",
+                        issue.id,
+                        existing_pr.number,
+                        existing_pr.url,
+                    )
+                    self._state.claimed.discard(issue.id)
+                    # Also add to completed so we don't re-process after restart
+                    self._state.completed.add(issue.id)
+                    return
+            # Update issue with latest state
+            issue.state = refreshed_issue.state
+        except Exception as exc:
+            logger.warning(
+                "Could not verify issue state for %s: %s — proceeding anyway",
+                issue.id,
+                exc,
+            )
 
         session = AgentSession(issue=issue, workspace=workspace)
         self._state.running[issue.id] = session
@@ -178,7 +249,15 @@ class Orchestrator:
                         comment_tracker=self.tracker,
                     )
                     if session.status == "completed":
-                        await self.git_sync.sync(session)
+                        sync_result = await self.git_sync.sync(session)
+                        if sync_result is not None:
+                            self._registry.mark_synced(
+                                session.issue.id or "",
+                                branch_name=sync_result.branch_name,
+                                commit_sha=sync_result.commit_sha,
+                                pr_number=sync_result.pull_request.number if sync_result.pull_request else None,
+                                pr_url=sync_result.pull_request.url if sync_result.pull_request else None,
+                            )
                 finally:
                     await self.workspace.run_after_run_hook(
                         session.workspace,
@@ -200,11 +279,13 @@ class Orchestrator:
                 if session.status == "completed":
                     self.status_dashboard.on_session_complete(session.issue.id or "")
                     self._state.completed.add(session.issue.id or "")
+                    self._registry.mark_completed(session.issue.id or "")
                 else:
                     self.status_dashboard.on_session_failed(
                         session.issue.id or "",
                         str(session.status),
                     )
+                    self._registry.mark_failed(session.issue.id or "")
                     # Schedule retry
                     await self._schedule_retry(session)
 
@@ -225,6 +306,18 @@ class Orchestrator:
         issue_id = session.issue.id or ""
         attempt = self._state.retry_attempts.get(issue_id, 0) + 1
         self._state.retry_attempts[issue_id] = attempt
+
+        max_attempts = self.workflow.agent.max_retry_attempts
+        if max_attempts and attempt > max_attempts:
+            logger.warning(
+                "Retry limit reached issue_id=%s attempts=%d max=%d — giving up",
+                issue_id,
+                attempt,
+                max_attempts,
+            )
+            self._state.claimed.discard(issue_id)
+            self._registry.mark_abandoned(issue_id)
+            return
 
         # Exponential backoff capped at max_retry_backoff_ms
         base_ms = _FAILURE_RETRY_BASE_MS

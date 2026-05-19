@@ -102,6 +102,17 @@ class RepositoryTrackerAdapter(TrackerAdapter):
             labels=labels or None,
         )
 
+    async def find_pull_request(
+        self,
+        *,
+        head_branch: str,
+        base_branch: str,
+    ) -> PullRequestRef | None:
+        return await self.client.find_pull_request(
+            head_branch=head_branch,
+            base_branch=base_branch,
+        )
+
     async def ensure_pull_request(
         self,
         *,

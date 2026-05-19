@@ -51,6 +51,18 @@ class TrackerAdapter(ABC):
         """Ensure a pull request exists for the branch."""
         return None
 
+    async def find_pull_request(
+        self,
+        *,
+        head_branch: str,
+        base_branch: str,
+    ) -> "PullRequestRef | None":
+        """Check if a pull request already exists for the given branch.
+
+        Used as a guard to skip already-handled issues before launching a new agent run.
+        """
+        return None
+
 
 @dataclass(frozen=True)
 class PullRequestRef:

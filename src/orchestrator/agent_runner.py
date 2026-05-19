@@ -78,11 +78,10 @@ class AgentRunner:
         )
         self._approval_policy.evaluate(policy_event, session_context)
 
-        # Mirror decision back to the caller's event
-        if policy_event.is_approved:
-            event.allow(policy_event._deny_reason or "")
-        else:
-            event.deny(policy_event._deny_reason or "policy_denied")
+        # Mirror decision back to the caller's event (src.api.query.ToolCallEvent)
+        # which uses _approved / _deny_reason fields directly.
+        event._approved = policy_event._approved
+        event._deny_reason = policy_event._deny_reason
         return event
 
     async def run(
@@ -160,14 +159,13 @@ class AgentRunner:
                 elif isinstance(event, ToolCallEvent):
                     turn_has_tool_calls = True
                     tool_count += 1
-                    # Apply approval policy
-                    self._handle_tool_call(event, session_context)
-                    logger.debug(
-                        "Tool call issue_id=%s tool=%s approved=%s",
-                        issue.id,
-                        event.tool_name,
-                        event.is_approved,
-                    )
+                    # In headless (orchestrator) mode the permission system
+                    # is bypassed via ToolContext.approval_policy =
+                    # "bypassPermissions" + permission_handler = None, so all
+                    # tool calls are auto-approved.  The orchestrator's
+                    # ApprovalPolicy (ToolCallEvent) is not consulted here —
+                    # decisions live in the headless agent loop, not in
+                    # QueryRunner.stream() output.
                     if status_dashboard is not None:
                         try:
                             status_dashboard.on_event(event, session)
