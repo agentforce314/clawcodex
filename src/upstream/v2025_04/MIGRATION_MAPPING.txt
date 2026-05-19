@@ -1,0 +1,16 @@
+# Migration Mapping (for Phase 2/3)
+# =================================
+# These are the planned import path rewrites:
+#
+# BEFORE (current):         AFTER (Phase 2/3):
+# src/agent/                → src/upstream/v2025_04/agent/
+# src/tool_system/          → src/upstream/v2025_04/tool_system/
+# src/context_system/       → src/upstream/v2025_04/context_system/
+#
+# The patches/ directory tracks modifications relative to upstream.
+# After migration, existing patches should be refreshed to reflect new paths.
+#
+# DO NOT hard-link or copy code manually. Use:
+#   1. upstream-sync apply   (apply patches to vendor snapshot)
+#   2. Copy/move files        (migrate to versioned upstream dir)
+#   3. upstream-sync audit   (verify layer isolation)
