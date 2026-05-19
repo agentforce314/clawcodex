@@ -1,0 +1,52 @@
+# ClawCodex upstream-sync configuration
+# See docs/UPSTREAM_SYNC_DESIGN-decoupling.md for design rationale.
+
+project_name: "clawcodex"
+source_lang: "python"
+
+upstream:
+  remote_url: "https://github.com/anthropics/claude-code.git"
+  main_branch: "main"
+  vendor_branch: "upstream/vendor"
+  version_tag_format: "upstream/v{YYYY}_{MM}"
+
+layers:
+  - name: "upstream"
+    paths:
+      - "src/upstream"
+    allowed_imports_from: []
+    forbidden_imports_from: []
+
+  - name: "capabilities"
+    paths:
+      - "src/capabilities"
+    allowed_imports_from: []
+    forbidden_imports_from:
+      - "src.upstream"
+
+  - name: "features"
+    paths:
+      - "src/orchestrator"
+      - "src/providers"
+      - "src/hooks"
+      - "src/permissions"
+    allowed_imports_from:
+      - "src.capabilities"
+    forbidden_imports_from:
+      - "src.upstream"
+      - "src.agent"
+      - "src.tool_system"
+      - "src.context_system"
+
+patches:
+  directory: "patches"
+  engine: "quilt"
+  series_file: "patches/series"
+  metadata_dir: "patches/metadata"
+
+sync:
+  impact_threshold_auto: "low"
+  impact_threshold_agent: "medium"
+  report_formats:
+    - "json"
+    - "markdown"

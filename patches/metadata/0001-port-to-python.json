@@ -1,0 +1,11 @@
+{
+  "id": "0001-port-to-python",
+  "description": "Initial TypeScript to Python port",
+  "affected_modules": [
+    "src/agent",
+    "src/tool_system",
+    "src/context_system"
+  ],
+  "applied_at": "2025-01-01",
+  "upstream_version_introduced": "upstream/v2025_01"
+}
