@@ -39,6 +39,13 @@ class ToolCallEvent:
 
     tool_name: str
     params: dict[str, Any]
+    tool_use_id: str | None = None
+    _approved: bool | None = None
+    _deny_reason: str | None = None
+
+    @property
+    def is_approved(self) -> bool | None:
+        return self._approved
 
 
 @dataclass
@@ -116,6 +123,7 @@ class QueryRunner:
                     yield ToolCallEvent(
                         tool_name=ev.tool_name,
                         params=ev.tool_input or {},
+                        tool_use_id=ev.tool_use_id,
                     )
                 elif ev.kind == "tool_result":
                     yield ToolResultEvent(

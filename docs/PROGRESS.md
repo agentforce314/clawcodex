@@ -2,7 +2,7 @@
 
 > 文档路径: `docs/PROGRESS.md`
 > 基于: `docs/open-source-replacement-progress.md`, `docs/FEATURE_PLAN.md`
-> 版本: v1.1
+> 版本: v1.2
 > 更新日期: 2026-05-19
 
 ---
@@ -43,6 +43,7 @@
 | F-10 | ExecuteExtraTool 延迟工具系统 | P2 | ⏳ 待开始 | TF-IDF 工具搜索 + 子代理执行 |
 | F-11 | sessionStorage 容量限制 | P2 | ⏳ 待开始 | 防止 daemon 会话内存泄漏 |
 | F-12 | cacheWarning 容量限制 | P2 | ⏳ 待开始 | 防止 source 类型内存泄漏 |
+| F-13 | Agent 记忆作用域隔离 | P1 | ✅ 完成 | 按需加载不同作用域记忆 |
 
 ---
 
@@ -252,6 +253,60 @@ Outlines (开源依赖)
 
 ## 三、进行中任务
 
+### F-13: Agent 记忆作用域隔离
+
+**状态**: ✅ 完成
+**完成日期**: 2026-05-19
+**优先级**: P1
+
+#### 背景
+在多 Agent 协作场景下，不同 Agent 可能需要访问不同范围的信息。传统的记忆系统是单例模式，所有 Agent 共享相同的记忆目录，无法满足按需隔离的需求。
+
+#### 实现方案
+在 `AgentDefinition` 中添加 `memory` 字段，支持指定 Agent 可访问的记忆作用域。核心 API `load_memory_prompts()` 支持传入作用域列表按需加载。
+
+#### 支持的作用域
+| 作用域 | 说明 |
+|--------|------|
+| `user` | 用户/私有记忆 |
+| `project` | 项目上下文记忆 |
+| `reference` | 外部系统指针 |
+| `team` | 团队共享记忆 |
+| `local` | 会话级本地记忆 |
+
+#### 完成的工作
+- [x] 添加 `load_memory_prompts()` 函数到 `memdir/memdir.py`
+- [x] 添加 `_load_memory_prompt_for_scope()` 和 `_get_memory_path_for_scope()` 辅助函数
+- [x] 导出 `load_memory_prompts` 到 `memdir/__init__.py`
+- [x] 更新 `build_full_system_prompt()` 支持 `memory_scopes` 参数
+- [x] 更新 `build_full_system_prompt_blocks()` 支持 `memory_scopes` 参数
+- [x] 更新 `_build_memory_section()` 接受 `memory_scopes` 参数
+- [x] 保持 `load_memory_prompt()` 向后兼容
+
+#### 关键文件
+- `src/memdir/memdir.py` - 核心 `load_memory_prompts()` 实现
+- `src/memdir/memory_types.py` - 四种记忆类型定义
+- `src/memdir/paths.py` - 记忆目录路径解析
+- `src/context_system/prompt_assembly.py` - 支持 `memory_scopes` 参数
+- `src/agent/agent_definitions.py` - `memory` 字段定义
+
+#### API 使用方式
+```python
+# 按需加载特定作用域的记忆
+memory_prompts = load_memory_prompts(['user', 'team'])
+
+# 在 build_full_system_prompt 中使用
+prompt = build_full_system_prompt(
+    memory_scopes=['user', 'project'],  # Agent 按需指定
+    ...
+)
+```
+
+#### 问题与解决方案
+(无)
+
+---
+
 ### R-7: LiteLLM 替换 Provider 层
 
 **状态**: 🔄 进行中
@@ -326,6 +381,7 @@ LiteLLM (开源依赖)
 | **重试上限保护** | P1 | `_schedule_retry` 增加最大重试次数限制（建议默认 5 次），超过后停止自动重试 |
 | **Issue State 前置检查** | P1 | `_launch_issue` 前调用 `tracker.fetch_issue_states_by_ids` 确认 issue 仍处于 active state，非 active 则跳过 |
 | **已有 PR 跳过后续处理** | P1 | `_launch_issue` 前调用 `tracker.find_pull_request`，若存在已关联 PR 则标记 completed 并跳过 |
+| **Issue 语义澄清流程** | P1 | 三通道优先机制：Dashboard交互 → ClarificationQueue → @mention作者（Phase 4） |
 | 可观测性集成 | P3 | Langfuse/Sentry 集成 |
 
 #### Phase 3 生产强化详细设计
@@ -374,7 +430,286 @@ LiteLLM (开源依赖)
 - [x] **Phase 1: Foundation (Week 1-2)** - 基础框架
 - [x] **Phase 2: Agent Integration (Week 3-4)** - Agent 集成 + GitHub/Gitee/GitCode 支持
 - [ ] **Phase 3: Production Hardening (Week 5-6)** - 重试上限保护 + Issue State 前置检查 + 冲突恢复
-- [ ] **Phase 4: Observability (Week 7-8)** - 可观测性
+- [ ] **Phase 4: Issue Clarification (Week 7-8)** - 语义澄清流程
+- [ ] **Phase 5: Observability (Week 9-10)** - 可观测性
+
+#### Phase 4: Issue Clarification 详细设计
+
+**F-1.5: Issue 语义澄清流程（三通道优先机制）**
+
+| 项 | 值 |
+|---|---|
+| 核心思路 | **三通道优先机制**：本地操作员优先（Dashboard / ClarificationQueue），@mention 作者兜底 |
+| 通道一 | StatusDashboard 交互提示（非 headless，操作员在线时即时响应） |
+| 通道二 | ClarificationQueue 文件队列（~/.clawcodex/clarification_queue.json，操作员异步 CLI 应答） |
+| 通道三 | @mention Issue 评论（操作员无响应后降级，完全异步等待作者回复） |
+| 触发条件 | Agent 检测到 Issue 语义模糊，调用 AskIssueAuthor(question, context) 工具 |
+| 降级时机 | 通道一 timeout（无 Dashboard 或 headless）→ 通道二 timeout（30min）→ 通道三（72h）→ escalation |
+| 次数限制 | max_questions_per_issue（默认 3 次），超过后标记 EXHAUSTED |
+| 状态机 | NONE → AWAITING_LOCAL → AWAITING_AUTHOR → RESOLVED / TIMED_OUT / EXHAUSTED |
+| 持久化 | ClarificationQueue 文件 + IssueRegistry clarification_status + question_history |
+| 平台约束 | GitHub/Gitee/GitCode 均无 DM/私信 API，外部通道唯一是 @mention 评论 |
+
+**F-1.6: 三通道详细设计**
+
+**通道一：StatusDashboard 交互提示**
+
+| 项 | 值 |
+|---|---|
+| 文件 | `orchestrator/status_dashboard.py` |
+| 触发条件 | 非 headless 模式 + 操作员在线 + `dashboard.interactive_clarification=true` |
+| UI 形式 | 面板中内联选项列表（1-4 选项 + 跳过 + 转发给作者） |
+| 优点 | 响应最快（即时），操作员可结合代码上下文判断 |
+| 降级条件 | headless 模式或 timeout（默认 5 分钟无操作） |
+
+**通道二：ClarificationQueue 文件队列**
+
+| 项 | 值 |
+|---|---|
+| 文件 | `orchestrator/clarification_queue.py:ClarificationQueue` |
+| 队列路径 | `~/.clawcodex/clarification_queue.json` |
+| CLI 命令 | `clawcodex clarify --issue <id> --answer <text>` |
+| 轮询机制 | Orchestrator 每轮 poll 检查队列（与 Issue 轮询同步） |
+| 超时 | timeout_local_minutes（默认 30 分钟），过期后降级通道三 |
+| 优点 | 完全异步，操作员无需盯屏，不阻塞 orchestrator |
+| 降级条件 | timeout_local_minutes 内无应答则发 @mention |
+
+**通道三：@mention 评论**
+
+| 项 | 值 |
+|---|---|
+| 接口 | `TrackerAdapter.create_clarification_comment()` → Issue 下发评论 + @mention |
+| 轮询机制 | Orchestrator 轮询检查 Issue 新评论（每 poll_interval_ms） |
+| 超时 | timeout_author_hours（默认 72 小时） |
+| escalation | 超时后 skip / mark_failed / notify |
+
+**F-1.7: ClarificationStatus 枚举（扩展）**
+
+```python
+class ClarificationStatus(str, Enum):
+    NONE = "none"
+    AWAITING_LOCAL = "awaiting_local"        # 等待本地操作员
+    AWAITING_AUTHOR = "awaiting_author"     # 已发 @mention，等待作者
+    RECEIVED = "received"
+    RESOLVED_LOCAL = "resolved_local"        # 来自本地操作员
+    RESOLVED_AUTHOR = "resolved_author"     # 来自 @mention 作者
+    TIMED_OUT_LOCAL = "timed_out_local"     # 本地超时，降级通道三
+    TIMED_OUT_AUTHOR = "timed_out_author"   # 作者超时
+    EXHAUSTED = "exhausted"
+```
+
+**F-1.8: TrackerAdapter 评论接口扩展**
+
+| 接口 | 说明 |
+|------|------|
+| `fetch_issue_comments(issue_id)` | 获取 Issue 所有评论，返回 `list[Comment]` |
+| `create_clarification_comment(issue_id, body, mentions)` | 发评论并 @mention，触发通知 |
+| `find_clarification_replies(since_comment_id)` | 查找某条评论之后的新回复（用于轮询增量检查） |
+
+**F-1.9: IssueRegistry 澄清字段**
+
+```python
+clarification_status: ClarificationStatus = ClarificationStatus.NONE
+question_history: list[str] = field(default_factory=list)
+author_login: str | None = None
+awaiting_since: float | None = None
+last_checked_comment_id: str | None = None
+local_answer: str | None = None           # 本地操作员的回答
+local_answer_source: str | None = None    # "dashboard" | "clarification_queue"
+```
+
+**F-1.10: 关键约束 & 风险**
+
+| 风险 | 缓解措施 |
+|------|----------|
+| 操作员不在线 + 作者不回复 | escalation 策略（skip/mark_failed/notify）+ 双通道降级 |
+| Agent 反复提问 | max_questions_per_issue（默认 3 次）上限 |
+| @mention 噪音 | 通道一二优先消耗模糊 Issue；仅置信度 > threshold（0.7）时触发 |
+| 作者回复无效/误解 | LLM 重判定 + 计入重试次数 |
+| 评论顺序错乱 | in_reply_to_comment_id + 时间戳重建对话树 |
+| 重启丢失上下文 | ClarificationQueue 文件持久化 + IssueRegistry clarification_status |
+| 多操作员同时应答 | ClarificationQueue 加锁；resolved 后其他应答者收到提示 |
+| Headless 无 Dashboard | headless 模式下自动跳过通道一直达 ClarificationQueue |
+
+**F-1.11: 多渠道冲突处理方案**
+
+**问题场景**:
+
+| 场景 | 描述 |
+|------|------|
+| 同时多渠道应答 | 操作员和作者在同一时间窗口内同时回答 |
+| 超时后迟到 | 通道二超时升级通道三后，操作员的本地回答才到达 |
+| 重复提交 | 同一渠道内同一答案被多次提交 |
+| 升级通知丢失 | 操作员在不知情的情况下回答了已升级的 Issue |
+
+**核心原则**:
+
+| 原则 | 说明 |
+|------|------|
+| 第一响应者优先 | 第一个被 Orchestrator 检测到的有效答案被采纳 |
+| 操作员优先级 | 操作员答案始终比作者更可信（`operator_priority: true`） |
+| 单向升级不可逆 | 通道二超时 → 通道三后，原通道迟来答案标记 STALE_REJECTED |
+| 过期主动通知 | 所有被拒绝的答案都要通知对应应答者，避免无谓等待 |
+| 去重幂等 | 同一答案重复提交第二次标记 DUPLICATE_REJECTED |
+
+**ClarificationStatus 扩展（冲突处理相关）**:
+
+```python
+DUPLICATE_REJECTED = "duplicate_rejected"   # 重复提交，被去重丢弃
+STALE_REJECTED = "stale_rejected"           # 超时升级后收到的过时答案
+CONFLICT_RESOLVED = "conflict_resolved"    # 多渠道冲突已裁决
+```
+
+**冲突处理状态机**:
+
+```
+收到任意渠道答案
+        ↓
+本通道第一响应？ → 否 → DUPLICATE_REJECTED 丢弃
+        ↓ 是
+当前 status = AWAITING_LOCAL:
+    LOCAL 答案 → RESOLVED_LOCAL
+    AUTHOR 答案（在 AWAITING_LOCAL 期间）→ RESOLVED_AUTHOR
+    → 操作员收到："作者已先回复，您的窗口已关闭"
+
+当前 status = AWAITING_AUTHOR:
+    AUTHOR 答案 → RESOLVED_AUTHOR
+    LOCAL 答案（在 AWAITING_AUTHOR 期间）→ STALE_REJECTED
+    → 操作员收到："通道二已超时，@mention 已发出，您的回答已过时"
+
+当前 status = TIMED_OUT_LOCAL / TIMED_OUT_AUTHOR / EXHAUSTED:
+    任何答案 → STALE_REJECTED
+    → 通知应答者："Issue 已超时升级/结束"
+```
+
+**同时应答检测**:
+
+```python
+# Orchestrator 同轮 poll 中同时检查 ClarificationQueue 和 Issue 评论
+candidates = []
+if local_item.answer:
+    candidates.append(("local", answer, local_item.answered_at))
+if author_comments:
+    candidates.append(("author", latest.body, latest.created_at))
+
+if len(candidates) > 1:
+    delta_ms = abs(candidates[0][2] - candidates[1][2]) * 1000
+    if delta_ms < 5000 and operator_priority:
+        winner, loser = 0, 1   # 操作员优先
+    else:
+        winner = min(range(len(candidates)), key=lambda i: candidates[i][2])
+    self._notify_rejected(candidates[1-winner][0], issue_id)
+```
+
+**超时告知机制**:
+
+| 升级事件 | 通知内容 |
+|---------|---------|
+| 通道二超时 → 通道三 | "您的本地回答窗口已关闭，@mention 已发给作者" |
+| 通道三超时 → escalation | "Issue #42 澄清超时，最终处理：skip/mark_failed/notify" |
+| 迟到操作员答案（通道三之后） | "您的回答已过时，@mention 已发出，作者回复已被采纳" |
+| 迟到作者答案（escalation 之后） | 忽略，不更新状态 |
+
+**冲突场景汇总**:
+
+| 场景 | 处理结果 | 是否通知 |
+|------|---------|---------|
+| T4a < T3（操作员先答） | RESOLVED_LOCAL | 无（正常） |
+| T3 < T4a（作者先回复） | RESOLVED_AUTHOR | ✅ 操作员超时通知 |
+| T4a ≈ T4b（同时 < 5ms） | 操作员优先 RESOLVED_LOCAL | ✅ 双方均通知 |
+| 通道三已升级后操作员才答 | STALE_REJECTED | ✅ "已超时升级" |
+| 多操作员同时写队列 | 先写入者 RESOLVED | ✅ 落败方"已被抢先" |
+| 同一答案重复提交 | DUPLICATE_REJECTED | ❌ 幂等，无需通知 |
+
+**新增配置**:
+
+```yaml
+agent:
+  clarification:
+    operator_priority: true        # 操作员答案优先于作者（默认 true）
+    stale_notification: "all"      # "all" | "operator_only" | "none"
+    simultaneous_grace_ms: 5000   # 5ms 内视为同时，由 operator_priority 决胜
+```
+
+**F-1.12: 实施检查清单**
+
+- [ ] Phase A: `ClarificationQueue` 文件队列 + Orchestrator 轮询逻辑（`orchestrator/clarification_queue.py`）
+- [ ] Phase A: 冲突处理状态机（`orchestrator/clarification.py`）：DUPLICATE_REJECTED / STALE_REJECTED / CONFLICT_RESOLVED
+- [ ] Phase A: 超时告知机制（escalation_notified + stale_notification）
+- [ ] Phase A: 同时应答检测逻辑（simultaneous_grace_ms + operator_priority）
+- [ ] Phase B: StatusDashboard 交互提示组件（`orchestrator/status_dashboard.py`）
+- [ ] Phase C: `AskIssueAuthor` 工具（`tool_system/tools/ask_issue_author.py`）
+- [ ] Phase C: `ClarificationResolver` 三通道降级 + 冲突裁决
+- [ ] Phase D: CLI `clarify` 子命令（`cli.py`：`clawcodex clarify --issue <id> --answer <text>`）
+- [ ] Phase E: `TrackerAdapter.fetch_issue_comments()` / `create_clarification_comment()` 接口
+- [ ] Phase E: `RepositoryTrackerAdapter` 实现（GitHub / Gitee / GitCode）
+- [ ] Phase F: IssueRegistry 澄清字段持久化（`clarification_status`、`local_answer`、`first_response_source`、`stale_answers`）
+- [ ] Phase F: PromptBuilder 澄清内容注入
+- [ ] Phase G: escalation 策略实现（skip / mark_failed / notify）
+
+- [ ] Phase A: `ClarificationQueue` 文件队列 + Orchestrator 轮询逻辑（`orchestrator/clarification_queue.py`）
+- [ ] Phase A: 冲突处理状态机（`orchestrator/clarification.py`）：DUPLICATE_REJECTED / STALE_REJECTED / CONFLICT_RESOLVED
+- [ ] Phase A: 超时告知机制（escalation_notified + stale_notification）
+- [ ] Phase A: 同时应答检测逻辑（simultaneous_grace_ms + operator_priority）
+- [ ] Phase B: StatusDashboard 交互提示组件（`orchestrator/status_dashboard.py`）
+- [ ] Phase C: `AskIssueAuthor` 工具（`tool_system/tools/ask_issue_author.py`）
+- [ ] Phase C: `ClarificationResolver` 三通道降级 + 冲突裁决
+- [ ] Phase D: CLI `clarify` 子命令（`orchestrator/cli/clarify.py`：`clawcodex orchestrator clarify --issue <id> --answer <text>`）
+- [ ] Phase E: `TrackerAdapter.fetch_issue_comments()` / `create_clarification_comment()` 接口
+- [ ] Phase E: `RepositoryTrackerAdapter` 实现（GitHub / Gitee / GitCode）
+- [ ] Phase F: IssueRegistry 澄清字段持久化（`clarification_status`、`local_answer`、`first_response_source`、`stale_answers`）
+- [ ] Phase F: PromptBuilder 澄清内容注入
+- [ ] Phase G: escalation 策略实现（skip / mark_failed / notify）
+
+**F-1.13: Orchestrator CLI 运维操作界面**
+
+| 命令 | 说明 | 优先级 |
+|------|------|--------|
+| `clawcodex orchestrator run` | 启动 orchestrator（替代 `--workflow`，**不兼容变更**） | P1 |
+| `clawcodex orchestrator status` | 全局 running/paused/completed/failed 状态 | P1 |
+| `clawcodex orchestrator issues list` | 列出所有 issue 及状态 | P1 |
+| `clawcodex orchestrator issues tail <id>` | 实时 tail tool call 日志 | P1 |
+| `clawcodex orchestrator issues show <id>` | 查看 issue 详情（理解上下文、token 用量） | P1 |
+| `clawcodex orchestrator pause <id>` | 暂停 agent（停在当前 tool call 边界） | P1 |
+| `clawcodex orchestrator resume <id>` | 恢复暂停中的 agent | P1 |
+| `clawcodex orchestrator stop <id>` | 强制终止 agent | P1 |
+| `clawcodex orchestrator inject <id> "text"` | 向运行中的 agent 注入提示 | P1 |
+| `clawcodex orchestrator inject <id> --list` | 查看已注入的提示 | P1 |
+| `clawcodex orchestrator inject <id> --remove <n>` | 删除某条提示 | P1 |
+| `clawcodex orchestrator clarify --issue <id> --answer <text>` | 操作员澄清应答 | P1 |
+| `clawcodex orchestrator workspace <id> --ls` | 列出 workspace 文件 | P1 |
+| `clawcodex orchestrator workspace <id> --cat <file>` | 查看文件内容 | P1 |
+| `clawcodex orchestrator workspace <id> --edit <file> --with <content>` | 修改文件 | P2 |
+| `clawcodex orchestrator takeover <id>` | 完全接管（终止 + REPL） | P2 |
+| `clawcodex orchestrator dashboard --port` | 独立 dashboard UI | P2 |
+
+**不兼容变更**：
+
+> ⚠️ `clawcodex --workflow` 将在发布时废弃，替换为 `clawcodex orchestrator run`。
+> 这是唯一的 CLI 不兼容变更。现有启动命令：
+> ```bash
+> # 旧（将废弃）
+> clawcodex --workflow test_gitcode_workflow.md
+> # 新
+> clawcodex orchestrator run --workflow test_gitcode_workflow.md
+> ```
+> release note 中需特别说明。
+
+**实施检查清单**：
+
+- [ ] Phase O1: CLI `orchestrator` group 框架（`cli.py`：`clawcodex orchestrator`）
+- [ ] Phase O1: `orchestrator run`（替代 `--workflow`）
+- [ ] Phase O1: `orchestrator status` / `orchestrator issues list`
+- [ ] Phase O2: `orchestrator pause <id>` / `orchestrator resume <id>` / `orchestrator stop <id>`
+- [ ] Phase O2: Orchestrator pause/resume 状态支持（running → paused → running）
+- [ ] Phase O3: `orchestrator issues tail <id>`（AgentRunner event stream → 流式推送 tool calls）
+- [ ] Phase O3: StatusDashboard 实时渲染（event stream 消费）
+- [ ] Phase O4: `orchestrator inject` Hint 注入（`.operator_hints.md` 机制）
+- [ ] Phase O5: `orchestrator workspace --ls` / `--cat`（文件查看）
+- [ ] Phase O5: `orchestrator workspace --edit`（文件修改，协作场景）
+- [ ] Phase O6: `orchestrator takeover <id>`（终止 + REPL 接管）
+- [ ] Phase O7: `orchestrator clarify`（澄清应答，与 Phase D/C 澄清流程合并）
+- [ ] Phase O8: Dashboard LiveView 增强（event stream 完整推送 LLM 摘要 + tool calls）
 
 ---
 

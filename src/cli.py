@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import sys
 from pathlib import Path
 
@@ -595,7 +596,6 @@ def start_repl(
 
 def _run_autonomous_mode(args) -> int:
     """Run in autonomous mode using a WORKFLOW.md file."""
-    import asyncio
     import logging
 
     from src.api.orchestration import OrchestrationSubsystem

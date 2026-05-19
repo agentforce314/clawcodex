@@ -331,4 +331,5 @@ If a concurrent force-push causes a conflict during step 7:
 | `agent.max_concurrent_agents` | `10` | Max parallel agent sessions |
 | `agent.max_turns` | `20` | Max turns per agent session |
 | `agent.max_retry_backoff_ms` | `300000` | Max retry delay (exponential backoff) |
+| `agent.max_retry_attempts` | `5` | Max retry attempts before giving up on an issue |
 | `codex.turn_timeout_ms` | `3600000` | Agent turn timeout |

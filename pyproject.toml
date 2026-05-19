@@ -72,6 +72,9 @@ dependencies = [
     "pluggy>=1.0.0",
     # Open source replacement: Outlines for structured output
     "outlines>=0.0.80",
+    # upstream-sync: CLI framework
+    "typer[all]>=0.12.0",
+    "jinja2>=3.1.0",
 ]
 
 [project.optional-dependencies]
@@ -90,6 +93,7 @@ dev = [
 
 [project.scripts]
 clawcodex-dev = "src.cli:main"
+upstream-sync = "upstream_sync.cli:app"
 
 [project.urls]
 Homepage = "https://github.com/agentforce314/clawcodex"
