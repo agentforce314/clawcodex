@@ -86,6 +86,27 @@ class ToolEventMessage(Message):
 
 
 @dataclass
+class AdvisorEventMessage(Message):
+    """Server-side advisor activity surfaced as a transcript row.
+
+    The Python streaming path doesn't expose per-event hooks for
+    server tools, so the bridge inspects the assembled assistant
+    message at end-of-turn and posts one of these per
+    ``server_tool_use(name=advisor)`` + ``advisor_tool_result`` pair.
+
+    ``kind`` is either ``"start"`` (the use block on its own) or
+    ``"result"`` (the matched result, carrying ``text`` or
+    ``error_code``).
+    """
+
+    kind: str
+    tool_use_id: str
+    advisor_model: str | None = None
+    text: str | None = None
+    error_code: str | None = None
+
+
+@dataclass
 class AgentRunFinished(Message):
     """Emitted when the agent loop returns (success or error)."""
 

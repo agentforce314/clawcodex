@@ -363,6 +363,7 @@ class ClawCodexTUI(App):
             return
         if result.system_text == "__clear__":
             transcript.clear_transcript()
+            self._agent_bridge.reset_advisor_dedup()
             return
         if result.system_text:
             transcript.append_system(result.system_text, style="muted")
@@ -494,6 +495,7 @@ class ClawCodexTUI(App):
         def _on_choice(action: str) -> None:
             if action == "clear":
                 transcript.clear_transcript()
+                self._agent_bridge.reset_advisor_dedup()
                 transcript.append_system("Conversation cleared.", style="muted")
                 self.announcer.announce("Conversation cleared.")
             elif action == "never":
@@ -790,6 +792,7 @@ class ClawCodexTUI(App):
                 conversation=self.session.conversation,
                 cost_tracker=CostTracker(),
                 history=HistoryLog(),
+                provider=self.provider,
             )
         except Exception:
             self._command_context = None

@@ -27,6 +27,7 @@ from textual.app import ComposeResult
 from textual.screen import Screen
 
 from ..messages import (
+    AdvisorEventMessage,
     AgentRunFinished,
     AgentRunStarted,
     AssistantChunk,
@@ -158,6 +159,15 @@ class REPLScreen(Screen):
             tool_use_id=message.tool_use_id,
             is_error=message.is_error,
             error=message.error,
+        )
+
+    def on_advisor_event_message(self, message: AdvisorEventMessage) -> None:
+        self.transcript.append_advisor_event(
+            kind=message.kind,
+            tool_use_id=message.tool_use_id,
+            advisor_model=message.advisor_model,
+            text=message.text,
+            error_code=message.error_code,
         )
 
     def on_agent_run_finished(self, message: AgentRunFinished) -> None:
