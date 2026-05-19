@@ -78,6 +78,29 @@ class Orchestrator:
         registry_path = workspace.config.root / ".clawcodex_issue_registry.json"
         self._registry = IssueRegistry(registry_path)
 
+        # Clarification handling (three-channel flow)
+        clarification_queue_path = workspace.config.root / ".clawcodex_clarification_queue.json"
+        from .clarification_queue import ClarificationQueue
+        self._clarification_queue = ClarificationQueue(clarification_queue_path)
+
+        # Event stream for CLI tail (shared queue directory)
+        self._event_stream_dir = workspace.config.root / ".event_streams"
+        self._event_stream_dir.mkdir(exist_ok=True)
+        from .clarification import ClarificationResolver, ClarificationConfig
+        self._clarification_resolver = ClarificationResolver(
+            clarification_queue=self._clarification_queue,
+            tracker=tracker,
+            config=ClarificationConfig(
+                enabled=getattr(workflow.agent, "clarification_enabled", True),
+                timeout_local_seconds=getattr(workflow.agent, "clarification_timeout_local", 30 * 60),
+                timeout_author_seconds=getattr(workflow.agent, "clarification_timeout_author", 72 * 3600),
+                max_questions_per_issue=getattr(workflow.agent, "max_questions_per_issue", 3),
+                operator_priority=getattr(workflow.agent, "clarification_operator_priority", True),
+                simultaneous_grace_ms=getattr(workflow.agent, "clarification_simultaneous_grace_ms", 5000),
+                escalation=getattr(workflow.agent, "clarification_escalation", "skip"),
+            ),
+        )
+
     async def run(self) -> None:
         """Main polling loop. Runs until cancelled."""
         logger.info("Orchestrator starting: interval=%sms max_concurrent=%s",
@@ -112,6 +135,9 @@ class Orchestrator:
         try:
             # Process lifecycle control commands (pause/resume/stop/takeover)
             await self._process_control_commands()
+
+            # Poll clarification answers (Channel 2 + Channel 3)
+            await self._clarification_resolver.poll_clarification_answers()
 
             # Process retry queue first
             await self._process_retry_queue()
@@ -223,6 +249,7 @@ class Orchestrator:
             issue=issue,
             workspace=workspace,
             pause_resume_event=asyncio.Event(),
+            event_queue=asyncio.Queue(),
         )
         self._state.running[issue.id] = session
 
@@ -256,6 +283,7 @@ class Orchestrator:
                         status_dashboard=self.status_dashboard,
                         tracker=self.tracker,
                         comment_tracker=self.tracker,
+                        clarification_resolver=self._clarification_resolver,
                     )
                     if session.status == "completed":
                         sync_result = await self.git_sync.sync(session)
@@ -476,6 +504,13 @@ class Orchestrator:
             session.status = "failed"
             session.pause_resume_event.set()  # Unblock if paused
             # Note: REPL takeover requires full session context - handled separately
+
+    def get_event_stream(self, issue_id: str) -> "asyncio.Queue | None":
+        """Get the event queue for a running issue session (for CLI tail)."""
+        session = self._state.running.get(issue_id)
+        if session is None:
+            return None
+        return session.event_queue
 
     async def _cancel_all_tasks(self) -> None:
         """Cancel all running agent tasks."""

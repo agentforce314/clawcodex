@@ -107,12 +107,63 @@ def _do_stop(issue_id: str) -> int:
 
 
 def _do_takeover(issue_id: str) -> int:
-    # Takeover is more involved — it terminates the agent and starts a REPL.
-    # For now, send the stop signal and inform the operator.
+    """Terminate agent and start REPL for manual intervention."""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    # Resolve workspace path
+    workspace_root = os.environ.get("CLAWCODEX_WORKSPACE_ROOT")
+    if workspace_root:
+        base = Path(workspace_root)
+    else:
+        base = Path.home() / ".clawcodex" / "workspace"
+
+    workspace_path = None
+    if base.exists():
+        for wd in base.iterdir():
+            if wd.is_dir():
+                metadata = wd / ".metadata"
+                if metadata.exists():
+                    import json
+                    try:
+                        m = json.loads(metadata.read_text())
+                        if m.get("issue_id") == issue_id:
+                            workspace_path = wd
+                            break
+                    except Exception:
+                        pass
+
+    if workspace_path is None:
+        print(
+            f"Could not find workspace for issue {issue_id}.\n"
+            "Cannot takeover — issue may not be active.",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Write stop control to stop the agent
+    _write_control("stop", issue_id)
+
     print(
-        f"Takeover for issue {issue_id}: The agent will be terminated and a REPL "
-        f"will be started in the workspace.\n"
-        f"Warning: This feature requires LiveView to be enabled (--port).\n",
+        f"[takeover] Stopping agent for issue {issue_id}...\n"
+        f"Starting REPL in workspace: {workspace_path}\n"
+        f"Type /done when finished to commit and push.",
         file=sys.stderr,
     )
-    return _write_control("takeover", issue_id)
+
+    # Start clawcodex REPL in the workspace directory
+    env = os.environ.copy()
+    env["CLAWCODEX_WORKSPACE"] = str(workspace_path)
+    try:
+        subprocess.run(
+            ["python3", "-m", "src.cli", "--workspace", str(workspace_path)],
+            cwd=str(workspace_path),
+            env=env,
+        )
+    except Exception as exc:
+        print(f"[takeover] Failed to start REPL: {exc}", file=sys.stderr)
+        return 1
+
+    return 0

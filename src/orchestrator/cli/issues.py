@@ -104,15 +104,74 @@ def _run_show(registry, issue_id: str) -> int:
 
 
 def _run_tail(_registry, issue_id: str) -> int:
-    # Tool call streaming requires a live connection to the agent runner.
-    # For now, print a message that this requires the running orchestrator.
-    print(
-        f"To tail Issue {issue_id}, the orchestrator must be running with "
-        f"LiveView enabled (--port). Use 'clawcodex orchestrator run --workflow "
-        f"WORKFLOW.md --dashboard --port 8080' and then monitor via the dashboard.",
-        file=sys.stderr,
-    )
-    return 1
+    """Tail the event log file for a running issue."""
+    import json
+    import sys
+    import time
+
+    workspace_root = _resolve_workspace_root()
+    if workspace_root is None:
+        print(
+            "Could not determine workspace root.\n"
+            "Set CLAWCODEX_WORKSPACE_ROOT or run the orchestrator with --workflow.",
+            file=sys.stderr,
+        )
+        return 1
+
+    event_log_path = workspace_root / ".event_logs" / f"{issue_id}.ndjson"
+
+    if not event_log_path.exists():
+        print(
+            f"No event log found for issue {issue_id}.\n"
+            f"Ensure the orchestrator is running and issue {issue_id} is active.\n"
+            f"Run 'clawcodex orchestrator issues list' to check active issues.",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(f"[tail] Streaming events for issue {issue_id}... (Ctrl+C to stop)")
+    print("-" * 60)
+
+    # Tail the ndjson file using inotifywait-like polling
+    last_size = 0
+    try:
+        while True:
+            if event_log_path.stat().st_size > last_size:
+                with open(event_log_path, "r", encoding="utf-8") as f:
+                    f.seek(last_size)
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            event = json.loads(line)
+                            ts = event.get("timestamp", "")
+                            etype = event.get("type", "")
+                            if etype == "tool_call":
+                                params_str = str(event.get("params", {}))[:60]
+                                print(f"  [{ts}] TOOL  {event.get('tool_name', '?')}  {params_str}")
+                            elif etype == "tool_result":
+                                err = " [ERR]" if event.get("is_error") else ""
+                                print(f"  [{ts}] RESULT{err} {event.get('tool_name', '?')}")
+                            elif etype == "text_delta":
+                                content = event.get("content", "")
+                                if content:
+                                    text = content[:80].replace("\n", " ")
+                                    print(f"  [{ts}] TEXT  {text}")
+                            else:
+                                print(f"  [{ts}] {etype}")
+                        except json.JSONDecodeError:
+                            pass
+                    last_size = f.tell()
+            else:
+                time.sleep(0.5)
+    except KeyboardInterrupt:
+        print("\n[tail] stopped")
+    except Exception as exc:
+        print(f"[tail] error: {exc}", file=sys.stderr)
+        return 1
+
+    return 0
 
 
 def _resolve_registry_path():
@@ -130,3 +189,21 @@ def _resolve_registry_path():
         if candidate.exists():
             return candidate
     return None
+
+
+def _resolve_workspace_root():
+    """Resolve the workspace root directory."""
+    import os
+    from pathlib import Path
+
+    workspace_root = os.environ.get("CLAWCODEX_WORKSPACE_ROOT")
+    if workspace_root:
+        return Path(workspace_root)
+
+    for candidate in [
+        Path.cwd(),
+        Path.home() / ".clawcodex" / "workspace",
+    ]:
+        if candidate.exists():
+            return candidate
+    return Path.cwd()

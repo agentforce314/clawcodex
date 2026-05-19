@@ -36,6 +36,8 @@ class AgentSession:
     paused_at: float | None = None
     pause_reason: str = ""
     pause_resume_event: "asyncio.Event | None" = None
+    # Event stream for CLI tail command
+    event_queue: "asyncio.Queue | None" = None
 
 
 @dataclass
@@ -97,6 +99,7 @@ class AgentRunner:
         status_dashboard: Any | None = None,
         tracker: Any = None,
         comment_tracker: Any = None,
+        clarification_resolver: Any = None,
     ) -> None:
         """Execute issue until completion or max_turns.
 
@@ -162,6 +165,16 @@ class AgentRunner:
                         except Exception:
                             pass
 
+                    # Push to event queue for CLI tail
+                    if session.event_queue is not None:
+                        try:
+                            session.event_queue.put_nowait(event)
+                        except Exception:
+                            pass
+
+                    # Also write to event log file for cross-process tail
+                    self._write_event_log(session.workspace.path, issue.id, event)
+
                 elif isinstance(event, ToolCallEvent):
                     turn_has_tool_calls = True
                     tool_count += 1
@@ -169,6 +182,9 @@ class AgentRunner:
                     # Pause support: wait for resume if session is paused
                     if session.pause_resume_event is not None:
                         await session.pause_resume_event.wait()
+
+                    # Operator hint injection: check .operator_hints.md
+                    self._inject_operator_hints(session.workspace)
 
                     # In headless (orchestrator) mode the permission system
                     # is bypassed via ToolContext.approval_policy =
@@ -183,6 +199,16 @@ class AgentRunner:
                         except Exception:
                             pass
 
+                    # Push to event queue for CLI tail
+                    if session.event_queue is not None:
+                        try:
+                            session.event_queue.put_nowait(event)
+                        except Exception:
+                            pass
+
+                    # Also write to event log file for cross-process tail
+                    self._write_event_log(session.workspace.path, issue.id, event)
+
                 elif isinstance(event, ToolResultEvent):
                     logger.debug(
                         "Tool result issue_id=%s tool=%s is_error=%s",
@@ -190,6 +216,21 @@ class AgentRunner:
                         event.tool_name,
                         event.result.get("is_error", False),
                     )
+                    if status_dashboard is not None:
+                        try:
+                            status_dashboard.on_event(event, session)
+                        except Exception:
+                            pass
+
+                    # Push to event queue for CLI tail
+                    if session.event_queue is not None:
+                        try:
+                            session.event_queue.put_nowait(event)
+                        except Exception:
+                            pass
+
+                    # Also write to event log file for cross-process tail
+                    self._write_event_log(session.workspace.path, issue.id, event)
                     if status_dashboard is not None:
                         try:
                             status_dashboard.on_event(event, session)
@@ -321,3 +362,76 @@ class AgentRunner:
             and refreshed_issue.state.strip().lower() in active_states
         )
         return is_active, refreshed_issue
+
+    def _inject_operator_hints(self, workspace: Any) -> None:
+        """Check for operator hints in workspace and inject into context.
+
+        Reads .operator_hints.md in the workspace directory and returns
+        its contents if present. The caller should prepend this to the
+        tool context for the next LLM call.
+        """
+        hints_file = workspace.path / ".operator_hints.md"
+        if not hints_file.exists():
+            return None
+
+        try:
+            content = hints_file.read_text(encoding="utf-8").strip()
+            if content:
+                logger.debug(
+                    "Operator hints found for workspace %s: %d chars",
+                    workspace.path,
+                    len(content),
+                )
+                return content
+        except Exception as exc:
+            logger.warning("Failed to read operator hints: %s", exc)
+        return None
+
+    def _write_event_log(
+        self,
+        workspace_path: Any,
+        issue_id: str | None,
+        event: Any,
+    ) -> None:
+        """Write structured event to event log file for CLI tail."""
+        import json
+        import time
+
+        if issue_id is None:
+            return
+
+        log_dir = workspace_path / ".event_logs"
+        log_dir.mkdir(exist_ok=True)
+        log_file = log_dir / f"{issue_id}.ndjson"
+
+        try:
+            if hasattr(event, "tool_name"):
+                entry = {
+                    "timestamp": time.strftime("%H:%M:%S"),
+                    "type": "tool_call",
+                    "tool_name": event.tool_name,
+                    "params": event.params,
+                }
+            elif hasattr(event, "result"):
+                entry = {
+                    "timestamp": time.strftime("%H:%M:%S"),
+                    "type": "tool_result",
+                    "tool_name": event.tool_name,
+                    "is_error": event.result.get("is_error", False),
+                }
+            elif hasattr(event, "content"):
+                entry = {
+                    "timestamp": time.strftime("%H:%M:%S"),
+                    "type": "text_delta",
+                    "content": event.content,
+                }
+            else:
+                entry = {
+                    "timestamp": time.strftime("%H:%M:%S"),
+                    "type": str(type(event).__name__),
+                }
+
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except Exception:
+            pass

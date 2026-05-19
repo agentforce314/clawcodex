@@ -295,3 +295,100 @@ class StatusDashboard:
         if spark:
             parts.append(f"tps={spark}")
         return f"[dashboard] {' '.join(parts)}"
+
+    # ------------------------------------------------------------------
+    # Clarification prompt (Channel 1 — interactive operator input)
+    # ------------------------------------------------------------------
+
+    def prompt_clarification(
+        self,
+        issue_id: str,
+        issue_identifier: str,
+        question: str,
+        options: list[str] | None = None,
+        context_summary: str = "",
+    ) -> str | None:
+        """Display an interactive clarification prompt.
+
+        This is Channel 1 of the three-channel clarification flow.
+        Used when the agent encounters ambiguous issue semantics and
+        needs immediate operator input.
+
+        Args:
+            issue_id: issue identifier
+            issue_identifier: human-readable identifier
+            question: the clarification question
+            options: optional multiple-choice options (1-4)
+            context_summary: brief context for the operator
+
+        Returns:
+            The operator's answer string, or None if timed out / declined.
+
+        Note: This requires a terminal that supports interactive input.
+        In headless mode, this should be called only when the terminal
+        supports it, and should return None to trigger Channel 2 fallback.
+        """
+        import sys
+
+        print(file=sys.stderr)
+        print("┌─ 🔵 Clarification Needed ───────────────────────────────┐", file=sys.stderr)
+        print(f"│  Issue {issue_id} ({issue_identifier})", file=sys.stderr)
+        print(f"│", file=sys.stderr)
+        if context_summary:
+            summary_line = context_summary[:50] + ("..." if len(context_summary) > 50 else "")
+            print(f"│  Context: {summary_line}", file=sys.stderr)
+            print(f"│", file=sys.stderr)
+        print(f"│  Question: {question}", file=sys.stderr)
+
+        if options and len(options) <= 4:
+            print(f"│", file=sys.stderr)
+            print(f"│  Options:", file=sys.stderr)
+            for i, opt in enumerate(options, 1):
+                print(f"│    [{i}] {opt}", file=sys.stderr)
+            print(f"│", file=sys.stderr)
+            print(f"│  Enter number or text answer, or press Enter to skip", file=sys.stderr)
+        else:
+            print(f"│", file=sys.stderr)
+            print(f"│  Enter your answer, or press Enter to skip (forward to author)", file=sys.stderr)
+
+        print("└───────────────────────────────────────────────────────┘", file=sys.stderr)
+        print("> ", end="", file=sys.stderr)
+        sys.stderr.flush()
+
+        try:
+            import select
+            # Wait for input with timeout
+            if select.select([sys.stdin], [], [], 60)[0]:
+                answer = sys.stdin.readline()
+                answer = answer.strip()
+                if not answer:
+                    return None
+                # If numeric option, return the text
+                if options:
+                    try:
+                        idx = int(answer)
+                        if 1 <= idx <= len(options):
+                            return options[idx - 1]
+                    except ValueError:
+                        pass
+                return answer
+        except Exception:
+            pass
+
+        return None
+
+    def render_clarification_status(self, issue_id: str, status: str, timeout_seconds: int | None = None) -> str:
+        """Render a clarification status indicator for the dashboard."""
+        status_icons = {
+            "pending": "⏳",
+            "awaiting_local": "👤",
+            "awaiting_author": "📧",
+            "resolved_local": "✅",
+            "resolved_author": "✅",
+            "timed_out_local": "⏰",
+            "timed_out_author": "⏰",
+            "exhausted": "❌",
+        }
+        icon = status_icons.get(status, "?")
+        timeout_str = f" (timeout in {timeout_seconds}s)" if timeout_seconds else ""
+        return f"  {icon} Issue {issue_id}: clarification {status}{timeout_str}"

@@ -103,7 +103,13 @@ def main():
         return show_config()
 
     # Autonomous mode — load workflow and run orchestration
-    if args.workflow:
+    if args.workflow_deprecated:
+        print(
+            "warning: `--workflow` is deprecated.\n"
+            "  Use `clawcodex orchestrator run --workflow PATH` instead.\n"
+            "  The `--workflow` flag will be removed in a future release.",
+            file=sys.stderr,
+        )
         return _run_autonomous_mode(args)
 
     # Plan-phase-1 wiring (ch02-bootstrap-refactoring-plan.md P1.5):
@@ -189,25 +195,29 @@ Examples:
     parser.add_argument('--config', action='store_true', help='Show current configuration')
     parser.add_argument('--stream', action='store_true', help='Enable live rendering in REPL')
 
-    # ---- Autonomous / workflow mode (NEW) ----
+    # ---- Autonomous / workflow mode (DEPRECATED → orchestrator run) ----
     workflow_group = parser.add_argument_group("autonomous mode")
     workflow_group.add_argument(
         '--workflow',
         type=str,
         default=None,
         metavar='PATH',
-        help='Run in autonomous mode using the specified WORKFLOW.md',
+        help='[DEPRECATED: use `clawcodex orchestrator run --workflow PATH`] '
+             'Run in autonomous mode using the specified WORKFLOW.md',
+        dest='workflow_deprecated',
     )
     workflow_group.add_argument(
         '--dashboard',
         action='store_true',
-        help='Show status dashboard in autonomous mode (Phase 4)',
+        help='[DEPRECATED: use `clawcodex orchestrator run --workflow PATH --dashboard`] '
+             'Show status dashboard in autonomous mode',
     )
     workflow_group.add_argument(
         '--port',
         type=int,
         default=None,
-        help='Observability dashboard port in autonomous mode (Phase 4)',
+        help='[DEPRECATED: use `clawcodex orchestrator run --workflow PATH --port N`] '
+             'Observability dashboard port in autonomous mode',
     )
 
     # ---- Interactive UI selection ----
@@ -619,12 +629,18 @@ def _run_orchestrator_subcommand(argv: list[str]) -> int:
     from src.orchestrator.cli import issues as issues_cmd
     from src.orchestrator.cli import clarify as clarify_cmd
     from src.orchestrator.cli import lifecycle as lifecycle_cmd
+    from src.orchestrator.cli import inject as inject_cmd
+    from src.orchestrator.cli import workspace as workspace_cmd
+    from src.orchestrator.cli import dashboard as dashboard_cmd
 
     run_cmd.add_run_parser(subparsers)
     status_cmd.add_status_parser(subparsers)
     issues_cmd.add_issues_parser(subparsers)
     clarify_cmd.add_clarify_parser(subparsers)
     lifecycle_cmd.add_lifecycle_parser(subparsers)
+    inject_cmd.add_inject_parser(subparsers)
+    workspace_cmd.add_workspace_parser(subparsers)
+    dashboard_cmd.add_dashboard_parser(subparsers)
 
     args = parser.parse_args(argv)
 
@@ -638,6 +654,12 @@ def _run_orchestrator_subcommand(argv: list[str]) -> int:
         return clarify_cmd.run(args)
     elif args.subcommand in ("pause", "resume", "stop", "takeover"):
         return lifecycle_cmd.run(args)
+    elif args.subcommand == "inject":
+        return inject_cmd.run(args)
+    elif args.subcommand == "workspace":
+        return workspace_cmd.run(args)
+    elif args.subcommand == "dashboard":
+        return dashboard_cmd.run(args)
     else:
         parser.print_help()
         return 1
