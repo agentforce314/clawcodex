@@ -2,8 +2,8 @@
 
 > 文档路径: `docs/FEATURE_PLAN.md`
 > 基于: `clawcodex-opensource-replacement-analysis-v2.md`, `clawcodex_vs_ccb_analysis-v3.md`, `INTEGRATION.md`, `TEAM_MEMBERSHIP.md`
-> 版本: v1.0
-> 更新日期: 2026-05-18
+> 版本: v1.1
+> 更新日期: 2026-05-19
 
 ---
 
@@ -129,9 +129,13 @@ src/
 
 | 功能 | 优先级 | 说明 |
 |------|--------|------|
-| 多 Tracker 支持 | P2 | **前置依赖**: 需先实现 GitHub/Gitee/GitCode 等远程仓库适配器；TrackerAdapter 协议已抽象，可扩展新 Tracker |
+| 多 Tracker 支持 | ✅ 已完成 | GitHub/Gitee/GitCode 通用 REST 适配器已实现（`repo_tracker/adapter.py` + `repo_tracker/client.py`），TrackerAdapter 协议已完整，支持 `ensure_pull_request` |
 | CLI 集成 | ✅ 已完成 | `cli.py:596-666` 已实现 `--workflow`、`--dashboard`、`--port` |
 | 重试队列 + 退避 | ✅ 已完成 | `orchestrator.py:205-298` 实现指数退避重试 |
+| **重试上限保护** | P1 | `_schedule_retry` 增加最大重试次数限制，防止无限重试；超过上限后不再自动重试 |
+| **Issue State 前置检查** | P1 | `_poll_and_dispatch` 在 launch 前查 issue 最新 state，非 active 状态直接跳过 |
+| **已有 PR 跳过后续处理** | P1 | `_launch_issue` 前查 `find_pull_request`，已有 PR 则标记 completed 并跳过 |
+| **本地 Issue 注册表** | P1 | 持久化 issue→commit→PR 映射到 JSON，重启后可识别已处理 issue |
 | SSH 远程执行 | P3 | 远程工作区支持 |
 | 可观测性集成 | P3 | Langfuse/Sentry 集成 |
 
@@ -542,4 +546,4 @@ WORKFLOW.md → Orchestrator → LinearAdapter (轮询 Issue)
 
 ---
 
-*文档更新时间: 2026-05-18*
+*文档更新时间: 2026-05-19*

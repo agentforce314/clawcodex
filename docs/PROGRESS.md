@@ -2,8 +2,8 @@
 
 > 文档路径: `docs/PROGRESS.md`
 > 基于: `docs/open-source-replacement-progress.md`, `docs/FEATURE_PLAN.md`
-> 版本: v1.0
-> 更新日期: 2026-05-18
+> 版本: v1.1
+> 更新日期: 2026-05-19
 
 ---
 
@@ -310,22 +310,70 @@ LiteLLM (开源依赖)
 | ApprovalPolicy | `orchestrator/approval_policy.py` | ✅ 完成 |
 | StatusDashboard | `orchestrator/status_dashboard.py` | ✅ 完成 |
 | TrackerAdapter | `orchestrator/tracker.py` | ✅ 完成 |
+| GitSyncService | `orchestrator/git_sync.py` | ✅ 完成 |
+| GitHub/Gitee/GitCode Adapter | `orchestrator/repo_tracker/adapter.py` | ✅ 完成 |
+| Repository Issue Client | `orchestrator/repo_tracker/client.py` | ✅ 完成 |
+| **重试上限保护** | `orchestrator/orchestrator.py` | ⏳ 待实现 |
+| **Issue State 前置检查** | `orchestrator/orchestrator.py` | ⏳ 待实现 |
 
 #### 待完成
 
 | 功能 | 优先级 | 说明 |
 |------|--------|------|
-| 多 Tracker 支持 | P2 | **前置依赖**: 需先实现 GitHub/Gitee/GitCode 等远程仓库适配器；TrackerAdapter 协议已抽象，可扩展新 Tracker |
-| 重试队列 + 退避 | ✅ 已完成 | 失败任务自动重试 |
+| 多 Tracker 支持 | ✅ 已完成 | GitHub/Gitee/GitCode REST 适配器已实现并通过实际测试（GitCode live test 完成 PR 创建） |
+| 重试队列 + 退避 | ✅ 已完成 | 失败任务自动重试，指数退避机制已实现 |
 | CLI 集成 | ✅ 已完成 | `--workflow` flag 已集成到 cli.py |
-| 重试队列 + 退避 | ✅ 已完成 | 指数退避重试机制已实现 |
+| **重试上限保护** | P1 | `_schedule_retry` 增加最大重试次数限制（建议默认 5 次），超过后停止自动重试 |
+| **Issue State 前置检查** | P1 | `_launch_issue` 前调用 `tracker.fetch_issue_states_by_ids` 确认 issue 仍处于 active state，非 active 则跳过 |
+| **已有 PR 跳过后续处理** | P1 | `_launch_issue` 前调用 `tracker.find_pull_request`，若存在已关联 PR 则标记 completed 并跳过 |
 | 可观测性集成 | P3 | Langfuse/Sentry 集成 |
+
+#### Phase 3 生产强化详细设计
+
+**F-1.1: 重试上限保护**
+
+| 项 | 值 |
+|---|---|
+| 实现位置 | `orchestrator/orchestrator.py:_schedule_retry` |
+| 新增字段 | `workflow.agent.max_retry_attempts: int = 5`（默认值 5） |
+| 触发条件 | `attempt > max_retry_attempts` 时跳过调度，打印 warning 并从 `claimed` 集合移除 |
+| 副作用 | 不写入 `completed`（需人工确认后手动关闭 issue） |
+
+**F-1.2: Issue State 前置检查**
+
+| 项 | 值 |
+|---|---|
+| 实现位置 | `orchestrator/orchestrator.py:_launch_issue`（创建 workspace 后、agent 运行前） |
+| 检查方式 | 调用 `tracker.fetch_issue_states_by_ids([issue.id])`，若 state 不在 `active_states` 则跳过 |
+| 副作用 | 从 `claimed` 集合移除，不进入 `completed` 集合 |
+
+**F-1.3: 已有 PR 跳过后续处理**
+
+| 项 | 值 |
+|---|---|
+| 实现位置 | `orchestrator/orchestrator.py:_launch_issue`（Issue State 检查之后） |
+| 检查方式 | 调用 `tracker.find_pull_request(head_branch, base_branch)`，若存在 PR 则跳过 |
+| 适用范围 | 仅 RepositoryTrackerAdapter（GitHub/Gitee/GitCode）；Linear 无 PR 概念，返回 None |
+| 副作用 | 从 `claimed` 移除，写入 `completed`（重启后不重复处理） |
+
+**F-1.4: 本地 Issue 注册表（持久化映射）**
+
+| 项 | 值 |
+|---|---|
+| 文件位置 | `{workspace.root}/.clawcodex_issue_registry.json` |
+| 实现文件 | `orchestrator/issue_registry.py:IssueRegistry` |
+| 记录字段 | `issue_id / identifier / branch_name / commit_sha / pr_number / pr_url / status / attempt_count` |
+| Status 枚举 | `PENDING → SYNCED → COMPLETED / FAILED / ABANDONED` |
+| 启动时检查 | `_poll_and_dispatch` 遍历候选 issue 时跳过 `is_completed` 或 `has_pr` 的记录 |
+| 注册时机 | `_launch_issue` workspace 创建后立即写入 PENDING |
+| 更新时机 | `git_sync.sync()` 后写入 SYNCED + PR 信息；session 完成后写入 COMPLETED |
+| Abandoned 时机 | 重试达到上限后标记为 ABANDONED |
 
 #### 实施阶段
 
 - [x] **Phase 1: Foundation (Week 1-2)** - 基础框架
-- [x] **Phase 2: Agent Integration (Week 3-4)** - Agent 集成
-- [ ] **Phase 3: Production Hardening (Week 5-6)** - 生产强化
+- [x] **Phase 2: Agent Integration (Week 3-4)** - Agent 集成 + GitHub/Gitee/GitCode 支持
+- [ ] **Phase 3: Production Hardening (Week 5-6)** - 重试上限保护 + Issue State 前置检查 + 冲突恢复
 - [ ] **Phase 4: Observability (Week 7-8)** - 可观测性
 
 ---
@@ -649,4 +697,4 @@ def parse_command(command: str):
 
 ---
 
-*文档更新时间: 2026-05-18*
+*文档更新时间: 2026-05-19*
