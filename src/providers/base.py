@@ -32,6 +32,14 @@ class ChatResponse:
     finish_reason: str
     reasoning_content: Optional[str] = None
     tool_uses: Optional[list[dict[str, Any]]] = None
+    # Raw content blocks the provider chose not to project into
+    # ``content``/``tool_uses`` — currently the server-side advisor's
+    # ``server_tool_use`` (name=advisor) and ``advisor_tool_result``
+    # blocks. The query loop appends these to assistant history as
+    # opaque passthrough dicts so the next turn can replay them. None
+    # when the response had no such blocks. See
+    # ``src/utils/advisor.py`` for the policy.
+    raw_content_blocks: Optional[list[dict[str, Any]]] = None
 
 
 MessageInput: TypeAlias = ChatMessage | dict[str, Any]

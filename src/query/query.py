@@ -286,8 +286,67 @@ async def _call_model_sync(
     abort_signal: Any = None,
 ) -> tuple[list[AssistantMessage], list[ToolUseBlock]]:
     from ..types.messages import normalize_messages_for_api
+    from ..utils.advisor import (
+        ADVISOR_BETA_HEADER,
+        ADVISOR_TOOL_INSTRUCTIONS,
+        build_advisor_tool_schema,
+        is_advisor_enabled,
+        is_valid_advisor_model,
+        model_supports_advisor,
+        strip_advisor_blocks,
+    )
+
+    # Advisor activation decision — server-side parity with TS
+    # claude.ts:1094-1130. Activation requires ALL of:
+    # 1. Provider is first-party Anthropic (no custom base_url) and the
+    #    CLAUDE_CODE_DISABLE_ADVISOR_TOOL env switch is not set.
+    # 2. ``settings.advisor_model`` is non-empty (the user opted in via
+    #    /advisor; ``_on_advisor_model_change`` persists writes here).
+    # 3. The main-loop model supports calling the advisor tool
+    #    (opus-4-6 / sonnet-4-6 — older models reject the schema).
+    # 4. The configured advisor model itself is a valid advisor target.
+    # A stale advisor_model setting under a non-supporting model is
+    # silently ignored — never sent to the API. Mirrors the TS
+    # "skipping advisor — base model X does not support advisor" branch.
+    main_loop_model = getattr(provider, "model", "") or ""
+    advisor_active = False
+    advisor_model_normalized: str | None = None
+    # Wrap the ENTIRE activation predicate so any failure (transient
+    # import, future provider type that throws on the first-party
+    # check, settings cache contention) defaults to "advisor inactive"
+    # instead of failing the turn. Critic M1: previously the env/
+    # provider check was outside the inner try, so an exception in
+    # ``is_first_party_provider`` would propagate to the caller.
+    try:
+        if is_advisor_enabled(provider):
+            from ..settings.settings import get_settings
+            configured = (get_settings().advisor_model or "").strip()
+            if configured and model_supports_advisor(main_loop_model):
+                from ..models.model import canonical_model_name
+                candidate = canonical_model_name(configured)
+                if is_valid_advisor_model(candidate):
+                    advisor_active = True
+                    advisor_model_normalized = candidate
+    except Exception:
+        # Don't let advisor activation issues kill the turn. The
+        # historical advisor blocks (if any) will still be stripped
+        # below since advisor_active is False.
+        logger.exception(
+            "Advisor activation check failed; treating advisor as inactive"
+        )
+        advisor_active = False
+        advisor_model_normalized = None
 
     api_messages = normalize_messages_for_api(messages)
+
+    # When the advisor beta header is NOT going on this request, strip
+    # any historical advisor blocks — the API 400s on
+    # ``server_tool_use(name=advisor)`` and ``advisor_tool_result`` blocks
+    # without the matching beta. Mirror of TS claude.ts:1332-1334.
+    # Always-on when advisor is inactive (provider switch, env disable,
+    # base model unsupported, or user ran /advisor unset).
+    if not advisor_active:
+        api_messages = strip_advisor_blocks(api_messages)
 
     # --- Diagnostic tracing ---
     _diag = os.environ.get("CLAWCODEX_DEBUG", "").lower() in ("1", "true", "yes")
@@ -339,7 +398,25 @@ async def _call_model_sync(
             "input_schema": dict(tool.input_schema),
         })
 
+    # Append the advisor schema AFTER the regular tools so the
+    # ``cache_control`` marker (which conventionally lives on the last
+    # cached tool — the final entry in ``tool_schemas`` before this
+    # append) stays in place. If we prepended or interleaved, toggling
+    # /advisor would shift the marker and bust the prompt cache. Mirrors
+    # TS claude.ts:1411-1421 explicitly.
+    if advisor_active:
+        tool_schemas.append(build_advisor_tool_schema(advisor_model_normalized))
+
     call_kwargs: dict[str, Any] = {"tools": tool_schemas}
+
+    if advisor_active:
+        # Opt into the server-side advisor tool. ``betas`` lives outside
+        # ``extra_headers`` because the SDK auto-converts it into the
+        # ``anthropic-beta`` header AND filters out 3P-incompatible
+        # entries on Bedrock/Vertex transports. Currently we send only
+        # the advisor beta; if other betas are introduced, change this
+        # to ``call_kwargs.setdefault("betas", []).append(...)``.
+        call_kwargs["betas"] = [ADVISOR_BETA_HEADER]
 
     from ..providers.anthropic_provider import AnthropicProvider
     from ..providers.minimax_provider import MinimaxProvider
@@ -349,6 +426,33 @@ async def _call_model_sync(
         # Forward whatever shape the engine produced — str or list[dict].
         # The SDK's ``system`` param accepts ``Union[str, Iterable[TextBlockParam]]``;
         # cache_control markers on blocks engage server-side prompt caching.
+        #
+        # When the advisor is active, append ``ADVISOR_TOOL_INSTRUCTIONS``
+        # AFTER the existing system prompt blocks. This mirrors TS
+        # claude.ts:1395 (the advisor instructions come AFTER the cached
+        # system blocks, so they land in the request-scope partition and
+        # toggling /advisor doesn't churn the cached prefix).
+        if advisor_active:
+            if isinstance(system_prompt, list):
+                system_prompt = list(system_prompt) + [
+                    {"type": "text", "text": ADVISOR_TOOL_INSTRUCTIONS}
+                ]
+            elif isinstance(system_prompt, str):
+                system_prompt = (
+                    f"{system_prompt}\n\n{ADVISOR_TOOL_INSTRUCTIONS}"
+                    if system_prompt
+                    else ADVISOR_TOOL_INSTRUCTIONS
+                )
+            else:
+                # Defensive: the upstream contract is
+                # ``str | list[dict[str, Any]]``. A future caller that
+                # passes something else (e.g. None, a TextBlock object)
+                # silently loses the instructions if we don't warn.
+                logger.warning(
+                    "Advisor active but system_prompt has unexpected type "
+                    "%s — ADVISOR_TOOL_INSTRUCTIONS NOT injected",
+                    type(system_prompt).__name__,
+                )
         call_kwargs["system"] = system_prompt
     else:
         # Non-Anthropic providers (OpenAI-compat, GLM, etc.) consume the
@@ -497,6 +601,18 @@ async def _call_model_sync(
             )
             assistant_blocks.append(block)
             tool_use_blocks.append(block)
+
+    # Preserve advisor server-tool blocks as passthrough dicts so the
+    # next turn can replay them to the API as a matched use/result pair.
+    # ``normalize_messages_for_api`` round-trips dict blocks unchanged
+    # (via ``content_block_to_dict``), and ``ensure_tool_result_pairing``
+    # treats the advisor pair as a self-contained server-side
+    # use/result on the assistant message (already paired in-message).
+    # Stripping happens centrally in this function when ``advisor_active``
+    # is False on a future turn.
+    if response.raw_content_blocks:
+        for raw in response.raw_content_blocks:
+            assistant_blocks.append(dict(raw))
 
     stop_reason = response.finish_reason or "end_turn"
 
