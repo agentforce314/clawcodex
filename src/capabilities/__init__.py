@@ -19,10 +19,18 @@ from .agent_protocol import AgentLoopProtocol
 from .tool_protocol import ToolSystemProtocol
 from .context_protocol import ContextBuilderProtocol
 from .provider_protocol import LLMProviderProtocol
+from .event_protocol import ToolEventProtocol
+from .headless_protocol import HeadlessOptionsProtocol, HeadlessRunnerProtocol
+from .headless_runner import HeadlessSessionOptions, run_headless_session
 
 __all__ = [
     "AgentLoopProtocol",
     "ToolSystemProtocol",
     "ContextBuilderProtocol",
     "LLMProviderProtocol",
+    "ToolEventProtocol",
+    "HeadlessOptionsProtocol",
+    "HeadlessRunnerProtocol",
+    "HeadlessSessionOptions",
+    "run_headless_session",
 ]

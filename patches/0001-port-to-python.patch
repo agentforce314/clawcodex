@@ -1,4 +1,0 @@
-# Placeholder patch file
-# This is a stub. Actual patch content will be generated via:
-#   git diff upstream/vendor upstream/main -- patches/...
-# when the upstream/vendor branch is established.

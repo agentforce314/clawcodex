@@ -100,11 +100,6 @@ class HeadlessOptions:
     # Workspace root override (default: cwd).
     workspace_root: Path | None = None
 
-    # Optional external event handler for tool-use / tool-result events.
-    # Used by the orchestrator's QueryRunner to intercept tool calls for
-    # approval policy evaluation and streaming dashboards.
-    on_event: Callable[[ToolEvent], None] | None = None
-
 
 def run_headless(options: HeadlessOptions) -> int:
     """Run one or more prompts in headless mode. Returns the exit code."""
@@ -265,9 +260,7 @@ def run_headless(options: HeadlessOptions) -> int:
             for user_msg in inputs:
                 session.conversation.add_user_message(user_msg.text)
 
-                on_event = _build_event_bridge(
-                    writer, aggregate_tool_events, external=options.on_event
-                )
+                on_event = _build_event_bridge(writer, aggregate_tool_events)
                 on_text_chunk = None
                 if writer is not None and options.include_partial_messages:
                     def _emit_partial(chunk: str) -> None:
@@ -617,20 +610,8 @@ def _noop_ask_user(questions):  # type: ignore[override]
     return answers
 
 
-def _build_event_bridge(
-    writer: StreamJsonWriter | None,
-    sink: list[dict],
-    external: Callable[[ToolEvent], None] | None = None,
-):
+def _build_event_bridge(writer: StreamJsonWriter | None, sink: list[dict]):
     def on_event(event: ToolEvent) -> None:
-        # Forward to external handler first (orchestrator interception)
-        if external is not None:
-            try:
-                external(event)
-            except Exception:
-                # External handlers must not break the core event pipeline
-                pass
-
         if event.kind == "tool_use":
             record = {
                 "type": "tool_use",

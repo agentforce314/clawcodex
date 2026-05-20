@@ -406,20 +406,10 @@ class ClawcodexREPL:
 
         # Load configuration
         config = get_provider_config(provider_name)
-        self._api_key_missing = not config.get("api_key")
-
-        if self._api_key_missing:
-            # No API key — initialize minimal state for read-only REPL
-            self.provider = None
-            self.session = None
-            self.tool_registry = None
-            self.tool_context = None
-            self._engine_messages = []
-            self._queued_prompts = []
-            self._queued_prompts_lock = threading.Lock()
-            # Skip provider-dependent setup
-            return
-
+        if not config.get("api_key"):
+            self.console.print("[red]Error: API key not configured.[/red]")
+            self.console.print("Run [bold]clawcodex login[/bold] to configure.")
+            sys.exit(1)
 
         # Initialize provider
         provider_class = get_provider_class(provider_name)
@@ -529,14 +519,10 @@ class ClawcodexREPL:
             "/skills",
             "/init",
             "/tui",
-            "/login",
         ]
         self._built_in_commands = list(self._original_built_ins)
 
         # Initialize new command system
-        if self._api_key_missing:
-            return
-
         self._init_command_system()
 
         # Prompt toolkit with tab completion
@@ -1237,8 +1223,6 @@ class ClawcodexREPL:
         # its own TTL. We just rebind the merged completer onto the
         # PromptSession in case anything in the tool-system replaced
         # ``self.completer`` with a stub.
-        if getattr(self, '_api_key_missing', False):
-            return
         try:
             from prompt_toolkit.completion import merge_completers
 
@@ -2049,9 +2033,17 @@ class ClawcodexREPL:
 
         display_path = self._display_cwd()
         provider_label = f"{self.provider_name.upper()} Provider"
-        model_label = self.provider.model if self.provider else "Unknown model"
+        model_label = self.provider.model or "Unknown model"
+
+        mascot_ascii = "\n".join([
+            "  /\\__/\\",
+            " / o  o \\",
+            "(  __  )",
+            " \\/__/  ",
+        ])
 
         if Panel is None or Group is None or Align is None or Table is None or Text is None or Columns is None:
+            print(mascot_ascii)
             print(f"ClawCodex v{__version__}")
             print(f"{model_label} · {provider_label}")
             print(f"{display_path}\n")
@@ -2068,8 +2060,9 @@ class ClawcodexREPL:
         table.add_row("Workspace", Text(self._truncate_middle(display_path, content_width - 12), style="bold blue"))
 
         footer = Text("/help  •  /tools  •  /tui  •  /stream  •  /exit", style="dim")
+        mascot_block = Text(mascot_ascii, style="bold orange3", no_wrap=True)
         body = Group(
-            table,
+            Columns([mascot_block, table], align="center", expand=False),
             Text(""),
             Align.center(footer),
         )
@@ -2086,11 +2079,6 @@ class ClawcodexREPL:
     def run(self):
         """Run the REPL."""
         self._print_startup_header()
-
-        if getattr(self, '_api_key_missing', False):
-            self.console.print("[yellow]No API key configured — REPL is in read-only mode.[/yellow]")
-            self.console.print("Use [bold]/login[/bold] to configure, or set [cyan]ANTHROPIC_API_KEY[/cyan] env var, then restart.")
-            self.console.print("Type [bold]/exit[/bold] to quit.\n")
 
         while True:
             try:
@@ -2114,11 +2102,7 @@ class ClawcodexREPL:
                     # up front so that newlines (via Shift+Enter / Meta+Enter
                     # / ``\`` + Enter) can live in the buffer. Plain Enter
                     # still submits via our custom ``c-m`` binding.
-                    if hasattr(self, "prompt_session") and self.prompt_session is not None:
-                        user_input = self.prompt_session.prompt('❯ ')
-                    else:
-                        # Fallback for read-only mode without full REPL setup
-                        user_input = input('❯ ')
+                    user_input = self.prompt_session.prompt('❯ ')
 
                 if not user_input.strip():
                     continue
@@ -2226,10 +2210,6 @@ class ClawcodexREPL:
         if cmd in ['/exit', '/quit', '/q']:
             self.console.print("[blue]Goodbye![/blue]")
             sys.exit(0)
-
-        elif cmd == '/login':
-            self.console.print("[cyan]Use [bold]clawcodex login[/bold] in a separate terminal to configure your API key.[/cyan]")
-            self.console.print("[dim]Then restart clawcodex-dev to use the REPL.[/dim]")
 
         elif cmd == '/tui':
             self._handoff_to_textual_tui()
@@ -2444,7 +2424,7 @@ class ClawcodexREPL:
 - Use Tab for command completion
 - Press Ctrl+C to interrupt current operation
 - Press Ctrl+D to exit
-- Multi-line input: Shift+Enter, Meta/Alt+Enter, or `\\` + Enter inserts a newline; plain Enter submits
+- Multi-line input: Shift+Enter, Meta/Alt+Enter, or `\` + Enter inserts a newline; plain Enter submits
 """
         self.console.print(Markdown(help_text))
 
@@ -2639,11 +2619,6 @@ class ClawcodexREPL:
             max_turns: Maximum number of tool call turns. None means unlimited
                 (matching TS interactive REPL behavior). Only set for SDK/non-interactive mode.
         """
-        if getattr(self, '_api_key_missing', False):
-            self.console.print("[yellow]API key not configured. Cannot send message.[/yellow]")
-            self.console.print("Use [bold]/login[/bold] to configure, or set [cyan]ANTHROPIC_API_KEY[/cyan] env var.")
-            return
-
         # Expand ``@path`` mentions into context attachments before the model
         # sees the message. Port of
         # ``typescript/src/utils/attachments.ts#processAtMentionedFiles``.

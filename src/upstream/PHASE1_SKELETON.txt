@@ -1,15 +1,20 @@
-# Phase 1 Skeleton Marker
-# ========================
+# Upstream Sync Root
+# ===================
 # Directory: src/upstream/
 # Purpose:   Layer 1 root — upstream compatibility layer.
 
-# Role:      House versioned upstream snapshots with local patches applied.
-#            This is the lowest-level layer and must NOT import from
-#            src.capabilities or any Layer 3 (features) package.
+# Role:      House versioned upstream snapshots fetched from GitHub.
+#            Each subdirectory is named by the vendor commit hash
+#            (e.g. b125e16/, a3f9c72/, etc.).
 
-# Phase 1 role: Create directory skeleton only. No code moved.
-# Future:       Code from src/agent/, src/tool_system/, src/context_system/
-#               will be migrated here as part of Phase 2/3.
+# Workflow:
+#   1. Fetch upstream: git archive upstream/vendor -- src/ | tar -x ...
+#   2. Subdirectory named by commit hash: src/upstream/{commit}/
+#   3. Apply patches/ to create dev branch
+#   4. upstream-sync audit enforces layer isolation
+
+# Import rule (enforced by upstream-sync audit):
+#   src.upstream may NOT import from src.capabilities or any features layer.
 
 # See: docs/UPSTREAM_SYNC_DESIGN-decoupling.md Section 4.2
 # See: upstream-sync.yaml layers[0] ("upstream")

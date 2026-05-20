@@ -1,0 +1,17 @@
+{
+  "id": "0001-port-to-python",
+  "description": "Initial TypeScript to Python port — baseline ClawCodex modifications",
+  "affected_modules": [
+    "src/agent",
+    "src/tool_system",
+    "src/context_system",
+    "src/providers",
+    "src/orchestrator",
+    "src/hooks",
+    "src/permissions"
+  ],
+  "applied_at": "2026-05-20",
+  "upstream_version_introduced": "upstream/v2025_04",
+  "status": "applied",
+  "notes": "Baseline patch generated from git diff upstream/vendor dev-decoupling-refactor. Excludes upstream-sync package and project documentation."
+}

@@ -1,4 +1,0 @@
-# quilt series file
-# Format: <priority> <patch-name> [<description>]
-# Add patch files below, one per line (without the .patch extension for quilt)
-0001-port-to-python

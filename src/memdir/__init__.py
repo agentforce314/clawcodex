@@ -22,7 +22,6 @@ from .memdir import (
     build_memory_prompt,
     ensure_memory_dir_exists,
     load_memory_prompt,
-    load_memory_prompts,
     truncate_entrypoint_content,
 )
 from .memory_age import (
@@ -108,7 +107,6 @@ __all__ = [
     "build_memory_prompt",
     "ensure_memory_dir_exists",
     "load_memory_prompt",
-    "load_memory_prompts",
     "truncate_entrypoint_content",
     # scan / recall
     "FRONTMATTER_MAX_LINES",

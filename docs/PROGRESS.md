@@ -2,8 +2,8 @@
 
 > 文档路径: `docs/PROGRESS.md`
 > 基于: `docs/open-source-replacement-progress.md`, `docs/FEATURE_PLAN.md`
-> 版本: v1.2
-> 更新日期: 2026-05-19
+> 版本: v1.3
+> 更新日期: 2026-05-20
 
 ---
 
@@ -44,10 +44,70 @@
 | F-11 | sessionStorage 容量限制 | P2 | ⏳ 待开始 | 防止 daemon 会话内存泄漏 |
 | F-12 | cacheWarning 容量限制 | P2 | ⏳ 待开始 | 防止 source 类型内存泄漏 |
 | F-13 | Agent 记忆作用域隔离 | P1 | ✅ 完成 | 按需加载不同作用域记忆 |
+| F-14 | 三层解耦架构（Layer Isolation） | P1 | ✅ 完成 | upstream/capabilities/features 三层分离，零层违规 |
 
 ---
 
 ## 二、已完成任务详情
+
+### F-14: 三层解耦架构（Layer Isolation）
+
+**状态**: ✅ 完成
+**完成日期**: 2026-05-20
+**优先级**: P1
+
+#### 背景
+
+`src/api/query.py` 在 `stream()` 方法内部直接导入 `src.entrypoints.headless` 和 `src.tool_system.agent_loop`，这违反了 layer isolation 约束——features 层（api）不能直接依赖 upstream。
+
+#### 实现方案
+
+```
+src/api/query.py
+    ↓ imports（在 stream() 方法内，运行时）
+src/capabilities/headless_runner.py  ← 函数内部懒加载，不在模块路径上
+    ↓                                   （upstream import 在 headless_runner.py 函数内部）
+src/entrypoints/headless.py          ← 上游模块（运行时才加载）
+```
+
+#### 解耦实现
+
+1. **新增 `src/capabilities/event_protocol.py`** — 定义 `ToolEventProtocol`，从 `src/tool_system/agent_loop.ToolEvent` 提取接口契约
+2. **新增 `src/capabilities/headless_protocol.py`** — 定义 `HeadlessOptionsProtocol` 和 `HeadlessRunnerProtocol`
+3. **新增 `src/capabilities/headless_runner.py`** — `HeadlessSessionOptions` + `run_headless_session()` 函数，通过环境变量 `CLAW_HEADLESS_BACKEND=stub` 可在测试中完全绕过上游
+4. **更新 `src/api/query.py`** — 类型标注改用 Protocol 接口，运行时通过 `run_headless_session()` 分发，不再直接引用上游
+
+#### upstream-sync 配置更新
+
+- `src/api` 加入 `features` 层（与 `orchestrator` 同层）
+- `upstream-sync audit` 验证：**零层违规**
+
+#### 关键文件
+
+- `src/capabilities/event_protocol.py` - ToolEvent 接口协议
+- `src/capabilities/headless_protocol.py` - HeadlessOptions / HeadlessRunner 接口协议
+- `src/capabilities/headless_runner.py` - 可插拔后端分发器
+- `src/api/query.py` - 运行时零上游耦合
+- `upstream-sync.yaml` - `src/api` 加入 features 层
+
+#### 解耦结果
+
+| 组件 | 上游直接引用 | 运行时耦合 |
+|------|------------|-----------|
+| `src/orchestrator/` | ❌ 无 | ✅ 通过 headless_runner 间接 |
+| `src/api/query.py` | ❌ 无 | ✅ 通过 headless_runner 间接 |
+| `src/api/orchestration.py` | ❌ 无 | ✅ 只调用 orchestrator 内部 |
+| `src/capabilities/` | ❌ 无 | ✅ 只定义 Protocol，无实现 |
+
+#### 测试验证
+
+```
+tests/test_layer_isolation.py: 12/12 通过
+upstream-sync audit: 零层违规
+CLAW_HEADLESS_BACKEND=stub: 不加载任何上游模块
+```
+
+---
 
 ### R-1: Pydantic-settings 替换配置系统
 
@@ -1026,3 +1086,5 @@ def parse_command(command: str):
 ---
 
 *文档更新时间: 2026-05-20*
+
+*版本 v1.3 更新：新增 F-14 三层解耦架构（Layer Isolation），`src/api/` 加入 features 层，`src/api/query.py` 通过 `capabilities/headless_runner.py` 实现运行时零上游耦合，upstream-sync audit 零层违规验证通过。*

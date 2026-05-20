@@ -373,7 +373,6 @@ def build_full_system_prompt(
     tool_restrictions: list[str] | None = None,
     custom_system_prompt: str | None = None,
     append_system_prompt: str | None = None,
-    memory_scopes: list[str] | None = None,
     use_cache: bool = True,
 ) -> str:
     """
@@ -408,12 +407,12 @@ def build_full_system_prompt(
         try:
             from src.memdir import (
                 has_auto_mem_path_override,
-                load_memory_prompts,
+                load_memory_prompt,
             )
             if has_auto_mem_path_override():
-                memory_prompts = load_memory_prompts(memory_scopes)
-                for prompt in memory_prompts:
-                    base += "\n\n" + prompt
+                memory_prompt = load_memory_prompt()
+                if memory_prompt:
+                    base += "\n\n" + memory_prompt
         except Exception:
             # Memory subsystem failures must never block prompt building.
             pass
@@ -473,7 +472,7 @@ def build_full_system_prompt(
         sections.append(env_section)
 
     # 25. Auto-memory section (MEMORY.md + behavioral instructions)
-    memory_section = _build_memory_section(memory_scopes)
+    memory_section = _build_memory_section()
     if memory_section:
         sections.append(memory_section)
 
@@ -565,7 +564,6 @@ def build_full_system_prompt_blocks(
     tool_restrictions: list[str] | None = None,
     custom_system_prompt: str | None = None,
     append_system_prompt: str | None = None,
-    memory_scopes: list[str] | None = None,
     use_cache: bool = True,
     query_source: str = "main",
     provider: Any | None = None,
@@ -599,12 +597,12 @@ def build_full_system_prompt_blocks(
         try:
             from src.memdir import (
                 has_auto_mem_path_override,
-                load_memory_prompts,
+                load_memory_prompt,
             )
             if has_auto_mem_path_override():
-                memory_prompts = load_memory_prompts(memory_scopes)
-                for prompt in memory_prompts:
-                    base += "\n\n" + prompt
+                memory_prompt = load_memory_prompt()
+                if memory_prompt:
+                    base += "\n\n" + memory_prompt
         except Exception:
             pass
         if append_system_prompt:
@@ -643,7 +641,7 @@ def build_full_system_prompt_blocks(
     env_section = _build_env_section(cwd, use_cache)
     if env_section:
         sections.append(env_section)
-    memory_section = _build_memory_section(memory_scopes)
+    memory_section = _build_memory_section()
     if memory_section:
         sections.append(memory_section)
     mcp_section = _build_mcp_section(mcp_servers, use_cache)
@@ -1076,9 +1074,7 @@ def _build_env_section(cwd: str | None, use_cache: bool) -> SystemPromptSection 
     return SystemPromptSection(id="environment", content=content, cache_scope=CacheScope.REQUEST, order=20)
 
 
-def _build_memory_section(
-    memory_scopes: list[str] | None = None,
-) -> SystemPromptSection | None:
+def _build_memory_section() -> SystemPromptSection | None:
     """Build the auto-memory system-prompt section.
 
     Mirrors TS ``constants/prompts.ts:495`` (``systemPromptSection('memory',
@@ -1087,20 +1083,14 @@ def _build_memory_section(
     can change mid-session as the model writes to it, and none of the
     existing cache scopes invalidate on file mtime. The work is small
     (one read of a ≤25KB file), so correctness over cache hit-rate.
-
-    Args:
-        memory_scopes: Optional list of scopes to load. If None, loads
-            the default memory prompt (backwards compatible).
     """
     try:
-        from src.memdir import load_memory_prompts
+        from src.memdir import load_memory_prompt
     except Exception:
         return None
-    prompts = load_memory_prompts(memory_scopes)
-    if not prompts:
+    content = load_memory_prompt()
+    if not content:
         return None
-    # Join multiple prompts with separators
-    content = "\n\n".join(prompts)
     return SystemPromptSection(
         id="memory",
         content=content,

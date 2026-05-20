@@ -2,8 +2,8 @@
 
 > 文档路径: `docs/FEATURE_PLAN.md`
 > 基于: `clawcodex-opensource-replacement-analysis-v2.md`, `clawcodex_vs_ccb_analysis-v3.md`, `INTEGRATION.md`, `TEAM_MEMBERSHIP.md`
-> 版本: v1.2
-> 更新日期: 2026-05-19
+> 版本: v1.3
+> 更新日期: 2026-05-20
 
 ---
 
@@ -13,23 +13,29 @@
 
 ClawCodex 是 Anthropic Claude Code 的 Python 移植版，同时扩展多 Provider 支持，目标成为功能完整的 AI Agent CLI 工具。
 
-### 1.2 当前架构
+### 1.2 当前架构（三层解耦）
 
 ```
 src/
-├── agent/              # Agent 核心（run_agent, fork_subagent, resume_agent）
-├── orchestrator/       # 自主模式编排（Symphony 集成）
-├── providers/          # 多 Provider 支持（Anthropic/OpenAI/GLM/Minimax/DeepSeek/OpenRouter）
-├── tool_system/        # 工具系统（30+ 内置工具）
-├── hooks/              # 钩子系统（28 事件）
-├── permissions/        # 权限与安全（Bash 安全、文件系统权限）
-├── context_system/     # 上下文构建（Git/Memory/Prompt）
-├── compact_service/    # 上下文压缩
-├── services/           # 扩展服务（MCP/Swarm/IDE/Analytics）
-├── api/                # 公共 API 层
-├── settings/           # 配置系统（Pydantic-settings）
-└── cli.py              # CLI 入口
+├── upstream/            # Layer 1: 上游快照（git archive 提取的原始代码）
+│   └── v2025_04/        #     具体版本标签镜像
+├── capabilities/        # Layer 2: ClawCodex Protocol 接口定义
+│   ├── agent_protocol.py
+│   ├── tool_protocol.py
+│   ├── context_protocol.py
+│   ├── provider_protocol.py
+│   ├── event_protocol.py          # ToolEvent 接口
+│   ├── headless_protocol.py       # HeadlessOptions 接口
+│   └── headless_runner.py          # 可插拔 headless 后端分发器
+├── orchestrator/        # Layer 3: 自主模式编排（完全新增，无上游依赖）
+├── api/                 # Layer 3: 公共 Python API（完全新增，无上游依赖）
+└── ...                  # 其余为上游原有模块
 ```
+
+**层约束（upstream-sync audit 强制）：**
+- `src.upstream` → 只能被 `src.capabilities` 依赖
+- `src.capabilities` → 不能导入 `src.upstream`
+- `src.orchestrator` / `src.api` → 只能从 `src.capabilities` 导入，不能直接导入 `src.upstream`
 
 ---
 
@@ -49,7 +55,23 @@ src/
 | Agent 定义系统 | `agent/agent_definitions.py` | Agent 类型、工具、配置定义 | ✅ 完成 |
 | Agent 记忆作用域 | `memdir/memdir.py` | 按需加载不同作用域的记忆 | ✅ 完成 |
 
-### 2.2 Provider 层
+### 2.0 三层解耦架构（Layer Isolation）
+
+| Layer | 路径 | 说明 | upstream-sync 层 |
+|-------|------|------|-----------------|
+| Layer 1 | `src/upstream/` / `src/upstream/v2025_04/` | 上游代码镜像（只读） | `upstream` |
+| Layer 2 | `src/capabilities/` | Protocol 接口定义，无运行时上游依赖 | `capabilities` |
+| Layer 3 | `src/orchestrator/` / `src/api/` | ClawCodex 新增组件，完全解耦 | `features` |
+
+**解耦实现：**
+- `src/api/query.py` 通过 `capabilities/headless_runner.py` 间接调用 `entrypoints/headless.run_headless`，运行时无直接上游引用
+- `src/api/query.py` 使用 `ToolEventProtocol` / `HeadlessOptionsProtocol` 做类型标注，与上游具体实现解耦
+- 所有 Protocol 使用 `typing.Protocol` 结构子类型（无 ABC 继承）
+- 适配器文件（`_gitpython_adapter.py` 等）在 `src/` 内，随上游代码一同在补丁范围内，不形成独立依赖
+
+**upstream-sync audit**：零层违规（`upstream-sync audit` 验证通过）
+
+### 2.1 核心 Agent 系统
 
 | Provider | 文件 | 状态 | 备注 |
 |----------|------|------|------|
@@ -1268,3 +1290,5 @@ WORKFLOW.md → Orchestrator → LinearAdapter (轮询 Issue)
 ---
 
 *文档更新时间: 2026-05-20*
+
+*版本 v1.3 更新：三层解耦架构（Layer 1 upstream / Layer 2 capabilities / Layer 3 features），新增 `src/api/` 加入 features 层，`src/api/query.py` 通过 `capabilities/headless_runner.py` 实现运行时零上游耦合。*

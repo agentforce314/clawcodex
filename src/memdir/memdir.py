@@ -288,142 +288,6 @@ def build_memory_prompt(
     return "\n".join(lines)
 
 
-def _get_memory_path_for_scope(scope: str) -> str:
-    """Get the memory directory path for a given scope.
-
-    The base structure is:
-    - <auto_mem>/              → user/private memories (default)
-    - <auto_mem>/team/         → team shared memories
-    - <auto_mem>/reference/    → reference memories (if needed)
-
-    The 'local' scope is a special scope that maps to the project-level
-    memory directory for session-only persistence.
-    """
-    from .paths import get_auto_mem_path
-    from .team_mem_paths import get_team_mem_path
-
-    auto_dir = get_auto_mem_path().rstrip("/\\")
-    team_dir = get_team_mem_path().rstrip("/\\")
-
-    if scope == "team":
-        return team_dir
-    elif scope == "local":
-        # Local scope maps to the project-level memory dir (same as user/private)
-        return auto_dir
-    else:
-        # Default: user/project/reference scopes all map to the base auto_mem dir
-        return auto_dir
-
-
-def _load_memory_prompt_for_scope(scope: str) -> str | None:
-    """Load memory prompt for a specific scope.
-
-    Returns None if the directory doesn't exist or is empty.
-    """
-    from .paths import get_auto_mem_path
-    from .team_mem_paths import get_team_mem_path
-
-    auto_dir = get_auto_mem_path()
-    team_dir = get_team_mem_path()
-
-    if scope == "team":
-        entrypoint_path = Path(team_dir) / ENTRYPOINT_NAME
-    else:
-        entrypoint_path = Path(auto_dir) / ENTRYPOINT_NAME
-
-    if not entrypoint_path.exists():
-        return None
-
-    try:
-        entrypoint_content = entrypoint_path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return None
-
-    if not entrypoint_content.strip():
-        return None
-
-    # Use the appropriate display name based on scope
-    display_name_map = {
-        "team": "Team Memory",
-        "local": "Local Memory",
-    }
-    display_name = display_name_map.get(scope, "Auto Memory")
-
-    memory_dir = _get_memory_path_for_scope(scope)
-
-    lines = build_memory_lines(
-        display_name=display_name,
-        memory_dir=memory_dir,
-    )
-
-    truncation = truncate_entrypoint_content(entrypoint_content)
-    lines.extend([f"## {ENTRYPOINT_NAME}", "", truncation.content])
-
-    return "\n".join(lines)
-
-
-def load_memory_prompts(
-    memory_scopes: list[str] | None = None,
-) -> list[str]:
-    """Load memory prompts for specified scopes.
-
-    Args:
-        memory_scopes: List of scopes to load. Supported scopes:
-            - "user": User/private memories (default if None provided)
-            - "project": Project context memories
-            - "reference": External system pointers
-            - "team": Team-shared memories
-            - "local": Session-local memories
-
-            If None, loads the default prompt (backwards compatible with
-            load_memory_prompt()).
-
-    Returns:
-        List of memory prompt strings (non-empty only).
-    """
-    if not is_auto_memory_enabled():
-        return []
-
-    # Lazy import to avoid circular import at module load time
-    from .team_mem_paths import get_team_mem_path, is_team_memory_enabled
-
-    # If no scopes specified, return default behavior for backwards compat
-    if memory_scopes is None:
-        if is_team_memory_enabled():
-            from .team_mem_prompts import build_combined_memory_prompt
-            team_dir = get_team_mem_path()
-            ensure_memory_dir_exists(team_dir)
-            combined = build_combined_memory_prompt()
-            return [combined] if combined else []
-        else:
-            auto_dir = get_auto_mem_path()
-            ensure_memory_dir_exists(auto_dir)
-            prompt = build_memory_prompt(
-                display_name=_AUTO_MEM_DISPLAY_NAME,
-                memory_dir=auto_dir,
-            )
-            return [prompt] if prompt else []
-
-    # Load prompts for each specified scope
-    prompts: list[str] = []
-
-    for scope in memory_scopes:
-        # Team memory needs special handling (combined prompt)
-        if scope == "team" and is_team_memory_enabled():
-            from .team_mem_prompts import build_combined_memory_prompt
-            team_dir = get_team_mem_path()
-            ensure_memory_dir_exists(team_dir)
-            combined = build_combined_memory_prompt()
-            if combined:
-                prompts.append(combined)
-        else:
-            prompt = _load_memory_prompt_for_scope(scope)
-            if prompt:
-                prompts.append(prompt)
-
-    return prompts
-
-
 def load_memory_prompt() -> str | None:
     """Top-level dispatch for the auto-memory system prompt section.
 
@@ -437,10 +301,28 @@ def load_memory_prompt() -> str | None:
     2. Team memory enabled → combined private + team prompt.
     3. Else → single-directory auto-memory prompt.
 
-    Note: For scope-based loading, use ``load_memory_prompts()`` instead.
-
     KAIROS daily-log mode is still deferred (Slice D in the refactor
     plan).
     """
-    prompts = load_memory_prompts(None)
-    return prompts[0] if prompts else None
+    if not is_auto_memory_enabled():
+        return None
+
+    # Lazy import to avoid a circular import at module load time
+    # (team_mem_prompts imports from this module).
+    from .team_mem_paths import get_team_mem_path, is_team_memory_enabled
+
+    if is_team_memory_enabled():
+        from .team_mem_prompts import build_combined_memory_prompt
+
+        # team_dir is nested under auto_dir, so creating team_dir with
+        # parents=True creates auto_dir as a side effect.
+        team_dir = get_team_mem_path()
+        ensure_memory_dir_exists(team_dir)
+        return build_combined_memory_prompt()
+
+    auto_dir = get_auto_mem_path()
+    ensure_memory_dir_exists(auto_dir)
+    return build_memory_prompt(
+        display_name=_AUTO_MEM_DISPLAY_NAME,
+        memory_dir=auto_dir,
+    )

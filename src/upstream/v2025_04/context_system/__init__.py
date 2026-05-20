@@ -1,1 +1,0 @@
-"""upstream/v2025_04/context_system/ — vendor snapshot of src/context_system/ module."""

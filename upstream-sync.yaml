@@ -5,16 +5,17 @@ project_name: "clawcodex"
 source_lang: "python"
 
 upstream:
-  remote_url: "https://github.com/anthropics/claude-code.git"
+  remote_url: "https://github.com/agentforce314/clawcodex.git"
   main_branch: "main"
   vendor_branch: "upstream/vendor"
-  version_tag_format: "upstream/v{YYYY}_{MM}"
+  # Use git short commit hash as version tag (e.g. "b125e16")
+  version_tag_format: "{commit}"
 
 layers:
   - name: "upstream"
     paths:
       - "src/upstream"
-      - "src/upstream/v2025_04"
+      - "src/upstream/{commit}"
     allowed_imports_from: []
     forbidden_imports_from: []
 
@@ -28,6 +29,7 @@ layers:
   - name: "features"
     paths:
       - "src/orchestrator"
+      - "src/api"
       - "src/providers"
       - "src/hooks"
       - "src/permissions"
@@ -40,10 +42,12 @@ layers:
       - "src.context_system"
 
 patches:
-  directory: "patches"
+  # Patches stored per upstream commit hash, e.g. patches/upstream/b125e16/
+  directory: "patches/upstream"
   engine: "quilt"
-  series_file: "patches/series"
-  metadata_dir: "patches/metadata"
+  # Series file: patches/upstream/{commit}_series
+  series_file: "patches/upstream/{commit}_series"
+  metadata_dir: "patches/metadata/upstream"
 
 sync:
   impact_threshold_auto: "low"

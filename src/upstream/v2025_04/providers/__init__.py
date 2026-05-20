@@ -1,1 +1,0 @@
-"""upstream/v2025_04/providers/ — vendor snapshot of src/providers/ module."""

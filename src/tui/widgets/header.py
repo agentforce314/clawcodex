@@ -12,6 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from rich.align import Align
+from rich.columns import Columns
 from rich.console import Group
 from rich.panel import Panel
 from rich.table import Table
@@ -19,6 +20,12 @@ from rich.text import Text
 from textual.widgets import Static
 
 
+_MASCOT = "\n".join([
+    "  /\\__/\\",
+    " / o  o \\",
+    "(  __  )",
+    " \\/__/  ",
+])
 
 
 def _display_cwd(workspace_root: Path) -> str:
@@ -108,8 +115,9 @@ class StartupHeader(Static):
         )
 
         footer = Text(self._slash_hints, style="dim")
+        mascot_block = Text(_MASCOT, style="bold orange3", no_wrap=True)
         body = Group(
-            table,
+            Columns([mascot_block, table], align="center", expand=False),
             Text(""),
             Align.center(footer),
         )

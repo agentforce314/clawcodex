@@ -10,7 +10,11 @@ import io
 import queue
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import TYPE_CHECKING, Any, AsyncIterator
+
+if TYPE_CHECKING:
+    from ..capabilities.event_protocol import ToolEventProtocol
+    from ..capabilities.headless_runner import HeadlessSessionOptions
 
 
 @dataclass
@@ -82,63 +86,74 @@ class QueryRunner:
     async def stream(self) -> AsyncIterator[QueryEvent]:
         """Yield query events as they occur.
 
-        Uses the headless entrypoint under the hood, but intercepts tool
-        events via the ``on_event`` callback so callers can observe (and
-        optionally gate) individual tool calls without parsing stdout.
+        Uses the headless runner registry under the hood, which dispatches
+        to the configured backend (default: upstream headless entrypoint).
+        The caller observes tool events via ``on_event`` without needing
+        to import from upstream.
         """
-        from ..entrypoints.headless import HeadlessOptions, run_headless
-        from ..tool_system.agent_loop import ToolEvent
+        # Import the headless session runner — this stays off the upstream
+        # import path at module-load time; the concrete implementation is
+        # loaded lazily inside run_headless_session.
+        from ..capabilities.headless_runner import HeadlessSessionOptions, run_headless_session
 
-        event_queue: queue.Queue[ToolEvent] = queue.Queue()
+        event_queue: queue.Queue[Any] = queue.Queue()
 
-        def on_event(tool_event: ToolEvent) -> None:
+        def on_event(tool_event: Any) -> None:
             try:
                 event_queue.put(tool_event)
             except Exception:
                 pass
 
         stdout = io.StringIO()
-        options = HeadlessOptions(
+        session_opts = HeadlessSessionOptions(
             prompt=self.config.prompt,
-            output_format="text",
+            workspace_root=Path(self.config.workspace),
             provider_name=self.config.provider,
             model=self.config.model,
             max_turns=self.config.max_turns,
             permission_mode=self.config.permission_mode,
-            workspace_root=Path(self.config.workspace),
             stdout=stdout,
             stderr=stdout,
             on_event=on_event,
         )
 
         loop = asyncio.get_running_loop()
-        future = loop.run_in_executor(None, run_headless, options)
+        future = loop.run_in_executor(None, run_headless_session, session_opts)
 
-        # Drain the event queue while headless runs in the background.
+        # Drain the event queue while the headless session runs in the background.
         # A short timeout lets us poll for completion without busy-waiting.
         while True:
             try:
-                ev = event_queue.get(timeout=0.05)
-                if ev.kind == "tool_use":
+                ev: Any = event_queue.get(timeout=0.05)
+                # Access via duck-typed attributes (matches ToolEventProtocol)
+                kind = getattr(ev, "kind", None)
+                tool_name = getattr(ev, "tool_name", "")
+                tool_input = getattr(ev, "tool_input", None)
+                tool_use_id = getattr(ev, "tool_use_id", None)
+                tool_output = getattr(ev, "tool_output", None)
+                is_error = getattr(ev, "is_error", False)
+                error = getattr(ev, "error", None)
+
+                if kind == "tool_use":
                     yield ToolCallEvent(
-                        tool_name=ev.tool_name,
-                        params=ev.tool_input or {},
-                        tool_use_id=ev.tool_use_id,
+                        tool_name=tool_name,
+                        params=tool_input or {},
+                        tool_use_id=tool_use_id,
                     )
-                elif ev.kind == "tool_result":
+                elif kind == "tool_result":
                     yield ToolResultEvent(
-                        tool_name=ev.tool_name,
+                        tool_name=tool_name,
                         result={
-                            "output": ev.tool_output,
+                            "output": tool_output,
                             "is_error": False,
                         },
                     )
-                elif ev.kind == "tool_error":
+                elif kind == "tool_error":
                     yield ToolResultEvent(
-                        tool_name=ev.tool_name,
+                        tool_name=tool_name,
                         result={
-                            "output": ev.tool_output,
-                            "error": ev.error,
+                            "output": tool_output,
+                            "error": error,
                             "is_error": True,
                         },
                     )
