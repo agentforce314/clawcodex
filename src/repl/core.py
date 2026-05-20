@@ -85,6 +85,20 @@ except ModuleNotFoundError:  # pragma: no cover
             raise EOFError()
 
 
+def _fuzzy_subseq(name: str, partial: str) -> bool:
+    """Lightweight subsequence match (``partial`` chars appear in order)."""
+
+    if not partial:
+        return True
+    i = 0
+    for ch in name:
+        if ch == partial[i]:
+            i += 1
+            if i == len(partial):
+                return True
+    return False
+
+
 class _SlashOnlyCompleter(Completer):
     """Trigger autocompletion only for slash commands, matching the reference
     Claude Code behavior.
@@ -98,13 +112,16 @@ class _SlashOnlyCompleter(Completer):
     * In every other case (plain words like ``hello``, ``ex``, etc.) return
       no completions so the user can type freely without a suggestion popup.
 
-    The underlying list of command words is provided as a callable so it can
-    be refreshed dynamically (skills, plugin commands, …) without replacing
-    the completer instance.
+    When a ``suggestions_provider`` is supplied it carries descriptions and
+    optional ``[workflow]`` tags, which surface in the prompt_toolkit menu
+    as ``display_meta`` — the same two-column layout the TS reference uses.
+    The legacy ``words_provider`` is still honoured for callers that only
+    have the flat name list.
     """
 
-    def __init__(self, words_provider):
+    def __init__(self, words_provider, suggestions_provider=None):
         self._words_provider = words_provider
+        self._suggestions_provider = suggestions_provider
 
     def get_completions(self, document, complete_event):  # type: ignore[override]
         text = document.text_before_cursor
@@ -112,6 +129,16 @@ class _SlashOnlyCompleter(Completer):
         if token is None:
             return
         partial = token[1:].lower()  # strip leading '/'
+        start_position = token_start - len(text)
+
+        if self._suggestions_provider is not None:
+            try:
+                suggestions = self._suggestions_provider() or []
+            except Exception:
+                suggestions = []
+            yield from self._rich_completions(suggestions, partial, start_position)
+            return
+
         words = self._words_provider() or []
         seen: set[str] = set()
         for word in words:
@@ -123,12 +150,93 @@ class _SlashOnlyCompleter(Completer):
                 continue
             if not partial or key.startswith(partial):
                 seen.add(key)
-                start_position = token_start - len(text)
                 yield Completion(
                     text=word,
                     start_position=start_position,
                     display=word,
                 )
+
+    def _rich_completions(self, suggestions, partial, start_position):
+        """Yield ``Completion`` entries with ``display`` + ``display_meta``.
+
+        Matches the TS ranking: exact name → exact alias → prefix name →
+        prefix alias → fuzzy. Aliases are surfaced in ``(alias)`` only
+        when the typed prefix matched the alias, so an unmatched partial
+        does not pollute the menu with every alternate name.
+        """
+
+        scored: list[tuple[int, int, Any, str | None]] = []
+        seen: set[str] = set()
+        for idx, sugg in enumerate(suggestions):
+            name = getattr(sugg, "name", None)
+            if not isinstance(name, str) or not name:
+                continue
+            name_lc = name.lower()
+            if name_lc in seen:
+                continue
+            aliases = tuple(getattr(sugg, "aliases", ()) or ())
+            matched_alias: str | None = None
+            rank: int | None = None
+            if not partial:
+                rank = 0
+            elif name_lc == partial:
+                rank = 0
+            else:
+                exact_alias = next(
+                    (a for a in aliases if a.lower() == partial), None
+                )
+                if exact_alias:
+                    rank = 1
+                    matched_alias = exact_alias
+                elif name_lc.startswith(partial):
+                    rank = 2
+                else:
+                    prefix_alias = next(
+                        (a for a in aliases if a.lower().startswith(partial)),
+                        None,
+                    )
+                    if prefix_alias:
+                        rank = 3
+                        matched_alias = prefix_alias
+                    elif _fuzzy_subseq(name_lc, partial):
+                        rank = 5
+                    else:
+                        fuzzy_alias = next(
+                            (a for a in aliases if _fuzzy_subseq(a.lower(), partial)),
+                            None,
+                        )
+                        if fuzzy_alias:
+                            rank = 6
+                            matched_alias = fuzzy_alias
+            if rank is None:
+                continue
+            seen.add(name_lc)
+            secondary = idx if not partial else len(name)
+            scored.append((rank, secondary, sugg, matched_alias))
+
+        scored.sort(key=lambda t: (t[0], t[1], t[2].name.lower()))
+
+        for _, _, sugg, matched_alias in scored:
+            alias_text = f" ({matched_alias})" if matched_alias else ""
+            display_text = f"/{sugg.name}{alias_text}"
+            display_styled = [("class:completion.command", display_text)]
+            description = (getattr(sugg, "description", "") or "").strip()
+            tag = getattr(sugg, "tag", None)
+            meta_parts: list[tuple[str, str]] = []
+            if tag:
+                meta_parts.append(("class:completion.tag", f"[{tag}] "))
+            if description:
+                # Collapse internal whitespace so multi-line descriptions
+                # render as one row in the prompt_toolkit menu.
+                meta_parts.append(
+                    ("class:completion.description", " ".join(description.split()))
+                )
+            yield Completion(
+                text=f"/{sugg.name}",
+                start_position=start_position,
+                display=display_styled,
+                display_meta=meta_parts if meta_parts else None,
+            )
 
     @staticmethod
     def _current_slash_token(text: str) -> tuple[str | None, int]:
@@ -428,7 +536,10 @@ class ClawcodexREPL:
         # interfering with the other's trigger.
         from prompt_toolkit.completion import merge_completers
 
-        self._slash_completer = _SlashOnlyCompleter(self._get_slash_command_words)
+        self._slash_completer = _SlashOnlyCompleter(
+            self._get_slash_command_words,
+            suggestions_provider=self._get_slash_command_suggestions,
+        )
         self._at_completer = AtFileCompleter(
             cwd=str(self.tool_context.workspace_root)
         )
@@ -528,6 +639,18 @@ class ClawcodexREPL:
                 # background highlight.
                 'prompt': 'bold fg:ansiblue bg:#262626',
                 'bottom-toolbar': 'fg:#888888 bg:default',
+                # Slash-command completion menu (two-column layout:
+                # /name on the left, [tag] + description on the right).
+                # Mirrors the TS reference where unselected rows are dim
+                # and the highlighted row inverts on a tinted background.
+                'completion-menu': 'bg:default',
+                'completion-menu.completion': 'fg:#bfbfbf bg:default',
+                'completion-menu.completion.current': 'fg:#ffffff bg:#005f87 bold',
+                'completion-menu.meta.completion': 'fg:#7a7a7a bg:default',
+                'completion-menu.meta.completion.current': 'fg:#dadada bg:#005f87',
+                'completion.command': 'bold fg:ansigreen',
+                'completion.tag': 'italic fg:ansicyan',
+                'completion.description': 'fg:#9a9a9a',
             }),
             key_bindings=self.bindings,
             complete_while_typing=True,
@@ -909,6 +1032,50 @@ class ClawcodexREPL:
             deduped.append(w)
         return deduped
 
+    # REPL-only built-ins not covered by the shared TUI ``LOCAL_BUILTINS``.
+    # Used to seed descriptions for the prompt_toolkit completion menu so
+    # ``/save`` etc. show meta text alongside the registry-backed entries.
+    _REPL_EXTRA_BUILTIN_DESCRIPTIONS: dict[str, str] = {
+        "save": "Save the conversation to a file",
+        "load": "Load a saved conversation",
+        "tool": "Inspect or invoke a single tool",
+        "init": "Initialize a CLAUDE.md for this workspace",
+        "tui": "Switch to the Textual TUI",
+    }
+
+    def _get_slash_command_suggestions(self) -> list[Any]:
+        """Return rich slash-command entries (name + description + tag).
+
+        Drives the prompt_toolkit completion menu's two-column display
+        (command name on the left, description as ``display_meta`` on
+        the right) and stays in lock-step with the TUI palette by
+        reusing :func:`src.tui.commands.build_command_suggestions`. Adds
+        the REPL-only built-ins (``/save``, ``/load``, ``/tool``,
+        ``/init``, ``/tui``) that the shared builder doesn't know about.
+        """
+
+        try:
+            from src.tui.commands import CommandSuggestion, build_command_suggestions
+
+            cwd = self.tool_context.cwd or self.tool_context.workspace_root
+            base = build_command_suggestions(cwd, self.tool_context)
+
+            have = {s.name.lower() for s in base if hasattr(s, "name")}
+            extra: list[Any] = []
+            for name, description in self._REPL_EXTRA_BUILTIN_DESCRIPTIONS.items():
+                if name in have:
+                    continue
+                extra.append(CommandSuggestion(name=name, description=description))
+            # Built-ins lead the menu, then registry/skills (the order
+            # ``build_command_suggestions`` already produces).
+            return [
+                *(s for s in base if getattr(s, "source", "") == "builtin"),
+                *extra,
+                *(s for s in base if getattr(s, "source", "") != "builtin"),
+            ]
+        except Exception:
+            return []
+
     def _refresh_completer(self) -> None:
         # The slash + ``@``-file completers are stable for the lifetime
         # of the REPL: ``_SlashOnlyCompleter`` reads its word list
@@ -925,7 +1092,8 @@ class ClawcodexREPL:
                 )
             if not hasattr(self, "_slash_completer") or self._slash_completer is None:
                 self._slash_completer = _SlashOnlyCompleter(
-                    self._get_slash_command_words
+                    self._get_slash_command_words,
+                    suggestions_provider=self._get_slash_command_suggestions,
                 )
             self.completer = merge_completers(
                 [self._slash_completer, self._at_completer]
