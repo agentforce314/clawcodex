@@ -296,10 +296,21 @@ def run_headless(options: HeadlessOptions) -> int:
                             # so the next turn can pair tool_use IDs to
                             # results. Plain add_assistant_message
                             # loses the structure.
+                            # Critic S3: log + re-raise on failure
+                            # rather than swallow; a persist error
+                            # means the conversation is corrupted and
+                            # the next API call will reject it. Better
+                            # to surface now than to debug a 400 later.
                             try:
                                 session.conversation.add_message(msg.role, msg.content)
                             except Exception:
-                                pass
+                                import logging
+                                logging.getLogger(__name__).exception(
+                                    "Failed to persist message into "
+                                    "conversation: role=%s",
+                                    getattr(msg, "role", "?"),
+                                )
+                                raise
 
                         compat_result = _asyncio.run(run_query_as_agent_loop(
                             initial_messages=list(session.conversation.messages),
@@ -311,7 +322,13 @@ def run_headless(options: HeadlessOptions) -> int:
                             on_event=on_event,
                             on_text_chunk=on_text_chunk,
                             on_message=_persist,
-                            cancel_signal=abort_controller.signal,
+                            # Critic C2: pass the OWNING controller so
+                            # the provider's chat_stream_response listens
+                            # on the same signal the SIGINT handler trips.
+                            # Passing only ``cancel_signal=signal`` would
+                            # force the adapter to mint a fresh controller
+                            # and break the mid-stream tear-down path.
+                            abort_controller=abort_controller,
                         ))
                         # Re-wrap into legacy AgentLoopResult shape so
                         # downstream usage/num_turns/response_text code

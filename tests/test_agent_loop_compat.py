@@ -145,8 +145,12 @@ class TestAgentLoopCompatAdapter(unittest.TestCase):
         self.assertIn("tool_result", kinds)
 
     def test_adapter_handles_cancel_signal(self):
-        """F.1: a pre-set cancel_signal causes the loop to exit
-        immediately via aborted_streaming/aborted_tools."""
+        """Critic C1: a pre-set cancel_signal causes the adapter to raise
+        AbortError so callers' existing ``except AbortError`` paths fire
+        (headless emits ``cancelled`` ResultEvent + exit 130; TUI posts
+        ``AgentRunFinished(error="Cancelled by user")``). Without this
+        the cutover regressed headless to exit 0 with no signal."""
+        from src.utils.abort_controller import AbortError
         provider = MagicMock()
         provider.chat_stream_response.side_effect = NotImplementedError()
         provider.chat.return_value = ChatResponse(
@@ -160,18 +164,16 @@ class TestAgentLoopCompatAdapter(unittest.TestCase):
         cancel = AbortController()
         cancel.abort("user_interrupt")
 
-        result = _run(run_query_as_agent_loop(
-            initial_messages=[UserMessage(content="Hi")],
-            provider=provider,
-            tool_registry=self.registry,
-            tool_context=self.context,
-            system_prompt="You are helpful.",
-            max_turns=5,
-            cancel_signal=cancel.signal,
-        ))
-
-        self.assertIsNotNone(result.terminal)
-        self.assertIn(result.terminal.reason, ("aborted_streaming", "aborted_tools"))
+        with self.assertRaises(AbortError):
+            _run(run_query_as_agent_loop(
+                initial_messages=[UserMessage(content="Hi")],
+                provider=provider,
+                tool_registry=self.registry,
+                tool_context=self.context,
+                system_prompt="You are helpful.",
+                max_turns=5,
+                cancel_signal=cancel.signal,
+            ))
 
 
 class TestLiveStreamingAndPersistence(unittest.TestCase):

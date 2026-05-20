@@ -33,7 +33,7 @@ from ..types.messages import (
     Message,
     UserMessage,
 )
-from ..utils.abort_controller import AbortController, AbortSignal
+from ..utils.abort_controller import AbortController, AbortError, AbortSignal
 
 from .query import QueryParams, StreamEvent, query
 from .transitions import Terminal, TerminalHolder
@@ -109,10 +109,27 @@ async def run_query_as_agent_loop(
     user-initiated cancels (Ctrl+C, /exit) propagate cleanly. When
     not supplied, the function constructs its own AbortController.
     """
-    abort_controller = abort_controller or AbortController()
-    if cancel_signal is not None and cancel_signal.aborted:
-        # Pre-cancel — bridge the abort upfront so the loop exits early.
-        abort_controller.abort(cancel_signal.reason or "user_interrupt")
+    # Critic C2 fix: do NOT mint a fresh controller when the caller
+    # provided one. The provider's chat_stream_response listens on
+    # ``QueryParams.abort_controller.signal`` to tear down HTTP streams
+    # mid-flight on ESC. A fresh controller breaks that wiring — ESC
+    # would flip the user's signal but the provider would never see it
+    # because the per-message bridge below only fires when query()
+    # yields a message, and a tool-use-only turn yields nothing during
+    # the multi-second generation. Caller's controller IS the user's
+    # signal source; reuse it.
+    if abort_controller is None:
+        if cancel_signal is not None:
+            # We received only the signal, not its owning controller.
+            # Mint a new controller and bridge cancellation into it
+            # both pre- and per-iteration (legacy fallback path).
+            abort_controller = AbortController()
+            if cancel_signal.aborted:
+                abort_controller.abort(
+                    cancel_signal.reason or "user_interrupt"
+                )
+        else:
+            abort_controller = AbortController()
 
     params = QueryParams(
         messages=list(initial_messages),
@@ -152,12 +169,21 @@ async def run_query_as_agent_loop(
                 )
 
         if isinstance(msg, AssistantMessage):
-            # Fire on_message FIRST so callers can persist the full
-            # message (tool_use blocks intact). Otherwise multi-turn
-            # sessions lose Anthropic's tool_use → tool_result
-            # pairings between turns.
-            if on_message is not None:
+            # Critic S1 fix: skip persisting API-error messages and
+            # meta messages. The legacy run_agent_loop never added
+            # these to the user's Conversation — letting them through
+            # poisons multi-prompt sessions (the model sees prior
+            # error text as its own past output, and PTL errors
+            # persisted as assistant messages fertilize a PTL death
+            # spiral on the next turn).
+            _is_api_error = bool(getattr(msg, "isApiErrorMessage", False))
+            _is_meta = bool(getattr(msg, "isMeta", False))
+            if on_message is not None and not _is_api_error and not _is_meta:
                 on_message(msg)
+            if _is_api_error:
+                # Don't count error turns or surface their text as the
+                # "response" — those are exit signals, not output.
+                continue
             num_turns += 1
             # Sum usage across turns.
             mu = getattr(msg, "usage", None) or {}
@@ -192,7 +218,11 @@ async def run_query_as_agent_loop(
             # Tool result(s) arrive as UserMessages with ToolResultBlock
             # content. Persist the full message (so the next turn's
             # API call can pair tool_use IDs to their results) AND
-            # dispatch tool_result events.
+            # dispatch tool_result events. Skip meta (interruption /
+            # cancellation synthesized by query.py) — those are loop
+            # bookkeeping, not real user turns.
+            if bool(getattr(msg, "isMeta", False)):
+                continue
             content = msg.content
             if isinstance(content, list):
                 has_tool_result = any(
@@ -211,6 +241,23 @@ async def run_query_as_agent_loop(
                                 is_error=bool(block.is_error),
                                 error=str(block.content) if block.is_error else None,
                             ))
+
+    # Critic C1 fix: surface terminal abort/error reasons as exceptions
+    # so callers' existing ``except AbortError`` / ``except Exception``
+    # paths fire. Without this, ESC during the loop sets a Terminal but
+    # the adapter returns normally — headless reports exit 0 instead of
+    # 130 with subtype:cancelled, TUI shows a blank response instead of
+    # "Cancelled by user". Mirrors the AbortError raise legacy
+    # run_agent_loop did at agent_loop.py:345-347.
+    terminal = holder.value
+    if terminal is not None:
+        reason = getattr(terminal, "reason", None) or ""
+        if reason in ("aborted_streaming", "aborted_tools", "interrupted"):
+            raise AbortError(
+                getattr(abort_controller.signal, "reason", None)
+                or reason
+                or "user_interrupt"
+            )
 
     response_text = last_assistant_text or " ".join(response_text_parts).strip()
     return AgentLoopRunResult(
