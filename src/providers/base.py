@@ -163,10 +163,9 @@ class BaseProvider(ABC):
         translating to ``image_url``), so the same client-side guard
         applies. Providers without image support are unaffected: the
         walker only inspects ``type=image`` blocks. Raises
-        ``ImageSizeError``; callers (``query._call_model_sync``,
-        ``tool_system.agent_loop._call_provider_for_turn``) translate it
-        into a media-size error message rather than letting it surface as
-        an opaque API failure.
+        ``ImageSizeError``; the caller (``query._call_model_sync``)
+        translates it into a media-size error message rather than
+        letting it surface as an opaque API failure.
         """
         prepared = [msg if isinstance(msg, dict) else msg.to_dict() for msg in messages]
         # Local import to avoid a top-level dependency from base.py into

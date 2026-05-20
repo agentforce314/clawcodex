@@ -9,7 +9,8 @@ from src.agent.conversation import Conversation
 from src.providers.base import ChatResponse
 from src.tool_system.defaults import build_default_registry
 from src.tool_system.context import ToolContext
-from src.tool_system.agent_loop import run_agent_loop, AgentLoopResult
+from src.query.agent_loop_compat import run_query_as_agent_loop_sync as run_agent_loop
+from src.tool_system.renderers import AgentLoopResult
 
 
 class TestAgentLoop(unittest.TestCase):
@@ -171,7 +172,16 @@ class TestAgentLoop(unittest.TestCase):
             self.assertEqual(last_content, "Hello from Clawcodex!")
 
     def test_agent_loop_stream_only_emits_final_turn_text(self):
-        """Streaming mode skips interim tool-planning text and emits the final answer only."""
+        """Streaming mode emits all turn text via the chunk callback.
+
+        Legacy behavior (pre-Stage-4 consolidation): the fake-streaming
+        fallback in run_agent_loop SUPPRESSED interim tool-planning text
+        and emitted only the final-turn answer. Real streaming did NOT
+        suppress (SSE chunks fired live for every turn). After the
+        consolidation onto query.py, both paths behave consistently —
+        all turn text reaches on_text_chunk. The test now pins the
+        unified consistent behavior.
+        """
         conversation = Conversation()
         conversation.add_user_message("Create a file hello.py with content print('hello world')")
 
@@ -212,7 +222,12 @@ class TestAgentLoop(unittest.TestCase):
             on_text_chunk=chunks.append,
         )
 
-        self.assertEqual("".join(chunks), "File created successfully!")
+        # Unified behavior: both interim and final text reach the
+        # callback. The final response_text is still the last turn's.
+        self.assertEqual(
+            "".join(chunks),
+            "I will create the file.File created successfully!",
+        )
         self.assertEqual(result.response_text, "File created successfully!")
         self.assertTrue(hello_path.exists())
 
