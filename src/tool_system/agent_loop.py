@@ -1,4 +1,19 @@
-"""Agent loop for multi-turn tool calling."""
+"""Agent loop for multi-turn tool calling.
+
+**DEPRECATED**. Headless and TUI now route through the canonical
+``query.query`` loop via the F.1 adapter (see PR #185). This module is
+preserved only as a back-compat surface for tests that haven't been
+ported yet; production code should not call ``run_agent_loop`` here.
+
+**Do not edit renderer bodies here.** ``ToolEvent``, ``AgentLoopResult``,
+``summarize_tool_use``, ``summarize_tool_result``, and the related
+handlers all live in ``src.tool_system.renderers``. The
+``from .renderers import (...)`` block below re-exports them by reference
+— editing here would only fork a stale copy. Same for
+``_build_effective_system_prompt``: the body lives in
+``src.query.agent_loop_compat.build_effective_system_prompt``; we just
+alias it for legacy ``run_agent_loop`` to reuse.
+"""
 
 from __future__ import annotations
 
@@ -18,6 +33,19 @@ from ..providers.minimax_provider import MinimaxProvider
 from ..utils.abort_controller import AbortError, AbortSignal
 from ..utils.image_validation import ImageSizeError
 
+# Renderer re-exports for back-compat. Canonical home is
+# ``src.tool_system.renderers``.
+from .renderers import (  # noqa: F401
+    AgentLoopResult,
+    TextChunkHandler,
+    ToolEvent,
+    ToolEventHandler,
+    _emit_text_chunks,
+    _safe_call_handler,
+    summarize_tool_result,
+    summarize_tool_use,
+)
+
 
 def _is_anthropic_provider(provider: BaseProvider) -> bool:
     return isinstance(provider, (AnthropicProvider, MinimaxProvider))
@@ -28,117 +56,6 @@ def _build_openai_tool_result_content(result_output: Any) -> str:
     if isinstance(result_output, str):
         return result_output
     return json.dumps(result_output, ensure_ascii=False)
-
-def summarize_tool_result(name: str, output: Any) -> str:
-    """Create a concise, single-line summary for tool result output."""
-    if not isinstance(output, dict):
-        return str(output)
-    if name.lower() == "write":
-        path = output.get("filePath") or output.get("file_path")
-        op = output.get("type")
-        return f"{name} · {path} · {op}"
-    if name.lower() == "edit":
-        path = output.get("filePath") or output.get("file_path")
-        replace_all = output.get("replaceAll")
-        return f"{name} · {path} · replaceAll={replace_all}"
-    if name.lower() == "read":
-        if isinstance(output, str):
-            if "unchanged" in output.lower():
-                return f"{name} · unchanged"
-            return f"{name}"
-        if output.get("type") == "text" and isinstance(output.get("file"), dict):
-            f = output["file"]
-            path = f.get("filePath")
-            num = f.get("numLines")
-            total = f.get("totalLines")
-            start = f.get("startLine")
-            return f"{name} · {path} · lines={start}-{(start or 1) + (num or 0) - 1}/{total}"
-        if output.get("type") == "file_unchanged" and isinstance(output.get("file"), dict):
-            return f"{name} · {output['file'].get('filePath')} · unchanged"
-        if output.get("type") in {"image", "pdf", "notebook"} and isinstance(output.get("file"), dict):
-            return f"{name} · {output['file'].get('filePath')} · {output.get('type')}"
-        return f"{name}"
-    if name.lower() == "glob":
-        n = output.get("numFiles")
-        return f"{name} · matches={n}"
-    if name.lower() == "grep":
-        n = output.get("numFiles")
-        mode = output.get("mode")
-        return f"{name} · mode={mode} · files={n}"
-    if name.lower() == "bash":
-        code = output.get("exit_code")
-        return f"{name} · exit={code}"
-    if name.lower() == "webfetch":
-        url = output.get("url")
-        ct = output.get("content_type")
-        return f"{name} · {url} · {ct}"
-    if name.lower() == "websearch":
-        q = output.get("query")
-        results = output.get("results")
-        n = len(results) if isinstance(results, list) else None
-        return f"{name} · \"{q}\" · results={n}"
-    if name.lower() == "config":
-        op = output.get("operation")
-        setting = output.get("setting")
-        return f"{name} · {op} · {setting}"
-    if name.lower() == "taskstop":
-        tid = output.get("task_id")
-        stopped = output.get("stopped")
-        return f"{name} · {tid} · stopped={stopped}"
-    if name.lower() == "sendusermessage":
-        n = 0
-        atts = output.get("attachments")
-        if isinstance(atts, list):
-            n = len(atts)
-        return f"{name} · attachments={n}"
-    # default: truncate dict keys for brevity
-    keys = ", ".join(list(output.keys())[:3])
-    return f"{name} · {keys}"
-
-
-@dataclass(frozen=True)
-class ToolEvent:
-    kind: str
-    tool_name: str
-    tool_input: dict[str, Any] | None = None
-    tool_output: Any | None = None
-    tool_use_id: str | None = None
-    is_error: bool = False
-    error: str | None = None
-
-
-@dataclass(frozen=True)
-class AgentLoopResult:
-    """Result of running the agent loop."""
-    response_text: str
-    usage: dict[str, Any] | None = None  # {"input_tokens": int, "output_tokens": int}
-    num_turns: int = 0
-
-
-ToolEventHandler = Callable[[ToolEvent], None]
-TextChunkHandler = Callable[[str], None]
-
-
-def _safe_call_handler(handler: ToolEventHandler | None, event: ToolEvent) -> None:
-    if handler is None:
-        return
-    try:
-        handler(event)
-    except Exception:
-        return
-
-
-def _emit_text_chunks(handler: TextChunkHandler | None, text: str, *, chunk_size: int = 12) -> None:
-    """Emit text in small chunks for user-visible streaming without changing loop semantics."""
-    if handler is None or not text:
-        return
-    if chunk_size <= 0:
-        chunk_size = len(text)
-    for idx in range(0, len(text), chunk_size):
-        try:
-            handler(text[idx: idx + chunk_size])
-        except Exception:
-            return
 
 
 def _call_provider_for_turn(
@@ -191,88 +108,15 @@ def _call_provider_for_turn(
     return response, False
 
 
-def _build_effective_system_prompt(style_prompt: str, tool_context: ToolContext) -> str:
-    try:
-        context_prompt = build_context_prompt(
-            tool_context.workspace_root,
-            cwd=tool_context.cwd,
-        )
-    except Exception:
-        context_prompt = ""
-    if not context_prompt.strip():
-        return style_prompt
-    return f"{style_prompt}\n\n{context_prompt}"
-
-
-def summarize_tool_use(name: str, tool_input: dict[str, Any]) -> str:
-    lowered = name.lower()
-    if lowered == "bash":
-        cmd = tool_input.get("command")
-        if isinstance(cmd, str):
-            s = cmd.strip().replace("\n", " ")
-            return s if len(s) <= 80 else s[:77] + "..."
-        return ""
-    if lowered in {"read", "write", "edit"}:
-        p = tool_input.get("file_path") or tool_input.get("filePath") or tool_input.get("path")
-        if isinstance(p, str):
-            extra = ""
-            if lowered == "read":
-                off = tool_input.get("offset")
-                lim = tool_input.get("limit")
-                if isinstance(off, int) or isinstance(lim, int):
-                    start = off if isinstance(off, int) else 1
-                    if isinstance(lim, int):
-                        extra = f" · lines {start}-{start + lim - 1}"
-            return f"{p}{extra}"
-        return ""
-    if lowered == "glob":
-        pat = tool_input.get("pattern")
-        base = tool_input.get("path")
-        if isinstance(pat, str) and isinstance(base, str):
-            return f"{pat} · {base}"
-        if isinstance(pat, str):
-            return pat
-        return ""
-    if lowered == "grep":
-        pat = tool_input.get("pattern")
-        base = tool_input.get("path")
-        if isinstance(pat, str) and isinstance(base, str):
-            return f"{pat} · {base}"
-        if isinstance(pat, str):
-            return pat
-        return ""
-    if lowered == "webfetch":
-        url = tool_input.get("url")
-        return url if isinstance(url, str) else ""
-    if lowered == "websearch":
-        q = tool_input.get("query")
-        return q if isinstance(q, str) else ""
-    if lowered == "toolsearch":
-        q = tool_input.get("query")
-        return q if isinstance(q, str) else ""
-    if lowered == "askuserquestion":
-        qs = tool_input.get("questions")
-        if isinstance(qs, list):
-            return f"{len(qs)} question(s)"
-        return ""
-    if lowered == "sendusermessage":
-        status = tool_input.get("status")
-        return status if isinstance(status, str) else ""
-    if lowered in ("agent", "task"):
-        # Surface ``@<subagent_type>`` + the user-supplied ``description``
-        # so a wall of ``Agent(...)`` calls in a single turn reads as
-        # discrete, scannable activity instead of identical placeholders.
-        sub = tool_input.get("subagent_type")
-        desc = tool_input.get("description")
-        parts: list[str] = []
-        if isinstance(sub, str) and sub.strip():
-            parts.append(f"@{sub.strip()}")
-        if isinstance(desc, str) and desc.strip():
-            s = desc.strip().replace("\n", " ")
-            parts.append(s if len(s) <= 60 else s[:57] + "...")
-        return " · ".join(parts)
-    return ""
-
+# Re-export the canonical build via private alias so legacy
+# ``run_agent_loop`` below shares the SAME body as the public helper
+# in ``agent_loop_compat`` — avoids the parallel-copies hazard the
+# critic flagged on F.4 (one copy could drift if the
+# ``build_context_prompt`` contract changes during the deprecation
+# cycle). Both go away with ``run_agent_loop`` in Stage 4.
+from ..query.agent_loop_compat import (
+    build_effective_system_prompt as _build_effective_system_prompt,
+)
 
 
 def run_agent_loop(

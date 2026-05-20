@@ -204,13 +204,17 @@ def test_headless_run_skip_permissions_sets_bypass_mode(tmp_path, monkeypatch):
     )
 
     captured: dict = {}
-    original = headless_mod.run_agent_loop
+    # Headless now routes through ``run_query_as_agent_loop`` (async)
+    # instead of the legacy ``run_agent_loop``. Patch the actual call
+    # site so this fixture still observes the tool_context the
+    # production path constructs.
+    original = headless_mod.run_query_as_agent_loop
 
-    def _capture(*args, **kw):
+    async def _capture(*args, **kw):
         captured["tool_context"] = kw["tool_context"]
-        return original(*args, **kw)
+        return await original(*args, **kw)
 
-    monkeypatch.setattr(headless_mod, "run_agent_loop", _capture)
+    monkeypatch.setattr(headless_mod, "run_query_as_agent_loop", _capture)
 
     code = run_headless(
         HeadlessOptions(
@@ -265,13 +269,17 @@ def test_headless_run_default_mode_keeps_auto_deny_handler(tmp_path, monkeypatch
     )
 
     captured: dict = {}
-    original = headless_mod.run_agent_loop
+    # Headless now routes through ``run_query_as_agent_loop`` (async)
+    # instead of the legacy ``run_agent_loop``. Patch the actual call
+    # site so this fixture still observes the tool_context the
+    # production path constructs.
+    original = headless_mod.run_query_as_agent_loop
 
-    def _capture(*args, **kw):
+    async def _capture(*args, **kw):
         captured["tool_context"] = kw["tool_context"]
-        return original(*args, **kw)
+        return await original(*args, **kw)
 
-    monkeypatch.setattr(headless_mod, "run_agent_loop", _capture)
+    monkeypatch.setattr(headless_mod, "run_query_as_agent_loop", _capture)
 
     code = run_headless(
         HeadlessOptions(
