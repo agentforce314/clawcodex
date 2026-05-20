@@ -22,6 +22,7 @@ from .base import BaseRow, SystemMessage
 from .user_text import UserTextMessage
 from .assistant_text import AssistantTextMessage
 from .assistant_tool_use import AssistantToolUseMessage
+from .assistant_advisor import AssistantAdvisorMessage
 from .tool_result import ToolResultRow
 
 __all__ = [
@@ -30,5 +31,6 @@ __all__ = [
     "UserTextMessage",
     "AssistantTextMessage",
     "AssistantToolUseMessage",
+    "AssistantAdvisorMessage",
     "ToolResultRow",
 ]
