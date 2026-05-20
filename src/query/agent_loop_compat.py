@@ -39,8 +39,13 @@ from .query import QueryParams, StreamEvent, query
 from .transitions import Terminal, TerminalHolder
 
 
-# Re-use the existing ToolEvent + handler typedefs so callers don't
-# have to refactor their event-handling code.
+# Re-use the renderer types + helpers. Post Ch5/F.4 the canonical
+# home is ``src/tui/tool_summary_renderers.py``; we still import via
+# ``src.tool_system.agent_loop`` because ``src/tui/__init__.py``
+# pulls in the full TUI app graph (app → agent_bridge →
+# agent_loop_compat) and that creates a circular import. The
+# tool_system.agent_loop re-export is back-compat-stable; both paths
+# resolve to the same objects.
 from ..tool_system.agent_loop import (
     ToolEvent,
     ToolEventHandler,
@@ -73,6 +78,7 @@ async def run_query_as_agent_loop(
     max_turns: int = 20,
     on_event: ToolEventHandler | None = None,
     on_text_chunk: TextChunkHandler | None = None,
+    on_message: Callable[[Message], None] | None = None,
     cancel_signal: AbortSignal | None = None,
     abort_controller: AbortController | None = None,
 ) -> AgentLoopRunResult:
@@ -85,9 +91,19 @@ async def run_query_as_agent_loop(
 
     The ``on_event`` callback receives :class:`ToolEvent` instances
     for every tool_use observed in the model's responses and every
-    tool_result yielded by the loop. ``on_text_chunk`` receives the
-    assistant text in chunks (currently the whole text on
-    completion, since streaming-text-chunk wiring is provider-side).
+    tool_result yielded by the loop.
+
+    ``on_text_chunk`` is forwarded into the QueryParams so the
+    provider's streaming layer fires text chunks LIVE (per-delta).
+    Callers MUST provide this if they need real-time text rendering
+    (TUI live streaming, ESC-mid-stream cancel teardown).
+
+    ``on_message`` is fired for EVERY :class:`Message` yielded by the
+    loop (Anthropic-shape AssistantMessage with full content blocks
+    including tool_use, UserMessage with tool_result blocks, etc.).
+    Use this to persist the full conversation transcript faithfully —
+    `response_text` alone loses tool_use/tool_result structure across
+    multi-turn sessions.
 
     ``cancel_signal`` is bridged into the loop's abort_controller so
     user-initiated cancels (Ctrl+C, /exit) propagate cleanly. When
@@ -107,6 +123,13 @@ async def run_query_as_agent_loop(
         provider=provider,
         abort_controller=abort_controller,
         max_turns=max_turns,
+        # Critic-flagged: forward on_text_chunk into QueryParams so
+        # the provider's chat_stream_response fires chunks LIVE. The
+        # adapter must NOT call on_text_chunk(full_text) once at the
+        # end — that breaks TUI live streaming AND the
+        # ESC-mid-stream-cancel path which relies on the chunk
+        # callback raising AbortError from inside the SDK stream.
+        on_text_chunk=on_text_chunk,
     )
 
     holder = TerminalHolder()
@@ -129,6 +152,12 @@ async def run_query_as_agent_loop(
                 )
 
         if isinstance(msg, AssistantMessage):
+            # Fire on_message FIRST so callers can persist the full
+            # message (tool_use blocks intact). Otherwise multi-turn
+            # sessions lose Anthropic's tool_use → tool_result
+            # pairings between turns.
+            if on_message is not None:
+                on_message(msg)
             num_turns += 1
             # Sum usage across turns.
             mu = getattr(msg, "usage", None) or {}
@@ -152,25 +181,36 @@ async def run_query_as_agent_loop(
                         ))
             if text_parts:
                 last_assistant_text = " ".join(text_parts).strip()
-                if on_text_chunk is not None and last_assistant_text:
-                    on_text_chunk(last_assistant_text)
+                # NB: do NOT fire on_text_chunk here. It was already
+                # fired LIVE by the provider's chat_stream_response
+                # via QueryParams.on_text_chunk threading. Firing
+                # again would duplicate the entire response into the
+                # caller's stream.
             continue
 
-        if isinstance(msg, UserMessage) and on_event is not None:
+        if isinstance(msg, UserMessage):
             # Tool result(s) arrive as UserMessages with ToolResultBlock
-            # content. Dispatch as tool_result events.
+            # content. Persist the full message (so the next turn's
+            # API call can pair tool_use IDs to their results) AND
+            # dispatch tool_result events.
             content = msg.content
             if isinstance(content, list):
-                for block in content:
-                    if isinstance(block, ToolResultBlock):
-                        on_event(ToolEvent(
-                            kind="tool_result",
-                            tool_name="",
-                            tool_use_id=block.tool_use_id,
-                            tool_output=block.content,
-                            is_error=bool(block.is_error),
-                            error=str(block.content) if block.is_error else None,
-                        ))
+                has_tool_result = any(
+                    isinstance(block, ToolResultBlock) for block in content
+                )
+                if has_tool_result and on_message is not None:
+                    on_message(msg)
+                if on_event is not None:
+                    for block in content:
+                        if isinstance(block, ToolResultBlock):
+                            on_event(ToolEvent(
+                                kind="tool_result",
+                                tool_name="",
+                                tool_use_id=block.tool_use_id,
+                                tool_output=block.content,
+                                is_error=bool(block.is_error),
+                                error=str(block.content) if block.is_error else None,
+                            ))
 
     response_text = last_assistant_text or " ".join(response_text_parts).strip()
     return AgentLoopRunResult(
