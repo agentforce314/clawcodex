@@ -224,10 +224,19 @@ class AgentBridge:
                 # tool_result blocks included) so subsequent turns can
                 # pair tool_use IDs to results. Plain
                 # ``add_assistant_message`` loses block structure.
+                # Critic S3: log failures instead of swallowing — a
+                # persist failure means the conversation is corrupted
+                # for the next turn (tool_use without tool_result will
+                # 400 at the API). Surface it now, not later.
                 try:
                     self._session.conversation.add_message(msg.role, msg.content)
                 except Exception:
-                    pass
+                    import logging
+                    logging.getLogger(__name__).exception(
+                        "Failed to persist message into conversation: "
+                        "role=%s; next-turn API may reject the call.",
+                        getattr(msg, "role", "?"),
+                    )
 
             _loop = _asyncio.new_event_loop()
             try:
@@ -241,9 +250,10 @@ class AgentBridge:
                     on_event=_on_event,
                     on_text_chunk=_on_text if self._stream else None,
                     on_message=_persist,
-                    cancel_signal=(
-                        controller.signal if controller is not None else None
-                    ),
+                    # Critic C2: pass the OWNING controller (not just
+                    # its signal) so the provider sees the same signal
+                    # ESC trips. See same fix in headless.py for why.
+                    abort_controller=controller,
                 ))
             finally:
                 _loop.close()
