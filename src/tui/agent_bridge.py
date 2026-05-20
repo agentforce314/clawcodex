@@ -25,7 +25,13 @@ from pathlib import Path
 from typing import Any, Callable
 
 from src.agent import Session
-from src.tool_system.agent_loop import ToolEvent, run_agent_loop
+from src.tool_system.agent_loop import (
+    AgentLoopResult,
+    ToolEvent,
+    _build_effective_system_prompt,
+    run_agent_loop,  # retained for back-compat imports; no longer called
+)
+from src.query.agent_loop_compat import run_query_as_agent_loop
 from src.tool_system.context import ToolContext
 from src.tool_system.registry import ToolRegistry
 from src.utils.abort_controller import AbortController, AbortError
@@ -195,17 +201,70 @@ class AgentBridge:
             self._post(AssistantChunk(text=chunk))
 
         try:
-            result = run_agent_loop(
-                conversation=self._session.conversation,
-                provider=self._provider,
-                tool_registry=self._tool_registry,
-                tool_context=self._tool_context,
-                max_turns=self._max_turns,
-                stream=self._stream,
-                verbose=False,
-                on_event=_on_event,
-                on_text_chunk=_on_text if self._stream else None,
-                cancel_signal=controller.signal if controller is not None else None,
+            # Ch5/F.3 cutover: route TUI through the canonical query()
+            # loop via the F.1 adapter. The Textual ``@work(thread=True)``
+            # worker doesn't have an asyncio loop, so we spin up a fresh
+            # one INSIDE the worker thread (NOT on the main loop —
+            # ``@work(thread=False)`` would block Textual's UI rendering
+            # during model streams). Pre-build the effective system
+            # prompt (CLAUDE.md, style, git status) — legacy
+            # run_agent_loop did this internally; the adapter doesn't.
+            import asyncio as _asyncio
+            from src.outputStyles import resolve_output_style
+            _style_prompt = resolve_output_style(
+                getattr(self._tool_context, "output_style_name", None),
+                getattr(self._tool_context, "output_style_dir", None),
+            ).prompt
+            effective_system_prompt = _build_effective_system_prompt(
+                _style_prompt, self._tool_context,
+            )
+
+            def _persist(msg: Any) -> None:
+                # BLOCKING #2 fix: persist FULL message (tool_use /
+                # tool_result blocks included) so subsequent turns can
+                # pair tool_use IDs to results. Plain
+                # ``add_assistant_message`` loses block structure.
+                # Critic S3: log failures instead of swallowing — a
+                # persist failure means the conversation is corrupted
+                # for the next turn (tool_use without tool_result will
+                # 400 at the API). Surface it now, not later.
+                try:
+                    self._session.conversation.add_message(msg.role, msg.content)
+                except Exception:
+                    import logging
+                    logging.getLogger(__name__).exception(
+                        "Failed to persist message into conversation: "
+                        "role=%s; next-turn API may reject the call.",
+                        getattr(msg, "role", "?"),
+                    )
+
+            _loop = _asyncio.new_event_loop()
+            try:
+                compat_result = _loop.run_until_complete(run_query_as_agent_loop(
+                    initial_messages=list(self._session.conversation.messages),
+                    provider=self._provider,
+                    tool_registry=self._tool_registry,
+                    tool_context=self._tool_context,
+                    system_prompt=effective_system_prompt,
+                    max_turns=self._max_turns,
+                    on_event=_on_event,
+                    on_text_chunk=_on_text if self._stream else None,
+                    on_message=_persist,
+                    # Critic C2: pass the OWNING controller (not just
+                    # its signal) so the provider sees the same signal
+                    # ESC trips. See same fix in headless.py for why.
+                    abort_controller=controller,
+                ))
+            finally:
+                _loop.close()
+            result = AgentLoopResult(
+                response_text=compat_result.response_text,
+                usage=(
+                    compat_result.usage
+                    if compat_result.num_turns > 0
+                    else None
+                ),
+                num_turns=compat_result.num_turns,
             )
         except AbortError:
             self._post(

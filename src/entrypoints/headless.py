@@ -48,7 +48,13 @@ from src.cli_core import (
 )
 from src.config import get_default_provider, get_provider_config
 from src.providers import get_provider_class
-from src.tool_system.agent_loop import ToolEvent, run_agent_loop
+from src.tool_system.agent_loop import (
+    AgentLoopResult,
+    ToolEvent,
+    _build_effective_system_prompt,
+    run_agent_loop,
+)
+from src.query.agent_loop_compat import run_query_as_agent_loop
 from src.tool_system.context import ToolContext
 from src.tool_system.defaults import build_default_registry
 from src.utils.abort_controller import AbortController, AbortError
@@ -265,17 +271,77 @@ def run_headless(options: HeadlessOptions) -> int:
                 try:
                     in_agent_loop.value = True
                     try:
-                        result = run_agent_loop(
-                            conversation=session.conversation,
+                        # Ch5/F.2 cutover: route headless through the
+                        # canonical query() loop via the F.1 adapter.
+                        # Headless is single-shot per prompt and starts
+                        # its own event loop, so ``asyncio.run`` is the
+                        # right pattern. Pre-build the effective system
+                        # prompt (CLAUDE.md + git status + style) so the
+                        # cold-start context reaches query() unchanged
+                        # — the legacy run_agent_loop did this inside
+                        # the loop; the adapter doesn't.
+                        import asyncio as _asyncio
+                        from src.outputStyles import resolve_output_style
+                        _style_prompt = resolve_output_style(
+                            getattr(tool_context, "output_style_name", None),
+                            getattr(tool_context, "output_style_dir", None),
+                        ).prompt
+                        effective_system_prompt = (
+                            _build_effective_system_prompt(_style_prompt, tool_context)
+                        )
+
+                        def _persist(msg: Any) -> None:
+                            # BLOCKING #2 fix: persist FULL message
+                            # (including tool_use/tool_result blocks)
+                            # so the next turn can pair tool_use IDs to
+                            # results. Plain add_assistant_message
+                            # loses the structure.
+                            # Critic S3: log + re-raise on failure
+                            # rather than swallow; a persist error
+                            # means the conversation is corrupted and
+                            # the next API call will reject it. Better
+                            # to surface now than to debug a 400 later.
+                            try:
+                                session.conversation.add_message(msg.role, msg.content)
+                            except Exception:
+                                import logging
+                                logging.getLogger(__name__).exception(
+                                    "Failed to persist message into "
+                                    "conversation: role=%s",
+                                    getattr(msg, "role", "?"),
+                                )
+                                raise
+
+                        compat_result = _asyncio.run(run_query_as_agent_loop(
+                            initial_messages=list(session.conversation.messages),
                             provider=provider,
                             tool_registry=tool_registry,
                             tool_context=tool_context,
+                            system_prompt=effective_system_prompt,
                             max_turns=options.max_turns,
-                            stream=bool(on_text_chunk),
-                            verbose=options.verbose,
                             on_event=on_event,
                             on_text_chunk=on_text_chunk,
-                            cancel_signal=abort_controller.signal,
+                            on_message=_persist,
+                            # Critic C2: pass the OWNING controller so
+                            # the provider's chat_stream_response listens
+                            # on the same signal the SIGINT handler trips.
+                            # Passing only ``cancel_signal=signal`` would
+                            # force the adapter to mint a fresh controller
+                            # and break the mid-stream tear-down path.
+                            abort_controller=abort_controller,
+                        ))
+                        # Re-wrap into legacy AgentLoopResult shape so
+                        # downstream usage/num_turns/response_text code
+                        # stays untouched. ``usage if num_turns > 0
+                        # else None`` preserves the dict|None contract.
+                        result = AgentLoopResult(
+                            response_text=compat_result.response_text,
+                            usage=(
+                                compat_result.usage
+                                if compat_result.num_turns > 0
+                                else None
+                            ),
+                            num_turns=compat_result.num_turns,
                         )
                     finally:
                         # Flip BEFORE the outer except block can run so a
