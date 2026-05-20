@@ -93,7 +93,6 @@ dev = [
 
 [project.scripts]
 clawcodex-dev = "src.cli:main"
-upstream-sync = "upstream_sync.cli:app"
 
 [project.urls]
 Homepage = "https://github.com/agentforce314/clawcodex"
