@@ -78,33 +78,101 @@ class CommandDispatchResult:
     error: str | None = None
 
 
-def build_command_words(
-    workspace_root: Path,
-    tool_context: Any | None = None,
-) -> list[str]:
-    """Return the flat list of slash words shown in the completion popup.
+@dataclass(frozen=True)
+class CommandSuggestion:
+    """A rich slash-command entry shown in the completion popup.
 
-    Sources, in order:
-      * Local built-ins from :data:`LOCAL_BUILTINS`.
-      * Every command registered with :func:`register_builtin_commands`
-        plus any aliases.
-      * Discovered skill names (mirrors the REPL behavior).
+    Mirrors the TS ``SuggestionItem`` shape just enough to render the
+    two-column ``/name  description`` layout. ``tag`` is an optional
+    short label (e.g. ``"workflow"``) and ``aliases`` is the list of
+    alternative names — both surface in the display row.
     """
 
-    words: list[str] = list(LOCAL_BUILTINS)
+    name: str  # without the leading slash
+    description: str = ""
+    aliases: tuple[str, ...] = ()
+    tag: str | None = None
+    source: str = "builtin"
+
+    @property
+    def slash(self) -> str:
+        return f"/{self.name}"
+
+
+_LOCAL_BUILTIN_DESCRIPTIONS: dict[str, str] = {
+    "/help": "Show available slash commands",
+    "/exit": "Exit the CLI",
+    "/quit": "Exit the CLI",
+    "/q": "Exit the CLI",
+    "/repl": "Alias for /exit (kept for parity)",
+    "/clear": "Clear the conversation transcript",
+    "/tools": "List available tools",
+    "/stream": "Toggle streaming output",
+    "/render-last": "Re-render the last assistant message",
+    "/skills": "List discovered skills",
+    "/model": "Choose the active model",
+    "/effort": "Choose reasoning effort",
+    "/history": "Open prompt history",
+    "/cost": "Show session token + cost usage",
+    "/idle": "Configure idle-mode preferences",
+    "/theme": "Change the color theme",
+    "/diff": "Show pending diff",
+    "/mcp": "Manage MCP servers",
+    "/tasks": "Browse background tasks",
+    "/rewind": "Rewind conversation to an earlier turn",
+}
+
+
+def build_command_suggestions(
+    workspace_root: Path,
+    tool_context: Any | None = None,
+) -> list[CommandSuggestion]:
+    """Return rich slash-command entries for the completion popup.
+
+    Mirrors :func:`build_command_words` but carries descriptions,
+    aliases, and tags so the popup can render the same two-column
+    layout the TypeScript reference uses.
+    """
+
+    out: list[CommandSuggestion] = []
+    seen: set[str] = set()
+
+    def push(sugg: CommandSuggestion) -> None:
+        key = sugg.name.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(sugg)
+
+    for word in LOCAL_BUILTINS:
+        push(
+            CommandSuggestion(
+                name=word[1:],
+                description=_LOCAL_BUILTIN_DESCRIPTIONS.get(word, ""),
+                source="builtin",
+            )
+        )
 
     try:
         from src.command_system.builtins import register_builtin_commands
         from src.command_system.registry import CommandRegistry, get_command_registry
 
-        # The global registry may not have been seeded yet (first TUI
-        # boot), so ensure at least the built-ins are present.
         register_builtin_commands(None)
         registry: CommandRegistry = get_command_registry()
         for cmd in registry.list_commands():
-            words.append(f"/{cmd.name}")
-            for alias in getattr(cmd, "aliases", []) or []:
-                words.append(f"/{alias}")
+            if getattr(cmd, "is_hidden", False):
+                continue
+            aliases = tuple(getattr(cmd, "aliases", []) or [])
+            tag = "workflow" if getattr(cmd, "kind", None) == "workflow" else None
+            push(
+                CommandSuggestion(
+                    name=cmd.name,
+                    description=getattr(cmd, "description", "") or "",
+                    aliases=aliases,
+                    tag=tag,
+                    source=getattr(cmd, "loaded_from", "builtin") or "builtin",
+                )
+            )
     except Exception:
         pass
 
@@ -113,19 +181,40 @@ def build_command_words(
 
         cwd = getattr(tool_context, "cwd", None) or workspace_root
         for skill in get_all_skills(project_root=cwd):
-            words.append(f"/{skill.name}")
+            push(
+                CommandSuggestion(
+                    name=skill.name,
+                    description=getattr(skill, "description", "") or "",
+                    source="skills",
+                )
+            )
     except Exception:
         pass
 
+    return out
+
+
+def build_command_words(
+    workspace_root: Path,
+    tool_context: Any | None = None,
+) -> list[str]:
+    """Return the flat list of slash words shown in the completion popup.
+
+    Kept as a backwards-compatible wrapper around
+    :func:`build_command_suggestions`. New callers should prefer the
+    rich variant so descriptions surface in the popup.
+    """
+
+    words: list[str] = []
     seen: set[str] = set()
-    deduped: list[str] = []
-    for word in words:
-        key = word.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(word)
-    return deduped
+    for sugg in build_command_suggestions(workspace_root, tool_context):
+        for w in (sugg.slash, *(f"/{a}" for a in sugg.aliases)):
+            key = w.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            words.append(w)
+    return words
 
 
 def dispatch_local_command(
