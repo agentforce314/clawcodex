@@ -256,16 +256,17 @@ class TestAdvisorInactivePaths(unittest.TestCase):
         self._iso.exit()
 
     def _assert_inactive(self, cap: _Capture) -> None:
+        """Assert NO advisor of either flavor leaks into the request."""
         self.assertNotIn("betas", cap.call_kwargs)
         tools = cap.call_kwargs.get("tools") or []
         for t in tools:
             self.assertNotEqual(
                 t.get("type"), "advisor_20260301",
-                "advisor schema must not be sent when inactive",
+                "server-side schema must not be sent when inactive",
             )
             self.assertNotEqual(
                 t.get("name"), "advisor",
-                "advisor name must not appear in tools when inactive",
+                "advisor tool must not appear in tools when inactive",
             )
         sysp = cap.call_kwargs.get("system", "") or ""
         if isinstance(sysp, list):
@@ -275,6 +276,38 @@ class TestAdvisorInactivePaths(unittest.TestCase):
         else:
             sysp_text = sysp
         self.assertNotIn("# Advisor Tool", sysp_text)
+
+    def _assert_server_side_not_sent(self, cap: _Capture) -> None:
+        """Assert SERVER-SIDE artifacts absent — but CLIENT-SIDE may be present."""
+        self.assertNotIn("betas", cap.call_kwargs)
+        tools = cap.call_kwargs.get("tools") or []
+        for t in tools:
+            self.assertNotEqual(
+                t.get("type"), "advisor_20260301",
+                "server-side schema must not leak in client-side mode",
+            )
+
+    def _assert_client_side_active(self, cap: _Capture) -> None:
+        """Assert CLIENT-SIDE: regular-shape advisor tool + instructions."""
+        self._assert_server_side_not_sent(cap)
+        tools = cap.call_kwargs.get("tools") or []
+        advisor_tools = [t for t in tools if t.get("name") == "advisor"]
+        self.assertEqual(
+            len(advisor_tools), 1,
+            "client-side mode must register the regular-tool advisor",
+        )
+        # Regular tool shape — no ``type`` discriminator, just name +
+        # description + input_schema.
+        self.assertNotIn("type", advisor_tools[0])
+        self.assertIn("input_schema", advisor_tools[0])
+        sysp = cap.call_kwargs.get("system", "") or ""
+        if isinstance(sysp, list):
+            sysp_text = "\n".join(
+                b.get("text", "") for b in sysp if isinstance(b, dict)
+            )
+        else:
+            sysp_text = sysp
+        self.assertIn("# Advisor Tool", sysp_text)
 
     def test_no_advisor_when_settings_unset(self) -> None:
         _set_settings(advisor_model="")
@@ -293,30 +326,48 @@ class TestAdvisorInactivePaths(unittest.TestCase):
             _run(provider, [UserMessage(content="x")])
             self._assert_inactive(cap)
 
-    def test_no_advisor_when_anthropic_has_custom_endpoint(self) -> None:
+    def test_no_advisor_when_advisor_model_does_not_route(self) -> None:
+        # An advisor model string that doesn't match any provider's
+        # available_models AND doesn't match a known prefix → no
+        # client-side route → INACTIVE. The strict "valid for
+        # server-side" gate is gone; only the routing gate remains.
+        _set_settings(advisor_model="some-totally-unknown-model-xyz")
+        cap = _Capture()
+        provider = _stub_provider_class(AnthropicProvider, cap)
+        _run(provider, [UserMessage(content="x")])
+        self._assert_inactive(cap)
+
+    def test_client_side_when_anthropic_has_custom_endpoint(self) -> None:
+        # Custom-endpoint Anthropic is treated as 3P for server-side
+        # purposes (no beta header, no advisor_20260301 schema), but
+        # client-side mode covers it now.
         _set_settings(advisor_model="claude-opus-4-6")
         cap = _Capture()
         provider = _stub_provider_class(AnthropicProvider, cap)
-        # Simulate a custom base_url (Bedrock shim, self-hosted proxy).
         provider.has_custom_endpoint = MagicMock(return_value=True)
         _run(provider, [UserMessage(content="x")])
-        self._assert_inactive(cap)
+        self._assert_client_side_active(cap)
 
-    def test_no_advisor_when_base_model_unsupported(self) -> None:
+    def test_client_side_when_base_model_does_not_support_server_side(self) -> None:
+        # opus-4-5 doesn't support the server-side beta — under the
+        # old strict rules, advisor went inactive. Now it falls back to
+        # client-side (any tool-calling main loop works).
         _set_settings(advisor_model="claude-opus-4-6")
         cap = _Capture()
         provider = _stub_provider_class(AnthropicProvider, cap)
-        # Stale main model — advisor must not piggy-back on an older model.
         provider.model = "claude-opus-4-5"
         _run(provider, [UserMessage(content="x")])
-        self._assert_inactive(cap)
+        self._assert_client_side_active(cap)
 
-    def test_no_advisor_when_advisor_model_invalid(self) -> None:
+    def test_client_side_when_advisor_is_haiku(self) -> None:
+        # haiku-4-5 isn't a valid server-side advisor (only opus-4-6 /
+        # sonnet-4-6 are) — but it routes to anthropic and works
+        # client-side.
         _set_settings(advisor_model="claude-haiku-4-5")
         cap = _Capture()
         provider = _stub_provider_class(AnthropicProvider, cap)
         _run(provider, [UserMessage(content="x")])
-        self._assert_inactive(cap)
+        self._assert_client_side_active(cap)
 
     def test_advisor_blocks_stripped_when_inactive(self) -> None:
         # The previous turn left advisor blocks in history, but the

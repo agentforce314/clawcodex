@@ -330,6 +330,40 @@ class AgentBridge:
             advisor_model = (get_settings().advisor_model or "") or None
         except Exception:
             advisor_model = None
+        # Client-side advisor results land on the NEXT (user-role)
+        # message after the assistant's tool_use, since the dispatcher
+        # routes the call through the tool registry. Build a lookup
+        # of ``tool_use_id → (text, is_error)`` from user messages so
+        # the inner loop can pair without an O(N²) walk.
+        client_side_results: dict[str, tuple[str, bool]] = {}
+        for msg in messages[start_idx:]:
+            mcontent = getattr(msg, "content", None)
+            if not isinstance(mcontent, list):
+                continue
+            for blk in mcontent:
+                if not isinstance(blk, dict):
+                    continue
+                if blk.get("type") != "tool_result":
+                    continue
+                use_id = blk.get("tool_use_id")
+                if not isinstance(use_id, str) or not use_id:
+                    continue
+                rc = blk.get("content")
+                # tool_result.content can be a string or a list of
+                # content blocks (multimodal tools). The advisor only
+                # ever emits string content (advisor's reply text).
+                if isinstance(rc, str):
+                    text = rc
+                elif isinstance(rc, list):
+                    parts: list[str] = []
+                    for b in rc:
+                        if isinstance(b, dict) and isinstance(b.get("text"), str):
+                            parts.append(b["text"])
+                    text = "\n".join(parts)
+                else:
+                    text = str(rc) if rc is not None else ""
+                client_side_results[use_id] = (text, bool(blk.get("is_error")))
+
         for msg in messages[start_idx:]:
             content = getattr(msg, "content", None)
             if not isinstance(content, list):
@@ -345,6 +379,49 @@ class AgentBridge:
                 if not isinstance(bid, str) or not bid:
                     continue
                 if bid in self._emitted_advisor_ids:
+                    continue
+                # Client-side advisor: regular tool_use(name="advisor")
+                # on an assistant message; the result is on a later
+                # user-role message. We've already indexed those above.
+                if btype == "tool_use" and bname == "advisor":
+                    self._post(
+                        AdvisorEventMessage(
+                            kind="start",
+                            tool_use_id=bid,
+                            advisor_model=advisor_model,
+                        )
+                    )
+                    pair = client_side_results.get(bid)
+                    if pair is None:
+                        # The dispatcher hasn't produced a result yet
+                        # (turn in flight, or interrupted). Synthesize
+                        # the interrupted event so the row doesn't spin
+                        # forever. If the result lands later, the
+                        # ``_emitted_advisor_ids`` guard prevents
+                        # double-rendering.
+                        self._post(
+                            AdvisorEventMessage(
+                                kind="result",
+                                tool_use_id=bid,
+                                advisor_model=advisor_model,
+                                error_code="interrupted",
+                            )
+                        )
+                    else:
+                        result_text, is_err = pair
+                        self._post(
+                            AdvisorEventMessage(
+                                kind="result",
+                                tool_use_id=bid,
+                                advisor_model=advisor_model,
+                                text=None if is_err else result_text,
+                                error_code=(
+                                    result_text[:120] if is_err and result_text
+                                    else ("error" if is_err else None)
+                                ),
+                            )
+                        )
+                    self._emitted_advisor_ids.add(bid)
                     continue
                 if btype == "server_tool_use" and bname == "advisor":
                     self._post(
