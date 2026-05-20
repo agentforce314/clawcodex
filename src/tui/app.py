@@ -29,6 +29,8 @@ from .a11y import Announcer, describe_status
 from .agent_bridge import AgentBridge
 from .commands import (
     CommandDispatchResult,
+    CommandSuggestion,
+    build_command_suggestions,
     build_command_words,
     dispatch_local_command,
     dispatch_registry_command,
@@ -190,6 +192,7 @@ class ClawCodexTUI(App):
             model=self.model,
             workspace_root=self.workspace_root,
             words_provider=self._slash_command_words,
+            suggestions_provider=self._slash_command_suggestions,
         )
         self.push_screen(self._repl_screen)
 
@@ -827,6 +830,9 @@ class ClawCodexTUI(App):
 
     def _slash_command_words(self) -> list[str]:
         return build_command_words(self.workspace_root, self.tool_context)
+
+    def _slash_command_suggestions(self) -> list[CommandSuggestion]:
+        return build_command_suggestions(self.workspace_root, self.tool_context)
 
     def _post_to_screen(self, message: Any) -> None:
         target = self._repl_screen or self

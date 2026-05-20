@@ -46,6 +46,7 @@ from ..widgets.transcript_view import Transcript
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..app import ClawCodexTUI
+    from ..commands import CommandSuggestion
 
 
 class REPLScreen(Screen):
@@ -69,6 +70,7 @@ class REPLScreen(Screen):
         model: str,
         workspace_root: Path,
         words_provider: Callable[[], list[str]],
+        suggestions_provider: Callable[[], list["CommandSuggestion"]] | None = None,
     ) -> None:
         super().__init__()
         self._version = version
@@ -76,6 +78,7 @@ class REPLScreen(Screen):
         self._model = model
         self._workspace_root = Path(workspace_root)
         self._words_provider = words_provider
+        self._suggestions_provider = suggestions_provider
 
         self.header_widget = StartupHeader(
             version=version,
@@ -89,7 +92,10 @@ class REPLScreen(Screen):
             model=model,
             workspace_root=self._workspace_root,
         )
-        self.prompt_input = PromptInput(words_provider=words_provider)
+        self.prompt_input = PromptInput(
+            words_provider=words_provider,
+            suggestions_provider=suggestions_provider,
+        )
         # ARIA live region — stays height: 1 and only announces the
         # most recent status change. Mounted just above the status
         # bar so it's adjacent to the prompt for single-sweep reads.
