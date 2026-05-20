@@ -39,20 +39,44 @@ from .query import QueryParams, StreamEvent, query
 from .transitions import Terminal, TerminalHolder
 
 
-# Re-use the renderer types + helpers. Post Ch5/F.4 the canonical
-# home is ``src/tui/tool_summary_renderers.py``; we still import via
-# ``src.tool_system.agent_loop`` because ``src/tui/__init__.py``
-# pulls in the full TUI app graph (app → agent_bridge →
-# agent_loop_compat) and that creates a circular import. The
-# tool_system.agent_loop re-export is back-compat-stable; both paths
-# resolve to the same objects.
-from ..tool_system.agent_loop import (
+# Renderer types are now canonically in ``src.tool_system.renderers``
+# (per the F.4 extraction in PR #N). ``src/tui/__init__.py`` doesn't
+# load the renderers module on import, so no circular hazard.
+from ..tool_system.renderers import (
     ToolEvent,
     ToolEventHandler,
     TextChunkHandler,
     summarize_tool_use,
     summarize_tool_result,
 )
+
+
+def build_effective_system_prompt(style_prompt: str, tool_context: ToolContext) -> str:
+    """Assemble the cold-start system prompt for headless+TUI cutover.
+
+    Combines the user's output-style prompt with the workspace
+    context block (CLAUDE.md, git status, cwd) produced by
+    ``build_context_prompt``. Lives here because the only callers are
+    the F.2/F.3 cutover code in ``src/entrypoints/headless.py`` and
+    ``src/tui/agent_bridge.py``; the canonical query() loop expects
+    the system_prompt pre-built (per its QueryParams.system_prompt
+    contract) so the cutover code uses this helper to match what
+    the legacy ``run_agent_loop`` did internally.
+    """
+    # Local import — context_system is a heavier dep; only the cutover
+    # callers need it, no need to drag it into agent_loop_compat's
+    # import time.
+    from ..context_system import build_context_prompt
+    try:
+        context_prompt = build_context_prompt(
+            tool_context.workspace_root,
+            cwd=tool_context.cwd,
+        )
+    except Exception:
+        context_prompt = ""
+    if not context_prompt.strip():
+        return style_prompt
+    return f"{style_prompt}\n\n{context_prompt}"
 
 
 @dataclass(frozen=True)

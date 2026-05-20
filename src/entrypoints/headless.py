@@ -48,13 +48,11 @@ from src.cli_core import (
 )
 from src.config import get_default_provider, get_provider_config
 from src.providers import get_provider_class
-from src.tool_system.agent_loop import (
-    AgentLoopResult,
-    ToolEvent,
-    _build_effective_system_prompt,
-    run_agent_loop,
+from src.tool_system.renderers import AgentLoopResult, ToolEvent
+from src.query.agent_loop_compat import (
+    build_effective_system_prompt,
+    run_query_as_agent_loop,
 )
-from src.query.agent_loop_compat import run_query_as_agent_loop
 from src.tool_system.context import ToolContext
 from src.tool_system.defaults import build_default_registry
 from src.utils.abort_controller import AbortController, AbortError
@@ -287,7 +285,7 @@ def run_headless(options: HeadlessOptions) -> int:
                             getattr(tool_context, "output_style_dir", None),
                         ).prompt
                         effective_system_prompt = (
-                            _build_effective_system_prompt(_style_prompt, tool_context)
+                            build_effective_system_prompt(_style_prompt, tool_context)
                         )
 
                         def _persist(msg: Any) -> None:
