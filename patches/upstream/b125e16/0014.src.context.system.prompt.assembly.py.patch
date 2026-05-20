@@ -1,0 +1,107 @@
+diff --git a/src/context_system/prompt_assembly.py b/src/context_system/prompt_assembly.py
+index 06e583a..37cec83 100644
+--- a/src/context_system/prompt_assembly.py
++++ b/src/context_system/prompt_assembly.py
+@@ -373,6 +373,7 @@ def build_full_system_prompt(
+     tool_restrictions: list[str] | None = None,
+     custom_system_prompt: str | None = None,
+     append_system_prompt: str | None = None,
++    memory_scopes: list[str] | None = None,
+     use_cache: bool = True,
+ ) -> str:
+     """
+@@ -407,12 +408,12 @@ def build_full_system_prompt(
+         try:
+             from src.memdir import (
+                 has_auto_mem_path_override,
+-                load_memory_prompt,
++                load_memory_prompts,
+             )
+             if has_auto_mem_path_override():
+-                memory_prompt = load_memory_prompt()
+-                if memory_prompt:
+-                    base += "\n\n" + memory_prompt
++                memory_prompts = load_memory_prompts(memory_scopes)
++                for prompt in memory_prompts:
++                    base += "\n\n" + prompt
+         except Exception:
+             # Memory subsystem failures must never block prompt building.
+             pass
+@@ -472,7 +473,7 @@ def build_full_system_prompt(
+         sections.append(env_section)
+ 
+     # 25. Auto-memory section (MEMORY.md + behavioral instructions)
+-    memory_section = _build_memory_section()
++    memory_section = _build_memory_section(memory_scopes)
+     if memory_section:
+         sections.append(memory_section)
+ 
+@@ -564,6 +565,7 @@ def build_full_system_prompt_blocks(
+     tool_restrictions: list[str] | None = None,
+     custom_system_prompt: str | None = None,
+     append_system_prompt: str | None = None,
++    memory_scopes: list[str] | None = None,
+     use_cache: bool = True,
+     query_source: str = "main",
+     provider: Any | None = None,
+@@ -597,12 +599,12 @@ def build_full_system_prompt_blocks(
+         try:
+             from src.memdir import (
+                 has_auto_mem_path_override,
+-                load_memory_prompt,
++                load_memory_prompts,
+             )
+             if has_auto_mem_path_override():
+-                memory_prompt = load_memory_prompt()
+-                if memory_prompt:
+-                    base += "\n\n" + memory_prompt
++                memory_prompts = load_memory_prompts(memory_scopes)
++                for prompt in memory_prompts:
++                    base += "\n\n" + prompt
+         except Exception:
+             pass
+         if append_system_prompt:
+@@ -641,7 +643,7 @@ def build_full_system_prompt_blocks(
+     env_section = _build_env_section(cwd, use_cache)
+     if env_section:
+         sections.append(env_section)
+-    memory_section = _build_memory_section()
++    memory_section = _build_memory_section(memory_scopes)
+     if memory_section:
+         sections.append(memory_section)
+     mcp_section = _build_mcp_section(mcp_servers, use_cache)
+@@ -1074,7 +1076,9 @@ def _build_env_section(cwd: str | None, use_cache: bool) -> SystemPromptSection
+     return SystemPromptSection(id="environment", content=content, cache_scope=CacheScope.REQUEST, order=20)
+ 
+ 
+-def _build_memory_section() -> SystemPromptSection | None:
++def _build_memory_section(
++    memory_scopes: list[str] | None = None,
++) -> SystemPromptSection | None:
+     """Build the auto-memory system-prompt section.
+ 
+     Mirrors TS ``constants/prompts.ts:495`` (``systemPromptSection('memory',
+@@ -1083,14 +1087,20 @@ def _build_memory_section() -> SystemPromptSection | None:
+     can change mid-session as the model writes to it, and none of the
+     existing cache scopes invalidate on file mtime. The work is small
+     (one read of a ≤25KB file), so correctness over cache hit-rate.
++
++    Args:
++        memory_scopes: Optional list of scopes to load. If None, loads
++            the default memory prompt (backwards compatible).
+     """
+     try:
+-        from src.memdir import load_memory_prompt
++        from src.memdir import load_memory_prompts
+     except Exception:
+         return None
+-    content = load_memory_prompt()
+-    if not content:
++    prompts = load_memory_prompts(memory_scopes)
++    if not prompts:
+         return None
++    # Join multiple prompts with separators
++    content = "\n\n".join(prompts)
+     return SystemPromptSection(
+         id="memory",
+         content=content,

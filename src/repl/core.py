@@ -582,7 +582,7 @@ class ClawcodexREPL:
         #                             supported: the terminal sends
         #                             "\x1b\r", which prompt_toolkit
         #                             parses as Escape+ControlM)
-        #   * ``\`` + Enter        -> insert newline  (portable fallback
+        #   * ``\\`` + Enter        -> insert newline  (portable fallback
         #                             that works on ANY terminal — the
         #                             trailing backslash is removed and
         #                             replaced by a real newline)
@@ -2033,17 +2033,9 @@ class ClawcodexREPL:
 
         display_path = self._display_cwd()
         provider_label = f"{self.provider_name.upper()} Provider"
-        model_label = self.provider.model or "Unknown model"
-
-        mascot_ascii = "\n".join([
-            "  /\\__/\\",
-            " / o  o \\",
-            "(  __  )",
-            " \\/__/  ",
-        ])
+        model_label = self.provider.model if self.provider else "Unknown model"
 
         if Panel is None or Group is None or Align is None or Table is None or Text is None or Columns is None:
-            print(mascot_ascii)
             print(f"ClawCodex v{__version__}")
             print(f"{model_label} · {provider_label}")
             print(f"{display_path}\n")
@@ -2060,9 +2052,8 @@ class ClawcodexREPL:
         table.add_row("Workspace", Text(self._truncate_middle(display_path, content_width - 12), style="bold blue"))
 
         footer = Text("/help  •  /tools  •  /tui  •  /stream  •  /exit", style="dim")
-        mascot_block = Text(mascot_ascii, style="bold orange3", no_wrap=True)
         body = Group(
-            Columns([mascot_block, table], align="center", expand=False),
+            table,
             Text(""),
             Align.center(footer),
         )
@@ -2100,7 +2091,7 @@ class ClawcodexREPL:
                     self.console.print()
                     # The prompt session is configured with ``multiline=True``
                     # up front so that newlines (via Shift+Enter / Meta+Enter
-                    # / ``\`` + Enter) can live in the buffer. Plain Enter
+                    # / ``\\`` + Enter) can live in the buffer. Plain Enter
                     # still submits via our custom ``c-m`` binding.
                     user_input = self.prompt_session.prompt('❯ ')
 
@@ -2424,7 +2415,7 @@ class ClawcodexREPL:
 - Use Tab for command completion
 - Press Ctrl+C to interrupt current operation
 - Press Ctrl+D to exit
-- Multi-line input: Shift+Enter, Meta/Alt+Enter, or `\` + Enter inserts a newline; plain Enter submits
+- Multi-line input: Shift+Enter, Meta/Alt+Enter, or `\\` + Enter inserts a newline; plain Enter submits
 """
         self.console.print(Markdown(help_text))
 

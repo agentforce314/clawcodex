@@ -104,14 +104,53 @@ def analyze(
 # apply
 # ---------------------------------------------------------------------------
 
+def _resolve_commit_placeholder(path: Path, commit: str) -> Path:
+    """Resolve {commit} placeholder in a path string."""
+    path_str = str(path)
+    if "{commit}" in path_str:
+        return Path(path_str.format(commit=commit))
+    return path
+
+
 @app.command()
 def apply(
+    commit: str = typer.Option(
+        None,
+        help="Upstream commit hash to apply patches for (auto-detected if omitted)",
+    ),
     config: Path = typer.Option(DEFAULT_CONFIG, help="Path to upstream-sync.yaml"),
 ) -> None:
-    """Apply the patch queue."""
+    """Apply the patch queue.
+
+    When ``patch_subdir`` is configured (recommended), patches are loaded from
+    the per-commit subdirectory.  Otherwise, falls back to the flat patch
+    directory.
+    """
     cfg = load_config(config)
+
+    # Auto-detect commit if not provided
+    if commit is None:
+        vendor = VendorManager(Path("."), cfg.upstream)
+        try:
+            commit = vendor.fetch()
+        except Exception:
+            typer.echo("Could not auto-detect upstream commit. Provide --commit explicitly.")
+            raise typer.Exit(1)
+
+    # Determine patch directory and series file
+    if cfg.patches.patch_subdir:
+        # Per-commit subdirectory structure: patches/upstream/{commit}/
+        patch_dir = _resolve_commit_placeholder(
+            Path(cfg.patches.patch_subdir), commit
+        )
+        series_file = patch_dir / f"{commit}_series"
+    else:
+        # Flat structure: patches/
+        patch_dir = cfg.patches.directory
+        series_file = cfg.patches.series_file
+
     engine = create_engine(cfg.patches)
-    result = engine.apply_all(cfg.patches.directory, cfg.patches.series_file)
+    result = engine.apply_all(patch_dir, series_file)
     typer.echo(
         f"Applied: {len(result.success)}, "
         f"Failed: {len(result.failed)}, "

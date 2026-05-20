@@ -42,13 +42,36 @@ class UpstreamConfig(BaseModel):
 
 
 class PatchConfig(BaseModel):
-    """Patch queue configuration."""
+    """Patch queue configuration.
+
+    Supports two organizational structures:
+
+    1. **Flat** (legacy): All patches in a single directory.
+       - directory: "patches"
+       - series_file: "patches/series"
+
+    2. **Per-commit subdirectory** (recommended): Each upstream commit has
+       its own subdirectory with dedicated patches and series file.
+       - directory: "patches/upstream"
+       - series_file: "patches/upstream/{commit}/{commit}_series"
+       - patch_subdir: "patches/upstream/{commit}"
+
+    The ``{commit}`` placeholder is resolved from the upstream version_tag
+    at apply time (e.g. "b125e16").
+    """
 
     directory: Path = Path("patches")
     engine: Literal["quilt", "git-am", "custom"] = "quilt"
     custom_command: str | None = None  # used when engine == "custom"
     series_file: Path = Path("patches/series")
     metadata_dir: Path = Path("patches/metadata")
+    # Optional: per-commit subdirectory pattern for patches
+    # Example: "patches/upstream/{commit}" resolves to "patches/upstream/b125e16"
+    patch_subdir: str | None = Field(
+        default=None,
+        description="Per-commit patch subdirectory pattern with {commit} placeholder. "
+        "When set, patches are loaded from this subdirectory instead of directory.",
+    )
 
 
 class SyncConfig(BaseModel):

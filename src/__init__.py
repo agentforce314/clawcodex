@@ -10,10 +10,21 @@ try:  # pragma: no cover
 except Exception:  # pragma: no cover
     BaseProvider = None  # type: ignore[assignment]
 
+# Public API for autonomous orchestration
+try:
+    from .api import OrchestrationSubsystem, QueryConfig, QueryRunner
+except Exception:  # pragma: no cover
+    OrchestrationSubsystem = None  # type: ignore[assignment,misc]
+    QueryConfig = None  # type: ignore[assignment,misc]
+    QueryRunner = None  # type: ignore[assignment,misc]
+
 __all__ = [
     "__version__",
     "__author__",
     "load_config",
     "get_provider_config",
     "BaseProvider",
+    "OrchestrationSubsystem",
+    "QueryConfig",
+    "QueryRunner",
 ]

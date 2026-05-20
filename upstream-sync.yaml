@@ -44,9 +44,12 @@ layers:
 patches:
   # Patches stored per upstream commit hash, e.g. patches/upstream/b125e16/
   directory: "patches/upstream"
-  engine: "quilt"
-  # Series file: patches/upstream/{commit}_series
-  series_file: "patches/upstream/{commit}_series"
+  engine: "git-am"           # quilt requires CLI installation; git-am is git-native
+  # Per-commit patch subdirectory (recommended for large patch sets)
+  # When set, patches are loaded from patches/upstream/{commit}/
+  # instead of the flat patches/ directory
+  patch_subdir: "patches/upstream/{commit}"
+  # Note: the {commit} placeholder is resolved at apply time
   metadata_dir: "patches/metadata/upstream"
 
 sync:

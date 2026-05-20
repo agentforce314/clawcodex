@@ -3,6 +3,8 @@
 
 Applies ``*.patch`` files using ``git am``.  Useful for projects that prefer
 git-native patch workflows over quilt.
+
+Supports both flat directory structure and per-commit subdirectory structure.
 """
 
 from __future__ import annotations
@@ -18,16 +20,38 @@ class GitAmEngine:
     """PatchEngine implementation backed by ``git am``."""
 
     def apply_all(self, patch_dir: Path, series_file: Path) -> ApplyResult:
-        """Apply all ``*.patch`` files in *patch_dir* via ``git am --3way``.
+        """Apply all ``*.patch`` files via ``git am --3way``.
+
+        If *series_file* exists and is readable, patches are applied in the
+        order listed in the series file.  Otherwise, falls back to globbing
+        ``*.patch`` from *patch_dir* in sorted order.
 
         Args:
             patch_dir: Directory containing ``*.patch`` files.
-            series_file: Ignored for git-am (patches are globbed and sorted).
+            series_file: Optional quilt-style series file listing patch order.
 
         Returns:
             Structured result with success / failed / needs-review lists.
         """
-        patches = sorted(patch_dir.glob("*.patch"))
+        # Read series file if it exists
+        patches: list[Path] = []
+        if series_file.exists():
+            # Quilt series file: one patch filename per line
+            # Lines starting with # are comments, empty lines are ignored
+            for line in series_file.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                patch_path = patch_dir / line
+                if patch_path.exists():
+                    patches.append(patch_path)
+                else:
+                    # Try relative to parent (backward compatibility)
+                    patches.append(patch_path)
+        else:
+            # Fallback: glob patches from patch_dir
+            patches = sorted(patch_dir.glob("*.patch"))
+
         if not patches:
             return ApplyResult()
 

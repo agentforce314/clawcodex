@@ -1,0 +1,11 @@
+diff --git a/src/orchestrator/repo_tracker/__init__.py b/src/orchestrator/repo_tracker/__init__.py
+new file mode 100644
+index 0000000..a890f0d
+--- /dev/null
++++ b/src/orchestrator/repo_tracker/__init__.py
+@@ -0,0 +1,5 @@
++"""Repository-backed tracker adapters."""
++
++from .adapter import RepositoryTrackerAdapter
++
++__all__ = ["RepositoryTrackerAdapter"]

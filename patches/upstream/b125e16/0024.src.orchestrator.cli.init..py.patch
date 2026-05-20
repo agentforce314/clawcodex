@@ -1,0 +1,16 @@
+diff --git a/src/orchestrator/cli/__init__.py b/src/orchestrator/cli/__init__.py
+new file mode 100644
+index 0000000..03620f9
+--- /dev/null
++++ b/src/orchestrator/cli/__init__.py
+@@ -0,0 +1,9 @@
++"""Orchestrator CLI subcommands.
++
++clawcodex orchestrator <subcommand>
++
++All orchestrator operations (run, status, issues, pause, resume, stop, etc.)
++live under this unified entry point.
++"""
++
++from __future__ import annotations
+\ No newline at end of file

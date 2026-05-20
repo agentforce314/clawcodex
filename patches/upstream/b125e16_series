@@ -1,7 +1,0 @@
-# Quilt series file — one entry per upstream commit
-#
-# Format: one patch filename per line (no leading whitespace, no # comments inline).
-# Patch file is stored alongside this series file.
-#
-# Current upstream commit: b125e16
-b125e16_0001-port-to-python.patch

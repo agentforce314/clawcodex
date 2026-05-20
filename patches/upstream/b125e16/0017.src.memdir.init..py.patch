@@ -1,0 +1,20 @@
+diff --git a/src/memdir/__init__.py b/src/memdir/__init__.py
+index d5735cc..4bff1e0 100644
+--- a/src/memdir/__init__.py
++++ b/src/memdir/__init__.py
+@@ -22,6 +22,7 @@ from .memdir import (
+     build_memory_prompt,
+     ensure_memory_dir_exists,
+     load_memory_prompt,
++    load_memory_prompts,
+     truncate_entrypoint_content,
+ )
+ from .memory_age import (
+@@ -107,6 +108,7 @@ __all__ = [
+     "build_memory_prompt",
+     "ensure_memory_dir_exists",
+     "load_memory_prompt",
++    "load_memory_prompts",
+     "truncate_entrypoint_content",
+     # scan / recall
+     "FRONTMATTER_MAX_LINES",
