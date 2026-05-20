@@ -489,52 +489,109 @@ def _write_advisor_model(context: CommandContext, value: str | None) -> None:
     invalidate_settings_cache()
 
 
+def _read_current_advisor_client_mode(context: CommandContext) -> bool:
+    """Resolve the user's current advisor_client_mode flag (reactive
+    store preferred, settings fallback). Mirrors
+    ``_read_current_advisor_model``."""
+    store = getattr(context, "app_state_store", None)
+    if store is not None:
+        try:
+            return bool(getattr(store.get_state(), "advisor_client_mode", False))
+        except Exception:
+            pass
+    try:
+        from ..settings.settings import get_settings
+        return bool(getattr(get_settings(), "advisor_client_mode", False))
+    except Exception:
+        return False
+
+
+def _write_advisor_client_mode(context: CommandContext, value: bool) -> None:
+    """Persist advisor_client_mode (store-preferred, settings fallback).
+    Mirrors ``_write_advisor_model`` — same dual-path persistence."""
+    store = getattr(context, "app_state_store", None)
+    if store is not None:
+        from ..state.app_state import replace_state
+        store.set_state(lambda s: replace_state(s, advisor_client_mode=bool(value)))
+        return
+    from .. import config as cfg_mod
+    from ..settings.settings import invalidate_settings_cache
+    mgr = cfg_mod._get_default_manager()
+    cfg = mgr.load_global()
+    settings_section = cfg.get("settings")
+    if not isinstance(settings_section, dict):
+        settings_section = {}
+    settings_section["advisor_client_mode"] = bool(value)
+    cfg["settings"] = settings_section
+    mgr.save_global(cfg)
+    invalidate_settings_cache()
+
+
 def advisor_command_call(args: str, context: CommandContext) -> LocalCommandResult:
-    """Handle /advisor — configure the server-side advisor reviewer model.
+    """Handle /advisor — configure the reviewer model.
 
-    Python port of typescript/src/commands/advisor.ts. Branches:
-      * no args → report current state (set/unset/inactive). Inactive =
-        a model is set but the running main-loop model doesn't support
-        the advisor tool.
-      * ``unset`` | ``off`` → clear the advisor model.
-      * ``<model>`` → resolve + validate + set.
+    Branches (after parsing optional ``--client`` / ``--no-client`` flags):
+      * no args, no flags → status report (model + active mode).
+      * ``unset`` | ``off`` → clear advisor_model AND advisor_client_mode.
+      * ``--no-client`` (alone) → keep model, clear client-mode flag.
+      * ``<model>`` → resolve + validate the model has a known provider,
+        then persist. ``--client`` flag (if present) also persists
+        advisor_client_mode=True; absent flag preserves the existing
+        client_mode value (so ``--client`` is sticky).
 
-    Writes go to the reactive AppState store if the caller wired one
-    via ``CommandContext.app_state_store``; otherwise they go straight
+    The activation mode (server-side vs client-side) is decided at
+    request time by ``decide_advisor_mode`` based on the provider and
+    the stored ``(advisor_model, advisor_client_mode)`` pair. This
+    command writes both fields; it doesn't pick the mode.
+
+    Writes go to the reactive AppState store when wired, falling back
     to the global settings file. Either path produces the same end
-    state (settings.advisor_model is the canonical source) — the
-    distinction is whether mid-session subscribers see the change as
-    an in-process event or have to re-read settings.
+    state — settings.advisor_model and settings.advisor_client_mode
+    are the canonical sources.
     """
     from ..models.model import canonical_model_name, resolve_model
     from ..models.validation import validate_model_name
     from ..utils.advisor import (
+        ADVISOR_MODE_CLIENT_SIDE,
+        ADVISOR_MODE_INACTIVE,
+        ADVISOR_MODE_SERVER_SIDE,
         can_user_configure_advisor,
-        is_valid_advisor_model,
-        model_supports_advisor,
+        decide_advisor_mode,
+        infer_provider_for_model,
     )
 
-    arg = (args or "").strip().lower()
     provider = getattr(context, "provider", None)
 
-    # Reject hard when /advisor is disabled by env var or by a non-first-
-    # party provider — otherwise the user would silently configure a value
-    # that no future request can use.
+    # Hard-reject only when env-disabled (the user would silently
+    # configure a value that no request can use).
     if not can_user_configure_advisor(provider):
         return LocalCommandResult(
             type="text",
             value=(
-                "Advisor is unavailable in this configuration. "
-                "It requires the first-party Anthropic API and is disabled by "
-                "the CLAUDE_CODE_DISABLE_ADVISOR_TOOL env var."
+                "Advisor is disabled by the CLAUDE_CODE_DISABLE_ADVISOR_TOOL "
+                "env var."
             ),
         )
 
+    # Tokenize raw args so flag handling is order-insensitive. A
+    # trailing or leading ``--client`` / ``--no-client`` should peel
+    # off cleanly without breaking the model identifier.
+    raw_tokens = (args or "").strip().split()
+    force_client_flag: bool | None = None  # None = no flag passed
+    rest_tokens: list[str] = []
+    for tok in raw_tokens:
+        if tok == "--client":
+            force_client_flag = True
+        elif tok == "--no-client":
+            force_client_flag = False
+        else:
+            rest_tokens.append(tok)
+    arg = " ".join(rest_tokens).strip()
+    arg_lower = arg.lower()
+
     current_advisor = _read_current_advisor_model(context)
-    # Resolve the active main-loop model. Prefer the provider's own
-    # ``.model`` attribute (mirrors TS ``options.model`` source of truth
-    # — the value the next API call will actually use). Fall back to
-    # AppState.main_loop_model when the provider isn't carrying one.
+    current_client_mode = _read_current_advisor_client_mode(context)
+
     main_loop_model = ""
     if provider is not None:
         main_loop_model = getattr(provider, "model", "") or ""
@@ -546,35 +603,93 @@ def advisor_command_call(args: str, context: CommandContext) -> LocalCommandResu
             except Exception:
                 pass
 
-    if not arg:
+    def _render_status() -> str:
+        """Format the current state for the no-args branch."""
+        if not current_advisor:
+            return (
+                "Advisor: not set\n"
+                'Use "/advisor <model>" to enable (e.g. "/advisor opus", '
+                '"/advisor gemini-2.5-pro").'
+            )
+        mode = decide_advisor_mode(
+            provider,
+            main_loop_model,
+            current_advisor,
+            force_client_mode=current_client_mode,
+        )
+        mode_label = {
+            ADVISOR_MODE_SERVER_SIDE: "active (server-side)",
+            ADVISOR_MODE_CLIENT_SIDE: "active (client-side)",
+            ADVISOR_MODE_INACTIVE: "inactive",
+        }.get(mode, "inactive")
+        suffix = ""
+        if current_client_mode:
+            suffix = " [--client forced]"
+        if mode == ADVISOR_MODE_INACTIVE:
+            inactive_reason = (
+                f"The current model ({main_loop_model}) cannot be paired "
+                f"with {current_advisor!r} (no known provider for the "
+                "advisor model)."
+                if main_loop_model
+                else f"No known provider for advisor model {current_advisor!r}."
+            )
+            return (
+                f"Advisor: {current_advisor} — {mode_label}{suffix}\n"
+                f"{inactive_reason}"
+            )
+        return (
+            f"Advisor: {current_advisor} — {mode_label}{suffix}\n"
+            'Use "/advisor unset" to disable or "/advisor <model>" to change.'
+        )
+
+    # No model arg, no flags → status only.
+    if not arg and force_client_flag is None:
+        return LocalCommandResult(type="text", value=_render_status())
+
+    # --no-client alone (no model) → just clear the forced-client flag.
+    if not arg and force_client_flag is False:
+        if not current_client_mode:
+            return LocalCommandResult(
+                type="text", value="Advisor client mode already off.",
+            )
+        _write_advisor_client_mode(context, False)
+        return LocalCommandResult(
+            type="text",
+            value=(
+                "Advisor client mode disabled. "
+                "Server-side will be used when applicable."
+            ),
+        )
+
+    # --client alone (no model) → just turn on the forced-client flag.
+    if not arg and force_client_flag is True:
         if not current_advisor:
             return LocalCommandResult(
                 type="text",
                 value=(
-                    "Advisor: not set\n"
-                    'Use "/advisor <model>" to enable (e.g. "/advisor opus").'
+                    "Cannot force client mode: no advisor model is set. "
+                    'Use "/advisor <model> --client" together.'
                 ),
             )
-        if main_loop_model and not model_supports_advisor(main_loop_model):
+        if current_client_mode:
             return LocalCommandResult(
-                type="text",
-                value=(
-                    f"Advisor: {current_advisor} (inactive)\n"
-                    f"The current model ({main_loop_model}) does not support advisors."
-                ),
+                type="text", value="Advisor client mode already on.",
             )
+        _write_advisor_client_mode(context, True)
         return LocalCommandResult(
             type="text",
             value=(
-                f"Advisor: {current_advisor}\n"
-                'Use "/advisor unset" to disable or "/advisor <model>" to change.'
+                "Advisor client mode enabled. The advisor will run via "
+                "client-side dispatch on every request."
             ),
         )
 
-    if arg in ("unset", "off"):
+    if arg_lower in ("unset", "off"):
         previous = current_advisor
         if previous is not None:
             _write_advisor_model(context, None)
+        if current_client_mode:
+            _write_advisor_client_mode(context, False)
         return LocalCommandResult(
             type="text",
             value=(
@@ -584,7 +699,7 @@ def advisor_command_call(args: str, context: CommandContext) -> LocalCommandResu
         )
 
     # Treat the rest as a model identifier.
-    raw = (args or "").strip()
+    raw = arg
     try:
         resolved = resolve_model(raw)
     except Exception as e:
@@ -597,28 +712,55 @@ def advisor_command_call(args: str, context: CommandContext) -> LocalCommandResu
             type="text",
             value=f"Unknown model: {raw} ({resolved})",
         )
-    if not is_valid_advisor_model(resolved):
+    # We no longer require ``is_valid_advisor_model`` (the strict
+    # opus-4-6/sonnet-4-6 gate) — client-side mode accepts any model
+    # that routes to a known provider. The router check is what
+    # actually matters: without it, ``execute_client_advisor`` would
+    # fail at request time and silently degrade.
+    if infer_provider_for_model(resolved) is None:
         return LocalCommandResult(
             type="text",
-            value=f"The model {raw} ({resolved}) cannot be used as an advisor",
+            value=(
+                f"Cannot use {raw} ({resolved}) as advisor: no known "
+                "provider for this model. Try a model listed in "
+                "PROVIDER_INFO, or use a provider-prefixed name "
+                "(e.g. 'anthropic/claude-sonnet-4.5')."
+            ),
         )
 
     normalized = canonical_model_name(resolved)
     _write_advisor_model(context, normalized)
+    if force_client_flag is True:
+        _write_advisor_client_mode(context, True)
+    elif force_client_flag is False:
+        _write_advisor_client_mode(context, False)
 
-    if main_loop_model and not model_supports_advisor(main_loop_model):
-        return LocalCommandResult(
-            type="text",
-            value=(
-                f"Advisor set to {normalized}.\n"
-                f"Note: Your current model ({main_loop_model}) does not support "
-                "advisors. Switch to a supported model to use the advisor."
-            ),
+    # Report what mode the chosen pair lands in, so the user can spot
+    # mismatches immediately (e.g., they expected server-side but the
+    # main model doesn't qualify).
+    effective_client_mode = (
+        force_client_flag
+        if force_client_flag is not None
+        else current_client_mode
+    )
+    chosen_mode = decide_advisor_mode(
+        provider,
+        main_loop_model,
+        normalized,
+        force_client_mode=effective_client_mode,
+    )
+    if chosen_mode == ADVISOR_MODE_SERVER_SIDE:
+        mode_msg = "Will run server-side (Anthropic beta path)."
+    elif chosen_mode == ADVISOR_MODE_CLIENT_SIDE:
+        mode_msg = "Will run client-side (separate API call)."
+    else:
+        mode_msg = (
+            "Note: advisor is currently inactive (no path applies for "
+            f"main loop {main_loop_model!r} + advisor {normalized!r})."
         )
-
     return LocalCommandResult(
         type="text",
-        value=f"Advisor set to {normalized}.",
+        value=f"Advisor set to {normalized}. {mode_msg}",
     )
 
 
@@ -811,8 +953,8 @@ from ..utils.advisor import can_user_configure_advisor as _can_user_configure_ad
 
 ADVISOR_COMMAND = LocalCommand(
     name="advisor",
-    description="Configure the advisor model",
-    argument_hint="[<model>|off]",
+    description="Configure the advisor model (server-side on 1P Anthropic, client-side on any provider)",
+    argument_hint="[<model> [--client] | --no-client | off]",
     supports_non_interactive=True,
     is_enabled=lambda: _can_user_configure_advisor(None),
 )

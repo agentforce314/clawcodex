@@ -69,11 +69,17 @@ class SettingsSchema:
     # Model
     model: str = ""
     small_fast_model: str = ""
-    # Advisor — server-side reviewer tool. Empty string = unset (no /advisor).
+    # Advisor — reviewer tool. Empty string = unset (no /advisor).
     # Persisted analogue of TS appState.advisorModel; the /advisor slash
     # command writes here, and _call_model_sync reads from here at request
     # time. See src/utils/advisor.py.
     advisor_model: str = ""
+    # Force client-side advisor mode (tool dispatch + separate API call)
+    # even when the main provider is first-party Anthropic. Default False
+    # lets the server-side beta path engage when applicable. Set via
+    # ``/advisor <model> --client``. See decide_advisor_mode() in
+    # src/utils/advisor.py for the full activation table.
+    advisor_client_mode: bool = False
 
     # Provider
     provider: str = "anthropic"

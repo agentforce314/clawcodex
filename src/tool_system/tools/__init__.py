@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from ..build_tool import Tool
 
+from .advisor import AdvisorTool
 from .agent import make_agent_tool
 from .ask_user_question import AskUserQuestionTool
 from .bash import BashTool
@@ -40,6 +41,7 @@ from .worktree import EnterWorktreeTool, ExitWorktreeTool
 from .write import WriteTool
 
 ALL_STATIC_TOOLS: list[Tool] = [
+    AdvisorTool,
     AskUserQuestionTool,
     BashTool,
     BriefTool,
@@ -84,6 +86,7 @@ ALL_STATIC_TOOLS: list[Tool] = [
 
 __all__ = [
     "ALL_STATIC_TOOLS",
+    "AdvisorTool",
     "AskUserQuestionTool",
     "BashTool",
     "BriefTool",

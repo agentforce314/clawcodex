@@ -288,64 +288,74 @@ async def _call_model_sync(
     from ..types.messages import normalize_messages_for_api
     from ..utils.advisor import (
         ADVISOR_BETA_HEADER,
+        ADVISOR_MODE_CLIENT_SIDE,
+        ADVISOR_MODE_INACTIVE,
+        ADVISOR_MODE_SERVER_SIDE,
         ADVISOR_TOOL_INSTRUCTIONS,
         build_advisor_tool_schema,
-        is_advisor_enabled,
-        is_valid_advisor_model,
-        model_supports_advisor,
+        build_client_advisor_tool_schema,
+        decide_advisor_mode,
         strip_advisor_blocks,
     )
 
-    # Advisor activation decision — server-side parity with TS
-    # claude.ts:1094-1130. Activation requires ALL of:
-    # 1. Provider is first-party Anthropic (no custom base_url) and the
-    #    CLAUDE_CODE_DISABLE_ADVISOR_TOOL env switch is not set.
-    # 2. ``settings.advisor_model`` is non-empty (the user opted in via
-    #    /advisor; ``_on_advisor_model_change`` persists writes here).
-    # 3. The main-loop model supports calling the advisor tool
-    #    (opus-4-6 / sonnet-4-6 — older models reject the schema).
-    # 4. The configured advisor model itself is a valid advisor target.
-    # A stale advisor_model setting under a non-supporting model is
-    # silently ignored — never sent to the API. Mirrors the TS
-    # "skipping advisor — base model X does not support advisor" branch.
+    # Advisor activation decision. Three outcomes:
+    #
+    # * SERVER_SIDE: 1P Anthropic provider + opus-4-6/sonnet-4-6 main
+    #   loop + valid server-side advisor target. Carries the beta
+    #   header and the ``advisor_20260301`` schema; the API runs the
+    #   reviewer model server-side. Optimal path — single roundtrip,
+    #   cache-friendly.
+    # * CLIENT_SIDE: any provider, any tool-calling main loop, any
+    #   advisor model that routes to a known provider. Registers
+    #   ``advisor`` as a regular client-side tool; the dispatcher
+    #   (``src/tool_system/tools/advisor.py``) makes a separate API
+    #   call to the configured advisor model. Two roundtrips but
+    #   provider-agnostic.
+    # * INACTIVE: no advisor on this request (env-disabled, no
+    #   advisor_model set, or no path can be resolved).
+    #
+    # The full decision table lives in ``decide_advisor_mode``. Any
+    # exception during the predicate degrades to INACTIVE rather than
+    # killing the turn (critic M1 from the original advisor PR).
     main_loop_model = getattr(provider, "model", "") or ""
-    advisor_active = False
+    advisor_mode = ADVISOR_MODE_INACTIVE
     advisor_model_normalized: str | None = None
-    # Wrap the ENTIRE activation predicate so any failure (transient
-    # import, future provider type that throws on the first-party
-    # check, settings cache contention) defaults to "advisor inactive"
-    # instead of failing the turn. Critic M1: previously the env/
-    # provider check was outside the inner try, so an exception in
-    # ``is_first_party_provider`` would propagate to the caller.
     try:
-        if is_advisor_enabled(provider):
-            from ..settings.settings import get_settings
-            configured = (get_settings().advisor_model or "").strip()
-            if configured and model_supports_advisor(main_loop_model):
-                from ..models.model import canonical_model_name
-                candidate = canonical_model_name(configured)
-                if is_valid_advisor_model(candidate):
-                    advisor_active = True
-                    advisor_model_normalized = candidate
+        from ..settings.settings import get_settings
+        settings = get_settings()
+        configured = (getattr(settings, "advisor_model", "") or "").strip()
+        force_client = bool(getattr(settings, "advisor_client_mode", False))
+        if configured:
+            from ..models.model import canonical_model_name
+            candidate = canonical_model_name(configured)
+            advisor_mode = decide_advisor_mode(
+                provider,
+                main_loop_model,
+                candidate,
+                force_client_mode=force_client,
+            )
+            if advisor_mode != ADVISOR_MODE_INACTIVE:
+                advisor_model_normalized = candidate
     except Exception:
-        # Don't let advisor activation issues kill the turn. The
-        # historical advisor blocks (if any) will still be stripped
-        # below since advisor_active is False.
         logger.exception(
             "Advisor activation check failed; treating advisor as inactive"
         )
-        advisor_active = False
+        advisor_mode = ADVISOR_MODE_INACTIVE
         advisor_model_normalized = None
 
     api_messages = normalize_messages_for_api(messages)
 
-    # When the advisor beta header is NOT going on this request, strip
-    # any historical advisor blocks — the API 400s on
-    # ``server_tool_use(name=advisor)`` and ``advisor_tool_result`` blocks
-    # without the matching beta. Mirror of TS claude.ts:1332-1334.
-    # Always-on when advisor is inactive (provider switch, env disable,
-    # base model unsupported, or user ran /advisor unset).
-    if not advisor_active:
+    # Server-side advisor blocks (``server_tool_use(name=advisor)`` and
+    # ``advisor_tool_result``) require the beta header on every request
+    # that carries them — the API 400s otherwise. Strip from history on
+    # any request that won't send the header.
+    #
+    # In CLIENT_SIDE mode the advisor surfaces as regular
+    # ``tool_use``/``tool_result`` blocks, which pass through normal
+    # message handling untouched. Only the SERVER_SIDE shape is gated
+    # by the header, so stripping is keyed off "current request carries
+    # the beta" — which is exactly SERVER_SIDE-and-only-SERVER_SIDE.
+    if advisor_mode != ADVISOR_MODE_SERVER_SIDE:
         api_messages = strip_advisor_blocks(api_messages)
 
     # --- Diagnostic tracing ---
@@ -404,12 +414,19 @@ async def _call_model_sync(
     # append) stays in place. If we prepended or interleaved, toggling
     # /advisor would shift the marker and bust the prompt cache. Mirrors
     # TS claude.ts:1411-1421 explicitly.
-    if advisor_active:
+    #
+    # The schema shape differs by mode: server-side carries the dated
+    # ``advisor_20260301`` discriminator + model field; client-side is
+    # a regular tool_use schema with no params, routed through the
+    # tool registry's AdvisorTool.
+    if advisor_mode == ADVISOR_MODE_SERVER_SIDE:
         tool_schemas.append(build_advisor_tool_schema(advisor_model_normalized))
+    elif advisor_mode == ADVISOR_MODE_CLIENT_SIDE:
+        tool_schemas.append(build_client_advisor_tool_schema())
 
     call_kwargs: dict[str, Any] = {"tools": tool_schemas}
 
-    if advisor_active:
+    if advisor_mode == ADVISOR_MODE_SERVER_SIDE:
         # Opt into the server-side advisor tool. ``betas`` lives outside
         # ``extra_headers`` because the SDK auto-converts it into the
         # ``anthropic-beta`` header AND filters out 3P-incompatible
@@ -417,22 +434,30 @@ async def _call_model_sync(
         # the advisor beta; if other betas are introduced, change this
         # to ``call_kwargs.setdefault("betas", []).append(...)``.
         call_kwargs["betas"] = [ADVISOR_BETA_HEADER]
+        # CLIENT_SIDE deliberately does NOT set betas — 3P endpoints
+        # reject the advisor beta, and 1P-with-force-client doesn't
+        # need it because the advisor schema is a regular tool here.
 
     from ..providers.anthropic_provider import AnthropicProvider
     from ..providers.minimax_provider import MinimaxProvider
 
     is_anthropic = isinstance(provider, (AnthropicProvider, MinimaxProvider))
+    advisor_instructions_active = advisor_mode != ADVISOR_MODE_INACTIVE
     if is_anthropic:
         # Forward whatever shape the engine produced — str or list[dict].
         # The SDK's ``system`` param accepts ``Union[str, Iterable[TextBlockParam]]``;
         # cache_control markers on blocks engage server-side prompt caching.
         #
-        # When the advisor is active, append ``ADVISOR_TOOL_INSTRUCTIONS``
-        # AFTER the existing system prompt blocks. This mirrors TS
-        # claude.ts:1395 (the advisor instructions come AFTER the cached
-        # system blocks, so they land in the request-scope partition and
-        # toggling /advisor doesn't churn the cached prefix).
-        if advisor_active:
+        # When the advisor is active (server OR client side), append
+        # ``ADVISOR_TOOL_INSTRUCTIONS`` AFTER the existing system prompt
+        # blocks. Mirrors TS claude.ts:1395 — the advisor instructions
+        # come AFTER the cached system blocks, so they land in the
+        # request-scope partition and toggling /advisor doesn't churn
+        # the cached prefix. The instruction text is provider-agnostic
+        # (tells the model "use the advisor tool"), so it works for
+        # both the server-side ``server_tool_use`` invocation and the
+        # client-side regular ``tool_use`` invocation.
+        if advisor_instructions_active:
             if isinstance(system_prompt, list):
                 system_prompt = list(system_prompt) + [
                     {"type": "text", "text": ADVISOR_TOOL_INSTRUCTIONS}
@@ -476,6 +501,15 @@ async def _call_model_sync(
             )
         else:
             flattened = system_prompt
+        # CLIENT_SIDE on a 3P provider: append the advisor instructions
+        # to the flattened system prompt so the model knows how + when
+        # to invoke the ``advisor`` tool. (Server-side instructions
+        # only land on 1P, handled by the is_anthropic branch above.)
+        if advisor_instructions_active and advisor_mode == ADVISOR_MODE_CLIENT_SIDE:
+            if flattened:
+                flattened = f"{flattened}\n\n{ADVISOR_TOOL_INSTRUCTIONS}"
+            else:
+                flattened = ADVISOR_TOOL_INSTRUCTIONS
         api_messages = [{"role": "system", "content": flattened}, *api_messages]
 
     if max_output_tokens_override is not None:
@@ -1433,6 +1467,17 @@ async def query(
                 "[DIAG] query loop: running %d tools in %d batches: %s",
                 len(tool_use_blocks), len(_batches), _batch_desc,
             )
+
+        # Snapshot the current conversation onto the ToolContext so
+        # tools that need history (currently: the client-side advisor)
+        # can read it via ``ctx.messages``. The list is the post-pipeline
+        # message stream up to and including the assistant message that
+        # just emitted the tool_use blocks we're about to dispatch. The
+        # advisor strips its own prior blocks via
+        # ``build_advisor_forwarded_messages`` before forwarding. Other
+        # tools ignore the field (the existing default factory was an
+        # empty list, so behavior is unchanged for them).
+        tool_use_context.messages = list(messages)
 
         tool_results = await _run_tools_partitioned(
             tool_use_blocks,

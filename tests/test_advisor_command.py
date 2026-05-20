@@ -117,7 +117,8 @@ class _IsolatedEnv:
 
 
 class TestAdvisorCommandGate(unittest.TestCase):
-    """The /advisor command refuses to run under non-first-party providers."""
+    """The /advisor command refuses to run when env-disabled. Provider
+    type is no longer a gate — client-side mode covers 3P."""
 
     def test_refuses_when_env_disabled(self) -> None:
         with _IsolatedEnv():
@@ -126,14 +127,18 @@ class TestAdvisorCommandGate(unittest.TestCase):
             ):
                 ctx = _make_context(provider=_fake_first_party_provider())
                 res = advisor_command_call("claude-opus-4-6", ctx)
-                self.assertIn("unavailable", res.value.lower())
+                self.assertIn("disabled", res.value.lower())
 
-    def test_refuses_with_non_first_party_provider(self) -> None:
+    def test_works_with_non_first_party_provider(self) -> None:
+        # Pre-client-side, this rejected. Post-client-side, 3P provider
+        # is fine — the advisor runs via the dispatcher's separate API
+        # call.
         with _IsolatedEnv():
             provider = MagicMock()  # Not an AnthropicProvider
+            provider.model = "gpt-5.4"
             ctx = _make_context(provider=provider)
             res = advisor_command_call("claude-opus-4-6", ctx)
-            self.assertIn("unavailable", res.value.lower())
+            self.assertIn("Advisor set to claude-opus-4-6", res.value)
 
 
 class TestAdvisorCommandStorePath(unittest.TestCase):
@@ -177,18 +182,19 @@ class TestAdvisorCommandStorePath(unittest.TestCase):
             self.assertIn("already unset", res.value.lower())
             self.assertEqual(store.writes, [])
 
-    def test_inactive_warning_when_base_model_unsupported(self) -> None:
+    def test_client_side_when_base_model_unsupported_for_server(self) -> None:
+        # Pre-client-side: this case warned "not supported". Now the
+        # base model just falls back to client-side dispatch — the
+        # command reports the actual mode chosen.
         with _IsolatedEnv():
             store = _FakeStore()
-            # Main loop on an older model — advisor can be SET but never
-            # actually fires until the user switches the base model.
             provider = _fake_first_party_provider("claude-opus-4-5")
             ctx = _make_context(store=store, provider=provider)
             res = advisor_command_call("claude-opus-4-6", ctx)
             self.assertIn("Advisor set to claude-opus-4-6", res.value)
-            self.assertIn("not support", res.value.lower())
+            self.assertIn("client-side", res.value.lower())
 
-    def test_no_arg_inactive_when_set_but_unsupported_base(self) -> None:
+    def test_no_arg_shows_client_side_for_unsupported_base(self) -> None:
         with _IsolatedEnv():
             from src.state.app_state import AppState
             store = _FakeStore(initial=AppState(advisor_model="claude-opus-4-6"))
@@ -196,31 +202,30 @@ class TestAdvisorCommandStorePath(unittest.TestCase):
             ctx = _make_context(store=store, provider=provider)
             res = advisor_command_call("", ctx)
             self.assertIn("Advisor: claude-opus-4-6", res.value)
-            self.assertIn("inactive", res.value.lower())
+            # Now active client-side rather than "inactive".
+            self.assertIn("client-side", res.value.lower())
 
-    def test_rejects_non_advisor_model(self) -> None:
+    def test_accepts_non_server_side_advisor_model(self) -> None:
+        # haiku-4-5 isn't valid for server-side, but it routes to
+        # anthropic and works client-side. The command should accept
+        # it (previously it was rejected by is_valid_advisor_model).
         with _IsolatedEnv():
             store = _FakeStore()
             ctx = _make_context(store=store, provider=_fake_first_party_provider())
             res = advisor_command_call("haiku", ctx)
-            # The resolver normalizes "haiku" to a haiku model id, which
-            # is_valid_advisor_model rejects.
-            self.assertIn("cannot be used as an advisor", res.value)
-            self.assertEqual(store.writes, [])
+            self.assertIn("Advisor set to", res.value)
+            self.assertEqual(len(store.writes), 1)
 
-    def test_rejects_unknown_model(self) -> None:
+    def test_rejects_unroutable_model(self) -> None:
+        # A model that doesn't resolve to any provider must still be
+        # rejected — the client-side path needs a provider to call.
         with _IsolatedEnv():
             store = _FakeStore()
             ctx = _make_context(store=store, provider=_fake_first_party_provider())
-            # validate_model_name accepts any ≥2 char string that
-            # doesn't violate known patterns, so an unknown but
-            # well-formed string may slip past that check and be
-            # rejected at the is_valid_advisor_model gate. Either
-            # rejection is acceptable; just verify nothing is written.
-            res = advisor_command_call("zzz-not-a-model-9999", ctx)
+            res = advisor_command_call("totally-fake-provider-zzz-9999", ctx)
             self.assertTrue(
                 "Unknown" in res.value
-                or "cannot be used as an advisor" in res.value,
+                or "no known provider" in res.value.lower(),
                 f"unexpected reject path: {res.value!r}",
             )
             self.assertEqual(store.writes, [])
