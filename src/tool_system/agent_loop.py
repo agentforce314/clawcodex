@@ -5,10 +5,14 @@
 preserved only as a back-compat surface for tests that haven't been
 ported yet; production code should not call ``run_agent_loop`` here.
 
-Renderer types (``ToolEvent``, ``AgentLoopResult``, summarizers, etc.)
-have moved to ``src.tool_system.renderers``. The shim re-exports them
-below so existing imports keep working through one deprecation cycle;
-new code should import directly from ``renderers``.
+**Do not edit renderer bodies here.** ``ToolEvent``, ``AgentLoopResult``,
+``summarize_tool_use``, ``summarize_tool_result``, and the related
+handlers all live in ``src.tool_system.renderers``. The
+``from .renderers import (...)`` block below re-exports them by reference
+— editing here would only fork a stale copy. Same for
+``_build_effective_system_prompt``: the body lives in
+``src.query.agent_loop_compat.build_effective_system_prompt``; we just
+alias it for legacy ``run_agent_loop`` to reuse.
 """
 
 from __future__ import annotations
@@ -104,17 +108,15 @@ def _call_provider_for_turn(
     return response, False
 
 
-def _build_effective_system_prompt(style_prompt: str, tool_context: ToolContext) -> str:
-    try:
-        context_prompt = build_context_prompt(
-            tool_context.workspace_root,
-            cwd=tool_context.cwd,
-        )
-    except Exception:
-        context_prompt = ""
-    if not context_prompt.strip():
-        return style_prompt
-    return f"{style_prompt}\n\n{context_prompt}"
+# Re-export the canonical build via private alias so legacy
+# ``run_agent_loop`` below shares the SAME body as the public helper
+# in ``agent_loop_compat`` — avoids the parallel-copies hazard the
+# critic flagged on F.4 (one copy could drift if the
+# ``build_context_prompt`` contract changes during the deprecation
+# cycle). Both go away with ``run_agent_loop`` in Stage 4.
+from ..query.agent_loop_compat import (
+    build_effective_system_prompt as _build_effective_system_prompt,
+)
 
 
 def run_agent_loop(
