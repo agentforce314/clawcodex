@@ -97,6 +97,14 @@ class AppState:
     # the settings cache so the next API call picks up the new value.
     advisor_model: str | None = None
 
+    # Force client-side advisor mode. False = auto (server-side when
+    # possible, client-side otherwise). True = always client-side even
+    # on 1P Anthropic (lets users pair a non-Anthropic advisor with an
+    # Anthropic main loop, or get transparency on the advisor call).
+    # Persisted to ``settings.advisor_client_mode`` via
+    # ``_on_advisor_client_mode_change``.
+    advisor_client_mode: bool = False
+
 
 def replace_state(state: AppState, **changes: Any) -> AppState:
     """Return a copy of ``state`` with ``changes`` applied. Equivalent
@@ -267,6 +275,39 @@ def _on_advisor_model_change(old: AppState, new: AppState) -> None:
         )
 
 
+def _on_advisor_client_mode_change(old: AppState, new: AppState) -> None:
+    """Persist advisor_client_mode to user settings + invalidate the read cache.
+
+    Same persistence pattern as ``_on_advisor_model_change`` — writes the
+    boolean into the user-scoped global config and invalidates the cache
+    so the next ``_call_model_sync`` turn picks up the new value without
+    a process restart.
+    """
+    if old.advisor_client_mode == new.advisor_client_mode:
+        return
+    from src import config as cfg_mod
+    from src.settings.settings import invalidate_settings_cache
+    try:
+        mgr = cfg_mod._get_default_manager()
+        cfg = mgr.load_global()
+        settings_section = cfg.get("settings")
+        if not isinstance(settings_section, dict):
+            settings_section = {}
+        settings_section["advisor_client_mode"] = bool(new.advisor_client_mode)
+        cfg["settings"] = settings_section
+        mgr.save_global(cfg)
+        invalidate_settings_cache()
+        logger.debug(
+            "AppState.advisor_client_mode %s -> %s — persisted + cache invalidated",
+            old.advisor_client_mode,
+            new.advisor_client_mode,
+        )
+    except Exception:
+        logger.exception(
+            "Failed to persist advisor_client_mode to settings; in-memory value still active"
+        )
+
+
 # Registry. EVERY field in AppState must appear here as a handler
 # (function-form, including explicit no-ops). The coverage test enforces
 # this — adding a new AppState field without a handler entry fails
@@ -278,6 +319,7 @@ _FIELD_HANDLERS: dict[str, Callable[[AppState, AppState], None]] = {
     "permission_mode": _on_permission_mode_change,
     "initial_message": _on_initial_message_change,
     "advisor_model": _on_advisor_model_change,
+    "advisor_client_mode": _on_advisor_client_mode_change,
 }
 
 
