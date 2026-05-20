@@ -485,18 +485,57 @@ def execute_client_advisor(
     except Exception as e:  # noqa: BLE001 — surface as advisor failure
         return (False, f"Advisor unavailable: failed to construct provider for {advisor_model!r}: {e}")
 
-    # The advisor doesn't make tool calls — it just emits advice text —
-    # so we send an empty tools list. Forward the conversation as
-    # user-role context wrapped under our advisor system prompt.
+    # System-prompt delivery is provider-specific:
+    #   * Anthropic-shaped providers (AnthropicProvider / MinimaxProvider)
+    #     expect ``system`` as a top-level kwarg; system-role messages
+    #     in the messages array would be rejected by the API.
+    #   * OpenAI-compatible providers (and Gemini-via-openai-shim) read
+    #     a leading ``{"role": "system", "content": ...}`` message and
+    #     ignore the ``system=`` kwarg silently.
+    # Detect the provider type to send the right shape — sending both
+    # forms blindly would either be ignored (best case) or fail
+    # validation (worst case, on Anthropic).
+    from src.providers.anthropic_provider import AnthropicProvider
+    from src.providers.minimax_provider import MinimaxProvider
+
+    is_anthropic_shape = isinstance(provider, (AnthropicProvider, MinimaxProvider))
+
+    call_kwargs: dict[str, Any] = {
+        "tools": [],
+        "max_tokens": 4096,
+    }
+    if is_anthropic_shape:
+        call_kwargs["system"] = CLIENT_ADVISOR_SYSTEM_PROMPT
+        request_messages = list(forwarded_messages)
+    else:
+        # Prepend the system message; OpenAI-compat will honor it
+        # naturally as the first message in the conversation.
+        request_messages = [
+            {"role": "system", "content": CLIENT_ADVISOR_SYSTEM_PROMPT},
+            *forwarded_messages,
+        ]
+
+    # ``chat_stream_response`` is the cross-provider call that accepts
+    # ``abort_signal`` uniformly (per BaseProvider) and returns a fully
+    # accumulated ChatResponse. The plain ``chat()`` path doesn't accept
+    # ``abort_signal`` consistently across providers — passing it as a
+    # kwarg would forward an unknown param to the underlying SDK for
+    # Anthropic (line 239 of anthropic_provider.py forwards unknown
+    # kwargs straight to ``messages.create``). Streaming under the hood
+    # but no ``on_text_chunk`` callback — we only need the final text.
     try:
-        response = provider.chat(
-            messages=forwarded_messages,
-            system=CLIENT_ADVISOR_SYSTEM_PROMPT,
-            tools=[],
-            max_tokens=4096,
-            stream=False,
-            abort_signal=abort_signal,
-        )
+        try:
+            response = provider.chat_stream_response(
+                request_messages,
+                on_text_chunk=None,
+                abort_signal=abort_signal,
+                **call_kwargs,
+            )
+        except (NotImplementedError, AttributeError):
+            # Older or stub providers may not implement streaming.
+            # Fall back to plain chat() — drop abort_signal there since
+            # we can't pass it portably.
+            response = provider.chat(request_messages, **call_kwargs)
     except Exception as e:  # noqa: BLE001 — surface as advisor failure
         return (False, f"Advisor unavailable: {type(e).__name__}: {e}")
 
