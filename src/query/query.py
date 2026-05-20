@@ -71,6 +71,15 @@ class QueryParams:
     user_context: dict[str, str] | None = None
     system_context: dict[str, str] | None = None
     pipeline_config: PipelineConfig | None = None
+    # Ch5/F-followup: live streaming text callback. When set, the
+    # provider's chat_stream_response receives this callback so each
+    # SSE text-delta drives the UI in real time. Critical for the
+    # TUI/headless live-stream UX after the F.2/F.3 migration to this
+    # loop — without it, callers see the entire response materialize
+    # at once after the model turn completes. The callback can also
+    # raise AbortError from inside the SDK's stream context to tear
+    # down the HTTP socket on ESC.
+    on_text_chunk: Callable[[str], None] | None = None
 
 
 @dataclass
@@ -284,6 +293,7 @@ async def _call_model_sync(
     tools: Tools,
     max_output_tokens_override: int | None = None,
     abort_signal: Any = None,
+    on_text_chunk: Callable[[str], None] | None = None,
 ) -> tuple[list[AssistantMessage], list[ToolUseBlock]]:
     from ..types.messages import normalize_messages_for_api
     from ..utils.advisor import (
@@ -538,9 +548,26 @@ async def _call_model_sync(
             # plumb, ESC during a tool-use-only response (no intermediate
             # text chunks for an ``on_text_chunk`` to observe) waits the
             # full model latency before the outer query loop bails.
-            response = provider.chat_stream_response(
-                api_messages, abort_signal=abort_signal, **call_kwargs,
-            )
+            # Forward on_text_chunk so the SDK fires chunks live (and
+            # the chunk callback can raise AbortError to tear down the
+            # stream mid-flight). Falls back to a kwargless call if
+            # the provider's signature doesn't accept on_text_chunk.
+            if on_text_chunk is not None:
+                try:
+                    response = provider.chat_stream_response(
+                        api_messages,
+                        on_text_chunk=on_text_chunk,
+                        abort_signal=abort_signal,
+                        **call_kwargs,
+                    )
+                except TypeError:
+                    response = provider.chat_stream_response(
+                        api_messages, abort_signal=abort_signal, **call_kwargs,
+                    )
+            else:
+                response = provider.chat_stream_response(
+                    api_messages, abort_signal=abort_signal, **call_kwargs,
+                )
         except (NotImplementedError, AttributeError):
             if _diag:
                 logger.warning("[DIAG] _call_model_sync: streaming not supported, falling back to chat()")
@@ -1229,6 +1256,7 @@ async def query(
                 tools=params.tools,
                 max_output_tokens_override=max_output_tokens_override,
                 abort_signal=params.abort_controller.signal,
+                on_text_chunk=params.on_text_chunk,
             )
             assistant_messages = returned_assistants
             tool_use_blocks = returned_tool_blocks

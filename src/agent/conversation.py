@@ -26,7 +26,20 @@ from ..types.messages import (
 @dataclass
 class Conversation:
     messages: list[Message] = field(default_factory=list)
-    max_history: int = 100
+    # Bumped from 100 to 2000 (critic ch05/F-consolidation S2).
+    # The headless+TUI cutover routes tool_use AND tool_result blocks
+    # through ``add_message`` separately (multiple messages per agent
+    # turn), so a 30-turn run with ~3 tools/turn produces ~120 messages
+    # per single user prompt — well past the old 100-cap. The cap
+    # silently truncates from the head, which removes the ORIGINAL
+    # user prompt; subsequent API calls go out without the task
+    # description and the model degrades. 2000 is enough to cover a
+    # long agentic session without changing the truncation semantics;
+    # if a deployment needs unbounded history it can override at
+    # construction. Compaction (``CompressionPipeline`` /
+    # ``/compact``) is the right tool for serious context management;
+    # this cap is just a memory-safety backstop.
+    max_history: int = 2000
 
     def add_message(self, role: str, content: MessageContent):
         if len(self.messages) >= self.max_history:
