@@ -32,7 +32,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.providers.base import ChatResponse
-from src.tool_system.agent_loop import run_agent_loop
+from src.query.agent_loop_compat import run_query_as_agent_loop_sync as run_agent_loop
 from src.tool_system.context import ToolContext
 from src.tool_system.protocol import ToolResult
 from src.tool_system.registry import ToolRegistry
@@ -40,12 +40,30 @@ from src.tool_system.build_tool import build_tool
 from src.utils.abort_controller import AbortController, AbortError
 
 
-class _FakeAnthropic:
-    """Stub provider that looks like an Anthropic provider to the loop."""
+from src.providers.anthropic_provider import AnthropicProvider as _RealAnthropicProvider
+
+
+class _FakeAnthropic(_RealAnthropicProvider):
+    """Stub provider that genuinely IS an AnthropicProvider subclass.
+
+    Stage-4 critic S1: the previous monkeypatch approach
+    (``monkeypatch.setattr(query_mod, "AnthropicProvider", ...)``)
+    was silently broken — query.py imports AnthropicProvider at
+    function-level scope, so the module-level setattr never
+    shadowed the local binding. The isinstance check still saw the
+    real class. Subclassing the real class makes
+    ``isinstance(_FakeAnthropic(), AnthropicProvider)`` True
+    naturally without any patching.
+    """
 
     def __init__(self, responses: list[ChatResponse]):
+        # Skip the real ``__init__`` (it constructs an SDK client we
+        # don't need). Set the fields query.py reads on the provider.
         self._responses = list(responses)
         self.calls = 0
+        self.api_key = "fake"
+        self.base_url = None
+        self.model = "claude-test"
 
     def chat_stream_response(self, *_args: Any, **_kwargs: Any) -> ChatResponse:
         raise NotImplementedError  # force the non-stream path
@@ -63,11 +81,17 @@ class _FakeAnthropic:
         return self._responses.pop(0)
 
 
-# Make ``_is_anthropic_provider`` happy without importing the real SDK class.
 def _patch_anthropic_check(monkeypatch: pytest.MonkeyPatch) -> None:
-    from src.tool_system import agent_loop
+    """No-op kept for back-compat with the original test bodies.
 
-    monkeypatch.setattr(agent_loop, "_is_anthropic_provider", lambda _p: True)
+    Pre-Stage-4 this monkeypatched ``agent_loop._is_anthropic_provider``
+    to make a non-subclass fake look Anthropic-shape. Post-Stage-4,
+    ``_FakeAnthropic`` IS an AnthropicProvider subclass (see above),
+    so the isinstance check in ``query._call_model_sync`` returns
+    True naturally and no patching is needed. Kept callable so the
+    existing test bodies don't need editing.
+    """
+    return
 
 
 def _make_context(workspace: Path) -> ToolContext:

@@ -12,7 +12,7 @@ from src.context_system import build_context_prompt
 from src.context_system.claude_md import clear_memory_file_caches
 from src.context_system.git_context import clear_git_caches, collect_git_context
 from src.providers.base import ChatResponse
-from src.tool_system.agent_loop import run_agent_loop
+from src.query.agent_loop_compat import run_query_as_agent_loop_sync as run_agent_loop
 from src.tool_system.context import ToolContext
 from src.tool_system.defaults import build_default_registry
 
@@ -68,6 +68,10 @@ class TestContextSystem(unittest.TestCase):
             conversation.add_user_message("hello")
 
             provider = MagicMock()
+            # Force chat() fallback (new adapter tries chat_stream_response
+            # first). Without this a plain MagicMock returns MagicMock
+            # content that corrupts response_text.
+            provider.chat_stream_response.side_effect = NotImplementedError()
             provider.chat.return_value = ChatResponse(
                 content="ok",
                 model="test",

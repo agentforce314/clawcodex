@@ -1,23 +1,28 @@
-"""Ch5/F.1 — compatibility adapter from query() → AgentLoopResult shape.
+"""Adapter from ``query.query`` → ``AgentLoopResult`` shape.
 
-The headless and TUI production paths currently invoke
-``run_agent_loop()`` (synchronous, no recovery ladder, no stop hooks,
-no token budget). This adapter wraps the canonical ``query()`` async
-generator and exposes the same return shape as ``run_agent_loop``, so
-callers can migrate one entry point at a time.
+Headless and TUI production paths invoke ``run_query_as_agent_loop``
+(async) to drive the canonical ``query()`` loop while keeping the
+legacy ``AgentLoopResult`` return contract. Tests inherited from the
+pre-consolidation era call the sync wrapper ``run_query_as_agent_loop_sync``
+which mimics the deleted ``run_agent_loop`` signature exactly so per-
+test churn is just an import swap. The original
+``src.tool_system.agent_loop`` module is gone (Stage 4 of the
+consolidation, PR #N).
 
-Per the refactoring plan's F.3 critic-revised decision:
-  * **Headless callers** (single-shot ``claude -p``) should wrap the
-    adapter in ``asyncio.run()`` — the entry already starts its own
-    event loop and runs to completion.
-  * **TUI callers** (Textual ``@work(thread=True)`` workers) should
-    invoke the adapter via ``asyncio.new_event_loop()`` inside the
-    worker thread so the UI's event loop stays free. Do NOT use
-    ``@work(thread=False)`` — it would put the loop on Textual's
+Event-loop ownership patterns the callers use:
+
+  * **Headless callers** (single-shot ``claude -p``) wrap the adapter
+    in ``asyncio.run()`` — the entry already starts its own event
+    loop and runs to completion.
+  * **TUI callers** (Textual ``@work(thread=True)`` workers) invoke
+    the adapter via ``asyncio.new_event_loop()`` inside the worker
+    thread so the UI's event loop stays free. Do NOT use
+    ``@work(thread=False)`` — that would put the loop on Textual's
     main event loop and block UI rendering during model streams.
 
-The adapter does NOT touch ``run_agent_loop`` itself; existing call
-sites continue to work until they're migrated.
+Also exports ``build_effective_system_prompt`` (CLAUDE.md + style +
+git status assembly) so the cutover code can pre-build the system
+prompt before calling the adapter — ``query()`` expects it pre-built.
 """
 from __future__ import annotations
 
@@ -51,6 +56,89 @@ from ..tool_system.renderers import (
 )
 
 
+def run_query_as_agent_loop_sync(
+    conversation: Any,
+    provider: BaseProvider,
+    tool_registry: ToolRegistry,
+    tool_context: ToolContext,
+    max_turns: int = 20,
+    stream: bool = True,  # kept for signature compat; adapter always streams
+    verbose: bool = False,  # kept for signature compat; ignored
+    on_event: ToolEventHandler | None = None,
+    on_text_chunk: TextChunkHandler | None = None,
+    cancel_signal: AbortSignal | None = None,
+) -> "AgentLoopResult":
+    """Sync wrapper around :func:`run_query_as_agent_loop` with the
+    signature of the legacy ``run_agent_loop``.
+
+    The async adapter is the canonical API; this wrapper exists so
+    sync call sites (mainly tests inherited from the pre-cutover
+    era) don't need to thread their own asyncio.run + initial_messages
+    + on_message persistence boilerplate at every call site. The
+    semantics match legacy ``run_agent_loop``:
+
+    * Pre-built effective system prompt (CLAUDE.md + style + git status).
+    * In-place conversation mutation (legacy contract — multi-prompt
+      sessions need this so subsequent turns see prior history).
+    * Returns a legacy ``AgentLoopResult`` shape.
+
+    Use the async adapter (:func:`run_query_as_agent_loop`) directly
+    for new code that owns its event loop.
+    """
+    import asyncio as _asyncio
+    from ..outputStyles import resolve_output_style
+    from ..tool_system.renderers import AgentLoopResult
+
+    style_prompt = resolve_output_style(
+        getattr(tool_context, "output_style_name", None),
+        getattr(tool_context, "output_style_dir", None),
+    ).prompt
+    effective_system_prompt = build_effective_system_prompt(
+        style_prompt, tool_context,
+    )
+
+    def _persist(msg: Any) -> None:
+        # Mirror the legacy contract: append assistant text + tool
+        # result blocks to the conversation in place so the next call
+        # in a multi-turn test sequence sees prior history.
+        # Stage 4 critic S3: match the production policy (log + raise
+        # on failure). Swallowing here would mask a corrupted
+        # conversation; the next API call would 400 with
+        # ``tool_use IDs must match tool_result IDs`` and the
+        # proximate cause would be invisible.
+        try:
+            conversation.add_message(msg.role, msg.content)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception(
+                "Failed to persist message into conversation: role=%s",
+                getattr(msg, "role", "?"),
+            )
+            raise
+
+    compat_result = _asyncio.run(run_query_as_agent_loop(
+        initial_messages=list(conversation.messages),
+        provider=provider,
+        tool_registry=tool_registry,
+        tool_context=tool_context,
+        system_prompt=effective_system_prompt,
+        max_turns=max_turns,
+        on_event=on_event,
+        on_text_chunk=on_text_chunk,
+        on_message=_persist,
+        cancel_signal=cancel_signal,
+    ))
+    return AgentLoopResult(
+        response_text=compat_result.response_text,
+        usage=(
+            compat_result.usage
+            if compat_result.num_turns > 0
+            else None
+        ),
+        num_turns=compat_result.num_turns,
+    )
+
+
 def build_effective_system_prompt(style_prompt: str, tool_context: ToolContext) -> str:
     """Assemble the cold-start system prompt for headless+TUI cutover.
 
@@ -81,10 +169,10 @@ def build_effective_system_prompt(style_prompt: str, tool_context: ToolContext) 
 
 @dataclass(frozen=True)
 class AgentLoopRunResult:
-    """Adapter result shape. Mirrors the existing
-    :class:`src.tool_system.agent_loop.AgentLoopResult` for callers
-    that previously consumed ``run_agent_loop``, AND adds a typed
-    ``terminal`` so wrappers can discriminate exit reason.
+    """Adapter result shape. Mirrors the
+    :class:`src.tool_system.renderers.AgentLoopResult` shape for
+    callers that previously consumed ``run_agent_loop``, AND adds a
+    typed ``terminal`` so wrappers can discriminate exit reason.
     """
     response_text: str
     usage: dict[str, int]
@@ -283,7 +371,35 @@ async def run_query_as_agent_loop(
                 or "user_interrupt"
             )
 
-    response_text = last_assistant_text or " ".join(response_text_parts).strip()
+    # When the loop exited because of max_turns, surface the legacy
+    # ``[Max tool turns reached]`` sentinel as response_text so callers
+    # (CLI accounting / TUI display) match the historical contract.
+    # Tests pin this — see test_max_turns_respected.
+    if terminal is not None and getattr(terminal, "reason", None) == "max_turns":
+        response_text = "[Max tool turns reached]"
+    else:
+        response_text = last_assistant_text or " ".join(response_text_parts).strip()
+
+    # SendUserMessage fallback (Stage 4 critic S2): if the final turn
+    # ended with empty assistant text BUT the model used
+    # ``SendUserMessage`` as its visible output (the tool's prompt
+    # advertises itself as the "primary visible output channel"), pull
+    # the last SendUserMessage's content into ``response_text``. Legacy
+    # ``agent_loop`` tracked this as ``last_user_visible_message``;
+    # without preserving the fallback here, an agent that obeys the
+    # SendUserMessage prompt's primary-channel guidance silently
+    # surfaces "" as its visible output.
+    if not response_text:
+        outbox = getattr(tool_context, "outbox", None) or []
+        for entry in reversed(outbox):
+            if (
+                isinstance(entry, dict)
+                and entry.get("tool") == "SendUserMessage"
+                and isinstance(entry.get("message"), str)
+                and entry["message"]
+            ):
+                response_text = entry["message"]
+                break
     return AgentLoopRunResult(
         response_text=response_text,
         usage=usage,

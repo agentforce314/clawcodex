@@ -1,9 +1,10 @@
 """Textual ``Message`` subclasses used to push events from the agent-loop
 worker thread (and other background tasks) into the UI.
 
-All cross-thread communication between the worker that runs
-``src.tool_system.agent_loop.run_agent_loop`` and the Textual widgets
-goes through these messages via ``App.post_message``. Keeping the
+All cross-thread communication between the worker that drives
+``src.query.agent_loop_compat.run_query_as_agent_loop`` and the
+Textual widgets goes through these messages via ``App.post_message``.
+Keeping the
 payload primitive-only (``str``, ``dict``, ``bool``, ``set[str]``)
 ensures Textual's message pump can marshal them safely across the
 thread boundary.
@@ -14,7 +15,7 @@ Naming conventions mirror the React side:
 * ``AssistantChunk`` — a streamed assistant token batch
   (`handleMessageFromStream` counterpart).
 * ``AssistantMessage`` — the fully-assembled assistant turn at end-of-turn.
-* ``ToolEventMessage`` — proxies :class:`src.tool_system.agent_loop.ToolEvent`.
+* ``ToolEventMessage`` — proxies :class:`src.tool_system.renderers.ToolEvent`.
 * ``PermissionRequested`` / ``PermissionResolved`` — gate-in / gate-out
   for the permission modal (Phase 1 of the ink :class:`PermissionRequest`
   overlay parity).
@@ -35,7 +36,7 @@ from .paste import PasteInfo
 
 @dataclass
 class AgentRunStarted(Message):
-    """Emitted right before the worker calls ``run_agent_loop``.
+    """Emitted right before the worker enters the agent loop.
 
     Used by the status bar to flip into a 'thinking…' state.
     """
@@ -72,7 +73,7 @@ class AssistantMessage(Message):
 class ToolEventMessage(Message):
     """A ``ToolEvent`` from the agent loop, flattened to dict for thread-safety.
 
-    Fields mirror ``src.tool_system.agent_loop.ToolEvent``: ``kind`` is
+    Fields mirror ``src.tool_system.renderers.ToolEvent``: ``kind`` is
     one of ``tool_use``, ``tool_result``, ``tool_error``.
     """
 

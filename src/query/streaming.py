@@ -14,10 +14,10 @@ continuation, no model fallback. Those features live in the canonical
 ``query()`` async generator at :func:`src.query.query.query`. If your
 work needs the production-ready loop, use that one.
 
-When/if the team decides to migrate FROM ``run_agent_loop`` and
-``query()`` TO ``streaming_query``, the chapter-5 recovery ladder
-needs to be re-ported into this module (Phases B/C/D/E equivalents).
-That migration is tracked as a separate follow-up ticket.
+When/if the team decides to migrate FROM ``query()`` TO
+``streaming_query``, the chapter-5 recovery ladder needs to be
+re-ported into this module (Phases B/C/D/E equivalents). That
+migration is tracked as a separate follow-up ticket.
 """
 from __future__ import annotations
 

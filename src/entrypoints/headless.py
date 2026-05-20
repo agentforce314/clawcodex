@@ -4,10 +4,12 @@ Port of ``typescript/src/cli/print.ts``, scoped to the slice that matters for
 Phase 1: run a single prompt (or a stream of prompts via stream-json stdin)
 through the agent loop and emit the response in the requested output format.
 
-The heavy lifting lives in :mod:`src.tool_system.agent_loop` which already
-understands Anthropic + OpenAI-compatible providers and emits structured tool
-events. This module adapts those events to the CLI protocol in
-:mod:`src.cli_core`.
+The heavy lifting lives in :mod:`src.query.query` (the canonical agent
+loop), driven via the sync wrapper
+:func:`src.query.agent_loop_compat.run_query_as_agent_loop`. That loop
+already understands Anthropic + OpenAI-compatible providers and emits
+structured tool events; this module adapts those events to the CLI
+protocol in :mod:`src.cli_core`.
 
 Design notes
 ------------
