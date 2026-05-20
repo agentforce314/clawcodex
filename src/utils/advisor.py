@@ -413,32 +413,163 @@ def decide_advisor_mode(
     return ADVISOR_MODE_CLIENT_SIDE if advisor_routes else ADVISOR_MODE_INACTIVE
 
 
+CLIENT_ADVISOR_PROMPT_SUFFIX = (
+    "Please review the conversation above and give me your advice on what "
+    "to do next. Be concrete."
+)
+
+
+def _tool_use_to_text(block: dict[str, Any]) -> str:
+    """Render a ``tool_use`` / ``server_tool_use`` / ``mcp_tool_use`` block
+    as a single-line text summary the advisor can read without needing
+    the underlying tool schemas."""
+    import json as _json
+    name = block.get("name", "?")
+    raw_input = block.get("input", {})
+    try:
+        rendered = _json.dumps(raw_input, ensure_ascii=False, default=str)
+    except Exception:
+        rendered = str(raw_input)
+    if len(rendered) > 240:
+        rendered = rendered[:237] + "..."
+    return f"[Tool call: {name}({rendered})]"
+
+
+def _tool_result_to_text(block: dict[str, Any]) -> str:
+    """Render a ``tool_result`` block as a single-line text summary."""
+    content = block.get("content")
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        parts: list[str] = []
+        for sub in content:
+            if isinstance(sub, dict):
+                if isinstance(sub.get("text"), str):
+                    parts.append(sub["text"])
+                elif sub.get("type") == "image":
+                    parts.append("[image]")
+                else:
+                    parts.append(f"[{sub.get('type', '?')}]")
+        text = "\n".join(parts)
+    elif content is None:
+        text = ""
+    else:
+        text = str(content)
+    if len(text) > 1200:
+        text = text[:1197] + "..."
+    is_error = block.get("is_error")
+    label = "Tool error" if is_error else "Tool result"
+    return f"[{label}: {text}]"
+
+
+def _flatten_content_for_advisor(content: Any) -> str:
+    """Reduce a message's content to plain text suitable for the advisor.
+
+    The forwarded conversation must be tool-schema-free (the advisor is
+    called with ``tools=[]`` — proxies reject ``tool_use``/``tool_result``
+    blocks without a matching ``tools=`` array). Replace them with text
+    summaries that preserve the information ("the worker ran Bash with
+    ls", "the result was these files") without the typed structure.
+
+    Drops ``thinking`` / ``redacted_thinking`` blocks — the advisor
+    doesn't need the worker's chain-of-thought as separate signal.
+    """
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return str(content) if content is not None else ""
+    parts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        bt = block.get("type")
+        if bt == "text":
+            t = block.get("text")
+            if isinstance(t, str) and t.strip():
+                parts.append(t)
+        elif bt in ("tool_use", "server_tool_use", "mcp_tool_use"):
+            parts.append(_tool_use_to_text(block))
+        elif bt == "tool_result":
+            parts.append(_tool_result_to_text(block))
+        elif bt in ("thinking", "redacted_thinking"):
+            continue
+        elif bt == "image":
+            parts.append("[image attachment]")
+        else:
+            # Unknown block — preserve the type signal but no payload.
+            parts.append(f"[{bt}]")
+    return "\n".join(parts).strip()
+
+
 def build_advisor_forwarded_messages(
     messages: list[Any],
 ) -> list[dict[str, Any]]:
-    """Normalize + strip advisor-specific blocks before forwarding to the
+    """Normalize + strip + flatten messages before forwarding to the
     client-side advisor.
 
-    The advisor model should see the *substance* of the conversation —
-    user's task, worker's text replies, tool calls, tool results — but
-    NOT the advisor's own prior consultations (which would balloon the
-    forwarded context and confuse the reviewer about whose advice is
-    whose). We also strip out the advisor tool schema entry from any
-    serialized tool list, but since this function only handles the
-    messages array, the schema-stripping happens at the request-build
-    site (we don't forward tools[] to the advisor anyway).
+    Three transforms:
 
-    Accepts the same shape as ``normalize_messages_for_api`` produces.
+    1. **Strip prior advisor consultations** — the reviewer shouldn't
+       see its own past advice as part of the worker's history; that
+       would let the advisor build on its own (potentially wrong)
+       earlier output.
+    2. **Flatten tool_use/tool_result blocks to text** — the advisor is
+       called with ``tools=[]``, but proxies (Vertex-fronted Anthropic
+       in particular) reject ``tool_use``/``tool_result`` blocks when
+       no ``tools=`` array is sent. Plain text summaries preserve the
+       "what happened" information while satisfying the API contract.
+    3. **Ensure ends-with-user** — the advisor is invoked from inside
+       an assistant ``tool_use``, so the natural tail is assistant.
+       Most LLM APIs reject assistant-prefill; append a synthetic user
+       turn asking for advice (doubles as a clear prompt aligned with
+       ``CLIENT_ADVISOR_SYSTEM_PROMPT``).
+
     Returns a plain list of dicts safe to send to any provider.
     """
-    # Local import — same cycle-avoidance reason as elsewhere in this
-    # module. ``normalize_messages_for_api`` projects typed Message
-    # objects to API dicts; we then run the existing advisor-blocks
-    # stripper to drop the prior consultations.
+    # Local imports — same cycle-avoidance reason as elsewhere.
     from src.types.messages import normalize_messages_for_api
 
     api_messages = normalize_messages_for_api(messages)
-    return strip_advisor_blocks(api_messages)
+    api_messages = strip_advisor_blocks(api_messages)
+
+    flattened: list[dict[str, Any]] = []
+    for msg in api_messages:
+        if not isinstance(msg, Mapping):
+            continue
+        role = msg.get("role")
+        text = _flatten_content_for_advisor(msg.get("content"))
+        if not text:
+            continue
+        flattened.append({"role": role, "content": text})
+
+    # Ensure the conversation ends with a user message. Vertex-fronted
+    # Anthropic (and most proxies) reject assistant-prefill.
+    if not flattened or flattened[-1].get("role") != "user":
+        flattened.append({"role": "user", "content": CLIENT_ADVISOR_PROMPT_SUFFIX})
+    return flattened
+
+
+def _provider_is_using_custom_endpoint(provider: Any) -> bool:
+    """True if the provider is pointed at a non-default base URL.
+
+    Heuristic for "this provider is a proxy that can serve other
+    models" (litellm, openrouter, custom-deployment Anthropic shim,
+    etc.). When True, ``execute_client_advisor`` prefers the SAME
+    provider+config for the advisor call rather than inferring a
+    direct upstream from the model name — the user explicitly chose
+    a proxy, so route through it.
+    """
+    from src.providers import PROVIDER_INFO
+    base_url = getattr(provider, "base_url", None)
+    if not base_url:
+        return False
+    name = provider.__class__.__name__.replace("Provider", "").lower()
+    info = PROVIDER_INFO.get(name)
+    if info is None:
+        # Unknown class — assume the user customized it for a reason.
+        return True
+    default = info.get("default_base_url", "")
+    return base_url.rstrip("/") != default.rstrip("/")
 
 
 def execute_client_advisor(
@@ -446,6 +577,7 @@ def execute_client_advisor(
     forwarded_messages: list[dict[str, Any]],
     *,
     abort_signal: Any = None,
+    main_provider: Any = None,
 ) -> tuple[bool, str]:
     """Run one client-side advisor consultation.
 
@@ -453,11 +585,18 @@ def execute_client_advisor(
     advisor's advice; when False, ``text`` is a short error message
     suitable for surfacing as a tool_result with ``is_error=True``.
 
-    Provider routing goes through ``infer_provider_for_model`` →
-    ``get_provider_class`` + ``get_provider_config`` — the same path
-    the main loop uses for its own provider, so user-configured API
-    keys / base URLs / auth headers are reused. No advisor-specific
-    credentials.
+    Provider routing:
+    * If ``main_provider`` was passed AND it has a custom base URL
+      (i.e. the user is talking to a proxy like litellm/openrouter
+      that proxies arbitrary models), reuse the main provider's class
+      and config with the advisor's model — the proxy will handle it.
+      Without this, a litellm user would have their advisor call
+      bounce direct to api.anthropic.com instead of through their
+      configured proxy.
+    * Otherwise, infer the advisor's provider from the model name and
+      build a fresh provider from the user's saved config for that
+      provider. This handles the "advisor on a different provider"
+      case (e.g. Anthropic main + Gemini advisor).
 
     Network failures, model errors, and missing-config conditions are
     all caught and surfaced as ``(False, "...")`` rather than raised —
@@ -465,38 +604,89 @@ def execute_client_advisor(
     advisor consultation should just leave the worker model uninformed
     and let it continue.
     """
-    provider_name = infer_provider_for_model(advisor_model)
-    if provider_name is None:
-        return (False, f"Advisor unavailable: cannot route model {advisor_model!r} to a known provider.")
-
     try:
         from src.config import get_provider_config
         from src.providers import get_provider_class
 
-        provider_cls = get_provider_class(provider_name)
-        cfg = dict(get_provider_config(provider_name))
-        # The provider config supplies base_url / api_key / etc.; we
-        # override the model with the advisor's specific choice so it
-        # doesn't inherit the user's main-loop model from the same
-        # provider's default. ``ChatProvider.__init__`` expects the
-        # model on the instance, not in the messages array.
-        cfg["model"] = advisor_model
-        provider = provider_cls(**cfg)
+        if main_provider is not None and _provider_is_using_custom_endpoint(
+            main_provider
+        ):
+            # Reuse main provider's class + config; just swap the model.
+            provider_cls = main_provider.__class__
+            name = provider_cls.__name__.replace("Provider", "").lower()
+            cfg_raw = dict(get_provider_config(name))
+        else:
+            provider_name = infer_provider_for_model(advisor_model)
+            if provider_name is None:
+                return (False, f"Advisor unavailable: cannot route model {advisor_model!r} to a known provider.")
+            provider_cls = get_provider_class(provider_name)
+            cfg_raw = dict(get_provider_config(provider_name))
+
+        # ``get_provider_config`` returns the raw config dict shape
+        # (api_key, base_url, default_model) which doesn't match the
+        # Provider ``__init__`` keyword args (api_key, base_url, model).
+        # Translate explicitly so unknown keys (default_model, plus any
+        # future config fields like extra_headers) don't get forwarded
+        # as kwargs and crash the constructor.
+        provider = provider_cls(
+            api_key=cfg_raw.get("api_key", ""),
+            base_url=cfg_raw.get("base_url"),
+            model=advisor_model,
+        )
     except Exception as e:  # noqa: BLE001 — surface as advisor failure
         return (False, f"Advisor unavailable: failed to construct provider for {advisor_model!r}: {e}")
 
-    # The advisor doesn't make tool calls — it just emits advice text —
-    # so we send an empty tools list. Forward the conversation as
-    # user-role context wrapped under our advisor system prompt.
+    # System-prompt delivery is provider-specific:
+    #   * Anthropic-shaped providers (AnthropicProvider / MinimaxProvider)
+    #     expect ``system`` as a top-level kwarg; system-role messages
+    #     in the messages array would be rejected by the API.
+    #   * OpenAI-compatible providers (and Gemini-via-openai-shim) read
+    #     a leading ``{"role": "system", "content": ...}`` message and
+    #     ignore the ``system=`` kwarg silently.
+    # Detect the provider type to send the right shape — sending both
+    # forms blindly would either be ignored (best case) or fail
+    # validation (worst case, on Anthropic).
+    from src.providers.anthropic_provider import AnthropicProvider
+    from src.providers.minimax_provider import MinimaxProvider
+
+    is_anthropic_shape = isinstance(provider, (AnthropicProvider, MinimaxProvider))
+
+    call_kwargs: dict[str, Any] = {
+        "tools": [],
+        "max_tokens": 4096,
+    }
+    if is_anthropic_shape:
+        call_kwargs["system"] = CLIENT_ADVISOR_SYSTEM_PROMPT
+        request_messages = list(forwarded_messages)
+    else:
+        # Prepend the system message; OpenAI-compat will honor it
+        # naturally as the first message in the conversation.
+        request_messages = [
+            {"role": "system", "content": CLIENT_ADVISOR_SYSTEM_PROMPT},
+            *forwarded_messages,
+        ]
+
+    # ``chat_stream_response`` is the cross-provider call that accepts
+    # ``abort_signal`` uniformly (per BaseProvider) and returns a fully
+    # accumulated ChatResponse. The plain ``chat()`` path doesn't accept
+    # ``abort_signal`` consistently across providers — passing it as a
+    # kwarg would forward an unknown param to the underlying SDK for
+    # Anthropic (line 239 of anthropic_provider.py forwards unknown
+    # kwargs straight to ``messages.create``). Streaming under the hood
+    # but no ``on_text_chunk`` callback — we only need the final text.
     try:
-        response = provider.chat(
-            messages=forwarded_messages,
-            system=CLIENT_ADVISOR_SYSTEM_PROMPT,
-            tools=[],
-            max_tokens=4096,
-            stream=False,
-            abort_signal=abort_signal,
-        )
+        try:
+            response = provider.chat_stream_response(
+                request_messages,
+                on_text_chunk=None,
+                abort_signal=abort_signal,
+                **call_kwargs,
+            )
+        except (NotImplementedError, AttributeError):
+            # Older or stub providers may not implement streaming.
+            # Fall back to plain chat() — drop abort_signal there since
+            # we can't pass it portably.
+            response = provider.chat(request_messages, **call_kwargs)
     except Exception as e:  # noqa: BLE001 — surface as advisor failure
         return (False, f"Advisor unavailable: {type(e).__name__}: {e}")
 

@@ -55,10 +55,19 @@ def _advisor_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResul
     abort = getattr(context, "abort_controller", None)
     abort_signal = getattr(abort, "signal", None) if abort is not None else None
 
+    # ``_active_provider`` is set by ``_call_model_sync`` before the
+    # tool round (dynamic attr, not a dataclass field). Letting
+    # ``execute_client_advisor`` see it enables the "reuse main
+    # provider when it's a proxy" routing — without it, an advisor
+    # running on a litellm-backed openai-compat session would bypass
+    # the proxy and hit api.anthropic.com directly.
+    main_provider = getattr(context, "_active_provider", None)
+
     ok, text = execute_client_advisor(
         advisor_model,
         forwarded,
         abort_signal=abort_signal,
+        main_provider=main_provider,
     )
     return ToolResult(
         name="advisor",
