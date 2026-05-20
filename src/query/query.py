@@ -572,6 +572,18 @@ async def _call_model_sync(
             if _diag:
                 logger.warning("[DIAG] _call_model_sync: streaming not supported, falling back to chat()")
             response = provider.chat(api_messages, **call_kwargs)
+            # Emulate streaming chunks from the final text when the
+            # caller asked for live streaming (on_text_chunk set) but
+            # the provider only supports plain chat(). Legacy
+            # ``agent_loop._emit_text_chunks`` did this so the headless
+            # ``--include-partial-messages`` flag and CLI live-text UX
+            # work uniformly across providers — without it, a
+            # ``stream=True`` caller paired with a non-streaming
+            # provider would see the entire response materialize at
+            # once after the model finishes.
+            if on_text_chunk is not None and response.content:
+                from ..tool_system.renderers import _emit_text_chunks
+                _emit_text_chunks(on_text_chunk, response.content)
     except AbortError:
         # User-initiated cancel — propagate so the query loop's
         # ``except AbortError: pass`` boundary unwinds to the
@@ -956,14 +968,32 @@ def _dispatch_single_tool(
                     ))
         return result_msg, extras
     except AbortError as abort_err:
-        # AbortError today is only raised when the signal is already
-        # tripped (grep/glob via the ripgrep guard, agent_loop on cancel,
-        # the streaming-abort helper). Gate on the same user-cancel
-        # check the other override sites use so a future tool that
-        # repurposes AbortError for its own internal cancellation
-        # doesn't get silently relabelled as a user rejection.
+        # Two contracts to satisfy at once:
+        #
+        # 1. **tool_use/tool_result pairing must stay intact** — every
+        #    emitted tool_use needs a paired tool_result or the next
+        #    API call 400s on the orphan. Returning a tool_result
+        #    (not raising) preserves the pair. Pinned by
+        #    ``tests/test_esc_reject_message_dispatch.py``.
+        # 2. **No follow-up API turn after AbortError** — the loop
+        #    must NOT issue another model call. Pinned by
+        #    ``test_agent_loop_does_not_swallow_abort_error_as_tool_error``.
+        #
+        # Reconcile both: when AbortError surfaces from a tool and
+        # the user-cancel signal isn't already tripped, trip it. The
+        # post-tool gate downstream sees the signal aborted, sets
+        # terminal=aborted_tools, and the adapter raises AbortError
+        # to the caller. The conversation ends well-formed (tool_use
+        # has its tool_result) AND the loop exits without another
+        # API turn. Critic-flagged on Stage 4 review.
         if _is_user_cancelled_abort(tool_use_context):
             return _build_user_cancelled_result(block.id), []
+        ctrl = getattr(tool_use_context, "abort_controller", None)
+        if ctrl is not None:
+            try:
+                ctrl.abort("tool_raised_abort_error")
+            except Exception:
+                pass
         return UserMessage(
             content=[
                 ToolResultBlock(
