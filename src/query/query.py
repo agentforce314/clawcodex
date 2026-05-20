@@ -402,6 +402,15 @@ async def _call_model_sync(
     _t0 = time.monotonic()
     tool_schemas = []
     for tool in tools:
+        # Filter out internal/hidden tools (is_enabled=False) so they
+        # don't leak into the API tools[] alongside the advisor schema
+        # we append below. Some callers pass an unfiltered tool list
+        # from ``registry.list_tools()``; this guard keeps the API
+        # from receiving duplicate names. ``getattr`` with default
+        # True keeps test fakes that don't implement is_enabled working.
+        is_enabled_fn = getattr(tool, "is_enabled", None)
+        if callable(is_enabled_fn) and not is_enabled_fn():
+            continue
         tool_schemas.append({
             "name": tool.name,
             "description": tool.prompt(),
@@ -1478,6 +1487,12 @@ async def query(
         # tools ignore the field (the existing default factory was an
         # empty list, so behavior is unchanged for them).
         tool_use_context.messages = list(messages)
+        # Also snapshot the active provider via a dynamic attribute so
+        # the client-side advisor can reuse it (and its config) when
+        # the user is on a proxy that probably proxies the advisor
+        # model too. Set as a plain attribute (not a dataclass field)
+        # to avoid touching ToolContext's public surface.
+        setattr(tool_use_context, "_active_provider", params.provider)
 
         tool_results = await _run_tools_partitioned(
             tool_use_blocks,
