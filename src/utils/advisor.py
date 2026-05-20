@@ -1,20 +1,31 @@
-"""Advisor tool integration — Python port of typescript/src/utils/advisor.ts.
+"""Advisor tool integration.
 
-The advisor is a server-side tool: when the model emits an advisor
-``server_tool_use`` block, the Anthropic API runs a stronger reviewer model
-on the conversation so far and returns an ``advisor_tool_result`` block.
-The client never executes anything — its only responsibilities are:
+There are TWO execution modes:
 
-1. opt the request into the ``advisor-tool-2026-03-01`` beta,
-2. declare the advisor tool schema in ``tools[]`` (cache-preserving append),
-3. inject ``ADVISOR_TOOL_INSTRUCTIONS`` into the system prompt,
-4. preserve the resulting blocks in conversation history,
-5. strip them on requests that won't carry the beta header (the API would
-   400 otherwise).
+**Server-side** (Anthropic 1P only — Python port of TS ``advisor.ts``):
+The model emits a ``server_tool_use(name=advisor)`` block; the Anthropic
+API runs a stronger reviewer model on the conversation so far and inlines
+an ``advisor_tool_result`` block into the same response. The client only:
 
-Provider gating is strict: any non-first-party Anthropic provider
-(Bedrock/Vertex shims, OpenAI-compat, Gemini, etc.) MUST NOT see the header
-or the schema — 3P endpoints 400 on the unknown tool type.
+1. opts the request into the ``advisor-tool-2026-03-01`` beta,
+2. declares the advisor schema in ``tools[]`` (cache-preserving append),
+3. injects ``ADVISOR_TOOL_INSTRUCTIONS`` into the system prompt,
+4. preserves the resulting blocks in conversation history,
+5. strips them on requests that won't carry the beta header.
+
+**Client-side** (any provider — no TS equivalent, Python extension):
+The model emits a regular ``tool_use(name="advisor")`` block; the agent
+intercepts it, makes a *separate* API call to whatever advisor model the
+user configured (could be Anthropic Opus, Gemini, GLM, etc.), and feeds
+the response back as a ``tool_result`` block. Two roundtrips per advisor
+call but works with any tool-calling main-loop model and any advisor
+provider.
+
+The client picks server-side automatically when the main provider is 1P
+Anthropic AND the chosen advisor model is a valid server-side target;
+otherwise falls back to client-side. Users can also force client-side
+even on 1P via the ``advisor_client_mode`` setting (useful for non-
+Anthropic advisors on Anthropic main loops, or for transparency).
 """
 
 from __future__ import annotations
@@ -111,17 +122,15 @@ def is_advisor_enabled(provider: "BaseProvider | None") -> bool:
 def can_user_configure_advisor(provider: "BaseProvider | None" = None) -> bool:
     """Whether the user is allowed to configure /advisor in this process.
 
-    The slash command needs to render in command lists even before a
-    provider is built (e.g. ``--help``), so when ``provider`` is None we
-    fall back to the env-disable check only. Once a provider exists, we
-    additionally require it to be first-party Anthropic; otherwise
-    /advisor would silently no-op every request and the UI would lie.
+    Originally a first-party-only gate (so the slash command wouldn't
+    silently no-op on 3P providers). Now that client-side mode lets
+    /advisor work on any provider, this only enforces the env-disable
+    kill switch. The provider argument is retained for API stability —
+    callers (slash-command visibility, /advisor command itself) used
+    to pass it. Once an entirely 3P-disabled environment is wanted,
+    this is still the chokepoint to add a check.
     """
-    if _env_truthy(_DISABLE_ENV):
-        return False
-    if provider is None:
-        return True
-    return is_advisor_enabled(provider)
+    return not _env_truthy(_DISABLE_ENV)
 
 
 def _block_field(block: Any, key: str) -> Any:
@@ -254,15 +263,268 @@ def strip_advisor_blocks(
     return result if changed else messages
 
 
+# ---------------------------------------------------------------------------
+# Client-side advisor mode (Python extension — no TS equivalent)
+# ---------------------------------------------------------------------------
+
+# Activation mode for a given turn — picked by ``decide_advisor_mode``.
+ADVISOR_MODE_INACTIVE = "inactive"
+ADVISOR_MODE_SERVER_SIDE = "server_side"
+ADVISOR_MODE_CLIENT_SIDE = "client_side"
+
+
+# The client-side advisor's *own* system prompt. Sent to the advisor
+# provider as the system message. Kept short — the conversation we
+# forward is the substantive context, and the prompt's role is just to
+# orient the advisor model on what kind of feedback to produce.
+CLIENT_ADVISOR_SYSTEM_PROMPT = """You are a senior reviewer model. Another model is working through a task and has paused to consult you. The conversation forwarded below is everything the worker model has seen so far: the user's request, every tool call the worker made, every result.
+
+Your job: produce concise, high-signal advice that helps the worker decide what to do next. Concretely:
+
+- If the worker's interpretation of the task or its current approach looks wrong, say so and explain the better path.
+- If you spot a bug, a missed constraint, a hidden invariant, or a step the worker is about to skip, name it.
+- If the worker is at a fork between approaches, recommend one and explain the tradeoff.
+- If the worker is done, sanity-check: did they actually solve what was asked? What edge cases didn't they cover?
+
+Keep it tight — short paragraphs, no preamble. Don't repeat what the worker already knows. Don't add disclaimers about being an AI. Write directly to the worker model in second person."""
+
+
+# Tool-use shape that the main-loop model sees in client-side mode.
+# Regular ``tool_use``-style entry (NOT ``server_tool_use``) with empty
+# parameters — the advisor takes the full conversation implicitly, the
+# model just invokes the tool with no args. The dispatcher (see
+# ``src/tool_system/tools/advisor.py``) maps the call to
+# ``execute_client_advisor``.
+CLIENT_ADVISOR_TOOL_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": False,
+}
+
+
+def build_client_advisor_tool_schema() -> dict[str, Any]:
+    """``tools[]`` entry that exposes the client-side advisor to the model.
+
+    Regular tool-use shape (NOT ``server_tool_use``) so any provider that
+    supports tool calling can route the invocation. Description doubles
+    as a one-line "what does this do" for the model — the full policy
+    lives in ``ADVISOR_TOOL_INSTRUCTIONS`` (system prompt).
+    """
+    return {
+        "name": ADVISOR_TOOL_NAME,
+        "description": (
+            "Consult a stronger reviewer model. Takes no parameters; the "
+            "current conversation is forwarded automatically. Returns the "
+            "reviewer's advice as text."
+        ),
+        "input_schema": dict(CLIENT_ADVISOR_TOOL_INPUT_SCHEMA),
+    }
+
+
+def infer_provider_for_model(model: str) -> str | None:
+    """Best-effort model → provider lookup.
+
+    Walks ``PROVIDER_INFO`` for an exact match first; falls back to
+    well-known prefix conventions. Returns ``None`` when the model
+    can't be confidently routed — callers should surface a clear error
+    to the user rather than silently picking the wrong endpoint.
+
+    The exact-match path covers the common case (user typed
+    ``gemini-2.5-pro`` and Gemini lists it). The prefix fallback covers
+    canonical names that PROVIDER_INFO's allowlist hasn't been refreshed
+    for (e.g. a new ``claude-opus-4-7`` not yet in the list — still
+    clearly Anthropic). Order matters: ``zai/`` before generic
+    ``vendor/<model>`` so OpenRouter doesn't steal GLM models.
+    """
+    if not model:
+        return None
+    # Local import to avoid pulling the providers package at module load.
+    from src.providers import PROVIDER_INFO
+
+    for name, info in PROVIDER_INFO.items():
+        if model in info.get("available_models", []):
+            return name
+
+    m = model.lower()
+    if m.startswith("zai/"):
+        return "glm"
+    if m.startswith("claude-"):
+        return "anthropic"
+    if m.startswith("gpt-") or m.startswith("o1") or m.startswith("o3"):
+        return "openai"
+    if m.startswith("gemini-"):
+        return "gemini"
+    if m.startswith("minimax-") or model.startswith("MiniMax-") or model == "M2-her":
+        return "minimax"
+    if m.startswith("deepseek-"):
+        return "deepseek"
+    # ``<vendor>/<model>`` shape after the more-specific prefix checks
+    # above. Catches OpenRouter routes like ``anthropic/claude-3.5-sonnet``.
+    if "/" in model:
+        return "openrouter"
+    return None
+
+
+def decide_advisor_mode(
+    provider: "BaseProvider | None",
+    main_loop_model: str | None,
+    advisor_model: str | None,
+    *,
+    force_client_mode: bool = False,
+) -> str:
+    """Pick activation mode for the upcoming turn.
+
+    Returns one of:
+    * ``ADVISOR_MODE_INACTIVE`` — no advisor on this request.
+    * ``ADVISOR_MODE_SERVER_SIDE`` — Anthropic 1P beta path.
+    * ``ADVISOR_MODE_CLIENT_SIDE`` — separate provider call from the
+      tool dispatcher.
+
+    Decision tree:
+
+    1. ``advisor_model`` empty / env-disabled → INACTIVE.
+    2. ``force_client_mode`` set → CLIENT_SIDE iff the advisor model
+       routes to a known provider; else INACTIVE.
+    3. 1P + main_loop_model supports server advisor + advisor_model is
+       a valid server target → SERVER_SIDE (the optimized path; one
+       roundtrip, prompt-cache friendly).
+    4. Otherwise, if the advisor model routes to a known provider →
+       CLIENT_SIDE (works with any main-loop tool-calling model).
+    5. Else INACTIVE — the configured advisor model can't be reached.
+    """
+    if _env_truthy(_DISABLE_ENV):
+        return ADVISOR_MODE_INACTIVE
+    if not advisor_model:
+        return ADVISOR_MODE_INACTIVE
+
+    advisor_routes = infer_provider_for_model(advisor_model) is not None
+
+    if force_client_mode:
+        return ADVISOR_MODE_CLIENT_SIDE if advisor_routes else ADVISOR_MODE_INACTIVE
+
+    if (
+        provider is not None
+        and is_advisor_enabled(provider)
+        and model_supports_advisor(main_loop_model)
+        and is_valid_advisor_model(advisor_model)
+    ):
+        return ADVISOR_MODE_SERVER_SIDE
+
+    return ADVISOR_MODE_CLIENT_SIDE if advisor_routes else ADVISOR_MODE_INACTIVE
+
+
+def build_advisor_forwarded_messages(
+    messages: list[Any],
+) -> list[dict[str, Any]]:
+    """Normalize + strip advisor-specific blocks before forwarding to the
+    client-side advisor.
+
+    The advisor model should see the *substance* of the conversation —
+    user's task, worker's text replies, tool calls, tool results — but
+    NOT the advisor's own prior consultations (which would balloon the
+    forwarded context and confuse the reviewer about whose advice is
+    whose). We also strip out the advisor tool schema entry from any
+    serialized tool list, but since this function only handles the
+    messages array, the schema-stripping happens at the request-build
+    site (we don't forward tools[] to the advisor anyway).
+
+    Accepts the same shape as ``normalize_messages_for_api`` produces.
+    Returns a plain list of dicts safe to send to any provider.
+    """
+    # Local import — same cycle-avoidance reason as elsewhere in this
+    # module. ``normalize_messages_for_api`` projects typed Message
+    # objects to API dicts; we then run the existing advisor-blocks
+    # stripper to drop the prior consultations.
+    from src.types.messages import normalize_messages_for_api
+
+    api_messages = normalize_messages_for_api(messages)
+    return strip_advisor_blocks(api_messages)
+
+
+def execute_client_advisor(
+    advisor_model: str,
+    forwarded_messages: list[dict[str, Any]],
+    *,
+    abort_signal: Any = None,
+) -> tuple[bool, str]:
+    """Run one client-side advisor consultation.
+
+    Returns ``(ok, text)``: when ``ok`` is True, ``text`` is the
+    advisor's advice; when False, ``text`` is a short error message
+    suitable for surfacing as a tool_result with ``is_error=True``.
+
+    Provider routing goes through ``infer_provider_for_model`` →
+    ``get_provider_class`` + ``get_provider_config`` — the same path
+    the main loop uses for its own provider, so user-configured API
+    keys / base URLs / auth headers are reused. No advisor-specific
+    credentials.
+
+    Network failures, model errors, and missing-config conditions are
+    all caught and surfaced as ``(False, "...")`` rather than raised —
+    a tool that throws inside dispatch kills the turn, but a failed
+    advisor consultation should just leave the worker model uninformed
+    and let it continue.
+    """
+    provider_name = infer_provider_for_model(advisor_model)
+    if provider_name is None:
+        return (False, f"Advisor unavailable: cannot route model {advisor_model!r} to a known provider.")
+
+    try:
+        from src.config import get_provider_config
+        from src.providers import get_provider_class
+
+        provider_cls = get_provider_class(provider_name)
+        cfg = dict(get_provider_config(provider_name))
+        # The provider config supplies base_url / api_key / etc.; we
+        # override the model with the advisor's specific choice so it
+        # doesn't inherit the user's main-loop model from the same
+        # provider's default. ``ChatProvider.__init__`` expects the
+        # model on the instance, not in the messages array.
+        cfg["model"] = advisor_model
+        provider = provider_cls(**cfg)
+    except Exception as e:  # noqa: BLE001 — surface as advisor failure
+        return (False, f"Advisor unavailable: failed to construct provider for {advisor_model!r}: {e}")
+
+    # The advisor doesn't make tool calls — it just emits advice text —
+    # so we send an empty tools list. Forward the conversation as
+    # user-role context wrapped under our advisor system prompt.
+    try:
+        response = provider.chat(
+            messages=forwarded_messages,
+            system=CLIENT_ADVISOR_SYSTEM_PROMPT,
+            tools=[],
+            max_tokens=4096,
+            stream=False,
+            abort_signal=abort_signal,
+        )
+    except Exception as e:  # noqa: BLE001 — surface as advisor failure
+        return (False, f"Advisor unavailable: {type(e).__name__}: {e}")
+
+    text = getattr(response, "content", None) or ""
+    if not isinstance(text, str) or not text.strip():
+        return (False, "Advisor returned no text content.")
+    return (True, text)
+
+
 __all__ = [
     "ADVISOR_BETA_HEADER",
+    "ADVISOR_MODE_CLIENT_SIDE",
+    "ADVISOR_MODE_INACTIVE",
+    "ADVISOR_MODE_SERVER_SIDE",
     "ADVISOR_TOOL_INSTRUCTIONS",
     "ADVISOR_TOOL_NAME",
     "ADVISOR_TOOL_TYPE",
+    "CLIENT_ADVISOR_SYSTEM_PROMPT",
+    "CLIENT_ADVISOR_TOOL_INPUT_SCHEMA",
+    "build_advisor_forwarded_messages",
     "build_advisor_tool_schema",
+    "build_client_advisor_tool_schema",
     "can_user_configure_advisor",
+    "decide_advisor_mode",
+    "execute_client_advisor",
     "extract_advisor_error_code",
     "extract_advisor_result_text",
+    "infer_provider_for_model",
     "is_advisor_block",
     "is_advisor_enabled",
     "is_valid_advisor_model",

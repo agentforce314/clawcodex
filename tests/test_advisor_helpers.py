@@ -183,10 +183,9 @@ class TestIsAdvisorEnabled(unittest.TestCase):
 
 
 class TestCanUserConfigureAdvisor(unittest.TestCase):
-    """The slash-command visibility gate. Loosened relative to
-    ``is_advisor_enabled`` because the command needs to appear in
-    listings even when no provider has been built yet (``--help``
-    etc.). Strict provider gating still applies at request time."""
+    """The slash-command visibility gate. Loosened to env-only after
+    client-side mode shipped — /advisor is now valid on any provider.
+    """
 
     def test_enabled_when_no_provider_and_no_env_disable(self) -> None:
         with patch.dict(os.environ, {}, clear=False):
@@ -199,13 +198,16 @@ class TestCanUserConfigureAdvisor(unittest.TestCase):
         ):
             self.assertFalse(can_user_configure_advisor(None))
 
-    def test_disabled_with_third_party_provider(self) -> None:
+    def test_enabled_with_third_party_provider(self) -> None:
+        # Pre-client-side, this was False. Post-client-side, /advisor
+        # works on 3P (the client-side path dispatches to whatever
+        # advisor model is configured) so we no longer reject upfront.
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("CLAUDE_CODE_DISABLE_ADVISOR_TOOL", None)
             with patch(
                 "src.state.cache_state.is_first_party_provider", return_value=False
             ):
-                self.assertFalse(can_user_configure_advisor(MagicMock()))
+                self.assertTrue(can_user_configure_advisor(MagicMock()))
 
 
 class TestIsAdvisorBlock(unittest.TestCase):
