@@ -1,0 +1,1 @@
+"""upstream/v2025_04/agent/ — vendor snapshot of src/agent/agent module."""

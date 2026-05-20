@@ -14,6 +14,7 @@ layers:
   - name: "upstream"
     paths:
       - "src/upstream"
+      - "src/upstream/v2025_04"
     allowed_imports_from: []
     forbidden_imports_from: []
 

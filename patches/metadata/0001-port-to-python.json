@@ -7,5 +7,7 @@
     "src/context_system"
   ],
   "applied_at": "2025-01-01",
-  "upstream_version_introduced": "upstream/v2025_01"
+  "upstream_version_introduced": "upstream/v2025_01",
+  "status": "intent",
+  "notes": "Placeholder patch — actual diff to be generated when upstream/vendor branch is established"
 }

@@ -1,0 +1,1 @@
+"""upstream/v2025_04/tool_system/ — vendor snapshot of src/tool_system/ module."""

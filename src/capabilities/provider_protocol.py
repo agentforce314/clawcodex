@@ -1,16 +1,17 @@
 """LLMProvider Protocol — interface for LLM provider abstraction.
 
-Phase 1: Stub with NotImplementedError.
 This Protocol defines the contract for LLM providers.
 Concrete implementation is in src/providers/base.py (BaseProvider).
 
-Note: src/providers/ is already in Layer 3 (features). This Protocol is
+Note: src/providers/ is in Layer 3 (features). This Protocol is
 the abstraction boundary that Layer 1 (upstream) uses to talk to Layer 3.
 
 See: src/tool_system/agent_loop.py imports from providers.base
 """
 
-from typing import Protocol
+from __future__ import annotations
+
+from typing import Protocol, Generator
 
 __all__ = ["LLMProviderProtocol"]
 
@@ -20,13 +21,19 @@ class LLMProviderProtocol(Protocol):
 
     Implementors must provide:
       - chat(messages, tools, **kwargs) -> ChatResponse
-      - stream(messages, tools, **kwargs) -> Iterator[ChatResponse]
+      - chat_stream(messages, tools, **kwargs) -> Iterator[str]
     """
 
     def chat(
-        self, messages: "list[Message]", tools: "list[Tool]", **kwargs  # noqa: F821
-    ) -> "ChatResponse": ...  # pragma: no cover
+        self,
+        messages: "list[MessageInput]",  # noqa: F821
+        tools: "list[dict[str, object]] | None" = None,
+        **kwargs: object,
+    ) -> "ChatResponse": ...  # pragma: no cover  # noqa: F821
 
-    def stream(
-        self, messages: "list[Message]", tools: "list[Tool]", **kwargs  # noqa: F821
-    ) -> "Iterator[ChatResponse]": ...  # pragma: no cover
+    def chat_stream(
+        self,
+        messages: "list[MessageInput]",  # noqa: F821
+        tools: "list[dict[str, object]] | None" = None,
+        **kwargs: object,
+    ) -> Generator[str, None, None]: ...  # pragma: no cover
