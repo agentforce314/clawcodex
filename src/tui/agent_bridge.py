@@ -25,13 +25,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 from src.agent import Session
-from src.tool_system.agent_loop import (
-    AgentLoopResult,
-    ToolEvent,
-    _build_effective_system_prompt,
-    run_agent_loop,  # retained for back-compat imports; no longer called
+from src.tool_system.renderers import AgentLoopResult, ToolEvent
+from src.query.agent_loop_compat import (
+    build_effective_system_prompt,
+    run_query_as_agent_loop,
 )
-from src.query.agent_loop_compat import run_query_as_agent_loop
 from src.tool_system.context import ToolContext
 from src.tool_system.registry import ToolRegistry
 from src.utils.abort_controller import AbortController, AbortError
@@ -215,7 +213,7 @@ class AgentBridge:
                 getattr(self._tool_context, "output_style_name", None),
                 getattr(self._tool_context, "output_style_dir", None),
             ).prompt
-            effective_system_prompt = _build_effective_system_prompt(
+            effective_system_prompt = build_effective_system_prompt(
                 _style_prompt, self._tool_context,
             )
 
