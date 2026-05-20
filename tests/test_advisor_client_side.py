@@ -251,11 +251,34 @@ class TestBuildAdvisorForwardedMessages(unittest.TestCase):
 
 
 class TestExecuteClientAdvisor(unittest.TestCase):
-    """``execute_client_advisor`` integration — provider factory wiring."""
+    """``execute_client_advisor`` integration — provider factory wiring.
 
-    def test_returns_text_on_success(self) -> None:
-        fake_provider = MagicMock()
-        fake_provider.chat = MagicMock(return_value=MagicMock(content="here is advice"))
+    The advisor uses ``chat_stream_response`` (cross-provider abort_signal
+    support) with a fallback to plain ``chat`` for providers that don't
+    implement it.
+    """
+
+    def _make_anthropic_shaped_provider(self, content: str = "advice") -> MagicMock:
+        """Mock that passes the isinstance check for AnthropicProvider."""
+        from src.providers.anthropic_provider import AnthropicProvider
+        provider = MagicMock(spec=AnthropicProvider)
+        provider.chat_stream_response = MagicMock(
+            return_value=MagicMock(content=content)
+        )
+        return provider
+
+    def _make_openai_shape_provider(self, content: str = "advice") -> MagicMock:
+        """Mock that does NOT pass isinstance for AnthropicProvider —
+        the function should detect it as OpenAI-shape and prepend a
+        system-role message instead of passing system=kwarg."""
+        provider = MagicMock()  # bare MagicMock, no spec
+        provider.chat_stream_response = MagicMock(
+            return_value=MagicMock(content=content)
+        )
+        return provider
+
+    def test_returns_text_on_success_anthropic(self) -> None:
+        fake_provider = self._make_anthropic_shaped_provider("here is advice")
         with patch(
             "src.providers.get_provider_class", return_value=lambda **kw: fake_provider
         ):
@@ -267,12 +290,35 @@ class TestExecuteClientAdvisor(unittest.TestCase):
                 )
         self.assertTrue(ok)
         self.assertEqual(text, "here is advice")
-        # The provider got the advisor's system prompt and an empty
-        # tools list.
-        kw = fake_provider.chat.call_args.kwargs
-        self.assertEqual(kw.get("tools"), [])
-        self.assertIn("system", kw)
-        self.assertIn("reviewer", kw["system"].lower())
+        # Anthropic-shaped → system goes as kwarg, NOT prepended to messages.
+        call = fake_provider.chat_stream_response.call_args
+        self.assertEqual(call.kwargs.get("tools"), [])
+        self.assertIn("system", call.kwargs)
+        self.assertIn("reviewer", call.kwargs["system"].lower())
+        # Messages array unchanged (no system message prepended).
+        forwarded_messages = call.args[0]
+        self.assertEqual(forwarded_messages[0].get("role"), "user")
+
+    def test_openai_shape_gets_system_as_first_message(self) -> None:
+        fake_provider = self._make_openai_shape_provider("advice from openai")
+        with patch(
+            "src.providers.get_provider_class", return_value=lambda **kw: fake_provider
+        ):
+            with patch(
+                "src.config.get_provider_config", return_value={"api_key": "test"}
+            ):
+                ok, text = execute_client_advisor(
+                    "gpt-5.4", [{"role": "user", "content": "hi"}]
+                )
+        self.assertTrue(ok)
+        self.assertEqual(text, "advice from openai")
+        # OpenAI-shape → system prepended as first message, NO system kwarg.
+        call = fake_provider.chat_stream_response.call_args
+        self.assertNotIn("system", call.kwargs)
+        forwarded_messages = call.args[0]
+        self.assertEqual(forwarded_messages[0]["role"], "system")
+        self.assertIn("reviewer", forwarded_messages[0]["content"].lower())
+        self.assertEqual(forwarded_messages[1]["role"], "user")
 
     def test_returns_error_when_model_unroutable(self) -> None:
         ok, text = execute_client_advisor(
@@ -282,8 +328,10 @@ class TestExecuteClientAdvisor(unittest.TestCase):
         self.assertIn("cannot route", text.lower())
 
     def test_returns_error_when_provider_raises(self) -> None:
-        fake_provider = MagicMock()
-        fake_provider.chat = MagicMock(side_effect=RuntimeError("network down"))
+        fake_provider = self._make_anthropic_shaped_provider()
+        fake_provider.chat_stream_response = MagicMock(
+            side_effect=RuntimeError("network down")
+        )
         with patch(
             "src.providers.get_provider_class", return_value=lambda **kw: fake_provider
         ):
@@ -297,8 +345,7 @@ class TestExecuteClientAdvisor(unittest.TestCase):
         self.assertIn("network down", text)
 
     def test_returns_error_when_response_empty(self) -> None:
-        fake_provider = MagicMock()
-        fake_provider.chat = MagicMock(return_value=MagicMock(content=""))
+        fake_provider = self._make_anthropic_shaped_provider("")
         with patch(
             "src.providers.get_provider_class", return_value=lambda **kw: fake_provider
         ):
@@ -310,6 +357,31 @@ class TestExecuteClientAdvisor(unittest.TestCase):
                 )
         self.assertFalse(ok)
         self.assertIn("no text", text.lower())
+
+    def test_falls_back_to_chat_when_stream_unimplemented(self) -> None:
+        # Older / stub providers may not implement chat_stream_response.
+        # The function should fall back to plain chat() gracefully.
+        from src.providers.anthropic_provider import AnthropicProvider
+        fake_provider = MagicMock(spec=AnthropicProvider)
+        fake_provider.chat_stream_response = MagicMock(
+            side_effect=NotImplementedError("no streaming"),
+        )
+        fake_provider.chat = MagicMock(return_value=MagicMock(content="fallback worked"))
+        with patch(
+            "src.providers.get_provider_class", return_value=lambda **kw: fake_provider
+        ):
+            with patch(
+                "src.config.get_provider_config", return_value={"api_key": "test"}
+            ):
+                ok, text = execute_client_advisor(
+                    "claude-opus-4-6", [{"role": "user", "content": "hi"}]
+                )
+        self.assertTrue(ok)
+        self.assertEqual(text, "fallback worked")
+        # The fallback path did NOT pass abort_signal (sync chat doesn't
+        # consistently accept it across providers).
+        fallback_call = fake_provider.chat.call_args
+        self.assertNotIn("abort_signal", fallback_call.kwargs)
 
 
 class TestAdvisorTool(unittest.TestCase):
