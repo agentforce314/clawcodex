@@ -56,6 +56,29 @@ class VendorManager:
         )
         return result.stdout.strip()
 
+    def fetch_ref(self, ref: str) -> str:
+        """Fetch a specific ref (commit, tag, or branch) from upstream.
+
+        Args:
+            ref: Specific git ref (commit hash, tag, or branch name).
+
+        Returns:
+            The full commit hash that was fetched.
+        """
+        subprocess.run(
+            ["git", "fetch", "upstream", ref],
+            cwd=self.repo_root,
+            check=True,
+        )
+        result = subprocess.run(
+            ["git", "rev-parse", f"upstream/{ref}"],
+            cwd=self.repo_root,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return result.stdout.strip()
+
     # ------------------------------------------------------------------
     # Version tags
     # ------------------------------------------------------------------

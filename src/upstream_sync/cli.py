@@ -59,14 +59,26 @@ def init(
 
 @app.command()
 def fetch(
+    ref: str = typer.Option(
+        None,
+        help="Specific ref (commit hash, tag, or branch) to fetch (default: main branch)",
+    ),
     config: Path = typer.Option(DEFAULT_CONFIG, help="Path to upstream-sync.yaml"),
 ) -> None:
-    """Fetch upstream latest code to vendor branch."""
+    """Fetch upstream code to vendor branch.
+
+    By default fetches the main branch. Use --ref to fetch a specific
+    commit, tag, or branch.
+    """
     cfg = load_config(config)
     vendor = VendorManager(Path("."), cfg.upstream)
     vendor.ensure_remote()
-    commit = vendor.fetch()
-    typer.echo(f"Fetched upstream/{cfg.upstream.main_branch} at {commit}")
+    if ref:
+        commit = vendor.fetch_ref(ref)
+        typer.echo(f"Fetched upstream/{ref} at {commit}")
+    else:
+        commit = vendor.fetch()
+        typer.echo(f"Fetched upstream/{cfg.upstream.main_branch} at {commit}")
 
 
 # ---------------------------------------------------------------------------
