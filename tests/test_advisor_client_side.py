@@ -358,6 +358,80 @@ class TestExecuteClientAdvisor(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("no text", text.lower())
 
+    def test_routes_through_main_provider_when_proxy(self) -> None:
+        # User's main provider is OpenAI pointed at litellm (custom
+        # base_url). The advisor model is claude-opus-4-7 which would
+        # normally infer to Anthropic — but the proxy assumption says
+        # "use the same proxy for both". We expect the advisor to be
+        # built via OpenAIProvider, NOT AnthropicProvider.
+        from src.providers.openai_provider import OpenAIProvider
+        # Make the main provider look like an OpenAI proxy: base_url
+        # set to something other than the default openai endpoint.
+        main_provider = MagicMock(spec=OpenAIProvider)
+        main_provider.base_url = "https://litellm.singula.ai"
+        main_provider.__class__ = OpenAIProvider
+
+        # Spy on the constructor — the advisor provider should be
+        # built from OpenAIProvider, not from infer_provider_for_model's
+        # anthropic result.
+        constructed = {}
+
+        def _fake_openai_init(**kwargs: Any) -> Any:
+            constructed["cls"] = "OpenAIProvider"
+            constructed["kwargs"] = kwargs
+            inst = MagicMock(spec=OpenAIProvider)
+            inst.chat_stream_response = MagicMock(
+                return_value=MagicMock(content="proxied advice")
+            )
+            return inst
+
+        with patch(
+            "src.config.get_provider_config",
+            return_value={"api_key": "k", "base_url": "https://litellm.singula.ai"},
+        ):
+            with patch.object(OpenAIProvider, "__new__", lambda cls, **kw: _fake_openai_init(**kw)):
+                ok, text = execute_client_advisor(
+                    "claude-opus-4-7",
+                    [{"role": "user", "content": "hi"}],
+                    main_provider=main_provider,
+                )
+        self.assertTrue(ok)
+        self.assertEqual(text, "proxied advice")
+        self.assertEqual(constructed["cls"], "OpenAIProvider")
+        # Model swapped to the advisor's choice, base_url preserved
+        # (came from get_provider_config).
+        self.assertEqual(constructed["kwargs"]["model"], "claude-opus-4-7")
+        self.assertEqual(
+            constructed["kwargs"]["base_url"], "https://litellm.singula.ai"
+        )
+
+    def test_uses_inferred_provider_when_main_is_not_proxy(self) -> None:
+        # 1P Anthropic main loop (default base_url). Advisor model is
+        # gemini-2.5-pro → should route via inference to Gemini, NOT
+        # reuse the Anthropic main provider.
+        from src.providers.anthropic_provider import AnthropicProvider
+        main_provider = MagicMock(spec=AnthropicProvider)
+        main_provider.base_url = "https://api.anthropic.com"  # default
+
+        fake_gemini = MagicMock()
+        fake_gemini.chat_stream_response = MagicMock(
+            return_value=MagicMock(content="gemini says hi")
+        )
+        with patch(
+            "src.providers.get_provider_class",
+            return_value=lambda **kw: fake_gemini,
+        ):
+            with patch(
+                "src.config.get_provider_config", return_value={"api_key": "k"}
+            ):
+                ok, text = execute_client_advisor(
+                    "gemini-2.5-pro",
+                    [{"role": "user", "content": "hi"}],
+                    main_provider=main_provider,
+                )
+        self.assertTrue(ok)
+        self.assertEqual(text, "gemini says hi")
+
     def test_falls_back_to_chat_when_stream_unimplemented(self) -> None:
         # Older / stub providers may not implement chat_stream_response.
         # The function should fall back to plain chat() gracefully.
