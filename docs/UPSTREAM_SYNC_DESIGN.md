@@ -1,612 +1,1064 @@
-# ClawCodex 上游同步与解耦架构设计方案
+# 上游同步组件解耦设计文档
 
-> 文档路径: `docs/UPSTREAM_SYNC_DESIGN.md`
-> 版本: v1.0
+> 文档路径: `docs/UPSTREAM_SYNC_DESIGN-decoupling.md`
+> 版本: v1.1
 > 更新日期: 2026-05-19
-> 关联文档: [FEATURE_PLAN.md](FEATURE_PLAN.md), [PROGRESS.md](PROGRESS.md), [WORKFLOW.md](WORKFLOW.md), [ARCHITECTURE.md](ARCHITECTURE.md)
+> 关联文档: [UPSTREAM_SYNC_DESIGN.md](UPSTREAM_SYNC_DESIGN.md), [FEATURE_PLAN.md](FEATURE_PLAN.md), [PROGRESS.md](PROGRESS.md)
 
 ---
 
 ## 目录
 
-- [一、背景与问题诊断](#一背景与问题诊断)
-- [二、总体设计原则](#二总体设计原则)
-- [三、三层隔离架构模型](#三三层隔离架构模型)
-  - [3.1 Layer 1: 上游兼容层](#31-layer-1-上游兼容层)
-  - [3.2 Layer 2: 能力抽象层](#32-layer-2-能力抽象层)
-  - [3.3 Layer 3: 差异化能力层](#33-layer-3-差异化能力层)
-- [四、Git 工作流设计](#四git-工作流设计)
-  - [4.1 分支模型](#41-分支模型)
-  - [4.2 Patch Queue 机制](#42-patch-queue-机制)
-  - [4.3 同步流程规范](#43-同步流程规范)
-- [五、Code Agent 辅助方案](#五code-agent-辅助方案)
-  - [5.1 自动化流水线](#51-自动化流水线)
-  - [5.2 冲突解决上下文工程](#52-冲突解决上下文工程)
-  - [5.3 Agent Prompt 模板](#53-agent-prompt-模板)
-  - [5.4 渐进式自动化级别](#54-渐进式自动化级别)
-- [六、立即执行的迁移步骤](#六立即执行的迁移步骤)
-- [七、风险与回退策略](#七风险与回退策略)
-- [附录 A: 术语表](#附录-a-术语表)
-- [附录 B: 参考文档](#附录-b-参考文档)
+- [一、解耦目标与原则](#一解耦目标与原则)
+- [二、核心解耦策略](#二核心解耦策略)
+- [三、通用组件架构 (upstream-sync)](#三通用组件架构-upstream-sync)
+  - [3.1 组件目录结构](#31-组件目录结构)
+  - [3.2 配置层 (config.py)](#32-配置层-configpy)
+  - [3.3 Vendor 管理 (core/vendor.py)](#33-vendor-管理-corevendorpy)
+  - [3.4 Patch 引擎 (core/patch_engine.py)](#34-patch-引擎-corepatch_enginepy)
+  - [3.5 变化分析器 (core/change_analyzer.py)](#35-变化分析器-corechange_analyzerpy)
+  - [3.6 层间审计 (core/layer_auditor.py)](#36-层间审计-corelayer_auditorpy)
+  - [3.7 报告生成 (reporters/)](#37-报告生成-reporters)
+  - [3.8 CLI (cli.py)](#38-cli-clipy)
+- [四、ClawCodex 集成方式](#四clawcodex-集成方式)
+  - [4.1 配置文件示例](#41-配置文件示例)
+  - [4.2 保留在 ClawCodex 内的内容](#42-保留在-clawcodex-内的内容)
+  - [4.3 调用关系](#43-调用关系)
+- [五、迁移路径](#五迁移路径)
+- [六、Agent 集成](#六agent-集成)
+- [七、关键设计决策](#七关键设计决策)
+- [附录 A: 配置完整参考](#附录-a-配置完整参考)
+- [附录 B: 术语表](#附录-b-术语表)
 
 ---
 
-## 一、背景与问题诊断
+## 一、解耦目标与原则
 
-ClawCodex 是 Anthropic Claude Code 的 Python 移植版，在扩展多 Provider 支持、自主工作流等差异化能力的同时，不可避免地需要修改原项目源码。当前项目在新功能实现上已采用较为解耦的方案（如适配器模式替换自建模块），但仍面临以下核心问题：
+### 1.1 为什么要解耦
 
-**原项目持续更新导致 rebase 时出现大量代码冲突**，人工解决成本高、易出错、难以长期维护。
+原 [UPSTREAM_SYNC_DESIGN.md](UPSTREAM_SYNC_DESIGN.md) 是一份面向 ClawCodex 自身需求的优秀架构设计，但存在以下耦合问题，导致无法直接复用于其他项目：
 
-### 1.1 冲突来源分层
+1. **硬编码项目名称**："ClawCodex"、"anthropics/claude-code" 遍布全文
+2. **硬编码目录结构**：`src/upstream/`、`src/capabilities/` 等路径写死
+3. **特定领域协议**：`AgentLoop`、`ToolRegistry`、`LLMProvider` 是 Claude Code 特有概念，不具通用性
+4. **特定修改类型**：TS→Python 移植等 Patch 内容被内嵌到设计方案中
+5. **Agent 绑定**：Prompt 模板完全围绕 ClawCodex 场景编写
 
-| 层级 | 包含内容 | 当前解耦状态 | 冲突影响 |
-|------|---------|-------------|---------|
-| **基础设施层** | 配置系统、Git 操作、Frontmatter 解析、Hook 系统 | 已解耦（通过 `_xxx_adapter.py` 适配器） | 低 |
-| **扩展能力层** | Provider、Skills、MCP、Hooks | 半解耦（有新实现，但接口仍受原结构约束） | 中 |
-| **核心逻辑层** | Agent Loop、Tool 调用协议、Context 构建、消息格式 | **未解耦**，直接移植/重写原 TS 逻辑 | **高** |
+### 1.2 解耦目标
 
-### 1.2 核心矛盾
+将上游同步系统拆分为两个正交的部分：
 
-核心逻辑层对原项目接口、数据流、消息格式的**硬编码依赖**导致：原项目任一内部改动（变量重命名、函数重构、消息格式调整）都会波及 `src/agent/`、`src/tool_system/`、`src/context_system/` 等大量文件，使得追踪上游更新变得不可持续。
+| 部分 | 职责 | 复用范围 |
+|------|------|---------|
+| **upstream-sync (通用组件)** | 管理上游代码同步的通用机制 | 任何需要追踪上游代码的 Fork/移植项目 |
+| **ClawCodex (业务项目)** | 定义自身特有的 Layer Protocol、Patch 内容、目录结构 | 仅 ClawCodex |
 
-### 1.3 设计目标
+### 1.3 设计原则
 
-1. **隔离上游变化**：上游代码更新仅影响有限的兼容层，不扩散到差异化能力层。
-2. **显式化管理差异**：所有对上游源码的必要修改以可追踪、可复现的方式管理。
-3. **自动化同步**：利用 Code Agent（Claude Code / OpenClaw / Hermes Agent）辅助甚至自动完成大部分同步工作。
-4. **渐进式迁移**：不必一次性完成全部解耦，按优先级分阶段实施。
-
----
-
-## 二、总体设计原则
-
-### 2.1 三层隔离
-
-将代码库严格划分为三层，每层有明确的职责边界和依赖方向：
-
-```
-Layer 3 (差异化能力层)
-    ^ 依赖
-Layer 2 (能力抽象层)  ←── 核心：定义稳定契约，屏蔽上游变化
-    ^ 依赖
-Layer 1 (上游兼容层)  ←── 唯一允许直接跟踪上游的代码区域
-```
-
-**依赖规则（强制）**：
-- Layer 3 只能依赖 Layer 2 的 Protocol / 接口，**禁止**直接导入 Layer 1 的具体实现。
-- Layer 2 **不依赖** Layer 1，是独立的契约定义层。
-- Layer 1 到 Layer 2 的桥接由显式的适配器/桥接模块完成。
-
-### 2.2 Patch 显式化
-
-所有对上游源码的必要修改必须提取为 `patches/` 目录下的 patch 文件，附带元数据描述修改原因和影响范围。禁止在 Layer 1 代码中直接手写差异化逻辑。
-
-### 2.3 版本化锁定
-
-Layer 1 代码按上游版本号组织（如 `v2025_04/`、`v2025_06/`），支持同时维护多个上游版本的兼容层，便于回退和灰度验证。
-
-### 2.4 Agent 友好
-
-所有设计决策需考虑 Code Agent 的自动化能力：目录结构清晰、上下文可机器解析、冲突解决有明确的决策树和边界约束。
+1. **机制与策略分离**：组件只保留机制（Patch 管理、层间审计、变化分析），策略（Protocol 定义、Patch 内容、Agent Prompt 细节）留给使用者
+2. **配置驱动**：零硬编码，所有项目特定的信息通过 `upstream-sync.yaml` 配置
+3. **协议无关**：组件不定义任何业务 Protocol，只提供审计框架让使用者注入自己的验证逻辑
+4. **Agent 友好**：输出标准化、可机器解析的上下文，不绑定特定 Agent
+5. **层数不限**：支持任意数量的层，不限于固定的三层模型
 
 ---
 
-## 三、三层隔离架构模型
+## 二、核心解耦策略
 
-### 3.1 Layer 1: 上游兼容层
+### 2.1 识别机制与策略
 
-**职责**：原项目 TypeScript 参考实现的 Python 镜像/翻译，尽量保持与原项目结构一一对应。
+| 文档中的内容 | 类型 | 解耦后归属 |
+|---|---|---|
+| 三层隔离依赖规则 | **机制** | 通用组件 (`layer_auditor.py`) |
+| Patch 应用/管理/冲突检测 | **机制** | 通用组件 (`patch_engine.py`) |
+| Vendor Branch + 版本锁定标签 | **机制** | 通用组件 (`vendor.py`) |
+| 变化分析 + 影响报告 | **机制** | 通用组件 (`change_analyzer.py`) |
+| Agent Prompt 模板生成 | **机制** | 通用组件（参数化模板） |
+| `AgentLoop` / `ToolRegistry` Protocol | **策略** | ClawCodex (`src/capabilities/`) |
+| `src/upstream/` `src/capabilities/` 目录结构 | **策略** | ClawCodex 配置 |
+| `anthropics/claude-code.git` 上游地址 | **策略** | ClawCodex 配置 |
+| TS→Python 移植 Patch | **策略** | ClawCodex `patches/` |
 
-**目录结构**：
+### 2.2 解耦后的依赖关系
 
 ```
-src/upstream/
-├── v2025_04/                  # 首次移植锁定的参考版本
-│   ├── agent_loop/
+upstream-sync (通用组件)
+    │ 零业务耦合，通过 YAML 配置驱动
+    ▼
+upstream-sync.yaml (配置文件)
+    │ 定义项目结构、层规则、上游地址
+    ▼
+ClawCodex (业务项目)
+```
+
+---
+
+## 三、通用组件架构 (upstream-sync)
+
+### 3.1 组件目录结构
+
+```
+upstream-sync/                          # 独立仓库 / PyPI 包
+├── pyproject.toml
+├── README.md
+├── src/upstream_sync/
+│   ├── __init__.py
+│   ├── cli.py                          # 统一 CLI 入口 (Typer)
+│   ├── config.py                       # Pydantic 配置模型
+│   ├── core/
 │   │   ├── __init__.py
-│   │   └── ...               # 与原项目 agent loop 对应的 Python 翻译
-│   ├── context_system/
-│   ├── tool_system/
-│   └── _bridge.py            # 此版本到 Layer 2 的桥接模块
-├── v2025_06/                  # 下一次同步后的新版本（未来）
-│   ├── agent_loop/
-│   ├── context_system/
-│   └── _bridge.py
-└── __init__.py               # 根据配置选择激活的版本
+│   │   ├── vendor.py                   # Vendor Branch 管理
+│   │   ├── patch_engine.py             # Patch 应用引擎抽象
+│   │   ├── change_analyzer.py          # 上游 diff 分析器
+│   │   ├── sync_orchestrator.py        # 同步流程编排
+│   │   └── layer_auditor.py            # 层间依赖审计
+│   ├── adapters/
+│   │   ├── __init__.py
+│   │   ├── quilt.py                    # Quilt 适配器
+│   │   ├── git_am.py                   # Git am 适配器
+│   │   └── custom.py                   # 自定义命令适配器
+│   ├── reporters/
+│   │   ├── __init__.py
+│   │   ├── json_reporter.py            # 机器可读报告
+│   │   └── markdown_reporter.py        # 人类可读报告
+│   ├── templates/
+│   │   └── agent_prompt.md.j2          # Agent Prompt Jinja2 模板
+│   └── hooks/
+│       └── base.py                     # 生命周期钩子基类
+└── tests/
 ```
 
-**核心规则**：
-- Layer 1 代码**尽量保持与原项目结构一一对应**，不做功能扩展。
-- ClawCodex 的差异化功能**绝不直接修改** Layer 1 文件。
-- 所有对 Layer 1 的必要修改必须通过 `patches/` 队列应用。
+### 3.2 配置层 (config.py)
 
-### 3.2 Layer 2: 能力抽象层
-
-**职责**：将原项目中"隐式契约"显式化为稳定的 Python Protocol / 抽象基类。这是解决长期冲突的**核心层**。
-
-**目录结构**：
-
-```
-src/capabilities/
-├── __init__.py
-├── agent_protocol.py         # Agent Loop 抽象契约
-├── tool_protocol.py          # Tool 系统抽象契约
-├── context_protocol.py       # Context 构建抽象契约
-├── provider_protocol.py      # Provider 层抽象契约
-└── events.py                 # 跨层事件定义
-```
-
-#### 3.2.1 Agent Protocol
+整个组件由单一配置文件驱动，零硬编码。
 
 ```python
-# src/capabilities/agent_protocol.py
-from typing import Protocol, AsyncIterator, runtime_checkable
+# upstream_sync/config.py
+from pydantic import BaseModel, Field
+from pathlib import Path
+from typing import Literal
+
+
+class LayerConfig(BaseModel):
+    """层配置：通用组件只检查依赖方向，不定义层内容。"""
+    name: str = Field(..., description="层名称，如 upstream, capabilities, features")
+    paths: list[Path] = Field(..., description="该层包含的目录/文件路径")
+    allowed_imports_from: list[str] = Field(default_factory=list,
+        description="允许从此层导入的模块前缀列表")
+    forbidden_imports_from: list[str] = Field(default_factory=list,
+        description="禁止从此层导入的模块前缀列表（优先于 allowed）")
+
+
+class UpstreamConfig(BaseModel):
+    remote_url: str = Field(..., description="上游仓库 URL")
+    main_branch: str = "main"
+    vendor_branch: str = "upstream/vendor"
+    version_tag_format: str = "upstream/v{YYYY}_{MM}"
+
+
+class PatchConfig(BaseModel):
+    directory: Path = Path("patches")
+    engine: Literal["quilt", "git-am", "custom"] = "quilt"
+    custom_command: str | None = None   # engine=custom 时使用
+    series_file: Path = Path("patches/series")
+    metadata_dir: Path = Path("patches/metadata")
+    # 可选：每个 upstream commit 对应一个子目录
+    # 示例："patches/upstream/{commit}" 解析为 "patches/upstream/b125e16"
+    patch_subdir: str | None = Field(
+        default=None,
+        description="每个 commit 的补丁子目录模式，支持 {commit} 占位符"
+    )
+
+
+class SyncConfig(BaseModel):
+    impact_threshold_auto: str = "low"      # 低于此阈值自动处理
+    impact_threshold_agent: str = "medium"  # 低于此阈值 Agent 辅助
+    report_formats: list[str] = ["json", "markdown"]
+
+
+class ProjectConfig(BaseModel):
+    """使用者项目的完整配置。"""
+    project_name: str
+    source_lang: str = "python"
+    upstream: UpstreamConfig
+    layers: list[LayerConfig]           # 任意数量的层
+    patches: PatchConfig
+    sync: SyncConfig
+```
+
+### 3.3 Vendor 管理 (core/vendor.py)
+
+管理上游仓库镜像和版本标签。完全通用，不感知业务。
+
+```python
+# upstream_sync/core/vendor.py
+import subprocess
+from pathlib import Path
+
+
+class VendorManager:
+    def __init__(self, repo_root: Path, upstream: UpstreamConfig):
+        self.repo_root = repo_root
+        self.cfg = upstream
+
+    def ensure_remote(self) -> None:
+        """添加上游 remote（如不存在）。"""
+        result = subprocess.run(
+            ["git", "remote", "get-url", "upstream"],
+            cwd=self.repo_root,
+            capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            subprocess.run(
+                ["git", "remote", "add", "upstream", self.cfg.remote_url],
+                cwd=self.repo_root, check=True
+            )
+
+    def fetch(self) -> str:
+        """拉取上游 main，返回最新 commit hash。"""
+        subprocess.run(
+            ["git", "fetch", "upstream", self.cfg.main_branch],
+            cwd=self.repo_root, check=True
+        )
+        result = subprocess.run(
+            ["git", "rev-parse", f"upstream/{self.cfg.main_branch}"],
+            cwd=self.repo_root, capture_output=True, text=True, check=True
+        )
+        return result.stdout.strip()
+
+    def create_version_tag(self, version: str, commit: str) -> None:
+        """创建版本锁定标签，如 upstream/v2025_06。"""
+        from datetime import datetime
+        dt = datetime.strptime(version, "%Y.%m.%d")
+        tag = self.cfg.version_tag_format.format(YYYY=dt.year, MM=f"{dt.month:02d}")
+        subprocess.run(
+            ["git", "tag", tag, commit],
+            cwd=self.repo_root, check=True
+        )
+
+    def checkout_vendor(self) -> None:
+        """切换到 vendor 分支（只读镜像）。"""
+        result = subprocess.run(
+            ["git", "branch", "--list", self.cfg.vendor_branch],
+            cwd=self.repo_root, capture_output=True, text=True
+        )
+        if not result.stdout.strip():
+            subprocess.run(
+                ["git", "checkout", "-b", self.cfg.vendor_branch],
+                cwd=self.repo_root, check=True
+            )
+        subprocess.run(
+            ["git", "checkout", self.cfg.vendor_branch],
+            cwd=self.repo_root, check=True
+        )
+```
+
+### 3.4 Patch 引擎 (core/patch_engine.py)
+
+可插拔的 Patch 应用引擎，支持 `quilt`、`git-am` 和自定义命令。
+
+```python
+# upstream_sync/core/patch_engine.py
+from typing import Protocol, runtime_checkable
+from pathlib import Path
 from dataclasses import dataclass
 
 
-@dataclass(frozen=True)
-class AgentTurn:
-    """单次 Agent 回合的产出。"""
-    messages: list[MessageBlock]
-    tool_calls: list[ToolCall]
-    stop_reason: StopReason
+@dataclass
+class ApplyResult:
+    success: list[str]              # 成功应用的 patch
+    failed: list[tuple[str, str]]   # (patch_name, reason)
+    needs_review: list[str]         # 需要人工审核
 
 
 @runtime_checkable
-class AgentLoop(Protocol):
-    """Agent 执行循环的抽象契约。
+class PatchEngine(Protocol):
+    """Patch 应用引擎协议。"""
 
-    上游 Claude Code 的 Agent Loop 实现细节无论如何变化，
-    ClawCodex 的扩展（如 Orchestrator、多 Provider 支持）
-    只依赖此 Protocol。
-    """
+    def apply_all(self, patch_dir: Path, series_file: Path) -> ApplyResult: ...
+    def pop_all(self) -> None: ...
+    def refresh(self, patch_name: str) -> None: ...
+    def status(self) -> dict: ...
 
-    async def run(
-        self,
-        session: SessionContext,
-        tools: ToolRegistry,
-        budget: TokenBudget,
-    ) -> AsyncIterator[AgentEvent]:
-        """运行 Agent 循环，产出流式事件。"""
+
+class QuiltEngine:
+    """Quilt 实现。"""
+
+    def apply_all(self, patch_dir: Path, series_file: Path) -> ApplyResult:
+        import subprocess
+        result = subprocess.run(
+            ["quilt", "push", "-a"],
+            cwd=patch_dir.parent,
+            capture_output=True, text=True
+        )
+        # 解析 quilt 输出，构建 ApplyResult
         ...
 
-    async def fork_subagent(
-        self,
-        parent: SessionContext,
-        task: SubagentTask,
-    ) -> SubagentHandle:
-        """创建独立会话的子 Agent。"""
+    def pop_all(self) -> None:
+        import subprocess
+        subprocess.run(["quilt", "pop", "-a"], check=True)
+
+    def refresh(self, patch_name: str) -> None:
+        import subprocess
+        subprocess.run(["quilt", "refresh", patch_name], check=True)
+
+    def status(self) -> dict:
+        import subprocess
+        result = subprocess.run(
+            ["quilt", "applied"], capture_output=True, text=True
+        )
+        return {"applied": result.stdout.strip().split("\n") if result.returncode == 0 else []}
+
+
+class GitAmEngine:
+    """git am 实现。"""
+
+    def apply_all(self, patch_dir: Path, series_file: Path) -> ApplyResult:
+        import subprocess
+        patches = sorted(patch_dir.glob("*.patch"))
+        result = subprocess.run(
+            ["git", "am", "--3way"] + [str(p) for p in patches],
+            capture_output=True, text=True
+        )
         ...
 
+    def pop_all(self) -> None:
+        import subprocess
+        subprocess.run(["git", "am", "--abort"], check=False)
 
-@runtime_checkable
-class AgentBridge(Protocol):
-    """Layer 1 具体实现到 Layer 2 Protocol 的桥接器。"""
+    def refresh(self, patch_name: str) -> None:
+        raise NotImplementedError("git-am engine does not support refresh")
 
-    def adapt(self, upstream_impl: Any) -> AgentLoop:
-        """将上游特定版本的实现包装为符合 Protocol 的对象。"""
+    def status(self) -> dict:
+        return {}
+
+
+class CustomEngine:
+    """调用使用者自定义脚本。"""
+
+    def __init__(self, command: str):
+        self.command = command
+
+    def apply_all(self, patch_dir: Path, series_file: Path) -> ApplyResult:
+        import subprocess
+        result = subprocess.run(
+            [self.command, "apply", str(patch_dir), str(series_file)],
+            capture_output=True, text=True
+        )
         ...
+
+    def pop_all(self) -> None:
+        subprocess.run([self.command, "pop"], check=False)
+
+    def refresh(self, patch_name: str) -> None:
+        subprocess.run([self.command, "refresh", patch_name], check=False)
+
+    def status(self) -> dict:
+        result = subprocess.run([self.command, "status"], capture_output=True, text=True)
+        return {"raw": result.stdout}
+
+
+def create_engine(config: PatchConfig) -> PatchEngine:
+    """工厂函数，根据配置创建对应引擎。"""
+    if config.engine == "quilt":
+        return QuiltEngine()
+    elif config.engine == "git-am":
+        return GitAmEngine()
+    elif config.engine == "custom":
+        if not config.custom_command:
+            raise ValueError("custom engine requires custom_command")
+        return CustomEngine(config.custom_command)
+    else:
+        raise ValueError(f"Unknown patch engine: {config.engine}")
 ```
 
-#### 3.2.2 Tool Protocol
+### 3.5 变化分析器 (core/change_analyzer.py)
+
+对比两个上游版本，生成结构化影响报告。
 
 ```python
-# src/capabilities/tool_protocol.py
-from typing import Protocol, runtime_checkable
+# upstream_sync/core/change_analyzer.py
+from dataclasses import dataclass, field
+from pathlib import Path
+import subprocess
+import json
 
 
-@runtime_checkable
-class Tool(Protocol):
-    """工具的抽象契约。"""
-
-    name: str
-    description: str
-    input_schema: dict[str, Any]
-
-    async def execute(self, input: dict, ctx: ToolContext) -> ToolResult:
-        """执行工具。"""
-        ...
-
-    @property
-    def permission_policy(self) -> PermissionPolicy:
-        """权限策略，提供扩展点而非修改原代码。"""
-        return PermissionPolicy.default()
+@dataclass
+class ModuleImpact:
+    module_name: str
+    layer_name: str              # 由配置映射，如 "upstream"
+    files_changed: list[str]
+    patches_affected: list[str]
+    conflict_probability: str    # low | medium | high
+    estimated_effort_minutes: int
+    recommended_strategy: str    # fast-forward | rebase-patches | human-review
 
 
-class ToolRegistry(Protocol):
-    """工具注册表的抽象契约。"""
+@dataclass
+class ChangeReport:
+    upstream_version: str
+    previous_version: str
+    overall_impact: str          # low | medium | high
+    statistics: dict
+    module_impacts: list[ModuleImpact]
+    action_items: list[dict]
 
-    def register(self, tool: Tool) -> None: ...
-    def get(self, name: str) -> Tool | None: ...
-    def list_tools(self) -> list[Tool]: ...
+    def to_json(self, indent: int = 2) -> str:
+        return json.dumps(self, indent=indent, default=lambda o: o.__dict__)
+
+
+class ChangeAnalyzer:
+    def __init__(self, repo_root: Path, config: ProjectConfig):
+        self.repo_root = repo_root
+        self.cfg = config
+
+    def analyze(self, from_ref: str, to_ref: str) -> ChangeReport:
+        # 1. 获取 diff 统计
+        result = subprocess.run(
+            ["git", "diff", "--stat", f"{from_ref}..{to_ref}"],
+            cwd=self.repo_root, capture_output=True, text=True, check=True
+        )
+        diff_stat = result.stdout
+
+        # 2. 识别文件变更
+        changed_files = self._parse_changed_files(diff_stat)
+
+        # 3. 映射到层
+        module_impacts = []
+        for layer in self.cfg.layers:
+            layer_files = [f for f in changed_files
+                          if any(Path(f).is_relative_to(p) for p in layer.paths)]
+            if layer_files:
+                # 交叉引用 patches/metadata/
+                affected_patches = self._find_affected_patches(layer_files)
+                conflict_prob = self._assess_conflict_probability(layer_files, affected_patches)
+                module_impacts.append(ModuleImpact(
+                    module_name=layer.name,
+                    layer_name=layer.name,
+                    files_changed=layer_files,
+                    patches_affected=affected_patches,
+                    conflict_probability=conflict_prob,
+                    estimated_effort_minutes=self._estimate_effort(conflict_prob, len(layer_files)),
+                    recommended_strategy=self._recommend_strategy(conflict_prob)
+                ))
+
+        # 4. 评估总体影响
+        overall = self._calculate_overall_impact(module_impacts)
+
+        return ChangeReport(
+            upstream_version=to_ref,
+            previous_version=from_ref,
+            overall_impact=overall,
+            statistics={
+                "files_changed_upstream": len(changed_files),
+                "modules_affected": len(module_impacts),
+            },
+            module_impacts=module_impacts,
+            action_items=self._generate_action_items(module_impacts)
+        )
+
+    def _parse_changed_files(self, diff_stat: str) -> list[str]:
+        files = []
+        for line in diff_stat.strip().split("\n"):
+            parts = line.split("|")
+            if len(parts) >= 2:
+                filename = parts[0].strip()
+                if filename and not filename.endswith("..."):
+                    files.append(filename)
+        return files
+
+    def _find_affected_patches(self, files: list[str]) -> list[str]:
+        affected = []
+        meta_dir = self.cfg.patches.metadata_dir
+        if not meta_dir.exists():
+            return affected
+        for meta_file in meta_dir.glob("*.json"):
+            data = json.loads(meta_file.read_text())
+            for mod in data.get("affected_modules", []):
+                if any(f.startswith(mod) for f in files):
+                    affected.append(data.get("id", meta_file.stem))
+                    break
+        return affected
+
+    def _assess_conflict_probability(self, files: list[str], patches: list[str]) -> str:
+        # 简单启发式：有 patch 影响的文件数 > 3 → high，有 patch → medium，否则 low
+        if len(patches) > 0 and len(files) > 3:
+            return "high"
+        elif len(patches) > 0:
+            return "medium"
+        return "low"
+
+    def _estimate_effort(self, prob: str, file_count: int) -> int:
+        base = {"low": 5, "medium": 20, "high": 45}
+        return base.get(prob, 30) + file_count * 2
+
+    def _recommend_strategy(self, prob: str) -> str:
+        return {"low": "fast-forward", "medium": "rebase-patches", "high": "human-review"}.get(prob, "human-review")
+
+    def _calculate_overall_impact(self, impacts: list[ModuleImpact]) -> str:
+        if any(i.conflict_probability == "high" for i in impacts):
+            return "high"
+        elif any(i.conflict_probability == "medium" for i in impacts):
+            return "medium"
+        return "low"
+
+    def _generate_action_items(self, impacts: list[ModuleImpact]) -> list[dict]:
+        items = []
+        for imp in impacts:
+            if imp.conflict_probability == "high":
+                items.append({
+                    "module": imp.module_name,
+                    "action": "human-review",
+                    "reason": f"High conflict probability with patches: {imp.patches_affected}"
+                })
+            elif imp.patches_affected:
+                items.append({
+                    "module": imp.module_name,
+                    "action": "review-patches",
+                    "reason": f"Affected patches: {imp.patches_affected}"
+                })
+        return items
 ```
 
-#### 3.2.3 Context Protocol
+### 3.6 层间审计 (core/layer_auditor.py)
+
+审计层间依赖违规。层定义完全由配置决定。
 
 ```python
-# src/capabilities/context_protocol.py
-from typing import Protocol, runtime_checkable
+# upstream_sync/core/layer_auditor.py
+import ast
+from pathlib import Path
+from dataclasses import dataclass
 
 
-@runtime_checkable
-class ContextBuilder(Protocol):
-    """上下文构建的抽象契约。
+@dataclass
+class Violation:
+    file: Path
+    forbidden_import: str
+    layer: str
+    line_number: int
 
-    上游的 Context System 实现变化时，
-    只需重新实现此 Protocol，不影响调用方。
-    """
 
-    async def build(
-        self,
-        session: SessionContext,
-        workspace: WorkspaceSnapshot,
-    ) -> ContextPayload:
-        """构建发送给模型的上下文载荷。"""
-        ...
+class LayerAuditor:
+    def __init__(self, config: ProjectConfig):
+        self.layers = config.layers
+
+    def audit(self) -> list[Violation]:
+        violations = []
+        for layer in self.layers:
+            for path in layer.paths:
+                if not path.exists():
+                    continue
+                for py_file in path.rglob("*.py"):
+                    imports = self._extract_imports(py_file)
+                    for forbidden in layer.forbidden_imports_from:
+                        for imp, lineno in imports:
+                            if imp.startswith(forbidden):
+                                violations.append(Violation(
+                                    file=py_file,
+                                    forbidden_import=imp,
+                                    layer=layer.name,
+                                    line_number=lineno
+                                ))
+        return violations
+
+    def _extract_imports(self, py_file: Path) -> list[tuple[str, int]]:
+        try:
+            tree = ast.parse(py_file.read_text(encoding="utf-8"))
+        except SyntaxError:
+            return []
+
+        imports = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    imports.append((alias.name, node.lineno))
+            elif isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                imports.append((module, node.lineno))
+        return imports
+
+    def report(self, violations: list[Violation]) -> str:
+        if not violations:
+            return "No layer violations found."
+        lines = [f"Found {len(violations)} layer violation(s):\n"]
+        for v in violations:
+            lines.append(f"  [{v.layer}] {v.file}:{v.line_number} imports '{v.forbidden_import}'")
+        return "\n".join(lines)
 ```
 
-#### 3.2.4 Provider Protocol
+### 3.7 报告生成 (reporters/)
 
 ```python
-# src/capabilities/provider_protocol.py
-from typing import Protocol, runtime_checkable
+# upstream_sync/reporters/json_reporter.py
+import json
+from pathlib import Path
+from upstream_sync.core.change_analyzer import ChangeReport
 
 
-@runtime_checkable
-class LLMProvider(Protocol):
-    """LLM Provider 的抽象契约。
+class JSONReporter:
+    def emit(self, report: ChangeReport, path: Path) -> None:
+        path.write_text(report.to_json(indent=2), encoding="utf-8")
 
-    ClawCodex 的多 Provider 支持在此 Protocol 之上构建，
-    不依赖上游 Provider 的具体实现细节。
-    """
 
-    name: str
+# upstream_sync/reporters/markdown_reporter.py
+from pathlib import Path
+from upstream_sync.core.change_analyzer import ChangeReport
 
-    async def stream_chat(
-        self,
-        messages: list[MessageBlock],
-        tools: list[ToolDefinition] | None,
-        config: ProviderConfig,
-    ) -> AsyncIterator[StreamEvent]:
-        ...
 
-    def supports_images(self) -> bool: ...
-    def supports_tools(self) -> bool: ...
+class MarkdownReporter:
+    def emit(self, report: ChangeReport, path: Path) -> None:
+        lines = [
+            f"# Upstream Sync Report: {report.upstream_version}",
+            "",
+            f"- **Previous Version**: {report.previous_version}",
+            f"- **Overall Impact**: {report.overall_impact}",
+            f"- **Files Changed**: {report.statistics.get('files_changed_upstream', 'N/A')}",
+            "",
+            "## Module Impacts",
+            "",
+        ]
+        for imp in report.module_impacts:
+            lines.extend([
+                f"### {imp.module_name}",
+                "",
+                f"- **Layer**: {imp.layer_name}",
+                f"- **Conflict Probability**: {imp.conflict_probability}",
+                f"- **Recommended Strategy**: {imp.recommended_strategy}",
+                f"- **Estimated Effort**: {imp.estimated_effort_minutes} minutes",
+                f"- **Files Changed**: {len(imp.files_changed)}",
+                f"- **Patches Affected**: {', '.join(imp.patches_affected) or 'None'}",
+                "",
+            ])
+
+        if report.action_items:
+            lines.extend([
+                "## Action Items",
+                "",
+            ])
+            for item in report.action_items:
+                lines.append(f"- [{item['action'].upper()}] {item['module']}: {item['reason']}")
+            lines.append("")
+
+        path.write_text("\n".join(lines), encoding="utf-8")
 ```
 
-### 3.3 Layer 3: 差异化能力层
+### 3.8 CLI (cli.py)
 
-**职责**：ClawCodex 完全自主的差异化功能，永不同步原项目，永不直接依赖 Layer 1。
+```python
+# upstream_sync/cli.py
+import typer
+from pathlib import Path
+from upstream_sync.config import ProjectConfig
+from upstream_sync.core.vendor import VendorManager
+from upstream_sync.core.patch_engine import create_engine
+from upstream_sync.core.change_analyzer import ChangeAnalyzer
+from upstream_sync.core.layer_auditor import LayerAuditor
+from upstream_sync.reporters.json_reporter import JSONReporter
+from upstream_sync.reporters.markdown_reporter import MarkdownReporter
 
-**当前已在此层的模块**（需审计是否仍有对 Layer 1 的直接依赖）：
+app = typer.Typer(help="upstream-sync: Generic upstream code synchronization tool")
 
-| 模块 | 说明 | 是否已完全隔离 Layer 1 |
-|------|------|----------------------|
-| `src/orchestrator/` | 自主工作流编排（Symphony 集成） | 需审计 |
-| `src/providers/` | 多 Provider 支持 | 需审计 |
-| `src/permissions/` | 权限与安全（含 Bash AST） | 需审计 |
-| `src/hooks/` | 钩子系统 | 需审计 |
-| `src/context_system/` | 上下文构建 | **未隔离**，需重构 |
-| `src/agent/` | Agent 核心 | **未隔离**，需重构 |
-| `src/tool_system/` | 工具系统 | **未隔离**，需重构 |
 
-**审计方法**：运行 `scripts/audit_layer_violations.py`（待创建），检查 Layer 3 模块是否直接导入了 Layer 1 的路径。
+def load_config(path: Path) -> ProjectConfig:
+    import yaml
+    data = yaml.safe_load(path.read_text())
+    return ProjectConfig(**data)
+
+
+@app.command()
+def init(
+    template: str = typer.Option("blank", help="Template: blank, python-port, node-fork, rust-fork"),
+    output: Path = typer.Option(Path("upstream-sync.yaml"), help="Output config path")
+):
+    """Initialize upstream-sync configuration for the current project."""
+    templates = {
+        "blank": _blank_template(),
+        "python-port": _python_port_template(),
+        "node-fork": _node_fork_template(),
+        "rust-fork": _rust_fork_template(),
+    }
+    content = templates.get(template, templates["blank"])
+    output.write_text(content, encoding="utf-8")
+    typer.echo(f"Created {output} (template: {template})")
+
+
+@app.command()
+def fetch(
+    config: Path = typer.Option(Path("upstream-sync.yaml"), help="Path to upstream-sync.yaml")
+):
+    """Fetch upstream latest code to vendor branch."""
+    cfg = load_config(config)
+    vendor = VendorManager(Path("."), cfg.upstream)
+    vendor.ensure_remote()
+    commit = vendor.fetch()
+    typer.echo(f"Fetched upstream/{cfg.upstream.main_branch} at {commit}")
+
+
+@app.command()
+def analyze(
+    from_ref: str = typer.Argument(..., help="Base ref/tag to compare from"),
+    to_ref: str = typer.Argument(..., help="Target ref/tag to compare to"),
+    config: Path = typer.Option(Path("upstream-sync.yaml"), help="Path to upstream-sync.yaml"),
+    output_dir: Path = typer.Option(Path(".upstream-sync"), help="Directory to write reports")
+):
+    """Analyze upstream changes and generate impact reports."""
+    cfg = load_config(config)
+    analyzer = ChangeAnalyzer(Path("."), cfg)
+    report = analyzer.analyze(from_ref, to_ref)
+
+    output_dir.mkdir(exist_ok=True)
+
+    if "json" in cfg.sync.report_formats:
+        JSONReporter().emit(report, output_dir / "sync-report.json")
+        typer.echo(f"JSON report: {output_dir / 'sync-report.json'}")
+
+    if "markdown" in cfg.sync.report_formats:
+        MarkdownReporter().emit(report, output_dir / "sync-report.md")
+        typer.echo(f"Markdown report: {output_dir / 'sync-report.md'}")
+
+    typer.echo(f"Overall impact: {report.overall_impact}")
+    if report.action_items:
+        typer.echo(f"Action items: {len(report.action_items)}")
+
+
+@app.command()
+def apply(
+    config: Path = typer.Option(Path("upstream-sync.yaml"), help="Path to upstream-sync.yaml")
+):
+    """Apply the patch queue."""
+    cfg = load_config(config)
+    engine = create_engine(cfg.patches)
+    result = engine.apply_all(cfg.patches.directory, cfg.patches.series_file)
+    typer.echo(f"Applied: {len(result.success)}, Failed: {len(result.failed)}, Needs Review: {len(result.needs_review)}")
+    if result.failed:
+        raise typer.Exit(1)
+
+
+@app.command()
+def audit(
+    config: Path = typer.Option(Path("upstream-sync.yaml"), help="Path to upstream-sync.yaml")
+):
+    """Audit layer dependency violations."""
+    cfg = load_config(config)
+    auditor = LayerAuditor(cfg)
+    violations = auditor.audit()
+    print(auditor.report(violations))
+    if violations:
+        raise typer.Exit(1)
+
+
+@app.command()
+def sync(
+    auto: bool = typer.Option(False, help="Auto-resolve low-impact changes"),
+    config: Path = typer.Option(Path("upstream-sync.yaml"), help="Path to upstream-sync.yaml")
+):
+    """Run full sync pipeline: fetch -> analyze -> apply -> audit."""
+    fetch(config)
+    # TODO: detect from/to refs automatically or via config
+    typer.echo("Sync pipeline complete.")
+
+
+@app.command()
+def agent_prompt(
+    report: Path = typer.Argument(..., help="Path to sync-report.json"),
+    config: Path = typer.Option(Path("upstream-sync.yaml"), help="Path to upstream-sync.yaml"),
+    output: Path = typer.Option(Path("agent-instruction.md"), help="Output prompt file")
+):
+    """Generate a standardized agent prompt from the sync report."""
+    import json
+    from jinja2 import Template
+
+    cfg = load_config(config)
+    report_data = json.loads(report.read_text())
+
+    template_text = (Path(__file__).parent / "templates" / "agent_prompt.md.j2").read_text()
+    template = Template(template_text)
+
+    rendered = template.render(
+        project_name=cfg.project_name,
+        upstream_url=cfg.upstream.remote_url,
+        layers=cfg.layers,
+        **report_data
+    )
+    output.write_text(rendered, encoding="utf-8")
+    typer.echo(f"Agent prompt written to {output}")
+
+
+def _blank_template() -> str:
+    return """project_name: "my-project"
+source_lang: "python"
+
+upstream:
+  remote_url: "https://github.com/original/repo.git"
+  main_branch: "main"
+  vendor_branch: "upstream/vendor"
+  version_tag_format: "upstream/v{YYYY}_{MM}"
+
+layers: []
+
+patches:
+  directory: "patches"
+  engine: "quilt"
+  series_file: "patches/series"
+  metadata_dir: "patches/metadata"
+
+sync:
+  impact_threshold_auto: "low"
+  impact_threshold_agent: "medium"
+  report_formats: ["json", "markdown"]
+"""
+
+
+def _python_port_template() -> str:
+    return """project_name: "my-python-port"
+source_lang: "python"
+
+upstream:
+  remote_url: "https://github.com/original/repo.git"
+  main_branch: "main"
+  vendor_branch: "upstream/vendor"
+  version_tag_format: "upstream/v{YYYY}_{MM}"
+
+layers:
+  - name: "upstream"
+    paths: ["src/upstream"]
+    forbidden_imports_from: []
+  - name: "capabilities"
+    paths: ["src/capabilities"]
+    forbidden_imports_from: ["src.upstream"]
+  - name: "features"
+    paths: ["src/features"]
+    forbidden_imports_from: ["src.upstream"]
+
+patches:
+  directory: "patches"
+  engine: "quilt"
+  series_file: "patches/series"
+  metadata_dir: "patches/metadata"
+
+sync:
+  impact_threshold_auto: "low"
+  impact_threshold_agent: "medium"
+  report_formats: ["json", "markdown"]
+"""
+
+
+def _node_fork_template() -> str:
+    return _python_port_template().replace("source_lang: \"python\"", "source_lang: \"typescript\"")
+
+
+def _rust_fork_template() -> str:
+    return _python_port_template().replace("source_lang: \"python\"", "source_lang: \"rust\"")
+
+
+if __name__ == "__main__":
+    app()
+```
 
 ---
 
-## 四、Git 工作流设计
+## 四、ClawCodex 集成方式
 
-### 4.1 分支模型
+### 4.1 配置文件示例
 
-```
-upstream/vendor          ← 原项目代码的纯镜像（定期 fetch，禁止人工修改）
-    │
-    ├── upstream/v2025_04   ← 基于 vendor 切出的锁定版本分支（标签）
-    │
-    └── upstream/v2025_06   ← 未来新版本（标签）
-
-main / dev-decoupling    ← ClawCodex 开发主干
-    │
-    ├── patches/            ← Patch Queue 目录
-    │
-    ├── src/capabilities/   ← Layer 2（能力抽象层）
-    ├── src/upstream/       ← Layer 1（上游兼容层，含版本子目录）
-    └── src/orchestrator/   ← Layer 3（差异化能力层示例）
-
-sync/upstream-YYYYMMDD   ← Agent 自动同步生成的临时分支
-```
-
-**分支规则**：
-- `upstream/vendor`：**只读镜像**，仅通过 `git fetch upstream` 更新，禁止任何人工 commit。
-- `upstream/vYYYY_MM`：**版本锁定标签**，从 `upstream/vendor` 的特定 commit 切出，作为 Patch 应用的基础。
-- `dev-decoupling` / `main`：**开发主干**，只包含 Layer 2 + Layer 3 + 已应用的 patches。
-- `sync/upstream-YYYYMMDD`：**同步临时分支**，由 Agent 自动生成，用于人工审核后合并。
-
-### 4.2 Patch Queue 机制
-
-将当前对原项目的**必要修改**提取为可维护的 patch 队列。
-
-**目录结构**：
-
-```
-patches/
-├── 0001-port-to-python-asyncio.patch       # TS→Python 基础移植
-├── 0002-add-provider-abstraction.patch     # 多 Provider 支持
-├── 0003-extract-tool-registry.patch        # 工具注册表改造
-├── 0004-subagent-lifecycle.patch           # 子 Agent 生命周期
-├── 0005-context-system-pluggable.patch     # Context 系统可插拔化
-├── ...
-├── series                                   # patch 应用顺序清单
-└── metadata/                                # 每个 patch 的元数据
-    ├── 0001.json
-    ├── 0002.json
-    └── ...
-```
-
-**Patch 元数据格式**（`patches/metadata/0001.json`）：
-
-```json
-{
-  "id": "0001",
-  "title": "Port agent loop to Python asyncio",
-  "upstream_version_range": ["2025.04.20", "2025.06.15"],
-  "affected_modules": ["agent_loop"],
-  "layer": 1,
-  "reason": "Claude Code is TypeScript; ClawCodex needs Python async/await equivalent",
-  "conflict_history": [
-    {"upstream_version": "2025.05.10", "resolution": "renamed variable in upstream", "effort_minutes": 15}
-  ],
-  "owner": "agent-team",
-  "automatable": true
-}
-```
-
-**Patch 管理工具**：使用 `quilt` 或 `git rebase --onto` + 自定义脚本。
-
-```bash
-# 初始化 patch 队列
-quilt init
-
-# 创建新 patch
-quilt new 0006-message-format-compat.patch
-
-# 编辑文件（修改会自动记录到 patch）
-quilt edit src/upstream/v2025_04/agent_loop/messages.py
-
-# 刷新 patch
-quilt refresh
-
-# 查看当前 applied patches
-quilt applied
-
-# 全部弹出
-quilt pop -a
-
-# 全部应用
-quilt push -a
-```
-
-### 4.3 同步流程规范
-
-**同步原项目新版本时的标准流程**：
-
-```
-Step 1: 获取上游更新
-    git fetch upstream
-    git tag upstream/v2025_06 upstream/main^{commit}
-
-Step 2: 分析变化范围
-    python scripts/analyze_upstream_changes.py \
-        --from upstream/v2025_04 \
-        --to upstream/v2025_06 \
-        --output .clawcodex/sync-report.json
-
-Step 3: 应用 Patch Queue
-    quilt push -a          # 或 git am patches/*.patch
-    └── 如果全部成功 → Step 5
-    └── 如果有冲突 → Step 4
-
-Step 4: Agent 辅助解决冲突（详见第 5 节）
-    clawcodex agent --task "resolve-upstream-sync" \
-        --context .clawcodex/sync-report.json
-
-Step 5: 验证契约完整性
-    pytest tests/test_capability_contracts.py
-    pytest tests/integration/test_upstream_compat.py
-
-Step 6: 创建同步分支并提交审核
-    git checkout -b sync/upstream-20250615
-    git add patches/ src/upstream/v2025_06/
-    git commit -m "sync: upstream v2025.06.15"
-    gh pr create --draft --title "[SYNC] upstream v2025.06.15"
-
-Step 7: 人工审核后合并到主分支
-```
-
----
-
-## 五、Code Agent 辅助方案
-
-### 5.1 自动化流水线
-
-设计一个可由 ClawCodex Orchestrator 执行的自动化同步工作流：
+在 ClawCodex 根目录创建 `upstream-sync.yaml`：
 
 ```yaml
-# .clawcodex/upstream-sync.workflow
-workflow:
-  name: upstream-sync
-  description: "自动检测上游更新并触发同步流程"
+project_name: "clawcodex"
+source_lang: "python"
 
-  trigger:
-    cron: "0 6 * * 1"          # 每周一早上 6 点检查
-    webhook: upstream-release   # 监听原项目 release 事件
+upstream:
+  remote_url: "https://github.com/anthropics/claude-code.git"
+  main_branch: "main"
+  vendor_branch: "upstream/vendor"
+  version_tag_format: "upstream/v{YYYY}_{MM}"
 
-  environment:
-    UPSTREAM_REMOTE: "https://github.com/anthropics/claude-code.git"
-    BASE_VERSION_TAG: "upstream/v2025_04"
+layers:
+  - name: "upstream"
+    paths: ["src/upstream"]
+    allowed_imports_from: []
+    forbidden_imports_from: []
 
-  steps:
-    - name: fetch-upstream
-      run: |
-        git remote add upstream $UPSTREAM_REMOTE 2>/dev/null || true
-        git fetch upstream main
-        NEW_COMMIT=$(git rev-parse upstream/main)
-        echo "upstream_latest=$NEW_COMMIT" >> $GITHUB_ENV
+  - name: "capabilities"
+    paths: ["src/capabilities"]
+    allowed_imports_from: []
+    forbidden_imports_from: ["src.upstream"]
 
-    - name: detect-changes
-      run: |
-        python scripts/analyze_upstream_changes.py \
-          --from $BASE_VERSION_TAG \
-          --to upstream/main \
-          --output .clawcodex/sync-report.json
+  - name: "features"
+    paths:
+      - "src/orchestrator"
+      - "src/providers"
+      - "src/hooks"
+      - "src/permissions"
+    allowed_imports_from: ["src.capabilities"]
+    forbidden_imports_from:
+      - "src.upstream"
+      - "src.agent"
+      - "src.tool_system"
+      - "src.context_system"
 
-    - name: check-impact
-      run: |
-        IMPACT=$(python -c "import json; d=json.load(open('.clawcodex/sync-report.json')); print(d['overall_impact'])")
-        if [ "$IMPACT" = "low" ]; then
-          echo "strategy=auto" >> $GITHUB_ENV
-        elif [ "$IMPACT" = "medium" ]; then
-          echo "strategy=agent-assisted" >> $GITHUB_ENV
-        else
-          echo "strategy=human-review" >> $GITHUB_ENV
-        fi
+patches:
+  directory: "patches"
+  engine: "quilt"
+  series_file: "patches/series"
+  metadata_dir: "patches/metadata"
 
-    - name: agent-resolve
-      if: env.strategy != 'human-review'
-      run: |
-        clawcodex agent \
-          --task "应用上游同步补丁并解决冲突" \
-          --context .clawcodex/sync-report.json \
-          --context patches/series \
-          --output-branch sync/upstream-$(date +%Y%m%d) \
-          --timeout 3600
-
-    - name: create-pr
-      run: |
-        gh pr create \
-          --draft \
-          --title "[SYNC] upstream $(date +%Y-%m-%d)" \
-          --body-file .clawcodex/sync-report.md
+sync:
+  impact_threshold_auto: "low"
+  impact_threshold_agent: "medium"
+  report_formats: ["json", "markdown"]
 ```
 
-### 5.2 冲突解决上下文工程
+### 4.2 保留在 ClawCodex 内的内容
 
-为了让 Agent 高效解决冲突，需要提供**结构化上下文**而非原始 diff。
+以下内容属于**业务策略**，不解耦到通用组件中：
 
-**分析报告格式**（`.clawcodex/sync-report.json`）：
-
-```json
-{
-  "upstream_version": "2025.06.15",
-  "previous_version": "2025.04.20",
-  "analysis_timestamp": "2026-05-19T08:00:00Z",
-  "overall_impact": "medium",
-  "statistics": {
-    "total_upstream_commits": 47,
-    "files_changed_upstream": 23,
-    "patches_in_queue": 8,
-    "patches_potentially_affected": 3
-  },
-  "affected_modules": [
-    {
-      "module": "agent_loop",
-      "layer": 1,
-      "upstream_changes": 12,
-      "files_changed": ["agent_loop/runner.ts", "agent_loop/events.ts"],
-      "local_patches_affected": [
-        "0003-extract-tool-registry.patch",
-        "0007-subagent-lifecycle.patch"
-      ],
-      "conflict_probability": "high",
-      "recommended_strategy": "rebase-patches",
-      "estimated_effort_minutes": 30
-    },
-    {
-      "module": "context_system",
-      "layer": 1,
-      "upstream_changes": 3,
-      "files_changed": ["context_system/builder.ts"],
-      "local_patches_affected": [],
-      "conflict_probability": "low",
-      "recommended_strategy": "fast-forward",
-      "estimated_effort_minutes": 5
-    }
-  ],
-  "protocol_impacts": {
-    "message_format": "unchanged",
-    "tool_schema": "minor_addition",
-    "agent_events": "unchanged",
-    "breaking_changes": []
-  },
-  "action_items": [
-    {
-      "patch_id": "0003",
-      "action": "review",
-      "reason": "upstream renamed ToolRegistry to ToolManager"
-    }
-  ]
-}
+```
+clawcodex/
+├── src/
+│   ├── capabilities/                  # Layer 2 Protocol 定义
+│   │   ├── agent_protocol.py          # ClawCodex 特有的 AgentLoop Protocol
+│   │   ├── tool_protocol.py           # Tool 系统 Protocol
+│   │   ├── context_protocol.py        # Context 构建 Protocol
+│   │   ├── provider_protocol.py       # LLM Provider Protocol
+│   │   └── events.py
+│   ├── upstream/                      # Layer 1 上游兼容层
+│   │   └── v2025_04/
+│   │       ├── agent_loop/
+│   │       ├── tool_system/
+│   │       └── _bridge.py
+│   └── orchestrator/                  # Layer 3 差异化能力
+├── patches/                           # 具体 Patch 内容
+│   ├── 0001-port-to-python.patch
+│   ├── 0002-add-provider-abstraction.patch
+│   └── ...
+├── tests/
+│   ├── test_capability_contracts.py   # Protocol 契约测试
+│   └── test_layer_isolation.py        # 层间隔离测试
+└── upstream-sync.yaml                 # 通用组件配置文件
 ```
 
-**分析报告脚本**（`scripts/analyze_upstream_changes.py`）职责：
+### 4.3 调用关系
 
-1. 对比两个版本之间的上游 diff。
-2. 识别受影响的 Layer 1 模块。
-3. 交叉引用 `patches/metadata/` 判断哪些 patch 可能受影响。
-4. 评估冲突概率（基于历史数据和变更类型）。
-5. 检查是否涉及 Layer 2 Protocol 的契约变更。
-6. 输出机器可读（JSON）和人类可读（Markdown）两份报告。
+```
+ClawCodex CI / 开发者
+    │
+    ▼
+upstream-sync <─── 零业务耦合，通过 upstream-sync.yaml 驱动
+    │
+    ├── fetch  → 管理 upstream/vendor 分支
+    ├── analyze → 生成 .upstream-sync/sync-report.{json,md}
+    ├── apply  → 应用 patches/ 队列
+    ├── audit  → 检查层间依赖违规
+    └── agent-prompt → 生成 agent-instruction.md
+```
 
-### 5.3 Agent Prompt 模板
+---
 
-用于指导 Code Agent 解决同步冲突的标准化 Prompt：
+## 五、迁移路径
 
-````markdown
+基于 ClawCodex 当前 `dev-decoupling` 分支状态，按以下顺序实施：
+
+### Step 1: 创建通用组件仓库（1-2 天）
+
+在独立仓库（如 `clawcodex/upstream-sync`）中实现核心框架，完全不引用 ClawCodex：
+
+1. `config.py` — Pydantic 配置模型
+2. `core/vendor.py` — Git 封装（fetch、tag、branch）
+3. `core/patch_engine.py` — PatchEngine 协议 + Quilt 实现
+4. `core/change_analyzer.py` — `git diff` 分析 + 影响评估
+5. `core/layer_auditor.py` — 层间依赖审计
+6. `cli.py` — Click/Typer CLI
+7. `reporters/` — JSON + Markdown 报告
+
+**验收标准**：组件可作为独立 PyPI 包安装，`upstream-sync --help` 正常工作。
+
+### Step 2: 在 ClawCodex 中接入验证（1 天）
+
+1. 在 ClawCodex 根目录创建 `upstream-sync.yaml`
+2. 安装组件：`pip install upstream-sync`
+3. 验证各子命令：
+   - `upstream-sync fetch`
+   - `upstream-sync analyze upstream/v2025_04 upstream/main`
+   - `upstream-sync audit`
+
+### Step 3: 逐步迁移现有代码到三层架构（1-2 周）
+
+1. 创建 `src/capabilities/` 目录，定义 Protocol
+2. 创建 `src/upstream/v2025_04/` 目录，将当前 `src/agent/`、`src/tool_system/` 等核心逻辑逐步迁移为 Layer 1
+3. 提取现有修改到 `patches/` 目录
+4. 用 `upstream-sync audit` 持续检查层间隔离
+
+### Step 4: CI 集成（0.5 天）
+
+```yaml
+# .github/workflows/upstream-detect.yml
+name: Upstream Change Detection
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install upstream-sync
+      - run: upstream-sync fetch
+      - run: upstream-sync analyze upstream/v2025_04 upstream/main --output-dir .upstream-sync
+      - name: Create issue if changes detected
+        run: |
+          gh issue create \
+            --title "[UPSTREAM] New changes detected $(date +%Y-%m-%d)" \
+            --body-file .upstream-sync/sync-report.md \
+            --label "upstream-sync"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
+
+---
+
+## 六、Agent 集成
+
+通用组件通过参数化模板实现 Agent 集成，不绑定任何特定 Agent。
+
+### 6.1 模板文件 (`templates/agent_prompt.md.j2`)
+
+```markdown
 # 角色：上游同步维护工程师
 
 你是一个负责维护开源项目同步的代码智能体。当前任务是将上游项目
-`anthropics/claude-code` 的更新合并到 ClawCodex 的 Python 移植版中。
+`{{ upstream_url }}` 的更新合并到 `{{ project_name }}` 中。
 
 ## 已知上下文
 
-- 上游版本：{upstream_version}
-- 当前锁定版本：{previous_version}
-- 受影响模块：{affected_modules}
-- Layer 2 Protocol 变更需求：{protocol_changes}
+- 上游版本：{{ upstream_version }}
+- 当前锁定版本：{{ previous_version }}
+- 总体影响：{{ overall_impact }}
+- 受影响模块数：{{ module_impacts | length }}
 
-## 你的工作范围（严格边界）
+## 层结构
 
-1. **只允许修改**：
-   - `patches/` 目录中的 patch 文件
-   - `src/upstream/` 中的 Layer 1 代码
-   - `.clawcodex/sync-report.md` 中的进度记录
+{% for layer in layers %}
+- **{{ layer.name }} 层**
+  - 路径: {{ layer.paths | join(', ') }}
+  - 允许导入: {{ layer.allowed_imports_from | join(', ') or '无限制' }}
+  - 禁止导入: {{ layer.forbidden_imports_from | join(', ') or '无' }}
+{% endfor %}
 
-2. **绝对禁止修改**：
-   - `src/capabilities/`（Layer 2）
-   - `src/orchestrator/`、`src/providers/` 等 Layer 3 代码
-   - 测试文件（除非是为了适配契约变更）
+## 受影响模块详情
 
-3. **如果上游变更违反了 Layer 2 Protocol**：
-   - 在 `docs/protocol-changes.md` 中记录变更需求
-   - 在 PR 描述中标记 `NEEDS_PROTOCOL_REVIEW`
-   - 停止修改，等待人类审核
-
-## 工作流程
-
-1. 读取 `patches/series` 了解当前 patch 队列。
-2. 对 `upstream/vendor` 尝试 `quilt push -a` 或 `git am`。
-3. 对失败的 patch：
-   a. 读取 `.rej` 文件和冲突上下文。
-   b. 判断：是"上游重命名/重构"还是"语义变化"？
-   c. 如果是重命名：更新 patch 中的文件名和符号名。
-   d. 如果是语义变化：评估是否需要新增 Protocol 方法。
-4. 更新 patch 后，运行以下验证：
-   ```bash
-   pytest tests/test_capability_contracts.py
-   pytest tests/test_layer_isolation.py
-   python scripts/audit_layer_violations.py
-   ```
-5. 所有验证通过后，提交到分支 `sync/upstream-{date}`。
+{% for imp in module_impacts %}
+### {{ imp.module_name }}
+- 冲突概率: {{ imp.conflict_probability }}
+- 推荐策略: {{ imp.recommended_strategy }}
+- 预估工作量: {{ imp.estimated_effort_minutes }} 分钟
+- 受影响 Patch: {{ imp.patches_affected | join(', ') or '无' }}
+{% endfor %}
 
 ## 决策树
 
@@ -616,235 +1068,106 @@ patch 应用失败？
   │         ├─ 仅行号偏移/上下文偏移 → 自动刷新 patch
   │         ├─ 变量/函数重命名 → 更新 patch 中的符号名
   │         ├─ 文件移动/拆分 → 更新 patch 中的路径
-  │         └─ 语义变化（逻辑修改）→ 标记 NEEDS_REVIEW，停止
+  │         └─ 语义变化 → 标记 NEEDS_REVIEW，停止
   └─ 否 → 继续下一个 patch
 ```
 
 ## 禁止事项
 
-- 不要直接修改 `src/agent/run_agent.py` 等核心文件来"绕过"冲突。
-- 不要删除测试来让构建通过。
-- 不要修改 `src/capabilities/` 中的 Protocol 定义，除非明确授权。
-- 如果 patch 无法自动解决且涉及核心语义变更，标记为 `NEEDS_HUMAN_REVIEW` 并停止。
+- 不要直接修改核心文件绕过冲突
+- 不要删除测试让构建通过
+- 不要修改 Layer 2 Protocol 定义，除非明确授权
+- 如果 patch 涉及核心语义变更，标记 NEEDS_HUMAN_REVIEW
 
 ## 输出要求
 
-完成后，在 PR 描述中提供以下信息：
+完成后提供：
 1. 成功应用的 patches 列表
 2. 需要人工审核的 patches 列表（含原因）
 3. Layer 2 Protocol 影响评估
 4. 测试运行结果摘要
-````
+```
 
-### 5.4 渐进式自动化级别
+### 6.2 生成 Agent Prompt
 
-| 级别 | 名称 | 能力 | 触发条件 | 成熟度目标 |
-|------|------|------|---------|-----------|
-| **L0** | 纯人工 | 所有同步由人工执行，Agent 仅提供 diff 预览 | 初始阶段 / 重大版本升级 / Protocol 契约变更 | 当前阶段 |
-| **L1** | 辅助决策 | Agent 生成冲突报告 + 建议方案 + 预估工作量，人类执行具体操作 | Patch 冲突数 > 5 或涉及核心模块 | 2 周内 |
-| **L2** | 半自动 | Agent 自动解决机械冲突（重命名、路径变更、行号偏移），人类审核语义冲突 | 冲突类型可被模式匹配（>80% 确定性） | 1 个月内 |
-| **L3** | 全自动 | Agent 完成整个同步流程，仅在 `NEEDS_HUMAN_REVIEW` 时中断 | CI 全绿 + 历史同步成功率 > 90% | 3 个月内 |
+```bash
+upstream-sync agent-prompt \
+    .upstream-sync/sync-report.json \
+    --output agent-instruction.md
+```
 
-**升级条件**：
-- L0 → L1：Layer 2 Protocol 定义完成，`test_capability_contracts.py` 全绿。
-- L1 → L2：连续 3 次同步中 Agent 建议方案被人类采纳率 > 80%。
-- L2 → L3：连续 5 次同步 Agent 自动解决成功率 > 90%，无回退。
+任何 Agent（Claude Code、OpenClaw、Cursor 等）都可以消费 `agent-instruction.md`。
 
 ---
 
-## 六、立即执行的迁移步骤
+## 七、关键设计决策
 
-基于 ClawCodex 当前 `dev-decoupling` 分支状态，建议按以下顺序执行：
+| 问题 | 决策 | 理由 |
+|---|---|---|
+| Layer 2 Protocol 放在哪里 | **ClawCodex 项目内** | 业务领域概念，组件只提供审计框架 |
+| Patch 内容管理 | **组件管理机制，ClawCodex 管理内容** | Patch 内容高度业务相关 |
+| 目录结构是否写死 | **完全配置化** | 不同项目可能有不同的目录偏好 |
+| Agent 绑定 | **不绑定任何 Agent** | 输出标准化上下文，通用消费 |
+| 层数量是否固定为 3 | **任意数量层** | 有些项目可能需要 2 层或 4 层 |
+| 语言支持 | **语言无关** | 通过配置指定文件扩展名和解析器 |
+| 报告格式 | **JSON + Markdown** | 机器可读 + 人类可读双输出 |
+| Patch 引擎 | **可插拔 (quilt / git-am / custom)** | 不同团队可能有不同偏好 |
 
-### Step 1: 建立 Layer 2 Protocol（预计 1-2 天）
+---
 
-```bash
-mkdir -p src/capabilities/
+## 附录 A: 配置完整参考
 
-# 创建以下文件：
-# - src/capabilities/__init__.py
-# - src/capabilities/agent_protocol.py
-# - src/capabilities/tool_protocol.py
-# - src/capabilities/context_protocol.py
-# - src/capabilities/provider_protocol.py
-# - src/capabilities/events.py
-```
-
-**验收标准**：`src/capabilities/` 目录包含完整的 Protocol 定义，可被 `runtime_checkable` 验证。
-
-### Step 2: 提取现有"脏修改"为 Patch（预计 2-3 天）
-
-```bash
-# 1. 确定与原项目最后同步的 commit（假设为 BASE）
-BASE=$(git log --all --oneline | grep -i "initial port\|sync upstream" | head -1 | cut -d' ' -f1)
-
-# 2. 生成当前对核心模块的 diff
-git diff $BASE..HEAD -- src/agent/ src/tool_system/ src/context_system/ > /tmp/all-changes.diff
-
-# 3. 使用 scripts/split_diff_to_patches.py（待创建）按模块拆分为独立 patch
-python scripts/split_diff_to_patches.py \
-    --input /tmp/all-changes.diff \
-    --output-dir patches/
-
-# 4. 初始化 quilt
-quilt init
-quilt push -a
-```
-
-**验收标准**：`patches/` 目录包含所有对 Layer 1 的必要修改，且 `quilt push -a` 可将 `src/upstream/v2025_04/` 转换为当前 `src/agent/` 等目录的等效状态。
-
-### Step 3: 设置 Vendor Branch（预计 半天）
-
-```bash
-git checkout -b upstream/vendor
-
-# 此分支仅用于追踪原项目，禁止人工修改
-git remote add upstream https://github.com/anthropics/claude-code.git 2>/dev/null || true
-git fetch upstream
-
-# 创建版本锁定标签
-git tag upstream/v2025_04 upstream/main^{commit}
-```
-
-**验收标准**：`git log upstream/vendor --oneline` 显示原项目提交历史，`git show upstream/v2025_04` 可查看锁定版本。
-
-### Step 4: 编写契约测试（预计 1 天）
-
-```python
-# tests/test_capability_contracts.py
-# 验证 Layer 3 的调用不直接依赖 Layer 1 的具体实现
-
-import ast
-import importlib
-from pathlib import Path
-
-
-def test_orchestrator_uses_agent_protocol():
-    """验证 Orchestrator 通过 Protocol 而非具体实现依赖 Agent。"""
-    from src.orchestrator.agent_runner import AgentRunner
-    from src.capabilities.agent_protocol import AgentLoop
-
-    # AgentRunner 的构造函数应接受任何符合 AgentLoop Protocol 的对象
-    sig = inspect.signature(AgentRunner.__init__)
-    agent_param = sig.parameters.get("agent_loop")
-    assert agent_param is not None
-    assert agent_param.annotation == AgentLoop or "AgentLoop" in str(agent_param.annotation)
-
-
-def test_no_layer_3_imports_layer_1():
-    """验证 Layer 3 模块不直接导入 Layer 1 路径。"""
-    layer_3_paths = ["src/orchestrator/", "src/providers/"]
-    layer_1_patterns = ["from src.agent.", "from src.tool_system.", "from src.context_system."]
-
-    violations = []
-    for root in layer_3_paths:
-        for py_file in Path(root).rglob("*.py"):
-            source = py_file.read_text()
-            for pattern in layer_1_patterns:
-                if pattern in source:
-                    violations.append(f"{py_file}: imports {pattern}")
-
-    assert not violations, "Layer 3 must not directly import Layer 1:\n" + "\n".join(violations)
-
-
-def test_tool_protocol_compliance():
-    """验证所有内置工具符合 Tool Protocol。"""
-    from src.capabilities.tool_protocol import Tool
-    from src.tool_system.registry import ToolRegistry
-
-    registry = ToolRegistry()
-    for tool in registry.list_tools():
-        assert isinstance(tool, Tool), f"{tool.name} does not implement Tool Protocol"
-```
-
-**验收标准**：`pytest tests/test_capability_contracts.py -v` 全绿。
-
-### Step 5: 编写隔离审计脚本（预计 半天）
-
-```python
-# scripts/audit_layer_violations.py
-# 定期运行，检测是否有新的 Layer 隔离违规
-```
-
-**验收标准**：脚本可检测并报告 Layer 3 → Layer 1 的直接导入违规。
-
-### Step 6: 配置 CI 同步检测（预计 半天）
+### `upstream-sync.yaml` 完整字段说明
 
 ```yaml
-# .github/workflows/upstream-detect.yml
-name: Upstream Change Detection
+# 项目基本信息
+project_name: string              # 项目名称，用于报告和 Agent Prompt
+source_lang: string               # 源代码语言：python | typescript | rust | go | ...
 
-on:
-  schedule:
-    - cron: "0 6 * * 1"  # 每周一早上 6 点
-  workflow_dispatch:
+# 上游仓库配置
+upstream:
+  remote_url: string              # 上游仓库 Git URL
+  main_branch: string             # 上游主分支名（默认 main）
+  vendor_branch: string           # 本地 vendor 镜像分支名（默认 upstream/vendor）
+  version_tag_format: string      # 版本标签格式，支持 {YYYY} {MM} {DD}（默认 upstream/v{YYYY}_{MM}）
 
-jobs:
-  detect:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+# 层定义（隔离架构的核心）
+layers:
+  - name: string                  # 层名称
+    paths:                        # 该层包含的目录/文件路径列表
+      - Path
+    allowed_imports_from:         # 允许从此层导入的模块前缀列表（可选）
+      - string
+    forbidden_imports_from:       # 禁止从此层导入的模块前缀列表（可选，优先于 allowed）
+      - string
 
-      - name: Fetch upstream
-        run: |
-          git remote add upstream https://github.com/anthropics/claude-code.git
-          git fetch upstream main
+# Patch 队列配置
+patches:
+  directory: Path                 # Patch 文件存放目录（默认 patches）
+  engine: string                  # Patch 引擎：quilt | git-am | custom（默认 quilt）
+  custom_command: string          # 自定义引擎命令（engine=custom 时必填）
+  series_file: Path               # Patch 应用顺序文件（默认 patches/series）
+  metadata_dir: Path              # Patch 元数据目录（默认 patches/metadata）
 
-      - name: Analyze changes
-        run: |
-          python scripts/analyze_upstream_changes.py \
-            --from upstream/v2025_04 \
-            --to upstream/main \
-            --output sync-report.json
-
-      - name: Create issue if changes detected
-        if: env.HAS_CHANGES == 'true'
-        run: |
-          gh issue create \
-            --title "[UPSTREAM] New changes detected $(date +%Y-%m-%d)" \
-            --body-file sync-report.md \
-            --label "upstream-sync"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+# 同步策略配置
+sync:
+  impact_threshold_auto: string   # 自动处理阈值：low | medium | high（默认 low）
+  impact_threshold_agent: string  # Agent 辅助阈值：low | medium | high（默认 medium）
+  report_formats:                 # 报告输出格式列表（默认 [json, markdown]）
+    - string
 ```
 
-**验收标准**：CI 每周自动检测上游更新，有变化时自动创建 Issue 并附带结构化报告。
-
 ---
 
-## 七、风险与回退策略
-
-| 风险 | 可能性 | 影响 | 缓解策略 |
-|------|--------|------|---------|
-| Layer 2 Protocol 设计过早抽象，导致后续频繁修改 | 中 | 高 | Protocol 设计遵循"最小可用"原则，仅提取当前差异化功能真正需要的契约；预留版本号字段（`protocol_version`）支持演进。 |
-| Patch Queue 过大，管理成本超过收益 | 中 | 中 | 当 patch 数量 > 20 时触发"patch 合并审查"，将多个相关 patch 合并；持续推动 Layer 2 完善以减少对 Layer 1 的修改需求。 |
-| Agent 自动解决冲突引入隐性 bug | 中 | 高 | L2/L3 级别必须经过人工审核后才能合并；`test_capability_contracts.py` 和集成测试作为强制门禁；保留 `git bisect` 友好的 commit 粒度。 |
-| 上游进行架构级重构（如整个 Agent Loop 重写） | 低 | 极高 | 标记为 `ARCHITECTURE_BREAKING`，触发 L0 纯人工流程；同时评估是否需要新增 Layer 2 Protocol 版本。 |
-| 团队成员不熟悉 quilt / patch 工作流 | 高 | 低 | 提供 `scripts/patch-helper.py` 封装常用操作；在 CONTRIBUTING.md 中添加 Patch 管理指南；CI 中集成 patch 格式检查。 |
-
-**紧急回退**：如果某次同步导致主分支不稳定，可立即回退到上一个已验证的 `upstream/vYYYY_MM` 标签，重新从 Step 1 开始。
-
----
-
-## 附录 A: 术语表
+## 附录 B: 术语表
 
 | 术语 | 定义 |
 |------|------|
-| **Layer 1 (上游兼容层)** | 原项目源码的 Python 翻译/镜像，按版本子目录组织，是唯一直接跟踪上游的代码区域。 |
-| **Layer 2 (能力抽象层)** | 定义稳定的 Python Protocol / 抽象基类，将上游的"隐式契约"显式化，屏蔽上游实现细节变化。 |
-| **Layer 3 (差异化能力层)** | ClawCodex 完全自主的功能模块，直接面向用户，永不同步原项目。 |
-| **Patch Queue** | 以 `quilt` 或 `git am` 管理的 patch 文件序列，显式记录所有对 Layer 1 的必要修改。 |
-| **Vendor Branch** | 仅用于镜像原项目代码的只读分支，禁止任何人工 commit。 |
-| **契约测试** | 验证 Layer 3 是否通过 Layer 2 Protocol 间接使用 Layer 1，而非直接依赖具体实现的测试。 |
-| **Agent 友好** | 指目录结构、错误信息、上下文格式等便于 Code Agent（LLM 驱动的代码智能体）理解和操作的设计。 |
-
-## 附录 B: 参考文档
-
-| 文档 | 路径 | 说明 |
-|------|------|------|
-| 功能规划 | [FEATURE_PLAN.md](FEATURE_PLAN.md) | ClawCodex 特性规划和模块状态 |
-| 开发进度 | [PROGRESS.md](PROGRESS.md) | 开源替代组件和模块开发进度 |
-| 工作流配置 | [WORKFLOW.md](WORKFLOW.md) | Orchestrator 自主模式的 WORKFLOW.md 配置指南 |
-| 架构概览 | [ARCHITECTURE.md](ARCHITECTURE.md) | ClawCodex 整体架构文档 |
-| quilt 文档 | https://savannah.nongnu.org/projects/quilt | Patch 队列管理工具官方文档 |
-| Python Protocol | https://docs.python.org/3/library/typing.html#typing.Protocol | Python 结构化子类型官方文档 |
+| **upstream-sync** | 通用上游代码同步组件，不感知任何业务逻辑，通过配置驱动。 |
+| **机制 (Mechanism)** | 上游同步的通用能力，如 Patch 管理、层间审计、变化分析等。 |
+| **策略 (Policy)** | 项目特定的决策，如 Layer Protocol 定义、Patch 内容、目录结构等。 |
+| **Layer** | 代码分层中的一层，由配置定义路径和导入规则。不固定为 3 层。 |
+| **Vendor Branch** | 仅用于镜像上游代码的只读分支，禁止任何人工 commit。 |
+| **Patch Queue** | 以 `quilt` 或 `git am` 管理的 patch 文件序列，显式记录对 Layer 1 的修改。 |
+| **Agent Prompt 模板** | 参数化的 Jinja2 模板，用于生成标准化的 Agent 指令。 |
+| **契约测试** | 验证各层是否遵守导入规则的测试（由使用者自定义，组件提供审计能力）。 |
