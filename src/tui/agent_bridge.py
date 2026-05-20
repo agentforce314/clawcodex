@@ -1,9 +1,13 @@
-"""Bridge between the synchronous agent loop and the Textual UI.
+"""Bridge between the agent loop and the Textual UI.
 
-The agent loop (:func:`src.tool_system.agent_loop.run_agent_loop`) is
-synchronous and performs blocking HTTP calls, so it runs on a worker
-thread. This module owns that thread plus the translation layer that
-marshals events back to the Textual screen:
+The canonical agent loop (:func:`src.query.query.query`) is async and
+performs blocking HTTP calls under the hood, so this module runs it on
+a worker thread via the F.1 adapter
+(:func:`src.query.agent_loop_compat.run_query_as_agent_loop`). The
+worker thread owns its own fresh asyncio loop (NOT Textual's main
+loop, which would block UI rendering during model streams). This
+module owns that thread plus the translation layer that marshals
+events back to the Textual screen:
 
 * ``on_event(ToolEvent)``   → :class:`ToolEventMessage`.
 * ``on_text_chunk(str)``    → :class:`AssistantChunk` (live streaming).
