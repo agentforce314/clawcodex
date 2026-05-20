@@ -251,11 +251,34 @@ class TestBuildAdvisorForwardedMessages(unittest.TestCase):
 
 
 class TestExecuteClientAdvisor(unittest.TestCase):
-    """``execute_client_advisor`` integration — provider factory wiring."""
+    """``execute_client_advisor`` integration — provider factory wiring.
 
-    def test_returns_text_on_success(self) -> None:
-        fake_provider = MagicMock()
-        fake_provider.chat = MagicMock(return_value=MagicMock(content="here is advice"))
+    The advisor uses ``chat_stream_response`` (cross-provider abort_signal
+    support) with a fallback to plain ``chat`` for providers that don't
+    implement it.
+    """
+
+    def _make_anthropic_shaped_provider(self, content: str = "advice") -> MagicMock:
+        """Mock that passes the isinstance check for AnthropicProvider."""
+        from src.providers.anthropic_provider import AnthropicProvider
+        provider = MagicMock(spec=AnthropicProvider)
+        provider.chat_stream_response = MagicMock(
+            return_value=MagicMock(content=content)
+        )
+        return provider
+
+    def _make_openai_shape_provider(self, content: str = "advice") -> MagicMock:
+        """Mock that does NOT pass isinstance for AnthropicProvider —
+        the function should detect it as OpenAI-shape and prepend a
+        system-role message instead of passing system=kwarg."""
+        provider = MagicMock()  # bare MagicMock, no spec
+        provider.chat_stream_response = MagicMock(
+            return_value=MagicMock(content=content)
+        )
+        return provider
+
+    def test_returns_text_on_success_anthropic(self) -> None:
+        fake_provider = self._make_anthropic_shaped_provider("here is advice")
         with patch(
             "src.providers.get_provider_class", return_value=lambda **kw: fake_provider
         ):
@@ -267,12 +290,35 @@ class TestExecuteClientAdvisor(unittest.TestCase):
                 )
         self.assertTrue(ok)
         self.assertEqual(text, "here is advice")
-        # The provider got the advisor's system prompt and an empty
-        # tools list.
-        kw = fake_provider.chat.call_args.kwargs
-        self.assertEqual(kw.get("tools"), [])
-        self.assertIn("system", kw)
-        self.assertIn("reviewer", kw["system"].lower())
+        # Anthropic-shaped → system goes as kwarg, NOT prepended to messages.
+        call = fake_provider.chat_stream_response.call_args
+        self.assertEqual(call.kwargs.get("tools"), [])
+        self.assertIn("system", call.kwargs)
+        self.assertIn("reviewer", call.kwargs["system"].lower())
+        # Messages array unchanged (no system message prepended).
+        forwarded_messages = call.args[0]
+        self.assertEqual(forwarded_messages[0].get("role"), "user")
+
+    def test_openai_shape_gets_system_as_first_message(self) -> None:
+        fake_provider = self._make_openai_shape_provider("advice from openai")
+        with patch(
+            "src.providers.get_provider_class", return_value=lambda **kw: fake_provider
+        ):
+            with patch(
+                "src.config.get_provider_config", return_value={"api_key": "test"}
+            ):
+                ok, text = execute_client_advisor(
+                    "gpt-5.4", [{"role": "user", "content": "hi"}]
+                )
+        self.assertTrue(ok)
+        self.assertEqual(text, "advice from openai")
+        # OpenAI-shape → system prepended as first message, NO system kwarg.
+        call = fake_provider.chat_stream_response.call_args
+        self.assertNotIn("system", call.kwargs)
+        forwarded_messages = call.args[0]
+        self.assertEqual(forwarded_messages[0]["role"], "system")
+        self.assertIn("reviewer", forwarded_messages[0]["content"].lower())
+        self.assertEqual(forwarded_messages[1]["role"], "user")
 
     def test_returns_error_when_model_unroutable(self) -> None:
         ok, text = execute_client_advisor(
@@ -282,8 +328,10 @@ class TestExecuteClientAdvisor(unittest.TestCase):
         self.assertIn("cannot route", text.lower())
 
     def test_returns_error_when_provider_raises(self) -> None:
-        fake_provider = MagicMock()
-        fake_provider.chat = MagicMock(side_effect=RuntimeError("network down"))
+        fake_provider = self._make_anthropic_shaped_provider()
+        fake_provider.chat_stream_response = MagicMock(
+            side_effect=RuntimeError("network down")
+        )
         with patch(
             "src.providers.get_provider_class", return_value=lambda **kw: fake_provider
         ):
@@ -297,8 +345,7 @@ class TestExecuteClientAdvisor(unittest.TestCase):
         self.assertIn("network down", text)
 
     def test_returns_error_when_response_empty(self) -> None:
-        fake_provider = MagicMock()
-        fake_provider.chat = MagicMock(return_value=MagicMock(content=""))
+        fake_provider = self._make_anthropic_shaped_provider("")
         with patch(
             "src.providers.get_provider_class", return_value=lambda **kw: fake_provider
         ):
@@ -310,6 +357,105 @@ class TestExecuteClientAdvisor(unittest.TestCase):
                 )
         self.assertFalse(ok)
         self.assertIn("no text", text.lower())
+
+    def test_routes_through_main_provider_when_proxy(self) -> None:
+        # User's main provider is OpenAI pointed at litellm (custom
+        # base_url). The advisor model is claude-opus-4-7 which would
+        # normally infer to Anthropic — but the proxy assumption says
+        # "use the same proxy for both". We expect the advisor to be
+        # built via OpenAIProvider, NOT AnthropicProvider.
+        from src.providers.openai_provider import OpenAIProvider
+        # Make the main provider look like an OpenAI proxy: base_url
+        # set to something other than the default openai endpoint.
+        main_provider = MagicMock(spec=OpenAIProvider)
+        main_provider.base_url = "https://litellm.singula.ai"
+        main_provider.__class__ = OpenAIProvider
+
+        # Spy on the constructor — the advisor provider should be
+        # built from OpenAIProvider, not from infer_provider_for_model's
+        # anthropic result.
+        constructed = {}
+
+        def _fake_openai_init(**kwargs: Any) -> Any:
+            constructed["cls"] = "OpenAIProvider"
+            constructed["kwargs"] = kwargs
+            inst = MagicMock(spec=OpenAIProvider)
+            inst.chat_stream_response = MagicMock(
+                return_value=MagicMock(content="proxied advice")
+            )
+            return inst
+
+        with patch(
+            "src.config.get_provider_config",
+            return_value={"api_key": "k", "base_url": "https://litellm.singula.ai"},
+        ):
+            with patch.object(OpenAIProvider, "__new__", lambda cls, **kw: _fake_openai_init(**kw)):
+                ok, text = execute_client_advisor(
+                    "claude-opus-4-7",
+                    [{"role": "user", "content": "hi"}],
+                    main_provider=main_provider,
+                )
+        self.assertTrue(ok)
+        self.assertEqual(text, "proxied advice")
+        self.assertEqual(constructed["cls"], "OpenAIProvider")
+        # Model swapped to the advisor's choice, base_url preserved
+        # (came from get_provider_config).
+        self.assertEqual(constructed["kwargs"]["model"], "claude-opus-4-7")
+        self.assertEqual(
+            constructed["kwargs"]["base_url"], "https://litellm.singula.ai"
+        )
+
+    def test_uses_inferred_provider_when_main_is_not_proxy(self) -> None:
+        # 1P Anthropic main loop (default base_url). Advisor model is
+        # gemini-2.5-pro → should route via inference to Gemini, NOT
+        # reuse the Anthropic main provider.
+        from src.providers.anthropic_provider import AnthropicProvider
+        main_provider = MagicMock(spec=AnthropicProvider)
+        main_provider.base_url = "https://api.anthropic.com"  # default
+
+        fake_gemini = MagicMock()
+        fake_gemini.chat_stream_response = MagicMock(
+            return_value=MagicMock(content="gemini says hi")
+        )
+        with patch(
+            "src.providers.get_provider_class",
+            return_value=lambda **kw: fake_gemini,
+        ):
+            with patch(
+                "src.config.get_provider_config", return_value={"api_key": "k"}
+            ):
+                ok, text = execute_client_advisor(
+                    "gemini-2.5-pro",
+                    [{"role": "user", "content": "hi"}],
+                    main_provider=main_provider,
+                )
+        self.assertTrue(ok)
+        self.assertEqual(text, "gemini says hi")
+
+    def test_falls_back_to_chat_when_stream_unimplemented(self) -> None:
+        # Older / stub providers may not implement chat_stream_response.
+        # The function should fall back to plain chat() gracefully.
+        from src.providers.anthropic_provider import AnthropicProvider
+        fake_provider = MagicMock(spec=AnthropicProvider)
+        fake_provider.chat_stream_response = MagicMock(
+            side_effect=NotImplementedError("no streaming"),
+        )
+        fake_provider.chat = MagicMock(return_value=MagicMock(content="fallback worked"))
+        with patch(
+            "src.providers.get_provider_class", return_value=lambda **kw: fake_provider
+        ):
+            with patch(
+                "src.config.get_provider_config", return_value={"api_key": "test"}
+            ):
+                ok, text = execute_client_advisor(
+                    "claude-opus-4-6", [{"role": "user", "content": "hi"}]
+                )
+        self.assertTrue(ok)
+        self.assertEqual(text, "fallback worked")
+        # The fallback path did NOT pass abort_signal (sync chat doesn't
+        # consistently accept it across providers).
+        fallback_call = fake_provider.chat.call_args
+        self.assertNotIn("abort_signal", fallback_call.kwargs)
 
 
 class TestAdvisorTool(unittest.TestCase):

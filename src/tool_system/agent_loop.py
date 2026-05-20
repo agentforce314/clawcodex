@@ -307,8 +307,15 @@ def run_agent_loop(
     Returns:
         AgentLoopResult with final text response, usage info, and turn count
     """
+    # Filter by is_enabled() so internal/hidden tools (e.g. the
+    # client-side AdvisorTool, which is registered but
+    # ``is_enabled=False`` to keep it out of the default schema) don't
+    # leak into the tools[] sent to the API. The advisor schema is
+    # appended per-turn below when advisor activation fires.
     tool_schemas = []
     for tool in tool_registry.list_tools():
+        if not tool.is_enabled():
+            continue
         tool_schemas.append({
             "name": tool.name,
             "description": tool.prompt(),
@@ -347,12 +354,77 @@ def run_agent_loop(
             # Use OpenAI formatted messages for non-Anthropic
             api_messages = openai_messages
 
-        call_kwargs: dict[str, Any] = {"tools": tool_schemas}
+        # Advisor activation — same decision tree as query.py's
+        # ``_call_model_sync``. We recompute per turn so that mid-session
+        # ``/advisor`` toggles take effect on the very next turn. The
+        # main path (REPL/TUI/headless) all routes through this function;
+        # without this block, the advisor would never actually fire in
+        # those paths even though the schema + instructions are correctly
+        # built. See src/utils/advisor.py:decide_advisor_mode.
+        from src.utils.advisor import (
+            ADVISOR_BETA_HEADER,
+            ADVISOR_MODE_CLIENT_SIDE,
+            ADVISOR_MODE_INACTIVE,
+            ADVISOR_MODE_SERVER_SIDE,
+            ADVISOR_TOOL_INSTRUCTIONS,
+            build_advisor_tool_schema,
+            build_client_advisor_tool_schema,
+            decide_advisor_mode,
+        )
+        advisor_mode = ADVISOR_MODE_INACTIVE
+        advisor_model_canonical: str | None = None
+        try:
+            from src.models.model import canonical_model_name
+            from src.settings.settings import get_settings
+            settings = get_settings()
+            configured = (getattr(settings, "advisor_model", "") or "").strip()
+            force_client = bool(getattr(settings, "advisor_client_mode", False))
+            main_loop_model = getattr(provider, "model", "") or ""
+            if configured:
+                candidate = canonical_model_name(configured)
+                advisor_mode = decide_advisor_mode(
+                    provider,
+                    main_loop_model,
+                    candidate,
+                    force_client_mode=force_client,
+                )
+                if advisor_mode != ADVISOR_MODE_INACTIVE:
+                    advisor_model_canonical = candidate
+        except Exception:
+            advisor_mode = ADVISOR_MODE_INACTIVE
+            advisor_model_canonical = None
+
+        # Build a per-turn tool list (base + maybe advisor at the END
+        # so the cache_control marker on the last base tool stays in
+        # place — same discipline as _call_model_sync).
+        turn_tool_schemas = list(tool_schemas)
+        if advisor_mode == ADVISOR_MODE_SERVER_SIDE and advisor_model_canonical:
+            turn_tool_schemas.append(build_advisor_tool_schema(advisor_model_canonical))
+        elif advisor_mode == ADVISOR_MODE_CLIENT_SIDE:
+            turn_tool_schemas.append(build_client_advisor_tool_schema())
+
+        # Per-turn system prompt — append ADVISOR_TOOL_INSTRUCTIONS at
+        # the end (cache-friendly position) for both server and client
+        # modes; both rely on the same instruction text.
+        turn_system_prompt = effective_system_prompt
+        if advisor_mode != ADVISOR_MODE_INACTIVE:
+            if turn_system_prompt:
+                turn_system_prompt = f"{turn_system_prompt}\n\n{ADVISOR_TOOL_INSTRUCTIONS}"
+            else:
+                turn_system_prompt = ADVISOR_TOOL_INSTRUCTIONS
+
+        call_kwargs: dict[str, Any] = {"tools": turn_tool_schemas}
         if _is_anthropic_provider(provider):
-            call_kwargs["system"] = effective_system_prompt
+            call_kwargs["system"] = turn_system_prompt
         else:
             if turn == 0:
-                api_messages = [{"role": "system", "content": effective_system_prompt}, *api_messages]
+                api_messages = [{"role": "system", "content": turn_system_prompt}, *api_messages]
+        if advisor_mode == ADVISOR_MODE_SERVER_SIDE:
+            # Anthropic beta header. SDK auto-converts ``betas`` into the
+            # ``anthropic-beta`` header. Server-side advisor only fires
+            # on 1P Anthropic providers; agent_loop's anthropic path
+            # accepts arbitrary kwargs forwarded to the SDK.
+            call_kwargs["betas"] = [ADVISOR_BETA_HEADER]
         response, streamed_live_text = _call_provider_for_turn(
             provider=provider,
             api_messages=api_messages,
@@ -429,6 +501,15 @@ def run_agent_loop(
                 usage=total_usage if total_usage["input_tokens"] > 0 or total_usage["output_tokens"] > 0 else None,
                 num_turns=turn_count,
             )
+
+        # Snapshot active conversation + provider onto the ToolContext
+        # so tools that need them (currently: the client-side advisor)
+        # can read them. ``messages`` is the live conversation up to
+        # and including the assistant message that just emitted these
+        # tool_use blocks. ``_active_provider`` lets the advisor reuse
+        # the main provider's class/config when it's a proxy.
+        tool_context.messages = list(conversation.messages)
+        setattr(tool_context, "_active_provider", provider)
 
         # Call each tool
         for tool_use in tool_uses:
