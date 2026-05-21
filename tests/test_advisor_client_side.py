@@ -262,6 +262,54 @@ class TestBuildAdvisorForwardedMessages(unittest.TestCase):
         for m in out:
             self.assertNotIn("[Tool call: advisor", m["content"])
 
+    def test_format_advisor_status_compact_label(self) -> None:
+        """``format_advisor_status`` returns a single short segment with
+        the canonical model (claude- prefix stripped) + the mode label.
+        Used by both the legacy REPL bottom_toolbar and the TUI
+        StatusLine widget."""
+        from src.utils.advisor import format_advisor_status
+        from unittest.mock import patch
+        # Mock settings to return a configured advisor model.
+        with patch("src.utils.advisor._env_truthy", return_value=False), \
+             patch("src.settings.settings.get_settings") as get_s, \
+             patch("src.models.model.canonical_model_name", side_effect=lambda x: x):
+            fake = type("S", (), {"advisor_model": "claude-opus-4-7", "advisor_client_mode": False})()
+            get_s.return_value = fake
+            out = format_advisor_status(None, "claude-haiku-4-5")
+        self.assertIsNotNone(out)
+        # claude- prefix stripped for brevity
+        self.assertIn("opus-4-7", out)
+        self.assertNotIn("claude-opus", out)
+        # Mode label is one of the three known values
+        self.assertTrue(
+            "(server)" in out or "(client)" in out or "(inactive)" in out,
+            f"unexpected mode label in: {out!r}",
+        )
+
+    def test_format_advisor_status_returns_none_when_unset(self) -> None:
+        from src.utils.advisor import format_advisor_status
+        from unittest.mock import patch
+        with patch("src.utils.advisor._env_truthy", return_value=False), \
+             patch("src.settings.settings.get_settings") as get_s:
+            fake = type("S", (), {"advisor_model": "", "advisor_client_mode": False})()
+            get_s.return_value = fake
+            out = format_advisor_status(None, "claude-haiku-4-5")
+        self.assertIsNone(out)
+
+    def test_format_advisor_status_returns_none_when_env_disabled(self) -> None:
+        from src.utils.advisor import format_advisor_status
+        from unittest.mock import patch
+        import os
+        with patch.dict(os.environ, {"CLAUDE_CODE_DISABLE_ADVISOR_TOOL": "1"}, clear=False), \
+             patch("src.settings.settings.get_settings") as get_s, \
+             patch("src.models.model.canonical_model_name", side_effect=lambda x: x):
+            fake = type("S", (), {"advisor_model": "claude-opus-4-7", "advisor_client_mode": False})()
+            get_s.return_value = fake
+            out = format_advisor_status(None, "claude-haiku-4-5")
+        # Even with model set, env-disable → mode is INACTIVE → label shows
+        self.assertIsNotNone(out)
+        self.assertIn("(inactive)", out)
+
     def test_strips_orphan_pairing_cruft_user_message(self) -> None:
         """The orphan-pairing pass injects a synthetic
         ``[Tool result missing due to internal error]`` user message

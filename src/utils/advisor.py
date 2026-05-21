@@ -428,6 +428,66 @@ def decide_advisor_mode(
     return ADVISOR_MODE_CLIENT_SIDE if advisor_routes else ADVISOR_MODE_INACTIVE
 
 
+# Human-readable mode labels for status displays.
+_ADVISOR_MODE_LABELS: dict[str, str] = {
+    ADVISOR_MODE_SERVER_SIDE: "server",
+    ADVISOR_MODE_CLIENT_SIDE: "client",
+    ADVISOR_MODE_INACTIVE: "inactive",
+}
+
+
+def format_advisor_status(
+    provider: "BaseProvider | None",
+    main_loop_model: str | None,
+) -> str | None:
+    """Render a compact one-segment status string for the bottom toolbar.
+
+    Returns e.g. ``"advisor: opus-4-7 (client)"`` when an advisor is
+    configured, or ``None`` when it isn't (caller omits the segment
+    entirely). The mode label comes from :func:`decide_advisor_mode`
+    so the display reflects what the next request will actually do —
+    a stale configuration under an unsupported main loop shows
+    ``"(inactive)"`` rather than silently lying about the state.
+
+    Shared between :mod:`src.repl.core` (prompt-toolkit bottom_toolbar)
+    and :mod:`src.tui.widgets.status_line` (Textual widget) so both
+    surfaces format the advisor identically.
+
+    Any unexpected failure (settings cache contention, future provider
+    that throws on inspection) returns ``None`` — the status row must
+    never be the thing that breaks the input prompt.
+    """
+    try:
+        from src.settings.settings import get_settings
+        from src.models.model import canonical_model_name
+    except Exception:
+        return None
+    try:
+        settings = get_settings()
+        advisor_model = (getattr(settings, "advisor_model", "") or "").strip()
+        if not advisor_model:
+            return None
+        canonical = canonical_model_name(advisor_model)
+        force_client = bool(getattr(settings, "advisor_client_mode", False))
+        mode = decide_advisor_mode(
+            provider,
+            main_loop_model,
+            canonical,
+            force_client_mode=force_client,
+        )
+    except Exception:
+        return None
+    label = _ADVISOR_MODE_LABELS.get(mode, mode)
+    # Strip the ``claude-`` family prefix for compactness; everyone
+    # reading the toolbar already knows what brand is in play. Other
+    # provider prefixes (``gemini-``, ``zai/``, etc.) keep their full
+    # name because the brand IS the disambiguator there.
+    display = canonical
+    if display.lower().startswith("claude-"):
+        display = display[len("claude-") :]
+    return f"advisor: {display} ({label})"
+
+
 CLIENT_ADVISOR_PROMPT_SUFFIX = (
     "Now produce advice in the format your system prompt specified "
     "(Gaps / Risks / Do next). DO NOT restate or paraphrase the plan "
@@ -770,6 +830,7 @@ __all__ = [
     "execute_client_advisor",
     "extract_advisor_error_code",
     "extract_advisor_result_text",
+    "format_advisor_status",
     "infer_provider_for_model",
     "is_advisor_block",
     "is_advisor_enabled",

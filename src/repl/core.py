@@ -677,8 +677,16 @@ class ClawcodexREPL:
             model = getattr(self.provider, "model", "") or "?"
             cwd_full = str(self.tool_context.cwd or self.tool_context.workspace_root)
             cwd = self._shorten_path_text(cwd_full) or cwd_full
+            # Optional advisor segment — appears between cwd and turns
+            # when ``/advisor`` is set. Mode label (server/client/inactive)
+            # reflects what the NEXT request will do given the current
+            # provider + main model, so a stale config under an
+            # unsupported provider shows "(inactive)" rather than lying.
+            from src.utils.advisor import format_advisor_status
+            advisor_seg = format_advisor_status(self.provider, model)
+            advisor_part = f" {advisor_seg} ·" if advisor_seg else ""
             return (
-                f" {provider} · {model} · {cwd} · "
+                f" {provider} · {model} · {cwd} ·{advisor_part} "
                 f"turns: {self._stats_turns} · "
                 f"tokens: {self._stats_input_tokens} in / "
                 f"{self._stats_output_tokens} out "
