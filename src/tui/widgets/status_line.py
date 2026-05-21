@@ -165,7 +165,9 @@ class StatusLine(Static):
         if self.queued:
             right_bits.append(f"queued {self.queued}")
         if state and state.usage:
-            total = state.usage.get("input_tokens", 0) + state.usage.get("output_tokens", 0)
+            in_t = state.usage.get("input_tokens", 0)
+            out_t = state.usage.get("output_tokens", 0)
+            total = in_t + out_t
             if total:
                 right_bits.append(f"tokens {total}")
             # Advisor token segment — appears next to worker tokens
@@ -180,6 +182,32 @@ class StatusLine(Static):
             adv_out = state.usage.get("advisor_output_tokens", 0)
             if adv_in or adv_out:
                 right_bits.append(f"advisor {adv_in}/{adv_out}")
+            # USD cost segment — uses the shared compute_session_cost
+            # helper so REPL and TUI render identical numbers for the
+            # same usage. Directional estimate based on upstream model
+            # prices; proxies (litellm/openrouter/bedrock) may bill
+            # differently. Hidden when zero.
+            try:
+                from src.services.pricing import (
+                    compute_session_cost,
+                    format_cost_usd,
+                )
+                from src.settings.settings import get_settings
+                _adv_model = (
+                    getattr(get_settings(), "advisor_model", "") or ""
+                ).strip()
+                _, _, total_cost = compute_session_cost(
+                    worker_model=self._model,
+                    worker_input_tokens=in_t,
+                    worker_output_tokens=out_t,
+                    advisor_model=_adv_model,
+                    advisor_input_tokens=adv_in,
+                    advisor_output_tokens=adv_out,
+                )
+                if total_cost > 0:
+                    right_bits.append(f"cost {format_cost_usd(total_cost)}")
+            except Exception:
+                pass
         right = " · ".join(right_bits)
         return Text(f"{left}    {middle}    {cwd}    {right}")
 

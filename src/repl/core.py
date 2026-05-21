@@ -697,12 +697,43 @@ class ClawcodexREPL:
                 f" (advisor: {adv_in} in / {adv_out} out)"
                 if (adv_in or adv_out) else ""
             )
+            # USD cost — directional estimate based on the upstream
+            # model's published per-token price. Proxies (litellm,
+            # openrouter, bedrock) may charge different rates; the
+            # displayed number is the upstream-list cost, not the
+            # exact invoice. Hidden when zero (no API turns yet this
+            # session).
+            from src.services.pricing import (
+                compute_session_cost,
+                format_cost_usd,
+            )
+            try:
+                from src.settings.settings import get_settings as _gs
+                _settings = _gs()
+                _advisor_model = (getattr(_settings, "advisor_model", "") or "").strip()
+            except Exception:
+                _advisor_model = ""
+            worker_cost, advisor_cost, total_cost = compute_session_cost(
+                worker_model=model,
+                worker_input_tokens=self._stats_input_tokens,
+                worker_output_tokens=self._stats_output_tokens,
+                advisor_model=_advisor_model,
+                advisor_input_tokens=adv_in,
+                advisor_output_tokens=adv_out,
+            )
+            # Space-separated label (matches TUI's "cost N" pattern;
+            # avoids the REPL/TUI label-style split critic flagged).
+            cost_part = (
+                f" · cost {format_cost_usd(total_cost)}"
+                if total_cost > 0 else ""
+            )
             return (
                 f" {provider} · {model} · {cwd} ·{advisor_part} "
                 f"turns: {self._stats_turns} · "
                 f"tokens: {self._stats_input_tokens} in / "
                 f"{self._stats_output_tokens} out"
-                f"{advisor_tokens} "
+                f"{advisor_tokens}"
+                f"{cost_part} "
             )
         except Exception:
             # Never let the toolbar break the input prompt.
