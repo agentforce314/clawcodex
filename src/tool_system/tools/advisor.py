@@ -38,14 +38,19 @@ def _advisor_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResul
 
     settings = get_settings()
     advisor_model = (getattr(settings, "advisor_model", "") or "").strip()
-    if not advisor_model:
-        # Defensive: the schema should never be exposed when advisor_model
-        # is empty, so reaching this branch means activation drifted from
-        # configuration. Surface as a tool failure (not a turn-killer) so
-        # the worker keeps moving.
+    advisor_provider = (getattr(settings, "advisor_provider", "") or "").strip()
+    if not advisor_model or not advisor_provider:
+        # Defensive: the schema should never be exposed when either
+        # half is empty, so reaching this branch means activation
+        # drifted from configuration. Surface as a tool failure (not
+        # a turn-killer) so the worker keeps moving.
         return ToolResult(
             name="advisor",
-            output="Advisor unavailable: no advisor_model configured.",
+            output=(
+                "Advisor unavailable: requires both advisor_provider "
+                "and advisor_model. Run /advisor <provider>:<model> "
+                "to configure."
+            ),
             is_error=True,
         )
 
@@ -55,17 +60,15 @@ def _advisor_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResul
     abort = getattr(context, "abort_controller", None)
     abort_signal = getattr(abort, "signal", None) if abort is not None else None
 
-    # ``_active_provider`` is set by ``_call_model_sync`` before the
-    # tool round (dynamic attr, not a dataclass field). Letting
-    # ``execute_client_advisor`` see it enables the "reuse main
-    # provider when it's a proxy" routing — without it, an advisor
-    # running on a litellm-backed openai-compat session would bypass
-    # the proxy and hit api.anthropic.com directly.
+    # ``main_provider`` is no longer consulted for routing — the
+    # provider is now explicit via ``advisor_provider``. Kept here for
+    # the signature only.
     main_provider = getattr(context, "_active_provider", None)
 
     ok, text, usage = execute_client_advisor(
         advisor_model,
         forwarded,
+        advisor_provider=advisor_provider,
         abort_signal=abort_signal,
         main_provider=main_provider,
     )

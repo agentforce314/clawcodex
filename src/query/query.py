@@ -334,6 +334,7 @@ async def _call_model_sync(
         from ..settings.settings import get_settings
         settings = get_settings()
         configured = (getattr(settings, "advisor_model", "") or "").strip()
+        configured_provider = (getattr(settings, "advisor_provider", "") or "").strip()
         force_client = bool(getattr(settings, "advisor_client_mode", False))
         if configured:
             from ..models.model import canonical_model_name
@@ -343,6 +344,7 @@ async def _call_model_sync(
                 main_loop_model,
                 candidate,
                 force_client_mode=force_client,
+                advisor_provider=configured_provider,
             )
             if advisor_mode != ADVISOR_MODE_INACTIVE:
                 advisor_model_normalized = candidate

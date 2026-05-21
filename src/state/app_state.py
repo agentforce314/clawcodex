@@ -97,6 +97,12 @@ class AppState:
     # the settings cache so the next API call picks up the new value.
     advisor_model: str | None = None
 
+    # Provider key (matches ``~/.clawcodex/config.json``'s providers map)
+    # for the advisor model. REQUIRED when advisor_model is set —
+    # see ``src/settings/types.py:advisor_provider`` for the rationale.
+    # Persisted via ``_on_advisor_provider_change`` alongside advisor_model.
+    advisor_provider: str | None = None
+
     # Force client-side advisor mode. False = auto (server-side when
     # possible, client-side otherwise). True = always client-side even
     # on 1P Anthropic (lets users pair a non-Anthropic advisor with an
@@ -275,6 +281,40 @@ def _on_advisor_model_change(old: AppState, new: AppState) -> None:
         )
 
 
+def _on_advisor_provider_change(old: AppState, new: AppState) -> None:
+    """Persist advisor_provider to user settings + invalidate the read cache.
+
+    Same persistence pattern as :func:`_on_advisor_model_change`. Written
+    alongside advisor_model by the /advisor command (both fields are part
+    of the ``<provider>:<model>`` argument and move together). Surfaces
+    as ``settings.advisor_provider`` for the read channel; see
+    ``src/utils/advisor.py`` for the consumer side.
+    """
+    if old.advisor_provider == new.advisor_provider:
+        return
+    from src import config as cfg_mod
+    from src.settings.settings import invalidate_settings_cache
+    try:
+        mgr = cfg_mod._get_default_manager()
+        cfg = mgr.load_global()
+        settings_section = cfg.get("settings")
+        if not isinstance(settings_section, dict):
+            settings_section = {}
+        settings_section["advisor_provider"] = new.advisor_provider or ""
+        cfg["settings"] = settings_section
+        mgr.save_global(cfg)
+        invalidate_settings_cache()
+        logger.debug(
+            "AppState.advisor_provider %s -> %s — persisted + cache invalidated",
+            old.advisor_provider,
+            new.advisor_provider,
+        )
+    except Exception:
+        logger.exception(
+            "Failed to persist advisor_provider to settings; in-memory value still active"
+        )
+
+
 def _on_advisor_client_mode_change(old: AppState, new: AppState) -> None:
     """Persist advisor_client_mode to user settings + invalidate the read cache.
 
@@ -319,6 +359,7 @@ _FIELD_HANDLERS: dict[str, Callable[[AppState, AppState], None]] = {
     "permission_mode": _on_permission_mode_change,
     "initial_message": _on_initial_message_change,
     "advisor_model": _on_advisor_model_change,
+    "advisor_provider": _on_advisor_provider_change,
     "advisor_client_mode": _on_advisor_client_mode_change,
 }
 

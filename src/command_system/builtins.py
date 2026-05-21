@@ -489,6 +489,65 @@ def _write_advisor_model(context: CommandContext, value: str | None) -> None:
     invalidate_settings_cache()
 
 
+def _read_current_advisor_provider(context: CommandContext) -> str:
+    """Resolve the current advisor_provider (store preferred, settings
+    fallback). Empty string = unset.
+    Mirrors ``_read_current_advisor_model``."""
+    store = getattr(context, "app_state_store", None)
+    if store is not None:
+        try:
+            v = getattr(store.get_state(), "advisor_provider", None)
+            return (v or "").strip()
+        except Exception:
+            pass
+    try:
+        from ..settings.settings import get_settings
+        return (getattr(get_settings(), "advisor_provider", "") or "").strip()
+    except Exception:
+        return ""
+
+
+def _write_advisor_provider(context: CommandContext, value: str | None) -> None:
+    """Persist advisor_provider (store preferred, settings fallback).
+    Mirrors ``_write_advisor_model`` — same dual-path persistence.
+    Empty / None clears the field."""
+    normalized = (value or "").strip()
+    store = getattr(context, "app_state_store", None)
+    if store is not None:
+        from ..state.app_state import replace_state
+        store.set_state(
+            lambda s: replace_state(s, advisor_provider=(normalized or None))
+        )
+        return
+    from .. import config as cfg_mod
+    from ..settings.settings import invalidate_settings_cache
+    mgr = cfg_mod._get_default_manager()
+    cfg = mgr.load_global()
+    settings_section = cfg.get("settings")
+    if not isinstance(settings_section, dict):
+        settings_section = {}
+    settings_section["advisor_provider"] = normalized
+    cfg["settings"] = settings_section
+    mgr.save_global(cfg)
+    invalidate_settings_cache()
+
+
+def _list_configured_providers() -> list[str]:
+    """Return the set of provider keys configured in
+    ``~/.clawcodex/config.json``. Used by /advisor to validate that the
+    user-supplied provider prefix refers to a real entry."""
+    try:
+        from .. import config as cfg_mod
+        mgr = cfg_mod._get_default_manager()
+        cfg = mgr.load_global()
+        providers = cfg.get("providers")
+        if isinstance(providers, dict):
+            return sorted(providers.keys())
+    except Exception:
+        pass
+    return []
+
+
 def _read_current_advisor_client_mode(context: CommandContext) -> bool:
     """Resolve the user's current advisor_client_mode flag (reactive
     store preferred, settings fallback). Mirrors
@@ -530,24 +589,30 @@ def _write_advisor_client_mode(context: CommandContext, value: bool) -> None:
 def advisor_command_call(args: str, context: CommandContext) -> LocalCommandResult:
     """Handle /advisor — configure the reviewer model.
 
-    Branches (after parsing optional ``--client`` / ``--no-client`` flags):
-      * no args, no flags → status report (model + active mode).
-      * ``unset`` | ``off`` → clear advisor_model AND advisor_client_mode.
-      * ``--no-client`` (alone) → keep model, clear client-mode flag.
-      * ``<model>`` → resolve + validate the model has a known provider,
-        then persist. ``--client`` flag (if present) also persists
-        advisor_client_mode=True; absent flag preserves the existing
-        client_mode value (so ``--client`` is sticky).
+    Required argument shape: ``<provider>:<model>`` — both halves
+    explicit, separated by the first colon (so model strings
+    containing ``/`` or further ``:`` are preserved verbatim).
+    Provider must match a key in ``~/.clawcodex/config.json``'s
+    ``providers`` map; clawcodex is multi-provider and the same
+    model name (e.g. ``claude-opus-4-7``) can sit behind anthropic,
+    openai (litellm), openrouter, bedrock, etc. Name-based inference
+    was ambiguous and silently routed to the wrong endpoint.
 
-    The activation mode (server-side vs client-side) is decided at
-    request time by ``decide_advisor_mode`` based on the provider and
-    the stored ``(advisor_model, advisor_client_mode)`` pair. This
-    command writes both fields; it doesn't pick the mode.
+    Branches (after parsing optional ``--client`` / ``--no-client``):
+      * no args, no flags → status report (provider/model + mode).
+      * ``unset`` | ``off`` → clear advisor_model, advisor_provider,
+        and advisor_client_mode.
+      * ``--no-client`` alone → keep model+provider, clear client-mode.
+      * ``--client`` alone → keep model+provider, set client-mode.
+      * ``<provider>:<model>`` → validate provider exists in config,
+        persist both fields together. ``--client`` flag (if present)
+        also persists advisor_client_mode.
 
-    Writes go to the reactive AppState store when wired, falling back
-    to the global settings file. Either path produces the same end
-    state — settings.advisor_model and settings.advisor_client_mode
-    are the canonical sources.
+    Examples:
+      * ``/advisor anthropic:claude-opus-4-7``  (direct Anthropic API)
+      * ``/advisor openai:claude-opus-4-7``     (litellm/proxy via openai provider)
+      * ``/advisor openrouter:anthropic/claude-opus-4.1``
+      * ``/advisor gemini:gemini-2.5-pro``
     """
     from ..models.model import canonical_model_name, resolve_model
     from ..models.validation import validate_model_name
@@ -557,7 +622,6 @@ def advisor_command_call(args: str, context: CommandContext) -> LocalCommandResu
         ADVISOR_MODE_SERVER_SIDE,
         can_user_configure_advisor,
         decide_advisor_mode,
-        infer_provider_for_model,
     )
 
     provider = getattr(context, "provider", None)
@@ -590,6 +654,7 @@ def advisor_command_call(args: str, context: CommandContext) -> LocalCommandResu
     arg_lower = arg.lower()
 
     current_advisor = _read_current_advisor_model(context)
+    current_provider = _read_current_advisor_provider(context)
     current_client_mode = _read_current_advisor_client_mode(context)
 
     main_loop_model = ""
@@ -605,17 +670,51 @@ def advisor_command_call(args: str, context: CommandContext) -> LocalCommandResu
 
     def _render_status() -> str:
         """Format the current state for the no-args branch."""
-        if not current_advisor:
+        if not current_advisor or not current_provider:
+            # Either field missing → effectively unset. Show what's
+            # there (if anything) so users can fix a partial config.
+            partial = ""
+            if current_advisor and not current_provider:
+                partial = (
+                    f"\n(Found advisor_model={current_advisor!r} but no "
+                    "advisor_provider — clear with /advisor unset then "
+                    "re-run with the explicit syntax.)"
+                )
+            elif current_provider and not current_advisor:
+                partial = (
+                    f"\n(Found advisor_provider={current_provider!r} but "
+                    "no advisor_model — clear with /advisor unset.)"
+                )
+            # Critic C1: surface advisor_client_mode even on partial
+            # configs so the user sees stored state that would silently
+            # activate as soon as both fields land.
+            if current_client_mode:
+                partial += (
+                    "\n(advisor_client_mode is ON but won't engage "
+                    "until both advisor_model and advisor_provider "
+                    "are set.)"
+                )
+            providers = _list_configured_providers()
+            providers_hint = (
+                f"Configured providers: {', '.join(providers)}.\n"
+                if providers else ""
+            )
             return (
                 "Advisor: not set\n"
-                'Use "/advisor <model>" to enable (e.g. "/advisor opus", '
-                '"/advisor gemini-2.5-pro").'
+                f"{providers_hint}"
+                "Use \"/advisor <provider>:<model>\" to enable, e.g.:\n"
+                '  /advisor anthropic:claude-opus-4-7   (direct Anthropic)\n'
+                '  /advisor openai:claude-opus-4-7      (via openai-compat, '
+                'e.g. litellm)\n'
+                '  /advisor openrouter:anthropic/claude-opus-4.1'
+                f"{partial}"
             )
         mode = decide_advisor_mode(
             provider,
             main_loop_model,
             current_advisor,
             force_client_mode=current_client_mode,
+            advisor_provider=current_provider,
         )
         mode_label = {
             ADVISOR_MODE_SERVER_SIDE: "active (server-side)",
@@ -625,21 +724,10 @@ def advisor_command_call(args: str, context: CommandContext) -> LocalCommandResu
         suffix = ""
         if current_client_mode:
             suffix = " [--client forced]"
-        if mode == ADVISOR_MODE_INACTIVE:
-            inactive_reason = (
-                f"The current model ({main_loop_model}) cannot be paired "
-                f"with {current_advisor!r} (no known provider for the "
-                "advisor model)."
-                if main_loop_model
-                else f"No known provider for advisor model {current_advisor!r}."
-            )
-            return (
-                f"Advisor: {current_advisor} — {mode_label}{suffix}\n"
-                f"{inactive_reason}"
-            )
         return (
-            f"Advisor: {current_advisor} — {mode_label}{suffix}\n"
-            'Use "/advisor unset" to disable or "/advisor <model>" to change.'
+            f"Advisor: {current_provider}:{current_advisor} — {mode_label}{suffix}\n"
+            'Use "/advisor unset" to disable or '
+            '"/advisor <provider>:<model>" to change.'
         )
 
     # No model arg, no flags → status only.
@@ -662,13 +750,16 @@ def advisor_command_call(args: str, context: CommandContext) -> LocalCommandResu
         )
 
     # --client alone (no model) → just turn on the forced-client flag.
+    # Critic C2: both fields are required before the flag matters; a
+    # partial config + --client would silently fail at request time.
     if not arg and force_client_flag is True:
-        if not current_advisor:
+        if not current_advisor or not current_provider:
             return LocalCommandResult(
                 type="text",
                 value=(
-                    "Cannot force client mode: no advisor model is set. "
-                    'Use "/advisor <model> --client" together.'
+                    "Cannot force client mode: advisor is not fully "
+                    "configured. Use \"/advisor <provider>:<model> "
+                    "--client\" together."
                 ),
             )
         if current_client_mode:
@@ -685,51 +776,84 @@ def advisor_command_call(args: str, context: CommandContext) -> LocalCommandResu
         )
 
     if arg_lower in ("unset", "off"):
-        previous = current_advisor
-        if previous is not None:
+        previous_model = current_advisor
+        previous_provider = current_provider
+        if previous_model:
             _write_advisor_model(context, None)
+        if previous_provider:
+            _write_advisor_provider(context, None)
         if current_client_mode:
             _write_advisor_client_mode(context, False)
+        if previous_model or previous_provider:
+            prior = (
+                f"{previous_provider}:{previous_model}"
+                if previous_provider and previous_model
+                else (previous_model or previous_provider or "?")
+            )
+            return LocalCommandResult(
+                type="text", value=f"Advisor disabled (was {prior}).",
+            )
+        return LocalCommandResult(
+            type="text", value="Advisor already unset.",
+        )
+
+    # Parse <provider>:<model> — provider must be a known config key.
+    raw = arg
+    if ":" not in raw:
+        providers = _list_configured_providers()
+        providers_hint = (
+            f" Configured providers: {', '.join(providers)}."
+            if providers else ""
+        )
         return LocalCommandResult(
             type="text",
             value=(
-                f"Advisor disabled (was {previous})." if previous
-                else "Advisor already unset."
+                "Advisor requires explicit <provider>:<model> syntax.\n"
+                f"Got: {raw!r}.{providers_hint}\n"
+                'Example: /advisor anthropic:claude-opus-4-7'
             ),
         )
-
-    # Treat the rest as a model identifier.
-    raw = arg
-    try:
-        resolved = resolve_model(raw)
-    except Exception as e:
+    provider_part, model_part = raw.split(":", 1)
+    provider_part = provider_part.strip()
+    model_part = model_part.strip()
+    if not provider_part or not model_part:
         return LocalCommandResult(
             type="text",
-            value=f"Invalid advisor model: {e}",
+            value=(
+                "Invalid syntax. Expected <provider>:<model> with both "
+                f"halves non-empty. Got: {raw!r}."
+            ),
+        )
+    # Critic S3: validate against the configured providers list
+    # unconditionally. ``_list_configured_providers`` is empty only
+    # when ``load_global`` crashes (its try/except swallows then
+    # returns []) — in that pathological case a clearer signal is
+    # better than a friendly silent-skip that lets bad input through.
+    configured = _list_configured_providers()
+    if provider_part not in configured:
+        return LocalCommandResult(
+            type="text",
+            value=(
+                f"Unknown provider {provider_part!r}. Configured: "
+                f"{', '.join(configured) or '(none — check ~/.clawcodex/config.json)'}. "
+                "Configure new providers in ~/.clawcodex/config.json."
+            ),
+        )
+    try:
+        resolved = resolve_model(model_part)
+    except Exception as e:
+        return LocalCommandResult(
+            type="text", value=f"Invalid advisor model: {e}",
         )
     if not validate_model_name(resolved):
         return LocalCommandResult(
             type="text",
-            value=f"Unknown model: {raw} ({resolved})",
-        )
-    # We no longer require ``is_valid_advisor_model`` (the strict
-    # opus-4-6/sonnet-4-6 gate) — client-side mode accepts any model
-    # that routes to a known provider. The router check is what
-    # actually matters: without it, ``execute_client_advisor`` would
-    # fail at request time and silently degrade.
-    if infer_provider_for_model(resolved) is None:
-        return LocalCommandResult(
-            type="text",
-            value=(
-                f"Cannot use {raw} ({resolved}) as advisor: no known "
-                "provider for this model. Try a model listed in "
-                "PROVIDER_INFO, or use a provider-prefixed name "
-                "(e.g. 'anthropic/claude-sonnet-4.5')."
-            ),
+            value=f"Unknown model: {model_part} ({resolved})",
         )
 
     normalized = canonical_model_name(resolved)
     _write_advisor_model(context, normalized)
+    _write_advisor_provider(context, provider_part)
     if force_client_flag is True:
         _write_advisor_client_mode(context, True)
     elif force_client_flag is False:
@@ -748,6 +872,7 @@ def advisor_command_call(args: str, context: CommandContext) -> LocalCommandResu
         main_loop_model,
         normalized,
         force_client_mode=effective_client_mode,
+        advisor_provider=provider_part,
     )
     if chosen_mode == ADVISOR_MODE_SERVER_SIDE:
         mode_msg = "Will run server-side (Anthropic beta path)."
@@ -760,7 +885,7 @@ def advisor_command_call(args: str, context: CommandContext) -> LocalCommandResu
         )
     return LocalCommandResult(
         type="text",
-        value=f"Advisor set to {normalized}. {mode_msg}",
+        value=f"Advisor set to {provider_part}:{normalized}. {mode_msg}",
     )
 
 
