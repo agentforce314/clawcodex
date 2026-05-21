@@ -63,12 +63,26 @@ def _advisor_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResul
     # the proxy and hit api.anthropic.com directly.
     main_provider = getattr(context, "_active_provider", None)
 
-    ok, text = execute_client_advisor(
+    ok, text, usage = execute_client_advisor(
         advisor_model,
         forwarded,
         abort_signal=abort_signal,
         main_provider=main_provider,
     )
+
+    # Accumulate the advisor's tokens onto the ToolContext so the
+    # REPL / TUI status bar can display them next to the worker's.
+    # Counters are added lazily via getattr so a long-lived context
+    # that was constructed before this field existed still works.
+    try:
+        prior_in = int(getattr(context, "advisor_input_tokens", 0) or 0)
+        prior_out = int(getattr(context, "advisor_output_tokens", 0) or 0)
+        context.advisor_input_tokens = prior_in + int(usage.get("input_tokens", 0))
+        context.advisor_output_tokens = prior_out + int(usage.get("output_tokens", 0))
+    except Exception:
+        # Status-bar bookkeeping must never break the tool result.
+        pass
+
     return ToolResult(
         name="advisor",
         output=text,
