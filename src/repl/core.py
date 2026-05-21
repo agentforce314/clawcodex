@@ -685,11 +685,24 @@ class ClawcodexREPL:
             from src.utils.advisor import format_advisor_status
             advisor_seg = format_advisor_status(self.provider, model)
             advisor_part = f" {advisor_seg} ·" if advisor_seg else ""
+            # Advisor token counts — accumulated on the ToolContext
+            # by ``src/tool_system/tools/advisor.py`` per consultation.
+            # Surface them next to the worker's counts so the user can
+            # see how much of the spend went to the reviewer model.
+            # Hidden when zero so the toolbar stays compact for users
+            # who haven't enabled the advisor.
+            adv_in = int(getattr(self.tool_context, "advisor_input_tokens", 0) or 0)
+            adv_out = int(getattr(self.tool_context, "advisor_output_tokens", 0) or 0)
+            advisor_tokens = (
+                f" (advisor: {adv_in} in / {adv_out} out)"
+                if (adv_in or adv_out) else ""
+            )
             return (
                 f" {provider} · {model} · {cwd} ·{advisor_part} "
                 f"turns: {self._stats_turns} · "
                 f"tokens: {self._stats_input_tokens} in / "
-                f"{self._stats_output_tokens} out "
+                f"{self._stats_output_tokens} out"
+                f"{advisor_tokens} "
             )
         except Exception:
             # Never let the toolbar break the input prompt.
