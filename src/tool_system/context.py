@@ -104,6 +104,15 @@ class ToolContext:
     # block without I/O).
     tool_result_chars_so_far: int = 0
     _aggregate_lock: threading.Lock = field(default_factory=threading.Lock)
+    # Session-cumulative tokens spent on client-side advisor calls.
+    # ``src/tool_system/tools/advisor.py`` accumulates here on every
+    # consultation; the REPL bottom_toolbar + TUI StatusLine read
+    # them to display ``advisor: <in>/<out>`` next to the worker's
+    # token counts. Distinct from ``tool_result_chars_so_far`` (which
+    # is a per-message budget tied to API-result persistence) — these
+    # are per-session totals for UI display.
+    advisor_input_tokens: int = 0
+    advisor_output_tokens: int = 0
     # Chapter-10 / Chunk F / WI-6.1 — agent-name registry. Maps the
     # human-readable ``name`` (passed via Agent({name: "researcher"}))
     # to the random ``agent_id`` returned by the spawn. SendMessage
