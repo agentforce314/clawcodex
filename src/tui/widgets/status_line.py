@@ -168,6 +168,18 @@ class StatusLine(Static):
             total = state.usage.get("input_tokens", 0) + state.usage.get("output_tokens", 0)
             if total:
                 right_bits.append(f"tokens {total}")
+            # Advisor token segment — appears next to worker tokens
+            # whenever the advisor has been consulted this session.
+            # ``state.usage["advisor_*"]`` is mirrored from
+            # ``tool_context.advisor_*`` by ``agent_bridge.py`` after
+            # each run; the underlying ctx counter is accumulated by
+            # ``AdvisorTool._advisor_call`` on every consultation.
+            # Hidden when zero so the bar stays compact for users who
+            # haven't enabled the advisor yet.
+            adv_in = state.usage.get("advisor_input_tokens", 0)
+            adv_out = state.usage.get("advisor_output_tokens", 0)
+            if adv_in or adv_out:
+                right_bits.append(f"advisor {adv_in}/{adv_out}")
         right = " · ".join(right_bits)
         return Text(f"{left}    {middle}    {cwd}    {right}")
 
