@@ -77,6 +77,12 @@ def _set_advisor(value: str) -> None:
     cfg = mgr.load_global()
     sub = cfg.get("settings") if isinstance(cfg.get("settings"), dict) else {}
     sub["advisor_model"] = value
+    # Post multi-provider rewrite: advisor_provider is required for
+    # the advisor to be considered active. Default to "anthropic" for
+    # these smoke tests since they all exercise the first-party
+    # server-side path; tests overriding to a non-anthropic provider
+    # would need to set this explicitly.
+    sub["advisor_provider"] = "anthropic" if value else ""
     cfg["settings"] = sub
     mgr.save_global(cfg)
     invalidate_settings_cache()
