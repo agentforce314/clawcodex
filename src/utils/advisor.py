@@ -694,12 +694,16 @@ def execute_client_advisor(
     *,
     abort_signal: Any = None,
     main_provider: Any = None,
-) -> tuple[bool, str]:
+) -> tuple[bool, str, dict[str, int]]:
     """Run one client-side advisor consultation.
 
-    Returns ``(ok, text)``: when ``ok`` is True, ``text`` is the
+    Returns ``(ok, text, usage)``: when ``ok`` is True, ``text`` is the
     advisor's advice; when False, ``text`` is a short error message
     suitable for surfacing as a tool_result with ``is_error=True``.
+    ``usage`` is a dict with ``input_tokens`` / ``output_tokens`` keys
+    (zero-filled on failure paths). The caller accumulates these into
+    a session-level counter so the status bar can show advisor token
+    spend separately from the worker's.
 
     Provider routing:
     * If ``main_provider`` was passed AND it has a custom base URL
@@ -715,11 +719,12 @@ def execute_client_advisor(
       case (e.g. Anthropic main + Gemini advisor).
 
     Network failures, model errors, and missing-config conditions are
-    all caught and surfaced as ``(False, "...")`` rather than raised —
-    a tool that throws inside dispatch kills the turn, but a failed
-    advisor consultation should just leave the worker model uninformed
-    and let it continue.
+    all caught and surfaced as ``(False, "...", {0,0})`` rather than
+    raised — a tool that throws inside dispatch kills the turn, but
+    a failed advisor consultation should just leave the worker model
+    uninformed and let it continue.
     """
+    _zero_usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
     try:
         from src.config import get_provider_config
         from src.providers import get_provider_class
@@ -734,7 +739,7 @@ def execute_client_advisor(
         else:
             provider_name = infer_provider_for_model(advisor_model)
             if provider_name is None:
-                return (False, f"Advisor unavailable: cannot route model {advisor_model!r} to a known provider.")
+                return (False, f"Advisor unavailable: cannot route model {advisor_model!r} to a known provider.", _zero_usage)
             provider_cls = get_provider_class(provider_name)
             cfg_raw = dict(get_provider_config(provider_name))
 
@@ -750,7 +755,7 @@ def execute_client_advisor(
             model=advisor_model,
         )
     except Exception as e:  # noqa: BLE001 — surface as advisor failure
-        return (False, f"Advisor unavailable: failed to construct provider for {advisor_model!r}: {e}")
+        return (False, f"Advisor unavailable: failed to construct provider for {advisor_model!r}: {e}", _zero_usage)
 
     # System-prompt delivery is provider-specific:
     #   * Anthropic-shaped providers (AnthropicProvider / MinimaxProvider)
@@ -804,12 +809,21 @@ def execute_client_advisor(
             # we can't pass it portably.
             response = provider.chat(request_messages, **call_kwargs)
     except Exception as e:  # noqa: BLE001 — surface as advisor failure
-        return (False, f"Advisor unavailable: {type(e).__name__}: {e}")
+        return (False, f"Advisor unavailable: {type(e).__name__}: {e}", _zero_usage)
+
+    # Pull token counts off the ChatResponse for the session
+    # accumulator. Defaults to zero when the provider didn't return
+    # a usage dict (some mocks / older providers).
+    raw_usage = getattr(response, "usage", None) or {}
+    usage: dict[str, int] = {
+        "input_tokens": int(raw_usage.get("input_tokens", 0) or 0),
+        "output_tokens": int(raw_usage.get("output_tokens", 0) or 0),
+    }
 
     text = getattr(response, "content", None) or ""
     if not isinstance(text, str) or not text.strip():
-        return (False, "Advisor returned no text content.")
-    return (True, text)
+        return (False, "Advisor returned no text content.", usage)
+    return (True, text, usage)
 
 
 __all__ = [
