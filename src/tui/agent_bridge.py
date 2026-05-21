@@ -317,6 +317,27 @@ class AgentBridge:
                 )
             except Exception:
                 pass
+        # Mirror the client-side advisor token counts from tool_context
+        # into ``state.usage`` so the StatusLine widget can surface them
+        # next to the worker tokens. ``tool_context.advisor_*`` is
+        # accumulated by ``AdvisorTool._advisor_call`` (PR #190) on every
+        # client-side consultation; this is the TUI-side parity of the
+        # legacy REPL's ``_bottom_toolbar`` reading the same ctx fields.
+        # NOTE: server-side advisor attribution (Anthropic API's
+        # ``usage.iterations[]`` with ``type="advisor_message"``) is NOT
+        # currently surfaced — the Python SDK 0.88.0 we depend on only
+        # defines ``"message"`` and ``"compaction"`` discriminators
+        # (see anthropic/types/beta/beta_message_iteration_usage.py).
+        # Add a separate accumulator + parser when the SDK gains the
+        # advisor discriminator OR when we move to direct HTTP parsing.
+        try:
+            adv_in = int(getattr(self._tool_context, "advisor_input_tokens", 0) or 0)
+            adv_out = int(getattr(self._tool_context, "advisor_output_tokens", 0) or 0)
+            if adv_in or adv_out:
+                self._state.usage["advisor_input_tokens"] = adv_in
+                self._state.usage["advisor_output_tokens"] = adv_out
+        except Exception:
+            pass
         self._post(
             AgentRunFinished(
                 response_text=result.response_text,

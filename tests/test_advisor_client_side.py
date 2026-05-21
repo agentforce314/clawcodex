@@ -371,7 +371,7 @@ class TestExecuteClientAdvisor(unittest.TestCase):
             with patch(
                 "src.config.get_provider_config", return_value={"api_key": "test"}
             ):
-                ok, text = execute_client_advisor(
+                ok, text, _usage = execute_client_advisor(
                     "claude-opus-4-6", [{"role": "user", "content": "hi"}]
                 )
         self.assertTrue(ok)
@@ -393,7 +393,7 @@ class TestExecuteClientAdvisor(unittest.TestCase):
             with patch(
                 "src.config.get_provider_config", return_value={"api_key": "test"}
             ):
-                ok, text = execute_client_advisor(
+                ok, text, _usage = execute_client_advisor(
                     "gpt-5.4", [{"role": "user", "content": "hi"}]
                 )
         self.assertTrue(ok)
@@ -407,7 +407,7 @@ class TestExecuteClientAdvisor(unittest.TestCase):
         self.assertEqual(forwarded_messages[1]["role"], "user")
 
     def test_returns_error_when_model_unroutable(self) -> None:
-        ok, text = execute_client_advisor(
+        ok, text, _usage = execute_client_advisor(
             "totally-fake-zzz-9999", [{"role": "user", "content": "hi"}]
         )
         self.assertFalse(ok)
@@ -424,7 +424,7 @@ class TestExecuteClientAdvisor(unittest.TestCase):
             with patch(
                 "src.config.get_provider_config", return_value={"api_key": "test"}
             ):
-                ok, text = execute_client_advisor(
+                ok, text, _usage = execute_client_advisor(
                     "claude-opus-4-6", [{"role": "user", "content": "hi"}]
                 )
         self.assertFalse(ok)
@@ -438,7 +438,7 @@ class TestExecuteClientAdvisor(unittest.TestCase):
             with patch(
                 "src.config.get_provider_config", return_value={"api_key": "test"}
             ):
-                ok, text = execute_client_advisor(
+                ok, text, _usage = execute_client_advisor(
                     "claude-opus-4-6", [{"role": "user", "content": "hi"}]
                 )
         self.assertFalse(ok)
@@ -476,7 +476,7 @@ class TestExecuteClientAdvisor(unittest.TestCase):
             return_value={"api_key": "k", "base_url": "https://litellm.singula.ai"},
         ):
             with patch.object(OpenAIProvider, "__new__", lambda cls, **kw: _fake_openai_init(**kw)):
-                ok, text = execute_client_advisor(
+                ok, text, _usage = execute_client_advisor(
                     "claude-opus-4-7",
                     [{"role": "user", "content": "hi"}],
                     main_provider=main_provider,
@@ -510,7 +510,7 @@ class TestExecuteClientAdvisor(unittest.TestCase):
             with patch(
                 "src.config.get_provider_config", return_value={"api_key": "k"}
             ):
-                ok, text = execute_client_advisor(
+                ok, text, _usage = execute_client_advisor(
                     "gemini-2.5-pro",
                     [{"role": "user", "content": "hi"}],
                     main_provider=main_provider,
@@ -533,7 +533,7 @@ class TestExecuteClientAdvisor(unittest.TestCase):
             with patch(
                 "src.config.get_provider_config", return_value={"api_key": "test"}
             ):
-                ok, text = execute_client_advisor(
+                ok, text, _usage = execute_client_advisor(
                     "claude-opus-4-6", [{"role": "user", "content": "hi"}]
                 )
         self.assertTrue(ok)
@@ -569,7 +569,7 @@ class TestAdvisorTool(unittest.TestCase):
         with patch("src.settings.settings.get_settings", return_value=fake_settings):
             with patch(
                 "src.utils.advisor.execute_client_advisor",
-                return_value=(True, "use the foo pattern"),
+                return_value=(True, "use the foo pattern", {"input_tokens": 0, "output_tokens": 0}),
             ):
                 result = AdvisorTool.call({}, ctx)
         self.assertEqual(result.name, "advisor")
@@ -584,11 +584,37 @@ class TestAdvisorTool(unittest.TestCase):
         with patch("src.settings.settings.get_settings", return_value=fake_settings):
             with patch(
                 "src.utils.advisor.execute_client_advisor",
-                return_value=(False, "Advisor unavailable: foo"),
+                return_value=(False, "Advisor unavailable: foo", {"input_tokens": 0, "output_tokens": 0}),
             ):
                 result = AdvisorTool.call({}, ctx)
         self.assertTrue(result.is_error)
         self.assertIn("unavailable", result.output)
+
+    def test_call_accumulates_advisor_tokens_onto_ctx(self) -> None:
+        """The dispatcher writes ``advisor_input_tokens`` /
+        ``advisor_output_tokens`` onto the ToolContext on every
+        consultation so the REPL/TUI status bar can surface them next
+        to the worker's totals. Multiple calls accumulate (not replace)."""
+        ctx = ToolContext(workspace_root=self._tmpdir)
+        ctx.messages = [{"role": "user", "content": "task"}]
+        fake_settings = MagicMock()
+        fake_settings.advisor_model = "claude-opus-4-6"
+        with patch("src.settings.settings.get_settings", return_value=fake_settings):
+            with patch(
+                "src.utils.advisor.execute_client_advisor",
+                return_value=(True, "advice 1", {"input_tokens": 100, "output_tokens": 50}),
+            ):
+                AdvisorTool.call({}, ctx)
+            self.assertEqual(ctx.advisor_input_tokens, 100)
+            self.assertEqual(ctx.advisor_output_tokens, 50)
+            # Second call ACCUMULATES on top of the first.
+            with patch(
+                "src.utils.advisor.execute_client_advisor",
+                return_value=(True, "advice 2", {"input_tokens": 30, "output_tokens": 10}),
+            ):
+                AdvisorTool.call({}, ctx)
+            self.assertEqual(ctx.advisor_input_tokens, 130)
+            self.assertEqual(ctx.advisor_output_tokens, 60)
 
     def test_call_when_no_model_configured_returns_error(self) -> None:
         ctx = ToolContext(workspace_root=self._tmpdir)
