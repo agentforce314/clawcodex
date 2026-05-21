@@ -74,6 +74,15 @@ class SettingsSchema:
     # command writes here, and _call_model_sync reads from here at request
     # time. See src/utils/advisor.py.
     advisor_model: str = ""
+    # Provider key (matches ~/.clawcodex/config.json's providers map) that
+    # serves the advisor call. REQUIRED when advisor_model is set —
+    # clawcodex is multi-provider and the same model name (e.g.
+    # ``claude-opus-4-7``) can live behind anthropic, openai (litellm),
+    # openrouter, bedrock, ... so name-based inference is ambiguous.
+    # The /advisor command writes both fields together via the
+    # ``<provider>:<model>`` syntax. Empty + advisor_model set = misconfig
+    # that surfaces as a clear error at the first advisor call.
+    advisor_provider: str = ""
     # Force client-side advisor mode (tool dispatch + separate API call)
     # even when the main provider is first-party Anthropic. Default False
     # lets the server-side beta path engage when applicable. Set via

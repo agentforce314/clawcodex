@@ -7,7 +7,6 @@ server-side beta.
 
 Test surface:
   * ``decide_advisor_mode`` — full activation truth table.
-  * ``infer_provider_for_model`` — known + prefix + unknown shapes.
   * ``build_advisor_forwarded_messages`` — strips prior advisor blocks
     so they don't leak into the advisor's own forwarded context.
   * ``execute_client_advisor`` — wires through provider factory,
@@ -33,55 +32,7 @@ from src.utils.advisor import (
     build_client_advisor_tool_schema,
     decide_advisor_mode,
     execute_client_advisor,
-    infer_provider_for_model,
 )
-
-
-class TestInferProviderForModel(unittest.TestCase):
-    def test_exact_match_anthropic(self) -> None:
-        self.assertEqual(infer_provider_for_model("claude-opus-4-6"), "anthropic")
-        self.assertEqual(infer_provider_for_model("claude-sonnet-4-6"), "anthropic")
-
-    def test_exact_match_openai(self) -> None:
-        self.assertEqual(infer_provider_for_model("gpt-5.4"), "openai")
-
-    def test_exact_match_glm(self) -> None:
-        self.assertEqual(infer_provider_for_model("zai/glm-5"), "glm")
-
-    def test_exact_match_gemini(self) -> None:
-        self.assertEqual(infer_provider_for_model("gemini-2.5-pro"), "gemini")
-
-    def test_prefix_fallback_anthropic(self) -> None:
-        # claude-opus-4-7 isn't in PROVIDER_INFO yet but the prefix
-        # rule routes it cleanly.
-        self.assertEqual(
-            infer_provider_for_model("claude-opus-4-7-future"), "anthropic"
-        )
-
-    def test_prefix_fallback_gemini(self) -> None:
-        self.assertEqual(infer_provider_for_model("gemini-3.0-pro"), "gemini")
-
-    def test_vendor_slash_routes_to_openrouter(self) -> None:
-        # ``anthropic/claude-…`` is an OpenRouter route, not Anthropic
-        # direct — the ``/`` shape after the more-specific prefix
-        # checks routes to openrouter.
-        self.assertEqual(
-            infer_provider_for_model("anthropic/claude-sonnet-4.5"), "openrouter"
-        )
-        self.assertEqual(
-            infer_provider_for_model("meta-llama/llama-3.3-70b-instruct"),
-            "openrouter",
-        )
-
-    def test_glm_prefix_beats_openrouter_slash(self) -> None:
-        # zai/ prefix is checked before the generic vendor/<model>
-        # rule, so GLM stays with the GLM provider.
-        self.assertEqual(infer_provider_for_model("zai/glm-4.7"), "glm")
-
-    def test_unknown_model_returns_none(self) -> None:
-        self.assertIsNone(infer_provider_for_model("totally-fake-zzz-9999"))
-        self.assertIsNone(infer_provider_for_model(""))
-        self.assertIsNone(infer_provider_for_model(None))  # type: ignore[arg-type]
 
 
 class TestDecideAdvisorMode(unittest.TestCase):
@@ -118,6 +69,7 @@ class TestDecideAdvisorMode(unittest.TestCase):
             self.assertEqual(mode, ADVISOR_MODE_INACTIVE)
 
     def test_server_side_for_1p_with_valid_models(self) -> None:
+        # Server-side now requires advisor_provider == "anthropic" too.
         with patch(
             "src.state.cache_state.is_first_party_provider",
             return_value=True,
@@ -126,6 +78,7 @@ class TestDecideAdvisorMode(unittest.TestCase):
                 self._first_party_provider(),
                 "claude-opus-4-6",
                 "claude-opus-4-6",
+                advisor_provider="anthropic",
             )
             self.assertEqual(mode, ADVISOR_MODE_SERVER_SIDE)
 
@@ -139,12 +92,13 @@ class TestDecideAdvisorMode(unittest.TestCase):
                 "claude-opus-4-6",
                 "claude-opus-4-6",
                 force_client_mode=True,
+                advisor_provider="anthropic",
             )
             self.assertEqual(mode, ADVISOR_MODE_CLIENT_SIDE)
 
     def test_client_side_for_1p_with_unsupported_base_model(self) -> None:
         # opus-4-5 doesn't support server-side advisor → falls back
-        # to client-side as long as the advisor model routes.
+        # to client-side as long as the advisor provider is configured.
         with patch(
             "src.state.cache_state.is_first_party_provider",
             return_value=True,
@@ -153,6 +107,7 @@ class TestDecideAdvisorMode(unittest.TestCase):
                 self._first_party_provider(),
                 "claude-opus-4-5",
                 "claude-opus-4-6",
+                advisor_provider="anthropic",
             )
             self.assertEqual(mode, ADVISOR_MODE_CLIENT_SIDE)
 
@@ -167,13 +122,14 @@ class TestDecideAdvisorMode(unittest.TestCase):
                 self._third_party_provider(),
                 "gpt-5.4",
                 "claude-opus-4-6",
+                advisor_provider="anthropic",
             )
             self.assertEqual(mode, ADVISOR_MODE_CLIENT_SIDE)
 
     def test_client_side_cross_provider(self) -> None:
         # 1P main loop with a Gemini advisor — server-side rejects
-        # the Gemini model, falls through to client-side which routes
-        # gemini-2.5-pro to the gemini provider.
+        # because advisor_provider != "anthropic"; falls through to
+        # client-side with the gemini provider.
         with patch(
             "src.state.cache_state.is_first_party_provider",
             return_value=True,
@@ -182,29 +138,32 @@ class TestDecideAdvisorMode(unittest.TestCase):
                 self._first_party_provider(),
                 "claude-opus-4-6",
                 "gemini-2.5-pro",
+                advisor_provider="gemini",
             )
             self.assertEqual(mode, ADVISOR_MODE_CLIENT_SIDE)
 
-    def test_inactive_when_force_client_but_unrouted_model(self) -> None:
-        # Even with force_client_mode, an unroutable advisor model
-        # returns INACTIVE — there's no provider to send the request to.
+    def test_inactive_when_force_client_but_unknown_provider(self) -> None:
+        # Even with force_client_mode, an unknown provider key
+        # returns INACTIVE — no Provider class to instantiate.
         mode = decide_advisor_mode(
             self._first_party_provider(),
             "claude-opus-4-6",
             "totally-fake-xyz-9999",
             force_client_mode=True,
+            advisor_provider="not-a-real-provider-zzz",
         )
         self.assertEqual(mode, ADVISOR_MODE_INACTIVE)
 
-    def test_inactive_when_no_provider_and_no_force(self) -> None:
-        # Provider=None + no force_client + advisor_model set: the
-        # server-side gate fails (needs is_advisor_enabled which needs
-        # a provider), and client-side activates as long as advisor
-        # routes. This matches the "/advisor pre-startup" surface.
-        mode = decide_advisor_mode(None, "claude-opus-4-6", "claude-opus-4-6")
-        # No provider → can't check first-party → falls to client-side
-        # (advisor model routes to anthropic).
-        self.assertEqual(mode, ADVISOR_MODE_CLIENT_SIDE)
+    def test_inactive_when_advisor_provider_missing(self) -> None:
+        # Multi-provider rewrite: advisor_provider is now REQUIRED.
+        # Even with a valid advisor_model and a first-party main
+        # provider, missing advisor_provider → INACTIVE. This guards
+        # against the pre-rewrite hardcoded ``claude-`` → anthropic
+        # inference silently routing to the wrong endpoint.
+        mode = decide_advisor_mode(
+            None, "claude-opus-4-6", "claude-opus-4-6"
+        )
+        self.assertEqual(mode, ADVISOR_MODE_INACTIVE)
 
 
 class TestBuildAdvisorForwardedMessages(unittest.TestCase):
@@ -273,13 +232,15 @@ class TestBuildAdvisorForwardedMessages(unittest.TestCase):
         with patch("src.utils.advisor._env_truthy", return_value=False), \
              patch("src.settings.settings.get_settings") as get_s, \
              patch("src.models.model.canonical_model_name", side_effect=lambda x: x):
-            fake = type("S", (), {"advisor_model": "claude-opus-4-7", "advisor_client_mode": False})()
+            fake = type("S", (), {"advisor_model": "claude-opus-4-7", "advisor_provider": "anthropic", "advisor_client_mode": False})()
             get_s.return_value = fake
             out = format_advisor_status(None, "claude-haiku-4-5")
         self.assertIsNotNone(out)
         # claude- prefix stripped for brevity
         self.assertIn("opus-4-7", out)
         self.assertNotIn("claude-opus", out)
+        # Colon-separated qualifier (matches /advisor input syntax).
+        self.assertIn("anthropic:opus-4-7", out)
         # Mode label is one of the three known values
         self.assertTrue(
             "(server)" in out or "(client)" in out or "(inactive)" in out,
@@ -291,7 +252,7 @@ class TestBuildAdvisorForwardedMessages(unittest.TestCase):
         from unittest.mock import patch
         with patch("src.utils.advisor._env_truthy", return_value=False), \
              patch("src.settings.settings.get_settings") as get_s:
-            fake = type("S", (), {"advisor_model": "", "advisor_client_mode": False})()
+            fake = type("S", (), {"advisor_model": "", "advisor_provider": "", "advisor_client_mode": False})()
             get_s.return_value = fake
             out = format_advisor_status(None, "claude-haiku-4-5")
         self.assertIsNone(out)
@@ -303,7 +264,7 @@ class TestBuildAdvisorForwardedMessages(unittest.TestCase):
         with patch.dict(os.environ, {"CLAUDE_CODE_DISABLE_ADVISOR_TOOL": "1"}, clear=False), \
              patch("src.settings.settings.get_settings") as get_s, \
              patch("src.models.model.canonical_model_name", side_effect=lambda x: x):
-            fake = type("S", (), {"advisor_model": "claude-opus-4-7", "advisor_client_mode": False})()
+            fake = type("S", (), {"advisor_model": "claude-opus-4-7", "advisor_provider": "anthropic", "advisor_client_mode": False})()
             get_s.return_value = fake
             out = format_advisor_status(None, "claude-haiku-4-5")
         # Even with model set, env-disable → mode is INACTIVE → label shows
@@ -372,7 +333,8 @@ class TestExecuteClientAdvisor(unittest.TestCase):
                 "src.config.get_provider_config", return_value={"api_key": "test"}
             ):
                 ok, text, _usage = execute_client_advisor(
-                    "claude-opus-4-6", [{"role": "user", "content": "hi"}]
+                    "claude-opus-4-6", [{"role": "user", "content": "hi"}],
+                    advisor_provider="anthropic",
                 )
         self.assertTrue(ok)
         self.assertEqual(text, "here is advice")
@@ -394,7 +356,8 @@ class TestExecuteClientAdvisor(unittest.TestCase):
                 "src.config.get_provider_config", return_value={"api_key": "test"}
             ):
                 ok, text, _usage = execute_client_advisor(
-                    "gpt-5.4", [{"role": "user", "content": "hi"}]
+                    "gpt-5.4", [{"role": "user", "content": "hi"}],
+                    advisor_provider="openai",
                 )
         self.assertTrue(ok)
         self.assertEqual(text, "advice from openai")
@@ -406,12 +369,22 @@ class TestExecuteClientAdvisor(unittest.TestCase):
         self.assertIn("reviewer", forwarded_messages[0]["content"].lower())
         self.assertEqual(forwarded_messages[1]["role"], "user")
 
-    def test_returns_error_when_model_unroutable(self) -> None:
+    def test_returns_error_when_provider_missing(self) -> None:
+        # Multi-provider rewrite: empty advisor_provider → fail-fast.
         ok, text, _usage = execute_client_advisor(
-            "totally-fake-zzz-9999", [{"role": "user", "content": "hi"}]
+            "claude-opus-4-7", [{"role": "user", "content": "hi"}]
         )
         self.assertFalse(ok)
-        self.assertIn("cannot route", text.lower())
+        self.assertIn("advisor_provider", text.lower())
+
+    def test_returns_error_when_provider_unknown(self) -> None:
+        # An unknown provider key (no Provider class registered) → fail-fast.
+        ok, text, _usage = execute_client_advisor(
+            "claude-opus-4-7", [{"role": "user", "content": "hi"}],
+            advisor_provider="totally-fake-zzz-9999",
+        )
+        self.assertFalse(ok)
+        self.assertIn("provider", text.lower())
 
     def test_returns_error_when_provider_raises(self) -> None:
         fake_provider = self._make_anthropic_shaped_provider()
@@ -425,7 +398,8 @@ class TestExecuteClientAdvisor(unittest.TestCase):
                 "src.config.get_provider_config", return_value={"api_key": "test"}
             ):
                 ok, text, _usage = execute_client_advisor(
-                    "claude-opus-4-6", [{"role": "user", "content": "hi"}]
+                    "claude-opus-4-6", [{"role": "user", "content": "hi"}],
+                    advisor_provider="anthropic",
                 )
         self.assertFalse(ok)
         self.assertIn("network down", text)
@@ -439,27 +413,18 @@ class TestExecuteClientAdvisor(unittest.TestCase):
                 "src.config.get_provider_config", return_value={"api_key": "test"}
             ):
                 ok, text, _usage = execute_client_advisor(
-                    "claude-opus-4-6", [{"role": "user", "content": "hi"}]
+                    "claude-opus-4-6", [{"role": "user", "content": "hi"}],
+                    advisor_provider="anthropic",
                 )
         self.assertFalse(ok)
         self.assertIn("no text", text.lower())
 
-    def test_routes_through_main_provider_when_proxy(self) -> None:
-        # User's main provider is OpenAI pointed at litellm (custom
-        # base_url). The advisor model is claude-opus-4-7 which would
-        # normally infer to Anthropic — but the proxy assumption says
-        # "use the same proxy for both". We expect the advisor to be
-        # built via OpenAIProvider, NOT AnthropicProvider.
+    def test_uses_explicit_provider_for_routing(self) -> None:
+        # Multi-provider rewrite: ``advisor_provider`` decides routing,
+        # NOT the model name. Even if the model name looks like an
+        # Anthropic model, passing ``advisor_provider="openai"`` should
+        # build via the openai provider config (e.g. litellm).
         from src.providers.openai_provider import OpenAIProvider
-        # Make the main provider look like an OpenAI proxy: base_url
-        # set to something other than the default openai endpoint.
-        main_provider = MagicMock(spec=OpenAIProvider)
-        main_provider.base_url = "https://litellm.singula.ai"
-        main_provider.__class__ = OpenAIProvider
-
-        # Spy on the constructor — the advisor provider should be
-        # built from OpenAIProvider, not from infer_provider_for_model's
-        # anthropic result.
         constructed = {}
 
         def _fake_openai_init(**kwargs: Any) -> Any:
@@ -467,56 +432,32 @@ class TestExecuteClientAdvisor(unittest.TestCase):
             constructed["kwargs"] = kwargs
             inst = MagicMock(spec=OpenAIProvider)
             inst.chat_stream_response = MagicMock(
-                return_value=MagicMock(content="proxied advice")
+                return_value=MagicMock(content="via openai litellm"),
             )
             return inst
 
         with patch(
-            "src.config.get_provider_config",
-            return_value={"api_key": "k", "base_url": "https://litellm.singula.ai"},
+            "src.providers.get_provider_class",
+            return_value=lambda **kw: _fake_openai_init(**kw),
         ):
-            with patch.object(OpenAIProvider, "__new__", lambda cls, **kw: _fake_openai_init(**kw)):
+            with patch(
+                "src.config.get_provider_config",
+                return_value={
+                    "api_key": "k",
+                    "base_url": "https://litellm.singula.ai",
+                },
+            ):
                 ok, text, _usage = execute_client_advisor(
                     "claude-opus-4-7",
                     [{"role": "user", "content": "hi"}],
-                    main_provider=main_provider,
+                    advisor_provider="openai",
                 )
         self.assertTrue(ok)
-        self.assertEqual(text, "proxied advice")
-        self.assertEqual(constructed["cls"], "OpenAIProvider")
-        # Model swapped to the advisor's choice, base_url preserved
-        # (came from get_provider_config).
+        self.assertEqual(text, "via openai litellm")
         self.assertEqual(constructed["kwargs"]["model"], "claude-opus-4-7")
         self.assertEqual(
-            constructed["kwargs"]["base_url"], "https://litellm.singula.ai"
+            constructed["kwargs"]["base_url"], "https://litellm.singula.ai",
         )
-
-    def test_uses_inferred_provider_when_main_is_not_proxy(self) -> None:
-        # 1P Anthropic main loop (default base_url). Advisor model is
-        # gemini-2.5-pro → should route via inference to Gemini, NOT
-        # reuse the Anthropic main provider.
-        from src.providers.anthropic_provider import AnthropicProvider
-        main_provider = MagicMock(spec=AnthropicProvider)
-        main_provider.base_url = "https://api.anthropic.com"  # default
-
-        fake_gemini = MagicMock()
-        fake_gemini.chat_stream_response = MagicMock(
-            return_value=MagicMock(content="gemini says hi")
-        )
-        with patch(
-            "src.providers.get_provider_class",
-            return_value=lambda **kw: fake_gemini,
-        ):
-            with patch(
-                "src.config.get_provider_config", return_value={"api_key": "k"}
-            ):
-                ok, text, _usage = execute_client_advisor(
-                    "gemini-2.5-pro",
-                    [{"role": "user", "content": "hi"}],
-                    main_provider=main_provider,
-                )
-        self.assertTrue(ok)
-        self.assertEqual(text, "gemini says hi")
 
     def test_falls_back_to_chat_when_stream_unimplemented(self) -> None:
         # Older / stub providers may not implement chat_stream_response.
@@ -534,7 +475,8 @@ class TestExecuteClientAdvisor(unittest.TestCase):
                 "src.config.get_provider_config", return_value={"api_key": "test"}
             ):
                 ok, text, _usage = execute_client_advisor(
-                    "claude-opus-4-6", [{"role": "user", "content": "hi"}]
+                    "claude-opus-4-6", [{"role": "user", "content": "hi"}],
+                    advisor_provider="anthropic",
                 )
         self.assertTrue(ok)
         self.assertEqual(text, "fallback worked")
@@ -566,6 +508,7 @@ class TestAdvisorTool(unittest.TestCase):
         # short-circuit on the "no model configured" branch.
         fake_settings = MagicMock()
         fake_settings.advisor_model = "claude-opus-4-6"
+        fake_settings.advisor_provider = "anthropic"
         with patch("src.settings.settings.get_settings", return_value=fake_settings):
             with patch(
                 "src.utils.advisor.execute_client_advisor",
@@ -581,6 +524,7 @@ class TestAdvisorTool(unittest.TestCase):
         ctx.messages = [{"role": "user", "content": "task"}]
         fake_settings = MagicMock()
         fake_settings.advisor_model = "claude-opus-4-6"
+        fake_settings.advisor_provider = "anthropic"
         with patch("src.settings.settings.get_settings", return_value=fake_settings):
             with patch(
                 "src.utils.advisor.execute_client_advisor",
@@ -599,6 +543,7 @@ class TestAdvisorTool(unittest.TestCase):
         ctx.messages = [{"role": "user", "content": "task"}]
         fake_settings = MagicMock()
         fake_settings.advisor_model = "claude-opus-4-6"
+        fake_settings.advisor_provider = "anthropic"
         with patch("src.settings.settings.get_settings", return_value=fake_settings):
             with patch(
                 "src.utils.advisor.execute_client_advisor",
@@ -620,10 +565,11 @@ class TestAdvisorTool(unittest.TestCase):
         ctx = ToolContext(workspace_root=self._tmpdir)
         fake_settings = MagicMock()
         fake_settings.advisor_model = ""
+        fake_settings.advisor_provider = ""
         with patch("src.settings.settings.get_settings", return_value=fake_settings):
             result = AdvisorTool.call({}, ctx)
         self.assertTrue(result.is_error)
-        self.assertIn("no advisor_model", result.output.lower())
+        self.assertIn("advisor_provider", result.output.lower())
 
 
 class TestClientAdvisorToolSchema(unittest.TestCase):

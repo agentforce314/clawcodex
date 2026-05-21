@@ -142,7 +142,7 @@ class TestAdvisorActiveOnFirstPartyAnthropic(unittest.TestCase):
         self._iso = _isolate_env()
         self._iso.enter()
         os.environ.pop("CLAUDE_CODE_DISABLE_ADVISOR_TOOL", None)
-        _set_settings(advisor_model="claude-opus-4-6")
+        _set_settings(advisor_model="claude-opus-4-6", advisor_provider="anthropic")
 
     def tearDown(self) -> None:
         # _iso.exit() restores the real config paths AND clears the
@@ -317,7 +317,7 @@ class TestAdvisorInactivePaths(unittest.TestCase):
         self._assert_inactive(cap)
 
     def test_no_advisor_when_env_disabled(self) -> None:
-        _set_settings(advisor_model="claude-opus-4-6")
+        _set_settings(advisor_model="claude-opus-4-6", advisor_provider="anthropic")
         with patch.dict(
             os.environ, {"CLAUDE_CODE_DISABLE_ADVISOR_TOOL": "1"}, clear=False
         ):
@@ -326,12 +326,17 @@ class TestAdvisorInactivePaths(unittest.TestCase):
             _run(provider, [UserMessage(content="x")])
             self._assert_inactive(cap)
 
-    def test_no_advisor_when_advisor_model_does_not_route(self) -> None:
-        # An advisor model string that doesn't match any provider's
-        # available_models AND doesn't match a known prefix → no
-        # client-side route → INACTIVE. The strict "valid for
-        # server-side" gate is gone; only the routing gate remains.
-        _set_settings(advisor_model="some-totally-unknown-model-xyz")
+    def test_no_advisor_when_provider_unknown(self) -> None:
+        # Post multi-provider rewrite: routing is decided by the
+        # explicit advisor_provider, not the model name. An UNKNOWN
+        # provider key (no registered Provider class) → INACTIVE.
+        # The old "unknown model name" scenario no longer triggers
+        # this branch — model names aren't validated against any list
+        # in client-side mode.
+        _set_settings(
+            advisor_model="claude-opus-4-6",
+            advisor_provider="not-a-real-provider-zzz",
+        )
         cap = _Capture()
         provider = _stub_provider_class(AnthropicProvider, cap)
         _run(provider, [UserMessage(content="x")])
@@ -341,7 +346,7 @@ class TestAdvisorInactivePaths(unittest.TestCase):
         # Custom-endpoint Anthropic is treated as 3P for server-side
         # purposes (no beta header, no advisor_20260301 schema), but
         # client-side mode covers it now.
-        _set_settings(advisor_model="claude-opus-4-6")
+        _set_settings(advisor_model="claude-opus-4-6", advisor_provider="anthropic")
         cap = _Capture()
         provider = _stub_provider_class(AnthropicProvider, cap)
         provider.has_custom_endpoint = MagicMock(return_value=True)
@@ -352,7 +357,7 @@ class TestAdvisorInactivePaths(unittest.TestCase):
         # opus-4-5 doesn't support the server-side beta — under the
         # old strict rules, advisor went inactive. Now it falls back to
         # client-side (any tool-calling main loop works).
-        _set_settings(advisor_model="claude-opus-4-6")
+        _set_settings(advisor_model="claude-opus-4-6", advisor_provider="anthropic")
         cap = _Capture()
         provider = _stub_provider_class(AnthropicProvider, cap)
         provider.model = "claude-opus-4-5"
@@ -363,7 +368,7 @@ class TestAdvisorInactivePaths(unittest.TestCase):
         # haiku-4-5 isn't a valid server-side advisor (only opus-4-6 /
         # sonnet-4-6 are) — but it routes to anthropic and works
         # client-side.
-        _set_settings(advisor_model="claude-haiku-4-5")
+        _set_settings(advisor_model="claude-haiku-4-5", advisor_provider="anthropic")
         cap = _Capture()
         provider = _stub_provider_class(AnthropicProvider, cap)
         _run(provider, [UserMessage(content="x")])
@@ -417,7 +422,7 @@ class TestAdvisorActivationDefensive(unittest.TestCase):
         iso = _isolate_env()
         iso.enter()
         try:
-            _set_settings(advisor_model="claude-opus-4-6")
+            _set_settings(advisor_model="claude-opus-4-6", advisor_provider="anthropic")
             cap = _Capture()
             provider = _stub_provider_class(AnthropicProvider, cap)
             with patch(

@@ -336,56 +336,13 @@ def build_client_advisor_tool_schema() -> dict[str, Any]:
     }
 
 
-def infer_provider_for_model(model: str) -> str | None:
-    """Best-effort model → provider lookup.
-
-    Walks ``PROVIDER_INFO`` for an exact match first; falls back to
-    well-known prefix conventions. Returns ``None`` when the model
-    can't be confidently routed — callers should surface a clear error
-    to the user rather than silently picking the wrong endpoint.
-
-    The exact-match path covers the common case (user typed
-    ``gemini-2.5-pro`` and Gemini lists it). The prefix fallback covers
-    canonical names that PROVIDER_INFO's allowlist hasn't been refreshed
-    for (e.g. a new ``claude-opus-4-7`` not yet in the list — still
-    clearly Anthropic). Order matters: ``zai/`` before generic
-    ``vendor/<model>`` so OpenRouter doesn't steal GLM models.
-    """
-    if not model:
-        return None
-    # Local import to avoid pulling the providers package at module load.
-    from src.providers import PROVIDER_INFO
-
-    for name, info in PROVIDER_INFO.items():
-        if model in info.get("available_models", []):
-            return name
-
-    m = model.lower()
-    if m.startswith("zai/"):
-        return "glm"
-    if m.startswith("claude-"):
-        return "anthropic"
-    if m.startswith("gpt-") or m.startswith("o1") or m.startswith("o3"):
-        return "openai"
-    if m.startswith("gemini-"):
-        return "gemini"
-    if m.startswith("minimax-") or model.startswith("MiniMax-") or model == "M2-her":
-        return "minimax"
-    if m.startswith("deepseek-"):
-        return "deepseek"
-    # ``<vendor>/<model>`` shape after the more-specific prefix checks
-    # above. Catches OpenRouter routes like ``anthropic/claude-3.5-sonnet``.
-    if "/" in model:
-        return "openrouter"
-    return None
-
-
 def decide_advisor_mode(
     provider: "BaseProvider | None",
     main_loop_model: str | None,
     advisor_model: str | None,
     *,
     force_client_mode: bool = False,
+    advisor_provider: str | None = None,
 ) -> str:
     """Pick activation mode for the upcoming turn.
 
@@ -398,21 +355,37 @@ def decide_advisor_mode(
     Decision tree:
 
     1. ``advisor_model`` empty / env-disabled → INACTIVE.
-    2. ``force_client_mode`` set → CLIENT_SIDE iff the advisor model
-       routes to a known provider; else INACTIVE.
-    3. 1P + main_loop_model supports server advisor + advisor_model is
-       a valid server target → SERVER_SIDE (the optimized path; one
-       roundtrip, prompt-cache friendly).
-    4. Otherwise, if the advisor model routes to a known provider →
-       CLIENT_SIDE (works with any main-loop tool-calling model).
-    5. Else INACTIVE — the configured advisor model can't be reached.
+    2. ``advisor_provider`` empty → INACTIVE (the multi-provider
+       rewrite requires explicit provider; name-based inference was
+       removed because the same model name can sit behind multiple
+       providers).
+    3. ``force_client_mode`` set → CLIENT_SIDE iff the advisor
+       provider is a configured key; else INACTIVE.
+    4. 1P + main_loop_model supports server advisor + advisor_model is
+       a valid server target + advisor_provider == "anthropic" →
+       SERVER_SIDE (the optimized path; one roundtrip, prompt-cache
+       friendly). Server-side only makes sense when the advisor call
+       lands on the same Anthropic API as the main loop.
+    5. Otherwise, if the advisor provider is configured → CLIENT_SIDE.
+    6. Else INACTIVE — the configured advisor can't be reached.
     """
     if _env_truthy(_DISABLE_ENV):
         return ADVISOR_MODE_INACTIVE
     if not advisor_model:
         return ADVISOR_MODE_INACTIVE
+    if not advisor_provider:
+        return ADVISOR_MODE_INACTIVE
 
-    advisor_routes = infer_provider_for_model(advisor_model) is not None
+    # Provider must be configured in ~/.clawcodex/config.json. Use the
+    # provider class registry as the lightweight check (a key with no
+    # class registered can't be instantiated anyway).
+    advisor_routes = False
+    try:
+        from src.providers import get_provider_class
+        get_provider_class(advisor_provider)
+        advisor_routes = True
+    except Exception:
+        advisor_routes = False
 
     if force_client_mode:
         return ADVISOR_MODE_CLIENT_SIDE if advisor_routes else ADVISOR_MODE_INACTIVE
@@ -422,6 +395,7 @@ def decide_advisor_mode(
         and is_advisor_enabled(provider)
         and model_supports_advisor(main_loop_model)
         and is_valid_advisor_model(advisor_model)
+        and advisor_provider == "anthropic"
     ):
         return ADVISOR_MODE_SERVER_SIDE
 
@@ -465,6 +439,7 @@ def format_advisor_status(
     try:
         settings = get_settings()
         advisor_model = (getattr(settings, "advisor_model", "") or "").strip()
+        advisor_provider = (getattr(settings, "advisor_provider", "") or "").strip()
         if not advisor_model:
             return None
         canonical = canonical_model_name(advisor_model)
@@ -474,6 +449,7 @@ def format_advisor_status(
             main_loop_model,
             canonical,
             force_client_mode=force_client,
+            advisor_provider=advisor_provider,
         )
     except Exception:
         return None
@@ -485,7 +461,16 @@ def format_advisor_status(
     display = canonical
     if display.lower().startswith("claude-"):
         display = display[len("claude-") :]
-    return f"advisor: {display} ({label})"
+    # Qualify with the provider so the user can spot a misroute
+    # (e.g. accidentally hitting api.anthropic.com instead of litellm).
+    # Falls back to "?" when provider is missing — partial config,
+    # already covered by the INACTIVE mode label.
+    # Critic S1: colon-separated to match the /advisor slash command
+    # input syntax. Lets the user copy the bar value into /advisor
+    # verbatim. Splits unambiguously on the first colon even when the
+    # model name itself contains slashes (openrouter convention).
+    qualified = f"{advisor_provider or '?'}:{display}"
+    return f"advisor: {qualified} ({label})"
 
 
 CLIENT_ADVISOR_PROMPT_SUFFIX = (
@@ -665,33 +650,11 @@ def build_advisor_forwarded_messages(
     return flattened
 
 
-def _provider_is_using_custom_endpoint(provider: Any) -> bool:
-    """True if the provider is pointed at a non-default base URL.
-
-    Heuristic for "this provider is a proxy that can serve other
-    models" (litellm, openrouter, custom-deployment Anthropic shim,
-    etc.). When True, ``execute_client_advisor`` prefers the SAME
-    provider+config for the advisor call rather than inferring a
-    direct upstream from the model name — the user explicitly chose
-    a proxy, so route through it.
-    """
-    from src.providers import PROVIDER_INFO
-    base_url = getattr(provider, "base_url", None)
-    if not base_url:
-        return False
-    name = provider.__class__.__name__.replace("Provider", "").lower()
-    info = PROVIDER_INFO.get(name)
-    if info is None:
-        # Unknown class — assume the user customized it for a reason.
-        return True
-    default = info.get("default_base_url", "")
-    return base_url.rstrip("/") != default.rstrip("/")
-
-
 def execute_client_advisor(
     advisor_model: str,
     forwarded_messages: list[dict[str, Any]],
     *,
+    advisor_provider: str = "",
     abort_signal: Any = None,
     main_provider: Any = None,
 ) -> tuple[bool, str, dict[str, int]]:
@@ -705,18 +668,18 @@ def execute_client_advisor(
     a session-level counter so the status bar can show advisor token
     spend separately from the worker's.
 
-    Provider routing:
-    * If ``main_provider`` was passed AND it has a custom base URL
-      (i.e. the user is talking to a proxy like litellm/openrouter
-      that proxies arbitrary models), reuse the main provider's class
-      and config with the advisor's model — the proxy will handle it.
-      Without this, a litellm user would have their advisor call
-      bounce direct to api.anthropic.com instead of through their
-      configured proxy.
-    * Otherwise, infer the advisor's provider from the model name and
-      build a fresh provider from the user's saved config for that
-      provider. This handles the "advisor on a different provider"
-      case (e.g. Anthropic main + Gemini advisor).
+    Provider routing (post the multi-provider rewrite): use the
+    explicit ``advisor_provider`` key as a lookup into
+    ``~/.clawcodex/config.json``'s ``providers`` map and instantiate
+    the matching provider class with that entry's api_key + base_url,
+    overriding the model. The ``/advisor`` command writes the
+    provider key alongside the model so this function never has to
+    infer.
+
+    ``main_provider`` is no longer consulted for routing — clawcodex
+    is multi-provider, every advisor call says exactly which provider
+    it wants. The argument is preserved on the signature for callers
+    that pass it for backwards compatibility; it's ignored.
 
     Network failures, model errors, and missing-config conditions are
     all caught and surfaced as ``(False, "...", {0,0})`` rather than
@@ -725,23 +688,36 @@ def execute_client_advisor(
     uninformed and let it continue.
     """
     _zero_usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
+    if not advisor_provider:
+        return (
+            False,
+            "Advisor unavailable: advisor_provider is not set. Run "
+            "/advisor <provider>:<model> to configure.",
+            _zero_usage,
+        )
     try:
         from src.config import get_provider_config
         from src.providers import get_provider_class
 
-        if main_provider is not None and _provider_is_using_custom_endpoint(
-            main_provider
-        ):
-            # Reuse main provider's class + config; just swap the model.
-            provider_cls = main_provider.__class__
-            name = provider_cls.__name__.replace("Provider", "").lower()
-            cfg_raw = dict(get_provider_config(name))
-        else:
-            provider_name = infer_provider_for_model(advisor_model)
-            if provider_name is None:
-                return (False, f"Advisor unavailable: cannot route model {advisor_model!r} to a known provider.", _zero_usage)
-            provider_cls = get_provider_class(provider_name)
-            cfg_raw = dict(get_provider_config(provider_name))
+        try:
+            provider_cls = get_provider_class(advisor_provider)
+        except Exception:
+            return (
+                False,
+                f"Advisor unavailable: provider {advisor_provider!r} has "
+                "no registered Provider class. Check the provider key "
+                "in ~/.clawcodex/config.json.",
+                _zero_usage,
+            )
+        try:
+            cfg_raw = dict(get_provider_config(advisor_provider))
+        except Exception:
+            return (
+                False,
+                f"Advisor unavailable: provider {advisor_provider!r} is "
+                "not configured in ~/.clawcodex/config.json.",
+                _zero_usage,
+            )
 
         # ``get_provider_config`` returns the raw config dict shape
         # (api_key, base_url, default_model) which doesn't match the
@@ -755,7 +731,7 @@ def execute_client_advisor(
             model=advisor_model,
         )
     except Exception as e:  # noqa: BLE001 — surface as advisor failure
-        return (False, f"Advisor unavailable: failed to construct provider for {advisor_model!r}: {e}", _zero_usage)
+        return (False, f"Advisor unavailable: failed to construct {advisor_provider!r} provider for {advisor_model!r}: {e}", _zero_usage)
 
     # System-prompt delivery is provider-specific:
     #   * Anthropic-shaped providers (AnthropicProvider / MinimaxProvider)
@@ -845,7 +821,6 @@ __all__ = [
     "extract_advisor_error_code",
     "extract_advisor_result_text",
     "format_advisor_status",
-    "infer_provider_for_model",
     "is_advisor_block",
     "is_advisor_enabled",
     "is_valid_advisor_model",
