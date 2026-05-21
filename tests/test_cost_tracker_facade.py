@@ -125,9 +125,12 @@ class TestPricing(unittest.TestCase):
         self.assertAlmostEqual(p["input"], 15.0 / 1_000_000)
         self.assertAlmostEqual(p["output"], 75.0 / 1_000_000)
 
-    def test_get_pricing_falls_back_to_default(self) -> None:
+    def test_get_pricing_returns_none_for_unknown(self) -> None:
+        # Post status-bar refactor: get_pricing returns None for
+        # unknowns. DEFAULT_PRICING is still exported but is only
+        # used by the legacy cost-tracker facade's per-event fallback.
         p = get_pricing("some-future-model-not-in-table")
-        self.assertEqual(p, DEFAULT_PRICING)
+        self.assertIsNone(p)
 
     def test_compute_cost_basic(self) -> None:
         cost = compute_cost(
