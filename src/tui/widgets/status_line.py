@@ -53,11 +53,20 @@ class StatusLine(Static):
         model: str,
         workspace_root: Path,
         app_state: AppState | None = None,
+        provider_instance: object | None = None,
     ) -> None:
         self._provider = provider
         self._model = model
         self._workspace_root = Path(workspace_root)
         self._app_state = app_state
+        # Live provider instance (BaseProvider) — used ONLY for the
+        # advisor status segment so ``format_advisor_status`` can call
+        # ``is_advisor_enabled(provider)`` and pick the right mode
+        # label. Optional: when omitted, the advisor segment shows
+        # "(client)" as the conservative default for any configured
+        # advisor (since SERVER_SIDE requires the instance to verify
+        # first-party).
+        self._provider_instance = provider_instance
         self._frame = 0
         self._timer = None
         initial = Text(f"{provider} · {model}    ready    turn 0")
@@ -129,7 +138,27 @@ class StatusLine(Static):
             if secs > 0:
                 elapsed = f" {secs}s"
 
-        left = f"{self._provider} · {self._model}"
+        left_parts = [f"{self._provider} · {self._model}"]
+        # Optional advisor segment — appears next to provider/model
+        # when ``/advisor`` is configured. Mode label reflects what
+        # the NEXT request will actually do (server/client/inactive)
+        # so a stale config under an unsupported provider doesn't
+        # silently lie. Shared formatter with the legacy REPL
+        # bottom_toolbar so both surfaces render identically.
+        try:
+            from src.utils.advisor import format_advisor_status
+            # Pass the live provider instance when available so the
+            # mode label (server/client/inactive) reflects what the
+            # next request will actually do. Falls back to None (=
+            # "client" default) when the instance isn't plumbed.
+            advisor_seg = format_advisor_status(
+                self._provider_instance, self._model,
+            )
+        except Exception:
+            advisor_seg = None
+        if advisor_seg:
+            left_parts.append(advisor_seg)
+        left = " · ".join(left_parts)
         cwd = self._display_cwd()
         middle = f"{spinner} {verb}{elapsed}" if self.is_thinking else verb
         right_bits: list[str] = [f"turn {self.turns}"]
