@@ -21,6 +21,13 @@ index f77e9c4..e201dba 100644
 +            self._engine_messages = []
 +            self._queued_prompts = []
 +            self._queued_prompts_lock = threading.Lock()
++            # Commands needed for read-only mode
++            self._original_built_ins = [
++                "/", "/help", "/exit", "/quit", "/q", "/clear",
++                "/save", "/load", "/stream", "/render-last", "/tools",
++                "/tool", "/skills", "/init", "/tui", "/login",
++            ]
++            self._built_in_commands = list(self._original_built_ins)
 +            # Skip provider-dependent setup
 +            return
 +
