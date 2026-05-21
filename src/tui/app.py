@@ -193,6 +193,10 @@ class ClawCodexTUI(App):
             workspace_root=self.workspace_root,
             words_provider=self._slash_command_words,
             suggestions_provider=self._slash_command_suggestions,
+            # Pass the live BaseProvider so the status line's advisor
+            # segment can call ``decide_advisor_mode(provider, ...)``
+            # and show the correct mode label (server/client/inactive).
+            provider_instance=self.provider,
         )
         self.push_screen(self._repl_screen)
 
