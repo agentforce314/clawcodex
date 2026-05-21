@@ -244,6 +244,44 @@ class TestBuildAdvisorForwardedMessages(unittest.TestCase):
                         self.assertNotEqual(b.get("type"), "server_tool_use")
                         self.assertNotEqual(b.get("type"), "advisor_tool_result")
 
+    def test_strips_worker_self_advisor_tool_use_marker(self) -> None:
+        """The worker's own ``tool_use(name=advisor)`` is what triggered
+        the advisor call. Including a `[Tool call: advisor({})]` marker
+        in the flattened text invites the advisor to LARP as the
+        worker. Strip it so the advisor sees the conversation as if
+        it's being asked to opine, not to ack a tool invocation."""
+        from src.types.messages import AssistantMessage, UserMessage
+        msgs = [
+            UserMessage(content="task"),
+            AssistantMessage(content=[
+                {"type": "text", "text": "thinking about it"},
+                {"type": "tool_use", "id": "t1", "name": "advisor", "input": {}},
+            ]),
+        ]
+        out = build_advisor_forwarded_messages(msgs)
+        for m in out:
+            self.assertNotIn("[Tool call: advisor", m["content"])
+
+    def test_strips_orphan_pairing_cruft_user_message(self) -> None:
+        """The orphan-pairing pass injects a synthetic
+        ``[Tool result missing due to internal error]`` user message
+        to keep tool_use/tool_result pairing valid for the API. That
+        cruft must be filtered from the advisor's view — otherwise
+        the advisor thinks the worker just hit a tool failure and
+        responds to that instead of the actual task."""
+        from src.types.messages import AssistantMessage, UserMessage
+        msgs = [
+            UserMessage(content="real task"),
+            AssistantMessage(content=[
+                {"type": "text", "text": "my plan is X"},
+                {"type": "tool_use", "id": "t1", "name": "advisor", "input": {}},
+            ]),
+        ]
+        out = build_advisor_forwarded_messages(msgs)
+        joined = "\n".join(m["content"] for m in out)
+        self.assertNotIn("[Tool result missing due to internal error]", joined)
+        self.assertNotIn("[Tool use interrupted]", joined)
+
     def test_returns_plain_dicts_safe_to_send(self) -> None:
         from src.types.messages import UserMessage
         out = build_advisor_forwarded_messages([UserMessage(content="hello")])
