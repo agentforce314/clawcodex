@@ -126,7 +126,7 @@ class TestAdvisorCommandGate(unittest.TestCase):
                 os.environ, {"CLAUDE_CODE_DISABLE_ADVISOR_TOOL": "1"}, clear=False
             ):
                 ctx = _make_context(provider=_fake_first_party_provider())
-                res = advisor_command_call("claude-opus-4-6", ctx)
+                res = advisor_command_call("anthropic:claude-opus-4-6", ctx)
                 self.assertIn("disabled", res.value.lower())
 
     def test_works_with_non_first_party_provider(self) -> None:
@@ -137,8 +137,8 @@ class TestAdvisorCommandGate(unittest.TestCase):
             provider = MagicMock()  # Not an AnthropicProvider
             provider.model = "gpt-5.4"
             ctx = _make_context(provider=provider)
-            res = advisor_command_call("claude-opus-4-6", ctx)
-            self.assertIn("Advisor set to claude-opus-4-6", res.value)
+            res = advisor_command_call("anthropic:claude-opus-4-6", ctx)
+            self.assertIn("Advisor set to anthropic:claude-opus-4-6", res.value)
 
 
 class TestAdvisorCommandStorePath(unittest.TestCase):
@@ -150,7 +150,7 @@ class TestAdvisorCommandStorePath(unittest.TestCase):
             ctx = _make_context(store=store, provider=_fake_first_party_provider())
             res = advisor_command_call("", ctx)
             self.assertIn("not set", res.value)
-            self.assertIn("/advisor <model>", res.value)
+            self.assertIn("/advisor <provider>:<model>", res.value)
             self.assertEqual(store.writes, [])
 
     def test_set_advisor_model(self) -> None:
@@ -159,20 +159,26 @@ class TestAdvisorCommandStorePath(unittest.TestCase):
             ctx = _make_context(
                 store=store, provider=_fake_first_party_provider("claude-opus-4-6")
             )
-            res = advisor_command_call("claude-opus-4-6", ctx)
-            self.assertIn("Advisor set to claude-opus-4-6", res.value)
-            self.assertEqual(len(store.writes), 1)
+            res = advisor_command_call("anthropic:claude-opus-4-6", ctx)
+            self.assertIn("Advisor set to anthropic:claude-opus-4-6", res.value)
+            # Two writes — model AND provider land separately on the store.
+            self.assertEqual(len(store.writes), 2)
             self.assertEqual(store.writes[-1].advisor_model, "claude-opus-4-6")
+            self.assertEqual(store.writes[-1].advisor_provider, "anthropic")
 
     def test_unset_clears_when_set(self) -> None:
         with _IsolatedEnv():
             from src.state.app_state import AppState
-            store = _FakeStore(initial=AppState(advisor_model="claude-opus-4-6"))
+            store = _FakeStore(initial=AppState(
+                advisor_model="claude-opus-4-6",
+                advisor_provider="anthropic",
+            ))
             ctx = _make_context(store=store, provider=_fake_first_party_provider())
             res = advisor_command_call("unset", ctx)
             self.assertIn("disabled", res.value.lower())
-            self.assertIn("claude-opus-4-6", res.value)
+            self.assertIn("anthropic:claude-opus-4-6", res.value)
             self.assertEqual(store.writes[-1].advisor_model, None)
+            self.assertEqual(store.writes[-1].advisor_provider, None)
 
     def test_unset_idempotent_when_not_set(self) -> None:
         with _IsolatedEnv():
@@ -190,44 +196,55 @@ class TestAdvisorCommandStorePath(unittest.TestCase):
             store = _FakeStore()
             provider = _fake_first_party_provider("claude-opus-4-5")
             ctx = _make_context(store=store, provider=provider)
-            res = advisor_command_call("claude-opus-4-6", ctx)
-            self.assertIn("Advisor set to claude-opus-4-6", res.value)
+            res = advisor_command_call("anthropic:claude-opus-4-6", ctx)
+            self.assertIn("Advisor set to anthropic:claude-opus-4-6", res.value)
             self.assertIn("client-side", res.value.lower())
 
     def test_no_arg_shows_client_side_for_unsupported_base(self) -> None:
         with _IsolatedEnv():
             from src.state.app_state import AppState
-            store = _FakeStore(initial=AppState(advisor_model="claude-opus-4-6"))
+            store = _FakeStore(initial=AppState(
+                advisor_model="claude-opus-4-6",
+                advisor_provider="anthropic",
+            ))
             provider = _fake_first_party_provider("claude-opus-4-5")
             ctx = _make_context(store=store, provider=provider)
             res = advisor_command_call("", ctx)
-            self.assertIn("Advisor: claude-opus-4-6", res.value)
+            self.assertIn("Advisor: anthropic:claude-opus-4-6", res.value)
             # Now active client-side rather than "inactive".
             self.assertIn("client-side", res.value.lower())
 
     def test_accepts_non_server_side_advisor_model(self) -> None:
-        # haiku-4-5 isn't valid for server-side, but it routes to
-        # anthropic and works client-side. The command should accept
-        # it (previously it was rejected by is_valid_advisor_model).
+        # haiku-4-5 isn't valid for server-side, but it works
+        # client-side. The command should accept it.
         with _IsolatedEnv():
             store = _FakeStore()
             ctx = _make_context(store=store, provider=_fake_first_party_provider())
-            res = advisor_command_call("haiku", ctx)
+            res = advisor_command_call("anthropic:haiku", ctx)
             self.assertIn("Advisor set to", res.value)
-            self.assertEqual(len(store.writes), 1)
+            # Two writes — model and provider land separately.
+            self.assertEqual(len(store.writes), 2)
 
-    def test_rejects_unroutable_model(self) -> None:
-        # A model that doesn't resolve to any provider must still be
-        # rejected — the client-side path needs a provider to call.
+    def test_rejects_unknown_provider(self) -> None:
+        # An unknown provider key must be rejected — clawcodex needs a
+        # registered Provider class to instantiate. The old test
+        # (rejects_unroutable_model) checked rejection by MODEL name;
+        # that's no longer a thing since the provider is explicit.
         with _IsolatedEnv():
             store = _FakeStore()
             ctx = _make_context(store=store, provider=_fake_first_party_provider())
-            res = advisor_command_call("totally-fake-provider-zzz-9999", ctx)
-            self.assertTrue(
-                "Unknown" in res.value
-                or "no known provider" in res.value.lower(),
-                f"unexpected reject path: {res.value!r}",
-            )
+            res = advisor_command_call("not-a-real-provider-zzz:foo-model", ctx)
+            self.assertIn("Unknown provider", res.value)
+            self.assertEqual(store.writes, [])
+
+    def test_rejects_missing_colon(self) -> None:
+        # Bare model name (no provider:) must be rejected; the old
+        # behavior of "/advisor opus" silently inferring is gone.
+        with _IsolatedEnv():
+            store = _FakeStore()
+            ctx = _make_context(store=store, provider=_fake_first_party_provider())
+            res = advisor_command_call("claude-opus-4-6", ctx)
+            self.assertIn("<provider>:<model>", res.value)
             self.assertEqual(store.writes, [])
 
 
@@ -237,8 +254,8 @@ class TestAdvisorCommandSettingsPath(unittest.TestCase):
     def test_set_persists_to_settings(self) -> None:
         with _IsolatedEnv():
             ctx = _make_context(provider=_fake_first_party_provider())
-            res = advisor_command_call("claude-opus-4-6", ctx)
-            self.assertIn("Advisor set to claude-opus-4-6", res.value)
+            res = advisor_command_call("anthropic:claude-opus-4-6", ctx)
+            self.assertIn("Advisor set to anthropic:claude-opus-4-6", res.value)
             # Read back via the settings stack (fresh load).
             from src.settings.settings import get_settings, invalidate_settings_cache
             invalidate_settings_cache()
@@ -247,7 +264,7 @@ class TestAdvisorCommandSettingsPath(unittest.TestCase):
     def test_unset_persists_to_settings(self) -> None:
         with _IsolatedEnv():
             ctx = _make_context(provider=_fake_first_party_provider())
-            advisor_command_call("claude-opus-4-6", ctx)
+            advisor_command_call("anthropic:claude-opus-4-6", ctx)
             # Now unset it.
             res = advisor_command_call("off", ctx)
             self.assertIn("disabled", res.value.lower())
@@ -264,7 +281,7 @@ class TestAdvisorCommandSettingsPath(unittest.TestCase):
             # Prime the cache.
             self.assertEqual(get_settings().advisor_model, "")
             ctx = _make_context(provider=_fake_first_party_provider())
-            advisor_command_call("claude-opus-4-6", ctx)
+            advisor_command_call("anthropic:claude-opus-4-6", ctx)
             # No explicit invalidate — the command must do it.
             self.assertEqual(get_settings().advisor_model, "claude-opus-4-6")
 
@@ -284,7 +301,7 @@ class TestAdvisorCommandStorePathInvalidatesCache(unittest.TestCase):
             # Prime cache.
             self.assertEqual(get_settings().advisor_model, "")
             ctx = _make_context(store=store, provider=_fake_first_party_provider())
-            advisor_command_call("claude-opus-4-6", ctx)
+            advisor_command_call("anthropic:claude-opus-4-6", ctx)
             # Store handler should have written + invalidated.
             self.assertEqual(get_settings().advisor_model, "claude-opus-4-6")
             # And the store itself reflects the value.
