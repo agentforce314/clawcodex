@@ -85,7 +85,11 @@ class CostTracker:
     _unknown_models: set[str] = field(default_factory=set)
 
     def record_usage(self, model: str, usage: dict[str, Any]) -> float:
-        pricing = _get_pricing(model)
+        # Legacy cost-tracker contract: always price something (the
+        # rolling session total has to be monotonic). For unknown
+        # models, fall back to DEFAULT_PRICING — divergent from the
+        # status-bar path, which suppresses unknowns entirely.
+        pricing = _get_pricing(model) or DEFAULT_PRICING
 
         input_tokens = int(usage.get("input_tokens", 0))
         output_tokens = int(usage.get("output_tokens", 0))
@@ -153,7 +157,7 @@ class CostTracker:
     def get_cache_savings(self) -> float:
         total_savings = 0.0
         for event in self._events:
-            pricing = _get_pricing(event.model)
+            pricing = _get_pricing(event.model) or DEFAULT_PRICING
             saved_per_token = pricing["input"] - pricing["cache_read"]
             total_savings += event.cache_read_input_tokens * saved_per_token
         return total_savings
