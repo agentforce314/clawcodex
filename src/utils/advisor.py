@@ -277,16 +277,31 @@ ADVISOR_MODE_CLIENT_SIDE = "client_side"
 # provider as the system message. Kept short — the conversation we
 # forward is the substantive context, and the prompt's role is just to
 # orient the advisor model on what kind of feedback to produce.
-CLIENT_ADVISOR_SYSTEM_PROMPT = """You are a senior reviewer model. Another model is working through a task and has paused to consult you. The conversation forwarded below is everything the worker model has seen so far: the user's request, every tool call the worker made, every result.
+CLIENT_ADVISOR_SYSTEM_PROMPT = """You are a senior reviewer being consulted by a junior worker model that has paused mid-task to get your judgment. The conversation below is everything the worker has seen and done so far: the user's task, every tool call the worker made, every result.
 
-Your job: produce concise, high-signal advice that helps the worker decide what to do next. Concretely:
+# CRITICAL — read these before responding
 
-- If the worker's interpretation of the task or its current approach looks wrong, say so and explain the better path.
-- If you spot a bug, a missed constraint, a hidden invariant, or a step the worker is about to skip, name it.
-- If the worker is at a fork between approaches, recommend one and explain the tradeoff.
-- If the worker is done, sanity-check: did they actually solve what was asked? What edge cases didn't they cover?
+1. **DO NOT restate, summarize, or echo back the worker's plan.** They already know what they're doing. Restating is worse than useless — it wastes their context window and your turn. If you find yourself writing "your plan is to ..." STOP and delete that paragraph.
 
-Keep it tight — short paragraphs, no preamble. Don't repeat what the worker already knows. Don't add disclaimers about being an AI. Write directly to the worker model in second person."""
+2. **DO NOT respond in the worker's voice.** Never write "I will...", "My plan is...", "Let me...". You are NOT the worker. You are the reviewer talking AT the worker. Use "you" / "your" / "the plan" — second-person, never first-person.
+
+3. **Your only value is the gap.** Tell the worker what they CAN'T see — what they missed, what's risky, what better approach exists. Anything the worker already wrote in their own message is something they already know — never repeat it.
+
+# Output shape
+
+Reply in this exact format. No preamble. No sign-off.
+
+**Gaps:** 1-3 short bullets on what's missing, wrong, or unclear in the plan. If nothing material → write "Nothing material missing." (one bullet, no more).
+
+**Risks:** 1-3 short bullets on what could break, surprise, or bite later. Concrete failure modes only — not generic disclaimers.
+
+**Do next:** ONE sentence. The single most-important next action.
+
+If the worker's whole approach is fundamentally wrong, skip the format and write a short "Stop — rethink: ..." paragraph instead, then the one-sentence next action.
+
+# Style
+
+Terse. Concrete. Write directly. No hedging ("you might want to consider"), no flattery ("good plan, but..."), no disclaimers ("as an AI..."), no "I think". Cut every sentence that isn't load-bearing."""
 
 
 # Tool-use shape that the main-loop model sees in client-side mode.
@@ -414,8 +429,12 @@ def decide_advisor_mode(
 
 
 CLIENT_ADVISOR_PROMPT_SUFFIX = (
-    "Please review the conversation above and give me your advice on what "
-    "to do next. Be concrete."
+    "Now produce advice in the format your system prompt specified "
+    "(Gaps / Risks / Do next). DO NOT restate or paraphrase the plan "
+    "above — the worker already wrote it. Tell them only what they "
+    "can't see: what's missing, what's risky, what to do next. If "
+    "their plan is already solid, say 'Nothing material missing.' "
+    "and recommend the single next action."
 )
 
 
@@ -488,6 +507,12 @@ def _flatten_content_for_advisor(content: Any) -> str:
             if isinstance(t, str) and t.strip():
                 parts.append(t)
         elif bt in ("tool_use", "server_tool_use", "mcp_tool_use"):
+            # Drop the worker's OWN advisor call — the marker would
+            # invite the reviewer to "answer the call" in the worker's
+            # voice rather than give fresh advice. The reviewer
+            # already knows it IS the advisor.
+            if block.get("name") == ADVISOR_TOOL_NAME:
+                continue
             parts.append(_tool_use_to_text(block))
         elif bt == "tool_result":
             parts.append(_tool_result_to_text(block))
@@ -499,6 +524,27 @@ def _flatten_content_for_advisor(content: Any) -> str:
             # Unknown block — preserve the type signal but no payload.
             parts.append(f"[{bt}]")
     return "\n".join(parts).strip()
+
+
+_ADVISOR_PAIRING_CRUFT = (
+    "[Tool result missing due to internal error]",
+    "[Tool use interrupted]",
+)
+
+
+def _is_advisor_pairing_cruft(text: str) -> bool:
+    """True if the message is just orphan-pairing-pass injected cruft.
+
+    ``normalize_messages_for_api`` runs ``ensure_tool_result_pairing``
+    which, on the in-flight worker advisor tool_use, injects a
+    synthetic tool_result UserMessage with a "[Tool result missing
+    due to internal error]" placeholder. That cruft is meaningful to
+    the API (keeps tool_use/tool_result pairing valid) but
+    counterproductive to the advisor (looks like a real tool failure
+    the advisor should react to). Strip it from the forwarded view.
+    """
+    t = text.strip()
+    return any(cruft in t for cruft in _ADVISOR_PAIRING_CRUFT)
 
 
 def build_advisor_forwarded_messages(
@@ -539,6 +585,16 @@ def build_advisor_forwarded_messages(
         role = msg.get("role")
         text = _flatten_content_for_advisor(msg.get("content"))
         if not text:
+            continue
+        # Drop the orphan-pairing-pass artifact: a synthetic user
+        # message containing only "[Tool result missing due to
+        # internal error]" wraps the in-flight worker advisor call.
+        # It's required for downstream API tool_use/tool_result
+        # pairing but tells the advisor "your worker just failed",
+        # confusing the response. The worker's own tool_use was
+        # already dropped from the flattened content above; the
+        # synthetic result has no surviving partner anyway.
+        if _is_advisor_pairing_cruft(text):
             continue
         flattened.append({"role": role, "content": text})
 
