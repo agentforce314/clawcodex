@@ -71,6 +71,7 @@ class REPLScreen(Screen):
         workspace_root: Path,
         words_provider: Callable[[], list[str]],
         suggestions_provider: Callable[[], list["CommandSuggestion"]] | None = None,
+        provider_instance: object | None = None,
     ) -> None:
         super().__init__()
         self._version = version
@@ -79,6 +80,7 @@ class REPLScreen(Screen):
         self._workspace_root = Path(workspace_root)
         self._words_provider = words_provider
         self._suggestions_provider = suggestions_provider
+        self._provider_instance = provider_instance
 
         self.header_widget = StartupHeader(
             version=version,
@@ -91,6 +93,7 @@ class REPLScreen(Screen):
             provider=provider,
             model=model,
             workspace_root=self._workspace_root,
+            provider_instance=provider_instance,
         )
         self.prompt_input = PromptInput(
             words_provider=words_provider,
