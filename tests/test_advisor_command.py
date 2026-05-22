@@ -9,8 +9,11 @@ covered:
   * non-supported base model warning (advisor set, but inactive)
 
 The command writes through ``_write_advisor_model`` which prefers the
-reactive AppState store when present and falls back to direct settings
-writes. Tests cover BOTH paths.
+reactive AppState store when present and falls back to mutating the
+in-memory settings cache. Advisor configuration is session-only:
+nothing is written to ~/.clawcodex/config.json, and a fresh launch
+always starts with advisor unset. Tests cover BOTH write paths plus
+the session-only contract.
 """
 
 from __future__ import annotations
@@ -249,63 +252,87 @@ class TestAdvisorCommandStorePath(unittest.TestCase):
 
 
 class TestAdvisorCommandSettingsPath(unittest.TestCase):
-    """When no store is wired, writes go to the global settings file."""
+    """When no store is wired, writes mutate the in-memory settings
+    cache. Advisor configuration is session-only: nothing is written
+    to disk, and a settings reload (invalidate + get_settings) returns
+    the value to its default."""
 
-    def test_set_persists_to_settings(self) -> None:
+    def test_set_updates_session_cache(self) -> None:
         with _IsolatedEnv():
+            from src.settings.settings import get_settings
             ctx = _make_context(provider=_fake_first_party_provider())
             res = advisor_command_call("anthropic:claude-opus-4-6", ctx)
             self.assertIn("Advisor set to anthropic:claude-opus-4-6", res.value)
-            # Read back via the settings stack (fresh load).
-            from src.settings.settings import get_settings, invalidate_settings_cache
-            invalidate_settings_cache()
+            # Mid-session: cached settings reflect the write.
             self.assertEqual(get_settings().advisor_model, "claude-opus-4-6")
+            self.assertEqual(get_settings().advisor_provider, "anthropic")
 
-    def test_unset_persists_to_settings(self) -> None:
+    def test_set_does_not_persist_to_disk(self) -> None:
+        # The contract: a process restart resets advisor to off.
+        # We simulate restart by invalidating the cache + reloading.
         with _IsolatedEnv():
             ctx = _make_context(provider=_fake_first_party_provider())
             advisor_command_call("anthropic:claude-opus-4-6", ctx)
-            # Now unset it.
+            from src.settings.settings import get_settings, invalidate_settings_cache
+            invalidate_settings_cache()
+            # After reload, advisor is back to its default.
+            self.assertEqual(get_settings().advisor_model, "")
+            self.assertEqual(get_settings().advisor_provider, "")
+
+    def test_unset_clears_session_cache(self) -> None:
+        with _IsolatedEnv():
+            from src.settings.settings import get_settings
+            ctx = _make_context(provider=_fake_first_party_provider())
+            advisor_command_call("anthropic:claude-opus-4-6", ctx)
             res = advisor_command_call("off", ctx)
             self.assertIn("disabled", res.value.lower())
-            from src.settings.settings import get_settings, invalidate_settings_cache
-            invalidate_settings_cache()
+            # Cache shows it cleared, no disk roundtrip required.
             self.assertEqual(get_settings().advisor_model, "")
 
-    def test_set_invalidates_settings_cache(self) -> None:
-        # After the command runs, the next get_settings() call must
-        # observe the new value — otherwise mid-session toggles would
-        # be invisible to _call_model_sync until process restart.
+    def test_set_visible_without_explicit_invalidate(self) -> None:
+        # The cache is mutated in place, so consumers reading
+        # ``get_settings()`` after /advisor see the new value without
+        # an invalidate dance. Critical for _call_model_sync, which
+        # reads per turn.
         with _IsolatedEnv():
             from src.settings.settings import get_settings
-            # Prime the cache.
             self.assertEqual(get_settings().advisor_model, "")
             ctx = _make_context(provider=_fake_first_party_provider())
             advisor_command_call("anthropic:claude-opus-4-6", ctx)
-            # No explicit invalidate — the command must do it.
             self.assertEqual(get_settings().advisor_model, "claude-opus-4-6")
 
 
-class TestAdvisorCommandStorePathInvalidatesCache(unittest.TestCase):
-    """When the reactive AppState store is wired, the _on_change handler
-    is responsible for persisting to settings AND invalidating the
-    cache. Verify the round trip — without this, mid-session toggles
-    via the store wouldn't show up in the next _call_model_sync read.
+class TestAdvisorCommandStorePathMirrorsCache(unittest.TestCase):
+    """When the reactive AppState store is wired, the _on_change
+    handler mirrors the new value into the settings cache so consumers
+    reading ``get_settings()`` see it. No disk write happens — the
+    contract is the same as the direct path: session-only.
     """
 
-    def test_store_setstate_invalidates_settings_cache(self) -> None:
+    def test_store_setstate_mirrors_to_settings_cache(self) -> None:
         with _IsolatedEnv():
             from src.settings.settings import get_settings
-            from src.state.app_state import create_app_state_store, replace_state
+            from src.state.app_state import create_app_state_store
             store = create_app_state_store()
             # Prime cache.
             self.assertEqual(get_settings().advisor_model, "")
             ctx = _make_context(store=store, provider=_fake_first_party_provider())
             advisor_command_call("anthropic:claude-opus-4-6", ctx)
-            # Store handler should have written + invalidated.
+            # Store handler mirrored to cache.
             self.assertEqual(get_settings().advisor_model, "claude-opus-4-6")
             # And the store itself reflects the value.
             self.assertEqual(store.get_state().advisor_model, "claude-opus-4-6")
+
+    def test_store_path_does_not_persist_to_disk(self) -> None:
+        with _IsolatedEnv():
+            from src.settings.settings import get_settings, invalidate_settings_cache
+            from src.state.app_state import create_app_state_store
+            store = create_app_state_store()
+            ctx = _make_context(store=store, provider=_fake_first_party_provider())
+            advisor_command_call("anthropic:claude-opus-4-6", ctx)
+            invalidate_settings_cache()
+            # Reload drops the session value.
+            self.assertEqual(get_settings().advisor_model, "")
 
 
 if __name__ == "__main__":

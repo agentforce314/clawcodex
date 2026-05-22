@@ -91,24 +91,25 @@ class AppState:
     initial_message: str | None = None
 
     # Advisor model (TS: AppStateStore.ts advisorModel). None = no /advisor.
-    # Writes here fire ``_on_advisor_model_change``, which persists into
-    # ``settings.advisor_model`` (the read channel — see
-    # ``src/utils/advisor.py`` and ``src/query/query.py``) and invalidates
-    # the settings cache so the next API call picks up the new value.
+    # SESSION-ONLY: writes here fire ``_on_advisor_model_change``, which
+    # mirrors the new value into the in-memory settings cache so
+    # consumers reading ``get_settings().advisor_model`` (e.g.
+    # ``src/utils/advisor.py``, ``src/query/query.py``) see it within
+    # this process. Nothing is persisted to ~/.clawcodex/config.json —
+    # the user must run /advisor each launch.
     advisor_model: str | None = None
 
     # Provider key (matches ``~/.clawcodex/config.json``'s providers map)
     # for the advisor model. REQUIRED when advisor_model is set —
     # see ``src/settings/types.py:advisor_provider`` for the rationale.
-    # Persisted via ``_on_advisor_provider_change`` alongside advisor_model.
+    # SESSION-ONLY (see advisor_model above).
     advisor_provider: str | None = None
 
     # Force client-side advisor mode. False = auto (server-side when
     # possible, client-side otherwise). True = always client-side even
     # on 1P Anthropic (lets users pair a non-Anthropic advisor with an
     # Anthropic main loop, or get transparency on the advisor call).
-    # Persisted to ``settings.advisor_client_mode`` via
-    # ``_on_advisor_client_mode_change``.
+    # SESSION-ONLY (see advisor_model above).
     advisor_client_mode: bool = False
 
 
@@ -233,118 +234,79 @@ def _on_initial_message_change(old: AppState, new: AppState) -> None:
 
 
 def _on_advisor_model_change(old: AppState, new: AppState) -> None:
-    """Persist advisor_model to user settings + invalidate the read cache.
+    """Mirror advisor_model into the in-memory settings cache.
 
-    Mirrors TS ``commands/advisor.ts:49`` (``updateSettingsForSource(
-    'userSettings', { advisorModel })``). The persistence pattern matches
-    the existing TODO on ``_on_main_loop_model_change`` — settings are
-    layered as ``global > project > local``; we write the user-scoped
-    global level only. After persisting, the in-memory settings cache must
-    be invalidated so the next ``get_settings()`` call (which
-    ``_call_model_sync`` makes per-turn) reflects the new value
-    immediately. Without the invalidate, mid-session toggles would only
-    take effect after a process restart.
+    Advisor configuration is session-only: a fresh clawcodex launch
+    always starts with advisor unset. ``load_settings`` zeroes the
+    advisor fields when constructing the SettingsSchema, so any value
+    that older builds wrote to ``~/.clawcodex/config.json`` is ignored
+    on read. This handler only updates the in-memory cache so the next
+    ``get_settings()`` call (made per-turn by consumers like
+    ``_call_model_sync``) sees the new value for the lifetime of this
+    process. Nothing is written to disk.
     """
     if old.advisor_model == new.advisor_model:
         return
-    # Local imports avoid making this module's import time pay for the
-    # settings stack on cold start. Use the SHARED default ConfigManager
-    # so callers reading via ``load_config()`` / the global cache see
-    # the new value, not a stale in-memory snapshot from before the
-    # write.
-    from src import config as cfg_mod
-    from src.settings.settings import invalidate_settings_cache
+    from src.settings.settings import get_settings
     try:
-        mgr = cfg_mod._get_default_manager()
-        cfg = mgr.load_global()
-        settings_section = cfg.get("settings")
-        if not isinstance(settings_section, dict):
-            settings_section = {}
-        # None / "" both map to "unset" — write empty string for
-        # round-trip fidelity with the SettingsSchema default.
-        settings_section["advisor_model"] = new.advisor_model or ""
-        cfg["settings"] = settings_section
-        mgr.save_global(cfg)
-        invalidate_settings_cache()
+        settings = get_settings()
+        settings.advisor_model = new.advisor_model or ""
         logger.debug(
-            "AppState.advisor_model %s -> %s — persisted + cache invalidated",
+            "AppState.advisor_model %s -> %s — mirrored to settings cache (session only)",
             old.advisor_model,
             new.advisor_model,
         )
     except Exception:
-        # The slash command already reported success to the user based on
-        # the in-memory store update; surface persistence failures via the
-        # log but don't propagate (the in-memory change still works for
-        # the current process; only re-launches would lose the setting).
         logger.exception(
-            "Failed to persist advisor_model to settings; in-memory value still active"
+            "Failed to mirror advisor_model to settings cache"
         )
 
 
 def _on_advisor_provider_change(old: AppState, new: AppState) -> None:
-    """Persist advisor_provider to user settings + invalidate the read cache.
+    """Mirror advisor_provider into the in-memory settings cache.
 
-    Same persistence pattern as :func:`_on_advisor_model_change`. Written
-    alongside advisor_model by the /advisor command (both fields are part
-    of the ``<provider>:<model>`` argument and move together). Surfaces
-    as ``settings.advisor_provider`` for the read channel; see
-    ``src/utils/advisor.py`` for the consumer side.
+    Same session-only pattern as :func:`_on_advisor_model_change`.
+    Written alongside advisor_model by the /advisor command (both
+    fields are part of the ``<provider>:<model>`` argument and move
+    together). Surfaces as ``settings.advisor_provider`` for the read
+    channel; see ``src/utils/advisor.py`` for the consumer side.
     """
     if old.advisor_provider == new.advisor_provider:
         return
-    from src import config as cfg_mod
-    from src.settings.settings import invalidate_settings_cache
+    from src.settings.settings import get_settings
     try:
-        mgr = cfg_mod._get_default_manager()
-        cfg = mgr.load_global()
-        settings_section = cfg.get("settings")
-        if not isinstance(settings_section, dict):
-            settings_section = {}
-        settings_section["advisor_provider"] = new.advisor_provider or ""
-        cfg["settings"] = settings_section
-        mgr.save_global(cfg)
-        invalidate_settings_cache()
+        settings = get_settings()
+        settings.advisor_provider = new.advisor_provider or ""
         logger.debug(
-            "AppState.advisor_provider %s -> %s — persisted + cache invalidated",
+            "AppState.advisor_provider %s -> %s — mirrored to settings cache (session only)",
             old.advisor_provider,
             new.advisor_provider,
         )
     except Exception:
         logger.exception(
-            "Failed to persist advisor_provider to settings; in-memory value still active"
+            "Failed to mirror advisor_provider to settings cache"
         )
 
 
 def _on_advisor_client_mode_change(old: AppState, new: AppState) -> None:
-    """Persist advisor_client_mode to user settings + invalidate the read cache.
+    """Mirror advisor_client_mode into the in-memory settings cache.
 
-    Same persistence pattern as ``_on_advisor_model_change`` — writes the
-    boolean into the user-scoped global config and invalidates the cache
-    so the next ``_call_model_sync`` turn picks up the new value without
-    a process restart.
+    Same session-only pattern as :func:`_on_advisor_model_change`.
     """
     if old.advisor_client_mode == new.advisor_client_mode:
         return
-    from src import config as cfg_mod
-    from src.settings.settings import invalidate_settings_cache
+    from src.settings.settings import get_settings
     try:
-        mgr = cfg_mod._get_default_manager()
-        cfg = mgr.load_global()
-        settings_section = cfg.get("settings")
-        if not isinstance(settings_section, dict):
-            settings_section = {}
-        settings_section["advisor_client_mode"] = bool(new.advisor_client_mode)
-        cfg["settings"] = settings_section
-        mgr.save_global(cfg)
-        invalidate_settings_cache()
+        settings = get_settings()
+        settings.advisor_client_mode = bool(new.advisor_client_mode)
         logger.debug(
-            "AppState.advisor_client_mode %s -> %s — persisted + cache invalidated",
+            "AppState.advisor_client_mode %s -> %s — mirrored to settings cache (session only)",
             old.advisor_client_mode,
             new.advisor_client_mode,
         )
     except Exception:
         logger.exception(
-            "Failed to persist advisor_client_mode to settings; in-memory value still active"
+            "Failed to mirror advisor_client_mode to settings cache"
         )
 
 

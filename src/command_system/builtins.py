@@ -436,8 +436,9 @@ def _read_current_advisor_model(context: CommandContext) -> str | None:
 
     Prefers the reactive AppState store if the caller wired one (so a
     just-issued ``/advisor`` from this session reads its own write
-    without a settings-cache roundtrip), and falls back to the
-    persisted settings — the source of truth on every restart.
+    without a cache roundtrip), and falls back to the in-memory
+    settings cache. Both are session-only: a fresh launch starts with
+    advisor unset, so this returns ``None`` until /advisor is run.
     """
     store = getattr(context, "app_state_store", None)
     if store is not None:
@@ -457,36 +458,25 @@ def _read_current_advisor_model(context: CommandContext) -> str | None:
 
 
 def _write_advisor_model(context: CommandContext, value: str | None) -> None:
-    """Persist a new advisor_model and update the reactive store if present.
+    """Update advisor_model for the current session — no disk persistence.
 
-    Both writes are idempotent. When an AppState store is wired (e.g.
-    tests, future TUI wiring), ``replace_state`` fires
-    ``_on_advisor_model_change`` which itself writes to settings — so
-    we skip the direct settings write to avoid double-saving. When the
-    store is absent (the current TUI configuration), we update settings
-    directly via the same chokepoint the handler uses.
+    Advisor configuration is session-only: a fresh clawcodex launch
+    always starts with advisor unset, so the user must run /advisor
+    each session. When an AppState store is wired (tests), ``replace_state``
+    fires ``_on_advisor_model_change`` which mutates the in-memory
+    settings cache. When the store is absent (the current TUI),
+    we mutate the cached ``SettingsSchema`` directly so the next
+    ``get_settings()`` call returns the new value for the lifetime of
+    this process.
     """
     store = getattr(context, "app_state_store", None)
     if store is not None:
         from ..state.app_state import replace_state
         store.set_state(lambda s: replace_state(s, advisor_model=value or None))
         return
-    # No reactive store — write straight to settings + invalidate cache
-    # so the next API call picks up the change. Use the shared default
-    # ConfigManager (instead of a fresh one) so the in-process
-    # ``_global_cache`` field stays consistent for callers that read
-    # via ``load_config()`` / ``_get_default_manager().get_merged()``.
-    from .. import config as cfg_mod
-    from ..settings.settings import invalidate_settings_cache
-    mgr = cfg_mod._get_default_manager()
-    cfg = mgr.load_global()
-    settings_section = cfg.get("settings")
-    if not isinstance(settings_section, dict):
-        settings_section = {}
-    settings_section["advisor_model"] = value or ""
-    cfg["settings"] = settings_section
-    mgr.save_global(cfg)
-    invalidate_settings_cache()
+    from ..settings.settings import get_settings
+    settings = get_settings()
+    settings.advisor_model = value or ""
 
 
 def _read_current_advisor_provider(context: CommandContext) -> str:
@@ -508,9 +498,9 @@ def _read_current_advisor_provider(context: CommandContext) -> str:
 
 
 def _write_advisor_provider(context: CommandContext, value: str | None) -> None:
-    """Persist advisor_provider (store preferred, settings fallback).
-    Mirrors ``_write_advisor_model`` — same dual-path persistence.
-    Empty / None clears the field."""
+    """Update advisor_provider for the current session — no disk
+    persistence. Mirrors ``_write_advisor_model``; see that function's
+    docstring for the session-only rationale."""
     normalized = (value or "").strip()
     store = getattr(context, "app_state_store", None)
     if store is not None:
@@ -519,17 +509,9 @@ def _write_advisor_provider(context: CommandContext, value: str | None) -> None:
             lambda s: replace_state(s, advisor_provider=(normalized or None))
         )
         return
-    from .. import config as cfg_mod
-    from ..settings.settings import invalidate_settings_cache
-    mgr = cfg_mod._get_default_manager()
-    cfg = mgr.load_global()
-    settings_section = cfg.get("settings")
-    if not isinstance(settings_section, dict):
-        settings_section = {}
-    settings_section["advisor_provider"] = normalized
-    cfg["settings"] = settings_section
-    mgr.save_global(cfg)
-    invalidate_settings_cache()
+    from ..settings.settings import get_settings
+    settings = get_settings()
+    settings.advisor_provider = normalized
 
 
 def _list_configured_providers() -> list[str]:
@@ -566,24 +548,17 @@ def _read_current_advisor_client_mode(context: CommandContext) -> bool:
 
 
 def _write_advisor_client_mode(context: CommandContext, value: bool) -> None:
-    """Persist advisor_client_mode (store-preferred, settings fallback).
-    Mirrors ``_write_advisor_model`` — same dual-path persistence."""
+    """Update advisor_client_mode for the current session — no disk
+    persistence. Mirrors ``_write_advisor_model``; see that function's
+    docstring for the session-only rationale."""
     store = getattr(context, "app_state_store", None)
     if store is not None:
         from ..state.app_state import replace_state
         store.set_state(lambda s: replace_state(s, advisor_client_mode=bool(value)))
         return
-    from .. import config as cfg_mod
-    from ..settings.settings import invalidate_settings_cache
-    mgr = cfg_mod._get_default_manager()
-    cfg = mgr.load_global()
-    settings_section = cfg.get("settings")
-    if not isinstance(settings_section, dict):
-        settings_section = {}
-    settings_section["advisor_client_mode"] = bool(value)
-    cfg["settings"] = settings_section
-    mgr.save_global(cfg)
-    invalidate_settings_cache()
+    from ..settings.settings import get_settings
+    settings = get_settings()
+    settings.advisor_client_mode = bool(value)
 
 
 def advisor_command_call(args: str, context: CommandContext) -> LocalCommandResult:
@@ -598,6 +573,10 @@ def advisor_command_call(args: str, context: CommandContext) -> LocalCommandResu
     openai (litellm), openrouter, bedrock, etc. Name-based inference
     was ambiguous and silently routed to the wrong endpoint.
 
+    Configuration is session-only: a fresh launch always starts with
+    advisor unset, and the user must re-run ``/advisor`` each session.
+    Nothing is written to ``~/.clawcodex/config.json``.
+
     Branches (after parsing optional ``--client`` / ``--no-client``):
       * no args, no flags → status report (provider/model + mode).
       * ``unset`` | ``off`` → clear advisor_model, advisor_provider,
@@ -605,8 +584,8 @@ def advisor_command_call(args: str, context: CommandContext) -> LocalCommandResu
       * ``--no-client`` alone → keep model+provider, clear client-mode.
       * ``--client`` alone → keep model+provider, set client-mode.
       * ``<provider>:<model>`` → validate provider exists in config,
-        persist both fields together. ``--client`` flag (if present)
-        also persists advisor_client_mode.
+        set both fields together. ``--client`` flag (if present) also
+        sets advisor_client_mode.
 
     Examples:
       * ``/advisor anthropic:claude-opus-4-7``  (direct Anthropic API)

@@ -69,23 +69,18 @@ def _isolate_env():
 
 
 def _set_advisor(value: str) -> None:
-    import src.config as cfg_mod
-    from src.config import ConfigManager
-    from src.settings.settings import invalidate_settings_cache
-    cfg_mod._default_manager = None
-    mgr = ConfigManager()
-    cfg = mgr.load_global()
-    sub = cfg.get("settings") if isinstance(cfg.get("settings"), dict) else {}
-    sub["advisor_model"] = value
-    # Post multi-provider rewrite: advisor_provider is required for
-    # the advisor to be considered active. Default to "anthropic" for
-    # these smoke tests since they all exercise the first-party
-    # server-side path; tests overriding to a non-anthropic provider
-    # would need to set this explicitly.
-    sub["advisor_provider"] = "anthropic" if value else ""
-    cfg["settings"] = sub
-    mgr.save_global(cfg)
-    invalidate_settings_cache()
+    """Set advisor_model + advisor_provider on the cached SettingsSchema.
+
+    Advisor fields are session-only: ``load_settings`` zeroes them on
+    every load, so disk writes wouldn't survive a cache invalidation.
+    Matches the /advisor command's behaviour, which mutates the cached
+    SettingsSchema directly. The "anthropic" default for the provider
+    keeps these smoke tests on the first-party server-side path.
+    """
+    from src.settings.settings import get_settings
+    settings = get_settings()
+    settings.advisor_model = value
+    settings.advisor_provider = "anthropic" if value else ""
 
 
 def _build_fake_anthropic_response(content_blocks: list[dict]) -> Any:
