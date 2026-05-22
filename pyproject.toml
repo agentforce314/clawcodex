@@ -48,6 +48,10 @@ dependencies = [
     # Ch16 Phase 0: SSE consumer for the CCR v2 SSE read transport. ``httpx``
     # itself is transitively available via the ``anthropic`` SDK.
     "httpx-sse>=0.4",
+    # Official Model Context Protocol SDK used by ``src.services.mcp`` for
+    # stdio, SSE, Streamable HTTP, WebSocket, OAuth discovery, and JSON-RPC
+    # message models.
+    "mcp>=1.27.0",
     # Image decode/resize/encode for the FileReadTool image pipeline (port
     # of TS imageResizer.ts which uses sharp). Pillow has pure-Python wheels
     # for all platforms and covers PNG/JPEG/GIF/WebP and palette quantization.
