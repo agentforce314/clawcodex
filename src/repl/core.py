@@ -301,6 +301,7 @@ import asyncio
 import sys
 import json
 import threading
+import time
 from collections import deque
 from typing import Any
 
@@ -536,6 +537,17 @@ class ClawcodexREPL:
         # interfering with the other's trigger.
         from prompt_toolkit.completion import merge_completers
 
+        # TTL cache for the slash-command suggestion list. ``build_command
+        # _suggestions`` walks the user/project/managed skills dirs on every
+        # call (~1.1s cold), and prompt_toolkit asks the completer on every
+        # keystroke while typing — so without a cache the first ``/`` press
+        # blocks the input row for over a second. Refreshed lazily; the
+        # background warm below populates the cache before the user can
+        # plausibly press ``/``. Invalidated on a 30 s TTL so newly-added
+        # skills surface within a turn or two.
+        self._slash_suggestions_cache: list[Any] | None = None
+        self._slash_suggestions_cache_at: float = 0.0
+
         self._slash_completer = _SlashOnlyCompleter(
             self._get_slash_command_words,
             suggestions_provider=self._get_slash_command_suggestions,
@@ -546,6 +558,15 @@ class ClawcodexREPL:
         self.completer = merge_completers(
             [self._slash_completer, self._at_completer]
         )
+
+        # Warm the slash-command suggestion cache in the background so the
+        # very first ``/`` keystroke doesn't pay the cold import + disk-walk
+        # cost. Daemon thread so it can't block REPL shutdown.
+        threading.Thread(
+            target=self._warm_slash_suggestions_cache,
+            name="slash-suggestions-warm",
+            daemon=True,
+        ).start()
 
         # Key bindings.
         #
@@ -586,6 +607,37 @@ class ClawcodexREPL:
                 buf.insert_text("/")
                 if was_empty:
                     buf.start_completion(select_first=False)
+
+            def _refresh_slash_menu_after_deletion(event, deleter):  # type: ignore[no-untyped-def]
+                # prompt_toolkit's ``complete_while_typing`` only fires on
+                # ``insert_text`` (buffer.py:1248-1252) — text deletions
+                # close the completion popup but never reopen it. That's
+                # what makes ``/exit`` → backspace to ``/ex`` go silent:
+                # the popup closes when the menu's selected completion no
+                # longer matches, and nothing re-triggers it. So we
+                # explicitly restart completion after the deletion when
+                # the cursor is still on a slash token.
+                buf = event.current_buffer
+                deleter(buf)
+                if not (buf.completer and buf.complete_while_typing()):
+                    return
+                token, _ = _SlashOnlyCompleter._current_slash_token(
+                    buf.document.text_before_cursor
+                )
+                if token is not None:
+                    buf.start_completion(select_first=False)
+
+            @self.bindings.add("backspace")  # type: ignore[attr-defined]
+            def _backspace_refreshes_slash_menu(event):  # type: ignore[no-untyped-def]
+                _refresh_slash_menu_after_deletion(
+                    event, lambda b: b.delete_before_cursor(count=1)
+                )
+
+            @self.bindings.add("delete")  # type: ignore[attr-defined]
+            def _delete_refreshes_slash_menu(event):  # type: ignore[no-untyped-def]
+                _refresh_slash_menu_after_deletion(
+                    event, lambda b: b.delete(count=1)
+                )
 
             @self.bindings.add("c-m")  # type: ignore[attr-defined]
             def _enter_submits_or_backslash_newline(event):  # type: ignore[no-untyped-def]
@@ -1095,6 +1147,8 @@ class ClawcodexREPL:
         "tui": "Switch to the Textual TUI",
     }
 
+    _SLASH_SUGGESTIONS_TTL_S = 30.0
+
     def _get_slash_command_suggestions(self) -> list[Any]:
         """Return rich slash-command entries (name + description + tag).
 
@@ -1104,7 +1158,20 @@ class ClawcodexREPL:
         reusing :func:`src.tui.commands.build_command_suggestions`. Adds
         the REPL-only built-ins (``/save``, ``/load``, ``/tool``,
         ``/init``, ``/tui``) that the shared builder doesn't know about.
+
+        Cached with a 30-second TTL: the builder walks user/project/managed
+        skills dirs (~1.1s cold, ~0.4 ms warm) and prompt_toolkit calls
+        this on every keystroke after ``/``, so rebuilding the 500-entry
+        list each keystroke is what made the popup feel laggy.
         """
+
+        now = time.monotonic()
+        cached = self._slash_suggestions_cache
+        if (
+            cached is not None
+            and (now - self._slash_suggestions_cache_at) < self._SLASH_SUGGESTIONS_TTL_S
+        ):
+            return cached
 
         try:
             from src.tui.commands import CommandSuggestion, build_command_suggestions
@@ -1120,13 +1187,34 @@ class ClawcodexREPL:
                 extra.append(CommandSuggestion(name=name, description=description))
             # Built-ins lead the menu, then registry/skills (the order
             # ``build_command_suggestions`` already produces).
-            return [
+            result: list[Any] = [
                 *(s for s in base if getattr(s, "source", "") == "builtin"),
                 *extra,
                 *(s for s in base if getattr(s, "source", "") != "builtin"),
             ]
         except Exception:
-            return []
+            result = []
+
+        self._slash_suggestions_cache = result
+        self._slash_suggestions_cache_at = now
+        return result
+
+    def _warm_slash_suggestions_cache(self) -> None:
+        """Pre-populate the slash-command suggestion cache off the main thread.
+
+        Called once from ``__init__``. Building the suggestion list cold
+        is ~1.1 s on a populated skills tree, which is what the user
+        perceives as latency on the very first ``/`` press. By doing the
+        work in a daemon thread during REPL startup the cache is already
+        warm by the time the user presses ``/``.
+        """
+
+        try:
+            self._get_slash_command_suggestions()
+        except Exception:
+            # Warming is a best-effort optimization; falling back to the
+            # lazy cold path on the next ``/`` press is acceptable.
+            pass
 
     def _refresh_completer(self) -> None:
         # The slash + ``@``-file completers are stable for the lifetime
