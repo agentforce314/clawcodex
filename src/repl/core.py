@@ -1247,6 +1247,12 @@ class ClawcodexREPL:
         # produce negative padding.
         console_width = max(1, getattr(self.console, "width", 0) or 80)
 
+        # Color bar starts at the line-number column and ends 7 cols
+        # short of the right terminal edge, leaving visible breathing
+        # room on the right so the bar doesn't run flush against the
+        # screen border.
+        target_right = max(1, console_width - 7)
+
         diff = Text()
         rendered = 0
         truncated = False
@@ -1265,20 +1271,18 @@ class ClawcodexREPL:
                 # on newlines and produce blank rows between every entry.
                 stripped = raw.rstrip("\n").rstrip("\r")
                 if stripped.startswith("+"):
-                    # Match Claude Code's truecolor dark theme. Background
-                    # starts at the line-number column and extends to the
-                    # right edge by padding the trailing space with the
-                    # same bg, so added/removed rows read as solid bars
-                    # across the full width. Mirrors
-                    # ``typescript/src/components/StructuredDiff/Fallback.tsx:331-346``
-                    # (lineNumStr + sigil + content + ' '.repeat(padding))
-                    # and ``typescript/src/utils/theme.ts darkTheme``
+                    # Colors mirror ``typescript/src/utils/theme.ts darkTheme``
                     # (``diffAdded: 'rgb(34,92,43)'``,
-                    # ``diffRemoved: 'rgb(122,41,54)'``).
+                    # ``diffRemoved: 'rgb(122,41,54)'``). The bar begins
+                    # one column to the left of the line-number digits
+                    # (i.e. the gutter carries a 1-col leading bg pad).
                     body = stripped[1:]
-                    gutter = f"{new_lineno:>4} "
+                    num_str = str(new_lineno)
+                    lead = " " * max(0, 4 - len(num_str) - 1)
+                    gutter = f" {num_str} "
                     visible = len(gutter) + 1 + cell_len(body)
-                    padding = max(0, console_width - visible)
+                    padding = max(0, target_right - len(lead) - visible)
+                    diff.append(lead)
                     diff.append(gutter, style="on rgb(34,92,43)")
                     diff.append("+", style="bold on rgb(34,92,43)")
                     diff.append(body + " " * padding, style="on rgb(34,92,43)")
@@ -1286,9 +1290,12 @@ class ClawcodexREPL:
                     new_lineno += 1
                 elif stripped.startswith("-"):
                     body = stripped[1:]
-                    gutter = f"{old_lineno:>4} "
+                    num_str = str(old_lineno)
+                    lead = " " * max(0, 4 - len(num_str) - 1)
+                    gutter = f" {num_str} "
                     visible = len(gutter) + 1 + cell_len(body)
-                    padding = max(0, console_width - visible)
+                    padding = max(0, target_right - len(lead) - visible)
+                    diff.append(lead)
                     diff.append(gutter, style="on rgb(122,41,54)")
                     diff.append("-", style="bold on rgb(122,41,54)")
                     diff.append(body + " " * padding, style="on rgb(122,41,54)")
