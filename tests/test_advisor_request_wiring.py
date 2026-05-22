@@ -110,18 +110,19 @@ def _isolate_env():
 
 
 def _set_settings(**kwargs):
-    """Write keys into the global settings file + invalidate cache."""
-    import src.config as cfg_mod
-    from src.config import ConfigManager
-    from src.settings.settings import invalidate_settings_cache
-    cfg_mod._default_manager = None
-    mgr = ConfigManager()
-    cfg = mgr.load_global()
-    sub = cfg.get("settings") if isinstance(cfg.get("settings"), dict) else {}
-    sub.update(kwargs)
-    cfg["settings"] = sub
-    mgr.save_global(cfg)
-    invalidate_settings_cache()
+    """Set fields on the cached SettingsSchema for the test.
+
+    Advisor fields (``advisor_model``, ``advisor_provider``,
+    ``advisor_client_mode``) are session-only — ``load_settings`` zeroes
+    them on every load, so writing to ~/.clawcodex/config.json wouldn't
+    survive an ``invalidate_settings_cache()``. The /advisor command
+    likewise mutates the cached SettingsSchema in place; the test
+    helper mirrors that behaviour to keep the wiring identical.
+    """
+    from src.settings.settings import get_settings
+    settings = get_settings()
+    for k, v in kwargs.items():
+        setattr(settings, k, v)
 
 
 def _run(provider, messages, system_prompt="hi", tools=None):

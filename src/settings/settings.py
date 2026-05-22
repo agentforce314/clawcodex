@@ -52,6 +52,17 @@ def load_settings(
     if extra_overrides:
         merged = _deep_merge(merged, extra_overrides)
 
+    # Advisor fields are session-only: each clawcodex launch starts with
+    # the advisor unset so the user must run /advisor explicitly. Any
+    # values that older builds wrote to ~/.clawcodex/config.json are
+    # ignored here. /advisor mutates the cached SettingsSchema in
+    # place (see _write_advisor_* in command_system/builtins.py), so
+    # mid-session reads still see the active configuration; only a
+    # process exit + restart resets them.
+    for _session_only in ("advisor_model", "advisor_provider", "advisor_client_mode"):
+        if _session_only in merged:
+            merged[_session_only] = "" if _session_only != "advisor_client_mode" else False
+
     return SettingsSchema.from_dict(merged)
 
 
