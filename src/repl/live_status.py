@@ -286,6 +286,48 @@ class LiveStatus:
                 except Exception:
                     pass
 
+        @bindings.add("s-tab")
+        def _cycle_permission_mode(event):  # type: ignore[no-untyped-def]
+            """Shift+Tab: cycle permission modes during agent work.
+
+            Delegates to the REPL's permission context if available.
+            """
+            try:
+                from src.permissions import cycle_permission_mode
+                from src.permissions.types import ToolPermissionContext
+
+                # Get the permission mode from REPL via the submit callback context
+                # The REPL's _permission_mode is accessed through self._on_submit
+                # We signal the permission change to the REPL through a shared state
+                on_submit = self._on_submit
+                if on_submit is not None:
+                    # Try to access the REPL's permission state via the submit handler
+                    # The submit handler is a bound method of ClawcodexREPL
+                    repl = getattr(on_submit, '__self__', None)
+                    if repl is not None and hasattr(repl, '_permission_mode'):
+                        current_mode = repl._permission_mode
+                        is_bypass_available = getattr(
+                            repl, '_is_bypass_permissions_mode_available', False
+                        )
+                        cycle_ctx = ToolPermissionContext(
+                            mode=current_mode,
+                            is_bypass_permissions_mode_available=is_bypass_available,
+                        )
+                        next_mode, next_ctx = cycle_permission_mode(cycle_ctx)
+                        repl._permission_mode = next_mode
+                        if repl.tool_context is not None:
+                            repl.tool_context.permission_context = next_ctx
+                            if next_mode == "bypassPermissions":
+                                repl.tool_context.permission_handler = lambda _tn, _msg, _sug: (True, False)
+                                repl.tool_context.allow_docs = True
+                            else:
+                                repl.tool_context.permission_handler = repl._handle_permission_request
+                                repl.tool_context.allow_docs = False
+                        # Update status to show mode change
+                        self.update(f"[mode: {next_mode}]")
+            except Exception:
+                pass
+
         # Editable input field — accepts keystrokes during agent work and
         # queues submissions back to the REPL via ``on_submit``.
         def _accept(buf: "Buffer") -> bool:

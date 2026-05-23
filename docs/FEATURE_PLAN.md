@@ -2,8 +2,8 @@
 
 > 文档路径: `docs/FEATURE_PLAN.md`
 > 基于: `clawcodex-opensource-replacement-analysis-v2.md`, `clawcodex_vs_ccb_analysis-v3.md`, `INTEGRATION.md`, `TEAM_MEMBERSHIP.md`
-> 版本: v1.3
-> 更新日期: 2026-05-20
+> 版本: v1.4
+> 更新日期: 2026-05-23
 
 ---
 
@@ -123,6 +123,79 @@ src/
 | Git 操作 | 6 个 subprocess.run() | GitPython | `context_system/_gitpython_adapter.py` | ✅ 完成 |
 | Hook 系统 | ~1,200 行自建 | Pluggy | `hooks/_pluggy_adapter.py` | ✅ 完成 |
 | 结构化输出 | json.loads + 手动验证 | Outlines | `agent/_outlines_adapter.py` | ✅ 完成 |
+
+### 2.5 工具系统按需加载（Tool System Extension）
+
+**状态**: ✅ 完成
+**目标**: 工具组件解耦，Agent 可配置完全无工具，支持按 bundle 选择性加载
+
+#### 架构设计
+
+```
+src/tool_system_ext/          # 扩展层（与上游解耦）
+├── bundles.py                 # 工具束定义
+├── registry_ext.py           # Registry 扩展（组合模式）
+├── agent_config.py           # Agent 工具配置
+└── patches/tool_system/      # 上游适配补丁
+```
+
+#### 四种工具模式
+
+| 模式 | 说明 | 工具数 |
+|------|------|--------|
+| `bare` | 零工具，纯推理 Agent | 0 |
+| `default` | 默认束（bash, edit, read, search） | 8 |
+| `clawcodex` | 所有原生内置工具 | 42 |
+| `all` | 所有工具束 | 15 bundles |
+
+#### 工具束定义
+
+| 束名 | 工具 |
+|------|------|
+| `default` | Bash, Edit, Write, Read, Glob, Grep, WebSearch, WebFetch |
+| `clawcodex` | 全部原生工具（Agent, AskUserQuestion, Bash, ... 等 42 个） |
+| `bash` | Bash |
+| `edit` | Edit, Write |
+| `read` | Read, Glob, Grep |
+| `search` | WebSearch, WebFetch |
+| `task` | TaskOutput, TaskStop, TaskCreate, TaskGet, TaskList, TaskUpdate |
+| `mcp` | MCPTool, ListMcpResources, ReadMcpResource |
+| `plan` | EnterPlanMode, ExitPlanMode |
+| `team` | TeamCreate, TeamDelete |
+| `cron` | CronCreate, CronDelete, CronList |
+| `worktree` | EnterWorktree, ExitWorktree |
+| `misc` | ClipboardRead, ClipboardWrite, Status, Sleep, StructuredOutput |
+| `notebook` | NotebookEdit |
+| `agent` | Agent |
+| `lsp` | LSP |
+
+#### 动态工具注册通知机制
+
+```python
+class ToolRegistryExt:
+    def on_tool_registered(self, callback: ToolRegistrationCallback) -> None
+    def off_tool_registered(self, callback: ToolRegistrationCallback) -> None
+```
+
+Bare Agent 可通过切换配置动态加载新工具：
+
+```python
+ext = ToolRegistryExt(registry)
+
+# Bare 状态
+bare_config = load_tool_config(mode="bare")
+assert ext.get_tools_for_config(bare_config) == []
+
+# 切换配置后自动加载
+default_config = load_tool_config(mode="default")
+tools = ext.get_tools_for_config(default_config)  # 包含所有注册表工具
+```
+
+#### 与上游解耦策略
+
+- 使用**组合模式**扩展 ToolRegistry，不修改原类
+- Bundle 定义独立于上游代码
+- 补丁目录 `patches/tool_system/` 用于快速适配上游更新
 
 ---
 
@@ -943,6 +1016,103 @@ agent:
 | Phase E | TrackerAdapter 评论接口（@mention 通道三） | P1 | ✅ 完成 |
 | Phase F | IssueRegistry 澄清字段持久化 + PromptBuilder 澄清内容注入 | P2 | ✅ 完成 |
 | Phase G | escalation 策略实现（skip / mark_failed / notify） | P2 | ✅ 完成 |
+
+---
+
+### 3.13 Auto 模式 (TRANSCRIPT_CLASSIFIER)
+
+**状态**: ⏳ 待实现
+**优先级**: P2
+**目标**: 基于 LLM 的自动权限模式切换，减少交互疲劳
+
+#### 3.13.1 功能说明
+
+Auto 模式是一种智能权限模式，通过 LLM 分类器（TRANSCRIPT_CLASSIFIER）自动判断何时允许执行敏感操作。在长时间任务或重复性操作场景下，Auto 模式可以减少用户确认的交互频率。
+
+#### 3.13.2 工作原理
+
+```
+用户启动 Auto 模式
+        ↓
+Agent 执行工具调用时触发分类器
+        ↓
+TRANSCRIPT_CLASSIFIER 分析:
+  - 工具类型 (Bash/Write/Edit/etc.)
+  - 命令内容 (是否危险)
+  - 执行上下文 (当前目录/文件类型)
+  - 历史行为模式
+        ↓
+分类决策:
+  - Auto-Allow: 直接执行，无需确认
+  - Auto-Deny: 静默拒绝或降级
+  - Fallback to Ask: 无法判断时回退到 ask 模式
+        ↓
+记录分类结果用于后续判断
+```
+
+#### 3.13.3 与手动模式的区别
+
+| 模式 | 触发方式 | 确认频率 | 适用场景 |
+|------|---------|---------|---------|
+| `default` | 手动确认每个敏感操作 | 高 | 学习/审查模式 |
+| `acceptEdits` | 手动确认写操作 | 中 | 代码迭代 |
+| `plan` | 仅读取，编辑前分析 | 低 | 探索代码库 |
+| `auto` | LLM 自动判断 | 自动调节 | 长任务/减少疲劳 |
+| `bypassPermissions` | 无限制 | 无 | 隔离环境 |
+
+#### 3.13.4 循环切换逻辑（已实现部分）
+
+`Shift+Tab` 循环切换顺序：
+```
+default → acceptEdits → plan → bypassPermissions (如果可用) → default
+```
+
+注意：`auto` 模式不出现在手动循环中，需要通过 `--permission-mode auto` 启动或由分类器自动触发。
+
+#### 3.13.5 待实现组件
+
+| 组件 | 文件 | 说明 |
+|------|------|------|
+| TRANSCRIPT_CLASSIFIER | `permissions/classifier.py` | LLM 分类器核心 |
+| canCycleToAuto | `permissions/cycle.py` | 判断是否可切换到 auto |
+| Auto Mode 集成 | `agent/run_agent.py` | 在工具执行前调用分类器 |
+| 分类结果缓存 | `permissions/cache.py` | 避免重复分类 |
+
+#### 3.13.6 分类器 prompt 设计
+
+```python
+AUTO_MODE_CLASSIFIER_PROMPT = """
+你是一个安全分类器，判断以下工具调用是否可以在 auto 模式下自动执行。
+
+工具: {tool_name}
+命令: {command}
+当前目录: {cwd}
+文件类型: {file_type}
+
+考虑因素:
+1. 工具类型 (Read/Glob/Grep 安全, Bash/Write/Edit 需谨慎)
+2. 命令是否包含危险操作 (rm -rf, sudo, 破坏性命令)
+3. 目标路径是否在保护目录内 (.git, .vscode, .clawcodex)
+4. 历史行为模式 (是否重复执行类似操作)
+
+输出格式:
+- AUTO_ALLOW: 可以自动执行
+- AUTO_DENY: 应拒绝执行
+- ASK_USER: 无法判断，需要用户确认
+
+决策: {decision}
+原因: {reasoning}
+"""
+```
+
+#### 3.13.7 实施阶段
+
+| 阶段 | 内容 | 优先级 | 状态 |
+|------|------|--------|------|
+| Phase A1 | TRANSCRIPT_CLASSIFIER 核心实现 | P2 | ⏳ 待开始 |
+| Phase A2 | `canCycleToAuto()` 判断逻辑 | P2 | ⏳ 待开始 |
+| Phase A3 | Auto Mode 工具执行前集成 | P2 | ⏳ 待开始 |
+| Phase A4 | 分类结果缓存机制 | P3 | ⏳ 待开始 |
 
 ---
 

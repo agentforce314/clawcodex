@@ -701,6 +701,43 @@ class ClawcodexREPL:
                     # but at least the expansion lands in scrollback.
                     self._do_expand_last()
 
+            @self.bindings.add("s-tab")  # type: ignore[attr-defined]
+            def _cycle_permission_mode(event):  # type: ignore[no-untyped-def]
+                """Shift+Tab: cycle through permission modes.
+
+                Mirrors the TypeScript Ink reference's Shift+Tab binding
+                for cycling through default → acceptEdits → plan →
+                bypassPermissions → default.
+                """
+                from src.permissions import cycle_permission_mode
+
+                ctx = self.tool_context
+                if ctx is None:
+                    return
+                current_mode = ctx.permission_context.mode
+                is_bypass_available = (
+                    self._is_bypass_permissions_mode_available
+                )
+                # Build a context for cycle_permission_mode
+                from src.permissions.types import ToolPermissionContext
+                cycle_ctx = ToolPermissionContext(
+                    mode=current_mode,
+                    is_bypass_permissions_mode_available=is_bypass_available,
+                )
+                next_mode, next_ctx = cycle_permission_mode(cycle_ctx)
+                # Update the REPL's permission state
+                self._permission_mode = next_mode
+                ctx.permission_context = next_ctx
+                # Update the tool context's permission handler if mode changed
+                if next_mode == "bypassPermissions":
+                    ctx.permission_handler = lambda _tn, _msg, _sug: (True, False)
+                    ctx.allow_docs = True
+                else:
+                    ctx.permission_handler = self._handle_permission_request
+                    ctx.allow_docs = False
+                # Mode change is reflected in the bottom toolbar (mode: {perm_mode})
+                # No additional notification needed since toolbar updates on next prompt
+
         self.prompt_session = PromptSession(
             history=FileHistory(str(history_file)),
             auto_suggest=AutoSuggestFromHistory(),

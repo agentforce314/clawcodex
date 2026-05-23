@@ -2,8 +2,8 @@
 
 > 文档路径: `docs/PROGRESS.md`
 > 基于: `docs/open-source-replacement-progress.md`, `docs/FEATURE_PLAN.md`
-> 版本: v1.3
-> 更新日期: 2026-05-20
+> 版本: v1.4
+> 更新日期: 2026-05-23
 
 ---
 
@@ -45,6 +45,108 @@
 | F-12 | cacheWarning 容量限制 | P2 | ⏳ 待开始 | 防止 source 类型内存泄漏 |
 | F-13 | Agent 记忆作用域隔离 | P1 | ✅ 完成 | 按需加载不同作用域记忆 |
 | F-14 | 三层解耦架构（Layer Isolation） | P1 | ✅ 完成 | upstream/capabilities/features 三层分离，零层违规 |
+| F-15 | 权限模式切换 (Shift+Tab) | P1 | ✅ 完成 | REPL/LiveStatus 中支持 `default→acceptEdits→plan→bypassPermissions` 循环切换，状态栏显示当前模式 |
+| F-16 | Auto 模式 (TRANSCRIPT_CLASSIFIER) | P2 | ⏳ 待开始 | 基于 LLM 的自动权限模式切换，减少交互疲劳 |
+| F-17 | 工具系统按需加载（Tool System Extension） | P1 | ✅ 完成 | 四种工具模式（bare/default/clawcodex/all），动态注册通知机制，与上游解耦 |
+
+---
+
+### F-15: 权限模式切换 (Shift+Tab)
+
+**状态**: ✅ 完成
+**完成日期**: 2026-05-21
+**优先级**: P1
+
+#### 背景
+
+Claude Code 支持在多种权限模式之间切换（default / acceptEdits / plan / auto / bypassPermissions），但 clawcodex 原先只有代码实现，UI 绑定缺失。
+
+#### 实现方案
+
+1. **REPL 空闲状态切换** (`src/repl/core.py`)
+
+   - 在 keybindings 中添加 `Shift+Tab` 绑定
+   - 调用 `cycle_permission_mode()` 循环切换权限模式
+   - 循环顺序：`default → acceptEdits → plan → bypassPermissions (如果可用) → default`
+
+2. **对话过程中切换** (`src/repl/live_status.py`)
+
+   - 在 LiveStatus 的 keybindings 中添加 `Shift+Tab` 处理器
+   - 通过 `on_submit.__self__` 获取 REPL 实例来访问权限状态
+   - 切换后更新 spinner 状态显示 `[mode: {next_mode}]`
+
+3. **状态栏显示** (`src/repl/core.py:_bottom_toolbar`)
+
+   - 在底部状态栏显示当前权限模式
+   - 格式：`{provider} · {model} · {cwd} · mode: {perm_mode} · turns: X · tokens: X in / X out`
+
+#### 完成的工作
+
+- [x] REPL Shift+Tab 权限切换绑定
+- [x] LiveStatus Shift+Tab 权限切换绑定
+- [x] 底部状态栏显示当前权限模式
+- [x] 补丁文件更新 (`0054.src.repl.core.py.patch`, `0066.src.repl.live_status.py.patch`)
+
+#### 关键文件
+
+- `src/repl/core.py` - REPL 空闲状态 Shift+Tab + 状态栏
+- `src/repl/live_status.py` - 对话过程中 Shift+Tab
+- `src/permissions/cycle.py` - `cycle_permission_mode()` 实现
+- `src/permissions/modes.py` - `permission_mode_short_title()` 等工具函数
+
+#### 注意
+
+- `bypassPermissions` 需要通过 `--dangerously-skip-permissions` 启动或 `settings.json` 中配置 `permissions.allowBypassPermissionsMode: true` 才可用
+- `auto` 模式不在手动循环中，需要通过 `--permission-mode auto` 启动或由 TRANSCRIPT_CLASSIFIER 自动触发
+
+---
+
+### F-16: Auto 模式 (TRANSCRIPT_CLASSIFIER)
+
+**状态**: ⏳ 待实现
+**优先级**: P2
+**目标**: 基于 LLM 的自动权限模式切换，减少交互疲劳
+
+#### 功能说明
+
+Auto 模式是一种智能权限模式，通过 LLM 分类器（TRANSCRIPT_CLASSIFIER）自动判断何时允许执行敏感操作。在长时间任务或重复性操作场景下，Auto 模式可以减少用户确认的交互频率。
+
+#### 工作原理
+
+```
+用户启动 Auto 模式
+        ↓
+Agent 执行工具调用时触发分类器
+        ↓
+TRANSCRIPT_CLASSIFIER 分析:
+  - 工具类型 (Bash/Write/Edit/etc.)
+  - 命令内容 (是否危险)
+  - 执行上下文 (当前目录/文件类型)
+  - 历史行为模式
+        ↓
+分类决策:
+  - Auto-Allow: 直接执行，无需确认
+  - Auto-Deny: 静默拒绝或降级
+  - Fallback to Ask: 无法判断时回退到 ask 模式
+```
+
+#### 待实现组件
+
+| 组件 | 文件 | 说明 |
+|------|------|------|
+| TRANSCRIPT_CLASSIFIER | `permissions/classifier.py` | LLM 分类器核心 |
+| canCycleToAuto | `permissions/cycle.py` | 判断是否可切换到 auto |
+| Auto Mode 集成 | `agent/run_agent.py` | 在工具执行前调用分类器 |
+| 分类结果缓存 | `permissions/cache.py` | 避免重复分类 |
+
+#### 实施阶段
+
+| 阶段 | 内容 | 优先级 | 状态 |
+|------|------|--------|------|
+| Phase A1 | TRANSCRIPT_CLASSIFIER 核心实现 | P2 | ⏳ 待开始 |
+| Phase A2 | `canCycleToAuto()` 判断逻辑 | P2 | ⏳ 待开始 |
+| Phase A3 | Auto Mode 工具执行前集成 | P2 | ⏳ 待开始 |
+| Phase A4 | 分类结果缓存机制 | P3 | ⏳ 待开始 |
 
 ---
 

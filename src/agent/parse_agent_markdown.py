@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any
 
 from src.agent.agent_definitions import AgentDefinition, AgentSource
+from src.tool_system_ext.bundles import TOOL_BUNDLES
 from src.utils.frontmatter_validators import (
     parse_effort_value,
     parse_hooks,
@@ -55,6 +56,9 @@ AGENT_COLORS: frozenset[str] = frozenset(
 VALID_MEMORY_SCOPES: frozenset[str] = frozenset({"user", "project", "local"})
 VALID_ISOLATION_MODES: frozenset[str] = frozenset({"worktree", "remote"})
 
+# Valid bundle names for tool expansion
+_VALID_BUNDLES: frozenset[str] = frozenset(TOOL_BUNDLES.keys())
+
 
 def _first(d: dict[str, Any], *keys: str) -> Any:
     """Return the first non-``None`` value among ``keys`` in ``d``."""
@@ -67,6 +71,9 @@ def _first(d: dict[str, Any], *keys: str) -> Any:
 def _parse_tools(value: Any) -> list[str] | None:
     """Parse a tools list. ``None`` / ``['*']`` both mean "all tools".
 
+    Bundle expansion: items starting with ':' are expanded from bundle.
+    e.g. [":default", "Bash"] -> ["Bash", "Edit", "Write", "Read", "Glob", "Grep", "WebSearch", "WebFetch", "Bash"]
+
     Returns ``None`` to signal all-tools (matches AgentDefinition.tools
     semantics: ``None`` or ``['*']`` both mean unrestricted).
     """
@@ -77,7 +84,17 @@ def _parse_tools(value: Any) -> list[str] | None:
         return []
     if "*" in parsed:
         return None
-    return parsed
+
+    # Expand bundle references (items starting with ':')
+    result: list[str] = []
+    for item in parsed:
+        if isinstance(item, str) and item.startswith(":") and item[1:] in _VALID_BUNDLES:
+            bundle_name = item[1:]
+            result.extend(TOOL_BUNDLES[bundle_name])
+        elif isinstance(item, str):
+            result.append(item)
+
+    return result if result else []
 
 
 def _parse_color(value: Any) -> str | None:
