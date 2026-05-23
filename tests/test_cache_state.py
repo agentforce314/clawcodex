@@ -346,5 +346,68 @@ class TestShouldUseGlobalCacheScope(unittest.TestCase):
         )
 
 
+class TestPromptCache1hPlainGetters(unittest.TestCase):
+    """WI-11 (Phase 2 bootstrap parity): plain getters for the latched 1h
+    eligibility & allowlist. See bootstrap-gap-analysis.md §1.4 — no
+    plain setter exposed (writes must go through the latching evaluator
+    or direct dataclass mutation)."""
+
+    def setUp(self):
+        from src.state.cache_state import reset_for_test_only
+
+        reset_for_test_only()
+
+    def test_get_prompt_cache_1h_eligible_returns_none_initially(self):
+        from src.state.cache_state import get_prompt_cache_1h_eligible
+
+        self.assertIsNone(get_prompt_cache_1h_eligible())
+
+    def test_get_prompt_cache_1h_eligible_returns_latched_true(self):
+        from src.state.cache_state import (
+            evaluate_prompt_cache_1h_eligibility,
+            get_prompt_cache_1h_eligible,
+        )
+
+        evaluate_prompt_cache_1h_eligibility(
+            is_ant_user=False, is_subscriber=True, is_using_overage=False,
+        )
+        self.assertIs(get_prompt_cache_1h_eligible(), True)
+
+    def test_get_prompt_cache_1h_eligible_returns_latched_false(self):
+        from src.state.cache_state import (
+            evaluate_prompt_cache_1h_eligibility,
+            get_prompt_cache_1h_eligible,
+        )
+
+        # is_using_overage=True forces False for subscribers
+        evaluate_prompt_cache_1h_eligibility(
+            is_ant_user=False, is_subscriber=True, is_using_overage=True,
+        )
+        self.assertIs(get_prompt_cache_1h_eligible(), False)
+
+    def test_get_prompt_cache_1h_allowlist_returns_empty_list_by_default(self):
+        from src.state.cache_state import get_prompt_cache_1h_allowlist
+
+        self.assertEqual(get_prompt_cache_1h_allowlist(), [])
+
+    def test_get_prompt_cache_1h_allowlist_returns_copy(self):
+        """Mutating the returned list must not leak into the singleton."""
+        from src.state.cache_state import (
+            get_beta_header_latches,
+            get_prompt_cache_1h_allowlist,
+        )
+
+        # Seed the singleton allowlist via direct dataclass attribute write
+        get_beta_header_latches().prompt_cache_1h_allowlist = ["main_loop"]
+        snapshot = get_prompt_cache_1h_allowlist()
+        self.assertEqual(snapshot, ["main_loop"])
+        snapshot.append("attacker-injected")
+        # Singleton allowlist unchanged
+        self.assertEqual(
+            get_beta_header_latches().prompt_cache_1h_allowlist,
+            ["main_loop"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
