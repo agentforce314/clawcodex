@@ -35,11 +35,15 @@ if TYPE_CHECKING:
 
 __all__ = [
     "BetaHeaderLatches",
+    "clear_beta_header_latches",
     "evaluate_prompt_cache_1h_eligibility",
     "get_beta_header_latches",
+    "get_prompt_cache_1h_allowlist",
+    "get_prompt_cache_1h_eligible",
     "is_first_party_provider",
     "reset_for_test_only",
     "should_1h_cache_ttl",
+    "should_use_global_cache_scope",
 ]
 
 
@@ -107,6 +111,35 @@ _LATCHES = BetaHeaderLatches()
 def get_beta_header_latches() -> BetaHeaderLatches:
     """Return the session-level singleton instance."""
     return _LATCHES
+
+
+def get_prompt_cache_1h_eligible() -> bool | None:
+    """Read the latched 1h-cache eligibility.
+
+    Returns:
+      * ``True`` / ``False`` after ``evaluate_prompt_cache_1h_eligibility``
+        has latched a decision
+      * ``None`` if the latch has not yet been evaluated
+
+    Plain getter for parity with TS ``getPromptCache1hEligible``
+    (``bootstrap/state.ts:1587``). **No setter is exposed** — writes go
+    through ``evaluate_prompt_cache_1h_eligibility``, which preserves the
+    sticky-on invariant. See
+    ``my-docs/get-parity-by-folder/bootstrap-gap-analysis.md §1.4``.
+    """
+    return _LATCHES.prompt_cache_1h_eligible
+
+
+def get_prompt_cache_1h_allowlist() -> list[str]:
+    """Read the 1h-cache query-source allowlist.
+
+    Returns a copy to discourage caller mutation. The allowlist is
+    populated by future GrowthBook-port work (currently always empty in
+    the open build). Plain getter for parity with TS
+    ``getPromptCache1hAllowlist`` (``bootstrap/state.ts:1579``). **No
+    setter is exposed**.
+    """
+    return list(_LATCHES.prompt_cache_1h_allowlist)
 
 
 def evaluate_prompt_cache_1h_eligibility(
