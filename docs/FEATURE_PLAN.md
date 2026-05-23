@@ -144,9 +144,9 @@ src/tool_system_ext/          # 扩展层（与上游解耦）
 | 模式 | 说明 | 工具数 |
 |------|------|--------|
 | `bare` | 零工具，纯推理 Agent | 0 |
-| `default` | 默认束（bash, edit, read, search） | 8 |
+| `default` | 默认束（Bash, Edit, Write, Read, Glob, Grep, WebSearch, WebFetch） | 8 |
 | `clawcodex` | 所有原生内置工具 | 42 |
-| `all` | 所有工具束 | 15 bundles |
+| `all` | 所有工具束（即 default + clawcodex） | 2 bundles |
 
 #### 工具束定义
 
@@ -154,20 +154,36 @@ src/tool_system_ext/          # 扩展层（与上游解耦）
 |------|------|
 | `default` | Bash, Edit, Write, Read, Glob, Grep, WebSearch, WebFetch |
 | `clawcodex` | 全部原生工具（Agent, AskUserQuestion, Bash, ... 等 42 个） |
-| `bash` | Bash |
-| `edit` | Edit, Write |
-| `read` | Read, Glob, Grep |
-| `search` | WebSearch, WebFetch |
-| `task` | TaskOutput, TaskStop, TaskCreate, TaskGet, TaskList, TaskUpdate |
-| `mcp` | MCPTool, ListMcpResources, ReadMcpResource |
-| `plan` | EnterPlanMode, ExitPlanMode |
-| `team` | TeamCreate, TeamDelete |
-| `cron` | CronCreate, CronDelete, CronList |
-| `worktree` | EnterWorktree, ExitWorktree |
-| `misc` | ClipboardRead, ClipboardWrite, Status, Sleep, StructuredOutput |
-| `notebook` | NotebookEdit |
-| `agent` | Agent |
-| `lsp` | LSP |
+
+#### 自定义 Agent 工具配置
+
+自定义 Agent 在 Markdown frontmatter 中使用 `tools` 字段时，支持 bundle 引用（以 `:` 前缀区分）：
+
+```markdown
+---
+name: my-agent
+description: A research agent
+tools: [":default"]           # 使用 default bundle
+---
+
+# 或混用
+tools: [":clawcodex", "Bash"] # clawcodex 全部工具 + 额外的 Bash
+```
+
+解析时展开逻辑：
+- `":bundle_name"` → 展开为对应 bundle 的工具列表
+- 普通工具名 → 保持原样
+
+#### 模式到 Bundle 的映射
+
+```python
+MODE_BUNDLES = {
+    "bare": [],
+    "default": ["default"],
+    "clawcodex": ["clawcodex"],
+    "all": ["default", "clawcodex"],
+}
+```
 
 #### 动态工具注册通知机制
 
@@ -195,7 +211,7 @@ tools = ext.get_tools_for_config(default_config)  # 包含所有注册表工具
 
 - 使用**组合模式**扩展 ToolRegistry，不修改原类
 - Bundle 定义独立于上游代码
-- 补丁目录 `patches/tool_system/` 用于快速适配上游更新
+- 补丁目录 `patches/tool_system/` 用于快速适配上游更新（当前为空，扩展层独立实现）
 
 ---
 
@@ -527,6 +543,300 @@ interface GoalState {
 | SearchExtraToolsTool | `packages/builtin-tools/src/tools/SearchExtraToolsTool/` | 待实现 |
 | ASYNC_AGENT_ALLOWED_TOOLS | `constants/tools.ts` | 待配置 |
 | 延迟工具提示 | `constants/prompts.ts` | 待配置 |
+
+---
+
+### 3.9 工具/Skill 调用统计（跨会话）
+
+**状态**: 🔄 规划中
+**目标**: 通过追加日志（JSON Lines）实现轻量级跨会话工具和 Skill 调用统计，不支持实时查询
+
+#### 3.9.1 背景
+
+当前项目没有调用统计功能，无法了解工具和 Skill 使用分布情况。本特性解决跨会话数据持久化问题，工具和 Skill 共用同一日志 schema。
+
+#### 3.9.2 日志格式
+
+```
+~/.clawcodex/tool_stats.jsonl
+{"agent_id": "dev", "kind": "tool", "tool": "Read", "ts": 1748..., "dur_ms": 12.3, "ok": true}
+{"agent_id": "dev", "kind": "skill", "skill": "code_review", "ts": 1748..., "dur_ms": 3200.0, "ok": true}
+{"agent_id": "orchestrator-001", "kind": "tool", "tool": "Bash", "ts": 1748..., "dur_ms": 2300.0, "ok": false, "error": "timeout"}
+```
+
+#### 3.9.3 日志字段（统一 schema）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `agent_id` | string | Agent 标识符（REPL 会话为 "main"，子 agent 按配置） |
+| `kind` | string | `"tool"` 或 `"skill"` |
+| `tool` | string \| null | 工具名称（kind=tool 时） |
+| `skill` | string \| null | Skill 名称（kind=skill 时） |
+| `ts` | float | Unix 时间戳（秒） |
+| `dur_ms` | float | 执行耗时（毫秒） |
+| `ok` | bool | 是否成功 |
+| `error` | string \| null | 错误信息（失败时） |
+| `params` | dict \| null | Skill 调用参数（kind=skill 时） |
+| `skill_version` | string \| null | Skill 版本（kind=skill 时） |
+
+#### 3.9.4 性能特性
+
+| 操作 | 性能影响 | 说明 |
+|------|---------|------|
+| 追加写入 | 极小 | 顺序追加是磁盘 I/O 最优模式 |
+| 文件过大后查询 | 较大 | 全量扫描，数据量大时需预聚合 |
+| 多进程并发写 | 中等 | 建议单进程内汇聚后批量写入 |
+
+#### 3.9.5 架构设计
+
+```
+src/tool_system/
+└── stats.py                    # 统计模块（新）
+    ├── record(name, dur_ms, ok, error, *, kind, params, version)  # 统一记录
+    ├── get_stats()             # 查询汇总（读取日志文件聚合）
+    └── _write_buffered()       # 批量写入
+
+注入点:
+  agent_loop.py                 # 工具执行完成后调用 record(kind="tool")
+  skills/loader.py             # Skill 执行完成后调用 record(kind="skill")
+```
+
+#### 3.9.6 查询示例
+
+```bash
+# 统计所有 skill 调用
+grep '"kind":"skill"' ~/.clawcodex/tool_stats.jsonl | jq '.skill' | sort | uniq -c | sort -rn
+
+# 统计工具 vs skill 调用比例
+grep -E '"kind":"(tool|skill)"' ~/.clawcodex/tool_stats.jsonl | jq -s 'group_by(.kind) | map({kind: .[0].kind, count: length})'
+
+# 统计某个 agent 的调用
+grep '"agent_id":"orchestrator-001"' ~/.clawcodex/tool_stats.jsonl | jq -s 'group_by(.kind) | map({kind: .[0].kind, count: length, avg_ms: (map(.dur_ms) | add / length)})'
+```
+
+#### 3.9.7 数据清理
+
+日志文件需定期归档或设置 TTL（建议保留最近 90 天数据）。
+
+#### 3.9.8 实时查询
+
+**不支持**。如需实时展示（如 TUI 状态栏），需另建汇总表预聚合。
+
+#### 3.9.9 替代方案：基于 Transcript 的轻量级统计
+
+如果只关心**调用频率和成功率**（不需要耗时），可直接解析现有 Transcript 文件，无需新建日志系统。
+
+**数据来源**:
+
+```
+~/.clawcodex/transcripts/<agent_id>.jsonl
+```
+
+每行是一个 `Message`，其中包含 `ToolUseBlock`：
+
+```json
+{"type": "user", "content": [{"type": "tool_use", "id": "2", "name": "Read", "input": {"path": "foo.py"}}]}
+{"type": "assistant", "content": [{"type": "tool_use", "id": "3", "name": "Edit", ...}]}
+{"type": "user", "content": [{"type": "tool_result", "tool_use_id": "2", "content": "...", "is_error": false}]}
+```
+
+**统计维度**:
+
+| 维度 | 支持 | 说明 |
+|------|------|------|
+| 调用频率 | ✅ | 按 tool/skill 名称统计 |
+| 成功率 | ✅ | ToolResult.is_error 可判断 |
+| 执行耗时 | ❌ | Transcript 不记录执行时长 |
+| Skill 调用 | ⚠️ | 取决于 Skill 是否走 ToolUseBlock |
+
+**查询示例**:
+
+```bash
+# 统计所有工具调用次数
+grep '"type":"tool_use"' ~/.clawcodex/transcripts/*.jsonl | jq '.content[].name' | sort | uniq -c | sort -rn
+
+# 统计某个 agent 的工具调用
+grep '"type":"tool_use"' ~/.clawcodex/transcripts/agent-123.jsonl | jq -s 'group_by(.content[].name) | map({tool: .[0].content[].name, count: length})'
+
+# 统计错误率（需配对 ToolUse → ToolResult）
+# 由于 ToolUse 和 ToolResult 通过 id/tool_use_id 关联，需要更复杂的脚本
+```
+
+**优缺点对比**:
+
+| 方案 | 优势 | 劣势 |
+|------|------|------|
+| **Transcript 方案** | 无需新增日志写入；已有数据 | 无耗时；Skill 覆盖不确定；解析稍复杂 |
+| **JSON Lines 日志方案** | 包含耗时；字段完整；格式统一 | 需新增写入逻辑；数据冗余 |
+
+**决策建议**:
+- 仅需调用频率/成功率 → 用 Transcript 方案
+- 需耗时统计 → 用 JSON Lines 日志方案
+
+#### 3.9.10 基于使用频率的工具/Skill 裁剪
+
+基于工具和 Skill 的使用频率统计，可自动识别并裁剪低使用率组件，减少 Bundle 大小和上下文开销。
+
+**裁剪策略**:
+
+| 策略 | 说明 |
+|------|------|
+| **自动隐藏** | 低频工具从默认 bundle 移到 `bare` 模式，需显式引用 |
+| **提示建议** | 统计报告提示"X 工具过去 90 天仅使用 N 次，可考虑移除" |
+| **按需加载** | 低频工具默认不加载，使用前需 `ExecuteExtraTool` 引用 |
+
+**配置参数**:
+
+```yaml
+tool_pruning:
+  enabled: true
+  lookback_days: 90          # 统计回溯周期
+  low_usage_threshold: 0.01  # 使用率 < 1% 则标记为低频
+  cooldown_days: 30          # 工具存在 > 30 天才纳入裁剪统计
+  action: "hide"             # "hide" | "suggest" | "remove"
+```
+
+**实现逻辑**:
+
+```python
+def get_rarely_used_tools(lookback_days=90, threshold=0.01, cooldown_days=30) -> list[str]:
+    """返回应裁剪的工具列表"""
+    stats = parse_transcript_stats(lookback_days=lookback_days)
+    total = sum(stats.values())
+    now = time.time()
+    for name, count in stats.items():
+        usage_rate = count / total
+        if usage_rate < threshold:
+            # 冷却期判断（工具创建时间 > cooldown_days）
+            if tool_exists_longer_than(name, days=cooldown_days):
+                yield name
+```
+
+**注意事项**:
+
+| 注意点 | 说明 |
+|--------|------|
+| 学习曲线 | 新工具初期使用率低不代表价值低，需冷却期保护 |
+| 核心工具 | `Read/Edit/Bash` 等高频核心工具不受影响 |
+| 保留 fallback | 低频工具仍可通过 `bare` 模式访问 |
+
+---
+
+### 3.10 CreateAgentTool 动态工具创建
+
+**状态**: 🔄 规划中
+**目标**: Agent 可根据三方 CLI/API 规范动态创建工具，实现"工具创建工具"的 Meta Tool 能力
+
+#### 3.9.1 功能说明
+
+允许 Agent 分析第三方工具（CLI 命令或 HTTP API）的接口规范，然后动态创建一个可用的工具：
+
+```
+Agent 分析 CLI 规范 → 生成工具规范 → 调用 CreateAgentTool → 注册新工具 → 使用新工具
+```
+
+#### 3.9.2 架构设计
+
+```
+src/agent/tool_authoring/           # 新增模块（与上游解耦）
+├── spec.py                         # AgentToolSpec 定义
+├── validators.py                   # 规范验证器
+├── factory.py                      # build_tool() 调用封装
+├── registry_ext.py                 # Agent 创建工具注册表
+├── persistence.py                  # 工具持久化
+└── call_handlers/                  # call_impl 处理
+    ├── bash.py                     # bash 命令调用
+    ├── http.py                     # HTTP 请求调用
+    └── python.py                   # Python 函数映射
+
+src/tool_system/tools/
+└── create_agent_tool.py            # CreateAgentTool 实现
+```
+
+#### 3.9.3 工具规范（AgentToolSpec）
+
+```python
+@dataclass(frozen=True)
+class AgentToolSpec:
+    name: str                          # 工具唯一名称
+    description: str                   # 工具描述
+    input_schema: dict                 # JSON Schema
+    call_type: "bash" | "http" | "python"  # 调用类型
+    call_impl: str | dict              # 实现（类型依赖）
+    tags: list[str] = field(default_factory=list)  # 分类标签
+    aliases: tuple[str, ...] = ()
+    source: str = "agent-created"      # 来源标记
+```
+
+#### 3.9.4 三种 call_impl 安全限制
+
+| call_type | call_impl 示例 | 安全级别 |
+|-----------|---------------|---------|
+| `bash` | `"git status --porcelain {path}"` | ✅ 占位符防注入，预定义命令白名单 |
+| `http` | `{"method": "GET", "url": "https://api.github.com/{endpoint}"}` | ✅ 模板化，方法白名单 |
+| `python` | `"fetch_data"` → 映射到预定义函数 | ⚠️ 仅白名单函数注册 |
+
+**命令白名单（bash）**：`git`, `gh`, `glab`, `curl`, `wget`, `kubectl`, `docker`, `npm`, `pip`
+
+**HTTP 方法白名单**：`GET`, `POST`, `PUT`, `DELETE`, `PATCH`
+
+#### 3.9.5 CreateAgentTool 输入规范
+
+```json
+{
+  "name": "my-gitlab-query",
+  "description": "查询 GitLab 项目信息",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "project_id": {"type": "string", "description": "项目 ID"}
+    },
+    "required": ["project_id"]
+  },
+  "call_type": "bash",
+  "call_impl": "glab project view {project_id} --output json",
+  "tags": ["gitlab", "project"],
+  "aliases": ["glab-project"]
+}
+```
+
+#### 3.9.6 安全性约束
+
+| 约束类型 | 实现位置 | 说明 |
+|---------|---------|------|
+| 命令白名单 | `validators.py:_validate_bash_impl` | 仅允许预定义命令 |
+| HTTP 方法白名单 | `validators.py:_validate_http_impl` | 仅白名单方法 |
+| Python 函数注册 | `validators.py:_validate_python_impl` | 仅白名单函数 |
+| 无任意代码执行 | `factory.py` | call_impl 是模板/映射，非代码 |
+| 参数化防注入 | `call_handlers/bash.py` | format 替换，无 shell 注入 |
+| 超时保护 | `call_handlers/bash.py` | subprocess timeout=30 |
+
+#### 3.9.7 持久化机制
+
+Agent 创建的工具保存到 `~/.clawcodex/agent-tools/{name}.json`，重启后自动加载。
+
+#### 3.9.8 与现有系统集成
+
+| 现有组件 | 如何协作 |
+|---------|---------|
+| `build_tool()` | 作为工厂函数，CreateAgentTool 调用它 |
+| `ToolRegistry` | 工具创建后调用 `registry.register(tool)` |
+| `parse_agent_markdown` | 已有工具定义解析，可复用 schema 验证 |
+| MCP 工具包装 | 参考 `tool_wrapper.py` 的声明式工具模式 |
+| `resolve_agent_tools()` | 允许 `source="agent-created"` 的工具被解析 |
+
+#### 3.9.9 实现文件
+
+| 文件 | 位置 | 状态 |
+|------|------|------|
+| `tool_authoring/spec.py` | `src/agent/tool_authoring/` | 规划中 |
+| `tool_authoring/validators.py` | `src/agent/tool_authoring/` | 规划中 |
+| `tool_authoring/call_handlers/bash.py` | `src/agent/tool_authoring/` | 规划中 |
+| `tool_authoring/call_handlers/http.py` | `src/agent/tool_authoring/` | 规划中 |
+| `tool_authoring/factory.py` | `src/agent/tool_authoring/` | 规划中 |
+| `tool_authoring/registry_ext.py` | `src/agent/tool_authoring/` | 规划中 |
+| `tool_authoring/persistence.py` | `src/agent/tool_authoring/` | 规划中 |
+| `create_agent_tool.py` | `src/tool_system/tools/` | 规划中 |
 
 ---
 
