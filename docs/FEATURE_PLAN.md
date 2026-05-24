@@ -917,6 +917,33 @@ class ConvertPOSToAgent:
 
 F-18 解决"工具创建工具"（Meta Tool 能力），此模式解决"工作流转化为 Agent"。两者结合可实现：SDK 接口 → 原子工具 → Skill 组合 → Agent 定义 → 动态注册。
 
+**实现清单**:
+
+| 文件 | 说明 |
+|------|------|
+| `src/pos_converter/__init__.py` | 模块入口 |
+| `src/pos_converter/sdk_parser.py` | SDK 解析（支持 OpenAPI JSON / URL / 简单方法列表） |
+| `src/pos_converter/skill_grouper.py` | Skill 分组（静态 MappingRule + LLM 辅助） |
+| `src/pos_converter/agent_builder.py` | Agent 构建 + 持久化（`~/.clawcodex/agents/<name>.json`） |
+| `src/pos_converter/convert_pos_skill.py` | `/convert-pos-to-agent` Skill 实现 |
+| `src/pos_converter/templates.py` | 模板定义 |
+| `src/skills_ext/bundled/pos_to_agent.py` | bundled skill 注册（解耦上游） |
+
+**三层映射实现**:
+
+```
+SdkParser.parse()           → list[SdkMethod]  (原子工具)
+SkillGrouper.group()       → list[SkillSpec]  (Skill 规范)
+AgentBuilder.build()       → AgentDefinition (Agent 定义)
+persist_converted_agent()   → ~/.clawcodex/agents/<name>.json
+```
+
+**使用方式**:
+
+```bash
+/convert-pos-to-agent docker_build,k8s_apply::CI/CD pipeline
+```
+
 #### 3.9.12 业务 Agent 长期使用（新窗口重连）
 
 将 POS 转化的 Agent 作为主 Agent 长期使用，并支持在新窗口中重新连接。
@@ -3254,6 +3281,142 @@ psutil = ">=5.9"        # 进程存活检测
 | 锁机制 | O_EXCL原子创建 | 简洁,无需额外服务 |
 | 会话任务 | 内存存储 | 进程内通信,无需持久化 |
 | 过期删除 | 触发后检查 | 无需额外清理进程 |
+
+---
+
+## 十、Skills System Extension（技能系统扩展层）
+
+**状态**: 🆕 新规划
+**优先级**: P1
+**目标**: 仿照 `tool_system_ext` 的模式，构建独立的技能系统扩展层，降低上游更新时的侵入式修改
+
+### 10.1 背景
+
+当前 `src/skills/loader.py` 存在以下问题：
+
+1. **耦合 clawcodex 特定逻辑**: 硬编码 `~/.clawcodex/skills`、`CLAWCODEX_SKILLS_DIR` 等路径
+2. **职责过于集中**: `get_all_skills()` 混合了上游加载 + clawcodex 扩展 + 条件激活 + MCP 构建
+3. **难以独立更新上游**: 每当上游 skills 系统更新，需要仔细比对 diff，区分哪些是上游变更、哪些是 clawcodex 扩展
+
+### 10.2 设计模式对比
+
+| 组件 | Tool System | Skills System |
+|------|-------------|---------------|
+| 上游核心 | `src/tool_system/registry.py` (ToolRegistry) | `src/skills/loader.py` (get_all_skills) |
+| 扩展目录 | `src/tool_system_ext/` | `src/skills_ext/` (新) |
+| 扩展包装类 | `ToolRegistryExt` | `SkillRegistryExt` (新) |
+| Bundle机制 | `TOOL_BUNDLES` (bundles.py) | `SKILL_BUNDLES` (新) |
+| Agent配置 | `AgentToolConfig` | `AgentSkillConfig` (新) |
+| 额外路径 | 无 | `~/.clawcodex/skills` 等 |
+| 注册回调 | `on_tool_registered` | `on_skill_registered` (新) |
+
+### 10.3 架构设计
+
+```
+src/
+├── skills/                      # Layer 1: 上游原始代码（只读）
+│   ├── loader.py                #   核心加载逻辑（上游）
+│   ├── model.py                 #   Skill 数据模型（上游）
+│   ├── bundled_skills.py        #   内置 skill 注册（上游）
+│   ├── bundled/                 #   内置 skill 实现（上游）
+│   └── ...
+│
+├── skills_ext/                  # Layer 2: clawcodex 扩展层（新增）
+│   ├── __init__.py
+│   ├── registry_ext.py          #   SkillRegistryExt 包装类
+│   ├── bundles.py               #   Skill Bundle 定义
+│   ├── agent_config.py          #   Agent Skill 配置
+│   ├── paths.py                 #   clawcodex 特定路径解析
+│   ├── hooks.py                 #   Skill 生命周期钩子
+│   └── cache.py                 #   扩展层缓存管理
+```
+
+### 10.4 核心组件设计
+
+#### 10.4.1 SkillRegistryExt
+
+```python
+# src/skills_ext/registry_ext.py
+
+class SkillRegistryExt:
+    """包装上游 loader，添加 clawcodex 特定功能"""
+    
+    def __init__(self, loader_module=None) -> None:
+        self._loader = loader_module or import.import_module('src.skills.loader')
+    
+    def get_all_skills(self, **kwargs) -> list[Skill]:
+        """获取所有 skills（上游 + 扩展）"""
+        # 1. 调用上游获取基础 skills
+        base_skills = self._loader.get_all_skills(**kwargs)
+        
+        # 2. 追加 clawcodex 特定 skills
+        clawcodex_skills = self._load_clawcodex_paths()
+        
+        # 3. 合并（去重）
+        return self._merge_skills(base_skills, clawcodex_skills)
+    
+    def _load_clawcodex_paths(self) -> list[Skill]:
+        """加载 clawcodex 特定路径的 skills"""
+        # 加载 ~/.clawcodex/skills
+        # 加载 CLAWCODEX_SKILLS_DIR
+        # 加载 CLAWCODEX_MANAGED_SKILLS_DIR
+        ...
+    
+    def on_skill_registered(self, callback: Callable[[Skill], None]) -> None:
+        """注册 Skill 生命周期回调"""
+        ...
+```
+
+#### 10.4.2 SKILL_BUNDLES
+
+```python
+# src/skills_ext/bundles.py
+
+# Skill Bundle 定义
+SKILL_BUNDLES: dict[str, list[str]] = {
+    "default": ["git:commit", "git:push", "review-pr", ...],
+    "clawcodex": ["simplify", "debug", "loop", "verify-content", ...],
+    "all": list(TOOL_BUNDLES.keys()),
+}
+
+MODE_BUNDLES: dict[str, list[str]] = {
+    "bare": [],
+    "default": ["default"],
+    "clawcodex": ["clawcodex"],
+    "all": list(SKILL_BUNDLES.keys()),
+}
+```
+
+#### 10.4.3 AgentSkillConfig
+
+```python
+# src/skills_ext/agent_config.py
+
+@dataclass
+class AgentSkillConfig:
+    """配置 Agent 可访问的 skills"""
+    mode: Literal["bare", "default", "all"] = "default"
+    bundles: list[str] | None = None
+    exclude: list[str] = field(default_factory=list)
+```
+
+### 10.5 迁移策略
+
+1. **Phase 1**: 创建 `src/skills_ext/` 目录和基础结构
+2. **Phase 2**: 将 clawcodex 特定路径逻辑从 `loader.py` 迁移到 `skills_ext/paths.py`
+3. **Phase 3**: 添加 Bundle 机制和 AgentSkillConfig
+4. **Phase 4**: 添加 Hook 机制和回调系统
+5. **Phase 5**: 更新 `get_all_skills()` 调用点使用 `SkillRegistryExt`
+
+### 10.6 优势
+
+| 优势 | 说明 |
+|------|------|
+| **非侵入式** | 上游代码保持原样，只需在 `skills_ext/` 中包装 |
+| **易于更新** | 上游更新时，只需同步 `loader.py`，扩展层改动很少 |
+| **清晰边界** | clawcodex 特定逻辑与上游逻辑分离 |
+| **可测试** | 扩展层可以独立测试 |
+| **可替换** | 可通过环境变量切换使用上游原始 loader |
 
 ---
 
