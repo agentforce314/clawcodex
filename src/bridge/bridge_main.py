@@ -93,6 +93,11 @@ from src.bridge.work_secret import (
     build_ccr_v2_sdk_url,
     decode_work_secret,
 )
+from src.bridge.worktree import (
+    WorktreePaths,
+    create_agent_worktree,
+    remove_agent_worktree,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -456,6 +461,14 @@ class _BridgeDaemon:
         self.completed_work_ids: set[str] = set()
         self.session_timer_tasks: dict[str, asyncio.Task[None]] = {}
         self.timed_out_sessions: set[str] = set()
+        # Phase 12a: per-session git worktree paths for ``--spawn worktree``.
+        # Populated only when worktree creation succeeded; ``_on_session_done``
+        # and ``shutdown`` consult it for cleanup.
+        self.session_worktrees: dict[str, WorktreePaths] = {}
+        # Phase 12a: refs to the ``_on_session_done`` background tasks so
+        # ``shutdown`` can await them (they own per-session cleanup like
+        # worktree removal — letting them outlive shutdown leaks state).
+        self.session_done_tasks: dict[str, asyncio.Task[None]] = {}
 
         # Two-track exponential backoff state. Reset on any successful
         # poll (including empty-poll = no work).
@@ -618,17 +631,38 @@ class _BridgeDaemon:
         }
         working_dir = self.config.dir
         if self.config.spawn_mode == 'worktree':
-            # MVP: worktree mode not yet implemented; spawn in cwd with
-            # a one-line warning so operators see the gap.
-            logger.warning(
-                '[bridge:main] --spawn worktree not yet implemented; '
-                'spawning in %s instead', working_dir,
-            )
+            # Phase 12a: real ``git worktree`` integration. Best-effort:
+            # ``create_agent_worktree`` is documented to never raise and
+            # to fall back to base_dir on any failure (not a repo, git
+            # missing, subprocess timeout, etc.). The outer try/except
+            # is belt-and-braces — if a future change to that contract
+            # accidentally lets an exception escape, we'd rather spawn
+            # in cwd than crash the daemon.
+            try:
+                paths = await create_agent_worktree(working_dir, session_id)
+                working_dir = paths.working_dir
+                if paths.created:
+                    self.session_worktrees[session_id] = paths
+            except Exception as err:  # noqa: BLE001
+                logger.warning(
+                    '[bridge:main] worktree setup raised (continuing in '
+                    'base dir): %s', err,
+                )
+        # Invariant: at this point, neither ``session_timer_tasks`` nor
+        # ``session_done_tasks`` has a key for ``session_id`` — both are
+        # populated below, AFTER the spawn succeeds. The spawn-fail
+        # cleanup branch below therefore only needs to remove the
+        # worktree entry.
         try:
             session = self.spawner.spawn(spawn_opts, working_dir)
         except Exception as err:  # noqa: BLE001
             logger.error('[bridge:main] spawn failed: %s', err)
             await self._safe_stop_work(work_id, force=True)
+            # Clean up the worktree we just created — the session never
+            # started, so leaving it behind is just litter.
+            wt = self.session_worktrees.pop(session_id, None)
+            if wt is not None:
+                await remove_agent_worktree(wt)
             return
         self.active_sessions[session_id] = session
         self.session_work_ids[session_id] = work_id
@@ -657,8 +691,9 @@ class _BridgeDaemon:
             session_id, work_id,
             len(self.active_sessions), self.config.max_sessions,
         )
-        # Fire-and-forget wait-done.
-        asyncio.create_task(
+        # Phase 12a: track the wait-done task so ``shutdown`` can await
+        # any in-flight cleanup (worktree removal, stop_work, etc.).
+        self.session_done_tasks[session_id] = asyncio.create_task(
             self._on_session_done(session_id),
             name=f'bridge-await-{session_id}',
         )
@@ -717,11 +752,29 @@ class _BridgeDaemon:
         # ``discard`` doesn't return a value; check membership first.
         was_timeout = session_id in self.timed_out_sessions
         self.timed_out_sessions.discard(session_id)
+        # Phase 12a: remove the per-session worktree (best-effort).
+        # The ``pop`` happens BEFORE the await so a concurrent
+        # ``shutdown`` sweep can't double-claim this entry. The
+        # ``session_done_tasks.pop`` at the end of this method closes
+        # the cleanup-tracking loop the same way.
+        wt = self.session_worktrees.pop(session_id, None)
+        if wt is not None:
+            try:
+                await remove_agent_worktree(wt)
+            except Exception as err:  # noqa: BLE001
+                logger.warning(
+                    '[bridge:main] worktree cleanup failed for %s: %s',
+                    session_id, err,
+                )
         timeout_marker = ' (TIMEOUT)' if was_timeout else ''
         logger.info(
             '[bridge:main] Session done session_id=%s status=%s%s',
             session_id, status, timeout_marker,
         )
+        # Drop the self-reference last so ``shutdown`` doesn't try to
+        # await a completed task (it's already finished anyway, but a
+        # stale dict entry is just litter for a long-running daemon).
+        self.session_done_tasks.pop(session_id, None)
 
     async def shutdown(self) -> None:
         """SIGTERM all sessions, wait up to ``shutdown_grace_ms``, SIGKILL
@@ -771,6 +824,55 @@ class _BridgeDaemon:
         # Stop all outstanding work items.
         for work_id in work_id_snapshot.values():
             await self._safe_stop_work(work_id, force=True)
+
+        # Phase 12a: wait for any in-flight ``_on_session_done`` tasks
+        # to finish — they own per-session cleanup (worktree removal,
+        # stop_work) and racing against them leaves orphaned state on
+        # disk. Bounded by a short timeout so a stuck cleanup task
+        # can't hang shutdown indefinitely. On timeout we cancel the
+        # stragglers and drain them — letting them outlive shutdown
+        # would leak both ``WorktreePaths`` refs and live ``git``
+        # subprocesses, which matters because ``shutdown`` is
+        # documented as idempotent and may be called multiple times.
+        done_snapshot = [
+            t for t in self.session_done_tasks.values() if not t.done()
+        ]
+        if done_snapshot:
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*done_snapshot, return_exceptions=True),
+                    timeout=2.0,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    '[bridge:main] %d session-done task(s) didn\'t '
+                    'finish within 2s during shutdown — cancelling',
+                    len(done_snapshot),
+                )
+                for t in done_snapshot:
+                    if not t.done():
+                        t.cancel()
+                # Drain. The cancelled tasks return promptly with
+                # ``CancelledError``; ``_run_git``'s try/finally then
+                # kills any subprocess that was mid-``communicate()``
+                # so we don't leak ``git`` processes past shutdown.
+                await asyncio.gather(*done_snapshot, return_exceptions=True)
+
+        # Phase 12a: clean up any worktrees still on the books. After
+        # the wait above, ``_on_session_done`` has handled most of
+        # these — what remains is sessions that never completed (e.g.
+        # because the grace timeout expired before SIGKILL took effect).
+        # Best-effort — orphaned worktrees are recoverable via
+        # ``git worktree prune``.
+        for wt in list(self.session_worktrees.values()):
+            try:
+                await remove_agent_worktree(wt)
+            except Exception as err:  # noqa: BLE001
+                logger.warning(
+                    '[bridge:main] shutdown worktree cleanup failed: %s',
+                    err,
+                )
+        self.session_worktrees.clear()
 
         # Deregister the environment (best-effort).
         try:
