@@ -203,6 +203,178 @@ async def test_init_v1_path_fails_without_callbacks() -> None:
 
 
 @pytest.mark.asyncio
+async def test_proactive_oauth_refresh_called_by_default() -> None:
+    """Phase 11c: proactive_oauth_refresh=True (default) → refresh fires."""
+    env = _no_claude_env() | {
+        'CLAUDE_BRIDGE_OAUTH_TOKEN': 'override-tok',
+        'CLAUDE_AI_OAUTH_ACCESS_TOKEN': 'ai-tok',
+        'CLAUDE_AI_OAUTH_SCOPES': 'user:inference user:profile',
+        'CLAUDE_AI_ORG_UUID': 'org-123',
+    }
+    refresh_calls = [0]
+
+    async def fake_refresh() -> None:
+        refresh_calls[0] += 1
+
+    async def fake_init(params: Any, **_kw: Any) -> Any:
+        return 'fake-handle'
+
+    with patch.dict(os.environ, env, clear=True):
+        with patch(
+            'src.bridge.init_repl_bridge.check_and_refresh_oauth_token_if_needed',
+            side_effect=fake_refresh,
+        ), patch(
+            'src.bridge.init_repl_bridge.init_env_less_bridge_core',
+            side_effect=fake_init,
+        ):
+            await init_repl_bridge(InitBridgeOptions())
+    assert refresh_calls[0] == 1
+
+
+@pytest.mark.asyncio
+async def test_proactive_oauth_refresh_skipped_when_disabled() -> None:
+    """`proactive_oauth_refresh=False` → refresh is NOT called."""
+    env = _no_claude_env() | {
+        'CLAUDE_BRIDGE_OAUTH_TOKEN': 'override-tok',
+        'CLAUDE_AI_OAUTH_ACCESS_TOKEN': 'ai-tok',
+        'CLAUDE_AI_OAUTH_SCOPES': 'user:inference user:profile',
+        'CLAUDE_AI_ORG_UUID': 'org-123',
+    }
+    refresh_calls = [0]
+
+    async def fake_refresh() -> None:
+        refresh_calls[0] += 1
+
+    async def fake_init(params: Any, **_kw: Any) -> Any:
+        return 'fake-handle'
+
+    with patch.dict(os.environ, env, clear=True):
+        with patch(
+            'src.bridge.init_repl_bridge.check_and_refresh_oauth_token_if_needed',
+            side_effect=fake_refresh,
+        ), patch(
+            'src.bridge.init_repl_bridge.init_env_less_bridge_core',
+            side_effect=fake_init,
+        ):
+            opts = InitBridgeOptions(proactive_oauth_refresh=False)
+            await init_repl_bridge(opts)
+    assert refresh_calls[0] == 0
+
+
+@pytest.mark.asyncio
+async def test_proactive_oauth_refresh_failure_doesnt_block_init() -> None:
+    """A raising refresh must NOT cause init to fail — best-effort."""
+    env = _no_claude_env() | {
+        'CLAUDE_BRIDGE_OAUTH_TOKEN': 'override-tok',
+        'CLAUDE_AI_OAUTH_ACCESS_TOKEN': 'ai-tok',
+        'CLAUDE_AI_OAUTH_SCOPES': 'user:inference user:profile',
+        'CLAUDE_AI_ORG_UUID': 'org-123',
+    }
+
+    async def boom_refresh() -> None:
+        raise RuntimeError('keychain locked')
+
+    async def fake_init(params: Any, **_kw: Any) -> Any:
+        return 'h'
+
+    with patch.dict(os.environ, env, clear=True):
+        with patch(
+            'src.bridge.init_repl_bridge.check_and_refresh_oauth_token_if_needed',
+            side_effect=boom_refresh,
+        ), patch(
+            'src.bridge.init_repl_bridge.init_env_less_bridge_core',
+            side_effect=fake_init,
+        ):
+            out = await init_repl_bridge(InitBridgeOptions())
+    # Init succeeded despite refresh failure.
+    assert out == 'h'
+
+
+@pytest.mark.asyncio
+async def test_worker_type_string_passed_to_v1_path() -> None:
+    """Phase 11c: opts.worker_type (str) flows into BridgeCoreParams."""
+    env = _no_claude_env() | {
+        'CLAUDE_BRIDGE_OAUTH_TOKEN': 'override-tok',
+        'CLAUDE_AI_OAUTH_ACCESS_TOKEN': 'ai-tok',
+        'CLAUDE_AI_OAUTH_SCOPES': 'user:inference user:profile',
+        'CLAUDE_AI_ORG_UUID': 'org-123',
+    }
+    captured: list[Any] = []
+
+    async def fake_v1(params: Any, **_kw: Any) -> Any:
+        captured.append(params)
+        return 'v1-handle'
+
+    async def cs(_o: dict[str, Any]) -> str | None:
+        return 'cse_test'
+
+    async def ar(_s: str) -> None:
+        pass
+
+    # Force v1 by setting perpetual=True (which falls back to v1 per
+    # the documented v1/v2 branch).
+    opts = InitBridgeOptions(
+        perpetual=True,
+        create_session=cs,
+        archive_session=ar,
+        worker_type='claude_code_assistant',
+    )
+
+    with patch.dict(os.environ, env, clear=True):
+        with patch(
+            'src.bridge.init_repl_bridge.init_bridge_core',
+            side_effect=fake_v1,
+        ):
+            await init_repl_bridge(opts)
+    assert len(captured) == 1
+    assert captured[0].worker_type == 'claude_code_assistant'
+
+
+@pytest.mark.asyncio
+async def test_worker_type_callable_invoked_at_init() -> None:
+    """Phase 11c: opts.worker_type (callable) is invoked + result used."""
+    env = _no_claude_env() | {
+        'CLAUDE_BRIDGE_OAUTH_TOKEN': 'override-tok',
+        'CLAUDE_AI_OAUTH_ACCESS_TOKEN': 'ai-tok',
+        'CLAUDE_AI_OAUTH_SCOPES': 'user:inference user:profile',
+        'CLAUDE_AI_ORG_UUID': 'org-123',
+    }
+    invocations = [0]
+
+    def compute_worker_type() -> str:
+        invocations[0] += 1
+        return 'dynamic_worker'
+
+    captured: list[Any] = []
+
+    async def fake_v1(params: Any, **_kw: Any) -> Any:
+        captured.append(params)
+        return 'v1-handle'
+
+    async def cs(_o: dict[str, Any]) -> str | None:
+        return 'cse_test'
+
+    async def ar(_s: str) -> None:
+        pass
+
+    opts = InitBridgeOptions(
+        perpetual=True,
+        create_session=cs,
+        archive_session=ar,
+        worker_type=compute_worker_type,
+    )
+
+    with patch.dict(os.environ, env, clear=True):
+        with patch(
+            'src.bridge.init_repl_bridge.init_bridge_core',
+            side_effect=fake_v1,
+        ):
+            await init_repl_bridge(opts)
+    assert invocations[0] == 1
+    assert captured[0].worker_type == 'dynamic_worker'
+
+
+@pytest.mark.asyncio
 async def test_init_passes_through_callbacks_to_env_less() -> None:
     """Optional callbacks land on the EnvLessBridgeParams."""
     env = _no_claude_env() | {
