@@ -751,3 +751,300 @@ async def test_send_control_request_forwards_when_active() -> None:
     assert any('control_cancel_request' in s for s in sent)
     spawner.handles[0].complete('completed')
     await handle.teardown()
+
+
+# ── Phase 12b: Strategy-1 in-place reconnect ─────────────────────────────
+#
+# These tests directly exercise ``_BridgeState._recreate_environment``
+# rather than going through the poll-404 flow, because the MVP's poll
+# loop intentionally suspends polling while a session is active (see
+# the ``self.active_session is not None`` branch at the top of
+# ``_poll_loop``). That's the right MVP behavior — a single-session
+# bridge has nothing to ask the server about while busy — but it means
+# the 404-detection path is exercised by other API calls in real life,
+# not by the poll. Testing ``_recreate_environment`` directly lets us
+# validate Strategy-1 ↔ Strategy-2 dispatch without inventing fake
+# heartbeat/SSE-error injection.
+
+
+@pytest.mark.asyncio
+async def test_strategy_1_reconnect_preserves_session_when_server_accepts(
+) -> None:
+    """When ``reconnect_session`` succeeds AND the server resurrected
+    the same env id, the daemon must NOT create a fresh session, NOT
+    kill the active one, NOT archive the old one — just clear the
+    stale work id, refresh the env_secret, and resume polling."""
+    work = {
+        'id': 'work-1', 'type': 'work', 'environment_id': 'env-srv-1',
+        'state': 'pending',
+        'data': {'type': 'session', 'id': 'cse_w1'},
+        'secret': _encode_work_secret(),
+        'created_at': '2026-05-24',
+    }
+    api = FakeApiClient(poll_results=[work])
+    spawner = FakeSpawner()
+    params = _make_params()
+    params.max_env_recreation_attempts = 2
+    handle = await init_bridge_core(
+        params, api_client=api, spawner=spawner,
+    )
+    assert handle is not None
+    for _ in range(40):
+        await asyncio.sleep(0.01)
+        if spawner.handles:
+            break
+    assert spawner.handles
+    original_session = spawner.handles[0]
+    original_session_id = original_session.session_id
+
+    state = handle.write_messages.__self__  # type: ignore[attr-defined]
+    prior_env_id = state.environment_id
+    pre_archive = list(api.archive_calls)
+    pre_stop = list(api.stop_calls)
+
+    # Server honors ``reuse_environment_id`` — returns the same env id
+    # with a fresh secret. This is the Strategy-1 precondition.
+    api.register_result = {
+        'environment_id': prior_env_id,
+        'environment_secret': 'sec-srv-fresh',
+    }
+
+    ok = await state._recreate_environment()
+
+    assert ok is True
+    # Strategy-1 invoked with the SAME env id and original session id.
+    assert api.reconnect_calls == [(prior_env_id, original_session_id)]
+    # Env id unchanged; secret swapped to the fresh value.
+    assert state.environment_id == prior_env_id
+    assert state.environment_secret == 'sec-srv-fresh'
+    # Session NOT killed, NOT archived, NOT replaced.
+    assert not original_session._kill_called
+    assert api.archive_calls == pre_archive
+    assert state.active_session is original_session
+    assert state.active_session_id == original_session_id
+    # Stale work id is stopped (best-effort) and cleared so the next
+    # poll picks up a fresh work-secret bound to the new env-secret.
+    new_stops = [s for s in api.stop_calls if s not in pre_stop]
+    assert any(s[1] == 'work-1' for s in new_stops), (
+        f'stale work-id should be stop-worked; new_stops={new_stops!r}'
+    )
+    assert state.active_work_id is None
+    # ``reuse_environment_id`` hint was set and then cleared.
+    assert state.bridge_config.reuse_environment_id is None
+
+    original_session.complete('completed')
+    await handle.teardown()
+
+
+@pytest.mark.asyncio
+async def test_strategy_1_skipped_when_server_assigns_new_env_id(
+) -> None:
+    """If the server doesn't honor ``reuse_environment_id`` and hands
+    back a different env_id, Strategy-1 must be SKIPPED (the prior
+    session is bound to the dead env). Falls through to Strategy-2."""
+    work = {
+        'id': 'work-1', 'type': 'work', 'environment_id': 'env-srv-1',
+        'state': 'pending',
+        'data': {'type': 'session', 'id': 'cse_w1'},
+        'secret': _encode_work_secret(),
+        'created_at': '2026-05-24',
+    }
+    api = FakeApiClient(poll_results=[work])
+    spawner = FakeSpawner()
+    params = _make_params()
+    params.max_env_recreation_attempts = 2
+
+    archived: list[str] = []
+    original_archive = params.archive_session
+    async def recording_archive(sid: str) -> None:
+        archived.append(sid)
+        return await original_archive(sid)
+    params.archive_session = recording_archive  # type: ignore[assignment]
+
+    handle = await init_bridge_core(
+        params, api_client=api, spawner=spawner,
+    )
+    assert handle is not None
+    for _ in range(40):
+        await asyncio.sleep(0.01)
+        if spawner.handles:
+            break
+    original_session = spawner.handles[0]
+    state = handle.write_messages.__self__  # type: ignore[attr-defined]
+
+    # Server returns a DIFFERENT env id — Strategy-1 precondition
+    # fails, fallback to Strategy-2.
+    api.register_result = {
+        'environment_id': 'env-srv-different',
+        'environment_secret': 'sec-srv-different',
+    }
+
+    ok = await state._recreate_environment()
+
+    assert ok is True
+    # Strategy-1 was NOT attempted — env-id mismatch short-circuited.
+    assert api.reconnect_calls == []
+    # Strategy-2 ran instead.
+    assert original_session._kill_called
+    assert original_session.session_id in archived
+    assert state.environment_id == 'env-srv-different'
+
+    await handle.teardown()
+
+
+@pytest.mark.asyncio
+async def test_strategy_1_falls_back_to_strategy_2_on_reconnect_refuse(
+) -> None:
+    """When ``reconnect_session`` raises, the daemon must fall back to
+    Strategy-2: kill the old session, archive it, create a fresh one."""
+    from src.bridge.exceptions import BridgeFatalError
+
+    work = {
+        'id': 'work-1', 'type': 'work', 'environment_id': 'env-srv-1',
+        'state': 'pending',
+        'data': {'type': 'session', 'id': 'cse_w1'},
+        'secret': _encode_work_secret(),
+        'created_at': '2026-05-24',
+    }
+    api = FakeApiClient(poll_results=[work])
+
+    # reconnect_session refuses with a session-expired error.
+    async def reconnect_refuse(env_id: str, sid: str) -> None:
+        api.reconnect_calls.append((env_id, sid))
+        raise BridgeFatalError(
+            'session not found', status=404, error_type='session_expired',
+        )
+    api.reconnect_session = reconnect_refuse  # type: ignore[method-assign]
+
+    spawner = FakeSpawner()
+    params = _make_params()
+    params.max_env_recreation_attempts = 2
+
+    # Wrap params.archive_session to record what was archived.
+    archived: list[str] = []
+    original_archive = params.archive_session
+    async def recording_archive(sid: str) -> None:
+        archived.append(sid)
+        return await original_archive(sid)
+    params.archive_session = recording_archive  # type: ignore[assignment]
+
+    handle = await init_bridge_core(
+        params, api_client=api, spawner=spawner,
+    )
+    assert handle is not None
+    for _ in range(40):
+        await asyncio.sleep(0.01)
+        if spawner.handles:
+            break
+    original_session = spawner.handles[0]
+    original_session_id = original_session.session_id
+    state = handle.write_messages.__self__  # type: ignore[attr-defined]
+
+    # Server honors reuse — Strategy-1 precondition satisfied, but
+    # reconnect_session itself refuses → falls through to Strategy-2.
+    api.register_result = {
+        'environment_id': state.environment_id,  # same env id
+        'environment_secret': 'sec-srv-fresh',
+    }
+
+    ok = await state._recreate_environment()
+
+    # Strategy-1 was attempted first, then Strategy-2 took over.
+    assert ok is True
+    assert api.reconnect_calls == [(state.environment_id, original_session_id)]
+    # Strategy-2 effects:
+    assert original_session._kill_called, (
+        'Strategy-2 killed the original session'
+    )
+    assert original_session_id in archived, (
+        f'Strategy-2 should archive the active session id; '
+        f'archived={archived!r}'
+    )
+    # The internal session-id pointer was updated to the new session
+    # that create_session returned (default 'cse_test').
+    assert state.initial_session_id == 'cse_test'
+    assert state.active_session is None
+
+    await handle.teardown()
+
+
+@pytest.mark.asyncio
+async def test_strategy_1_skipped_when_no_active_session() -> None:
+    """If there's no active session at recreation time, Strategy-1 must
+    NOT call ``reconnect_session`` — there's no session id to preserve."""
+    api = FakeApiClient()
+    api.register_result = {
+        'environment_id': 'env-srv-2',
+        'environment_secret': 'sec-srv-2',
+    }
+    spawner = FakeSpawner()
+    params = _make_params()
+    params.max_env_recreation_attempts = 2
+    handle = await init_bridge_core(
+        params, api_client=api, spawner=spawner,
+    )
+    assert handle is not None
+    state = handle.write_messages.__self__  # type: ignore[attr-defined]
+    # No work has been dispatched, so no active session.
+    assert state.active_session is None
+    assert state.active_session_id is None
+
+    ok = await state._recreate_environment()
+
+    assert ok is True
+    # Strategy-1 skipped → no reconnect call.
+    assert api.reconnect_calls == []
+    # Strategy-2 path ran: re-registered env + created new session.
+    assert state.environment_id == 'env-srv-2'
+    assert state.initial_session_id == 'cse_test'
+
+    await handle.teardown()
+
+
+@pytest.mark.asyncio
+async def test_strategy_1_re_register_failure_returns_false() -> None:
+    """If the env re-registration itself fails, ``_recreate_environment``
+    must return False without attempting reconnect or fresh-session
+    create — the caller's retry loop will back off and try again."""
+    work = {
+        'id': 'work-1', 'type': 'work', 'environment_id': 'env-srv-1',
+        'state': 'pending',
+        'data': {'type': 'session', 'id': 'cse_w1'},
+        'secret': _encode_work_secret(),
+        'created_at': '2026-05-24',
+    }
+    api = FakeApiClient(poll_results=[work])
+    spawner = FakeSpawner()
+    params = _make_params()
+    handle = await init_bridge_core(
+        params, api_client=api, spawner=spawner,
+    )
+    assert handle is not None
+    for _ in range(40):
+        await asyncio.sleep(0.01)
+        if spawner.handles:
+            break
+    original_session = spawner.handles[0]
+
+    # Make register fail.
+    # Use a realistic transport-class failure (mirrors what
+    # ``_with_oauth_retry`` raises for 5xx).
+    from src.bridge.exceptions import BridgeFatalError
+    api.register_raises = BridgeFatalError(
+        'temporary backend outage', status=503,
+    )
+    state = handle.write_messages.__self__  # type: ignore[attr-defined]
+    pre_reconnect = list(api.reconnect_calls)
+    pre_archive = list(api.archive_calls)
+
+    ok = await state._recreate_environment()
+
+    assert ok is False
+    # Neither Strategy-1 nor Strategy-2 actions occurred after re-
+    # register failed.
+    assert api.reconnect_calls == pre_reconnect
+    assert api.archive_calls == pre_archive
+    assert not original_session._kill_called
+
+    original_session.complete('completed')
+    await handle.teardown()
