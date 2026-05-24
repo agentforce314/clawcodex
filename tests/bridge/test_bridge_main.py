@@ -863,3 +863,247 @@ async def test_bridge_main_permanent_error_returns_three() -> None:
         cancel_event=cancel,
     )
     assert code == 3
+
+
+# ── Phase 12a: worktree spawn-mode integration ──────────────────────────
+
+
+def _init_git_repo(repo_path: str) -> None:
+    """Helper: initialize a real git repo with one commit."""
+    import subprocess
+    subprocess.run(
+        ['git', 'init', '--initial-branch=main'], cwd=repo_path,
+        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    subprocess.run(
+        ['git', 'config', 'user.email', 'test@example.com'],
+        cwd=repo_path, check=True,
+    )
+    subprocess.run(
+        ['git', 'config', 'user.name', 'Test'],
+        cwd=repo_path, check=True,
+    )
+    subprocess.run(
+        ['git', 'config', 'commit.gpgsign', 'false'],
+        cwd=repo_path, check=True,
+    )
+    with open(f'{repo_path}/README.md', 'w', encoding='utf-8') as fh:
+        fh.write('hello\n')
+    subprocess.run(
+        ['git', 'add', 'README.md'], cwd=repo_path, check=True,
+    )
+    subprocess.run(
+        ['git', 'commit', '-m', 'init'], cwd=repo_path, check=True,
+        stdout=subprocess.DEVNULL,
+    )
+
+
+@pytest.mark.asyncio
+async def test_spawn_worktree_creates_isolated_dir_and_cleans_up(
+    tmp_path,
+) -> None:
+    """``--spawn worktree`` against a git repo gives the session an
+    isolated working dir, then removes it when the session ends."""
+    import os
+    repo = str(tmp_path / 'repo')
+    os.makedirs(repo)
+    _init_git_repo(repo)
+
+    work = {
+        'id': 'w1', 'type': 'work', 'environment_id': 'env-srv',
+        'state': 'pending',
+        'data': {'type': 'session', 'id': 'cse_wt1'},
+        'secret': _encode_work_secret(),
+        'created_at': '2026-05-24',
+    }
+    api = FakeApiClient(poll_results=[work])
+    spawner = FakeSpawner()
+    cancel = asyncio.Event()
+    cfg = _bridge_config()
+    cfg.dir = repo
+    cfg.spawn_mode = 'worktree'
+
+    task = asyncio.create_task(run_bridge_loop(
+        cfg, 'env-srv', 'sec-srv', api, spawner, cancel,
+    ))
+    for _ in range(50):
+        await asyncio.sleep(0.01)
+        if spawner.spawns:
+            break
+
+    assert len(spawner.spawns) == 1
+    _opts, wd = spawner.spawns[0]
+    # The spawner was handed the worktree path, not the base repo.
+    expected = os.path.join(repo, '.claude', 'worktrees', 'agent-cse_wt1')
+    assert wd == expected
+    assert os.path.isdir(expected)
+
+    # Complete the session — the worktree should be removed.
+    spawner.handles[0].complete('completed')
+    for _ in range(50):
+        await asyncio.sleep(0.01)
+        if not os.path.isdir(expected):
+            break
+    assert not os.path.isdir(expected), (
+        'worktree should be cleaned up after session completion'
+    )
+
+    cancel.set()
+    await task
+
+
+@pytest.mark.asyncio
+async def test_spawn_worktree_falls_back_when_not_a_repo(tmp_path) -> None:
+    """If ``cfg.dir`` isn't a git repo, ``--spawn worktree`` falls back
+    to ``cfg.dir`` itself rather than refusing to spawn."""
+    work = {
+        'id': 'w1', 'type': 'work', 'environment_id': 'env-srv',
+        'state': 'pending',
+        'data': {'type': 'session', 'id': 'cse_wt2'},
+        'secret': _encode_work_secret(),
+        'created_at': '2026-05-24',
+    }
+    api = FakeApiClient(poll_results=[work])
+    spawner = FakeSpawner()
+    cancel = asyncio.Event()
+    cfg = _bridge_config()
+    cfg.dir = str(tmp_path)  # not a git repo
+    cfg.spawn_mode = 'worktree'
+
+    task = asyncio.create_task(run_bridge_loop(
+        cfg, 'env-srv', 'sec-srv', api, spawner, cancel,
+    ))
+    for _ in range(50):
+        await asyncio.sleep(0.01)
+        if spawner.spawns:
+            break
+
+    assert len(spawner.spawns) == 1
+    _opts, wd = spawner.spawns[0]
+    # Fell back to base dir — no worktree created.
+    assert wd == str(tmp_path)
+    spawner.handles[0].complete('completed')
+    cancel.set()
+    await task
+
+
+@pytest.mark.asyncio
+async def test_shutdown_removes_orphaned_worktrees(tmp_path) -> None:
+    """If the daemon is shut down with a still-active worktree session,
+    the worktree directory must not be left behind on disk."""
+    import os
+    repo = str(tmp_path / 'repo')
+    os.makedirs(repo)
+    _init_git_repo(repo)
+
+    work = {
+        'id': 'w1', 'type': 'work', 'environment_id': 'env-srv',
+        'state': 'pending',
+        'data': {'type': 'session', 'id': 'cse_wt3'},
+        'secret': _encode_work_secret(),
+        'created_at': '2026-05-24',
+    }
+    api = FakeApiClient(poll_results=[work])
+    spawner = FakeSpawner()
+    cancel = asyncio.Event()
+    cfg = _bridge_config()
+    cfg.dir = repo
+    cfg.spawn_mode = 'worktree'
+
+    task = asyncio.create_task(run_bridge_loop(
+        cfg, 'env-srv', 'sec-srv', api, spawner, cancel,
+    ))
+    for _ in range(50):
+        await asyncio.sleep(0.01)
+        if spawner.spawns:
+            break
+
+    expected = os.path.join(repo, '.claude', 'worktrees', 'agent-cse_wt3')
+    assert os.path.isdir(expected)
+    # Trigger shutdown WITHOUT completing the session first.
+    cancel.set()
+    # Have the spawner's handle "exit" once it's been killed, so
+    # ``shutdown`` can proceed past the wait_for-grace step. Capture
+    # the task handle so we can await it explicitly and prevent test
+    # leakage across the suite.
+
+    async def complete_after_kill() -> None:
+        for _ in range(50):
+            await asyncio.sleep(0.01)
+            if spawner.handles[0].killed:
+                spawner.handles[0].complete('interrupted')
+                return
+
+    helper = asyncio.create_task(complete_after_kill())
+    try:
+        await task
+    finally:
+        if not helper.done():
+            helper.cancel()
+        await asyncio.gather(helper, return_exceptions=True)
+    assert not os.path.isdir(expected), (
+        'worktree should be cleaned up by daemon shutdown'
+    )
+
+
+@pytest.mark.asyncio
+async def test_shutdown_bounded_when_session_done_task_is_slow(
+    monkeypatch, tmp_path,
+) -> None:
+    """If ``_on_session_done`` is mid-cleanup when shutdown runs and
+    doesn't finish within 2s, shutdown cancels it and returns within
+    a bounded time — it must not hang forever on the cleanup task."""
+    import os
+    from src.bridge import bridge_main as bm
+
+    repo = str(tmp_path / 'repo')
+    os.makedirs(repo)
+    _init_git_repo(repo)
+
+    # Replace ``remove_agent_worktree`` with a slow stub so the
+    # done-task is genuinely stuck during shutdown.
+    async def slow_remove(_paths):
+        await asyncio.sleep(30)
+
+    monkeypatch.setattr(bm, 'remove_agent_worktree', slow_remove)
+
+    work = {
+        'id': 'w1', 'type': 'work', 'environment_id': 'env-srv',
+        'state': 'pending',
+        'data': {'type': 'session', 'id': 'cse_slow_done'},
+        'secret': _encode_work_secret(),
+        'created_at': '2026-05-24',
+    }
+    api = FakeApiClient(poll_results=[work])
+    spawner = FakeSpawner()
+    cancel = asyncio.Event()
+    cfg = _bridge_config()
+    cfg.dir = repo
+    cfg.spawn_mode = 'worktree'
+
+    task = asyncio.create_task(run_bridge_loop(
+        cfg, 'env-srv', 'sec-srv', api, spawner, cancel,
+    ))
+    for _ in range(50):
+        await asyncio.sleep(0.01)
+        if spawner.spawns:
+            break
+
+    # Complete the session so ``_on_session_done`` enters the slow
+    # ``remove_agent_worktree`` path. Then cancel the loop — shutdown
+    # should hit the 2s wait_for timeout and cancel the stragglers.
+    spawner.handles[0].complete('completed')
+    await asyncio.sleep(0.05)  # let _on_session_done get into slow_remove
+    cancel.set()
+
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    await task
+    elapsed = loop.time() - start
+    # Shutdown should complete within ~3s — the 2s wait_for plus
+    # a small drain budget after cancellation. Without the bounded
+    # wait, this would hang for 30s on the slow_remove sleep.
+    assert elapsed < 5.0, (
+        f'shutdown took {elapsed:.2f}s — should be bounded by 2s '
+        f'wait_for + cancel drain'
+    )
