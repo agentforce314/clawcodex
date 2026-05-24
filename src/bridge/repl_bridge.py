@@ -465,20 +465,103 @@ class _BridgeState:
             pass
 
     async def _recreate_environment(self) -> bool:
-        """Re-register the environment + create a fresh session.
+        """Re-register the environment, then **try Strategy-1 reconnect
+        first** (preserve the active session via ``reconnect_session``
+        when the server resurrects the *same* env id); fall back to
+        **Strategy-2** (kill + create fresh session) otherwise.
 
-        Mirrors TS Strategy-2 on ``replBridge.ts:822``. Returns True on
-        success (caller resets the attempt counter), False on failure
-        (caller backs off and retries; the attempt counter persists so
-        we eventually give up).
+        Mirrors TS ``replBridge.ts:614-852``. Returns True on success
+        (caller resets the attempt counter), False on failure (caller
+        backs off and retries; the attempt counter persists so we
+        eventually give up).
 
-        Strategy-1 (in-place ``reconnect_session`` to keep the same
-        session ID + SSE seq-num) is deferred — it needs the
-        ``BridgeApiClient.reconnect_session`` happy path which the MVP
-        doesn't exercise, and the session-runner doesn't yet support
-        live resumption with a different ingress URL.
+        Strategy-1 preserves the local session subprocess and its
+        in-flight CCR client connection. It does NOT independently
+        preserve the SSE seq-num — that depends on the CCR client
+        surviving the env change, which today is best-effort.
         """
-        # If there's an active session, archive it before starting fresh.
+        # Strategy-1 only makes sense if the server hands back the
+        # SAME env id (TS ``tryReconnectInPlace`` at replBridge.ts:386-391
+        # bails when ``environmentId !== requestedEnvId``). Hint the
+        # server to reuse by setting ``reuse_environment_id`` before
+        # registering; restore it after so a future Strategy-2 cycle
+        # gets a fresh env if the server doesn't want to reuse.
+        prior_env_id = self.environment_id
+        prior_reuse = self.bridge_config.reuse_environment_id
+        # ``active_session_id`` reflects the currently-running work
+        # item (may differ from ``initial_session_id`` after earlier
+        # recreations). Strategy-1 preserves the *active* session.
+        prior_session_id = self.active_session_id
+        prior_work_id = self.active_work_id
+        had_active_session = self.active_session is not None
+        self.bridge_config.reuse_environment_id = prior_env_id
+        try:
+            try:
+                registration = await self.api.register_bridge_environment(
+                    self.bridge_config,
+                )
+            except Exception as err:  # noqa: BLE001
+                logger.warning(
+                    '[bridge:repl] Re-register failed: %s', err
+                )
+                return False
+        finally:
+            self.bridge_config.reuse_environment_id = prior_reuse
+        new_env_id = registration['environment_id']
+        new_env_secret = registration['environment_secret']
+
+        # ── Strategy-1: in-place reconnect ──────────────────────────
+        # Gate on (a) same env id AND (b) active session id AND (c)
+        # active session handle. (a) is the TS preconditon; (b) and (c)
+        # together mean there's a real session to preserve. If the
+        # server changed env id (despite our reuse hint), Strategy-1
+        # is unreachable — the prior session was bound to the dead env.
+        if (
+            new_env_id == prior_env_id
+            and prior_session_id is not None
+            and had_active_session
+        ):
+            try:
+                await self.api.reconnect_session(
+                    new_env_id, prior_session_id,
+                )
+            except Exception as err:  # noqa: BLE001
+                logger.info(
+                    '[bridge:repl] Strategy-1 reconnect refused '
+                    '(session=%s): %s — falling back to Strategy-2',
+                    prior_session_id, err,
+                )
+            else:
+                # Server accepted the reconnect. The OLD work item is
+                # now stale (its work-secret was bound to the dead env
+                # state) — clear it server-side and locally so the next
+                # poll can pick up a fresh work-secret. The subprocess
+                # itself keeps running; the next poll will redeliver
+                # work for the same session_id with a fresh JWT.
+                #
+                # Invariant: ``new_env_id == prior_env_id`` here (the
+                # gate above enforces it), so ``_safe_stop_work`` —
+                # which reads ``self.environment_id`` — hits the right
+                # env whether called before or after the swap below.
+                if prior_work_id is not None:
+                    await self._safe_stop_work(prior_work_id, force=False)
+                    self.active_work_id = None
+                self.environment_id = new_env_id
+                self.environment_secret = new_env_secret
+                logger.info(
+                    '[bridge:repl] Strategy-1 reconnect succeeded: '
+                    'env=%s session=%s (preserved)',
+                    new_env_id, prior_session_id,
+                )
+                return True
+
+        # ── Strategy-2: kill active session + create fresh ─────────
+        # Capture the session id we should archive BEFORE nulling the
+        # active fields below. Prefer the currently-running session id
+        # (what the user was actually doing) over the bridge's initial
+        # session id (which may be stale after an earlier recreation).
+        archive_id = self.active_session_id or self.initial_session_id
+        # If there's an active session, kill it before starting fresh.
         if self.active_session is not None:
             try:
                 self.active_session.kill()
@@ -494,25 +577,16 @@ class _BridgeState:
                 self.active_token_refresh = None
         # Best-effort archive of the prior session id.
         try:
-            await self.params.archive_session(self.initial_session_id)
+            await self.params.archive_session(archive_id)
         except Exception as err:  # noqa: BLE001
             logger.debug(
                 '[bridge:repl] archive of prior session failed '
                 'during recreation: %s', err
             )
-        # Re-register environment (server may hand back a fresh
-        # environment_id; we accept whatever it gives us).
-        try:
-            registration = await self.api.register_bridge_environment(
-                self.bridge_config,
-            )
-        except Exception as err:  # noqa: BLE001
-            logger.warning(
-                '[bridge:repl] Re-register failed: %s', err
-            )
-            return False
-        self.environment_id = registration['environment_id']
-        self.environment_secret = registration['environment_secret']
+        # Adopt the new env handles before create_session (the server
+        # binds the new session to whatever env we name).
+        self.environment_id = new_env_id
+        self.environment_secret = new_env_secret
         # Create a fresh session on the new environment.
         try:
             new_session_id = await self.params.create_session({
@@ -536,7 +610,7 @@ class _BridgeState:
         # ReplBridgeHandle is immutable; this is the internal copy).
         self.initial_session_id = new_session_id
         logger.info(
-            '[bridge:repl] Environment recreated: env=%s session=%s',
+            '[bridge:repl] Strategy-2 recreate complete: env=%s session=%s',
             self.environment_id, new_session_id,
         )
         return True
