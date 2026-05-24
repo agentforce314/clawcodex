@@ -2340,6 +2340,431 @@ WORKFLOW.md → Orchestrator → LinearAdapter (轮询 Issue)
 
 ---
 
-*文档更新时间: 2026-05-20*
+---
 
-*版本 v1.3 更新：三层解耦架构（Layer 1 upstream / Layer 2 capabilities / Layer 3 features），新增 `src/api/` 加入 features 层，`src/api/query.py` 通过 `capabilities/headless_runner.py` 实现运行时零上游耦合。*
+## 九、Cron 系统执行引擎
+
+> 优先级: P0  
+> 状态: 🔄 规划中  
+> 参考实现: claude-code-best `src/utils/cron*.ts`
+
+### 9.1 设计目标
+
+将 claude-code-best 的生产级别 cron 执行引擎完整移植到 ClawCodex，实现：
+
+1. **完整 cron 表达式解析** - 支持 5 字段标准 cron 语法
+2. **下次执行时间计算** - 基于本地时区的精确计算
+3. **调度器执行引擎** - 基于时间轮询的执行机制
+4. **任务持久化** - 存储到 `.claude/scheduled_tasks.json`
+5. **分布式锁** - 防止多进程/多会话重复执行
+6. **Jitter 抖动算法** - 避免雷鸣般群体效应
+7. **任务过期机制** - 周期性任务 7 天自动删除
+
+### 9.2 架构设计
+
+```
+src/cron_system/
+├── __init__.py
+├── cron_parser.py          # Cron 表达式解析器
+├── cron_scheduler.py       # 执行引擎核心
+├── cron_tasks.py           # 任务存储与 CRUD
+├── cron_tasks_lock.py      # 分布式调度器锁
+└── skills.py               # CLI 命令行界面
+```
+
+### 9.3 核心数据结构
+
+```python
+@dataclass
+class CronFields:
+    minute: list[int]         # 0-59
+    hour: list[int]           # 0-23
+    day_of_month: list[int]   # 1-31
+    month: list[int]          # 1-12
+    day_of_week: list[int]    # 0-6 (0=Sunday, 7=Sunday alias)
+
+@dataclass
+class CronTask:
+    id: str                      # 8位十六进制UUID (uuid.uuid4().hex[:8])
+    cron: str                     # 5字段cron表达式 (本地时间)
+    prompt: str                   # 触发时执行的prompt
+    created_at: int               # 创建时间戳(毫秒)
+    last_fired_at: Optional[int]  # 最后触发时间戳
+    recurring: bool               # 是否周期性
+    permanent: bool              # 是否永久(不自动过期)
+    durable: bool                 # 是否持久化到磁盘
+    agent_id: Optional[str]       # 关联的agent ID (session-only任务)
+```
+
+### 9.4 组件详细设计
+
+#### 9.4.1 cron_parser.py - Cron 表达式解析
+
+**功能**:
+- 解析 5 字段 cron 表达式 (minute hour day-of-month month day-of-week)
+- 支持语法: wildcard (`*`), 步长 (`*/N`), 范围 (`N-M`), 列表 (`N,M`)
+- 计算下次执行时间
+- 将 cron 转换为人类可读描述
+
+**关键函数**:
+
+```python
+def parse_cron_expression(expr: str) -> CronFields | None:
+    """
+    解析5字段cron表达式。
+    支持: *, */N, N-M, N,M, 范围步长 N-M/N
+    返回 CronFields 或 None (无效表达式)
+    
+    示例:
+      "0 9 * * *"  -> CronFields(minute=[0], hour=[9], ...)
+      "*/15 * * * *" -> CronFields(minute=[0,15,30,45], ...)
+      "0 9 * * 1-5" -> CronFields(minute=[0], hour=[9], day_of_week=[1,2,3,4,5])
+    """
+
+def compute_next_cron_run(fields: CronFields, from_time: datetime) -> datetime | None:
+    """
+    计算下次执行时间。
+    - 使用本地时区
+    - 严格在未来时间(after from_time)
+    - 最多向前查找366天
+    - OR语义: dayOfMonth和dayOfWeek都约束时,任一匹配即可
+    
+    DST行为: 
+      - 固定小时crons targeting spring-forward gap 跳过转换日
+      - wildcard小时crons 在gap后第一个有效分钟触发
+      - fall-back 重复触发一次
+    """
+
+def cron_to_human(cron: str, utc: bool = False) -> str:
+    """
+    将cron表达式转为人类可读字符串。
+    
+    示例:
+      "0 9 * * *"       -> "Every day at 9:00 AM"
+      "*/15 * * * *"    -> "Every 15 minutes"
+      "0 9 * * 1-5"     -> "Weekdays at 9:00 AM"
+      "30 14 27 2 *"    -> "Every February 27 at 2:30 PM"
+    """
+```
+
+#### 9.4.2 cron_scheduler.py - 执行引擎核心
+
+**功能**:
+- 基于 `CHECK_INTERVAL_MS = 1000` (1秒) 的轮询调度器
+- 文件监控 (watchdog 替代 chokidar)
+- 调度器锁获取与释放
+- 任务触发 (onFire) 回调
+- 周期性任务重排
+- 单次任务删除
+
+**CronScheduler 类**:
+
+```python
+class CronScheduler:
+    def __init__(
+        self,
+        on_fire: Callable[[str], None],              # 任务触发回调 (prompt)
+        is_loading: Callable[[], bool],               # 加载状态检查
+        assistant_mode: bool = False,
+        on_fire_task: Optional[Callable[[CronTask], None]] = None,  # 完整任务回调
+        on_missed: Optional[Callable[[list[CronTask]], None]] = None,  # 错过的任务回调
+        dir: Optional[str] = None,                     # 自定义项目目录
+        lock_identity: Optional[str] = None,           # 锁标识(daemon用)
+        get_jitter_config: Optional[Callable[[], CronJitterConfig]] = None,
+        is_killed: Optional[Callable[[], bool]] = None,
+        filter: Optional[Callable[[CronTask], bool]] = None,  # 任务过滤器
+    ):
+        self.on_fire = on_fire
+        self.is_loading = is_loading
+        # ...
+
+    def start(self) -> None:
+        """启动调度器"""
+        # 1. 尝试获取调度器锁
+        # 2. 加载任务文件
+        # 3. 启动文件监控 (watchdog)
+        # 4. 启动1秒轮询timer
+        # 5. 非所有者启动5秒锁探测timer
+
+    def stop(self) -> None:
+        """停止调度器"""
+        # 清理所有timer和监控,释放锁
+
+    def get_next_fire_time(self) -> int | None:
+        """返回最快触发的任务时间戳(毫秒),无任务返回None"""
+```
+
+**调度器锁协议**:
+
+```
+1. 启动时尝试获取锁 (.claude/scheduled_tasks.lock)
+2. 使用 O_EXCL 原子创建实现test-and-set
+3. 锁文件包含: session_id, pid, acquired_at
+4. 非所有者定期探测锁(每5秒)
+5. 所有者死亡(PID not running)后,其他会话可接管
+6. 退出时释放锁
+```
+
+#### 9.4.3 cron_tasks.py - 任务存储
+
+**功能**:
+- 读写 `.claude/scheduled_tasks.json`
+- 任务 CRUD 操作
+- 持久化 lastFiredAt
+- 计算下次执行时间 (含 jitter)
+
+**关键函数**:
+
+```python
+CRON_FILE_PATH = ".claude/scheduled_tasks.json"
+
+async def read_cron_tasks(dir: Optional[str] = None) -> list[CronTask]:
+    """读取并验证cron任务,无效任务自动跳过(日志记录)"""
+
+async def write_cron_tasks(tasks: list[CronTask], dir: Optional[str] = None) -> None:
+    """覆写任务文件,自动去除runtime-only字段(durable, agent_id)"""
+
+def has_cron_tasks_sync(dir: Optional[str] = None) -> bool:
+    """同步检查任务文件是否有内容(用于启动时auto-enable)"""
+
+async def add_cron_task(
+    cron: str,
+    prompt: str,
+    recurring: bool,
+    durable: bool,
+    agent_id: Optional[str] = None,
+) -> str:
+    """添加任务,返回生成的8位hex ID"""
+    # durable=False -> session task, 只存内存
+    # durable=True -> file task, 持久化
+
+async def remove_cron_tasks(ids: list[str], dir: Optional[str] = None) -> None:
+    """批量删除任务(文件+session)"""
+
+async def mark_cron_tasks_fired(ids: list[str], fired_at: int, dir: Optional[str] = None) -> None:
+    """标记周期性任务已触发,更新lastFiredAt"""
+```
+
+#### 9.4.4 cron_tasks_lock.py - 分布式锁
+
+**功能**:
+- 基于文件系统的原子锁
+- PID 存活检测
+- 陈旧锁自动恢复
+
+**关键函数**:
+
+```python
+LOCK_FILE_PATH = ".claude/scheduled_tasks.lock"
+
+async def try_acquire_scheduler_lock(
+    opts: Optional[SchedulerLockOptions] = None,
+) -> bool:
+    """
+    尝试获取调度器锁。
+    
+    协议:
+    - O_EXCL 原子创建
+    - 锁文件存在时检查PID是否存活(psutil)
+    - 死亡PID的锁被认定为陈旧,自动删除并重试
+    - 去重: 如果sessionId相同(重启后)则更新PID并返回True
+    
+    Returns: True=获取成功, False=被其他会话持有
+    """
+
+async def release_scheduler_lock(opts: Optional[SchedulerLockOptions] = None) -> None:
+    """释放调度器锁(仅当自己持有时)"""
+```
+
+**锁文件格式**:
+
+```json
+{
+  "sessionId": "550e8400-e29b-41d4-a716-446655440000",
+  "pid": 12345,
+  "acquiredAt": 1700000000000
+}
+```
+
+#### 9.4.5 skills.py - CLI 命令
+
+**技能注册**:
+
+```python
+def register_cron_list_skill() -> None:
+    """注册 /cron-list 命令,调用 CronListTool"""
+    registerBundledSkill({
+        name: "cron-list",
+        description: "List all scheduled cron jobs in this session",
+        whenToUse: "When the user wants to see their scheduled/recurring tasks...",
+        userInvocable: True,
+        isEnabled: isKairosCronEnabled,
+    })
+
+def register_cron_delete_skill() -> None:
+    """注册 /cron-delete <job-id> 命令,调用 CronDeleteTool"""
+```
+
+### 9.5 Jitter 抖动算法
+
+**目的**: 避免多个客户端同一 cron 表达式在同一时刻触发
+
+**周期性任务**:
+
+```python
+def jittered_next_cron_run_ms(
+    cron: str,
+    from_ms: int,
+    task_id: str,
+    cfg: CronJitterConfig,
+) -> int | None:
+    """
+    计算周期性任务下次触发时间(含抖动)。
+    
+    抖动 = jitter_frac(task_id) * recurring_frac * (间隔, capped by recurring_cap_ms)
+    
+    示例(默认配置):
+      - hourly task -> 分散到 [:00, :06)
+      - per-minute task -> 分散几秒钟
+    """
+```
+
+**一次性任务**:
+
+```python
+def one_shot_jittered_next_cron_run_ms(
+    cron: str,
+    from_ms: int,
+    task_id: str,
+    cfg: CronJitterConfig,
+) -> int | None:
+    """
+    计算一次性任务下次触发时间(含抖动)。
+    
+    只在分钟边界匹配时应用抖动:
+    - minute % one_shot_minute_mod == 0 时触发
+    - 向后偏移 [floor, max) 毫秒
+    
+    默认: mod=30, max=90s, floor=0
+    结果: :00/:30 的任务被分散到 [t-90s, t] 区间
+    """
+```
+
+**jitter_frac 函数**:
+
+```python
+def jitter_frac(task_id: str) -> float:
+    """基于8位hex UUID计算[0,1)均匀分布值"""
+    frac = int(task_id[:8], 16) / 0x1_0000_0000
+    return frac if math.isfinite(frac) else 0
+```
+
+### 9.6 任务过期机制
+
+```python
+@dataclass
+class CronJitterConfig:
+    recurring_frac: float = 0.1          # 间隔的10%
+    recurring_cap_ms: int = 15*60*1000   # 最多15分钟
+    one_shot_max_ms: int = 90*1000       # 最多提前90秒
+    one_shot_floor_ms: int = 0           # 最小提前0秒
+    one_shot_minute_mod: int = 30        # :00/:30 边界
+    recurring_max_age_ms: int = 7*24*60*60*1000  # 7天
+
+def is_recurring_task_aged(
+    t: CronTask,
+    now_ms: int,
+    max_age_ms: int,
+) -> bool:
+    """检查周期性任务是否超过最大存活时间"""
+    if max_age_ms == 0:
+        return False  # 0 = 无限
+    return t.recurring and not t.permanent and (now_ms - t.created_at) >= max_age_ms
+```
+
+### 9.7 文件格式
+
+**`.claude/scheduled_tasks.json`**:
+
+```json
+{
+  "tasks": [
+    {
+      "id": "a1b2c3d4",
+      "cron": "0 9 * * 1-5",
+      "prompt": "Check my PRs",
+      "createdAt": 1700000000000,
+      "lastFiredAt": 1700080000000,
+      "recurring": true,
+      "permanent": false
+    }
+  ]
+}
+```
+
+**`.claude/scheduled_tasks.lock`**:
+
+```json
+{
+  "sessionId": "550e8400-e29b-41d4-a716-446655440000",
+  "pid": 12345,
+  "acquiredAt": 1700000000000
+}
+```
+
+### 9.8 与现有 cron.py 的关系
+
+**现有实现** (`src/tool_system/tools/cron.py`):
+- 仅提供 CronCreate/CronList/CronDelete 工具
+- 任务存储在 `context.crons` (进程内存)
+- **不执行任何调度**
+
+**新实现**:
+- 保留现有工具作为用户接口
+- 新增执行引擎层
+- 工具创建的任务同时写入文件
+- 调度器从文件读取并执行
+
+**迁移策略**:
+1. 保留现有 `CronCreateTool`, `CronListTool`, `CronDeleteTool`
+2. 修改工具层的写入逻辑,同时写入 `context.crons` 和文件
+3. 新增 `CronScheduler` 作为后台服务
+4. 添加 CLI 命令 `/cron-list`, `/cron-delete`
+
+### 9.9 实现文件清单
+
+| 文件路径 | 行数估算 | 依赖 |
+|---------|---------|------|
+| `src/cron_system/__init__.py` | ~20 | - |
+| `src/cron_system/cron_parser.py` | ~250 | dataclasses, datetime, re |
+| `src/cron_system/cron_scheduler.py` | ~500 | asyncio, watchdog, cron_parser, cron_tasks, cron_lock |
+| `src/cron_system/cron_tasks.py` | ~300 | asyncio, json, pathlib |
+| `src/cron_system/cron_tasks_lock.py` | ~200 | asyncio, pathlib, psutil |
+| `src/cron_system/skills.py` | ~100 | bundled_skills |
+| `tests/cron/test_parser.py` | ~150 | pytest |
+| `tests/cron/test_scheduler.py` | ~300 | pytest, pytest-asyncio |
+| `tests/cron/test_tasks.py` | ~150 | pytest, pytest-asyncio |
+
+### 9.10 外部依赖
+
+```toml
+# pyproject.toml 新增依赖
+watchdog = ">=3.0"      # 文件监控 (chokidar 替代)
+psutil = ">=5.9"        # 进程存活检测
+```
+
+### 9.11 关键设计决策
+
+| 决策点 | 选择 | 理由 |
+|-------|------|------|
+| 轮询 vs 定时器 | 每秒轮询 | 简单可靠,cron精度本来就是分钟级 |
+| 文件监控 | watchdog | Python标准,跨平台 |
+| 锁机制 | O_EXCL原子创建 | 简洁,无需额外服务 |
+| 会话任务 | 内存存储 | 进程内通信,无需持久化 |
+| 过期删除 | 触发后检查 | 无需额外清理进程 |
+
+---
+
+*文档更新时间: 2026-05-24*
+
+*版本 v1.4 更新：新增 Cron 系统执行引擎完整设计（第九章），对标 claude-code-best 生产级实现。*

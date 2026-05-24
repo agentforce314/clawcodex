@@ -81,6 +81,10 @@ def setup_graceful_shutdown() -> None:
     try:
         signal.signal(signal.SIGINT, _signal_handler)
         signal.signal(signal.SIGTERM, _signal_handler)
+        # SIGTSTP is the signal the foreground promotion machinery
+        # races on — handle it gracefully so Ctrl+B from a raw TTY
+        # still triggers clean background promotion.
+        signal.signal(signal.SIGTSTP, _signal_handler)
     except ValueError:
         # signal.signal raises ValueError when called off the main
         # thread; this is OK in test contexts where setup may run
