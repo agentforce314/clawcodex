@@ -31,6 +31,14 @@ PORTING_NOTE = f"Python placeholder package for '{ARCHIVE_NAME}' with {MODULE_CO
 # -----------------------------------------------------------------------------
 
 from src.bridge.bounded_uuid_set import BoundedUUIDSet
+from src.bridge.bridge_api import (
+    ANTHROPIC_VERSION,
+    BETA_HEADER,
+    create_bridge_api_client,
+    is_expired_error_type,
+    is_suppressible_403,
+    validate_bridge_id,
+)
 from src.bridge.bridge_config import (
     get_bridge_access_token,
     get_bridge_base_url,
@@ -112,7 +120,9 @@ __all__ = [
     'MODULE_COUNT',
     'PORTING_NOTE',
     'SAMPLE_FILES',
-    # Phase 1 leaves
+    # Phase 1 leaves + Phase 3 HTTP client surface
+    'ANTHROPIC_VERSION',
+    'BETA_HEADER',
     'BRIDGE_LOGIN_ERROR',
     'BRIDGE_LOGIN_INSTRUCTION',
     'BoundedUUIDSet',
@@ -137,6 +147,10 @@ __all__ = [
     'WS_CLOSE_RECONNECT_BUDGET_EXHAUSTED',
     'WS_CLOSE_SESSION_NOT_FOUND',
     'WorkSecret',
+    'create_bridge_api_client',
+    'is_expired_error_type',
+    'is_suppressible_403',
+    'validate_bridge_id',
     'build_active_footer_text',
     'build_bridge_connect_url',
     'build_bridge_session_url',
