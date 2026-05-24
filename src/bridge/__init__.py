@@ -93,6 +93,22 @@ from src.bridge.repl_bridge_handle import (
     get_self_bridge_compat_id,
     set_repl_bridge_handle,
 )
+
+
+# Lazy re-export of the Phase 5 orchestrator surface. ``remote_bridge_core``
+# transitively imports ``repl_bridge_transport`` → ``src.transports.ccr_client``
+# → ``src.bridge.exceptions``. Eagerly importing here triggers a circular
+# import the first time any consumer starts at ``src.transports.ccr_client``
+# (the ``exceptions`` import re-enters ``bridge/__init__.py`` mid-load).
+# PEP 562 ``__getattr__`` defers the import until first attribute access,
+# which by then has ``bridge/__init__.py`` fully loaded.
+def __getattr__(name: str) -> object:
+    if name in ('init_env_less_bridge_core', 'EnvLessBridgeParams',
+                'RemoteBridgeHandle'):
+        from src.bridge import remote_bridge_core as _rbc
+
+        return getattr(_rbc, name)
+    raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
 from src.bridge.session_id_compat import (
     set_cse_shim_gate,
     to_compat_session_id,
@@ -136,10 +152,12 @@ __all__ = [
     'DEFAULT_POLL_CONFIG',
     'DEFAULT_SESSION_TIMEOUT_MS',
     'EnvLessBridgeConfig',
+    'EnvLessBridgeParams',
     'EpochSupersededError',
     'FlushGate',
     'PollIntervalConfig',
     'REMOTE_CONTROL_DISCONNECTED_MSG',
+    'RemoteBridgeHandle',
     'SessionActivity',
     'WS_CLOSE_EPOCH_MISMATCH',
     'WS_CLOSE_INIT_FAILURE',
@@ -170,6 +188,7 @@ __all__ = [
     'get_poll_interval_config',
     'get_repl_bridge_handle',
     'get_self_bridge_compat_id',
+    'init_env_less_bridge_core',
     'is_bridge_permission_response',
     'normalize_image_blocks',
     'same_session_id',
