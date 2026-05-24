@@ -4,7 +4,7 @@
 # Patch file is stored alongside this series file in the b125e16/ directory.
 #
 # Current upstream commit: b125e16
-# Total patches: 65
+# Total patches: 73
 
 0000.src.init..py.patch
 0001.src.agent.outlines.adapter.py.patch
@@ -71,3 +71,12 @@
 0062.src.upstream.PHASE1.SKELETON.txt.patch
 0063.src.upstream.init..py.patch
 0064.src.utils.advisor.py.patch
+0065.src.repl.live_status.py.patch
+0067.src.agent.background_state.py.patch
+0068.src.services.tail_follower.py.patch
+0069.src.utils.session_watcher.py.patch
+0070.src.tui.keybindings.py.patch
+0071.src.tui.app.py.patch
+0072.src.agent.session.py.patch
+0073.src.tui.agent_bridge.py.patch
+0074.src.utils.graceful_shutdown.py.patch

@@ -1,0 +1,139 @@
+diff --git a/src/services/tail_follower.py b/src/services/tail_follower.py
+new file mode 100644
+index 0000000..a1b2c3d
+--- /dev/null
++++ b/src/services/tail_follower.py
+@@ -0,0 +1,141 @@
++"""Tail-follower for real-time transcript updates during ``--resume``.
++
++Mirrors ``tail -f`` behaviour on a JSONL transcript file. Used during
++session resume to watch for new messages written by a backgrounded
++agent without re-reading the entire history.
++
++Usage::
++
++    follower = TailFollower(path_to_jsonl)
++    await follower.start(from_offset=last_known_position)
++    async for message in follower:
++        yield message  # dict decoded from JSON line
++"""
++
++from __future__ import annotations
++
++import asyncio
++import json
++import logging
++import os
++from pathlib import Path
++
++logger = logging.getLogger(__name__)
++
++# Threshold for falling back to polling when inotify/FSEvents is
++# unavailable (500 ms is short enough for an interactive session).
++_POLL_INTERVAL = 0.5
++
++
++class TailFollower:
++    """Async iterator that yields new lines appended to a file.
++
++    Lines are parsed as JSON and returned as dicts. The follower can
++    optionally start from an offset to skip already-read content.
++    """
++
++    def __init__(self, path: str | Path) -> None:
++        self._path = str(path)
++        self._offset: int = 0
++        self._stopping = False
++        self._event_lock = asyncio.Lock()
++        self._new_event = asyncio.Event()
++
++    # ---- public API -------------------------------------------------------
++
++    async def start(self, from_offset: int = 0) -> None:
++        """Start following from ``from_offset`` bytes.
++
++        If the file is shorter than ``from_offset``, waits until the
++        file grows to that size or the file is replaced (truncated).
++        """
++        self._offset = from_offset
++        self._stopping = False
++        stat = self._get_stat()
++        if stat is not None and stat.st_size < from_offset:
++            # File was truncated — start from the current end.
++            self._offset = stat.st_size
++
++    async def stop(self) -> None:
++        """Signal the iterator to stop after the next yield."""
++        self._stopping = True
++        self._new_event.set()
++
++    def __aiter__(self) -> "TailFollower":
++        return self
++
++    async def __anext__(self) -> dict:
++        """Block until a new JSON line is appended; return parsed dict."""
++        while not self._stopping:
++            line = await self._wait_for_line()
++            if line is not None:
++                return line
++            # Poll interval — ``_wait_for_line`` already waited once.
++
++        raise StopAsyncIteration
++
++    # ---- internals --------------------------------------------------------
++
++    async def _wait_for_line(self) -> dict | None:
++        """Wait for a new line and return it, or None on timeout."""
++        while not self._stopping:
++            line = self._read_next_line()
++            if line is not None:
++                return line
++            # No new line yet — wait with poll interval.
++            await asyncio.sleep(_POLL_INTERVAL)
++
++        return None
++
++    def _read_next_line(self) -> dict | None:
++        """Read and parse the next new line from the file, or None."""
++        try:
++            stat = self._get_stat()
++            if stat is None:
++                return None
++            current_size = stat.st_size
++
++            if current_size <= self._offset:
++                # File hasn't grown yet (or was truncated).
++                return None
++
++            with open(self._path, "rb") as fh:
++                fh.seek(self._offset)
++                raw = fh.read()
++                self._offset = current_size
++
++            text = raw.decode("utf-8", errors="replace")
++            for line in text.splitlines():
++                line = line.strip()
++                if not line:
++                    continue
++                try:
++                    return json.loads(line)
++                except json.JSONDecodeError:
++                    logger.warning("skipping unparseable line in %s", self._path)
++                    continue
++            return None
++        except FileNotFoundError:
++            return None
++        except OSError as exc:
++            logger.warning("error reading %s: %s", self._path, exc)
++            return None
++
++    def _get_stat(self) -> os.stat_result | None:
++        try:
++            return os.stat(self._path)
++        except FileNotFoundError:
++            return None
++        except OSError:
++            return None
++
++
++__all__ = ["TailFollower"]

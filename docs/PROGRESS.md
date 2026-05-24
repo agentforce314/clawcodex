@@ -50,13 +50,14 @@
 | F-17 | 工具系统按需加载（Tool System Extension） | P1 | ✅ 完成 | 四种工具模式（bare/default/clawcodex/all），4 bundle 简化设计，bundle 引用前缀 ":"，与上游解耦 |
 | F-18 | CreateAgentTool 动态工具创建 | P2 | 🔄 规划中 | Agent 可根据 CLI/API 规范动态创建工具，Meta Tool 能力，bash/http/python 三种 call_impl 安全限制 |
 | F-19 | 工具/Skill 调用统计（跨会话） | P2 | 🔄 规划中 | JSON Lines 日志持久化，按 agent_id 统计工具和 Skill 调用频率、耗时、错误率，支持所有会话 |
-| F-20 | Agent 阶段性进度汇报 | P2 | 🔄 规划中 | 三组合方案：检查点触发 + ProgressReportTool + ToolContext.tasks 持久化 |
+| F-20 | Agent 阶段性进度汇报 | P2 | ✅ 完成 | 三组合方案：检查点触发 + ProgressReportTool + ToolContext.tasks 持久化 |
+| F-21 | 后台运行 + 恢复同步 | P1 | 🔄 补丁已创建 | Ctrl+B 后台化 + TailFollower 实时同步 + SessionWatcher 多终端感知，补丁 0067-0074 |
 
 ---
 
-## F-20: Agent 阶段性进度汇报
+## F-21: 后台运行 + 恢复同步
 
-**状态**: 🔄 规划中
+**状态**: ✅ 已完成
 **优先级**: P2
 **目标**: 在 Agent 编排中阶段性将结果汇报至任务看板，将任务看板提取为工具
 
@@ -173,9 +174,9 @@ async def _on_phase_complete(self, session_id: str, phase_result: dict):
 
 | 阶段 | 内容 | 优先级 | 状态 |
 |------|------|--------|------|
-| Phase A | ProgressReportTool 工具实现 | P2 | ⏳ 待开始 |
-| Phase B | AgentRunner PhaseComplete 事件 | P2 | ⏳ 待开始 |
-| Phase C | ProgressReporter 汇报处理器 | P2 | ⏳ 待开始 |
+| Phase A | ProgressReportTool 工具实现 | P2 | ✅ 已完成 |
+| Phase B | AgentRunner PhaseComplete 事件 | P2 | ✅ 已完成 |
+| Phase C | ProgressReporter 汇报处理器 | P2 | ✅ 已完成 |
 | Phase D | 与 StatusDashboard 集成 | P3 | ⏳ 待开始 |
 
 **状态**: 🔄 规划中
@@ -351,6 +352,150 @@ def get_rarely_used_tools(lookback_days=90, threshold=0.01, cooldown_days=30) ->
 | 核心工具 | `Read/Edit/Bash` 等高频核心工具不受影响 |
 | 保留 fallback | 低频工具仍可通过 `bare` 模式访问 |
 
+#### POS to Agent 转化模式
+
+将专业工作流（POS）拆解为 Agent 架构，实现工作流的可复用、可观测、可编排。
+
+**三层映射关系**:
+
+| 工作流组件 | Agent 架构 | 示例 |
+|-----------|-----------|------|
+| POS (专业系统) | Agent | 数据分析 Agent、CI/CD Agent、ML Pipeline Agent |
+| 工作流步骤 | Skill | `deploy_service`、`run_etl`、`train_model` |
+| SDK 接口 | 原子工具 | `s3_upload`、`k8s_apply`、`spark_submit` |
+
+**架构示例**:
+
+```
+CI/CD Agent
+├── Skill: build_image
+│   ├── tool: docker_build()
+│   ├── tool: docker_tag()
+│   └── tool: docker_push()
+├── Skill: deploy_service
+│   ├── tool: k8s_apply()
+│   ├── tool: health_check()
+│   └── tool: rollback_if_failed()
+└── Skill: notify_team
+    ├── tool: slack_send()
+    └── tool: email_send()
+```
+
+**转化过程（Skill + Template + Config）**:
+
+| 层面 | 形式 | 说明 |
+|------|------|------|
+| **转化执行器** | Skill | 需要 LLM 判断如何分组、如何命名 |
+| **产出物规范** | Template | Agent/Skill 定义的结构规范 |
+| **映射规则** | Config | SDK method → tool 的映射表 |
+
+```
+Skill（执行器）+ Template（产出物规范）+ Config（映射规则）
+```
+
+**转化 Skill 示例**:
+
+```python
+class ConvertPOSToAgent:
+    """将 POS SDK 转换为 Agent 的 Skill"""
+
+    async def execute(self, sdk_spec: str, requirements: str) -> AgentDefinition:
+        # 1. 解析 SDK 接口 → 需要理解 API 语义（LLM）
+        atomic_tools = await self._parse_sdk_methods(sdk_spec)
+
+        # 2. 按业务逻辑分组 → 需要判断相关性（LLM）
+        skills = await self._group_into_skills(atomic_tools, requirements)
+
+        # 3. 填充 Agent 定义模板
+        return self._fill_template(skills)
+```
+
+**优势**:
+
+| 优势 | 说明 |
+|------|------|
+| 可复用性 | 原子工具可在不同 Skill/Agent 间共享 |
+| 可观测性 | 每步工具调用独立记录，便于调试 |
+| 容错粒度 | 可在工具级别重试，而非整个工作流 |
+| 动态编排 | Agent 可根据上下文选择不同的 Skill 执行路径 |
+
+**与 F-18 CreateAgentTool 的关系**:
+
+F-18 解决"工具创建工具"（Meta Tool 能力），此模式解决"工作流转化为 Agent"。两者结合可实现：SDK 接口 → 原子工具 → Skill 组合 → Agent 定义 → 动态注册。
+
+#### 业务 Agent 长期使用（新窗口重连）
+
+将 POS 转化的 Agent 作为主 Agent 长期使用，并支持在新窗口中重新连接。
+
+**核心能力**:
+
+| 能力 | 说明 | 实现 |
+|------|------|------|
+| **持久化** | Agent 定义保存到文件 | `~/.clawcodex/agents/<name>.json` |
+| **主 Agent 指定** | 启动时指定使用哪个 Agent | `clawcodex --agent <name>` 或配置文件 |
+| **窗口重连** | 新窗口连接到已运行的 Agent | Session ID / Named Pipe |
+
+**Agent 持久化格式**:
+
+```json
+// ~/.clawcodex/agents/cicd-agent.json
+{
+  "name": "cicd-agent",
+  "description": "自动化部署 Agent",
+  "model": "claude-sonnet",
+  "tools": ["k8s_apply", "docker_push", "health_check"],
+  "skills": ["deploy_service", "rollback"],
+  "memory_scope": ["project", "team"],
+  "persistent": true
+}
+```
+
+**启动方式**:
+
+```bash
+# 方式一：启动时指定
+clawcodex --agent cicd-agent
+
+# 方式二：配置为默认
+# ~/.clawcodex/settings.json
+{
+  "default_agent": "cicd-agent"
+}
+
+# 方式三：daemon 模式长期运行
+clawcodex --daemon --agent cicd-agent
+# 新窗口 attach
+clawcodex attach cicd-agent
+```
+
+**Daemon + Attach 架构**:
+
+```
+终端 1: clawcodex --daemon --agent cicd-agent
+        └── cicd-agent 进程运行中，保持状态
+               ↓
+终端 2: clawcodex attach cicd-agent
+        └── 连接到已有 Agent 会话，继续交互
+```
+
+**需要新增的组件**:
+
+| 组件 | 文件 | 说明 |
+|------|------|------|
+| Agent 存储 | `src/agent/agent_persistence.py` | 读写 `~/.clawcodex/agents/` |
+| Agent 加载器 | `src/agent/agent_loader.py` | 启动时加载指定 Agent |
+| Attach 协议 | `src/agent/attach.py` | 连接到已有 Agent 会话 |
+
+**与现有组件的集成**:
+
+| 现有组件 | 集成点 |
+|---------|--------|
+| `agent/agent_definitions.py` | Agent 定义模型 |
+| `agent/session.py` | Session 持久化 |
+| `agent/run_agent.py` | 主 Agent 启动逻辑 |
+| `repl/core.py` | REPL 启动入口 |
+| `src/entrypoints/headless.py` | Daemon 模式支持 |
+
 ---
 
 ### F-18: CreateAgentTool 动态工具创建
@@ -453,6 +598,74 @@ TRANSCRIPT_CLASSIFIER 分析:
 | Phase A2 | `canCycleToAuto()` 判断逻辑 | P2 | ⏳ 待开始 |
 | Phase A3 | Auto Mode 工具执行前集成 | P2 | ⏳ 待开始 |
 | Phase A4 | 分类结果缓存机制 | P3 | ⏳ 待开始 |
+
+---
+
+### F-20: Agent 间自主观察与消息交互
+
+**状态**: ⏳ 规划中
+**优先级**: P1
+**目标**: 实现 Manager Agent 全自动观察 Worker Agent 状态并注入指令，支持优先级队列和权限审批
+
+#### 背景
+
+当前 ClawCodex 的 agent 之交互依赖人类的介入（操作员通过 CLI inject hint）。需要设计一套全自动的 agent-to-agent 状态观察与消息注入机制：
+
+- Manager Agent 通过工具主动查询 Worker Agent 状态
+- Manager 根据状态通过带优先级的消息注入机制向 Worker 发送修正指令
+- Worker 在下一 turn 边界以 UserMessage 形式接收并执行
+
+#### 角色定义
+
+| 角色 | 判断标准 | 说明 |
+|------|---------|------|
+| **Manager Agent** | 工具集中包含 `TaskInspect` + `TaskDirectives` | 通过工具组合自动识别，无需独立 Agent 类型 |
+| **Worker Agent** | 不包含上述管理工具 | 普通执行单元 |
+
+#### 核心工具
+
+| 工具 | 文件 | 功能 |
+|------|------|------|
+| `TaskInspect` | `src/tool_system/tools/task_inspect.py`（新增） | Manager 查询 Worker 运行时状态 |
+| `TaskDirectives` | `src/tool_system/tools/task_directives.py`（新增） | Manager 向 Worker 注入优先级指令 |
+| `ReportToSupervisor` | `src/tool_system/tools/report_to_supervisor.py`（新增） | Worker 可选自愿上报 |
+
+#### 优先级处理
+
+| 优先级 | 队列位置 | 用途 |
+|--------|---------|------|
+| `critical` | 队列头部，最先消费 | 紧急修正，worker 必须响应 |
+| `high` | 队列头部 | 重要建议，worker 应优先处理 |
+| `normal` | 队列尾部，FIFO | 普通协调信息 |
+
+#### 权限方案
+
+| 场景 | Worker 模式 | Manager 职责 |
+|------|-------------|-------------|
+| 测试/开发 | `bypassPermissions` | 无需审批 |
+| 受控环境 | `bubble` + `always_allow_rules` | 规则外的工具弹窗给人类 |
+| 生产/高风险 | `plan` | Manager 实时审批关键操作 |
+
+#### 关键文件
+
+| 文件 | 说明 |
+|------|------|
+| `src/tool_system/tools/task_inspect.py` | 新增，状态查看工具 |
+| `src/tool_system/tools/task_directives.py` | 新增，消息注入工具 |
+| `src/tasks/local_agent.py` | 修改，`queue_pending_message` 支持 priority |
+| `src/query/query.py` | 修改，`drain_pending_messages` 按优先级消费 |
+| `src/agent/agent_tool_utils.py` | 修改，过滤管理工具（仅 Manager 可用） |
+
+#### 实施阶段
+
+| 阶段 | 内容 | 优先级 | 状态 |
+|------|------|--------|------|
+| Phase M1 | `TaskInspect` + `TaskDirectives` 核心工具 | P1 | ⏳ 待开始 |
+| Phase M2 | `queue_pending_message` 支持 priority | P1 | ⏳ 待开始 |
+| Phase M3 | `drain_pending_messages` 按优先级消费 | P1 | ⏳ 待开始 |
+| Phase M4 | 工具可见性过滤（仅 Manager 可调用） | P1 | ⏳ 待开始 |
+| Phase M5 | 权限规则传递（`always_allow_rules` + `worker_permission_mode`） | P1 | ⏳ 待开始 |
+| Phase M6 | 测试与联调 | P2 | ⏳ 待开始 |
 
 ---
 

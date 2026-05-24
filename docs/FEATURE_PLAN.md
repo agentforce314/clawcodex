@@ -124,6 +124,52 @@ src/
 | Hook 系统 | ~1,200 行自建 | Pluggy | `hooks/_pluggy_adapter.py` | ✅ 完成 |
 | 结构化输出 | json.loads + 手动验证 | Outlines | `agent/_outlines_adapter.py` | ✅ 完成 |
 
+### 2.6 后台运行 + 恢复同步（Background Running & Resume）
+
+**状态**: 🔄 补丁已创建（0067-0074）
+**目标**: 支持 Ctrl+B 后台化 CLI/TUI 任务，执行 `clawcodex --resume` 时对话流实时同步更新（非静态快照）
+
+#### 核心设计
+
+```
+┌──────────────────┐     ┌───────────────────┐     ┌─────────────────┐
+│   后台任务循环    │────►│  TranscriptWriter │────►│  transcript.jsonl│
+│                  │     │  (O_APPEND 原子)   │     │  (实时增量)      │
+└──────────────────┘     └───────────────────┘     └─────────────────┘
+                                                              │
+                                                              │ watchdog
+                                                              ▼ 通知
+┌──────────────────┐     ┌───────────────────┐     ┌─────────────────┐
+│   新终端 TUI      │◄────│  SessionWatcher    │◄────│  会话目录变更   │
+│                  │     │  (监控 + 事件)     │     │                 │
+└──────────────────┘     └───────────────────┘     └─────────────────┘
+```
+
+#### 架构组件
+
+| 组件 | 补丁文件 | 功能 |
+|------|---------|------|
+| `BackgroundState` | `0067.src.agent.background_state.py.patch` | 进程级后台信号管理器单例，signal/flag 管理 |
+| `TailFollower` | `0068.src.services.tail_follower.py.patch` | tail -f 风格尾部追踪器，实时读取 JSONL 增量 |
+| `SessionWatcher` | `0069.src.utils.session_watcher.py.patch` | 目录变更监控（inotify/FSEvents/500ms polling fallback） |
+| `keybindings.py` | `0070.src.tui.keybindings.py.patch` | 添加 `ctrl+b → agent.background` 绑定 |
+| `app.py` | `0071.src.tui.app.py.patch` | `action_agent_background()` 处理 Ctrl+B |
+| `session.py` | `0072.src.agent.session.py.patch` | 新增 `Session.resume_with_tail()` 工厂方法 |
+| `agent_bridge.py` | `0073.src.tui.agent_bridge.py.patch` | 集成 TailFollower 支持 |
+| `graceful_shutdown.py` | `0074.src.utils.graceful_shutdown.py.patch` | 添加 SIGTSTP 处理 |
+
+#### 工作流程
+
+1. **后台化**: TUI 按 Ctrl+B → `signal_background()` 设置信号 → `foreground_promotion.run_with_background_escape` 竞速检测 → `register_agent_background()` → TUI 退出，后台任务通过 `TranscriptWriter` 追加消息
+2. **恢复**: `Session.resume_with_tail()` 恢复会话 + 启动 `TailFollower` → 新消息写入时 TailFollower 检测到偏移量变化 → 通知 UI 实时更新
+
+#### 关键设计点
+
+- **不修改上游源码** — 所有改动通过标准 quilt 补丁注入（`patches/upstream/b125e16/`）
+- **O_APPEND 原子写入** — 后台任务写入时不会丢失或交错
+- **尾部追踪而非快照** — 恢复时读取增量，而非全量重放
+- **跨平台** — SessionWatcher 自动选择 inotify (Linux) / FSEvents (macOS) / polling fallback
+
 ### 2.5 工具系统按需加载（Tool System Extension）
 
 **状态**: ✅ 完成
@@ -259,7 +305,7 @@ tools = ext.get_tools_for_config(default_config)  # 包含所有注册表工具
 
 ### 3.2 Agent 阶段性进度汇报
 
-**状态**: 规划中
+**状态**: ✅ 已完成
 **目标**: 在 Agent 编排中阶段性将结果汇报至任务看板，将任务看板提取为工具
 
 #### 三组合实现方案
@@ -799,6 +845,150 @@ def get_rarely_used_tools(lookback_days=90, threshold=0.01, cooldown_days=30) ->
 | 学习曲线 | 新工具初期使用率低不代表价值低，需冷却期保护 |
 | 核心工具 | `Read/Edit/Bash` 等高频核心工具不受影响 |
 | 保留 fallback | 低频工具仍可通过 `bare` 模式访问 |
+
+#### 3.9.11 POS to Agent 转化模式
+
+将专业工作流（POS）拆解为 Agent 架构，实现工作流的可复用、可观测、可编排。
+
+**三层映射关系**:
+
+| 工作流组件 | Agent 架构 | 示例 |
+|-----------|-----------|------|
+| POS (专业系统) | Agent | 数据分析 Agent、CI/CD Agent、ML Pipeline Agent |
+| 工作流步骤 | Skill | `deploy_service`、`run_etl`、`train_model` |
+| SDK 接口 | 原子工具 | `s3_upload`、`k8s_apply`、`spark_submit` |
+
+**架构示例**:
+
+```
+CI/CD Agent
+├── Skill: build_image
+│   ├── tool: docker_build()
+│   ├── tool: docker_tag()
+│   └── tool: docker_push()
+├── Skill: deploy_service
+│   ├── tool: k8s_apply()
+│   ├── tool: health_check()
+│   └── tool: rollback_if_failed()
+└── Skill: notify_team
+    ├── tool: slack_send()
+    └── tool: email_send()
+```
+
+**转化过程（Skill + Template + Config）**:
+
+| 层面 | 形式 | 说明 |
+|------|------|------|
+| **转化执行器** | Skill | 需要 LLM 判断如何分组、如何命名 |
+| **产出物规范** | Template | Agent/Skill 定义的结构规范 |
+| **映射规则** | Config | SDK method → tool 的映射表 |
+
+```
+Skill（执行器）+ Template（产出物规范）+ Config（映射规则）
+```
+
+**转化 Skill 示例**:
+
+```python
+class ConvertPOSToAgent:
+    """将 POS SDK 转换为 Agent 的 Skill"""
+
+    async def execute(self, sdk_spec: str, requirements: str) -> AgentDefinition:
+        # 1. 解析 SDK 接口 → 需要理解 API 语义（LLM）
+        atomic_tools = await self._parse_sdk_methods(sdk_spec)
+
+        # 2. 按业务逻辑分组 → 需要判断相关性（LLM）
+        skills = await self._group_into_skills(atomic_tools, requirements)
+
+        # 3. 填充 Agent 定义模板
+        return self._fill_template(skills)
+```
+
+**优势**:
+
+| 优势 | 说明 |
+|------|------|
+| 可复用性 | 原子工具可在不同 Skill/Agent 间共享 |
+| 可观测性 | 每步工具调用独立记录，便于调试 |
+| 容错粒度 | 可在工具级别重试，而非整个工作流 |
+| 动态编排 | Agent 可根据上下文选择不同的 Skill 执行路径 |
+
+**与 F-18 CreateAgentTool 的关系**:
+
+F-18 解决"工具创建工具"（Meta Tool 能力），此模式解决"工作流转化为 Agent"。两者结合可实现：SDK 接口 → 原子工具 → Skill 组合 → Agent 定义 → 动态注册。
+
+#### 3.9.12 业务 Agent 长期使用（新窗口重连）
+
+将 POS 转化的 Agent 作为主 Agent 长期使用，并支持在新窗口中重新连接。
+
+**核心能力**:
+
+| 能力 | 说明 | 实现 |
+|------|------|------|
+| **持久化** | Agent 定义保存到文件 | `~/.clawcodex/agents/<name>.json` |
+| **主 Agent 指定** | 启动时指定使用哪个 Agent | `clawcodex --agent <name>` 或配置文件 |
+| **窗口重连** | 新窗口连接到已运行的 Agent | Session ID / Named Pipe |
+
+**Agent 持久化格式**:
+
+```json
+// ~/.clawcodex/agents/cicd-agent.json
+{
+  "name": "cicd-agent",
+  "description": "自动化部署 Agent",
+  "model": "claude-sonnet",
+  "tools": ["k8s_apply", "docker_push", "health_check"],
+  "skills": ["deploy_service", "rollback"],
+  "memory_scope": ["project", "team"],
+  "persistent": true
+}
+```
+
+**启动方式**:
+
+```bash
+# 方式一：启动时指定
+clawcodex --agent cicd-agent
+
+# 方式二：配置为默认
+# ~/.clawcodex/settings.json
+{
+  "default_agent": "cicd-agent"
+}
+
+# 方式三：daemon 模式长期运行
+clawcodex --daemon --agent cicd-agent
+# 新窗口 attach
+clawcodex attach cicd-agent
+```
+
+**Daemon + Attach 架构**:
+
+```
+终端 1: clawcodex --daemon --agent cicd-agent
+        └── cicd-agent 进程运行中，保持状态
+               ↓
+终端 2: clawcodex attach cicd-agent
+        └── 连接到已有 Agent 会话，继续交互
+```
+
+**需要新增的组件**:
+
+| 组件 | 文件 | 说明 |
+|------|------|------|
+| Agent 存储 | `src/agent/agent_persistence.py` | 读写 `~/.clawcodex/agents/` |
+| Agent 加载器 | `src/agent/agent_loader.py` | 启动时加载指定 Agent |
+| Attach 协议 | `src/agent/attach.py` | 连接到已有 Agent 会话 |
+
+**与现有组件的集成**:
+
+| 现有组件 | 集成点 |
+|---------|--------|
+| `agent/agent_definitions.py` | Agent 定义模型 |
+| `agent/session.py` | Session 持久化 |
+| `agent/run_agent.py` | 主 Agent 启动逻辑 |
+| `repl/core.py` | REPL 启动入口 |
+| `src/entrypoints/headless.py` | Daemon 模式支持 |
 
 ---
 
@@ -1503,6 +1693,307 @@ AUTO_MODE_CLASSIFIER_PROMPT = """
 | Phase A2 | `canCycleToAuto()` 判断逻辑 | P2 | ⏳ 待开始 |
 | Phase A3 | Auto Mode 工具执行前集成 | P2 | ⏳ 待开始 |
 | Phase A4 | 分类结果缓存机制 | P3 | ⏳ 待开始 |
+
+---
+
+### 3.14 Agent 间自主观察与消息交互
+
+**状态**: 规划中
+**优先级**: P1
+**目标**: 实现 Manager Agent 全自动观察 Worker Agent 状态并注入指令，支持优先级队列和权限审批
+
+#### 3.14.1 角色定义
+
+| 角色 | 判断标准 | 说明 |
+|------|---------|------|
+| **Manager Agent** | 工具集中包含 `TaskInspect` + `TaskDirectives` | 通过工具组合自动识别，无需独立 Agent 类型 |
+| **Worker Agent** | 不包含上述管理工具 | 普通执行单元 |
+
+任意现有 Agent（`general-purpose`、`worker` 等）只需添加工具即可具备管理能力。
+
+#### 3.14.2 核心工具
+
+**工具 1：`TaskInspect`（状态查看）**
+
+**用途**: Manager Agent 按需主动查询一个或多个 Worker 的运行时状态
+
+**输入 schema**:
+```json
+{
+  "type": "object",
+  "properties": {
+    "targets": {
+      "type": "array",
+      "description": "要查询的 task_id 列表；空数组表示查询所有运行中的 worker"
+    },
+    "fields": {
+      "type": "array",
+      "description": "指定要返回的字段；空/省略则返回所有字段",
+      "items": {"enum": ["status", "progress", "pending_messages", "error", "result_text", "turn_count"]}
+    },
+    "summary_only": {
+      "type": "boolean",
+      "description": "true 时只返回一句话摘要，不返回 pending_messages 内容"
+    }
+  }
+}
+```
+
+**输出**（结构化）:
+```json
+{
+  "workers": [
+    {
+      "task_id": "local_agent_xxxxx",
+      "status": "running",
+      "progress": {"summary": "Refactoring auth module...", "tool_uses": 12},
+      "pending_messages": ["Please check permission boundary conditions"],
+      "error": null,
+      "last_activity": "2026-05-24T10:30:00Z"
+    }
+  ]
+}
+```
+
+**行为**:
+- 查询 `runtime_tasks` registry
+- `pending_messages` 字段反映有多少条待注入消息（不会被消费）
+- 非 Manager Agent 调用时报 `ToolInputError: "permission denied"`
+
+---
+
+**工具 2：`TaskDirectives`（消息注入）**
+
+**用途**: Manager → Worker 的指令注入，支持优先级和权限配置
+
+**输入 schema**:
+```json
+{
+  "type": "object",
+  "properties": {
+    "to": {
+      "type": "array",
+      "description": "目标 task_id 列表；支持 ['*'] 表示所有运行中的 worker"
+    },
+    "priority": {
+      "type": "string",
+      "enum": ["normal", "high", "critical"],
+      "default": "normal"
+    },
+    "message": {
+      "type": "string",
+      "description": "指令内容，支持结构化标记如 [OBSERVE]、[INTERVENE]、[CORRECT]"
+    },
+    "reason": {
+      "type": "string",
+      "description": "可选的干预原因说明，供 worker 理解上下文"
+    },
+    "worker_permission_mode": {
+      "type": "string",
+      "enum": ["bypassPermissions", "bubble", "plan", "default"],
+      "description": "Worker 使用的权限模式，默认继承 Manager 设置"
+    },
+    "always_allow_rules": {
+      "type": "array",
+      "description": "Worker 的权限白名单规则"
+    }
+  },
+  "required": ["to", "message"]
+}
+```
+
+**输出**:
+```json
+{
+  "delivered": ["local_agent_xxxxx"],
+  "queued": ["local_agent_yyyyy"],
+  "failed": []
+}
+```
+
+**行为**:
+- 高优先级消息（`high`、`critical`）插入队列**头部**，worker 下一 turn 优先处理
+- `normal` 追加到**尾部**，FIFO 顺序
+- 注入消息格式：`[MANAGER] [PRIORITY] {message}`
+- 权限 gate 同 `TaskInspect`
+
+---
+
+**工具 3：`ReportToSupervisor`（可选，Worker 自愿上报）**
+
+```json
+{
+  "to": "manager_task_id",
+  "status_report": "Progress: auth refactoring done, working on permission check",
+  "needs_intervention": false,
+  "blockers": []
+}
+```
+
+**用途**: Worker 认为需要 Manager 介入时主动调用，非强制。
+
+#### 3.14.3 优先级处理
+
+`queue_pending_message` 新增 priority 参数：
+
+```python
+def queue_priority_message(task_id, message, priority, registry):
+    def _enqueue(prev):
+        if priority in ("critical", "high"):
+            prefix = "[CRITICAL]" if priority == "critical" else "[HIGH]"
+            return replace(prev, pending_messages=[prefix + message, *prev.pending_messages])
+        # normal: append to tail
+        return replace(prev, pending_messages=[*prev.pending_messages, message])
+```
+
+| 优先级 | 队列位置 | 用途 |
+|--------|---------|------|
+| `critical` | 队列头部，最先消费 | 紧急修正，worker 必须响应 |
+| `high` | 队列头部 | 重要建议，worker 应优先处理 |
+| `normal` | 队列尾部，FIFO | 普通协调信息 |
+
+Worker 消费时通过 `drain_pending_messages` 读取消息。
+
+#### 3.14.4 交互流程
+
+**Manager 主循环**:
+
+```
+┌─────────────────────────────────────────────────────┐
+│  Manager Agent Turn N                                │
+│                                                     │
+│  1. TaskInspect(targets=[], summary_only=true)     │
+│     ↓ 观察所有 worker 状态摘要                        │
+│                                                     │
+│  2. 分析状态：                                       │
+│     - 有 worker 出错？→ TaskDirectives(INTERVENE)   │
+│     - 有 worker 停滞？→ TaskDirectives(OBSERVE)     │
+│     - 一切正常？→ 继续工作                           │
+│                                                     │
+│  3. 如有注入指令 → TaskDirectives                    │
+│                                                     │
+│  4. 执行自身其他任务                                  │
+└─────────────────────────────────────────────────────┘
+```
+
+**Worker 消费注入消息**:
+
+```
+Turn M 开始 (tool-round 边界):
+
+  drain_pending_messages() → ["[MANAGER] [CRITICAL] Permission logic error, please re-implement"]
+                                ↓
+  作为 UserMessage 追加到 messages[]
+                                ↓
+  Worker LLM 看到新的 user 消息，理解并执行修正
+```
+
+**权限配置传递**:
+
+Manager 可在 `TaskDirectives` 中指定 `worker_permission_mode` 和 `always_allow_rules`：
+
+```python
+# 示例：启动一个信任的 worker
+TaskDirectives(
+    to=["worker_abc"],
+    message="Continue with deployment",
+    worker_permission_mode="bypassPermissions"
+)
+
+# 示例：启动一个需要审批的 worker
+TaskDirectives(
+    to=["worker_xyz"],
+    message="Refactor the auth module",
+    worker_permission_mode="plan",
+    always_allow_rules=[
+        {"tool": "Read", "pattern": "*.py"},
+        {"tool": "Write", "pattern": "*.py"},
+        {"tool": "Bash", "pattern": "pytest.*"},
+    ]
+)
+```
+
+#### 3.14.5 权限方案
+
+**权限层级**:
+
+| 模式 | 行为 | 适用场景 |
+|------|------|---------|
+| `bypassPermissions` | 所有工具直接执行，不弹窗 | 测试/完全信任的 worker |
+| `bubble` | 权限弹窗冒泡到 Manager 终端 | 受控环境，需人类监督高风险操作 |
+| `plan` | 高风险操作需 Manager 实时审批 | 生产/高风险场景 |
+| `default` | 标准运行时审批 | 普通场景 |
+
+**always_allow_rules 格式**:
+
+```json
+[
+  {"tool": "Bash", "pattern": "rm -rf /tmp/*"},
+  {"tool": "Write", "pattern": "*.py"},
+  {"tool": "Read", "pattern": "*"}
+]
+```
+
+权限系统匹配规则时**先检查** `always_allow_rules`，匹配则直接放行。
+
+**Plan Mode 审批流程**:
+
+```
+Worker 执行: Bash(rm -rf build/)
+    ↓
+权限系统卡住，发送 plan_approval_request 给 Manager
+    ↓
+Manager 收到通知 → 分析风险 → 决定审批或拒绝
+    ↓
+SendMessage(message={
+  "type": "plan_approval_response",
+  "approve": true,
+  "request_id": "xxx",
+  "feedback": "Approved - this is a clean build directory"
+})
+    ↓
+Worker 继续执行
+```
+
+**组合推荐**:
+
+| 场景 | Worker 模式 | Manager 职责 |
+|------|-------------|-------------|
+| 测试/开发 | `bypassPermissions` | 无需审批 |
+| 受控环境 | `bubble` + `always_allow_rules` | 规则外的工具弹窗给人类 |
+| 生产/高风险 | `plan` | Manager 实时审批关键操作 |
+
+#### 3.14.6 错误处理
+
+| 场景 | 处理方式 |
+|------|---------|
+| Worker 不存在 | `TaskDirectives` 返回 `failed: [task_id]` |
+| Worker 已终止 | 自动 resume（`resume_agent_background` 机制） |
+| 注入消息丢失（worker 被 kill） | Manager 收到 notification 后重新分配任务 |
+| Manager 无权限 | `ToolInputError: "permission denied"` |
+| Worker 拒绝执行 | Manager 收到错误报告，通过 `TaskDirectives` 重新注入修正指令 |
+
+#### 3.14.7 文件变更清单
+
+| 文件 | 变更类型 | 说明 |
+|------|---------|------|
+| `src/tool_system/tools/task_inspect.py` | 新增 | 状态查看工具 |
+| `src/tool_system/tools/task_directives.py` | 新增 | 消息注入工具 |
+| `src/tasks/local_agent.py` | 修改 | `queue_pending_message` 支持 priority 参数 |
+| `src/query/query.py` | 修改 | `drain_pending_messages` 按优先级消费 |
+| `src/agent/agent_tool_utils.py` | 修改 | `resolve_agent_tools` 过滤管理工具（仅 Manager 可用） |
+| `src/tool_system/tools/send_message.py` | 修改 | 复用结构化消息逻辑 |
+
+#### 3.14.8 实施阶段
+
+| 阶段 | 内容 | 优先级 | 状态 |
+|------|------|--------|------|
+| Phase M1 | `TaskInspect` + `TaskDirectives` 核心工具 | P1 | ⏳ 待开始 |
+| Phase M2 | `queue_pending_message` 支持 priority | P1 | ⏳ 待开始 |
+| Phase M3 | `drain_pending_messages` 按优先级消费 | P1 | ⏳ 待开始 |
+| Phase M4 | 工具可见性过滤（仅 Manager 可调用） | P1 | ⏳ 待开始 |
+| Phase M5 | 权限规则传递（`always_allow_rules` + `worker_permission_mode`） | P1 | ⏳ 待开始 |
+| Phase M6 | 测试与联调 | P2 | ⏳ 待开始 |
 
 ---
 
