@@ -1,0 +1,934 @@
+"""Child-CLI spawner for the bridge — Phase 4.
+
+Ports ``typescript/src/bridge/sessionRunner.ts``.
+
+Used by env-based orchestrators (Phase 6 ``replBridge`` and Phase 8
+``bridgeMain``) to spawn local Claude Code CLI children, parse their
+NDJSON stdout for activity events + control_requests + first user
+message, and expose a ``SessionHandle`` for lifecycle control.
+
+The Phase 5 env-less ``remoteBridgeCore`` does NOT use this module —
+it's an in-process bridge that connects to a remote v2 session via
+SSE+CCRClient without any local subprocess.
+
+Design notes:
+
+* Built on ``asyncio.create_subprocess_exec`` with three piped streams
+  (stdin for control, stdout for NDJSON, stderr for diagnostics).
+* Activity + stderr ring buffers via ``collections.deque(maxlen=N)``.
+* Environment is built from a strict allowlist — secrets in the parent
+  process (``CLAUDE_CODE_OAUTH_TOKEN``, ``ANTHROPIC_API_KEY``, etc.)
+  must never leak to the child, which authenticates via
+  ``CLAUDE_CODE_SESSION_ACCESS_TOKEN`` only.
+* ``SessionHandle.update_access_token`` writes an
+  ``update_environment_variables`` NDJSON line to the child's stdin so
+  the bridge can refresh tokens without restarting the child.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+import signal
+import sys
+import tempfile
+import time
+from collections import deque
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from src.bridge.debug_utils import debug_truncate
+from src.bridge.types import (
+    SessionActivity,
+    SessionDoneStatus,
+    SessionHandle,
+    SessionSpawner,
+    SessionSpawnOpts,
+)
+
+logger = logging.getLogger(__name__)
+
+
+MAX_ACTIVITIES = 10
+MAX_STDERR_LINES = 10
+
+
+# ── Environment sanitizer ─────────────────────────────────────────────────
+
+
+CHILD_ENV_ALLOWLIST: frozenset[str] = frozenset({
+    # System / shell
+    'PATH', 'HOME', 'USERPROFILE', 'HOMEPATH', 'HOMEDRIVE',
+    'USERNAME', 'USER', 'LOGNAME',
+    'TEMP', 'TMP', 'TMPDIR',
+    'SYSTEMROOT', 'SYSTEMDRIVE', 'COMSPEC', 'WINDIR',
+    'LANG', 'LC_ALL', 'LC_CTYPE',
+    # Node.js runtime
+    'NODE_OPTIONS', 'NODE_PATH', 'NODE_ENV',
+    # OpenClaude session / bridge (non-secret)
+    'CLAUDE_CODE_ENVIRONMENT_KIND',
+    'CLAUDE_CODE_FORCE_SANDBOX',
+    'CLAUDE_CODE_BUBBLEWRAP',
+    'CLAUDE_CODE_ENTRYPOINT',
+    'CLAUDE_CODE_COORDINATOR_MODE',
+    'CLAUDE_CODE_PERMISSIONS_VERSION',
+    'CLAUDE_CODE_PERMISSIONS_SETTING',
+    # Display / terminal
+    'TERM', 'COLORTERM', 'FORCE_COLOR', 'NO_COLOR',
+})
+"""Safe variables that the child needs to function. Everything else
+must not be inherited — the child authenticates exclusively via
+``CLAUDE_CODE_SESSION_ACCESS_TOKEN``. Mirrors TS allowlist on
+``sessionRunner.ts:24-43``.
+"""
+
+
+@dataclass
+class BuildChildEnvOpts:
+    """Inputs to ``build_child_env``. Mirrors TS ``BuildChildEnvOpts``."""
+
+    access_token: str
+    use_ccr_v2: bool = False
+    worker_epoch: int | None = None
+    sandbox: bool = False
+
+
+def build_child_env(
+    parent_env: dict[str, str],
+    opts: BuildChildEnvOpts,
+) -> dict[str, str]:
+    """Build the child env from an allowlist, then layer bridge overrides.
+
+    Mirrors TS ``buildChildEnv`` on ``sessionRunner.ts:56-80``.
+
+    Importantly:
+
+    * ``CLAUDE_CODE_OAUTH_TOKEN`` is explicitly omitted (allowlist does
+      not include it; even if the parent has it set, we strip).
+    * ``CLAUDE_CODE_SESSION_ACCESS_TOKEN`` is the ONLY auth signal sent
+      to the child — written explicitly, not inherited.
+    * ``CLAUDE_CODE_ENVIRONMENT_KIND='bridge'`` tells the child it's
+      running under a bridge orchestrator.
+    """
+    env = {k: v for k, v in parent_env.items() if k in CHILD_ENV_ALLOWLIST}
+    env['CLAUDE_CODE_ENVIRONMENT_KIND'] = 'bridge'
+    if opts.sandbox:
+        env['CLAUDE_CODE_FORCE_SANDBOX'] = '1'
+    env['CLAUDE_CODE_SESSION_ACCESS_TOKEN'] = opts.access_token
+    env['CLAUDE_CODE_POST_FOR_SESSION_INGRESS_V2'] = '1'
+    if opts.use_ccr_v2:
+        env['CLAUDE_CODE_USE_CCR_V2'] = '1'
+        if opts.worker_epoch is not None:
+            env['CLAUDE_CODE_WORKER_EPOCH'] = str(opts.worker_epoch)
+    return env
+
+
+def safe_filename_id(value: str) -> str:
+    """Sanitize a session ID for use in file names.
+
+    Mirrors TS ``safeFilenameId`` on ``sessionRunner.ts:87-89``. Strips
+    any character that could cause path traversal (``../``, ``/``) or
+    other filesystem issues, replacing with underscores.
+    """
+    return ''.join(c if c.isalnum() or c in '_-' else '_' for c in value)
+
+
+# ── Activity extraction ───────────────────────────────────────────────────
+
+
+TOOL_VERBS: dict[str, str] = {
+    'Read': 'Reading',
+    'Write': 'Writing',
+    'Edit': 'Editing',
+    'MultiEdit': 'Editing',
+    'Bash': 'Running',
+    'Glob': 'Searching',
+    'Grep': 'Searching',
+    'WebFetch': 'Fetching',
+    'WebSearch': 'Searching',
+    'Task': 'Running task',
+    'FileReadTool': 'Reading',
+    'FileWriteTool': 'Writing',
+    'FileEditTool': 'Editing',
+    'GlobTool': 'Searching',
+    'GrepTool': 'Searching',
+    'BashTool': 'Running',
+    'NotebookEditTool': 'Editing notebook',
+    'LSP': 'LSP',
+}
+"""Tool name → human-readable verb for the status display. Mirrors TS
+``TOOL_VERBS`` on ``sessionRunner.ts:133-152``."""
+
+
+def _tool_summary(name: str, tool_input: dict[str, Any]) -> str:
+    verb = TOOL_VERBS.get(name, name)
+    target: str = ''
+    for key in ('file_path', 'filePath', 'pattern'):
+        raw = tool_input.get(key)
+        if isinstance(raw, str):
+            target = raw
+            break
+    if not target:
+        cmd = tool_input.get('command')
+        if isinstance(cmd, str):
+            target = cmd[:60]
+    if not target:
+        for key in ('url', 'query'):
+            raw = tool_input.get(key)
+            if isinstance(raw, str):
+                target = raw
+                break
+    return f'{verb} {target}' if target else verb
+
+
+def _input_preview(tool_input: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for key, val in tool_input.items():
+        if isinstance(val, str):
+            parts.append(f'{key}="{val[:100]}"')
+        if len(parts) >= 3:
+            break
+    return ' '.join(parts)
+
+
+def extract_activities(
+    line: str,
+    session_id: str,
+    on_debug: Callable[[str], None],
+) -> list[SessionActivity]:
+    """Parse one NDJSON line and emit SessionActivity events.
+
+    Mirrors TS ``extractActivities`` on ``sessionRunner.ts:170-263``.
+    Returns an empty list when the line isn't JSON or doesn't match a
+    known activity type. Never raises — invalid input is logged.
+    """
+    try:
+        parsed = json.loads(line)
+    except (ValueError, json.JSONDecodeError):
+        return []
+    if not isinstance(parsed, dict):
+        return []
+
+    activities: list[SessionActivity] = []
+    now = _now_ms()
+    msg_type = parsed.get('type')
+
+    if msg_type == 'assistant':
+        message = parsed.get('message')
+        if not isinstance(message, dict):
+            return []
+        content = message.get('content')
+        if not isinstance(content, list):
+            return []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            block_type = block.get('type')
+            if block_type == 'tool_use':
+                name = block.get('name') or 'Tool'
+                if not isinstance(name, str):
+                    name = 'Tool'
+                tool_input = block.get('input') or {}
+                if not isinstance(tool_input, dict):
+                    tool_input = {}
+                activities.append(SessionActivity(
+                    type='tool_start',
+                    summary=_tool_summary(name, tool_input),
+                    timestamp=now,
+                ))
+                on_debug(
+                    f'[bridge:activity] sessionId={session_id} '
+                    f'tool_use name={name} {_input_preview(tool_input)}'
+                )
+            elif block_type == 'text':
+                text = block.get('text') or ''
+                if isinstance(text, str) and len(text) > 0:
+                    activities.append(SessionActivity(
+                        type='text',
+                        summary=text[:80],
+                        timestamp=now,
+                    ))
+                    on_debug(
+                        f'[bridge:activity] sessionId={session_id} '
+                        f'text "{text[:100]}"'
+                    )
+    elif msg_type == 'result':
+        subtype = parsed.get('subtype')
+        if subtype == 'success':
+            activities.append(SessionActivity(
+                type='result',
+                summary='Session completed',
+                timestamp=now,
+            ))
+            on_debug(
+                f'[bridge:activity] sessionId={session_id} '
+                f'result subtype=success'
+            )
+        elif isinstance(subtype, str) and subtype:
+            errors = parsed.get('errors')
+            error_summary = (
+                errors[0] if isinstance(errors, list) and errors and isinstance(errors[0], str)
+                else f'Error: {subtype}'
+            )
+            activities.append(SessionActivity(
+                type='error',
+                summary=error_summary,
+                timestamp=now,
+            ))
+            on_debug(
+                f'[bridge:activity] sessionId={session_id} '
+                f'result subtype={subtype} error="{error_summary}"'
+            )
+        else:
+            on_debug(
+                f'[bridge:activity] sessionId={session_id} '
+                f'result subtype=undefined'
+            )
+
+    return activities
+
+
+def _extract_user_message_text(msg: dict[str, Any]) -> str | None:
+    """Extract plain text from a replayed SDKUserMessage NDJSON line.
+
+    Mirrors TS ``extractUserMessageText`` on ``sessionRunner.ts:270-297``.
+    Returns the trimmed text if this looks like a real human-authored
+    message, otherwise ``None`` so the caller keeps waiting.
+    """
+    if (
+        msg.get('parent_tool_use_id') is not None
+        or msg.get('isSynthetic')
+        or msg.get('isReplay')
+    ):
+        return None
+    message = msg.get('message')
+    content = message.get('content') if isinstance(message, dict) else None
+    text: str | None = None
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get('type') == 'text':
+                raw = block.get('text')
+                if isinstance(raw, str):
+                    text = raw
+                    break
+    if isinstance(text, str):
+        stripped = text.strip()
+        return stripped or None
+    return None
+
+
+# ── Permission request type ──────────────────────────────────────────────
+
+
+class PermissionRequest(dict):
+    """A ``control_request`` from the child requesting tool permission.
+
+    Mirrors TS ``PermissionRequest`` on ``sessionRunner.ts:96-106``.
+    Subclasses ``dict`` for wire-format compatibility — the orchestrator
+    forwards the raw dict to the server via the bridge transport.
+    """
+
+
+# ── Spawner ──────────────────────────────────────────────────────────────
+
+
+@dataclass
+class SessionSpawnerDeps:
+    """Configuration for ``create_session_spawner``.
+
+    Mirrors TS ``SessionSpawnerDeps`` on ``sessionRunner.ts:108-130``.
+    """
+
+    exec_path: str
+    """Path to the binary to spawn. For compiled builds this is the
+    ``claude`` binary; for npm installs this is the Node runtime and
+    ``script_args`` contains the script path."""
+
+    script_args: list[str] = field(default_factory=list)
+    """Args that must precede the CLI flags. Empty for compiled
+    binaries; contains the script path for npm installs (otherwise Node
+    sees ``--sdk-url`` as a Node option and errors)."""
+
+    env: dict[str, str] = field(default_factory=lambda: dict(os.environ))
+    verbose: bool = False
+    sandbox: bool = False
+    debug_file: str | None = None
+    permission_mode: str | None = None
+    on_debug: Callable[[str], None] = lambda msg: logger.debug(msg)  # noqa: E731
+    on_activity: Callable[[str, SessionActivity], None] | None = None
+    on_permission_request: (
+        Callable[[str, PermissionRequest, str], None] | None
+    ) = None
+
+
+def create_session_spawner(deps: SessionSpawnerDeps) -> SessionSpawner:
+    """Build a ``SessionSpawner`` bound to the given deps.
+
+    Mirrors TS ``createSessionSpawner`` on ``sessionRunner.ts:311-599``.
+    The returned object's ``spawn(opts, dir)`` returns a ``SessionHandle``
+    immediately; the child runs in the background and its NDJSON stdout
+    is parsed asynchronously into ``activities``.
+    """
+    return _SubprocessSpawner(deps)
+
+
+class _SubprocessSpawner:
+    """Concrete ``SessionSpawner`` implementation. Not exported."""
+
+    def __init__(self, deps: SessionSpawnerDeps) -> None:
+        self._deps = deps
+
+    def spawn(self, opts: SessionSpawnOpts, working_dir: str) -> SessionHandle:
+        # ``spawn`` is sync to match the TS contract — orchestrators
+        # don't want to await this. The actual subprocess creation is
+        # deferred to an asyncio task that starts immediately.
+        # **Must be called from inside a running asyncio loop** —
+        # ``start()`` binds the done-future + spawn task to the
+        # orchestrator's loop via ``get_running_loop()``.
+        spawned: _SpawnedSession = _SpawnedSession(self._deps, opts, working_dir)
+        spawned.start()
+        return spawned
+
+
+# ── Per-session state machine ────────────────────────────────────────────
+
+
+class _SpawnedSession:
+    """One child CLI's lifecycle state. Implements ``SessionHandle``."""
+
+    def __init__(
+        self,
+        deps: SessionSpawnerDeps,
+        opts: SessionSpawnOpts,
+        working_dir: str,
+    ) -> None:
+        self._deps = deps
+        self._opts = opts
+        self._working_dir = working_dir
+        # ``session_id`` and ``access_token`` are typed dict keys in the
+        # SessionSpawnOpts TypedDict.
+        self._session_id: str = opts['session_id']
+        self._access_token: str = opts['access_token']
+
+        self._activities: deque[SessionActivity] = deque(maxlen=MAX_ACTIVITIES)
+        self._last_stderr: deque[str] = deque(maxlen=MAX_STDERR_LINES)
+        self._current_activity: SessionActivity | None = None
+        self._first_user_message_seen = False
+        self._sigkill_sent = False
+        self._transcript_path: str | None = None
+        self._transcript_file: Any = None  # text file handle when present
+
+        self._process: asyncio.subprocess.Process | None = None
+        # Track "kill requested before _process was ready" so a caller
+        # that invokes ``handle.kill()`` between ``spawn()`` returning
+        # and ``_spawn_and_wait`` reaching the subprocess-created state
+        # doesn't silently leak a child.
+        self._kill_requested = False
+        self._force_kill_requested = False
+        # Created lazily inside ``start()`` (which runs on the asyncio
+        # loop) — ``get_event_loop()`` here would raise on Python 3.12+
+        # when no loop is running.
+        self._done_future: asyncio.Future[SessionDoneStatus] | None = None
+        self._start_task: asyncio.Task[None] | None = None
+
+    # ── Public properties ─────────────────────────────────────────────
+
+    @property
+    def session_id(self) -> str:
+        return self._session_id
+
+    @property
+    def access_token(self) -> str:
+        return self._access_token
+
+    @property
+    def activities(self) -> list[SessionActivity]:
+        # Snapshot via list() — mutations during read shouldn't surface.
+        return list(self._activities)
+
+    @property
+    def current_activity(self) -> SessionActivity | None:
+        return self._current_activity
+
+    @property
+    def last_stderr(self) -> list[str]:
+        return list(self._last_stderr)
+
+    # ── SessionHandle interface ───────────────────────────────────────
+
+    async def wait_done(self) -> SessionDoneStatus:
+        if self._done_future is None:
+            # Caller awaited before ``start()`` ran (or after the future
+            # was already consumed). Construct one now if there's a loop;
+            # otherwise raise so the bug surfaces.
+            self._done_future = asyncio.get_running_loop().create_future()
+        return await self._done_future
+
+    def kill(self) -> None:
+        """SIGTERM the child (graceful).
+
+        Mirrors TS ``kill`` on ``sessionRunner.ts:542-553``. Safe to call
+        before the subprocess has been created — the request is latched
+        and ``_spawn_and_wait`` honors it once ``_process`` is set, so a
+        ``handle.kill()`` immediately after ``spawn()`` never leaks a
+        child that's still in the middle of ``create_subprocess_exec``.
+
+        On Windows, ``terminate()`` translates to ``TerminateProcess``.
+        """
+        self._kill_requested = True
+        if self._process is None:
+            return
+        self._send_kill_signal(force=False)
+
+    def force_kill(self) -> None:
+        """SIGKILL the child.
+
+        Mirrors TS ``forceKill`` on ``sessionRunner.ts:555-569``. Guarded
+        by ``_sigkill_sent`` so calling multiple times is a no-op.
+
+        Like ``kill()``, safe to call before the subprocess is created
+        — the request is latched and ``_spawn_and_wait`` honors it once
+        ``_process`` is set.
+        """
+        if self._sigkill_sent:
+            return
+        self._sigkill_sent = True
+        self._force_kill_requested = True
+        if self._process is None:
+            return
+        self._send_kill_signal(force=True)
+
+    def _send_kill_signal(self, *, force: bool) -> None:
+        """Send SIGTERM/SIGKILL to ``self._process`` (assumed non-None).
+
+        Centralizes the platform branching + exit-status guard so the
+        latched-kill path in ``_spawn_and_wait`` and the eager-kill path
+        in ``kill()``/``force_kill()`` share one code path.
+        """
+        process = self._process
+        if process is None:
+            return
+        if process.returncode is not None:
+            return
+        sig_name = 'SIGKILL' if force else 'SIGTERM'
+        self._deps.on_debug(
+            f'[bridge:session] Sending {sig_name} to '
+            f'sessionId={self._session_id} pid={process.pid}'
+        )
+        try:
+            if sys.platform == 'win32':
+                process.kill() if force else process.terminate()
+            else:
+                process.send_signal(
+                    signal.SIGKILL if force else signal.SIGTERM
+                )
+        except (ProcessLookupError, OSError) as err:
+            self._deps.on_debug(
+                f'[bridge:session] {sig_name.lower()} failed '
+                f'(already exited?): {err}'
+            )
+
+    def write_stdin(self, data: str) -> None:
+        """Write to child stdin.
+
+        Mirrors TS ``writeStdin`` on ``sessionRunner.ts:570-577``. Silent
+        no-op if the process or its stdin isn't open.
+        """
+        if self._process is None or self._process.stdin is None:
+            return
+        if self._process.stdin.is_closing():
+            return
+        self._deps.on_debug(
+            f'[bridge:ws] sessionId={self._session_id} '
+            f'>>> {debug_truncate(data)}'
+        )
+        try:
+            self._process.stdin.write(data.encode('utf-8'))
+        except (BrokenPipeError, ConnectionResetError, OSError, RuntimeError) as err:
+            # Broaden vs ``(BrokenPipeError, ConnectionResetError)``:
+            # ``asyncio.StreamWriter.write`` on a closed transport can
+            # raise plain ``RuntimeError("Transport is closed")`` on
+            # some Python versions, and OSError covers other write-side
+            # failures (ENOMEM during enlargement, etc.) that we don't
+            # want to surface as crashes.
+            self._deps.on_debug(
+                f'[bridge:session] write_stdin failed: {err}'
+            )
+
+    def update_access_token(self, token: str) -> None:
+        """Send a fresh OAuth token via stdin without restarting the child.
+
+        Mirrors TS ``updateAccessToken`` on ``sessionRunner.ts:578-593``.
+        The child's StructuredIO handles ``update_environment_variables``
+        by setting ``os.environ`` directly so the next API call picks up
+        the new token.
+        """
+        self._access_token = token
+        payload = json.dumps({
+            'type': 'update_environment_variables',
+            'variables': {'CLAUDE_CODE_SESSION_ACCESS_TOKEN': token},
+        }) + '\n'
+        self.write_stdin(payload)
+        self._deps.on_debug(
+            f'[bridge:session] Sent token refresh via stdin for '
+            f'sessionId={self._session_id}'
+        )
+
+    # ── Internal: spawn + parse pipeline ──────────────────────────────
+
+    def start(self) -> None:
+        """Kick off the async spawn + stream-reader tasks.
+
+        Must be called from inside a running asyncio loop. Creates the
+        ``done_future`` lazily here (rather than in ``__init__``) so the
+        future is bound to the orchestrator's loop, and ``__init__`` can
+        run from sync contexts without raising on Python 3.12+.
+        """
+        if self._done_future is None:
+            self._done_future = asyncio.get_running_loop().create_future()
+        self._start_task = asyncio.create_task(
+            self._spawn_and_wait(),
+            name=f'session-{self._session_id}',
+        )
+
+    async def _spawn_and_wait(self) -> None:
+        # Transcript file is opened only AFTER the child successfully
+        # spawns. Wrapping the whole body in try/finally ensures the
+        # file handle is closed even if an unexpected exception (or
+        # CancelledError) unwinds the task before ``process.wait()``
+        # returns.
+        try:
+            await self._spawn_and_wait_inner()
+        finally:
+            self._close_transcript()
+            # If an unexpected exception or CancelledError unwound the
+            # task before ``_resolve_done`` was reached, wake any
+            # ``wait_done()`` awaiters with 'failed' so they don't hang
+            # forever during shutdown.
+            if self._done_future is not None and not self._done_future.done():
+                self._done_future.set_result('failed')
+
+    async def _spawn_and_wait_inner(self) -> None:
+        debug_file = self._resolve_debug_file()
+        args = self._build_args(debug_file)
+        env = build_child_env(
+            self._deps.env,
+            BuildChildEnvOpts(
+                access_token=self._access_token,
+                use_ccr_v2=bool(self._opts.get('use_ccr_v2')),
+                worker_epoch=self._opts.get('worker_epoch'),
+                sandbox=self._deps.sandbox,
+            ),
+        )
+        self._deps.on_debug(
+            f'[bridge:session] Spawning sessionId={self._session_id} '
+            f'sdkUrl={self._opts["sdk_url"]} '
+            f'accessToken={"present" if self._access_token else "MISSING"}'
+        )
+        self._deps.on_debug(
+            f'[bridge:session] Child args: {" ".join(args)}'
+        )
+        if debug_file:
+            self._deps.on_debug(f'[bridge:session] Debug log: {debug_file}')
+
+        try:
+            process = await asyncio.create_subprocess_exec(
+                self._deps.exec_path,
+                *args,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=self._working_dir,
+                env=env,
+            )
+        except (FileNotFoundError, PermissionError, OSError) as err:
+            self._deps.on_debug(
+                f'[bridge:session] sessionId={self._session_id} '
+                f'spawn error: {err}'
+            )
+            self._resolve_done('failed')
+            return
+
+        self._process = process
+        self._deps.on_debug(
+            f'[bridge:session] sessionId={self._session_id} pid={process.pid}'
+        )
+
+        # Open the transcript only after the child is up — avoids leaking
+        # a file handle when the spawn fails or the task is cancelled
+        # earlier. CRITIC BLOCKING-2 fix.
+        self._open_transcript_if_needed(debug_file)
+
+        # Honor any kill request that latched while ``create_subprocess_exec``
+        # was awaiting. CRITIC MAJOR-2 fix — without this, a caller that
+        # does ``handle = spawner.spawn(...); handle.kill()`` immediately
+        # would silently leak the still-launching child.
+        if self._force_kill_requested:
+            self._send_kill_signal(force=True)
+        elif self._kill_requested:
+            self._send_kill_signal(force=False)
+
+        stdout_task = asyncio.create_task(self._read_stdout())
+        stderr_task = asyncio.create_task(self._read_stderr())
+        try:
+            returncode = await process.wait()
+        finally:
+            # Make sure reader tasks finish before the outer try/finally
+            # closes the transcript.
+            await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+
+        # asyncio.Process exposes the negative-of-signal convention for
+        # signal-terminated children on POSIX. SIGTERM = 15, SIGINT = 2.
+        status: SessionDoneStatus
+        if returncode == -signal.SIGTERM or returncode == -signal.SIGINT:
+            self._deps.on_debug(
+                f'[bridge:session] sessionId={self._session_id} '
+                f'interrupted signal={-returncode} pid={process.pid}'
+            )
+            status = 'interrupted'
+        elif returncode == 0:
+            self._deps.on_debug(
+                f'[bridge:session] sessionId={self._session_id} '
+                f'completed exit_code=0 pid={process.pid}'
+            )
+            status = 'completed'
+        else:
+            self._deps.on_debug(
+                f'[bridge:session] sessionId={self._session_id} '
+                f'failed exit_code={returncode} pid={process.pid}'
+            )
+            status = 'failed'
+        self._resolve_done(status)
+
+    async def _read_stdout(self) -> None:
+        if self._process is None or self._process.stdout is None:
+            return
+        async for raw in self._iter_lines(self._process.stdout):
+            line = raw.decode('utf-8', errors='replace').rstrip('\r\n')
+            if self._transcript_file is not None:
+                try:
+                    self._transcript_file.write(line + '\n')
+                except (OSError, ValueError) as err:
+                    self._deps.on_debug(
+                        f'[bridge:session] Transcript write error: {err}'
+                    )
+                    self._transcript_file = None
+
+            self._deps.on_debug(
+                f'[bridge:ws] sessionId={self._session_id} '
+                f'<<< {debug_truncate(line)}'
+            )
+            if self._deps.verbose:
+                sys.stderr.write(line + '\n')
+
+            extracted = extract_activities(
+                line, self._session_id, self._deps.on_debug,
+            )
+            for activity in extracted:
+                self._activities.append(activity)
+                self._current_activity = activity
+                if self._deps.on_activity is not None:
+                    try:
+                        self._deps.on_activity(self._session_id, activity)
+                    except Exception as err:  # noqa: BLE001
+                        self._deps.on_debug(
+                            f'[bridge:session] on_activity raised: {err}'
+                        )
+
+            self._detect_control_request_and_first_user(line)
+
+    async def _read_stderr(self) -> None:
+        if self._process is None or self._process.stderr is None:
+            return
+        async for raw in self._iter_lines(self._process.stderr):
+            line = raw.decode('utf-8', errors='replace').rstrip('\r\n')
+            if self._deps.verbose:
+                sys.stderr.write(line + '\n')
+            self._last_stderr.append(line)
+
+    @staticmethod
+    async def _iter_lines(stream: asyncio.StreamReader):
+        """Yield NDJSON lines from a stream, terminating on EOF."""
+        while True:
+            try:
+                line = await stream.readline()
+            except (asyncio.IncompleteReadError, ConnectionResetError):
+                return
+            if not line:
+                return
+            yield line
+
+    def _detect_control_request_and_first_user(self, line: str) -> None:
+        """Re-parse the line for control_request + first-user-message.
+
+        ``extract_activities`` swallows parse errors and ignores ``user``
+        type; we re-parse cheaply (NDJSON lines are small) and keep each
+        path self-contained.
+        """
+        try:
+            parsed = json.loads(line)
+        except (ValueError, json.JSONDecodeError):
+            return
+        if not isinstance(parsed, dict):
+            return
+
+        msg_type = parsed.get('type')
+        if msg_type == 'control_request':
+            request = parsed.get('request')
+            if (
+                isinstance(request, dict)
+                and request.get('subtype') == 'can_use_tool'
+                and self._deps.on_permission_request is not None
+            ):
+                try:
+                    self._deps.on_permission_request(
+                        self._session_id,
+                        PermissionRequest(parsed),
+                        self._access_token,
+                    )
+                except Exception as err:  # noqa: BLE001
+                    self._deps.on_debug(
+                        f'[bridge:session] on_permission_request raised: {err}'
+                    )
+        elif (
+            msg_type == 'user'
+            and not self._first_user_message_seen
+            and self._opts.get('on_first_user_message') is not None
+        ):
+            text = _extract_user_message_text(parsed)
+            if text:
+                self._first_user_message_seen = True
+                cb = self._opts['on_first_user_message']
+                try:
+                    cb(text)
+                except Exception as err:  # noqa: BLE001
+                    self._deps.on_debug(
+                        f'[bridge:session] on_first_user_message raised: {err}'
+                    )
+
+    # ── Helpers ────────────────────────────────────────────────────────
+
+    def _build_args(self, debug_file: str | None) -> list[str]:
+        args = [
+            *self._deps.script_args,
+            '--print',
+            '--sdk-url', self._opts['sdk_url'],
+            '--session-id', self._session_id,
+            '--input-format', 'stream-json',
+            '--output-format', 'stream-json',
+            '--replay-user-messages',
+        ]
+        if self._deps.verbose:
+            args.append('--verbose')
+        if debug_file:
+            args.extend(['--debug-file', debug_file])
+        if self._deps.permission_mode:
+            args.extend(['--permission-mode', self._deps.permission_mode])
+        return args
+
+    def _resolve_debug_file(self) -> str | None:
+        """Mirror TS debug-file resolution on ``sessionRunner.ts:316-329``.
+
+        Priority:
+        1. ``deps.debug_file`` (with session ID suffix).
+        2. Auto-generated tmpfile when verbose OR ant build.
+        3. None.
+        """
+        safe_id = safe_filename_id(self._session_id)
+        if self._deps.debug_file is not None:
+            ext_idx = self._deps.debug_file.rfind('.')
+            if ext_idx > 0:
+                return (
+                    f'{self._deps.debug_file[:ext_idx]}'
+                    f'-{safe_id}'
+                    f'{self._deps.debug_file[ext_idx:]}'
+                )
+            return f'{self._deps.debug_file}-{safe_id}'
+        if self._deps.verbose or os.environ.get('USER_TYPE') == 'ant':
+            return str(
+                Path(tempfile.gettempdir()) / 'claude'
+                / f'bridge-session-{safe_id}.log'
+            )
+        return None
+
+    def _open_transcript_if_needed(self, debug_file: str | None) -> None:
+        """Open the transcript file when a debug file is configured.
+
+        Mirrors TS transcript handling on ``sessionRunner.ts:331-348``.
+        Placed alongside the debug file. Best-effort — errors are logged
+        and the transcript is disabled.
+        """
+        if not self._deps.debug_file:
+            return
+        safe_id = safe_filename_id(self._session_id)
+        target_dir = Path(self._deps.debug_file).parent
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as err:
+            self._deps.on_debug(
+                f'[bridge:session] Transcript dir mkdir failed: {err}'
+            )
+            return
+        self._transcript_path = str(
+            target_dir / f'bridge-transcript-{safe_id}.jsonl'
+        )
+        try:
+            self._transcript_file = open(  # noqa: SIM115  closed in _close_transcript
+                self._transcript_path, 'a', encoding='utf-8',
+            )
+        except OSError as err:
+            self._deps.on_debug(
+                f'[bridge:session] Transcript open failed: {err}'
+            )
+            self._transcript_file = None
+            return
+        self._deps.on_debug(
+            f'[bridge:session] Transcript log: {self._transcript_path}'
+        )
+
+    def _close_transcript(self) -> None:
+        if self._transcript_file is not None:
+            try:
+                self._transcript_file.close()
+            except OSError:
+                pass
+            self._transcript_file = None
+
+    def _resolve_done(self, status: SessionDoneStatus) -> None:
+        if self._done_future is None:
+            self._done_future = asyncio.get_running_loop().create_future()
+        if not self._done_future.done():
+            self._done_future.set_result(status)
+
+
+def _now_ms() -> int:
+    """Return the current time as milliseconds since the Unix epoch.
+
+    Matches TS ``Date.now()`` units so ``SessionActivity.timestamp``
+    is interchangeable across the TS/Python port boundary. Downstream
+    consumers (e.g. ``bridgeUI`` elapsed-time displays) do
+    ``now() - activity.timestamp`` and expect ms — using seconds here
+    would silently produce values 1000× wrong.
+    """
+    return int(time.time() * 1000)
+
+
+__all__ = [
+    'CHILD_ENV_ALLOWLIST',
+    'MAX_ACTIVITIES',
+    'MAX_STDERR_LINES',
+    'TOOL_VERBS',
+    'BuildChildEnvOpts',
+    'PermissionRequest',
+    'SessionSpawnerDeps',
+    'build_child_env',
+    'create_session_spawner',
+    'extract_activities',
+    'safe_filename_id',
+]
