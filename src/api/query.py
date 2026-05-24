@@ -61,6 +61,14 @@ class ToolResultEvent:
 
 
 @dataclass
+class PhaseComplete:
+    """One phase (multiple turns) finished."""
+
+    phase: int
+    turn_count: int
+
+
+@dataclass
 class TurnComplete:
     """One turn finished."""
 
@@ -74,7 +82,7 @@ class SessionComplete:
     reason: str
 
 
-QueryEvent = TextDelta | ToolCallEvent | ToolResultEvent | TurnComplete | SessionComplete
+QueryEvent = TextDelta | ToolCallEvent | ToolResultEvent | TurnComplete | PhaseComplete | SessionComplete
 
 
 class QueryRunner:

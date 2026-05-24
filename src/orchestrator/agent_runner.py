@@ -9,15 +9,18 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from ..api.query import QueryConfig, QueryRunner
+from ..api.query import PhaseComplete, QueryConfig, QueryRunner
 from ..api.query import SessionComplete, TextDelta, ToolCallEvent, ToolResultEvent
 from .approval_policy import ApprovalPolicy, get_approval_policy, ToolCallEvent as PolicyToolCallEvent
 from .config.schema import AgentConfig, CodexConfig, WorkflowConfig
 from .issue import Issue
 from .prompt_builder import PromptBuilder
 from .workspace import Workspace
+
+if TYPE_CHECKING:
+    from .progress_reporter import ProgressReporter
 
 logger = logging.getLogger(__name__)
 
@@ -98,8 +101,9 @@ class AgentRunner:
         workflow: WorkflowConfig,
         status_dashboard: Any | None = None,
         tracker: Any = None,
-        comment_tracker: Any = None,
-        clarification_resolver: Any = None,
+        comment_tracker: Any | None = None,
+        clarification_resolver: Any | None = None,
+        progress_reporter: Any | None = None,
     ) -> None:
         """Execute issue until completion or max_turns.
 
@@ -269,6 +273,14 @@ class AgentRunner:
                     turn_number += 1
                     session.turn_count = turn_number
 
+                    # Emit PhaseComplete event for progress reporting
+                    if progress_reporter is not None:
+                        phase_event = PhaseComplete(
+                            phase=turn_number,
+                            turn_count=turn_number,
+                        )
+                        progress_reporter.on_event(phase_event, session)
+
                     if event.reason == "success":
                         # Check if issue is still active before declaring completion
                         if tracker is not None and issue.id:
@@ -318,6 +330,14 @@ class AgentRunner:
             self.max_turns,
             tool_count,
         )
+
+        # Emit PhaseComplete event for progress reporting (max_turns path)
+        if progress_reporter is not None:
+            phase_event = PhaseComplete(
+                phase=turn_number,
+                turn_count=turn_number,
+            )
+            progress_reporter.on_event(phase_event, session)
 
         # Post completion summary to Linear
         await self._post_run_comment(

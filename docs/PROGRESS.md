@@ -49,7 +49,7 @@
 | F-16 | Auto 模式 (TRANSCRIPT_CLASSIFIER) | P2 | ⏳ 待开始 | 基于 LLM 的自动权限模式切换，减少交互疲劳 |
 | F-17 | 工具系统按需加载（Tool System Extension） | P1 | ✅ 完成 | 四种工具模式（bare/default/clawcodex/all），4 bundle 简化设计，bundle 引用前缀 ":"，与上游解耦 |
 | F-18 | CreateAgentTool 动态工具创建 | P2 | 🔄 规划中 | Agent 可根据 CLI/API 规范动态创建工具，Meta Tool 能力，bash/http/python 三种 call_impl 安全限制 |
-| F-19 | 工具/Skill 调用统计（跨会话） | P2 | 🔄 规划中 | JSON Lines 日志持久化，按 agent_id 统计工具和 Skill 调用频率、耗时、错误率，支持所有会话 |
+| F-19 | POS to Agent 转化模式 | P2 | ✅ 完成 | 三层映射（POS→Agent、workflow→Skill、SDK→工具），SDK 解析 + Skill 分组 + Agent 构建 + 持久化 |
 | F-20 | Agent 阶段性进度汇报 | P2 | ✅ 完成 | 三组合方案：检查点触发 + ProgressReportTool + ToolContext.tasks 持久化 |
 | F-21 | 后台运行 + 恢复同步 | P1 | 🔄 补丁已创建 | Ctrl+B 后台化 + TailFollower 实时同步 + SessionWatcher 多终端感知，补丁 0067-0074 |
 
