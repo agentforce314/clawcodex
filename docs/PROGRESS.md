@@ -50,7 +50,7 @@
 | F-17 | 工具系统按需加载（Tool System Extension） | P1 | ✅ 完成 | 四种工具模式（bare/default/clawcodex/all），4 bundle 简化设计，bundle 引用前缀 ":"，与上游解耦 |
 | F-18 | CreateAgentTool 动态工具创建 | P2 | 🔄 规划中 | Agent 可根据 CLI/API 规范动态创建工具，Meta Tool 能力，bash/http/python 三种 call_impl 安全限制 |
 | F-19 | POS to Agent 转化模式 | P2 | ✅ 完成 | 三层映射（POS→Agent、workflow→Skill、SDK→工具），SDK 解析 + Skill 分组 + Agent 构建 + 持久化 |
-| F-20 | Agent 阶段性进度汇报 | P2 | ✅ 完成 | 三组合方案：检查点触发 + ProgressReportTool + ToolContext.tasks 持久化 |
+| F-20 | Agent 阶段性进度汇报 | P2 | ✅ 完成 | 三组合方案：检查点触发 + ProgressReportTool + ToolContext.tasks 持久化；PhaseComplete 时双重调用 ProgressReportTool + TaskUpdateTool 更新 metadata |
 | F-21 | 后台运行 + 恢复同步 | P1 | 🔄 补丁已创建 | Ctrl+B 后台化 + TailFollower 实时同步 + SessionWatcher 多终端感知，补丁 0067-0074 |
 | F-22 | Cron 系统执行引擎 | P0 | 🔄 规划中 | 完整迁移 claude-code-best 生产级 cron 引擎 |
 
@@ -78,13 +78,17 @@
 
 | 文件路径 | 优先级 | 状态 | 依赖 |
 |---------|--------|------|------|
-| `src/cron_system/cron_parser.py` | P0 | 🔄 规划中 | - |
-| `src/cron_system/cron_scheduler.py` | P0 | 🔄 规划中 | watchdog, psutil |
-| `src/cron_system/cron_tasks.py` | P0 | 🔄 规划中 | - |
-| `src/cron_system/cron_tasks_lock.py` | P0 | 🔄 规划中 | psutil |
-| `src/cron_system/skills.py` | P1 | 🔄 规划中 | bundled_skills |
-| `tests/cron/test_parser.py` | P0 | 🔄 规划中 | pytest |
-| `tests/cron/test_scheduler.py` | P0 | 🔄 规划中 | pytest-asyncio |
+| `src/cron_system/cron_parser.py` | P0 | ⏳ 待开始 | - |
+| `src/cron_system/cron_scheduler.py` | P0 | ⏳ 待开始 | watchdog, psutil |
+| `src/cron_system/cron_tasks.py` | P0 | ⏳ 待开始 | - |
+| `src/cron_system/cron_tasks_lock.py` | P0 | ⏳ 待开始 | psutil |
+| `src/cron_system/cron_jitter_config.py` | P1 | ⏳ 待开始 | growthbook (可选) |
+| `src/cron_system/skills.py` | P1 | ⏳ 待开始 | bundled_skills |
+| `src/cron_system/loop_skill.py` | P1 | ⏳ 待开始 | bundled_skills |
+| `src/cron_system/autonomy_runs.py` | P1 | ⏳ 待开始 | - |
+| `tests/cron/test_parser.py` | P0 | ⏳ 待开始 | pytest |
+| `tests/cron/test_scheduler.py` | P0 | ⏳ 待开始 | pytest-asyncio |
+| `tests/cron/test_tasks.py` | P0 | ⏳ 待开始 | pytest-asyncio |
 
 ### 外部依赖
 
@@ -94,6 +98,57 @@ watchdog = ">=3.0"  # 文件监控
 psutil = ">=5.9"     # 进程存活检测
 ```
 
+### 核心组件详细说明
+
+#### 1. cron_parser.py - 表达式解析
+- 5字段 cron 解析 (minute hour day-of-month month day-of-week)
+- `parseCronExpression()` - 支持 *, */N, N-M, N,M, N-M/N
+- `computeNextCronRun()` - 下次执行时间计算，OR 语义，DST 处理
+- `cronToHuman()` - cron 转人类可读描述
+
+#### 2. cron_tasks.py - 任务存储
+- `readCronTasks()` / `writeCronTasks()` - JSON 文件读写
+- `addCronTask()` - durable=False 存内存，True 持久化
+- `removeCronTasks()` - 批量删除
+- `markCronTasksFired()` - 批量更新 lastFiredAt
+- `findMissedTasks()` - 检测错失任务
+- `jitteredNextCronRunMs()` / `oneShotJitteredNextCronRunMs()` - 带抖动的下次触发时间
+
+#### 3. cron_tasks_lock.py - 分布式锁
+- `tryAcquireSchedulerLock()` - O_EXCL 原子创建锁
+- `releaseSchedulerLock()` - 仅释放自己持有的锁
+- PID 存活检测 + 陈旧锁自动恢复
+- 锁文件: `.claude/scheduled_tasks.lock`
+
+#### 4. cron_scheduler.py - 执行引擎核心
+- `CHECK_INTERVAL_MS = 1000` - 1秒轮询
+- `LOCK_PROBE_INTERVAL_MS = 5000` - 非所有者5秒探测锁
+- `FILE_STABILITY_MS = 300` - 文件稳定性等待
+- `isRecurringTaskAged()` - 任务过期检查
+- `buildMissedTaskNotification()` - 错失任务通知格式化
+
+#### 5. cron_jitter_config.py - 动态配置
+- `getCronJitterConfig()` - 从 GrowthBook 读取 `tengu_kairos_cron_config`
+- `JITTER_CONFIG_REFRESH_MS = 60000` - 60秒缓存刷新
+- 支持运行时动态调整 jitter 参数
+
+#### 6. skills.py - CLI 命令
+- `/cron-list` - 调用 CronListTool 列出所有任务
+- `/cron-delete <job-id>` - 调用 CronDeleteTool 删除任务
+
+#### 7. loop_skill.py - /loop 命令
+- `/loop [interval] <prompt>` - 简化周期性任务创建
+- `DEFAULT_INTERVAL = "10m"`
+- 解析优先级: 前导 token > 尾部 every > 默认
+- Interval → cron 转换表 (Nm/Nh/Nd/Ns)
+- 创建后**立即执行** (不等待第一次 cron 触发)
+
+#### 8. autonomy_runs.py - 任务队列集成
+- `createAutonomyQueuedPrompt()` - 创建 autonomy queued command
+- 防重放: `hasActiveAutonomyRunForSource()` 检查 sourceId
+- `WORKLOAD_CRON = "cron"` - workload 类型标识
+- 路由: agentId 任务 → teammate 队列，否则 → 主 REPL 队列
+
 ### 里程碑
 
 | 阶段 | 任务 | 状态 |
@@ -102,8 +157,11 @@ psutil = ">=5.9"     # 进程存活检测
 | 2 | cron_tasks.py - 任务存储 CRUD | ⏳ 待开始 |
 | 3 | cron_tasks_lock.py - 分布式锁 | ⏳ 待开始 |
 | 4 | cron_scheduler.py - 执行引擎核心 | ⏳ 待开始 |
-| 5 | skills.py - CLI 命令注册 | ⏳ 待开始 |
-| 6 | 测试覆盖 | ⏳ 待开始 |
+| 5 | cron_jitter_config.py - 动态配置 | ⏳ 待开始 |
+| 6 | skills.py - CLI 命令 (/cron-list, /cron-delete) | ⏳ 待开始 |
+| 7 | loop_skill.py - /loop 命令 | ⏳ 待开始 |
+| 8 | autonomy_runs.py - 任务队列集成 | ⏳ 待开始 |
+| 9 | 测试覆盖 | ⏳ 待开始 |
 
 ---
 
@@ -1825,6 +1883,71 @@ def parse_command(command: str):
 | `docs/PROGRESS.md` | 本文档 - 进度跟踪 |
 | `docs/INTEGRATION.md` | Symphony 集成规范 |
 | `docs/TEAM_MEMBERSHIP.md` | Team 成员扩展设计 |
+
+---
+
+## F-23: Skills System Extension（技能系统扩展层）
+
+**状态**: ✅ 完成
+**优先级**: P1
+**目标**: 仿照 `tool_system_ext` 模式，构建独立的技能系统扩展层
+**完成日期**: 2026-05-24
+
+### 背景
+
+当前 `src/skills/loader.py` 存在以下问题：
+- 硬编码 clawcodex 特定路径（`~/.clawcodex/skills` 等）
+- `get_all_skills()` 职责过于集中
+- 难以独立更新上游
+
+### 设计模式
+
+| 组件 | Tool System | Skills System |
+|------|-------------|---------------|
+| 上游核心 | `tool_system/registry.py` | `skills/loader.py` |
+| 扩展目录 | `tool_system_ext/` | `skills_ext/` (新) |
+| 扩展包装类 | `ToolRegistryExt` | `SkillRegistryExt` (新) |
+| Bundle机制 | `TOOL_BUNDLES` | `SKILL_BUNDLES` (新) |
+| Agent配置 | `AgentToolConfig` | `AgentSkillConfig` (新) |
+
+### 实现文件清单
+
+| 文件路径 | 优先级 | 状态 | 说明 |
+|---------|--------|------|------|
+| `src/skills_ext/__init__.py` | P0 | ✅ 完成 | 扩展层入口 |
+| `src/skills_ext/registry_ext.py` | P0 | ✅ 完成 | SkillRegistryExt 包装类 |
+| `src/skills_ext/bundles.py` | P0 | ✅ 完成 | Skill Bundle 定义 |
+| `src/skills_ext/agent_config.py` | P1 | ✅ 完成 | Agent Skill 配置 |
+| `src/skills_ext/paths.py` | P1 | ✅ 完成 | clawcodex 特定路径解析 |
+| `src/skills_ext/hooks.py` | P2 | ✅ 完成 | Skill 生命周期钩子 |
+| `src/skills_ext/cache.py` | P2 | ✅ 完成 | 扩展层缓存管理 |
+
+### 迁移策略
+
+| 阶段 | 任务 | 状态 |
+|------|------|------|
+| 1 | 创建 `src/skills_ext/` 目录和基础结构 | ✅ 完成 |
+| 2 | 迁移 clawcodex 特定路径逻辑到 `skills_ext/paths.py` | ✅ 完成 |
+| 3 | 添加 Bundle 机制和 AgentSkillConfig | ✅ 完成 |
+| 4 | 添加 Hook 机制和回调系统 | ✅ 完成 |
+| 5 | 更新 `get_all_skills()` 调用点使用 `SkillRegistryExt` | ✅ 完成 |
+
+### 核心组件设计
+
+```python
+# src/skills_ext/registry_ext.py
+class SkillRegistryExt:
+    """包装上游 loader，添加 clawcodex 特定功能"""
+    
+    def get_all_skills(self, **kwargs) -> list[Skill]:
+        base = self._loader.get_all_skills(**kwargs)  # 上游 skills
+        clawcodex = self._load_clawcodex_paths()      # clawcodex 特定
+        return self._merge_skills(base, clawcodex)     # 合并去重
+    
+    def on_skill_registered(self, callback):
+        """Skill 注册回调通知"""
+        ...
+```
 
 ---
 
