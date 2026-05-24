@@ -224,8 +224,6 @@ def create_command_context(
     history: Any = None,
     cwd: str | Path | None = None,
     config: dict[str, Any] | None = None,
-    app_state_store: Any = None,
-    provider: Any = None,
 ) -> CommandContext:
     """
     Create a command context.
@@ -237,10 +235,6 @@ def create_command_context(
         history: History log object
         cwd: Current working directory (defaults to workspace_root)
         config: Optional configuration dict
-        app_state_store: Optional reactive AppState store. Commands that
-            mutate global session state (e.g. /advisor) need this.
-        provider: Optional active LLM provider. Commands that gate on
-            provider type (e.g. /advisor) need this.
 
     Returns:
         CommandContext instance
@@ -255,6 +249,4 @@ def create_command_context(
         cost_tracker=cost_tracker,
         history=history,
         config=config or {},
-        app_state_store=app_state_store,
-        provider=provider,
     )

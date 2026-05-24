@@ -15,8 +15,7 @@ import pytest
 
 from src.agent.conversation import Conversation
 from src.providers.base import ChatResponse
-from src.query.agent_loop_compat import run_query_as_agent_loop_sync as run_agent_loop
-from src.tool_system.renderers import AgentLoopResult
+from src.tool_system.agent_loop import run_agent_loop, AgentLoopResult
 from src.tool_system.context import ToolContext
 from src.tool_system.defaults import build_default_registry
 

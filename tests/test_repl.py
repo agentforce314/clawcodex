@@ -300,15 +300,11 @@ class TestREPL(unittest.TestCase):
                     repl = ClawcodexREPL(provider_name="glm", stream=True)
                     repl.console.print = Mock()
 
-                    # Post-consolidation: REPL no longer imports
-                    # ``run_agent_loop`` (it routes through QueryEngine).
-                    # The assertion that simple prompts bypass the agent
-                    # loop is now structurally guaranteed — REPL can't
-                    # call it. Keep the chat_stream assertion as the
-                    # primary signal that the fast-path fired.
-                    repl.chat("你是谁")
+                    with patch('src.repl.core.run_agent_loop') as mock_agent_loop:
+                        repl.chat("你是谁")
 
                     mock_provider.chat_stream.assert_called_once()
+                    mock_agent_loop.assert_not_called()
                     self.assertFalse(any(
                         args and isinstance(args[0], Markdown)
                         for args, _kwargs in repl.console.print.call_args_list

@@ -13,7 +13,6 @@ interactive stacks can evolve independently.
 
 from .app import ClawCodexTUI
 from .messages import (
-    AdvisorEventMessage,
     AgentRunFinished,
     AgentRunStarted,
     AssistantChunk,
@@ -23,7 +22,6 @@ from .messages import (
 
 __all__ = [
     "ClawCodexTUI",
-    "AdvisorEventMessage",
     "AgentRunFinished",
     "AgentRunStarted",
     "AssistantChunk",

@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 
 from src.agent.conversation import Conversation
 from src.providers.base import ChatResponse
-from src.query.agent_loop_compat import run_query_as_agent_loop_sync as run_agent_loop
+from src.tool_system.agent_loop import run_agent_loop
 from src.tool_system.context import ToolContext
 from src.tool_system.defaults import build_default_registry
 from src.tool_system.protocol import ToolCall
@@ -70,21 +70,10 @@ class TestClaudeCodeToolParity(unittest.TestCase):
         self.assertEqual(missing, [])
 
     def test_send_user_message_is_user_visible_fallback(self) -> None:
-        """SendUserMessage advertises itself as the 'primary visible
-        output channel' (src/tool_system/tools/send_user_message.py:73).
-        When a model obeys that prompt and ends a turn with empty
-        assistant text after calling SendUserMessage, the loop must
-        surface the SendUserMessage's content as response_text — not
-        ``""``. Legacy ``agent_loop`` tracked this via
-        ``last_user_visible_message``; the Stage 4 adapter restores
-        the fallback by scanning ``tool_context.outbox`` when
-        last_assistant_text is empty (see agent_loop_compat.py)."""
         conversation = Conversation()
         conversation.add_user_message("hi")
 
         mock_provider = MagicMock()
-        # Force chat() fallback (mocks don't implement streaming).
-        mock_provider.chat_stream_response.side_effect = NotImplementedError()
         mock_tool_use = {
             "id": "toolu_1",
             "name": "SendUserMessage",
@@ -143,22 +132,48 @@ class TestClaudeCodeToolParity(unittest.TestCase):
         )
         self.assertEqual(self.ctx.todos, [])
 
-    # NOTE: ``test_openai_messages_preserve_reasoning_content_across_tool_turns``
-    # (legacy) asserted the second-turn API call's messages array
-    # contained an OpenAI-shape ``assistant + tool_calls`` entry with
-    # ``reasoning_content`` preserved. agent_loop.py maintained a
-    # parallel ``openai_messages`` list and converted Anthropic-shape
-    # responses to OpenAI tool_calls format manually; query.py sends
-    # Anthropic-shape messages and lets the real OpenAI-compat
-    # provider's ``_prepare_messages`` do the conversion. The
-    # user-visible invariant (reasoning_content reaches the next API
-    # call) is still preserved on real DeepSeek runs because
-    # ``OpenAIProvider._prepare_messages`` reads it from the
-    # AssistantMessage's reasoning_content attribute. The legacy
-    # mock-level assertion no longer holds because there's no
-    # ``openai_messages`` list at the adapter level for the mock to
-    # observe. Restore as a real OpenAIProvider integration test if
-    # this becomes a regression risk.
+    def test_openai_messages_preserve_reasoning_content_across_tool_turns(self) -> None:
+        conversation = Conversation()
+        conversation.add_user_message("hi")
+
+        mock_provider = MagicMock()
+        mock_provider.__class__.__name__ = "DeepSeekProvider"
+        first = ChatResponse(
+            content="Let me check",
+            model="deepseek-v4-pro",
+            usage={"input_tokens": 1, "output_tokens": 1},
+            finish_reason="tool_calls",
+            reasoning_content="hidden chain of thought token stream",
+            tool_uses=[{"id": "toolu_1", "name": "SendUserMessage", "input": {"message": "working"}}],
+        )
+        second = ChatResponse(
+            content="done",
+            model="deepseek-v4-pro",
+            usage={"input_tokens": 1, "output_tokens": 1},
+            finish_reason="stop",
+            tool_uses=None,
+        )
+        mock_provider.chat.side_effect = [first, second]
+
+        out = run_agent_loop(
+            conversation=conversation,
+            provider=mock_provider,
+            tool_registry=self.registry,
+            tool_context=self.ctx,
+            verbose=False,
+        )
+        self.assertEqual(out.response_text, "done")
+        self.assertEqual(mock_provider.chat.call_count, 2)
+        second_call_messages = mock_provider.chat.call_args_list[1].args[0]
+        assistant_with_tool_call = next(
+            msg
+            for msg in second_call_messages
+            if msg.get("role") == "assistant" and msg.get("tool_calls")
+        )
+        self.assertEqual(
+            assistant_with_tool_call.get("reasoning_content"),
+            "hidden chain of thought token stream",
+        )
 
 
 if __name__ == "__main__":

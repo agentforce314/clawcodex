@@ -54,20 +54,6 @@ class CommandContext:
     cost_tracker: Any
     history: Any
     config: dict[str, Any] = field(default_factory=dict)
-    # Optional handles for commands that need to read or mutate
-    # cross-session state. Default to None so existing call sites that
-    # build CommandContext positionally / partially still work.
-    #
-    # ``app_state_store`` is the reactive AppState store created at TUI /
-    # REPL startup. /advisor uses it to read the current advisor model
-    # and to flip it via ``set_state`` (which fires the persistence
-    # handler in ``src/state/app_state.py``).
-    #
-    # ``provider`` is the currently-active LLM provider; /advisor checks
-    # it to decide whether the user can configure the advisor at all
-    # (only first-party Anthropic supports it).
-    app_state_store: Any = None
-    provider: Any = None
 
 
 # Protocol for local command callables

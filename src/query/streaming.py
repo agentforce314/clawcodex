@@ -1,24 +1,3 @@
-"""SSE event-stream loop — planned migration target (Ch5/F.5).
-
-This module is a parallel implementation of the agent loop that emits
-fine-grained SSE events (MessageStart/TextDelta/ToolUseStart/...). It
-has **no production consumers** in ``src/`` — only test files
-reference it. Per the refactoring plan's F.5 decision, ``streaming_query``
-is retained as an in-progress migration target rather than being
-deleted.
-
-**Important.** This module does NOT yet have the chapter-5 recovery
-infrastructure wired in: no prompt-too-long recovery via
-``reactive_compact``, no stop-hooks dispatch, no token-budget
-continuation, no model fallback. Those features live in the canonical
-``query()`` async generator at :func:`src.query.query.query`. If your
-work needs the production-ready loop, use that one.
-
-When/if the team decides to migrate FROM ``query()`` TO
-``streaming_query``, the chapter-5 recovery ladder needs to be
-re-ported into this module (Phases B/C/D/E equivalents). That
-migration is tracked as a separate follow-up ticket.
-"""
 from __future__ import annotations
 
 import asyncio

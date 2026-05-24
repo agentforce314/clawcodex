@@ -141,44 +141,12 @@ class AnthropicProvider(BaseProvider):
         return bool(self._client_kwargs.get("base_url"))
 
     def _build_chat_response(self, response: Any) -> ChatResponse:
-        """Convert Anthropic SDK response into the shared ChatResponse shape.
-
-        Beyond the text + ``tool_use`` projection used by the rest of
-        the agentic loop, we also preserve advisor server-tool blocks
-        (``server_tool_use`` with ``name=='advisor'`` and the
-        ``advisor_tool_result`` follow-up). They must round-trip through
-        conversation history so that on the next turn the API sees a
-        valid use/result pair; stripping them here would either lose the
-        advisor's analysis or — worse — leave an orphan ``server_tool_use``
-        that the API rejects on replay. See ``src/utils/advisor.py``.
-
-        The SDK parses unknown discriminator values (e.g.
-        ``advisor_tool_result``) leniently via ``construct_type`` — the
-        block lands as the first matching union variant (typically
-        ``BetaTextBlock``) but the original fields (``type``,
-        ``tool_use_id``, ``content``) are preserved on the instance.
-        ``model_dump()`` round-trips them as a dict for downstream replay.
-        """
+        """Convert Anthropic SDK response into the shared ChatResponse shape."""
         content_text = ""
         tool_uses: list[dict[str, Any]] = []
-        raw_content_blocks: list[dict[str, Any]] = []
 
         for block in response.content:
             block_type = getattr(block, "type", "text")
-            block_name = getattr(block, "name", None)
-            is_advisor = block_type == "advisor_tool_result" or (
-                block_type == "server_tool_use" and block_name == "advisor"
-            )
-            if is_advisor:
-                dump = getattr(block, "model_dump", None)
-                if callable(dump):
-                    raw_content_blocks.append(dict(dump(exclude_none=True)))
-                else:
-                    # Fallback for non-Pydantic shapes (test doubles, etc.).
-                    raw_content_blocks.append(
-                        {k: v for k, v in vars(block).items() if v is not None}
-                    )
-                continue
             if block_type == "text":
                 text_val = getattr(block, "text", "")
                 if text_val is not None:
@@ -197,7 +165,6 @@ class AnthropicProvider(BaseProvider):
             usage=_extract_usage_dict(usage),
             finish_reason=str(getattr(response, "stop_reason", "stop")),
             tool_uses=tool_uses if tool_uses else None,
-            raw_content_blocks=raw_content_blocks or None,
         )
 
     def chat(

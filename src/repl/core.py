@@ -85,20 +85,6 @@ except ModuleNotFoundError:  # pragma: no cover
             raise EOFError()
 
 
-def _fuzzy_subseq(name: str, partial: str) -> bool:
-    """Lightweight subsequence match (``partial`` chars appear in order)."""
-
-    if not partial:
-        return True
-    i = 0
-    for ch in name:
-        if ch == partial[i]:
-            i += 1
-            if i == len(partial):
-                return True
-    return False
-
-
 class _SlashOnlyCompleter(Completer):
     """Trigger autocompletion only for slash commands, matching the reference
     Claude Code behavior.
@@ -112,16 +98,13 @@ class _SlashOnlyCompleter(Completer):
     * In every other case (plain words like ``hello``, ``ex``, etc.) return
       no completions so the user can type freely without a suggestion popup.
 
-    When a ``suggestions_provider`` is supplied it carries descriptions and
-    optional ``[workflow]`` tags, which surface in the prompt_toolkit menu
-    as ``display_meta`` — the same two-column layout the TS reference uses.
-    The legacy ``words_provider`` is still honoured for callers that only
-    have the flat name list.
+    The underlying list of command words is provided as a callable so it can
+    be refreshed dynamically (skills, plugin commands, …) without replacing
+    the completer instance.
     """
 
-    def __init__(self, words_provider, suggestions_provider=None):
+    def __init__(self, words_provider):
         self._words_provider = words_provider
-        self._suggestions_provider = suggestions_provider
 
     def get_completions(self, document, complete_event):  # type: ignore[override]
         text = document.text_before_cursor
@@ -129,16 +112,6 @@ class _SlashOnlyCompleter(Completer):
         if token is None:
             return
         partial = token[1:].lower()  # strip leading '/'
-        start_position = token_start - len(text)
-
-        if self._suggestions_provider is not None:
-            try:
-                suggestions = self._suggestions_provider() or []
-            except Exception:
-                suggestions = []
-            yield from self._rich_completions(suggestions, partial, start_position)
-            return
-
         words = self._words_provider() or []
         seen: set[str] = set()
         for word in words:
@@ -150,93 +123,12 @@ class _SlashOnlyCompleter(Completer):
                 continue
             if not partial or key.startswith(partial):
                 seen.add(key)
+                start_position = token_start - len(text)
                 yield Completion(
                     text=word,
                     start_position=start_position,
                     display=word,
                 )
-
-    def _rich_completions(self, suggestions, partial, start_position):
-        """Yield ``Completion`` entries with ``display`` + ``display_meta``.
-
-        Matches the TS ranking: exact name → exact alias → prefix name →
-        prefix alias → fuzzy. Aliases are surfaced in ``(alias)`` only
-        when the typed prefix matched the alias, so an unmatched partial
-        does not pollute the menu with every alternate name.
-        """
-
-        scored: list[tuple[int, int, Any, str | None]] = []
-        seen: set[str] = set()
-        for idx, sugg in enumerate(suggestions):
-            name = getattr(sugg, "name", None)
-            if not isinstance(name, str) or not name:
-                continue
-            name_lc = name.lower()
-            if name_lc in seen:
-                continue
-            aliases = tuple(getattr(sugg, "aliases", ()) or ())
-            matched_alias: str | None = None
-            rank: int | None = None
-            if not partial:
-                rank = 0
-            elif name_lc == partial:
-                rank = 0
-            else:
-                exact_alias = next(
-                    (a for a in aliases if a.lower() == partial), None
-                )
-                if exact_alias:
-                    rank = 1
-                    matched_alias = exact_alias
-                elif name_lc.startswith(partial):
-                    rank = 2
-                else:
-                    prefix_alias = next(
-                        (a for a in aliases if a.lower().startswith(partial)),
-                        None,
-                    )
-                    if prefix_alias:
-                        rank = 3
-                        matched_alias = prefix_alias
-                    elif _fuzzy_subseq(name_lc, partial):
-                        rank = 5
-                    else:
-                        fuzzy_alias = next(
-                            (a for a in aliases if _fuzzy_subseq(a.lower(), partial)),
-                            None,
-                        )
-                        if fuzzy_alias:
-                            rank = 6
-                            matched_alias = fuzzy_alias
-            if rank is None:
-                continue
-            seen.add(name_lc)
-            secondary = idx if not partial else len(name)
-            scored.append((rank, secondary, sugg, matched_alias))
-
-        scored.sort(key=lambda t: (t[0], t[1], t[2].name.lower()))
-
-        for _, _, sugg, matched_alias in scored:
-            alias_text = f" ({matched_alias})" if matched_alias else ""
-            display_text = f"/{sugg.name}{alias_text}"
-            display_styled = [("class:completion.command", display_text)]
-            description = (getattr(sugg, "description", "") or "").strip()
-            tag = getattr(sugg, "tag", None)
-            meta_parts: list[tuple[str, str]] = []
-            if tag:
-                meta_parts.append(("class:completion.tag", f"[{tag}] "))
-            if description:
-                # Collapse internal whitespace so multi-line descriptions
-                # render as one row in the prompt_toolkit menu.
-                meta_parts.append(
-                    ("class:completion.description", " ".join(description.split()))
-                )
-            yield Completion(
-                text=f"/{sugg.name}",
-                start_position=start_position,
-                display=display_styled,
-                display_meta=meta_parts if meta_parts else None,
-            )
 
     @staticmethod
     def _current_slash_token(text: str) -> tuple[str | None, int]:
@@ -301,7 +193,6 @@ import asyncio
 import sys
 import json
 import threading
-import time
 from collections import deque
 from typing import Any
 
@@ -316,7 +207,7 @@ from src.services.api.claude import tool_to_api_schema
 from src.tool_system.context import ToolContext
 from src.tool_system.defaults import build_default_registry
 from src.tool_system.protocol import ToolCall
-from src.tool_system.renderers import ToolEvent, summarize_tool_result, summarize_tool_use
+from src.tool_system.agent_loop import ToolEvent, run_agent_loop, summarize_tool_result, summarize_tool_use
 from src.query.engine import QueryEngine, QueryEngineConfig
 from src.query.query import StreamEvent
 from src.types.messages import AssistantMessage, SystemMessage, UserMessage
@@ -558,36 +449,13 @@ class ClawcodexREPL:
         # interfering with the other's trigger.
         from prompt_toolkit.completion import merge_completers
 
-        # TTL cache for the slash-command suggestion list. ``build_command
-        # _suggestions`` walks the user/project/managed skills dirs on every
-        # call (~1.1s cold), and prompt_toolkit asks the completer on every
-        # keystroke while typing — so without a cache the first ``/`` press
-        # blocks the input row for over a second. Refreshed lazily; the
-        # background warm below populates the cache before the user can
-        # plausibly press ``/``. Invalidated on a 30 s TTL so newly-added
-        # skills surface within a turn or two.
-        self._slash_suggestions_cache: list[Any] | None = None
-        self._slash_suggestions_cache_at: float = 0.0
-
-        self._slash_completer = _SlashOnlyCompleter(
-            self._get_slash_command_words,
-            suggestions_provider=self._get_slash_command_suggestions,
-        )
+        self._slash_completer = _SlashOnlyCompleter(self._get_slash_command_words)
         self._at_completer = AtFileCompleter(
             cwd=str(self.tool_context.workspace_root)
         )
         self.completer = merge_completers(
             [self._slash_completer, self._at_completer]
         )
-
-        # Warm the slash-command suggestion cache in the background so the
-        # very first ``/`` keystroke doesn't pay the cold import + disk-walk
-        # cost. Daemon thread so it can't block REPL shutdown.
-        threading.Thread(
-            target=self._warm_slash_suggestions_cache,
-            name="slash-suggestions-warm",
-            daemon=True,
-        ).start()
 
         # Key bindings.
         #
@@ -628,37 +496,6 @@ class ClawcodexREPL:
                 buf.insert_text("/")
                 if was_empty:
                     buf.start_completion(select_first=False)
-
-            def _refresh_slash_menu_after_deletion(event, deleter):  # type: ignore[no-untyped-def]
-                # prompt_toolkit's ``complete_while_typing`` only fires on
-                # ``insert_text`` (buffer.py:1248-1252) — text deletions
-                # close the completion popup but never reopen it. That's
-                # what makes ``/exit`` → backspace to ``/ex`` go silent:
-                # the popup closes when the menu's selected completion no
-                # longer matches, and nothing re-triggers it. So we
-                # explicitly restart completion after the deletion when
-                # the cursor is still on a slash token.
-                buf = event.current_buffer
-                deleter(buf)
-                if not (buf.completer and buf.complete_while_typing()):
-                    return
-                token, _ = _SlashOnlyCompleter._current_slash_token(
-                    buf.document.text_before_cursor
-                )
-                if token is not None:
-                    buf.start_completion(select_first=False)
-
-            @self.bindings.add("backspace")  # type: ignore[attr-defined]
-            def _backspace_refreshes_slash_menu(event):  # type: ignore[no-untyped-def]
-                _refresh_slash_menu_after_deletion(
-                    event, lambda b: b.delete_before_cursor(count=1)
-                )
-
-            @self.bindings.add("delete")  # type: ignore[attr-defined]
-            def _delete_refreshes_slash_menu(event):  # type: ignore[no-untyped-def]
-                _refresh_slash_menu_after_deletion(
-                    event, lambda b: b.delete(count=1)
-                )
 
             @self.bindings.add("c-m")  # type: ignore[attr-defined]
             def _enter_submits_or_backslash_newline(event):  # type: ignore[no-untyped-def]
@@ -749,18 +586,6 @@ class ClawcodexREPL:
                 # background highlight.
                 'prompt': 'bold fg:ansiblue bg:#262626',
                 'bottom-toolbar': 'fg:#888888 bg:default',
-                # Slash-command completion menu (two-column layout:
-                # /name on the left, [tag] + description on the right).
-                # Mirrors the TS reference where unselected rows are dim
-                # and the highlighted row inverts on a tinted background.
-                'completion-menu': 'bg:default',
-                'completion-menu.completion': 'fg:#bfbfbf bg:default',
-                'completion-menu.completion.current': 'fg:#ffffff bg:#005f87 bold',
-                'completion-menu.meta.completion': 'fg:#7a7a7a bg:default',
-                'completion-menu.meta.completion.current': 'fg:#dadada bg:#005f87',
-                'completion.command': 'bold fg:ansigreen',
-                'completion.tag': 'italic fg:ansicyan',
-                'completion.description': 'fg:#9a9a9a',
             }),
             key_bindings=self.bindings,
             complete_while_typing=True,
@@ -787,63 +612,15 @@ class ClawcodexREPL:
             model = getattr(self.provider, "model", "") or "?"
             cwd_full = str(self.tool_context.cwd or self.tool_context.workspace_root)
             cwd = self._shorten_path_text(cwd_full) or cwd_full
-            # Optional advisor segment — appears between cwd and turns
-            # when ``/advisor`` is set. Mode label (server/client/inactive)
-            # reflects what the NEXT request will do given the current
-            # provider + main model, so a stale config under an
-            # unsupported provider shows "(inactive)" rather than lying.
-            from src.utils.advisor import format_advisor_status
-            advisor_seg = format_advisor_status(self.provider, model)
-            advisor_part = f" {advisor_seg} ·" if advisor_seg else ""
-            # Advisor token counts — accumulated on the ToolContext
-            # by ``src/tool_system/tools/advisor.py`` per consultation.
-            # Surface them next to the worker's counts so the user can
-            # see how much of the spend went to the reviewer model.
-            # Hidden when zero so the toolbar stays compact for users
-            # who haven't enabled the advisor.
-            adv_in = int(getattr(self.tool_context, "advisor_input_tokens", 0) or 0)
-            adv_out = int(getattr(self.tool_context, "advisor_output_tokens", 0) or 0)
-            advisor_tokens = (
-                f" (advisor: {adv_in} in / {adv_out} out)"
-                if (adv_in or adv_out) else ""
-            )
-            # USD cost — directional estimate based on the upstream
-            # model's published per-token price. Proxies (litellm,
-            # openrouter, bedrock) may charge different rates; the
-            # displayed number is the upstream-list cost, not the
-            # exact invoice. Hidden when zero (no API turns yet this
-            # session).
-            from src.services.pricing import (
-                compute_session_cost,
-                format_cost_usd,
-            )
-            try:
-                from src.settings.settings import get_settings as _gs
-                _settings = _gs()
-                _advisor_model = (getattr(_settings, "advisor_model", "") or "").strip()
-            except Exception:
-                _advisor_model = ""
-            worker_cost, advisor_cost, total_cost = compute_session_cost(
-                worker_model=model,
-                worker_input_tokens=self._stats_input_tokens,
-                worker_output_tokens=self._stats_output_tokens,
-                advisor_model=_advisor_model,
-                advisor_input_tokens=adv_in,
-                advisor_output_tokens=adv_out,
-            )
-            # Space-separated label (matches TUI's "cost N" pattern;
-            # avoids the REPL/TUI label-style split critic flagged).
-            cost_part = (
-                f" · cost {format_cost_usd(total_cost)}"
-                if total_cost > 0 else ""
-            )
+            # Get current permission mode for display
+            from src.permissions import permission_mode_short_title
+            perm_mode = permission_mode_short_title(self._permission_mode)
             return (
-                f" {provider} · {model} · {cwd} ·{advisor_part} "
+                f" {provider} · {model} · {cwd} · "
+                f"mode: {perm_mode} · "
                 f"turns: {self._stats_turns} · "
                 f"tokens: {self._stats_input_tokens} in / "
-                f"{self._stats_output_tokens} out"
-                f"{advisor_tokens}"
-                f"{cost_part} "
+                f"{self._stats_output_tokens} out "
             )
         except Exception:
             # Never let the toolbar break the input prompt.
@@ -1194,86 +971,6 @@ class ClawcodexREPL:
             deduped.append(w)
         return deduped
 
-    # REPL-only built-ins not covered by the shared TUI ``LOCAL_BUILTINS``.
-    # Used to seed descriptions for the prompt_toolkit completion menu so
-    # ``/save`` etc. show meta text alongside the registry-backed entries.
-    _REPL_EXTRA_BUILTIN_DESCRIPTIONS: dict[str, str] = {
-        "save": "Save the conversation to a file",
-        "load": "Load a saved conversation",
-        "tool": "Inspect or invoke a single tool",
-        "init": "Initialize a CLAUDE.md for this workspace",
-        "tui": "Switch to the Textual TUI",
-    }
-
-    _SLASH_SUGGESTIONS_TTL_S = 30.0
-
-    def _get_slash_command_suggestions(self) -> list[Any]:
-        """Return rich slash-command entries (name + description + tag).
-
-        Drives the prompt_toolkit completion menu's two-column display
-        (command name on the left, description as ``display_meta`` on
-        the right) and stays in lock-step with the TUI palette by
-        reusing :func:`src.tui.commands.build_command_suggestions`. Adds
-        the REPL-only built-ins (``/save``, ``/load``, ``/tool``,
-        ``/init``, ``/tui``) that the shared builder doesn't know about.
-
-        Cached with a 30-second TTL: the builder walks user/project/managed
-        skills dirs (~1.1s cold, ~0.4 ms warm) and prompt_toolkit calls
-        this on every keystroke after ``/``, so rebuilding the 500-entry
-        list each keystroke is what made the popup feel laggy.
-        """
-
-        now = time.monotonic()
-        cached = self._slash_suggestions_cache
-        if (
-            cached is not None
-            and (now - self._slash_suggestions_cache_at) < self._SLASH_SUGGESTIONS_TTL_S
-        ):
-            return cached
-
-        try:
-            from src.tui.commands import CommandSuggestion, build_command_suggestions
-
-            cwd = self.tool_context.cwd or self.tool_context.workspace_root
-            base = build_command_suggestions(cwd, self.tool_context)
-
-            have = {s.name.lower() for s in base if hasattr(s, "name")}
-            extra: list[Any] = []
-            for name, description in self._REPL_EXTRA_BUILTIN_DESCRIPTIONS.items():
-                if name in have:
-                    continue
-                extra.append(CommandSuggestion(name=name, description=description))
-            # Built-ins lead the menu, then registry/skills (the order
-            # ``build_command_suggestions`` already produces).
-            result: list[Any] = [
-                *(s for s in base if getattr(s, "source", "") == "builtin"),
-                *extra,
-                *(s for s in base if getattr(s, "source", "") != "builtin"),
-            ]
-        except Exception:
-            result = []
-
-        self._slash_suggestions_cache = result
-        self._slash_suggestions_cache_at = now
-        return result
-
-    def _warm_slash_suggestions_cache(self) -> None:
-        """Pre-populate the slash-command suggestion cache off the main thread.
-
-        Called once from ``__init__``. Building the suggestion list cold
-        is ~1.1 s on a populated skills tree, which is what the user
-        perceives as latency on the very first ``/`` press. By doing the
-        work in a daemon thread during REPL startup the cache is already
-        warm by the time the user presses ``/``.
-        """
-
-        try:
-            self._get_slash_command_suggestions()
-        except Exception:
-            # Warming is a best-effort optimization; falling back to the
-            # lazy cold path on the next ``/`` press is acceptable.
-            pass
-
     def _refresh_completer(self) -> None:
         # The slash + ``@``-file completers are stable for the lifetime
         # of the REPL: ``_SlashOnlyCompleter`` reads its word list
@@ -1292,8 +989,7 @@ class ClawcodexREPL:
                 )
             if not hasattr(self, "_slash_completer") or self._slash_completer is None:
                 self._slash_completer = _SlashOnlyCompleter(
-                    self._get_slash_command_words,
-                    suggestions_provider=self._get_slash_command_suggestions,
+                    self._get_slash_command_words
                 )
             self.completer = merge_completers(
                 [self._slash_completer, self._at_completer]
@@ -1395,12 +1091,6 @@ class ClawcodexREPL:
         # produce negative padding.
         console_width = max(1, getattr(self.console, "width", 0) or 80)
 
-        # Color bar starts at the line-number column and ends 7 cols
-        # short of the right terminal edge, leaving visible breathing
-        # room on the right so the bar doesn't run flush against the
-        # screen border.
-        target_right = max(1, console_width - 7)
-
         diff = Text()
         rendered = 0
         truncated = False
@@ -1419,18 +1109,20 @@ class ClawcodexREPL:
                 # on newlines and produce blank rows between every entry.
                 stripped = raw.rstrip("\n").rstrip("\r")
                 if stripped.startswith("+"):
-                    # Colors mirror ``typescript/src/utils/theme.ts darkTheme``
+                    # Match Claude Code's truecolor dark theme. Background
+                    # starts at the line-number column and extends to the
+                    # right edge by padding the trailing space with the
+                    # same bg, so added/removed rows read as solid bars
+                    # across the full width. Mirrors
+                    # ``typescript/src/components/StructuredDiff/Fallback.tsx:331-346``
+                    # (lineNumStr + sigil + content + ' '.repeat(padding))
+                    # and ``typescript/src/utils/theme.ts darkTheme``
                     # (``diffAdded: 'rgb(34,92,43)'``,
-                    # ``diffRemoved: 'rgb(122,41,54)'``). The bar begins
-                    # one column to the left of the line-number digits
-                    # (i.e. the gutter carries a 1-col leading bg pad).
+                    # ``diffRemoved: 'rgb(122,41,54)'``).
                     body = stripped[1:]
-                    num_str = str(new_lineno)
-                    lead = " " * max(0, 4 - len(num_str) - 1)
-                    gutter = f" {num_str} "
+                    gutter = f"{new_lineno:>4} "
                     visible = len(gutter) + 1 + cell_len(body)
-                    padding = max(0, target_right - len(lead) - visible)
-                    diff.append(lead)
+                    padding = max(0, console_width - visible)
                     diff.append(gutter, style="on rgb(34,92,43)")
                     diff.append("+", style="bold on rgb(34,92,43)")
                     diff.append(body + " " * padding, style="on rgb(34,92,43)")
@@ -1438,12 +1130,9 @@ class ClawcodexREPL:
                     new_lineno += 1
                 elif stripped.startswith("-"):
                     body = stripped[1:]
-                    num_str = str(old_lineno)
-                    lead = " " * max(0, 4 - len(num_str) - 1)
-                    gutter = f" {num_str} "
+                    gutter = f"{old_lineno:>4} "
                     visible = len(gutter) + 1 + cell_len(body)
-                    padding = max(0, target_right - len(lead) - visible)
-                    diff.append(lead)
+                    padding = max(0, console_width - visible)
                     diff.append(gutter, style="on rgb(122,41,54)")
                     diff.append("-", style="bold on rgb(122,41,54)")
                     diff.append(body + " " * padding, style="on rgb(122,41,54)")

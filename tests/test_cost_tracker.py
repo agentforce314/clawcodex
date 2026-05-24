@@ -10,13 +10,9 @@ class TestGetPricing:
         pricing = _get_pricing("claude-sonnet-4-20250514")
         assert pricing == PRICING["claude-sonnet-4-20250514"]
 
-    def test_unknown_model_returns_none(self):
-        # Post status-bar refactor: get_pricing returns None for
-        # unknowns. The legacy cost-tracker that needs "always
-        # something" falls back to DEFAULT_PRICING at its call site
-        # (services/cost_tracker.py::record_usage).
+    def test_unknown_model_defaults(self):
         pricing = _get_pricing("some-unknown-model")
-        assert pricing is None
+        assert pricing == DEFAULT_PRICING
 
     def test_prefix_matching(self):
         pricing = _get_pricing("claude-3-5-sonnet-20241022-v2")

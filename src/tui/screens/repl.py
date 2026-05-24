@@ -27,7 +27,6 @@ from textual.app import ComposeResult
 from textual.screen import Screen
 
 from ..messages import (
-    AdvisorEventMessage,
     AgentRunFinished,
     AgentRunStarted,
     AssistantChunk,
@@ -46,7 +45,6 @@ from ..widgets.transcript_view import Transcript
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..app import ClawCodexTUI
-    from ..commands import CommandSuggestion
 
 
 class REPLScreen(Screen):
@@ -70,8 +68,6 @@ class REPLScreen(Screen):
         model: str,
         workspace_root: Path,
         words_provider: Callable[[], list[str]],
-        suggestions_provider: Callable[[], list["CommandSuggestion"]] | None = None,
-        provider_instance: object | None = None,
     ) -> None:
         super().__init__()
         self._version = version
@@ -79,8 +75,6 @@ class REPLScreen(Screen):
         self._model = model
         self._workspace_root = Path(workspace_root)
         self._words_provider = words_provider
-        self._suggestions_provider = suggestions_provider
-        self._provider_instance = provider_instance
 
         self.header_widget = StartupHeader(
             version=version,
@@ -93,12 +87,8 @@ class REPLScreen(Screen):
             provider=provider,
             model=model,
             workspace_root=self._workspace_root,
-            provider_instance=provider_instance,
         )
-        self.prompt_input = PromptInput(
-            words_provider=words_provider,
-            suggestions_provider=suggestions_provider,
-        )
+        self.prompt_input = PromptInput(words_provider=words_provider)
         # ARIA live region — stays height: 1 and only announces the
         # most recent status change. Mounted just above the status
         # bar so it's adjacent to the prompt for single-sweep reads.
@@ -169,15 +159,6 @@ class REPLScreen(Screen):
             tool_use_id=message.tool_use_id,
             is_error=message.is_error,
             error=message.error,
-        )
-
-    def on_advisor_event_message(self, message: AdvisorEventMessage) -> None:
-        self.transcript.append_advisor_event(
-            kind=message.kind,
-            tool_use_id=message.tool_use_id,
-            advisor_model=message.advisor_model,
-            text=message.text,
-            error_code=message.error_code,
         )
 
     def on_agent_run_finished(self, message: AgentRunFinished) -> None:

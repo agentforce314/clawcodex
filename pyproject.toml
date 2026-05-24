@@ -48,10 +48,21 @@ dependencies = [
     # Ch16 Phase 0: SSE consumer for the CCR v2 SSE read transport. ``httpx``
     # itself is transitively available via the ``anthropic`` SDK.
     "httpx-sse>=0.4",
-    # Official Model Context Protocol SDK used by ``src.services.mcp`` for
-    # stdio, SSE, Streamable HTTP, WebSocket, OAuth discovery, and JSON-RPC
-    # message models.
-    "mcp>=1.27.0",
+    # Open source replacement: Pydantic Settings for type-safe config
+    "pydantic-settings>=2.0.0",
+    # Open source replacement: python-frontmatter for parsing SKILL.md / agent files
+    "python-frontmatter>=1.0.0",
+    # Open source replacement: tree-sitter-bash for Bash AST parsing
+    "tree-sitter>=0.25.0",
+    "tree-sitter-bash>=0.25.0",
+    # Open source replacement: GitPython for Git operations
+    "GitPython>=3.1.0",
+    # Open source replacement: LiteLLM for unified Provider layer
+    "litellm>=1.0.0",
+    # Open source replacement: Pluggy for Hook system
+    "pluggy>=1.0.0",
+    # Open source replacement: Outlines for structured output
+    "outlines>=0.0.80",
     # Image decode/resize/encode for the FileReadTool image pipeline (port
     # of TS imageResizer.ts which uses sharp). Pillow has pure-Python wheels
     # for all platforms and covers PNG/JPEG/GIF/WebP and palette quantization.

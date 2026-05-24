@@ -25,9 +25,9 @@ jobs:
 
       - name: Detect and analyse changes
         run: |
-          # Auto-detect latest upstream tag or use main
-          FROM_REF="${FROM_REF:-upstream/v2025_01}"
-          TO_REF="${TO_REF:-upstream/main}"
+          # Use b125e16 as base, 68dc3c5 as latest
+          FROM_REF="${FROM_REF:-b125e16}"
+          TO_REF="${TO_REF:-68dc3c5}"
           upstream-sync analyze "$FROM_REF" "$TO_REF" --output-dir .upstream-sync
         env:
           FROM_REF: ${{ vars.UPSTREAM_FROM_REF }}

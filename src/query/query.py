@@ -71,15 +71,6 @@ class QueryParams:
     user_context: dict[str, str] | None = None
     system_context: dict[str, str] | None = None
     pipeline_config: PipelineConfig | None = None
-    # Ch5/F-followup: live streaming text callback. When set, the
-    # provider's chat_stream_response receives this callback so each
-    # SSE text-delta drives the UI in real time. Critical for the
-    # TUI/headless live-stream UX after the F.2/F.3 migration to this
-    # loop — without it, callers see the entire response materialize
-    # at once after the model turn completes. The callback can also
-    # raise AbortError from inside the SDK's stream context to tear
-    # down the HTTP socket on ESC.
-    on_text_chunk: Callable[[str], None] | None = None
 
 
 @dataclass
@@ -293,82 +284,10 @@ async def _call_model_sync(
     tools: Tools,
     max_output_tokens_override: int | None = None,
     abort_signal: Any = None,
-    on_text_chunk: Callable[[str], None] | None = None,
 ) -> tuple[list[AssistantMessage], list[ToolUseBlock]]:
     from ..types.messages import normalize_messages_for_api
-    from ..utils.advisor import (
-        ADVISOR_BETA_HEADER,
-        ADVISOR_MODE_CLIENT_SIDE,
-        ADVISOR_MODE_INACTIVE,
-        ADVISOR_MODE_SERVER_SIDE,
-        ADVISOR_TOOL_INSTRUCTIONS,
-        build_advisor_tool_schema,
-        build_client_advisor_tool_schema,
-        decide_advisor_mode,
-        strip_advisor_blocks,
-    )
-
-    # Advisor activation decision. Three outcomes:
-    #
-    # * SERVER_SIDE: 1P Anthropic provider + opus-4-6/sonnet-4-6 main
-    #   loop + valid server-side advisor target. Carries the beta
-    #   header and the ``advisor_20260301`` schema; the API runs the
-    #   reviewer model server-side. Optimal path — single roundtrip,
-    #   cache-friendly.
-    # * CLIENT_SIDE: any provider, any tool-calling main loop, any
-    #   advisor model that routes to a known provider. Registers
-    #   ``advisor`` as a regular client-side tool; the dispatcher
-    #   (``src/tool_system/tools/advisor.py``) makes a separate API
-    #   call to the configured advisor model. Two roundtrips but
-    #   provider-agnostic.
-    # * INACTIVE: no advisor on this request (env-disabled, no
-    #   advisor_model set, or no path can be resolved).
-    #
-    # The full decision table lives in ``decide_advisor_mode``. Any
-    # exception during the predicate degrades to INACTIVE rather than
-    # killing the turn (critic M1 from the original advisor PR).
-    main_loop_model = getattr(provider, "model", "") or ""
-    advisor_mode = ADVISOR_MODE_INACTIVE
-    advisor_model_normalized: str | None = None
-    try:
-        from ..settings.settings import get_settings
-        settings = get_settings()
-        configured = (getattr(settings, "advisor_model", "") or "").strip()
-        configured_provider = (getattr(settings, "advisor_provider", "") or "").strip()
-        force_client = bool(getattr(settings, "advisor_client_mode", False))
-        if configured:
-            from ..models.model import canonical_model_name
-            candidate = canonical_model_name(configured)
-            advisor_mode = decide_advisor_mode(
-                provider,
-                main_loop_model,
-                candidate,
-                force_client_mode=force_client,
-                advisor_provider=configured_provider,
-            )
-            if advisor_mode != ADVISOR_MODE_INACTIVE:
-                advisor_model_normalized = candidate
-    except Exception:
-        logger.exception(
-            "Advisor activation check failed; treating advisor as inactive"
-        )
-        advisor_mode = ADVISOR_MODE_INACTIVE
-        advisor_model_normalized = None
 
     api_messages = normalize_messages_for_api(messages)
-
-    # Server-side advisor blocks (``server_tool_use(name=advisor)`` and
-    # ``advisor_tool_result``) require the beta header on every request
-    # that carries them — the API 400s otherwise. Strip from history on
-    # any request that won't send the header.
-    #
-    # In CLIENT_SIDE mode the advisor surfaces as regular
-    # ``tool_use``/``tool_result`` blocks, which pass through normal
-    # message handling untouched. Only the SERVER_SIDE shape is gated
-    # by the header, so stripping is keyed off "current request carries
-    # the beta" — which is exactly SERVER_SIDE-and-only-SERVER_SIDE.
-    if advisor_mode != ADVISOR_MODE_SERVER_SIDE:
-        api_messages = strip_advisor_blocks(api_messages)
 
     # --- Diagnostic tracing ---
     _diag = os.environ.get("CLAWCODEX_DEBUG", "").lower() in ("1", "true", "yes")
@@ -414,91 +333,22 @@ async def _call_model_sync(
     _t0 = time.monotonic()
     tool_schemas = []
     for tool in tools:
-        # Filter out internal/hidden tools (is_enabled=False) so they
-        # don't leak into the API tools[] alongside the advisor schema
-        # we append below. Some callers pass an unfiltered tool list
-        # from ``registry.list_tools()``; this guard keeps the API
-        # from receiving duplicate names. ``getattr`` with default
-        # True keeps test fakes that don't implement is_enabled working.
-        is_enabled_fn = getattr(tool, "is_enabled", None)
-        if callable(is_enabled_fn) and not is_enabled_fn():
-            continue
         tool_schemas.append({
             "name": tool.name,
             "description": tool.prompt(),
             "input_schema": dict(tool.input_schema),
         })
 
-    # Append the advisor schema AFTER the regular tools so the
-    # ``cache_control`` marker (which conventionally lives on the last
-    # cached tool — the final entry in ``tool_schemas`` before this
-    # append) stays in place. If we prepended or interleaved, toggling
-    # /advisor would shift the marker and bust the prompt cache. Mirrors
-    # TS claude.ts:1411-1421 explicitly.
-    #
-    # The schema shape differs by mode: server-side carries the dated
-    # ``advisor_20260301`` discriminator + model field; client-side is
-    # a regular tool_use schema with no params, routed through the
-    # tool registry's AdvisorTool.
-    if advisor_mode == ADVISOR_MODE_SERVER_SIDE:
-        tool_schemas.append(build_advisor_tool_schema(advisor_model_normalized))
-    elif advisor_mode == ADVISOR_MODE_CLIENT_SIDE:
-        tool_schemas.append(build_client_advisor_tool_schema())
-
     call_kwargs: dict[str, Any] = {"tools": tool_schemas}
-
-    if advisor_mode == ADVISOR_MODE_SERVER_SIDE:
-        # Opt into the server-side advisor tool. ``betas`` lives outside
-        # ``extra_headers`` because the SDK auto-converts it into the
-        # ``anthropic-beta`` header AND filters out 3P-incompatible
-        # entries on Bedrock/Vertex transports. Currently we send only
-        # the advisor beta; if other betas are introduced, change this
-        # to ``call_kwargs.setdefault("betas", []).append(...)``.
-        call_kwargs["betas"] = [ADVISOR_BETA_HEADER]
-        # CLIENT_SIDE deliberately does NOT set betas — 3P endpoints
-        # reject the advisor beta, and 1P-with-force-client doesn't
-        # need it because the advisor schema is a regular tool here.
 
     from ..providers.anthropic_provider import AnthropicProvider
     from ..providers.minimax_provider import MinimaxProvider
 
     is_anthropic = isinstance(provider, (AnthropicProvider, MinimaxProvider))
-    advisor_instructions_active = advisor_mode != ADVISOR_MODE_INACTIVE
     if is_anthropic:
         # Forward whatever shape the engine produced — str or list[dict].
         # The SDK's ``system`` param accepts ``Union[str, Iterable[TextBlockParam]]``;
         # cache_control markers on blocks engage server-side prompt caching.
-        #
-        # When the advisor is active (server OR client side), append
-        # ``ADVISOR_TOOL_INSTRUCTIONS`` AFTER the existing system prompt
-        # blocks. Mirrors TS claude.ts:1395 — the advisor instructions
-        # come AFTER the cached system blocks, so they land in the
-        # request-scope partition and toggling /advisor doesn't churn
-        # the cached prefix. The instruction text is provider-agnostic
-        # (tells the model "use the advisor tool"), so it works for
-        # both the server-side ``server_tool_use`` invocation and the
-        # client-side regular ``tool_use`` invocation.
-        if advisor_instructions_active:
-            if isinstance(system_prompt, list):
-                system_prompt = list(system_prompt) + [
-                    {"type": "text", "text": ADVISOR_TOOL_INSTRUCTIONS}
-                ]
-            elif isinstance(system_prompt, str):
-                system_prompt = (
-                    f"{system_prompt}\n\n{ADVISOR_TOOL_INSTRUCTIONS}"
-                    if system_prompt
-                    else ADVISOR_TOOL_INSTRUCTIONS
-                )
-            else:
-                # Defensive: the upstream contract is
-                # ``str | list[dict[str, Any]]``. A future caller that
-                # passes something else (e.g. None, a TextBlock object)
-                # silently loses the instructions if we don't warn.
-                logger.warning(
-                    "Advisor active but system_prompt has unexpected type "
-                    "%s — ADVISOR_TOOL_INSTRUCTIONS NOT injected",
-                    type(system_prompt).__name__,
-                )
         call_kwargs["system"] = system_prompt
     else:
         # Non-Anthropic providers (OpenAI-compat, GLM, etc.) consume the
@@ -522,15 +372,6 @@ async def _call_model_sync(
             )
         else:
             flattened = system_prompt
-        # CLIENT_SIDE on a 3P provider: append the advisor instructions
-        # to the flattened system prompt so the model knows how + when
-        # to invoke the ``advisor`` tool. (Server-side instructions
-        # only land on 1P, handled by the is_anthropic branch above.)
-        if advisor_instructions_active and advisor_mode == ADVISOR_MODE_CLIENT_SIDE:
-            if flattened:
-                flattened = f"{flattened}\n\n{ADVISOR_TOOL_INSTRUCTIONS}"
-            else:
-                flattened = ADVISOR_TOOL_INSTRUCTIONS
         api_messages = [{"role": "system", "content": flattened}, *api_messages]
 
     if max_output_tokens_override is not None:
@@ -550,42 +391,13 @@ async def _call_model_sync(
             # plumb, ESC during a tool-use-only response (no intermediate
             # text chunks for an ``on_text_chunk`` to observe) waits the
             # full model latency before the outer query loop bails.
-            # Forward on_text_chunk so the SDK fires chunks live (and
-            # the chunk callback can raise AbortError to tear down the
-            # stream mid-flight). Falls back to a kwargless call if
-            # the provider's signature doesn't accept on_text_chunk.
-            if on_text_chunk is not None:
-                try:
-                    response = provider.chat_stream_response(
-                        api_messages,
-                        on_text_chunk=on_text_chunk,
-                        abort_signal=abort_signal,
-                        **call_kwargs,
-                    )
-                except TypeError:
-                    response = provider.chat_stream_response(
-                        api_messages, abort_signal=abort_signal, **call_kwargs,
-                    )
-            else:
-                response = provider.chat_stream_response(
-                    api_messages, abort_signal=abort_signal, **call_kwargs,
-                )
+            response = provider.chat_stream_response(
+                api_messages, abort_signal=abort_signal, **call_kwargs,
+            )
         except (NotImplementedError, AttributeError):
             if _diag:
                 logger.warning("[DIAG] _call_model_sync: streaming not supported, falling back to chat()")
             response = provider.chat(api_messages, **call_kwargs)
-            # Emulate streaming chunks from the final text when the
-            # caller asked for live streaming (on_text_chunk set) but
-            # the provider only supports plain chat(). Legacy
-            # ``agent_loop._emit_text_chunks`` did this so the headless
-            # ``--include-partial-messages`` flag and CLI live-text UX
-            # work uniformly across providers — without it, a
-            # ``stream=True`` caller paired with a non-streaming
-            # provider would see the entire response materialize at
-            # once after the model finishes.
-            if on_text_chunk is not None and response.content:
-                from ..tool_system.renderers import _emit_text_chunks
-                _emit_text_chunks(on_text_chunk, response.content)
     except AbortError:
         # User-initiated cancel — propagate so the query loop's
         # ``except AbortError: pass`` boundary unwinds to the
@@ -685,18 +497,6 @@ async def _call_model_sync(
             )
             assistant_blocks.append(block)
             tool_use_blocks.append(block)
-
-    # Preserve advisor server-tool blocks as passthrough dicts so the
-    # next turn can replay them to the API as a matched use/result pair.
-    # ``normalize_messages_for_api`` round-trips dict blocks unchanged
-    # (via ``content_block_to_dict``), and ``ensure_tool_result_pairing``
-    # treats the advisor pair as a self-contained server-side
-    # use/result on the assistant message (already paired in-message).
-    # Stripping happens centrally in this function when ``advisor_active``
-    # is False on a future turn.
-    if response.raw_content_blocks:
-        for raw in response.raw_content_blocks:
-            assistant_blocks.append(dict(raw))
 
     stop_reason = response.finish_reason or "end_turn"
 
@@ -970,32 +770,14 @@ def _dispatch_single_tool(
                     ))
         return result_msg, extras
     except AbortError as abort_err:
-        # Two contracts to satisfy at once:
-        #
-        # 1. **tool_use/tool_result pairing must stay intact** — every
-        #    emitted tool_use needs a paired tool_result or the next
-        #    API call 400s on the orphan. Returning a tool_result
-        #    (not raising) preserves the pair. Pinned by
-        #    ``tests/test_esc_reject_message_dispatch.py``.
-        # 2. **No follow-up API turn after AbortError** — the loop
-        #    must NOT issue another model call. Pinned by
-        #    ``test_agent_loop_does_not_swallow_abort_error_as_tool_error``.
-        #
-        # Reconcile both: when AbortError surfaces from a tool and
-        # the user-cancel signal isn't already tripped, trip it. The
-        # post-tool gate downstream sees the signal aborted, sets
-        # terminal=aborted_tools, and the adapter raises AbortError
-        # to the caller. The conversation ends well-formed (tool_use
-        # has its tool_result) AND the loop exits without another
-        # API turn. Critic-flagged on Stage 4 review.
+        # AbortError today is only raised when the signal is already
+        # tripped (grep/glob via the ripgrep guard, agent_loop on cancel,
+        # the streaming-abort helper). Gate on the same user-cancel
+        # check the other override sites use so a future tool that
+        # repurposes AbortError for its own internal cancellation
+        # doesn't get silently relabelled as a user rejection.
         if _is_user_cancelled_abort(tool_use_context):
             return _build_user_cancelled_result(block.id), []
-        ctrl = getattr(tool_use_context, "abort_controller", None)
-        if ctrl is not None:
-            try:
-                ctrl.abort("tool_raised_abort_error")
-            except Exception:
-                pass
         return UserMessage(
             content=[
                 ToolResultBlock(
@@ -1288,7 +1070,6 @@ async def query(
                 tools=params.tools,
                 max_output_tokens_override=max_output_tokens_override,
                 abort_signal=params.abort_controller.signal,
-                on_text_chunk=params.on_text_chunk,
             )
             assistant_messages = returned_assistants
             tool_use_blocks = returned_tool_blocks
@@ -1536,23 +1317,6 @@ async def query(
                 "[DIAG] query loop: running %d tools in %d batches: %s",
                 len(tool_use_blocks), len(_batches), _batch_desc,
             )
-
-        # Snapshot the current conversation onto the ToolContext so
-        # tools that need history (currently: the client-side advisor)
-        # can read it via ``ctx.messages``. The list is the post-pipeline
-        # message stream up to and including the assistant message that
-        # just emitted the tool_use blocks we're about to dispatch. The
-        # advisor strips its own prior blocks via
-        # ``build_advisor_forwarded_messages`` before forwarding. Other
-        # tools ignore the field (the existing default factory was an
-        # empty list, so behavior is unchanged for them).
-        tool_use_context.messages = list(messages)
-        # Also snapshot the active provider via a dynamic attribute so
-        # the client-side advisor can reuse it (and its config) when
-        # the user is on a proxy that probably proxies the advisor
-        # model too. Set as a plain attribute (not a dataclass field)
-        # to avoid touching ToolContext's public surface.
-        setattr(tool_use_context, "_active_provider", params.provider)
 
         tool_results = await _run_tools_partitioned(
             tool_use_blocks,

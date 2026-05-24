@@ -26,37 +26,4 @@ class BridgeAuthError(Exception):
     """
 
 
-class BridgeFatalError(Exception):
-    """Non-retryable error from the environments API.
-
-    Mirrors TS ``BridgeFatalError`` exported from ``bridgeApi.ts:56-66``.
-    Carries the HTTP status code and an optional server-provided error type
-    (e.g. ``'environment_expired'``, ``'lifetime'``). Callers use
-    ``is_expired_error_type(err.error_type)`` (Phase 3) to decide between
-    teardown-and-recreate (expired) vs. fail-loudly (genuine 401/403).
-
-    Args:
-        message: Human-readable detail (typically ``f'{verb} {status}'``).
-        status: HTTP status code.
-        error_type: Optional server-provided error code from the response
-            body's ``data.error.type`` field.
-    """
-
-    def __init__(
-        self,
-        message: str,
-        status: int,
-        error_type: str | None = None,
-    ) -> None:
-        super().__init__(message)
-        self.status = status
-        self.error_type = error_type
-
-    def __repr__(self) -> str:
-        return (
-            f'BridgeFatalError(status={self.status}, '
-            f'error_type={self.error_type!r}, message={str(self)!r})'
-        )
-
-
-__all__ = ['BridgeAuthError', 'BridgeFatalError', 'EpochSupersededError']
+__all__ = ['BridgeAuthError', 'EpochSupersededError']

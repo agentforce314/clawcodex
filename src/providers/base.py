@@ -32,14 +32,6 @@ class ChatResponse:
     finish_reason: str
     reasoning_content: Optional[str] = None
     tool_uses: Optional[list[dict[str, Any]]] = None
-    # Raw content blocks the provider chose not to project into
-    # ``content``/``tool_uses`` — currently the server-side advisor's
-    # ``server_tool_use`` (name=advisor) and ``advisor_tool_result``
-    # blocks. The query loop appends these to assistant history as
-    # opaque passthrough dicts so the next turn can replay them. None
-    # when the response had no such blocks. See
-    # ``src/utils/advisor.py`` for the policy.
-    raw_content_blocks: Optional[list[dict[str, Any]]] = None
 
 
 MessageInput: TypeAlias = ChatMessage | dict[str, Any]
@@ -163,9 +155,10 @@ class BaseProvider(ABC):
         translating to ``image_url``), so the same client-side guard
         applies. Providers without image support are unaffected: the
         walker only inspects ``type=image`` blocks. Raises
-        ``ImageSizeError``; the caller (``query._call_model_sync``)
-        translates it into a media-size error message rather than
-        letting it surface as an opaque API failure.
+        ``ImageSizeError``; callers (``query._call_model_sync``,
+        ``tool_system.agent_loop._call_provider_for_turn``) translate it
+        into a media-size error message rather than letting it surface as
+        an opaque API failure.
         """
         prepared = [msg if isinstance(msg, dict) else msg.to_dict() for msg in messages]
         # Local import to avoid a top-level dependency from base.py into

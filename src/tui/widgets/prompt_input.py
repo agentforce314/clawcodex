@@ -20,9 +20,8 @@ Phase 2 to swap in a ``TextArea`` without changing the public surface.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Callable
 
-from rich.text import Text
 from textual import events
 from textual.app import ComposeResult
 from textual.containers import Vertical
@@ -30,7 +29,6 @@ from textual.message import Message
 from textual.widgets import Input, OptionList
 from textual.widgets.option_list import Option
 
-from ..commands import CommandSuggestion
 from ..messages import CancelRequested, PromptPasted
 from ..paste import PasteInfo, classify_paste
 from ..vim import VimState
@@ -89,24 +87,12 @@ class _PasteAwareInput(Input):
         super()._on_paste(event)
 
 
-_NAME_COLUMN_WIDTH = 22  # left column reserved for "/name (alias)"
-_MAX_VISIBLE_SUGGESTIONS = 10
-
-
 class _SlashSuggestions(OptionList):
     DEFAULT_CSS = """
     _SlashSuggestions {
         max-height: 10;
-        border: none;
-        padding: 0;
-        background: $background;
-    }
-    _SlashSuggestions > .option-list--option {
-        padding: 0 1;
-    }
-    _SlashSuggestions > .option-list--option-highlighted {
-        background: $boost;
-        text-style: bold;
+        border: round $primary;
+        background: $surface;
     }
     _SlashSuggestions.-hidden {
         display: none;
@@ -136,12 +122,10 @@ class PromptInput(Vertical):
         self,
         *,
         words_provider: Callable[[], list[str]],
-        suggestions_provider: Callable[[], list[CommandSuggestion]] | None = None,
         vim_mode: bool = False,
     ) -> None:
         super().__init__()
         self._words_provider = words_provider
-        self._suggestions_provider = suggestions_provider
         self._history: list[str] = []
         self._history_pos: int | None = None
         self._input = _PasteAwareInput(placeholder="Type a prompt, or / for commands")
@@ -371,34 +355,28 @@ class PromptInput(Vertical):
             self._hide_suggestions()
             return
         partial = token[1:].lower()
-
-        options = self._build_suggestion_options(partial)
-        if not options:
+        words = self._words_provider() or []
+        matches: list[str] = []
+        seen: set[str] = set()
+        for word in words:
+            if not isinstance(word, str) or not word.startswith("/"):
+                continue
+            name = word[1:]
+            key = name.lower()
+            if key in seen:
+                continue
+            if not partial or _fuzzy_match(key, partial):
+                seen.add(key)
+                matches.append(word)
+                if len(matches) >= 12:
+                    break
+        if not matches:
             self._hide_suggestions()
             return
         self._suggestions.clear_options()
-        self._suggestions.add_options(options)
+        self._suggestions.add_options([Option(word, id=word) for word in matches])
         self._suggestions.highlighted = 0
         self._suggestions.remove_class("-hidden")
-
-    def _build_suggestion_options(self, partial: str) -> list[Option]:
-        """Return the rich Option rows to show under the prompt.
-
-        Prefers the rich ``suggestions_provider`` (two-column ``/name +
-        description`` layout to match the TS reference); falls back to
-        the ``words_provider`` string list when no rich source exists
-        (legacy tests, embedded uses).
-        """
-
-        if self._suggestions_provider is not None:
-            try:
-                suggestions = self._suggestions_provider() or []
-            except Exception:
-                suggestions = []
-            return _options_from_suggestions(suggestions, partial)
-
-        words = self._words_provider() or []
-        return _options_from_words(words, partial)
 
     def _hide_suggestions(self) -> None:
         if not self._suggestions.has_class("-hidden"):
@@ -424,135 +402,6 @@ class PromptInput(Vertical):
                 return
         self._input.value = self._history[self._history_pos]
         self._input.cursor_position = len(self._input.value)
-
-
-def _options_from_suggestions(
-    suggestions: list[CommandSuggestion],
-    partial: str,
-) -> list[Option]:
-    """Filter + rank rich command suggestions, then render two-column rows.
-
-    Sort order matches the TS ranking spirit: exact name → exact alias
-    → prefix name → prefix alias → fuzzy subsequence. Duplicates (same
-    name) are collapsed; aliases are surfaced only when the user typed
-    them so an unmatched ``/com<TAB>`` does not get polluted with the
-    full alias list.
-    """
-
-    scored: list[tuple[int, int, CommandSuggestion, str | None]] = []
-    seen: set[str] = set()
-    for idx, sugg in enumerate(suggestions):
-        if not isinstance(sugg, CommandSuggestion):
-            continue
-        name_lc = sugg.name.lower()
-        if name_lc in seen:
-            continue
-        matched_alias: str | None = None
-        rank: int | None = None
-        if not partial:
-            # Preserve the provider's order — built-ins first, then
-            # skills — by collapsing every entry into one rank bucket
-            # and tiebreaking on the insertion index below.
-            rank = 0
-        elif name_lc == partial:
-            rank = 0
-        else:
-            alias_exact = next(
-                (a for a in sugg.aliases if a.lower() == partial), None
-            )
-            if alias_exact:
-                rank = 1
-                matched_alias = alias_exact
-            elif name_lc.startswith(partial):
-                rank = 2
-            else:
-                alias_prefix = next(
-                    (a for a in sugg.aliases if a.lower().startswith(partial)),
-                    None,
-                )
-                if alias_prefix:
-                    rank = 3
-                    matched_alias = alias_prefix
-                elif _fuzzy_match(name_lc, partial):
-                    rank = 5
-                else:
-                    alias_fuzzy = next(
-                        (a for a in sugg.aliases if _fuzzy_match(a.lower(), partial)),
-                        None,
-                    )
-                    if alias_fuzzy:
-                        rank = 6
-                        matched_alias = alias_fuzzy
-        if rank is None:
-            continue
-        seen.add(name_lc)
-        # Tiebreak: for an empty partial preserve insertion order so
-        # built-ins lead skills; otherwise shorter names (closer to
-        # the typed prefix) sort first, then alphabetically.
-        secondary = idx if not partial else len(sugg.name)
-        scored.append((rank, secondary, sugg, matched_alias))
-
-    scored.sort(key=lambda t: (t[0], t[1], t[2].name.lower()))
-    scored = scored[:_MAX_VISIBLE_SUGGESTIONS]
-    return [
-        Option(_render_suggestion_row(sugg, matched_alias), id=sugg.slash)
-        for _, _, sugg, matched_alias in scored
-    ]
-
-
-def _options_from_words(words: list[Any], partial: str) -> list[Option]:
-    """Fallback renderer for the legacy ``words_provider`` path.
-
-    Produces the same plain ``/name`` rows the older popup used, with
-    the same fuzzy filter — so older callers / tests keep working
-    while richer surfaces opt into the two-column layout.
-    """
-
-    matches: list[str] = []
-    seen: set[str] = set()
-    for word in words:
-        if not isinstance(word, str) or not word.startswith("/"):
-            continue
-        key = word[1:].lower()
-        if key in seen:
-            continue
-        if not partial or _fuzzy_match(key, partial):
-            seen.add(key)
-            matches.append(word)
-            if len(matches) >= _MAX_VISIBLE_SUGGESTIONS:
-                break
-    return [Option(word, id=word) for word in matches]
-
-
-def _render_suggestion_row(
-    sugg: CommandSuggestion,
-    matched_alias: str | None,
-) -> Text:
-    """Render one slash-command row as a Rich ``Text`` with two columns.
-
-    Column 1: ``/name`` (plus ``(alias)`` if the user typed an alias),
-    padded to :data:`_NAME_COLUMN_WIDTH`. Column 2: optional
-    ``[tag]`` then the command description. The whole row is dim by
-    default; OptionList's highlighted-row CSS overlays bold + boost
-    background on the selected entry (see ``_SlashSuggestions``).
-    """
-
-    alias_text = f" ({matched_alias})" if matched_alias else ""
-    name_segment = f"{sugg.slash}{alias_text}"
-    if len(name_segment) > _NAME_COLUMN_WIDTH - 1:
-        name_segment = name_segment[: _NAME_COLUMN_WIDTH - 2] + "…"
-    pad = max(1, _NAME_COLUMN_WIDTH - len(name_segment))
-
-    row = Text(no_wrap=True, overflow="ellipsis", style="dim")
-    row.append(name_segment, style="bold")
-    row.append(" " * pad)
-    if sugg.tag:
-        row.append(f"[{sugg.tag}] ", style="italic cyan")
-    if sugg.description:
-        # Collapse internal whitespace so multi-line descriptions render
-        # cleanly on a single row (the OptionList truncates with "…").
-        row.append(" ".join(sugg.description.split()))
-    return row
 
 
 def _fuzzy_match(name: str, partial: str) -> bool:
