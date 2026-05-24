@@ -23,6 +23,7 @@ from src.bridge.bridge_main import (
     run_bridge_loop,
 )
 from src.bridge.exceptions import BridgeFatalError
+from src.bridge.poll_config_defaults import PollIntervalConfig
 from src.bridge.types import BridgeConfig, SessionDoneStatus
 
 
@@ -538,6 +539,314 @@ async def test_bridge_main_happy_path_with_cancel_event_returns_zero() -> None:
     assert api.register_calls[0].max_sessions == 2
     # Deregistration happened.
     assert api.deregister_calls == ['env-srv']
+
+
+@pytest.mark.asyncio
+async def test_session_timeout_kills_session() -> None:
+    """A session that runs past `session_timeout_ms` gets killed."""
+    work = {
+        'id': 'w1', 'type': 'work', 'environment_id': 'env-srv',
+        'state': 'pending',
+        'data': {'type': 'session', 'id': 'cse_w1'},
+        'secret': _encode_work_secret(),
+        'created_at': '2026-05-24',
+    }
+    api = FakeApiClient(poll_results=[work])
+    spawner = FakeSpawner()
+    cancel = asyncio.Event()
+    cfg = _bridge_config()
+    cfg.session_timeout_ms = 200  # 200ms timeout
+
+    task = asyncio.create_task(run_bridge_loop(
+        cfg, 'env-srv', 'sec-srv', api, spawner, cancel,
+    ))
+    # Wait for spawn.
+    for _ in range(30):
+        await asyncio.sleep(0.01)
+        if spawner.handles:
+            break
+    handle = spawner.handles[0]
+    # Don't complete the session — let the timeout fire.
+    for _ in range(40):
+        await asyncio.sleep(0.02)
+        if handle.killed:
+            break
+    assert handle.killed, 'watchdog should have killed the session'
+
+    # Complete + cancel so the task finishes.
+    handle.complete('interrupted')
+    cancel.set()
+    await task
+
+
+@pytest.mark.asyncio
+async def test_session_timeout_disabled_when_unset() -> None:
+    """Without `session_timeout_ms`, no watchdog fires."""
+    work = {
+        'id': 'w1', 'type': 'work', 'environment_id': 'env-srv',
+        'state': 'pending',
+        'data': {'type': 'session', 'id': 'cse_w1'},
+        'secret': _encode_work_secret(),
+        'created_at': '2026-05-24',
+    }
+    api = FakeApiClient(poll_results=[work])
+    spawner = FakeSpawner()
+    cancel = asyncio.Event()
+    cfg = _bridge_config()
+    assert cfg.session_timeout_ms is None
+
+    task = asyncio.create_task(run_bridge_loop(
+        cfg, 'env-srv', 'sec-srv', api, spawner, cancel,
+    ))
+    for _ in range(30):
+        await asyncio.sleep(0.01)
+        if spawner.handles:
+            break
+    handle = spawner.handles[0]
+    # Sleep past where the watchdog would have fired if armed.
+    await asyncio.sleep(0.25)
+    assert not handle.killed
+    handle.complete('completed')
+    cancel.set()
+    await task
+
+
+@pytest.mark.asyncio
+async def test_two_track_backoff_doubles_on_repeated_errors() -> None:
+    """Backoff doubles per failure within a track; success resets it.
+
+    Verifies via the conn-error path that two consecutive errors
+    produce delays roughly initial_ms and 2*initial_ms.
+    """
+    import httpx
+
+    error_count = [0]
+
+    class FlakyApi(FakeApiClient):
+        async def poll_for_work(self, *_a: Any, **_kw: Any) -> Any:
+            error_count[0] += 1
+            if error_count[0] <= 2:
+                raise httpx.ConnectError('refused')
+            return None  # eventually succeed
+
+    api = FlakyApi()
+    spawner = FakeSpawner()
+    cancel = asyncio.Event()
+    # Tight backoff so the test finishes quickly.
+    bc = BackoffConfig(
+        conn_initial_ms=20, conn_cap_ms=10_000, conn_give_up_ms=60_000,
+        general_initial_ms=10, general_cap_ms=10_000, general_give_up_ms=60_000,
+    )
+    task = asyncio.create_task(run_bridge_loop(
+        _bridge_config(), 'env-srv', 'sec-srv', api, spawner, cancel,
+        backoff_config=bc,
+    ))
+    # Wait for both errors + at least one successful poll.
+    for _ in range(50):
+        await asyncio.sleep(0.02)
+        if error_count[0] >= 3:
+            break
+    assert error_count[0] >= 3
+    cancel.set()
+    await task
+
+
+@pytest.mark.asyncio
+async def test_backoff_track_gives_up_after_threshold() -> None:
+    """When backoff exceeds give_up_ms, raise BridgeHeadlessPermanentError."""
+    import httpx
+
+    class AlwaysFails(FakeApiClient):
+        async def poll_for_work(self, *_a: Any, **_kw: Any) -> Any:
+            raise httpx.ConnectError('always refused')
+
+    api = AlwaysFails()
+    spawner = FakeSpawner()
+    cancel = asyncio.Event()
+    # Set give-up to a tiny window so the test triggers it fast.
+    bc = BackoffConfig(
+        conn_initial_ms=20, conn_cap_ms=20, conn_give_up_ms=50,
+        general_initial_ms=10, general_cap_ms=10, general_give_up_ms=50,
+    )
+    with pytest.raises(BridgeHeadlessPermanentError) as exc:
+        await run_bridge_loop(
+            _bridge_config(), 'env-srv', 'sec-srv', api, spawner, cancel,
+            backoff_config=bc,
+        )
+    assert 'connection-error' in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_general_track_used_for_non_connection_errors() -> None:
+    """Non-connection errors use the general track, not the conn track."""
+
+    class ValueErrApi(FakeApiClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.call_count = 0
+
+        async def poll_for_work(self, *_a: Any, **_kw: Any) -> Any:
+            self.call_count += 1
+            raise ValueError('not a connection error')
+
+    api = ValueErrApi()
+    spawner = FakeSpawner()
+    cancel = asyncio.Event()
+    bc = BackoffConfig(
+        conn_initial_ms=10, conn_cap_ms=10, conn_give_up_ms=10_000,
+        # Tiny general give-up so this test triggers it via the general track.
+        general_initial_ms=10, general_cap_ms=10, general_give_up_ms=50,
+    )
+    with pytest.raises(BridgeHeadlessPermanentError) as exc:
+        await run_bridge_loop(
+            _bridge_config(), 'env-srv', 'sec-srv', api, spawner, cancel,
+            backoff_config=bc,
+        )
+    assert 'general-error' in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_successful_poll_resets_backoff_tracks() -> None:
+    """A clean response forgives prior errors on both tracks."""
+    import httpx
+
+    poll_sequence: list[Any] = [
+        httpx.ConnectError('fail-1'),
+        None,  # success → reset both tracks
+        httpx.ConnectError('fail-2'),  # should start over at initial_ms
+    ]
+    call_count = [0]
+
+    class SeqApi(FakeApiClient):
+        async def poll_for_work(self, *_a: Any, **_kw: Any) -> Any:
+            call_count[0] += 1
+            if not poll_sequence:
+                return None
+            item = poll_sequence.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+    api = SeqApi()
+    spawner = FakeSpawner()
+    cancel = asyncio.Event()
+    bc = BackoffConfig(
+        conn_initial_ms=10, conn_cap_ms=10_000, conn_give_up_ms=10_000,
+        general_initial_ms=10, general_cap_ms=10_000, general_give_up_ms=10_000,
+    )
+    # Speed up the seek interval so the test doesn't hang waiting for
+    # the default 2s sleep between successful empty-polls.
+    fast_poll = PollIntervalConfig(
+        poll_interval_ms_not_at_capacity=10,
+        poll_interval_ms_at_capacity=60_000,
+        non_exclusive_heartbeat_interval_ms=0,
+        multisession_poll_interval_ms_not_at_capacity=10,
+        multisession_poll_interval_ms_partial_capacity=10,
+        multisession_poll_interval_ms_at_capacity=60_000,
+        reclaim_older_than_ms=5_000,
+        session_keepalive_interval_v2_ms=120_000,
+    )
+    task = asyncio.create_task(run_bridge_loop(
+        _bridge_config(), 'env-srv', 'sec-srv', api, spawner, cancel,
+        backoff_config=bc, poll_config=fast_poll,
+    ))
+    # Wait until the sequence has been consumed (3 attempts).
+    for _ in range(60):
+        await asyncio.sleep(0.02)
+        if call_count[0] >= 3:
+            break
+    cancel.set()
+    await task
+    assert call_count[0] >= 3
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_mode_fires_when_at_capacity() -> None:
+    """When `non_exclusive_heartbeat_interval_ms > 0`, hearts beat at capacity."""
+    work = {
+        'id': 'w1', 'type': 'work', 'environment_id': 'env-srv',
+        'state': 'pending',
+        'data': {'type': 'session', 'id': 'cse_w1'},
+        'secret': _encode_work_secret(),
+        'created_at': '2026-05-24',
+    }
+    api = FakeApiClient(poll_results=[work])
+    api.heartbeat_call_count = 0  # type: ignore[attr-defined]
+    original_heartbeat = api.heartbeat_work
+
+    async def counted_heartbeat(
+        env_id: str, work_id: str, tok: str,
+    ) -> dict[str, Any]:
+        api.heartbeat_call_count += 1  # type: ignore[attr-defined]
+        return await original_heartbeat(env_id, work_id, tok)
+
+    api.heartbeat_work = counted_heartbeat  # type: ignore[method-assign]
+    spawner = FakeSpawner()
+    cancel = asyncio.Event()
+    # Enable heartbeat at 30ms; max_sessions=1 so we go at-capacity immediately.
+    poll_cfg = PollIntervalConfig(
+        poll_interval_ms_not_at_capacity=10,
+        poll_interval_ms_at_capacity=60_000,
+        non_exclusive_heartbeat_interval_ms=30,
+        multisession_poll_interval_ms_not_at_capacity=10,
+        multisession_poll_interval_ms_partial_capacity=10,
+        multisession_poll_interval_ms_at_capacity=60_000,
+        reclaim_older_than_ms=5_000,
+        session_keepalive_interval_v2_ms=120_000,
+    )
+
+    task = asyncio.create_task(run_bridge_loop(
+        _bridge_config(), 'env-srv', 'sec-srv', api, spawner, cancel,
+        poll_config=poll_cfg,
+    ))
+    # Wait for spawn + a few heartbeat ticks.
+    for _ in range(80):
+        await asyncio.sleep(0.01)
+        if api.heartbeat_call_count >= 2:  # type: ignore[attr-defined]
+            break
+    assert api.heartbeat_call_count >= 2, (  # type: ignore[attr-defined]
+        f'expected ≥2 heartbeats, got {api.heartbeat_call_count}'  # type: ignore[attr-defined]
+    )
+    spawner.handles[0].complete('completed')
+    cancel.set()
+    await task
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_disabled_when_interval_zero() -> None:
+    """`non_exclusive_heartbeat_interval_ms=0` → no heartbeats."""
+    work = {
+        'id': 'w1', 'type': 'work', 'environment_id': 'env-srv',
+        'state': 'pending',
+        'data': {'type': 'session', 'id': 'cse_w1'},
+        'secret': _encode_work_secret(),
+        'created_at': '2026-05-24',
+    }
+    api = FakeApiClient(poll_results=[work])
+    api.heartbeat_call_count = 0  # type: ignore[attr-defined]
+    original_heartbeat = api.heartbeat_work
+
+    async def counted_heartbeat(*a: Any) -> dict[str, Any]:
+        api.heartbeat_call_count += 1  # type: ignore[attr-defined]
+        return await original_heartbeat(*a)
+
+    api.heartbeat_work = counted_heartbeat  # type: ignore[method-assign]
+    spawner = FakeSpawner()
+    cancel = asyncio.Event()
+    # Default poll config has heartbeat disabled.
+    task = asyncio.create_task(run_bridge_loop(
+        _bridge_config(), 'env-srv', 'sec-srv', api, spawner, cancel,
+    ))
+    for _ in range(20):
+        await asyncio.sleep(0.01)
+        if spawner.handles:
+            break
+    # Sleep a bit at capacity; no heartbeats should fire.
+    await asyncio.sleep(0.1)
+    assert api.heartbeat_call_count == 0  # type: ignore[attr-defined]
+    spawner.handles[0].complete('completed')
+    cancel.set()
+    await task
 
 
 @pytest.mark.asyncio
