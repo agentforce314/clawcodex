@@ -49,6 +49,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from src.auth.claude_ai import (
+    check_and_refresh_oauth_token_if_needed,
     has_profile_scope,
     is_claude_ai_subscriber,
 )
@@ -126,6 +127,23 @@ class InitBridgeOptions:
     ) = None
     archive_session: Callable[[str], Awaitable[None]] | None = None
 
+    # Phase 11c hooks:
+
+    # Override the ``worker_type`` metadata sent at env registration.
+    # Mirrors TS KAIROS / assistant-mode detection where the worker
+    # advertises itself as ``claude_code_assistant`` so the claude.ai
+    # session picker can filter it into the assistant tab. Defaults to
+    # ``claude_code``. Callers can pass a callable so detection runs at
+    # init time (e.g. reading bootstrap state).
+    worker_type: str | Callable[[], str] = 'claude_code'
+
+    # Whether to run a proactive OAuth-token refresh during pre-flight.
+    # The check_and_refresh_oauth_token_if_needed call is a no-op stub
+    # today (Phase 2 deferral) but emits a warning if a near-expiry
+    # token is detected; flipping this off skips the warning when
+    # callers know they're using a long-lived token.
+    proactive_oauth_refresh: bool = True
+
 
 async def init_repl_bridge(
     options: InitBridgeOptions | None = None,
@@ -150,7 +168,25 @@ async def init_repl_bridge(
     """
     opts = options or InitBridgeOptions()
 
-    # ── 1. OAuth token pre-check ───────────────────────────────────────
+    # ── 1. Proactive OAuth refresh ─────────────────────────────────────
+    # Phase 11c addition: run the refresh waterfall BEFORE reading the
+    # access token. Real impl (Phase 10 keychain port) refreshes tokens
+    # near expiry; the current stub is a no-op that emits a warning
+    # when expiry is detected — useful signal for diagnosing 401s in
+    # tests / dev.
+    if opts.proactive_oauth_refresh:
+        try:
+            await check_and_refresh_oauth_token_if_needed()
+        except Exception as err:  # noqa: BLE001
+            # Best-effort: never block init on a refresh failure. The
+            # subsequent token read + entitlement check will fail
+            # explicitly if the token actually is stale.
+            logger.debug(
+                '[bridge:repl] proactive OAuth refresh raised '
+                '(continuing): %s', err
+            )
+
+    # ── 2. OAuth token pre-check ───────────────────────────────────────
     access_token = get_bridge_access_token()
     if not access_token:
         log_bridge_skip(
@@ -256,6 +292,12 @@ async def init_repl_bridge(
         )
         return None
 
+    # Phase 11c: resolve worker_type from callable-or-string.
+    worker_type = (
+        opts.worker_type()
+        if callable(opts.worker_type)
+        else opts.worker_type
+    )
     return await init_bridge_core(BridgeCoreParams(
         dir=working_dir,
         machine_name=machine_name,
@@ -264,7 +306,7 @@ async def init_repl_bridge(
         title=title,
         base_url=base_url,
         session_ingress_url=base_url,
-        worker_type='claude_code',
+        worker_type=worker_type,
         get_access_token=get_bridge_access_token,
         create_session=opts.create_session,
         archive_session=opts.archive_session,
