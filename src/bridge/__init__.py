@@ -31,9 +31,26 @@ PORTING_NOTE = f"Python placeholder package for '{ARCHIVE_NAME}' with {MODULE_CO
 # -----------------------------------------------------------------------------
 
 from src.bridge.bounded_uuid_set import BoundedUUIDSet
+from src.bridge.bridge_config import (
+    get_bridge_access_token,
+    get_bridge_base_url,
+    get_bridge_base_url_override,
+    get_bridge_token_override,
+)
 from src.bridge.bridge_permission_callbacks import (
     BridgePermissionResponse,
     is_bridge_permission_response,
+)
+from src.bridge.bridge_status_util import (
+    BridgeStatusInfo,
+    build_active_footer_text,
+    build_bridge_connect_url,
+    build_bridge_session_url,
+    build_idle_footer_text,
+    format_duration,
+    get_bridge_status,
+    truncate_to_width,
+    wrap_with_osc8_link,
 )
 from src.bridge.capacity_wake import CapacityWake, create_capacity_wake
 from src.bridge.close_codes import (
@@ -42,6 +59,11 @@ from src.bridge.close_codes import (
     WS_CLOSE_PERMANENT_UNAUTHORIZED,
     WS_CLOSE_RECONNECT_BUDGET_EXHAUSTED,
     WS_CLOSE_SESSION_NOT_FOUND,
+)
+from src.bridge.env_less_bridge_config import (
+    DEFAULT_ENV_LESS_BRIDGE_CONFIG,
+    EnvLessBridgeConfig,
+    get_env_less_bridge_config,
 )
 from src.bridge.exceptions import (
     BridgeAuthError,
@@ -53,9 +75,15 @@ from src.bridge.inbound_messages import (
     extract_inbound_message_fields,
     normalize_image_blocks,
 )
+from src.bridge.poll_config import get_poll_interval_config
 from src.bridge.poll_config_defaults import (
     DEFAULT_POLL_CONFIG,
     PollIntervalConfig,
+)
+from src.bridge.repl_bridge_handle import (
+    get_repl_bridge_handle,
+    get_self_bridge_compat_id,
+    set_repl_bridge_handle,
 )
 from src.bridge.session_id_compat import (
     set_cse_shim_gate,
@@ -92,9 +120,12 @@ __all__ = [
     'BridgeConfig',
     'BridgeFatalError',
     'BridgePermissionResponse',
+    'BridgeStatusInfo',
     'CapacityWake',
+    'DEFAULT_ENV_LESS_BRIDGE_CONFIG',
     'DEFAULT_POLL_CONFIG',
     'DEFAULT_SESSION_TIMEOUT_MS',
+    'EnvLessBridgeConfig',
     'EpochSupersededError',
     'FlushGate',
     'PollIntervalConfig',
@@ -106,15 +137,32 @@ __all__ = [
     'WS_CLOSE_RECONNECT_BUDGET_EXHAUSTED',
     'WS_CLOSE_SESSION_NOT_FOUND',
     'WorkSecret',
+    'build_active_footer_text',
+    'build_bridge_connect_url',
+    'build_bridge_session_url',
     'build_ccr_v2_sdk_url',
+    'build_idle_footer_text',
     'build_sdk_url',
     'create_capacity_wake',
     'decode_work_secret',
     'extract_inbound_message_fields',
+    'format_duration',
+    'get_bridge_access_token',
+    'get_bridge_base_url',
+    'get_bridge_base_url_override',
+    'get_bridge_status',
+    'get_bridge_token_override',
+    'get_env_less_bridge_config',
+    'get_poll_interval_config',
+    'get_repl_bridge_handle',
+    'get_self_bridge_compat_id',
     'is_bridge_permission_response',
     'normalize_image_blocks',
     'same_session_id',
     'set_cse_shim_gate',
+    'set_repl_bridge_handle',
     'to_compat_session_id',
     'to_infra_session_id',
+    'truncate_to_width',
+    'wrap_with_osc8_link',
 ]
