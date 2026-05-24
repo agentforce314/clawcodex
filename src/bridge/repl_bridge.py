@@ -69,6 +69,7 @@ from src.bridge.bridge_api import (
     create_bridge_api_client,
     is_expired_error_type,
 )
+from src.bridge.jwt_utils import TokenRefreshScheduler
 from src.bridge.poll_config_defaults import (
     DEFAULT_POLL_CONFIG,
     PollIntervalConfig,
@@ -180,6 +181,12 @@ class BridgeCoreParams:
     # flush_gate pattern).
     initial_messages: list[Any] | None = None
     initial_history_cap: int = 200
+
+    # Max attempts to recreate the environment after a poll 404 / expired
+    # error. Mirrors TS bridgeMain's 3-attempt envelope on
+    # ``replBridge.ts:614-852``. Each attempt: re-register the env, then
+    # create a fresh session, then resume polling.
+    max_env_recreation_attempts: int = 3
 
 
 @dataclass
@@ -315,6 +322,7 @@ async def init_bridge_core(
         environment_id=environment_id,
         environment_secret=environment_secret,
         initial_session_id=session_id,
+        bridge_config=bridge_config,
     )
     state.start_poll_loop()
 
@@ -347,12 +355,21 @@ class _BridgeState:
     environment_id: str
     environment_secret: str
     initial_session_id: str
+    bridge_config: BridgeConfig
 
     poll_task: asyncio.Task[None] | None = None
     poll_cancel: asyncio.Event = field(default_factory=asyncio.Event)
     active_session: SessionHandle | None = None
     active_work_id: str | None = None
+    active_session_id: str | None = None
+    active_token_refresh: TokenRefreshScheduler | None = None
     torn_down: bool = False
+
+    # Per-session telemetry-style counters. Dropped batches is a count
+    # of times a write to the child's stdin failed (broken pipe, etc.)
+    # — surfaces silent message loss that would otherwise be invisible.
+    dropped_batch_count: int = 0
+    env_recreation_attempts: int = 0
 
     # ── Poll loop ───────────────────────────────────────────────────────
 
@@ -385,18 +402,50 @@ class _BridgeState:
                 await self._process_work(work)
             except BridgeFatalError as err:
                 if is_expired_error_type(err.error_type) or err.status == 404:
-                    # MVP: log + give up on the poll loop. Phase 8 will
-                    # implement Strategy-1/Strategy-2 env recreation.
-                    logger.error(
-                        '[bridge:repl] Environment expired or not found '
-                        '(MVP gives up — Phase 8 implements recreation): %s',
-                        err,
+                    # Env-recreation flow (Phase 11b, mirrors TS Strategy-2
+                    # on ``replBridge.ts:822``). Re-register the env from
+                    # scratch + create a fresh session, then keep polling.
+                    # Bounded by ``max_env_recreation_attempts`` to avoid
+                    # infinite loops on a permanently-broken backend.
+                    if self.env_recreation_attempts >= (
+                        self.params.max_env_recreation_attempts
+                    ):
+                        logger.error(
+                            '[bridge:repl] Env recreation exhausted '
+                            '(%s attempts); giving up: %s',
+                            self.env_recreation_attempts, err,
+                        )
+                        _fire_state(
+                            self.params.on_state_change, 'failed',
+                            f'Env recreation exhausted ({err.status})',
+                        )
+                        return
+                    self.env_recreation_attempts += 1
+                    logger.warning(
+                        '[bridge:repl] Environment lost (%s); '
+                        'recreating (attempt %s/%s)',
+                        err.status,
+                        self.env_recreation_attempts,
+                        self.params.max_env_recreation_attempts,
                     )
                     _fire_state(
-                        self.params.on_state_change, 'failed',
-                        f'Environment lost ({err.status})',
+                        self.params.on_state_change, 'reconnecting',
+                        f'Env recreation attempt '
+                        f'{self.env_recreation_attempts}',
                     )
-                    return
+                    if await self._recreate_environment():
+                        # Reset the attempt counter on success — a future
+                        # 404 starts fresh rather than counting against
+                        # this one's budget.
+                        self.env_recreation_attempts = 0
+                        _fire_state(
+                            self.params.on_state_change, 'ready',
+                        )
+                        continue
+                    # Recreation itself failed; loop will retry on next
+                    # iteration (the attempt counter persists).
+                    await self._sleep_or_cancel(interval)
+                    continue
                 logger.error('[bridge:repl] Poll fatal error: %s', err)
                 _fire_state(
                     self.params.on_state_change, 'failed', str(err),
@@ -414,6 +463,83 @@ class _BridgeState:
             await asyncio.wait_for(self.poll_cancel.wait(), timeout=seconds)
         except asyncio.TimeoutError:
             pass
+
+    async def _recreate_environment(self) -> bool:
+        """Re-register the environment + create a fresh session.
+
+        Mirrors TS Strategy-2 on ``replBridge.ts:822``. Returns True on
+        success (caller resets the attempt counter), False on failure
+        (caller backs off and retries; the attempt counter persists so
+        we eventually give up).
+
+        Strategy-1 (in-place ``reconnect_session`` to keep the same
+        session ID + SSE seq-num) is deferred — it needs the
+        ``BridgeApiClient.reconnect_session`` happy path which the MVP
+        doesn't exercise, and the session-runner doesn't yet support
+        live resumption with a different ingress URL.
+        """
+        # If there's an active session, archive it before starting fresh.
+        if self.active_session is not None:
+            try:
+                self.active_session.kill()
+            except Exception as err:  # noqa: BLE001
+                logger.debug(
+                    '[bridge:repl] kill during recreation: %s', err
+                )
+            self.active_session = None
+            self.active_work_id = None
+            self.active_session_id = None
+            if self.active_token_refresh is not None:
+                self.active_token_refresh.cancel_all()
+                self.active_token_refresh = None
+        # Best-effort archive of the prior session id.
+        try:
+            await self.params.archive_session(self.initial_session_id)
+        except Exception as err:  # noqa: BLE001
+            logger.debug(
+                '[bridge:repl] archive of prior session failed '
+                'during recreation: %s', err
+            )
+        # Re-register environment (server may hand back a fresh
+        # environment_id; we accept whatever it gives us).
+        try:
+            registration = await self.api.register_bridge_environment(
+                self.bridge_config,
+            )
+        except Exception as err:  # noqa: BLE001
+            logger.warning(
+                '[bridge:repl] Re-register failed: %s', err
+            )
+            return False
+        self.environment_id = registration['environment_id']
+        self.environment_secret = registration['environment_secret']
+        # Create a fresh session on the new environment.
+        try:
+            new_session_id = await self.params.create_session({
+                'environment_id': self.environment_id,
+                'title': self.params.title,
+                'gitRepoUrl': self.params.git_repo_url,
+                'branch': self.params.branch,
+            })
+        except Exception as err:  # noqa: BLE001
+            logger.warning(
+                '[bridge:repl] create_session during recreation '
+                'failed: %s', err,
+            )
+            return False
+        if new_session_id is None:
+            logger.warning(
+                '[bridge:repl] create_session during recreation returned None'
+            )
+            return False
+        # Replace the bookkeeping handle's session id (the external
+        # ReplBridgeHandle is immutable; this is the internal copy).
+        self.initial_session_id = new_session_id
+        logger.info(
+            '[bridge:repl] Environment recreated: env=%s session=%s',
+            self.environment_id, new_session_id,
+        )
+        return True
 
     async def _process_work(self, work: dict[str, Any]) -> None:
         """Handle one work item from the poll."""
@@ -488,6 +614,28 @@ class _BridgeState:
             await self._safe_stop_work(work_id, force=True)
             return
         self.active_work_id = work_id
+        self.active_session_id = session_id
+        # Wire JWT refresh: token expires after a finite window
+        # (typically 1h); without a refresh, long sessions silently
+        # break when the ingress token expires. The scheduler fires
+        # before expiry and pushes a fresh token to the child via
+        # session.update_access_token (which sends an
+        # update_environment_variables NDJSON line on stdin).
+        self.active_token_refresh = self._build_token_refresh_scheduler()
+        # Use the work-secret JWT's expires_in if present; else fall
+        # back to scheduler defaults. The work-secret payload doesn't
+        # currently surface expires_in (TS reads it from WorkSecret too;
+        # MVP doesn't decode that field), so we use the JWT's own
+        # ``exp`` claim via ``schedule`` rather than ``schedule_from_expires_in``.
+        try:
+            self.active_token_refresh.schedule(
+                session_id, secret.session_ingress_token,
+            )
+        except Exception as err:  # noqa: BLE001
+            logger.debug(
+                '[bridge:repl] schedule refresh failed (likely '
+                'undecodable JWT — child uses initial token): %s', err
+            )
         _fire_state(self.params.on_state_change, 'connected')
         logger.debug(
             '[bridge:repl] Spawned session_id=%s work_id=%s',
@@ -498,6 +646,35 @@ class _BridgeState:
         asyncio.create_task(
             self._await_session_done(work_id),
             name=f'bridge-session-await-{session_id}',
+        )
+
+    def _build_token_refresh_scheduler(self) -> TokenRefreshScheduler:
+        """Create a scheduler whose ``on_refresh`` forwards to the child."""
+        def on_refresh(_session_id: str, fresh_token: str) -> None:
+            session = self.active_session
+            if session is None:
+                return
+            try:
+                session.update_access_token(fresh_token)
+            except Exception as err:  # noqa: BLE001
+                logger.warning(
+                    '[bridge:repl] update_access_token via stdin '
+                    'failed: %s', err
+                )
+
+        async def get_access_token() -> str | None:
+            # OAuth token getter for the refresh chain. Bridge sessions
+            # never need to refresh the OAuth token themselves (the
+            # ingress JWT is independently re-issued by the server's
+            # poll flow) — return None so the scheduler treats this as
+            # "no proactive OAuth refresh needed" and just fires the
+            # follow-up timer.
+            return self.params.get_access_token()
+
+        return TokenRefreshScheduler(
+            get_access_token=get_access_token,
+            on_refresh=on_refresh,
+            label='repl-bridge',
         )
 
     async def _await_session_done(self, work_id: str) -> None:
@@ -513,10 +690,16 @@ class _BridgeState:
         logger.debug(
             '[bridge:repl] Session done (status=%s)', status
         )
+        # Cancel the JWT refresh scheduler — the session is done so any
+        # pending refresh would write to a dead stdin.
+        if self.active_token_refresh is not None:
+            self.active_token_refresh.cancel_all()
+            self.active_token_refresh = None
         # Stop the work item to free the server-side lease.
         await self._safe_stop_work(work_id, force=False)
         self.active_session = None
         self.active_work_id = None
+        self.active_session_id = None
 
     async def _safe_ack(self, work_id: str, session_token: str) -> None:
         try:
@@ -552,16 +735,17 @@ class _BridgeState:
 
         Phase 6 full port: route through the bridge events POST so
         messages also reach claude.ai. The MVP just forwards to the
-        child so the local session sees them.
+        child so the local session sees them. Failures bump
+        ``dropped_batch_count`` so silent message loss is observable.
         """
         if self.active_session is None or not messages:
             return
         # MVP: serialize each message as an NDJSON line and write to
         # the child stdin. The real wire format is more elaborate (see
         # message_mappers.to_sdk_messages) and is wired in Phase 6 full.
+        import json
         for msg in messages:
             try:
-                import json
                 line = json.dumps({
                     'type': 'user',
                     'message': {
@@ -572,8 +756,11 @@ class _BridgeState:
                 }) + '\n'
                 self.active_session.write_stdin(line)
             except Exception as err:  # noqa: BLE001
+                self.dropped_batch_count += 1
                 logger.warning(
-                    '[bridge:repl] write_messages failed: %s', err
+                    '[bridge:repl] write_messages failed '
+                    '(dropped_batch_count=%s): %s',
+                    self.dropped_batch_count, err,
                 )
 
     def write_sdk_messages(self, messages: list[dict[str, Any]]) -> None:
@@ -585,8 +772,11 @@ class _BridgeState:
             try:
                 self.active_session.write_stdin(json.dumps(msg) + '\n')
             except Exception as err:  # noqa: BLE001
+                self.dropped_batch_count += 1
                 logger.warning(
-                    '[bridge:repl] write_sdk_messages failed: %s', err
+                    '[bridge:repl] write_sdk_messages failed '
+                    '(dropped_batch_count=%s): %s',
+                    self.dropped_batch_count, err,
                 )
 
     def send_control_request(self, request: dict[str, Any]) -> None:
@@ -635,6 +825,12 @@ class _BridgeState:
                 await self.poll_task
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
+
+        # Cancel the JWT refresh scheduler so any pending refresh
+        # doesn't write to a dead stdin during teardown.
+        if self.active_token_refresh is not None:
+            self.active_token_refresh.cancel_all()
+            self.active_token_refresh = None
 
         # Kill the active session if any.
         if self.active_session is not None:
