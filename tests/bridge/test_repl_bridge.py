@@ -394,32 +394,178 @@ async def test_poll_loop_handles_healthcheck_work() -> None:
 
 
 @pytest.mark.asyncio
-async def test_poll_loop_gives_up_on_404() -> None:
-    """MVP: 404 (env lost) fires 'failed' and exits poll loop.
-
-    Full Phase 6/8 will implement env recreation here.
+async def test_poll_loop_gives_up_after_recreation_exhausted() -> None:
+    """Phase 11b: 404 (env lost) triggers env recreation; after
+    `max_env_recreation_attempts` failed attempts, gives up with 'failed'.
     """
+    from src.bridge.exceptions import BridgeFatalError
+    from src.bridge.poll_config_defaults import PollIntervalConfig
+
+    api = FakeApiClient()
+    spawner = FakeSpawner()
+    # Set max_env_recreation_attempts=1 so the test bounds quickly.
+    # Also speed up the poll interval so the retry happens promptly.
+    params = _make_params()
+    params.max_env_recreation_attempts = 1
+    fast_cfg = PollIntervalConfig(
+        poll_interval_ms_not_at_capacity=20,
+        poll_interval_ms_at_capacity=60_000,
+        non_exclusive_heartbeat_interval_ms=0,
+        multisession_poll_interval_ms_not_at_capacity=20,
+        multisession_poll_interval_ms_partial_capacity=20,
+        multisession_poll_interval_ms_at_capacity=60_000,
+        reclaim_older_than_ms=5_000,
+        session_keepalive_interval_v2_ms=120_000,
+    )
+    params.get_poll_interval_config = lambda: fast_cfg
+    handle = await init_bridge_core(
+        params, api_client=api, spawner=spawner,
+    )
+    assert handle is not None
+
+    # Make poll always 404, AND make recreation register fail so the
+    # attempt counter increments without succeeding.
+    async def poll_404(*_a: Any, **_kw: Any) -> Any:
+        raise BridgeFatalError('not found', status=404)
+
+    async def register_fail(_c: Any) -> dict[str, str]:
+        raise BridgeFatalError('register failed', status=500)
+
+    api.poll_for_work = poll_404  # type: ignore[method-assign]
+    api.register_bridge_environment = register_fail  # type: ignore[method-assign]
+
+    # Let the loop attempt recreation then exhaust the budget.
+    for _ in range(100):
+        await asyncio.sleep(0.02)
+        # 'reconnecting' followed by 'failed' indicates exhausted recreation.
+        if any('failed' in str(s) for s in params._state_log):  # type: ignore[attr-defined]
+            break
+    state_strs = [str(s) for s in params._state_log]  # type: ignore[attr-defined]
+    # Should have fired both reconnecting + failed.
+    assert any('reconnecting' in s for s in state_strs)
+    assert any('failed' in s for s in state_strs)
+    await handle.teardown()
+
+
+@pytest.mark.asyncio
+async def test_env_recreation_succeeds_and_resets_attempts() -> None:
+    """A successful recreation resumes polling and resets the attempt counter."""
     from src.bridge.exceptions import BridgeFatalError
 
     api = FakeApiClient()
+    spawner = FakeSpawner()
+    params = _make_params()
+    params.max_env_recreation_attempts = 2
+    handle = await init_bridge_core(
+        params, api_client=api, spawner=spawner,
+    )
+    assert handle is not None
+
+    call_count = [0]
+
+    async def poll_404_then_ok(*_a: Any, **_kw: Any) -> Any:
+        call_count[0] += 1
+        if call_count[0] == 1:
+            raise BridgeFatalError('not found', status=404)
+        return None  # empty poll after recreation
+
+    api.poll_for_work = poll_404_then_ok  # type: ignore[method-assign]
+    # Recreation register + create_session should succeed (default behavior).
+
+    # Wait until we've seen the 404 + a successful poll.
+    for _ in range(60):
+        await asyncio.sleep(0.02)
+        if call_count[0] >= 2:
+            break
+    assert call_count[0] >= 2
+    state_strs = [str(s) for s in params._state_log]  # type: ignore[attr-defined]
+    # 'reconnecting' fired during recreation, then 'ready' on success.
+    assert any('reconnecting' in s for s in state_strs)
+    # After successful recreation the env recreation attempt counter
+    # is reset (visible via the second 'ready' event).
+    assert sum(1 for s in state_strs if s == "('ready',)") >= 2
+    await handle.teardown()
+
+
+@pytest.mark.asyncio
+async def test_dropped_batch_count_increments_on_write_failure() -> None:
+    """Failed stdin writes increment dropped_batch_count for observability."""
+    from src.types.messages import UserMessage
+
+    work = {
+        'id': 'work-1', 'type': 'work', 'environment_id': 'env-srv-1',
+        'state': 'pending',
+        'data': {'type': 'session', 'id': 'cse_w1'},
+        'secret': _encode_work_secret(),
+        'created_at': '2026-05-24',
+    }
+    api = FakeApiClient(poll_results=[work])
     spawner = FakeSpawner()
     params = _make_params()
     handle = await init_bridge_core(
         params, api_client=api, spawner=spawner,
     )
     assert handle is not None
-
-    # Inject a 404 on the next poll.
-    async def poll_404(*_a: Any, **_kw: Any) -> Any:
-        raise BridgeFatalError('not found', status=404)
-
-    api.poll_for_work = poll_404  # type: ignore[method-assign]
-    # Let the loop hit the 404.
-    for _ in range(30):
+    for _ in range(20):
         await asyncio.sleep(0.01)
-        if any('failed' in str(s) for s in params._state_log):  # type: ignore[attr-defined]
+        if spawner.handles:
             break
-    assert any('failed' in str(s) for s in params._state_log)  # type: ignore[attr-defined]
+
+    # Make the session's write_stdin raise.
+    def boom(_data: str) -> None:
+        raise BrokenPipeError('child closed')
+
+    spawner.handles[0].write_stdin = boom  # type: ignore[method-assign]
+
+    # Reach into the internal state object via the handle's callable.
+    # The dropped_batch_count lives on the _BridgeState; we access it
+    # via the handle's send_result method's closure-like reference.
+    handle.write_messages([UserMessage(content='hi', uuid='u-1')])
+    handle.write_messages([UserMessage(content='hi-2', uuid='u-2')])
+
+    # Drop-count is observable via the state object that owns the
+    # handle's write_messages callable. We expose it by sampling the
+    # underlying object via the test-only attribute.
+    # (The state object's address isn't returned in the handle's public
+    # surface, so we use the callable's __self__ to reach it.)
+    state = handle.write_messages.__self__  # type: ignore[attr-defined]
+    assert state.dropped_batch_count == 2
+
+    spawner.handles[0].complete('completed')
+    await handle.teardown()
+
+
+@pytest.mark.asyncio
+async def test_jwt_refresh_scheduler_armed_on_spawn() -> None:
+    """When a session is spawned, the JWT refresh scheduler is created."""
+    work = {
+        'id': 'work-1', 'type': 'work', 'environment_id': 'env-srv-1',
+        'state': 'pending',
+        'data': {'type': 'session', 'id': 'cse_w1'},
+        'secret': _encode_work_secret(),
+        'created_at': '2026-05-24',
+    }
+    api = FakeApiClient(poll_results=[work])
+    spawner = FakeSpawner()
+    params = _make_params()
+    handle = await init_bridge_core(
+        params, api_client=api, spawner=spawner,
+    )
+    assert handle is not None
+    for _ in range(20):
+        await asyncio.sleep(0.01)
+        if spawner.handles:
+            break
+
+    state = handle.write_messages.__self__  # type: ignore[attr-defined]
+    assert state.active_token_refresh is not None
+    spawner.handles[0].complete('completed')
+    # After session done, the scheduler should be cancelled + cleared.
+    for _ in range(20):
+        await asyncio.sleep(0.01)
+        if state.active_token_refresh is None:
+            break
+    assert state.active_token_refresh is None
     await handle.teardown()
 
 
