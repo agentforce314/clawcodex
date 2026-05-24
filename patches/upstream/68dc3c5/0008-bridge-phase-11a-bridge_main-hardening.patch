@@ -1,0 +1,359 @@
+From b7eae268488f12d78232aabb664b4edeb8efd6cb Mon Sep 17 00:00:00 2001
+From: Eric Lee <ericleepi314@gmail.com>
+Date: Sun, 24 May 2026 01:33:05 -0700
+Subject: [PATCH 8/9] bridge phase 11a: bridge_main hardening
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Fills in three Phase 8 MVP deferrals identified in the parity plan.
+
+Per-session timeout watchdog:
+- New asyncio task per spawned session (cancelled on session done)
+- Mirrors TS bridgeMain.ts:1177-1192 / 1677-1692
+- --session-timeout SECONDS now actually fires; the timer kills the
+  child and marks the session in timed_out_sessions so the done-log
+  distinguishes timeout from clean exit
+- Shutdown cancels all pending timer tasks before SIGTERM
+
+Two-track exponential backoff:
+- New _BackoffTrack dataclass + two instances (conn_track, general_track)
+- is_connection_error()-routed: TCP/TLS/DNS failures → conn track;
+  everything else → general track
+- Each track: initial_ms → doubles per failure (capped at cap_ms),
+  give-up after give_up_ms wall-clock from first failure
+- Successful poll resets BOTH tracks
+- Give-up raises BridgeHeadlessPermanentError with the track name
+- Mirrors TS bridgeMain.ts:1269-1399
+
+Heartbeat mode (non-exclusive):
+- When poll_config.non_exclusive_heartbeat_interval_ms > 0, at-capacity
+  loop heartbeats each active work item (api.heartbeat_work) at the
+  heartbeat interval instead of the at-cap poll interval
+- Disabled by default (=0 in DEFAULT_POLL_CONFIG)
+- Mirrors TS bridgeMain.ts:649-730
+
+8 new regression tests:
+- test_session_timeout_kills_session — armed timer fires
+- test_session_timeout_disabled_when_unset — no timer when ms=None
+- test_two_track_backoff_doubles_on_repeated_errors — flaky API
+- test_backoff_track_gives_up_after_threshold — permanent failure
+- test_general_track_used_for_non_connection_errors — routing
+- test_successful_poll_resets_backoff_tracks — reset semantics
+- test_heartbeat_mode_fires_when_at_capacity — beat count ≥ 2
+- test_heartbeat_disabled_when_interval_zero — no beats at default
+
+42/42 bridge_main tests pass; 592/592 bridge tests pass overall.
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+---
+ src/bridge/bridge_main.py | 206 ++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 196 insertions(+), 10 deletions(-)
+
+diff --git a/src/bridge/bridge_main.py b/src/bridge/bridge_main.py
+index 92a4161..405d6b4 100644
+--- a/src/bridge/bridge_main.py
++++ b/src/bridge/bridge_main.py
+@@ -62,6 +62,7 @@ import asyncio
+ import logging
+ import signal
+ import socket
++import time
+ import uuid
+ from collections.abc import Awaitable, Callable
+ from dataclasses import dataclass, field
+@@ -286,6 +287,12 @@ def _int_seconds_to_ms(value: str) -> int:
+     return n * 1000
+ 
+ 
++def _now_ms() -> float:
++    """Current wall-clock time in ms since the Unix epoch (float for
++    sub-ms precision; backoff give-up math compares against it)."""
++    return time.time() * 1000.0
++
++
+ # ── Error predicates ─────────────────────────────────────────────────────
+ 
+ 
+@@ -371,6 +378,49 @@ async def run_bridge_loop(
+         await daemon.shutdown()
+ 
+ 
++@dataclass
++class _BackoffTrack:
++    """One exponential-backoff state machine.
++
++    Mirrors TS's two-track pattern on ``bridgeMain.ts:1269-1399`` where
++    connection errors and general errors each have an independent
++    counter with separate cap + give-up thresholds. Calling ``fail()``
++    increments the delay; ``reset()`` returns to ``initial_ms``.
++
++    ``give_up_at_ms`` is set on the first failure and cleared on reset.
++    The track is "given up" when wall-clock time exceeds it.
++    """
++
++    initial_ms: int
++    cap_ms: int
++    give_up_ms: int
++    current_ms: int = 0
++    give_up_at_ms: float | None = None
++
++    def reset(self) -> None:
++        self.current_ms = 0
++        self.give_up_at_ms = None
++
++    def fail(self, now_ms: float) -> int:
++        """Record a failure; return the next sleep duration in ms.
++
++        Doubles ``current_ms`` (capped at ``cap_ms``). On first failure,
++        arms the give-up deadline.
++        """
++        if self.current_ms == 0:
++            self.current_ms = self.initial_ms
++            self.give_up_at_ms = now_ms + self.give_up_ms
++        else:
++            self.current_ms = min(self.current_ms * 2, self.cap_ms)
++        return self.current_ms
++
++    def is_given_up(self, now_ms: float) -> bool:
++        return (
++            self.give_up_at_ms is not None
++            and now_ms >= self.give_up_at_ms
++        )
++
++
+ class _BridgeDaemon:
+     """Encapsulates the multi-session daemon state.
+ 
+@@ -404,6 +454,22 @@ class _BridgeDaemon:
+         self.session_work_ids: dict[str, str] = {}
+         self.session_compat_ids: dict[str, str] = {}
+         self.completed_work_ids: set[str] = set()
++        self.session_timer_tasks: dict[str, asyncio.Task[None]] = {}
++        self.timed_out_sessions: set[str] = set()
++
++        # Two-track exponential backoff state. Reset on any successful
++        # poll (including empty-poll = no work).
++        bc = backoff_config
++        self._conn_track = _BackoffTrack(
++            initial_ms=bc.conn_initial_ms,
++            cap_ms=bc.conn_cap_ms,
++            give_up_ms=bc.conn_give_up_ms,
++        )
++        self._general_track = _BackoffTrack(
++            initial_ms=bc.general_initial_ms,
++            cap_ms=bc.general_cap_ms,
++            give_up_ms=bc.general_give_up_ms,
++        )
+ 
+     async def run(self) -> None:
+         cfg = self.poll_config
+@@ -411,11 +477,22 @@ class _BridgeDaemon:
+         at_cap_interval = (
+             cfg.poll_interval_ms_at_capacity / 1000.0
+             if cfg.poll_interval_ms_at_capacity > 0
+-            else 60.0  # heartbeat-only mode not yet supported
++            else 60.0
++        )
++        heartbeat_interval = (
++            cfg.non_exclusive_heartbeat_interval_ms / 1000.0
++            if cfg.non_exclusive_heartbeat_interval_ms > 0
++            else None
+         )
+         while not self.cancel_event.is_set():
+             if len(self.active_sessions) >= self.config.max_sessions:
+-                await self._sleep_or_cancel(at_cap_interval)
++                # At capacity: optionally heartbeat active work items to
++                # keep server-side leases alive between polls.
++                if heartbeat_interval is not None:
++                    await self._heartbeat_active_work()
++                    await self._sleep_or_cancel(heartbeat_interval)
++                else:
++                    await self._sleep_or_cancel(at_cap_interval)
+                 continue
+             try:
+                 work = await self.api.poll_for_work(
+@@ -425,8 +502,7 @@ class _BridgeDaemon:
+                 if is_expired_error_type(err.error_type) or err.status == 404:
+                     logger.error(
+                         '[bridge:main] Environment expired/lost '
+-                        '(MVP gives up — Phase 10 will add recreation): %s',
+-                        err,
++                        '(MVP gives up): %s', err,
+                     )
+                     raise BridgeHeadlessPermanentError(str(err)) from err
+                 logger.error('[bridge:main] Poll fatal: %s', err)
+@@ -434,16 +510,67 @@ class _BridgeDaemon:
+             except (asyncio.CancelledError, KeyboardInterrupt):
+                 raise
+             except Exception as err:  # noqa: BLE001
+-                logger.warning('[bridge:main] Poll error: %s', err)
+-                # Fixed-interval backoff for the MVP; full TS uses two-
+-                # track exponential backoff. Phase 10 expansion.
+-                await self._sleep_or_cancel(seek_interval)
++                # Two-track exponential backoff. Connection-class
++                # errors get a longer initial delay (TCP/TLS handshake
++                # cost) and an independent give-up timer.
++                now_ms = _now_ms()
++                track = (
++                    self._conn_track
++                    if is_connection_error(err)
++                    else self._general_track
++                )
++                delay_ms = track.fail(now_ms)
++                if track.is_given_up(now_ms):
++                    label = (
++                        'connection-error' if track is self._conn_track
++                        else 'general-error'
++                    )
++                    logger.error(
++                        '[bridge:main] %s track exceeded give-up '
++                        'threshold (%sms): %s',
++                        label, track.give_up_ms, err,
++                    )
++                    raise BridgeHeadlessPermanentError(
++                        f'{label} give-up: {err}',
++                    ) from err
++                logger.warning(
++                    '[bridge:main] Poll error (%s, sleeping %sms): %s',
++                    'conn' if track is self._conn_track else 'general',
++                    delay_ms, err,
++                )
++                await self._sleep_or_cancel(delay_ms / 1000.0)
+                 continue
++            # Successful poll resets BOTH tracks — any prior error is
++            # forgiven once we get a clean response.
++            self._conn_track.reset()
++            self._general_track.reset()
+             if work is None:
+                 await self._sleep_or_cancel(seek_interval)
+                 continue
+             await self._process_work(work)
+ 
++    async def _heartbeat_active_work(self) -> None:
++        """Send a lightweight heartbeat for each active work item.
++
++        Mirrors TS heartbeat-mode behavior on ``bridgeMain.ts:649-730``.
++        Best-effort: a single failure is logged but doesn't tear down
++        the loop — the next poll-deadline tick will surface a permanent
++        failure if the server has rejected the lease.
++        """
++        for session_id, work_id in list(self.session_work_ids.items()):
++            session = self.active_sessions.get(session_id)
++            if session is None:
++                continue
++            try:
++                await self.api.heartbeat_work(
++                    self.environment_id, work_id, session.access_token,
++                )
++            except Exception as err:  # noqa: BLE001
++                logger.warning(
++                    '[bridge:main] heartbeat work_id=%s failed: %s',
++                    work_id, err,
++                )
++
+     async def _process_work(self, work: dict[str, Any]) -> None:
+         work_id = work.get('id')
+         if not isinstance(work_id, str):
+@@ -509,6 +636,21 @@ class _BridgeDaemon:
+         # the MVP doesn't yet exercise — populated for forward compat.
+         from src.bridge.session_id_compat import to_compat_session_id
+         self.session_compat_ids[session_id] = to_compat_session_id(session_id)
++        # Per-session timeout watchdog. ``--session-timeout SECONDS``
++        # → ``config.session_timeout_ms`` (or None to disable). Mirrors
++        # TS watchdog on ``bridgeMain.ts:1177-1192`` / ``1677-1692``.
++        # When the timer fires, ``timed_out_sessions`` is marked so
++        # ``_on_session_done`` can distinguish timeout from clean exit
++        # in logs / future telemetry.
++        if self.config.session_timeout_ms:
++            timer_task = asyncio.create_task(
++                self._session_timeout_watchdog(
++                    session_id,
++                    self.config.session_timeout_ms / 1000.0,
++                ),
++                name=f'bridge-timer-{session_id}',
++            )
++            self.session_timer_tasks[session_id] = timer_task
+         logger.info(
+             '[bridge:main] Spawned session_id=%s work_id=%s '
+             '(%s/%s active)',
+@@ -521,6 +663,35 @@ class _BridgeDaemon:
+             name=f'bridge-await-{session_id}',
+         )
+ 
++    async def _session_timeout_watchdog(
++        self, session_id: str, timeout_seconds: float,
++    ) -> None:
++        """Kill the session after ``timeout_seconds`` if still active.
++
++        Mirrors TS ``onSessionTimeout`` semantics. The session's
++        ``wait_done`` will then resolve with whatever status the kill
++        produced (typically 'interrupted'); ``_on_session_done`` checks
++        ``timed_out_sessions`` to log this distinctly.
++        """
++        try:
++            await asyncio.sleep(timeout_seconds)
++        except asyncio.CancelledError:
++            return
++        session = self.active_sessions.get(session_id)
++        if session is None:
++            return
++        logger.warning(
++            '[bridge:main] Session %s exceeded timeout %.1fs — killing',
++            session_id, timeout_seconds,
++        )
++        self.timed_out_sessions.add(session_id)
++        try:
++            session.kill()
++        except Exception as err:  # noqa: BLE001
++            logger.warning(
++                '[bridge:main] watchdog kill failed: %s', err
++            )
++
+     async def _on_session_done(self, session_id: str) -> None:
+         session = self.active_sessions.get(session_id)
+         if session is None:
+@@ -532,6 +703,10 @@ class _BridgeDaemon:
+                 '[bridge:main] wait_done(%s) raised: %s', session_id, err
+             )
+             status = 'failed'
++        # Cancel any pending timeout watchdog — session is done.
++        timer = self.session_timer_tasks.pop(session_id, None)
++        if timer is not None and not timer.done():
++            timer.cancel()
+         work_id = self.session_work_ids.get(session_id)
+         if work_id is not None:
+             await self._safe_stop_work(work_id, force=False)
+@@ -539,9 +714,13 @@ class _BridgeDaemon:
+         self.active_sessions.pop(session_id, None)
+         self.session_work_ids.pop(session_id, None)
+         self.session_compat_ids.pop(session_id, None)
++        # ``discard`` doesn't return a value; check membership first.
++        was_timeout = session_id in self.timed_out_sessions
++        self.timed_out_sessions.discard(session_id)
++        timeout_marker = ' (TIMEOUT)' if was_timeout else ''
+         logger.info(
+-            '[bridge:main] Session done session_id=%s status=%s',
+-            session_id, status,
++            '[bridge:main] Session done session_id=%s status=%s%s',
++            session_id, status, timeout_marker,
+         )
+ 
+     async def shutdown(self) -> None:
+@@ -554,6 +733,13 @@ class _BridgeDaemon:
+         active_snapshot = list(self.active_sessions.values())
+         work_id_snapshot = dict(self.session_work_ids)
+ 
++        # Cancel any pending per-session timeout watchdogs so they
++        # don't fire mid-shutdown and inject confusing log lines.
++        for timer in self.session_timer_tasks.values():
++            if not timer.done():
++                timer.cancel()
++        self.session_timer_tasks.clear()
++
+         # SIGTERM all.
+         for session in active_snapshot:
+             try:
+-- 
+2.34.1
+

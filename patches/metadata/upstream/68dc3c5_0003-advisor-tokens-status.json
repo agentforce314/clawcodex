@@ -1,0 +1,13 @@
+{
+  "id": "0003-advisor-tokens-status",
+  "description": "Advisor token 计数显示、client-side advisor mode、cost tracker 增强",
+  "affected_modules": [
+    "src/agent/conversation.py",
+    "src/providers/anthropic_provider.py",
+    "src/providers/base.py"
+  ],
+  "applied_at": "2026-05-25",
+  "upstream_version_introduced": "68dc3c5",
+  "status": "pending",
+  "notes": "max_history 从 100 提升到 2000，provider 增加 token 追踪"
+}

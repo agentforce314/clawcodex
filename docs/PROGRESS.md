@@ -2,8 +2,9 @@
 
 > 文档路径: `docs/PROGRESS.md`
 > 基于: `docs/open-source-replacement-progress.md`, `docs/FEATURE_PLAN.md`
-> 版本: v1.4
-> 更新日期: 2026-05-23
+> 版本: v1.5
+> 更新日期: 2026-05-25
+> 上游同步: 68dc3c5 (Phase 11 bridge complete)
 
 ---
 
@@ -51,15 +52,165 @@
 | F-18 | CreateAgentTool 动态工具创建 | P2 | 🔄 规划中 | Agent 可根据 CLI/API 规范动态创建工具，Meta Tool 能力，bash/http/python 三种 call_impl 安全限制 |
 | F-19 | POS to Agent 转化模式 | P2 | ✅ 完成 | 三层映射（POS→Agent、workflow→Skill、SDK→工具），SDK 解析 + Skill 分组 + Agent 构建 + 持久化 |
 | F-20 | Agent 阶段性进度汇报 | P2 | ✅ 完成 | 三组合方案：检查点触发 + ProgressReportTool + ToolContext.tasks 持久化；PhaseComplete 时双重调用 ProgressReportTool + TaskUpdateTool 更新 metadata |
-| F-21 | 后台运行 + 恢复同步 | P1 | 🔄 补丁已创建 | Ctrl+B 后台化 + TailFollower 实时同步 + SessionWatcher 多终端感知，补丁 0067-0074 |
-| F-22 | Cron 系统执行引擎 | P0 | 🔄 规划中 | 完整迁移 claude-code-best 生产级 cron 引擎 |
+| F-21 | 后台运行 + 恢复同步 | P1 | ✅ 完成 | Ctrl+B 后台化 + TailFollower 实时同步 + SessionWatcher 多终端感知，补丁 0067-0074 |
+| F-22 | Cron 系统执行引擎 | P0 | ✅ 完成 | 完整迁移 claude-code-best 生产级 cron 引擎，含过期机制和错失任务通知 |
+| F-23 | Bridge Phase 8-11 多 Session Daemon | P1 | ✅ 完成 | 多会话桥接器完整实现，bridge_main/repl_bridge/remote_bridge_core/session_runner，Phase 1-11 全部完成 |
+| F-24 | Agent Loop Consolidation (Stage 4) | P1 | ✅ 完成 | 删除 agent_loop.py (537 行)，新增 renderers.py (+257) 和 advisor.py (+125)，重构到 src/query/ |
+| F-25 | Advisor Token 计数与状态显示 | P2 | ✅ 完成 | max_history 100→2000，Provider token 追踪增强，client-side advisor mode |
+| F-26 | Away-Summary（离开摘要） | P2 | 📋 规划中 | ※ 标记 + 浅灰色，终端失焦 5 分钟自动触发，支持 /recap 手动命令 |
 
 ---
 
-## F-22: Cron 系统执行引擎
+## F-26: Away-Summary（离开摘要）功能
 
-**状态**: 🔄 规划中
+**状态**: 📋 规划中
+**优先级**: P2
+**上游版本**: claude-code-best `src/services/awaySummary.ts`, `src/hooks/useAwaySummary.ts`
+**参考实现**: claude-code-best `src/commands/recap/`
+
+### 目标
+
+实现离开摘要功能：在一次交互对话完成后，自动总结对话内容并给出总结与下一步的意见，以 ※ 开头显示在终端，字体颜色为浅灰色（dimColor）。
+
+### 上游实现对照
+
+| 上游文件 | 功能 | ClawCodex 映射 |
+|----------|------|----------------|
+| `src/constants/figures.ts:29` | 定义 `REFERENCE_MARK = '\u203b'` | `src/constants/figures.py` |
+| `src/services/awaySummary.ts` | 生成离开摘要 | `src/services/away_summary.py` |
+| `src/commands/recap/generateRecap.ts` | 手动 recap 命令 | `src/commands/recap.py` |
+| `src/hooks/useAwaySummary.ts` | 终端焦点监控 | `src/hooks/use_away_summary.py` |
+| `src/components/messages/SystemTextMessage.tsx:55-64` | 渲染 away_summary | `src/components/messages/system_text.py` |
+| `src/types/message.ts` | `SystemAwaySummaryMessage` 类型 | `src/types/message.py` |
+
+### 实现文件清单
+
+| 文件路径 | 优先级 | 状态 | 依赖 |
+|---------|--------|------|------|
+| `src/constants/figures.py` | P0 | 📋 规划 | 添加 `REFERENCE_MARK = '\u203b'` |
+| `src/types/message.py` | P0 | 📋 规划 | 添加 `SystemAwaySummaryMessage` |
+| `src/services/away_summary.py` | P0 | 📋 规划 | 小模型调用、摘要生成 |
+| `src/hooks/use_away_summary.py` | P0 | 📋 规划 | 终端焦点监控、5 分钟定时器 |
+| `src/commands/recap.py` | P1 | 📋 规划 | `/recap`, `/away`, `/catchup` 命令 |
+| `src/components/messages/system_text.py` | P1 | 📋 规划 | 渲染 away_summary subtype |
+
+### 核心组件详细说明
+
+#### 1. services/away_summary.py - 摘要生成服务
+
+```python
+BLUR_DELAY_MS = 5 * 60_000  # 5 分钟失焦触发
+
+RECAP_PROMPT_ZH = """用户离开后回来了。用中文写 1-3 句话。
+先说明用户在做什么（高层目标，不是实现细节），
+然后说明下一步具体操作。不要写状态报告或提交总结。"""
+
+async def generate_away_summary(messages: list[Message], signal: AbortSignal) -> str | None:
+    """生成离开摘要，返回 None 表示取消或失败"""
+    # 1. 取最近 30 条消息
+    recent = messages[-30:]
+    
+    # 2. 调用小模型生成摘要
+    model = get_small_fast_model()
+    response = await query_model_without_streaming(
+        messages=recent + [create_user_message(RECAP_PROMPT_ZH)],
+        model=model,
+        ...
+    )
+    
+    # 3. 返回摘要文本
+    return get_assistant_message_text(response)
+```
+
+#### 2. hooks/use_away_summary.py - 焦点监控
+
+```python
+def use_away_summary(messages, set_messages, is_loading):
+    """监控终端焦点状态，失焦 5 分钟后生成摘要"""
+    timer_ref = None
+    abort_ref = None
+    
+    def on_blur_timer_fire():
+        """定时器触发：检查条件后生成摘要"""
+        if is_loading:
+            pending = True  # turn 结束再生成
+            return
+        if has_summary_since_last_user_turn(messages):
+            return  # 已有摘要，不重复生成
+        abort_in_flight()
+        controller = AbortController()
+        abort_ref = controller
+        text = await generate_away_summary(messages, controller.signal)
+        if text:
+            set_messages(prev => [...prev, create_away_summary_message(text)])
+    
+    def on_focus_change(state):
+        """焦点变化处理"""
+        if state in ('blurred', 'unknown'):
+            timer_ref = set_timeout(on_blur_timer_fire, BLUR_DELAY_MS)
+        else:
+            clear_timer(timer_ref)
+            abort_in_flight()
+            pending = False
+    
+    # 订阅终端焦点变化
+    subscribe_terminal_focus(on_focus_change)
+```
+
+#### 3. commands/recap.py - 手动 recap 命令
+
+```python
+RECAP_COMMAND = {
+    "name": "recap",
+    "description": "Generate a one-line session recap now",
+    "aliases": ["away", "catchup"],
+    "execute": async (session) -> CommandResult:
+        """手动触发摘要生成"""
+        result = await generate_recap(signal)
+        return format_recap_result(result)
+}
+```
+
+### 渲染样式
+
+```python
+# components/messages/system_text.py
+if message.subtype == "away_summary":
+    return Box(
+        flex_direction="row",
+        children=[
+            Box(min_width=2, children=[Text(dim_color=True, children=["※"])]),
+            Text(dim_color=True, children=[message.content]),
+        ]
+    )
+```
+
+### 触发条件
+
+| 触发方式 | 条件 | 说明 |
+|----------|------|------|
+| 自动触发 | 终端失焦 5 分钟 + 无进行中 turn | 主要场景 |
+| 手动触发 | `/recap` 或 `/away` 或 `/catchup` | 即时摘要 |
+
+### 里程碑
+
+| 阶段 | 任务 | 状态 |
+|------|------|------|
+| 1 | `src/constants/figures.py` - 添加 REFERENCE_MARK | 📋 规划 |
+| 2 | `src/types/message.py` - 添加 SystemAwaySummaryMessage | 📋 规划 |
+| 3 | `src/services/away_summary.py` - 摘要生成服务 | 📋 规划 |
+| 4 | `src/hooks/use_away_summary.py` - 焦点监控 | 📋 规划 |
+| 5 | `src/components/messages/system_text.py` - 渲染组件 | 📋 规划 |
+| 6 | `src/commands/recap.py` - 手动 recap 命令 | 📋 规划 |
+| 7 | 测试覆盖 | 📋 规划 |
+
+---
+
+## F-23: Bridge Phase 8-11 多 Session Daemon 桥接器
+
+**状态**: ✅ 完成
 **优先级**: P0
+**完成日期**: 2026-05-25
 **参考实现**: claude-code-best `src/utils/cron*.ts`
 
 ### 目标
@@ -78,17 +229,17 @@
 
 | 文件路径 | 优先级 | 状态 | 依赖 |
 |---------|--------|------|------|
-| `src/cron_system/cron_parser.py` | P0 | ⏳ 待开始 | - |
-| `src/cron_system/cron_scheduler.py` | P0 | ⏳ 待开始 | watchdog, psutil |
-| `src/cron_system/cron_tasks.py` | P0 | ⏳ 待开始 | - |
-| `src/cron_system/cron_tasks_lock.py` | P0 | ⏳ 待开始 | psutil |
-| `src/cron_system/cron_jitter_config.py` | P1 | ⏳ 待开始 | growthbook (可选) |
-| `src/cron_system/skills.py` | P1 | ⏳ 待开始 | bundled_skills |
-| `src/cron_system/loop_skill.py` | P1 | ⏳ 待开始 | bundled_skills |
-| `src/cron_system/autonomy_runs.py` | P1 | ⏳ 待开始 | - |
-| `tests/cron/test_parser.py` | P0 | ⏳ 待开始 | pytest |
-| `tests/cron/test_scheduler.py` | P0 | ⏳ 待开始 | pytest-asyncio |
-| `tests/cron/test_tasks.py` | P0 | ⏳ 待开始 | pytest-asyncio |
+| `src/cron_system/cron_parser.py` | P0 | ✅ 完成 | - |
+| `src/cron_system/cron_scheduler.py` | P0 | ✅ 完成 | watchdog, psutil |
+| `src/cron_system/cron_tasks.py` | P0 | ✅ 完成 | - |
+| `src/cron_system/cron_tasks_lock.py` | P0 | ✅ 完成 | psutil |
+| `src/cron_system/cron_jitter_config.py` | P1 | ✅ 完成 | growthbook (可选) |
+| `src/cron_system/skills.py` | P1 | ✅ 完成 | bundled_skills |
+| `src/cron_system/loop_skill.py` | P1 | ✅ 完成 | bundled_skills |
+| `src/cron_system/autonomy_runs.py` | P1 | ✅ 完成 | - |
+| `tests/cron/test_parser.py` | P0 | ✅ 完成 | pytest |
+| `tests/cron/test_scheduler.py` | P0 | ✅ 完成 | pytest-asyncio |
+| `tests/cron/test_tasks.py` | P0 | ✅ 完成 | pytest-asyncio |
 
 ### 外部依赖
 
@@ -153,15 +304,186 @@ psutil = ">=5.9"     # 进程存活检测
 
 | 阶段 | 任务 | 状态 |
 |------|------|------|
-| 1 | cron_parser.py - 表达式解析与时间计算 | ⏳ 待开始 |
-| 2 | cron_tasks.py - 任务存储 CRUD | ⏳ 待开始 |
-| 3 | cron_tasks_lock.py - 分布式锁 | ⏳ 待开始 |
-| 4 | cron_scheduler.py - 执行引擎核心 | ⏳ 待开始 |
-| 5 | cron_jitter_config.py - 动态配置 | ⏳ 待开始 |
-| 6 | skills.py - CLI 命令 (/cron-list, /cron-delete) | ⏳ 待开始 |
-| 7 | loop_skill.py - /loop 命令 | ⏳ 待开始 |
-| 8 | autonomy_runs.py - 任务队列集成 | ⏳ 待开始 |
-| 9 | 测试覆盖 | ⏳ 待开始 |
+| 1 | cron_parser.py - 表达式解析与时间计算 | ✅ 完成 |
+| 2 | cron_tasks.py - 任务存储 CRUD | ✅ 完成 |
+| 3 | cron_tasks_lock.py - 分布式锁 | ✅ 完成 |
+| 4 | cron_scheduler.py - 执行引擎核心 | ✅ 完成 |
+| 5 | cron_jitter_config.py - 动态配置 | ✅ 完成 |
+| 6 | skills.py - CLI 命令 (/cron-list, /cron-delete) | ✅ 完成 |
+| 7 | loop_skill.py - /loop 命令 | ✅ 完成 |
+| 8 | autonomy_runs.py - 任务队列集成 | ✅ 完成 |
+| 9 | 测试覆盖 | ✅ 完成 |
+
+---
+
+## F-23: Bridge Phase 8-11 多 Session Daemon 桥接器
+
+**状态**: ✅ 完成
+**优先级**: P1
+**完成日期**: 2026-05-25
+**上游版本**: 68dc3c5 (Phase 11 bridge complete)
+
+### 目标
+
+实现多 Session Daemon 架构，支持远程桥接、REPL 桥接和多会话协调。
+
+### 实现文件清单
+
+| 文件路径 | Phase | 状态 |
+|---------|-------|------|
+| `src/bridge/__init__.py` | - | ✅ 完成 |
+| `src/bridge/bridge_api.py` | Phase 3 | ✅ 完成 |
+| `src/bridge/bridge_main.py` | Phase 8 | ✅ 完成 |
+| `src/bridge/remote_bridge_core.py` | Phase 5 | ✅ 完成 |
+| `src/bridge/session_runner.py` | Phase 4 | ✅ 完成 |
+| `src/bridge/repl_bridge.py` | Phase 11 | ✅ 完成 |
+| `src/bridge/init_repl_bridge.py` | Phase 11 | ✅ 完成 |
+| `src/bridge/messaging.py` | - | ✅ 完成 |
+| `src/bridge/types.py` | - | ✅ 完成 |
+| `src/bridge/headless_bridge.py` | - | ✅ 完成 |
+
+### 外部依赖
+
+```toml
+# pyproject.toml 新增 (如需要)
+watchdog = ">=3.0"  # 文件监控
+psutil = ">=5.9"     # 进程存活检测
+```
+
+### 核心组件详细说明
+
+#### 1. bridge_main.py - 多 Session Daemon 入口 (Phase 8)
+
+多会话轮询守护进程，负责：
+- CLI 参数解析 (`--verbose`, `--sandbox`, `--spawn`, `--capacity`, `--permission-mode`, `--name`)
+- 多会话容量控制 (capacity gating)
+- 会话状态管理 (active_sessions, session_work_ids, completed_work_ids)
+- 工作轮询循环 (work poll loop)
+- 优雅关闭 (SIGTERM → wait grace → SIGKILL stragglers → deregister)
+- SIGINT/SIGTERM 处理器安装
+
+#### 2. remote_bridge_core.py - 远程桥接核心 (Phase 5)
+
+远程桥接实现，支持：
+- v2 环境变量驱动配置
+- 远程会话生命周期管理
+- 跨进程通信
+
+#### 3. session_runner.py - 子 CLI 会话生成 (Phase 4)
+
+子进程管理，实现：
+- Child CLI 生成和监控
+- 工作目录管理
+- 会话超时控制
+
+#### 4. repl_bridge.py - REPL 桥接 (Phase 11)
+
+REPL 集成桥接器，实现：
+- REPL 与 Bridge 的消息路由
+- 会话状态同步
+- TUI 交互支持
+
+---
+
+## F-24: Agent Loop Consolidation (Stage 4)
+
+**状态**: ✅ 完成
+**优先级**: P1
+**完成日期**: 2026-05-25
+**上游版本**: 68dc3c5
+
+### 目标
+
+删除 `agent_loop.py`，重构到 `src/query/` 模块，实现工具执行与 Agent 循环的解耦。
+
+### 核心变更
+
+| 变更 | 说明 | 行数 |
+|------|------|------|
+| 删除 `agent_loop.py` | 上游原 Agent 循环逻辑移除 | -537 行 |
+| 新增 `renderers.py` | 系统 prompt 渲染器 | +257 行 |
+| 新增 `advisor.py` | Advisor 工具 | +125 行 |
+| 重构到 `src/query/` | 查询引擎解耦 | - |
+
+### 实现文件清单
+
+| 文件路径 | 状态 |
+|---------|------|
+| `src/tool_system/agent_loop.py` | ✅ 已删除 |
+| `src/tool_system/renderers.py` | ✅ 完成 |
+| `src/tool_system/tools/advisor.py` | ✅ 完成 |
+| `src/query/` | ✅ 重构 |
+
+### renderers.py - 系统 Prompt 渲染器
+
+渲染器负责将系统 prompt 组件组合并格式化：
+
+```python
+class SystemPromptRenderer:
+    """系统 Prompt 渲染器"""
+    def render(self, context: PromptContext) -> str: ...
+    def render_capabilities(self, capabilities: list[str]) -> str: ...
+    def render_rules(self, rules: list[str]) -> str: ...
+```
+
+### advisor.py - Advisor 工具
+
+Advisor 工具提供 Token 计数和状态显示：
+
+```python
+class AdvisorTool:
+    """Advisor 工具 - 提供 token 计数和状态信息"""
+    def get_token_usage(self) -> TokenUsage: ...
+    def get_cost_estimate(self) -> CostEstimate: ...
+```
+
+---
+
+## F-25: Advisor Token 计数与状态显示
+
+**状态**: ✅ 完成
+**优先级**: P2
+**完成日期**: 2026-05-25
+**上游版本**: 68dc3c5
+
+### 目标
+
+增强 Advisor 的 token 计数显示、client-side advisor mode 和 cost tracker。
+
+### 核心改进
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| Token 计数显示 | `src/agent/conversation.py` | max_history: 100 → 2000 |
+| Provider Token 追踪 | `src/providers/anthropic_provider.py` | 增加 token 使用追踪 |
+| Base Provider 增强 | `src/providers/base.py` | 统一 token 计数接口 |
+
+### max_history 扩展
+
+`src/agent/conversation.py` 中 `max_history` 从 100 提升到 2000，允许更长的对话历史：
+
+```python
+@dataclass
+class ConversationConfig:
+    max_history: int = 2000  # 从 100 提升到 2000
+```
+
+### Provider Token 追踪
+
+```python
+@dataclass
+class TokenUsage:
+    """Token 使用统计"""
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    
+    def add(self, other: TokenUsage) -> None:
+        """累加 token 使用"""
+        self.prompt_tokens += other.prompt_tokens
+        self.completion_tokens += other.completion_tokens
+        self.total_tokens += other.total_tokens
+```
 
 ---
 

@@ -2,8 +2,9 @@
 
 > 文档路径: `docs/FEATURE_PLAN.md`
 > 基于: `clawcodex-opensource-replacement-analysis-v2.md`, `clawcodex_vs_ccb_analysis-v3.md`, `INTEGRATION.md`, `TEAM_MEMBERSHIP.md`
-> 版本: v1.4
-> 更新日期: 2026-05-23
+> 版本: v1.5
+> 更新日期: 2026-05-25
+> 上游同步: 68dc3c5 (Phase 11 bridge complete)
 
 ---
 
@@ -126,7 +127,7 @@ src/
 
 ### 2.6 后台运行 + 恢复同步（Background Running & Resume）
 
-**状态**: 🔄 补丁已创建（0067-0074）
+**状态**: ✅ 完成
 **目标**: 支持 Ctrl+B 后台化 CLI/TUI 任务，执行 `clawcodex --resume` 时对话流实时同步更新（非静态快照）
 
 #### 核心设计
@@ -169,6 +170,208 @@ src/
 - **O_APPEND 原子写入** — 后台任务写入时不会丢失或交错
 - **尾部追踪而非快照** — 恢复时读取增量，而非全量重放
 - **跨平台** — SessionWatcher 自动选择 inotify (Linux) / FSEvents (macOS) / polling fallback
+
+### 2.7 Bridge Phase 8-11 多 Session Daemon 桥接器
+
+**状态**: ✅ 完成
+**上游版本**: 68dc3c5 (Phase 11 bridge complete)
+**目标**: 实现多 Session Daemon 架构，支持远程桥接、REPL 桥接和多会话协调
+
+#### 架构设计
+
+```
+src/bridge/                    # 桥接层（与上游解耦新增）
+├── __init__.py                # 模块入口
+├── bridge_api.py               # Phase 3: HTTP 客户端 + API 定义
+├── bridge_main.py              # Phase 8: 多 Session Daemon 入口
+├── remote_bridge_core.py       # Phase 5: 远程桥接核心
+├── session_runner.py           # Phase 4: 子 CLI 会话生成
+├── repl_bridge.py              # Phase 11: REPL 桥接
+├── init_repl_bridge.py         # 初始化 REPL 桥接
+├── messaging.py                # 消息传递机制
+├── types.py                   # 桥接类型定义
+└── headless_bridge.py          # Headless 桥接
+```
+
+#### Phase 里程碑
+
+| Phase | 补丁文件 | 核心组件 | 状态 |
+|-------|---------|---------|------|
+| Phase 1 | 0002-bridge-complete-Phase-1-* | Config/URL 处理/polling URL | ✅ 完成 |
+| Phase 3 | 0003-bridge-phase-3-port-bridgeApi.ts-* | bridge_api.py HTTP 客户端 | ✅ 完成 |
+| Phase 4 | 0005-bridge-phase-4-port-sessionRunner.ts-* | session_runner.py 子 CLI 生成 | ✅ 完成 |
+| Phase 5 | 0004-bridge-phase-5-MVP-port-remoteBridgeCore.ts-* | remote_bridge_core.py 远程桥接 | ✅ 完成 |
+| Phase 6 | 0006-bridge-phase-6-*-orchestrator-skel-* | 基于 env 的编排器骨架 | ✅ 完成 |
+| Phase 8 | 0007-bridge-phase-8-*-multi-session-daemon-* | bridge_main.py 多会话轮询 | ✅ 完成 |
+| Phase 11a | 0008-bridge-phase-11a-bridge_main-hardening-* | bridge_main.py 硬化 | ✅ 完成 |
+| Phase 11b | 0009-bridge-phase-11b-repl_bridge-hardening-* | repl_bridge.py 硬化 | ✅ 完成 |
+
+#### 核心组件详细说明
+
+**1. bridge_main.py - 多 Session Daemon 入口 (Phase 8)**
+
+多会话轮询守护进程，负责：
+- CLI 参数解析 (`--verbose`, `--sandbox`, `--spawn`, `--capacity`, `--permission-mode`, `--name`)
+- 多会话容量控制 (capacity gating)
+- 会话状态管理 (active_sessions, session_work_ids, completed_work_ids)
+- 工作轮询循环 (work poll loop)
+- 优雅关闭 (SIGTERM → wait grace → SIGKILL stragglers → deregister)
+- SIGINT/SIGTERM 处理器安装
+
+**2. remote_bridge_core.py - 远程桥接核心 (Phase 5)**
+
+远程桥接实现，支持：
+- v2 环境变量驱动配置
+- 远程会话生命周期管理
+- 跨进程通信
+
+**3. session_runner.py - 子 CLI 会话生成 (Phase 4)**
+
+子进程管理，实现：
+- Child CLI 生成和监控
+- 工作目录管理
+- 会话超时控制
+
+**4. repl_bridge.py - REPL 桥接 (Phase 11)**
+
+REPL 集成桥接器，实现：
+- REPL 与 Bridge 的消息路由
+- 会话状态同步
+- TUI 交互支持
+
+**5. bridge_api.py - HTTP 客户端 (Phase 3)**
+
+API 通信层：
+- 轮询 URL 处理
+- 会话注册/注销
+- 工作队列管理
+
+#### 关键类型定义
+
+```python
+@dataclass
+class ParsedArgs:
+    """bridge_main CLI 参数"""
+    verbose: bool = False
+    sandbox: bool = True
+    debug_file: str | None = None
+    session_timeout: int | None = None
+    permission_mode: str = "default"
+    name: str | None = None
+    spawn: str = "session"  # session | same-dir | worktree
+    capacity: int = 1
+    create_session_in_dir: bool = True
+
+@dataclass
+class BackoffConfig:
+    """退避配置"""
+    base_delay_ms: int = 1000
+    max_delay_ms: int = 30000
+    exponential: bool = True
+
+class BridgeHeadlessPermanentError(Exception):
+    """永久性错误信号，不要重试"""
+    pass
+```
+
+#### 与现有组件集成
+
+| 现有组件 | 集成点 | 说明 |
+|---------|--------|------|
+| `src/query/query.py` | QueryEngine | 复用 query engine 重构 |
+| `src/tool_system/advisor.py` | Advisor | token 计数和状态显示 |
+| `src/tool_system/renderers.py` | Renderer | 系统 prompt 渲染 |
+
+### 2.8 Agent Loop Consolidation (Stage 4)
+
+**状态**: ✅ 完成
+**上游版本**: 68dc3c5
+**目标**: 删除 `agent_loop.py`，重构到 `src/query/` 模块，实现工具执行与 Agent 循环的解耦
+
+#### 核心变更
+
+| 变更 | 说明 |
+|------|------|
+| 删除 `agent_loop.py` (537 行) | 上游原 Agent 循环逻辑移除 |
+| 新增 `src/tool_system/renderers.py` (+257 行) | 系统 prompt 渲染器 |
+| 新增 `src/tool_system/tools/advisor.py` (+125 行) | Advisor 工具 |
+| 重构到 `src/query/` 模块 | 查询引擎解耦 |
+
+#### renderers.py - 系统 Prompt 渲染器
+
+渲染器负责将系统 prompt 组件组合并格式化：
+
+```python
+class SystemPromptRenderer:
+    """系统 Prompt 渲染器"""
+    def render(self, context: PromptContext) -> str: ...
+    def render_capabilities(self, capabilities: list[str]) -> str: ...
+    def render_rules(self, rules: list[str]) -> str: ...
+```
+
+#### advisor.py - Advisor 工具
+
+Advisor 工具提供 Token 计数和状态显示：
+
+```python
+class AdvisorTool:
+    """Advisor 工具 - 提供 token 计数和状态信息"""
+    def get_token_usage(self) -> TokenUsage: ...
+    def get_cost_estimate(self) -> CostEstimate: ...
+```
+
+### 2.9 Advisor Token 计数与状态显示
+
+**状态**: ✅ 完成
+**上游版本**: 68dc3c5
+**目标**: 增强 Advisor 的 token 计数显示、client-side advisor mode 和 cost tracker
+
+#### 核心改进
+
+| 改进 | 文件 | 说明 |
+|------|------|------|
+| Token 计数显示 | `src/agent/conversation.py` | max_history: 100 → 2000 |
+| Provider Token 追踪 | `src/providers/anthropic_provider.py` | 增加 token 使用追踪 |
+| Base Provider 增强 | `src/providers/base.py` | 统一 token 计数接口 |
+
+#### max_history 扩展
+
+`src/agent/conversation.py` 中 `max_history` 从 100 提升到 2000，允许更长的对话历史。
+
+#### Provider Token 追踪
+
+```python
+@dataclass
+class TokenUsage:
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+```
+
+### 2.10 REPL 与 TUI 增强
+
+**状态**: ✅ 完成
+**上游版本**: 68dc3c5
+**目标**: 增强 REPL 和 TUI 的交互能力和状态显示
+
+#### 核心组件
+
+| 组件 | 文件 | 功能 |
+|------|------|------|
+| REPL Core | `src/repl/core.py` | REPL 核心逻辑 |
+| TUI App | `src/tui/app.py` | Textual TUI 应用 |
+| Keybindings | `src/tui/keybindings.py` | 快捷键绑定 |
+| LiveStatus | `src/tui/live_status.py` | 实时状态栏 |
+
+#### Shift+Tab 权限模式循环
+
+支持在 REPL/LiveStatus 中通过 `Shift+Tab` 循环切换权限模式：`default → acceptEdits → plan → bypassPermissions`
+
+#### TUI 增强 (+999 行)
+
+- 实时 tool call 日志显示
+- Token 使用量状态栏
+- Agent 状态监控面板
 
 ### 2.5 工具系统按需加载（Tool System Extension）
 
@@ -3418,8 +3621,148 @@ class AgentSkillConfig:
 | **可测试** | 扩展层可以独立测试 |
 | **可替换** | 可通过环境变量切换使用上游原始 loader |
 
+### 2.11 Away-Summary（离开摘要）功能
+
+**状态**: 📋 规划中
+**上游版本**: claude-code-best `src/services/awaySummary.ts`, `src/hooks/useAwaySummary.ts`, `src/commands/recap/`
+**目标**: 在一次交互对话完成后，CCB 会总结对话内容并给出总结与下一步的意见（以 ※ 开头，字体颜色为浅灰色）
+
+#### 功能描述
+
+Away-summary 是 Claude Code 的一个贴心功能：当用户离开终端一段时间后返回，CLI 会自动生成一段简短摘要，说明：
+1. 用户在做什么（高层目标，不是实现细节）
+2. 下一步具体操作
+
+#### 上游实现分析
+
+| 文件 | 功能 | 关键点 |
+|------|------|--------|
+| `src/constants/figures.ts:29` | 定义 `REFERENCE_MARK = '\u203b'` | ※ 符号，用于 away-summary 标记 |
+| `src/services/awaySummary.ts` | 生成离开摘要 | 调用小模型生成 1-3 句话摘要 |
+| `src/commands/recap/generateRecap.ts` | 手动 recap 命令 | `/recap`, `/away`, `/catchup` 别名 |
+| `src/hooks/useAwaySummary.ts` | React hook | 终端失焦 5 分钟后自动触发 |
+| `src/components/messages/SystemTextMessage.tsx:55-64` | 渲染组件 | `dimColor` 浅灰色显示 |
+
+#### 渲染样式
+
+```tsx
+// SystemTextMessage.tsx:55-64
+if (message.subtype === 'away_summary') {
+  return (
+    <Box flexDirection="row" marginTop={addMargin ? 1 : 0} backgroundColor={bg} width="100%">
+      <Box minWidth={2}>
+        <Text dimColor>{REFERENCE_MARK}</Text>
+      </Box>
+      <Text dimColor>{String(message.content ?? '')}</Text>
+    </Box>
+  );
+}
+```
+
+#### 触发条件
+
+1. **自动触发**: 终端失焦（blur）5 分钟后，且无进行中的 turn
+2. **手动触发**: `/recap`, `/away`, `/catchup` 命令
+3. **前提条件**: 
+   - Feature flag `AWAY_SUMMARY` 启用
+   - GrowthBook A/B 测试 `tengu_sedge_lantern` 为 true
+
+#### 摘要内容规范
+
+**英文版 prompt** (`src/services/awaySummary.ts:23`):
+```
+The user stepped away and is coming back. Write exactly 1-3 short sentences. 
+Start by stating the high-level task — what they are building or debugging, 
+not implementation details. Next: the concrete next step. 
+Skip status reports and commit recaps.
+```
+
+**中文版 prompt** (`src/services/awaySummary.ts:26`):
+```
+用户离开后回来了。用中文写 1-3 句话。先说明用户在做什么（高层目标，不是实现细节），
+然后说明下一步具体操作。不要写状态报告或提交总结。
+```
+
+#### ClawCodex 实现方案
+
+##### 架构设计
+
+```
+src/
+├── services/
+│   └── away_summary.py          # 核心服务：生成离开摘要
+├── hooks/
+│   └── use_away_summary.py     # 终端焦点状态监控 + 定时器
+├── commands/
+│   └── recap.py                 # /recap, /away, /catchup 命令
+├── components/
+│   └── messages/
+│       └── system_text.py       # SystemTextMessage 渲染 away_summary subtype
+├── types/
+│   └── message.py               # 添加 SystemAwaySummaryMessage 类型
+└── constants/
+    └── figures.py               # 添加 REFERENCE_MARK = '\u203b'
+```
+
+##### 核心组件
+
+| 组件 | 文件 | 功能 |
+|------|------|------|
+| `generate_away_summary()` | `services/away_summary.py` | 调用小模型生成 1-3 句话摘要 |
+| `generate_recap()` | `commands/recap.py` | 手动 recap 命令实现 |
+| `use_away_summary()` | `hooks/use_away_summary.py` | 监控终端焦点，5 分钟失焦后触发 |
+| `SystemAwaySummaryMessage` | `types/message.py` | 消息类型定义 |
+| `REFERENCE_MARK` | `constants/figures.py` | ※ 符号常量 |
+
+##### 消息类型
+
+```python
+@dataclass
+class SystemAwaySummaryMessage(SystemMessage):
+    """离开摘要消息"""
+    type: Literal["system"] = "system"
+    subtype: Literal["away_summary"] = "away_summary"
+    content: str
+```
+
+##### 触发逻辑
+
+```python
+# hooks/use_away_summary.py
+
+BLUR_DELAY_MS = 5 * 60_000  # 5 分钟
+
+def use_away_summary(messages, set_messages, is_loading):
+    """监控终端焦点，失焦 5 分钟后生成摘要"""
+    timer_ref = None
+    
+    def on_focus_change(state):
+        nonlocal timer_ref
+        if state in ('blurred', 'unknown'):
+            timer_ref = set_timeout(on_blur_timer_fire, BLUR_DELAY_MS)
+        elif state == 'focused':
+            cancel_timer(timer_ref)
+            abort_in_flight()
+    
+    # 焦点变化时启动定时器
+    # 定时器触发时检查：无进行中的 turn，无已有摘要 → 生成摘要
+```
+
+##### 与现有组件集成
+
+| 现有组件 | 集成点 | 说明 |
+|---------|--------|------|
+| `src/repl/live_status.py` | 焦点状态 | 复用终端焦点感知 |
+| `src/agent/session.py` | 消息历史 | 读取最近 30 条消息生成摘要 |
+| `src/providers/base.py` | 模型调用 | 使用小模型（fast model）生成摘要 |
+| `src/tool_system/tools/recap.py` | 命令注册 | 注册 `/recap` 命令 |
+
+##### 外部依赖
+
+无新增外部依赖，复用现有基础设施。
+
 ---
 
-*文档更新时间: 2026-05-24*
+*文档更新时间: 2026-05-25*
 
-*版本 v1.4 更新：新增 Cron 系统执行引擎完整设计（第九章），对标 claude-code-best 生产级实现。*
+*版本 v1.5 更新：新增 Away-Summary（离开摘要）功能设计，对标 claude-code-best 生产级实现。*
