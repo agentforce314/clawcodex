@@ -57,6 +57,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -68,6 +69,12 @@ from src.bridge.bridge_api import (
     BridgeFatalError,
     create_bridge_api_client,
     is_expired_error_type,
+)
+from src.bridge.bridge_pointer import (
+    BridgePointer,
+    clear_pointer,
+    read_pointer,
+    write_pointer,
 )
 from src.bridge.jwt_utils import TokenRefreshScheduler
 from src.bridge.poll_config_defaults import (
@@ -236,13 +243,6 @@ async def init_bridge_core(
       the real subprocess.
     * ``runner_version``: header value for ``x-environment-runner-version``.
     """
-    if params.perpetual:
-        raise NotImplementedError(
-            'Phase 6 MVP does not yet implement perpetual mode '
-            '(crash-recovery pointer + env reuse). Full port lands in a '
-            'future revision; set perpetual=False for now.'
-        )
-
     if api_client is None:
         api_client = create_bridge_api_client(
             base_url=params.base_url,
@@ -251,6 +251,32 @@ async def init_bridge_core(
             on_auth_401=params.on_auth_401,
             client=http_client,
         )
+
+    # ── 0. Perpetual mode: try crash-recovery pointer ──────────────────
+    # Mirrors TS ``initReplBridge`` / ``replBridge.ts`` recovery dance:
+    # if the previous run left a pointer, attempt to reuse its env id
+    # (server may resurrect the lease) and its session id (subprocess
+    # restart resumes the same conversation). Any failure — pointer
+    # absent, stale, register-with-reuse rejected, etc. — drops us
+    # back into the fresh-env+fresh-session bootstrap path.
+    pointer: BridgePointer | None = None
+    reuse_session_id: str | None = None
+    pointer_created_at_ms: int | None = None
+    effective_bridge_id = params.bridge_id
+    if params.perpetual:
+        pointer = read_pointer(
+            params.dir, machine_name=params.machine_name,
+        )
+        if pointer is not None:
+            logger.info(
+                '[bridge:repl] Perpetual: found recovery pointer '
+                'bridge_id=%s env=%s session=%s — attempting reuse',
+                pointer.bridge_id, pointer.environment_id,
+                pointer.session_id,
+            )
+            effective_bridge_id = pointer.bridge_id
+            reuse_session_id = pointer.session_id
+            pointer_created_at_ms = pointer.created_at_ms
 
     # ── 1. Register environment ────────────────────────────────────────
     bridge_config = BridgeConfig(
@@ -262,11 +288,19 @@ async def init_bridge_core(
         spawn_mode=_validated_spawn_mode(params.spawn_mode),
         verbose=False,
         sandbox=False,
-        bridge_id=params.bridge_id,
+        bridge_id=effective_bridge_id,
         worker_type=params.worker_type,
-        environment_id=params.bridge_id,  # client-generated; server may swap
+        # client-generated placeholder; the server returns the real
+        # env id in the registration response and we overwrite then.
+        environment_id=effective_bridge_id,
         api_base_url=params.base_url,
         session_ingress_url=params.session_ingress_url,
+        # Hint server to resurrect the pointer's env. If the server
+        # ignores it (env lease expired), it'll just assign a fresh
+        # id and we'll fall through to creating a new session.
+        reuse_environment_id=(
+            pointer.environment_id if pointer is not None else None
+        ),
     )
     try:
         registration = await api_client.register_bridge_environment(
@@ -276,6 +310,11 @@ async def init_bridge_core(
         logger.error('[bridge:repl] Registration failed: %s', err)
         _fire_state(params.on_state_change, 'failed',
                     f'Registration failed: {err}')
+        # A stale pointer that the server fully rejects (rather than
+        # just declining to reuse) is dead weight — clear it so the
+        # next start doesn't re-fail the same way.
+        if params.perpetual:
+            clear_pointer(params.dir)
         return None
     environment_id = registration['environment_id']
     environment_secret = registration['environment_secret']
@@ -283,28 +322,66 @@ async def init_bridge_core(
         '[bridge:repl] Registered environment_id=%s', environment_id
     )
 
-    # ── 2. Create initial session ──────────────────────────────────────
-    try:
-        session_id = await params.create_session({
-            'environment_id': environment_id,
-            'title': params.title,
-            'gitRepoUrl': params.git_repo_url,
-            'branch': params.branch,
-        })
-    except Exception as err:  # noqa: BLE001
-        logger.error('[bridge:repl] Session creation threw: %s', err)
-        session_id = None
-    if session_id is None:
-        _fire_state(params.on_state_change, 'failed',
-                    'Session creation failed')
+    # If we asked for env reuse and the server gave us back a DIFFERENT
+    # env id, the resurrection didn't happen. The reuse_session_id
+    # we'd captured from the pointer is bound to the dead env and
+    # would be useless against the new env, so drop it — create_session
+    # will mint a fresh one below.
+    if (
+        pointer is not None
+        and registration['environment_id'] != pointer.environment_id
+    ):
+        logger.info(
+            '[bridge:repl] Perpetual: server didn\'t resurrect env '
+            '(pointer=%s, got=%s) — falling back to fresh session',
+            pointer.environment_id, registration['environment_id'],
+        )
+        reuse_session_id = None
+
+    # ── 2. Reuse or create session ─────────────────────────────────────
+    session_id: str | None
+    if reuse_session_id is not None:
+        # Trust the pointer's session id. The poll loop / next work
+        # item will surface an error if the server has already
+        # archived it, at which point our standard recreation flow
+        # takes over (Strategy-1 or Strategy-2).
+        #
+        # TODO(phase-13): probe the server (e.g. via a lightweight
+        # ``session.status`` lookup, or by treating the first poll as
+        # validation) before trusting blindly. Today a long-archived
+        # session resumes optimistically and only surfaces the error
+        # via the standard 404 → recreate flow — possibly after a
+        # full poll cycle of dead time.
+        session_id = reuse_session_id
+        logger.info(
+            '[bridge:repl] Perpetual: reusing session_id=%s '
+            'from pointer', session_id,
+        )
+    else:
         try:
-            await api_client.deregister_environment(environment_id)
+            session_id = await params.create_session({
+                'environment_id': environment_id,
+                'title': params.title,
+                'gitRepoUrl': params.git_repo_url,
+                'branch': params.branch,
+            })
         except Exception as err:  # noqa: BLE001
-            logger.debug(
-                '[bridge:repl] Deregister-after-create-fail failed: %s', err
+            logger.error(
+                '[bridge:repl] Session creation threw: %s', err
             )
-        return None
-    logger.debug('[bridge:repl] Created session_id=%s', session_id)
+            session_id = None
+        if session_id is None:
+            _fire_state(params.on_state_change, 'failed',
+                        'Session creation failed')
+            try:
+                await api_client.deregister_environment(environment_id)
+            except Exception as err:  # noqa: BLE001
+                logger.debug(
+                    '[bridge:repl] Deregister-after-create-fail failed: %s',
+                    err,
+                )
+            return None
+        logger.debug('[bridge:repl] Created session_id=%s', session_id)
 
     # ── 3. Build the spawner (if not test-injected) ────────────────────
     if spawner is None:
@@ -323,7 +400,28 @@ async def init_bridge_core(
         environment_secret=environment_secret,
         initial_session_id=session_id,
         bridge_config=bridge_config,
+        perpetual=params.perpetual,
+        pointer_created_at_ms=pointer_created_at_ms,
     )
+    # Write the pointer immediately so a crash before the first poll
+    # still leaves a recoverable state for the next start. Compute the
+    # ``created_at_ms`` locally — passing it both to ``write_pointer``
+    # AND storing it on ``state.pointer_created_at_ms`` ensures future
+    # updates preserve the original timestamp. Doing this via a
+    # read-back from the file would silently lose the value if the
+    # write failed (write_pointer is best-effort and logs-and-swallows).
+    if params.perpetual:
+        if pointer_created_at_ms is None:
+            pointer_created_at_ms = int(time.time() * 1000)
+        state.pointer_created_at_ms = pointer_created_at_ms
+        write_pointer(
+            params.dir,
+            bridge_id=effective_bridge_id,
+            environment_id=environment_id,
+            session_id=session_id,
+            machine_name=params.machine_name,
+            created_at_ms=pointer_created_at_ms,
+        )
     state.start_poll_loop()
 
     _fire_state(params.on_state_change, 'ready')
@@ -370,6 +468,46 @@ class _BridgeState:
     # — surfaces silent message loss that would otherwise be invisible.
     dropped_batch_count: int = 0
     env_recreation_attempts: int = 0
+
+    # Phase 12c: perpetual mode + crash-recovery pointer state.
+    # ``perpetual`` decides whether to write/update/clear the pointer
+    # on lifecycle events. ``pointer_created_at_ms`` carries forward
+    # the pointer's original creation timestamp across recreations so
+    # operators can see how long a perpetual bridge has been alive.
+    perpetual: bool = False
+    pointer_created_at_ms: int | None = None
+
+    async def _update_pointer(self, *, session_id: str | None) -> None:
+        """No-op when not perpetual; otherwise rewrite the pointer with
+        the current env_id + given session_id. Called at every
+        lifecycle transition (init, work-spawned, session-done,
+        recreate) so a crash always leaves a recoverable on-disk state.
+
+        ``write_pointer`` does synchronous file IO; we delegate it to
+        a worker thread so a slow disk (NFS, etc.) can't stall the
+        event loop. Best-effort — failures are logged by the writer.
+        """
+        if not self.perpetual:
+            return
+        await asyncio.to_thread(
+            write_pointer,
+            self.params.dir,
+            bridge_id=self.bridge_config.bridge_id,
+            environment_id=self.environment_id,
+            session_id=session_id,
+            machine_name=self.params.machine_name,
+            created_at_ms=self.pointer_created_at_ms,
+        )
+
+    async def _clear_pointer(self) -> None:
+        """No-op when not perpetual; otherwise remove the pointer
+        file. Called when the bridge tears down cleanly so the next
+        start doesn't try to resume a state that's no longer valid.
+
+        Also off-loaded to a worker thread (see ``_update_pointer``)."""
+        if not self.perpetual:
+            return
+        await asyncio.to_thread(clear_pointer, self.params.dir)
 
     # ── Poll loop ───────────────────────────────────────────────────────
 
@@ -548,6 +686,9 @@ class _BridgeState:
                     self.active_work_id = None
                 self.environment_id = new_env_id
                 self.environment_secret = new_env_secret
+                # Phase 12c: env+session preserved; pointer just needs
+                # a touch so ``updated_at_ms`` reflects the activity.
+                await self._update_pointer(session_id=prior_session_id)
                 logger.info(
                     '[bridge:repl] Strategy-1 reconnect succeeded: '
                     'env=%s session=%s (preserved)',
@@ -609,6 +750,10 @@ class _BridgeState:
         # Replace the bookkeeping handle's session id (the external
         # ReplBridgeHandle is immutable; this is the internal copy).
         self.initial_session_id = new_session_id
+        # Phase 12c: env+session were both swapped; rewrite the pointer
+        # so a crash at this point recovers into the NEW state rather
+        # than the dead one.
+        await self._update_pointer(session_id=new_session_id)
         logger.info(
             '[bridge:repl] Strategy-2 recreate complete: env=%s session=%s',
             self.environment_id, new_session_id,
@@ -689,6 +834,11 @@ class _BridgeState:
             return
         self.active_work_id = work_id
         self.active_session_id = session_id
+        # Phase 12c: the server may dispatch work for a session id we
+        # didn't bootstrap with (e.g. after a server-side session
+        # migration). Refresh the pointer so a crash mid-session
+        # recovers into the right session, not the init bootstrap.
+        await self._update_pointer(session_id=session_id)
         # Wire JWT refresh: token expires after a finite window
         # (typically 1h); without a refresh, long sessions silently
         # break when the ingress token expires. The scheduler fires
@@ -774,6 +924,11 @@ class _BridgeState:
         self.active_session = None
         self.active_work_id = None
         self.active_session_id = None
+        # Phase 12c: the session just finished — clear ``session_id``
+        # in the pointer so a crash before the next poll doesn't try
+        # to resurrect an archived session. The pointer keeps its
+        # bridge_id + env_id so the next start can still reuse the env.
+        await self._update_pointer(session_id=None)
 
     async def _safe_ack(self, work_id: str, session_token: str) -> None:
         try:
@@ -944,6 +1099,13 @@ class _BridgeState:
             logger.warning(
                 '[bridge:repl] deregister failed: %s', err
             )
+
+        # Phase 12c: clean teardown → remove pointer. A future restart
+        # should start fresh, not try to resurrect an env we just
+        # deregistered. Best-effort; a leftover pointer is harmless
+        # because read_pointer's host/dir staleness checks plus the
+        # server's expiry will eventually drop it.
+        await self._clear_pointer()
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────

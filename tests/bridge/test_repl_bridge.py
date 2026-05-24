@@ -224,12 +224,31 @@ def _make_params(
 
 
 @pytest.mark.asyncio
-async def test_perpetual_mode_not_yet_supported() -> None:
+async def test_perpetual_mode_writes_pointer_on_init(tmp_path) -> None:
+    """Phase 12c: ``perpetual=True`` now succeeds (no more
+    NotImplementedError) and writes the pointer file after init."""
+    from src.bridge.bridge_pointer import read_pointer
+
     params = _make_params(perpetual=True)
-    with pytest.raises(NotImplementedError, match='perpetual'):
-        await init_bridge_core(
-            params, api_client=FakeApiClient(), spawner=FakeSpawner(),
-        )
+    params.dir = str(tmp_path)  # write pointer here, not /tmp/test
+    api = FakeApiClient()
+    handle = await init_bridge_core(
+        params, api_client=api, spawner=FakeSpawner(),
+    )
+    assert handle is not None
+    pointer = read_pointer(
+        params.dir, machine_name=params.machine_name,
+    )
+    assert pointer is not None
+    assert pointer.environment_id == 'env-srv-1'
+    assert pointer.session_id == 'cse_test'
+    assert pointer.bridge_id == params.bridge_id
+    await handle.teardown()
+    # Clean teardown → pointer removed.
+    after = read_pointer(
+        params.dir, machine_name=params.machine_name,
+    )
+    assert after is None
 
 
 @pytest.mark.asyncio
@@ -1047,4 +1066,349 @@ async def test_strategy_1_re_register_failure_returns_false() -> None:
     assert not original_session._kill_called
 
     original_session.complete('completed')
+    await handle.teardown()
+
+
+# ── Phase 12c: perpetual mode + crash-recovery pointer ───────────────────
+
+
+@pytest.mark.asyncio
+async def test_perpetual_resumes_session_when_pointer_and_env_reuse_succeed(
+    tmp_path,
+) -> None:
+    """When ``perpetual=True`` and the pointer exists, init must reuse
+    both the env id (via ``reuse_environment_id``) and the session id
+    (skipping ``create_session`` entirely)."""
+    from src.bridge.bridge_pointer import write_pointer
+
+    params = _make_params(perpetual=True)
+    params.dir = str(tmp_path)
+    # Seed a pointer pointing at env-srv-7 / session cse_resumed.
+    write_pointer(
+        params.dir,
+        bridge_id=params.bridge_id,
+        environment_id='env-srv-7',
+        session_id='cse_resumed',
+        machine_name=params.machine_name,
+    )
+    # Configure the fake API to "resurrect" the env id when reuse is
+    # requested.
+    api = FakeApiClient()
+    api.register_result = {
+        'environment_id': 'env-srv-7',
+        'environment_secret': 'sec-srv-7',
+    }
+    # Track create_session calls so we can assert it was NOT called.
+    create_calls: list[Any] = []
+    original_create = params.create_session
+    async def recording_create(opts: dict[str, Any]) -> str | None:
+        create_calls.append(opts)
+        return await original_create(opts)
+    params.create_session = recording_create  # type: ignore[assignment]
+
+    handle = await init_bridge_core(
+        params, api_client=api, spawner=FakeSpawner(),
+    )
+    assert handle is not None
+    # ``reuse_environment_id`` was hinted in the register call.
+    assert api.register_calls, 'expected register call'
+    sent_config = api.register_calls[-1]
+    assert sent_config.reuse_environment_id == 'env-srv-7'
+    # Session reused, NOT created.
+    assert handle.bridge_session_id == 'cse_resumed'
+    assert create_calls == []
+    await handle.teardown()
+
+
+@pytest.mark.asyncio
+async def test_perpetual_falls_back_when_server_assigns_new_env_id(
+    tmp_path,
+) -> None:
+    """If the server ignores ``reuse_environment_id`` and returns a
+    different env id, init must drop the pointer's session id (it's
+    bound to the dead env) and create a fresh session."""
+    from src.bridge.bridge_pointer import write_pointer
+
+    params = _make_params(perpetual=True)
+    params.dir = str(tmp_path)
+    write_pointer(
+        params.dir,
+        bridge_id=params.bridge_id,
+        environment_id='env-srv-OLD',
+        session_id='cse_dead',
+        machine_name=params.machine_name,
+    )
+    api = FakeApiClient()
+    # Server doesn't honor reuse — returns a different env id.
+    api.register_result = {
+        'environment_id': 'env-srv-FRESH',
+        'environment_secret': 'sec-fresh',
+    }
+    create_calls: list[Any] = []
+    original_create = params.create_session
+    async def recording_create(opts: dict[str, Any]) -> str | None:
+        create_calls.append(opts)
+        return await original_create(opts)
+    params.create_session = recording_create  # type: ignore[assignment]
+
+    handle = await init_bridge_core(
+        params, api_client=api, spawner=FakeSpawner(),
+    )
+    assert handle is not None
+    # Hint was sent, but the server gave back a different id.
+    assert api.register_calls[-1].reuse_environment_id == 'env-srv-OLD'
+    # Fresh session was created (not reused).
+    assert create_calls, 'create_session should have been called'
+    assert handle.bridge_session_id == 'cse_test'  # default fake result
+    await handle.teardown()
+
+
+@pytest.mark.asyncio
+async def test_perpetual_ignores_stale_pointer_from_different_dir(
+    tmp_path,
+) -> None:
+    """A pointer file written for a different working directory must
+    be rejected; init starts fresh as if no pointer existed."""
+    from src.bridge.bridge_pointer import write_pointer
+    import json
+    import os
+
+    params = _make_params(perpetual=True)
+    params.dir = str(tmp_path)
+    # Write a pointer that claims a DIFFERENT dir.
+    pointer_dir = os.path.join(params.dir, '.claude')
+    os.makedirs(pointer_dir, exist_ok=True)
+    with open(
+        os.path.join(pointer_dir, 'bridge-pointer.json'),
+        'w', encoding='utf-8',
+    ) as fh:
+        json.dump({
+            'schema_version': 1,
+            'bridge_id': 'br-old',
+            'environment_id': 'env-srv-OLD',
+            'session_id': 'cse_old',
+            'machine_name': params.machine_name,
+            'dir': '/some/other/working/dir',
+            'created_at_ms': 1000,
+            'updated_at_ms': 2000,
+        }, fh)
+    api = FakeApiClient()
+    handle = await init_bridge_core(
+        params, api_client=api, spawner=FakeSpawner(),
+    )
+    assert handle is not None
+    # Stale pointer should not have hinted reuse.
+    assert api.register_calls[-1].reuse_environment_id is None
+    # Fresh session created.
+    assert handle.bridge_session_id == 'cse_test'
+    await handle.teardown()
+
+
+@pytest.mark.asyncio
+async def test_perpetual_clears_pointer_on_clean_teardown(tmp_path) -> None:
+    """``teardown()`` must remove the pointer so a subsequent start
+    doesn't try to resume an env we just deregistered."""
+    from src.bridge.bridge_pointer import read_pointer
+
+    params = _make_params(perpetual=True)
+    params.dir = str(tmp_path)
+    handle = await init_bridge_core(
+        params, api_client=FakeApiClient(), spawner=FakeSpawner(),
+    )
+    assert handle is not None
+    # Pointer exists during the run.
+    assert read_pointer(
+        params.dir, machine_name=params.machine_name,
+    ) is not None
+    await handle.teardown()
+    # Pointer removed after teardown.
+    assert read_pointer(
+        params.dir, machine_name=params.machine_name,
+    ) is None
+
+
+@pytest.mark.asyncio
+async def test_non_perpetual_does_not_write_pointer(tmp_path) -> None:
+    """``perpetual=False`` (the default) must NOT write a pointer —
+    avoiding pointer pollution in non-recovery use cases."""
+    from src.bridge.bridge_pointer import read_pointer
+
+    params = _make_params(perpetual=False)
+    params.dir = str(tmp_path)
+    handle = await init_bridge_core(
+        params, api_client=FakeApiClient(), spawner=FakeSpawner(),
+    )
+    assert handle is not None
+    assert read_pointer(
+        params.dir, machine_name=params.machine_name,
+    ) is None
+    await handle.teardown()
+
+
+@pytest.mark.asyncio
+async def test_perpetual_pointer_updates_when_work_spawns_session(
+    tmp_path,
+) -> None:
+    """When ``_process_work`` spawns a session for a server-provided
+    session_id (which may differ from the bootstrap id), the pointer
+    must be rewritten so a mid-session crash recovers correctly."""
+    from src.bridge.bridge_pointer import read_pointer
+
+    work = {
+        'id': 'work-1', 'type': 'work', 'environment_id': 'env-srv-1',
+        'state': 'pending',
+        'data': {'type': 'session', 'id': 'cse_from_work'},
+        'secret': _encode_work_secret(),
+        'created_at': '2026-05-24',
+    }
+    params = _make_params(perpetual=True)
+    params.dir = str(tmp_path)
+    api = FakeApiClient(poll_results=[work])
+    spawner = FakeSpawner()
+    handle = await init_bridge_core(
+        params, api_client=api, spawner=spawner,
+    )
+    assert handle is not None
+    # Initial pointer has the bootstrap session id.
+    initial = read_pointer(
+        params.dir, machine_name=params.machine_name,
+    )
+    assert initial is not None
+    assert initial.session_id == 'cse_test'
+
+    # Wait for the work item to be processed.
+    for _ in range(50):
+        await asyncio.sleep(0.01)
+        if spawner.handles:
+            break
+    assert spawner.handles
+
+    # Pointer should now reflect the work's session_id, not the
+    # bootstrap one.
+    after_spawn = read_pointer(
+        params.dir, machine_name=params.machine_name,
+    )
+    assert after_spawn is not None
+    assert after_spawn.session_id == 'cse_from_work'
+    # ``created_at_ms`` is preserved across the update.
+    assert after_spawn.created_at_ms == initial.created_at_ms
+
+    spawner.handles[0].complete('completed')
+    await handle.teardown()
+
+
+@pytest.mark.asyncio
+async def test_perpetual_pointer_clears_session_when_session_completes(
+    tmp_path,
+) -> None:
+    """After ``_await_session_done`` runs, the pointer must drop its
+    ``session_id`` (set it to None) — a crash before the next poll
+    would otherwise try to resurrect an archived session."""
+    from src.bridge.bridge_pointer import read_pointer
+
+    work = {
+        'id': 'work-1', 'type': 'work', 'environment_id': 'env-srv-1',
+        'state': 'pending',
+        'data': {'type': 'session', 'id': 'cse_short_lived'},
+        'secret': _encode_work_secret(),
+        'created_at': '2026-05-24',
+    }
+    params = _make_params(perpetual=True)
+    params.dir = str(tmp_path)
+    api = FakeApiClient(poll_results=[work])
+    spawner = FakeSpawner()
+    handle = await init_bridge_core(
+        params, api_client=api, spawner=spawner,
+    )
+    assert handle is not None
+    for _ in range(50):
+        await asyncio.sleep(0.01)
+        if spawner.handles:
+            break
+    # Pointer has the active session id at this point.
+    mid = read_pointer(
+        params.dir, machine_name=params.machine_name,
+    )
+    assert mid is not None
+    assert mid.session_id == 'cse_short_lived'
+
+    # Session ends.
+    spawner.handles[0].complete('completed')
+    # Wait for _await_session_done to run.
+    for _ in range(50):
+        await asyncio.sleep(0.01)
+        p = read_pointer(
+            params.dir, machine_name=params.machine_name,
+        )
+        if p is not None and p.session_id is None:
+            break
+
+    final = read_pointer(
+        params.dir, machine_name=params.machine_name,
+    )
+    assert final is not None
+    assert final.session_id is None, (
+        'pointer should null session_id after session completes'
+    )
+    # Env id is unchanged so the next start can still resume the env.
+    assert final.environment_id == mid.environment_id
+    assert final.bridge_id == mid.bridge_id
+
+    await handle.teardown()
+
+
+@pytest.mark.asyncio
+async def test_perpetual_pointer_updates_after_strategy_2_recreation(
+    tmp_path,
+) -> None:
+    """After Strategy-2 swaps env+session, the pointer must reflect
+    the NEW identities — a crash mid-recreation should recover into
+    the new env, not the dead one."""
+    from src.bridge.bridge_pointer import read_pointer
+
+    # Cycle the fake create_session through distinct ids so the
+    # "after recreate" session id is observably different from
+    # the initial one.
+    session_ids = iter(['cse_initial', 'cse_after_strat2'])
+    async def cycling_create(_opts: dict[str, Any]) -> str | None:
+        return next(session_ids)
+    params = _make_params(perpetual=True)
+    params.dir = str(tmp_path)
+    params.create_session = cycling_create  # type: ignore[assignment]
+    api = FakeApiClient()
+    handle = await init_bridge_core(
+        params, api_client=api, spawner=FakeSpawner(),
+    )
+    assert handle is not None
+    initial = read_pointer(
+        params.dir, machine_name=params.machine_name,
+    )
+    assert initial is not None
+    initial_env = initial.environment_id
+    initial_session = initial.session_id
+    assert initial_session == 'cse_initial'
+
+    state = handle.write_messages.__self__  # type: ignore[attr-defined]
+    # Force Strategy-2: server hands back a DIFFERENT env id.
+    api.register_result = {
+        'environment_id': 'env-srv-strategy2',
+        'environment_secret': 'sec-s2',
+    }
+    ok = await state._recreate_environment()
+    assert ok is True
+
+    after = read_pointer(
+        params.dir, machine_name=params.machine_name,
+    )
+    assert after is not None
+    assert after.environment_id == 'env-srv-strategy2'
+    assert after.environment_id != initial_env
+    # Strategy-2 minted a new session id from the cycling fixture.
+    assert after.session_id == 'cse_after_strat2'
+    assert after.session_id != initial_session
+    # Created_at_ms preserved across the update.
+    assert after.created_at_ms == initial.created_at_ms
+    # Updated_at_ms bumped (or at least not regressed).
+    assert after.updated_at_ms >= initial.updated_at_ms
+
     await handle.teardown()
