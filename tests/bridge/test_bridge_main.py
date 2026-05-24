@@ -1,0 +1,556 @@
+"""Tests for ``src.bridge.bridge_main`` (Phase 8 MVP slice)."""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import json
+import socket
+from typing import Any
+
+import httpx
+import pytest
+
+from src.bridge.bridge_main import (
+    DEFAULT_BACKOFF,
+    BackoffConfig,
+    BridgeHeadlessPermanentError,
+    ParsedArgs,
+    bridge_main,
+    is_connection_error,
+    is_server_error,
+    parse_args,
+    run_bridge_loop,
+)
+from src.bridge.exceptions import BridgeFatalError
+from src.bridge.types import BridgeConfig, SessionDoneStatus
+
+
+# ── parse_args ──────────────────────────────────────────────────────────
+
+
+def test_parse_empty_args_returns_defaults() -> None:
+    out = parse_args([])
+    assert out.error is None
+    assert out.verbose is False
+    assert out.sandbox is False
+    assert out.help is False
+    assert out.spawn_mode is None
+    assert out.capacity is None
+
+
+def test_parse_verbose_flag() -> None:
+    assert parse_args(['--verbose']).verbose is True
+    assert parse_args(['-v']).verbose is True
+
+
+def test_parse_sandbox_toggle() -> None:
+    assert parse_args(['--sandbox']).sandbox is True
+    assert parse_args(['--no-sandbox']).sandbox is False
+
+
+def test_parse_help_flag() -> None:
+    assert parse_args(['--help']).help is True
+    assert parse_args(['-h']).help is True
+
+
+def test_parse_debug_file_separate_value() -> None:
+    out = parse_args(['--debug-file', '/tmp/foo.log'])
+    assert out.debug_file == '/tmp/foo.log'
+
+
+def test_parse_debug_file_equals_form() -> None:
+    out = parse_args(['--debug-file=/tmp/foo.log'])
+    assert out.debug_file == '/tmp/foo.log'
+
+
+def test_parse_session_timeout_converts_seconds_to_ms() -> None:
+    out = parse_args(['--session-timeout', '30'])
+    assert out.session_timeout_ms == 30_000
+    out = parse_args(['--session-timeout=60'])
+    assert out.session_timeout_ms == 60_000
+
+
+def test_parse_permission_mode() -> None:
+    assert parse_args(['--permission-mode', 'plan']).permission_mode == 'plan'
+    assert parse_args(['--permission-mode=auto']).permission_mode == 'auto'
+
+
+def test_parse_name_flag() -> None:
+    assert parse_args(['--name', 'My env']).name == 'My env'
+    assert parse_args(['--name=foo']).name == 'foo'
+
+
+def test_parse_spawn_session_translates_to_single_session() -> None:
+    """``--spawn session`` is the user-facing alias for 'single-session'."""
+    out = parse_args(['--spawn', 'session'])
+    assert out.spawn_mode == 'single-session'
+
+
+def test_parse_spawn_other_modes() -> None:
+    assert parse_args(['--spawn', 'same-dir']).spawn_mode == 'same-dir'
+    assert parse_args(['--spawn=worktree']).spawn_mode == 'worktree'
+
+
+def test_parse_spawn_invalid_value_returns_error() -> None:
+    out = parse_args(['--spawn', 'invalid'])
+    assert out.error is not None
+    assert 'one of: session, same-dir, worktree' in out.error
+
+
+def test_parse_spawn_specified_twice_errors() -> None:
+    out = parse_args(['--spawn', 'session', '--spawn', 'worktree'])
+    assert out.error == '--spawn may only be specified once'
+
+
+def test_parse_capacity_positive_integer() -> None:
+    assert parse_args(['--capacity', '5']).capacity == 5
+    assert parse_args(['--capacity=10']).capacity == 10
+
+
+def test_parse_capacity_invalid_value_errors() -> None:
+    assert 'positive integer' in parse_args(['--capacity', 'foo']).error or ''
+    assert 'positive integer' in parse_args(['--capacity', '-1']).error or ''
+    assert 'positive integer' in parse_args(['--capacity', '0']).error or ''
+
+
+def test_parse_capacity_twice_errors() -> None:
+    out = parse_args(['--capacity', '1', '--capacity', '2'])
+    assert out.error == '--capacity may only be specified once'
+
+
+def test_parse_create_session_in_dir_toggle() -> None:
+    assert parse_args(['--create-session-in-dir']).create_session_in_dir is True
+    assert parse_args(['--no-create-session-in-dir']).create_session_in_dir is False
+
+
+def test_parse_kairos_session_id_rejected() -> None:
+    """--session-id (KAIROS) is not yet supported in MVP."""
+    out = parse_args(['--session-id', 'sess-1'])
+    assert out.error is not None
+    assert '--session-id' in out.error
+
+
+def test_parse_kairos_continue_rejected() -> None:
+    out = parse_args(['--continue'])
+    assert out.error is not None
+    out2 = parse_args(['-c'])
+    assert out2.error is not None
+
+
+def test_parse_unknown_arg_errors() -> None:
+    out = parse_args(['--never-defined'])
+    assert out.error == 'Unknown argument: --never-defined'
+
+
+# ── predicates ───────────────────────────────────────────────────────────
+
+
+def test_is_connection_error_on_network_classes() -> None:
+    assert is_connection_error(ConnectionResetError())
+    assert is_connection_error(socket.gaierror())
+    assert is_connection_error(httpx.ConnectError('refused'))
+    assert is_connection_error(httpx.ConnectTimeout('timeout'))
+    assert not is_connection_error(BridgeFatalError('boom', status=500))
+    assert not is_connection_error(ValueError('not network'))
+
+
+def test_is_server_error_on_5xx_bridge_fatal() -> None:
+    assert is_server_error(BridgeFatalError('5xx', status=500))
+    assert is_server_error(BridgeFatalError('5xx', status=503))
+    assert not is_server_error(BridgeFatalError('4xx', status=404))
+    assert not is_server_error(ValueError('not server'))
+
+
+# ── BackoffConfig ────────────────────────────────────────────────────────
+
+
+def test_default_backoff_constants() -> None:
+    assert DEFAULT_BACKOFF.conn_initial_ms == 2_000
+    assert DEFAULT_BACKOFF.conn_cap_ms == 120_000
+    assert DEFAULT_BACKOFF.conn_give_up_ms == 600_000
+    assert DEFAULT_BACKOFF.general_initial_ms == 500
+    assert DEFAULT_BACKOFF.general_cap_ms == 30_000
+    assert DEFAULT_BACKOFF.general_give_up_ms == 600_000
+    assert DEFAULT_BACKOFF.shutdown_grace_ms == 30_000
+
+
+def test_backoff_config_constructible_with_overrides() -> None:
+    cfg = BackoffConfig(conn_initial_ms=500, shutdown_grace_ms=10_000)
+    assert cfg.conn_initial_ms == 500
+    assert cfg.shutdown_grace_ms == 10_000
+    # Untouched fields keep defaults.
+    assert cfg.general_cap_ms == 30_000
+
+
+# ── run_bridge_loop ─────────────────────────────────────────────────────
+
+
+class FakeApiClient:
+    def __init__(
+        self,
+        *,
+        poll_results: list[Any] | None = None,
+    ) -> None:
+        self.poll_results = poll_results or []
+        self.ack_calls: list[tuple[str, str, str]] = []
+        self.stop_calls: list[tuple[str, str, bool]] = []
+        self.deregister_calls: list[str] = []
+        self.register_calls: list[Any] = []
+
+    async def register_bridge_environment(self, config: Any) -> dict[str, str]:
+        self.register_calls.append(config)
+        return {
+            'environment_id': 'env-srv',
+            'environment_secret': 'sec-srv',
+        }
+
+    async def poll_for_work(self, *_a: Any, **_kw: Any) -> Any:
+        if not self.poll_results:
+            return None
+        return self.poll_results.pop(0)
+
+    async def acknowledge_work(self, env_id: str, work_id: str, tok: str) -> None:
+        self.ack_calls.append((env_id, work_id, tok))
+
+    async def stop_work(self, env_id: str, work_id: str, force: bool) -> None:
+        self.stop_calls.append((env_id, work_id, force))
+
+    async def deregister_environment(self, env_id: str) -> None:
+        self.deregister_calls.append(env_id)
+
+    async def archive_session(self, sid: str) -> None:
+        pass
+
+    async def reconnect_session(self, *_a: Any) -> None:
+        pass
+
+    async def heartbeat_work(self, *_a: Any) -> dict[str, Any]:
+        return {'lease_extended': True, 'state': 'running'}
+
+    async def send_permission_response_event(self, *_a: Any) -> None:
+        pass
+
+
+class FakeSessionHandle:
+    def __init__(self, session_id: str, access_token: str) -> None:
+        self._session_id = session_id
+        self._access_token = access_token
+        self._done: asyncio.Future[SessionDoneStatus] = (
+            asyncio.get_event_loop().create_future()
+        )
+        self.killed = False
+        self.force_killed = False
+
+    @property
+    def session_id(self) -> str:
+        return self._session_id
+
+    @property
+    def access_token(self) -> str:
+        return self._access_token
+
+    @property
+    def activities(self) -> list[Any]:
+        return []
+
+    @property
+    def current_activity(self) -> Any:
+        return None
+
+    @property
+    def last_stderr(self) -> list[str]:
+        return []
+
+    async def wait_done(self) -> SessionDoneStatus:
+        return await self._done
+
+    def kill(self) -> None:
+        self.killed = True
+
+    def force_kill(self) -> None:
+        self.force_killed = True
+
+    def write_stdin(self, data: str) -> None:
+        pass
+
+    def update_access_token(self, token: str) -> None:
+        pass
+
+    def complete(self, status: SessionDoneStatus = 'completed') -> None:
+        if not self._done.done():
+            self._done.set_result(status)
+
+
+class FakeSpawner:
+    def __init__(self) -> None:
+        self.spawns: list[tuple[Any, str]] = []
+        self.handles: list[FakeSessionHandle] = []
+
+    def spawn(self, opts: Any, working_dir: str) -> FakeSessionHandle:
+        self.spawns.append((opts, working_dir))
+        h = FakeSessionHandle(
+            session_id=opts['session_id'],
+            access_token=opts['access_token'],
+        )
+        self.handles.append(h)
+        return h
+
+
+def _encode_work_secret() -> str:
+    payload = {
+        'version': 1,
+        'session_ingress_token': 'sess-jwt',
+        'api_base_url': 'https://api.example.com',
+        'sources': [],
+        'auth': [],
+        'use_code_sessions': True,
+    }
+    raw = json.dumps(payload).encode('utf-8')
+    return base64.urlsafe_b64encode(raw).rstrip(b'=').decode('ascii')
+
+
+def _bridge_config(*, max_sessions: int = 1) -> BridgeConfig:
+    return BridgeConfig(
+        dir='/tmp/test',
+        machine_name='test',
+        branch='main',
+        git_repo_url=None,
+        max_sessions=max_sessions,
+        spawn_mode='single-session',
+        verbose=False,
+        sandbox=False,
+        bridge_id='br-1',
+        worker_type='claude_code',
+        environment_id='env-srv',
+        api_base_url='https://api.example.com',
+        session_ingress_url='https://api.example.com',
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_loop_cancellation_returns_promptly() -> None:
+    """Setting cancel_event during the loop should exit within ~1 sec."""
+    api = FakeApiClient()
+    spawner = FakeSpawner()
+    cancel = asyncio.Event()
+
+    async def cancel_soon() -> None:
+        await asyncio.sleep(0.05)
+        cancel.set()
+
+    asyncio.create_task(cancel_soon())
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    await run_bridge_loop(
+        _bridge_config(),
+        'env-srv', 'sec-srv', api, spawner, cancel,
+    )
+    elapsed = loop.time() - start
+    assert elapsed < 2.0
+    # Deregister called as part of shutdown.
+    assert api.deregister_calls == ['env-srv']
+
+
+@pytest.mark.asyncio
+async def test_run_loop_spawns_session_for_v2_work() -> None:
+    work = {
+        'id': 'work-1', 'type': 'work', 'environment_id': 'env-srv',
+        'state': 'pending',
+        'data': {'type': 'session', 'id': 'cse_w1'},
+        'secret': _encode_work_secret(),
+        'created_at': '2026-05-24',
+    }
+    api = FakeApiClient(poll_results=[work])
+    spawner = FakeSpawner()
+    cancel = asyncio.Event()
+
+    async def runner() -> None:
+        await run_bridge_loop(
+            _bridge_config(), 'env-srv', 'sec-srv', api, spawner, cancel,
+        )
+
+    task = asyncio.create_task(runner())
+    # Wait for the spawn.
+    for _ in range(30):
+        await asyncio.sleep(0.01)
+        if spawner.spawns:
+            break
+
+    assert len(spawner.spawns) == 1
+    opts, _wd = spawner.spawns[0]
+    assert opts['session_id'] == 'cse_w1'
+    assert opts['access_token'] == 'sess-jwt'
+    assert opts['use_ccr_v2'] is True
+    # Ack happened.
+    assert any(w == 'work-1' for _e, w, _t in api.ack_calls)
+
+    # Complete the session + cancel the loop.
+    spawner.handles[0].complete('completed')
+    cancel.set()
+    await task
+
+
+@pytest.mark.asyncio
+async def test_run_loop_respects_capacity() -> None:
+    """With max_sessions=1, second work is not spawned while first is active."""
+    work1 = {
+        'id': 'w1', 'type': 'work', 'environment_id': 'env-srv',
+        'state': 'pending',
+        'data': {'type': 'session', 'id': 'cse_w1'},
+        'secret': _encode_work_secret(),
+        'created_at': '2026-05-24',
+    }
+    work2 = {
+        'id': 'w2', 'type': 'work', 'environment_id': 'env-srv',
+        'state': 'pending',
+        'data': {'type': 'session', 'id': 'cse_w2'},
+        'secret': _encode_work_secret(),
+        'created_at': '2026-05-24',
+    }
+    api = FakeApiClient(poll_results=[work1, work2])
+    spawner = FakeSpawner()
+    cancel = asyncio.Event()
+
+    task = asyncio.create_task(run_bridge_loop(
+        _bridge_config(max_sessions=1),
+        'env-srv', 'sec-srv', api, spawner, cancel,
+    ))
+    for _ in range(30):
+        await asyncio.sleep(0.01)
+        if spawner.spawns:
+            break
+
+    assert len(spawner.spawns) == 1  # capacity 1; second not yet spawned
+
+    cancel.set()
+    await task
+
+
+@pytest.mark.asyncio
+async def test_run_loop_gives_up_on_410() -> None:
+    """410 (env expired) → BridgeHeadlessPermanentError raised."""
+    class FailingApi(FakeApiClient):
+        async def poll_for_work(self, *_a: Any, **_kw: Any) -> Any:
+            raise BridgeFatalError(
+                'gone', status=410, error_type='environment_expired',
+            )
+
+    api = FailingApi()
+    spawner = FakeSpawner()
+    cancel = asyncio.Event()
+    with pytest.raises(BridgeHeadlessPermanentError):
+        await run_bridge_loop(
+            _bridge_config(),
+            'env-srv', 'sec-srv', api, spawner, cancel,
+        )
+
+
+@pytest.mark.asyncio
+async def test_run_loop_shutdown_kills_sessions() -> None:
+    """Cancel during a running session → kill, then wait, then deregister."""
+    work = {
+        'id': 'w1', 'type': 'work', 'environment_id': 'env-srv',
+        'state': 'pending',
+        'data': {'type': 'session', 'id': 'cse_w1'},
+        'secret': _encode_work_secret(),
+        'created_at': '2026-05-24',
+    }
+    api = FakeApiClient(poll_results=[work])
+    spawner = FakeSpawner()
+    cancel = asyncio.Event()
+    # Speed up the shutdown grace so the test finishes quickly.
+    fast_backoff = BackoffConfig(shutdown_grace_ms=200)
+
+    task = asyncio.create_task(run_bridge_loop(
+        _bridge_config(), 'env-srv', 'sec-srv', api, spawner, cancel,
+        backoff_config=fast_backoff,
+    ))
+    for _ in range(30):
+        await asyncio.sleep(0.01)
+        if spawner.handles:
+            break
+    handle = spawner.handles[0]
+
+    # Don't complete the session — force shutdown to use the grace timeout.
+    cancel.set()
+
+    # Allow the shutdown sequence to run (kill → wait → force_kill → deregister).
+    async def auto_complete_after_grace() -> None:
+        await asyncio.sleep(0.3)  # past the 200ms grace
+        handle.complete('interrupted')
+
+    asyncio.create_task(auto_complete_after_grace())
+    await task
+
+    assert handle.killed
+    # Past grace, force_kill was called.
+    assert handle.force_killed
+    # stop_work + deregister fired.
+    assert api.deregister_calls == ['env-srv']
+
+
+# ── bridge_main entry point ─────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_bridge_main_help_returns_zero() -> None:
+    code = await bridge_main(['--help'])
+    assert code == 0
+
+
+@pytest.mark.asyncio
+async def test_bridge_main_parse_error_returns_one() -> None:
+    code = await bridge_main(['--unknown'])
+    assert code == 1
+
+
+@pytest.mark.asyncio
+async def test_bridge_main_registration_failure_returns_two() -> None:
+    class FailRegister(FakeApiClient):
+        async def register_bridge_environment(self, _c: Any) -> dict[str, str]:
+            raise BridgeFatalError('boom', status=500)
+
+    code = await bridge_main(
+        [], api=FailRegister(), spawner=FakeSpawner(),
+    )
+    assert code == 2
+
+
+@pytest.mark.asyncio
+async def test_bridge_main_happy_path_with_cancel_event_returns_zero() -> None:
+    api = FakeApiClient()
+    spawner = FakeSpawner()
+    cancel = asyncio.Event()
+
+    async def stop_soon() -> None:
+        await asyncio.sleep(0.05)
+        cancel.set()
+
+    asyncio.create_task(stop_soon())
+    code = await bridge_main(
+        ['--capacity', '2'], api=api, spawner=spawner,
+        cancel_event=cancel,
+    )
+    assert code == 0
+    # Registration happened.
+    assert len(api.register_calls) == 1
+    assert api.register_calls[0].max_sessions == 2
+    # Deregistration happened.
+    assert api.deregister_calls == ['env-srv']
+
+
+@pytest.mark.asyncio
+async def test_bridge_main_permanent_error_returns_three() -> None:
+    class GoneApi(FakeApiClient):
+        async def poll_for_work(self, *_a: Any, **_kw: Any) -> Any:
+            raise BridgeFatalError(
+                'gone', status=410, error_type='environment_expired',
+            )
+
+    cancel = asyncio.Event()
+    code = await bridge_main(
+        [], api=GoneApi(), spawner=FakeSpawner(),
+        cancel_event=cancel,
+    )
+    assert code == 3
