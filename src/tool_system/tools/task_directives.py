@@ -1,0 +1,356 @@
+"""TaskDirectives tool — Manager injects priority messages to Workers.
+
+Phase M1 of the Supervisor/Worker Agent Pattern. Manager Agent uses this
+tool to send instructions to Worker agents with priority queue support.
+
+Mirrors the intervention side of the chapter-10 "Manager monitors Workers"
+pattern. The companion tool ``TaskInspect`` handles state observation.
+"""
+from __future__ import annotations
+
+from typing import Any
+
+from ..build_tool import Tool, build_tool
+from ..context import ToolContext
+from ..errors import ToolInputError
+from ..protocol import ToolResult
+
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+_VALID_PRIORITIES = {"normal", "high", "critical"}
+_VALID_PERMISSION_MODES = {"bypassPermissions", "bubble", "plan", "default"}
+
+# Priority prefix tags (English per design decision)
+_PRIORITY_PREFIX = {
+    "critical": "[CRITICAL] ",
+    "high": "[HIGH] ",
+    "normal": "",
+}
+
+
+# ---------------------------------------------------------------------------
+# Priority-aware queue helper
+# ---------------------------------------------------------------------------
+
+def _queue_priority_message(
+    task_id: str,
+    message: str,
+    priority: str,
+    registry: Any,
+) -> bool:
+    """Queue a message with priority handling.
+
+    Mirrors the priority queue behavior from the design doc:
+    - critical/high: prepend to head (worker processes next turn)
+    - normal: append to tail (FIFO)
+
+    Returns True if the message was queued successfully.
+    """
+    from dataclasses import replace
+    from src.tasks.local_agent import LocalAgentTaskState
+    from src.tasks_core import is_terminal_task_status
+
+    if priority not in _VALID_PRIORITIES:
+        priority = "normal"
+
+    queued = False
+
+    def _enqueue(prev: Any) -> Any:
+        nonlocal queued
+        if not isinstance(prev, LocalAgentTaskState):
+            return prev
+        if is_terminal_task_status(prev.status):
+            return prev
+
+        prefix = _PRIORITY_PREFIX.get(priority, "")
+        formatted_message = f"[MANAGER] {prefix}{message}"
+
+        queued = True
+        if priority in ("critical", "high"):
+            # Prepend to head — worker processes next turn
+            return replace(prev, pending_messages=[formatted_message, *prev.pending_messages])
+        else:
+            # Append to tail — FIFO
+            return replace(prev, pending_messages=[*prev.pending_messages, formatted_message])
+
+    registry.update(task_id, _enqueue)
+    return queued
+
+
+# ---------------------------------------------------------------------------
+# Permission rules storage on task state
+# ---------------------------------------------------------------------------
+
+def _apply_permission_config(
+    task_id: str,
+    permission_mode: str | None,
+    always_allow_rules: list[dict[str, str]] | None,
+    registry: Any,
+) -> bool:
+    """Apply permission configuration to a worker's task state.
+
+    Stores the permission config on the task state so it can be retrieved
+    when the worker runs. This allows Manager to set per-worker permission
+    levels via TaskDirectives.
+
+    Returns True if config was applied successfully.
+    """
+    from dataclasses import replace
+    from src.tasks.local_agent import LocalAgentTaskState
+
+    if permission_mode is None and always_allow_rules is None:
+        return True  # Nothing to apply
+
+    applied = False
+
+    def _apply(prev: Any) -> Any:
+        nonlocal applied
+        if not isinstance(prev, LocalAgentTaskState):
+            return prev
+
+        applied = True
+        updates: dict[str, Any] = {}
+        if permission_mode is not None:
+            updates["permission_mode"] = permission_mode
+        if always_allow_rules is not None:
+            updates["always_allow_rules"] = always_allow_rules
+
+        if not updates:
+            return prev
+        return replace(prev, **updates)
+
+    registry.update(task_id, _apply)
+    return applied
+
+
+# ---------------------------------------------------------------------------
+# Tool call implementation
+# ---------------------------------------------------------------------------
+
+def _task_directives_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
+    """Inject directive messages into Worker agents.
+
+    Input:
+        to: list of target task_ids; ['*'] means all running workers
+        priority: 'normal' (default), 'high', or 'critical'
+        message: the directive content
+        reason: optional explanation for context
+        worker_permission_mode: optional permission mode to set for workers
+        always_allow_rules: optional permission whitelist rules
+
+    Output:
+        delivered: task_ids that received the message
+        queued: task_ids that were queued (worker not found or terminal)
+        failed: task_ids that could not be delivered
+    """
+    # Permission gate — Phase M4 will add proper filtering
+    # if not _is_manager_agent(context):
+    #     raise ToolInputError("permission denied: TaskDirectives requires Manager Agent privileges")
+
+    raw_to = tool_input.get("to")
+    if not isinstance(raw_to, list) or len(raw_to) == 0:
+        raise ToolInputError("'to' is required and must be a non-empty array of task IDs")
+    to_list = [str(t) for t in raw_to]
+
+    message = tool_input.get("message")
+    if not isinstance(message, str) or not message.strip():
+        raise ToolInputError("'message' is required and must be a non-empty string")
+
+    priority = str(tool_input.get("priority", "normal"))
+    if priority not in _VALID_PRIORITIES:
+        raise ToolInputError(
+            f"priority must be one of: {sorted(_VALID_PRIORITIES)}"
+        )
+
+    reason = tool_input.get("reason")
+    if reason is not None and not isinstance(reason, str):
+        raise ToolInputError("reason must be a string when provided")
+
+    # Optional permission config
+    raw_permission_mode = tool_input.get("worker_permission_mode")
+    permission_mode: str | None = None
+    if raw_permission_mode is not None:
+        if not isinstance(raw_permission_mode, str) or raw_permission_mode not in _VALID_PERMISSION_MODES:
+            raise ToolInputError(
+                f"worker_permission_mode must be one of: {sorted(_VALID_PERMISSION_MODES)}"
+            )
+        permission_mode = raw_permission_mode
+
+    raw_always_allow_rules = tool_input.get("always_allow_rules")
+    always_allow_rules: list[dict[str, str]] | None = None
+    if raw_always_allow_rules is not None:
+        if not isinstance(raw_always_allow_rules, list):
+            raise ToolInputError("always_allow_rules must be an array when provided")
+        for rule in raw_always_allow_rules:
+            if not isinstance(rule, dict) or "tool" not in rule or "pattern" not in rule:
+                raise ToolInputError(
+                    "each always_allow_rules entry must have 'tool' and 'pattern' fields"
+                )
+        always_allow_rules = [
+            {"tool": str(r["tool"]), "pattern": str(r["pattern"])}
+            for r in raw_always_allow_rules
+        ]
+
+    runtime = getattr(context, "runtime_tasks", None)
+    if runtime is None:
+        return ToolResult(
+            name="TaskDirectives",
+            output={"delivered": [], "queued": [], "failed": list(to_list)},
+            is_error=True,
+        )
+
+    from src.tasks.local_agent import LocalAgentTaskState
+    from src.tasks_core import is_terminal_task_status
+
+    delivered: list[str] = []
+    queued: list[str] = []
+    failed: list[str] = []
+
+    # Broadcast to all running workers
+    if to_list == ["*"]:
+        target_ids: list[str] = []
+        for task_id, state in runtime._tasks.items():
+            if isinstance(state, LocalAgentTaskState) and not is_terminal_task_status(state.status):
+                target_ids.append(task_id)
+    else:
+        target_ids = to_list
+
+    for task_id in target_ids:
+        ok = _queue_priority_message(task_id, message, priority, runtime)
+        if not ok:
+            failed.append(task_id)
+            continue
+
+        # Apply permission config if provided
+        if permission_mode is not None or always_allow_rules is not None:
+            _apply_permission_config(task_id, permission_mode, always_allow_rules, runtime)
+
+        state = runtime.get(task_id)
+        if state is None:
+            queued.append(task_id)
+        elif is_terminal_task_status(state.status):
+            queued.append(task_id)
+        else:
+            delivered.append(task_id)
+
+    output: dict[str, Any] = {
+        "delivered": delivered,
+        "queued": queued,
+        "failed": failed,
+    }
+    if reason:
+        output["reason"] = reason
+
+    is_error = len(failed) == len(target_ids) if target_ids else False
+    return ToolResult(
+        name="TaskDirectives",
+        output=output,
+        is_error=is_error,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Auto-classifier helper
+# ---------------------------------------------------------------------------
+
+def _task_directives_classifier_input(input_data: dict) -> str:
+    """Mirror TS ``TaskDirectivesTool.toAutoClassifierInput``."""
+    to_list = input_data.get("to", [])
+    priority = input_data.get("priority", "normal")
+    count = len(to_list) if to_list else "all"
+    return f"directive to {count} worker(s) [{priority}]"
+
+
+# ---------------------------------------------------------------------------
+# Tool definition
+# ---------------------------------------------------------------------------
+
+TaskDirectivesTool: Tool = build_tool(
+    name="TaskDirectives",
+    input_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "to": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Target task IDs. Use ['*'] to broadcast to all running workers. "
+                    "Each target must be a local_agent task ID."
+                ),
+            },
+            "priority": {
+                "type": "string",
+                "enum": ["normal", "high", "critical"],
+                "default": "normal",
+                "description": (
+                    "Message priority. critical/high prepend to queue head (worker "
+                    "processes next turn); normal appends to tail (FIFO)."
+                ),
+            },
+            "message": {
+                "type": "string",
+                "description": "Directive content. Supports tags like [OBSERVE], [INTERVENE], [CORRECT].",
+            },
+            "reason": {
+                "type": "string",
+                "description": "Optional intervention reason for Worker context.",
+            },
+            "worker_permission_mode": {
+                "type": "string",
+                "enum": ["bypassPermissions", "bubble", "plan", "default"],
+                "description": "Optional permission mode to set for the target Worker.",
+            },
+            "always_allow_rules": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "tool": {"type": "string"},
+                        "pattern": {"type": "string"},
+                    },
+                    "required": ["tool", "pattern"],
+                },
+                "description": "Optional permission whitelist rules for the Worker.",
+            },
+        },
+        "required": ["to", "message"],
+    },
+    call=_task_directives_call,
+    prompt="""\
+Inject directive messages into Worker agents.
+
+Use this tool when you need to:
+- Correct Worker behavior (use [CORRECT] or [INTERVENE] tag)
+- Alert Worker to new information (use [OBSERVE] tag)
+- Stop a Worker from proceeding in a dangerous direction
+- Update Worker priority when circumstances change
+
+Priority affects queue ordering:
+- critical: prepended to queue head, Worker processes immediately next turn
+- high: prepended to queue head, Worker processes next turn
+- normal: appended to tail, Worker processes in FIFO order
+
+You can optionally configure Worker permission settings:
+- worker_permission_mode: bypassPermissions (no approval), bubble (human approves),
+  plan (Manager approves via plan_approval_response), default (standard approval)
+- always_allow_rules: whitelist of tool+pattern rules the Worker can execute
+
+Broadcast to all workers with to=['*'].
+""",
+    description="Inject directive messages into Worker agents (Manager only).",
+    strict=True,
+    max_result_size_chars=2000,
+    is_read_only=lambda _input: False,
+    is_concurrency_safe=lambda _input: False,
+    to_auto_classifier_input=_task_directives_classifier_input,
+)
+
+
+__all__ = [
+    "TaskDirectivesTool",
+]

@@ -603,7 +603,7 @@ TRANSCRIPT_CLASSIFIER 分析:
 
 ### F-20: Agent 间自主观察与消息交互
 
-**状态**: ⏳ 规划中
+**状态**: 🔄 开发中
 **优先级**: P1
 **目标**: 实现 Manager Agent 全自动观察 Worker Agent 状态并注入指令，支持优先级队列和权限审批
 
@@ -660,12 +660,12 @@ TRANSCRIPT_CLASSIFIER 分析:
 
 | 阶段 | 内容 | 优先级 | 状态 |
 |------|------|--------|------|
-| Phase M1 | `TaskInspect` + `TaskDirectives` 核心工具 | P1 | ⏳ 待开始 |
-| Phase M2 | `queue_pending_message` 支持 priority | P1 | ⏳ 待开始 |
-| Phase M3 | `drain_pending_messages` 按优先级消费 | P1 | ⏳ 待开始 |
-| Phase M4 | 工具可见性过滤（仅 Manager 可调用） | P1 | ⏳ 待开始 |
-| Phase M5 | 权限规则传递（`always_allow_rules` + `worker_permission_mode`） | P1 | ⏳ 待开始 |
-| Phase M6 | 测试与联调 | P2 | ⏳ 待开始 |
+| Phase M1 | `TaskInspect` + `TaskDirectives` 核心工具 | P1 | ✅ 完成 |
+| Phase M2 | `queue_pending_message` 支持 priority | P1 | ✅ 完成 |
+| Phase M3 | `drain_pending_messages` 按优先级消费 | P1 | ✅ 完成 |
+| Phase M4 | 工具可见性过滤（仅 Manager 可调用） | P1 | ✅ 完成 |
+| Phase M5 | 权限规则传递（`always_allow_rules` + `worker_permission_mode`） | P1 | ✅ 完成 |
+| Phase M6 | 测试与联调 | P2 | 🔄 进行中 |
 
 ---
 

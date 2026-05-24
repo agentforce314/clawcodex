@@ -91,6 +91,10 @@ class LocalAgentTaskState(TaskStateBase):
     # message onto the resumed agent's pending_messages instead.
     # Reset to False on the fresh state ``register_async_agent`` upserts.
     is_resuming: bool = False
+    # Phase M5: permission config set by Manager via TaskDirectives.
+    # These fields allow Manager to control worker permission behavior.
+    permission_mode: str | None = None
+    always_allow_rules: list[dict[str, str]] | None = None
 
 
 def is_local_agent_task(state: Any) -> bool:
@@ -164,6 +168,7 @@ def queue_pending_message(
     task_id: str,
     message: str,
     registry: "RuntimeTaskRegistry",
+    priority: str = "normal",
 ) -> bool:
     """Append a message to the agent's pending-messages inbox.
 
@@ -172,21 +177,30 @@ def queue_pending_message(
     in TS LocalAgentTask.tsx; mirrored via
     ``is_local_agent_task_terminal``).
 
+    Priority handling (Phase M2):
+    - ``critical`` / ``high``: prepend to head — worker processes next turn
+    - ``normal``: append to tail — FIFO order
+
     Drained at tool-round boundaries by ``drain_pending_messages``
     (Chunk D / WI-3.3 hooks the drain into ``run_agent``).
     """
     queued = False
 
-    def _append(prev: TaskStateBase) -> TaskStateBase:
+    def _enqueue(prev: TaskStateBase) -> TaskStateBase:
         nonlocal queued
         if not isinstance(prev, LocalAgentTaskState):
             return prev
         if is_terminal_task_status(prev.status):
             return prev
         queued = True
+        if priority in ("critical", "high"):
+            # Prepend to head — worker processes next turn
+            prefix = "[CRITICAL] " if priority == "critical" else "[HIGH] "
+            return replace(prev, pending_messages=[prefix + message, *prev.pending_messages])
+        # normal: append to tail
         return replace(prev, pending_messages=[*prev.pending_messages, message])
 
-    registry.update(task_id, _append)
+    registry.update(task_id, _enqueue)
     return queued
 
 
@@ -194,11 +208,16 @@ def drain_pending_messages(
     task_id: str,
     registry: "RuntimeTaskRegistry",
 ) -> list[str]:
-    """Atomically pop every pending message; return them in FIFO order.
+    """Atomically pop every pending message; return them in priority order.
 
     Sized for the per-turn drain in ``run_agent`` (Chunk D / WI-3.3) —
     the entire inbox is consumed at the boundary, the agent processes
-    each message in order, then the next turn begins.
+    each message in priority order, then the next turn begins.
+
+    Priority ordering (Phase M3):
+    - critical messages ([CRITICAL] prefix) are returned first
+    - high messages ([HIGH] prefix) are returned second
+    - normal messages (no prefix) are returned last (FIFO within each band)
     """
     drained: list[str] = []
 
@@ -208,7 +227,16 @@ def drain_pending_messages(
             return prev
         if not prev.pending_messages:
             return prev
-        drained = list(prev.pending_messages)
+        messages = list(prev.pending_messages)
+        # Sort by priority: critical > high > normal
+        def _priority_key(msg: str) -> tuple[int, int]:
+            if msg.startswith("[CRITICAL] "):
+                return (0, 0)
+            if msg.startswith("[HIGH] "):
+                return (1, 0)
+            return (2, 0)
+        messages.sort(key=_priority_key)
+        drained = messages
         return replace(prev, pending_messages=[])
 
     registry.update(task_id, _empty)
