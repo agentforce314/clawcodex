@@ -2659,7 +2659,499 @@ def jitter_frac(task_id: str) -> float:
     return frac if math.isfinite(frac) else 0
 ```
 
-### 9.6 任务过期机制
+### 9.6 错失任务通知 (buildMissedTaskNotification)
+
+当一次性任务在 Claude 关闭期间错失了执行时间，在重启时需要询问用户是否立即执行。
+
+**功能**: 格式化错失任务的通知文本，用于向用户展示错失的任务列表。
+
+**Python 实现**:
+
+```python
+def build_missed_task_notification(missed: list[CronTask]) -> str:
+    """
+    构建错失任务通知文本。
+    
+    格式:
+    - 标题说明任务已被删除
+    - 指示用户使用 AskUserQuestion 确认后再执行
+    - 每个任务用代码块包裹,防止 prompt injection
+    
+    参数:
+        missed: 错失的一次性任务列表
+    
+    返回:
+        格式化后的通知文本
+    """
+    plural = len(missed) > 1
+    
+    # 标题
+    header = (
+        f"The following one-shot scheduled task{plural and 's were' or ' was'} "
+        f"missed while ClawCodex was not running. "
+        f"{plural and 'They have' or 'It has'} already been removed from "
+        f".claude/scheduled_tasks.json.\n\n"
+        f"Do NOT execute {plural and 'these prompts' or 'this prompt'} yet. "
+        f"First use the AskUserQuestion tool to ask whether to run "
+        f"{plural and 'each one' or 'it'} now. "
+        f"Only execute if the user confirms."
+    )
+    
+    # 任务块
+    blocks = []
+    for t in missed:
+        # 任务元信息
+        meta = f"[{cron_to_human(t.cron)}, created {datetime.fromtimestamp(t.created_at/1000).locale_string()}]"
+        
+        # 计算最长反引号序列,确保不闭合用户 prompt 中的代码块
+        longest_run = max((len(run) for run in re.findall(r"`+", t.prompt) or [""]))
+        fence = "`" * max(3, longest_run + 1)
+        
+        blocks.append(f"{meta}\n{fence}\n{t.prompt}\n{fence}")
+    
+    return header + "\n\n" + "\n\n".join(blocks)
+```
+
+**安全考虑**:
+- 使用比用户 prompt 中最长反引号序列更长的 fence 字符,防止 prompt 中的 ``` 提前关闭代码块
+- 指示模型先询问用户,再执行,防止 prompt injection 攻击
+
+**使用场景**:
+
+```python
+# 在 scheduler 的 load() 函数中,初始化时检测错失任务
+if initial_load:
+    missed = find_missed_tasks(tasks, now)
+    if missed:
+        if on_missed:
+            on_missed(missed)  # daemon 模式,直接传递任务列表
+        else:
+            on_fire(build_missed_task_notification(missed))  # REPL 模式,显示通知
+```
+
+---
+
+### 9.7 GrowthBook 动态配置 (cron_jitter_config.py)
+
+**目的**: 支持运维团队在不停机的情况下动态调整 jitter 参数,用于应对突发负载。
+
+**架构设计**:
+
+```
+cron_jitter_config.py     # 动态配置读取层
+        ↓
+GrowthBook / Feature Gate # 远程配置源 (可选)
+        ↓
+CronJitterConfig          # 配置对象
+        ↓
+cron_scheduler.py         # 消费配置
+```
+
+**Python 实现**:
+
+```python
+from dataclasses import dataclass
+from typing import Optional, Callable
+
+# 配置刷新间隔 (毫秒)
+JITTER_CONFIG_REFRESH_MS = 60 * 1000
+
+# GrowthBook schema (Zod 等效 Python)
+@dataclass
+class CronJitterConfig:
+    recurring_frac: float       # 0-1, 间隔的百分比
+    recurring_cap_ms: int       # 上限,最多延迟毫秒
+    one_shot_max_ms: int        # 一次性任务最大提前毫秒
+    one_shot_floor_ms: int      # 一次性任务最小提前毫秒
+    one_shot_minute_mod: int    # 分钟模数 (:00/:30)
+    recurring_max_age_ms: int   # 周期性任务最大存活毫秒
+
+DEFAULT_CRON_JITTER_CONFIG = CronJitterConfig(
+    recurring_frac=0.1,
+    recurring_cap_ms=15 * 60 * 1000,      # 15分钟
+    one_shot_max_ms=90 * 1000,            # 90秒
+    one_shot_floor_ms=0,
+    one_shot_minute_mod=30,
+    recurring_max_age_ms=7 * 24 * 60 * 60 * 1000,  # 7天
+)
+
+# 配置验证
+HALF_HOUR_MS = 30 * 60 * 1000
+THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000
+
+def validate_jitter_config(cfg: dict) -> CronJitterConfig:
+    """验证并返回配置,无效时返回默认值"""
+    try:
+        # 范围检查
+        if not (0 <= cfg.get("recurring_frac", 0) <= 1):
+            return DEFAULT_CRON_JITTER_CONFIG
+        if not (0 <= cfg.get("recurring_cap_ms", 0) <= HALF_HOUR_MS):
+            return DEFAULT_CRON_JITTER_CONFIG
+        if not (0 <= cfg.get("one_shot_max_ms", 0) <= HALF_HOUR_MS):
+            return DEFAULT_CRON_JITTER_CONFIG
+        if cfg.get("one_shot_floor_ms", 0) > cfg.get("one_shot_max_ms", 0):
+            return DEFAULT_CRON_JITTER_CONFIG
+        return CronJitterConfig(**cfg)
+    except (TypeError, ValueError):
+        return DEFAULT_CRON_JITTER_CONFIG
+
+def get_cron_jitter_config() -> CronJitterConfig:
+    """
+    从 GrowthBook 读取 `tengu_kairos_cron_config` 配置。
+    
+    缓存过期时间: JITTER_CONFIG_REFRESH_MS (60秒)
+    支持运行时动态调整,无需重启客户端。
+    
+    Returns:
+        CronJitterConfig 实例(远程或默认)
+    """
+    # 实际实现中调用 GrowthBook SDK
+    # raw = get_feature_value_cached_with_refresh(
+    #     "tengu_kairos_cron_config",
+    #     DEFAULT_CRON_JITTER_CONFIG,
+    #     JITTER_CONFIG_REFRESH_MS,
+    # )
+    # return validate_jitter_config(raw)
+    return DEFAULT_CRON_JITTER_CONFIG
+```
+
+**与 Scheduler 的集成**:
+
+```python
+class CronScheduler:
+    def __init__(
+        self,
+        # ...
+        get_jitter_config: Optional[Callable[[], CronJitterConfig]] = None,
+        # ...
+    ):
+        self.get_jitter_config = get_jitter_config or (lambda: DEFAULT_CRON_JITTER_CONFIG)
+    
+    def check(self):
+        # 每个 tick 重新读取配置
+        jitter_cfg = self.get_jitter_config()
+        # ... 使用 jitter_cfg 计算下次触发时间
+```
+
+**配置推送示例** (ops 场景):
+
+```json
+// GrowthBook 推送的配置
+{
+  "tengu_kairos_cron_config": {
+    "recurringFrac": 0.15,
+    "recurringCapMs": 300000,
+    "oneShotMaxMs": 300000,
+    "oneShotFloorMs": 30000,
+    "oneShotMinuteMod": 15,
+    "recurringMaxAgeMs": 604800000
+  }
+}
+```
+
+---
+
+### 9.8 /loop 命令 (loop_skill.py)
+
+**功能**: 提供 `/loop [interval] <prompt>` 命令,简化周期性任务的创建。
+
+**CLI 界面**:
+
+```
+/loop 5m /babysit-prs     # 每5分钟执行 /babysit-prs
+/loop 30m check the deploy # 每30分钟执行 "check the deploy"
+/loop 1h /standup 1       # 每小时执行 /standup 1
+/loop check the deploy    # 默认10分钟间隔
+/loop check the deploy every 20m  # 同上
+```
+
+**Interval → cron 转换表**:
+
+| 输入格式 | Cron 表达式 | 说明 |
+|---------|-------------|------|
+| `Nm` (N ≤ 59) | `*/N * * * *` | 每 N 分钟 |
+| `Nm` (N ≥ 60) | `0 */H * * *` | 转为小时 (H = N/60, 必须整除24) |
+| `Nh` (N ≤ 23) | `0 */N * * *` | 每 N 小时 |
+| `Nd` | `0 0 */N * *` | 每 N 天午夜 |
+| `Ns` | `ceil(N/60)m` | 秒转分钟 (最小1分钟) |
+
+**解析优先级**:
+
+1. **前导 token**: 首个 `\d+[smhd]` 匹配为间隔,其余为 prompt
+2. **尾部 "every" 从句**: `every <N><unit>` 格式,用于分离 prompt
+3. **默认**: 间隔 `10m`,整个输入为 prompt
+
+**Python 实现**:
+
+```python
+import re
+from typing import Tuple
+
+DEFAULT_INTERVAL = "10m"
+DEFAULT_MAX_AGE_DAYS = 7
+
+def parse_interval_input(args: str) -> Tuple[str, str]:
+    """
+    解析 /loop 命令输入,返回 (interval, prompt)。
+    
+    优先级:
+    1. 前导 token: 5m /foo -> interval="5m", prompt="/foo"
+    2. 尾部 every: "check every 20m" -> interval="20m", prompt="check"
+    3. 默认: "check the deploy" -> interval="10m", prompt="check the deploy"
+    """
+    args = args.strip()
+    if not args:
+        return "", ""
+    
+    # 规则1: 前导 token
+    lead_match = re.match(r"^(\d+[smhd])\s+(.+)$", args)
+    if lead_match:
+        interval = lead_match.group(1)
+        prompt = lead_match.group(2)
+        return interval, prompt
+    
+    # 规则2: 尾部 every
+    every_match = re.search(r"\s+every\s+(\d+)\s*([smhd])\s*$", args, re.IGNORECASE)
+    if every_match:
+        n, unit = every_match.groups()
+        # 检查 "every" 后面是否真的是时间表达,而不是 "check every PR"
+        before_every = args[:every_match.start()]
+        if before_every.strip():
+            interval = f"{n}{unit}"
+            prompt = before_every.strip()
+            return interval, prompt
+    
+    # 规则3: 默认
+    return DEFAULT_INTERVAL, args
+
+def interval_to_cron(interval: str) -> Tuple[str, str]:
+    """
+    将 interval 字符串转为 cron 表达式。
+    
+    Returns: (cron, human_readable)
+    """
+    match = re.match(r"^(\d+)([smhd])$", interval)
+    if not match:
+        return interval, interval  # fallback
+    
+    n, unit = int(match.group(1)), match.group(2)
+    
+    if unit == "s":
+        n = max(1, (n + 59) // 60)  # ceil to minutes
+        unit = "m"
+    
+    if unit == "m":
+        if n <= 59:
+            return f"*/{n} * * * *", f"every {n} minutes"
+        else:
+            h = n // 60
+            if n % 60 == 0 and h <= 24 and 24 % h == 0:
+                return f"0 */{h} * * *", f"every {h} hours"
+            return f"*/{n} * * * *", f"every {n} minutes (rounded)"
+    
+    if unit == "h":
+        if 1 <= n <= 23:
+            return f"0 */{n} * * *", f"every {n} hours"
+        return f"0 */{n} * * *", f"every {n} hours"
+    
+    if unit == "d":
+        return f"0 0 */{n} * *", f"every {n} days"
+    
+    return interval, interval
+
+def build_loop_prompt(args: str) -> str:
+    """
+    生成 /loop 命令的 prompt,指导 LLM 调用 CronCreateTool。
+    """
+    interval, prompt_text = parse_interval_input(args)
+    
+    if not prompt_text:
+        return f"""Usage: /loop [interval] <prompt>
+
+Run a prompt or slash command on a recurring interval.
+
+Intervals: Ns, Nm, Nh, Nd (e.g. 5m, 30m, 2h, 1d). Minimum granularity is 1 minute.
+If no interval is specified, defaults to {DEFAULT_INTERVAL}.
+
+Examples:
+  /loop 5m /babysit-prs
+  /loop 30m check the deploy
+  /loop 1h /standup 1
+  /loop check the deploy          (defaults to {DEFAULT_INTERVAL})
+  /loop check the deploy every 20m"""
+    
+    cron_expr, human_readable = interval_to_cron(interval)
+    
+    return f"""# /loop — schedule a recurring prompt
+
+Parse the input below into `[interval] <prompt…>` and schedule it with CronCreate.
+
+## Parsing
+
+- `{interval} {prompt_text}` → interval `{interval}`, prompt `{prompt_text}`
+
+## Interval → cron
+
+- `{interval}` → `{cron_expr}` ({human_readable})
+
+## Action
+
+1. Call CronCreate with:
+   - `cron`: `{cron_expr}`
+   - `prompt`: `{prompt_text}`
+   - `recurring`: `true`
+2. Confirm: what's scheduled, the cron expression, the cadence, that recurring tasks auto-expire after {DEFAULT_MAX_AGE_DAYS} days, and that they can cancel sooner with CronDelete (include the job ID).
+3. **Then immediately execute the parsed prompt now** — don't wait for the first cron fire. If it's a slash command, invoke it via the Skill tool; otherwise act on it directly.
+
+## Input
+
+{args}"""
+```
+
+---
+
+### 9.9 autonomyRuns 集成
+
+**目的**: 将 cron 任务触发后的 prompt 集成到 ClawCodex 的命令队列系统,实现异步执行。
+
+**autonomyRuns 模块** (`autonomy_runs.py`) 负责:
+- 管理 autonomy runs 的生命周期 (queued/running/completed/failed/cancelled)
+- 持久化 runs 到 `~/.clawcodex/autonomy/runs.json`
+- 命令队列化 (`QueuedCommand`)
+- 防重放检查
+
+**核心函数**:
+
+```python
+@dataclass
+class AutonomyRunRecord:
+    run_id: str
+    runtime: str              # "automatic" | "flow_step"
+    trigger: str              # "scheduled-task" | ...
+    status: str               # "queued" | "running" | ...
+    root_dir: str
+    current_dir: str
+    source_id: Optional[str]   # 任务 ID (用于去重)
+    source_label: Optional[str]
+    prompt_preview: str
+    created_at: int
+    # ...
+
+async def create_autonomy_queued_prompt(
+    trigger: str,
+    base_prompt: str,
+    source_id: Optional[str] = None,
+    source_label: Optional[str] = None,
+    workload: str = "WORKLOAD_CRON",
+    should_create: Optional[Callable[[], bool]] = None,
+) -> Optional[QueuedCommand]:
+    """
+    创建 autonomy queued command。
+    
+    - 检查是否已有相同 source_id 的活跃 run (防重放)
+    - 准备 prompt
+    - 提交到命令队列
+    """
+    # 1. 防重放检查
+    if source_id and await has_active_autonomy_run_for_source(trigger, source_id):
+        return None
+    
+    # 2. 准备 autonomy turn prompt
+    prepared = await prepare_autonomy_turn_prompt(
+        base_prompt=base_prompt,
+        trigger=trigger,
+        root_dir=root_dir,
+        current_dir=current_dir,
+    )
+    
+    # 3. 提交到队列
+    return await commit_autonomy_queued_prompt(
+        prepared,
+        source_id=source_id,
+        source_label=source_label,
+        workload=workload,
+        should_create=should_create,
+    )
+```
+
+**与 Cron Scheduler 的集成**:
+
+```python
+# useScheduledTasks 中
+scheduler = createCronScheduler({
+    on_fire: lambda prompt: enqueue_scheduled_prompt(prompt),
+    on_fire_task: lambda task: handle_scheduled_task(task),
+    # ...
+})
+
+# 任务入队函数
+async def enqueue_scheduled_prompt(prompt: str):
+    command = await create_autonomy_queued_prompt(
+        trigger="scheduled-task",
+        base_prompt=prompt,
+        workload=WORKLOAD_CRON,
+    )
+    if command:
+        enqueue_pending_notification(command)
+
+# 处理任务触发 (含 agentId 路由)
+async def handle_scheduled_task(task: CronTask):
+    if task.agent_id:
+        # 路由到 teammate 队列
+        teammate = find_teammate_by_agent_id(task.agent_id)
+        if teammate and not is_terminal_status(teammate.status):
+            command = await create_scheduled_task_queued_command(task)
+            inject_message_to_teammate(teammate.id, command)
+        else:
+            # teammate 已退出,清理 orphaned cron
+            await remove_cron_tasks([task.id])
+    else:
+        # 主 REPL 队列
+        command = await create_scheduled_task_queued_command(task)
+        enqueue_pending_notification(command)
+        show_scheduled_task_fire_message(task)
+```
+
+**WORKLOAD_CRON 常量**:
+
+```python
+# 用于标识 cron 触发的 workload 类型
+WORKLOAD_CRON = "cron"
+
+# 在 autonomy_runs.py 中的使用
+command = await create_autonomy_queued_prompt(
+    trigger="scheduled-task",
+    base_prompt=task.prompt,
+    source_id=task.id,
+    source_label=task.prompt,
+    workload=WORKLOAD_CRON,  # 标记 workload 类型
+)
+```
+
+**runs.json 格式**:
+
+```json
+{
+  "runs": [
+    {
+      "runId": "uuid",
+      "runtime": "automatic",
+      "trigger": "scheduled-task",
+      "status": "queued",
+      "rootDir": "/path/to/project",
+      "currentDir": "/path/to/project",
+      "sourceId": "a1b2c3d4",
+      "sourceLabel": "Check my PRs",
+      "promptPreview": "Check my PRs",
+      "createdAt": 1700000000000
+    }
+  ]
+}
+```
+
+---
+
+### 9.10 任务过期机制
 
 ```python
 @dataclass

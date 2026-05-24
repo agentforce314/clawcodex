@@ -104,6 +104,32 @@ class ProgressReporter:
                 exc,
             )
 
+        # Also call TaskUpdateTool to update task metadata
+        try:
+            from ..tool_system.tools.tasks_v2 import _task_update_call
+
+            task_update_input = {
+                "taskId": self._current_task_id,
+                "metadata": {
+                    "phase": event.phase,
+                    "turn_count": event.turn_count,
+                    "phase_name": phase_name,
+                    "phase_complete": True,
+                },
+            }
+            _task_update_call(task_update_input, self._context)
+            logger.debug(
+                "Task metadata updated for task %s at phase %d",
+                self._current_task_id,
+                self._phase_count,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to update task metadata for task %s: %s",
+                self._current_task_id,
+                exc,
+            )
+
     def _on_turn_complete(
         self,
         event: TurnComplete,
