@@ -257,7 +257,87 @@ tools = ext.get_tools_for_config(default_config)  # 包含所有注册表工具
 
 ---
 
-### 3.2 Team 成员管理（Phase-7）
+### 3.2 Agent 阶段性进度汇报
+
+**状态**: 规划中
+**目标**: 在 Agent 编排中阶段性将结果汇报至任务看板，将任务看板提取为工具
+
+#### 三组合实现方案
+
+| 维度 | 方案 | 解决的问题 |
+|------|------|-----------|
+| **触发时机** | 方式一：检查点触发 | "什么时候汇报" — 在 Agent 的 phase/step 完成检查点自动触发 |
+| **工具形态** | 方式二：ProgressReportTool | "用什么汇报" — 封装专门的汇报工具，而不是直接调用 TaskUpdate |
+| **数据存储** | 方式三：ToolContext.tasks | "存在哪" — 通过 ToolContext.tasks 持久化 |
+
+三个方案**互补不冲突**，组合使用：
+
+```
+Agent 执行到检查点 (方式一)
+    ↓
+调用 ProgressReportTool (方式二)
+    ↓
+数据存入 ToolContext.tasks (方式三)
+```
+
+#### 架构设计
+
+```
+src/tool_system/tools/
+└── progress_report.py           # ProgressReportTool（新）
+
+src/orchestrator/
+├── agent_runner.py              # 事件流中新增 PhaseComplete 事件
+└── progress_reporter.py         # 汇报逻辑处理器（新）
+```
+
+#### ProgressReportTool 设计
+
+```python
+ProgressReportTool = build_tool(
+    name="ProgressReport",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "taskId": {"type": "string"},      # 任务 ID
+            "stage": {"type": "string"},       # 当前阶段名
+            "progress": {"type": "number"},    # 0-100 进度
+            "summary": {"type": "string"},    # 阶段性总结
+            "nextAction": {"type": "string"}, # 下一步动作
+            "metadata": {"type": "object"},   # 额外元数据
+        },
+        "required": ["taskId", "stage"]
+    },
+    call=_progress_report_call,
+    description="Report 阶段性进度至任务看板"
+)
+```
+
+#### 触发时机（方式一）
+
+在 `AgentRunner` 事件流中新增 `PhaseComplete` 事件：
+
+| 事件 | 触发位置 | 说明 |
+|------|---------|------|
+| `PhaseComplete` | `agent_runner.py` 的 phase 边界 | Agent 完成一个阶段（多个 turn 组成） |
+| `StepComplete` | tool call 完成后 | 每个工具调用完成（可选，粒度过细） |
+
+#### 数据持久化（方式三）
+
+现有 `TaskUpdateTool` 已支持 `metadata` 字段，ProgressReport 通过 metadata 扩展阶段信息。
+
+#### 与现有组件关系
+
+| 现有组件 | 集成点 | 说明 |
+|---------|--------|------|
+| `tasks_v2.py` | TaskUpdate/TaskCreate | 复用现有工具，通过 metadata 扩展 |
+| `StatusDashboard` | 状态展示 | 可消费汇报数据实时展示 |
+| `AgentRunner` | 事件流 | PhaseComplete 事件触发汇报 |
+| `ToolContext.tasks` | 存储后端 | 已有实现，无需修改 |
+
+---
+
+### 3.3 Team 成员管理（Phase-7）
 
 **状态**: 规划中
 **目标**: TeamCreate 扩展 `members` 数组，跟踪团队成员 Agent

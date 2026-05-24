@@ -50,10 +50,133 @@
 | F-17 | 工具系统按需加载（Tool System Extension） | P1 | ✅ 完成 | 四种工具模式（bare/default/clawcodex/all），4 bundle 简化设计，bundle 引用前缀 ":"，与上游解耦 |
 | F-18 | CreateAgentTool 动态工具创建 | P2 | 🔄 规划中 | Agent 可根据 CLI/API 规范动态创建工具，Meta Tool 能力，bash/http/python 三种 call_impl 安全限制 |
 | F-19 | 工具/Skill 调用统计（跨会话） | P2 | 🔄 规划中 | JSON Lines 日志持久化，按 agent_id 统计工具和 Skill 调用频率、耗时、错误率，支持所有会话 |
+| F-20 | Agent 阶段性进度汇报 | P2 | 🔄 规划中 | 三组合方案：检查点触发 + ProgressReportTool + ToolContext.tasks 持久化 |
 
 ---
 
-## F-19: 工具/Skill 调用统计（跨会话）
+## F-20: Agent 阶段性进度汇报
+
+**状态**: 🔄 规划中
+**优先级**: P2
+**目标**: 在 Agent 编排中阶段性将结果汇报至任务看板，将任务看板提取为工具
+
+#### 背景
+
+在 Agent 编排场景中，需要在阶段性检查点（如 phase/step complete）自动将进度汇报至任务看板。目前项目已有 TaskCreate/TaskGet/TaskList/TaskUpdate/TaskOutput 完整的任务看板工具集（`src/tool_system/tools/tasks_v2.py`），但缺少在 Agent 阶段性检查点自动触发汇报的机制。
+
+#### 三组合实现方案
+
+| 维度 | 方案 | 解决的问题 |
+|------|------|-----------|
+| **触发时机** | 方式一：检查点触发 | "什么时候汇报" — 在 Agent 的 phase/step 完成检查点自动触发 |
+| **工具形态** | 方式二：ProgressReportTool | "用什么汇报" — 封装专门的汇报工具，而不是直接调用 TaskUpdate |
+| **数据存储** | 方式三：ToolContext.tasks | "存在哪" — 通过 ToolContext.tasks 持久化 |
+
+三个方案**互补不冲突**，组合使用：
+
+```
+Agent 执行到检查点 (方式一)
+    ↓
+调用 ProgressReportTool (方式二)
+    ↓
+数据存入 ToolContext.tasks (方式三)
+```
+
+#### 架构设计
+
+```
+src/tool_system/tools/
+└── progress_report.py           # ProgressReportTool（新）
+
+src/orchestrator/
+├── agent_runner.py              # 事件流中新增 PhaseComplete 事件
+└── progress_reporter.py         # 汇报逻辑处理器（新）
+```
+
+#### ProgressReportTool 设计
+
+```python
+ProgressReportTool = build_tool(
+    name="ProgressReport",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "taskId": {"type": "string"},      # 任务 ID
+            "stage": {"type": "string"},       # 当前阶段名
+            "progress": {"type": "number"},    # 0-100 进度
+            "summary": {"type": "string"},    # 阶段性总结
+            "nextAction": {"type": "string"}, # 下一步动作
+            "metadata": {"type": "object"},   # 额外元数据
+        },
+        "required": ["taskId", "stage"]
+    },
+    call=_progress_report_call,
+    description="Report 阶段性进度至任务看板"
+)
+```
+
+#### 触发时机（方式一）
+
+在 `AgentRunner` 事件流中新增 `PhaseComplete` 事件：
+
+| 事件 | 触发位置 | 说明 |
+|------|---------|------|
+| `PhaseComplete` | `agent_runner.py` 的 phase 边界 | Agent 完成一个阶段（多个 turn 组成） |
+| `StepComplete` | tool call 完成后 | 每个工具调用完成（可选，粒度过细） |
+
+```python
+async def _on_phase_complete(self, session_id: str, phase_result: dict):
+    # 自动汇报进度
+    await self.tool_registry.dispatch(
+        ToolCall(name="ProgressReport", input={
+            "taskId": session_id,
+            "stage": phase_result["phase"],
+            "progress": phase_result["progress"],
+            "summary": phase_result["summary"]
+        }),
+        context
+    )
+```
+
+#### 数据持久化（方式三）
+
+现有 `TaskUpdateTool` 已支持 `metadata` 字段，ProgressReport 只需扩展 metadata 结构：
+
+```python
+{
+    "taskId": "abc123",
+    "stage": "code_generation",
+    "progress": 60,
+    "summary": "已完成核心模块代码生成",
+    "nextAction": "编写单元测试",
+    "metadata": {
+        "phases": [
+            {"name": "analysis", "completed": true, "progress": 100},
+            {"name": "code_generation", "completed": true, "progress": 100},
+            {"name": "testing", "completed": false, "progress": 0}
+        ],
+        "tokenUsage": {"input": 5000, "output": 3000}
+    }
+}
+```
+
+#### 与现有组件的关系
+
+| 现有组件 | 集成点 | 说明 |
+|---------|--------|------|
+| `tasks_v2.py` | TaskUpdate/TaskCreate | 复用现有工具，通过 metadata 扩展 |
+| `StatusDashboard` | 状态展示 | 可消费汇报数据实时展示 |
+| `AgentRunner` | 事件流 | PhaseComplete 事件触发汇报 |
+| `ToolContext.tasks` | 存储后端 | 已有实现，无需修改 |
+
+#### 实施阶段
+
+| 阶段 | 内容 | 优先级 | 状态 |
+|------|------|--------|------|
+| Phase A | ProgressReportTool 工具实现 | P2 | ⏳ 待开始 |
+| Phase B | AgentRunner PhaseComplete 事件 | P2 | ⏳ 待开始 |
+| Phase C | ProgressReporter 汇报处理器 | P2 | ⏳ 待开始 |
+| Phase D | 与 StatusDashboard 集成 | P3 | ⏳ 待开始 |
 
 **状态**: 🔄 规划中
 **优先级**: P2
