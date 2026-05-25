@@ -81,6 +81,43 @@ def fetch(
         typer.echo(f"Fetched upstream/{cfg.upstream.main_branch} at {commit}")
 
 
+@app.command()
+def extract(
+    ref: str = typer.Argument(..., help="Upstream ref (commit, tag, or branch) to extract"),
+    output: Path = typer.Option(
+        None,
+        help="Output directory (default: src/upstream/{short_ref})",
+    ),
+    config: Path = typer.Option(DEFAULT_CONFIG, help="Path to upstream-sync.yaml"),
+) -> None:
+    """Fetch a specific upstream ref and extract only the source sub-path.
+
+    The source sub-path is defined by ``upstream.source_subpath`` in config
+    (default: ``src``). Only that sub-directory is extracted to the output
+    location, keeping the vendor tree clean.
+    """
+    cfg = load_config(config)
+    vendor = VendorManager(Path("."), cfg.upstream)
+    vendor.ensure_remote()
+
+    # Fetch the ref first
+    commit = vendor.fetch_ref(ref)
+    typer.echo(f"Fetched upstream/{ref} at {commit}")
+
+    # Determine output path
+    short_ref = commit[:8]
+    if output is None:
+        output = Path("src") / "upstream" / short_ref
+
+    # Extract the source subpath
+    vendor.extract_to_path(
+        ref=ref,
+        subpath=cfg.upstream.source_subpath,
+        target_path=output,
+    )
+    typer.echo(f"Extracted {cfg.upstream.source_subpath}/ to {output}")
+
+
 # ---------------------------------------------------------------------------
 # analyze
 # ---------------------------------------------------------------------------
@@ -279,6 +316,7 @@ upstream:
   main_branch: "main"
   vendor_branch: "upstream/vendor"
   version_tag_format: "upstream/v{YYYY}_{MM}"
+  source_subpath: "src"  # Only extract this sub-path from upstream (default: src)
 
 layers: []
 
@@ -304,6 +342,7 @@ upstream:
   main_branch: "main"
   vendor_branch: "upstream/vendor"
   version_tag_format: "upstream/v{YYYY}_{MM}"
+  source_subpath: "src"  # Only extract this sub-path from upstream (default: src)
 
 layers:
   - name: "upstream"

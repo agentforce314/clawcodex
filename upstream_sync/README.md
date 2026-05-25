@@ -92,7 +92,8 @@ sync:
 | Command | Description |
 |---------|-------------|
 | `init [--template TEMPLATE]` | Scaffold a new `upstream-sync.yaml` |
-| `fetch` | Pull upstream code into vendor branch |
+| `fetch [ref]` | Pull upstream code into vendor branch |
+| `extract REF [--output DIR]` | Fetch a ref and extract only the source sub-path (e.g. `src/`) |
 | `analyze FROM TO` | Compare two refs and write impact reports |
 | `apply [--commit COMMIT]` | Apply the configured patch queue (auto-detects commit if omitted) |
 | `audit` | Report layer import violations |

@@ -39,6 +39,10 @@ class UpstreamConfig(BaseModel):
     main_branch: str = "main"
     vendor_branch: str = "upstream/vendor"
     version_tag_format: str = "upstream/v{YYYY}_{MM}"
+    source_subpath: str = Field(
+        default="src",
+        description="Sub-path within upstream repo to extract (e.g. 'src' extracts only the src/ directory)",
+    )
 
 
 class PatchConfig(BaseModel):
