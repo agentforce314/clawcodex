@@ -1,9 +1,11 @@
-diff --git a/src/providers/_litellm_adapter.py b/src/providers/_litellm_adapter.py
-new file mode 100755
-index 0000000..cfe5ec9
+diff --git a/providers/_litellm_adapter.py b/providers/_litellm_adapter.py
+new file mode 100644
 --- /dev/null
-+++ b/src/providers/_litellm_adapter.py
-@@ -0,0 +1,206 @@
+--- a/providers/_litellm_adapter.py
++++ b/providers/_litellm_adapter.py
+--- /dev/null
++++ b/providers/_litellm_adapter.py
+@@ -0,0 +1,205 @@
 +"""
 +LiteLLM adapter for ClawCodex LLM Provider layer.
 +
@@ -210,4 +212,3 @@ index 0000000..cfe5ec9
 +        model=model,
 +        provider_name=provider_name,
 +    )
-\ No newline at end of file

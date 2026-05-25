@@ -1,9 +1,11 @@
-diff --git a/src/tool_system/tools/ask_issue_author.py b/src/tool_system/tools/ask_issue_author.py
-new file mode 100755
-index 0000000..91b4dab
+diff --git a/tool_system/tools/ask_issue_author.py b/tool_system/tools/ask_issue_author.py
+new file mode 100644
 --- /dev/null
-+++ b/src/tool_system/tools/ask_issue_author.py
-@@ -0,0 +1,141 @@
+--- a/tool_system/tools/ask_issue_author.py
++++ b/tool_system/tools/ask_issue_author.py
+--- /dev/null
++++ b/tool_system/tools/ask_issue_author.py
+@@ -0,0 +1,140 @@
 +"""AskIssueAuthor — request clarification when issue semantics are ambiguous.
 +
 +This tool is used by the agent when an issue's intent is unclear and needs
@@ -145,4 +147,3 @@ index 0000000..91b4dab
 +    search_hint="ask issue author clarification",
 +    to_auto_classifier_input=lambda input_data: input_data.get("question", ""),
 +)
-\ No newline at end of file

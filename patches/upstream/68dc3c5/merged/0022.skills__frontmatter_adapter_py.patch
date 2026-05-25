@@ -1,9 +1,11 @@
-diff --git a/src/skills/_frontmatter_adapter.py b/src/skills/_frontmatter_adapter.py
-new file mode 100755
-index 0000000..5911fdf
+diff --git a/skills/_frontmatter_adapter.py b/skills/_frontmatter_adapter.py
+new file mode 100644
 --- /dev/null
-+++ b/src/skills/_frontmatter_adapter.py
-@@ -0,0 +1,106 @@
+--- a/skills/_frontmatter_adapter.py
++++ b/skills/_frontmatter_adapter.py
+--- /dev/null
++++ b/skills/_frontmatter_adapter.py
+@@ -0,0 +1,105 @@
 +"""
 +python-frontmatter adapter for ClawCodex frontmatter parsing.
 +
@@ -110,4 +112,3 @@ index 0000000..5911fdf
 +        return FrontmatterParseResult(frontmatter={}, body=body)
 +
 +    return FrontmatterParseResult(frontmatter=parsed, body=body)
-\ No newline at end of file

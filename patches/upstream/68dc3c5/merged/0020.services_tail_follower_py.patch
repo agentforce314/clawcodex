@@ -1,9 +1,11 @@
-diff --git a/src/services/tail_follower.py b/src/services/tail_follower.py
+diff --git a/services/tail_follower.py b/services/tail_follower.py
 new file mode 100644
-index 0000000..a1b2c3d
 --- /dev/null
-+++ b/src/services/tail_follower.py
-@@ -0,0 +1,141 @@
+--- a/services/tail_follower.py
++++ b/services/tail_follower.py
+--- /dev/null
++++ b/services/tail_follower.py
+@@ -0,0 +1,132 @@
 +"""Tail-follower for real-time transcript updates during ``--resume``.
 +
 +Mirrors ``tail -f`` behaviour on a JSONL transcript file. Used during

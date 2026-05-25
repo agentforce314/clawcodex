@@ -1,0 +1,22 @@
+diff --git a/agent/tool_authoring/call_handlers/__init__.py b/agent/tool_authoring/call_handlers/__init__.py
+new file mode 100644
+--- /dev/null
+--- a/agent/tool_authoring/call_handlers/__init__.py
++++ b/agent/tool_authoring/call_handlers/__init__.py
+--- /dev/null
++++ b/agent/tool_authoring/call_handlers/__init__.py
+@@ -0,0 +1,13 @@
++"""Call handlers for agent-created tools."""
++
++from .bash import BashCallError, execute_bash
++from .http import HttpCallError, execute_http
++from .python import PythonCallError, execute_python
++
++__all__ = [
++    "BashCallError",
++    "execute_bash",
++    "HttpCallError",
++    "execute_http",
++    "PythonCallError",
++    "execute_python",
++]

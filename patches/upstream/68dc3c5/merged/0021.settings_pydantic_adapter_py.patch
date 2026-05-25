@@ -1,9 +1,11 @@
-diff --git a/src/settings/pydantic_adapter.py b/src/settings/pydantic_adapter.py
+diff --git a/settings/pydantic_adapter.py b/settings/pydantic_adapter.py
 new file mode 100644
-index 0000000..9effcac
 --- /dev/null
-+++ b/src/settings/pydantic_adapter.py
-@@ -0,0 +1,190 @@
+--- a/settings/pydantic_adapter.py
++++ b/settings/pydantic_adapter.py
+--- /dev/null
++++ b/settings/pydantic_adapter.py
+@@ -0,0 +1,189 @@
 +"""
 +Pydantic-settings adapter for ClawCodex configuration.
 +
@@ -194,4 +196,3 @@ index 0000000..9effcac
 +def get_pydantic_settings_class() -> type[ClawCodexSettings]:
 +    """Get the Pydantic Settings class for external use."""
 +    return ClawCodexSettings
-\ No newline at end of file

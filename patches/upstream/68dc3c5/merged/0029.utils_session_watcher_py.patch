@@ -1,9 +1,11 @@
-diff --git a/src/utils/session_watcher.py b/src/utils/session_watcher.py
+diff --git a/utils/session_watcher.py b/utils/session_watcher.py
 new file mode 100644
-index 0000000..bcdef12
 --- /dev/null
-+++ b/src/utils/session_watcher.py
-@@ -0,0 +1,115 @@
+--- a/utils/session_watcher.py
++++ b/utils/session_watcher.py
+--- /dev/null
++++ b/utils/session_watcher.py
+@@ -0,0 +1,205 @@
 +"""Session directory watcher for multi-terminal state synchronisation.
 +
 +Watches the session transcript directory (e.g. ``~/.clawcodex/transcripts/``)

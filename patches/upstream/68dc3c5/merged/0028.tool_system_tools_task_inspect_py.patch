@@ -1,0 +1,270 @@
+diff --git a/tool_system/tools/task_inspect.py b/tool_system/tools/task_inspect.py
+new file mode 100644
+--- /dev/null
+--- a/tool_system/tools/task_inspect.py
++++ b/tool_system/tools/task_inspect.py
+--- /dev/null
++++ b/tool_system/tools/task_inspect.py
+@@ -0,0 +1,261 @@
++"""TaskInspect tool — Manager queries Worker runtime state.
++
++Phase M1 of the Supervisor/Worker Agent Pattern. Manager Agent uses this
++tool to observe one or more Worker runtime states via the runtime_tasks
++registry.
++
++Mirrors the observation side of the chapter-10 "Manager monitors Workers"
++pattern. The companion tool ``TaskDirectives`` handles message injection.
++"""
++from __future__ import annotations
++
++from typing import Any
++
++from ..build_tool import Tool, build_tool
++from ..context import ToolContext
++from ..errors import ToolInputError
++from ..protocol import ToolResult
++
++
++# ---------------------------------------------------------------------------
++# Manager-only gate helpers
++# ---------------------------------------------------------------------------
++
++def _is_manager_agent(context: ToolContext) -> bool:
++    """Check whether the caller is a Manager Agent.
++
++    A Manager Agent is identified by having both TaskInspect and
++    TaskDirectives available in its resolved tool set. We approximate
++    this by checking whether TaskDirectives is accessible to the caller
++    (if it resolves, the caller has manager-level access).
++    """
++    # Check if TaskDirectives is in the context's available tools.
++    # This works because tool filtering (Phase M4) hasn't been implemented
++    # yet, so all tools are visible during Phase M1-M3 development.
++    # Phase M4 will add proper visibility filtering.
++    available_tool_names = getattr(context, 'available_tool_names', None)
++    if available_tool_names is not None:
++        return 'TaskDirectives' in available_tool_names
++    # Fallback: allow all callers during early phases (Phase M1-M3).
++    # Phase M4 will enforce the manager-only gate properly.
++    return True
++
++
++# ---------------------------------------------------------------------------
++# Input validation helpers
++# ---------------------------------------------------------------------------
++
++def _parse_fields(fields: Any) -> list[str] | None:
++    """Parse and validate the optional fields filter."""
++    if fields is None:
++        return None
++    if not isinstance(fields, list):
++        raise ToolInputError("fields must be an array when provided")
++    valid_fields = {"status", "progress", "pending_messages", "error", "result_text", "turn_count"}
++    for f in fields:
++        if not isinstance(f, str) or f not in valid_fields:
++            raise ToolInputError(
++                f"Invalid field {f!r}. Must be one of: {sorted(valid_fields)}"
++            )
++    return list(fields)
++
++
++def _build_worker_snapshot(
++    state: Any,
++    fields: list[str] | None,
++    summary_only: bool,
++) -> dict[str, Any]:
++    """Project a LocalAgentTaskState into the model-facing output shape."""
++    result: dict[str, Any] = {
++        "task_id": state.id,
++        "status": state.status,
++    }
++
++    if fields is None or "pending_messages" in fields:
++        pending_count = len(state.pending_messages) if hasattr(state, 'pending_messages') else 0
++        if summary_only:
++            result["pending_messages"] = f"{pending_count} pending message(s)"
++        else:
++            result["pending_messages"] = list(state.pending_messages) if hasattr(state, 'pending_messages') else []
++
++    if fields is None or "progress" in fields:
++        if hasattr(state, 'progress') and state.progress is not None:
++            p = state.progress
++            result["progress"] = {
++                "summary": getattr(p, 'summary', None),
++                "tool_uses": getattr(p, 'total_tool_uses', 0),
++            }
++        else:
++            result["progress"] = {"summary": None, "tool_uses": 0}
++
++    if fields is None or "error" in fields:
++        result["error"] = getattr(state, 'error', None)
++
++    if fields is None or "result_text" in fields:
++        result["result_text"] = getattr(state, 'result_text', "") or ""
++
++    if fields is None or "turn_count" in fields:
++        result["turn_count"] = getattr(state, 'turn_count', 0)
++
++    # Last activity timestamp
++    if hasattr(state, 'last_activity') and state.last_activity:
++        result["last_activity"] = state.last_activity
++    elif hasattr(state, 'start_time') and state.start_time:
++        result["last_activity"] = state.start_time
++
++    return result
++
++
++# ---------------------------------------------------------------------------
++# Tool call implementation
++# ---------------------------------------------------------------------------
++
++def _task_inspect_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
++    """Query runtime state of one or more Worker agents.
++
++    Input:
++        targets: list of task_id strings to query; empty list = all running workers
++        fields: optional list of fields to return (default: all fields)
++        summary_only: if True, pending_messages shows only the count (not content)
++
++    Output:
++        workers: list of worker state dicts
++
++    Raises:
++        ToolInputError: if caller is not a Manager Agent (Phase M4+)
++    """
++    # Phase M4 gate — for now always allow
++    # if not _is_manager_agent(context):
++    #     raise ToolInputError("permission denied: TaskInspect requires Manager Agent privileges")
++
++    raw_targets = tool_input.get("targets")
++    if raw_targets is None:
++        targets: list[str] = []
++    elif not isinstance(raw_targets, list):
++        raise ToolInputError("targets must be an array when provided")
++    else:
++        targets = [str(t) for t in raw_targets]
++
++    fields = _parse_fields(tool_input.get("fields"))
++    summary_only = bool(tool_input.get("summary_only", False))
++
++    runtime = getattr(context, "runtime_tasks", None)
++    if runtime is None:
++        return ToolResult(
++            name="TaskInspect",
++            output={"workers": []},
++        )
++
++    from src.tasks.local_agent import LocalAgentTaskState
++    from src.tasks_core import is_terminal_task_status
++
++    workers: list[dict[str, Any]] = []
++
++    if not targets:
++        # Empty targets = query all running local_agent workers
++        for task_id, state in runtime._tasks.items():
++            if not isinstance(state, LocalAgentTaskState):
++                continue
++            if is_terminal_task_status(state.status):
++                continue
++            workers.append(_build_worker_snapshot(state, fields, summary_only))
++    else:
++        # Specific targets
++        for task_id in targets:
++            state = runtime.get(task_id)
++            if state is None:
++                workers.append({
++                    "task_id": task_id,
++                    "error": "task not found",
++                })
++                continue
++            if not isinstance(state, LocalAgentTaskState):
++                workers.append({
++                    "task_id": task_id,
++                    "error": f"task type {state.type} does not support inspection",
++                })
++                continue
++            workers.append(_build_worker_snapshot(state, fields, summary_only))
++
++    return ToolResult(
++        name="TaskInspect",
++        output={"workers": workers},
++    )
++
++
++# ---------------------------------------------------------------------------
++# Auto-classifier helper
++# ---------------------------------------------------------------------------
++
++def _task_inspect_classifier_input(input_data: dict) -> str:
++    """Mirror TS ``TaskInspectTool.toAutoClassifierInput``."""
++    targets = input_data.get("targets", [])
++    fields = input_data.get("fields", [])
++    summary = "summary" if input_data.get("summary_only") else "full"
++    if not targets:
++        return f"inspect all workers ({summary})"
++    return f"inspect {len(targets)} worker(s) ({summary})"
++
++
++# ---------------------------------------------------------------------------
++# Tool definition
++# ---------------------------------------------------------------------------
++
++TaskInspectTool: Tool = build_tool(
++    name="TaskInspect",
++    input_schema={
++        "type": "object",
++        "additionalProperties": False,
++        "properties": {
++            "targets": {
++                "type": "array",
++                "items": {"type": "string"},
++                "description": (
++                    "Task IDs to inspect. Empty array means query all running workers. "
++                    "Each target must be a local_agent task ID."
++                ),
++            },
++            "fields": {
++                "type": "array",
++                "items": {"type": "string", "enum": ["status", "progress", "pending_messages", "error", "result_text", "turn_count"]},
++                "description": "Fields to return. Omit for all fields.",
++            },
++            "summary_only": {
++                "type": "boolean",
++                "default": False,
++                "description": "When true, pending_messages shows count only, not content.",
++            },
++        },
++    },
++    call=_task_inspect_call,
++    prompt="""\
++Inspect the runtime state of one or more Worker agents.
++
++Use this tool when you need to:
++- Check what a Worker agent is currently doing (progress, tool uses)
++- See how many messages are queued for a Worker (pending_messages count)
++- Monitor Worker health (error field, status)
++- Query all running workers by passing an empty targets list
++
++The tool queries the runtime_tasks registry, NOT the StatusDashboard.
++Only LocalAgentTaskState entries are inspectable.
++
++Each Worker reports:
++- status: running, completed, failed, etc.
++- progress: summary text and tool use count
++- pending_messages: messages queued for next turn (count or content)
++- error: error message if the worker has failed
++- result_text: final output if completed
++- turn_count: number of turns executed
++""",
++    description="Query runtime state of Worker agents (Manager only).",
++    strict=True,
++    max_result_size_chars=4000,
++    is_read_only=lambda _input: True,
++    is_concurrency_safe=lambda _input: True,
++    to_auto_classifier_input=_task_inspect_classifier_input,
++)
++
++
++__all__ = [
++    "TaskInspectTool",
++]

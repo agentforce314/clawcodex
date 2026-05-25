@@ -1,9 +1,11 @@
-diff --git a/src/agent/_outlines_adapter.py b/src/agent/_outlines_adapter.py
-new file mode 100755
-index 0000000..6218efb
+diff --git a/agent/_outlines_adapter.py b/agent/_outlines_adapter.py
+new file mode 100644
 --- /dev/null
-+++ b/src/agent/_outlines_adapter.py
-@@ -0,0 +1,151 @@
+--- a/agent/_outlines_adapter.py
++++ b/agent/_outlines_adapter.py
+--- /dev/null
++++ b/agent/_outlines_adapter.py
+@@ -0,0 +1,150 @@
 +"""
 +Outlines adapter for ClawCodex structured output.
 +
@@ -155,4 +157,3 @@ index 0000000..6218efb
 +        An OutlinesStructuredOutput instance
 +    """
 +    return OutlinesStructuredOutput(model_name=model_name)
-\ No newline at end of file

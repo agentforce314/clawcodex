@@ -1,16 +1,6 @@
-diff --git a/src/tui/widgets/header.py b/src/tui/widgets/header.py
-index bb4741d..1571def 100644
---- a/src/tui/widgets/header.py
-+++ b/src/tui/widgets/header.py
-@@ -12,7 +12,6 @@ from __future__ import annotations
- from pathlib import Path
- 
- from rich.align import Align
--from rich.columns import Columns
- from rich.console import Group
- from rich.panel import Panel
- from rich.table import Table
-@@ -20,12 +19,6 @@ from rich.text import Text
+--- src/upstream/68dc3c5/tui/widgets/header.py	2026-05-24 16:47:52.000000000 +0800
++++ src/tui/widgets/header.py	2026-05-26 02:37:16.127328400 +0800
+@@ -20,14 +20,6 @@
  from textual.widgets import Static
  
  
@@ -20,10 +10,12 @@ index bb4741d..1571def 100644
 -    "(  __  )",
 -    " \\/__/  ",
 -])
- 
- 
+-
+-
  def _display_cwd(workspace_root: Path) -> str:
-@@ -115,9 +108,8 @@ class StartupHeader(Static):
+     try:
+         home = Path.home()
+@@ -115,9 +107,8 @@
          )
  
          footer = Text(self._slash_hints, style="dim")

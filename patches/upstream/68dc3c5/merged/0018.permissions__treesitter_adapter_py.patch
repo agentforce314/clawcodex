@@ -1,9 +1,11 @@
-diff --git a/src/permissions/_treesitter_adapter.py b/src/permissions/_treesitter_adapter.py
-new file mode 100755
-index 0000000..b47c22f
+diff --git a/permissions/_treesitter_adapter.py b/permissions/_treesitter_adapter.py
+new file mode 100644
 --- /dev/null
-+++ b/src/permissions/_treesitter_adapter.py
-@@ -0,0 +1,255 @@
+--- a/permissions/_treesitter_adapter.py
++++ b/permissions/_treesitter_adapter.py
+--- /dev/null
++++ b/permissions/_treesitter_adapter.py
+@@ -0,0 +1,254 @@
 +"""
 +tree-sitter-bash adapter for ClawCodex Bash AST parsing.
 +
@@ -259,4 +261,3 @@ index 0000000..b47c22f
 +def get_command_safety_from_bashlex(command: str) -> CommandSafety:
 +    """Alias for classify_command_with_bashlex."""
 +    return classify_command_with_bashlex(command)
-\ No newline at end of file

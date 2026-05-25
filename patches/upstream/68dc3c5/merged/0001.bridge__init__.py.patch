@@ -1,0 +1,10 @@
+--- src/upstream/68dc3c5/bridge/__init__.py	2026-05-24 16:47:52.000000000 +0800
++++ src/bridge/__init__.py	2026-05-26 01:51:15.158953100 +0800
+@@ -146,6 +146,7 @@
+     'BridgeConfig',
+     'BridgeFatalError',
+     'BridgePermissionResponse',
++    'BridgeState',
+     'BridgeStatusInfo',
+     'CapacityWake',
+     'DEFAULT_ENV_LESS_BRIDGE_CONFIG',

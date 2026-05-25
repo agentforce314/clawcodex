@@ -1,9 +1,11 @@
-diff --git a/src/hooks/_pluggy_adapter.py b/src/hooks/_pluggy_adapter.py
-new file mode 100755
-index 0000000..9ac3fd4
+diff --git a/hooks/_pluggy_adapter.py b/hooks/_pluggy_adapter.py
+new file mode 100644
 --- /dev/null
-+++ b/src/hooks/_pluggy_adapter.py
-@@ -0,0 +1,246 @@
+--- a/hooks/_pluggy_adapter.py
++++ b/hooks/_pluggy_adapter.py
+--- /dev/null
++++ b/hooks/_pluggy_adapter.py
+@@ -0,0 +1,245 @@
 +"""
 +Pluggy adapter for ClawCodex Hook system.
 +
@@ -250,4 +252,3 @@ index 0000000..9ac3fd4
 +        except Exception as e:
 +            logger.error("Hook command failed: %s", e)
 +            return None
-\ No newline at end of file
