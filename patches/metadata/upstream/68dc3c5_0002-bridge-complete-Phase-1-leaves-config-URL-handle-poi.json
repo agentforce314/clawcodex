@@ -1,0 +1,13 @@
+{
+  "id": "0002-bridge-complete-Phase-1-leaves-config-URL-handle-poi",
+  "description": "Bridge Phase 1: complete leaves - config + URL + handle points of interest",
+  "affected_modules": [
+    "src/bridge/bridge_config.py",
+    "src/bridge/bridge_api.py",
+    "src/bridge/bridge_main.py"
+  ],
+  "applied_at": "2026-05-25",
+  "upstream_version_introduced": "68dc3c5",
+  "status": "pending",
+  "notes": "Bridge Phase 1 completion - config, URL handling, POI"
+}

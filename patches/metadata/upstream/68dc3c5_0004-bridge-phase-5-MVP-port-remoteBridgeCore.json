@@ -1,0 +1,12 @@
+{
+  "id": "0004-bridge-phase-5-MVP-port-remoteBridgeCore",
+  "description": "Bridge Phase 5 MVP: port remoteBridgeCore.ts with v2 env logging",
+  "affected_modules": [
+    "src/bridge/remote_bridge_core.py",
+    "src/bridge/bridge_api.py"
+  ],
+  "applied_at": "2026-05-25",
+  "upstream_version_introduced": "68dc3c5",
+  "status": "pending",
+  "notes": "Bridge Phase 5 MVP - remoteBridgeCore port with env-based logging"
+}

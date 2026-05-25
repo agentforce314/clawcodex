@@ -1,0 +1,13 @@
+{
+  "id": "0001-bridge-port-capacity-wake-7-leaf-modules",
+  "description": "Bridge: port capacity_wake + 7 leaf modules toward TypeScript",
+  "affected_modules": [
+    "src/bridge/__init__.py",
+    "src/bridge/bridge_api.py",
+    "src/bridge/remote_bridge_core.py"
+  ],
+  "applied_at": "2026-05-25",
+  "upstream_version_introduced": "68dc3c5",
+  "status": "pending",
+  "notes": "Bridge Phase 1 - port capacity_wake and 7 leaf modules"
+}

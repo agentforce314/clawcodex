@@ -1,0 +1,12 @@
+{
+  "id": "0005-bridge-phase-4-port-sessionRunner-child-CLI",
+  "description": "Bridge Phase 4: port sessionRunner.ts (child CLI spawner)",
+  "affected_modules": [
+    "src/bridge/session_runner.py",
+    "src/bridge/bridge_main.py"
+  ],
+  "applied_at": "2026-05-25",
+  "upstream_version_introduced": "68dc3c5",
+  "status": "pending",
+  "notes": "Bridge Phase 4 - sessionRunner child CLI spawner port"
+}

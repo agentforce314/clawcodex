@@ -1,3 +1,28 @@
-68dc3c5_0001-bridge-phase11.patch
-68dc3c5_0002-query-engine-refactor.patch
-68dc3c5_0003-advisor-tokens-status.patch
+# Quilt series file — one entry per upstream commit
+#
+# Format: one patch filename per line (no leading whitespace, no # comments inline).
+# Patch file is stored alongside this series file in the 68dc3c5/ directory.
+#
+# Current upstream commit: 68dc3c5
+# Total patches: 15
+
+# === Phase 11c: init_repl_bridge polish (from PR #212) ===
+0001-feat-advisor-preserve-advisor-blocks-in-ChatResponse.patch
+0002-fix-consolidate-address-critic-blocking-cancel-histo.patch
+0003-feat-consolidate-F.4-extract-renderers-system-prompt.patch
+0004-feat-consolidate-Stage-4-delete-agent_loop.py-port-t.patch
+0005-feat-advisor-surface-separate-worker-advisor-token-c.patch
+
+# === Bridge Phase 1-11 port patches ===
+0001-bridge-port-capacity_wake-7-leaf-modules-toward-TS-p.patch
+0002-bridge-complete-Phase-1-leaves-config-URL-handle-poi.patch
+0003-bridge-phase-3-port-bridgeApi.ts-HTTP-client.patch
+0004-bridge-phase-5-MVP-port-remoteBridgeCore.ts-v2-env-l.patch
+0005-bridge-phase-4-port-sessionRunner.ts-child-CLI-spawn.patch
+0006-bridge-phase-6-MVP-slice-env-based-orchestrator-skel.patch
+0007-bridge-phase-8-MVP-slice-multi-session-daemon-orches.patch
+0008-bridge-phase-11a-bridge_main-hardening.patch
+0009-bridge-phase-11b-repl_bridge-hardening.patch
+
+# === Recent fixes ===
+0010-repl-tui-context-guard.patch
