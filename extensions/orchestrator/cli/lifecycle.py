@@ -1,0 +1,169 @@
+"""orchestrator lifecycle commands — pause / resume / stop / takeover.
+
+Usage:
+  clawcodex orchestrator pause <issue_id>
+  clawcodex orchestrator resume <issue_id>
+  clawcodex orchestrator stop <issue_id>
+  clawcodex orchestrator takeover <issue_id>
+
+Lifecycle control:
+  pause     - Pause agent at next tool call boundary (no new tool calls until resume)
+  resume    - Resume a paused agent
+  stop      - Force-terminate a running agent (marks as failed)
+  takeover  - Terminate agent and start a REPL for manual intervention
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import signal
+import socket
+import sys
+from pathlib import Path
+
+
+def add_lifecycle_parser(subparsers: argparse._SubParsersAction) -> None:
+    lifecycle_parser = subparsers.add_parser(
+        "pause",
+        help="Pause a running agent at the next tool call boundary",
+    )
+    lifecycle_parser.add_argument("issue_id", help="Issue ID to pause")
+    lifecycle_parser.add_argument(
+        "--reason",
+        default="",
+        help="Reason for pausing (visible to agent)",
+    )
+
+    resume_parser = subparsers.add_parser(
+        "resume",
+        help="Resume a paused agent",
+    )
+    resume_parser.add_argument("issue_id", help="Issue ID to resume")
+
+    stop_parser = subparsers.add_parser(
+        "stop",
+        help="Force-terminate a running agent",
+    )
+    stop_parser.add_argument("issue_id", help="Issue ID to stop")
+
+    takeover_parser = subparsers.add_parser(
+        "takeover",
+        help="Take over an issue (terminate agent + start REPL)",
+    )
+    takeover_parser.add_argument("issue_id", help="Issue ID to take over")
+
+
+def run(args: argparse.Namespace) -> int:
+    """Execute lifecycle commands."""
+    issue_id = args.issue_id
+
+    if args.subcommand == "pause":
+        return _do_pause(issue_id, args)
+    elif args.subcommand == "resume":
+        return _do_resume(issue_id)
+    elif args.subcommand == "stop":
+        return _do_stop(issue_id)
+    elif args.subcommand == "takeover":
+        return _do_takeover(issue_id)
+    return 0
+
+
+def _control_path() -> Path:
+    """Path to the orchestrator control directory."""
+    base = Path(os.environ.get("CLAWCODEX_WORKSPACE_ROOT", Path.home() / ".clawcodex"))
+    return base / ".orchestrator_control"
+
+
+def _write_control(cmd: str, issue_id: str, extra: str = "") -> int:
+    """Write a control command to be picked up by the orchestrator."""
+    control_dir = _control_path()
+    control_dir.mkdir(parents=True, exist_ok=True)
+
+    # Use issue_id as part of the filename for atomicity
+    control_file = control_dir / f"{cmd}_{issue_id}.control"
+    payload = f"{cmd}\n{issue_id}\n{extra}\n"
+    try:
+        control_file.write_text(payload, encoding="utf-8")
+        print(f"Control command '{cmd}' sent for issue {issue_id}")
+        print(f"  The orchestrator will pick this up on its next poll cycle.")
+        return 0
+    except Exception as exc:
+        print(f"Failed to send '{cmd}' for issue {issue_id}: {exc}", file=sys.stderr)
+        return 1
+
+
+def _do_pause(issue_id: str, args: argparse.Namespace) -> int:
+    reason = args.reason or "operator requested pause"
+    return _write_control("pause", issue_id, reason)
+
+
+def _do_resume(issue_id: str) -> int:
+    return _write_control("resume", issue_id)
+
+
+def _do_stop(issue_id: str) -> int:
+    return _write_control("stop", issue_id)
+
+
+def _do_takeover(issue_id: str) -> int:
+    """Terminate agent and start REPL for manual intervention."""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    # Resolve workspace path
+    workspace_root = os.environ.get("CLAWCODEX_WORKSPACE_ROOT")
+    if workspace_root:
+        base = Path(workspace_root)
+    else:
+        base = Path.home() / ".clawcodex" / "workspace"
+
+    workspace_path = None
+    if base.exists():
+        for wd in base.iterdir():
+            if wd.is_dir():
+                metadata = wd / ".metadata"
+                if metadata.exists():
+                    import json
+                    try:
+                        m = json.loads(metadata.read_text())
+                        if m.get("issue_id") == issue_id:
+                            workspace_path = wd
+                            break
+                    except Exception:
+                        pass
+
+    if workspace_path is None:
+        print(
+            f"Could not find workspace for issue {issue_id}.\n"
+            "Cannot takeover — issue may not be active.",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Write stop control to stop the agent
+    _write_control("stop", issue_id)
+
+    print(
+        f"[takeover] Stopping agent for issue {issue_id}...\n"
+        f"Starting REPL in workspace: {workspace_path}\n"
+        f"Type /done when finished to commit and push.",
+        file=sys.stderr,
+    )
+
+    # Start clawcodex REPL in the workspace directory
+    env = os.environ.copy()
+    env["CLAWCODEX_WORKSPACE"] = str(workspace_path)
+    try:
+        subprocess.run(
+            ["python3", "-m", "src.cli", "--workspace", str(workspace_path)],
+            cwd=str(workspace_path),
+            env=env,
+        )
+    except Exception as exc:
+        print(f"[takeover] Failed to start REPL: {exc}", file=sys.stderr)
+        return 1
+
+    return 0
