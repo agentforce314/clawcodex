@@ -14,8 +14,11 @@ from upstream_sync.config import ProjectConfig
 from upstream_sync.core.change_analyzer import ChangeAnalyzer
 from upstream_sync.core.layer_auditor import LayerAuditor
 from upstream_sync.core.patch_engine import create_engine
+from upstream_sync.core.patch_generator import PatchGenerator
 from upstream_sync.core.sync_orchestrator import SyncOrchestrator
 from upstream_sync.core.vendor import VendorManager
+from upstream_sync.core.backup_manager import BackupManager
+from upstream_sync.core.verifier import Verifier
 from upstream_sync.reporters.json_reporter import JSONReporter
 from upstream_sync.reporters.markdown_reporter import MarkdownReporter
 
@@ -268,6 +271,148 @@ def sync(
             typer.echo(f"  [{v.layer}] {v.file}:{v.line_number} -> {v.forbidden_import}")
 
     typer.echo("\nSync pipeline complete.")
+
+
+# ---------------------------------------------------------------------------
+# generate-patch
+# ---------------------------------------------------------------------------
+
+@app.command("generate-patch")
+def generate_patch(
+    new_commit: str = typer.Option(..., help="New upstream commit hash to generate patches for"),
+    old_commit: str = typer.Option(..., help="Old upstream commit hash to reference for patch patterns"),
+    config: Path = typer.Option(DEFAULT_CONFIG, help="Path to upstream-sync.yaml"),
+    output: Path | None = typer.Option(None, help="Output directory (default: patches/upstream/{new_commit})"),
+) -> None:
+    """Generate new patches based on old patch patterns.
+
+    This command analyzes old patches from old_commit and generates new patches
+    for new_commit by understanding the transformation patterns.
+    """
+    cfg = load_config(config)
+    generator = PatchGenerator(Path("."), cfg)
+
+    if output is None:
+        if cfg.patches.patch_subdir:
+            output = Path(str(cfg.patches.patch_subdir).format(commit=new_commit))
+        else:
+            output = cfg.patches.directory
+
+    typer.echo(f"Generating patches for {new_commit} based on {old_commit}...")
+    patches = generator.generate_patches(new_commit, old_commit, output)
+
+    if patches:
+        # Create series file
+        series_file = output / f"{new_commit}_series"
+        generator.create_series_file(patches, series_file)
+        typer.echo(f"Generated {len(patches)} patches in {output}")
+        typer.echo(f"Series file: {series_file}")
+    else:
+        typer.echo("No patches generated (no changes detected)")
+
+
+# ---------------------------------------------------------------------------
+# backup
+# ---------------------------------------------------------------------------
+
+@app.command()
+def backup(
+    backup_root: Path = typer.Option(None, help="Backup root directory (default: backup/)"),
+    config: Path = typer.Option(DEFAULT_CONFIG, help="Path to upstream-sync.yaml"),
+) -> None:
+    """Backup src/ directory excluding src/upstream/.
+
+    Creates a timestamped backup of the src/ directory, excluding upstream
+    source code and other specified patterns.
+    """
+    cfg = load_config(config)
+
+    backup_mgr = BackupManager(Path("."), backup_root)
+    backup_path = backup_mgr.backup(Path("src"))
+
+    typer.echo(f"Backup created: {backup_path}")
+    typer.echo(f"Total files backed up: {len(list(backup_path.rglob('*')))}")
+
+
+@app.command()
+def restore(
+    backup_dir: Path = typer.Argument(..., help="Backup directory to restore from"),
+    clear_first: bool = typer.Option(False, help="Clear src/ before restoring"),
+    config: Path = typer.Option(DEFAULT_CONFIG, help="Path to upstream-sync.yaml"),
+) -> None:
+    """Restore a backup to the src/ directory.
+
+    Restores files from a previously created backup directory.
+    Use 'backup-list' to see available backups.
+    """
+    backup_mgr = BackupManager(Path("."))
+    restored = backup_mgr.restore(backup_dir, Path("src"), clear_first=clear_first)
+    typer.echo(f"Restored {len(restored)} files from {backup_dir}")
+
+
+@app.command("backup-list")
+def backup_list(
+    backup_root: Path = typer.Option(None, help="Backup root directory (default: backup/)"),
+) -> None:
+    """List all available backups."""
+    backup_mgr = BackupManager(Path("."), backup_root)
+    backups = backup_mgr.list_backups()
+
+    if not backups:
+        typer.echo("No backups found")
+        return
+
+    typer.echo("Available backups:")
+    typer.echo("-" * 50)
+    for b in backups:
+        typer.echo(f"  {b['path'].name} - {b['file_count']} files")
+
+
+# ---------------------------------------------------------------------------
+# verify
+# ---------------------------------------------------------------------------
+
+@app.command()
+def verify(
+    old_commit: str = typer.Option(..., help="Old upstream commit hash"),
+    new_commit: str = typer.Option(..., help="New upstream commit hash"),
+    output: Path = typer.Option(Path(".upstream-sync/verify-report.md"), help="Output report path"),
+    config: Path = typer.Option(DEFAULT_CONFIG, help="Path to upstream-sync.yaml"),
+) -> None:
+    """Verify patch functional equivalence between upstream versions.
+
+    Validates that:
+    1. New patches apply successfully to new upstream code
+    2. The transformation preserves functional equivalence
+    3. Patch structure matches expected patterns
+    """
+    cfg = load_config(config)
+
+    old_patches_dir = Path(str(cfg.patches.patch_subdir).format(commit=old_commit)) if cfg.patches.patch_subdir else cfg.patches.directory
+    new_patches_dir = Path(str(cfg.patches.patch_subdir).format(commit=new_commit)) if cfg.patches.patch_subdir else cfg.patches.directory
+    old_upstream_dir = Path("src") / "upstream" / old_commit[:8]
+    new_upstream_dir = Path("src") / "upstream" / new_commit[:8]
+    backup_dir = Path("backup")
+
+    verifier = Verifier(Path("."))
+    result = verifier.verify_patches(
+        old_patches_dir=old_patches_dir,
+        new_patches_dir=new_patches_dir,
+        old_upstream_dir=old_upstream_dir,
+        new_upstream_dir=new_upstream_dir,
+        backup_dir=backup_dir,
+    )
+
+    verifier.generate_verification_report(result, output)
+    typer.echo(f"Verification {'PASSED' if result.passed else 'FAILED'}")
+    typer.echo(f"Report: {output}")
+
+    if result.details and "issues" in result.details:
+        for issue in result.details["issues"]:
+            typer.echo(f"  - {issue}")
+
+    if not result.passed:
+        raise typer.Exit(1)
 
 
 # ---------------------------------------------------------------------------
