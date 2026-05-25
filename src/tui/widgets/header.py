@@ -20,14 +20,6 @@ from rich.text import Text
 from textual.widgets import Static
 
 
-_MASCOT = "\n".join([
-    "  /\\__/\\",
-    " / o  o \\",
-    "(  __  )",
-    " \\/__/  ",
-])
-
-
 def _display_cwd(workspace_root: Path) -> str:
     try:
         home = Path.home()
@@ -115,9 +107,8 @@ class StartupHeader(Static):
         )
 
         footer = Text(self._slash_hints, style="dim")
-        mascot_block = Text(_MASCOT, style="bold orange3", no_wrap=True)
         body = Group(
-            Columns([mascot_block, table], align="center", expand=False),
+            table,
             Text(""),
             Align.center(footer),
         )

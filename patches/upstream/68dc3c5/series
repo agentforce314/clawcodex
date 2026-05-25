@@ -1,25 +1,45 @@
-# Quilt series file — 68dc3c5 (rebuilt patches)
+# Quilt series file — 68dc3c5 (rebuilt & merged patches)
 #
 # Format: one patch filename per line (no leading whitespace, no # comments inline).
 #
-# These patches are rebuilt from the current src/ state (post-b125e16 + 68dc3c5 modifications)
-# based on src/upstream/68dc3c5/src/ as the upstream source.
-#
-# Patch application order:
-# 1. Modified files patches
-# 2. New files patches (b125e16 adapter modules + advisor preservation)
+# Patch application order: by file dependencies
 
-# === Phase 1: Modified files (diffs from upstream) ===
-0001.bridge-init.py.patch
-0002.repl-core.py.patch
+# Foundation patches (Phase A)
+0001.src.__init__.py.patch
+0002.src.agent._outlines_adapter.py.patch
+0003.src.agent.background_state.py.patch
+0004.src.agent.session.py.patch
+0005.src.cli.py.patch
+0006.src.config.py.patch
+0007.src.context_system._gitpython_adapter.py.patch
+0008.src.context_system.prompt_assembly.py.patch
+0009.src.entrypoints.headless.py.patch
+0010.src.hooks._pluggy_adapter.py.patch
+0011.src.memdir.__init__.py.patch
+0012.src.memdir.memdir.py.patch
+0013.src.permissions._treesitter_adapter.py.patch
+0014.src.providers._litellm_adapter.py.patch
 
-# === Phase 2: New files from b125e16 + customizations ===
-0010.agent..outlines.adapter.py.patch
-0011.agent.background.state.py.patch
-0012.hooks..pluggy.adapter.py.patch
-0013.permissions..treesitter.adapter.py.patch
-0014.providers..litellm.adapter.py.patch
-0015.services.tail.follower.py.patch
-0016.skills..frontmatter.adapter.py.patch
-0017.tool.system.tools.ask.issue.author.py.patch
-0018.utils.advisor.py.patch
+# Core patches (Phase B)
+0015.src.repl.core.py.patch
+0016.src.repl.live_status.py.patch
+0017.src.services.tail_follower.py.patch
+0018.src.settings.pydantic_adapter.py.patch
+0019.src.settings.types.py.patch
+0020.src.skills._frontmatter_adapter.py.patch
+0021.src.tool_system.tools.ask_issue_author.py.patch
+
+# UI patches (Phase C)
+0022.src.tui.agent_bridge.py.patch
+0023.src.tui.app.py.patch
+0024.src.tui.keybindings.py.patch
+0025.src.tui.screens.repl.py.patch
+0026.src.tui.widgets.header.py.patch
+
+# Type and utility patches (Phase D)
+0027.src.types.messages.py.patch
+0028.src.upstream.PHASE1_SKELETON.txt.patch
+0029.src.upstream.__init__.py.patch
+0030.src.utils.advisor.py.patch
+0031.src.utils.graceful_shutdown.py.patch
+0032.src.utils.session_watcher.py.patch
