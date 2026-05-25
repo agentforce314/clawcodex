@@ -1114,6 +1114,9 @@ async def test_perpetual_resumes_session_when_pointer_and_env_reuse_succeed(
     assert api.register_calls, 'expected register call'
     sent_config = api.register_calls[-1]
     assert sent_config.reuse_environment_id == 'env-srv-7'
+    # Phase 13: reuse only after the server confirms the session is
+    # still alive via reconnect_session.
+    assert api.reconnect_calls == [('env-srv-7', 'cse_resumed')]
     # Session reused, NOT created.
     assert handle.bridge_session_id == 'cse_resumed'
     assert create_calls == []
@@ -1411,4 +1414,263 @@ async def test_perpetual_pointer_updates_after_strategy_2_recreation(
     # Updated_at_ms bumped (or at least not regressed).
     assert after.updated_at_ms >= initial.updated_at_ms
 
+    await handle.teardown()
+
+
+# ── Phase 13: validate pointer's session_id via reconnect ─────────────────
+
+
+@pytest.mark.asyncio
+async def test_perpetual_validates_session_via_reconnect_before_reuse(
+    tmp_path,
+) -> None:
+    """Phase 13: when reuse is eligible (env resurrected), init must
+    call ``reconnect_session`` to validate the session is still alive
+    before skipping ``create_session``."""
+    from src.bridge.bridge_pointer import read_pointer, write_pointer
+
+    params = _make_params(perpetual=True)
+    params.dir = str(tmp_path)
+    write_pointer(
+        params.dir,
+        bridge_id=params.bridge_id,
+        environment_id='env-srv-A',
+        session_id='cse_alive',
+        machine_name=params.machine_name,
+    )
+    api = FakeApiClient()
+    api.register_result = {
+        'environment_id': 'env-srv-A',
+        'environment_secret': 'sec-a',
+    }
+    create_calls: list[Any] = []
+    original_create = params.create_session
+    async def recording_create(opts: dict[str, Any]) -> str | None:
+        create_calls.append(opts)
+        return await original_create(opts)
+    params.create_session = recording_create  # type: ignore[assignment]
+
+    handle = await init_bridge_core(
+        params, api_client=api, spawner=FakeSpawner(),
+    )
+    assert handle is not None
+    # Exactly one reconnect attempt (cse_ tag has no session_ variant).
+    assert api.reconnect_calls == [('env-srv-A', 'cse_alive')]
+    # Validation passed → session reused, no create_session.
+    assert create_calls == []
+    assert handle.bridge_session_id == 'cse_alive'
+    # Pointer still present (validation passed, not cleared).
+    p = read_pointer(params.dir, machine_name=params.machine_name)
+    assert p is not None
+    assert p.session_id == 'cse_alive'
+    await handle.teardown()
+
+
+@pytest.mark.asyncio
+async def test_perpetual_falls_back_when_reconnect_session_refused(
+    tmp_path,
+) -> None:
+    """Phase 13: when the server refuses ``reconnect_session`` for every
+    candidate id, init must clear the pointer, mint a fresh session via
+    ``create_session``, and write the fresh id into the pointer."""
+    from src.bridge.bridge_pointer import read_pointer, write_pointer
+    from src.bridge.exceptions import BridgeFatalError
+
+    params = _make_params(perpetual=True)
+    params.dir = str(tmp_path)
+    write_pointer(
+        params.dir,
+        bridge_id=params.bridge_id,
+        environment_id='env-srv-B',
+        session_id='cse_dead',
+        machine_name=params.machine_name,
+    )
+    api = FakeApiClient()
+    api.register_result = {
+        'environment_id': 'env-srv-B',
+        'environment_secret': 'sec-b',
+    }
+    # Every reconnect attempt is refused (e.g., session was reaped).
+    async def reconnect_refuse(env_id: str, sid: str) -> None:
+        api.reconnect_calls.append((env_id, sid))
+        raise BridgeFatalError('Session not found', status=404)
+    api.reconnect_session = reconnect_refuse  # type: ignore[method-assign]
+
+    # Capture the original created_at_ms to verify continuity.
+    original = read_pointer(
+        params.dir, machine_name=params.machine_name,
+    )
+    assert original is not None
+    original_created_at_ms = original.created_at_ms
+
+    create_calls: list[Any] = []
+    original_create = params.create_session
+    async def recording_create(opts: dict[str, Any]) -> str | None:
+        create_calls.append(opts)
+        return await original_create(opts)
+    params.create_session = recording_create  # type: ignore[assignment]
+
+    handle = await init_bridge_core(
+        params, api_client=api, spawner=FakeSpawner(),
+    )
+    assert handle is not None
+    # All candidates tried (cse_dead is already cse_, so just one).
+    assert api.reconnect_calls == [('env-srv-B', 'cse_dead')]
+    # Validation failed → fall through to create_session.
+    assert create_calls, 'create_session must have been called'
+    # Bridge holds the freshly-minted session id, not the dead one.
+    assert handle.bridge_session_id == 'cse_test'
+    # Pointer was rewritten with the fresh session id (init re-writes
+    # the pointer after create_session lands a new session).
+    p = read_pointer(params.dir, machine_name=params.machine_name)
+    assert p is not None
+    assert p.session_id == 'cse_test'
+    assert p.environment_id == 'env-srv-B'
+    # created_at_ms must persist across the clear+rewrite — it's the
+    # daemon install time, not a per-session timestamp.
+    assert p.created_at_ms == original_created_at_ms
+    await handle.teardown()
+
+
+@pytest.mark.asyncio
+async def test_perpetual_reconnect_tries_session_then_cse_flavor(
+    tmp_path,
+) -> None:
+    """Phase 13: when the pointer's id is ``session_*`` tagged, init must
+    try the ``session_*`` form first and fall back to the ``cse_*``
+    form on failure (the server's v2-compat-gate may flip between
+    pointer-write and pointer-read). The canonical session id used
+    by the bridge afterward is the pointer's original tag — TS uses
+    ``prior.sessionId`` regardless of which candidate validated."""
+    from src.bridge.bridge_pointer import write_pointer
+    from src.bridge.exceptions import BridgeFatalError
+
+    params = _make_params(perpetual=True)
+    params.dir = str(tmp_path)
+    # Pointer was written when the gate was OFF (session_* tag).
+    write_pointer(
+        params.dir,
+        bridge_id=params.bridge_id,
+        environment_id='env-srv-C',
+        session_id='session_xyz',
+        machine_name=params.machine_name,
+    )
+    api = FakeApiClient()
+    api.register_result = {
+        'environment_id': 'env-srv-C',
+        'environment_secret': 'sec-c',
+    }
+    # First attempt (session_xyz) fails — gate has since flipped ON;
+    # second attempt (cse_xyz) succeeds.
+    call_count = {'n': 0}
+    async def reconnect_flaky(env_id: str, sid: str) -> None:
+        api.reconnect_calls.append((env_id, sid))
+        call_count['n'] += 1
+        if call_count['n'] == 1:
+            raise BridgeFatalError('Session not found', status=404)
+        # Second call succeeds.
+    api.reconnect_session = reconnect_flaky  # type: ignore[method-assign]
+
+    create_calls: list[Any] = []
+    original_create = params.create_session
+    async def recording_create(opts: dict[str, Any]) -> str | None:
+        create_calls.append(opts)
+        return await original_create(opts)
+    params.create_session = recording_create  # type: ignore[assignment]
+
+    handle = await init_bridge_core(
+        params, api_client=api, spawner=FakeSpawner(),
+    )
+    assert handle is not None
+    # Both candidates tried, in the right order.
+    assert api.reconnect_calls == [
+        ('env-srv-C', 'session_xyz'),
+        ('env-srv-C', 'cse_xyz'),
+    ]
+    # Validation succeeded on the second attempt → no create_session.
+    assert create_calls == []
+    # Canonical id is the pointer's original tag, matching TS behavior.
+    assert handle.bridge_session_id == 'session_xyz'
+    await handle.teardown()
+
+
+@pytest.mark.asyncio
+async def test_perpetual_reconnect_stops_at_first_success(
+    tmp_path,
+) -> None:
+    """Phase 13: when the first candidate (``session_*``) succeeds, the
+    second (``cse_*``) must not be attempted — the ``break`` after a
+    success guards against wasted server round-trips. Inverse of
+    ``test_perpetual_reconnect_tries_session_then_cse_flavor``."""
+    from src.bridge.bridge_pointer import write_pointer
+
+    params = _make_params(perpetual=True)
+    params.dir = str(tmp_path)
+    # Pointer with session_* tag → two candidates would be generated.
+    write_pointer(
+        params.dir,
+        bridge_id=params.bridge_id,
+        environment_id='env-srv-D',
+        session_id='session_yyy',
+        machine_name=params.machine_name,
+    )
+    api = FakeApiClient()
+    api.register_result = {
+        'environment_id': 'env-srv-D',
+        'environment_secret': 'sec-d',
+    }
+    # First (and only) reconnect attempt succeeds — default
+    # FakeApiClient.reconnect_session does nothing on success.
+
+    handle = await init_bridge_core(
+        params, api_client=api, spawner=FakeSpawner(),
+    )
+    assert handle is not None
+    # ONLY the session_* form was tried; cse_yyy was never attempted.
+    assert api.reconnect_calls == [('env-srv-D', 'session_yyy')]
+    assert handle.bridge_session_id == 'session_yyy'
+    await handle.teardown()
+
+
+@pytest.mark.asyncio
+async def test_perpetual_skips_reconnect_validation_when_env_mismatch(
+    tmp_path,
+) -> None:
+    """Phase 13: when the server hands back a different env id than the
+    one the pointer requested, ``reuse_session_id`` is already nulled
+    by the env-mismatch branch and the reconnect validation block
+    must NOT fire (the session is bound to the dead env anyway)."""
+    from src.bridge.bridge_pointer import write_pointer
+
+    params = _make_params(perpetual=True)
+    params.dir = str(tmp_path)
+    write_pointer(
+        params.dir,
+        bridge_id=params.bridge_id,
+        environment_id='env-srv-OLD',
+        session_id='cse_orphan',
+        machine_name=params.machine_name,
+    )
+    api = FakeApiClient()
+    api.register_result = {
+        'environment_id': 'env-srv-FRESH',
+        'environment_secret': 'sec-fresh',
+    }
+    create_calls: list[Any] = []
+    original_create = params.create_session
+    async def recording_create(opts: dict[str, Any]) -> str | None:
+        create_calls.append(opts)
+        return await original_create(opts)
+    params.create_session = recording_create  # type: ignore[assignment]
+
+    handle = await init_bridge_core(
+        params, api_client=api, spawner=FakeSpawner(),
+    )
+    assert handle is not None
+    # Validation skipped entirely — env mismatch already invalidated
+    # the pointer's session id.
+    assert api.reconnect_calls == []
+    # Fresh session was created.
+    assert create_calls, 'create_session must have been called'
+    assert handle.bridge_session_id == 'cse_test'
     await handle.teardown()
