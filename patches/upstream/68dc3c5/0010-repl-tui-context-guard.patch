@@ -1,0 +1,18 @@
+diff --git a/src/repl/core.py b/src/repl/core.py
+index 47fbcdb..76d509f 100644
+--- a/src/repl/core.py
++++ b/src/repl/core.py
+@@ -2000,6 +2000,13 @@ class ClawcodexREPL:
+             )
+             return
+ 
++        if self.tool_context is None:
++            self.console.print(
++                "[red]TUI requires an API key to function.[/red]\n"
++                "[dim]Use [bold]/login[/bold] to configure, or set [cyan]ANTHROPIC_API_KEY[/cyan] env var, then restart.[/dim]"
++            )
++            return
++
+         self.console.print("[dim]Entering Textual TUI. Press Ctrl+D or type /exit to return.[/dim]")
+         app = ClawCodexTUI(
+             provider=self.provider,

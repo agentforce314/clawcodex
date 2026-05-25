@@ -132,15 +132,12 @@ filterwarnings = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["src*"]
+include = ["src*", "upstream_sync*"]
 exclude = [
-    "src/upstream_sync*",
     "src/upstream*",
 ]
 
 # Excluded paths:
-#   src/upstream_sync*  — development workflow CLI tool, not runtime
-#                         use: python -m upstream_sync.cli (from source tree)
 #   src/upstream*        — vendor snapshot (git archive artifact), not runtime
 #                         see: src/upstream/PHASE1_SKELETON.txt
 
