@@ -172,3 +172,4 @@ coverage/
 .env.test.local
 .env.production.local
 /.upstream-sync/
+/backup/

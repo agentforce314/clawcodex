@@ -1,0 +1,36 @@
+diff --git a/src/tui/widgets/header.py b/src/tui/widgets/header.py
+index bb4741d..1571def 100644
+--- a/src/tui/widgets/header.py
++++ b/src/tui/widgets/header.py
+@@ -12,7 +12,6 @@ from __future__ import annotations
+ from pathlib import Path
+ 
+ from rich.align import Align
+-from rich.columns import Columns
+ from rich.console import Group
+ from rich.panel import Panel
+ from rich.table import Table
+@@ -20,12 +19,6 @@ from rich.text import Text
+ from textual.widgets import Static
+ 
+ 
+-_MASCOT = "\n".join([
+-    "  /\\__/\\",
+-    " / o  o \\",
+-    "(  __  )",
+-    " \\/__/  ",
+-])
+ 
+ 
+ def _display_cwd(workspace_root: Path) -> str:
+@@ -115,9 +108,8 @@ class StartupHeader(Static):
+         )
+ 
+         footer = Text(self._slash_hints, style="dim")
+-        mascot_block = Text(_MASCOT, style="bold orange3", no_wrap=True)
+         body = Group(
+-            Columns([mascot_block, table], align="center", expand=False),
++            table,
+             Text(""),
+             Align.center(footer),
+         )

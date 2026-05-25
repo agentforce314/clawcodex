@@ -119,13 +119,13 @@ class AssistantToolUseMessage(BaseRow):
 def _summarise_input(tool_name: str, tool_input: dict) -> str:
     """One-line summary for the tool-use header, e.g. ``Bash · ls``.
 
-    Delegates to :mod:`src.tool_system.agent_loop.summarize_tool_use` when
+    Delegates to :mod:`src.tool_system.renderers.summarize_tool_use` when
     available so the TUI, the legacy REPL, and the headless NDJSON path
     all agree on wording.
     """
 
     try:
-        from src.tool_system.agent_loop import summarize_tool_use
+        from src.tool_system.renderers import summarize_tool_use
 
         return summarize_tool_use(tool_name, tool_input or {}) or ""
     except Exception:

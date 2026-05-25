@@ -25,6 +25,7 @@ from textual.widget import Widget
 from textual.widgets import Static
 
 from .messages import (
+    AssistantAdvisorMessage,
     AssistantTextMessage,
     AssistantToolUseMessage,
     SystemMessage,
@@ -60,6 +61,12 @@ class TranscriptView(VerticalScroll):
         # Tool-use rows indexed by ``tool_use_id`` so ``tool_result`` /
         # ``tool_error`` events can find the matching activity widget.
         self._tool_rows: dict[str, AssistantToolUseMessage] = {}
+        # Advisor rows indexed by ``tool_use_id``. Kept separate from
+        # ``_tool_rows`` so the eviction sweep can distinguish them and
+        # so the lifecycle ("start" → "result") is unambiguous —
+        # advisor rows have no surrounding ToolEvent stream the way
+        # regular tools do.
+        self._advisor_rows: dict[str, AssistantAdvisorMessage] = {}
         # Insertion-ordered list of rows we've mounted. Textual's
         # ``self.children`` lags behind ``mount()`` until the event
         # loop ticks, so we track the order ourselves to make the
@@ -197,7 +204,7 @@ class TranscriptView(VerticalScroll):
             # No matching tool_use row; emit a standalone result row so
             # the event is not silently dropped.
             try:
-                from src.tool_system.agent_loop import summarize_tool_result
+                from src.tool_system.renderers import summarize_tool_result
 
                 summary = summarize_tool_result(tool_name, tool_output) or tool_name
             except Exception:
@@ -237,6 +244,55 @@ class TranscriptView(VerticalScroll):
         self.mount(SystemMessage(f"{tool_name} [{kind}]", style="muted"))
         self._scroll_end()
 
+    def append_advisor_event(
+        self,
+        *,
+        kind: str,
+        tool_use_id: str,
+        advisor_model: str | None = None,
+        text: str | None = None,
+        error_code: str | None = None,
+    ) -> None:
+        """Add or update an advisor row.
+
+        ``kind="start"`` mounts a fresh row in the in-progress state.
+        ``kind="result"`` looks up the row by ``tool_use_id`` and swaps
+        it into the done/error terminal state. If we see a result
+        without a prior start (e.g. the bridge inspects history after a
+        resume where the start landed before the UI was up), we mount
+        the row directly in the terminal state so the event isn't
+        silently dropped.
+        """
+        self._retire_active_assistant()
+        if kind == "start":
+            if tool_use_id in self._advisor_rows:
+                return
+            row = AssistantAdvisorMessage(
+                tool_use_id=tool_use_id, advisor_model=advisor_model
+            )
+            self._advisor_rows[tool_use_id] = row
+            self.mount(row)
+            row.mark_running()
+            self._scroll_end()
+            return
+        if kind == "result":
+            row = self._advisor_rows.pop(tool_use_id, None)
+            if row is None:
+                # Result without a start — mount fresh and finalise.
+                row = AssistantAdvisorMessage(
+                    tool_use_id=tool_use_id, advisor_model=advisor_model
+                )
+                self.mount(row)
+            if error_code:
+                row.mark_error(error_code)
+            else:
+                row.mark_done(text)
+            self._scroll_end()
+            return
+        # Unknown kind — surface as a muted system row.
+        self.mount(SystemMessage(f"advisor [{kind}]", style="muted"))
+        self._scroll_end()
+
     def append_system(self, text: str, *, style: str = "muted") -> None:
         """Append a system / informational row.
 
@@ -254,6 +310,7 @@ class TranscriptView(VerticalScroll):
     def clear_transcript(self) -> None:
         self._active_assistant = None
         self._tool_rows.clear()
+        self._advisor_rows.clear()
         self._mounted_rows.clear()
         try:
             for child in list(self.children):
@@ -332,6 +389,12 @@ class TranscriptView(VerticalScroll):
             if (
                 isinstance(row, AssistantToolUseMessage)
                 and row.tool_use_id in self._tool_rows
+            ):
+                idx += 1
+                continue
+            if (
+                isinstance(row, AssistantAdvisorMessage)
+                and row.tool_use_id in self._advisor_rows
             ):
                 idx += 1
                 continue

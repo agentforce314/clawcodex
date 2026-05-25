@@ -34,31 +34,12 @@ class ResolvedAgentTools:
     allowed_agent_types: list[str] | None = None
 
 
-# Manager-only tools — only visible to agents that have ALL manager tools.
-# Phase M4: a Manager Agent is identified by having TaskInspect + TaskDirectives.
-MANAGER_ONLY_TOOLS: frozenset[str] = frozenset({"TaskInspect", "TaskDirectives"})
-
-
-def _is_manager_agent(agent_tools: list[str] | None) -> bool:
-    """Check whether an agent has all Manager Agent tools.
-
-    A Manager Agent must have both TaskInspect and TaskDirectives in its
-    tool set. This is checked at tool resolution time to hide these tools
-    from non-manager agents.
-    """
-    if agent_tools is None:
-        return True  # Wildcard grants access
-    tool_names = {_extract_tool_name(t) for t in agent_tools}
-    return MANAGER_ONLY_TOOLS.issubset(tool_names)
-
-
 def filter_tools_for_agent(
     *,
     tools: Tools,
     is_built_in: bool,
     is_async: bool = False,
     permission_mode: PermissionMode | None = None,
-    agent_tools: list[str] | None = None,
 ) -> Tools:
     """Filter available tools based on agent type and mode.
 
@@ -69,10 +50,7 @@ def filter_tools_for_agent(
     - ALL_AGENT_DISALLOWED_TOOLS are always blocked.
     - CUSTOM_AGENT_DISALLOWED_TOOLS are blocked for non-built-in agents.
     - Async agents are restricted to ASYNC_AGENT_ALLOWED_TOOLS whitelist.
-    - Manager-only tools (TaskInspect, TaskDirectives) are filtered for
-      non-manager agents (Phase M4).
     """
-    is_manager = _is_manager_agent(agent_tools)
     result: Tools = []
     for tool in tools:
         # MCP tools always allowed
@@ -95,10 +73,6 @@ def filter_tools_for_agent(
 
         # Async agents: only whitelisted tools
         if is_async and tool.name not in ASYNC_AGENT_ALLOWED_TOOLS:
-            continue
-
-        # Phase M4: Manager-only tools filtered for non-managers
-        if not is_manager and tool.name in MANAGER_ONLY_TOOLS:
             continue
 
         result.append(tool)
@@ -130,7 +104,6 @@ def resolve_agent_tools(
         is_built_in=(source == "built-in"),
         is_async=is_async,
         permission_mode=permission_mode,
-        agent_tools=agent_tools,
     )
 
     # Build disallowed set

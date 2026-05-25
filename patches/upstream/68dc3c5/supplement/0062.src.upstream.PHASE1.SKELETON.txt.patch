@@ -1,0 +1,22 @@
+diff --git a/src/upstream/PHASE1_SKELETON.txt b/src/upstream/PHASE1_SKELETON.txt
+new file mode 100644
+index 0000000..f029c04
+--- /dev/null
++++ b/src/upstream/PHASE1_SKELETON.txt
+@@ -0,0 +1,15 @@
++# Phase 1 Skeleton Marker
++# ========================
++# Directory: src/upstream/
++# Purpose:   Layer 1 root — upstream compatibility layer.
++
++# Role:      House versioned upstream snapshots with local patches applied.
++#            This is the lowest-level layer and must NOT import from
++#            src.capabilities or any Layer 3 (features) package.
++
++# Phase 1 role: Create directory skeleton only. No code moved.
++# Future:       Code from src/agent/, src/tool_system/, src/context_system/
++#               will be migrated here as part of Phase 2/3.
++
++# See: docs/UPSTREAM_SYNC_DESIGN-decoupling.md Section 4.2
++# See: upstream-sync.yaml layers[0] ("upstream")
+\ No newline at end of file

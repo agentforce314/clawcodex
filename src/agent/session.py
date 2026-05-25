@@ -141,25 +141,6 @@ class Session:
         restore_cost_state_for_session(session_id)
         return loaded
 
-    @classmethod
-    def resume_with_tail(cls, session_id: str) -> tuple[Optional["Session"], Any]:
-        """Resume session and start tail follower for real-time updates.
-
-        Returns ``(session, tail_follower)`` where ``tail_follower`` is
-        a :class:`TailFollower` instance watching the session transcript
-        for new messages written by a backgrounded agent. The caller is
-        responsible for starting and stopping the follower.
-        """
-        from src.services.tail_follower import TailFollower
-        from src.agent.transcript import get_agent_transcript_path
-
-        session = cls.resume(session_id)
-        if session is None:
-            return None, None
-        path = get_agent_transcript_path(session_id)
-        follower = TailFollower(path)
-        return session, follower
-
 
 def _snapshot_cost_block() -> dict:
     """Build the cost block written by ``Session.save``.

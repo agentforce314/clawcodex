@@ -778,7 +778,7 @@ def _format_subagent_tool_use(agent_type: str, name: str, tool_input: Any) -> st
     Empty summaries fall back to ``Name`` (no parens) so a tool whose summarizer
     returned nothing still produces a clean line instead of literal ``Name()``.
     """
-    from src.tool_system.agent_loop import summarize_tool_use
+    from src.tool_system.renderers import summarize_tool_use
 
     safe_input: dict[str, Any] = tool_input if isinstance(tool_input, dict) else {}
     summary = ""

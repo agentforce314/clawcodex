@@ -1,0 +1,26 @@
+diff --git a/src/__init__.py b/src/__init__.py
+index 565f1bc..219b286 100644
+--- a/src/__init__.py
++++ b/src/__init__.py
+@@ -10,10 +10,21 @@ try:  # pragma: no cover
+ except Exception:  # pragma: no cover
+     BaseProvider = None  # type: ignore[assignment]
+ 
++# Public API for autonomous orchestration
++try:
++    from .api import OrchestrationSubsystem, QueryConfig, QueryRunner
++except Exception:  # pragma: no cover
++    OrchestrationSubsystem = None  # type: ignore[assignment,misc]
++    QueryConfig = None  # type: ignore[assignment,misc]
++    QueryRunner = None  # type: ignore[assignment,misc]
++
+ __all__ = [
+     "__version__",
+     "__author__",
+     "load_config",
+     "get_provider_config",
+     "BaseProvider",
++    "OrchestrationSubsystem",
++    "QueryConfig",
++    "QueryRunner",
+ ]

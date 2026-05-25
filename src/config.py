@@ -6,10 +6,6 @@ Three-level config hierarchy matching TypeScript config.ts:
   Local:   <git-root>/.claude/config.local.json
 
 Inheritance: local > project > global (deep merge).
-
-This module is being migrated to pydantic-settings. The ConfigManager
-class and backward-compatible API are preserved. New code should use
-pydantic-settings directly via src.settings.
 """
 
 from __future__ import annotations
@@ -23,14 +19,6 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
-
-# pydantic-settings is the preferred configuration backend
-try:
-    from pydantic_settings import BaseSettings, SettingsConfigDict
-    from pydantic import Field
-    _PYDANTIC_SETTINGS_AVAILABLE = True
-except ImportError:
-    _PYDANTIC_SETTINGS_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 

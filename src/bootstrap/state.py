@@ -10,10 +10,28 @@ package (``src/tui``, ``src/repl``, ``src/agent``, ``src/services``,
 enforces this when the linter is installed; until then, treat the rule as
 review discipline.
 
-Phase 1 of the ch03 state refactor (see
-``my-docs/ch03-state-refactoring-plan.md``) covers the ~30 fields below.
-Subsequent phases will grow the field list as their respective subsystems
-land (telemetry/OTel handles, plugin/channel state, hooks registry, etc.).
+Phase 2 of the bootstrap-folder parity sweep (see
+``my-docs/get-parity-by-folder/bootstrap-refactoring-plan.md``) brings the
+``_BootstrapState`` field count to ~50 and adds:
+
+  * Turn-level metric accumulators (hook / tool / classifier duration + count)
+  * Token aggregators over ``model_usage`` (input / output / cache-read /
+    cache-creation / web-search)
+  * Turn-output-token budget primitives (module-level globals, matching TS
+    lines 756-775)
+  * ``get_total_duration`` (returns milliseconds for TS parity)
+  * ``get_usage_for_model``
+  * ``prefer_third_party_authentication`` derivation
+  * Allowed-settings-sources allowlist (default = the TS five-source list)
+  * Invoked-skills tracker with composite-key dict
+  * Permanent no-op stubs for slow-ops and REPL-bridge entries
+
+Class-C symbols from the gap analysis (channels, scheduled tasks,
+plugins, hook callbacks SDK, agent color picker, mode-exit one-shots,
+model strings, scroll-drain debouncer, statsStore, SDK betas, FD-borne
+credentials, plan slug cache, teleport reliability info, deferred-write
+interaction time, last API request snapshots, feature-flag toggles)
+remain deferred — they land when their consumers do.
 """
 
 from __future__ import annotations
@@ -56,6 +74,22 @@ class ModelUsage:
     cache_read_input_tokens: int = 0
     cost_usd: float = 0.0
     web_search_requests: int = 0
+
+
+@dataclass
+class InvokedSkillInfo:
+    """One invoked skill, preserved across compaction.
+
+    Mirrors TS ``InvokedSkillInfo`` at ``bootstrap/state.ts:1425-1431``.
+    Used by ``services/compact/post_compact_attachments.py`` to re-emit
+    skill content after a ``/compact`` rewinds the transcript.
+    """
+
+    skill_name: str
+    skill_path: str
+    content: str
+    invoked_at: float  # seconds since epoch (time.time())
+    agent_id: str | None
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +166,37 @@ class _BootstrapState:
     has_unknown_model_cost: bool = False
     model_usage: dict[str, ModelUsage] = field(default_factory=dict)
 
+    # --- Turn-level metric accumulators (TS: lines 47-52, 624-672) ---------
+    # Bumped by add_to_turn_*_duration / add_to_tool_duration / ...; reset
+    # by reset_turn_*_duration at end of each turn. The chapter's
+    # "turn breakdown" telemetry depends on these.
+    turn_hook_duration_ms: int = 0
+    turn_tool_duration_ms: int = 0
+    turn_classifier_duration_ms: int = 0
+    turn_hook_count: int = 0
+    turn_tool_count: int = 0
+    turn_classifier_count: int = 0
+
+    # --- Allowed settings sources (TS: lines 75, 287-292) -------------------
+    # Default mirrors TS line 287-292. Bootstrap is a DAG leaf, so we keep
+    # this as a plain list[str] rather than importing src/settings/ enums.
+    # Translators between this list and the settings package's internal
+    # enum live in src/settings/, not here.
+    allowed_setting_sources: list[str] = field(
+        default_factory=lambda: [
+            "userSettings",
+            "projectSettings",
+            "localSettings",
+            "flagSettings",
+            "policySettings",
+        ]
+    )
+
+    # --- Invoked skills (TS: lines 150-160) ---------------------------------
+    # Composite key: f"{agent_id or ''}:{skill_name}" — string, NOT a tuple,
+    # to keep parity with TS Map<string, ...> for any future serialization.
+    invoked_skills: dict[str, InvokedSkillInfo] = field(default_factory=dict)
+
     # --- Cache optimization (TS: lines 122-123, 202-205, 207, 256) ---------
     cached_claude_md_content: str | None = None
     system_prompt_section_cache: dict[str, str | None] = field(default_factory=dict)
@@ -158,6 +223,22 @@ class _BootstrapState:
 
 
 _STATE: _BootstrapState = _BootstrapState()
+
+
+# ---------------------------------------------------------------------------
+# WI-4: Turn-output-token snapshot & budget continuation
+#
+# Module-level globals — mirror TS lines 756-775. Not on ``_BootstrapState``
+# because the TS code keeps them module-scoped, and the parity audit
+# preserves shape.
+#
+# RESET ALSO MUST HANDLE THESE: ``reset_state_for_tests()`` rebinds all three
+# below. Any future addition to this block needs a matching reset line.
+# ---------------------------------------------------------------------------
+
+_output_tokens_at_turn_start: int = 0
+_current_turn_token_budget: int | None = None
+_budget_continuation_count: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -431,6 +512,16 @@ def set_has_exited_plan_mode(value: bool) -> None:
     _STATE.has_exited_plan_mode = bool(value)
 
 
+def prefer_third_party_authentication() -> bool:
+    """Mirrors TS ``preferThirdPartyAuthentication`` (state.ts:1157-1160).
+
+    True iff the session is non-interactive AND the client type is not
+    ``'claude-vscode'`` (the IDE extension is treated as 1P for auth
+    purposes even though it runs non-interactively).
+    """
+    return get_is_non_interactive_session() and _STATE.client_type != "claude-vscode"
+
+
 # ===========================================================================
 # Accessors — Cost & timing
 # ===========================================================================
@@ -468,7 +559,16 @@ def get_total_tool_duration() -> int:
 
 
 def add_to_tool_duration(duration: int) -> None:
+    """Record a tool-execution duration.
+
+    Mirrors TS ``addToToolDuration`` (state.ts:618-622): bumps the
+    cumulative ``total_tool_duration`` AND the per-turn
+    ``turn_tool_duration_ms`` AND the per-turn ``turn_tool_count``.
+    All three update atomically.
+    """
     _STATE.total_tool_duration += duration
+    _STATE.turn_tool_duration_ms += duration
+    _STATE.turn_tool_count += 1
 
 
 def get_total_lines_added() -> int:
@@ -498,8 +598,66 @@ def get_model_usage() -> dict[str, ModelUsage]:
     return _STATE.model_usage
 
 
+def get_usage_for_model(model: str) -> ModelUsage | None:
+    """Return the ``ModelUsage`` recorded for ``model`` or ``None`` if no
+    cost event has been recorded for it. Mirrors TS ``getUsageForModel``
+    (state.ts:862-864).
+    """
+    return _STATE.model_usage.get(model)
+
+
+def get_total_input_tokens() -> int:
+    """Sum of ``input_tokens`` across every model in ``model_usage``.
+
+    Mirrors TS ``getTotalInputTokens`` (state.ts:736-738) — TS uses
+    ``sumBy(values, 'inputTokens')``.
+    """
+    return sum(usage.input_tokens for usage in _STATE.model_usage.values())
+
+
+def get_total_output_tokens() -> int:
+    """Sum of ``output_tokens`` across every model in ``model_usage``.
+    Mirrors TS ``getTotalOutputTokens`` (state.ts:740-742)."""
+    return sum(usage.output_tokens for usage in _STATE.model_usage.values())
+
+
+def get_total_cache_read_input_tokens() -> int:
+    """Sum of ``cache_read_input_tokens`` across every model in
+    ``model_usage``. Mirrors TS ``getTotalCacheReadInputTokens``
+    (state.ts:744-746)."""
+    return sum(
+        usage.cache_read_input_tokens for usage in _STATE.model_usage.values()
+    )
+
+
+def get_total_cache_creation_input_tokens() -> int:
+    """Sum of ``cache_creation_input_tokens`` across every model in
+    ``model_usage``. Mirrors TS ``getTotalCacheCreationInputTokens``
+    (state.ts:748-750)."""
+    return sum(
+        usage.cache_creation_input_tokens for usage in _STATE.model_usage.values()
+    )
+
+
+def get_total_web_search_requests() -> int:
+    """Sum of ``web_search_requests`` across every model in ``model_usage``.
+    Mirrors TS ``getTotalWebSearchRequests`` (state.ts:752-754)."""
+    return sum(usage.web_search_requests for usage in _STATE.model_usage.values())
+
+
 def get_start_time() -> float:
     return _STATE.start_time
+
+
+def get_total_duration() -> int:
+    """Wall-clock duration since session start, in MILLISECONDS.
+
+    Mirrors TS ``getTotalDuration`` (state.ts:606-608), which returns
+    ``Date.now() - STATE.startTime`` (already milliseconds in JS).
+    Python ``start_time`` is in seconds, so cast to int ms here so
+    downstream formatters that assume ms match TS exactly.
+    """
+    return int((time.time() - _STATE.start_time) * 1000)
 
 
 def get_last_interaction_time() -> float:
@@ -659,6 +817,268 @@ def set_last_emitted_date(date: str | None) -> None:
 
 
 # ===========================================================================
+# Accessors — Turn-level metrics (TS: lines 624-672)
+# ===========================================================================
+
+
+def get_turn_hook_duration_ms() -> int:
+    return _STATE.turn_hook_duration_ms
+
+
+def add_to_turn_hook_duration(duration_ms: int) -> None:
+    """Bump per-turn hook duration & count. Mirrors TS
+    ``addToTurnHookDuration`` (state.ts:628-631)."""
+    _STATE.turn_hook_duration_ms += duration_ms
+    _STATE.turn_hook_count += 1
+
+
+def reset_turn_hook_duration() -> None:
+    _STATE.turn_hook_duration_ms = 0
+    _STATE.turn_hook_count = 0
+
+
+def get_turn_hook_count() -> int:
+    return _STATE.turn_hook_count
+
+
+def get_turn_tool_duration_ms() -> int:
+    return _STATE.turn_tool_duration_ms
+
+
+def reset_turn_tool_duration() -> None:
+    """Reset per-turn tool duration & count. Mirrors TS
+    ``resetTurnToolDuration`` (state.ts:646-649). ``add_to_tool_duration``
+    is the writer (bumps total + turn duration + turn count atomically)."""
+    _STATE.turn_tool_duration_ms = 0
+    _STATE.turn_tool_count = 0
+
+
+def get_turn_tool_count() -> int:
+    return _STATE.turn_tool_count
+
+
+def get_turn_classifier_duration_ms() -> int:
+    return _STATE.turn_classifier_duration_ms
+
+
+def add_to_turn_classifier_duration(duration_ms: int) -> None:
+    """Bump per-turn classifier duration & count. Mirrors TS
+    ``addToTurnClassifierDuration`` (state.ts:659-662)."""
+    _STATE.turn_classifier_duration_ms += duration_ms
+    _STATE.turn_classifier_count += 1
+
+
+def reset_turn_classifier_duration() -> None:
+    _STATE.turn_classifier_duration_ms = 0
+    _STATE.turn_classifier_count = 0
+
+
+def get_turn_classifier_count() -> int:
+    return _STATE.turn_classifier_count
+
+
+# ===========================================================================
+# Accessors — Turn-output-token budget (TS: lines 756-775)
+# ===========================================================================
+#
+# These read/write the module-level globals declared near the singleton.
+# TS keeps them module-scoped (not on STATE); we preserve the shape so the
+# parity audit stays clean. ``reset_state_for_tests`` zeros them.
+
+
+def get_turn_output_tokens() -> int:
+    """Output tokens emitted in the current turn.
+
+    Returns ``get_total_output_tokens() - <snapshot at turn start>``.
+    Mirrors TS ``getTurnOutputTokens`` (state.ts:758-760).
+    """
+    return get_total_output_tokens() - _output_tokens_at_turn_start
+
+
+def get_current_turn_token_budget() -> int | None:
+    """The token budget set for the current turn, or ``None`` if no
+    budget is in effect. Mirrors TS ``getCurrentTurnTokenBudget``
+    (state.ts:761-763)."""
+    return _current_turn_token_budget
+
+
+def snapshot_output_tokens_for_turn(budget: int | None) -> None:
+    """Snapshot the output-token counter at turn start and install the
+    new turn budget. Resets the budget-continuation counter to 0.
+
+    Mirrors TS ``snapshotOutputTokensForTurn`` (state.ts:765-769).
+    ``budget=None`` is a legitimate input meaning "no budget enforced
+    this turn"; it still snapshots the counter and zeros continuations.
+    """
+    global _output_tokens_at_turn_start, _current_turn_token_budget
+    global _budget_continuation_count
+    _output_tokens_at_turn_start = get_total_output_tokens()
+    _current_turn_token_budget = budget
+    _budget_continuation_count = 0
+
+
+def get_budget_continuation_count() -> int:
+    return _budget_continuation_count
+
+
+def increment_budget_continuation_count() -> None:
+    """Bump the continuation count. Mirrors TS
+    ``incrementBudgetContinuationCount`` (state.ts:773-775)."""
+    global _budget_continuation_count
+    _budget_continuation_count += 1
+
+
+# ===========================================================================
+# Accessors — Allowed settings sources (TS: lines 75, 287-292, 1149-1155)
+# ===========================================================================
+
+
+def get_allowed_setting_sources() -> list[str]:
+    """Return a copy of the allowed-settings-sources list.
+
+    Returning a copy discourages caller mutation; consumers that need
+    to mutate must call ``set_allowed_setting_sources`` explicitly.
+    """
+    return list(_STATE.allowed_setting_sources)
+
+
+def set_allowed_setting_sources(sources: list[str]) -> None:
+    """Replace the allowed-settings-sources list atomically.
+
+    Mirrors TS ``setAllowedSettingSources`` (state.ts:1153-1155). Stores
+    a copy so subsequent mutation of the caller's list does not leak in.
+    """
+    _STATE.allowed_setting_sources = list(sources)
+
+
+# ===========================================================================
+# Accessors — Invoked skills (compaction preservation; TS: lines 1424-1486)
+# ===========================================================================
+
+
+def add_invoked_skill(
+    skill_name: str,
+    skill_path: str,
+    content: str,
+    agent_id: str | None = None,
+) -> None:
+    """Record an invoked skill so the post-compaction attachment path can
+    re-emit it after a ``/compact`` rewinds the transcript.
+
+    Composite key: ``f"{agent_id or ''}:{skill_name}"`` — string form,
+    NOT a tuple, to match TS ``${agentId ?? ''}:${skillName}`` (state.ts:
+    1439). Same-key add overwrites. Mirrors TS ``addInvokedSkill``
+    (state.ts:1433-1447).
+    """
+    key = f"{agent_id or ''}:{skill_name}"
+    _STATE.invoked_skills[key] = InvokedSkillInfo(
+        skill_name=skill_name,
+        skill_path=skill_path,
+        content=content,
+        invoked_at=time.time(),
+        agent_id=agent_id,
+    )
+
+
+def get_invoked_skills() -> dict[str, InvokedSkillInfo]:
+    """Return the underlying invoked-skills dict (NOT a copy).
+
+    Mirrors TS ``getInvokedSkills`` which returns the live Map. Callers
+    that want a copy must copy explicitly.
+    """
+    return _STATE.invoked_skills
+
+
+def get_invoked_skills_for_agent(
+    agent_id: str | None,
+) -> dict[str, InvokedSkillInfo]:
+    """Filter the invoked-skills map to entries whose ``agent_id`` matches.
+
+    ``agent_id=None`` matches only skills recorded with ``agent_id=None``.
+    Mirrors TS ``getInvokedSkillsForAgent`` (state.ts:1453-1464); the
+    ``normalizedId = agentId ?? null`` step in TS is unnecessary in
+    Python because we never pass ``undefined``.
+    """
+    return {
+        key: skill
+        for key, skill in _STATE.invoked_skills.items()
+        if skill.agent_id == agent_id
+    }
+
+
+def clear_invoked_skills(
+    preserved_agent_ids: set[str] | None = None,
+) -> None:
+    """Clear invoked skills, optionally preserving entries tied to the
+    named agents.
+
+    Semantics (mirror TS ``clearInvokedSkills`` state.ts:1466-1478):
+      * ``preserved_agent_ids=None`` OR empty set → clear EVERYTHING.
+      * Otherwise, keep entries whose ``agent_id`` is non-None AND in
+        the set. Entries with ``agent_id is None`` are always removed
+        when a preserved set is supplied (matches TS line 1474:
+        ``if (skill.agentId === null || !preservedAgentIds.has(skill.agentId))``).
+    """
+    if not preserved_agent_ids:
+        _STATE.invoked_skills.clear()
+        return
+    for key in list(_STATE.invoked_skills.keys()):
+        skill = _STATE.invoked_skills[key]
+        if skill.agent_id is None or skill.agent_id not in preserved_agent_ids:
+            del _STATE.invoked_skills[key]
+
+
+def clear_invoked_skills_for_agent(agent_id: str) -> None:
+    """Remove every invoked skill tied to ``agent_id``. Mirrors TS
+    ``clearInvokedSkillsForAgent`` (state.ts:1480-1486)."""
+    for key in list(_STATE.invoked_skills.keys()):
+        if _STATE.invoked_skills[key].agent_id == agent_id:
+            del _STATE.invoked_skills[key]
+
+
+# ===========================================================================
+# Accessors — Slow operations (permanent no-op stubs; TS: lines 1488-1508)
+# ===========================================================================
+#
+# TS keeps these as documented no-ops (the slow-ops tracker was removed).
+# Python mirrors as no-ops so any future caller that depends on the names
+# compiles, while the actual behavior remains a permanent no-op. Do NOT
+# add backing state for these — that would resurrect a removed feature.
+
+
+_EMPTY_SLOW_OPERATIONS: tuple[dict, ...] = ()
+
+
+def add_slow_operation(operation: str, duration_ms: int) -> None:
+    """Permanent no-op. Mirrors TS ``addSlowOperation`` (state.ts:1497-1500)."""
+    return
+
+
+def get_slow_operations() -> tuple[dict, ...]:
+    """Permanent no-op — always returns the same empty tuple. Mirrors TS
+    ``getSlowOperations`` (state.ts:1502-1508)."""
+    return _EMPTY_SLOW_OPERATIONS
+
+
+# ===========================================================================
+# Accessors — REPL bridge (closed-source feature stubs; TS: lines 1647-1653)
+# ===========================================================================
+#
+# Feature-gated in TS (returns false / null in the open build). Python
+# mirrors as permanent stubs — no backing state, no toggle.
+
+
+def is_repl_bridge_active() -> bool:
+    """Permanent stub. Mirrors TS ``isReplBridgeActive`` (state.ts:1647-1649)."""
+    return False
+
+
+def get_repl_bridge_handle() -> None:
+    """Permanent stub. Mirrors TS ``getReplBridgeHandle`` (state.ts:1651-1653)."""
+    return None
+
+
+# ===========================================================================
 # Test reset
 # ===========================================================================
 
@@ -669,18 +1089,31 @@ def reset_state_for_tests() -> None:
     Gated by the ``PYTEST_CURRENT_TEST`` environment variable, which pytest
     sets during test execution. Production calls raise ``RuntimeError``.
     Mirrors TS ``resetStateForTests`` (``bootstrap/state.ts:993``).
+
+    Resets:
+      * the ``_STATE`` dataclass singleton (all dataclass fields zero out)
+      * the session-switched signal listeners
+      * the WI-4 turn-budget module-level globals (these live outside
+        ``_STATE`` to mirror TS lines 756-775; the dataclass replace does
+        not touch them, so we rebind them here explicitly)
     """
     if os.environ.get("PYTEST_CURRENT_TEST") is None:
         raise RuntimeError("reset_state_for_tests can only be called in tests")
     global _STATE
+    global _output_tokens_at_turn_start, _current_turn_token_budget
+    global _budget_continuation_count
     _STATE = _BootstrapState()
     _session_switched.clear()
+    _output_tokens_at_turn_start = 0
+    _current_turn_token_budget = None
+    _budget_continuation_count = 0
 
 
 __all__ = [
     # Types
     "SessionId",
     "ModelUsage",
+    "InvokedSkillInfo",
     "SdkContext",
     # Per-query context
     "run_with_sdk_context",
@@ -712,6 +1145,7 @@ __all__ = [
     "set_is_remote_mode",
     "has_exited_plan_mode_in_session",
     "set_has_exited_plan_mode",
+    "prefer_third_party_authentication",
     # Cost & timing
     "get_total_cost_usd",
     "add_to_total_cost_state",
@@ -726,11 +1160,51 @@ __all__ = [
     "has_unknown_model_cost",
     "set_has_unknown_model_cost",
     "get_model_usage",
+    "get_usage_for_model",
+    "get_total_input_tokens",
+    "get_total_output_tokens",
+    "get_total_cache_read_input_tokens",
+    "get_total_cache_creation_input_tokens",
+    "get_total_web_search_requests",
     "get_start_time",
+    "get_total_duration",
     "get_last_interaction_time",
     "update_last_interaction_time",
     "reset_cost_state",
     "set_cost_state_for_restore",
+    # Turn-level metrics
+    "get_turn_hook_duration_ms",
+    "add_to_turn_hook_duration",
+    "reset_turn_hook_duration",
+    "get_turn_hook_count",
+    "get_turn_tool_duration_ms",
+    "reset_turn_tool_duration",
+    "get_turn_tool_count",
+    "get_turn_classifier_duration_ms",
+    "add_to_turn_classifier_duration",
+    "reset_turn_classifier_duration",
+    "get_turn_classifier_count",
+    # Turn-output-token budget
+    "get_turn_output_tokens",
+    "get_current_turn_token_budget",
+    "snapshot_output_tokens_for_turn",
+    "get_budget_continuation_count",
+    "increment_budget_continuation_count",
+    # Allowed settings sources
+    "get_allowed_setting_sources",
+    "set_allowed_setting_sources",
+    # Invoked skills
+    "add_invoked_skill",
+    "get_invoked_skills",
+    "get_invoked_skills_for_agent",
+    "clear_invoked_skills",
+    "clear_invoked_skills_for_agent",
+    # Slow operations (permanent no-op stubs)
+    "add_slow_operation",
+    "get_slow_operations",
+    # REPL bridge stubs
+    "is_repl_bridge_active",
+    "get_repl_bridge_handle",
     # Cache optimization
     "get_cached_claude_md_content",
     "set_cached_claude_md_content",
