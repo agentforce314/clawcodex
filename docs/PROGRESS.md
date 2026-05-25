@@ -53,7 +53,7 @@
 | F-19 | POS to Agent 转化模式 | P2 | ✅ 完成 | 三层映射（POS→Agent、workflow→Skill、SDK→工具），SDK 解析 + Skill 分组 + Agent 构建 + 持久化 |
 | F-20 | Agent 阶段性进度汇报 | P2 | ✅ 完成 | 三组合方案：检查点触发 + ProgressReportTool + ToolContext.tasks 持久化；PhaseComplete 时双重调用 ProgressReportTool + TaskUpdateTool 更新 metadata |
 | F-21 | 后台运行 + 恢复同步 | P1 | ✅ 完成 | Ctrl+B 后台化 + TailFollower 实时同步 + SessionWatcher 多终端感知，补丁 0067-0074 |
-| F-22 | Cron 系统执行引擎 | P0 | ✅ 完成 | 完整迁移 claude-code-best 生产级 cron 引擎，含过期机制和错失任务通知 |
+| F-22 | Cron 系统执行引擎 | P0 | 🔄 进行中 | 工具定义和/loop skill已完成，核心执行引擎(cron_system/)待实现 |
 | F-23 | Bridge Phase 8-11 多 Session Daemon | P1 | ✅ 完成 | 多会话桥接器完整实现，bridge_main/repl_bridge/remote_bridge_core/session_runner，Phase 1-11 全部完成 |
 | F-24 | Agent Loop Consolidation (Stage 4) | P1 | ✅ 完成 | 删除 agent_loop.py (537 行)，新增 renderers.py (+257) 和 advisor.py (+125)，重构到 src/query/ |
 | F-25 | Advisor Token 计数与状态显示 | P2 | ✅ 完成 | max_history 100→2000，Provider token 追踪增强，client-side advisor mode |
@@ -206,17 +206,15 @@ if message.subtype == "away_summary":
 
 ---
 
-## F-23: Bridge Phase 8-11 多 Session Daemon 桥接器
+## F-22: Cron 系统执行引擎
 
-**状态**: ✅ 完成
+**状态**: 🔄 进行中
 **优先级**: P0
-**完成日期**: 2026-05-25
 **参考实现**: claude-code-best `src/utils/cron*.ts`
 
 ### 目标
 
-将 claude-code-best 的生产级别 cron 执行引擎完整移植到 ClawCodex，实现：
-
+将 claude-code-best 的生产级别 cron 执行引擎移植到 ClawCodex，实现：
 1. 完整 cron 表达式解析（5字段标准语法）
 2. 下次执行时间计算（本地时区）
 3. 调度器执行引擎（1秒轮询）
@@ -225,94 +223,32 @@ if message.subtype == "away_summary":
 6. Jitter 抖动算法（避免雷鸣般群体效应）
 7. 任务过期机制（周期性任务7天自动删除）
 
-### 实现文件清单
+### 当前实现状态
 
-| 文件路径 | 优先级 | 状态 | 依赖 |
-|---------|--------|------|------|
-| `src/cron_system/cron_parser.py` | P0 | ✅ 完成 | - |
-| `src/cron_system/cron_scheduler.py` | P0 | ✅ 完成 | watchdog, psutil |
-| `src/cron_system/cron_tasks.py` | P0 | ✅ 完成 | - |
-| `src/cron_system/cron_tasks_lock.py` | P0 | ✅ 完成 | psutil |
-| `src/cron_system/cron_jitter_config.py` | P1 | ✅ 完成 | growthbook (可选) |
-| `src/cron_system/skills.py` | P1 | ✅ 完成 | bundled_skills |
-| `src/cron_system/loop_skill.py` | P1 | ✅ 完成 | bundled_skills |
-| `src/cron_system/autonomy_runs.py` | P1 | ✅ 完成 | - |
-| `tests/cron/test_parser.py` | P0 | ✅ 完成 | pytest |
-| `tests/cron/test_scheduler.py` | P0 | ✅ 完成 | pytest-asyncio |
-| `tests/cron/test_tasks.py` | P0 | ✅ 完成 | pytest-asyncio |
-
-### 外部依赖
-
-```toml
-# pyproject.toml 新增
-watchdog = ">=3.0"  # 文件监控
-psutil = ">=5.9"     # 进程存活检测
-```
-
-### 核心组件详细说明
-
-#### 1. cron_parser.py - 表达式解析
-- 5字段 cron 解析 (minute hour day-of-month month day-of-week)
-- `parseCronExpression()` - 支持 *, */N, N-M, N,M, N-M/N
-- `computeNextCronRun()` - 下次执行时间计算，OR 语义，DST 处理
-- `cronToHuman()` - cron 转人类可读描述
-
-#### 2. cron_tasks.py - 任务存储
-- `readCronTasks()` / `writeCronTasks()` - JSON 文件读写
-- `addCronTask()` - durable=False 存内存，True 持久化
-- `removeCronTasks()` - 批量删除
-- `markCronTasksFired()` - 批量更新 lastFiredAt
-- `findMissedTasks()` - 检测错失任务
-- `jitteredNextCronRunMs()` / `oneShotJitteredNextCronRunMs()` - 带抖动的下次触发时间
-
-#### 3. cron_tasks_lock.py - 分布式锁
-- `tryAcquireSchedulerLock()` - O_EXCL 原子创建锁
-- `releaseSchedulerLock()` - 仅释放自己持有的锁
-- PID 存活检测 + 陈旧锁自动恢复
-- 锁文件: `.claude/scheduled_tasks.lock`
-
-#### 4. cron_scheduler.py - 执行引擎核心
-- `CHECK_INTERVAL_MS = 1000` - 1秒轮询
-- `LOCK_PROBE_INTERVAL_MS = 5000` - 非所有者5秒探测锁
-- `FILE_STABILITY_MS = 300` - 文件稳定性等待
-- `isRecurringTaskAged()` - 任务过期检查
-- `buildMissedTaskNotification()` - 错失任务通知格式化
-
-#### 5. cron_jitter_config.py - 动态配置
-- `getCronJitterConfig()` - 从 GrowthBook 读取 `tengu_kairos_cron_config`
-- `JITTER_CONFIG_REFRESH_MS = 60000` - 60秒缓存刷新
-- 支持运行时动态调整 jitter 参数
-
-#### 6. skills.py - CLI 命令
-- `/cron-list` - 调用 CronListTool 列出所有任务
-- `/cron-delete <job-id>` - 调用 CronDeleteTool 删除任务
-
-#### 7. loop_skill.py - /loop 命令
-- `/loop [interval] <prompt>` - 简化周期性任务创建
-- `DEFAULT_INTERVAL = "10m"`
-- 解析优先级: 前导 token > 尾部 every > 默认
-- Interval → cron 转换表 (Nm/Nh/Nd/Ns)
-- 创建后**立即执行** (不等待第一次 cron 触发)
-
-#### 8. autonomy_runs.py - 任务队列集成
-- `createAutonomyQueuedPrompt()` - 创建 autonomy queued command
-- 防重放: `hasActiveAutonomyRunForSource()` 检查 sourceId
-- `WORKLOAD_CRON = "cron"` - workload 类型标识
-- 路由: agentId 任务 → teammate 队列，否则 → 主 REPL 队列
+| 组件 | 文件 | 状态 | 说明 |
+|------|------|------|------|
+| Cron 工具定义 | `src/tool_system/tools/cron.py` | ✅ 完成 | CronCreate/CronList/CronDelete 工具，内存存储 |
+| /loop Skill | `src/skills/bundled/loop.py` | ✅ 完成 | 4种模式（fixed-prompt/fixed-maintenance/dynamic-prompt/dynamic-maintenance） |
+| cron_parser.py | `src/cron_system/cron_parser.py` | ❌ 待实现 | 表达式解析与时间计算 |
+| cron_scheduler.py | `src/cron_system/cron_scheduler.py` | ❌ 待实现 | 执行引擎核心 |
+| cron_tasks.py | `src/cron_system/cron_tasks.py` | ❌ 待实现 | 任务存储 CRUD |
+| cron_tasks_lock.py | `src/cron_system/cron_tasks_lock.py` | ❌ 待实现 | 分布式锁 |
+| cron_jitter_config.py | `src/cron_system/cron_jitter_config.py` | ❌ 待实现 | GrowthBook 动态配置 |
+| skills.py | `src/cron_system/skills.py` | ❌ 待实现 | /cron-list, /cron-delete 命令 |
+| autonomy_runs.py | `src/cron_system/autonomy_runs.py` | ❌ 待实现 | 任务队列集成 |
 
 ### 里程碑
 
 | 阶段 | 任务 | 状态 |
 |------|------|------|
-| 1 | cron_parser.py - 表达式解析与时间计算 | ✅ 完成 |
-| 2 | cron_tasks.py - 任务存储 CRUD | ✅ 完成 |
-| 3 | cron_tasks_lock.py - 分布式锁 | ✅ 完成 |
-| 4 | cron_scheduler.py - 执行引擎核心 | ✅ 完成 |
-| 5 | cron_jitter_config.py - 动态配置 | ✅ 完成 |
-| 6 | skills.py - CLI 命令 (/cron-list, /cron-delete) | ✅ 完成 |
-| 7 | loop_skill.py - /loop 命令 | ✅ 完成 |
-| 8 | autonomy_runs.py - 任务队列集成 | ✅ 完成 |
-| 9 | 测试覆盖 | ✅ 完成 |
+| 1 | cron_parser.py - 表达式解析与时间计算 | ⏳ 待开始 |
+| 2 | cron_tasks.py - 任务存储 CRUD | ⏳ 待开始 |
+| 3 | cron_tasks_lock.py - 分布式锁 | ⏳ 待开始 |
+| 4 | cron_scheduler.py - 执行引擎核心 | ⏳ 待开始 |
+| 5 | cron_jitter_config.py - 动态配置 | ⏳ 待开始 |
+| 6 | skills.py - CLI 命令 (/cron-list, /cron-delete) | ⏳ 待开始 |
+| 7 | autonomy_runs.py - 任务队列集成 | ⏳ 待开始 |
+| 8 | 测试覆盖 | ⏳ 待开始 |
 
 ---
 
