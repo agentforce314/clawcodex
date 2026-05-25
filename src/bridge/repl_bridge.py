@@ -81,7 +81,10 @@ from src.bridge.poll_config_defaults import (
     DEFAULT_POLL_CONFIG,
     PollIntervalConfig,
 )
-from src.bridge.session_id_compat import to_compat_session_id
+from src.bridge.session_id_compat import (
+    to_compat_session_id,
+    to_infra_session_id,
+)
 from src.bridge.session_runner import (
     PermissionRequest,
     SessionSpawnerDeps,
@@ -338,24 +341,56 @@ async def init_bridge_core(
         )
         reuse_session_id = None
 
-    # ── 2. Reuse or create session ─────────────────────────────────────
+    # ── 2. Validate the pointer's session id, reuse or create ──────────
+    # Phase 13: before trusting ``reuse_session_id``, actively probe the
+    # server via ``reconnect_session``. Without this, a session archived
+    # between restarts would resurface only after a full 404 poll cycle.
+    # Try both ``session_*`` and ``cse_*`` tags because the pointer was
+    # written under an unknown v2-compat-gate state (see TS
+    # ``replBridge.ts:392-415`` for the same rationale).
+    if reuse_session_id is not None:
+        candidates: list[str] = [reuse_session_id]
+        infra_id = to_infra_session_id(reuse_session_id)
+        if infra_id != reuse_session_id:
+            candidates.append(infra_id)
+        reconnect_ok = False
+        for candidate in candidates:
+            try:
+                await api_client.reconnect_session(
+                    environment_id, candidate,
+                )
+            # Intentionally broad (mirrors TS replBridge.ts:410):
+            # transient failures (5xx, network) conservatively fall
+            # through to fresh session rather than risk reusing a
+            # session whose state is undefined. ``CancelledError``
+            # inherits from ``BaseException`` and is not caught here.
+            except Exception as err:  # noqa: BLE001
+                logger.debug(
+                    '[bridge:repl] reconnect_session(%s) failed: %s',
+                    candidate, err,
+                )
+                continue
+            logger.debug(
+                '[bridge:repl] reconnect_session(%s) succeeded',
+                candidate,
+            )
+            reconnect_ok = True
+            break
+        if not reconnect_ok:
+            logger.info(
+                '[bridge:repl] Perpetual: session %s no longer reachable '
+                '(all %d candidate(s) refused) — creating fresh',
+                reuse_session_id, len(candidates),
+            )
+            clear_pointer(params.dir)
+            reuse_session_id = None
+
     session_id: str | None
     if reuse_session_id is not None:
-        # Trust the pointer's session id. The poll loop / next work
-        # item will surface an error if the server has already
-        # archived it, at which point our standard recreation flow
-        # takes over (Strategy-1 or Strategy-2).
-        #
-        # TODO(phase-13): probe the server (e.g. via a lightweight
-        # ``session.status`` lookup, or by treating the first poll as
-        # validation) before trusting blindly. Today a long-archived
-        # session resumes optimistically and only surfaces the error
-        # via the standard 404 → recreate flow — possibly after a
-        # full poll cycle of dead time.
         session_id = reuse_session_id
         logger.info(
             '[bridge:repl] Perpetual: reusing session_id=%s '
-            'from pointer', session_id,
+            '(reconnect-validated)', session_id,
         )
     else:
         try:
