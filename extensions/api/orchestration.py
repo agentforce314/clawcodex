@@ -8,10 +8,13 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from ..orchestrator.agent_runner import AgentRunner
+if TYPE_CHECKING:
+    from ..orchestrator.agent_runner import AgentRunner
+    from ..orchestrator.orchestrator import Orchestrator
+
 from ..orchestrator.config.schema import WorkflowConfig
-from ..orchestrator.orchestrator import Orchestrator
 from ..orchestrator.status_dashboard import StatusDashboard
 from ..orchestrator.tracker import (
     TrackerAdapter,
@@ -34,11 +37,14 @@ class OrchestrationSubsystem:
     workflow: WorkflowConfig
     workspace_manager: WorkspaceManager
     tracker_adapter: TrackerAdapter
-    agent_runner: AgentRunner
+    agent_runner: "AgentRunner"
     status_dashboard: StatusDashboard
-    _orchestrator: Orchestrator | None = None
+    _orchestrator: "Orchestrator | None" = None
 
     def __init__(self, workflow_config: WorkflowConfig) -> None:
+        from ..orchestrator.agent_runner import AgentRunner
+        from ..orchestrator.orchestrator import Orchestrator
+
         self.workflow = workflow_config
         self.workspace_manager = WorkspaceManager(
             WorkspaceConfig(

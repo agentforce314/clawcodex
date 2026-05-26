@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..utils.git import (
+from src.utils.git import (
     get_current_branch,
     get_default_branch,
     get_file_status,

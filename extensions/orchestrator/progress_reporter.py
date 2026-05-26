@@ -15,7 +15,7 @@ from ..api.query import PhaseComplete, SessionComplete, TurnComplete
 
 if TYPE_CHECKING:
     from .agent_runner import AgentSession
-    from ..tool_system.context import ToolContext
+    from src.tool_system.context import ToolContext
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +79,7 @@ class ProgressReporter:
         # Use context to call ProgressReportTool
         # This leverages the existing tool call infrastructure
         try:
-            from ..tool_system.tools.progress_report import _progress_report_call
+            from src.tool_system.tools.progress_report import _progress_report_call
 
             tool_input = {
                 "taskId": self._current_task_id,
@@ -106,7 +106,7 @@ class ProgressReporter:
 
         # Also call TaskUpdateTool to update task metadata
         try:
-            from ..tool_system.tools.tasks_v2 import _task_update_call
+            from src.tool_system.tools.tasks_v2 import _task_update_call
 
             task_update_input = {
                 "taskId": self._current_task_id,
@@ -154,7 +154,7 @@ class ProgressReporter:
             return
 
         try:
-            from ..tool_system.tools.progress_report import _progress_report_call
+            from src.tool_system.tools.progress_report import _progress_report_call
 
             final_stage = f"phase_{self._phase_count}_complete"
             tool_input = {
