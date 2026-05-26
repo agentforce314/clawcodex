@@ -416,6 +416,164 @@ def verify(
 
 
 # ---------------------------------------------------------------------------
+# upgrade (recommended workflow)
+# ---------------------------------------------------------------------------
+
+@app.command()
+def upgrade(
+    new_commit: str = typer.Option(...,
+        help="New upstream commit hash to upgrade to"),
+    old_commit: str = typer.Option(...,
+        help="Old upstream commit hash to reference (current version)"),
+    extract_only: bool = typer.Option(False,
+        help="Only extract new upstream source without generating patches"),
+    config: Path = typer.Option(DEFAULT_CONFIG, help="Path to upstream-sync.yaml"),
+) -> None:
+    """Recommended workflow: sync current patches, then upgrade to new upstream.
+
+    This command implements the recommended upgrade workflow:
+
+    1. SYNC CURRENT: Ensure current patches are up-to-date with current src/
+       (generate-patch based on current upstream reference)
+
+    2. FETCH NEW: Fetch the new upstream commit
+
+    3. EXTRACT NEW: Extract new upstream source sub-path
+
+    4. GENERATE PATCHES: Generate new patches based on old patch patterns
+
+    5. VERIFY: Verify patches apply correctly to new upstream
+
+    Use this command before running 'sync' to ensure a safe upgrade.
+    """
+    cfg = load_config(config)
+    vendor = VendorManager(Path("."), cfg.upstream)
+    generator = PatchGenerator(Path("."), cfg)
+
+    # Step 1: Sync current patches (ensure patches match current src/)
+    typer.echo("=" * 60)
+    typer.echo("Step 1: Syncing current patches with current src/")
+    typer.echo("=" * 60)
+
+    if cfg.patches.patch_subdir:
+        old_patch_dir = Path(str(cfg.patches.patch_subdir).format(commit=old_commit))
+    else:
+        old_patch_dir = cfg.patches.directory
+
+    old_upstream_dir = Path("src") / "upstream" / old_commit[:8]
+
+    # Generate patches for current state (src/ vs old_upstream)
+    typer.echo(f"Generating current patches from {old_upstream_dir}...")
+    current_patches = generator.generate_patches(
+        new_commit=old_commit,
+        old_commit=old_commit,  # Same commit = diff is src/ vs upstream
+        patch_subdir=old_patch_dir,
+    )
+
+    if current_patches:
+        typer.echo(f"  -> {len(current_patches)} patches refreshed")
+    else:
+        typer.echo("  -> No changes from current upstream")
+
+    # Verify current patches
+    typer.echo("Verifying current patches apply correctly...")
+    from upstream_sync.core.verifier import Verifier
+    verifier = Verifier(Path("."))
+    verify_result = verifier.verify_patches(
+        old_patches_dir=old_patch_dir,
+        new_patches_dir=old_patch_dir,
+        old_upstream_dir=old_upstream_dir,
+        new_upstream_dir=old_upstream_dir,
+        backup_dir=Path("backup"),
+    )
+    if not verify_result.passed:
+        typer.echo(f"  -> WARNING: Current patches verification incomplete")
+
+    # Step 2: Fetch new upstream
+    typer.echo()
+    typer.echo("=" * 60)
+    typer.echo("Step 2: Fetching new upstream")
+    typer.echo("=" * 60)
+    vendor.ensure_remote()
+    fetched_commit = vendor.fetch_ref(new_commit)
+    typer.echo(f"Fetched upstream/{new_commit} at {fetched_commit}")
+
+    # Step 3: Extract new upstream source
+    typer.echo()
+    typer.echo("=" * 60)
+    typer.echo("Step 3: Extracting new upstream source")
+    typer.echo("=" * 60)
+    new_upstream_dir = Path("src") / "upstream" / new_commit[:8]
+    vendor.extract_to_path(
+        ref=new_commit,
+        subpath=cfg.upstream.source_subpath,
+        target_path=new_upstream_dir,
+    )
+    typer.echo(f"Extracted {cfg.upstream.source_subpath}/ to {new_upstream_dir}")
+
+    if extract_only:
+        typer.echo()
+        typer.echo("extract_only=True: Skipping patch generation")
+        return
+
+    # Step 4: Generate patches for new upstream
+    typer.echo()
+    typer.echo("=" * 60)
+    typer.echo("Step 4: Generating patches for new upstream")
+    typer.echo("=" * 60)
+
+    if cfg.patches.patch_subdir:
+        new_patch_dir = Path(str(cfg.patches.patch_subdir).format(commit=new_commit))
+    else:
+        new_patch_dir = cfg.patches.directory
+
+    typer.echo(f"Generating patches for {new_commit} based on {old_commit}...")
+    new_patches = generator.generate_patches(
+        new_commit=new_commit,
+        old_commit=old_commit,
+        patch_subdir=new_patch_dir,
+    )
+
+    if new_patches:
+        series_file = new_patch_dir / f"{new_commit}_series"
+        generator.create_series_file(new_patches, series_file)
+        typer.echo(f"  -> Generated {len(new_patches)} patches in {new_patch_dir}")
+    else:
+        typer.echo("  -> No patches generated (no changes detected)")
+
+    # Step 5: Verify new patches
+    typer.echo()
+    typer.echo("=" * 60)
+    typer.echo("Step 5: Verifying new patches apply correctly")
+    typer.echo("=" * 60)
+
+    verify_result = verifier.verify_patches(
+        old_patches_dir=old_patch_dir,
+        new_patches_dir=new_patch_dir,
+        old_upstream_dir=old_upstream_dir,
+        new_upstream_dir=new_upstream_dir,
+        backup_dir=Path("backup"),
+    )
+
+    if verify_result.passed:
+        typer.echo("  -> Verification PASSED")
+    else:
+        typer.echo("  -> Verification FAILED")
+        if verify_result.details and "issues" in verify_result.details:
+            for issue in verify_result.details["issues"]:
+                typer.echo(f"     {issue}")
+
+    typer.echo()
+    typer.echo("=" * 60)
+    typer.echo("Upgrade workflow complete")
+    typer.echo("=" * 60)
+    typer.echo(f"Old upstream: {old_commit}")
+    typer.echo(f"New upstream: {new_commit}")
+    typer.echo(f"Old patches:  {old_patch_dir}")
+    typer.echo(f"New patches:  {new_patch_dir}")
+
+
+# ---------------------------------------------------------------------------
 # agent-prompt
 # ---------------------------------------------------------------------------
 
