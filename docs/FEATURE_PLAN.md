@@ -703,7 +703,7 @@ class TokenBudgetAnalysis(BaseModel):
 
 ### 3.6 Agent 记忆作用域隔离
 
-**状态**: ✅ 已完成
+**状态**: 🔄 规划中 (代码待实现)
 **目标**: 支持 Agent 按需加载不同作用域的记忆内容
 
 #### 3.6.1 设计背景
@@ -746,15 +746,17 @@ agent = AgentDefinition(
 )
 ```
 
-#### 3.6.4 实现文件
+#### 3.6.4 实现文件（待实现）
 
 | 文件 | 功能 | 状态 |
 |------|------|------|
-| `memdir/memdir.py` | `load_memory_prompts()` 按作用域加载 | ✅ 完成 |
-| `memdir/memory_types.py` | 四种记忆类型定义 | ✅ 完成 |
-| `memdir/paths.py` | 记忆目录路径解析 | ✅ 完成 |
-| `context_system/prompt_assembly.py` | 支持 `memory_scopes` 参数 | ✅ 完成 |
-| `agent/agent_definitions.py` | `memory` 字段定义 | ✅ 完成 |
+| `memdir/memdir.py` | `load_memory_prompts()` 按作用域加载 | 🔄 待实现 |
+| `memdir/memory_types.py` | 四种记忆类型定义 | 🔄 待实现 |
+| `memdir/paths.py` | 记忆目录路径解析 | 🔄 待实现 |
+| `memdir/team_mem_paths.py` | 团队记忆路径解析 | 🔄 待实现 |
+| `memdir/team_mem_prompts.py` | 团队记忆 prompt 构建 | 🔄 待实现 |
+| `context_system/prompt_assembly.py` | 支持 `memory_scopes` 参数 | 🔄 待实现 |
+| `agent/agent_definitions.py` | `memory` 字段定义 | 🔄 待实现 |
 
 #### 3.6.5 使用示例
 
