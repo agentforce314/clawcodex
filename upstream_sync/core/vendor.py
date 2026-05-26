@@ -91,7 +91,12 @@ class VendorManager:
         Args:
             ref: The upstream ref (commit hash, tag, or branch).
             subpath: Sub-directory within the upstream repo to extract (e.g. "src").
+                     The extracted contents are placed DIRECTLY into target_path,
+                     NOT into target_path/subpath/. This means target_path should
+                     be the destination for the subpath contents themselves.
             target_path: Local directory to extract the sub-path contents into.
+                         For example, extract_to_path("abc123", "src", Path("src/upstream/abc123"))
+                         extracts upstream/src/* -> src/upstream/abc123/* (NOT src/upstream/abc123/src/*).
             use_archive: If True, use git archive for efficient extraction.
                          If False, use git checkout.
         """
@@ -99,27 +104,9 @@ class VendorManager:
         target_path.mkdir(parents=True, exist_ok=True)
 
         if use_archive:
-            # Use git archive to extract only the subpath efficiently
-            subprocess.run(
-                [
-                    "git", "archive", upstream_ref, subpath,
-                    "--", f"{subpath}/",
-                ],
-                cwd=self.repo_root,
-                stdout=subprocess.PIPE,
-                check=True,
-            )
-            # git archive prefix/with/subpath outputs to stdout, so we need to extract properly
-            # Actually git archive with subpath doesn't work with -- prefix the way we need
-            # Let's use a different approach: checkout to temp then copy
-            subprocess.run(
-                ["git", "archive", upstream_ref],
-                cwd=self.repo_root,
-                stdout=subprocess.PIPE,
-                check=True,
-            )
             import tarfile
             import io
+            # Extract the full archive and filter to only the subpath members
             proc = subprocess.run(
                 ["git", "archive", "--prefix=", upstream_ref],
                 cwd=self.repo_root,
@@ -127,15 +114,18 @@ class VendorManager:
                 check=True,
             )
             with tarfile.open(fileobj=io.BytesIO(proc.stdout)) as tar:
+                # Filter to only members under the subpath directory
                 members = [m for m in tar.getmembers() if m.name.startswith(f"{subpath}/")]
                 for member in members:
-                    # Strip the subpath prefix
-                    member.name = member.name[len(subpath)+1:] if len(subpath)+1 < len(member.name) else member.name
+                    # Strip the subpath/ prefix so contents go directly into target_path
+                    # e.g., "src/bridge/__init__.py" -> "bridge/__init__.py"
+                    member.name = member.name[len(subpath)+1:]
                     if member.name:
                         tar.extract(member, target_path)
         else:
             # Fallback: checkout to a temp branch and copy
             import tempfile
+            import shutil
             with tempfile.TemporaryDirectory() as tmpdir:
                 tmp_branch = f"tmp-extract-{ref[:8]}"
                 subprocess.run(
@@ -144,9 +134,14 @@ class VendorManager:
                     check=True,
                 )
                 src_path = Path(tmpdir) / subpath
-                import shutil
                 if src_path.exists():
-                    shutil.copytree(src_path, target_path, dirs_exist_ok=True)
+                    # Copy contents directly (not the subpath directory itself)
+                    for item in src_path.iterdir():
+                        dest = target_path / item.name
+                        if item.is_dir():
+                            shutil.copytree(item, dest, dirs_exist_ok=True)
+                        else:
+                            shutil.copy2(item, dest)
                 subprocess.run(
                     ["git", "checkout", "-"],
                     cwd=self.repo_root,

@@ -3,6 +3,21 @@
 
 This module provides the logic to generate new patches for an upstream commit
 (456def) by understanding the transformation patterns from old patches (123abc).
+
+Path Convention
+==============
+All patches are generated with paths relative to the upstream source_subpath
+(e.g. "src"). The patch diff header uses paths like:
+    diff --git a/bridge/__init__.py b/bridge/__init__.py
+NOT:
+    diff --git a/src/bridge/__init__.py b/src/bridge/__init__.py
+
+This means patches are applied directly to the extracted upstream source
+at src/upstream/{commit_id}/, where the extracted directory already contains
+the source_subpath contents (e.g., src/upstream/68dc3c5/bridge/__init__.py).
+
+When comparing two upstream commits (old vs new), the source_subpath prefix
+is stripped from all paths so patches use consistent, subpath-relative paths.
 """
 
 from __future__ import annotations
@@ -98,7 +113,12 @@ class PatchGenerator:
         return generated
 
     def _get_upstream_diff(self, old_commit: str, new_commit: str) -> list[PatchDiff]:
-        """Get file diffs between two upstream commits."""
+        """Get file diffs between two upstream commits.
+
+        All returned paths are relative to source_subpath (e.g. "src").
+        The source_subpath prefix is stripped from paths, so a file like
+        "src/bridge/__init__.py" becomes "bridge/__init__.py" in the diff.
+        """
         result = subprocess.run(
             ["git", "diff", f"{old_commit}..{new_commit}", "--", self.cfg.upstream.source_subpath],
             cwd=self.repo_root,
@@ -127,13 +147,18 @@ class PatchGenerator:
                         is_new=is_new,
                         is_deleted=is_deleted,
                     ))
-                # Parse new file
+                # Parse new file path from "b/<path>" part
+                # e.g., "diff --git a/src/bridge/__init__.py b/src/bridge/__init__.py"
                 parts = line.split(" b/")
                 if len(parts) == 2:
-                    current_file = parts[1].split(" ")[0] if " " in parts[1] else parts[1]
-                    # Remove the source_subpath prefix
-                    if current_file.startswith(f"{self.cfg.upstream.source_subpath}/"):
-                        current_file = current_file[len(f"{self.cfg.upstream.source_subpath}/"):]
+                    raw_path = parts[1].split(" ")[0] if " " in parts[1] else parts[1]
+                    # Strip source_subpath prefix so paths are relative to extracted upstream root
+                    # e.g., "src/bridge/__init__.py" -> "bridge/__init__.py"
+                    subpath = self.cfg.upstream.source_subpath
+                    if raw_path.startswith(f"{subpath}/"):
+                        current_file = raw_path[len(subpath)+1:]
+                    else:
+                        current_file = raw_path
                 old_lines = []
                 new_lines = []
                 is_new = "new file mode" in line
@@ -162,25 +187,43 @@ class PatchGenerator:
     def _analyze_old_patches(self, old_patches_dir: Path) -> dict[str, str]:
         """Analyze old patches to understand transformation patterns.
 
-        Returns a dict mapping file paths to their transformation patterns.
+        Returns a dict mapping file paths (relative to source_subpath) to their
+        patch content. Paths in patches have source_subpath prefix stripped, so
+        a patch for "src/bridge/__init__.py" is stored under key "bridge/__init__.py".
         """
         patterns = {}
         if not old_patches_dir.exists():
             return patterns
 
+        subpath = self.cfg.upstream.source_subpath
         for patch_file in old_patches_dir.glob("*.patch"):
             content = patch_file.read_text(encoding="utf-8")
             # Extract the source file from patch header
-            # Format: a/src/foo.py b/src/foo.py or just the filename
+            # Format: "diff --git a/bridge/__init__.py b/bridge/__init__.py"
+            # or: "--- a/src/bridge/__init__.py"
             for line in content.splitlines():
-                if line.startswith("--- a/") or line.startswith("diff --git"):
-                    if "a/" in line:
-                        src = line.split("a/")[1].split(" ")[0] if " " in line else line.split("a/")[1]
-                        # Remove source_subpath prefix if present
-                        if src.startswith(f"{self.cfg.upstream.source_subpath}/"):
-                            src = src[len(f"{self.cfg.upstream.source_subpath}/"):]
-                        patterns[src] = content
-                        break
+                if line.startswith("diff --git"):
+                    # Extract "b/<path>" or "a/<path>"
+                    if " b/" in line:
+                        src = line.split(" b/")[1].split(" ")[0]
+                    elif " a/" in line:
+                        src = line.split(" a/")[1].split(" ")[0]
+                    else:
+                        continue
+                    # Strip source_subpath prefix if present
+                    if src.startswith(f"{subpath}/"):
+                        src = src[len(subpath)+1:]
+                    patterns[src] = content
+                    break
+                elif line.startswith("--- a/") or line.startswith("+++ b/"):
+                    # Extract path after a/ or b/
+                    prefix = "--- a/" if line.startswith("--- a/") else "+++ b/"
+                    src = line[len(prefix):].split(" ")[0]
+                    # Strip source_subpath prefix if present
+                    if src.startswith(f"{subpath}/"):
+                        src = src[len(subpath)+1:]
+                    patterns[src] = content
+                    break
 
         return patterns
 
@@ -195,31 +238,26 @@ class PatchGenerator:
         if not pattern:
             return None
 
-        # Simple transformation: update the commit references in patch header
-        new_patch = pattern
-
-        # Update a/ and b/ paths to use new commit
-        old_src_prefix = f"a/{self.cfg.upstream.source_subpath}/{diff.path.split('/')[0]}" if '/' in diff.path else f"a/{diff.path}"
-        new_src_prefix = f"a/{diff.path}"
-
-        # Update the diff header
-        new_patch = new_patch.replace(f"a/{self.cfg.upstream.source_subpath}/", f"a/")
-        new_patch = new_patch.replace(f"b/{self.cfg.upstream.source_subpath}/", f"b/")
-
-        # Generate unified diff format
-        if diff.is_new:
-            # Create new file patch
-            return self._create_unified_patch(diff, new_commit)
-        else:
-            # For modified files, apply the diff transformation
-            return self._create_unified_patch(diff, new_commit)
+        # Paths in patches are already relative to source_subpath root,
+        # so we generate new patches with simple a/<path> b/<path> format.
+        return self._create_unified_patch(diff, new_commit)
 
     def _create_simple_patch(self, diff: PatchDiff, commit: str) -> str:
         """Create a simple patch for a file change."""
         return self._create_unified_patch(diff, commit)
 
     def _create_unified_patch(self, diff: PatchDiff, commit: str) -> str:
-        """Create a unified diff patch."""
+        """Create a unified diff patch with source_subpath-relative paths.
+
+        Paths in the patch header use the format:
+            diff --git a/bridge/__init__.py b/bridge/__init__.py
+        NOT:
+            diff --git a/src/bridge/__init__.py b/src/bridge/__init__.py
+
+        This convention allows the patch to be applied directly to the
+        extracted upstream source at src/upstream/{commit_id}/, where the
+        directory already contains the source_subpath contents.
+        """
         old_path = f"a/{diff.path}"
         new_path = f"b/{diff.path}"
 
@@ -234,15 +272,20 @@ class PatchGenerator:
                 text=True,
             )
             if result.stdout:
-                return result.stdout
+                # Normalize paths: strip source_subpath prefix from the diff output
+                output = result.stdout
+                subpath = self.cfg.upstream.source_subpath
+                output = output.replace(f"a/{subpath}/", "a/")
+                output = output.replace(f"b/{subpath}/", "b/")
+                return output
 
         # Fallback: create manual unified diff
         lines = []
-        lines.append(f"diff --git a/{diff.path} b/{diff.path}")
+        lines.append(f"diff --git {old_path} {new_path}")
         if diff.is_new:
             lines.append(f"new file mode 100644")
-        lines.append(f"--- a/{diff.path}")
-        lines.append(f"+++ b/{diff.path}")
+        lines.append(f"--- {old_path}")
+        lines.append(f"+++ {new_path}")
         lines.append(f"@@ -0,0 +1,{len(diff.new_version.splitlines())} @@")
 
         for line in diff.new_version.splitlines():

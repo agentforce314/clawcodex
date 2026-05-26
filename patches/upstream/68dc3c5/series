@@ -1,45 +1,40 @@
-# Quilt series file — 68dc3c5 (rebuilt & merged patches)
+# Quilt series file — 68dc3c5 (rebuilt patches)
 #
 # Format: one patch filename per line (no leading whitespace, no # comments inline).
 #
-# Patch application order: by file dependencies
+# Rebuilt from current src/ state based on src/upstream/68dc3c5/ as upstream source.
+#
+# Patch application order: by file type (modified first, then new files)
 
-# Foundation patches (Phase A)
-0001.src.__init__.py.patch
-0002.src.agent._outlines_adapter.py.patch
-0003.src.agent.background_state.py.patch
-0004.src.agent.session.py.patch
-0005.src.cli.py.patch
-0006.src.config.py.patch
-0007.src.context_system._gitpython_adapter.py.patch
-0008.src.context_system.prompt_assembly.py.patch
-0009.src.entrypoints.headless.py.patch
-0010.src.hooks._pluggy_adapter.py.patch
-0011.src.memdir.__init__.py.patch
-0012.src.memdir.memdir.py.patch
-0013.src.permissions._treesitter_adapter.py.patch
-0014.src.providers._litellm_adapter.py.patch
+# === Phase 1: Modified files (diffs from upstream) ===
+0001.bridge__init__.py.patch
+0002.repl_core.py.patch
+0003.tui_widgets_header.py.patch
 
-# Core patches (Phase B)
-0015.src.repl.core.py.patch
-0016.src.repl.live_status.py.patch
-0017.src.services.tail_follower.py.patch
-0018.src.settings.pydantic_adapter.py.patch
-0019.src.settings.types.py.patch
-0020.src.skills._frontmatter_adapter.py.patch
-0021.src.tool_system.tools.ask_issue_author.py.patch
-
-# UI patches (Phase C)
-0022.src.tui.agent_bridge.py.patch
-0023.src.tui.app.py.patch
-0024.src.tui.keybindings.py.patch
-0025.src.tui.screens.repl.py.patch
-0026.src.tui.widgets.header.py.patch
-
-# Type and utility patches (Phase D)
-0027.src.types.messages.py.patch
-0028.src.upstream.PHASE1_SKELETON.txt.patch
-0029.src.upstream.__init__.py.patch
-0030.src.utils.advisor.py.patch
-0031.src.utils.graceful_shutdown.py.patch
-0032.src.utils.session_watcher.py.patch
+# === Phase 2: New files (from b125e16 + customizations) ===
+0004.agent__outlines_adapter_py.patch
+0005.agent_background_state_py.patch
+0006.agent_tool_authoring___init___py.patch
+0007.agent_tool_authoring_call_handlers___init___py.patch
+0008.agent_tool_authoring_call_handlers_bash_py.patch
+0009.agent_tool_authoring_call_handlers_http_py.patch
+0010.agent_tool_authoring_call_handlers_python_py.patch
+0011.agent_tool_authoring_factory_py.patch
+0012.agent_tool_authoring_persistence_py.patch
+0013.agent_tool_authoring_registry_ext_py.patch
+0014.agent_tool_authoring_spec_py.patch
+0015.agent_tool_authoring_validators_py.patch
+0016.context_system__gitpython_adapter_py.patch
+0017.hooks__pluggy_adapter_py.patch
+0018.permissions__treesitter_adapter_py.patch
+0019.providers__litellm_adapter_py.patch
+0020.services_tail_follower_py.patch
+0021.settings_pydantic_adapter_py.patch
+0022.skills__frontmatter_adapter_py.patch
+0023.tool_system_agent_loop_py.patch
+0024.tool_system_tools_ask_issue_author_py.patch
+0025.tool_system_tools_create_agent_tool_py.patch
+0026.tool_system_tools_progress_report_py.patch
+0027.tool_system_tools_task_directives_py.patch
+0028.tool_system_tools_task_inspect_py.patch
+0029.utils_session_watcher_py.patch
