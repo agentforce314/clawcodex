@@ -141,6 +141,14 @@ def main():
     elif getattr(args, 'legacy_repl', False) or args.no_tui:
         explicit_tui = False
 
+    # ``--resume`` without a SESSION_ID requires the TUI session browser
+    # (the REPL has no equivalent UI). Force TUI mode in this case.
+    resume_val = getattr(args, 'resume', None)
+    if resume_val == 'browse' and explicit_tui is not True:
+        from src.entrypoints.tui import _textual_available
+        if _textual_available():
+            explicit_tui = True
+
     from src.entrypoints.tui import should_use_tui
 
     if should_use_tui(explicit_tui):
@@ -154,6 +162,7 @@ def main():
         stream=args.stream,
         permission_mode=args._resolved_permission_mode,
         is_bypass_permissions_mode_available=args._resolved_is_bypass_available,
+        resume_session_id=resume_val if resume_val and resume_val != 'browse' else None,
     )
 
 
@@ -263,10 +272,11 @@ Examples:
     )
     noninteractive.add_argument(
         '--resume',
-        type=str,
+        nargs='?',
         default=None,
+        const='browse',
         metavar='SESSION_ID',
-        help='Resume a previous session by session ID',
+        help='Resume a previous session by session ID; without SESSION_ID, browse sessions',
     )
     noninteractive.add_argument(
         '--verbose',
@@ -424,6 +434,11 @@ def _run_tui_mode(args) -> int:
     allowed = _split_csv(args.allowed_tools)
     disallowed = _split_csv(args.disallowed_tools)
 
+    # --resume without SESSION_ID means "browse" mode
+    resume_val = getattr(args, 'resume', None)
+    resume_session_id = None if resume_val == 'browse' else resume_val
+    resume_browse = resume_val == 'browse'
+
     options = TUIOptions(
         provider_name=args.provider,
         model=args.model,
@@ -433,7 +448,8 @@ def _run_tui_mode(args) -> int:
         stream=True,
         permission_mode=args._resolved_permission_mode,
         is_bypass_permissions_mode_available=args._resolved_is_bypass_available,
-        resume_session_id=getattr(args, 'resume', None),
+        resume_session_id=resume_session_id,
+        resume_browse=resume_browse,
     )
     return run_tui(options)
 
@@ -554,6 +570,7 @@ def start_repl(
     *,
     permission_mode: str = "default",
     is_bypass_permissions_mode_available: bool = False,
+    resume_session_id: str | None = None,
 ):
     """Start interactive REPL.
 
@@ -561,6 +578,9 @@ def start_repl(
     resolved by :func:`_resolve_permission_state`. They control whether
     the in-process tool registry will short-circuit permission checks
     for the user (when ``--dangerously-skip-permissions`` is set).
+
+    ``resume_session_id`` optionally loads a previous session by ID,
+    so ``clawcodex --resume abc123`` continues that conversation.
     """
     from src.config import get_default_provider
     from src.repl import ClawcodexREPL
@@ -571,6 +591,7 @@ def start_repl(
         stream=stream,
         permission_mode=permission_mode,
         is_bypass_permissions_mode_available=is_bypass_permissions_mode_available,
+        resume_session_id=resume_session_id,
     )
     repl.run()
     return 0

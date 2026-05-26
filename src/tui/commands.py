@@ -52,6 +52,7 @@ LOCAL_BUILTINS: tuple[str, ...] = (
     "/mcp",
     "/tasks",
     "/rewind",
+    "/resume",
 )
 
 
@@ -104,7 +105,7 @@ _LOCAL_BUILTIN_DESCRIPTIONS: dict[str, str] = {
     "/exit": "Exit the CLI",
     "/quit": "Exit the CLI",
     "/q": "Exit the CLI",
-    "/repl": "Alias for /exit (kept for parity)",
+    "/repl": "Return to CLI / terminal (keep session in background)",
     "/clear": "Clear the conversation transcript",
     "/tools": "List available tools",
     "/stream": "Toggle streaming output",
@@ -239,8 +240,10 @@ def dispatch_local_command(
 
     name = raw.split(" ", 1)[0].lower()
 
-    if name in ("/exit", "/quit", "/q", "/repl"):
+    if name in ("/exit", "/quit", "/q"):
         return CommandDispatchResult(handled=True, system_text="__exit__")
+    if name == "/repl":
+        return CommandDispatchResult(handled=True, system_text="__repl__")
     if name == "/clear":
         return CommandDispatchResult(handled=True, system_text="__clear__")
     if name == "/help":
@@ -248,7 +251,7 @@ def dispatch_local_command(
             "Slash commands:",
             "  " + "  ".join(LOCAL_BUILTINS),
             "Tip: press `/` in the prompt to open the palette.",
-            "Exit with /exit or Ctrl+D. /repl is an alias kept for parity.",
+            "Exit with /exit or Ctrl+D. /repl returns to CLI in background.",
         ]
         return CommandDispatchResult(handled=True, system_text="\n".join(lines))
     if name == "/tools":
@@ -289,6 +292,8 @@ def dispatch_local_command(
         return CommandDispatchResult(handled=True, open_dialog="tasks")
     if name == "/rewind":
         return CommandDispatchResult(handled=True, open_dialog="rewind")
+    if name == "/resume":
+        return CommandDispatchResult(handled=True, open_dialog="resume")
 
     return CommandDispatchResult(handled=False)
 

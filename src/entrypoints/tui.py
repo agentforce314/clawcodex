@@ -45,6 +45,8 @@ class TUIOptions:
     provider_factory: Callable[[], object] | None = None
     # Resume a previous session by ID (e.g. after Ctrl+B background).
     resume_session_id: str | None = None
+    # --resume without SESSION_ID: show session browser on TUI mount.
+    resume_browse: bool = False
 
 
 def run_tui(options: TUIOptions) -> int:
@@ -149,20 +151,26 @@ def run_tui(options: TUIOptions) -> int:
         max_turns=options.max_turns,
         stream=options.stream,
         tail_follower=tail_follower,
+        resume_browse=options.resume_browse,
     )
     try:
-        # ``inline=True`` renders the app in-place at the bottom of the
-        # terminal rather than grabbing the alt-screen — previous shell
-        # output stays in scrollback, and ``/exit`` leaves the rendered
-        # transcript intact (``inline_no_clear=True``). Matches the
-        # TS / ink reference's terminal-native experience.
-        # ``mouse=False`` lets the host terminal handle mouse events so
-        # the user can drag-select and copy text natively. The trade-off
-        # is no in-app mouse scroll on the transcript — keyboard scroll
-        # bindings (PgUp/PgDn) still work.
-        app.run(inline=True, inline_no_clear=True, mouse=False)
+        result = app.run()
     except KeyboardInterrupt:
         return 130
+
+    # Ctrl+B and /repl exit with ("__FULL_EXIT__", session_id) —
+    # print the resume hint for the user.
+    if isinstance(result, tuple) and result[0] == "__FULL_EXIT__":
+        session_id = result[1] if len(result) > 1 else ""
+        from rich.console import Console as RichConsole
+        rc = RichConsole()
+        if session_id:
+            rc.print(
+                f"\n  [bold yellow]Session {session_id} saved.[/bold yellow] Resume with:\n"
+                f"    [cyan]clawcodex --tui --resume {session_id}[/cyan]"
+            )
+        else:
+            rc.print("\n  [dim]Session saved.[/dim]")
     return 0
 
 

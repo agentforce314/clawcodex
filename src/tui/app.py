@@ -47,6 +47,7 @@ from .screens.mcp_dialogs import McpListScreen, McpServer
 from .screens.message_selector import MessageSelectorScreen, TranscriptMessage
 from .screens.model_picker import ModelPickerScreen
 from .screens.repl import REPLScreen
+from .screens.resume_conversation import ResumeConversation
 from .screens.theme_picker import ThemePickerScreen
 from .state import AppState
 from .terminal_chrome import (
@@ -115,6 +116,7 @@ class ClawCodexTUI(App):
         stream: bool = True,
         theme_name: str | None = None,
         tail_follower: Any | None = None,
+        resume_browse: bool = False,
     ) -> None:
         super().__init__()
         self.provider = provider
@@ -160,6 +162,7 @@ class ClawCodexTUI(App):
             stream=self.stream,
             tail_follower=tail_follower,
         )
+        self._resume_browse = resume_browse
 
     # The base CSS for the REPL; Phase 1 uses Textual's default theme
     # variables ($primary, $surface, …) — palette overrides sit in
@@ -220,6 +223,11 @@ class ClawCodexTUI(App):
         except Exception:
             pass
         self._state_unsub = self.app_state.subscribe(self._on_state_change)
+
+        # If --resume was given without a SESSION_ID, show the session
+        # browser so the user can pick a session to resume.
+        if self._resume_browse:
+            self._show_resume_browser()
 
     def on_unmount(self) -> None:
         # Best-effort cleanup so we don't leave stale chrome on the host.
@@ -317,39 +325,31 @@ class ClawCodexTUI(App):
         self.exit()
 
     def action_agent_background(self) -> None:
-        """Handle Ctrl+B — save session and exit to terminal shell.
+        """Handle Ctrl+B — signal agent to continue in background, save
+        session, and exit to terminal shell.
 
         Unlike ``/exit`` (which returns to the CLI REPL loop), Ctrl+B is a
-        hard exit that terminates the entire ``clawcodex`` process. The
-        ``__FULL_EXIT__`` sentinel is detected by
-        :meth:`ClawcodexREPL._handoff_to_textual_tui`, which calls
-        ``sys.exit(0)`` instead of resuming the REPL loop.
+        hard exit that terminates the TUI process but leaves the agent
+        running in the background. The session is persisted so the user
+        can resume later via ``clawcodex --tui --resume <session_id>``.
 
-        The session is saved to disk so the user can resume it later via
-        ``clawcodex --tui --resume <session_id>`` and get back the
-        conversation history plus any work the backgrounded agent
-        completes.
+        The session ID is passed back as ``("__FULL_EXIT__", session_id)``
+        so that :meth:`ClawcodexREPL._handoff_to_textual_tui` can print
+        the resume hint **after** the TUI screen has been torn down.
         """
+        # Signal agent to continue running in background.
         try:
             from src.agent.background_state import signal_background
             signal_background()
         except Exception:
             pass
-        # Persist session so --resume can find it.
+        # Persist session so --resume can find it later.
         try:
             self.session.save()
         except Exception:
             pass
-        # Print the resume command so the user can easily return.
         sid = getattr(self.session, "session_id", None) or ""
-        if sid:
-            import sys
-            print(
-                f"\n  Session {sid} backgrounded. Resume with:\n"
-                f"    clawcodex --tui --resume {sid}\n",
-                file=sys.stderr,
-            )
-        self.exit(result="__FULL_EXIT__")
+        self.exit(result=("__FULL_EXIT__", sid))
 
     # ---- local command dispatcher ----
     def handle_local_slash_command(self, text: str, transcript: Transcript) -> bool:
@@ -411,6 +411,27 @@ class ClawCodexTUI(App):
         if result.system_text == "__exit__":
             self._confirm_exit(transcript)
             return
+        if result.system_text == "__background__":
+            # Ctrl+B: signal agent to continue in background,
+            # persist session for --resume, exit with session ID so the
+            # calling code prints the resume hint after teardown.
+            try:
+                from src.agent.background_state import signal_background
+                signal_background()
+            except Exception:
+                pass
+            try:
+                self.session.save()
+            except Exception:
+                pass
+            sid = getattr(self.session, "session_id", None) or ""
+            self.exit(result=("__FULL_EXIT__", sid))
+            return
+        if result.system_text == "__repl__":
+            # /repl: cleanly exit TUI page, return to CLI REPL.
+            # No dialog, no background signal — just go back.
+            self.exit()
+            return
         if result.system_text == "__clear__":
             transcript.clear_transcript()
             self._agent_bridge.reset_advisor_dedup()
@@ -450,6 +471,8 @@ class ClawCodexTUI(App):
             self._open_message_selector(transcript)
         elif name == "tasks":
             self._open_tasks_dialog(transcript)
+        elif name == "resume":
+            self._show_resume_browser()
         else:
             transcript.append_system(f"Dialog '{name}' not available.", style="muted")
 
@@ -868,6 +891,32 @@ class ClawCodexTUI(App):
             self.announcer.announce("Cancelling…", level="assertive", notify=False)
 
     # ---- helpers ----
+    def _show_resume_browser(self) -> None:
+        """Push the ResumeConversation modal so the user can pick a session."""
+        screen = ResumeConversation()
+        self.push_screen(screen, self._on_session_selected)
+
+    def _on_session_selected(self, session_id: str | None) -> None:
+        """Callback after the user picks a session from the resume browser."""
+        if session_id is None:
+            # User cancelled — start a fresh session.
+            return
+        try:
+            from src.agent import Session as AgentSession
+
+            resumed, tail = AgentSession.resume_with_tail(session_id)
+            # Swap session + bridge.
+            self.session = resumed
+            self._agent_bridge._session = resumed
+            if tail is not None:
+                self._agent_bridge._tail_follower = tail
+                self._agent_bridge._start_tail_follower()
+            # Replay the restored conversation into the transcript.
+            if resumed.conversation.messages and self._repl_screen is not None:
+                self._replay_history()
+        except Exception:
+            pass
+
     def _build_default_tool_context(self) -> ToolContext:
         ctx = ToolContext(workspace_root=self.workspace_root)
         ctx.ask_user = lambda questions: {

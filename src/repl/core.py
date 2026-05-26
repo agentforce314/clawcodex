@@ -383,6 +383,7 @@ class ClawcodexREPL:
         *,
         permission_mode: str = "default",
         is_bypass_permissions_mode_available: bool = False,
+        resume_session_id: str | None = None,
     ):
         # ``is_interactive`` is set during bootstrap phase 2 by
         # ``src.init.run_pre_action`` (called from ``cli.main``) before
@@ -435,11 +436,24 @@ class ClawcodexREPL:
             model=config.get("default_model")
         )
 
-        # Create session
-        self.session = Session.create(
-            provider_name,
-            self.provider.model
-        )
+        # Create session — or resume an existing one when ``--resume ID``
+        # is passed at the CLI. ``resume_session_id`` is plumbed through
+        # from ``cli.py:start_repl``.
+        self._resume_session_id = resume_session_id
+        if resume_session_id:
+            loaded_session = Session.resume(resume_session_id)
+            if loaded_session is not None:
+                self.session = loaded_session
+                self.console.print(f"[green]Resumed session: {resume_session_id}[/green]")
+                self.console.print(f"[dim]Provider: {loaded_session.provider}, Model: {loaded_session.model}[/dim]")
+            else:
+                self.console.print(f"[yellow]Session not found: {resume_session_id}. Starting new session.[/yellow]")
+                self.session = Session.create(provider_name, self.provider.model)
+        else:
+            self.session = Session.create(
+                provider_name,
+                self.provider.model
+            )
 
         # Late-binding closure: ``tool_context`` is built below, but the
         # Agent tool's prompt builder won't read this until much later,
@@ -2109,7 +2123,15 @@ class ClawcodexREPL:
                     continue
 
             # Ctrl+B → full exit to terminal shell (not back to CLI)
-            if result == "__FULL_EXIT__":
+            if isinstance(result, tuple) and result[0] == "__FULL_EXIT__":
+                session_id = result[1] if len(result) > 1 else ""
+                if session_id:
+                    self.console.print(
+                        f"\n  [bold yellow]Session {session_id} saved.[/bold yellow] Resume with:\n"
+                        f"    [cyan]clawcodex --tui --resume {session_id}[/cyan]"
+                    )
+                else:
+                    self.console.print("\n  [dim]Session saved.[/dim]")
                 self.console.print("[dim]Exiting clawcodex...[/dim]")
                 sys.exit(0)
 
