@@ -329,6 +329,17 @@ async def init_bridge_core(
     # we'd captured from the pointer is bound to the dead env and
     # would be useless against the new env, so drop it — create_session
     # will mint a fresh one below.
+    #
+    # Phase 16 / phase-13 follow-up: also clear the stale pointer
+    # eagerly. Phase 12c's original behavior relied on the post-
+    # ``create_session`` pointer write to overwrite the stale entry,
+    # but if ``create_session`` itself fails after this branch fires,
+    # the stale pointer survives on disk and a subsequent restart
+    # would re-hint the dead env again. TS clears on any failure to
+    # reuse the prior pointer (``prior && !reusedPriorSession`` at
+    # ``replBridge.ts:429-431``) — Python mirrors this with two
+    # clears: here for the env-mismatch case, and at the reconnect-
+    # validation block below for the all-candidates-refused case.
     if (
         pointer is not None
         and registration['environment_id'] != pointer.environment_id
@@ -339,6 +350,7 @@ async def init_bridge_core(
             pointer.environment_id, registration['environment_id'],
         )
         reuse_session_id = None
+        clear_pointer(params.dir)
 
     # ── 2. Validate the pointer's session id, reuse or create ──────────
     # Phase 13: before trusting ``reuse_session_id``, actively probe the
