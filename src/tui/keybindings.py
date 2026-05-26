@@ -98,6 +98,7 @@ def default_bindings() -> list[ChordBinding]:
         ChordBinding(("G",), "transcript.bottom", "Jump to latest message"),
         ChordBinding(("[", "c"), "transcript.prev-change", "Previous tool result"),
         ChordBinding(("]", "c"), "transcript.next-change", "Next tool result"),
+        ChordBinding(("ctrl+b",), "agent.background", "Background agent"),
         ChordBinding(("[", "m"), "transcript.prev-message", "Previous message"),
         ChordBinding(("]", "m"), "transcript.next-message", "Next message"),
         ChordBinding(("ctrl+w", "v"), "layout.toggle-overlay", "Toggle overlay"),

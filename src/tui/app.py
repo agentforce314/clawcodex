@@ -99,6 +99,7 @@ class ClawCodexTUI(App):
     BINDINGS = [
         ("ctrl+c", "cancel_or_quit", "Cancel / Quit"),
         ("ctrl+d", "quit", "Quit"),
+        ("ctrl+b", "agent_background", "Background agent"),
     ]
 
     def __init__(
@@ -306,6 +307,20 @@ class ClawCodexTUI(App):
         # Phase 1 keeps Ctrl+C as exit. Real cancellation (interrupt the
         # in-flight agent loop) lands in Phase 2 alongside the cost /
         # idle dialogs.
+        self.exit()
+
+    def action_agent_background(self) -> None:
+        """Handle Ctrl+B — promote agent to background and exit TUI.
+
+        Sets the background signal so the agent loop races toward
+        background promotion. The TUI exits cleanly, leaving the
+        background agent writing to the transcript file.
+        """
+        try:
+            from src.agent.background_state import signal_background
+            signal_background()
+        except Exception:
+            pass
         self.exit()
 
     # ---- local command dispatcher ----
