@@ -198,6 +198,8 @@ class FakeApiClient:
         self.stop_calls: list[tuple[str, str, bool]] = []
         self.deregister_calls: list[str] = []
         self.register_calls: list[Any] = []
+        # Phase 15: capture reconnect_session calls for v2 refresh tests.
+        self.reconnect_calls: list[tuple[str, str]] = []
 
     async def register_bridge_environment(self, config: Any) -> dict[str, str]:
         self.register_calls.append(config)
@@ -223,8 +225,8 @@ class FakeApiClient:
     async def archive_session(self, sid: str) -> None:
         pass
 
-    async def reconnect_session(self, *_a: Any) -> None:
-        pass
+    async def reconnect_session(self, env_id: str, session_id: str) -> None:
+        self.reconnect_calls.append((env_id, session_id))
 
     async def heartbeat_work(self, *_a: Any) -> dict[str, Any]:
         return {'lease_extended': True, 'state': 'running'}
@@ -276,7 +278,9 @@ class FakeSessionHandle:
         pass
 
     def update_access_token(self, token: str) -> None:
-        pass
+        # Phase 15: record the new token so refresh tests can assert
+        # it propagated to the child.
+        self._access_token = token
 
     def complete(self, status: SessionDoneStatus = 'completed') -> None:
         if not self._done.done():
@@ -451,6 +455,312 @@ async def test_run_loop_spawns_session_for_v1_work() -> None:
     spawner.handles[0].complete('completed')
     cancel.set()
     await task
+
+
+# ─── Phase 15: JWT refresh wiring with v1/v2 split ────────────────────
+
+
+@pytest.mark.asyncio
+async def test_daemon_schedules_token_refresh_on_spawn() -> None:
+    """Direct daemon unit test (full integration): construct a
+    ``_BridgeDaemon`` with ``get_access_token`` wired, invoke
+    ``_process_work`` with a real-decodable JWT, assert the daemon
+    actually scheduled a refresh + tracks the v2 session id."""
+    import base64
+    import json
+    import time
+
+    from src.bridge.bridge_main import _BridgeDaemon, DEFAULT_BACKOFF
+    from src.bridge.poll_config_defaults import DEFAULT_POLL_CONFIG
+
+    # Build a JWT with a real ``exp`` claim 1 hour out so the
+    # scheduler can decode it and arm a timer (without a real exp,
+    # ``schedule`` silently no-ops at jwt_utils.py:151-162).
+    payload = {'exp': int(time.time()) + 3600, 'session_id': 'cse_v2'}
+    payload_b64 = base64.urlsafe_b64encode(
+        json.dumps(payload).encode('utf-8'),
+    ).rstrip(b'=').decode('ascii')
+    real_jwt = f'header.{payload_b64}.signature'
+
+    secret_payload = {
+        'version': 1,
+        'session_ingress_token': real_jwt,
+        'api_base_url': 'https://api.example.com',
+        'sources': [],
+        'auth': [],
+        'use_code_sessions': True,
+    }
+    raw = json.dumps(secret_payload).encode('utf-8')
+    encoded_secret = base64.urlsafe_b64encode(raw).rstrip(b'=').decode('ascii')
+
+    api = FakeApiClient()
+    spawner = FakeSpawner()
+    daemon = _BridgeDaemon(
+        config=_bridge_config(),
+        environment_id='env-srv',
+        environment_secret='sec',
+        api=api,
+        spawner=spawner,
+        cancel_event=asyncio.Event(),
+        backoff_config=DEFAULT_BACKOFF,
+        poll_config=DEFAULT_POLL_CONFIG,
+        get_access_token=lambda: 'oauth-tok',
+    )
+    assert daemon.token_refresh is not None
+
+    work = {
+        'id': 'work-v2',
+        'type': 'work',
+        'environment_id': 'env-srv',
+        'state': 'pending',
+        'data': {'type': 'session', 'id': 'cse_v2'},
+        'secret': encoded_secret,
+        'created_at': '2026-05-26',
+    }
+    await daemon._process_work(work)
+
+    # v2 session id tracked.
+    assert 'cse_v2' in daemon.v2_sessions
+    # Scheduler armed a real timer (real JWT decoded → timer in
+    # ``_timers`` dict, not silently no-op'd).
+    assert 'cse_v2' in daemon.token_refresh._timers
+    # Spawn happened (not the existingHandle short-circuit).
+    assert len(spawner.spawns) == 1
+
+    # Cleanup: complete + run _on_session_done.
+    spawner.handles[0].complete('completed')
+    done_task = daemon.session_done_tasks.get('cse_v2')
+    if done_task is not None:
+        await done_task
+    # Scheduler cancelled the timer + v2_sessions discarded.
+    assert 'cse_v2' not in daemon.v2_sessions
+    assert 'cse_v2' not in daemon.token_refresh._timers
+
+
+@pytest.mark.asyncio
+async def test_daemon_existing_handle_path_updates_token() -> None:
+    """Phase 15 CRITIC: when work arrives for a session already in
+    ``active_sessions`` (e.g. server re-dispatched after a v2 JWT
+    refresh), the daemon updates the existing handle's token + reschedules
+    the refresh, and does NOT spawn a duplicate subprocess. Mirrors
+    TS ``bridgeMain.ts:868-885``."""
+    import base64
+    import json
+    import time
+
+    from src.bridge.bridge_main import _BridgeDaemon, DEFAULT_BACKOFF
+    from src.bridge.poll_config_defaults import DEFAULT_POLL_CONFIG
+
+    payload = {'exp': int(time.time()) + 3600, 'session_id': 'cse_v2'}
+    payload_b64 = base64.urlsafe_b64encode(
+        json.dumps(payload).encode('utf-8'),
+    ).rstrip(b'=').decode('ascii')
+    real_jwt = f'header.{payload_b64}.signature'
+    secret_payload = {
+        'version': 1,
+        'session_ingress_token': real_jwt,
+        'api_base_url': 'https://api.example.com',
+        'sources': [],
+        'auth': [],
+        'use_code_sessions': True,
+    }
+    raw = json.dumps(secret_payload).encode('utf-8')
+    encoded_secret = base64.urlsafe_b64encode(raw).rstrip(b'=').decode('ascii')
+
+    api = FakeApiClient()
+    spawner = FakeSpawner()
+    daemon = _BridgeDaemon(
+        config=_bridge_config(),
+        environment_id='env-srv',
+        environment_secret='sec',
+        api=api,
+        spawner=spawner,
+        cancel_event=asyncio.Event(),
+        backoff_config=DEFAULT_BACKOFF,
+        poll_config=DEFAULT_POLL_CONFIG,
+        get_access_token=lambda: 'oauth-tok',
+    )
+    # Pre-populate an active session for cse_v2 (simulates the
+    # session already running when the re-dispatched work arrives).
+    existing_handle = FakeSessionHandle('cse_v2', 'OLD-token')
+    daemon.active_sessions['cse_v2'] = existing_handle
+    daemon.v2_sessions.add('cse_v2')
+    daemon.session_work_ids['cse_v2'] = 'old-work-id'
+
+    work = {
+        'id': 'work-redispatched',
+        'type': 'work',
+        'environment_id': 'env-srv',
+        'state': 'pending',
+        'data': {'type': 'session', 'id': 'cse_v2'},
+        'secret': encoded_secret,
+        'created_at': '2026-05-26',
+    }
+    await daemon._process_work(work)
+
+    # NO new spawn — existing handle was updated in place.
+    assert spawner.spawns == []
+    # Existing handle's token was updated to the fresh JWT.
+    assert existing_handle.access_token == real_jwt
+    # work_id was bumped to the new redispatch.
+    assert daemon.session_work_ids['cse_v2'] == 'work-redispatched'
+    # Refresh was rescheduled (real JWT → timer armed).
+    assert 'cse_v2' in daemon.token_refresh._timers
+    # Existing handle remains in active_sessions.
+    assert daemon.active_sessions['cse_v2'] is existing_handle
+
+
+@pytest.mark.asyncio
+async def test_daemon_token_refresh_v1_pushes_to_handle() -> None:
+    """Direct daemon unit test: simulate a v1 session, fire
+    ``on_refresh`` via the scheduler's stored callback, assert the
+    fresh token landed on ``handle.update_access_token``."""
+    from src.bridge.bridge_main import _BridgeDaemon, DEFAULT_BACKOFF
+    from src.bridge.poll_config_defaults import DEFAULT_POLL_CONFIG
+
+    api = FakeApiClient()
+    spawner = FakeSpawner()
+    daemon = _BridgeDaemon(
+        config=_bridge_config(),
+        environment_id='env-srv',
+        environment_secret='sec',
+        api=api,
+        spawner=spawner,
+        cancel_event=asyncio.Event(),
+        backoff_config=DEFAULT_BACKOFF,
+        poll_config=DEFAULT_POLL_CONFIG,
+        get_access_token=lambda: 'oauth-tok',
+    )
+    assert daemon.token_refresh is not None
+    # Prime active_sessions with a v1 session (NOT in v2_sessions).
+    handle = FakeSessionHandle('cse_v1', 'initial-jwt')
+    daemon.active_sessions['cse_v1'] = handle
+    # Fire the refresh callback directly.
+    daemon.token_refresh._on_refresh('cse_v1', 'fresh-oauth-token')
+    await asyncio.sleep(0.01)
+    # v1: token pushed to the child.
+    assert handle.access_token == 'fresh-oauth-token'
+    # v1: reconnect_session NOT called.
+    assert api.reconnect_calls == []
+
+
+@pytest.mark.asyncio
+async def test_daemon_token_refresh_v2_calls_reconnect() -> None:
+    """v2: ``on_refresh`` schedules ``api.reconnect_session(env, sid)``
+    instead of pushing to the child. The fresh token does NOT touch
+    ``handle.update_access_token``."""
+    from src.bridge.bridge_main import _BridgeDaemon, DEFAULT_BACKOFF
+    from src.bridge.poll_config_defaults import DEFAULT_POLL_CONFIG
+
+    api = FakeApiClient()
+    spawner = FakeSpawner()
+    daemon = _BridgeDaemon(
+        config=_bridge_config(),
+        environment_id='env-srv',
+        environment_secret='sec',
+        api=api,
+        spawner=spawner,
+        cancel_event=asyncio.Event(),
+        backoff_config=DEFAULT_BACKOFF,
+        poll_config=DEFAULT_POLL_CONFIG,
+        get_access_token=lambda: 'oauth-tok',
+    )
+    assert daemon.token_refresh is not None
+    handle = FakeSessionHandle('cse_v2', 'initial-jwt')
+    daemon.active_sessions['cse_v2'] = handle
+    daemon.v2_sessions.add('cse_v2')
+
+    daemon.token_refresh._on_refresh('cse_v2', 'fresh-oauth-token')
+    # The reconnect_session call is scheduled as an async task.
+    await asyncio.sleep(0.05)
+    assert api.reconnect_calls == [('env-srv', 'cse_v2')]
+    # v2: stdin update did NOT happen.
+    assert handle.access_token == 'initial-jwt'
+
+
+@pytest.mark.asyncio
+async def test_daemon_token_refresh_v2_failure_swallowed() -> None:
+    """v2 ``reconnect_session`` raising in the refresh path must not
+    propagate; the next scheduled refresh will retry naturally."""
+    from src.bridge.bridge_main import _BridgeDaemon, DEFAULT_BACKOFF
+    from src.bridge.poll_config_defaults import DEFAULT_POLL_CONFIG
+
+    api = FakeApiClient()
+    async def reconnect_raise(_env: str, _sid: str) -> None:
+        raise RuntimeError('server unavailable')
+    api.reconnect_session = reconnect_raise  # type: ignore[method-assign]
+    spawner = FakeSpawner()
+    daemon = _BridgeDaemon(
+        config=_bridge_config(),
+        environment_id='env-srv',
+        environment_secret='sec',
+        api=api,
+        spawner=spawner,
+        cancel_event=asyncio.Event(),
+        backoff_config=DEFAULT_BACKOFF,
+        poll_config=DEFAULT_POLL_CONFIG,
+        get_access_token=lambda: 'oauth-tok',
+    )
+    assert daemon.token_refresh is not None
+    handle = FakeSessionHandle('cse_v2', 'initial-jwt')
+    daemon.active_sessions['cse_v2'] = handle
+    daemon.v2_sessions.add('cse_v2')
+
+    daemon.token_refresh._on_refresh('cse_v2', 'fresh-token')
+    await asyncio.sleep(0.05)
+    # No exception escaped. Daemon state intact.
+    assert 'cse_v2' in daemon.active_sessions
+    assert 'cse_v2' in daemon.v2_sessions
+
+
+@pytest.mark.asyncio
+async def test_daemon_token_refresh_skipped_for_dead_session() -> None:
+    """If the session ended between schedule and fire,
+    ``handle is None`` short-circuits the callback — no stdin push,
+    no reconnect."""
+    from src.bridge.bridge_main import _BridgeDaemon, DEFAULT_BACKOFF
+    from src.bridge.poll_config_defaults import DEFAULT_POLL_CONFIG
+
+    api = FakeApiClient()
+    daemon = _BridgeDaemon(
+        config=_bridge_config(),
+        environment_id='env-srv',
+        environment_secret='sec',
+        api=api,
+        spawner=FakeSpawner(),
+        cancel_event=asyncio.Event(),
+        backoff_config=DEFAULT_BACKOFF,
+        poll_config=DEFAULT_POLL_CONFIG,
+        get_access_token=lambda: 'oauth-tok',
+    )
+    assert daemon.token_refresh is not None
+    # No active session for cse_gone.
+    daemon.token_refresh._on_refresh('cse_gone', 'fresh-token')
+    await asyncio.sleep(0.02)
+    assert api.reconnect_calls == []
+
+
+@pytest.mark.asyncio
+async def test_daemon_without_get_access_token_has_no_scheduler() -> None:
+    """When ``get_access_token`` is None (the default), the daemon
+    constructs no scheduler — sessions use their initial JWT until
+    expiry. Matches TS ``getAccessToken ? createTokenRefreshScheduler
+    : null`` at ``bridgeMain.ts:283``."""
+    from src.bridge.bridge_main import _BridgeDaemon, DEFAULT_BACKOFF
+    from src.bridge.poll_config_defaults import DEFAULT_POLL_CONFIG
+
+    daemon = _BridgeDaemon(
+        config=_bridge_config(),
+        environment_id='env-srv',
+        environment_secret='sec',
+        api=FakeApiClient(),
+        spawner=FakeSpawner(),
+        cancel_event=asyncio.Event(),
+        backoff_config=DEFAULT_BACKOFF,
+        poll_config=DEFAULT_POLL_CONFIG,
+        # No get_access_token kwarg.
+    )
+    assert daemon.token_refresh is None
 
 
 @pytest.mark.asyncio
