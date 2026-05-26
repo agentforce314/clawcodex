@@ -91,6 +91,7 @@ from src.bridge.types import (
 )
 from src.bridge.work_secret import (
     build_ccr_v2_sdk_url,
+    build_sdk_url,
     decode_work_secret,
 )
 from src.bridge.worktree import (
@@ -613,20 +614,25 @@ class _BridgeDaemon:
             return
         await self._safe_ack(work_id, secret.session_ingress_token)
 
-        # MVP: CCR v2 only. v1 work (use_code_sessions = False) is rejected.
+        # Phase 14c: dispatch v1 + v2 work items. v1 uses the bridge's
+        # configured ``session_ingress_url`` (NOT ``secret.api_base_url``
+        # — see TS ``bridgeMain.ts:905-907``: the secret's url may be a
+        # remote proxy/tunnel that doesn't know about locally-created
+        # sessions). v2 uses ``secret.api_base_url`` (the
+        # server-controlled CCR endpoint). The child SDK constructs
+        # its own transport from sdk_url + access_token.
         use_ccr_v2 = bool(secret.use_code_sessions)
-        if not use_ccr_v2:
-            logger.warning(
-                '[bridge:main] v1 session-ingress not supported in MVP'
+        if use_ccr_v2:
+            sdk_url = build_ccr_v2_sdk_url(secret.api_base_url, session_id)
+        else:
+            sdk_url = build_sdk_url(
+                self.config.session_ingress_url, session_id,
             )
-            await self._safe_stop_work(work_id, force=True)
-            return
-        sdk_url = build_ccr_v2_sdk_url(secret.api_base_url, session_id)
         spawn_opts: SessionSpawnOpts = {
             'session_id': session_id,
             'sdk_url': sdk_url,
             'access_token': secret.session_ingress_token,
-            'use_ccr_v2': True,
+            'use_ccr_v2': use_ccr_v2,
             'worker_epoch': 0,  # MVP: full port fetches via /worker/register
         }
         working_dir = self.config.dir
