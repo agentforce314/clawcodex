@@ -44,7 +44,7 @@
 | F-10 | ExecuteExtraTool 延迟工具系统 | P2 | ⏳ 待开始 | TF-IDF 工具搜索 + 子代理执行 |
 | F-11 | sessionStorage 容量限制 | P2 | ⏳ 待开始 | 防止 daemon 会话内存泄漏 |
 | F-12 | cacheWarning 容量限制 | P2 | ⏳ 待开始 | 防止 source 类型内存泄漏 |
-| F-13 | Agent 记忆作用域隔离 | P1 | 🔄 规划中 | 按需加载不同作用域记忆，代码待实现 |
+| F-13 | Agent 记忆作用域隔离 | P1 | 🔄 进行中 | 按需加载不同作用域记忆，部分实现 |
 | F-14 | 三层解耦架构（Layer Isolation） | P1 | ✅ 完成 | upstream/capabilities/features 三层分离，零层违规 |
 | F-15 | 权限模式切换 (Shift+Tab) | P1 | ✅ 完成 | REPL/LiveStatus 中支持 `default→acceptEdits→plan→bypassPermissions` 循环切换，状态栏显示当前模式 |
 | F-16 | Auto 模式 (TRANSCRIPT_CLASSIFIER) | P2 | ⏳ 待开始 | 基于 LLM 的自动权限模式切换，减少交互疲劳 |
@@ -1107,6 +1107,18 @@ src/tool_system/tools/
 | `tool_authoring/persistence.py` | `src/agent/tool_authoring/` |
 | `create_agent_tool.py` | `src/tool_system/tools/` |
 
+#### 已有基础 (extensions/pos_converter/)
+
+`extensions/pos_converter/` 目录已实现 POS → Agent 转换框架：
+
+| 文件 | 功能 |
+|------|------|
+| `agent_builder.py` | Agent 构建器 |
+| `convert_pos_skill.py` | POS 转换 Skill |
+| `sdk_parser.py` | SDK 解析器 |
+| `skill_grouper.py` | Skill 分组器 |
+| `templates.py` | 模板定义 |
+
 ---
 
 ## 二、已完成任务详情
@@ -1376,7 +1388,7 @@ Outlines (开源依赖)
 
 ### F-13: Agent 记忆作用域隔离
 
-**状态**: 🔄 规划中 (代码待实现)
+**状态**: 🔄 进行中
 **优先级**: P1
 **规划日期**: 2026-05-19
 
@@ -1396,13 +1408,13 @@ Outlines (开源依赖)
 | `local` | 会话级本地记忆 |
 
 #### 待完成的工作
-- [ ] 添加 `load_memory_prompts()` 函数到 `memdir/memdir.py`
-- [ ] 添加 `_load_memory_prompt_for_scope()` 和 `_get_memory_path_for_scope()` 辅助函数
-- [ ] 导出 `load_memory_prompts` 到 `memdir/__init__.py`
+- [x] 添加 `load_memory_prompts()` 函数到 `memdir/memdir.py`
+- [x] 添加 `_load_memory_prompt_for_scope()` 和 `_get_memory_path_for_scope()` 辅助函数
+- [x] 导出 `load_memory_prompts` 到 `memdir/__init__.py`
 - [ ] 更新 `build_full_system_prompt()` 支持 `memory_scopes` 参数
 - [ ] 更新 `build_full_system_prompt_blocks()` 支持 `memory_scopes` 参数
 - [ ] 更新 `_build_memory_section()` 接受 `memory_scopes` 参数
-- [ ] 保持 `load_memory_prompt()` 向后兼容
+- [x] 保持 `load_memory_prompt()` 向后兼容
 
 #### 关键文件（待创建/修改）
 - `src/memdir/memdir.py` - 核心 `load_memory_prompts()` 实现
