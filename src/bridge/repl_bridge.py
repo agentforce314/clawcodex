@@ -106,6 +106,14 @@ from src.bridge.work_secret import (
 logger = logging.getLogger(__name__)
 
 
+# Phase 17: hourly pointer-mtime refresh interval for perpetual mode.
+# Mirrors TS ``replBridge.ts:1541`` (``60 * 60_000`` ms = 1 hour).
+# Long-running sessions touch the pointer once per interval so the
+# mtime stays fresh; without this, a future TTL check on the pointer
+# would reject it after a few hours of no user activity.
+POINTER_MTIME_REFRESH_INTERVAL_S = 60.0 * 60.0
+
+
 # ── Public types ──────────────────────────────────────────────────────────
 
 
@@ -468,6 +476,13 @@ async def init_bridge_core(
             machine_name=params.machine_name,
             created_at_ms=pointer_created_at_ms,
         )
+        # Phase 17: start the periodic mtime-refresh task. Skipped in
+        # non-perpetual mode since the pointer is cleared on teardown
+        # anyway.
+        state.pointer_mtime_task = asyncio.create_task(
+            state._pointer_mtime_refresh_loop(),
+            name='bridge-repl-pointer-mtime-refresh',
+        )
     state.start_poll_loop()
 
     _fire_state(params.on_state_change, 'ready')
@@ -528,6 +543,11 @@ class _BridgeState:
     # operators can see how long a perpetual bridge has been alive.
     perpetual: bool = False
     pointer_created_at_ms: int | None = None
+    #: Phase 17: periodic pointer-mtime refresh task. Started in
+    #: perpetual mode at init; touches the pointer once per hour so
+    #: long-running sessions don't leave a stale mtime that triggers
+    #: the next-start TTL check (when one lands). Cancelled in teardown.
+    pointer_mtime_task: asyncio.Task[None] | None = None
 
     async def _update_pointer(self, *, session_id: str | None) -> None:
         """No-op when not perpetual; otherwise rewrite the pointer with
@@ -560,6 +580,51 @@ class _BridgeState:
         if not self.perpetual:
             return
         await asyncio.to_thread(clear_pointer, self.params.dir)
+
+    async def _pointer_mtime_refresh_loop(self) -> None:
+        """Phase 17: periodic pointer-mtime refresh for perpetual mode.
+
+        Mirrors TS ``replBridge.ts:1522-1543`` — a daemon idle for
+        many hours without a user prompt would have a stale pointer
+        mtime; when the next-start TTL check (future phase) lands, it
+        would reject the pointer and force a fresh session. Touching
+        the pointer hourly keeps long-running sessions recoverable.
+
+        The write is atomic via ``write_pointer``'s tmpfile + os.replace
+        primitive, so a race with ``_recreate_environment``'s own
+        pointer write cannot leave a half-corrupt file. The race is
+        benign in the common case (Strategy-1 updates env+session in
+        a tight window) but **narrowly inconsistent in Strategy-2**:
+        between the env-id swap and the new session-id assignment,
+        ``active_session_id`` is briefly ``None`` while
+        ``environment_id`` is already the new one. A refresh tick
+        landing in that window writes ``(new_env_id, session_id=None)``;
+        if the refresh's write *follows* Strategy-2's final write,
+        the pointer ends as ``(new_env_id, None)`` instead of
+        ``(new_env_id, new_session_id)``. The next start would resume
+        the env but mint a fresh session — recoverable, not corrupt.
+        Strategy-2 has already killed the prior session by that point,
+        so user-visible continuity was already lost. TS guards against
+        this with a ``reconnectPromise`` skip; we accept the benign
+        race in exchange for a simpler implementation.
+
+        Loop exits on ``CancelledError`` (teardown cancels the task,
+        catches cancellation from either the sleep or the inner
+        ``_update_pointer`` await).
+        """
+        try:
+            while not self.torn_down:
+                await asyncio.sleep(POINTER_MTIME_REFRESH_INTERVAL_S)
+                if self.torn_down:
+                    return
+                # ``active_session_id`` may be None between sessions
+                # (post ``_await_session_done``); ``_update_pointer``
+                # handles None correctly by writing a null session_id.
+                await self._update_pointer(
+                    session_id=self.active_session_id,
+                )
+        except asyncio.CancelledError:
+            return
 
     # ── Poll loop ───────────────────────────────────────────────────────
 
@@ -1227,6 +1292,18 @@ class _BridgeState:
                 await self.poll_task
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
+
+        # Phase 17: cancel the periodic pointer-mtime refresh task.
+        # The loop also checks ``torn_down`` between sleeps, but
+        # cancelling here ends it immediately instead of waiting up to
+        # an hour for the next tick.
+        if self.pointer_mtime_task is not None:
+            self.pointer_mtime_task.cancel()
+            try:
+                await self.pointer_mtime_task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+            self.pointer_mtime_task = None
 
         # Cancel the JWT refresh scheduler so any pending refresh
         # doesn't write to a dead stdin during teardown.

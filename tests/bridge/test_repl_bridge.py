@@ -1497,6 +1497,86 @@ async def test_perpetual_falls_back_when_server_assigns_new_env_id(
 
 
 @pytest.mark.asyncio
+async def test_perpetual_starts_pointer_mtime_refresh_task(tmp_path) -> None:
+    """Phase 17: in perpetual mode, the periodic pointer-mtime refresh
+    task is started at init."""
+    params = _make_params(perpetual=True)
+    params.dir = str(tmp_path)
+    handle = await init_bridge_core(
+        params, api_client=FakeApiClient(), spawner=FakeSpawner(),
+    )
+    assert handle is not None
+    state = handle.write_messages.__self__  # type: ignore[attr-defined]
+    assert state.pointer_mtime_task is not None
+    assert not state.pointer_mtime_task.done()
+    await handle.teardown()
+    # Task is cancelled + cleared on teardown.
+    assert state.pointer_mtime_task is None
+
+
+@pytest.mark.asyncio
+async def test_non_perpetual_does_not_start_pointer_mtime_task(
+    tmp_path,
+) -> None:
+    """Phase 17: non-perpetual mode skips the mtime refresh task —
+    the pointer is cleared on teardown anyway, no maintenance needed."""
+    params = _make_params(perpetual=False)
+    params.dir = str(tmp_path)
+    handle = await init_bridge_core(
+        params, api_client=FakeApiClient(), spawner=FakeSpawner(),
+    )
+    assert handle is not None
+    state = handle.write_messages.__self__  # type: ignore[attr-defined]
+    assert state.pointer_mtime_task is None
+    await handle.teardown()
+
+
+@pytest.mark.asyncio
+async def test_pointer_mtime_task_fires_and_advances_updated_at_ms(
+    tmp_path, monkeypatch,
+) -> None:
+    """Phase 17: when the refresh interval elapses, the pointer's
+    ``updated_at_ms`` advances (proves the task fires + writes)."""
+    from src.bridge import repl_bridge as rb
+    from src.bridge.bridge_pointer import read_pointer
+
+    # Short interval so the test finishes in ~0.1s instead of 1h.
+    monkeypatch.setattr(rb, 'POINTER_MTIME_REFRESH_INTERVAL_S', 0.05)
+
+    params = _make_params(perpetual=True)
+    params.dir = str(tmp_path)
+    handle = await init_bridge_core(
+        params, api_client=FakeApiClient(), spawner=FakeSpawner(),
+    )
+    assert handle is not None
+
+    # Snapshot the initial pointer state.
+    initial = read_pointer(
+        params.dir, machine_name=params.machine_name,
+    )
+    assert initial is not None
+    initial_updated_at_ms = initial.updated_at_ms
+    initial_created_at_ms = initial.created_at_ms
+
+    # Wait for at least one refresh tick to fire.
+    await asyncio.sleep(0.1)
+
+    refreshed = read_pointer(
+        params.dir, machine_name=params.machine_name,
+    )
+    assert refreshed is not None
+    # updated_at_ms advanced (mtime refresh happened).
+    assert refreshed.updated_at_ms > initial_updated_at_ms
+    # created_at_ms preserved (the daemon's install time doesn't reset).
+    assert refreshed.created_at_ms == initial_created_at_ms
+    # bridge_id + env_id unchanged.
+    assert refreshed.bridge_id == initial.bridge_id
+    assert refreshed.environment_id == initial.environment_id
+
+    await handle.teardown()
+
+
+@pytest.mark.asyncio
 async def test_perpetual_env_mismatch_clears_stale_pointer_eagerly(
     tmp_path,
 ) -> None:
