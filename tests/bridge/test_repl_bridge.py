@@ -353,32 +353,107 @@ async def test_poll_loop_spawns_session_for_work_item() -> None:
 
 
 @pytest.mark.asyncio
-async def test_poll_loop_stops_work_for_v1_secret() -> None:
-    """MVP rejects v1 (non-CCR-v2) work."""
+async def test_poll_loop_dispatches_v1_work_with_session_ingress_url() -> None:
+    """Phase 14c: v1 work items spawn with the session-ingress WS URL
+    derived from ``params.session_ingress_url`` (NOT from
+    ``secret.api_base_url`` — see TS ``bridgeMain.ts:905-907``).
+    The work secret's ``api_base_url`` is set to a DIFFERENT host so a
+    regression to ``secret.api_base_url`` would be caught here."""
+    # Work secret carries a "remote proxy/tunnel" api_base_url that
+    # is intentionally distinct from the bridge's configured
+    # session_ingress_url. v1 must use the bridge's ingress URL,
+    # not the proxy URL.
+    import base64
+    import json
+    secret_payload = {
+        'version': 1,
+        'session_ingress_token': 'sess-jwt-abc',
+        'api_base_url': 'https://remote-proxy.example.com',
+        'sources': [],
+        'auth': [],
+        'use_code_sessions': False,
+    }
+    raw = json.dumps(secret_payload).encode('utf-8')
+    encoded_secret = base64.urlsafe_b64encode(raw).rstrip(b'=').decode('ascii')
+
     work = {
         'id': 'work-v1',
         'type': 'work',
         'environment_id': 'env-srv-1',
         'state': 'pending',
         'data': {'type': 'session', 'id': 'cse_v1'},
-        'secret': _encode_work_secret(use_ccr_v2=False),
+        'secret': encoded_secret,
         'created_at': '2026-05-24',
     }
     api = FakeApiClient(poll_results=[work])
     spawner = FakeSpawner()
     params = _make_params()
+    # Override session_ingress_url so it differs from the secret's
+    # api_base_url — proves v1 picks the right source.
+    params.session_ingress_url = 'https://bridge-local.example.com'
     handle = await init_bridge_core(
         params, api_client=api, spawner=spawner,
     )
     assert handle is not None
     for _ in range(20):
         await asyncio.sleep(0.01)
-        if api.stop_calls:
+        if spawner.spawns:
             break
-    # Stopped the work (force=True for unsupported secret format).
-    assert any(work_id == 'work-v1' for _e, work_id, _f in api.stop_calls)
-    # No session spawned.
-    assert spawner.spawns == []
+    assert len(spawner.spawns) == 1
+    opts, _working_dir = spawner.spawns[0]
+    # Session-ingress WS URL derived from the BRIDGE's session_ingress_url,
+    # not from the secret's api_base_url. Without this distinction the
+    # v1 dispatch would (incorrectly) use 'remote-proxy.example.com'.
+    assert opts['sdk_url'] == (
+        'wss://bridge-local.example.com/v1/session_ingress/ws/cse_v1'
+    )
+    assert opts['use_ccr_v2'] is False
+    assert opts['access_token'] == 'sess-jwt-abc'
+    # Work was ack'd, NOT stopped.
+    assert any(work_id == 'work-v1' for _e, work_id, _t in api.ack_calls)
+    assert not any(
+        work_id == 'work-v1' for _e, work_id, _f in api.stop_calls
+    )
+    await handle.teardown()
+
+
+@pytest.mark.asyncio
+async def test_poll_loop_dispatches_v2_work_with_ccr_v2_url() -> None:
+    """Phase 14c regression: v2 work uses ``secret.api_base_url``
+    (the server-controlled CCR endpoint), distinct from the bridge's
+    ``session_ingress_url``. Verifies the v2 path didn't accidentally
+    pick up the v1 URL source."""
+    work = {
+        'id': 'work-v2',
+        'type': 'work',
+        'environment_id': 'env-srv-1',
+        'state': 'pending',
+        'data': {'type': 'session', 'id': 'cse_v2'},
+        'secret': _encode_work_secret(use_ccr_v2=True),
+        'created_at': '2026-05-24',
+    }
+    api = FakeApiClient(poll_results=[work])
+    spawner = FakeSpawner()
+    params = _make_params()
+    # Distinct host from secret.api_base_url so we'd notice if the
+    # builder accidentally pulled from session_ingress_url instead.
+    params.session_ingress_url = 'https://bridge-local.example.com'
+    handle = await init_bridge_core(
+        params, api_client=api, spawner=spawner,
+    )
+    assert handle is not None
+    for _ in range(20):
+        await asyncio.sleep(0.01)
+        if spawner.spawns:
+            break
+    assert len(spawner.spawns) == 1
+    opts, _working_dir = spawner.spawns[0]
+    # CCR v2 URL — uses secret.api_base_url ('api.example.com'), NOT
+    # the bridge's session_ingress_url ('bridge-local.example.com').
+    assert opts['sdk_url'] == (
+        'https://api.example.com/v1/code/sessions/cse_v2'
+    )
+    assert opts['use_ccr_v2'] is True
     await handle.teardown()
 
 

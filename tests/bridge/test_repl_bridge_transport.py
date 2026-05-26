@@ -28,10 +28,117 @@ def _sse_body(events: list[tuple[str, str]]) -> bytes:
     return ('\n'.join(out) + '\n').encode('utf-8')
 
 
+# ─── Phase 14c: v1 adapter ────────────────────────────────────────────
+
+
 @pytest.mark.asyncio
-async def test_v1_factory_raises_not_implemented():
-    with pytest.raises(NotImplementedError):
-        create_v1_repl_transport()
+async def test_v1_adapter_passes_through_to_hybrid(monkeypatch) -> None:
+    """The v1 adapter is a thin pass-through over HybridTransport;
+    verify the read-side callback wiring (set_on_data) is forwarded."""
+    from src.transports.hybrid_transport import HybridTransport
+    from src.transports.websocket_transport import WebSocketTransportOptions
+
+    monkeypatch.setenv('CLAUDE_CODE_SESSION_ACCESS_TOKEN', 'tok')
+    hybrid = HybridTransport(
+        url='wss://api.test/v2/session_ingress/ws/sid',
+        options=WebSocketTransportOptions(auto_reconnect=False),
+    )
+    v1 = create_v1_repl_transport(hybrid)
+    received: list[str] = []
+    v1.set_on_data(received.append)
+    # Hybrid is closed/idle; on_data wiring is verifiable via the
+    # underlying hybrid attribute (delegate confirmed).
+    assert hybrid._on_data_cb is not None
+    # State-label / connected-status pass-throughs.
+    assert v1.get_state_label() == 'idle'
+    assert v1.is_connected_status() is False
+    v1.close()
+    assert v1.is_connected_status() is False
+
+
+@pytest.mark.asyncio
+async def test_v1_adapter_get_last_sequence_num_is_zero() -> None:
+    """v1 doesn't use SSE seq nums; always returns 0 (mirrors TS
+    replBridgeTransport.ts:94)."""
+    from src.transports.hybrid_transport import HybridTransport
+    from src.transports.websocket_transport import WebSocketTransportOptions
+
+    hybrid = HybridTransport(
+        url='wss://api.test/v2/session_ingress/ws/sid',
+        options=WebSocketTransportOptions(auto_reconnect=False),
+    )
+    v1 = create_v1_repl_transport(hybrid)
+    assert v1.get_last_sequence_num() == 0
+    v1.close()
+
+
+@pytest.mark.asyncio
+async def test_v1_adapter_v2_only_methods_are_noops() -> None:
+    """report_state / report_metadata / report_delivery are v2-only;
+    in v1 they must be no-ops (don't raise)."""
+    from src.transports.hybrid_transport import HybridTransport
+    from src.transports.websocket_transport import WebSocketTransportOptions
+
+    hybrid = HybridTransport(
+        url='wss://api.test/v2/session_ingress/ws/sid',
+        options=WebSocketTransportOptions(auto_reconnect=False),
+    )
+    v1 = create_v1_repl_transport(hybrid)
+    v1.report_state({'requires_action': True})
+    v1.report_metadata({'key': 'value'})
+    v1.report_delivery('event-id', 'processed')
+    v1.close()
+
+
+@pytest.mark.asyncio
+async def test_v1_adapter_dropped_batch_count_proxies(monkeypatch) -> None:
+    """``dropped_batch_count`` delegates to the hybrid's uploader."""
+    from src.transports.hybrid_transport import HybridTransport
+    from src.transports.websocket_transport import WebSocketTransportOptions
+
+    hybrid = HybridTransport(
+        url='wss://api.test/v2/session_ingress/ws/sid',
+        options=WebSocketTransportOptions(auto_reconnect=False),
+    )
+    v1 = create_v1_repl_transport(hybrid)
+    assert v1.dropped_batch_count == 0
+    # Simulate a drop by bumping the underlying counter.
+    hybrid._uploader._dropped_batches = 3
+    assert v1.dropped_batch_count == 3
+    v1.close()
+
+
+@pytest.mark.asyncio
+async def test_v1_adapter_connect_schedules_task_without_blocking() -> None:
+    """``connect()`` is sync (per Protocol); schedules the hybrid's
+    async ``connect()`` as a fire-and-forget task. Match the v2
+    factory's equivalent pattern.
+
+    Targets a bound-then-released local port so ``connect`` gets
+    ECONNREFUSED instantly (no privileged-port quirks, no silent
+    drops in restrictive-network CI)."""
+    import socket as _socket
+    from src.transports.hybrid_transport import HybridTransport
+    from src.transports.websocket_transport import WebSocketTransportOptions
+
+    # Bind to a free port, then close the socket immediately — the
+    # port is now unbound and a connect() to it gets ECONNREFUSED.
+    with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as s:
+        s.bind(('127.0.0.1', 0))
+        port = s.getsockname()[1]
+
+    hybrid = HybridTransport(
+        url=f'ws://127.0.0.1:{port}',
+        options=WebSocketTransportOptions(auto_reconnect=False),
+    )
+    v1 = create_v1_repl_transport(hybrid)
+    # connect() must return immediately even with a doomed target.
+    v1.connect()
+    # Give the scheduled task a tick to run (and fail).
+    await asyncio.sleep(0.1)
+    # Transport ends up in 'closed' state because auto_reconnect=False.
+    assert hybrid.is_closed_status()
+    v1.close()
 
 
 @pytest.mark.asyncio
