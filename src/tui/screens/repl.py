@@ -103,7 +103,8 @@ class REPLScreen(Screen):
         # most recent status change. Mounted just above the status
         # bar so it's adjacent to the prompt for single-sweep reads.
         self.live_region = LiveRegion(aria_label="Status")
-        aria_label(self.transcript, "Conversation transcript")
+        # Note: intentionally NOT setting tooltip via aria_label on transcript
+        # to avoid the hover-tooltip popup that follows the mouse cursor.
         aria_label(self.prompt_input, "Prompt input — type a message, or '/' for commands")
         # ``layout`` is a reserved attribute on Textual screens; use a
         # private attribute for our parity shell.
