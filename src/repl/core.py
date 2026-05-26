@@ -525,6 +525,7 @@ class ClawcodexREPL:
             "/exit",
             "/quit",
             "/q",
+            "/repl",
             "/clear",
             "/save",
             "/load",
@@ -536,6 +537,18 @@ class ClawcodexREPL:
             "/init",
             "/tui",
             "/login",
+            # Phase 2 dialogs (TUI-only, show in palette with placeholder):
+            "/model",
+            "/effort",
+            "/history",
+            "/cost",
+            "/idle",
+            "/theme",
+            # Phase 3 dialogs (TUI-only, show in palette with placeholder):
+            "/diff",
+            "/mcp",
+            "/tasks",
+            "/rewind",
         ]
         self._built_in_commands = list(self._original_built_ins)
 
@@ -2215,8 +2228,17 @@ class ClawcodexREPL:
                 'skill',
                 'context', 'compact',  # These need special handling
                 'tui',  # handoff to Textual TUI
+                # TUI-only commands (not implemented in REPL, show placeholder):
+                'repl', 'model', 'effort', 'history', 'idle', 'theme',
+                'diff', 'mcp', 'tasks', 'rewind',
                 ''
             }
+
+            # Handle TUI-only commands that don't exist in REPL
+            if cmd_name in ('repl', 'model', 'effort', 'history', 'idle', 'theme',
+                           'diff', 'mcp', 'tasks', 'rewind'):
+                self.console.print(f"[dim]/{cmd_name} is only available in the Textual TUI. Use /tui to switch.[/dim]")
+                return
 
             # Handle /init through the new command system (PromptCommand path)
             if cmd_name == 'init':

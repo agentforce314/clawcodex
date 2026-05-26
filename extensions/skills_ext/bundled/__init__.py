@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from extensions.skills.bundled_skills import BundledSkillDefinition, register_bundled_skill
+from src.skills.bundled_skills import BundledSkillDefinition, register_bundled_skill
 from extensions.pos_converter.convert_pos_skill import get_prompt_for_command
 
 

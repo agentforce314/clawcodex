@@ -279,6 +279,15 @@ class PromptInput(Vertical):
         self._input.value = ""
         self.post_message(PromptSubmitted(text=text))
 
+    def on_option_list_option_selected(
+        self, event: OptionList.OptionSelected
+    ) -> None:
+        """Handle Enter/Space on a suggestion row — insert the command."""
+        if event.option.id:
+            self._input.value = event.option.id
+            self._input.cursor_position = len(event.option.id)
+            self._hide_suggestions()
+
     async def on_key(self, event: events.Key) -> None:
         key = event.key
 
