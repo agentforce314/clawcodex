@@ -11,16 +11,13 @@ refactoring plan. For autonomous porting in one session, this module
 implements the structural skeleton + single-session happy path:
 
 * Register environment → create session
-* Work-poll loop (basic, v2-only transport)
+* Work-poll loop with dual v1 (session-ingress WS) / v2 (CCR) dispatch
 * Spawn session via Phase 4 ``session_runner``
 * ``ReplBridgeHandle`` surface — write_messages / control / teardown
 * Teardown — stop_work + archive + deregister
 
 What is **explicitly deferred** (with TODOs at the call sites):
 
-* **v1 transport** (``HybridTransport`` POST writes + WS reads) — v2 is
-  the going-forward path; v1 is being deprecated server-side. Module
-  raises ``NotImplementedError`` if work secrets indicate v1 only.
 * **Perpetual mode** (crash-recovery pointer integration, env reuse via
   ``reuseEnvironmentId``). Caller must set ``perpetual=False``.
 * **Env recreation** (the Strategy-1 / Strategy-2 reconnect dance after
@@ -835,17 +832,36 @@ class _BridgeState:
         # redispatch it after the reclaim window.
         await self._safe_ack(work_id, secret.session_ingress_token)
 
-        # MVP: v2 transport only (CCR). Detect v1 (session-ingress WS)
-        # via the URL and refuse for now.
+        # Phase 14c: dispatch v1 (session-ingress WS) and v2 (CCR)
+        # work items both — the child SDK constructs its own
+        # transport from sdk_url + access_token (via env vars set
+        # in build_child_env). v1 work items used to be refused at
+        # this site; that gate is now lifted.
+        #
+        # v1 / v2 use DIFFERENT URL sources:
+        # * v2 (CCR) uses ``secret.api_base_url`` — the CCR control
+        #   plane is the server-controlled endpoint and the secret
+        #   carries the authoritative one for this work item.
+        # * v1 (session-ingress) uses ``params.session_ingress_url``
+        #   — the bridge's own configured ingress URL. Using
+        #   ``secret.api_base_url`` would break proxy/tunnel setups
+        #   where the secret's URL points to a remote that doesn't
+        #   know about locally-created sessions (TS comment at
+        #   ``bridgeMain.ts:905-907``; ``replBridge.ts:1471``).
+        #
+        # The auth split is also different: v1 session-ingress
+        # accepts OAuth or JWT; v2 CCR /worker/* requires the JWT.
+        # The Python parent always forwards the JWT (carried by
+        # ``secret.session_ingress_token``) to the child as
+        # ``CLAUDE_CODE_SESSION_ACCESS_TOKEN`` regardless of v1/v2;
+        # the child runs the appropriate transport.
         use_ccr_v2 = bool(secret.use_code_sessions)
-        if not use_ccr_v2:
-            logger.warning(
-                '[bridge:repl] v1 (session-ingress) transport not yet '
-                'implemented in Phase 6 MVP — v2 only. Stopping work.'
+        if use_ccr_v2:
+            sdk_url = build_ccr_v2_sdk_url(secret.api_base_url, session_id)
+        else:
+            sdk_url = build_sdk_url(
+                self.params.session_ingress_url, session_id,
             )
-            await self._safe_stop_work(work_id, force=True)
-            return
-        sdk_url = build_ccr_v2_sdk_url(secret.api_base_url, session_id)
         # NOTE: Phase 6 full port will fetch worker_epoch via the v2
         # /worker/register call. The MVP uses 0 as a placeholder since
         # session_runner threads it into the child's env vars only when
