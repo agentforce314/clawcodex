@@ -36,7 +36,7 @@ from .commands import (
     dispatch_registry_command,
 )
 from .history_store import HistoryStore  # noqa: F401 (re-exported for tests)
-from .messages import CancelRequested
+from .messages import AssistantMessage, CancelRequested, ToolEventMessage
 from .screens.cost_threshold import CostThresholdScreen
 from .screens.diff_dialog import DiffDialogScreen, FileDiff
 from .screens.effort_picker import EffortPickerScreen
@@ -114,6 +114,7 @@ class ClawCodexTUI(App):
         max_turns: int = 20,
         stream: bool = True,
         theme_name: str | None = None,
+        tail_follower: Any | None = None,
     ) -> None:
         super().__init__()
         self.provider = provider
@@ -157,6 +158,7 @@ class ClawCodexTUI(App):
             run_worker=self.run_worker,
             max_turns=self.max_turns,
             stream=self.stream,
+            tail_follower=tail_follower,
         )
 
     # The base CSS for the REPL; Phase 1 uses Textual's default theme
@@ -200,6 +202,11 @@ class ClawCodexTUI(App):
             provider_instance=self.provider,
         )
         self.push_screen(self._repl_screen)
+
+        # Replay conversation history from a resumed session so the
+        # transcript widget shows the prior context immediately.
+        if self.session.conversation.messages:
+            self._replay_history()
 
         # Terminal chrome: set a descriptive title, enable DEC 1004
         # focus reporting, and mark the tab idle. The app-state
@@ -310,18 +317,39 @@ class ClawCodexTUI(App):
         self.exit()
 
     def action_agent_background(self) -> None:
-        """Handle Ctrl+B — promote agent to background and exit TUI.
+        """Handle Ctrl+B — save session and exit to terminal shell.
 
-        Sets the background signal so the agent loop races toward
-        background promotion. The TUI exits cleanly, leaving the
-        background agent writing to the transcript file.
+        Unlike ``/exit`` (which returns to the CLI REPL loop), Ctrl+B is a
+        hard exit that terminates the entire ``clawcodex`` process. The
+        ``__FULL_EXIT__`` sentinel is detected by
+        :meth:`ClawcodexREPL._handoff_to_textual_tui`, which calls
+        ``sys.exit(0)`` instead of resuming the REPL loop.
+
+        The session is saved to disk so the user can resume it later via
+        ``clawcodex --tui --resume <session_id>`` and get back the
+        conversation history plus any work the backgrounded agent
+        completes.
         """
         try:
             from src.agent.background_state import signal_background
             signal_background()
         except Exception:
             pass
-        self.exit()
+        # Persist session so --resume can find it.
+        try:
+            self.session.save()
+        except Exception:
+            pass
+        # Print the resume command so the user can easily return.
+        sid = getattr(self.session, "session_id", None) or ""
+        if sid:
+            import sys
+            print(
+                f"\n  Session {sid} backgrounded. Resume with:\n"
+                f"    clawcodex --tui --resume {sid}\n",
+                file=sys.stderr,
+            )
+        self.exit(result="__FULL_EXIT__")
 
     # ---- local command dispatcher ----
     def handle_local_slash_command(self, text: str, transcript: Transcript) -> bool:
@@ -846,6 +874,51 @@ class ClawCodexTUI(App):
             q["id"]: "" for q in questions if isinstance(q, dict) and "id" in q
         }
         return ctx
+
+    def _replay_history(self) -> None:
+        """Replay conversation messages from a resumed session to the transcript.
+
+        Emits ``AssistantMessage`` / ``ToolEventMessage`` for each historical
+        message so the transcript widget shows the prior context immediately
+        after ``--resume``. Only called from :meth:`on_mount` when the
+        session has existing messages.
+        """
+        for msg in self.session.conversation.messages:
+            role = getattr(msg, "role", None) or ""
+            content = getattr(msg, "content", None) or ""
+            if role == "user":
+                # User messages are not replayed — the transcript already
+                # shows them inline with the prompt input.
+                continue
+            if role == "assistant":
+                text = _flatten_message_text(content)
+                if text:
+                    self._post_to_screen(AssistantMessage(text=text))
+                # Replay tool_use / tool_result blocks from the content list.
+                if isinstance(content, list):
+                    for item in content:
+                        if not isinstance(item, dict):
+                            continue
+                        kind = item.get("type")
+                        if kind == "tool_use":
+                            self._post_to_screen(
+                                ToolEventMessage(
+                                    kind="tool_use",
+                                    tool_name=item.get("name", ""),
+                                    tool_input=item.get("input"),
+                                    tool_use_id=item.get("id"),
+                                )
+                            )
+                        elif kind == "tool_result":
+                            self._post_to_screen(
+                                ToolEventMessage(
+                                    kind="tool_result",
+                                    tool_name="",
+                                    tool_output=item.get("content"),
+                                    tool_use_id=item.get("tool_use_id"),
+                                    is_error=bool(item.get("is_error")),
+                                )
+                            )
 
     def _slash_command_words(self) -> list[str]:
         return build_command_words(self.workspace_root, self.tool_context)

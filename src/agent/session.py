@@ -55,6 +55,11 @@ class Session:
         (`total_cost_usd`, durations, lines added/removed, per-model
         usage). Previously this method emitted no cost block; the
         restore reader hit defaults of 0 unconditionally.
+
+        Also persists conversation messages via :class:`SessionStorage`
+        (JSONL transcript) so ``--resume`` can attach a
+        :class:`TailFollower` to watch for lines written by a
+        backgrounded agent.
         """
         session_dir = Path.home() / ".clawcodex" / "sessions"
         session_dir.mkdir(parents=True, exist_ok=True)
@@ -77,6 +82,40 @@ class Session:
             json.dump(session_data, f, indent=2)
 
         self.updated_at = datetime.now().isoformat()
+
+        # Also persist via SessionStorage (JSONL transcript) so
+        # TailFollower can observe new lines during --resume.
+        self._save_to_session_storage()
+
+    def _save_to_session_storage(self) -> None:
+        """Persist conversation messages via SessionStorage (JSONL transcript).
+
+        Best-effort: errors are logged but never propagated. The JSONL
+        transcript is the file that :class:`TailFollower` watches during
+        ``--resume``, so it must exist and contain all current messages
+        for the resume path to work correctly.
+        """
+        try:
+            from src.services.session_storage import SessionStorage
+
+            storage = SessionStorage(session_id=self.session_id)
+            storage.init_metadata(
+                model=self.model,
+                cwd=str(Path.cwd()),
+                title=f"session-{self.session_id[:8]}",
+            )
+            # Write each message from the conversation.  Use ``write_raw``
+            # with the serialised dict so we don't re-encode via
+            # ``message_to_dict`` (which may not match the shape stored
+            # in ``Conversation.to_dict``).
+            conv_dict = self.conversation.to_dict()
+            messages_list = conv_dict.get("messages", []) if isinstance(conv_dict, dict) else []
+            for msg_data in messages_list:
+                if isinstance(msg_data, dict):
+                    storage.write_raw(msg_data)
+            storage.flush()
+        except Exception:
+            pass  # Best-effort; not critical if this fails.
 
     @classmethod
     def load(cls, session_id: str) -> Optional['Session']:
@@ -140,6 +179,42 @@ class Session:
         switch_session(SessionId(session_id))
         restore_cost_state_for_session(session_id)
         return loaded
+
+    @classmethod
+    def resume_with_tail(
+        cls, session_id: str
+    ) -> tuple[Optional['Session'], Any | None]:
+        """Resume a session and optionally attach a TailFollower.
+
+        Returns ``(session, tail_follower)`` where *session* is the
+        reconstructed :class:`Session` (or ``None`` if not found) and
+        *tail_follower* is a :class:`~src.services.tail_follower.TailFollower`
+        started from the current transcript end (so only *new* lines
+        written by the backgrounded agent are yielded), or ``None``
+        if the transcript file does not exist or the import fails.
+        """
+        session = cls.resume(session_id)
+        if session is None:
+            return None, None
+
+        tail_follower = None
+        try:
+            from src.services.tail_follower import TailFollower
+            from src.services.session_storage import SessionStorage
+
+            storage = SessionStorage(session_id=session_id)
+            transcript_path = storage._transcript_path
+            if transcript_path.exists():
+                current_size = transcript_path.stat().st_size
+                tail_follower = TailFollower(str(transcript_path))
+                # ``start()`` is async but we only need a synchronous
+                # record of the offset.  The actual async iteration
+                # happens in AgentBridge's worker thread.
+                tail_follower._offset = current_size
+        except Exception:
+            tail_follower = None
+
+        return session, tail_follower
 
 
 def _snapshot_cost_block() -> dict:

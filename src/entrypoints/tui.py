@@ -43,6 +43,8 @@ class TUIOptions:
     is_bypass_permissions_mode_available: bool = False
     # Test hook: replace the provider instance we'd otherwise build from config.
     provider_factory: Callable[[], object] | None = None
+    # Resume a previous session by ID (e.g. after Ctrl+B background).
+    resume_session_id: str | None = None
 
 
 def run_tui(options: TUIOptions) -> int:
@@ -126,14 +128,27 @@ def run_tui(options: TUIOptions) -> int:
     # Build and run app ---------------------------------------------------
     from src.tui.app import ClawCodexTUI
 
+    # Session resume: if --resume was passed, load the session and
+    # optionally start a TailFollower to watch for new transcript lines
+    # written by the backgrounded agent.
+    resumed_session = None
+    tail_follower = None
+    if options.resume_session_id:
+        from src.agent.session import Session as AgentSession
+        resumed_session, tail_follower = AgentSession.resume_with_tail(
+            options.resume_session_id,
+        )
+
     app = ClawCodexTUI(
         provider=provider,
         provider_name=provider_name,
         workspace_root=workspace_root,
         tool_registry=tool_registry,
         tool_context=tool_context,
+        session=resumed_session,
         max_turns=options.max_turns,
         stream=options.stream,
+        tail_follower=tail_follower,
     )
     try:
         # ``inline=True`` renders the app in-place at the bottom of the

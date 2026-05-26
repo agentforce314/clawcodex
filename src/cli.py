@@ -262,6 +262,13 @@ Examples:
         help='Comma-separated list of tools that must NOT run',
     )
     noninteractive.add_argument(
+        '--resume',
+        type=str,
+        default=None,
+        metavar='SESSION_ID',
+        help='Resume a previous session by session ID',
+    )
+    noninteractive.add_argument(
         '--verbose',
         action='store_true',
         help='Emit verbose diagnostics to stderr',
@@ -426,6 +433,7 @@ def _run_tui_mode(args) -> int:
         stream=True,
         permission_mode=args._resolved_permission_mode,
         is_bypass_permissions_mode_available=args._resolved_is_bypass_available,
+        resume_session_id=getattr(args, 'resume', None),
     )
     return run_tui(options)
 

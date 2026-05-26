@@ -1,18 +1,17 @@
 """Resume-conversation modal screen.
 
-Phase-8 of the ch13 refactor (gap #9) — see
-``my-docs/ch13-phase8-audit-result.md`` for the audit result and the
-rationale for shipping a placeholder rather than the full wiring.
+Lists past sessions from :class:`~src.services.session_storage.SessionStorage`
+and returns the selected session ID on dismissal. Esc / Ctrl+C returns
+``None`` so callers can ignore the dismissal.
 
-When the WI-8.0 audit found state (2) — `services/session_storage.py`
-exists as a module but no live caller writes transcripts — the
-Resume/Doctor screens were scope-limited to navigation surfaces that
-honestly say "not yet wired" to the user. This module provides that
-surface; future work fills in the listing once persistence is wired.
+Part of the Ctrl+B → ``--resume`` round-trip: after backgrounding the
+TUI (Ctrl+B), the user runs ``clawcodex --tui --resume <session_id>``
+or picks a session from this dialog via ``/resume``.
 """
 
 from __future__ import annotations
 
+from datetime import datetime
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -25,9 +24,8 @@ from textual.widgets.option_list import Option
 class ResumeConversation(ModalScreen[str | None]):
     """Modal listing past sessions; dismisses with the chosen session id.
 
-    Currently a placeholder — :meth:`_load_sessions` returns ``[]`` until
-    transcript-persistence wiring lands. The Esc / Ctrl+C path returns
-    ``None`` so callers (slash commands) can ignore the dismissal.
+    Esc / Ctrl+C returns ``None`` so callers (slash commands) can ignore
+    the dismissal.
     """
 
     BINDINGS = [
@@ -77,10 +75,10 @@ class ResumeConversation(ModalScreen[str | None]):
             body.mount(
                 Static(
                     Text(
-                        "No persisted conversations yet.\n\n"
-                        "Transcript persistence is not wired into this build "
-                        "(see my-docs/ch13-phase8-audit-result.md). When the "
-                        "wiring lands, prior sessions will appear here.",
+                        "No previous sessions found.\n\n"
+                        "Start a new conversation, then use Ctrl+B to "
+                        "background it and resume later with:\n"
+                        "  clawcodex --tui --resume <session_id>",
                         style="dim",
                     ),
                     classes="-empty",
@@ -105,29 +103,40 @@ class ResumeConversation(ModalScreen[str | None]):
     def _load_sessions(self) -> list[tuple[str, str]]:
         """Return ``(session_id, label)`` pairs to display.
 
-        Phase-8 close-out: ``SessionStorage.list_sessions()`` is now wired
-        from ``agent_bridge.py``; this method reads the metadata files
-        the agent loop writes during normal operation. Empty list when
-        no sessions exist (clean install, first run).
+        Reads metadata from :class:`SessionStorage` and formats each
+        entry with timestamp, title, model, and message count.
         """
-
         try:
             from src.services.session_storage import SessionStorage
 
             metas = SessionStorage.list_sessions()
             out: list[tuple[str, str]] = []
             for meta in metas:
-                session_id = getattr(meta, "session_id", None) or getattr(
-                    meta, "id", None
-                )
-                label = (
-                    getattr(meta, "title", None)
-                    or getattr(meta, "summary", None)
-                    or session_id
-                    or "(unnamed session)"
-                )
-                if session_id:
-                    out.append((session_id, str(label)))
+                session_id = getattr(meta, "session_id", None) or ""
+                if not session_id:
+                    continue
+                title = getattr(meta, "title", None) or "(untitled)"
+                model = getattr(meta, "model", None) or ""
+                msg_count = getattr(meta, "message_count", None) or 0
+                last_updated = getattr(meta, "last_updated", None)
+                if last_updated:
+                    try:
+                        dt_str = datetime.fromtimestamp(last_updated).strftime(
+                            "%Y-%m-%d %H:%M"
+                        )
+                    except Exception:
+                        dt_str = ""
+                else:
+                    dt_str = ""
+                label_parts = [title]
+                if model:
+                    label_parts.append(model)
+                label = " — ".join(label_parts)
+                if msg_count:
+                    label += f" [{msg_count} msgs]"
+                if dt_str:
+                    label = f"{dt_str} | {label}"
+                out.append((session_id, label))
             return out
         except Exception:
             return []

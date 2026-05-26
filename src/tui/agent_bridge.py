@@ -65,6 +65,7 @@ class AgentBridge:
         run_worker: Callable[..., Any],
         max_turns: int = 20,
         stream: bool = True,
+        tail_follower: Any | None = None,
     ) -> None:
         self._post = post_message
         self._session = session
@@ -100,6 +101,12 @@ class AgentBridge:
         # truncated or replaced.
         self._emitted_advisor_ids: set[str] = set()
         self._last_scanned_msg_index: int = 0
+        # Tail-follower for --resume: watches the backgrounded agent's
+        # transcript and posts new lines to the UI in real time.
+        self._tail_follower = tail_follower
+        self._tail_thread: threading.Thread | None = None
+        if self._tail_follower is not None:
+            self._start_tail_follower()
 
     def reset_advisor_dedup(self) -> None:
         """Drop the advisor-dedup state.
@@ -116,6 +123,61 @@ class AgentBridge:
         """
         self._emitted_advisor_ids.clear()
         self._last_scanned_msg_index = 0
+
+    # ---- tail-follower for --resume ----
+    def _start_tail_follower(self) -> None:
+        """Spawn a daemon thread that watches the transcript for new lines."""
+        self._tail_thread = threading.Thread(
+            target=self._run_tail_follower,
+            name="tail-follower",
+            daemon=True,
+        )
+        self._tail_thread.start()
+
+    def _run_tail_follower(self) -> None:
+        """Run the TailFollower in a dedicated thread with its own event loop."""
+        import asyncio
+        from .messages import AssistantChunk, AssistantMessage, ToolEventMessage
+
+        follower = self._tail_follower
+        if follower is None:
+            return
+
+        async def _follow() -> None:
+            try:
+                await follower.start(from_offset=follower._offset)
+                async for msg_dict in follower:
+                    if msg_dict is None:
+                        continue
+                    role = msg_dict.get("role", "")
+                    content = msg_dict.get("content", "")
+                    if role == "assistant":
+                        # Streaming chunk or full message.
+                        text = content if isinstance(content, str) else ""
+                        if isinstance(content, list):
+                            for item in content:
+                                if isinstance(item, dict) and item.get("type") == "text":
+                                    text += item.get("text", "")
+                        if text:
+                            self._post(AssistantMessage(text=text))
+                    elif role in ("tool_use", "tool_result"):
+                        self._post(
+                            ToolEventMessage(
+                                kind=role,
+                                tool_name=msg_dict.get("name", ""),
+                                tool_input=msg_dict.get("input"),
+                                tool_output=msg_dict.get("content"),
+                                tool_use_id=msg_dict.get("id") or msg_dict.get("tool_use_id"),
+                            )
+                        )
+            except Exception:
+                pass
+
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(_follow())
+        finally:
+            loop.close()
 
     # ---- public API ----
     @property

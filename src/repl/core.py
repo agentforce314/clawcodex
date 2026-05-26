@@ -2080,7 +2080,7 @@ class ClawcodexREPL:
             )
             return
 
-        self.console.print("[dim]Entering Textual TUI. Press Ctrl+D or type /exit to return.[/dim]")
+        self.console.print("[dim]Entering Textual TUI. Press Ctrl+B to exit to shell, or /exit / Ctrl+D to return to CLI.[/dim]")
         app = ClawCodexTUI(
             provider=self.provider,
             provider_name=self.provider_name,
@@ -2090,8 +2090,9 @@ class ClawcodexREPL:
             session=self.session,
             stream=True,
         )
+        result = None
         try:
-            app.run()
+            result = app.run()
         except KeyboardInterrupt:
             pass
         except Exception as exc:
@@ -2106,6 +2107,12 @@ class ClawcodexREPL:
                     self.console.print(piece)
                 except Exception:
                     continue
+
+            # Ctrl+B → full exit to terminal shell (not back to CLI)
+            if result == "__FULL_EXIT__":
+                self.console.print("[dim]Exiting clawcodex...[/dim]")
+                sys.exit(0)
+
             self.console.print("[dim]Returned from Textual TUI.[/dim]")
 
     def _print_startup_header(self):

@@ -173,3 +173,5 @@ coverage/
 .env.production.local
 /.upstream-sync/
 /backup/
+/.atomcode/
+/.audit_temp/
