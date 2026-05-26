@@ -629,6 +629,261 @@ async def test_dropped_batch_count_increments_on_write_failure() -> None:
     await handle.teardown()
 
 
+# ── Phase 15: JWT refresh v1/v2 split ────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_v1_token_refresh_pushes_to_session_via_stdin() -> None:
+    """v1 work item (use_code_sessions=False): on_refresh pushes the
+    fresh OAuth/JWT to the child via session.update_access_token,
+    and does NOT call api.reconnect_session."""
+    work = {
+        'id': 'work-v1', 'type': 'work', 'environment_id': 'env-srv-1',
+        'state': 'pending',
+        'data': {'type': 'session', 'id': 'cse_v1'},
+        'secret': _encode_work_secret(use_ccr_v2=False),
+        'created_at': '2026-05-24',
+    }
+    api = FakeApiClient(poll_results=[work])
+    spawner = FakeSpawner()
+    params = _make_params()
+    handle = await init_bridge_core(
+        params, api_client=api, spawner=spawner,
+    )
+    assert handle is not None
+    for _ in range(30):
+        await asyncio.sleep(0.01)
+        if spawner.handles:
+            break
+    assert spawner.handles
+    state = handle.write_messages.__self__  # type: ignore[attr-defined]
+    assert state.active_use_ccr_v2 is False
+    # Snapshot the initial reconnect_calls count (Strategy-1 reconnect
+    # is unrelated; this guards against test ordering surprises).
+    initial_reconnects = len(api.reconnect_calls)
+
+    # Fire on_refresh directly via the scheduler's stored callback.
+    state.active_token_refresh._on_refresh('cse_v1', 'fresh-oauth-token')
+    # Let any scheduled tasks run.
+    await asyncio.sleep(0.02)
+    # v1 path: token pushed to child stdin.
+    assert spawner.handles[0].access_token == 'fresh-oauth-token'
+    # v1 must NOT call reconnect_session.
+    assert len(api.reconnect_calls) == initial_reconnects
+
+    spawner.handles[0].complete('completed')
+    await handle.teardown()
+
+
+@pytest.mark.asyncio
+async def test_v2_token_refresh_calls_reconnect_session() -> None:
+    """v2 work item (use_code_sessions=True): on_refresh schedules
+    api.reconnect_session(env_id, session_id), and does NOT push to
+    the child's stdin (CCR worker endpoints validate the JWT's
+    session_id claim — pushing OAuth would break them)."""
+    work = {
+        'id': 'work-v2', 'type': 'work', 'environment_id': 'env-srv-1',
+        'state': 'pending',
+        'data': {'type': 'session', 'id': 'cse_v2'},
+        'secret': _encode_work_secret(use_ccr_v2=True),
+        'created_at': '2026-05-24',
+    }
+    api = FakeApiClient(poll_results=[work])
+    spawner = FakeSpawner()
+    params = _make_params()
+    handle = await init_bridge_core(
+        params, api_client=api, spawner=spawner,
+    )
+    assert handle is not None
+    for _ in range(30):
+        await asyncio.sleep(0.01)
+        if spawner.handles:
+            break
+    assert spawner.handles
+    state = handle.write_messages.__self__  # type: ignore[attr-defined]
+    assert state.active_use_ccr_v2 is True
+
+    initial_reconnects = len(api.reconnect_calls)
+    initial_child_token = spawner.handles[0].access_token
+
+    state.active_token_refresh._on_refresh('cse_v2', 'fresh-oauth-token')
+    # Let the scheduled reconnect task run.
+    await asyncio.sleep(0.05)
+    # v2 path: reconnect_session called with (env, session_id).
+    assert len(api.reconnect_calls) == initial_reconnects + 1
+    env_id, sid = api.reconnect_calls[-1]
+    assert sid == 'cse_v2'
+    # Child's access_token unchanged — v2 doesn't push via stdin.
+    assert spawner.handles[0].access_token == initial_child_token
+
+    spawner.handles[0].complete('completed')
+    await handle.teardown()
+
+
+@pytest.mark.asyncio
+async def test_v2_token_refresh_reconnect_failure_swallowed() -> None:
+    """If api.reconnect_session raises during v2 refresh, no
+    exception propagates and the bridge state is preserved (the
+    scheduler's follow-up timer will retry naturally)."""
+    work = {
+        'id': 'work-v2', 'type': 'work', 'environment_id': 'env-srv-1',
+        'state': 'pending',
+        'data': {'type': 'session', 'id': 'cse_v2'},
+        'secret': _encode_work_secret(use_ccr_v2=True),
+        'created_at': '2026-05-24',
+    }
+    api = FakeApiClient(poll_results=[work])
+    spawner = FakeSpawner()
+    params = _make_params()
+    handle = await init_bridge_core(
+        params, api_client=api, spawner=spawner,
+    )
+    assert handle is not None
+    for _ in range(30):
+        await asyncio.sleep(0.01)
+        if spawner.handles:
+            break
+    state = handle.write_messages.__self__  # type: ignore[attr-defined]
+
+    # Make reconnect_session raise.
+    async def reconnect_raise(_env: str, _sid: str) -> None:
+        raise RuntimeError('server unavailable')
+    api.reconnect_session = reconnect_raise  # type: ignore[method-assign]
+
+    # Fire on_refresh — must not raise.
+    state.active_token_refresh._on_refresh('cse_v2', 'fresh-oauth-token')
+    await asyncio.sleep(0.05)
+    # Bridge state is intact.
+    assert state.active_session is not None
+    assert state.active_use_ccr_v2 is True
+
+    spawner.handles[0].complete('completed')
+    await handle.teardown()
+
+
+@pytest.mark.asyncio
+async def test_session_done_clears_v2_flag() -> None:
+    """After a v2 session completes, ``active_use_ccr_v2`` is reset
+    to False so the next spawn starts clean."""
+    work = {
+        'id': 'work-v2', 'type': 'work', 'environment_id': 'env-srv-1',
+        'state': 'pending',
+        'data': {'type': 'session', 'id': 'cse_v2'},
+        'secret': _encode_work_secret(use_ccr_v2=True),
+        'created_at': '2026-05-24',
+    }
+    api = FakeApiClient(poll_results=[work])
+    spawner = FakeSpawner()
+    params = _make_params()
+    handle = await init_bridge_core(
+        params, api_client=api, spawner=spawner,
+    )
+    assert handle is not None
+    for _ in range(30):
+        await asyncio.sleep(0.01)
+        if spawner.handles:
+            break
+    state = handle.write_messages.__self__  # type: ignore[attr-defined]
+    assert state.active_use_ccr_v2 is True
+
+    spawner.handles[0].complete('completed')
+    # Wait for _await_session_done to run.
+    for _ in range(30):
+        await asyncio.sleep(0.01)
+        if not state.active_use_ccr_v2:
+            break
+    assert state.active_use_ccr_v2 is False
+    await handle.teardown()
+
+
+@pytest.mark.asyncio
+async def test_existing_handle_path_updates_token_for_redispatched_work(
+) -> None:
+    """Phase 15 CRITIC: when work arrives for an already-active session
+    (e.g. server re-dispatched after a v2 JWT refresh), the bridge
+    updates the existing handle's token + reschedules the refresh,
+    and does NOT spawn a duplicate subprocess. Mirrors TS
+    ``bridgeMain.ts:868-885``."""
+    import base64
+    import json
+    import time
+
+    payload = {'exp': int(time.time()) + 3600, 'session_id': 'cse_v2'}
+    payload_b64 = base64.urlsafe_b64encode(
+        json.dumps(payload).encode('utf-8'),
+    ).rstrip(b'=').decode('ascii')
+    real_jwt = f'header.{payload_b64}.signature'
+
+    # First work item: triggers normal spawn.
+    secret_v2_initial: dict[str, Any] = {
+        'version': 1,
+        'session_ingress_token': real_jwt,
+        'api_base_url': 'https://api.example.com',
+        'sources': [],
+        'auth': [],
+        'use_code_sessions': True,
+    }
+    raw_v2 = json.dumps(secret_v2_initial).encode('utf-8')
+    encoded_v2 = base64.urlsafe_b64encode(raw_v2).rstrip(b'=').decode('ascii')
+    initial_work = {
+        'id': 'work-1', 'type': 'work', 'environment_id': 'env-srv-1',
+        'state': 'pending',
+        'data': {'type': 'session', 'id': 'cse_v2'},
+        'secret': encoded_v2,
+        'created_at': '2026-05-26',
+    }
+    api = FakeApiClient(poll_results=[initial_work])
+    spawner = FakeSpawner()
+    params = _make_params()
+    handle = await init_bridge_core(
+        params, api_client=api, spawner=spawner,
+    )
+    assert handle is not None
+    for _ in range(30):
+        await asyncio.sleep(0.01)
+        if spawner.handles:
+            break
+    assert len(spawner.spawns) == 1
+    existing_handle = spawner.handles[0]
+    state = handle.write_messages.__self__  # type: ignore[attr-defined]
+    assert state.active_session is existing_handle
+    initial_work_id = state.active_work_id
+
+    # Simulate a server re-dispatch: synthesize a second work item
+    # with the SAME session_id but a different work_id (the server
+    # would issue a new work_id on re-dispatch) + a fresh JWT.
+    fresh_payload = {
+        'exp': int(time.time()) + 7200, 'session_id': 'cse_v2',
+    }
+    fresh_b64 = base64.urlsafe_b64encode(
+        json.dumps(fresh_payload).encode('utf-8'),
+    ).rstrip(b'=').decode('ascii')
+    fresh_jwt = f'header.{fresh_b64}.signature'
+    secret_v2_redispatch = {**secret_v2_initial, 'session_ingress_token': fresh_jwt}
+    raw_re = json.dumps(secret_v2_redispatch).encode('utf-8')
+    encoded_re = base64.urlsafe_b64encode(raw_re).rstrip(b'=').decode('ascii')
+    redispatch_work = {
+        'id': 'work-redispatched', 'type': 'work',
+        'environment_id': 'env-srv-1', 'state': 'pending',
+        'data': {'type': 'session', 'id': 'cse_v2'},
+        'secret': encoded_re,
+        'created_at': '2026-05-26',
+    }
+    # Invoke _process_work directly with the redispatch.
+    await state._process_work(redispatch_work)
+    # NO new spawn.
+    assert len(spawner.spawns) == 1
+    # Existing handle's token bumped.
+    assert existing_handle.access_token == fresh_jwt
+    # work_id rolled to the redispatch.
+    assert state.active_work_id == 'work-redispatched'
+    assert state.active_work_id != initial_work_id
+
+    # Cleanup.
+    existing_handle.complete('completed')
+    await handle.teardown()
+
+
 @pytest.mark.asyncio
 async def test_jwt_refresh_scheduler_armed_on_spawn() -> None:
     """When a session is spawned, the JWT refresh scheduler is created."""
