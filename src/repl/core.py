@@ -793,6 +793,7 @@ class ClawcodexREPL:
             # provider + main model, so a stale config under an
             # unsupported provider shows "(inactive)" rather than lying.
             from src.utils.advisor import format_advisor_status
+            from src.permissions import permission_mode_short_title
             advisor_seg = format_advisor_status(self.provider, model)
             advisor_part = f" {advisor_seg} ·" if advisor_seg else ""
             # Advisor token counts — accumulated on the ToolContext
