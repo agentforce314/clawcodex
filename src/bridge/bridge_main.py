@@ -68,6 +68,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from src.bridge.jwt_utils import TokenRefreshScheduler
 from src.bridge.bridge_api import (
     BridgeFatalError,
     create_bridge_api_client,
@@ -355,6 +356,7 @@ async def run_bridge_loop(
     backoff_config: BackoffConfig = DEFAULT_BACKOFF,
     initial_session_id: str | None = None,  # noqa: ARG001 future use
     poll_config: PollIntervalConfig = DEFAULT_POLL_CONFIG,
+    get_access_token: Callable[[], str | None] | None = None,
 ) -> None:
     """Run the multi-session work-poll loop.
 
@@ -367,6 +369,10 @@ async def run_bridge_loop(
       to ``backoff_config.shutdown_grace_ms``, SIGKILL stragglers
     * Best-effort stopWork on shutdown, with retry up to
       ``backoff_config.stop_work_base_delay_ms`` per attempt
+    * Phase 15: proactive JWT refresh per session, with v1/v2 split
+      (v1 pushes OAuth to child stdin; v2 triggers server re-dispatch
+      via ``reconnect_session``). Enabled when ``get_access_token`` is
+      provided; otherwise sessions use their initial JWT until expiry.
     """
     daemon = _BridgeDaemon(
         config=config,
@@ -377,6 +383,7 @@ async def run_bridge_loop(
         cancel_event=cancel_event,
         backoff_config=backoff_config,
         poll_config=poll_config,
+        get_access_token=get_access_token,
     )
     try:
         await daemon.run()
@@ -445,6 +452,7 @@ class _BridgeDaemon:
         cancel_event: asyncio.Event,
         backoff_config: BackoffConfig,
         poll_config: PollIntervalConfig,
+        get_access_token: Callable[[], str | None] | None = None,
     ) -> None:
         self.config = config
         self.environment_id = environment_id
@@ -470,6 +478,18 @@ class _BridgeDaemon:
         # ``shutdown`` can await them (they own per-session cleanup like
         # worktree removal — letting them outlive shutdown leaks state).
         self.session_done_tasks: dict[str, asyncio.Task[None]] = {}
+        # Phase 15: track which session ids run with use_ccr_v2=True so
+        # the JWT refresh callback can branch v1 (push token to child)
+        # vs v2 (server re-dispatch via reconnect_session). Mirrors TS
+        # ``v2Sessions`` set on ``bridgeMain.ts:276``.
+        self.v2_sessions: set[str] = set()
+        # Phase 15: proactive JWT refresh scheduler. Conditional on
+        # ``get_access_token`` being provided; matches TS pattern
+        # (``const tokenRefresh = getAccessToken ? createTokenRefreshScheduler(...) : null``).
+        self.token_refresh: TokenRefreshScheduler | None = (
+            self._build_token_refresh_scheduler(get_access_token)
+            if get_access_token is not None else None
+        )
 
         # Two-track exponential backoff state. Reset on any successful
         # poll (including empty-poll = no work).
@@ -484,6 +504,83 @@ class _BridgeDaemon:
             cap_ms=bc.general_cap_ms,
             give_up_ms=bc.general_give_up_ms,
         )
+
+    # ─── Phase 15: JWT refresh ──────────────────────────────────────
+
+    def _build_token_refresh_scheduler(
+        self,
+        get_access_token: Callable[[], str | None],
+    ) -> TokenRefreshScheduler:
+        """Create a per-daemon scheduler with v1/v2-aware ``on_refresh``.
+
+        Mirrors TS ``bridgeMain.ts:283-312``.
+
+        * **v2 (CCR worker endpoints)**: ``register_worker.go:32``
+          validates the JWT's ``session_id`` claim, so pushing an
+          OAuth token to the child's stdin would break subsequent
+          ``/worker/*`` requests. Instead, call
+          ``api.reconnect_session(env_id, session_id)`` — the server
+          re-dispatches the work item with a fresh JWT, which flows
+          through the next poll's ``_process_work``.
+        * **v1 (Session-Ingress)**: push the fresh OAuth token via
+          ``handle.update_access_token`` (session-ingress accepts
+          OAuth or JWT).
+        """
+        def on_refresh(session_id: str, fresh_token: str) -> None:
+            handle = self.active_sessions.get(session_id)
+            if handle is None:
+                # Session ended after the refresh was scheduled but
+                # before the callback fired. _on_session_done already
+                # cancelled the scheduler entry; if we got here anyway,
+                # just no-op.
+                return
+            if session_id in self.v2_sessions:
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    logger.warning(
+                        '[bridge:main] token refresh fired outside an '
+                        'asyncio loop (sessionId=%s) — cannot dispatch '
+                        'v2 reconnect', session_id,
+                    )
+                    return
+                loop.create_task(
+                    self._safe_reconnect_for_refresh(session_id),
+                    name=f'bridge-main-refresh-{session_id}',
+                )
+                return
+            # v1: push fresh OAuth/JWT to child stdin.
+            try:
+                handle.update_access_token(fresh_token)
+            except Exception as err:  # noqa: BLE001
+                logger.warning(
+                    '[bridge:main] update_access_token via stdin '
+                    'failed for sessionId=%s: %s', session_id, err,
+                )
+
+        async def get_access_token_async() -> str | None:
+            return get_access_token()
+
+        return TokenRefreshScheduler(
+            get_access_token=get_access_token_async,
+            on_refresh=on_refresh,
+            label='bridge-main',
+        )
+
+    async def _safe_reconnect_for_refresh(self, session_id: str) -> None:
+        """v2 token-refresh helper. Calls ``api.reconnect_session``
+        and swallows errors — the next refresh fire will retry.
+
+        Mirrors TS ``bridgeMain.ts:295-305`` (``void
+        api.reconnectSession(...).catch(...)``).
+        """
+        try:
+            await self.api.reconnect_session(self.environment_id, session_id)
+        except Exception as err:  # noqa: BLE001
+            logger.warning(
+                '[bridge:main] v2 token refresh via reconnect_session '
+                'failed for sessionId=%s: %s', session_id, err,
+            )
 
     async def run(self) -> None:
         cfg = self.poll_config
@@ -614,6 +711,39 @@ class _BridgeDaemon:
             return
         await self._safe_ack(work_id, secret.session_ingress_token)
 
+        # Phase 15: existingHandle path. If this work item is for a
+        # session that's already running (e.g. server re-dispatched
+        # work after a v2 JWT refresh's ``reconnect_session`` call,
+        # or after a WS drop), push the fresh JWT to the live child
+        # and reschedule the refresh — DO NOT spawn a duplicate
+        # subprocess. Mirrors TS ``bridgeMain.ts:868-885``.
+        existing = self.active_sessions.get(session_id)
+        if existing is not None:
+            try:
+                existing.update_access_token(secret.session_ingress_token)
+            except Exception as err:  # noqa: BLE001
+                logger.warning(
+                    '[bridge:main] update_access_token for existing '
+                    'sessionId=%s failed: %s', session_id, err,
+                )
+            self.session_work_ids[session_id] = work_id
+            if self.token_refresh is not None:
+                try:
+                    self.token_refresh.schedule(
+                        session_id, secret.session_ingress_token,
+                    )
+                except Exception as err:  # noqa: BLE001
+                    logger.debug(
+                        '[bridge:main] reschedule token refresh for '
+                        'existing sessionId=%s failed: %s',
+                        session_id, err,
+                    )
+            logger.info(
+                '[bridge:main] Updated access token for existing '
+                'sessionId=%s workId=%s', session_id, work_id,
+            )
+            return
+
         # Phase 14c: dispatch v1 + v2 work items. v1 uses the bridge's
         # configured ``session_ingress_url`` (NOT ``secret.api_base_url``
         # — see TS ``bridgeMain.ts:905-907``: the secret's url may be a
@@ -697,6 +827,20 @@ class _BridgeDaemon:
             session_id, work_id,
             len(self.active_sessions), self.config.max_sessions,
         )
+        # Phase 15: track v1/v2 + schedule JWT refresh.
+        if use_ccr_v2:
+            self.v2_sessions.add(session_id)
+        if self.token_refresh is not None:
+            try:
+                self.token_refresh.schedule(
+                    session_id, secret.session_ingress_token,
+                )
+            except Exception as err:  # noqa: BLE001
+                logger.debug(
+                    '[bridge:main] schedule token refresh failed for '
+                    'sessionId=%s (likely undecodable JWT — session '
+                    'uses initial token): %s', session_id, err,
+                )
         # Phase 12a: track the wait-done task so ``shutdown`` can await
         # any in-flight cleanup (worktree removal, stop_work, etc.).
         self.session_done_tasks[session_id] = asyncio.create_task(
@@ -752,6 +896,12 @@ class _BridgeDaemon:
         if work_id is not None:
             await self._safe_stop_work(work_id, force=False)
             self.completed_work_ids.add(work_id)
+        # Phase 15: cancel the pending JWT refresh for this session
+        # so it can't fire on a dead handle. ``cancel`` is a no-op if
+        # the session was never scheduled (e.g. undecodable JWT).
+        if self.token_refresh is not None:
+            self.token_refresh.cancel(session_id)
+        self.v2_sessions.discard(session_id)
         self.active_sessions.pop(session_id, None)
         self.session_work_ids.pop(session_id, None)
         self.session_compat_ids.pop(session_id, None)
@@ -791,6 +941,16 @@ class _BridgeDaemon:
         """
         active_snapshot = list(self.active_sessions.values())
         work_id_snapshot = dict(self.session_work_ids)
+
+        # Phase 15: cancel all pending JWT refresh timers so they
+        # don't fire mid-shutdown against dead session handles. Also
+        # clear ``v2_sessions`` since a future ``_BridgeDaemon`` may
+        # be reconstructed (currently ``run_bridge_loop`` makes a
+        # fresh daemon per call, but the clear here is defensive
+        # hygiene).
+        if self.token_refresh is not None:
+            self.token_refresh.cancel_all()
+        self.v2_sessions.clear()
 
         # Cancel any pending per-session timeout watchdogs so they
         # don't fire mid-shutdown and inject confusing log lines.
@@ -1016,6 +1176,7 @@ async def bridge_main(
             api,
             spawner,
             cancel_event,
+            get_access_token=get_access_token,
         )
     except BridgeHeadlessPermanentError as err:
         logger.error('[bridge:main] Permanent error: %s', err)
