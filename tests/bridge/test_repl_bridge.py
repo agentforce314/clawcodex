@@ -1497,6 +1497,50 @@ async def test_perpetual_falls_back_when_server_assigns_new_env_id(
 
 
 @pytest.mark.asyncio
+async def test_perpetual_env_mismatch_clears_stale_pointer_eagerly(
+    tmp_path,
+) -> None:
+    """Phase 16: on env-mismatch, the stale pointer is cleared
+    eagerly so that if ``create_session`` subsequently fails, a
+    next-start doesn't re-hint the dead env again. Mirrors TS
+    ``replBridge.ts:429-431``."""
+    from src.bridge.bridge_pointer import read_pointer, write_pointer
+
+    params = _make_params(perpetual=True)
+    params.dir = str(tmp_path)
+    write_pointer(
+        params.dir,
+        bridge_id=params.bridge_id,
+        environment_id='env-srv-OLD',
+        session_id='cse_dead',
+        machine_name=params.machine_name,
+    )
+    api = FakeApiClient()
+    # Server returns DIFFERENT env id (mismatch).
+    api.register_result = {
+        'environment_id': 'env-srv-FRESH',
+        'environment_secret': 'sec-fresh',
+    }
+    # Make create_session fail so we can observe the post-mismatch
+    # pointer state — without the eager clear, a stale pointer with
+    # env-srv-OLD would survive on disk.
+    async def failing_create(_opts: dict[str, Any]) -> str | None:
+        return None
+    params.create_session = failing_create  # type: ignore[assignment]
+
+    handle = await init_bridge_core(
+        params, api_client=api, spawner=FakeSpawner(),
+    )
+    # init_bridge_core returns None when create_session fails.
+    assert handle is None
+    # Pointer was cleared on env-mismatch BEFORE create_session ran;
+    # the subsequent create_session failure didn't leave a stale
+    # env-srv-OLD pointer on disk. The pointer file is gone.
+    p = read_pointer(params.dir, machine_name=params.machine_name)
+    assert p is None
+
+
+@pytest.mark.asyncio
 async def test_perpetual_ignores_stale_pointer_from_different_dir(
     tmp_path,
 ) -> None:
