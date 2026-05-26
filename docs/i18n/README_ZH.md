@@ -217,22 +217,22 @@ clawcodex login
   "default_provider": "openai",
   "providers": {
     "anthropic": {
-      "api_key": "base64-encoded-key",
+      "api_key": "your-api-key",
       "base_url": "https://api.anthropic.com",
       "default_model": "claude-sonnet-4-6"
     },
     "openai": {
-      "api_key": "base64-encoded-key",
+      "api_key": "your-api-key",
       "base_url": "https://api.openai.com/v1",
       "default_model": "gpt-5.4"
     },
     "glm": {
-      "api_key": "base64-encoded-key",
+      "api_key": "your-api-key",
       "base_url": "https://open.bigmodel.cn/api/paas/v4",
       "default_model": "zai/glm-5"
     },
     "minimax": {
-      "api_key": "base64-encoded-key",
+      "api_key": "your-api-key",
       "base_url": "https://api.minimaxi.com/anthropic",
       "default_model": "MiniMax-M2.7"
     }
