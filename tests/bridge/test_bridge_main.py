@@ -298,14 +298,18 @@ class FakeSpawner:
         return h
 
 
-def _encode_work_secret() -> str:
+def _encode_work_secret(
+    *,
+    use_ccr_v2: bool = True,
+    api_base_url: str = 'https://api.example.com',
+) -> str:
     payload = {
         'version': 1,
         'session_ingress_token': 'sess-jwt',
-        'api_base_url': 'https://api.example.com',
+        'api_base_url': api_base_url,
         'sources': [],
         'auth': [],
-        'use_code_sessions': True,
+        'use_code_sessions': use_ccr_v2,
     }
     raw = json.dumps(payload).encode('utf-8')
     return base64.urlsafe_b64encode(raw).rstrip(b'=').decode('ascii')
@@ -385,6 +389,63 @@ async def test_run_loop_spawns_session_for_v2_work() -> None:
     assert opts['use_ccr_v2'] is True
     # Ack happened.
     assert any(w == 'work-1' for _e, w, _t in api.ack_calls)
+
+    # Complete the session + cancel the loop.
+    spawner.handles[0].complete('completed')
+    cancel.set()
+    await task
+
+
+@pytest.mark.asyncio
+async def test_run_loop_spawns_session_for_v1_work() -> None:
+    """Phase 14c: v1 work items dispatch in the daemon path. The
+    session-ingress URL is derived from ``config.session_ingress_url``
+    (NOT ``secret.api_base_url``, which may point at a remote
+    proxy/tunnel — see TS ``bridgeMain.ts:905-907``). Distinct hosts
+    catch a regression to either side."""
+    work = {
+        'id': 'work-v1', 'type': 'work', 'environment_id': 'env-srv',
+        'state': 'pending',
+        'data': {'type': 'session', 'id': 'cse_v1'},
+        'secret': _encode_work_secret(
+            use_ccr_v2=False,
+            api_base_url='https://remote-proxy.example.com',
+        ),
+        'created_at': '2026-05-24',
+    }
+    api = FakeApiClient(poll_results=[work])
+    spawner = FakeSpawner()
+    cancel = asyncio.Event()
+
+    # Override session_ingress_url so it's distinct from the secret's
+    # api_base_url — the v1 dispatch must pick session_ingress_url.
+    config = _bridge_config()
+    config.session_ingress_url = 'https://bridge-local.example.com'
+
+    async def runner() -> None:
+        await run_bridge_loop(
+            config, 'env-srv', 'sec-srv', api, spawner, cancel,
+        )
+
+    task = asyncio.create_task(runner())
+    for _ in range(30):
+        await asyncio.sleep(0.01)
+        if spawner.spawns:
+            break
+
+    assert len(spawner.spawns) == 1
+    opts, _wd = spawner.spawns[0]
+    # Spawn URL derived from the bridge's session_ingress_url, NOT
+    # the secret's api_base_url. Without this split the daemon would
+    # (incorrectly) build the WS URL against remote-proxy.example.com.
+    assert opts['sdk_url'] == (
+        'wss://bridge-local.example.com/v1/session_ingress/ws/cse_v1'
+    )
+    assert opts['use_ccr_v2'] is False
+    assert opts['access_token'] == 'sess-jwt'
+    # Work was ack'd, NOT stopped (the v1 refusal gate is lifted).
+    assert any(w == 'work-v1' for _e, w, _t in api.ack_calls)
+    assert not any(w == 'work-v1' for _e, w, _f in api.stop_calls)
 
     # Complete the session + cancel the loop.
     spawner.handles[0].complete('completed')
