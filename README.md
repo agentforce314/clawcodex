@@ -297,32 +297,32 @@ The configuration file is saved in in `~/.clawcodex/config.json`. Example struct
   "default_provider": "anthropic",
   "providers": {
     "anthropic": {
-      "api_key": "base64-encoded-key",
+      "api_key": "your-api-key",
       "base_url": "https://api.anthropic.com",
       "default_model": "claude-sonnet-4-6"
     },
     "openai": {
-      "api_key": "base64-encoded-key",
+      "api_key": "your-api-key",
       "base_url": "https://api.openai.com/v1",
       "default_model": "gpt-5.4"
     },
     "glm": {
-      "api_key": "base64-encoded-key",
+      "api_key": "your-api-key",
       "base_url": "https://open.bigmodel.cn/api/paas/v4",
       "default_model": "zai/glm-5"
     },
     "minimax": {
-      "api_key": "base64-encoded-key",
+      "api_key": "your-api-key",
       "base_url": "https://api.minimaxi.com/anthropic",
       "default_model": "MiniMax-M2.7"
     },
     "openrouter": {
-      "api_key": "base64-encoded-key",
+      "api_key": "your-api-key",
       "base_url": "https://openrouter.ai/api/v1",
       "default_model": "deepseek/deepseek-v4-pro"
     },
     "deepseek": {
-      "api_key": "base64-encoded-key",
+      "api_key": "your-api-key",
       "base_url": "https://api.deepseek.com",
       "default_model": "deepseek-v4-pro"
     }
