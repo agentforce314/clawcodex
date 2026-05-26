@@ -14,27 +14,21 @@ def test_subsystem_packages_preserve_legacy_metadata_for_porting_workspace() -> 
         assert pkg.PORTING_NOTE, f'{pkg.__name__}.PORTING_NOTE is empty'
 
 
-def test_legacy_services_bridge_emits_deprecation_warning() -> None:
-    """WI-0.2: importing src.services.bridge fires a DeprecationWarning."""
+def test_legacy_services_bridge_is_removed() -> None:
+    """Phase 18: ``src.services.bridge`` was a deprecation-shim package
+    pointing callers at ``src.bridge``. With the CCR bridge port now
+    functionally complete (phases 12-17), the shim is removed.
+    Importing the dotted path must fail with ``ModuleNotFoundError``.
+    """
     import importlib
-    import sys
-    import warnings
 
-    # Force reimport so the warning fires inside the recording context.
-    sys.modules.pop('src.services.bridge', None)
-    sys.modules.pop('src.services.bridge.session', None)
-    sys.modules.pop('src.services.bridge.transport', None)
-    sys.modules.pop('src.services.bridge.auth', None)
-
-    with warnings.catch_warnings(record=True) as captured:
-        warnings.simplefilter('always')
+    try:
         importlib.import_module('src.services.bridge')
-
-    assert any(
-        issubclass(w.category, DeprecationWarning)
-        and 'src.services.bridge is deprecated' in str(w.message)
-        for w in captured
-    ), 'expected DeprecationWarning from src.services.bridge import'
+    except ModuleNotFoundError:
+        return
+    raise AssertionError(
+        'src.services.bridge should be removed but is still importable',
+    )
 
 
 def test_legacy_remote_runtime_emits_deprecation_warning() -> None:
