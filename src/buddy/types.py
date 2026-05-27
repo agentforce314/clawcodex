@@ -1,0 +1,175 @@
+"""Buddy data types — port of ``typescript/src/buddy/types.ts``.
+
+Five concept tiers (rarity / species / eye / hat / stat) plus the bones-
+and-soul shape types underlying ``Companion``.
+
+``RARITY_COLORS`` values are Python palette field names (matching
+``src.tui.theme.Palette`` fields), not raw color strings. Consumers
+``getattr(palette, RARITY_COLORS[rarity])`` to materialize.
+See ``my-docs/get-parity-by-folder/buddy-gap-analysis.md`` §3.5 / §4.4
+for the TS-key → Python-key mapping rationale.
+
+Audit-trail: TS encodes each species name via ``String.fromCharCode``
+to keep canary-class strings out of the build output for a build-time
+``excluded-strings.txt`` grep. The Python build has no such check, so
+the species literals here are plain strings. If a future Python build
+adds a similar canary scan, reconstruct via ``chr()`` at module load.
+See gap-analysis §2.3.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Literal, TypedDict
+
+
+# --- Rarity ----------------------------------------------------------
+
+Rarity = Literal['common', 'uncommon', 'rare', 'epic', 'legendary']
+
+RARITIES: tuple[Rarity, ...] = (
+    'common', 'uncommon', 'rare', 'epic', 'legendary',
+)
+
+
+# --- Species ---------------------------------------------------------
+
+Species = Literal[
+    'duck', 'goose', 'blob', 'cat', 'dragon', 'octopus', 'owl',
+    'penguin', 'turtle', 'snail', 'ghost', 'axolotl', 'capybara',
+    'cactus', 'robot', 'rabbit', 'mushroom', 'chonk',
+]
+
+SPECIES: tuple[Species, ...] = (
+    'duck', 'goose', 'blob', 'cat', 'dragon', 'octopus', 'owl',
+    'penguin', 'turtle', 'snail', 'ghost', 'axolotl', 'capybara',
+    'cactus', 'robot', 'rabbit', 'mushroom', 'chonk',
+)
+
+
+# --- Eye glyphs ------------------------------------------------------
+
+Eye = Literal['·', '✦', '×', '◉', '@', '°']
+
+EYES: tuple[Eye, ...] = ('·', '✦', '×', '◉', '@', '°')
+
+
+# --- Hats ------------------------------------------------------------
+
+Hat = Literal[
+    'none', 'crown', 'tophat', 'propeller', 'halo',
+    'wizard', 'beanie', 'tinyduck',
+]
+
+HATS: tuple[Hat, ...] = (
+    'none', 'crown', 'tophat', 'propeller', 'halo',
+    'wizard', 'beanie', 'tinyduck',
+)
+
+
+# --- Stat names ------------------------------------------------------
+
+StatName = Literal['DEBUGGING', 'PATIENCE', 'CHAOS', 'WISDOM', 'SNARK']
+
+STAT_NAMES: tuple[StatName, ...] = (
+    'DEBUGGING', 'PATIENCE', 'CHAOS', 'WISDOM', 'SNARK',
+)
+
+
+# --- Shape types -----------------------------------------------------
+
+@dataclass(frozen=True)
+class CompanionBones:
+    """Deterministic-from-userId portion of a companion. Never persists.
+
+    Regenerating on every read means species renames or edits to
+    ``SPECIES`` don't break stored companions, and editing
+    ``config['companion']`` can't fake a rarity.
+    """
+    rarity: Rarity
+    species: Species
+    eye: Eye
+    hat: Hat
+    shiny: bool
+    stats: dict[StatName, int]
+
+
+class CompanionSoul(TypedDict):
+    """Persisted-in-config portion. Plain dict for JSON-roundtrip."""
+    name: str
+    personality: str
+
+
+class StoredCompanion(TypedDict):
+    """What actually goes into ``config['companion']`` — soul + hatched_at.
+
+    Snake_case ``hatched_at`` matches Python convention. TS uses
+    camelCase ``hatchedAt``. Python and TS write to different config
+    files (``~/.clawcodex/config.json`` vs ``~/.openclaude.json``) so
+    there's no cross-port migration concern. See gap-analysis §4.8.
+    """
+    name: str
+    personality: str
+    hatched_at: int  # unix milliseconds
+
+
+@dataclass(frozen=True)
+class Companion:
+    """Live companion: bones (regenerated) + soul (persisted) + hatched_at."""
+    name: str
+    personality: str
+    hatched_at: int
+    rarity: Rarity
+    species: Species
+    eye: Eye
+    hat: Hat
+    shiny: bool
+    stats: dict[StatName, int]
+
+
+# --- Rarity-keyed constants ------------------------------------------
+
+RARITY_WEIGHTS: dict[Rarity, int] = {
+    'common': 60,
+    'uncommon': 25,
+    'rare': 10,
+    'epic': 4,
+    'legendary': 1,
+}
+
+RARITY_STARS: dict[Rarity, str] = {
+    'common': '★',
+    'uncommon': '★★',
+    'rare': '★★★',
+    'epic': '★★★★',
+    'legendary': '★★★★★',
+}
+
+# RARITY_COLORS values are src/tui/theme.py Palette field names,
+# NOT theme color strings. Consumers materialize via
+# ``getattr(palette, RARITY_COLORS[rarity])``.
+#
+# Mapped from TS keys (inactive/success/permission/autoAccept/warning)
+# to Python palette keys per gap-analysis §3.5 / §4.4. Some TS keys
+# (``inactive``, ``permission``, ``autoAccept``) don't exist on the
+# Python palette today; the mapping picks the closest semantic match.
+RARITY_COLORS: dict[Rarity, str] = {
+    'common':    'text_muted',  # was TS 'inactive'
+    'uncommon':  'success',
+    'rare':      'primary',     # was TS 'permission'  (blue)
+    'epic':      'secondary',   # was TS 'autoAccept'  (violet)
+    'legendary': 'warning',
+}
+
+
+__all__ = [
+    # Literals + tuples
+    'Rarity', 'RARITIES',
+    'Species', 'SPECIES',
+    'Eye', 'EYES',
+    'Hat', 'HATS',
+    'StatName', 'STAT_NAMES',
+    # Shape types
+    'CompanionBones', 'CompanionSoul', 'StoredCompanion', 'Companion',
+    # Rarity-keyed constants
+    'RARITY_WEIGHTS', 'RARITY_STARS', 'RARITY_COLORS',
+]
