@@ -194,6 +194,7 @@ class QueryEngine:
         prompt: str | list[ContentBlock],
         *,
         on_message: Callable[[Message | StreamEvent], None] | None = None,
+        on_thinking_chunk: Callable[[str], None] | None = None,
     ) -> AsyncGenerator[Message | StreamEvent, None]:
         # ``MessageContent = str | list[ContentBlock]`` already supports
         # both shapes; the list form lets callers attach image/document
@@ -251,6 +252,7 @@ class QueryEngine:
             user_context=user_context,
             system_context=system_context,
             pipeline_config=pipeline_config,
+            on_thinking_chunk=on_thinking_chunk,
         )
 
         async for message in query(params):

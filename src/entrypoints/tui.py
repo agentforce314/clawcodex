@@ -158,7 +158,25 @@ def run_tui(options: TUIOptions) -> int:
     except KeyboardInterrupt:
         return 130
 
-    # Ctrl+B and /repl exit with ("__FULL_EXIT__", session_id) —
+    # /repl exit: hand off to the legacy REPL instead of returning to CLI.
+    if result == "__REPL__":
+        from src.cli import start_repl
+
+        # Save TUI session before handing off to REPL so history is preserved
+        if hasattr(app, "session") and app.session:
+            try:
+                app.session.save()
+            except Exception:
+                pass
+
+        return start_repl(
+            stream=options.stream,
+            permission_mode=options.permission_mode,
+            is_bypass_permissions_mode_available=options.is_bypass_permissions_mode_available,
+            resume_session_id=getattr(app.session, "session_id", None),
+        )
+
+    # Ctrl+B exit with ("__FULL_EXIT__", session_id) —
     # print the resume hint for the user.
     if isinstance(result, tuple) and result[0] == "__FULL_EXIT__":
         session_id = result[1] if len(result) > 1 else ""

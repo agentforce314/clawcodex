@@ -11,6 +11,9 @@ distinct component; the previous Python TUI dispatched them through
 ``AssistantTextMessage`` (or dropped them entirely). This widget is the
 matching component the dispatcher should route ``ThinkingBlock`` /
 ``RedactedThinkingBlock`` events to.
+
+Supports expand/collapse via click on the header row, or via the
+global thinking toggle (Ctrl+T in CLI, TUI equivalent).
 """
 
 from __future__ import annotations
@@ -18,18 +21,43 @@ from __future__ import annotations
 from rich.console import Group
 from rich.text import Text
 from textual.app import ComposeResult
+from textual.events import Click
+from textual.message import Message
 from textual.reactive import reactive
 from textual.widgets import Static
 
 from .base import BaseRow, RowHeader
 
 
+class ThinkingToggled(Message):
+    """Sent when the thinking block is expanded or collapsed."""
+
+    def __init__(self, widget: "AssistantThinkingMessage", expanded: bool) -> None:
+        super().__init__()
+        self.widget = widget
+        self.expanded = expanded
+
+
 class AssistantThinkingMessage(BaseRow):
-    """Live-updating thinking block — italic dim text under a 'thinking' header."""
+    """Live-updating thinking block — italic dim text under a 'thinking' header.
+
+    Supports expand/collapse via click on the header. The header shows
+    ``[-] thinking`` when expanded and ``[+] thinking`` when collapsed.
+    """
 
     DEFAULT_CSS = """
     AssistantThinkingMessage {
         height: auto;
+    }
+    AssistantThinkingMessage > RowHeader.-thinking {
+        text-style: bold;
+        color: $text-muted;
+    }
+    AssistantThinkingMessage > RowHeader.-thinking.-clickable {
+        cursor: pointer;
+    }
+    AssistantThinkingMessage > RowHeader.-thinking:hover {
+        color: $text;
     }
     AssistantThinkingMessage > Static.-body {
         padding: 0 1;
@@ -42,6 +70,7 @@ class AssistantThinkingMessage(BaseRow):
     """
 
     streaming_text: reactive[str] = reactive("", layout=True)
+    expanded: reactive[bool] = reactive(True, layout=True)
 
     def __init__(self, *, redacted: bool = False) -> None:
         super().__init__()
@@ -49,45 +78,31 @@ class AssistantThinkingMessage(BaseRow):
         self._final_text = ""
         self._redacted = redacted
         self._last_body_renderable = None
+        self._ignore_next_click = False
         if redacted:
             self.add_class("-redacted")
 
     def compose(self) -> ComposeResult:
-        label = "thinking (redacted)" if self._redacted else "thinking"
+        label = self._header_label()
         header = RowHeader(Text(label, style="bold dim"), markup=False)
-        header.add_class("-thinking")
+        header.add_class("-thinking", "-clickable")
         yield header
-        yield Static(Text(""), markup=False, classes="-body")
+        body = Static(Text(""), markup=False, classes="-body")
+        body.display = True
+        yield body
 
-    # ---- streaming ----
-    def append_chunk(self, chunk: str) -> None:
-        if self._finalised or not chunk:
-            return
-        self.streaming_text += chunk
-        self._refresh_body()
+    def _header_label(self) -> str:
+        indicator = "[-]" if self.expanded else "[+]"
+        label = "thinking (redacted)" if self._redacted else "thinking"
+        return f"{indicator} {label}"
 
-    def finalise(self, text: str) -> None:
-        self._final_text = text or self.streaming_text
-        self._finalised = True
-        body = self._body_widget()
-        if body is None:
-            return
-        rendered = self._render_for(self._final_text)
-        self._last_body_renderable = rendered
-        body.update(rendered)
+    def _update_header(self) -> None:
+        try:
+            header = self.query_one(RowHeader)
+            header.update(Text(self._header_label(), style="bold dim"))
+        except Exception:
+            pass
 
-    def snapshot(self):
-        text = self._final_text if self._finalised else self.streaming_text
-        if not (text or "").strip():
-            return None
-        header = Text(
-            "thinking (redacted)\n" if self._redacted else "thinking\n",
-            style="bold dim",
-        )
-        body = Text(text, style="italic dim")
-        return Group(header, body)
-
-    # ---- internals ----
     def _body_widget(self) -> Static | None:
         try:
             for static in self.query(Static):
@@ -112,5 +127,64 @@ class AssistantThinkingMessage(BaseRow):
             return Text(text or "(redacted)", style="italic dim")
         return Text(text, style="italic")
 
+    # ---- expand/collapse ----
+    def watch_expanded(self, expanded: bool) -> None:
+        """React to expanded state change."""
+        body = self._body_widget()
+        if body is not None:
+            body.display = expanded
+        self._update_header()
+        self.post_message(ThinkingToggled(self, expanded))
 
-__all__ = ["AssistantThinkingMessage"]
+    def on_click(self) -> None:
+        """Toggle expanded/collapsed state on click."""
+        if self._ignore_next_click:
+            self._ignore_next_click = False
+            return
+        self.expanded = not self.expanded
+
+    # ---- public API for external control ----
+    def collapse(self) -> None:
+        """Collapse the thinking body (hide content)."""
+        self.expanded = False
+
+    def expand(self) -> None:
+        """Expand the thinking body (show content)."""
+        self.expanded = True
+
+    def toggle(self) -> None:
+        """Toggle the expanded state."""
+        self.expanded = not self.expanded
+
+    # ---- streaming ----
+    def append_chunk(self, chunk: str) -> None:
+        if self._finalised or not chunk:
+            return
+        self.streaming_text += chunk
+        self._refresh_body()
+
+    def finalise(self, text: str) -> None:
+        self._final_text = text or self.streaming_text
+        self._finalised = True
+        body = self._body_widget()
+        if body is None:
+            return
+        rendered = self._render_for(self._final_text)
+        self._last_body_renderable = rendered
+        body.update(rendered)
+
+    def snapshot(self):
+        text = self._final_text if self._finalised else self.streaming_text
+        if not (text or "").strip():
+            return None
+        indicator = "[-]" if self.expanded else "[+]"
+        header = Text(
+            f"{indicator} thinking (redacted)\n" if self._redacted
+            else f"{indicator} thinking\n",
+            style="bold dim",
+        )
+        body = Text(text, style="italic dim")
+        return Group(header, body)
+
+
+__all__ = ["AssistantThinkingMessage", "ThinkingToggled"]

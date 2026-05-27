@@ -53,6 +53,8 @@ LOCAL_BUILTINS: tuple[str, ...] = (
     "/tasks",
     "/rewind",
     "/resume",
+    # Phase 4 dialogs:
+    "/permission",
 )
 
 
@@ -121,6 +123,8 @@ _LOCAL_BUILTIN_DESCRIPTIONS: dict[str, str] = {
     "/mcp": "Manage MCP servers",
     "/tasks": "Browse background tasks",
     "/rewind": "Rewind conversation to an earlier turn",
+    "/resume": "Resume a saved session",
+    "/permission": "Change permission mode",
 }
 
 
@@ -294,6 +298,8 @@ def dispatch_local_command(
         return CommandDispatchResult(handled=True, open_dialog="rewind")
     if name == "/resume":
         return CommandDispatchResult(handled=True, open_dialog="resume")
+    if name == "/permission":
+        return CommandDispatchResult(handled=True, open_dialog="permission")
 
     return CommandDispatchResult(handled=False)
 

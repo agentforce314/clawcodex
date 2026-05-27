@@ -186,12 +186,15 @@ class AgentBridge:
 
     def submit(self, prompt: str) -> bool:
         """Queue ``prompt`` for the agent. Returns False if busy."""
+        ## _log(f'[agent_bridge] submit called: {prompt}')
 
         with self._busy_lock:
             if self._busy:
+                ## _log(f'[agent_bridge] busy, returning False')
                 return False
             self._busy = True
             self._abort_controller = AbortController()
+            ## _log(f'[agent_bridge] acquired busy lock')
             # Plumb the controller onto the tool context BEFORE we spawn
             # the worker. Tools (Bash supervisor, Agent subagents, the
             # streaming executor, tool hooks) read
@@ -205,14 +208,17 @@ class AgentBridge:
             self._tool_context.abort_controller = self._abort_controller
 
         self._session.conversation.add_user_message(prompt)
+        ## _log(f'[agent_bridge] posted AgentRunStarted, calling run_worker')
         self._post(AgentRunStarted(prompt=prompt))
         self._state.set_thinking(True, verb="Synthesizing")
+        ## _log(f'[agent_bridge] about to call self._run_worker')
         self._run_worker(
             self._run_agent_in_thread,
             thread=True,
             exclusive=True,
             name="agent-loop",
         )
+        ## _log(f'[agent_bridge] run_worker called')
         return True
 
     def cancel(self, reason: str = "user_interrupt") -> bool:
@@ -233,6 +239,7 @@ class AgentBridge:
 
     # ---- worker implementation ----
     def _run_agent_in_thread(self) -> None:
+        ## _log(f'[agent_bridge] _run_agent_in_thread STARTED')
         controller = self._abort_controller
 
         def _on_event(event: ToolEvent) -> None:
@@ -261,8 +268,15 @@ class AgentBridge:
             # context manager and tears down the HTTP connection.
             if controller is not None and controller.signal.aborted:
                 raise AbortError(controller.signal.reason or "user_interrupt")
+            ## _log(f'[agent_bridge] _on_text: {chunk[:30] if chunk else "empty"}...')
             self._state.append_streaming_text(chunk)
             self._post(AssistantChunk(text=chunk))
+
+        def _on_thinking(chunk: str) -> None:
+            """Handle thinking content chunks from the provider."""
+            ## _log(f'[agent_bridge] _on_thinking called with: {chunk[:50] if chunk else "empty"}...')
+            from .messages import ThinkingChunk
+            self._post(ThinkingChunk(text=chunk))
 
         try:
             # Ch5/F.3 cutover: route TUI through the canonical query()
@@ -303,6 +317,9 @@ class AgentBridge:
                     )
 
             _loop = _asyncio.new_event_loop()
+            ## _log(f'[agent_bridge] about to call run_query_as_agent_loop')
+            ## _log(f'[agent_bridge] initial_messages count: {len(list(self._session.conversation.messages))}')
+            ## _log(f'[agent_bridge] stream={self._stream}, _on_text={"_on_text" if self._stream else None}')
             try:
                 compat_result = _loop.run_until_complete(run_query_as_agent_loop(
                     initial_messages=list(self._session.conversation.messages),
@@ -313,12 +330,12 @@ class AgentBridge:
                     max_turns=self._max_turns,
                     on_event=_on_event,
                     on_text_chunk=_on_text if self._stream else None,
+                    on_thinking_chunk=_on_thinking if self._stream else None,
                     on_message=_persist,
-                    # Critic C2: pass the OWNING controller (not just
-                    # its signal) so the provider sees the same signal
-                    # ESC trips. See same fix in headless.py for why.
                     abort_controller=controller,
                 ))
+                ## _log(f'[agent_bridge] run_query_as_agent_loop returned, response_text={compat_result.response_text[:100] if compat_result.response_text else "empty"}, num_turns={compat_result.num_turns}')
+                ## _log(f'[agent_bridge] result terminal: {compat_result.terminal}')
             finally:
                 _loop.close()
             result = AgentLoopResult(

@@ -528,6 +528,7 @@ class OpenAICompatibleProvider(BaseProvider):
         messages: list[MessageInput],
         tools: Optional[list[dict[str, Any]]] = None,
         on_text_chunk: TextChunkCallback | None = None,
+        on_thinking_chunk: "Callable[[str], None] | None" = None,
         abort_signal: Any = None,
         **kwargs
     ) -> ChatResponse:
@@ -691,6 +692,10 @@ class OpenAICompatibleProvider(BaseProvider):
                         reasoning_piece = getattr(delta, "reasoning_content", None)
                         if reasoning_piece:
                             reasoning_parts.append(str(reasoning_piece))
+                            ## _log(f'[openai_provider] reasoning_piece={str(reasoning_piece)[:30]}, on_thinking_chunk={on_thinking_chunk}')
+                            if on_thinking_chunk is not None:
+                                ## _log(f'[openai_provider] calling on_thinking_chunk')
+                                on_thinking_chunk(str(reasoning_piece))
 
                         tool_call_deltas = getattr(delta, "tool_calls", None) or []
                         for tc in tool_call_deltas:

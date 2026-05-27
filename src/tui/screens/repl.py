@@ -20,8 +20,16 @@ Event wiring:
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import Callable, TYPE_CHECKING
+
+_log_lock = threading.Lock()
+
+def _log(msg: str) -> None:
+    with _log_lock:
+        with open('/tmp/tui_flow.log', 'a') as f:
+            f.write(msg + '\n')
 
 from textual.app import ComposeResult
 from textual.screen import Screen
@@ -35,6 +43,7 @@ from ..messages import (
     PermissionRequested,
     PermissionResolved,
     StateChanged,
+    ThinkingChunk,
     ToolEventMessage,
 )
 from ..a11y import LiveRegion, aria_label
@@ -49,11 +58,15 @@ if TYPE_CHECKING:  # pragma: no cover
     from ..commands import CommandSuggestion
 
 
+from textual.binding import Binding
+
 class REPLScreen(Screen):
     """Composes the interactive TUI layout."""
 
     BINDINGS = [
         ("ctrl+l", "clear_transcript", "Clear transcript"),
+        ("ctrl+t", "toggle_thinking", "Toggle thinking"),
+        Binding("shift+tab", "cycle_permission_mode", "Cycle permission mode", priority=True),
     ]
 
     DEFAULT_CSS = """
@@ -138,8 +151,29 @@ class REPLScreen(Screen):
     def action_clear_transcript(self) -> None:
         self.transcript.clear_transcript()
 
+    def action_toggle_thinking(self) -> None:
+        """Ctrl+T: toggle thinking content visibility in all thinking rows."""
+        from src.tui.widgets.messages.assistant_thinking import (
+            AssistantThinkingMessage,
+        )
+
+        expanded = True
+        for row in self.transcript.query(AssistantThinkingMessage):
+            row.toggle()
+            expanded = row.expanded
+
+        label = "expanded" if expanded else "collapsed"
+        self.transcript.append_system(f"Thinking content: {label}", style="muted")
+
+    def action_cycle_permission_mode(self) -> None:
+        """Shift+Tab: cycle permission mode. Delegates to app."""
+        app: "ClawCodexTUI" = self.app  # type: ignore[assignment]
+        if hasattr(app, "action_cycle_permission_mode"):
+            app.action_cycle_permission_mode()
+
     # ---- prompt submission ----
     def on_prompt_submitted(self, message: PromptSubmitted) -> None:
+        ## _log(f'[repl.py] on_prompt_submitted: {message.text}')
         app: "ClawCodexTUI" = self.app  # type: ignore[assignment]
         text = message.text
         if text.startswith("/"):
@@ -148,6 +182,7 @@ class REPLScreen(Screen):
         self.transcript.append_user(text)
         self.status_bar.set_busy()
         self.status_bar.bump_turn()
+        ## _log(f'[repl.py] calling submit_to_agent: {text}')
         app.submit_to_agent(text)
 
     # ---- agent message handlers ----
@@ -155,9 +190,15 @@ class REPLScreen(Screen):
         self.status_bar.set_busy()
 
     def on_assistant_chunk(self, message: AssistantChunk) -> None:
+        ## _log(f'[repl.py] on_assistant_chunk: {message.text[:50] if message.text else "empty"}...')
         self.transcript.append_assistant_chunk(message.text)
 
+    def on_thinking_chunk(self, message: ThinkingChunk) -> None:
+        ## _log(f'[repl.py] on_thinking_chunk: {message.text[:50] if message.text else "empty"}...')
+        self.transcript.append_thinking_chunk(message.text)
+
     def on_assistant_message(self, message: AssistantMessage) -> None:
+        ## _log(f'[repl.py] on_assistant_message: {message.text[:100] if message.text else "empty"}...')
         self.transcript.append_assistant(message.text)
 
     def on_tool_event_message(self, message: ToolEventMessage) -> None:

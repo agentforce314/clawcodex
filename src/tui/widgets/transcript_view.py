@@ -158,9 +158,12 @@ class TranscriptView(VerticalScroll):
 
     def append_assistant(self, text: str) -> None:
         if self._active_assistant is not None:
-            self._active_assistant.finalise(text)
-            self._active_assistant = None
-        elif (text or "").strip():
+            # Retire any active thinking row first, then create a fresh
+            # AssistantTextMessage for the final text. Calling finalise()
+            # directly on the thinking row would render its own streaming_
+            # text, not the passed-in text.
+            self._retire_active_assistant()
+        if (text or "").strip():
             row = AssistantTextMessage()
             self.mount(row)
             row.finalise(text)

@@ -30,7 +30,10 @@ from __future__ import annotations
 
 import os
 import threading
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
+
+if TYPE_CHECKING:
+    from src.utils.abort_controller import AbortSignal
 
 __all__ = [
     "DEFAULT_STREAM_IDLE_TIMEOUT_S",
@@ -87,7 +90,7 @@ class StreamWatchdog:
     the raise and decides whether to fall back.
     """
 
-    def __init__(self, stream: Any, *, timeout_s: float | None = None) -> None:
+    def __init__(self, stream: Any, *, timeout_s: float | None = None, abort_signal: "AbortSignal | None" = None) -> None:
         self._stream = stream
         self._timeout_s = (
             timeout_s if timeout_s is not None else stream_idle_timeout_seconds()
@@ -98,6 +101,10 @@ class StreamWatchdog:
         # error in the fallback decision.
         self._fired = threading.Event()
         self._lock = threading.Lock()
+        # Optional abort signal to fire on timeout, so the TUI's
+        # cancel mechanism (ESC, Ctrl+C) is triggered and the UI
+        # becomes responsive again.
+        self._abort_signal: "AbortSignal | None" = abort_signal
 
     @property
     def fired(self) -> bool:
@@ -182,3 +189,7 @@ class StreamWatchdog:
         except Exception:
             # Best-effort: never let the close propagate out of the timer.
             pass
+        # Fire the abort signal so the TUI becomes responsive again
+        # (ESC, Ctrl+C, /exit will work after this).
+        if self._abort_signal is not None and not self._abort_signal.aborted:
+            self._abort_signal._fire(f"timeout_after_{self._timeout_s}s")

@@ -365,13 +365,41 @@ class TokenUsage:
 
 #### Shift+Tab 权限模式循环
 
-支持在 REPL/LiveStatus 中通过 `Shift+Tab` 循环切换权限模式：`default → acceptEdits → plan → bypassPermissions`
+支持在 REPL/LiveStatus/TUI 中通过 `Shift+Tab` 循环切换权限模式：`default → acceptEdits → plan → bypassPermissions`
+
+#### TUI /permission 命令
+
+在 TUI 中可通过 `/permission` 命令打开权限模式选择器，支持选择：
+- Default (default)
+- Accept edits (acceptEdits)
+- Plan mode (plan)
+- Bypass permissions (bypassPermissions) - 需要配置启用
+- Don't ask (dontAsk)
+
+#### REPL/TUI 双向切换
+
+- **REPL → TUI**: `/tui` 命令切换到 Textual TUI，会话历史自动同步
+- **TUI → REPL**: `/repl` 命令切换回 CLI REPL，TUI 会话自动保存
+- 切换时保留 session、conversation、permission_mode 等状态
 
 #### TUI 增强 (+999 行)
 
 - 实时 tool call 日志显示
 - Token 使用量状态栏
 - Agent 状态监控面板
+
+#### TUI 响应性修复（LLM 超时后 Ctrl+C/ESC 无响应）
+
+**问题**: thinking 过程中 LLM 服务超时时，ESC、CTRL+C、CTRL+D 和 /exit 都无效，界面完全无反应。
+
+**根因**:
+1. `StreamWatchdog` 超时只关闭 HTTP 响应流，不触发 TUI 的 `AbortController`
+2. `action_cancel_or_quit`（Ctrl+C）直接调用 `self.exit()`，没有先调用 `agent_bridge.cancel()`
+
+**修复**:
+- `src/tui/app.py:322` — `action_cancel_or_quit` 先调用 `self._agent_bridge.cancel()`，取消成功则返回，失败才 exit
+- `src/utils/stream_watchdog.py` — 新增 `abort_signal` 参数，超时时调用 `abort_signal._fire()` 触发 TUI 取消机制
+- `src/providers/anthropic_provider.py:366` — `StreamWatchdog(stream)` → `StreamWatchdog(stream, abort_signal=abort_signal)`
 
 ### 2.5 工具系统按需加载（Tool System Extension）
 

@@ -363,7 +363,7 @@ class AnthropicProvider(BaseProvider):
                 # and the close-via-stream.response.close mechanism).
                 # The provider keeps the watchdog and fallback logic
                 # local: they aren't abort-related.
-                watchdog = StreamWatchdog(stream)
+                watchdog = StreamWatchdog(stream, abort_signal=abort_signal)
                 watchdog.arm()
                 try:
                     for text in stream.text_stream:

@@ -277,6 +277,7 @@ class PromptInput(Vertical):
         self._history_pos = None
         self._hide_suggestions()
         self._input.value = ""
+        ## _log(f'[prompt_input] posting PromptSubmitted: {text}')
         self.post_message(PromptSubmitted(text=text))
 
     def on_option_list_option_selected(

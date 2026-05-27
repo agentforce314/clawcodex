@@ -5,10 +5,18 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator, Callable
 from uuid import uuid4
+
+_log_lock = threading.Lock()
+
+def _log(msg: str) -> None:
+    with _log_lock:
+        with open('/tmp/tui_flow.log', 'a') as f:
+            f.write(msg + '\n')
 
 from ..types.messages import (
     AssistantMessage,
@@ -80,6 +88,10 @@ class QueryParams:
     # raise AbortError from inside the SDK's stream context to tear
     # down the HTTP socket on ESC.
     on_text_chunk: Callable[[str], None] | None = None
+    # Live streaming thinking callback. When set, the provider's
+    # chat_stream_response calls this for each reasoning_content delta,
+    # allowing the UI to display thinking in real time.
+    on_thinking_chunk: Callable[[str], None] | None = None
 
 
 @dataclass
@@ -294,6 +306,7 @@ async def _call_model_sync(
     max_output_tokens_override: int | None = None,
     abort_signal: Any = None,
     on_text_chunk: Callable[[str], None] | None = None,
+    on_thinking_chunk: Callable[[str], None] | None = None,
 ) -> tuple[list[AssistantMessage], list[ToolUseBlock]]:
     from ..types.messages import normalize_messages_for_api
     from ..utils.advisor import (
@@ -556,16 +569,29 @@ async def _call_model_sync(
             # the provider's signature doesn't accept on_text_chunk.
             if on_text_chunk is not None:
                 try:
+                    ## _log(f'[query.py] attempting chat_stream_response with on_thinking_chunk')
                     response = provider.chat_stream_response(
                         api_messages,
                         on_text_chunk=on_text_chunk,
+                        on_thinking_chunk=on_thinking_chunk,
                         abort_signal=abort_signal,
                         **call_kwargs,
                     )
-                except TypeError:
-                    response = provider.chat_stream_response(
-                        api_messages, abort_signal=abort_signal, **call_kwargs,
-                    )
+                except TypeError as e:
+                    ## _log(f'[query.py] TypeError with on_thinking_chunk: {e}')
+                    # Provider doesn't accept on_thinking_chunk
+                    try:
+                        response = provider.chat_stream_response(
+                            api_messages,
+                            on_text_chunk=on_text_chunk,
+                            abort_signal=abort_signal,
+                            **call_kwargs,
+                        )
+                    except TypeError as e2:
+                        ## _log(f'[query.py] TypeError without on_thinking_chunk: {e2}')
+                        response = provider.chat_stream_response(
+                            api_messages, abort_signal=abort_signal, **call_kwargs,
+                        )
             else:
                 response = provider.chat_stream_response(
                     api_messages, abort_signal=abort_signal, **call_kwargs,
@@ -606,6 +632,7 @@ async def _call_model_sync(
         err_msg._api_error = "media_size"  # type: ignore[attr-defined]
         return [err_msg], []
     except Exception as e:
+        ## _log(f'[query.py] Exception in _call_model_sync: {type(e).__name__}: {e}')
         if _diag:
             logger.warning("[DIAG] _call_model_sync: EXCEPTION after %.1fs: %s", time.monotonic() - _t0, e)
         error_str = str(e)
@@ -1119,6 +1146,7 @@ async def query(
     recovery integration, stop hooks, token budget, model fallback,
     and continuation nudge land in subsequent PRs.
     """
+    ## _log(f'[query.py] query START, on_thinking_chunk={params.on_thinking_chunk}')
     _diag = os.environ.get("CLAWCODEX_DEBUG", "").lower() in ("1", "true", "yes")
     holder = terminal_holder or TerminalHolder()
     # Inner-only flag for the future outer two-layer wrapper (Phase G).
@@ -1289,6 +1317,7 @@ async def query(
                 max_output_tokens_override=max_output_tokens_override,
                 abort_signal=params.abort_controller.signal,
                 on_text_chunk=params.on_text_chunk,
+                on_thinking_chunk=params.on_thinking_chunk,
             )
             assistant_messages = returned_assistants
             tool_use_blocks = returned_tool_blocks

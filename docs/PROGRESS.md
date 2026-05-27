@@ -46,7 +46,7 @@
 | F-12 | cacheWarning 容量限制 | P2 | ⏳ 待开始 | 防止 source 类型内存泄漏 |
 | F-13 | Agent 记忆作用域隔离 | P1 | 🔄 进行中 | 按需加载不同作用域记忆，部分实现 |
 | F-14 | 三层解耦架构（Layer Isolation） | P1 | ✅ 完成 | upstream/capabilities/features 三层分离，零层违规 |
-| F-15 | 权限模式切换 (Shift+Tab) | P1 | ✅ 完成 | REPL/LiveStatus 中支持 `default→acceptEdits→plan→bypassPermissions` 循环切换，状态栏显示当前模式 |
+| F-15 | 权限模式切换 (Shift+Tab) | P1 | ✅ 完成 | REPL/LiveStatus/TUI 中支持 `default→acceptEdits→plan→bypassPermissions` 循环切换，状态栏显示当前模式，/permission 命令 |
 | F-16 | Auto 模式 (TRANSCRIPT_CLASSIFIER) | P2 | ⏳ 待开始 | 基于 LLM 的自动权限模式切换，减少交互疲劳 |
 | F-17 | 工具系统按需加载（Tool System Extension） | P1 | ✅ 完成 | 四种工具模式（bare/default/clawcodex/all），4 bundle 简化设计，bundle 引用前缀 ":"，与上游解耦 |
 | F-18 | CreateAgentTool 动态工具创建 | P2 | 🔄 规划中 | Agent 可根据 CLI/API 规范动态创建工具，Meta Tool 能力，bash/http/python 三种 call_impl 安全限制 |
@@ -58,6 +58,31 @@
 | F-24 | Agent Loop Consolidation (Stage 4) | P1 | ✅ 完成 | 删除 agent_loop.py (537 行)，新增 renderers.py (+257) 和 advisor.py (+125)，重构到 src/query/ |
 | F-25 | Advisor Token 计数与状态显示 | P2 | ✅ 完成 | max_history 100→2000，Provider token 追踪增强，client-side advisor mode |
 | F-26 | Away-Summary（离开摘要） | P2 | 📋 规划中 | ※ 标记 + 浅灰色，终端失焦 5 分钟自动触发，支持 /recap 手动命令 |
+| F-27 | TUI 响应性修复（LLM 超时后 Ctrl+C/ESC 无响应） | P1 | ✅ 完成 | StreamWatchdog 超时时触发 AbortSignal；Ctrl+C 先尝试取消 agent 再退出 |
+
+---
+
+## F-27: TUI 响应性修复（LLM 超时后 Ctrl+C/ESC 无响应）
+
+**状态**: ✅ 完成
+**优先级**: P1
+**问题描述**: CLI/TUI 在 thinking 过程中 LLM 服务超时时，ESC、CTRL+C、CTRL+D 和 /exit 都无效，界面完全无反应。
+
+**根因分析**:
+1. `StreamWatchdog` 超时只关闭 HTTP 响应流，不触发 TUI 的 `AbortController`
+2. `action_cancel_or_quit`（Ctrl+C 处理）直接调用 `self.exit()`，没有先调用 `agent_bridge.cancel()`
+
+**修复方案**:
+
+| 文件 | 修改内容 |
+|------|---------|
+| `src/tui/app.py:322` | `action_cancel_or_quit` 先调用 `self._agent_bridge.cancel()`，取消成功则返回，失败才 exit |
+| `src/utils/stream_watchdog.py` | 新增 `abort_signal` 参数，超时时调用 `abort_signal._fire()` 触发 TUI 取消机制 |
+| `src/providers/anthropic_provider.py:366` | `StreamWatchdog(stream)` → `StreamWatchdog(stream, abort_signal=abort_signal)` |
+
+**修复后行为**:
+- LLM 超时 → StreamWatchdog 触发 AbortSignal → TUI 的 ESC/Ctrl+C 机制重新生效
+- Ctrl+C → 先尝试取消 agent run，取消失败才退出 TUI
 
 ---
 
@@ -905,6 +930,8 @@ Claude Code 支持在多种权限模式之间切换（default / acceptEdits / pl
 
 - [x] REPL Shift+Tab 权限切换绑定
 - [x] LiveStatus Shift+Tab 权限切换绑定
+- [x] **TUI Shift+Tab 权限切换绑定** (`src/tui/screens/repl.py`)
+- [x] **TUI /permission 命令** (`src/tui/commands.py`, `src/tui/app.py`)
 - [x] 底部状态栏显示当前权限模式
 - [x] 补丁文件更新 (`0054.src.repl.core.py.patch`, `0066.src.repl.live_status.py.patch`)
 
@@ -912,6 +939,9 @@ Claude Code 支持在多种权限模式之间切换（default / acceptEdits / pl
 
 - `src/repl/core.py` - REPL 空闲状态 Shift+Tab + 状态栏
 - `src/repl/live_status.py` - 对话过程中 Shift+Tab
+- `src/tui/screens/repl.py` - TUI Shift+Tab 绑定
+- `src/tui/screens/permission_mode_picker.py` - TUI 权限模式选择器
+- `src/tui/app.py` - TUI /permission 命令分发
 - `src/permissions/cycle.py` - `cycle_permission_mode()` 实现
 - `src/permissions/modes.py` - `permission_mode_short_title()` 等工具函数
 
@@ -919,6 +949,19 @@ Claude Code 支持在多种权限模式之间切换（default / acceptEdits / pl
 
 - `bypassPermissions` 需要通过 `--dangerously-skip-permissions` 启动或 `settings.json` 中配置 `permissions.allowBypassPermissionsMode: true` 才可用
 - `auto` 模式不在手动循环中，需要通过 `--permission-mode auto` 启动或由 TRANSCRIPT_CLASSIFIER 自动触发
+
+#### REPL/TUI 双向切换 (新增)
+
+- **REPL → TUI**: `/tui` 命令切换到 Textual TUI (`src/repl/core.py:_handoff_to_textual_tui`)
+- **TUI → REPL**: `/repl` 命令切换回 CLI REPL (`src/entrypoints/tui.py`)，TUI 会话自动保存
+- 切换时保留 session、conversation、permission_mode 等状态
+- TUI 在 `on_mount` 时自动调用 `_replay_history()` 恢复会话历史
+
+#### 关键文件
+
+- `src/repl/core.py` - REPL `/tui` 切换及会话历史
+- `src/entrypoints/tui.py` - TUI `/repl` 切换及会话保存
+- `src/tui/app.py:_replay_history()` - TUI 历史回放
 
 ---
 

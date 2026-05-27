@@ -14,10 +14,18 @@ screen then materialises as a modal.
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import Any
 
 from textual.app import App
+
+_log_lock = threading.Lock()
+
+def _log(msg: str) -> None:
+    with _log_lock:
+        with open('/tmp/tui_flow.log', 'a') as f:
+            f.write(msg + '\n')
 
 from src import __version__ as CLAW_VERSION
 from src.agent import Session
@@ -46,6 +54,7 @@ from .screens.idle_return import IdleReturnScreen
 from .screens.mcp_dialogs import McpListScreen, McpServer
 from .screens.message_selector import MessageSelectorScreen, TranscriptMessage
 from .screens.model_picker import ModelPickerScreen
+from .screens.permission_mode_picker import PermissionModePickerScreen
 from .screens.repl import REPLScreen
 from .screens.resume_conversation import ResumeConversation
 from .screens.theme_picker import ThemePickerScreen
@@ -101,6 +110,8 @@ class ClawCodexTUI(App):
         ("ctrl+c", "cancel_or_quit", "Cancel / Quit"),
         ("ctrl+d", "quit", "Quit"),
         ("ctrl+b", "agent_background", "Background agent"),
+        ("ctrl+t", "toggle_thinking", "Toggle thinking"),
+        ("shift+tab", "cycle_permission_mode", "Cycle permission mode"),
     ]
 
     def __init__(
@@ -180,6 +191,8 @@ class ClawCodexTUI(App):
 
     # ---- lifecycle ----
     def on_mount(self) -> None:
+        import sys
+        print(f"[DEBUG app] on_mount called, session has {len(self.session.conversation.messages)} messages", file=sys.stderr)
         # Apply palette-derived CSS on top of the component defaults so
         # the chrome picks up the correct background / foreground even
         # when Textual's internal theme doesn't cover every slot.
@@ -319,9 +332,11 @@ class ClawCodexTUI(App):
 
     # ---- bindings ----
     def action_cancel_or_quit(self) -> None:
-        # Phase 1 keeps Ctrl+C as exit. Real cancellation (interrupt the
-        # in-flight agent loop) lands in Phase 2 alongside the cost /
-        # idle dialogs.
+        # Try to cancel the in-flight agent run first. Only exit if
+        # there is no active run or the cancel fails.
+        if self._agent_bridge.cancel():
+            self.announcer.announce("Cancelling…", level="assertive", notify=False)
+            return
         self.exit()
 
     def action_agent_background(self) -> None:
@@ -350,6 +365,61 @@ class ClawCodexTUI(App):
             pass
         sid = getattr(self.session, "session_id", None) or ""
         self.exit(result=("__FULL_EXIT__", sid))
+
+    def action_toggle_thinking(self) -> None:
+        """Ctrl+T: toggle thinking content visibility in all thinking rows."""
+        if self._repl_screen is None:
+            return
+        transcript = self._repl_screen.transcript
+        # Toggle all thinking rows
+        from src.tui.widgets.messages.assistant_thinking import (
+            AssistantThinkingMessage,
+            ThinkingToggled,
+        )
+
+        expanded = True
+        for row in transcript.query(AssistantThinkingMessage):
+            row.toggle()
+            expanded = row.expanded
+
+        label = "expanded" if expanded else "collapsed"
+        transcript.append_system(f"Thinking content: {label}", style="muted")
+        self.announcer.announce(f"Thinking {label}")
+
+    def action_cycle_permission_mode(self) -> None:
+        """Shift+Tab: cycle through permission modes.
+
+        Cycles: default → acceptEdits → plan → bypassPermissions (if available) → default.
+        """
+        from src.permissions import cycle_permission_mode
+
+        ctx = self.tool_context
+        if ctx is None or ctx.permission_context is None:
+            return
+        current_mode = ctx.permission_context.mode
+        is_bypass_available = False
+        try:
+            from src.permissions.modes import has_allow_bypass_permissions_mode
+            is_bypass_available = has_allow_bypass_permissions_mode()
+        except Exception:
+            pass
+        cycle_ctx = ctx.permission_context.__class__(
+            mode=current_mode,
+            is_bypass_permissions_mode_available=is_bypass_available,
+        )
+        next_mode, next_ctx = cycle_permission_mode(cycle_ctx)
+        ctx.permission_context = next_ctx
+        if next_mode == "bypassPermissions":
+            ctx.permission_handler = lambda _tn, _msg, _sug: (True, False)
+            ctx.allow_docs = True
+        else:
+            ctx.permission_handler = self._agent_bridge._permission_handler
+            ctx.allow_docs = False
+        if self._repl_screen is not None:
+            self._repl_screen.transcript.append_system(
+                f"Permission mode: {next_mode}", style="muted"
+            )
+        self.announcer.announce(f"Permission mode: {next_mode}")
 
     # ---- local command dispatcher ----
     def handle_local_slash_command(self, text: str, transcript: Transcript) -> bool:
@@ -473,6 +543,8 @@ class ClawCodexTUI(App):
             self._open_tasks_dialog(transcript)
         elif name == "resume":
             self._show_resume_browser()
+        elif name == "permission":
+            self._open_permission_mode_picker(transcript)
         else:
             transcript.append_system(f"Dialog '{name}' not available.", style="muted")
 
@@ -613,6 +685,70 @@ class ClawCodexTUI(App):
                 on_preview=_on_preview,
             ),
             callback=_on_selected,
+        )
+
+    def _open_permission_mode_picker(self, transcript: Transcript) -> None:
+        current_mode = "default"
+        try:
+            from src.permissions.modes import to_external_permission_mode
+            ctx = self.tool_context
+            if ctx is not None and ctx.permission_context is not None:
+                current_mode = to_external_permission_mode(
+                    ctx.permission_context.mode or "default"
+                )
+        except Exception:
+            pass
+
+        is_bypass_available = False
+        try:
+            from src.permissions.modes import has_allow_bypass_permissions_mode
+            is_bypass_available = has_allow_bypass_permissions_mode()
+        except Exception:
+            pass
+
+        def _on_selected(mode: str | None) -> None:
+            self._restore_prompt_focus()
+            if not mode:
+                return
+            try:
+                from src.permissions.updates import apply_permission_update
+                from src.permissions.types import PermissionUpdateSetMode
+
+                ctx = self.tool_context
+                if ctx is not None and ctx.permission_context is not None:
+                    new_ctx = apply_permission_update(
+                        ctx.permission_context,
+                        PermissionUpdateSetMode(
+                            type="setMode",
+                            destination="session",
+                            mode=mode,
+                        ),
+                    )
+                    ctx.permission_context = new_ctx
+                    # Update the permission handler if mode changed
+                    if mode == "bypassPermissions":
+                        ctx.permission_handler = lambda _tn, _msg, _sug: (True, False)
+                        ctx.allow_docs = True
+                    else:
+                        # Re-wire the UI permission handler from the bridge
+                        ctx.permission_handler = self._agent_bridge._permission_handler
+                        ctx.allow_docs = False
+                    transcript.append_system(
+                        f"Permission mode set to {mode}.", style="muted"
+                    )
+                    self.announcer.announce(f"Permission mode: {mode}.")
+            except Exception as exc:
+                transcript.append_system(
+                    f"Failed to set permission mode: {exc}", style="error"
+                )
+
+        self.announcer.announce("Opened permission mode picker.", notify=False)
+        self.push_screen(
+            PermissionModePickerScreen(
+                current_mode=current_mode,
+                is_bypass_available=is_bypass_available,
+                on_select=_on_selected,
+            ),
         )
 
     # ---- Phase 3 dialogs ----
@@ -873,11 +1009,14 @@ class ClawCodexTUI(App):
 
     # ---- agent loop plumbing ----
     def submit_to_agent(self, prompt: str) -> None:
+        ## _log(f'[app.py] submit_to_agent called: {prompt}')
         try:
             self.history_store.append(prompt)
         except Exception:
             pass
+        ## _log(f'[app.py] calling _agent_bridge.submit')
         submitted = self._agent_bridge.submit(prompt)
+        ## _log(f'[app.py] _agent_bridge.submit returned: {submitted}')
         if not submitted:
             # If the bridge is busy we queue the prompt for the next
             # turn so the user can keep typing. Phase 2 adds a visible
@@ -943,7 +1082,7 @@ class ClawCodexTUI(App):
                 text = _flatten_message_text(content)
                 if text:
                     self._post_to_screen(AssistantMessage(text=text))
-                # Replay tool_use / tool_result blocks from the content list.
+                # Replay tool_use / tool_result / thinking blocks from the content list.
                 if isinstance(content, list):
                     for item in content:
                         if not isinstance(item, dict):
@@ -968,6 +1107,16 @@ class ClawCodexTUI(App):
                                     is_error=bool(item.get("is_error")),
                                 )
                             )
+                        elif kind == "thinking":
+                            # Replay thinking content from historical session.
+                            thinking_text = item.get("thinking", "") or ""
+                            if thinking_text:
+                                self.transcript.append_thinking_chunk(thinking_text)
+                        elif kind == "redacted_thinking":
+                            # Replay redacted thinking with redacted=True.
+                            data = item.get("data", "") or ""
+                            if data:
+                                self.transcript.append_thinking_chunk(data, redacted=True)
 
     def _slash_command_words(self) -> list[str]:
         return build_command_words(self.workspace_root, self.tool_context)

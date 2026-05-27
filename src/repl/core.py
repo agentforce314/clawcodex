@@ -532,6 +532,12 @@ class ClawcodexREPL:
         # grow unboundedly during a long session.
         self._expandable_blocks: deque[tuple[str, str]] = deque(maxlen=20)
 
+        # Thinking content visibility state. When False, thinking content
+        # is stashed for later expansion via ctrl+o (like expandable blocks).
+        # Mirrors the TypeScript reference's "thinking collapsed" UI state.
+        self._thinking_visible: bool = True
+        self._thinking_chunks: list[str] = []  # Accumulated thinking content
+
         # Original built-in commands - define this FIRST!
         self._original_built_ins = [
             "/",
@@ -726,6 +732,17 @@ class ClawcodexREPL:
                     # Fallback: print directly. Prompt may redraw oddly
                     # but at least the expansion lands in scrollback.
                     self._do_expand_last()
+
+            @self.bindings.add("c-t")  # type: ignore[attr-defined]
+            def _toggle_thinking(event):  # type: ignore[no-untyped-def]
+                """Ctrl+T: toggle thinking content visibility.
+
+                When thinking is hidden, chunks are stashed for later
+                expansion via ctrl+o (same as truncated tool blocks).
+                """
+                self._thinking_visible = not self._thinking_visible
+                label = "shown" if self._thinking_visible else "hidden"
+                self.console.print(f"[dim]Thinking content: {label}[/dim]")
 
             @self.bindings.add("s-tab")  # type: ignore[attr-defined]
             def _cycle_permission_mode(event):  # type: ignore[no-untyped-def]
@@ -1916,6 +1933,9 @@ class ClawcodexREPL:
         Application's redraw.
         """
 
+        # First, expand any stashed thinking content
+        self._expand_thinking()
+
         if not self._expandable_blocks:
             return
         label, content = self._expandable_blocks[-1]
@@ -1938,6 +1958,27 @@ class ClawcodexREPL:
                 soft_wrap=True,
             )
         self.console.print("  [dim]── End ──[/dim]", highlight=False)
+
+    def _expand_thinking(self) -> None:
+        """Print stashed thinking content when user presses ctrl+o."""
+        if not self._thinking_chunks:
+            return
+        thinking_text = "".join(self._thinking_chunks)
+        lines = thinking_text.split("\n")
+        if thinking_text.endswith("\n") and lines and lines[-1] == "":
+            lines = lines[:-1]
+        self.console.print(
+            "  [dim]── Expanded thinking ──[/dim]", highlight=False
+        )
+        for i, line in enumerate(lines, start=1):
+            self.console.print(
+                f"     {i:>3}  {line}",
+                markup=False,
+                highlight=False,
+                soft_wrap=True,
+            )
+        self.console.print("  [dim]── End ──[/dim]", highlight=False)
+        self._thinking_chunks.clear()
 
     def _shorten_path_text(self, text: str) -> str:
         root = str(self.tool_context.workspace_root)
@@ -2937,7 +2978,19 @@ class ClawcodexREPL:
                     pending_task_flush = False
                     self._render_task_snapshot()
 
-                async for msg in engine.submit_message(user_message_content):
+                def _on_thinking_chunk(chunk: str) -> None:
+                    """Accumulate thinking chunks for later expansion."""
+                    if self._thinking_visible:
+                        # Print thinking content directly when visible
+                        self.console.print(chunk, end="", markup=False, highlight=False, soft_wrap=True)
+                    else:
+                        # Stash for later expansion via ctrl+o
+                        self._thinking_chunks.append(chunk)
+
+                async for msg in engine.submit_message(
+                    user_message_content,
+                    on_thinking_chunk=_on_thinking_chunk,
+                ):
                     if isinstance(msg, StreamEvent):
                         if msg.type == "stream_request_start":
                             api_call_count += 1

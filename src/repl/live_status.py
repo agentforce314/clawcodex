@@ -286,6 +286,25 @@ class LiveStatus:
                 except Exception:
                     pass
 
+        @bindings.add("c-t")
+        def _on_toggle_thinking(event):  # type: ignore[no-untyped-def]
+            """Ctrl+T: toggle thinking content visibility during agent work."""
+            on_submit = self._on_submit
+            if on_submit is None:
+                return
+            repl = getattr(on_submit, "__self__", None)
+            if repl is not None and hasattr(repl, "_thinking_visible"):
+                repl._thinking_visible = not repl._thinking_visible
+                label = "shown" if repl._thinking_visible else "hidden"
+                try:
+                    from prompt_toolkit.application import run_in_terminal
+                    run_in_terminal(lambda: repl.console.print(f"[dim]Thinking content: {label}[/dim]"))
+                except Exception:
+                    try:
+                        repl.console.print(f"[dim]Thinking content: {label}[/dim]")
+                    except Exception:
+                        pass
+
         @bindings.add("s-tab")
         def _cycle_permission_mode(event):  # type: ignore[no-untyped-def]
             """Shift+Tab: cycle permission modes during agent work.

@@ -44,6 +44,7 @@ class ChatResponse:
 
 MessageInput: TypeAlias = ChatMessage | dict[str, Any]
 TextChunkCallback: TypeAlias = Callable[[str], None]
+ThinkingChunkCallback: TypeAlias = Callable[[str], None]
 
 
 class BaseProvider(ABC):
@@ -106,6 +107,7 @@ class BaseProvider(ABC):
         messages: list[MessageInput],
         tools: Optional[list[dict[str, Any]]] = None,
         on_text_chunk: TextChunkCallback | None = None,
+        on_thinking_chunk: ThinkingChunkCallback | None = None,
         abort_signal: "AbortSignal | None" = None,
         **kwargs
     ) -> ChatResponse:

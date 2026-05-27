@@ -58,6 +58,17 @@ class AssistantChunk(Message):
 
 
 @dataclass
+class ThinkingChunk(Message):
+    """Streaming thinking/reasoning chunk from the assistant.
+
+    Routed to :class:`src.tui.widgets.messages.assistant_thinking.AssistantThinkingMessage`
+    for live display with expand/collapse support.
+    """
+
+    text: str
+
+
+@dataclass
 class AssistantMessage(Message):
     """A complete assistant response at the end of a single agent turn.
 
