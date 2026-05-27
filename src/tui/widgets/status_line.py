@@ -45,6 +45,7 @@ class StatusLine(Static):
     turns: reactive[int] = reactive(0)
     is_thinking: reactive[bool] = reactive(False)
     queued: reactive[int] = reactive(0)
+    permission_mode: reactive[str] = reactive("")
 
     def __init__(
         self,
@@ -115,6 +116,9 @@ class StatusLine(Static):
         if self._app_state is not None:
             self._app_state.set_thinking(False)
 
+    def set_permission_mode(self, mode: str | None) -> None:
+        self.permission_mode = mode or ""
+
     # ---- render ----
     def watch_is_thinking(self, _: bool) -> None:
         self._redraw()
@@ -123,6 +127,9 @@ class StatusLine(Static):
         self._redraw()
 
     def watch_queued(self, _: int) -> None:
+        self._redraw()
+
+    def watch_permission_mode(self, _: str) -> None:
         self._redraw()
 
     def _redraw(self) -> None:
@@ -139,6 +146,9 @@ class StatusLine(Static):
                 elapsed = f" {secs}s"
 
         left_parts = [f"{self._provider} · {self._model}"]
+        # Permission mode segment — reflects the active permission mode.
+        if self.permission_mode:
+            left_parts.append(f"mode: {self.permission_mode}")
         # Optional advisor segment — appears next to provider/model
         # when ``/advisor`` is configured. Mode label reflects what
         # the NEXT request will actually do (server/client/inactive)
@@ -169,7 +179,7 @@ class StatusLine(Static):
             out_t = state.usage.get("output_tokens", 0)
             total = in_t + out_t
             if total:
-                right_bits.append(f"tokens {total}")
+                right_bits.append(f"tokens {in_t} in / {out_t} out")
             # Advisor token segment — appears next to worker tokens
             # whenever the advisor has been consulted this session.
             # ``state.usage["advisor_*"]`` is mirrored from

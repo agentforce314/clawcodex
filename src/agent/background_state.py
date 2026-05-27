@@ -1,5 +1,16 @@
 """Process-level background signal manager (singleton).
 
+NOTE (Fork-Continue redesign): The signal/flag pattern defined here
+mirrors the TS ``Promise.race`` pattern from ``foreground_promotion.py``
+but was never wired into the TUI agent loop path.  The Ctrl+B feature
+now uses the Fork-Continue model (``src.agent.background_runner.py``)
+where the parent process exits and a forked child continues the agent.
+
+This module is retained for:
+  - backward compatibility with any code that reads ``is_backgrounded()``
+  - potential future use by the REPL (non-TUI) path
+  - test coverage of the ``run_with_background_escape`` race logic
+
 Coordinates the Ctrl+B → SIGTSTP → background promotion flow:
   • TUI captures Ctrl+B and sets ``background_signal``
   • ``foreground_promotion.run_with_background_escape`` races on it

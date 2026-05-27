@@ -149,6 +149,16 @@ class AgentBridge:
                 async for msg_dict in follower:
                     if msg_dict is None:
                         continue
+                    # Detect background agent completion marker
+                    if (msg_dict.get("role") == "system" and
+                            msg_dict.get("content") == "__background_complete__"):
+                        self._post(AgentRunFinished(
+                            response_text="",
+                            num_turns=0,
+                            usage=None,
+                            error=None,
+                        ))
+                        break
                     role = msg_dict.get("role", "")
                     content = msg_dict.get("content", "")
                     if role == "assistant":

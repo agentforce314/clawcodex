@@ -15,6 +15,7 @@ to reconstruct the per-conversation Persistence record.
 from __future__ import annotations
 
 import json
+import logging
 import time
 from pathlib import Path
 from datetime import datetime
@@ -34,6 +35,8 @@ from src.bootstrap.state import (
 )
 
 from .conversation import Conversation
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -196,6 +199,17 @@ class Session:
         session = cls.resume(session_id)
         if session is None:
             return None, None
+
+        # Check for a running background agent
+        try:
+            from src.agent.background_runner import get_background_runner_status
+            bg_status = get_background_runner_status(session_id)
+            logger.info(
+                "resume_with_tail: session=%s, bg_status=%s",
+                session_id, bg_status,
+            )
+        except Exception:
+            pass
 
         tail_follower = None
         try:

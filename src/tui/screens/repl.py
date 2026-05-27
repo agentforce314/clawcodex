@@ -40,6 +40,7 @@ from ..messages import (
     AgentRunStarted,
     AssistantChunk,
     AssistantMessage,
+    PermissionModeCycleRequested,
     PermissionRequested,
     PermissionResolved,
     StateChanged,
@@ -137,6 +138,15 @@ class REPLScreen(Screen):
         app: "ClawCodexTUI" = self.app  # type: ignore[assignment]
         if hasattr(app, "app_state"):
             self.status_bar.bind_state(app.app_state)
+        # Set the initial permission mode on the status bar.
+        try:
+            from src.permissions.modes import to_external_permission_mode
+            ctx = getattr(app, "tool_context", None)
+            if ctx is not None and ctx.permission_context is not None:
+                mode = to_external_permission_mode(ctx.permission_context.mode or "default")
+                self.status_bar.set_permission_mode(mode)
+        except Exception:
+            pass
         # Attach the live region to the app's announcer so every
         # cross-screen announcement mirrors into this REPL.
         if hasattr(app, "announcer"):
@@ -170,6 +180,12 @@ class REPLScreen(Screen):
         app: "ClawCodexTUI" = self.app  # type: ignore[assignment]
         if hasattr(app, "action_cycle_permission_mode"):
             app.action_cycle_permission_mode()
+
+    def on_permission_mode_cycle_requested(
+        self, _: PermissionModeCycleRequested
+    ) -> None:
+        """Handle Shift+Tab posted from PromptInput."""
+        self.action_cycle_permission_mode()
 
     # ---- prompt submission ----
     def on_prompt_submitted(self, message: PromptSubmitted) -> None:

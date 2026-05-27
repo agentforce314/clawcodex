@@ -343,14 +343,16 @@ class ClawCodexTUI(App):
         """Handle Ctrl+B — signal agent to continue in background, save
         session, and exit to terminal shell.
 
-        Unlike ``/exit`` (which returns to the CLI REPL loop), Ctrl+B is a
-        hard exit that terminates the TUI process but leaves the agent
-        running in the background. The session is persisted so the user
-        can resume later via ``clawcodex --tui --resume <session_id>``.
+        Implements the Fork-Continue pattern:
+        * If the agent is currently busy, we cancel the foreground run,
+          wait briefly for it to settle, then launch the background
+          runner so the agent keeps working after the TUI exits.
+        * If the agent is idle, we fall back to the simpler
+          ``__FULL_EXIT__`` path.
 
-        The session ID is passed back as ``("__FULL_EXIT__", session_id)``
-        so that :meth:`ClawcodexREPL._handoff_to_textual_tui` can print
-        the resume hint **after** the TUI screen has been torn down.
+        The exit marker tells the calling entry point whether a
+        background agent was actually spawned, so it can print the
+        appropriate hint after the alt-screen tears down.
         """
         # Signal agent to continue running in background.
         try:
@@ -364,7 +366,30 @@ class ClawCodexTUI(App):
         except Exception:
             pass
         sid = getattr(self.session, "session_id", None) or ""
-        self.exit(result=("__FULL_EXIT__", sid))
+
+        if self.app_state.is_thinking:
+            # Agent is busy — cancel the foreground run, wait briefly,
+            # then fork into the background runner.
+            self._agent_bridge.cancel()
+            import time
+            time.sleep(0.15)
+            has_bg_agent = False
+            try:
+                from src.agent.background_runner import launch_background_runner
+                launch_background_runner(
+                    session=self.session,
+                    provider=self.provider,
+                    tool_registry=self.tool_registry,
+                    tool_context=self.tool_context,
+                    max_turns=self.max_turns,
+                )
+                has_bg_agent = True
+            except Exception:
+                pass
+            self.exit(result=("__BACKGROUND_EXIT__", sid, has_bg_agent))
+        else:
+            # Agent is idle — simple exit with session ID for resume hint.
+            self.exit(result=("__FULL_EXIT__", sid))
 
     def action_toggle_thinking(self) -> None:
         """Ctrl+T: toggle thinking content visibility in all thinking rows."""
@@ -419,6 +444,7 @@ class ClawCodexTUI(App):
             self._repl_screen.transcript.append_system(
                 f"Permission mode: {next_mode}", style="muted"
             )
+            self._repl_screen.status_bar.set_permission_mode(next_mode)
         self.announcer.announce(f"Permission mode: {next_mode}")
 
     # ---- local command dispatcher ----
@@ -736,6 +762,8 @@ class ClawCodexTUI(App):
                     transcript.append_system(
                         f"Permission mode set to {mode}.", style="muted"
                     )
+                    if self._repl_screen is not None:
+                        self._repl_screen.status_bar.set_permission_mode(mode)
                     self.announcer.announce(f"Permission mode: {mode}.")
             except Exception as exc:
                 transcript.append_system(

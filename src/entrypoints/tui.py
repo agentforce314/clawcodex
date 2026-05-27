@@ -176,13 +176,26 @@ def run_tui(options: TUIOptions) -> int:
             resume_session_id=getattr(app.session, "session_id", None),
         )
 
-    # Ctrl+B exit with ("__FULL_EXIT__", session_id) —
-    # print the resume hint for the user.
-    if isinstance(result, tuple) and result[0] == "__FULL_EXIT__":
+    # Ctrl+B / background exit — print the appropriate resume hint.
+    if isinstance(result, tuple) and result[0] in (
+        "__BACKGROUND_EXIT__",
+        "__FULL_EXIT__",
+    ):
+        marker = result[0]
         session_id = result[1] if len(result) > 1 else ""
+        has_bg_agent = result[2] if len(result) > 2 else False
         from rich.console import Console as RichConsole
+
         rc = RichConsole()
-        if session_id:
+        if marker == "__BACKGROUND_EXIT__" and has_bg_agent:
+            if session_id:
+                rc.print(
+                    f"\n  [bold green]Agent is running in background.[/bold green] Resume with:\n"
+                    f"    [cyan]clawcodex --tui --resume {session_id}[/cyan]"
+                )
+            else:
+                rc.print("\n  [bold green]Agent is running in background.[/bold green]")
+        elif session_id:
             rc.print(
                 f"\n  [bold yellow]Session {session_id} saved.[/bold yellow] Resume with:\n"
                 f"    [cyan]clawcodex --tui --resume {session_id}[/cyan]"

@@ -57,8 +57,8 @@ def run_orchestrator_subcommand(rest: list[str]) -> int:
         if rest[i] == "--workspace" and i + 1 < len(rest):
             workspace_arg = rest[i + 1]
             i += 2
-        elif rest[i] == "--workflow" and i + 1 < len(rest) and not is_run:
-            # Don't extract --workflow for 'run' - let run's own parser handle it
+        elif rest[i] == "--workflow" and i + 1 < len(rest) and is_run:
+            # Extract --workflow for 'run' subcommand (passed to run_run separately)
             workflow_arg = rest[i + 1]
             i += 2
         else:

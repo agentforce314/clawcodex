@@ -185,6 +185,17 @@ class CancelRequested(Message):
 
 
 @dataclass
+class PermissionModeCycleRequested(Message):
+    """User pressed Shift+Tab in the prompt input to cycle permission modes.
+
+    Posted by :class:`PromptInput` when shift+tab is pressed so the
+    binding is reliable even when the Input widget has focus.
+    """
+
+    pass
+
+
+@dataclass
 class PromptPasted(Message):
     """Bracketed-paste landed in the :class:`PromptInput` widget.
 

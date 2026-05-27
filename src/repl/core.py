@@ -2163,6 +2163,24 @@ class ClawcodexREPL:
                 except Exception:
                     continue
 
+            # Ctrl+B → background exit (agent running in background)
+            if isinstance(result, tuple) and result[0] == "__BACKGROUND_EXIT__":
+                session_id = result[1] if len(result) > 1 else ""
+                has_bg_agent = result[2] if len(result) > 2 else False
+                if has_bg_agent:
+                    self.console.print(
+                        "\n  [bold green]Agent is running in background[/bold green]"
+                    )
+                else:
+                    if session_id:
+                        self.console.print(
+                            f"\n  [bold yellow]Session {session_id} saved.[/bold yellow]"
+                        )
+                    else:
+                        self.console.print("\n  [yellow]Session saved.[/yellow]")
+                self.console.print("[dim]Exiting clawcodex...[/dim]")
+                sys.exit(0)
+
             # Ctrl+B → full exit to terminal shell (not back to CLI)
             if isinstance(result, tuple) and result[0] == "__FULL_EXIT__":
                 session_id = result[1] if len(result) > 1 else ""

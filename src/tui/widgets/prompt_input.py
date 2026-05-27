@@ -31,7 +31,7 @@ from textual.widgets import Input, OptionList
 from textual.widgets.option_list import Option
 
 from ..commands import CommandSuggestion
-from ..messages import CancelRequested, PromptPasted
+from ..messages import CancelRequested, PermissionModeCycleRequested, PromptPasted
 from ..paste import PasteInfo, classify_paste
 from ..vim import VimState
 from .prompt_input_footer import PromptInputFooter
@@ -291,6 +291,15 @@ class PromptInput(Vertical):
 
     async def on_key(self, event: events.Key) -> None:
         key = event.key
+
+        # Shift+Tab: cycle permission mode. Intercept here so it works
+        # even when the Input child has focus (Textual's default focus
+        # navigation would otherwise consume the key before the screen
+        # binding fires).
+        if key == "shift+tab":
+            self.post_message(PermissionModeCycleRequested())
+            event.stop()
+            return
 
         # Vim mode: consume chord-owned keys before the Input sees them.
         if self._vim.enabled:
