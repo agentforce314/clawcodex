@@ -2672,6 +2672,28 @@ class ClawcodexREPL:
                     f"[dim]  ⎿  Invoking agent @{att['agent_type']}[/dim]"
                 )
 
+        # Companion intro (port of TS prompt.ts + utils/attachments.ts).
+        # Build the intro attachment list, then append the
+        # <system-reminder> AFTER any at-mention text per
+        # my-docs/get-parity-by-folder/buddy-refactoring-plan.md §4.6
+        # item 2. Final user_input shape:
+        #   [at-mention reminder]\n\n[user typed text]\n\n[companion-intro reminder]
+        from src.buddy.feature import is_buddy_enabled
+        from src.buddy.prompt import (
+            build_companion_intro_attachment,
+            format_companion_intro_attachments,
+        )
+        intro_atts: list[dict[str, Any]] = []
+        if is_buddy_enabled():
+            intro_atts = build_companion_intro_attachment(self._engine_messages)
+            if intro_atts:
+                intro_text = format_companion_intro_attachments(intro_atts)
+                if intro_text:
+                    user_input = (
+                        f"{user_input}\n\n{intro_text}"
+                        if user_input else intro_text
+                    )
+
         # Image @-mentions become real image content blocks on the user
         # message so the model sees the image directly (matches TS's
         # auto-Read-on-@image behaviour, and stops the model from
@@ -3027,6 +3049,39 @@ class ClawcodexREPL:
             engine.reset_abort_controller()
 
             self._engine_messages = engine.get_messages()
+            # Append the dedup marker for the companion-intro
+            # (my-docs/get-parity-by-folder/buddy-refactoring-plan.md
+            # §4.6 item 3). content=[] means the API serialization sees
+            # nothing — that's correct: the intro text was already
+            # delivered via the prepend above. The marker exists so the
+            # NEXT turn's build_companion_intro_attachment() dedup walk
+            # sees it and short-circuits.
+            if intro_atts:
+                from src.types.messages import create_attachment_message
+                self._engine_messages.append(
+                    create_attachment_message(intro_atts[0])
+                )
+
+            # Fire the per-turn companion observer (port of TS
+            # screens/REPL.tsx:2846-2849). The on_reaction callback is a
+            # no-op for now per plan §1.3 — reactions are invisible to
+            # the user until the Textual companion sprite lands. The
+            # call site itself is the integration point future contributors
+            # need to preserve; plan §6 acceptance criterion 7 greps for
+            # it.
+            if is_buddy_enabled():
+                from src.buddy.observer import fire_companion_observer
+
+                def _record_reaction(reaction: str | None) -> None:
+                    # No-op: avoids scope-creeping this edit with a
+                    # `logger` import repl/core.py doesn't otherwise
+                    # have. When a Textual sprite + companion_reaction
+                    # AppState slice land, replace this with an AppState
+                    # write.
+                    return
+
+                fire_companion_observer(self._engine_messages, _record_reaction)
+
             self._stats_turns += 1
 
             if not last_text_was_printed and response_text:
