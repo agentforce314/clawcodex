@@ -260,22 +260,24 @@ Goal: Build distinctive features unique to the Python reimplementation.
 | LiveView Dashboard | ✅ | HTTP SSE dashboard on port 8080 with embedded HTML/JS |
 | Operator Hints | ✅ | `.operator_hints.md` injection at tool call boundaries |
 | Workspace CLI | ✅ | `orchestrator workspace` for ls/cat/edit during agent runs |
-| `--workflow` Migration | ✅ | `workflow_deprecated` flag with deprecation warning, use `orchestrator run --workflow` |
 
 ### Orchestrator CLI Subcommands
 
 | Command | Description |
 |---------|-------------|
-| `orchestrator run --workflow PATH` | Launch orchestrator with WORKFLOW.md |
-| `orchestrator status [--watch]` | Show running/completed/failed issue counts |
-| `orchestrator issues [list\|show\|tail]` | List, show, or tail issue event logs |
-| `orchestrator clarify --issue ID --answer TEXT` | Write operator answer to clarification queue |
-| `orchestrator pause <issue_id> [--reason]` | Pause agent at next tool call boundary |
-| `orchestrator resume <issue_id>` | Resume a paused agent |
-| `orchestrator stop <issue_id>` | Force-terminate a running agent |
-| `orchestrator takeover <issue_id>` | Stop agent + start REPL for manual intervention |
-| `orchestrator inject <issue_id> [hint]` | Inject operator hints via `.operator_hints.md` |
-| `orchestrator workspace <issue_id> [--ls\|--cat FILE\|--edit FILE]` | View/modify workspace files |
+| `orchestrator server start --workflow PATH` | Start the orchestrator daemon |
+| `orchestrator server status` | Show daemon status (PID, uptime, workspace) |
+| `orchestrator server stop` | Stop the orchestrator daemon gracefully |
+| `orchestrator issue list [--status]` | List all issues (optionally filter by status) |
+| `orchestrator issue show --id <id>` | Show issue details (context, token usage) |
+| `orchestrator issue tail --id <id>` | Real-time tail of tool call logs |
+| `orchestrator issue pause --id <id> [--reason]` | Pause agent at next tool call boundary |
+| `orchestrator issue resume --id <id>` | Resume a paused agent |
+| `orchestrator issue stop --id <id>` | Force-terminate a running agent |
+| `orchestrator issue takeover --id <id>` | Stop agent + start REPL for manual intervention |
+| `orchestrator issue inject --id <id> [hint]` | Inject operator hints via `.operator_hints.md` |
+| `orchestrator issue clarify --id <id> --answer <text>` | Answer a clarification request |
+| `orchestrator issue workspace --id <id> [--ls\|--cat FILE\|--edit FILE]` | View/modify workspace files |
 | `orchestrator dashboard [--port PORT] [--host HOST]` | Start LiveView HTTP SSE dashboard |
 
 ---
@@ -618,22 +620,24 @@ You can introduce the project like this:
 | LiveView Dashboard | ✅ | 端口 8080 HTTP SSE 仪表盘，内嵌 HTML/JS |
 | Operator Hints | ✅ | `.operator_hints.md` 在 tool call 边界注入 |
 | Workspace CLI | ✅ | `orchestrator workspace` 支持 ls/cat/edit |
-| `--workflow` 迁移 | ✅ | `workflow_deprecated` 标志 + 弃用警告，使用 `orchestrator run --workflow` |
 
 ### Orchestrator CLI 子命令
 
 | 命令 | 描述 |
 |------|------|
-| `orchestrator run --workflow PATH` | 使用 WORKFLOW.md 启动 orchestrator |
-| `orchestrator status [--watch]` | 显示 running/completed/failed issue 数量 |
-| `orchestrator issues [list\|show\|tail]` | 列出、查看或尾部跟踪 issue 事件日志 |
-| `orchestrator clarify --issue ID --answer TEXT` | 向 clarification queue 写入 operator 答案 |
-| `orchestrator pause <issue_id> [--reason]` | 在下一个 tool call 边界暂停 agent |
-| `orchestrator resume <issue_id>` | 恢复已暂停的 agent |
-| `orchestrator stop <issue_id>` | 强制终止运行中的 agent |
-| `orchestrator takeover <issue_id>` | 停止 agent + 启动 REPL 手动干预 |
-| `orchestrator inject <issue_id> [hint]` | 通过 `.operator_hints.md` 注入 operator hints |
-| `orchestrator workspace <issue_id> [--ls\|--cat FILE\|--edit FILE]` | 查看/修改 workspace 文件 |
+| `orchestrator server start --workflow PATH` | 启动 orchestrator daemon |
+| `orchestrator server status` | 查看 daemon 运行状态（PID、uptime、workspace） |
+| `orchestrator server stop` | 优雅停止 orchestrator daemon |
+| `orchestrator issue list [--status]` | 列出所有 issue（可选按状态过滤） |
+| `orchestrator issue show --id <id>` | 查看 issue 详情（上下文、token 用量） |
+| `orchestrator issue tail --id <id>` | 实时 tail tool call 日志 |
+| `orchestrator issue pause --id <id> [--reason]` | 在下一个 tool call 边界暂停 agent |
+| `orchestrator issue resume --id <id>` | 恢复已暂停的 agent |
+| `orchestrator issue stop --id <id>` | 强制终止运行中的 agent |
+| `orchestrator issue takeover --id <id>` | 停止 agent + 启动 REPL 手动干预 |
+| `orchestrator issue inject --id <id> [hint]` | 通过 `.operator_hints.md` 注入 operator hints |
+| `orchestrator issue clarify --id <id> --answer <text>` | 回答 clarification 请求 |
+| `orchestrator issue workspace --id <id> [--ls\|--cat FILE\|--edit FILE]` | 查看/修改 workspace 文件 |
 | `orchestrator dashboard [--port PORT] [--host HOST]` | 启动 LiveView HTTP SSE 仪表盘 |
 
 ---

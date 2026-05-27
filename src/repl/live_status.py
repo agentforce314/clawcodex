@@ -108,6 +108,7 @@ class LiveStatus:
         on_cancel: Callable[[], None] | None = None,
         on_submit: Callable[[str], None] | None = None,
         on_expand: Callable[[], None] | None = None,
+        on_background: Callable[[], None] | None = None,
         completer=None,
         verbose: bool = False,
     ) -> None:
@@ -120,6 +121,7 @@ class LiveStatus:
         self._on_cancel = on_cancel
         self._on_submit = on_submit
         self._on_expand = on_expand
+        self._on_background = on_background
         # Optional ``prompt_toolkit.completion.Completer``. When set,
         # the live input buffer surfaces completions (e.g. ``@`` file
         # mentions, slash commands) in a popup above the input row —
@@ -203,6 +205,7 @@ class LiveStatus:
         on_cancel = self._on_cancel
         on_submit = self._on_submit
         on_expand = self._on_expand
+        on_background = self._on_background
         completer = self._completer
         # Preserve the timer / token counter across the pause so the
         # spinner picks up where it left off after the foreground prompt
@@ -217,6 +220,7 @@ class LiveStatus:
             self._on_cancel = on_cancel
             self._on_submit = on_submit
             self._on_expand = on_expand
+            self._on_background = on_background
             self._completer = completer
             self._frame_index = 0
             self._started_at = started_at
@@ -242,6 +246,25 @@ class LiveStatus:
         @bindings.add("c-c")
         def _on_cancel(event):  # type: ignore[no-untyped-def]
             cb = self._on_cancel
+            if cb is None:
+                return
+            try:
+                cb()
+            except Exception:
+                pass
+
+        @bindings.add("c-b")
+        def _on_background_key(event):  # type: ignore[no-untyped-def]
+            """Ctrl+B: send the agent to the background (REPL mode).
+
+            When the user presses Ctrl+B during an active agent run,
+            this invokes the ``on_background`` callback (if set), which
+            signals the REPL's ``chat()`` to raise a
+            :class:`BackgroundEscape` and fork the agent into a
+            background process.  When ``on_background`` is ``None``
+            (e.g. TUI mode), the binding is a no-op.
+            """
+            cb = self._on_background
             if cb is None:
                 return
             try:
@@ -474,16 +497,16 @@ class LiveStatus:
         self._frame_index += 1
 
         # Spinner suffix layout:
-        # ``(esc to interrupt · enter to queue · 12s · ↓ 1.2k tokens)``.
-        # ``esc to interrupt · enter to queue`` is always shown — it tells
-        # the user how to cancel the run and that typing-while-thinking
-        # queues the next prompt (a Python-only affordance not present in
-        # the TS reference's ``SpinnerAnimationRow.tsx``). Timer + token
-        # parts mirror the TS suffix and stay gated by 30s elapsed (or
-        # ``verbose``); tokens additionally require a non-zero count.
+        # ``(esc to interrupt · ctrl+b background · enter to queue · 12s · ↓ 1.2k tokens)``.
+        # ``esc to interrupt · ctrl+b background · enter to queue`` is always shown —
+        # it tells the user how to cancel the run, send it to the background,
+        # and that typing-while-thinking queues the next prompt (a Python-only
+        # affordance not present in the TS reference's ``SpinnerAnimationRow.tsx``).
+        # Timer + token parts mirror the TS suffix and stay gated by 30s elapsed
+        # (or ``verbose``); tokens additionally require a non-zero count.
         elapsed_ms = (time.monotonic() - started_at) * 1000 if started_at else 0.0
         wants_timer = verbose or elapsed_ms > _SHOW_TIMER_AFTER_MS
-        suffix = "  (esc to interrupt · enter to queue"
+        suffix = "  (esc to interrupt · ctrl+b background · enter to queue"
         if wants_timer:
             suffix += f" · {format_duration(elapsed_ms)}"
             if tokens > 0:

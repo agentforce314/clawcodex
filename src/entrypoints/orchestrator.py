@@ -1,19 +1,17 @@
-"""Orchestrator CLI subcommand router.
+"""Orchestrator CLI subcommand router — noun-verb structure.
 
-clawcodex orchestrator [--workspace PATH] [--workflow PATH] <subcommand> [args...]
+Usage:
+  clawcodex orchestrator server status|stop|start [--workspace PATH]   # daemon-level
+  clawcodex orchestrator issue list|show|stop|... --id <id>            # issue-level
+  clawcodex orchestrator dashboard [--port PORT]                       # dashboard
 
-Wires the orchestrator extension's CLI modules into the main clawcodex CLI.
-Each subcommand (run, status, issues, etc.) is handled by its corresponding
-module in extensions/orchestrator/cli/.
+Design:
+  - noun-verb structure: ``<noun> <verb> [--param value]``
+  - Self-describing named parameters (``--id``, ``--workspace``, etc.)
+  - All operations are idempotent where possible
 
-Global options --workspace and --workflow are parsed at the top level
-and attached to args for subcommand handlers to use.
-
-For the 'run' subcommand, --workflow is NOT extracted at the entrypoint level
-because 'run' has its own --workflow argument. The global --workflow is passed
-to run_run() separately and merged there.
-
-Pattern mirrors src/entrypoints/mcp.py, daemon.py, doctor.py.
+Each subparser declares its own arguments — there are no global options
+extracted before the subcommand token.
 """
 
 from __future__ import annotations
@@ -23,14 +21,16 @@ import sys
 
 
 def run_orchestrator_subcommand(rest: list[str]) -> int:
-    """Handle ``clawcodex orchestrator [--workspace PATH] [--workflow PATH] <subcommand>``.
+    """Handle ``clawcodex orchestrator <subcommand>``.
+
+    Supports the noun-verb structure (``server|issue|dashboard``).
 
     Returns the process exit code.
     """
-    # Find subcommand token position
+    # Find subcommand token position (everything else is passed through)
     subcommand_tokens = {
-        "run", "status", "issues", "dashboard", "clarify", "inject",
-        "pause", "resume", "stop", "takeover", "workspace"
+        "dashboard",
+        "server", "issue",    # New noun-verb
     }
     subcommand_idx = -1
     subcommand = None
@@ -40,92 +40,46 @@ def run_orchestrator_subcommand(rest: list[str]) -> int:
             subcommand = tok
             break
 
-    is_run = subcommand == "run"
-
-    # Extract --workspace and --workflow from before the subcommand
-    # For 'run', we don't extract --workflow (let run's own parser handle it)
-    workspace_arg = None
-    workflow_arg = None
-    filtered_rest = []
-    i = 0
-    while i < len(rest):
-        if i == subcommand_idx:
-            # Subcommand reached - stop extracting global options
-            filtered_rest.append(rest[i])
-            i += 1
-            continue
-        if rest[i] == "--workspace" and i + 1 < len(rest):
-            workspace_arg = rest[i + 1]
-            i += 2
-        elif rest[i] == "--workflow" and i + 1 < len(rest) and is_run:
-            # Extract --workflow for 'run' subcommand (passed to run_run separately)
-            workflow_arg = rest[i + 1]
-            i += 2
-        else:
-            filtered_rest.append(rest[i])
-            i += 1
+    # Pass through everything verbatim — subparsers own their args
+    filtered_rest = list(rest)
 
     # Build the main parser with subparsers
     parser = argparse.ArgumentParser(
         prog="clawcodex orchestrator",
         description="Autonomous issue processing orchestration",
+        epilog="""
+Usage (noun-verb):
+  server status|stop|start    Manage the orchestrator daemon
+  issue list|show|tail|...    Manage individual issues (use --id <id>)
+  dashboard [--port PORT]     Standalone LiveView UI
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     subparsers = parser.add_subparsers(dest="subcommand", required=True)
 
     # Import CLI modules to register their subparsers
-    from extensions.orchestrator.cli import (
-        run_clarify,
-        run_dashboard,
-        run_inject,
-        run_issues,
-        run_lifecycle,
-        run_run,
-        run_status,
-        run_workspace,
-    )
-    from extensions.orchestrator.cli.clarify import add_clarify_parser
     from extensions.orchestrator.cli.dashboard import add_dashboard_parser
-    from extensions.orchestrator.cli.inject import add_inject_parser
-    from extensions.orchestrator.cli.issues import add_issues_parser
-    from extensions.orchestrator.cli.lifecycle import add_lifecycle_parser
-    from extensions.orchestrator.cli.run import add_run_parser
-    from extensions.orchestrator.cli.status import add_status_parser
-    from extensions.orchestrator.cli.workspace import add_workspace_parser
+    from extensions.orchestrator.cli.issue import add_issue_parser
+    from extensions.orchestrator.cli.server import add_server_parser
 
-    # Register subparsers for each command
-    add_run_parser(subparsers)
-    add_status_parser(subparsers)
-    add_issues_parser(subparsers)
-    add_dashboard_parser(subparsers)
-    add_clarify_parser(subparsers)
-    add_inject_parser(subparsers)
-    add_lifecycle_parser(subparsers)
-    add_workspace_parser(subparsers)
+    # Register noun-verb subparsers
+    add_server_parser(subparsers)     # server status|stop|start
+    add_issue_parser(subparsers)      # issue list|show|tail|stop|pause|resume|...
+    add_dashboard_parser(subparsers)  # dashboard [--port PORT]
 
-    # Parse all arguments (subcommand only - workspace/workflow already extracted)
+    # Parse all arguments
     args = parser.parse_args(filtered_rest)
 
-    # Attach extracted global options to args for subcommand handlers
-    args.workspace = workspace_arg
-    args.workflow = workflow_arg
-
-    # Dispatch to the appropriate run() function
-    if args.subcommand in ("run", None):
-        return run_run(args, workflow_path=workflow_arg)
-    elif args.subcommand == "status":
-        return run_status(args)
-    elif args.subcommand == "issues":
-        return run_issues(args)
+    # Dispatch — noun-verb dispatch
+    if args.subcommand == "server":
+        from extensions.orchestrator.cli.server import run as run_server
+        return run_server(args)
+    elif args.subcommand == "issue":
+        from extensions.orchestrator.cli.issue import run as run_issue
+        return run_issue(args)
     elif args.subcommand == "dashboard":
+        from extensions.orchestrator.cli.dashboard import run as run_dashboard
         return run_dashboard(args)
-    elif args.subcommand == "clarify":
-        return run_clarify(args)
-    elif args.subcommand == "inject":
-        return run_inject(args)
-    elif args.subcommand in ("pause", "resume", "stop", "takeover"):
-        return run_lifecycle(args)
-    elif args.subcommand == "workspace":
-        return run_workspace(args)
     else:
         parser.print_help()
         return 2

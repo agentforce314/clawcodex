@@ -718,6 +718,29 @@ class ClawcodexREPL:
                 """Meta+Enter (and Kitty-protocol Shift+Enter): insert ``\\n``."""
                 event.current_buffer.insert_text("\n")
 
+            @self.bindings.add("c-b")  # type: ignore[attr-defined]
+            def _background_or_exit(event):  # type: ignore[no-untyped-def]
+                """Ctrl+B: save session and exit to shell.
+
+                When the agent is idle (prompt is showing), this just
+                saves and exits.  When the agent is active (LiveStatus
+                is showing), the LiveStatus's own Ctrl+B binding fires
+                instead and triggers BackgroundEscape.
+                """
+                try:
+                    self.session.save()
+                except Exception:
+                    pass
+                session_id = self.session.session_id
+                self.console.print(
+                    f"\n  [bold yellow]Session {session_id} saved.[/bold yellow]"
+                )
+                self.console.print(
+                    f"  [dim]Resume with: clawcodex --resume {session_id}[/dim]"
+                )
+                self.console.print("[dim]Exiting clawcodex...[/dim]")
+                raise EOFError()  # let run()'s while loop exit cleanly
+
             @self.bindings.add("c-o")  # type: ignore[attr-defined]
             def _expand_last(event):  # type: ignore[no-untyped-def]
                 """Ctrl+O: re-print the most recent truncated block in
@@ -2799,6 +2822,8 @@ class ClawcodexREPL:
             max_turns: Maximum number of tool call turns. None means unlimited
                 (matching TS interactive REPL behavior). Only set for SDK/non-interactive mode.
         """
+        from src.repl.background_escape import BackgroundEscape
+
         # Expand ``@path`` mentions into context attachments before the model
         # sees the message. Port of
         # ``typescript/src/utils/attachments.ts#processAtMentionedFiles``.
@@ -2908,12 +2933,25 @@ class ClawcodexREPL:
                     if _direct_status_ref:
                         _direct_status_ref[0].update(self._status_message())
 
+                # Ctrl+B background escape flag — set by the
+                # LiveStatus keybinding and checked after the
+                # with-block to raise BackgroundEscape.
+                _background_requested_direct = False
+
+                def _on_background_direct() -> None:
+                    nonlocal _background_requested_direct
+                    _background_requested_direct = True
+                    # Also cancel the direct stream so it stops
+                    # consuming tokens immediately.
+                    self._direct_stream_abort = True
+
                 with _pt_patch_stdout(raw=True):
                     with LiveStatus(
                         self._status_message(),
                         on_cancel=_cancel_direct_stream,
                         on_submit=_on_submit_direct,
                         on_expand=self._do_expand_last,
+                        on_background=_on_background_direct,
                         completer=self.completer,
                     ) as status:
                         _direct_status_ref.append(status)
@@ -2927,6 +2965,8 @@ class ClawcodexREPL:
                 if direct_response is not None:
                     self.console.print("\n")
                     return
+                if _background_requested_direct:
+                    raise BackgroundEscape()
 
             from src.outputStyles import resolve_output_style
 
@@ -3193,12 +3233,28 @@ class ClawcodexREPL:
                 if _engine_status_ref:
                     _engine_status_ref[0].update(self._status_message())
 
+            # Ctrl+B background escape flag — set by the
+            # LiveStatus keybinding and raised after the
+            # with-block exits.
+            _background_requested_engine = False
+
+            def _on_background_engine() -> None:
+                nonlocal _background_requested_engine
+                _background_requested_engine = True
+                # Also cancel the engine so it stops consuming
+                # tokens and tool calls immediately.
+                try:
+                    engine.interrupt()
+                except Exception:
+                    pass
+
             with _pt_patch_stdout(raw=True):
                 with LiveStatus(
                     self._status_message(),
                     on_cancel=_cancel_engine,
                     on_submit=_on_submit_engine,
                     on_expand=self._do_expand_last,
+                    on_background=_on_background_engine,
                     completer=self.completer,
                 ) as status:
                     _engine_status_ref.append(status)
@@ -3225,6 +3281,15 @@ class ClawcodexREPL:
                 self.console.print(Markdown(response_text))
             self.console.print()
 
+            # If Ctrl+B was pressed during the engine run, raise
+            # BackgroundEscape *after* the LiveStatus is torn down
+            # and the engine's abort controller is reset.  This keeps
+            # the background-fork logic out of the LiveStatus handler.
+            if _background_requested_engine:
+                raise BackgroundEscape()
+
+        except BackgroundEscape:
+            self._handle_background_escape()
         except Exception as e:
             error_str = str(e)
 
@@ -3247,6 +3312,53 @@ class ClawcodexREPL:
                 self.console.print(f"\n[red]Error: {e}[/red]")
                 import traceback
                 traceback.print_exc()
+
+    def _handle_background_escape(self) -> None:
+        """Handle Ctrl+B background escape: fork the agent into a background process.
+
+        Called when ``chat()`` catches a :class:`BackgroundEscape`.  Saves
+        the session, calls :func:`launch_background_runner` to fork (Unix)
+        or spawn (Windows) a child that continues the agent loop headlessly,
+        then prints a resume hint so the user can re-attach later with
+        ``--resume <session_id>``.
+        """
+        from src.agent.background_runner import launch_background_runner
+
+        # Save the conversation state so the child process can pick up
+        # where the parent left off.
+        try:
+            self.session.save()
+        except Exception:
+            pass
+
+        # Determine max_turns for the background runner.  In interactive
+        # mode there is no limit (None), matching the REPL's default.
+        pid = launch_background_runner(
+            session=self.session,
+            provider=self.provider,
+            tool_registry=self.tool_registry,
+            tool_context=self.tool_context,
+            max_turns=0,  # 0 = unlimited in the headless runner
+        )
+
+        if pid is not None:
+            self.console.print(
+                f"\n[green]⏎ Agent sent to background (pid {pid}).[/green]"
+            )
+            self.console.print(
+                f"[dim]Resume with: clawcodex --resume {self.session.session_id}[/dim]"
+            )
+            self.console.print("[dim]Exiting clawcodex...[/dim]")
+            sys.exit(0)
+        else:
+            # Windows graceful degradation — no os.fork(), subprocess
+            # launch may also have failed.
+            self.console.print(
+                "\n[yellow]Background mode is not supported on this platform.[/yellow]"
+            )
+            self.console.print(
+                "[dim]Press Ctrl+C to cancel the current run instead.[/dim]"
+            )
 
     def _handle_relogin(self):
         """Handle re-authentication when API key fails."""
