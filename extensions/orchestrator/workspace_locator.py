@@ -137,6 +137,22 @@ def _parse_workspace_from_workflow(workflow_path: str | Path) -> Path | None:
 # Orchestrator metadata management
 # ---------------------------------------------------------------------------
 
+def _find_latest_metadata() -> Path | None:
+    """Find the most recently modified orchestrator metadata file."""
+    if not ORCHESTRATOR_DIR.exists():
+        return None
+    metadata_files = []
+    for md in ORCHESTRATOR_DIR.iterdir():
+        if md.is_dir():
+            mf = md / "metadata.json"
+            if mf.exists():
+                metadata_files.append((mf.stat().st_mtime, mf))
+    if not metadata_files:
+        return None
+    metadata_files.sort(key=lambda x: x[0], reverse=True)
+    return metadata_files[0][1]
+
+
 def write_orchestrator_metadata(
     workspace_root: str | Path,
     workflow_path: str | None = None,

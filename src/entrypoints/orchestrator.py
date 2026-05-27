@@ -23,26 +23,27 @@ def run_orchestrator_subcommand(rest: list[str]) -> int:
 
     Returns the process exit code.
     """
-    # Build the main parser with global options
+    # Extract global --workspace and --workflow options from anywhere in rest
+    workspace_arg = None
+    workflow_arg = None
+    filtered_rest = []
+    i = 0
+    while i < len(rest):
+        if rest[i] == "--workspace" and i + 1 < len(rest):
+            workspace_arg = rest[i + 1]
+            i += 2
+        elif rest[i] == "--workflow" and i + 1 < len(rest):
+            workflow_arg = rest[i + 1]
+            i += 2
+        else:
+            filtered_rest.append(rest[i])
+            i += 1
+
+    # Build the main parser with subparsers
     parser = argparse.ArgumentParser(
         prog="clawcodex orchestrator",
         description="Autonomous issue processing orchestration",
     )
-    parser.add_argument(
-        "--workspace",
-        type=str,
-        default=None,
-        metavar="PATH",
-        help="Workspace root path (overrides workflow file)",
-    )
-    parser.add_argument(
-        "--workflow",
-        type=str,
-        default=None,
-        metavar="PATH",
-        help="Path to WORKFLOW.md (parse workspace.root from it)",
-    )
-
     subparsers = parser.add_subparsers(dest="subcommand", required=True)
 
     # Import CLI modules to register their subparsers
@@ -75,8 +76,12 @@ def run_orchestrator_subcommand(rest: list[str]) -> int:
     add_lifecycle_parser(subparsers)
     add_workspace_parser(subparsers)
 
-    # Parse all arguments
-    args = parser.parse_args(rest)
+    # Parse all arguments (subcommand only - workspace/workflow already extracted)
+    args = parser.parse_args(filtered_rest)
+
+    # Attach extracted global options to args for subcommand handlers
+    args.workspace = workspace_arg
+    args.workflow = workflow_arg
 
     # Dispatch to the appropriate run() function
     if args.subcommand in ("run", None):

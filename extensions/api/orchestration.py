@@ -68,6 +68,8 @@ class OrchestrationSubsystem:
 
     async def run(self) -> None:
         """Start polling and issue execution. Runs until cancelled."""
+        from ..orchestrator.orchestrator import Orchestrator
+
         self._orchestrator = Orchestrator(
             workflow=self.workflow,
             tracker=self.tracker_adapter,

@@ -48,17 +48,46 @@ def run(args: argparse.Namespace) -> int:
     from extensions.orchestrator.issue_registry import IssueRegistry
     from extensions.orchestrator.workspace_locator import get_registry_path
 
+    # Use workspace_locator to resolve workspace (handles env var, metadata, etc.)
+    # args.workspace and args.workflow come from parent orchestrator parser if provided
     registry_path = get_registry_path(
-        workspace_arg=args.workspace,
-        workflow_path=args.workflow,
+        workspace_arg=getattr(args, 'workspace', None),
+        workflow_path=getattr(args, 'workflow', None),
     )
     if not registry_path or not registry_path.exists():
-        ws_info = ""
-        if args.workspace:
-            ws_info = f" (workspace: {args.workspace})"
-        elif args.workflow:
-            ws_info = f" (workflow: {args.workflow})"
-        print(f"No orchestrator registry found{ws_info}. Is the orchestrator running?", file=sys.stderr)
+        ws_arg = getattr(args, 'workspace', None)
+        wf_arg = getattr(args, 'workflow', None)
+        # Check if orchestrator is running but no issues processed yet
+        from extensions.orchestrator.workspace_locator import (
+            get_workspace_root,
+            list_orchestrator_projects,
+        )
+        workspace_root = get_workspace_root(workspace_arg=ws_arg, workflow_path=wf_arg)
+        projects = list_orchestrator_projects()
+
+        if workspace_root and projects:
+            p = projects[0]
+            pid = p.get("pid", "?")
+            started = p.get("started_at", 0)
+            if started:
+                import time
+                age = int(time.time() - started)
+                age_str = f"{age}s ago"
+            else:
+                age_str = ""
+            slug = p.get("project_slug", "unknown")
+            print(f"Orchestrator is running (PID {pid}, {slug}, {age_str})", file=sys.stderr)
+            print(f"Workspace: {workspace_root}", file=sys.stderr)
+            print("No issues processed yet.", file=sys.stderr)
+        else:
+            ws_info = ""
+            if ws_arg:
+                ws_info = f" (workspace: {ws_arg})"
+            elif wf_arg:
+                ws_info = f" (workflow: {wf_arg})"
+            print(f"No orchestrator registry found{ws_info}.", file=sys.stderr)
+            print("Hint: Run 'clawcodex orchestrator run --workflow WORKFLOW.md' first.", file=sys.stderr)
+            _print_available_projects()
         return 1
 
     registry = IssueRegistry(registry_path)
@@ -70,6 +99,29 @@ def run(args: argparse.Namespace) -> int:
     elif args.issues_subcommand == "tail":
         return _run_tail(registry, args.issue_id)
     return 0
+
+
+def _print_available_projects() -> None:
+    """Print available orchestrator projects from metadata."""
+    from extensions.orchestrator.workspace_locator import list_orchestrator_projects
+
+    projects = list_orchestrator_projects()
+    if not projects:
+        print("  (no orchestrator projects found)", file=sys.stderr)
+        return
+
+    print("  Available projects:", file=sys.stderr)
+    for p in projects:
+        slug = p.get("project_slug", "unknown")
+        ws = p.get("workspace_root", "unknown")
+        started = p.get("started_at", 0)
+        if started:
+            import time
+            age = int(time.time() - started)
+            age_str = f"{age}s ago"
+        else:
+            age_str = ""
+        print(f"    {slug}: {ws} ({age_str})", file=sys.stderr)
 
 
 def _run_list(registry, args) -> int:

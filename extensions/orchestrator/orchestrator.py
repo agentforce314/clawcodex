@@ -94,7 +94,7 @@ class Orchestrator:
 
         # Event stream for CLI tail (shared queue directory)
         self._event_stream_dir = workspace.config.root / ".event_streams"
-        self._event_stream_dir.mkdir(exist_ok=True)
+        self._event_stream_dir.mkdir(parents=True, exist_ok=True)
         from .clarification import ClarificationResolver, ClarificationConfig
         self._clarification_resolver = ClarificationResolver(
             clarification_queue=self._clarification_queue,

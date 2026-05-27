@@ -31,22 +31,50 @@ def add_status_parser(subparsers: argparse._SubParsersAction) -> None:
 def run(args: argparse.Namespace) -> int:
     """Execute the orchestrator status command."""
     from extensions.orchestrator.issue_registry import IssueRegistry
-    from extensions.orchestrator.workspace_locator import get_registry_path
+    from extensions.orchestrator.workspace_locator import (
+        get_registry_path,
+        get_workspace_root,
+    )
 
     # Try to read the registry from the resolved workspace location
     registry_path = get_registry_path(
-        workspace_arg=args.workspace,
-        workflow_path=args.workflow,
+        workspace_arg=getattr(args, 'workspace', None),
+        workflow_path=getattr(args, 'workflow', None),
     )
     if registry_path and registry_path.exists():
         registry = IssueRegistry(registry_path)
         _print_summary(registry)
         if args.watch:
             print("Use --watch with a running orchestrator for live updates")
+        return 0
+
+    # Registry not found — distinguish "not running" vs "running but no issues yet"
+    workspace_root = get_workspace_root(
+        workspace_arg=getattr(args, 'workspace', None),
+        workflow_path=getattr(args, 'workflow', None),
+    )
+    projects = _get_orchestrator_projects()
+
+    if workspace_root and projects:
+        # Orchestrator metadata exists → it's running but no issues processed yet
+        p = projects[0]
+        pid = p.get("pid", "?")
+        started = p.get("started_at", 0)
+        if started:
+            import time
+            age = int(time.time() - started)
+            age_str = f"{age}s ago"
+        else:
+            age_str = ""
+        slug = p.get("project_slug", "unknown")
+        print(f"Orchestrator is running (PID {pid}, {slug}, {age_str})")
+        print(f"Workspace: {workspace_root}")
+        print("No issues processed yet.")
+        if args.watch:
+            print("Use --watch with a running orchestrator for live updates")
     else:
         print("No orchestrator registry found. Is the orchestrator running?")
         print("Hint: Run 'clawcodex orchestrator run --workflow WORKFLOW.md' first.")
-        # List available projects
         _print_available_projects()
     return 0
 
@@ -67,11 +95,15 @@ def _print_summary(registry: "IssueRegistry") -> None:
     print(f"  ABANDONED : {counts.get('ABANDONED', 0)}")
 
 
+def _get_orchestrator_projects() -> list[dict]:
+    """Get list of orchestrator projects from metadata."""
+    from extensions.orchestrator.workspace_locator import list_orchestrator_projects
+    return list_orchestrator_projects()
+
+
 def _print_available_projects() -> None:
     """Print available orchestrator projects from metadata."""
-    from extensions.orchestrator.workspace_locator import list_orchestrator_projects
-
-    projects = list_orchestrator_projects()
+    projects = _get_orchestrator_projects()
     if not projects:
         print("\n  (no orchestrator projects found)")
         return
