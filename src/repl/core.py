@@ -446,6 +446,9 @@ class ClawcodexREPL:
                 self.session = loaded_session
                 self.console.print(f"[green]Resumed session: {resume_session_id}[/green]")
                 self.console.print(f"[dim]Provider: {loaded_session.provider}, Model: {loaded_session.model}[/dim]")
+                # Sync conversation from JSONL transcript (has full history
+                # including background agent output not in .json snapshot)
+                self._sync_conversation_from_transcript(resume_session_id)
             else:
                 self.console.print(f"[yellow]Session not found: {resume_session_id}. Starting new session.[/yellow]")
                 self.session = Session.create(provider_name, self.provider.model)
@@ -739,7 +742,7 @@ class ClawcodexREPL:
                     f"  [dim]Resume with: clawcodex --resume {session_id}[/dim]"
                 )
                 self.console.print("[dim]Exiting clawcodex...[/dim]")
-                raise EOFError()  # let run()'s while loop exit cleanly
+                self.prompt_session.app.exit()
 
             @self.bindings.add("c-o")  # type: ignore[attr-defined]
             def _expand_last(event):  # type: ignore[no-untyped-def]
@@ -2219,6 +2222,72 @@ class ClawcodexREPL:
 
             self.console.print("[dim]Returned from Textual TUI.[/dim]")
 
+    def _sync_conversation_from_transcript(self, session_id: str) -> None:
+        """Sync conversation from JSONL transcript to get full history.
+
+        The .json session file is a snapshot saved at fork time and doesn't
+        include background agent output. The JSONL transcript has the complete
+        history and is used by TailFollower in TUI --resume mode.
+        """
+        try:
+            from src.services.session_storage import SessionStorage
+            from src.types.messages import message_from_dict
+
+            storage = SessionStorage(session_id=session_id)
+            entries = storage.read_transcript()
+
+            if not entries:
+                return
+
+            # Rebuild message list from transcript
+            messages = []
+            for entry in entries:
+                if entry.get("role") == "system" and entry.get("content") == "__background_complete__":
+                    continue  # Skip completion marker
+                try:
+                    msg = message_from_dict(entry)
+                    messages.append(msg)
+                except Exception:
+                    pass
+
+            if messages:
+                self.session.conversation.messages = messages
+        except Exception:
+            pass  # Best-effort, don't fail resume
+
+    def _flatten_message_content(self, content: Any) -> str:
+        """Normalise Message.content (string or block list) to text."""
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                # Handle dataclass blocks (TextBlock, ToolUseBlock, ToolResultBlock, etc.)
+                item_type = getattr(item, 'type', None) if hasattr(item, 'type') else None
+                if item_type is None and isinstance(item, dict):
+                    item_type = item.get("type")
+
+                if item_type == "text":
+                    text = getattr(item, 'text', None) or (item.get("text") if isinstance(item, dict) else "")
+                    if text:
+                        parts.append(text)
+                elif item_type == "tool_use":
+                    name = getattr(item, 'name', None) or (item.get("name") if isinstance(item, dict) else "")
+                    if not name and isinstance(item, dict):
+                        name = item.get("input", {}).get("description", "")
+                    if name:
+                        parts.append(f"[tool:{name}]")
+                elif item_type == "tool_result":
+                    result = getattr(item, 'content', None) or (item.get("content") if isinstance(item, dict) else "")
+                    if result:
+                        parts.append(str(result))
+                elif item_type is None and isinstance(item, str):
+                    parts.append(item)
+            return "\n".join(p for p in parts if p).strip()
+        return str(content)
+
     def _print_startup_header(self):
         from src import __version__
 
@@ -2267,6 +2336,39 @@ class ClawcodexREPL:
             self.console.print("Use [bold]/login[/bold] to configure, or set [cyan]ANTHROPIC_API_KEY[/cyan] env var, then restart.")
             self.console.print("Type [bold]/exit[/bold] to quit.\n")
 
+        # Print conversation history when resuming a session
+        resumed = getattr(self, '_resume_session_id', None)
+        if resumed and self.session.conversation.messages:
+            self.console.print("[dim]--- conversation history ---[/dim]")
+            for msg in self.session.conversation.messages:
+                role = getattr(msg, 'role', '')
+                content = getattr(msg, 'content', '')
+
+                # Skip tool_result messages - they're results of agent's tool calls,
+                # not actual user inputs. Displaying them as user messages pollutes
+                # the conversation view.
+                if role == 'user' and isinstance(content, list):
+                    # Check if this is a tool_result message (user providing tool output)
+                    has_tool_result = any(
+                        (getattr(c, 'type', None) == 'tool_result') or
+                        (isinstance(c, dict) and c.get('type') == 'tool_result')
+                        for c in content if content
+                    )
+                    if has_tool_result:
+                        continue  # Skip tool_result messages
+
+                content_text = self._flatten_message_content(content)
+                if not content_text:
+                    continue
+
+                if role == 'user':
+                    self.console.print(f"[dim]❯ {content_text}[/dim]")
+                elif role == 'assistant' and content_text:
+                    # Truncate long assistant messages for preview
+                    preview = content_text[:300] + '...' if len(content_text) > 300 else content_text
+                    self.console.print(f"[magenta]{preview}[/magenta]")
+            self.console.print("[dim]--- end of history ---\n[/dim]")
+
         while True:
             try:
                 self._refresh_completer()
@@ -2293,6 +2395,11 @@ class ClawcodexREPL:
                         user_input = input('❯ ')
                     else:
                         user_input = self.prompt_session.prompt('❯ ')
+
+                if user_input is None:
+                    # app.exit() was called (e.g., Ctrl+B)
+                    self.console.print("\n[blue]Goodbye![/blue]")
+                    break
 
                 if not user_input.strip():
                     continue
