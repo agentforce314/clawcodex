@@ -1,10 +1,12 @@
 {
   "archive_name": "buddy",
   "package_name": "buddy",
-  "module_count": 6,
+  "module_count": 8,
   "sample_files": [
     "buddy/CompanionSprite.tsx",
     "buddy/companion.ts",
+    "buddy/feature.ts",
+    "buddy/observer.ts",
     "buddy/prompt.ts",
     "buddy/sprites.ts",
     "buddy/types.ts",

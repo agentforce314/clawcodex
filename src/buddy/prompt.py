@@ -1,0 +1,137 @@
+"""Companion-intro attachment + system-prompt text.
+
+Port of ``typescript/src/buddy/prompt.ts``.
+
+Two functions:
+
+* :func:`companion_intro_text` — the system-prompt block (TS prompt.ts:7-13).
+* :func:`build_companion_intro_attachment` — guards + dedup + attachment
+  dict construction (TS prompt.ts:15-35). Signature matches TS exactly
+  (only ``messages`` argument; ``companion`` resolved internally) per
+  ``my-docs/get-parity-by-folder/buddy-gap-analysis.md`` §4.6 item 1.
+
+Plus :func:`format_companion_intro_attachments` — a SIBLING formatter
+to ``src.command_system.input_processing.format_at_mention_attachments``
+that renders the companion-intro into a ``<system-reminder>`` block.
+The two formatters are kept separate so neither's scope creeps into the
+other (gap-analysis §4.6 item 2).
+
+No null-rendering filter needed in Python: ``src/tui/widgets/
+transcript_view.py`` does not auto-walk ``AttachmentMessage`` instances;
+intro text reaches the model via prepend to ``user_input``, and the
+``AttachmentMessage`` marker is invisible to both renderer and API.
+See gap-analysis §3.6, §2.9.
+"""
+from __future__ import annotations
+
+from typing import Any, Iterable
+
+from src.buddy.companion import get_companion
+from src.buddy.feature import is_buddy_enabled
+from src.config import load_config
+from src.types.messages import AttachmentMessage
+
+
+def companion_intro_text(name: str, species: str) -> str:
+    """System-prompt block describing the companion to the model.
+
+    Mirrors TS ``prompt.ts:7-13`` byte-for-byte except for the leading
+    ``# Companion`` heading and the f-string interpolation.
+    """
+    return (
+        f"# Companion\n\n"
+        f"A small {species} named {name} sits beside the user's input box "
+        f"and occasionally comments in a speech bubble. You're not {name} — "
+        f"it's a separate watcher.\n\n"
+        f"When the user addresses {name} directly (by name), its bubble "
+        f"will answer. Your job in that moment is to stay out of the way: "
+        f"respond in ONE line or less, or just answer any part of the "
+        f"message meant for you. Don't explain that you're not {name} — "
+        f"they know. Don't narrate what {name} might say — the bubble "
+        f"handles that."
+    )
+
+
+def build_companion_intro_attachment(
+    messages: Iterable[Any] | None,
+) -> list[dict[str, Any]]:
+    """Build the companion-intro attachment, or ``[]``.
+
+    Returns ``[]`` when ANY of:
+
+    * buddy is disabled,
+    * no companion hatched (``get_companion()`` returns ``None``),
+    * companion is muted (``config['companion_muted']`` truthy),
+    * this companion has already been announced in this conversation
+      (dedup loop walks ``messages`` for an ``AttachmentMessage`` whose
+      ``attachments`` list contains a ``companion_intro`` matching the
+      current companion's name).
+
+    Otherwise returns a one-element list ``[{"kind": "companion_intro",
+    "name": ..., "species": ...}]``.
+
+    Dedup-loop shape mirrors TS ``prompt.ts:23-28`` adapted to Python's
+    plural ``msg.attachments`` list (TS has singular ``msg.attachment``).
+    See gap-analysis §2.8 for the key-rename (``"kind"`` vs TS's
+    ``"type"``) rationale.
+
+    Does NOT mutate state.
+    """
+    if not is_buddy_enabled():
+        return []
+    companion = get_companion()
+    if companion is None:
+        return []
+    if load_config().get('companion_muted', False):
+        return []
+
+    for msg in messages or []:
+        if not isinstance(msg, AttachmentMessage):
+            continue
+        for att in (msg.attachments or []):
+            if not isinstance(att, dict):
+                continue
+            if att.get('kind') == 'companion_intro' and att.get('name') == companion.name:
+                return []
+
+    return [{
+        'kind': 'companion_intro',
+        'name': companion.name,
+        'species': companion.species,
+    }]
+
+
+def format_companion_intro_attachments(
+    attachments: list[dict[str, Any]],
+) -> str:
+    """Render companion-intro attachments as concatenated <system-reminder>s.
+
+    Sibling formatter to
+    ``src.command_system.input_processing.format_at_mention_attachments``.
+    Filters for ``kind == "companion_intro"`` and ignores other kinds
+    (so callers can pass a heterogenous attachment list safely, though
+    in practice ``build_companion_intro_attachment`` returns only this
+    kind).
+
+    Concatenation order at the REPL caller per gap-analysis §4.6 item 2:
+    at-mention text FIRST, then this formatter's output appended.
+    """
+    blocks: list[str] = []
+    for att in attachments:
+        if not isinstance(att, dict):
+            continue
+        if att.get('kind') != 'companion_intro':
+            continue
+        text = companion_intro_text(
+            att.get('name', ''),
+            att.get('species', ''),
+        )
+        blocks.append(f"<system-reminder>\n{text}\n</system-reminder>")
+    return '\n\n'.join(blocks)
+
+
+__all__ = [
+    'build_companion_intro_attachment',
+    'companion_intro_text',
+    'format_companion_intro_attachments',
+]

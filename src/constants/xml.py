@@ -26,6 +26,20 @@ WORKTREE_PATH_TAG: Final[str] = "worktree-path"
 WORKTREE_BRANCH_TAG: Final[str] = "worktree-branch"
 
 
+# Common argument patterns for slash commands that request help.
+# Mirrors ``typescript/src/constants/xml.ts:69`` verbatim.
+COMMON_HELP_ARGS: Final[tuple[str, ...]] = ('help', '-h', '--help')
+
+# Common argument patterns for slash commands that request current state/info.
+# Mirrors ``typescript/src/constants/xml.ts:72-86`` verbatim. Notably ``?``
+# lives here, NOT in ``COMMON_HELP_ARGS`` — so ``/cmd ?`` means
+# "show status", not "help".
+COMMON_INFO_ARGS: Final[tuple[str, ...]] = (
+    'list', 'show', 'display', 'current', 'view', 'get', 'check',
+    'describe', 'print', 'version', 'about', 'status', '?',
+)
+
+
 __all__ = [
     "TASK_NOTIFICATION_TAG",
     "TASK_ID_TAG",
@@ -41,4 +55,6 @@ __all__ = [
     "WORKTREE_TAG",
     "WORKTREE_PATH_TAG",
     "WORKTREE_BRANCH_TAG",
+    "COMMON_HELP_ARGS",
+    "COMMON_INFO_ARGS",
 ]
