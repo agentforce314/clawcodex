@@ -48,7 +48,7 @@ def add_clarify_parser(subparsers: argparse._SubParsersAction) -> None:
 
 def run(args: argparse.Namespace) -> int:
     """Execute the orchestrator clarify command."""
-    from orchestrator.clarification_queue import (
+    from extensions.orchestrator.clarification_queue import (
         ClarificationQueue,
         ClarificationStatus,
         DEFAULT_QUEUE_PATH,

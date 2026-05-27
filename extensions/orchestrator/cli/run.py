@@ -48,8 +48,8 @@ def add_run_parser(subparsers: argparse._SubParsersAction) -> None:
 
 def run(args: argparse.Namespace) -> int:
     """Execute the orchestrator run command."""
-    from orchestrator.tracker import TrackerConfigError, validate_tracker_config
-    from orchestrator.workflow import WorkflowLoader, WorkflowParseError
+    from extensions.orchestrator.tracker import TrackerConfigError, validate_tracker_config
+    from extensions.orchestrator.workflow import WorkflowLoader, WorkflowParseError
 
     workflow_path = args.workflow
     if not workflow_path:
@@ -77,7 +77,7 @@ def run(args: argparse.Namespace) -> int:
         stream=sys.stderr,
     )
 
-    from api.orchestration import OrchestrationSubsystem
+    from extensions.api.orchestration import OrchestrationSubsystem
 
     subsystem = OrchestrationSubsystem(config)
 

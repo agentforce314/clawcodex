@@ -34,7 +34,10 @@ class WorkflowLoader:
             raise WorkflowParseError(f"Workflow file not found: {path}")
 
         content = path.read_text(encoding="utf-8")
-        return WorkflowLoader.parse(content)
+        config, prompt = WorkflowLoader.parse(content)
+        # Attach source path for orchestrator metadata
+        config._source_path = str(path)
+        return config, prompt
 
     @staticmethod
     def parse(content: str) -> tuple[WorkflowConfig, str]:

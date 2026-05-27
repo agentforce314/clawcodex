@@ -30,12 +30,14 @@ def add_status_parser(subparsers: argparse._SubParsersAction) -> None:
 
 def run(args: argparse.Namespace) -> int:
     """Execute the orchestrator status command."""
-    from orchestrator.issue_registry import IssueRegistry
+    from extensions.orchestrator.issue_registry import IssueRegistry
+    from extensions.orchestrator.workspace_locator import get_registry_path
 
-    # Try to read the registry from the default workspace location
-    # Note: In a live orchestrator scenario, this would connect to the
-    # running orchestrator's status dashboard. Here we show registry state.
-    registry_path = _resolve_registry_path()
+    # Try to read the registry from the resolved workspace location
+    registry_path = get_registry_path(
+        workspace_arg=args.workspace,
+        workflow_path=args.workflow,
+    )
     if registry_path and registry_path.exists():
         registry = IssueRegistry(registry_path)
         _print_summary(registry)
@@ -44,11 +46,13 @@ def run(args: argparse.Namespace) -> int:
     else:
         print("No orchestrator registry found. Is the orchestrator running?")
         print("Hint: Run 'clawcodex orchestrator run --workflow WORKFLOW.md' first.")
+        # List available projects
+        _print_available_projects()
     return 0
 
 
 def _print_summary(registry: "IssueRegistry") -> None:
-    from orchestrator.issue_registry import IssueStatus
+    from extensions.orchestrator.issue_registry import IssueStatus
 
     counts = {"PENDING": 0, "SYNCED": 0, "COMPLETED": 0, "FAILED": 0, "ABANDONED": 0}
     for record in registry._records.values():
@@ -63,20 +67,24 @@ def _print_summary(registry: "IssueRegistry") -> None:
     print(f"  ABANDONED : {counts.get('ABANDONED', 0)}")
 
 
-def _resolve_registry_path():
-    """Resolve the issue registry path from environment or default."""
-    import os
-    from pathlib import Path
+def _print_available_projects() -> None:
+    """Print available orchestrator projects from metadata."""
+    from extensions.orchestrator.workspace_locator import list_orchestrator_projects
 
-    workspace_root = os.environ.get("CLAWCODEX_WORKSPACE_ROOT")
-    if workspace_root:
-        return Path(workspace_root) / ".clawcodex_issue_registry.json"
+    projects = list_orchestrator_projects()
+    if not projects:
+        print("\n  (no orchestrator projects found)")
+        return
 
-    # Try common locations
-    for candidate in [
-        Path.cwd() / ".clawcodex_issue_registry.json",
-        Path.home() / ".clawcodex" / "workspace" / ".clawcodex_issue_registry.json",
-    ]:
-        if candidate.exists():
-            return candidate
-    return None
+    print("\n  Available projects:")
+    for p in projects:
+        slug = p.get("project_slug", "unknown")
+        ws = p.get("workspace_root", "unknown")
+        started = p.get("started_at", 0)
+        if started:
+            import time
+            age = int(time.time() - started)
+            age_str = f"{age}s ago"
+        else:
+            age_str = ""
+        print(f"    {slug}: {ws} ({age_str})")

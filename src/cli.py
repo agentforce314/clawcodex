@@ -84,6 +84,9 @@ def main():
         if token == 'doctor':
             from src.entrypoints.doctor import run_doctor
             return run_doctor()
+        if token == 'orchestrator':
+            from src.entrypoints.orchestrator import run_orchestrator_subcommand
+            return run_orchestrator_subcommand(rest)
 
     parser = _build_parser()
     args = parser.parse_args(argv)

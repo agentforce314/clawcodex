@@ -72,11 +72,20 @@ class Orchestrator:
         self._semaphore = asyncio.Semaphore(workflow.agent.max_concurrent_agents)
         self._shutdown_event = asyncio.Event()
         self._tasks: set[asyncio.Task] = set()
+        # Store workflow path for metadata
+        self._workflow_path: str | None = getattr(workflow, "_source_path", None)
         # Workspace root for control command polling
         self._workspace_root = workspace.config.root
         # Persistent issue→commit→PR mapping (persists across restarts)
         registry_path = workspace.config.root / ".clawcodex_issue_registry.json"
         self._registry = IssueRegistry(registry_path)
+
+        # Write orchestrator metadata for CLI discovery
+        from .workspace_locator import write_orchestrator_metadata
+        write_orchestrator_metadata(
+            workspace_root=workspace.config.root,
+            workflow_path=self._workflow_path,
+        )
 
         # Clarification handling (three-channel flow)
         clarification_queue_path = workspace.config.root / ".clawcodex_clarification_queue.json"
@@ -124,8 +133,11 @@ class Orchestrator:
         await self._cancel_all_tasks()
 
     async def shutdown(self) -> None:
-        """Signal graceful shutdown."""
+        """Signal graceful shutdown and clean up metadata."""
         self._shutdown_event.set()
+        # Clean up orchestrator metadata
+        from .workspace_locator import clear_orchestrator_metadata
+        clear_orchestrator_metadata(self._workspace_root)
 
     async def _poll_and_dispatch(self) -> None:
         """Fetch candidates, respect concurrency limit, launch runs."""

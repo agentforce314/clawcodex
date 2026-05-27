@@ -45,11 +45,20 @@ def add_issues_parser(subparsers: argparse._SubParsersAction) -> None:
 
 def run(args: argparse.Namespace) -> int:
     """Execute the orchestrator issues command."""
-    from orchestrator.issue_registry import IssueRegistry
+    from extensions.orchestrator.issue_registry import IssueRegistry
+    from extensions.orchestrator.workspace_locator import get_registry_path
 
-    registry_path = _resolve_registry_path()
+    registry_path = get_registry_path(
+        workspace_arg=args.workspace,
+        workflow_path=args.workflow,
+    )
     if not registry_path or not registry_path.exists():
-        print("No orchestrator registry found. Is the orchestrator running?", file=sys.stderr)
+        ws_info = ""
+        if args.workspace:
+            ws_info = f" (workspace: {args.workspace})"
+        elif args.workflow:
+            ws_info = f" (workflow: {args.workflow})"
+        print(f"No orchestrator registry found{ws_info}. Is the orchestrator running?", file=sys.stderr)
         return 1
 
     registry = IssueRegistry(registry_path)
@@ -64,7 +73,7 @@ def run(args: argparse.Namespace) -> int:
 
 
 def _run_list(registry, args) -> int:
-    from orchestrator.issue_registry import IssueStatus
+    from extensions.orchestrator.issue_registry import IssueStatus
 
     if not registry._records:
         print("No issues in registry.")
