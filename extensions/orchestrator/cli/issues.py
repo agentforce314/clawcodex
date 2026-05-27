@@ -124,6 +124,13 @@ def _print_available_projects() -> None:
         print(f"    {slug}: {ws} ({age_str})", file=sys.stderr)
 
 
+def _get_status_str(status) -> str:
+    """Get string value from status field (handles both str and IssueStatus enum)."""
+    if hasattr(status, 'value'):
+        return status.value
+    return str(status)
+
+
 def _run_list(registry, args) -> int:
     from extensions.orchestrator.issue_registry import IssueStatus
 
@@ -134,12 +141,13 @@ def _run_list(registry, args) -> int:
     print(f"{'Issue ID':<30} {'Identifier':<25} {'Status':<12} {'Branch'}")
     print("-" * 85)
     for record in registry._records.values():
-        if args.status and record.status.value != args.status:
+        status_str = _get_status_str(record.status)
+        if args.status and status_str != args.status:
             continue
         print(
             f"{record.issue_id:<30} "
             f"{record.issue_identifier or '':<25} "
-            f"{record.status.value:<12} "
+            f"{status_str:<12} "
             f"{record.branch_name or '-'}"
         )
     return 0
@@ -152,7 +160,7 @@ def _run_show(registry, issue_id: str) -> int:
         return 1
 
     print(f"Issue: {record.issue_identifier or record.issue_id}")
-    print(f"  Status     : {record.status.value}")
+    print(f"  Status     : {_get_status_str(record.status)}")
     print(f"  Branch     : {record.branch_name or '-'}")
     print(f"  Commit SHA : {record.commit_sha or '-'}")
     print(f"  PR Number  : {record.pr_number or '-'}")

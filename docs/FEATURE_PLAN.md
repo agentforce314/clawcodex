@@ -2,8 +2,8 @@
 
 > 文档路径: `docs/FEATURE_PLAN.md`
 > 基于: `clawcodex-opensource-replacement-analysis-v2.md`, `clawcodex_vs_ccb_analysis-v3.md`, `INTEGRATION.md`, `TEAM_MEMBERSHIP.md`
-> 版本: v1.5
-> 更新日期: 2026-05-25
+> 版本: v1.6
+> 更新日期: 2026-05-27
 > 上游同步: 68dc3c5 (Phase 11 bridge complete)
 
 ---
@@ -113,6 +113,9 @@ src/
 | ToolSearch | `tool_system/tools/tool_search.py` | ✅ 完成 |
 | LSP | `tool_system/tools/lsp.py` | ✅ 完成 |
 | Worktree | `tool_system/tools/worktree.py` | ✅ 完成 |
+| TaskInspect | `tool_system/tools/task_inspect.py` | ✅ 完成 | Manager Agent 查询 Worker |
+| TaskDirectives | `tool_system/tools/task_directives.py` | ✅ 完成 | Manager Agent 指令 Worker |
+| ProgressReport | `tool_system/tools/progress_report.py` | ✅ 完成 | Agent 阶段性进度汇报 |
 
 ### 2.4 开源替代组件（已完成）
 
@@ -3790,6 +3793,410 @@ def use_away_summary(messages, set_messages, is_loading):
 ##### 外部依赖
 
 无新增外部依赖，复用现有基础设施。
+
+---
+
+### 2.12 Ctrl+B Agent 后台持续运行 + `--resume` 恢复会话（Fork-Continue 模式）
+
+**状态**: 🔄 设计完成，待实现
+**目标**: Ctrl+B 后 Agent 在子进程中继续运行，用户可通过 `--resume` 重新连接并实时查看 Agent 进度
+
+#### 问题背景
+
+当前 Ctrl+B 的实际行为：
+
+1. TUI 按 Ctrl+B → `action_agent_background()` 调用 `self.exit(result=("__FULL_EXIT__", sid))`
+2. 整个 ClawCodex 进程退出，agent worker 线程（daemon thread）随之被杀死
+3. `background_signal` 被设置但无人监听（`run_with_background_escape` 未在 TUI agent loop 路径中被调用）
+4. `--resume` 仅恢复已保存的 JSONL 快照，不会连接到任何活跃的后台 agent
+
+**核心缺陷**：Ctrl+B 只是"保存退出"，Agent 并未在后台继续运行。
+
+#### 设计方案：Fork-Continue 模式
+
+采用 **父进程退出 + 子进程继续运行 agent** 的模式，而非"进程内线程分离"：
+
+- agent 在子进程中拥有完整的独立事件循环，不受父进程退出影响
+- 子进程通过已有的 `SessionStorage` JSONL 文件持续写入 agent 输出
+- `--resume` 通过 `TailFollower` 读取 JSONL 增量，实时显示 agent 进度
+- 子进程自然终止后（agent 完成），JSONL 不再增长，resume 端能检测到
+
+#### 数据流
+
+```
+                    ┌───────────────────────────────────┐
+  Ctrl+B 触发 ───→ │  action_agent_background()        │
+                    │  1. session.save()                │
+                    │  2. 写入 .background-runner.json   │
+                    │  3. os.fork()                      │
+                    │     ├─ 父进程: exit → shell        │
+                    │     └─ 子进程: 继续运行 agent loop │
+                    │         → 持续写入 JSONL transcript│
+                    └───────────────────────────────────┘
+
+                    ┌───────────────────────────────────┐
+  --resume ────→   │  run_tui()                         │
+                    │  1. Session.resume_with_tail()     │
+                    │  2. TailFollower 监听 JSONL 增量   │
+                    │  3. AgentBridge._run_tail_follower │
+                    │     → 实时渲染后台 agent 输出      │
+                    │  4. agent 完成后自动检测           │
+                    └───────────────────────────────────┘
+```
+
+#### 新增模块：`src/agent/background_runner.py`
+
+管理后台 agent 子进程的完整生命周期：
+
+```python
+"""Background agent runner — manages the forked child process that
+continues the agent loop after Ctrl+B.
+
+Lifecycle:
+  1. Parent: ``launch_background_runner()`` forks a child that runs
+     the agent loop headlessly, writing output to the session's
+     JSONL transcript.
+  2. Child:  ``_run_agent_headless()`` drives the agent loop with
+     on_message/write_message callbacks (no TUI, no streaming).
+  3. Resume: ``--resume`` attaches a TailFollower to the JSONL file
+     for real-time output. When the child finishes, the JSONL stops
+     growing and a completion marker is appended.
+  4. Cleanup: ``cleanup_background_runner()`` removes the marker
+     file after successful resume.
+
+State file: ``~/.clawcodex/sessions/{session_id}/.background-runner.json``
+  {
+    "pid": 12345,
+    "session_id": "abc123",
+    "started_at": "2025-01-01T00:00:00",
+    "status": "running" | "completed" | "failed"
+  }
+"""
+```
+
+##### 关键函数
+
+| 函数 | 说明 |
+|------|------|
+| `launch_background_runner(session, provider, tool_registry, tool_context, max_turns)` | Fork 子进程，在子进程中运行 headless agent loop |
+| `_run_agent_headless(session, provider, tool_registry, tool_context, max_turns)` | 子进程入口：构建独立 asyncio loop，调用 `run_query_as_agent_loop`，通过 `SessionStorage.write_message` 持续写入输出 |
+| `get_background_runner_status(session_id)` | 读取 `.background-runner.json`，检查子进程是否存活 |
+| `wait_for_background_runner(session_id, timeout=None)` | 等待子进程完成（可选，用于同步场景） |
+| `cleanup_background_runner(session_id)` | 清理 marker 文件 |
+
+##### Fork 实现细节
+
+```python
+def launch_background_runner(session, provider, tool_registry, tool_context, max_turns):
+    session.save()  # 确保 JSONL transcript 存在
+
+    pid = os.fork()
+    if pid > 0:
+        # 父进程：记录子进程信息，立即返回
+        _write_runner_marker(session.session_id, pid)
+        return pid
+    else:
+        # 子进程：脱离终端，运行 headless agent
+        os.setsid()  # 新会话组，不受父进程终端影响
+        # 关闭 Textual 的文件描述符（stdin/stdout/stderr 重定向）
+        sys.stdin.close()
+        # 重定向 stdout/stderr 到日志文件
+        log_path = _runner_log_path(session.session_id)
+        sys.stdout = open(log_path, 'a')
+        sys.stderr = open(log_path, 'a')
+        # 运行 agent loop
+        _run_agent_headless(session, provider, tool_registry, tool_context, max_turns)
+        os._exit(0)
+```
+
+##### Headless Agent Loop
+
+```python
+def _run_agent_headless(session, provider, tool_registry, tool_context, max_turns):
+    """子进程入口：驱动 agent loop，将输出写入 JSONL transcript。"""
+    import asyncio
+    from src.query.agent_loop_compat import run_query_as_agent_loop, build_effective_system_prompt
+    from src.services.session_storage import SessionStorage
+    from src.outputStyles import resolve_output_style
+
+    storage = SessionStorage(session_id=session.session_id)
+
+    style_prompt = resolve_output_style(
+        getattr(tool_context, "output_style_name", None),
+        getattr(tool_context, "output_style_dir", None),
+    ).prompt
+    effective_system_prompt = build_effective_system_prompt(style_prompt, tool_context)
+
+    # on_message: 将每条消息写入 JSONL transcript
+    def _on_message(msg):
+        try:
+            storage.write_message(msg)
+            storage.flush()
+        except Exception:
+            pass
+
+    # 不需要 on_text_chunk（headless 不需要实时流式渲染）
+    # 权限处理：后台模式自动批准所有权限（用户已在 Ctrl+B 前确认）
+    tool_context.permission_context.mode = "bypassPermissions"
+
+    loop = asyncio.new_event_loop()
+    try:
+        result = loop.run_until_complete(run_query_as_agent_loop(
+            initial_messages=list(session.conversation.messages),
+            provider=provider,
+            tool_registry=tool_registry,
+            tool_context=tool_context,
+            system_prompt=effective_system_prompt,
+            max_turns=max_turns,
+            on_message=_on_message,
+        ))
+        _update_runner_status(session.session_id, "completed")
+    except Exception as e:
+        _update_runner_status(session.session_id, "failed", error=str(e))
+    finally:
+        loop.close()
+        # 写入完成标记，resume 端可检测
+        storage.write_raw({"role": "system", "content": "__background_complete__"})
+        storage.flush()
+```
+
+#### 现有模块修改
+
+##### 1. `src/tui/app.py` — `action_agent_background()` 重构
+
+```python
+def action_agent_background(self) -> None:
+    """Handle Ctrl+B — fork agent into background, exit to terminal."""
+    from src.agent.background_runner import launch_background_runner
+
+    # 仅在 agent 正忙时有意义（空闲时只是保存退出）
+    is_busy = self._agent_bridge.busy
+
+    try:
+        self.session.save()
+    except Exception:
+        pass
+
+    if is_busy:
+        # 取消前台 agent run（将在子进程中重新运行）
+        self._agent_bridge.cancel(reason="background_promotion")
+        # 等待 worker 停止
+        import time; time.sleep(0.1)
+
+        # Fork 后台 runner
+        try:
+            pid = launch_background_runner(
+                session=self.session,
+                provider=self.provider,
+                tool_registry=self.tool_registry,
+                tool_context=self.tool_context,
+                max_turns=self.max_turns,
+            )
+        except Exception:
+            pid = None
+
+    sid = getattr(self.session, "session_id", None) or ""
+    # 使用新标记区分"有后台 agent"和"仅保存退出"
+    self.exit(result=("__BACKGROUND_EXIT__", sid, bool(is_busy)))
+```
+
+##### 2. `src/tui/agent_bridge.py` — TailFollower 完成检测
+
+在 `_run_tail_follower` 的 `_follow()` 异步迭代中添加完成标记检测：
+
+```python
+async for msg_dict in follower:
+    if msg_dict is None:
+        continue
+
+    # 检测后台 agent 完成标记
+    if (msg_dict.get("role") == "system" and
+        msg_dict.get("content") == "__background_complete__"):
+        self._post(AgentRunFinished(
+            response_text="",
+            num_turns=0,
+            usage=None,
+            error=None,
+        ))
+        break
+
+    # 现有的消息分发逻辑（role-based dispatch）...
+```
+
+##### 3. `src/entrypoints/tui.py` — 退出处理增强
+
+```python
+# run_tui() 末尾
+if isinstance(result, tuple) and result[0] in ("__FULL_EXIT__", "__BACKGROUND_EXIT__"):
+    session_id = result[1] if len(result) > 1 else ""
+    has_bg_agent = result[2] if len(result) > 2 else False
+    from rich.console import Console as RichConsole
+    rc = RichConsole()
+    if session_id:
+        if has_bg_agent:
+            rc.print(
+                f"\n  [bold green]Agent is running in background.[/bold green]\n"
+                f"  Resume with:\n"
+                f"    [cyan]clawcodex --tui --resume {session_id}[/cyan]"
+            )
+        else:
+            rc.print(
+                f"\n  [bold yellow]Session {session_id} saved.[/bold yellow] Resume with:\n"
+                f"    [cyan]clawcodex --tui --resume {session_id}[/cyan]"
+            )
+```
+
+##### 4. `src/repl/core.py` — `_handoff_to_textual_tui` 退出处理同步更新
+
+```python
+# _handoff_to_textual_tui() 中 Ctrl+B 处理分支
+if isinstance(result, tuple) and result[0] == "__BACKGROUND_EXIT__":
+    session_id = result[1] if len(result) > 1 else ""
+    has_bg_agent = result[2] if len(result) > 2 else False
+    if session_id and has_bg_agent:
+        self.console.print(
+            f"\n  [bold green]Agent is running in background.[/bold green] Resume with:\n"
+            f"    [cyan]clawcodex --tui --resume {session_id}[/cyan]"
+        )
+    elif session_id:
+        self.console.print(
+            f"\n  [bold yellow]Session {session_id} saved.[/bold yellow] Resume with:\n"
+            f"    [cyan]clawcodex --tui --resume {session_id}[/cyan]"
+        )
+    self.console.print("[dim]Exiting clawcodex...[/dim]")
+    sys.exit(0)
+
+# 向下兼容旧的 __FULL_EXIT__ 标记
+elif isinstance(result, tuple) and result[0] == "__FULL_EXIT__":
+    # ... 保持原有逻辑不变
+```
+
+##### 5. `src/agent/session.py` — `resume_with_tail()` 增强
+
+```python
+@classmethod
+def resume_with_tail(cls, session_id: str) -> tuple[Optional['Session'], Any | None]:
+    """Resume a session and optionally attach a TailFollower.
+
+    如果有后台 runner 正在运行，必须附加 TailFollower 以便
+    实时显示后台 agent 的增量输出。
+    """
+    session = cls.resume(session_id)
+    if session is None:
+        return None, None
+
+    # 检查是否有后台 runner 正在运行
+    from src.agent.background_runner import get_background_runner_status
+    bg_status = get_background_runner_status(session_id)
+    logger.info(
+        "resume_with_tail: session=%s, bg_status=%s",
+        session_id, bg_status,
+    )
+
+    tail_follower = None
+    try:
+        from src.services.session_storage import SessionStorage
+        from src.services.tail_follower import TailFollower
+
+        storage = SessionStorage(session_id=session_id)
+        transcript_path = storage._transcript_path
+        if transcript_path.exists():
+            current_size = transcript_path.stat().st_size
+            tail_follower = TailFollower(str(transcript_path))
+            tail_follower._offset = current_size
+    except Exception:
+        tail_follower = None
+
+    return session, tail_follower
+```
+
+##### 6. `src/agent/background_state.py` — 文档注释更新
+
+原 `background_state.py` 中的 `background_signal` / `is_backgrounded` 机制为上游
+TypeScript 的 `Promise.race` 竞速模式翻译，但在 TUI agent loop 路径中未被调用。
+Fork-Continue 模式取代了原有的信号竞态设计：
+
+```python
+"""Process-level background signal manager (singleton).
+
+NOTE (Fork-Continue redesign): The signal/flag pattern defined here
+mirrors the TS ``Promise.race`` pattern from ``foreground_promotion.py``
+but was never wired into the TUI agent loop path.  The Ctrl+B feature
+now uses the Fork-Continue model (``src/agent/background_runner.py``)
+where the parent process exits and a forked child continues the agent.
+
+This module is retained for:
+  - backward compatibility with any code that reads ``is_backgrounded()``
+  - potential future use by the REPL (non-TUI) path
+  - test coverage of the ``run_with_background_escape`` race logic
+"""
+```
+
+#### 文件变更清单
+
+| 文件 | 变更类型 | 说明 |
+|------|----------|------|
+| `src/agent/background_runner.py` | **新增** | 后台 runner 核心模块（fork + headless loop + marker 管理） |
+| `src/tui/app.py` | 修改 | `action_agent_background()` 改为调用 `launch_background_runner()` + 新退出标记 `__BACKGROUND_EXIT__` |
+| `src/tui/agent_bridge.py` | 修改 | `_run_tail_follower` 添加 `__background_complete__` 完成标记检测 |
+| `src/entrypoints/tui.py` | 修改 | 退出处理区分"有/无后台 agent"；resume 时检查 bg runner 状态 |
+| `src/repl/core.py` | 修改 | `_handoff_to_textual_tui` 退出处理同步更新 |
+| `src/agent/session.py` | 微调 | `resume_with_tail()` 添加 bg runner 状态检查日志 |
+| `src/agent/background_state.py` | 微调 | 更新文档注释，说明 Fork-Continue 模式替代了原始信号竞态设计 |
+
+#### 并发安全保证
+
+| 场景 | 保证 |
+|------|------|
+| JSONL 写入竞态 | `SessionStorage.write_message` 已有 atomic write（`_atomic_write`）；父进程退出后子进程独占写入，不存在并发写入 |
+| Fork 时序 | fork 前先 `session.save()` 确保状态落盘；fork 后父进程立即退出，子进程从头开始 `run_query_as_agent_loop`，不依赖父进程的任何运行时状态 |
+| 权限处理 | 后台模式使用 `bypassPermissions`，因为用户不在场无法交互式授权。Ctrl+B 本身就是用户的显式授权动作 |
+| 僵尸进程 | 子进程 `os.setsid()` 后独立于父进程会话组；若子进程崩溃，marker 文件记录 `failed` 状态，resume 时可检测并提示 |
+
+#### 边界情况处理
+
+| 场景 | 处理方式 |
+|------|----------|
+| Ctrl+B 时 agent 空闲 | 仅保存会话 + 退出，无 fork（与当前行为一致） |
+| Ctrl+B 时 agent 正在请求权限 | 取消当前 run，fork 后重新运行（headless bypass） |
+| Resume 时后台 agent 已完成 | TailFollower 读到 `__background_complete__` 后停止，正常进入交互模式 |
+| Resume 时后台 agent 已崩溃 | marker 文件为 `failed`，提示用户 "agent 遇到错误" 并显示日志路径 |
+| 多次 Ctrl+B | 同一 session 只有一个 runner；检查 marker 文件，若已有 running 则提示 |
+| `os.fork()` 不可用（Windows） | 回退到当前行为（保存退出，不 fork），打印提示 |
+
+#### Windows 兼容性设计
+
+`os.fork()` 在 Windows 上不可用。设计方案提供降级路径：
+
+```python
+def launch_background_runner(...):
+    if not hasattr(os, 'fork'):
+        # Windows: 使用 subprocess 启动 headless runner
+        import subprocess
+        subprocess.Popen(
+            [sys.executable, '-m', 'src.agent.background_runner',
+             '--session-id', session.session_id,
+             '--max-turns', str(max_turns)],
+            stdout=open(log_path, 'a'),
+            stderr=subprocess.STDOUT,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,  # Windows
+        )
+        return  # 父进程继续退出流程
+```
+
+这需要一个 `__main__.py` 入口点，但架构上与 fork 模式一致：子进程独立运行 headless agent loop，通过 JSONL 通信。
+
+#### 实现优先级与里程碑
+
+| 里程碑 | 内容 | 依赖 |
+|--------|------|------|
+| M1 | `background_runner.py` 核心模块 + fork 逻辑 | 无 |
+| M2 | `action_agent_background()` 重构 + 退出标记 | M1 |
+| M3 | TailFollower 完成检测 + `__background_complete__` | M1 |
+| M4 | `tui.py` / `repl/core.py` 退出处理增强 | M2 |
+| M5 | `resume_with_tail()` bg runner 状态集成 | M1, M3 |
+| M6 | Windows subprocess 降级路径 | M1 |
+| M7 | 端到端测试（Ctrl+B → resume → 验证 agent 输出完整） | M1-M5 |
 
 ---
 

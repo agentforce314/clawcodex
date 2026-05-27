@@ -29,7 +29,7 @@ def add_run_parser(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument(
         "--workflow",
         type=str,
-        required=True,
+        required=False,
         metavar="PATH",
         help="Path to WORKFLOW.md file",
     )
@@ -46,12 +46,13 @@ def add_run_parser(subparsers: argparse._SubParsersAction) -> None:
     )
 
 
-def run(args: argparse.Namespace) -> int:
+def run(args: argparse.Namespace, workflow_path: str | None = None) -> int:
     """Execute the orchestrator run command."""
     from extensions.orchestrator.tracker import TrackerConfigError, validate_tracker_config
     from extensions.orchestrator.workflow import WorkflowLoader, WorkflowParseError
 
-    workflow_path = args.workflow
+    # Allow workflow_path to be passed from global --workflow option
+    workflow_path = workflow_path or args.workflow
     if not workflow_path:
         print("error: --workflow is required", file=sys.stderr)
         return 2

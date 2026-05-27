@@ -2,8 +2,8 @@
 
 > 文档路径: `docs/PROGRESS.md`
 > 基于: `docs/open-source-replacement-progress.md`, `docs/FEATURE_PLAN.md`
-> 版本: v1.5
-> 更新日期: 2026-05-25
+> 版本: v1.6
+> 更新日期: 2026-05-27
 > 上游同步: 68dc3c5 (Phase 11 bridge complete)
 
 ---
@@ -59,6 +59,115 @@
 | F-25 | Advisor Token 计数与状态显示 | P2 | ✅ 完成 | max_history 100→2000，Provider token 追踪增强，client-side advisor mode |
 | F-26 | Away-Summary（离开摘要） | P2 | 📋 规划中 | ※ 标记 + 浅灰色，终端失焦 5 分钟自动触发，支持 /recap 手动命令 |
 | F-27 | TUI 响应性修复（LLM 超时后 Ctrl+C/ESC 无响应） | P1 | ✅ 完成 | StreamWatchdog 超时时触发 AbortSignal；Ctrl+C 先尝试取消 agent 再退出 |
+| F-28 | Ctrl+B Agent 后台持续运行 + `--resume` 恢复会话 | P1 | 🔄 设计完成 | Fork-Continue 模式：Ctrl+B 后 fork 子进程继续运行 agent，--resume 通过 TailFollower 实时显示增量输出 |
+| F-29 | TaskInspect/TaskDirectives 工具注册 | P2 | ✅ 完成 | 将 TaskInspectTool 和 TaskDirectivesTool 注册到 ALL_STATIC_TOOLS，实现 Manager Agent 查询/指令 Worker |
+| F-30 | ProgressReportTool 工具注册 | P2 | ✅ 完成 | 将 ProgressReportTool 注册到 ALL_STATIC_TOOLS，Agent 可调用阶段性进度汇报 |
+| F-31 | TUI 权限模式选择器 | P1 | ✅ 完成 | 模态对话框支持 5 种权限模式切换 (default/acceptEdits/plan/bypassPermissions/dontAsk) |
+| F-32 | 会话恢复浏览器 (Resume Conversation) | P1 | ✅ 完成 | 模糊搜索、实时过滤、会话元数据展示，支持 /resume 命令和 --tui --resume 启动选项 |
+
+---
+
+## F-29: TaskInspect/TaskDirectives 工具注册
+
+**状态**: ✅ 完成
+**优先级**: P2
+**提交**: `17e6d5b` feat(tui): 添加权限模式选择器和思考块功能
+
+### 问题
+
+`TaskInspectTool` 和 `TaskDirectivesTool` 代码文件存在于 `src/tool_system/tools/` 目录，但未注册到 `ALL_STATIC_TOOLS`，导致 AI Agent 无法调用。
+
+### 修复
+
+在 `src/tool_system/tools/__init__.py` 中添加：
+- 导入: `from .task_inspect import TaskInspectTool`, `from .task_directives import TaskDirectivesTool`
+- 添加到 `ALL_STATIC_TOOLS` 列表
+- 添加到 `__all__` 导出列表
+
+### 验证
+
+```
+$ python3 -m src.cli --dangerously-skip-permissions -p "Use TaskInspect to query task status"
+There are no running worker agents at the moment. The task list is empty.
+```
+
+---
+
+## F-30: ProgressReportTool 工具注册
+
+**状态**: ✅ 完成
+**优先级**: P2
+**提交**: `17e6d5b` feat(tui): 添加权限模式选择器和思考块功能
+
+### 问题
+
+`ProgressReportTool` 代码文件存在于 `src/tool_system/tools/progress_report.py`，但未注册到 `ALL_STATIC_TOOLS`。
+
+### 修复
+
+在 `src/tool_system/tools/__init__.py` 中添加：
+- 导入: `from .progress_report import ProgressReportTool`
+- 添加到 `ALL_STATIC_TOOLS` 列表
+- 添加到 `__all__` 导出列表
+
+### 验证
+
+```
+$ python3 -m src.cli --dangerously-skip-permissions -p "Use ProgressReport to report progress"
+（AI 能够识别并调用该工具，需要 taskId 和 stage 参数）
+```
+
+---
+
+## F-31: TUI 权限模式选择器
+
+**状态**: ✅ 完成
+**优先级**: P1
+**提交**: `17e6d5b` feat(tui): 添加权限模式选择器和思考块功能
+
+### 功能
+
+通过 `PermissionModePickerScreen` 模态对话框支持 5 种权限模式：
+- `default` - 每个工具运行前询问
+- `acceptEdits` - 自动批准文件编辑操作
+- `plan` - Plan mode - 自动批准只读操作
+- `bypassPermissions` - 运行所有工具不提示
+- `dontAsk` - 从不提示，自动批准所有
+
+### 组件位置
+
+```
+src/tui/screens/permission_mode_picker.py
+```
+
+---
+
+## F-32: 会话恢复浏览器 (Resume Conversation)
+
+**状态**: ✅ 完成
+**优先级**: P1
+**提交**: `740a2e8` feat(tui): 添加会话恢复浏览器和相关功能
+
+### 功能
+
+- 模糊搜索 (fuzzy search)：支持输入过滤历史会话
+- 实时计数显示：显示 "X / Y sessions" 过滤结果
+- 会话元数据展示：标题、模型、消息数、时间戳
+
+### 使用方式
+
+| 方式 | 说明 |
+|------|------|
+| `clawcodex --tui --resume` | 启动时直接进入会话选择 |
+| `/resume` 命令 | 从 REPL 呼出会话选择器 |
+| Ctrl+B 后台后 | 用户选择会话重新附着 |
+
+### 组件位置
+
+```
+src/tui/screens/resume_conversation.py
+src/repl/live_status.py  # 新增 Live Status 实时状态组件
+```
 
 ---
 
@@ -2267,6 +2376,167 @@ class SkillRegistryExt:
 
 ---
 
-*文档更新时间: 2026-05-24*
+## F-28: Ctrl+B Agent 后台持续运行 + `--resume` 恢复会话
+
+**状态**: 🔄 设计完成，待实现
+**优先级**: P1
+**目标**: Ctrl+B 后 Agent 在子进程中继续运行，用户可通过 `--resume` 重新连接并实时查看 Agent 进度
+
+### 问题分析
+
+当前 Ctrl+B 的实际行为是"保存退出"而非"后台运行"：
+
+1. `action_agent_background()` 调用 `self.exit(result=("__FULL_EXIT__", sid))`，整个进程退出
+2. Agent worker 线程（daemon thread）随进程死亡，无任何后台延续
+3. `background_signal` 被设置但 `run_with_background_escape` 未在 TUI agent loop 路径中被调用
+4. `--resume` 仅恢复 JSONL 快照，不会连接活跃的后台 agent
+
+### 设计方案：Fork-Continue 模式
+
+采用**父进程退出 + 子进程继续运行 agent** 的模式：
+
+```
+                    ┌───────────────────────────────────┐
+  Ctrl+B 触发 ───→ │  action_agent_background()        │
+                    │  1. session.save()                │
+                    │  2. 写入 .background-runner.json   │
+                    │  3. os.fork()                      │
+                    │     ├─ 父进程: exit → shell        │
+                    │     └─ 子进程: 继续运行 agent loop │
+                    │         → 持续写入 JSONL transcript│
+                    └───────────────────────────────────┘
+
+                    ┌───────────────────────────────────┐
+  --resume ────→   │  run_tui()                         │
+                    │  1. Session.resume_with_tail()     │
+                    │  2. TailFollower 监听 JSONL 增量   │
+                    │  3. AgentBridge._run_tail_follower │
+                    │     → 实时渲染后台 agent 输出      │
+                    │  4. agent 完成后自动检测           │
+                    └───────────────────────────────────┘
+```
+
+### 核心组件
+
+#### 1. `src/agent/background_runner.py` — 后台 Runner（新增）
+
+| 函数 | 说明 |
+|------|------|
+| `launch_background_runner(session, provider, tool_registry, tool_context, max_turns)` | Fork 子进程，在子进程中运行 headless agent loop |
+| `_run_agent_headless(session, provider, tool_registry, tool_context, max_turns)` | 子进程入口：构建独立 asyncio loop，调用 `run_query_as_agent_loop`，通过 `SessionStorage.write_message` 持续写入 |
+| `get_background_runner_status(session_id)` | 读取 `.background-runner.json`，检查子进程存活状态 |
+| `wait_for_background_runner(session_id, timeout=None)` | 等待子进程完成（同步场景） |
+| `cleanup_background_runner(session_id)` | 清理 marker 文件 |
+
+**状态文件**：`~/.clawcodex/sessions/{session_id}/.background-runner.json`
+
+```json
+{
+  "pid": 12345,
+  "session_id": "abc123",
+  "started_at": "2025-01-01T00:00:00",
+  "status": "running"
+}
+```
+
+**Fork 逻辑**：
+
+```python
+def launch_background_runner(session, provider, tool_registry, tool_context, max_turns):
+    session.save()  # 确保 JSONL transcript 存在
+
+    pid = os.fork()
+    if pid > 0:
+        _write_runner_marker(session.session_id, pid)
+        return pid
+    else:
+        os.setsid()  # 新会话组，脱离父进程终端
+        sys.stdin.close()
+        log_path = _runner_log_path(session.session_id)
+        sys.stdout = open(log_path, 'a')
+        sys.stderr = open(log_path, 'a')
+        _run_agent_headless(session, provider, tool_registry, tool_context, max_turns)
+        os._exit(0)
+```
+
+**Headless Agent Loop**：
+
+- 构建独立 `asyncio.new_event_loop()`
+- 调用 `run_query_as_agent_loop()`，传入 `on_message` 回调写入 JSONL
+- 权限模式切换为 `bypassPermissions`（后台无用户交互）
+- 完成后写入 `{"role": "system", "content": "__background_complete__"}` 标记
+- 更新 marker 文件状态为 `completed` 或 `failed`
+
+#### 2. 现有模块修改
+
+| 文件 | 变更 | 说明 |
+|------|------|------|
+| `src/tui/app.py` | 修改 | `action_agent_background()` 改为调用 `launch_background_runner()` + 新退出标记 `__BACKGROUND_EXIT__` |
+| `src/tui/agent_bridge.py` | 修改 | `_run_tail_follower` 添加 `__background_complete__` 完成标记检测 |
+| `src/entrypoints/tui.py` | 修改 | 退出处理区分有/无后台 agent；resume 时检查 bg runner 状态 |
+| `src/repl/core.py` | 修改 | `_handoff_to_textual_tui` 退出处理同步更新 |
+| `src/agent/session.py` | 微调 | `resume_with_tail()` 添加 bg runner 状态检查 |
+| `src/agent/background_state.py` | 微调 | 更新文档注释，说明 Fork-Continue 模式替代原始信号竞态设计 |
+
+#### 3. 退出标记变更
+
+```
+旧: ("__FULL_EXIT__", session_id)
+新: ("__BACKGROUND_EXIT__", session_id, has_bg_agent)
+```
+
+- `has_bg_agent=True`：Agent 在后台子进程中运行，打印绿色提示 + resume 命令
+- `has_bg_agent=False`：仅保存退出，打印黄色提示 + resume 命令
+- 旧 `__FULL_EXIT__` 标记保持向下兼容
+
+### 并发安全保证
+
+| 场景 | 保证 |
+|------|------|
+| JSONL 写入竞态 | 父进程退出后子进程独占写入，不存在并发写入；`SessionStorage._atomic_write` 保证原子性 |
+| Fork 时序 | fork 前先 `session.save()` 确保状态落盘；fork 后子进程从头开始 agent loop |
+| 权限处理 | 后台模式 `bypassPermissions`，Ctrl+B 是用户的显式授权 |
+| 僵尸进程 | 子进程 `os.setsid()` 独立会话组；崩溃时 marker 记录 `failed` 状态 |
+
+### 边界情况
+
+| 场景 | 处理方式 |
+|------|----------|
+| Ctrl+B 时 agent 空闲 | 仅保存退出，无 fork |
+| Ctrl+B 时 agent 正在请求权限 | 取消当前 run，fork 后重新运行（headless bypass） |
+| Resume 时后台 agent 已完成 | TailFollower 读到 `__background_complete__` 后停止，进入交互模式 |
+| Resume 时后台 agent 已崩溃 | marker 文件为 `failed`，提示错误并显示日志路径 |
+| 多次 Ctrl+B | 检查 marker，若已有 running 则提示 |
+| Windows（无 os.fork） | 回退到 subprocess.Popen 启动 headless runner |
+
+### 里程碑
+
+| 阶段 | 内容 | 状态 | 依赖 |
+|------|------|------|------|
+| M1 | `background_runner.py` 核心模块 + fork 逻辑 | ⏳ 待实现 | 无 |
+| M2 | `action_agent_background()` 重构 + `__BACKGROUND_EXIT__` 标记 | ⏳ 待实现 | M1 |
+| M3 | TailFollower 完成检测 + `__background_complete__` | ⏳ 待实现 | M1 |
+| M4 | `tui.py` / `repl/core.py` 退出处理增强 | ⏳ 待实现 | M2 |
+| M5 | `resume_with_tail()` bg runner 状态集成 | ⏳ 待实现 | M1, M3 |
+| M6 | Windows subprocess 降级路径 | ⏳ 待实现 | M1 |
+| M7 | 端到端测试 | ⏳ 待实现 | M1-M5 |
+
+### 与 F-21 的关系
+
+F-21（后台运行 + 恢复同步）是当前已有的基础设施层，提供了：
+
+- `background_state.py` — 信号/标志管理
+- `TailFollower` — JSONL 尾部追踪
+- `SessionWatcher` — 目录变更监控
+- `keybindings.py` — Ctrl+B 绑定
+- `session.py` — `resume_with_tail()` 工厂方法
+- `agent_bridge.py` — TailFollower 集成
+- `graceful_shutdown.py` — SIGTSTP 处理
+
+F-28 在 F-21 基础上补全了**关键缺失环节**：Agent 实际在后台继续运行的机制。F-21 提供了"传输管道"（TailFollower/SessionWatcher），F-28 提供了"数据源"（fork 子进程持续写入 JSONL）。
+
+---
+
+*文档更新时间: 2026-05-25*
 
 *版本 v1.4 更新：新增 F-22 Cron 系统执行引擎规划，对标 claude-code-best 生产级实现。*

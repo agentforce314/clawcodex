@@ -209,7 +209,7 @@ def default_active_states_for_kind(kind: str) -> list[str]:
     if normalized == "linear":
         return ["Todo", "In Progress"]
     if normalized == "gitcode":
-        return ["opened"]
+        return ["open"]
     return ["open"]
 
 

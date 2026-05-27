@@ -79,12 +79,20 @@ def run(args: argparse.Namespace) -> int:
     return 0
 
 
+def _get_status_str(status) -> str:
+    """Get string value from status field (handles both str and IssueStatus enum)."""
+    if hasattr(status, 'value'):
+        return status.value
+    return str(status)
+
+
 def _print_summary(registry: "IssueRegistry") -> None:
     from extensions.orchestrator.issue_registry import IssueStatus
 
     counts = {"PENDING": 0, "SYNCED": 0, "COMPLETED": 0, "FAILED": 0, "ABANDONED": 0}
     for record in registry._records.values():
-        key = record.status.name
+        status_str = _get_status_str(record.status)
+        key = status_str.upper()
         counts[key] = counts.get(key, 0) + 1
 
     print(f"Issue Registry Summary ({len(registry._records)} total)")

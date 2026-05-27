@@ -18,12 +18,15 @@ from .notebook_edit import NotebookEditTool
 from .mcp_resources import ListMcpResourcesTool, ReadMcpResourceTool
 from .misc import ClipboardReadTool, ClipboardWriteTool, StatusTool
 from .plan_mode import EnterPlanModeTool, ExitPlanModeTool
+from .progress_report import ProgressReportTool
 from .read import ReadTool
 from .send_message import SendMessageTool
 from .send_user_message import SendUserMessageTool
 from .skill import SkillTool
 from .sleep import SleepTool
 from .structured_output import StructuredOutputTool
+from .task_directives import TaskDirectivesTool
+from .task_inspect import TaskInspectTool
 from .task_stop import TaskStopTool
 from .tasks_v2 import (
     TaskCreateTool,
@@ -62,6 +65,7 @@ ALL_STATIC_TOOLS: list[Tool] = [
     ListMcpResourcesTool,
     MCPTool,
     NotebookEditTool,
+    ProgressReportTool,
     ReadMcpResourceTool,
     ReadTool,
     SendMessageTool,
@@ -70,7 +74,8 @@ ALL_STATIC_TOOLS: list[Tool] = [
     SleepTool,
     StatusTool,
     StructuredOutputTool,
-    TaskCreateTool,
+    TaskDirectivesTool,
+    TaskInspectTool,
     TaskGetTool,
     TaskListTool,
     TaskOutputTool,
@@ -107,6 +112,7 @@ __all__ = [
     "ListMcpResourcesTool",
     "MCPTool",
     "NotebookEditTool",
+    "ProgressReportTool",
     "ReadMcpResourceTool",
     "ReadTool",
     "SendMessageTool",
@@ -115,6 +121,8 @@ __all__ = [
     "SleepTool",
     "StatusTool",
     "StructuredOutputTool",
+    "TaskDirectivesTool",
+    "TaskInspectTool",
     "TaskCreateTool",
     "TaskGetTool",
     "TaskListTool",

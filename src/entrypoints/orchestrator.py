@@ -9,6 +9,10 @@ module in extensions/orchestrator/cli/.
 Global options --workspace and --workflow are parsed at the top level
 and attached to args for subcommand handlers to use.
 
+For the 'run' subcommand, --workflow is NOT extracted at the entrypoint level
+because 'run' has its own --workflow argument. The global --workflow is passed
+to run_run() separately and merged there.
+
 Pattern mirrors src/entrypoints/mcp.py, daemon.py, doctor.py.
 """
 
@@ -23,16 +27,38 @@ def run_orchestrator_subcommand(rest: list[str]) -> int:
 
     Returns the process exit code.
     """
-    # Extract global --workspace and --workflow options from anywhere in rest
+    # Find subcommand token position
+    subcommand_tokens = {
+        "run", "status", "issues", "dashboard", "clarify", "inject",
+        "pause", "resume", "stop", "takeover", "workspace"
+    }
+    subcommand_idx = -1
+    subcommand = None
+    for i, tok in enumerate(rest):
+        if tok in subcommand_tokens:
+            subcommand_idx = i
+            subcommand = tok
+            break
+
+    is_run = subcommand == "run"
+
+    # Extract --workspace and --workflow from before the subcommand
+    # For 'run', we don't extract --workflow (let run's own parser handle it)
     workspace_arg = None
     workflow_arg = None
     filtered_rest = []
     i = 0
     while i < len(rest):
+        if i == subcommand_idx:
+            # Subcommand reached - stop extracting global options
+            filtered_rest.append(rest[i])
+            i += 1
+            continue
         if rest[i] == "--workspace" and i + 1 < len(rest):
             workspace_arg = rest[i + 1]
             i += 2
-        elif rest[i] == "--workflow" and i + 1 < len(rest):
+        elif rest[i] == "--workflow" and i + 1 < len(rest) and not is_run:
+            # Don't extract --workflow for 'run' - let run's own parser handle it
             workflow_arg = rest[i + 1]
             i += 2
         else:
@@ -85,7 +111,7 @@ def run_orchestrator_subcommand(rest: list[str]) -> int:
 
     # Dispatch to the appropriate run() function
     if args.subcommand in ("run", None):
-        return run_run(args)
+        return run_run(args, workflow_path=workflow_arg)
     elif args.subcommand == "status":
         return run_status(args)
     elif args.subcommand == "issues":
