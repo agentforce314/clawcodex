@@ -56,6 +56,8 @@ class OrchestrationSubsystem:
                 checkout_issue_branch=(
                     workflow_config.workspace.checkout_issue_branch
                 ),
+                git_username=workflow_config.workspace.git_username,
+                git_token=workflow_config.workspace.git_token,
             )
         )
         self.tracker_adapter = create_tracker_adapter(workflow_config.tracker)

@@ -117,15 +117,19 @@ class PromptBuilder:
             return fallback.render(context).strip()
 
     @staticmethod
-    def build_continuation_prompt(turn_number: int, max_turns: int) -> str:
+    def build_continuation_prompt(
+        turn_number: int,
+        max_turns: int,
+        issue_context: str | None = None,
+    ) -> str:
         """Build continuation prompt for subsequent turns."""
+        context_block = f"\n\nCurrent issue context:\n{issue_context}\n" if issue_context else ""
         return (
             f"Continuation guidance:\n\n"
-            f"- The previous turn completed normally, but the issue is still active.\n"
-            f"- This is continuation turn #{turn_number} of {max_turns}.\n"
-            f"- Resume from the current workspace state instead of restarting.\n"
-            f"- The original task instructions are already in this thread; do not restate them.\n"
-            f"- Focus on remaining work and do not end the turn while the issue stays active.\n"
+            f"- This is continuation turn #{turn_number} of {max_turns}.{context_block}\n"
+            f"- Resume from the current workspace state and continue implementing.\n"
+            f"- Use available tools (Bash, Write, Edit, Grep, Glob, etc.) to make changes.\n"
+            f"- Focus on completing the issue requirements.\n"
         )
 
     @staticmethod

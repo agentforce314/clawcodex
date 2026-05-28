@@ -39,8 +39,9 @@ class GitSyncError(RuntimeError):
 class GitSyncService:
     """Perform commit, push, and PR creation after a run."""
 
-    def __init__(self, tracker: TrackerAdapter) -> None:
+    def __init__(self, tracker: TrackerAdapter, branch_prefix: str | None = None) -> None:
         self.tracker = tracker
+        self._branch_prefix = branch_prefix
 
     async def sync(self, session: Any) -> GitSyncResult | None:
         workspace: Workspace = session.workspace
@@ -130,6 +131,13 @@ class GitSyncService:
             ["rebase", f"origin/{branch_name}"], repo_root,
         )
         if rc != 0:
+            # Check if remote branch doesn't exist (shallow clone scenario)
+            if "fatal: invalid upstream" in stderr or "couldn't find remote ref" in stderr:
+                # Remote branch doesn't exist - force push to create it
+                self._run_git_checked(
+                    ["push", "-u", "origin", branch_name, "--force"], repo_root
+                )
+                return True, False, ()
             conflict_files = self._detect_conflicts(repo_root)
             if conflict_files:
                 return False, True, conflict_files
@@ -146,6 +154,8 @@ class GitSyncService:
             "non-fast-forward" in stderr.lower()
             or "fetch first" in stderr.lower()
             or "Updates were rejected" in stderr
+            or "shallow update" in stderr.lower()
+            or "deny updating a hidden branch" in stderr.lower()
         )
 
     def _detect_conflicts(self, repo_root: str) -> tuple[str, ...]:
@@ -262,7 +272,8 @@ class GitSyncService:
         identifier = issue.identifier or issue.id or "issue"
         title = issue.title or "update"
         slug = _slugify(f"{identifier}-{title}")[:48]
-        return f"clawcodex/{slug}"
+        prefix = self._branch_prefix or "clawcodex"
+        return f"{prefix}/{slug}"
 
     def _run_git_output(self, args: list[str], repo_root: str) -> str:
         stdout, stderr, rc = _run_git(args, repo_root)

@@ -34,6 +34,8 @@ class WorkspaceConfig:
     repo_clone_url: str | None = None
     clone_depth: int | None = 1
     checkout_issue_branch: bool = True
+    git_username: str | None = None
+    git_token: str | None = None
 
     def __post_init__(self) -> None:
         if self.hooks is None:
@@ -143,13 +145,20 @@ class WorkspaceManager:
 
         path.parent.mkdir(parents=True, exist_ok=True)
 
+        # Inject credentials if git_username and git_token are configured
+        effective_url = clone_url
+        if self.config.git_username and self.config.git_token:
+            effective_url = clone_url.replace(
+                "https://", f"https://{self.config.git_username}:{self.config.git_token}@"
+            )
+
         command = ["git", "clone"]
         if (
             isinstance(self.config.clone_depth, int)
             and self.config.clone_depth > 0
         ):
             command.extend(["--depth", str(self.config.clone_depth)])
-        command.extend([clone_url, str(path)])
+        command.extend([effective_url, str(path)])
         await self._run_process(command, cwd=str(path.parent))
 
     async def _checkout_issue_branch(self, path: Path, issue: Any) -> None:

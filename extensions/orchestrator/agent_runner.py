@@ -163,10 +163,12 @@ class AgentRunner:
                     pending_question=pending_question,
                     options=options,
                 )
+                session._issue_context = prompt  # Store for continuation
             else:
                 prompt = PromptBuilder.build_continuation_prompt(
                     turn_number=turn_number,
                     max_turns=self.max_turns,
+                    issue_context=getattr(session, "_issue_context", None),
                 )
                 logger.info(
                     "Continuation turn %d/%s for issue_id=%s",

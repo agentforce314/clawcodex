@@ -103,6 +103,7 @@ class TrackerConfig:
     repo: str | None = None
     clone_url: str | None = None
     assignee: str | None = None
+    branch_prefix: str | None = None
     active_states: list[str] = field(
         default_factory=lambda: ["Todo", "In Progress"]
     )
@@ -129,6 +130,8 @@ class WorkspaceConfig:
     repo_clone_url: str | None = None
     clone_depth: int | None = 1
     checkout_issue_branch: bool = True
+    git_username: str | None = None
+    git_token: str | None = None
 
 
 @dataclass
@@ -250,6 +253,7 @@ class WorkflowConfig:
             clone_url=_resolve_env_value(tracker_raw.get("clone_url")),
             assignee=_resolve_env_value(tracker_raw.get("assignee"))
             or _resolve_first_env(tracker_info.assignee_env_vars),
+            branch_prefix=_resolve_env_value(tracker_raw.get("branch_prefix")),
             active_states=tracker_active_states,
             terminal_states=tracker_terminal_states,
         )
@@ -266,6 +270,10 @@ class WorkflowConfig:
             clone_depth=workspace_raw.get("clone_depth", 1),
             checkout_issue_branch=workspace_raw.get(
                 "checkout_issue_branch", True
+            ),
+            git_username=_resolve_env_value(workspace_raw.get("git_username")),
+            git_token=_normalize_secret_value(
+                _resolve_env_value(workspace_raw.get("git_token"))
             ),
         )
 

@@ -373,13 +373,17 @@ def _run_orchestrator(
         return 2
 
     try:
-        config, _prompt = WorkflowLoader.load(workflow_path)
+        config, prompt = WorkflowLoader.load(workflow_path)
     except WorkflowParseError as exc:
         print(f"error: failed to parse workflow: {exc}", file=sys.stderr)
         return 2
     except FileNotFoundError:
         print(f"error: workflow file not found: {workflow_path}", file=sys.stderr)
         return 2
+
+    # Load prompt into WorkflowStore so PromptBuilder can use it
+    from ..workflow_store import get_workflow_store
+    get_workflow_store().load(workflow_path)
 
     try:
         validate_tracker_config(config.tracker)

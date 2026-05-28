@@ -64,7 +64,7 @@ class Orchestrator:
         self.workspace = workspace
         self.agent_runner = agent_runner
         self.status_dashboard = status_dashboard or StatusDashboard()
-        self.git_sync = GitSyncService(tracker)
+        self.git_sync = GitSyncService(tracker, workflow.tracker.branch_prefix)
         self._state = OrchestratorState(
             poll_interval_ms=workflow.polling.interval_ms,
             max_concurrent_agents=workflow.agent.max_concurrent_agents,
