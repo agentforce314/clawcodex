@@ -4,8 +4,8 @@
 # Date: 2026-05-29 13:26:23
 #
 # Modified files: 31
-# New files: 49
-# Total: 80
+# New files: 29
+# Total: 60
 
 # === Phase 1: Modified files (diffs from upstream) ===
 0001.agent_session_py.patch
@@ -41,29 +41,9 @@
 0031.utils_stream_watchdog_py.patch
 
 # === Phase 2: New files (not present in upstream) ===
-0032.__init__.py_orig.patch
-0033.__init__.py_rej.patch
-0034.agent___init__.py_orig.patch
-0035.agent___init__.py_rej.patch
 0036.agent__outlines_adapter_py.patch
-0037.agent_agent_definitions.py_orig.patch
-0038.agent_agent_definitions.py_rej.patch
-0039.agent_agent_tool_utils.py_orig.patch
-0040.agent_agent_tool_utils.py_rej.patch
 0041.agent_background_runner_py.patch
 0042.agent_background_state_py.patch
-0043.agent_constants.py_orig.patch
-0044.agent_constants.py_rej.patch
-0045.agent_conversation.py_orig.patch
-0046.agent_conversation.py_rej.patch
-0047.agent_filter_agents_by_mcp.py_orig.patch
-0048.agent_filter_agents_by_mcp.py_rej.patch
-0049.agent_foreground_promotion.py_orig.patch
-0050.agent_foreground_promotion.py_rej.patch
-0051.agent_fork_subagent.py_orig.patch
-0052.agent_fork_subagent.py_rej.patch
-0053.agent_load_agents_dir.py_orig.patch
-0054.agent_load_agents_dir.py_rej.patch
 0055.agent_tool_authoring___init___py.patch
 0056.agent_tool_authoring_call_handlers___init___py.patch
 0057.agent_tool_authoring_call_handlers_bash_py.patch
