@@ -1,0 +1,46 @@
+diff --git a/__init__.py.rej b/__init__.py.rej
+new file mode 100644
+--- /dev/null
++++ src/upstream/68dc3c5/__init__.py.rej
+@@ -0,0 +1,41 @@
++--- src/upstream/68dc3c5/__init__.py	2026-05-24 08:47:52.000000 +0000
+++++ src/__init__.py	2026-05-28 03:35:04.878114 +0000
++@@ -1,19 +1,19 @@
++-"""Claw Codex - Claude Code Python Implementation."""
++-
++-__version__ = "0.5.0"
++-__author__ = "Claw Codex Team"
++-
++-from .config import load_config, get_provider_config
++-
++-try:  # pragma: no cover
++-    from .providers.base import BaseProvider
++-except Exception:  # pragma: no cover
++-    BaseProvider = None  # type: ignore[assignment]
++-
++-__all__ = [
++-    "__version__",
++-    "__author__",
++-    "load_config",
++-    "get_provider_config",
++-    "BaseProvider",
++-]
+++"""Claw Codex - Claude Code Python Implementation."""
+++
+++__version__ = "0.5.0"
+++__author__ = "Claw Codex Team"
+++
+++from .config import load_config, get_provider_config
+++
+++try:  # pragma: no cover
+++    from .providers.base import BaseProvider
+++except Exception:  # pragma: no cover
+++    BaseProvider = None  # type: ignore[assignment]
+++
+++__all__ = [
+++    "__version__",
+++    "__author__",
+++    "load_config",
+++    "get_provider_config",
+++    "BaseProvider",
+++]

@@ -181,7 +181,7 @@ class AgentRunner:
                 prompt=prompt,
                 workspace=workspace.path,
                 provider=self.agent_config.provider,
-                max_turns=1,  # One turn per QueryRunner call
+                max_turns=self.max_turns,
                 permission_mode=self.agent_config.permission_mode,
             )
             runner = QueryRunner(query_config)

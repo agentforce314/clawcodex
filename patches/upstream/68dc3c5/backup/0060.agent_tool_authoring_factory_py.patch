@@ -1,0 +1,88 @@
+diff --git a/agent/tool_authoring/factory.py b/agent/tool_authoring/factory.py
+new file mode 100644
+--- /dev/null
++++ src/upstream/68dc3c5/agent/tool_authoring/factory.py
+@@ -0,0 +1,83 @@
++"""Factory — builds a Tool from an AgentToolSpec, then registers it."""
++
++from __future__ import annotations
++
++import logging
++from typing import Any
++
++from tool_system.build_tool import Tool, build_tool
++from tool_system.context import ToolContext
++from tool_system.protocol import ToolResult
++from agent.tool_authoring.validators import validate_spec, ValidationError
++from agent.tool_authoring.call_handlers import (
++    BashCallError,
++    execute_bash,
++    HttpCallError,
++    execute_http,
++    PythonCallError,
++    execute_python,
++)
++
++logger = logging.getLogger(__name__)
++
++# ---------------------------------------------------------------------------
++# Tool builder
++# ---------------------------------------------------------------------------
++
++def build_tool_from_spec(spec: AgentToolSpec) -> Tool:
++    """Construct a ``Tool`` instance from an ``AgentToolSpec``.
++
++    The tool is fully operational: ``tool.call`` dispatches to the appropriate
++    ``call_handlers`` entry based on ``spec.call_type``, and all security
++    constraints have already been validated by ``validate_spec``.
++
++    Args:
++        spec: A validated ``AgentToolSpec``.
++
++    Returns:
++        A ``Tool`` object that can be registered with a ``ToolRegistry``.
++    """
++    def _call_impl(input: dict[str, Any], _context: ToolContext) -> ToolResult:
++        try:
++            if spec.call_type == "bash":
++                output = execute_bash(spec.call_impl, input)
++            elif spec.call_type == "http":
++                output = execute_http(spec.call_impl, input)
++            elif spec.call_type == "python":
++                output = execute_python(spec.call_impl, input)
++            else:
++                output = f"Unknown call_type: {spec.call_type}"
++        except (BashCallError, HttpCallError, PythonCallError) as exc:
++            return ToolResult(
++                name=spec.name,
++                output={"error": str(exc)},
++                is_error=True,
++            )
++
++        return ToolResult(
++            name=spec.name,
++            output=output,
++        )
++
++    return build_tool(
++        name=spec.name,
++        input_schema=spec.input_schema,
++        call=_call_impl,
++        prompt=f"Tool: {spec.name}\n\n{spec.description}",
++        description=spec.description,
++        aliases=spec.aliases,
++        search_hint=" ".join(spec.tags) if spec.tags else None,
++        source=spec.source,
++    )
++
++
++def create_and_validate(spec: AgentToolSpec) -> Tool:
++    """Validate a spec and build a ``Tool`` from it.
++
++    This is the main entry point used by ``CreateAgentTool``.
++
++    Raises:
++        ValidationError: If the spec fails validation.
++    """
++    validate_spec(spec)
++    return build_tool_from_spec(spec)

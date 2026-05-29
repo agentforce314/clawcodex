@@ -1,0 +1,14 @@
+--- src/upstream/68dc3c5/repl/__init__.py	2026-05-24 08:47:52.000000 +0000
++++ src/repl/__init__.py	2026-05-28 12:54:49.430649 +0000
+@@ -1,5 +1,6 @@
+-"""REPL module for Claw Codex."""
+-
+-from .core import ClawcodexREPL
+-
+-__all__ = ["ClawcodexREPL"]
++"""REPL module for Claw Codex."""
++
++from .background_escape import BackgroundEscape
++from .core import ClawcodexREPL
++
++__all__ = ["ClawcodexREPL", "BackgroundEscape"]

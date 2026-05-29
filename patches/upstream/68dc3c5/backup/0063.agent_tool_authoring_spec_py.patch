@@ -1,0 +1,77 @@
+diff --git a/agent/tool_authoring/spec.py b/agent/tool_authoring/spec.py
+new file mode 100644
+--- /dev/null
++++ src/upstream/68dc3c5/agent/tool_authoring/spec.py
+@@ -0,0 +1,72 @@
++"""AgentToolSpec — schema for an agent-created tool."""
++
++from __future__ import annotations
++
++from dataclasses import dataclass, field
++from typing import Literal
++
++
++@dataclass(frozen=True)
++class AgentToolSpec:
++    """Specification for a dynamically created tool.
++
++    Attributes:
++        name: Unique tool name (kebab-case recommended).
++        description: Human-readable description of what the tool does.
++        input_schema: JSON Schema dict describing required/optional parameters.
++        call_type: How the tool is invoked — ``"bash"``, ``"http"``, or ``"python"``.
++        call_impl: Implementation detail (type depends on ``call_type``):
++            - bash:  A format-string command template, e.g. ``"glab project view {project_id}"``.
++            - http:  A dict with ``method`` and ``url`` keys (both with ``{param}`` placeholders).
++            - python: A string naming a registered whitelisted function.
++        tags: Optional classification labels for searching/filtering.
++        aliases: Alternative names that also trigger this tool.
++        source: Origin marker; ``"agent-created"`` for agent-authored tools.
++
++    Example (bash tool):
++
++        AgentToolSpec(
++            name="glab-project-view",
++            description="View a GitLab project by ID",
++            input_schema={
++                "type": "object",
++                "properties": {
++                    "project_id": {"type": "string", "description": "Project ID"},
++                },
++                "required": ["project_id"],
++            },
++            call_type="bash",
++            call_impl="glab project view {project_id} --output json",
++            tags=["gitlab", "project"],
++            aliases=("glab-project",),
++            source="agent-created",
++        )
++
++    Example (http tool):
++
++        AgentToolSpec(
++            name="github-repo-get",
++            description="Fetch a GitHub repository",
++            input_schema={
++                "type": "object",
++                "properties": {
++                    "owner": {"type": "string"},
++                    "repo": {"type": "string"},
++                },
++                "required": ["owner", "repo"],
++            },
++            call_type="http",
++            call_impl={"method": "GET", "url": "https://api.github.com/repos/{owner}/{repo}"},
++            tags=["github"],
++            source="agent-created",
++        )
++    """
++
++    name: str
++    description: str
++    input_schema: dict
++    call_type: Literal["bash", "http", "python"]
++    call_impl: str | dict
++    tags: tuple[str, ...] = field(default_factory=tuple)
++    aliases: tuple[str, ...] = field(default_factory=tuple)
++    source: str = "agent-created"
