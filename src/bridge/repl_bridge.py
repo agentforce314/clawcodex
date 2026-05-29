@@ -106,6 +106,13 @@ from src.bridge.work_secret import (
 logger = logging.getLogger(__name__)
 
 
+# Phase 17: hourly pointer-mtime refresh interval for perpetual mode.
+# Long-running sessions touch the pointer once per interval so the
+# mtime stays fresh; without this, a future TTL check on the pointer
+# would reject it after a few hours of no user activity.
+POINTER_MTIME_REFRESH_INTERVAL_S = 60.0 * 60.0
+
+
 # ── Public types ──────────────────────────────────────────────────────────
 
 
@@ -385,6 +392,11 @@ async def init_bridge_core(
         pointer_created_at_ms=pointer.created_at_ms if pointer else None,
     )
     state.start_poll_loop()
+    if params.perpetual:
+        asyncio.create_task(
+            state._pointer_mtime_refresh_loop(),
+            name='bridge-pointer-mtime-refresh',
+        )
 
     _fire_state(params.on_state_change, 'ready')
 
@@ -526,20 +538,76 @@ class _BridgeState:
             pass
 
     async def _recreate_environment(self) -> bool:
-        """Re-register the environment + create a fresh session.
+        """Re-register the environment, then **try Strategy-1 reconnect
+        first** (preserve the active session via ``reconnect_session``
+        when the server resurrects the *same* env id); fall back to
+        **Strategy-2** (kill + create fresh session) otherwise.
 
-        Mirrors TS Strategy-2 on ``replBridge.ts:822``. Returns True on
-        success (caller resets the attempt counter), False on failure
-        (caller backs off and retries; the attempt counter persists so
+        Mirrors TS ``replBridge.ts:614-852``. Returns True on success
+        (caller resets the attempt counter), False on failure (caller
+        backs off and retries; the attempt counter persists so
         we eventually give up).
-
-        Strategy-1 (in-place ``reconnect_session`` to keep the same
-        session ID + SSE seq-num) is deferred — it needs the
-        ``BridgeApiClient.reconnect_session`` happy path which the MVP
-        doesn't exercise, and the session-runner doesn't yet support
-        live resumption with a different ingress URL.
         """
-        # If there's an active session, archive it before starting fresh.
+        # Strategy-1 only makes sense if the server hands back the
+        # SAME env id. Hint the server to reuse by setting
+        # ``reuse_environment_id`` before registering; restore after
+        # so a future Strategy-2 cycle gets a fresh env if the server
+        # doesn't want to reuse.
+        prior_env_id = self.environment_id
+        prior_reuse = self.bridge_config.reuse_environment_id
+        prior_session_id = self.active_session_id
+        prior_work_id = self.active_work_id
+        had_active_session = self.active_session is not None
+        self.bridge_config.reuse_environment_id = prior_env_id
+        try:
+            try:
+                registration = await self.api.register_bridge_environment(
+                    self.bridge_config,
+                )
+            except Exception as err:  # noqa: BLE001
+                logger.warning(
+                    '[bridge:repl] Re-register failed: %s', err
+                )
+                return False
+        finally:
+            self.bridge_config.reuse_environment_id = prior_reuse
+        new_env_id = registration['environment_id']
+        new_env_secret = registration['environment_secret']
+
+        # ── Strategy-1: in-place reconnect ──────────────────────────
+        if (
+            new_env_id == prior_env_id
+            and prior_session_id is not None
+            and had_active_session
+        ):
+            try:
+                await self.api.reconnect_session(
+                    new_env_id, prior_session_id,
+                )
+            except Exception as err:  # noqa: BLE001
+                logger.info(
+                    '[bridge:repl] Strategy-1 reconnect refused '
+                    '(session=%s): %s — falling back to Strategy-2',
+                    prior_session_id, err,
+                )
+            else:
+                # Server accepted the reconnect. Stop the old work item
+                # (its secret was bound to the dead env state).
+                if prior_work_id is not None:
+                    await self._safe_stop_work(prior_work_id, force=False)
+                    self.active_work_id = None
+                self.environment_id = new_env_id
+                self.environment_secret = new_env_secret
+                await self._update_pointer(session_id=prior_session_id)
+                logger.info(
+                    '[bridge:repl] Strategy-1 reconnect succeeded: '
+                    'env=%s session=%s (preserved)',
+                    new_env_id, prior_session_id,
+                )
+                return True
+
+        # ── Strategy-2: kill active session + create fresh ─────────
+        archive_id = self.active_session_id or self.initial_session_id
         if self.active_session is not None:
             try:
                 self.active_session.kill()
@@ -553,28 +621,15 @@ class _BridgeState:
             if self.active_token_refresh is not None:
                 self.active_token_refresh.cancel_all()
                 self.active_token_refresh = None
-        # Best-effort archive of the prior session id.
         try:
-            await self.params.archive_session(self.initial_session_id)
+            await self.params.archive_session(archive_id)
         except Exception as err:  # noqa: BLE001
             logger.debug(
                 '[bridge:repl] archive of prior session failed '
                 'during recreation: %s', err
             )
-        # Re-register environment (server may hand back a fresh
-        # environment_id; we accept whatever it gives us).
-        try:
-            registration = await self.api.register_bridge_environment(
-                self.bridge_config,
-            )
-        except Exception as err:  # noqa: BLE001
-            logger.warning(
-                '[bridge:repl] Re-register failed: %s', err
-            )
-            return False
-        self.environment_id = registration['environment_id']
-        self.environment_secret = registration['environment_secret']
-        # Create a fresh session on the new environment.
+        self.environment_id = new_env_id
+        self.environment_secret = new_env_secret
         try:
             new_session_id = await self.params.create_session({
                 'environment_id': self.environment_id,
@@ -593,23 +648,60 @@ class _BridgeState:
                 '[bridge:repl] create_session during recreation returned None'
             )
             return False
-        # Replace the bookkeeping handle's session id (the external
-        # ReplBridgeHandle is immutable; this is the internal copy).
         self.initial_session_id = new_session_id
-        if self.params.perpetual:
-            write_pointer(
-                self.params.dir,
-                bridge_id=self.params.bridge_id,
-                environment_id=self.environment_id,
-                session_id=new_session_id,
-                machine_name=self.params.machine_name,
-                created_at_ms=self.pointer_created_at_ms,
-            )
+        await self._update_pointer(session_id=new_session_id)
         logger.info(
             '[bridge:repl] Environment recreated: env=%s session=%s',
             self.environment_id, new_session_id,
         )
         return True
+
+    async def _pointer_mtime_refresh_loop(self) -> None:
+        """Phase 17: periodic pointer-mtime refresh for perpetual mode.
+
+        A daemon idle for many hours without a user prompt would have a
+        stale pointer mtime; when the next-start TTL check lands, it
+        would reject the pointer and force a fresh session. Touching
+        the pointer hourly keeps long-running sessions recoverable.
+
+        The write is atomic via ``write_pointer``'s tmpfile + os.replace
+        primitive, so a race with ``_recreate_environment``'s own
+        pointer write cannot leave a half-corrupt file.
+        """
+        try:
+            while not self.torn_down:
+                await asyncio.sleep(POINTER_MTIME_REFRESH_INTERVAL_S)
+                if self.torn_down:
+                    return
+                await self._update_pointer(
+                    session_id=self.active_session_id,
+                )
+        except asyncio.CancelledError:
+            return
+
+    async def _update_pointer(self, session_id: str | None) -> None:
+        """Touch the pointer's mtime, preserving all other fields."""
+        if not self.params.perpetual:
+            return
+        write_pointer(
+            self.params.dir,
+            bridge_id=self.params.bridge_id,
+            environment_id=self.environment_id,
+            session_id=session_id,
+            machine_name=self.params.machine_name,
+            created_at_ms=self.pointer_created_at_ms,
+        )
+
+    async def _safe_reconnect_for_refresh(self, session_id: str) -> None:
+        """v2 token-refresh helper. Calls ``api.reconnect_session``
+        and swallows errors — the next refresh fire will retry."""
+        try:
+            await self.api.reconnect_session(self.environment_id, session_id)
+        except Exception as err:  # noqa: BLE001
+            logger.warning(
+                '[bridge:repl] v2 token refresh via reconnect_session '
+                'failed for sessionId=%s: %s', session_id, err,
+            )
 
     async def _process_work(self, work: dict[str, Any]) -> None:
         """Handle one work item from the poll."""
@@ -719,7 +811,11 @@ class _BridgeState:
         )
 
     def _build_token_refresh_scheduler(self) -> TokenRefreshScheduler:
-        """Create a scheduler whose ``on_refresh`` forwards to the child."""
+        """Create a scheduler whose ``on_refresh`` forwards to the child.
+
+        v1: writes the fresh token to the child's stdin.
+        v2: calls ``reconnect_session`` to notify the server.
+        """
         def on_refresh(_session_id: str, fresh_token: str) -> None:
             session = self.active_session
             if session is None:
@@ -730,6 +826,15 @@ class _BridgeState:
                 logger.warning(
                     '[bridge:repl] update_access_token via stdin '
                     'failed: %s', err
+                )
+            # v2: trigger server re-dispatch so it picks up the new JWT.
+            # _safe_reconnect_for_refresh is async; fire-and-forget via
+            # create_task so on_refresh stays sync (TokenRefreshScheduler
+            # contract).
+            if self.active_session is not None:
+                asyncio.create_task(
+                    self._safe_reconnect_for_refresh(_session_id),
+                    name='bridge-reconnect-for-refresh',
                 )
 
         async def get_access_token() -> str | None:
