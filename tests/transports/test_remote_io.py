@@ -112,6 +112,30 @@ def _clean_env(monkeypatch):
     monkeypatch.delenv("DEBUG_SDK", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _forbid_real_http(monkeypatch):
+    """Regression guard: fail if a *future* test here builds a real httpx.AsyncClient.
+
+    No current test trips this — every test in this module either
+    monkeypatches ``get_transport_for_url`` to a stub or drives the
+    in-process ``websockets`` server (smoke test), neither of which needs
+    httpx. The guard exists so that a later test which accidentally selects a
+    POST-based transport (SSE/Hybrid build an ``httpx.AsyncClient`` on
+    connect) trips loudly instead of making a silent real-network call.
+    (Plan §5 risk row "Tests inadvertently fire real network I/O".)
+    """
+    import httpx
+
+    def _forbidden(self, *args, **kwargs):
+        raise AssertionError(
+            "httpx.AsyncClient instantiated in a RemoteIO test — tests must "
+            "not perform real network I/O (use the get_transport_for_url stub "
+            "or the in-process websockets server)."
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "__init__", _forbidden)
+
+
 # ---------------------------------------------------------------------------
 # Constructor wiring
 
@@ -467,3 +491,89 @@ async def test_internal_events_pending_default_zero(stub_transport):
         assert io.internal_events_pending == 0
     finally:
         io.close()
+
+
+# ---------------------------------------------------------------------------
+# Smoke test: real (in-process) WebSocketTransport — NO stub.
+#
+# The stub-based tests above always give the transport a ``write`` method, so
+# they cannot catch a regression where the REAL ``WebSocketTransport`` loses
+# (or renames) ``write`` — which would make ``RemoteIO.__init__`` wrongly
+# raise ``NotImplementedError`` for the WS path. This exercises ``RemoteIO``
+# end-to-end over a real ``WebSocketTransport`` backed by an in-process
+# ``websockets`` server: construct (no stub) → connect → read one frame from
+# the server → write one frame back. (Plan §5 risk row "RemoteIO has no
+# current consumer — risk that the code rots before its first user lands".)
+
+
+@pytest.mark.integration
+async def test_remote_io_smoke_real_websocket_transport(monkeypatch):
+    import socket
+
+    import websockets
+    from websockets.asyncio.server import serve as ws_serve
+
+    from src.transports.websocket_transport import WebSocketTransport
+
+    # Hermetic: force the default ws branch of get_transport_for_url so it
+    # builds a real WebSocketTransport (not SSE/Hybrid).
+    monkeypatch.delenv("CLAUDE_CODE_USE_CCR_V2", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_POST_FOR_SESSION_INGRESS_V2", raising=False)
+
+    received: list[str] = []
+    opened = asyncio.Event()
+
+    async def handler(ws):
+        opened.set()
+        # Push one frame to exercise the read side (server → RemoteIO).
+        await ws.send("from-server\n")
+        try:
+            async for raw in ws:
+                received.append(raw if isinstance(raw, str) else raw.decode())
+        except (websockets.exceptions.ConnectionClosed, OSError):
+            return
+
+    # Same free-port pattern as test_websocket_transport.py (bind, release,
+    # reuse). Minor TOCTOU, matches repo convention.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+
+    server = await ws_serve(handler, "127.0.0.1", port)
+    try:
+        # Real factory + real transport. Construction must NOT raise
+        # NotImplementedError — that gate is only for write-less transports
+        # (SSE). A real WebSocketTransport has ``write``; this asserts it.
+        io = RemoteIO(f"ws://127.0.0.1:{port}")
+        assert isinstance(io._transport, WebSocketTransport)
+        try:
+            await asyncio.wait_for(opened.wait(), timeout=5.0)
+            # write() is a silent no-op until the transport is connected.
+            for _ in range(250):
+                if io._transport.is_connected_status():
+                    break
+                await asyncio.sleep(0.02)
+            assert io._transport.is_connected_status()
+
+            # Read side: the server's frame reaches input_stream.
+            first = await asyncio.wait_for(
+                io.input_stream.__anext__(), timeout=5.0
+            )
+            assert first == "from-server\n"
+
+            # Write side: forwards through the REAL transport to the server.
+            await io.write({"type": "user", "message": "hello"})
+            for _ in range(250):
+                if received:
+                    break
+                await asyncio.sleep(0.02)
+            assert received, "server never received the written frame"
+            assert json.loads(received[0]) == {
+                "type": "user",
+                "message": "hello",
+            }
+        finally:
+            io.close()
+    finally:
+        server.close()
+        await server.wait_closed()
