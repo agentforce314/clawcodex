@@ -29,7 +29,8 @@ loop. Matches the pattern of sibling ``ccr_client.py`` /
 ``hybrid_transport.py`` which also assume a running loop.
 
 See ``my-docs/get-parity-by-folder/cli-refactoring-plan.md`` §2.2 for
-the source-of-truth design notes.
+the source-of-truth design notes, and ``cli-gap-analysis.md`` §3.4 / §4.2
+for the inventory entry and port spec this file satisfies.
 """
 
 from __future__ import annotations
