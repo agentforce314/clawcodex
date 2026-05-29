@@ -1,0 +1,266 @@
+diff --git a/context_system/_gitpython_adapter.py b/context_system/_gitpython_adapter.py
+new file mode 100644
+--- /dev/null
++++ b/context_system/_gitpython_adapter.py	2026-05-26 00:47:29.467460 +0000
+@@ -0,0 +1,260 @@
++"""
++GitPython adapter for ClawCodex Git operations.
++
++This module provides a GitPython-based implementation that can replace
++the subprocess-based Git operations in src/context_system/git_context.py.
++
++Architecture:
++    src/context_system/git_context.py (existing git functions)
++        ↓
++    src/context_system/_gitpython_adapter.py (This module - GitPython backend)
++        ↓
++    GitPython (Open source dependency)
++
++Switch:
++    CLAW_USE_GITPYTHON=true (default) - use GitPython
++    CLAW_USE_GITPYTHON=false - fallback to subprocess calls
++"""
++
++from __future__ import annotations
++
++import logging
++import os
++from functools import lru_cache
++from pathlib import Path
++from typing import Any, Optional
++
++logger = logging.getLogger(__name__)
++
++# Switching mechanism: control via environment variable
++_USE_GITPYTHON = os.getenv("CLAW_USE_GITPYTHON", "true").lower() in ("true", "1")
++
++# GitPython availability
++try:
++    from git import Repo
++    from git.exc import InvalidGitRepositoryError, GitCommandError
++    _GITPYTHON_AVAILABLE = True
++except ImportError:
++    _GITPYTHON_AVAILABLE = False
++    Repo = None
++    InvalidGitRepositoryError = None
++    GitCommandError = None
++
++
++def is_gitpython_available() -> bool:
++    """Check if GitPython is available."""
++    return _GITPYTHON_AVAILABLE
++
++
++class GitContextSnapshot:
++    """Structured git context for prompt injection."""
++    def __init__(
++        self,
++        available: bool,
++        repo_root: Optional[str] = None,
++        branch: Optional[str] = None,
++        default_branch: Optional[str] = None,
++        user_name: Optional[str] = None,
++        status: Optional[str] = None,
++        status_truncated: bool = False,
++        recent_commits: Optional[str] = None,
++        error: Optional[str] = None,
++    ):
++        self.available = available
++        self.repo_root = repo_root
++        self.branch = branch
++        self.default_branch = default_branch
++        self.user_name = user_name
++        self.status = status
++        self.status_truncated = status_truncated
++        self.recent_commits = recent_commits
++        self.error = error
++
++
++class GitPythonProvider:
++    """Git operations provider using GitPython."""
++
++    def __init__(self, cwd: str | Path | None = None):
++        self.cwd = Path(cwd) if cwd else Path.cwd()
++        try:
++            self.repo = Repo(self.cwd, search_parent_directories=True)
++        except InvalidGitRepositoryError:
++            self.repo = None
++
++    def is_git_repo(self) -> bool:
++        """Check if the cwd is inside a git repository with commits."""
++        if not self.repo:
++            return False
++        try:
++            # Must have at least one commit to be a valid repo
++            _ = self.repo.head.commit
++            return True
++        except (ValueError, GitCommandError):
++            return False
++
++    def get_branch(self) -> Optional[str]:
++        """Get the current branch name."""
++        if not self.repo or self.repo.head.is_detached:
++            return None
++        return self.repo.active_branch.name
++
++    def get_default_branch(self) -> str:
++        """Detect the default branch (main/master/etc)."""
++        if not self.repo:
++            return "main"
++
++        # Try refs/remotes/origin/HEAD symref
++        try:
++            head_ref = self.repo.git.symbolic_ref("refs/remotes/origin/HEAD")
++            if head_ref:
++                parts = head_ref.rsplit("/", 1)
++                if len(parts) == 2:
++                    return parts[1]
++        except GitCommandError:
++            pass
++
++        # Try known default branch names
++        for candidate in ("main", "master", "develop"):
++            try:
++                self.repo.git.rev_parse("--verify", f"refs/heads/{candidate}")
++                return candidate
++            except GitCommandError:
++                continue
++
++        return "main"
++
++    def get_status(self, max_chars: int = 2000) -> tuple[Optional[str], bool]:
++        """Get git status, truncated if needed."""
++        if not self.repo:
++            return None, False
++
++        try:
++            status = self.repo.git.status(porcelain="v2")
++            if len(status) > max_chars:
++                return status[:max_chars] + "\n... (truncated)", True
++            return status if status else None, False
++        except GitCommandError:
++            return None, False
++
++    def get_recent_commits(self, max_count: int = 5) -> Optional[str]:
++        """Get recent commit messages."""
++        if not self.repo:
++            return None
++
++        try:
++            commits = list(self.repo.iter_commits(max_count=max_count))
++            if not commits:
++                return None
++            return "\n".join(c.message.strip() for c in commits)
++        except GitCommandError:
++            return None
++
++    def get_user_name(self) -> Optional[str]:
++        """Get the configured user.name."""
++        if not self.repo:
++            return None
++
++        try:
++            return self.repo.git.config("user.name")
++        except GitCommandError:
++            return None
++
++    def get_repo_root(self) -> Optional[str]:
++        """Get the repository root path."""
++        if not self.repo:
++            return None
++        return self.repo.working_tree_dir
++
++
++# Module-level cache
++_git_provider_cache: Optional[GitPythonProvider] = None
++_git_context_cache: Optional[GitContextSnapshot] = None
++
++
++def get_gitpython_provider(cwd: str | Path | None = None) -> GitPythonProvider:
++    """Get a cached GitPythonProvider instance."""
++    global _git_provider_cache
++    if _git_provider_cache is None:
++        _git_provider_cache = GitPythonProvider(cwd=cwd)
++    return _git_provider_cache
++
++
++def clear_git_caches() -> None:
++    """Clear the cached git context and provider."""
++    global _git_provider_cache, _git_context_cache
++    _git_provider_cache = None
++    _git_context_cache = None
++
++
++@lru_cache(maxsize=32)
++def collect_git_context_with_gitpython(
++    cwd: str | Path | None = None,
++) -> GitContextSnapshot:
++    """
++    Collect a comprehensive git context snapshot using GitPython.
++
++    This function replaces the subprocess-based collect_git_context
++    with a GitPython-based implementation.
++    """
++    global _git_context_cache
++    if _git_context_cache is not None:
++        return _git_context_cache
++
++    provider = GitPythonProvider(cwd=cwd)
++
++    if not provider.is_git_repo():
++        snapshot = GitContextSnapshot(available=False, error="Not a git repository")
++        _git_context_cache = snapshot
++        return snapshot
++
++    branch = provider.get_branch()
++    default_branch = provider.get_default_branch()
++    status, status_truncated = provider.get_status()
++    commits = provider.get_recent_commits()
++    user_name = provider.get_user_name()
++    repo_root = provider.get_repo_root()
++
++    snapshot = GitContextSnapshot(
++        available=True,
++        repo_root=repo_root,
++        branch=branch,
++        default_branch=default_branch,
++        user_name=user_name,
++        status=status,
++        status_truncated=status_truncated,
++        recent_commits=commits,
++    )
++    _git_context_cache = snapshot
++    return snapshot
++
++
++def format_git_status_with_gitpython(ctx: GitContextSnapshot) -> str:
++    """
++    Format git context as a string for the systemContext.gitStatus key.
++
++    Mirrors the format_git_status output from git_context.py.
++    """
++    if not ctx.available:
++        return ""
++
++    parts: list[str] = []
++    parts.append("Git repository detected.")
++
++    if ctx.branch:
++        parts.append(f"Current branch: {ctx.branch}")
++    if ctx.default_branch:
++        parts.append(f"Default branch: {ctx.default_branch}")
++    if ctx.user_name:
++        parts.append(f"User: {ctx.user_name}")
++
++    if ctx.status:
++        parts.append(f"\nStatus:\n{ctx.status}")
++        if ctx.status_truncated:
++            parts.append("(Status output was truncated)")
++    else:
++        parts.append("\nWorking tree clean.")
++
++    if ctx.recent_commits:
++        parts.append(f"\nRecent commits:\n{ctx.recent_commits}")
++
++    return "\n".join(parts)
+\ No newline at end of file

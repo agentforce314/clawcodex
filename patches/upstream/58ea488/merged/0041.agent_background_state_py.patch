@@ -1,0 +1,78 @@
+diff --git a/agent/background_state.py b/agent/background_state.py
+new file mode 100644
+--- /dev/null
++++ b/agent/background_state.py	2026-05-28 12:54:49.427087 +0000
+@@ -0,0 +1,73 @@
++"""Process-level background signal manager (singleton).
++
++NOTE (Fork-Continue redesign): The signal/flag pattern defined here
++mirrors the TS ``Promise.race`` pattern from ``foreground_promotion.py``
++but was never wired into the TUI agent loop path.  The Ctrl+B feature
++now uses the Fork-Continue model (``src.agent.background_runner.py``)
++where the parent process exits and a forked child continues the agent.
++
++This module is retained for:
++  - backward compatibility with any code that reads ``is_backgrounded()``
++  - potential future use by the REPL (non-TUI) path
++  - test coverage of the ``run_with_background_escape`` race logic
++
++Coordinates the Ctrl+B → SIGTSTP → background promotion flow:
++  • TUI captures Ctrl+B and sets ``background_signal``
++  • ``foreground_promotion.run_with_background_escape`` races on it
++  • On signal, ``register_agent_background()`` is called and
++    ``is_backgrounded`` flips True
++
++The module-level instance is the singleton — import it anywhere to
++read or signal the background escape.
++"""
++
++from __future__ import annotations
++
++import asyncio
++import threading
++
++# Process-level event — set by TUI on Ctrl+B, waited on by agent loop
++background_signal: asyncio.Event = asyncio.Event()
++
++# Lock protects ``_is_backgrounded`` so the flag can be flipped from
++# the agent worker thread without racing the TUI read path.
++_is_backgrounded: bool = False
++_is_backgrounded_lock = threading.Lock()
++
++# --- public API -----------------------------------------------------------
++
++
++def is_backgrounded() -> bool:
++    """True iff the current agent has been promoted to background."""
++    with _is_backgrounded_lock:
++        return _is_backgrounded
++
++
++def set_backgrounded(value: bool = True) -> None:
++    """Flip the backgrounded flag (called by promotion logic)."""
++    global _is_backgrounded
++    with _is_backgrounded_lock:
++        _is_backgrounded = value
++
++
++def signal_background() -> None:
++    """Called from the TUI to request background promotion."""
++    if not background_signal.is_set():
++        background_signal.set()
++
++
++def reset_background() -> None:
++    """Reset the signal for a fresh foreground session (tests / new run)."""
++    background_signal.clear()
++    with _is_backgrounded_lock:
++        global _is_backgrounded
++        _is_backgrounded = False
++
++
++__all__ = [
++    "background_signal",
++    "is_backgrounded",
++    "set_backgrounded",
++    "signal_background",
++    "reset_background",
++]

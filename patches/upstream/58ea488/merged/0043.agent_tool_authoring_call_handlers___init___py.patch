@@ -1,0 +1,20 @@
+diff --git a/agent/tool_authoring/call_handlers/__init__.py b/agent/tool_authoring/call_handlers/__init__.py
+new file mode 100644
+--- /dev/null
++++ b/agent/tool_authoring/call_handlers/__init__.py	2026-05-26 00:47:29.444386 +0000
+@@ -0,0 +1,14 @@
++"""Call handlers for agent-created tools."""
++
++from .bash import BashCallError, execute_bash
++from .http import HttpCallError, execute_http
++from .python import PythonCallError, execute_python
++
++__all__ = [
++    "BashCallError",
++    "execute_bash",
++    "HttpCallError",
++    "execute_http",
++    "PythonCallError",
++    "execute_python",
++]
+\ No newline at end of file
