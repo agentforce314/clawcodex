@@ -1149,7 +1149,7 @@ ADVISOR_COMMAND.set_call(advisor_command_call)
 
 def get_builtin_commands() -> list[Command]:
     """Get all built-in commands."""
-    return [
+    cmds: list[Command] = [
         HELP_COMMAND,
         CLEAR_COMMAND,
         EXIT_COMMAND,
@@ -1160,6 +1160,10 @@ def get_builtin_commands() -> list[Command]:
         ADVISOR_COMMAND,
         INIT_COMMAND,
     ]
+    from src.command_system.buddy_command import is_buddy_command_enabled, BUDDY_COMMAND
+    if is_buddy_command_enabled():
+        cmds.append(BUDDY_COMMAND)
+    return cmds
 
 
 def register_builtin_commands(registry: CommandRegistry | None = None) -> None:

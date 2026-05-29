@@ -1,0 +1,503 @@
+"""Serial batched POST queue with retry/backoff and backpressure.
+
+Ports ``typescript/src/cli/transports/SerialBatchEventUploader.ts``.
+
+Used by ``HybridTransport`` (phase 14c) for the v1 POST writes, and
+by ``CCRClient`` in TS for v2 — the Python v2 transport
+(``src/transports/ccr_client.py``) currently has its own ad-hoc queue
+that may be migrated to this uploader in a future cleanup.
+
+Design overview
+----------------
+
+The class is a single-producer-single-consumer queue with serialized
+upload semantics:
+
+* ``enqueue(events)`` adds items to a pending buffer. Returns
+  immediately when there's space; awaits when the buffer would
+  exceed ``max_queue_size`` (backpressure).
+* A single drain task is in flight at any time — guarded by
+  ``_draining``. It pulls batches off the pending head (up to
+  ``max_batch_size`` items, optionally capped by
+  ``max_batch_bytes``), calls ``config.send(batch)``, and on success
+  releases backpressure waiters.
+* On send failure: the batch is re-queued at the front and the
+  drain sleeps for ``_retry_delay(failures, retry_after_ms)``
+  before the next attempt. ``RetryableError`` carries a
+  server-supplied ``retry_after_ms`` that overrides the exponential
+  schedule for that attempt (clamped to ``[base, max]`` + jitter to
+  prevent thundering herd).
+* When ``max_consecutive_failures`` is set and reached for a single
+  batch: drop the batch, fire ``on_batch_dropped``, increment
+  ``dropped_batch_count``, and advance to the next pending item with
+  a fresh failure budget.
+* ``flush()`` resolves immediately when the queue is empty and not
+  draining; otherwise blocks until the drain settles.
+* ``close()`` drops the pending queue, releases all waiters
+  (backpressure + flush), and short-circuits any in-flight backoff
+  sleep so the drain can exit promptly. It is sync — callers wanting
+  to await pending completion should ``await flush()`` first.
+
+Python-specific notes vs TS
+--------------------------
+
+* TS Promise-based waiters → ``asyncio.Future`` lists.
+* TS ``setTimeout`` for the backoff sleep → ``asyncio.wait_for`` on
+  a close-event so close() can interrupt the sleep.
+* TS ``Buffer.byteLength(jsonStringify(item))`` → ``len(json.dumps(item).encode('utf-8'))``.
+* TS lets ``JSON.stringify`` raise on un-serializable items
+  (BigInt, circular refs, throwing toJSON); Python's ``json.dumps``
+  raises ``TypeError`` / ``ValueError``. Same handling: drop the
+  poison item in place inside ``_take_batch``.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import random
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from typing import Generic, TypeVar
+
+logger = logging.getLogger(__name__)
+
+
+T = TypeVar('T')
+
+
+class RetryableError(Exception):
+    """Raise from ``config.send`` to wait a server-supplied duration.
+
+    Mirrors TS ``RetryableError``. ``retry_after_ms`` is clamped to
+    ``[base_delay_ms, max_delay_ms]`` and a uniform jitter is added
+    so the client neither hot-loops nor stalls, and many sessions
+    sharing a rate limit don't all pounce at the same instant.
+    Without ``retry_after_ms``, behaves like any other thrown error
+    (exponential backoff).
+    """
+
+    def __init__(
+        self, message: str, retry_after_ms: float | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.retry_after_ms = retry_after_ms
+
+
+@dataclass(frozen=True)
+class SerialBatchEventUploaderConfig(Generic[T]):
+    """Construction-time configuration for ``SerialBatchEventUploader``.
+
+    Mirrors TS ``SerialBatchEventUploaderConfig``.
+    """
+
+    #: Max items per POST. ``1`` = no batching.
+    max_batch_size: int
+    #: Max pending items before ``enqueue`` awaits.
+    max_queue_size: int
+    #: The actual HTTP call. Caller controls payload format. Must
+    #: raise on transient failures so the uploader retries; return
+    #: cleanly on success.
+    send: Callable[[list[T]], Awaitable[None]]
+    #: Base delay for exponential backoff (ms).
+    base_delay_ms: float
+    #: Max delay cap (ms).
+    max_delay_ms: float
+    #: Random jitter range added to retry delay (uniform [0, jitter_ms)).
+    jitter_ms: float
+    #: Max serialized bytes per POST. First item always goes alone
+    #: regardless of size; subsequent items only if cumulative JSON
+    #: bytes stay under this. ``None`` = no byte limit.
+    max_batch_bytes: int | None = None
+    #: After this many consecutive ``send`` failures, drop the batch
+    #: and move on. ``None`` = retry indefinitely.
+    max_consecutive_failures: int | None = None
+    #: Called when a batch is dropped via ``max_consecutive_failures``.
+    on_batch_dropped: Callable[[int, int], None] | None = None
+
+    def __post_init__(self) -> None:
+        # Footgun prevention. TS doesn't validate, but a zero
+        # max_batch_size would loop forever (take_batch returns []
+        # → drain `if not batch: continue` → infinite loop) and a
+        # zero max_queue_size blocks every enqueue forever.
+        if self.max_batch_size < 1:
+            raise ValueError(
+                f'max_batch_size must be >= 1 (got {self.max_batch_size})',
+            )
+        if self.max_queue_size < 1:
+            raise ValueError(
+                f'max_queue_size must be >= 1 (got {self.max_queue_size})',
+            )
+        if self.base_delay_ms < 0:
+            raise ValueError(
+                f'base_delay_ms must be >= 0 (got {self.base_delay_ms})',
+            )
+        if self.max_delay_ms < self.base_delay_ms:
+            raise ValueError(
+                f'max_delay_ms ({self.max_delay_ms}) must be >= '
+                f'base_delay_ms ({self.base_delay_ms})',
+            )
+        if self.jitter_ms < 0:
+            raise ValueError(
+                f'jitter_ms must be >= 0 (got {self.jitter_ms})',
+            )
+        if (
+            self.max_batch_bytes is not None
+            and self.max_batch_bytes < 1
+        ):
+            raise ValueError(
+                f'max_batch_bytes (when set) must be >= 1 '
+                f'(got {self.max_batch_bytes})',
+            )
+        if (
+            self.max_consecutive_failures is not None
+            and self.max_consecutive_failures < 1
+        ):
+            raise ValueError(
+                f'max_consecutive_failures (when set) must be >= 1 '
+                f'(got {self.max_consecutive_failures})',
+            )
+
+
+class SerialBatchEventUploader(Generic[T]):
+    """Serial batched POST queue with retry/backoff/backpressure.
+
+    See module docstring for design overview.
+
+    Lifecycle::
+
+        config = SerialBatchEventUploaderConfig(
+            max_batch_size=50,
+            max_queue_size=1000,
+            send=my_send_fn,
+            base_delay_ms=500.0,
+            max_delay_ms=8000.0,
+            jitter_ms=1000.0,
+        )
+        uploader = SerialBatchEventUploader(config)
+        await uploader.enqueue(event)
+        await uploader.enqueue([event1, event2])
+        await uploader.flush()   # block until drain settles
+        uploader.close()         # drop pending, release waiters
+    """
+
+    def __init__(self, config: SerialBatchEventUploaderConfig[T]) -> None:
+        self._config = config
+        self._pending: list[T] = []
+        self._pending_at_close = 0
+        self._draining = False
+        self._closed = False
+        self._backpressure_waiters: list[asyncio.Future[None]] = []
+        self._flush_waiters: list[asyncio.Future[None]] = []
+        self._dropped_batches = 0
+        # Set by ``close()``; consulted by ``_sleep`` to short-circuit
+        # an in-flight backoff sleep so the drain can exit promptly.
+        self._close_event = asyncio.Event()
+        self._drain_task: asyncio.Task[None] | None = None
+
+    # ─── Public read-only state ──────────────────────────────────────
+
+    @property
+    def dropped_batch_count(self) -> int:
+        """Monotonic count of batches dropped via
+        ``max_consecutive_failures``. Callers snapshot before
+        ``flush()`` and compare after to detect silent drops —
+        ``flush()`` resolves normally even when batches were dropped.
+        """
+        return self._dropped_batches
+
+    @property
+    def pending_count(self) -> int:
+        """Pending queue depth. After ``close()``, returns the count
+        at close time — ``close()`` clears the queue but shutdown
+        diagnostics may want to read this after.
+        """
+        return self._pending_at_close if self._closed else len(self._pending)
+
+    # ─── Public lifecycle ────────────────────────────────────────────
+
+    async def enqueue(self, events: T | list[T]) -> None:
+        """Add events to the pending buffer.
+
+        Returns immediately when there's space; awaits if the buffer
+        would exceed ``max_queue_size`` (backpressure). No-op when
+        the uploader is closed.
+
+        Accepts a single item or a list — matches TS ``enqueue``.
+        Note: caller can't distinguish a list-valued ``T`` from a
+        list of ``T``; mirror TS and treat any ``list`` as a batch.
+        """
+        if self._closed:
+            return
+        items: list[T] = (
+            events if isinstance(events, list) else [events]  # type: ignore[list-item]
+        )
+        if not items:
+            return
+
+        # Backpressure: wait until there's space. Loop because multiple
+        # waiters released at once may collectively still exceed capacity.
+        while (
+            len(self._pending) + len(items) > self._config.max_queue_size
+            and not self._closed
+        ):
+            fut: asyncio.Future[None] = (
+                asyncio.get_running_loop().create_future()
+            )
+            self._backpressure_waiters.append(fut)
+            try:
+                await fut
+            except asyncio.CancelledError:
+                # Best-effort: remove from list so a later release
+                # doesn't try to set a cancelled future. Cancellation
+                # propagates per asyncio convention.
+                if fut in self._backpressure_waiters:
+                    self._backpressure_waiters.remove(fut)
+                raise
+
+        if self._closed:
+            return
+        self._pending.extend(items)
+        self._kick_drain()
+
+    async def flush(self) -> None:
+        """Block until pending is empty.
+
+        Returns immediately when the queue is empty and not draining.
+        Used at turn boundaries and graceful shutdown.
+
+        **Note**: if ``max_consecutive_failures`` is ``None`` (default —
+        retry indefinitely) and the upstream is failing persistently,
+        ``flush()`` will not return until ``close()`` is called.
+        Callers wanting a bounded flush should set
+        ``max_consecutive_failures`` or wrap the call in
+        ``asyncio.wait_for``.
+        """
+        if not self._pending and not self._draining:
+            return
+        self._kick_drain()
+        fut: asyncio.Future[None] = (
+            asyncio.get_running_loop().create_future()
+        )
+        self._flush_waiters.append(fut)
+        await fut
+
+    def close(self) -> None:
+        """Drop pending events and stop processing. Sync.
+
+        Resolves any blocked ``enqueue()`` and ``flush()`` callers.
+        Short-circuits any in-flight backoff sleep via the close-event.
+        Idempotent — second call is a no-op.
+
+        Callers wanting to await pending completion should
+        ``await flush()`` *before* ``close()``; this method drops
+        whatever's still pending.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        self._pending_at_close = len(self._pending)
+        self._pending = []
+        self._close_event.set()
+        for fut in self._backpressure_waiters:
+            if not fut.done():
+                fut.set_result(None)
+        self._backpressure_waiters = []
+        for fut in self._flush_waiters:
+            if not fut.done():
+                fut.set_result(None)
+        self._flush_waiters = []
+
+    # ─── Internal ────────────────────────────────────────────────────
+
+    def _kick_drain(self) -> None:
+        """Schedule a drain task if not already running.
+
+        Singleflight via ``_draining`` and ``_drain_task.done()`` —
+        a re-entrant kick is a no-op. The drain task fires the
+        actual ``_drain`` coroutine which loops over pending until
+        empty or close.
+        """
+        if self._draining or self._closed:
+            return
+        if self._drain_task is not None and not self._drain_task.done():
+            return
+        loop = asyncio.get_running_loop()
+        self._drain_task = loop.create_task(
+            self._drain(), name='serial-batch-uploader-drain',
+        )
+
+    async def _drain(self) -> None:
+        """Drain loop. Mirrors TS ``drain()``.
+
+        At most one instance runs at a time (guarded by
+        ``_draining``). Sends batches serially. On failure, sleeps
+        ``_retry_delay`` and retries; on success, releases backpressure.
+        On exit (pending empty or closed), resolves any flush waiters.
+        """
+        if self._draining or self._closed:
+            return
+        self._draining = True
+        failures = 0
+        try:
+            while self._pending and not self._closed:
+                batch = self._take_batch()
+                if not batch:
+                    continue
+
+                try:
+                    await self._config.send(batch)
+                    failures = 0
+                except asyncio.CancelledError:
+                    raise
+                except Exception as err:  # noqa: BLE001
+                    failures += 1
+                    if (
+                        self._config.max_consecutive_failures is not None
+                        and failures
+                        >= self._config.max_consecutive_failures
+                    ):
+                        self._dropped_batches += 1
+                        cb = self._config.on_batch_dropped
+                        if cb is not None:
+                            try:
+                                cb(len(batch), failures)
+                            except Exception as cb_err:  # noqa: BLE001
+                                logger.warning(
+                                    '[batch-uploader] on_batch_dropped '
+                                    'raised: %s', cb_err,
+                                )
+                        failures = 0
+                        # Free any backpressure waiters even though
+                        # the batch was dropped — we made room.
+                        self._release_backpressure()
+                        continue
+                    # Re-queue the failed batch at the front. ``batch +
+                    # pending`` allocates once; ``unshift`` equivalents
+                    # would re-index every pending item batch-size times.
+                    self._pending = batch + self._pending
+                    retry_after_ms = (
+                        err.retry_after_ms
+                        if isinstance(err, RetryableError) else None
+                    )
+                    await self._sleep(
+                        self._retry_delay(failures, retry_after_ms),
+                    )
+                    continue
+
+                # Success: release backpressure waiters if space opened up.
+                self._release_backpressure()
+        finally:
+            self._draining = False
+            # Pending empty (whether by success drain or close)?
+            # Resolve all flush waiters.
+            if not self._pending:
+                for fut in self._flush_waiters:
+                    if not fut.done():
+                        fut.set_result(None)
+                self._flush_waiters = []
+
+    def _take_batch(self) -> list[T]:
+        """Pull the next batch from pending head.
+
+        Respects both ``max_batch_size`` and (when set)
+        ``max_batch_bytes``. First item always goes in regardless of
+        size; subsequent items only if cumulative JSON bytes stay
+        under ``max_batch_bytes``.
+
+        Un-serializable items (sets, objects without a JSON encoder,
+        circular refs — anything ``json.dumps`` raises on) are dropped
+        in place — leaving them at ``pending[0]`` would poison the
+        queue and hang ``flush()`` forever.
+
+        **Note**: the count-only path (``max_batch_bytes is None``)
+        does NOT screen items via ``json.dumps``. Callers using
+        count-only mode must either ensure items are JSON-serializable
+        themselves or set ``max_consecutive_failures`` so a poison
+        batch can be bounded.
+        """
+        max_batch_size = self._config.max_batch_size
+        max_batch_bytes = self._config.max_batch_bytes
+        if max_batch_bytes is None:
+            batch = self._pending[:max_batch_size]
+            del self._pending[:max_batch_size]
+            return batch
+        # Byte-limited path. Iterate from index 0; un-serializable items
+        # are deleted in place (index doesn't advance for the deletion).
+        total_bytes = 0
+        count = 0
+        i = 0
+        while i < len(self._pending) and count < max_batch_size:
+            try:
+                item_bytes = len(
+                    json.dumps(self._pending[i]).encode('utf-8'),
+                )
+            except (TypeError, ValueError) as exc:
+                logger.warning(
+                    '[batch-uploader] dropping un-serializable item '
+                    'at index %d: %s', i, exc,
+                )
+                del self._pending[i]
+                continue
+            # First item always taken; subsequent only if it fits.
+            if count > 0 and total_bytes + item_bytes > max_batch_bytes:
+                break
+            total_bytes += item_bytes
+            count += 1
+            i += 1
+        batch = self._pending[:count]
+        del self._pending[:count]
+        return batch
+
+    def _retry_delay(
+        self, failures: int, retry_after_ms: float | None,
+    ) -> float:
+        """Compute the next retry delay in ms.
+
+        ``retry_after_ms`` path: clamp to ``[base, max]`` + uniform
+        jitter ``[0, jitter_ms)``. Without ``retry_after_ms``:
+        exponential ``min(base * 2^(failures-1), max) + jitter``.
+        """
+        jitter = random.random() * self._config.jitter_ms
+        if retry_after_ms is not None:
+            clamped = max(
+                self._config.base_delay_ms,
+                min(retry_after_ms, self._config.max_delay_ms),
+            )
+            return clamped + jitter
+        exponential = min(
+            self._config.base_delay_ms * (2 ** (failures - 1)),
+            self._config.max_delay_ms,
+        )
+        return exponential + jitter
+
+    def _release_backpressure(self) -> None:
+        """Resolve all pending backpressure waiters."""
+        waiters = self._backpressure_waiters
+        self._backpressure_waiters = []
+        for fut in waiters:
+            if not fut.done():
+                fut.set_result(None)
+
+    async def _sleep(self, ms: float) -> None:
+        """Sleep for ``ms`` milliseconds; short-circuited by ``close()``.
+
+        Returns normally on timeout (sleep completed) or early when
+        ``_close_event`` is set (close fired). The drain loop's
+        ``while ... and not self._closed`` check handles the
+        post-sleep exit.
+        """
+        try:
+            await asyncio.wait_for(
+                self._close_event.wait(), timeout=ms / 1000.0,
+            )
+        except asyncio.TimeoutError:
+            return
+
+
+__all__ = [
+    'RetryableError',
+    'SerialBatchEventUploader',
+    'SerialBatchEventUploaderConfig',
+]

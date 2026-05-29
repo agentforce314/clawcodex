@@ -1,16 +1,17 @@
-"""Python package placeholder for the archived `buddy` subsystem."""
+"""Buddy / companion subsystem — ports TypeScript ``buddy/*`` modules."""
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
+from src.buddy.feature import is_buddy_enabled
+from src.buddy.prompt import (
+    build_companion_intro_attachment,
+    companion_intro_text,
+    format_companion_intro_attachments,
+)
 
-SNAPSHOT_PATH = Path(__file__).resolve().parent.parent / 'reference_data' / 'subsystems' / 'buddy.json'
-_SNAPSHOT = json.loads(SNAPSHOT_PATH.read_text())
-
-ARCHIVE_NAME = _SNAPSHOT['archive_name']
-MODULE_COUNT = _SNAPSHOT['module_count']
-SAMPLE_FILES = tuple(_SNAPSHOT['sample_files'])
-PORTING_NOTE = f"Python placeholder package for '{ARCHIVE_NAME}' with {MODULE_COUNT} archived module references."
-
-__all__ = ['ARCHIVE_NAME', 'MODULE_COUNT', 'PORTING_NOTE', 'SAMPLE_FILES']
+__all__ = [
+    'is_buddy_enabled',
+    'build_companion_intro_attachment',
+    'companion_intro_text',
+    'format_companion_intro_attachments',
+]

@@ -69,12 +69,21 @@ from src.bridge.bridge_api import (
     create_bridge_api_client,
     is_expired_error_type,
 )
+from src.bridge.bridge_pointer import (
+    BridgePointer,
+    clear_pointer,
+    read_pointer,
+    write_pointer,
+)
 from src.bridge.jwt_utils import TokenRefreshScheduler
 from src.bridge.poll_config_defaults import (
     DEFAULT_POLL_CONFIG,
     PollIntervalConfig,
 )
-from src.bridge.session_id_compat import to_compat_session_id
+from src.bridge.session_id_compat import (
+    to_compat_session_id,
+    to_infra_session_id,
+)
 from src.bridge.session_runner import (
     PermissionRequest,
     SessionSpawnerDeps,
@@ -236,12 +245,9 @@ async def init_bridge_core(
       the real subprocess.
     * ``runner_version``: header value for ``x-environment-runner-version``.
     """
+    pointer: BridgePointer | None = None
     if params.perpetual:
-        raise NotImplementedError(
-            'Phase 6 MVP does not yet implement perpetual mode '
-            '(crash-recovery pointer + env reuse). Full port lands in a '
-            'future revision; set perpetual=False for now.'
-        )
+        pointer = read_pointer(params.dir, machine_name=params.machine_name)
 
     if api_client is None:
         api_client = create_bridge_api_client(
@@ -267,6 +273,7 @@ async def init_bridge_core(
         environment_id=params.bridge_id,  # client-generated; server may swap
         api_base_url=params.base_url,
         session_ingress_url=params.session_ingress_url,
+        reuse_environment_id=pointer.environment_id if pointer else None,
     )
     try:
         registration = await api_client.register_bridge_environment(
@@ -276,27 +283,70 @@ async def init_bridge_core(
         logger.error('[bridge:repl] Registration failed: %s', err)
         _fire_state(params.on_state_change, 'failed',
                     f'Registration failed: {err}')
+        if params.perpetual:
+            clear_pointer(params.dir)
         return None
     environment_id = registration['environment_id']
     environment_secret = registration['environment_secret']
     logger.debug(
         '[bridge:repl] Registered environment_id=%s', environment_id
     )
+    if pointer is not None and environment_id != pointer.environment_id:
+        logger.info(
+            '[bridge:repl] Perpetual: server did not resurrect env '
+            '(pointer=%s, got=%s); creating fresh session',
+            pointer.environment_id, environment_id,
+        )
+        clear_pointer(params.dir)
+        pointer = None
 
     # ── 2. Create initial session ──────────────────────────────────────
-    try:
-        session_id = await params.create_session({
-            'environment_id': environment_id,
-            'title': params.title,
-            'gitRepoUrl': params.git_repo_url,
-            'branch': params.branch,
-        })
-    except Exception as err:  # noqa: BLE001
-        logger.error('[bridge:repl] Session creation threw: %s', err)
-        session_id = None
+    session_id: str | None = None
+    if pointer is not None and pointer.session_id is not None:
+        candidates = [pointer.session_id]
+        infra_session_id = to_infra_session_id(pointer.session_id)
+        if infra_session_id != pointer.session_id:
+            candidates.append(infra_session_id)
+        for candidate in candidates:
+            try:
+                await api_client.reconnect_session(
+                    environment_id, candidate,
+                )
+            except Exception as err:  # noqa: BLE001
+                logger.debug(
+                    '[bridge:repl] reconnect_session(%s) failed: %s',
+                    candidate, err,
+                )
+                continue
+            session_id = pointer.session_id
+            logger.debug(
+                '[bridge:repl] Reconnected pointer session_id=%s',
+                session_id,
+            )
+            break
+        if session_id is None:
+            logger.info(
+                '[bridge:repl] Pointer session no longer reachable; '
+                'creating fresh session',
+            )
+            clear_pointer(params.dir)
+            pointer = None
+    if session_id is None:
+        try:
+            session_id = await params.create_session({
+                'environment_id': environment_id,
+                'title': params.title,
+                'gitRepoUrl': params.git_repo_url,
+                'branch': params.branch,
+            })
+        except Exception as err:  # noqa: BLE001
+            logger.error('[bridge:repl] Session creation threw: %s', err)
+            session_id = None
     if session_id is None:
         _fire_state(params.on_state_change, 'failed',
                     'Session creation failed')
+        if params.perpetual:
+            clear_pointer(params.dir)
         try:
             await api_client.deregister_environment(environment_id)
         except Exception as err:  # noqa: BLE001
@@ -305,6 +355,15 @@ async def init_bridge_core(
             )
         return None
     logger.debug('[bridge:repl] Created session_id=%s', session_id)
+    if params.perpetual:
+        write_pointer(
+            params.dir,
+            bridge_id=params.bridge_id,
+            environment_id=environment_id,
+            session_id=session_id,
+            machine_name=params.machine_name,
+            created_at_ms=pointer.created_at_ms if pointer else None,
+        )
 
     # ── 3. Build the spawner (if not test-injected) ────────────────────
     if spawner is None:
@@ -323,6 +382,7 @@ async def init_bridge_core(
         environment_secret=environment_secret,
         initial_session_id=session_id,
         bridge_config=bridge_config,
+        pointer_created_at_ms=pointer.created_at_ms if pointer else None,
     )
     state.start_poll_loop()
 
@@ -356,6 +416,7 @@ class _BridgeState:
     environment_secret: str
     initial_session_id: str
     bridge_config: BridgeConfig
+    pointer_created_at_ms: int | None = None
 
     poll_task: asyncio.Task[None] | None = None
     poll_cancel: asyncio.Event = field(default_factory=asyncio.Event)
@@ -535,6 +596,15 @@ class _BridgeState:
         # Replace the bookkeeping handle's session id (the external
         # ReplBridgeHandle is immutable; this is the internal copy).
         self.initial_session_id = new_session_id
+        if self.params.perpetual:
+            write_pointer(
+                self.params.dir,
+                bridge_id=self.params.bridge_id,
+                environment_id=self.environment_id,
+                session_id=new_session_id,
+                machine_name=self.params.machine_name,
+                created_at_ms=self.pointer_created_at_ms,
+            )
         logger.info(
             '[bridge:repl] Environment recreated: env=%s session=%s',
             self.environment_id, new_session_id,
@@ -862,6 +932,8 @@ class _BridgeState:
             logger.warning(
                 '[bridge:repl] archive_session failed: %s', err
             )
+        if self.params.perpetual:
+            clear_pointer(self.params.dir)
 
         # Deregister the environment.
         try:

@@ -10,6 +10,12 @@ from __future__ import annotations
 
 from typing import Final
 
+COMMON_HELP_ARGS: tuple[str, ...] = ('help', '-h', '--help')
+COMMON_INFO_ARGS: tuple[str, ...] = (
+    'list', 'show', 'display', 'current', 'view', 'get', 'check',
+    'describe', 'print', 'version', 'about', 'status', '?',
+)
+
 TASK_NOTIFICATION_TAG: Final[str] = "task-notification"
 TASK_ID_TAG: Final[str] = "task-id"
 TOOL_USE_ID_TAG: Final[str] = "tool-use-id"
@@ -27,6 +33,8 @@ WORKTREE_BRANCH_TAG: Final[str] = "worktree-branch"
 
 
 __all__ = [
+    "COMMON_HELP_ARGS",
+    "COMMON_INFO_ARGS",
     "TASK_NOTIFICATION_TAG",
     "TASK_ID_TAG",
     "TOOL_USE_ID_TAG",

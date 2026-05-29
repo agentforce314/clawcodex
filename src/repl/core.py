@@ -2984,6 +2984,25 @@ class ClawcodexREPL:
                     f"[dim]  ⎿  Invoking agent @{att['agent_type']}[/dim]"
                 )
 
+        # Companion intro — build and prepend companion intro attachment
+        # if a companion has been hatched and not yet announced.
+        intro_attachments: list[dict[str, Any]] = []
+        from src.buddy.prompt import (
+            build_companion_intro_attachment,
+            format_companion_intro_attachments,
+        )
+        intro_attachments = build_companion_intro_attachment(
+            self.session.conversation.messages,  # type: ignore[attr-defined]
+        )
+        if intro_attachments:
+            intro_text = format_companion_intro_attachments(intro_attachments)
+            if intro_text:
+                user_input = f"{intro_text}\n\n{user_input}" if user_input else intro_text
+            from src.types.messages import AttachmentMessage
+            self.session.conversation._messages.append(  # type: ignore[attr-defined]
+                AttachmentMessage(attachments=intro_attachments)
+            )
+
         # Image @-mentions become real image content blocks on the user
         # message so the model sees the image directly (matches TS's
         # auto-Read-on-@image behaviour, and stops the model from
@@ -3383,6 +3402,17 @@ class ClawcodexREPL:
 
             self._engine_messages = engine.get_messages()
             self._stats_turns += 1
+
+            # Companion observer — fire per-turn reaction if relevant keywords
+            # appear in the user's message. Currently a no-op until Textual
+            # sprite rendering is available.
+            from src.buddy.observer import fire_companion_observer
+            def _no_op_reaction(quip: str | None) -> None:
+                return
+            fire_companion_observer(
+                self.session.conversation.messages,  # type: ignore[attr-defined]
+                _no_op_reaction,
+            )
 
             if not last_text_was_printed and response_text:
                 self.console.print(Markdown(response_text))

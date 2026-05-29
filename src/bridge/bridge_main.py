@@ -93,6 +93,11 @@ from src.bridge.work_secret import (
     build_ccr_v2_sdk_url,
     decode_work_secret,
 )
+from src.bridge.worktree import (
+    WorktreePaths,
+    create_agent_worktree,
+    remove_agent_worktree,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -453,6 +458,7 @@ class _BridgeDaemon:
         self.active_sessions: dict[str, SessionHandle] = {}
         self.session_work_ids: dict[str, str] = {}
         self.session_compat_ids: dict[str, str] = {}
+        self.session_worktrees: dict[str, WorktreePaths] = {}
         self.completed_work_ids: set[str] = set()
         self.session_timer_tasks: dict[str, asyncio.Task[None]] = {}
         self.timed_out_sessions: set[str] = set()
@@ -616,21 +622,24 @@ class _BridgeDaemon:
             'use_ccr_v2': True,
             'worker_epoch': 0,  # MVP: full port fetches via /worker/register
         }
+        worktree_paths: WorktreePaths | None = None
         working_dir = self.config.dir
         if self.config.spawn_mode == 'worktree':
-            # MVP: worktree mode not yet implemented; spawn in cwd with
-            # a one-line warning so operators see the gap.
-            logger.warning(
-                '[bridge:main] --spawn worktree not yet implemented; '
-                'spawning in %s instead', working_dir,
+            worktree_paths = await create_agent_worktree(
+                self.config.dir, session_id,
             )
+            working_dir = worktree_paths.working_dir
         try:
             session = self.spawner.spawn(spawn_opts, working_dir)
         except Exception as err:  # noqa: BLE001
             logger.error('[bridge:main] spawn failed: %s', err)
+            if worktree_paths is not None:
+                await remove_agent_worktree(worktree_paths)
             await self._safe_stop_work(work_id, force=True)
             return
         self.active_sessions[session_id] = session
+        if worktree_paths is not None:
+            self.session_worktrees[session_id] = worktree_paths
         self.session_work_ids[session_id] = work_id
         # session_compat_ids cached for future title/archive ops that
         # the MVP doesn't yet exercise — populated for forward compat.
@@ -714,6 +723,9 @@ class _BridgeDaemon:
         self.active_sessions.pop(session_id, None)
         self.session_work_ids.pop(session_id, None)
         self.session_compat_ids.pop(session_id, None)
+        worktree_paths = self.session_worktrees.pop(session_id, None)
+        if worktree_paths is not None:
+            await remove_agent_worktree(worktree_paths)
         # ``discard`` doesn't return a value; check membership first.
         was_timeout = session_id in self.timed_out_sessions
         self.timed_out_sessions.discard(session_id)
@@ -771,6 +783,13 @@ class _BridgeDaemon:
         # Stop all outstanding work items.
         for work_id in work_id_snapshot.values():
             await self._safe_stop_work(work_id, force=True)
+
+        # Remove any session worktrees that did not go through the normal
+        # wait-done cleanup path during shutdown.
+        worktree_snapshot = list(self.session_worktrees.values())
+        self.session_worktrees.clear()
+        for worktree_paths in worktree_snapshot:
+            await remove_agent_worktree(worktree_paths)
 
         # Deregister the environment (best-effort).
         try:
