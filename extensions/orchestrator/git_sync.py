@@ -185,10 +185,25 @@ class GitSyncService:
         if rc == 0:
             return branch_name
 
-        stdout, stderr, rc = _run_git(
-            ["checkout", "-b", branch_name],
-            repo_root,
+        # Branch doesn't exist locally — determine best creation strategy
+        # Case 1: remote branch exists → checkout with --track to wire it to origin
+        # Case 2: completely new branch → create with -b
+        remote_ref = f"origin/{branch_name}"
+        check_remote = self._run_git_output(
+            ["rev-parse", "--verify", f"refs/remotes/{remote_ref}"], repo_root
         )
+        if check_remote:
+            # Remote branch exists — wire it up with --track
+            stdout, stderr, rc = _run_git(
+                ["checkout", "--track", remote_ref],
+                repo_root,
+            )
+        else:
+            # No remote branch → create new local branch
+            stdout, stderr, rc = _run_git(
+                ["checkout", "-b", branch_name],
+                repo_root,
+            )
         if rc != 0:
             raise GitSyncError(
                 f"Failed to checkout work branch {branch_name}: {stderr or stdout}"
