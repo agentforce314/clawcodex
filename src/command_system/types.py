@@ -89,7 +89,8 @@ class CommandBase:
     version: Optional[str] = None
     disable_model_invocation: bool = False
     user_invocable: bool = True
-    loaded_from: str = "builtin"  # "builtin" | "skills" | "plugin" | "bundled" | "mcp"
+    loaded_from: str = "builtin"  # "builtin" | "skills" | "plugin" | "bundled" | "mcp" | "commands_DEPRECATED"
+    is_mcp: bool = False  # True for commands sourced from an MCP server (TS CommandBase.isMcp)
     kind: Optional[str] = None  # "workflow" or None
     immediate: bool = False
     is_sensitive: bool = False

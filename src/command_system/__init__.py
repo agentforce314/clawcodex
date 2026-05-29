@@ -11,8 +11,10 @@ from src.utils.startup_profiler import profile_checkpoint
 
 profile_checkpoint("command_system_imported")
 
+from .aggregator import clear_commands_cache, get_commands
 from .argument_substitution import parse_argument_names, substitute_arguments
 from .builtins import (
+    AUTO_FIX_COMMAND,
     CLEAR_COMMAND,
     COMPACT_COMMAND,
     CONTEXT_COMMAND,
@@ -20,6 +22,7 @@ from .builtins import (
     EXIT_COMMAND,
     HELP_COMMAND,
     INIT_COMMAND,
+    REVIEW_COMMAND,
     SKILLS_COMMAND,
     execute_command_async,
     execute_command_sync,
@@ -40,6 +43,12 @@ from .registry import (
     has_command,
     list_commands,
     register_command,
+)
+from .safe_commands import (
+    BRIDGE_SAFE_COMMANDS,
+    REMOTE_SAFE_COMMANDS,
+    filter_commands_for_remote_mode,
+    is_bridge_safe_command,
 )
 from .skills_integration import (
     get_skill_command,
@@ -98,8 +107,18 @@ __all__ = [
     "CONTEXT_COMMAND",
     "COMPACT_COMMAND",
     "INIT_COMMAND",
+    "AUTO_FIX_COMMAND",
+    "REVIEW_COMMAND",
     "get_builtin_commands",
     "register_builtin_commands",
+    # Aggregator
+    "get_commands",
+    "clear_commands_cache",
+    # Safe commands
+    "REMOTE_SAFE_COMMANDS",
+    "BRIDGE_SAFE_COMMANDS",
+    "is_bridge_safe_command",
+    "filter_commands_for_remote_mode",
     # Skills integration
     "skill_to_prompt_command",
     "register_skill_as_command",

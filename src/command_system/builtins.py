@@ -1093,6 +1093,64 @@ INIT_COMMAND = PromptCommand(
     source="builtin",
 )
 
+# Port of typescript/src/commands/auto-fix.ts (type: 'prompt'). Text is verbatim.
+AUTO_FIX_PROMPT = (
+    "The user wants to configure auto-fix settings. Auto-fix automatically runs lint "
+    "and test commands after AI file edits, feeding errors back for self-repair.\n\n"
+    "Current settings location: `.claude/settings.json` or "
+    "`.claude/settings.local.json`\n\n"
+    "Example configuration:\n```json\n{\n  \"autoFix\": {\n    \"enabled\": true,\n"
+    "    \"lint\": \"eslint . --fix\",\n    \"test\": \"bun test\",\n"
+    "    \"maxRetries\": 3,\n    \"timeout\": 30000\n  }\n}\n```\n\n"
+    "Ask the user what lint and test commands they use, then help them set up the "
+    "configuration."
+)
+
+# Port of the /review half of typescript/src/commands/review.ts (LOCAL_REVIEW_PROMPT).
+# TS uses an indented template literal; this is intentionally dedented (the model is
+# indentation-insensitive). `${args}` becomes `$ARGUMENTS` for substitute_arguments.
+REVIEW_PROMPT = """
+You are an expert code reviewer. Follow these steps:
+
+1. If no PR number is provided in the args, run `gh pr list` to show open PRs
+2. If a PR number is provided, run `gh pr view <number>` to get PR details
+3. Run `gh pr diff <number>` to get the diff
+4. Analyze the changes and provide a thorough code review that includes:
+   - Overview of what the PR does
+   - Analysis of code quality and style
+   - Specific suggestions for improvements
+   - Any potential issues or risks
+
+Keep your review concise but thorough. Focus on:
+- Code correctness
+- Following project conventions
+- Performance implications
+- Test coverage
+- Security considerations
+
+Format your review with clear sections and bullet points.
+
+PR number: $ARGUMENTS
+"""
+
+AUTO_FIX_COMMAND = PromptCommand(
+    name="auto-fix",
+    description="Configure auto-fix: run lint/test after AI edits",
+    markdown_content=AUTO_FIX_PROMPT,
+    progress_message="Configuring auto-fix...",
+    content_length=0,
+    source="builtin",
+)
+
+REVIEW_COMMAND = PromptCommand(
+    name="review",
+    description="Review a pull request",
+    markdown_content=REVIEW_PROMPT,
+    progress_message="reviewing pull request",
+    content_length=0,
+    source="builtin",
+)
+
 
 # Synchronous versions for REPL integration
 def execute_command_sync(cmd_name: str, args: str, context: CommandContext) -> tuple[bool, str | None, str | None]:
@@ -1164,6 +1222,8 @@ def get_builtin_commands() -> list[Command]:
         COMPACT_COMMAND,
         ADVISOR_COMMAND,
         INIT_COMMAND,
+        AUTO_FIX_COMMAND,
+        REVIEW_COMMAND,
     ]
     if is_buddy_command_enabled():
         cmds.append(BUDDY_COMMAND)
