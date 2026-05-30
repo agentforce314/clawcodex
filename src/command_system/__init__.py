@@ -55,6 +55,7 @@ from .safe_commands import (
     is_bridge_safe_command,
 )
 from .security_review import SECURITY_REVIEW_COMMAND
+from .statusline import STATUSLINE_COMMAND, StatuslineCommand
 from .shell_prompt import (
     execute_shell_commands_in_prompt,
     make_bash_shell_executor,
@@ -119,6 +120,8 @@ __all__ = [
     "AUTO_FIX_COMMAND",
     "REVIEW_COMMAND",
     "SECURITY_REVIEW_COMMAND",
+    "STATUSLINE_COMMAND",
+    "StatuslineCommand",
     "get_builtin_commands",
     "register_builtin_commands",
     # Moved-to-plugin factory + shell-at-prompt-build
