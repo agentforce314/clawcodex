@@ -40,458 +40,11 @@ src/
 
 ---
 
-## 二、已实现功能模块
-
-### 2.1 核心 Agent 系统
-
-| 模块 | 文件 | 功能 | 状态 |
-|------|------|------|------|
-| Agent 执行循环 | `agent/run_agent.py` | 四级权限模型、Subagent 隔离、消息完整性 | ✅ 完成 |
-| Fork Subagent | `agent/fork_subagent.py` | 创建独立会话的 sub-agent | ✅ 完成 |
-| Resume Agent | `agent/resume_agent.py` | 从断点恢复 sub-agent | ✅ 完成 |
-| Foreground Promotion | `agent/foreground_promotion.py` | 后台 agent 提升到前台 | ✅ 完成 |
-| Session 管理 | `agent/session.py` | 会话状态管理 | ✅ 完成 |
-| Transcript | `agent/transcript.py` | 对话转录本管理 | ✅ 完成 |
-| Prompt 构建 | `agent/prompt.py` | 系统 Prompt 组装 | ✅ 完成 |
-| Agent 定义系统 | `agent/agent_definitions.py` | Agent 类型、工具、配置定义 | ✅ 完成 |
-| Agent 记忆作用域 | `memdir/memdir.py` | 按需加载不同作用域的记忆 | ✅ 完成 |
-
-### 2.0 三层解耦架构（Layer Isolation）
-
-| Layer | 路径 | 说明 | upstream-sync 层 |
-|-------|------|------|-----------------|
-| Layer 1 | `src/upstream/` / `src/upstream/v2025_04/` | 上游代码镜像（只读） | `upstream` |
-| Layer 2 | `src/capabilities/` | Protocol 接口定义，无运行时上游依赖 | `capabilities` |
-| Layer 3 | `src/orchestrator/` / `src/api/` | ClawCodex 新增组件，完全解耦 | `features` |
-
-**解耦实现：**
-- `src/api/query.py` 通过 `capabilities/headless_runner.py` 间接调用 `entrypoints/headless.run_headless`，运行时无直接上游引用
-- `src/api/query.py` 使用 `ToolEventProtocol` / `HeadlessOptionsProtocol` 做类型标注，与上游具体实现解耦
-- 所有 Protocol 使用 `typing.Protocol` 结构子类型（无 ABC 继承）
-- 适配器文件（`_gitpython_adapter.py` 等）在 `src/` 内，随上游代码一同在补丁范围内，不形成独立依赖
-
-**upstream-sync audit**：零层违规（`upstream-sync audit` 验证通过）
-
-### 2.1 核心 Agent 系统
-
-| Provider | 文件 | 状态 | 备注 |
-|----------|------|------|------|
-| Anthropic | `providers/anthropic_provider.py` | ✅ 完成 | 官方 API |
-| OpenAI | `providers/openai_provider.py` | ✅ 完成 | |
-| OpenAI Compatible | `providers/openai_compatible.py` | ✅ 完成 | 通用 OpenAI 兼容端点 |
-| GLM | `providers/glm_provider.py` | ✅ 完成 | 智谱 GLM |
-| MiniMax | `providers/minimax_provider.py` | ✅ 完成 | |
-| DeepSeek | `providers/deepseek_provider.py` | ✅ 完成 | |
-| OpenRouter | `providers/openrouter_provider.py` | ✅ 完成 | |
-| **LiteLLM 适配器** | `providers/_litellm_adapter.py` | ✅ 完成 | P0，统一 100+ 模型 |
-
-### 2.3 工具系统
-
-| 工具 | 文件 | 状态 |
-|------|------|------|
-| FileRead | `tool_system/tools/read.py` | ✅ 完成 |
-| FileWrite | `tool_system/tools/write.py` | ✅ 完成 |
-| FileEdit | `tool_system/tools/edit.py` | ✅ 完成 |
-| Glob | `tool_system/tools/glob.py` | ✅ 完成 |
-| Grep | `tool_system/tools/grep.py` | ✅ 完成 |
-| Bash | `tool_system/tools/bash/` | ✅ 完成 |
-| WebFetch | `tool_system/tools/web_fetch.py` | ✅ 完成 |
-| WebSearch | `tool_system/tools/web_search.py` | ✅ 完成 |
-| AskUserQuestion | `tool_system/tools/ask_user_question.py` | ✅ 完成 |
-| SendMessage | `tool_system/tools/send_message.py` | ✅ 完成 |
-| TodoWrite | `tool_system/tools/todo_write.py` | ✅ 完成 |
-| TaskStop | `tool_system/tools/task_stop.py` | ✅ 完成 |
-| TasksV2 | `tool_system/tools/tasks_v2.py` | ✅ 完成 |
-| Agent | `tool_system/tools/agent.py` | ✅ 完成 |
-| Team | `tool_system/tools/team.py` | ✅ 完成 |
-| Config | `tool_system/tools/config.py` | ✅ 完成 |
-| PlanMode | `tool_system/tools/plan_mode.py` | ✅ 完成 |
-| Cron | `tool_system/tools/cron.py` | ✅ 完成 |
-| MCPTool | `tool_system/tools/mcp.py` | ✅ 完成 |
-| MCPResources | `tool_system/tools/mcp_resources.py` | ✅ 完成 |
-| Skill | `tool_system/tools/skill.py` | ✅ 完成 |
-| ToolSearch | `tool_system/tools/tool_search.py` | ✅ 完成 |
-| LSP | `tool_system/tools/lsp.py` | ✅ 完成 |
-| Worktree | `tool_system/tools/worktree.py` | ✅ 完成 |
-| TaskInspect | `tool_system/tools/task_inspect.py` | ✅ 完成 | Manager Agent 查询 Worker |
-| TaskDirectives | `tool_system/tools/task_directives.py` | ✅ 完成 | Manager Agent 指令 Worker |
-| ProgressReport | `tool_system/tools/progress_report.py` | ✅ 完成 | Agent 阶段性进度汇报 |
-
-### 2.4 开源替代组件（已完成）
-
-| 组件 | 原始实现 | 替代方案 | 适配器文件 | 状态 |
-|------|---------|---------|-----------|------|
-| 配置系统 | 手动 JSON 管理 | Pydantic-settings | `settings/pydantic_adapter.py` | ✅ 完成 |
-| Frontmatter 解析 | 手动 yaml.safe_load | python-frontmatter | `skills/_frontmatter_adapter.py` | ✅ 完成 |
-| Bash AST 解析器 | ~1,500 行自建 | tree-sitter-bash | `permissions/_treesitter_adapter.py` | ✅ 完成 |
-| Git 操作 | 6 个 subprocess.run() | GitPython | `context_system/_gitpython_adapter.py` | ✅ 完成 |
-| Hook 系统 | ~1,200 行自建 | Pluggy | `hooks/_pluggy_adapter.py` | ✅ 完成 |
-| 结构化输出 | json.loads + 手动验证 | Outlines | `agent/_outlines_adapter.py` | ✅ 完成 |
-
-### 2.6 后台运行 + 恢复同步（Background Running & Resume）
-
-**状态**: ✅ 完成
-**目标**: 支持 Ctrl+B 后台化 CLI/TUI 任务，执行 `clawcodex --resume` 时对话流实时同步更新（非静态快照）
-
-#### 核心设计
-
-```
-┌──────────────────┐     ┌───────────────────┐     ┌─────────────────┐
-│   后台任务循环    │────►│  TranscriptWriter │────►│  transcript.jsonl│
-│                  │     │  (O_APPEND 原子)   │     │  (实时增量)      │
-└──────────────────┘     └───────────────────┘     └─────────────────┘
-                                                              │
-                                                              │ watchdog
-                                                              ▼ 通知
-┌──────────────────┐     ┌───────────────────┐     ┌─────────────────┐
-│   新终端 TUI      │◄────│  SessionWatcher    │◄────│  会话目录变更   │
-│                  │     │  (监控 + 事件)     │     │                 │
-└──────────────────┘     └───────────────────┘     └─────────────────┘
-```
-
-#### 架构组件
-
-| 组件 | 补丁文件 | 功能 |
-|------|---------|------|
-| `BackgroundState` | `0067.src.agent.background_state.py.patch` | 进程级后台信号管理器单例，signal/flag 管理 |
-| `TailFollower` | `0068.src.services.tail_follower.py.patch` | tail -f 风格尾部追踪器，实时读取 JSONL 增量 |
-| `SessionWatcher` | `0069.src.utils.session_watcher.py.patch` | 目录变更监控（inotify/FSEvents/500ms polling fallback） |
-| `keybindings.py` | `0070.src.tui.keybindings.py.patch` | 添加 `ctrl+b → agent.background` 绑定 |
-| `app.py` | `0071.src.tui.app.py.patch` | `action_agent_background()` 处理 Ctrl+B |
-| `session.py` | `0072.src.agent.session.py.patch` | 新增 `Session.resume_with_tail()` 工厂方法 |
-| `agent_bridge.py` | `0073.src.tui.agent_bridge.py.patch` | 集成 TailFollower 支持 |
-| `graceful_shutdown.py` | `0074.src.utils.graceful_shutdown.py.patch` | 添加 SIGTSTP 处理 |
-
-#### 工作流程
-
-1. **后台化**: TUI 按 Ctrl+B → `signal_background()` 设置信号 → `foreground_promotion.run_with_background_escape` 竞速检测 → `register_agent_background()` → TUI 退出，后台任务通过 `TranscriptWriter` 追加消息
-2. **恢复**: `Session.resume_with_tail()` 恢复会话 + 启动 `TailFollower` → 新消息写入时 TailFollower 检测到偏移量变化 → 通知 UI 实时更新
-
-#### 关键设计点
-
-- **不修改上游源码** — 所有改动通过标准 quilt 补丁注入（`patches/upstream/b125e16/`）
-- **O_APPEND 原子写入** — 后台任务写入时不会丢失或交错
-- **尾部追踪而非快照** — 恢复时读取增量，而非全量重放
-- **跨平台** — SessionWatcher 自动选择 inotify (Linux) / FSEvents (macOS) / polling fallback
-
-### 2.7 Bridge Phase 8-11 多 Session Daemon 桥接器
-
-**状态**: ✅ 完成
-**上游版本**: 68dc3c5 (Phase 11 bridge complete)
-**目标**: 实现多 Session Daemon 架构，支持远程桥接、REPL 桥接和多会话协调
-
-#### 架构设计
-
-```
-src/bridge/                    # 桥接层（与上游解耦新增）
-├── __init__.py                # 模块入口
-├── bridge_api.py               # Phase 3: HTTP 客户端 + API 定义
-├── bridge_main.py              # Phase 8: 多 Session Daemon 入口
-├── remote_bridge_core.py       # Phase 5: 远程桥接核心
-├── session_runner.py           # Phase 4: 子 CLI 会话生成
-├── repl_bridge.py              # Phase 11: REPL 桥接
-├── init_repl_bridge.py         # 初始化 REPL 桥接
-├── messaging.py                # 消息传递机制
-├── types.py                   # 桥接类型定义
-└── headless_bridge.py          # Headless 桥接
-```
-
-#### Phase 里程碑
-
-| Phase | 补丁文件 | 核心组件 | 状态 |
-|-------|---------|---------|------|
-| Phase 1 | 0002-bridge-complete-Phase-1-* | Config/URL 处理/polling URL | ✅ 完成 |
-| Phase 3 | 0003-bridge-phase-3-port-bridgeApi.ts-* | bridge_api.py HTTP 客户端 | ✅ 完成 |
-| Phase 4 | 0005-bridge-phase-4-port-sessionRunner.ts-* | session_runner.py 子 CLI 生成 | ✅ 完成 |
-| Phase 5 | 0004-bridge-phase-5-MVP-port-remoteBridgeCore.ts-* | remote_bridge_core.py 远程桥接 | ✅ 完成 |
-| Phase 6 | 0006-bridge-phase-6-*-orchestrator-skel-* | 基于 env 的编排器骨架 | ✅ 完成 |
-| Phase 8 | 0007-bridge-phase-8-*-multi-session-daemon-* | bridge_main.py 多会话轮询 | ✅ 完成 |
-| Phase 11a | 0008-bridge-phase-11a-bridge_main-hardening-* | bridge_main.py 硬化 | ✅ 完成 |
-| Phase 11b | 0009-bridge-phase-11b-repl_bridge-hardening-* | repl_bridge.py 硬化 | ✅ 完成 |
-
-#### 核心组件详细说明
-
-**1. bridge_main.py - 多 Session Daemon 入口 (Phase 8)**
-
-多会话轮询守护进程，负责：
-- CLI 参数解析 (`--verbose`, `--sandbox`, `--spawn`, `--capacity`, `--permission-mode`, `--name`)
-- 多会话容量控制 (capacity gating)
-- 会话状态管理 (active_sessions, session_work_ids, completed_work_ids)
-- 工作轮询循环 (work poll loop)
-- 优雅关闭 (SIGTERM → wait grace → SIGKILL stragglers → deregister)
-- SIGINT/SIGTERM 处理器安装
-
-**2. remote_bridge_core.py - 远程桥接核心 (Phase 5)**
-
-远程桥接实现，支持：
-- v2 环境变量驱动配置
-- 远程会话生命周期管理
-- 跨进程通信
-
-**3. session_runner.py - 子 CLI 会话生成 (Phase 4)**
-
-子进程管理，实现：
-- Child CLI 生成和监控
-- 工作目录管理
-- 会话超时控制
-
-**4. repl_bridge.py - REPL 桥接 (Phase 11)**
-
-REPL 集成桥接器，实现：
-- REPL 与 Bridge 的消息路由
-- 会话状态同步
-- TUI 交互支持
-
-**5. bridge_api.py - HTTP 客户端 (Phase 3)**
-
-API 通信层：
-- 轮询 URL 处理
-- 会话注册/注销
-- 工作队列管理
-
-#### 关键类型定义
-
-```python
-@dataclass
-class ParsedArgs:
-    """bridge_main CLI 参数"""
-    verbose: bool = False
-    sandbox: bool = True
-    debug_file: str | None = None
-    session_timeout: int | None = None
-    permission_mode: str = "default"
-    name: str | None = None
-    spawn: str = "session"  # session | same-dir | worktree
-    capacity: int = 1
-    create_session_in_dir: bool = True
-
-@dataclass
-class BackoffConfig:
-    """退避配置"""
-    base_delay_ms: int = 1000
-    max_delay_ms: int = 30000
-    exponential: bool = True
-
-class BridgeHeadlessPermanentError(Exception):
-    """永久性错误信号，不要重试"""
-    pass
-```
-
-#### 与现有组件集成
-
-| 现有组件 | 集成点 | 说明 |
-|---------|--------|------|
-| `src/query/query.py` | QueryEngine | 复用 query engine 重构 |
-| `src/tool_system/advisor.py` | Advisor | token 计数和状态显示 |
-| `src/tool_system/renderers.py` | Renderer | 系统 prompt 渲染 |
-
-### 2.8 Agent Loop Consolidation (Stage 4)
-
-**状态**: ✅ 完成
-**上游版本**: 68dc3c5
-**目标**: 删除 `agent_loop.py`，重构到 `src/query/` 模块，实现工具执行与 Agent 循环的解耦
-
-#### 核心变更
-
-| 变更 | 说明 |
-|------|------|
-| 删除 `agent_loop.py` (537 行) | 上游原 Agent 循环逻辑移除 |
-| 新增 `src/tool_system/renderers.py` (+257 行) | 系统 prompt 渲染器 |
-| 新增 `src/tool_system/tools/advisor.py` (+125 行) | Advisor 工具 |
-| 重构到 `src/query/` 模块 | 查询引擎解耦 |
-
-#### renderers.py - 系统 Prompt 渲染器
-
-渲染器负责将系统 prompt 组件组合并格式化：
-
-```python
-class SystemPromptRenderer:
-    """系统 Prompt 渲染器"""
-    def render(self, context: PromptContext) -> str: ...
-    def render_capabilities(self, capabilities: list[str]) -> str: ...
-    def render_rules(self, rules: list[str]) -> str: ...
-```
-
-#### advisor.py - Advisor 工具
-
-Advisor 工具提供 Token 计数和状态显示：
-
-```python
-class AdvisorTool:
-    """Advisor 工具 - 提供 token 计数和状态信息"""
-    def get_token_usage(self) -> TokenUsage: ...
-    def get_cost_estimate(self) -> CostEstimate: ...
-```
-
-### 2.9 Advisor Token 计数与状态显示
-
-**状态**: ✅ 完成
-**上游版本**: 68dc3c5
-**目标**: 增强 Advisor 的 token 计数显示、client-side advisor mode 和 cost tracker
-
-#### 核心改进
-
-| 改进 | 文件 | 说明 |
-|------|------|------|
-| Token 计数显示 | `src/agent/conversation.py` | max_history: 100 → 2000 |
-| Provider Token 追踪 | `src/providers/anthropic_provider.py` | 增加 token 使用追踪 |
-| Base Provider 增强 | `src/providers/base.py` | 统一 token 计数接口 |
-
-#### max_history 扩展
-
-`src/agent/conversation.py` 中 `max_history` 从 100 提升到 2000，允许更长的对话历史。
-
-#### Provider Token 追踪
-
-```python
-@dataclass
-class TokenUsage:
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    total_tokens: int = 0
-```
-
-### 2.10 REPL 与 TUI 增强
-
-**状态**: ✅ 完成
-**上游版本**: 68dc3c5
-**目标**: 增强 REPL 和 TUI 的交互能力和状态显示
-
-#### 核心组件
-
-| 组件 | 文件 | 功能 |
-|------|------|------|
-| REPL Core | `src/repl/core.py` | REPL 核心逻辑 |
-| TUI App | `src/tui/app.py` | Textual TUI 应用 |
-| Keybindings | `src/tui/keybindings.py` | 快捷键绑定 |
-| LiveStatus | `src/tui/live_status.py` | 实时状态栏 |
-
-#### Shift+Tab 权限模式循环
-
-支持在 REPL/LiveStatus/TUI 中通过 `Shift+Tab` 循环切换权限模式：`default → acceptEdits → plan → bypassPermissions`
-
-#### TUI /permission 命令
-
-在 TUI 中可通过 `/permission` 命令打开权限模式选择器，支持选择：
-- Default (default)
-- Accept edits (acceptEdits)
-- Plan mode (plan)
-- Bypass permissions (bypassPermissions) - 需要配置启用
-- Don't ask (dontAsk)
-
-#### REPL/TUI 双向切换
-
-- **REPL → TUI**: `/tui` 命令切换到 Textual TUI，会话历史自动同步
-- **TUI → REPL**: `/repl` 命令切换回 CLI REPL，TUI 会话自动保存
-- 切换时保留 session、conversation、permission_mode 等状态
-
-#### TUI 增强 (+999 行)
-
-- 实时 tool call 日志显示
-- Token 使用量状态栏
-- Agent 状态监控面板
-
-#### TUI 响应性修复（LLM 超时后 Ctrl+C/ESC 无响应）
-
-**问题**: thinking 过程中 LLM 服务超时时，ESC、CTRL+C、CTRL+D 和 /exit 都无效，界面完全无反应。
-
-**根因**:
-1. `StreamWatchdog` 超时只关闭 HTTP 响应流，不触发 TUI 的 `AbortController`
-2. `action_cancel_or_quit`（Ctrl+C）直接调用 `self.exit()`，没有先调用 `agent_bridge.cancel()`
-
-**修复**:
-- `src/tui/app.py:322` — `action_cancel_or_quit` 先调用 `self._agent_bridge.cancel()`，取消成功则返回，失败才 exit
-- `src/utils/stream_watchdog.py` — 新增 `abort_signal` 参数，超时时调用 `abort_signal._fire()` 触发 TUI 取消机制
-- `src/providers/anthropic_provider.py:366` — `StreamWatchdog(stream)` → `StreamWatchdog(stream, abort_signal=abort_signal)`
-
-### 2.5 工具系统按需加载（Tool System Extension）
-
-**状态**: ✅ 完成
-**目标**: 工具组件解耦，Agent 可配置完全无工具，支持按 bundle 选择性加载
-
-#### 架构设计
-
-```
-src/tool_system_ext/          # 扩展层（与上游解耦）
-├── bundles.py                 # 工具束定义
-├── registry_ext.py           # Registry 扩展（组合模式）
-├── agent_config.py           # Agent 工具配置
-└── patches/tool_system/      # 上游适配补丁
-```
-
-#### 四种工具模式
-
-| 模式 | 说明 | 工具数 |
-|------|------|--------|
-| `bare` | 零工具，纯推理 Agent | 0 |
-| `default` | 默认束（Bash, Edit, Write, Read, Glob, Grep, WebSearch, WebFetch） | 8 |
-| `clawcodex` | 所有原生内置工具 | 42 |
-| `all` | 所有工具束（即 default + clawcodex） | 2 bundles |
-
-#### 工具束定义
-
-| 束名 | 工具 |
-|------|------|
-| `default` | Bash, Edit, Write, Read, Glob, Grep, WebSearch, WebFetch |
-| `clawcodex` | 全部原生工具（Agent, AskUserQuestion, Bash, ... 等 42 个） |
-
-#### 自定义 Agent 工具配置
-
-自定义 Agent 在 Markdown frontmatter 中使用 `tools` 字段时，支持 bundle 引用（以 `:` 前缀区分）：
-
-```markdown
----
-name: my-agent
-description: A research agent
-tools: [":default"]           # 使用 default bundle
----
-
-# 或混用
-tools: [":clawcodex", "Bash"] # clawcodex 全部工具 + 额外的 Bash
-```
-
-解析时展开逻辑：
-- `":bundle_name"` → 展开为对应 bundle 的工具列表
-- 普通工具名 → 保持原样
-
-#### 模式到 Bundle 的映射
-
-```python
-MODE_BUNDLES = {
-    "bare": [],
-    "default": ["default"],
-    "clawcodex": ["clawcodex"],
-    "all": ["default", "clawcodex"],
-}
-```
-
-#### 动态工具注册通知机制
-
-```python
-class ToolRegistryExt:
-    def on_tool_registered(self, callback: ToolRegistrationCallback) -> None
-    def off_tool_registered(self, callback: ToolRegistrationCallback) -> None
-```
-
-Bare Agent 可通过切换配置动态加载新工具：
-
-```python
-ext = ToolRegistryExt(registry)
-
-# Bare 状态
-bare_config = load_tool_config(mode="bare")
-assert ext.get_tools_for_config(bare_config) == []
-
-# 切换配置后自动加载
-default_config = load_tool_config(mode="default")
-tools = ext.get_tools_for_config(default_config)  # 包含所有注册表工具
-```
-
-#### 与上游解耦策略
-
-- 使用**组合模式**扩展 ToolRegistry，不修改原类
-- Bundle 定义独立于上游代码
-- 补丁目录 `patches/tool_system/` 用于快速适配上游更新（当前为空，扩展层独立实现）
+## 二、已归档功能模块
+
+> **已实现功能已归档至 [ARCHIVED_FEATURES.md](./ARCHIVED_FEATURES.md)**
+>
+> 以下列出的所有功能模块已在归档文档中详细记录：核心Agent系统、三层解耦架构、Provider层、工具系统、开源替代组件、后台运行与恢复同步、Bridge桥接器、Agent Loop Consolidation、Advisor Token计数、REPL/TUI增强、MCP协议扩展、Orchestrator自主模式等。
 
 ---
 
@@ -4481,8 +4034,412 @@ def _background_or_exit(event):  # type: ignore[no-untyped-def]
 | M5 | `core.py` 空闲态 Ctrl+B 绑定 + `_handle_background_escape()` | M1 | 15 min |
 | M6 | 手动集成测试 | M1-M5 | 10 min |
 
+### 2.14 CLI/TUI Frontend 解耦架构（F-34）
+
+#### 2.14.1 问题现状
+
+当前 CLI、TUI、Headless 三个入口点各自重复构造核心依赖（Provider、ToolRegistry、ToolContext、Session），耦合图谱如下：
+
+```
+ src/cli.py (604行)
+   ├── argparse 定义所有入口参数
+   ├── _resolve_permission_state()           ← 共享，但存 args 上
+   ├──→ _run_print_mode() → entrypoints/headless.py
+   │     └── 自建 provider/registry/context/session
+   ├──→ _run_tui_mode()   → entrypoints/tui.py → tui/app.py
+   │     └── 自建 provider/registry/context/session
+   └──→ start_repl()     → repl/core.py (ClawcodexREPL)
+         └── 自建 provider/registry/context/session
+```
+
+**核心问题**：
+
+| 问题 | 后果 |
+|------|------|
+| Provider/Registry/Session 构造代码 ×3 处 | 改动需同步 N 个入口，易遗漏 |
+| argparse 参数与 frontend 选择耦合 | 加新 frontend 需改 argparse + dispatch + N 个 `_run_*_mode()` |
+| Agent 循环实现 ×2（AgentBridge vs repl/core 内联） | bug 修复和行为变更需改两套代码 |
+| 权限状态通过 args 传递 | 每个 frontend 要自己解释权限字符串配置 tool context |
+
+#### 2.14.2 设计目标
+
+1. **统一 Runtime 初始化**：消除 provider/registry/context/session 的三重复造
+2. **Frontend 协议化**：任何 UI 实现只需实现 `Frontend` 协议即可接入
+3. **Agent 循环单一实现**：一个 `AgentEngine` 供所有 frontend 使用
+4. **插件式 frontend 注册**：`cli.py` 不再需要知道有哪些 frontend
+
+#### 2.14.3 架构概览
+
+```
+ src/runtime/
+   ├── __init__.py           # 公共导出
+   ├── context.py            # RuntimeContext（统一的 factory）
+   ├── protocol.py           # Frontend 协议
+   ├── events.py             # 标准化事件类型
+   ├── engine.py             # AgentEngine（从 frontend 解耦的 agent 循环）
+   └── registry.py           # Frontend 注册表（插件式）
+```
+
+#### 2.14.4 核心组件设计
+
+##### 1. `RuntimeContext` — 统一运行时上下文
+
+```python
+# src/runtime/context.py
+
+@dataclass
+class RuntimeOptions:
+    """构建 RuntimeContext 的选项，从 CLI args 或 API 调用中提取。"""
+    provider_name: str | None = None
+    model: str | None = None
+    workspace_root: Path | None = None
+    max_turns: int = 20
+    allowed_tools: tuple[str, ...] = ()
+    disallowed_tools: tuple[str, ...] = ()
+    permission_mode: str = "default"
+    is_bypass_permissions_mode_available: bool = False
+    resume_session_id: str | None = None
+    resume_browse: bool = False
+    stream: bool = True
+    verbose: bool = False
+
+
+@dataclass
+class RuntimeContext:
+    """每个 frontend 启动时必需的共享上下文。
+
+    取代三个入口点各自重复的 provider/registry/context/session 构造。
+    """
+    provider: object                         # BaseProvider 实例
+    provider_name: str
+    model: str
+    workspace_root: Path
+    tool_registry: ToolRegistry
+    tool_context: ToolContext
+    session: Session
+    permission_mode: str
+    is_bypass_permissions_mode_available: bool
+    max_turns: int = 20
+    stream: bool = True
+    cost_tracker: CostTracker | None = None
+    history: HistoryLog | None = None
+
+    @classmethod
+    def build(cls, options: RuntimeOptions) -> RuntimeContext:
+        """统一的 factory 方法，替代 3 套重复代码。
+
+        负责：
+        1. 解析 provider_name → 构建 provider 实例
+        2. 调用 build_default_registry()
+        3. 创建 ToolContext
+        4. 创建或恢复 Session
+        5. 应用工具过滤（allowed/disallowed）
+        6. 应用权限状态
+        """
+        # ... 统一实现，消除三个入口点的重复代码
+```
+
+##### 2. `Frontend` 协议
+
+```python
+# src/runtime/protocol.py
+
+class Frontend(Protocol):
+    """UI 前端必须实现的协议。
+
+    实现此协议即可注册为 clawcodex 的可用前端。
+    """
+
+    # 元信息（供 CLI --help 和注册表使用）
+    name: str                                  # 唯一标识，如 "repl", "tui", "headless"
+    display_name: str                          # 显示名称，如 "Interactive REPL"
+    description: str                           # 简短描述
+
+    def run(self, ctx: RuntimeContext) -> int:
+        """运行前端，返回 CLI 退出码。"""
+        ...
+
+    # 可选 hook
+    def on_start(self, ctx: RuntimeContext) -> None: ...
+    def on_finish(self, exit_code: int) -> None: ...
+
+    # 可选：此前端支持的 CLI 参数组
+    @classmethod
+    def argparse_group(cls, parser: argparse.ArgumentParser) -> None: ...
+```
+
+##### 3. `AgentEngine` — 统一 Agent 循环
+
+```python
+# src/runtime/engine.py
+
+@dataclass
+class AgentEngine:
+    """从 frontend 解耦的 agent 循环，提供统一的 submit/cancel/event 接口。
+
+    替代：
+    - tui/agent_bridge.py (TUI 专用)
+    - repl/core.py 中的内联 agent 循环
+    """
+
+    session: Session
+    provider: object
+    tool_registry: ToolRegistry
+    tool_context: ToolContext
+    max_turns: int = 20
+    stream: bool = True
+
+    def submit(self, prompt: str) -> bool:
+        """提交用户输入，启动 agent 循环。返回 False 表示忙。"""
+        ...
+
+    def cancel(self) -> bool:
+        """取消当前 agent 运行。返回 False 表示无运行中。"""
+        ...
+
+    # 事件流（订阅者模式）
+    def subscribe(self, event_type: type, callback: Callable) -> None: ...
+    def unsubscribe(self, event_type: type, callback: Callable) -> None: ...
+
+    # 生命周期
+    async def run(self) -> None: ...
+    def stop(self) -> None: ...
+```
+
+##### 4. `FrontendRegistry` — 插件式注册表
+
+```python
+# src/runtime/registry.py
+
+_frontends: dict[str, type[Frontend]] = {}
+
+def register(name: str, frontend_cls: type[Frontend]) -> None:
+    """注册一个前端实现。"""
+    _frontends[name] = frontend_cls
+
+def get(name: str) -> type[Frontend] | None:
+    """按名称获取前端类。"""
+    return _frontends.get(name)
+
+def list_frontends() -> dict[str, type[Frontend]]:
+    """返回所有已注册的前端。"""
+    return dict(_frontends)
+
+def available_names() -> list[str]:
+    """返回所有已注册前端名称列表（按注册顺序）。"""
+    return list(_frontends.keys())
+
+def dispatch(args) -> int:
+    """根据 CLI args 选择并运行前端。
+
+    Args:
+        args: argparse.Namespace，含 ``_frontend`` 属性
+
+    Returns:
+        CLI 退出码
+    """
+    name = getattr(args, '_frontend', None) or os.environ.get('CLAWCODEX_FRONTEND', 'repl')
+    frontend_cls = get(name)
+    if frontend_cls is None:
+        console = Console(stderr=True)
+        console.print(f"[red]Unknown frontend: {name}[/red]")
+        console.print(f"Available: {', '.join(available_names())}")
+        return 1
+
+    options = _build_runtime_options(args)
+    ctx = RuntimeContext.build(options)
+    return frontend_cls().run(ctx)
+```
+
+#### 2.14.5 标准事件类型
+
+```python
+# src/runtime/events.py
+
+@dataclass
+class TextChunkEvent:
+    """LLM 返回的文本片段（流式）。"""
+    text: str
+
+@dataclass
+class ToolUseEvent:
+    """Agent 请求使用工具。"""
+    tool_name: str
+    tool_input: dict
+    tool_use_id: str
+
+@dataclass
+class ToolResultEvent:
+    """工具执行结果。"""
+    tool_use_id: str
+    tool_name: str
+    output: str
+    is_error: bool
+
+@dataclass
+class PermissionRequested:
+    """工具需要用户授权。"""
+    tool_name: str
+    tool_input: dict
+    permission_id: str
+    resolve: Callable[[bool], None]
+
+@dataclass
+class ErrorEvent:
+    """Agent 循环中发生错误。"""
+    error: str
+    fatal: bool = False
+
+@dataclass
+class DoneEvent:
+    """Agent 循环完成。"""
+    total_turns: int
+    total_cost: float | None
+```
+
+#### 2.14.6 分阶段实施计划
+
+##### Phase 1 — 提取 `RuntimeContext`（消除 3 处重复构造）
+
+| 步骤 | 内容 | 文件 | 工作量 |
+|------|------|------|--------|
+| 1.1 | 创建 `src/runtime/context.py`（`RuntimeOptions` + `RuntimeContext.build()`） | 新增 | 2h |
+| 1.2 | 创建 `src/runtime/__init__.py`（导出） | 新增 | 5min |
+| 1.3 | 修改 `src/entrypoints/tui.py` → 使用 `RuntimeContext.build()` | 修改 | 30min |
+| 1.4 | 修改 `src/repl/core.py` → `ClawcodexREPL` 接受 `RuntimeContext` | 修改 | 30min |
+| 1.5 | 修改 `src/entrypoints/headless.py` → 使用 `RuntimeContext.build()` | 修改 | 30min |
+| 1.6 | 验证：三入口点行为不变 | 测试 | 30min |
+
+**Phase 1 后状态**：三入口点各减 30-50 行重复代码
+
+##### Phase 2 — 提取 `AgentEngine`（统一 agent 循环）
+
+| 步骤 | 内容 | 文件 | 工作量 |
+|------|------|------|--------|
+| 2.1 | 创建 `src/runtime/events.py`（标准事件类型） | 新增 | 30min |
+| 2.2 | 创建 `src/runtime/engine.py`（`AgentEngine`） | 新增 | 4h |
+| 2.3 | 修改 `tui/agent_bridge.py` → 封装/委派给 `AgentEngine` | 修改 | 2h |
+| 2.4 | 修改 `repl/core.py` → 使用 `AgentEngine` | 修改 | 2h |
+| 2.5 | 集成测试：TUI + REPL 正常 submit/cancel/event | 测试 | 1h |
+
+##### Phase 3 — Frontend 协议 + 注册表（插件化）
+
+| 步骤 | 内容 | 文件 | 工作量 |
+|------|------|------|--------|
+| 3.1 | 创建 `src/runtime/protocol.py`（`Frontend` 协议） | 新增 | 30min |
+| 3.2 | 创建 `src/runtime/registry.py`（注册表 + dispatch） | 新增 | 1h |
+| 3.3 | 实现 `ReplFrontend`、`TuiFrontend`、`HeadlessFrontend` | 新增 | 2h |
+| 3.4 | 修改 `src/cli.py` → 使用 `registry.dispatch()` + 注册 | 修改 | 1h |
+| 3.5 | 注册 `claude_repl` 和 `clawcodex_cli_integration` 的 frontend | 注册 | 各 1h |
+
+##### Phase 4（可选）— CLI 参数插件化
+
+| 步骤 | 内容 | 文件 | 工作量 |
+|------|------|------|--------|
+| 4.1 | Frontend 协议增加 `argparse_group()` 类方法 | 修改 protocol | 30min |
+| 4.2 | CLI 遍历注册表收集参数组 | 修改 cli.py | 1h |
+| 4.3 | 各 frontend 实现自己的参数组 | 各 frontend | 各 30min |
+
+#### 2.14.7 文件变更清单
+
+| 操作 | 文件路径 | Phase |
+|------|----------|-------|
+| 新增 | `src/runtime/__init__.py` | 1 |
+| 新增 | `src/runtime/context.py` | 1 |
+| 新增 | `src/runtime/events.py` | 2 |
+| 新增 | `src/runtime/engine.py` | 2 |
+| 新增 | `src/runtime/protocol.py` | 3 |
+| 新增 | `src/runtime/registry.py` | 3 |
+| 修改 | `src/cli.py` | 1-3 |
+| 修改 | `src/entrypoints/tui.py` | 1-3 |
+| 修改 | `src/entrypoints/headless.py` | 1-3 |
+| 修改 | `src/repl/core.py` | 1-3 |
+| 修改 | `src/tui/app.py` | 1-3 |
+| 修改 | `src/tui/agent_bridge.py` | 2 |
+
+#### 2.14.8 集成外部 Frontend
+
+##### 集成 `claude_repl`
+
+```python
+# claude_repl 项目内
+from clawcodex.runtime import Frontend, RuntimeContext, register
+
+class ClaudeReplFrontend:
+    name = "claude-repl"
+    display_name = "Claude REPL"
+    description = "Claude 原生命令行 REPL 体验"
+
+    def run(self, ctx: RuntimeContext) -> int:
+        # 使用 ctx.provider, ctx.session, ctx.tool_registry
+        # 运行 claude_repl 自己的 REPL 循环
+        ...
+
+# 注册
+register("claude-repl", ClaudeReplFrontend)
+```
+
+##### 集成 `clawcodex_cli_integration`
+
+```python
+# clawcodex_cli_integration 项目内
+from clawcodex.runtime import Frontend, RuntimeContext, register
+
+class CliIntegrationFrontend:
+    name = "cli-integration"
+    display_name = "CLI Integration"
+    description = "集成式 CLI 工具包"
+
+    def run(self, ctx: RuntimeContext) -> int:
+        # 使用 ctx 运行集成式 CLI
+        ...
+
+register("cli-integration", CliIntegrationFrontend)
+```
+
+使用方式：
+```bash
+# 指定 frontend
+clawcodex --frontend claude-repl -p "hello"
+clawcodex --frontend cli-integration --tui
+
+# 环境变量全局切换
+export CLAWCODEX_FRONTEND=claude-repl
+clawcodex  # 自动使用 claude-repl
+```
+
+#### 2.14.9 与上游解耦的关系
+
+解耦后的架构使得二开版本和上游版本能共享同一套 frontend 协议：
+
+```
+上游版本:
+  clawcodex (upstream)
+    └── 注册 repl, tui, headless
+
+下游二开:
+  clawcodex (clawcodex)
+    ├── 注册 repl (二改版), tui (二改版), headless
+    └── 注册 claude-repl (新增)
+    └── 注册 cli-integration (新增)
+```
+
+**好处**：
+- 上游升级 `repl`/`tui` 模块时，只需更新对应的 Frontend 实现
+- 二开版本保持自己的 frontend 自定义行为，不影响上游 core
+- 第三方 frontend 无需修改 clawcodex 核心代码
+
+#### 2.14.10 风险与缓解
+
+| 风险 | 影响 | 缓解措施 |
+|------|------|----------|
+| `RuntimeContext.build()` 耦合了 provider/registry 实现 | 更换 provider/registry 需要修改 build | 抽象 ProviderFactory/RegistryFactory，可配置 |
+| `AgentEngine` 与现有 AgentBridge 行为差异 | TUI 行为回归 | Phase 2 中保留 AgentBridge 接口，内部委派，逐步替换 |
+| 第三方 frontend 需要引用 `clawcodex.runtime` | import 耦合 | runtime 模块设计为对外无副作用，仅依赖公共类型 |
+| 重构过程中破坏已实现功能 | 开发中断 | 每个 Phase 完成后执行完整的集成测试套件 |
+
 ---
 
 *文档更新时间: 2026-05-25*
 
-*版本 v1.6 更新：新增 F-33 REPL 模式 Ctrl+B 后台运行支持设计，解耦实现以便上游 REPL 升级。*
+*版本 v1.7 更新：新增 F-34 CLI/TUI Frontend 解耦架构设计，三阶段渐进式前端解耦方案。*
