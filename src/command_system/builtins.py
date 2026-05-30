@@ -24,6 +24,7 @@ from ..providers.base import BaseProvider
 from .engine import CommandContext, CommandResult, LocalCommandResult
 from .registry import CommandRegistry, get_command_registry, list_commands
 from .security_review import SECURITY_REVIEW_COMMAND
+from .statusline import STATUSLINE_COMMAND
 from .types import Command, CommandType, CompactionResult, LocalCommand, PromptCommand
 
 
@@ -1226,6 +1227,7 @@ def get_builtin_commands() -> list[Command]:
         AUTO_FIX_COMMAND,
         REVIEW_COMMAND,
         SECURITY_REVIEW_COMMAND,
+        STATUSLINE_COMMAND,
     ]
     if is_buddy_command_enabled():
         cmds.append(BUDDY_COMMAND)
