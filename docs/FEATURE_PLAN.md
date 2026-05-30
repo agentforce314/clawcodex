@@ -4443,3 +4443,297 @@ clawcodex  # 自动使用 claude-repl
 *文档更新时间: 2026-05-25*
 
 *版本 v1.7 更新：新增 F-34 CLI/TUI Frontend 解耦架构设计，三阶段渐进式前端解耦方案。*
+*版本 v2.0 更新：新增 F-35 二开特性统一切换架构设计，一个全局开关（CLAWCODEX_UPSTREAM_MODE）控制所有二开特性，文件级 import hook 实现模块替换，分批还原 584 个内联修改文件。*
+
+---
+
+### 2.15 F-35: 二开特性统一切换（上游纯净模式开关）（已简化）
+
+#### 2.15.1 问题现状
+
+F-34 解决了前端层的切换问题，但 `src/` 中还有大量二开特性与上游源码 58ea488 深度混合：
+
+| 分类 | 数量 | 说明 |
+|------|------|------|
+| 二开新增文件（Only in src/） | 23 个 | 上游不存在，纯二开特性 |
+| 二开修改文件（Files differ） | **584 个** | 上游源码被直接内联修改，二开内容与上游代码混编 |
+
+**584 个内联修改文件是主要问题**。当前格局：
+
+```
+src/agent/conversation.py  ← 上游 58ea488 + 二开修改混在一起
+src/repl/core.py           ← 上游 58ea488 + 吉祥物删除 + Ctrl+B + ...
+src/tui/app.py             ← 上游 58ea488 + 二开改动
+...共 584 个文件
+```
+
+这意味着：
+- **不能直接切换回上游** — 因为 inline 修改无法单独关闭
+- **上游升级困难** — 每次合入需要手动 diff 584 个文件
+- **特性边界不清** — 不知道每个文件改了什么用途
+
+#### 2.15.2 设计目标
+
+1. **一个开关统一切换**：运行时通过 `CLAWCODEX_UPSTREAM_MODE=true` 决定加载上游版本还是二开版本
+2. **零代码切换**：无需改 import、无需改代码，修改环境变量即可
+3. **上游兼容**：上游模式开启时，系统行为与上游 58ea488 一致
+4. **逐步迁移**：584 个文件不必一次全部提取，可以分批渐进
+
+#### 2.15.3 二开特性全景
+
+##### A. 纯新增文件（23 个，上游不存在）
+
+| 文件 | 功能 |
+|------|------|
+| `agent/background_runner.py`, `agent/background_state.py`, `repl/background_escape.py` | Ctrl+B 后台运行 |
+| `agent/_outlines_adapter.py` | 结构化输出 |
+| `agent/tool_authoring/` | 工具创作 |
+| `cli/` (commands/input/permissions/renderer/session/tasks/utils/) | CLI 模块化重构 |
+| `entrypoints/orchestrator.py` | Orchestrator 自主模式 |
+| `context_system/_gitpython_adapter.py` | GitPython 上下文 |
+| `hooks/_pluggy_adapter.py` | Pluggy 钩子系统 |
+| `permissions/_treesitter_adapter.py` | Tree-sitter 权限分析 |
+| `providers/_litellm_adapter.py` | LiteLLM Provider |
+| `services/bridge/` | 桥接服务 |
+| `services/tail_follower.py` | 尾部追随 |
+| `settings/pydantic_adapter.py` | Pydantic 配置 |
+| `skills/_frontmatter_adapter.py` | Frontmatter 技能 |
+| `tool_system/tools/ask_issue_author.py` | 问题作者询问 |
+| `tool_system/tools/create_agent_tool.py` | 动态工具创建 |
+| `tool_system/tools/progress_report.py` | 进度报告 |
+| `tool_system/tools/task_directives.py` | 任务指令 |
+| `tool_system/tools/task_inspect.py` | 任务检查 |
+| `tui/screens/permission_mode_picker.py` | 权限模式选择器 |
+| `utils/session_watcher.py` | 会话监视器 |
+
+##### B. 内联修改（584 个文件，与上游源码混编）
+
+这些修改散布在 584 个上游文件中，包括但不限于：
+- 吉祥物移除（`repl/core.py`, `tui/widgets/header.py`, `task_registry.py`）
+- 权限模式增强（`cli.py`, `permissions/*`）
+- TUI 响应性修复（`tui/app.py`, `tui/*`）
+- Away-Summary（`services/away_summary.py` 等）
+- Agent Loop Consolidation（`agent/run_agent.py`, `agent/prompt.py`）
+- Advisor Token 计数（`agent/advisor.py`, `agent/conversation.py`）
+- Session 恢复（`agent/session.py`, `assistant/*`）
+- Cron 系统（`cron_system/*`）
+- Bridge Phase 8-11（`bridge/*`）
+- 文档变更（`FEATURE_LIST.md`, `CHANGELOG.md` 等）
+
+#### 2.15.4 架构设计：二开/上游统一切换层
+
+```
+┌───────────────────────────────────────────┐
+│              clawcodex 入口                 │
+│  (cli.py / registry.dispatch())            │
+└─────────────────┬─────────────────────────┘
+                  │
+                  ▼
+┌───────────────────────────────────────────┐
+│          Import Resolution Layer            │  ← 新增
+│  上游模式 → 加载 src/upstream/58ea488/      │
+│  二开模式 → 加载 src/ 下的二开模块          │
+│  src/features/resolver.py                  │
+└──────┬──────────────────────┬──────────────┘
+       │                      │
+       ▼                      ▼
+┌──────────────┐   ┌────────────────────┐
+│ src/         │   │ src/upstream/       │
+│ (二开版本)   │   │ 58ea488/ (上游)     │
+│              │   │                     │
+│ 23 新增文件  │   │ 原始上游文件         │
+│ 584 修改文件  │   │ (无二开改动)        │
+└──────────────┘   └────────────────────┘
+```
+
+#### 2.15.5 核心组件设计
+
+##### 1. 上游模式检测（最简单形式）
+
+```python
+# src/features/__init__.py
+
+import os
+
+def is_upstream_mode() -> bool:
+    """检查是否以上游纯净模式运行。
+    
+    优先级：环境变量 CLAWCODEX_UPSTREAM_MODE > settings.json upstream_mode > 默认 False
+    """
+    # 默认二开模式（False），仅通过特定配置进入上游模式
+    return os.environ.get("CLAWCODEX_UPSTREAM_MODE", "0").lower() in ("1", "true")
+
+def init_features():
+    """启动时初始化：根据模式决定 import 路径。"""
+    if is_upstream_mode():
+        _setup_upstream_resolver()
+```
+
+##### 2. 模块解析器（通过 Python import hooks）
+
+核心思路：拦截 `import` 语句，根据上游模式决定加载 `src/` 版本还是 `src/upstream/58ea488/` 版本。
+
+```python
+# src/features/resolver.py
+
+import sys
+import importlib.abc
+import importlib.util
+
+class UpstreamResolver(importlib.abc.MetaPathFinder):
+    """Import hook: 上游模式时拦截模块加载，指向 upstream 版本。
+    
+    upstream_mode=True:
+        import repl.core
+        → 实际上加载 src/upstream/58ea488/repl/core.py（纯上游）
+        
+    upstream_mode=False:
+        import repl.core
+        → 正常加载 src/repl/core.py（二开版本）
+    """
+    
+    _UPSTREAM_MAPPINGS: dict[str, str] = {}  # module → upstream path
+    
+    @classmethod
+    def register(cls, module_name: str, upstream_path: str) -> None:
+        """注册需要重定向的模块映射。"""
+        cls._UPSTREAM_MAPPINGS[module_name] = upstream_path
+    
+    def find_spec(self, fullname, path, target=None):
+        if fullname not in self._UPSTREAM_MAPPINGS:
+            return None
+        
+        upstream_path = self._UPSTREAM_MAPPINGS[fullname]
+        spec = importlib.util.spec_from_file_location(fullname, upstream_path)
+        return spec
+```
+
+##### 3. 提取方式：整体文件替换 vs 补丁
+
+对于 584 个内联修改文件，分两种提取策略：
+
+| 策略 | 适用场景 | 原理 | 复杂度 |
+|------|----------|------|--------|
+| **文件级替换** | 整个文件的大幅修改 | 二开版本保留在 `src/`，上游模式时重定向到 `src/upstream/58ea488/` 版 | 低 |
+| **补丁（Patch）** | 文件内小范围修改 | 提取 diff 为独立 patch，启动时对上游模块应用 patch | 中 |
+
+**推荐策略**：优先使用**文件级替换**（import hook 加载上游原版），只有小范围改动（几行）再用补丁。
+
+#### 2.15.6 提取流程
+
+```
+原始状态（当前）:
+  src/repl/core.py = 上游 58ea488 + 吉祥物删除 + Ctrl+B + 欢迎消息修改
+  src/tui/app.py   = 上游 58ea488 + TUI 增强 + 权限模式选择器
+  ... 共 584 个文件混编
+
+步骤 A: 备份上游原版（一次完成）
+  scripts/backup_upstream.sh
+  → 将 src/upstream/58ea488/ 目录中尚未备份的原版文件补全
+  → 注：目前已有一份 58ea488 快照，可能不完整
+
+步骤 B: 还原内联修改文件为上游（分批）
+  Phase 1: 高优先级文件还原
+    cp src/upstream/58ea488/repl/core.py src/repl/core.py
+    cp src/upstream/58ea488/tui/app.py src/tui/app.py
+    cp src/upstream/58ea488/tui/widgets/header.py src/tui/widgets/header.py
+    ...
+  Phase 2: 中优先级文件还原
+  Phase 3: 低优先级文件还原（依此类推）
+
+步骤 C: 注册 import 映射
+  src/features/resolver.py 中注册已还原的文件
+    当 upstream_mode=True 时 → 加载 src/upstream/58ea488/ 版本
+    当 upstream_mode=False 时 → 加载 src/ 版本（已还原，行为同上游...）
+
+  注意：还原上游后，二开模式下需要保留二开行为。
+  因此需要先把二开改动提取出来存到 src/features/patches/，启动时应用。
+```
+
+#### 2.15.7 完整数据流
+
+```
+                       启动
+                         │
+                     ┌───▼────┐
+                     │ 检测    │
+                     │ 模式    │
+                     └───┬────┘
+                    ╱          ╲
+            上游模式╱            ╲二开模式
+              ┌──▼──┐          ┌──▼──┐
+              │加载  │          │加载  │
+              │上游  │          │二开  │
+              │原版  │          │版本  │
+              └──┬──┘          └──┬──┘
+                 │                │
+                 ▼                ▼
+          行为 = 上游 58ea488  行为 = 当前二开版本
+
+       CLAWCODEX_UPSTREAM_MODE=1         普通启动
+```
+
+#### 2.15.8 文件变更清单
+
+| 操作 | 文件 | 说明 |
+|------|------|------|
+| 新增 | `src/features/__init__.py` | 包入口 + `is_upstream_mode()` |
+| 新增 | `src/features/resolver.py` | Import hook 模块解析器 |
+| 新增 | `src/features/patches/` | 提取后的二开补丁目录（可选） |
+| 新增 | `scripts/backup_upstream.sh` | 补全上游快照中缺失的文件 |
+| 新增 | `scripts/restore_upstream_file.py` | 还原单个文件为上游版本 + 提取 diff |
+| 修改 | `src/cli.py` → 启动时调用 `init_features()` | 根据模式启用 import hook |
+| 修改 | 584 个文件分批还原为上游 | 按优先级分批进行 |
+
+#### 2.15.9 实施路线图
+
+| Phase | 内容 | 工作量 | 说明 |
+|-------|------|--------|------|
+| **P1** | 基础设施：`features/__init__.py` + `resolver.py` + cli.py 初始化 | 1 天 | 最简可用的 import hook |
+| **P2** | 补全上游快照：确保 `src/upstream/58ea488/` 与原版完全一致 | 1 天 | 与 git 历史对比确认 |
+| **P3** | 高优先级文件提取 + 还原（~20 个核心文件） | 3 天 | repl/core.py, tui/app.py, cli.py 等 |
+| **P4** | 中优先级文件提取 + 还原（~100 个文件） | 1 周 | 按模块分批发 |
+| **P5** | 低优先级文件提取 + 还原（剩余 ~460 个文件） | 2 周 | 批量脚本处理 |
+| **P6** | 完整验证 | 2 天 | 上游模式 = 原始 58ea488；二开模式 = 当前行为一致 |
+
+#### 2.15.10 使用方式
+
+```bash
+# 默认启动（二开模式，同当前行为不变）
+clawcodex
+
+# 上游纯净模式（所有二开特性关闭）
+CLAWCODEX_UPSTREAM_MODE=1 clawcodex
+
+# 通过环境变量
+CLAWCODEX_UPSTREAM_MODE=1 clawcodex
+CLAWCODEX_UPSTREAM_MODE=true clawcodex-tui
+
+# 通过配置文件
+# ~/.clawcodex/settings.json → "upstream_mode": true
+```
+
+#### 2.15.11 对比：简化前后
+
+| 维度 | 之前（30 个独立 FTR） | 现在（一个全局开关） |
+|------|----------------------|---------------------|
+| 代码复杂度 | 需要 `toggles.py` 注册表、30+ env var 解析、依赖校验 | 只需 `is_upstream_mode()` + import hook |
+| 配置量 | 30 个 `CLAWCODEX_FTR_*` 环境变量 | 仅 1 个 `CLAWCODEX_UPSTREAM_MODE` |
+| 提取难度 | 需逐段标注 diff（行级标记 FTR-ID） | 整体文件提取即可 |
+| 灵活性 | 极高（每个特性可单独开关） | 低（要么全开要么全关） |
+| 用户心智负担 | 高（需要知道每个 FTR 什么含义） | 极低（开关即模式切换） |
+
+#### 2.15.12 风险与缓解
+
+| 风险 | 缓解 |
+|------|------|
+| Import hook 与现有模块系统冲突 | P1 充分测试；备选方案：直接 `sys.path` 操作 |
+| 584 个文件还原时间过长 | 优先级分批进行，P1-P2 即可获得核心功能 |
+| 上游源码升级后 diff 过大 | 提取时保留完整文件的二开版本副本，二开模式用 diff apply 而非 import hook |
+| 还原后二开模式行为偏差 | 分步还原每个文件后立即验证 |
+
+---
+
+*文档更新时间: 2026-05-25*
+
+*版本 v2.0 更新：新增 F-35 二开特性可切换架构设计，Feature Toggle 系统 + 584 个内联修改文件特性提取方案。*

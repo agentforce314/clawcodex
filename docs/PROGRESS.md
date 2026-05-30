@@ -67,134 +67,6 @@
 
 ---
 
-## F-29: TaskInspect/TaskDirectives 工具注册
-
-**状态**: ✅ 完成
-**优先级**: P2
-**提交**: `17e6d5b` feat(tui): 添加权限模式选择器和思考块功能
-
-### 问题
-
-`TaskInspectTool` 和 `TaskDirectivesTool` 代码文件存在于 `src/tool_system/tools/` 目录，但未注册到 `ALL_STATIC_TOOLS`，导致 AI Agent 无法调用。
-
-### 修复
-
-在 `src/tool_system/tools/__init__.py` 中添加：
-- 导入: `from .task_inspect import TaskInspectTool`, `from .task_directives import TaskDirectivesTool`
-- 添加到 `ALL_STATIC_TOOLS` 列表
-- 添加到 `__all__` 导出列表
-
-### 验证
-
-```
-$ python3 -m src.cli --dangerously-skip-permissions -p "Use TaskInspect to query task status"
-There are no running worker agents at the moment. The task list is empty.
-```
-
----
-
-## F-30: ProgressReportTool 工具注册
-
-**状态**: ✅ 完成
-**优先级**: P2
-**提交**: `17e6d5b` feat(tui): 添加权限模式选择器和思考块功能
-
-### 问题
-
-`ProgressReportTool` 代码文件存在于 `src/tool_system/tools/progress_report.py`，但未注册到 `ALL_STATIC_TOOLS`。
-
-### 修复
-
-在 `src/tool_system/tools/__init__.py` 中添加：
-- 导入: `from .progress_report import ProgressReportTool`
-- 添加到 `ALL_STATIC_TOOLS` 列表
-- 添加到 `__all__` 导出列表
-
-### 验证
-
-```
-$ python3 -m src.cli --dangerously-skip-permissions -p "Use ProgressReport to report progress"
-（AI 能够识别并调用该工具，需要 taskId 和 stage 参数）
-```
-
----
-
-## F-31: TUI 权限模式选择器
-
-**状态**: ✅ 完成
-**优先级**: P1
-**提交**: `17e6d5b` feat(tui): 添加权限模式选择器和思考块功能
-
-### 功能
-
-通过 `PermissionModePickerScreen` 模态对话框支持 5 种权限模式：
-- `default` - 每个工具运行前询问
-- `acceptEdits` - 自动批准文件编辑操作
-- `plan` - Plan mode - 自动批准只读操作
-- `bypassPermissions` - 运行所有工具不提示
-- `dontAsk` - 从不提示，自动批准所有
-
-### 组件位置
-
-```
-src/tui/screens/permission_mode_picker.py
-```
-
----
-
-## F-32: 会话恢复浏览器 (Resume Conversation)
-
-**状态**: ✅ 完成
-**优先级**: P1
-**提交**: `740a2e8` feat(tui): 添加会话恢复浏览器和相关功能
-
-### 功能
-
-- 模糊搜索 (fuzzy search)：支持输入过滤历史会话
-- 实时计数显示：显示 "X / Y sessions" 过滤结果
-- 会话元数据展示：标题、模型、消息数、时间戳
-
-### 使用方式
-
-| 方式 | 说明 |
-|------|------|
-| `clawcodex --tui --resume` | 启动时直接进入会话选择 |
-| `/resume` 命令 | 从 REPL 呼出会话选择器 |
-| Ctrl+B 后台后 | 用户选择会话重新附着 |
-
-### 组件位置
-
-```
-src/tui/screens/resume_conversation.py
-src/repl/live_status.py  # 新增 Live Status 实时状态组件
-```
-
----
-
-## F-27: TUI 响应性修复（LLM 超时后 Ctrl+C/ESC 无响应）
-
-**状态**: ✅ 完成
-**优先级**: P1
-**问题描述**: CLI/TUI 在 thinking 过程中 LLM 服务超时时，ESC、CTRL+C、CTRL+D 和 /exit 都无效，界面完全无反应。
-
-**根因分析**:
-1. `StreamWatchdog` 超时只关闭 HTTP 响应流，不触发 TUI 的 `AbortController`
-2. `action_cancel_or_quit`（Ctrl+C 处理）直接调用 `self.exit()`，没有先调用 `agent_bridge.cancel()`
-
-**修复方案**:
-
-| 文件 | 修改内容 |
-|------|---------|
-| `src/tui/app.py:322` | `action_cancel_or_quit` 先调用 `self._agent_bridge.cancel()`，取消成功则返回，失败才 exit |
-| `src/utils/stream_watchdog.py` | 新增 `abort_signal` 参数，超时时调用 `abort_signal._fire()` 触发 TUI 取消机制 |
-| `src/providers/anthropic_provider.py:366` | `StreamWatchdog(stream)` → `StreamWatchdog(stream, abort_signal=abort_signal)` |
-
-**修复后行为**:
-- LLM 超时 → StreamWatchdog 触发 AbortSignal → TUI 的 ESC/Ctrl+C 机制重新生效
-- Ctrl+C → 先尝试取消 agent run，取消失败才退出 TUI
-
----
-
 ## F-26: Away-Summary（离开摘要）功能
 
 **状态**: 📋 规划中
@@ -388,888 +260,7 @@ if message.subtype == "away_summary":
 
 ---
 
-## F-23: Bridge Phase 8-11 多 Session Daemon 桥接器
-
-**状态**: ✅ 完成
-**优先级**: P1
-**完成日期**: 2026-05-25
-**上游版本**: 68dc3c5 (Phase 11 bridge complete)
-
-### 目标
-
-实现多 Session Daemon 架构，支持远程桥接、REPL 桥接和多会话协调。
-
-### 实现文件清单
-
-| 文件路径 | Phase | 状态 |
-|---------|-------|------|
-| `src/bridge/__init__.py` | - | ✅ 完成 |
-| `src/bridge/bridge_api.py` | Phase 3 | ✅ 完成 |
-| `src/bridge/bridge_main.py` | Phase 8 | ✅ 完成 |
-| `src/bridge/remote_bridge_core.py` | Phase 5 | ✅ 完成 |
-| `src/bridge/session_runner.py` | Phase 4 | ✅ 完成 |
-| `src/bridge/repl_bridge.py` | Phase 11 | ✅ 完成 |
-| `src/bridge/init_repl_bridge.py` | Phase 11 | ✅ 完成 |
-| `src/bridge/messaging.py` | - | ✅ 完成 |
-| `src/bridge/types.py` | - | ✅ 完成 |
-| `src/bridge/headless_bridge.py` | - | ✅ 完成 |
-
-### 外部依赖
-
-```toml
-# pyproject.toml 新增 (如需要)
-watchdog = ">=3.0"  # 文件监控
-psutil = ">=5.9"     # 进程存活检测
-```
-
-### 核心组件详细说明
-
-#### 1. bridge_main.py - 多 Session Daemon 入口 (Phase 8)
-
-多会话轮询守护进程，负责：
-- CLI 参数解析 (`--verbose`, `--sandbox`, `--spawn`, `--capacity`, `--permission-mode`, `--name`)
-- 多会话容量控制 (capacity gating)
-- 会话状态管理 (active_sessions, session_work_ids, completed_work_ids)
-- 工作轮询循环 (work poll loop)
-- 优雅关闭 (SIGTERM → wait grace → SIGKILL stragglers → deregister)
-- SIGINT/SIGTERM 处理器安装
-
-#### 2. remote_bridge_core.py - 远程桥接核心 (Phase 5)
-
-远程桥接实现，支持：
-- v2 环境变量驱动配置
-- 远程会话生命周期管理
-- 跨进程通信
-
-#### 3. session_runner.py - 子 CLI 会话生成 (Phase 4)
-
-子进程管理，实现：
-- Child CLI 生成和监控
-- 工作目录管理
-- 会话超时控制
-
-#### 4. repl_bridge.py - REPL 桥接 (Phase 11)
-
-REPL 集成桥接器，实现：
-- REPL 与 Bridge 的消息路由
-- 会话状态同步
-- TUI 交互支持
-
----
-
-## F-24: Agent Loop Consolidation (Stage 4)
-
-**状态**: ✅ 完成
-**优先级**: P1
-**完成日期**: 2026-05-25
-**上游版本**: 68dc3c5
-
-### 目标
-
-删除 `agent_loop.py`，重构到 `src/query/` 模块，实现工具执行与 Agent 循环的解耦。
-
-### 核心变更
-
-| 变更 | 说明 | 行数 |
-|------|------|------|
-| 删除 `agent_loop.py` | 上游原 Agent 循环逻辑移除 | -537 行 |
-| 新增 `renderers.py` | 系统 prompt 渲染器 | +257 行 |
-| 新增 `advisor.py` | Advisor 工具 | +125 行 |
-| 重构到 `src/query/` | 查询引擎解耦 | - |
-
-### 实现文件清单
-
-| 文件路径 | 状态 |
-|---------|------|
-| `src/tool_system/agent_loop.py` | ✅ 已删除 |
-| `src/tool_system/renderers.py` | ✅ 完成 |
-| `src/tool_system/tools/advisor.py` | ✅ 完成 |
-| `src/query/` | ✅ 重构 |
-
-### renderers.py - 系统 Prompt 渲染器
-
-渲染器负责将系统 prompt 组件组合并格式化：
-
-```python
-class SystemPromptRenderer:
-    """系统 Prompt 渲染器"""
-    def render(self, context: PromptContext) -> str: ...
-    def render_capabilities(self, capabilities: list[str]) -> str: ...
-    def render_rules(self, rules: list[str]) -> str: ...
-```
-
-### advisor.py - Advisor 工具
-
-Advisor 工具提供 Token 计数和状态显示：
-
-```python
-class AdvisorTool:
-    """Advisor 工具 - 提供 token 计数和状态信息"""
-    def get_token_usage(self) -> TokenUsage: ...
-    def get_cost_estimate(self) -> CostEstimate: ...
-```
-
----
-
-## F-25: Advisor Token 计数与状态显示
-
-**状态**: ✅ 完成
-**优先级**: P2
-**完成日期**: 2026-05-25
-**上游版本**: 68dc3c5
-
-### 目标
-
-增强 Advisor 的 token 计数显示、client-side advisor mode 和 cost tracker。
-
-### 核心改进
-
-| 改进 | 文件 | 说明 |
-|------|------|------|
-| Token 计数显示 | `src/agent/conversation.py` | max_history: 100 → 2000 |
-| Provider Token 追踪 | `src/providers/anthropic_provider.py` | 增加 token 使用追踪 |
-| Base Provider 增强 | `src/providers/base.py` | 统一 token 计数接口 |
-
-### max_history 扩展
-
-`src/agent/conversation.py` 中 `max_history` 从 100 提升到 2000，允许更长的对话历史：
-
-```python
-@dataclass
-class ConversationConfig:
-    max_history: int = 2000  # 从 100 提升到 2000
-```
-
-### Provider Token 追踪
-
-```python
-@dataclass
-class TokenUsage:
-    """Token 使用统计"""
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    total_tokens: int = 0
-    
-    def add(self, other: TokenUsage) -> None:
-        """累加 token 使用"""
-        self.prompt_tokens += other.prompt_tokens
-        self.completion_tokens += other.completion_tokens
-        self.total_tokens += other.total_tokens
-```
-
----
-
-## F-21: 后台运行 + 恢复同步
-
-**状态**: ✅ 已完成
-**优先级**: P2
-**目标**: 在 Agent 编排中阶段性将结果汇报至任务看板，将任务看板提取为工具
-
-#### 背景
-
-在 Agent 编排场景中，需要在阶段性检查点（如 phase/step complete）自动将进度汇报至任务看板。目前项目已有 TaskCreate/TaskGet/TaskList/TaskUpdate/TaskOutput 完整的任务看板工具集（`src/tool_system/tools/tasks_v2.py`），但缺少在 Agent 阶段性检查点自动触发汇报的机制。
-
-#### 三组合实现方案
-
-| 维度 | 方案 | 解决的问题 |
-|------|------|-----------|
-| **触发时机** | 方式一：检查点触发 | "什么时候汇报" — 在 Agent 的 phase/step 完成检查点自动触发 |
-| **工具形态** | 方式二：ProgressReportTool | "用什么汇报" — 封装专门的汇报工具，而不是直接调用 TaskUpdate |
-| **数据存储** | 方式三：ToolContext.tasks | "存在哪" — 通过 ToolContext.tasks 持久化 |
-
-三个方案**互补不冲突**，组合使用：
-
-```
-Agent 执行到检查点 (方式一)
-    ↓
-调用 ProgressReportTool (方式二)
-    ↓
-数据存入 ToolContext.tasks (方式三)
-```
-
-#### 架构设计
-
-```
-src/tool_system/tools/
-└── progress_report.py           # ProgressReportTool（新）
-
-src/orchestrator/
-├── agent_runner.py              # 事件流中新增 PhaseComplete 事件
-└── progress_reporter.py         # 汇报逻辑处理器（新）
-```
-
-#### ProgressReportTool 设计
-
-```python
-ProgressReportTool = build_tool(
-    name="ProgressReport",
-    input_schema={
-        "type": "object",
-        "properties": {
-            "taskId": {"type": "string"},      # 任务 ID
-            "stage": {"type": "string"},       # 当前阶段名
-            "progress": {"type": "number"},    # 0-100 进度
-            "summary": {"type": "string"},    # 阶段性总结
-            "nextAction": {"type": "string"}, # 下一步动作
-            "metadata": {"type": "object"},   # 额外元数据
-        },
-        "required": ["taskId", "stage"]
-    },
-    call=_progress_report_call,
-    description="Report 阶段性进度至任务看板"
-)
-```
-
-#### 触发时机（方式一）
-
-在 `AgentRunner` 事件流中新增 `PhaseComplete` 事件：
-
-| 事件 | 触发位置 | 说明 |
-|------|---------|------|
-| `PhaseComplete` | `agent_runner.py` 的 phase 边界 | Agent 完成一个阶段（多个 turn 组成） |
-| `StepComplete` | tool call 完成后 | 每个工具调用完成（可选，粒度过细） |
-
-```python
-async def _on_phase_complete(self, session_id: str, phase_result: dict):
-    # 自动汇报进度
-    await self.tool_registry.dispatch(
-        ToolCall(name="ProgressReport", input={
-            "taskId": session_id,
-            "stage": phase_result["phase"],
-            "progress": phase_result["progress"],
-            "summary": phase_result["summary"]
-        }),
-        context
-    )
-```
-
-#### 数据持久化（方式三）
-
-现有 `TaskUpdateTool` 已支持 `metadata` 字段，ProgressReport 只需扩展 metadata 结构：
-
-```python
-{
-    "taskId": "abc123",
-    "stage": "code_generation",
-    "progress": 60,
-    "summary": "已完成核心模块代码生成",
-    "nextAction": "编写单元测试",
-    "metadata": {
-        "phases": [
-            {"name": "analysis", "completed": true, "progress": 100},
-            {"name": "code_generation", "completed": true, "progress": 100},
-            {"name": "testing", "completed": false, "progress": 0}
-        ],
-        "tokenUsage": {"input": 5000, "output": 3000}
-    }
-}
-```
-
-#### 与现有组件的关系
-
-| 现有组件 | 集成点 | 说明 |
-|---------|--------|------|
-| `tasks_v2.py` | TaskUpdate/TaskCreate | 复用现有工具，通过 metadata 扩展 |
-| `StatusDashboard` | 状态展示 | 可消费汇报数据实时展示 |
-| `AgentRunner` | 事件流 | PhaseComplete 事件触发汇报 |
-| `ToolContext.tasks` | 存储后端 | 已有实现，无需修改 |
-
-#### 实施阶段
-
-| 阶段 | 内容 | 优先级 | 状态 |
-|------|------|--------|------|
-| Phase A | ProgressReportTool 工具实现 | P2 | ✅ 已完成 |
-| Phase B | AgentRunner PhaseComplete 事件 | P2 | ✅ 已完成 |
-| Phase C | ProgressReporter 汇报处理器 | P2 | ✅ 已完成 |
-| Phase D | 与 StatusDashboard 集成 | P3 | ⏳ 待开始 |
-
-**状态**: 🔄 规划中
-**优先级**: P2
-**目标**: 跨会话统计所有 Agent 的工具和 Skill 调用频率、耗时和错误率
-
-#### 背景
-
-当前项目没有调用统计功能，无法了解工具和 Skill 使用分布情况。本特性通过追加日志（JSON Lines）实现轻量级跨会话持久化，不支持实时查询。
-
-#### 实现方案
-
-**日志格式（Append-only JSON Lines，统一记录工具和 Skill）**:
-
-```
-~/.clawcodex/tool_stats.jsonl
-{"agent_id": "dev", "kind": "tool", "tool": "Read", "ts": 1748..., "dur_ms": 12.3, "ok": true}
-{"agent_id": "dev", "kind": "tool", "tool": "Edit", "ts": 1748..., "dur_ms": 45.1, "ok": true}
-{"agent_id": "dev", "kind": "skill", "skill": "code_review", "ts": 1748..., "dur_ms": 3200.0, "ok": true}
-{"agent_id": "orchestrator-001", "kind": "tool", "tool": "Bash", "ts": 1748..., "dur_ms": 2300.0, "ok": false, "error": "timeout"}
-{"agent_id": "orchestrator-001", "kind": "skill", "skill": "git_commit", "ts": 1748..., "dur_ms": 800.0, "ok": true}
-```
-
-**日志字段（统一 schema，工具和 Skill 共用）**:
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `agent_id` | string | Agent 标识符（REPL 会话为 "main"，子 agent 按配置） |
-| `kind` | string | `"tool"` 或 `"skill"` |
-| `tool` | string \| null | 工具名称（kind=tool 时） |
-| `skill` | string \| null | Skill 名称（kind=skill 时） |
-| `ts` | float | Unix 时间戳（秒） |
-| `dur_ms` | float | 执行耗时（毫秒） |
-| `ok` | bool | 是否成功 |
-| `error` | string \| null | 错误信息（失败时） |
-| `params` | dict \| null | Skill 调用参数（kind=skill 时） |
-| `skill_version` | string \| null | Skill 版本（kind=skill 时） |
-
-**性能分析**:
-
-| 操作 | 性能影响 | 说明 |
-|------|---------|------|
-| 追加写入 | 极小 | 顺序追加是磁盘 I/O 最优模式，现代文件系统高度优化 |
-| 文件过大后查询 | 较大 | 每次 grep/jq 需全量扫描，数据量大时需预聚合 |
-| 多进程并发写 | 中等 | OS 层写锁竞争，建议单进程内汇聚后批量写入 |
-
-**架构设计**:
-
-```
-src/tool_system/
-└── stats.py                    # 统计模块（新）
-    ├── record(name, dur_ms, ok, error, *, kind, params, version)  # 统一记录
-    ├── get_stats()             # 查询汇总（读取日志文件聚合）
-    └── _write_buffered()       # 批量写入（缓冲后刷新到磁盘）
-
-注入点:
-  agent_loop.py                 # 工具执行完成后调用 record(kind="tool")
-  skills/loader.py             # Skill 执行完成后调用 record(kind="skill")
-```
-
-**查询示例**:
-
-```bash
-# 统计所有 skill 调用
-grep '"kind":"skill"' ~/.clawcodex/tool_stats.jsonl | jq '.skill' | sort | uniq -c | sort -rn
-
-# 统计工具 vs skill 调用比例
-grep -E '"kind":"(tool|skill)"' ~/.clawcodex/tool_stats.jsonl | jq -s 'group_by(.kind) | map({kind: .[0].kind, count: length})'
-
-# 统计某个 agent 的调用
-grep '"agent_id":"orchestrator-001"' ~/.clawcodex/tool_stats.jsonl | jq -s 'group_by(.kind) | map({kind: .[0].kind, count: length, avg_ms: (map(.dur_ms) | add / length)})'
-
-# 统计错误率
-grep '"kind":"skill"' ~/.clawcodex/tool_stats.jsonl | jq -s 'map({ok}) | group_by(.ok) | map({ok: .[0].ok, count: length})'
-```
-
-**数据清理**: 日志文件需定期归档或设置 TTL（建议保留最近 90 天数据）。
-
-**不支持的功能**: 暂不支持实时查询（如 TUI 页面每次渲染时查询）。如需实时展示，需另建汇总表预聚合。
-
-#### 替代方案：基于 Transcript 的轻量级统计
-
-如果只关心**调用频率和成功率**（不需要耗时），可直接解析现有 Transcript 文件，无需新建日志系统。
-
-**数据来源**:
-
-```
-~/.clawcodex/transcripts/<agent_id>.jsonl
-```
-
-每行是一个 `Message`，其中包含 `ToolUseBlock`：
-
-```json
-{"type": "user", "content": [{"type": "tool_use", "id": "2", "name": "Read", "input": {"path": "foo.py"}}]}
-{"type": "assistant", "content": [{"type": "tool_use", "id": "3", "name": "Edit", ...}]}
-{"type": "user", "content": [{"type": "tool_result", "tool_use_id": "2", "content": "...", "is_error": false}]}
-```
-
-**统计维度**:
-
-| 维度 | 支持 | 说明 |
-|------|------|------|
-| 调用频率 | ✅ | 按 tool/skill 名称统计 |
-| 成功率 | ✅ | ToolResult.is_error 可判断 |
-| 执行耗时 | ❌ | Transcript 不记录执行时长 |
-| Skill 调用 | ⚠️ | 取决于 Skill 是否走 ToolUseBlock |
-
-**查询示例**:
-
-```bash
-# 统计所有工具调用次数
-grep '"type":"tool_use"' ~/.clawcodex/transcripts/*.jsonl | jq '.content[].name' | sort | uniq -c | sort -rn
-
-# 统计某个 agent 的工具调用
-grep '"type":"tool_use"' ~/.clawcodex/transcripts/agent-123.jsonl | jq -s 'group_by(.content[].name) | map({tool: .[0].content[].name, count: length})'
-```
-
-**优缺点对比**:
-
-| 方案 | 优势 | 劣势 |
-|------|------|------|
-| **Transcript 方案** | 无需新增日志写入；已有数据 | 无耗时；Skill 覆盖不确定；解析稍复杂 |
-| **JSON Lines 日志方案** | 包含耗时；字段完整；格式统一 | 需新增写入逻辑；数据冗余 |
-
-**决策建议**:
-- 仅需调用频率/成功率 → 用 Transcript 方案
-- 需耗时统计 → 用 JSON Lines 日志方案
-
-#### 基于使用频率的工具/Skill 裁剪
-
-基于工具和 Skill 的使用频率统计，可自动识别并裁剪低使用率组件，减少 Bundle 大小和上下文开销。
-
-**裁剪策略**:
-
-| 策略 | 说明 |
-|------|------|
-| **自动隐藏** | 低频工具从默认 bundle 移到 `bare` 模式，需显式引用 |
-| **提示建议** | 统计报告提示"X 工具过去 90 天仅使用 N 次，可考虑移除" |
-| **按需加载** | 低频工具默认不加载，使用前需 `ExecuteExtraTool` 引用 |
-
-**配置参数**:
-
-```yaml
-tool_pruning:
-  enabled: true
-  lookback_days: 90          # 统计回溯周期
-  low_usage_threshold: 0.01  # 使用率 < 1% 则标记为低频
-  cooldown_days: 30          # 工具存在 > 30 天才纳入裁剪统计
-  action: "hide"             # "hide" | "suggest" | "remove"
-```
-
-**实现逻辑**:
-
-```python
-def get_rarely_used_tools(lookback_days=90, threshold=0.01, cooldown_days=30) -> list[str]:
-    """返回应裁剪的工具列表"""
-    stats = parse_transcript_stats(lookback_days=lookback_days)
-    total = sum(stats.values())
-    now = time.time()
-    for name, count in stats.items():
-        usage_rate = count / total
-        if usage_rate < threshold:
-            # 冷却期判断（工具创建时间 > cooldown_days）
-            if tool_exists_longer_than(name, days=cooldown_days):
-                yield name
-```
-
-**注意事项**:
-
-| 注意点 | 说明 |
-|--------|------|
-| 学习曲线 | 新工具初期使用率低不代表价值低，需冷却期保护 |
-| 核心工具 | `Read/Edit/Bash` 等高频核心工具不受影响 |
-| 保留 fallback | 低频工具仍可通过 `bare` 模式访问 |
-
-#### POS to Agent 转化模式
-
-将专业工作流（POS）拆解为 Agent 架构，实现工作流的可复用、可观测、可编排。
-
-**三层映射关系**:
-
-| 工作流组件 | Agent 架构 | 示例 |
-|-----------|-----------|------|
-| POS (专业系统) | Agent | 数据分析 Agent、CI/CD Agent、ML Pipeline Agent |
-| 工作流步骤 | Skill | `deploy_service`、`run_etl`、`train_model` |
-| SDK 接口 | 原子工具 | `s3_upload`、`k8s_apply`、`spark_submit` |
-
-**架构示例**:
-
-```
-CI/CD Agent
-├── Skill: build_image
-│   ├── tool: docker_build()
-│   ├── tool: docker_tag()
-│   └── tool: docker_push()
-├── Skill: deploy_service
-│   ├── tool: k8s_apply()
-│   ├── tool: health_check()
-│   └── tool: rollback_if_failed()
-└── Skill: notify_team
-    ├── tool: slack_send()
-    └── tool: email_send()
-```
-
-**转化过程（Skill + Template + Config）**:
-
-| 层面 | 形式 | 说明 |
-|------|------|------|
-| **转化执行器** | Skill | 需要 LLM 判断如何分组、如何命名 |
-| **产出物规范** | Template | Agent/Skill 定义的结构规范 |
-| **映射规则** | Config | SDK method → tool 的映射表 |
-
-```
-Skill（执行器）+ Template（产出物规范）+ Config（映射规则）
-```
-
-**转化 Skill 示例**:
-
-```python
-class ConvertPOSToAgent:
-    """将 POS SDK 转换为 Agent 的 Skill"""
-
-    async def execute(self, sdk_spec: str, requirements: str) -> AgentDefinition:
-        # 1. 解析 SDK 接口 → 需要理解 API 语义（LLM）
-        atomic_tools = await self._parse_sdk_methods(sdk_spec)
-
-        # 2. 按业务逻辑分组 → 需要判断相关性（LLM）
-        skills = await self._group_into_skills(atomic_tools, requirements)
-
-        # 3. 填充 Agent 定义模板
-        return self._fill_template(skills)
-```
-
-**优势**:
-
-| 优势 | 说明 |
-|------|------|
-| 可复用性 | 原子工具可在不同 Skill/Agent 间共享 |
-| 可观测性 | 每步工具调用独立记录，便于调试 |
-| 容错粒度 | 可在工具级别重试，而非整个工作流 |
-| 动态编排 | Agent 可根据上下文选择不同的 Skill 执行路径 |
-
-**与 F-18 CreateAgentTool 的关系**:
-
-F-18 解决"工具创建工具"（Meta Tool 能力），此模式解决"工作流转化为 Agent"。两者结合可实现：SDK 接口 → 原子工具 → Skill 组合 → Agent 定义 → 动态注册。
-
-#### 业务 Agent 长期使用（新窗口重连）
-
-将 POS 转化的 Agent 作为主 Agent 长期使用，并支持在新窗口中重新连接。
-
-**核心能力**:
-
-| 能力 | 说明 | 实现 |
-|------|------|------|
-| **持久化** | Agent 定义保存到文件 | `~/.clawcodex/agents/<name>.json` |
-| **主 Agent 指定** | 启动时指定使用哪个 Agent | `clawcodex --agent <name>` 或配置文件 |
-| **窗口重连** | 新窗口连接到已运行的 Agent | Session ID / Named Pipe |
-
-**Agent 持久化格式**:
-
-```json
-// ~/.clawcodex/agents/cicd-agent.json
-{
-  "name": "cicd-agent",
-  "description": "自动化部署 Agent",
-  "model": "claude-sonnet",
-  "tools": ["k8s_apply", "docker_push", "health_check"],
-  "skills": ["deploy_service", "rollback"],
-  "memory_scope": ["project", "team"],
-  "persistent": true
-}
-```
-
-**启动方式**:
-
-```bash
-# 方式一：启动时指定
-clawcodex --agent cicd-agent
-
-# 方式二：配置为默认
-# ~/.clawcodex/settings.json
-{
-  "default_agent": "cicd-agent"
-}
-
-# 方式三：daemon 模式长期运行
-clawcodex --daemon --agent cicd-agent
-# 新窗口 attach
-clawcodex attach cicd-agent
-```
-
-**Daemon + Attach 架构**:
-
-```
-终端 1: clawcodex --daemon --agent cicd-agent
-        └── cicd-agent 进程运行中，保持状态
-               ↓
-终端 2: clawcodex attach cicd-agent
-        └── 连接到已有 Agent 会话，继续交互
-```
-
-**需要新增的组件**:
-
-| 组件 | 文件 | 说明 |
-|------|------|------|
-| Agent 存储 | `src/agent/agent_persistence.py` | 读写 `~/.clawcodex/agents/` |
-| Agent 加载器 | `src/agent/agent_loader.py` | 启动时加载指定 Agent |
-| Attach 协议 | `src/agent/attach.py` | 连接到已有 Agent 会话 |
-
-**与现有组件的集成**:
-
-| 现有组件 | 集成点 |
-|---------|--------|
-| `agent/agent_definitions.py` | Agent 定义模型 |
-| `agent/session.py` | Session 持久化 |
-| `agent/run_agent.py` | 主 Agent 启动逻辑 |
-| `repl/core.py` | REPL 启动入口 |
-| `src/entrypoints/headless.py` | Daemon 模式支持 |
-
----
-
-### F-18: CreateAgentTool 动态工具创建
-
----
-
-### F-15: 权限模式切换 (Shift+Tab)
-
-**状态**: ✅ 完成
-**完成日期**: 2026-05-21
-**优先级**: P1
-
-#### 背景
-
-Claude Code 支持在多种权限模式之间切换（default / acceptEdits / plan / auto / bypassPermissions），但 clawcodex 原先只有代码实现，UI 绑定缺失。
-
-#### 实现方案
-
-1. **REPL 空闲状态切换** (`src/repl/core.py`)
-
-   - 在 keybindings 中添加 `Shift+Tab` 绑定
-   - 调用 `cycle_permission_mode()` 循环切换权限模式
-   - 循环顺序：`default → acceptEdits → plan → bypassPermissions (如果可用) → default`
-
-2. **对话过程中切换** (`src/repl/live_status.py`)
-
-   - 在 LiveStatus 的 keybindings 中添加 `Shift+Tab` 处理器
-   - 通过 `on_submit.__self__` 获取 REPL 实例来访问权限状态
-   - 切换后更新 spinner 状态显示 `[mode: {next_mode}]`
-
-3. **状态栏显示** (`src/repl/core.py:_bottom_toolbar`)
-
-   - 在底部状态栏显示当前权限模式
-   - 格式：`{provider} · {model} · {cwd} · mode: {perm_mode} · turns: X · tokens: X in / X out`
-
-#### 完成的工作
-
-- [x] REPL Shift+Tab 权限切换绑定
-- [x] LiveStatus Shift+Tab 权限切换绑定
-- [x] **TUI Shift+Tab 权限切换绑定** (`src/tui/screens/repl.py`)
-- [x] **TUI /permission 命令** (`src/tui/commands.py`, `src/tui/app.py`)
-- [x] 底部状态栏显示当前权限模式
-- [x] 补丁文件更新 (`0054.src.repl.core.py.patch`, `0066.src.repl.live_status.py.patch`)
-
-#### 关键文件
-
-- `src/repl/core.py` - REPL 空闲状态 Shift+Tab + 状态栏
-- `src/repl/live_status.py` - 对话过程中 Shift+Tab
-- `src/tui/screens/repl.py` - TUI Shift+Tab 绑定
-- `src/tui/screens/permission_mode_picker.py` - TUI 权限模式选择器
-- `src/tui/app.py` - TUI /permission 命令分发
-- `src/permissions/cycle.py` - `cycle_permission_mode()` 实现
-- `src/permissions/modes.py` - `permission_mode_short_title()` 等工具函数
-
-#### 注意
-
-- `bypassPermissions` 需要通过 `--dangerously-skip-permissions` 启动或 `settings.json` 中配置 `permissions.allowBypassPermissionsMode: true` 才可用
-- `auto` 模式不在手动循环中，需要通过 `--permission-mode auto` 启动或由 TRANSCRIPT_CLASSIFIER 自动触发
-
-#### REPL/TUI 双向切换 (新增)
-
-- **REPL → TUI**: `/tui` 命令切换到 Textual TUI (`src/repl/core.py:_handoff_to_textual_tui`)
-- **TUI → REPL**: `/repl` 命令切换回 CLI REPL (`src/entrypoints/tui.py`)，TUI 会话自动保存
-- 切换时保留 session、conversation、permission_mode 等状态
-- TUI 在 `on_mount` 时自动调用 `_replay_history()` 恢复会话历史
-
-#### 关键文件
-
-- `src/repl/core.py` - REPL `/tui` 切换及会话历史
-- `src/entrypoints/tui.py` - TUI `/repl` 切换及会话保存
-- `src/tui/app.py:_replay_history()` - TUI 历史回放
-
----
-
-### F-16: Auto 模式 (TRANSCRIPT_CLASSIFIER)
-
-**状态**: ⏳ 待实现
-**优先级**: P2
-**目标**: 基于 LLM 的自动权限模式切换，减少交互疲劳
-
-#### 功能说明
-
-Auto 模式是一种智能权限模式，通过 LLM 分类器（TRANSCRIPT_CLASSIFIER）自动判断何时允许执行敏感操作。在长时间任务或重复性操作场景下，Auto 模式可以减少用户确认的交互频率。
-
-#### 工作原理
-
-```
-用户启动 Auto 模式
-        ↓
-Agent 执行工具调用时触发分类器
-        ↓
-TRANSCRIPT_CLASSIFIER 分析:
-  - 工具类型 (Bash/Write/Edit/etc.)
-  - 命令内容 (是否危险)
-  - 执行上下文 (当前目录/文件类型)
-  - 历史行为模式
-        ↓
-分类决策:
-  - Auto-Allow: 直接执行，无需确认
-  - Auto-Deny: 静默拒绝或降级
-  - Fallback to Ask: 无法判断时回退到 ask 模式
-```
-
-#### 待实现组件
-
-| 组件 | 文件 | 说明 |
-|------|------|------|
-| TRANSCRIPT_CLASSIFIER | `permissions/classifier.py` | LLM 分类器核心 |
-| canCycleToAuto | `permissions/cycle.py` | 判断是否可切换到 auto |
-| Auto Mode 集成 | `agent/run_agent.py` | 在工具执行前调用分类器 |
-| 分类结果缓存 | `permissions/cache.py` | 避免重复分类 |
-
-#### 实施阶段
-
-| 阶段 | 内容 | 优先级 | 状态 |
-|------|------|--------|------|
-| Phase A1 | TRANSCRIPT_CLASSIFIER 核心实现 | P2 | ⏳ 待开始 |
-| Phase A2 | `canCycleToAuto()` 判断逻辑 | P2 | ⏳ 待开始 |
-| Phase A3 | Auto Mode 工具执行前集成 | P2 | ⏳ 待开始 |
-| Phase A4 | 分类结果缓存机制 | P3 | ⏳ 待开始 |
-
----
-
-### F-20: Agent 间自主观察与消息交互
-
-**状态**: 🔄 开发中
-**优先级**: P1
-**目标**: 实现 Manager Agent 全自动观察 Worker Agent 状态并注入指令，支持优先级队列和权限审批
-
-#### 背景
-
-当前 ClawCodex 的 agent 之交互依赖人类的介入（操作员通过 CLI inject hint）。需要设计一套全自动的 agent-to-agent 状态观察与消息注入机制：
-
-- Manager Agent 通过工具主动查询 Worker Agent 状态
-- Manager 根据状态通过带优先级的消息注入机制向 Worker 发送修正指令
-- Worker 在下一 turn 边界以 UserMessage 形式接收并执行
-
-#### 角色定义
-
-| 角色 | 判断标准 | 说明 |
-|------|---------|------|
-| **Manager Agent** | 工具集中包含 `TaskInspect` + `TaskDirectives` | 通过工具组合自动识别，无需独立 Agent 类型 |
-| **Worker Agent** | 不包含上述管理工具 | 普通执行单元 |
-
-#### 核心工具
-
-| 工具 | 文件 | 功能 |
-|------|------|------|
-| `TaskInspect` | `src/tool_system/tools/task_inspect.py`（新增） | Manager 查询 Worker 运行时状态 |
-| `TaskDirectives` | `src/tool_system/tools/task_directives.py`（新增） | Manager 向 Worker 注入优先级指令 |
-| `ReportToSupervisor` | `src/tool_system/tools/report_to_supervisor.py`（新增） | Worker 可选自愿上报 |
-
-#### 优先级处理
-
-| 优先级 | 队列位置 | 用途 |
-|--------|---------|------|
-| `critical` | 队列头部，最先消费 | 紧急修正，worker 必须响应 |
-| `high` | 队列头部 | 重要建议，worker 应优先处理 |
-| `normal` | 队列尾部，FIFO | 普通协调信息 |
-
-#### 权限方案
-
-| 场景 | Worker 模式 | Manager 职责 |
-|------|-------------|-------------|
-| 测试/开发 | `bypassPermissions` | 无需审批 |
-| 受控环境 | `bubble` + `always_allow_rules` | 规则外的工具弹窗给人类 |
-| 生产/高风险 | `plan` | Manager 实时审批关键操作 |
-
-#### 关键文件
-
-| 文件 | 说明 |
-|------|------|
-| `src/tool_system/tools/task_inspect.py` | 新增，状态查看工具 |
-| `src/tool_system/tools/task_directives.py` | 新增，消息注入工具 |
-| `src/tasks/local_agent.py` | 修改，`queue_pending_message` 支持 priority |
-| `src/query/query.py` | 修改，`drain_pending_messages` 按优先级消费 |
-| `src/agent/agent_tool_utils.py` | 修改，过滤管理工具（仅 Manager 可用） |
-
-#### 实施阶段
-
-| 阶段 | 内容 | 优先级 | 状态 |
-|------|------|--------|------|
-| Phase M1 | `TaskInspect` + `TaskDirectives` 核心工具 | P1 | ✅ 完成 |
-| Phase M2 | `queue_pending_message` 支持 priority | P1 | ✅ 完成 |
-| Phase M3 | `drain_pending_messages` 按优先级消费 | P1 | ✅ 完成 |
-| Phase M4 | 工具可见性过滤（仅 Manager 可调用） | P1 | ✅ 完成 |
-| Phase M5 | 权限规则传递（`always_allow_rules` + `worker_permission_mode`） | P1 | ✅ 完成 |
-| Phase M6 | 测试与联调 | P2 | 🔄 进行中 |
-
----
-
-### F-18: CreateAgentTool 动态工具创建
-
-**状态**: 🔄 规划中
-**优先级**: P2
-**目标**: Agent 可根据三方 CLI/API 规范动态创建工具，实现"工具创建工具"的 Meta Tool 能力
-
-#### 功能说明
-
-允许 Agent 分析第三方工具（CLI 命令或 HTTP API）的接口规范，然后动态创建一个可用的工具：
-
-```
-Agent 分析 CLI 规范 → 生成工具规范 → 调用 CreateAgentTool → 注册新工具 → 使用新工具
-```
-
-#### 架构设计
-
-```
-src/agent/tool_authoring/           # 新增模块（与上游解耦）
-├── spec.py                         # AgentToolSpec 定义
-├── validators.py                   # 规范验证器
-├── factory.py                      # build_tool() 调用封装
-├── registry_ext.py                 # Agent 创建工具注册表
-├── persistence.py                  # 工具持久化
-└── call_handlers/                  # call_impl 处理
-    ├── bash.py                     # bash 命令调用
-    ├── http.py                     # HTTP 请求调用
-    └── python.py                   # Python 函数映射
-
-src/tool_system/tools/
-└── create_agent_tool.py            # CreateAgentTool 实现
-```
-
-#### 三种 call_impl 安全限制
-
-| call_type | call_impl 示例 | 安全级别 |
-|-----------|---------------|---------|
-| `bash` | `"git status --porcelain {path}"` | ✅ 占位符防注入，预定义命令白名单 |
-| `http` | `{"method": "GET", "url": "https://api.github.com/{endpoint}"}` | ✅ 模板化，方法白名单 |
-| `python` | `"fetch_data"` → 映射到预定义函数 | ⚠️ 仅白名单函数注册 |
-
-**命令白名单（bash）**：`git`, `gh`, `glab`, `curl`, `wget`, `kubectl`, `docker`, `npm`, `pip`
-
-**HTTP 方法白名单**：`GET`, `POST`, `PUT`, `DELETE`, `PATCH`
-
-#### 安全性约束
-
-| 约束类型 | 说明 |
-|---------|------|
-| 命令白名单 | 仅允许预定义命令 |
-| HTTP 方法白名单 | 仅白名单方法 |
-| Python 函数注册 | 仅白名单函数 |
-| 无任意代码执行 | call_impl 是模板/映射，非代码 |
-| 参数化防注入 | format 替换，无 shell 注入 |
-| 超时保护 | subprocess timeout=30 |
-
-#### 实现文件
-
-| 文件 | 位置 |
-|------|------|
-| `tool_authoring/spec.py` | `src/agent/tool_authoring/` |
-| `tool_authoring/validators.py` | `src/agent/tool_authoring/` |
-| `tool_authoring/call_handlers/bash.py` | `src/agent/tool_authoring/` |
-| `tool_authoring/call_handlers/http.py` | `src/agent/tool_authoring/` |
-| `tool_authoring/factory.py` | `src/agent/tool_authoring/` |
-| `tool_authoring/registry_ext.py` | `src/agent/tool_authoring/` |
-| `tool_authoring/persistence.py` | `src/agent/tool_authoring/` |
-| `create_agent_tool.py` | `src/tool_system/tools/` |
-
-#### 已有基础 (extensions/pos_converter/)
-
-`extensions/pos_converter/` 目录已实现 POS → Agent 转换框架：
-
-| 文件 | 功能 |
-|------|------|
-| `agent_builder.py` | Agent 构建器 |
-| `convert_pos_skill.py` | POS 转换 Skill |
-| `sdk_parser.py` | SDK 解析器 |
-| `skill_grouper.py` | Skill 分组器 |
-| `templates.py` | 模板定义 |
+**规划任务详情已归档至 [ARCHIVED_PROGRESS.md](./ARCHIVED_PROGRESS.md)**
 
 ---
 
@@ -1737,64 +728,6 @@ agent:
 - [x] Phase O6: `orchestrator issue takeover --id <id>`（终止 + REPL 接管）
 - [x] Phase O7: `orchestrator issue clarify --id <id>`（澄清应答）
 - [x] Phase O8: Dashboard LiveView 增强（event stream 完整推送 LLM 摘要 + tool calls）
-
----
-
-## 四、规划任务
-
-### F-2: Team 成员管理 (Phase-7)
-
-**状态**: ⏳ 规划中
-**优先级**: P1
-**WI**: WI-6.4
-
-#### 目标
-扩展 `TeamCreate` 工具，使其能够跟踪和管理团队中的成员 Agent。
-
-#### 数据模型
-
-```json
-{
-  "team_name": "backend-team",
-  "lead_agent_id": "a1b2c3d4e5f6",
-  "members": [
-    {
-      "agent_id": "g7h8i9j0k1l2",
-      "name": "auth-dev",
-      "agent_type": "general-purpose",
-      "description": "认证模块开发",
-      "status": "running",
-      "joined_at": "2026-05-17T10:30:00Z"
-    }
-  ]
-}
-```
-
-#### 核心机制
-
-| 机制 | 说明 |
-|------|------|
-| TeammateInit | `agent(run_in_background=true)` 时自动注册到 `members` |
-| 状态同步 | TaskOutput 显示 completed/failed 时更新成员状态 |
-| 名称注册 | Agent 名称冲突检测 `agent_name_registry` |
-| 递归 Fork 保护 | Fork Agent 无法嵌套调用 Fork |
-
-#### 实现文件
-
-| 文件 | 状态 |
-|------|------|
-| `tool_system/tools/team.py` | ✅ 已实现 TeamCreate/TeamDelete，members 数组已支持 |
-| `services/swarm/team_file.py` | ✅ 已实现 TeamFile、TeamMember 数据模型 |
-| `services/swarm/team_membership.py` | ✅ 已实现 is_team_lead() 函数 |
-| `services/swarm/agent_name_registry.py` | ✅ 已实现名称注册表 |
-| `tool_system/tools/agent.py` | ✅ 基础完成，TeammateInit 机制就绪 |
-
-#### 测试覆盖
-
-| 测试文件 | 测试用例 |
-|----------|----------|
-| `test_team_file.py` | `test_team_file_created_with_members_array`, `test_team_file_schema_members_array`, `test_team_file_missing_members_tolerated` |
-| `test_team_membership.py` | `test_is_team_lead_true_*`, `test_is_team_lead_false_*` |
 
 ---
 
@@ -2546,3 +1479,153 @@ clawcodex  # 自动使用 claude-repl
 
 *版本 v1.5 更新：新增 F-33 REPL 模式 Ctrl+B 后台运行支持设计，解耦实现以便上游 REPL 升级。*
 *版本 v1.6 更新：新增 F-34 CLI/TUI Frontend 解耦架构设计，三阶段渐进式前端解耦方案。*
+*版本 v2.0 更新：新增 F-35 二开特性可切换架构设计，Feature Toggle 系统 + 内联修改特性提取方案。*
+
+---
+
+## F-35: 二开特性统一切换（上游纯净模式开关）
+
+**状态**: 📋 规划中
+**优先级**: P1
+**依赖**: F-34（前端的切换提供了入口点基础）
+
+### 问题现状
+
+F-34 解决了前端层的切换问题，但 `src/` 中还有大量二开特性与上游源码 58ea488 深度混合：
+
+| 分类 | 数量 | 说明 |
+|------|------|------|
+| 二开新增文件（Only in src/） | 23 个 | 上游不存在，纯二开特性 |
+| 二开修改文件（Files differ） | **584 个** | 上游源码被直接内联修改 |
+
+这意味着：
+- **不能直接切换回上游** — inline 修改无法单独关闭
+- **上游升级困难** — 每次合入需手动 diff 584 个文件
+- **特性边界不清** — 每个文件的改动用途不明
+
+### 设计目标
+
+1. **一个开关统一切换**：运行时通过 `CLAWCODEX_UPSTREAM_MODE=true` 决定加载上游版本还是二开版本
+2. **零代码切换**：无需改 import、无需改代码，修改环境变量即可
+3. **上游兼容**：上游模式开启时，行为与上游 58ea488 一致
+4. **逐步迁移**：584 个文件不必一次全部提取，可以分批渐进
+
+### 架构设计
+
+```
+src/features/
+   ├── __init__.py           # 包入口 + is_upstream_mode()
+   ├── resolver.py           # Import hook 模块解析器
+   └── patches/              # 提取后的二开补丁（可选）
+```
+
+#### 启动时执行流程
+
+```python
+# src/features/__init__.py
+
+def is_upstream_mode() -> bool:
+    """检查是否以上游纯净模式运行"""
+    return os.environ.get("CLAWCODEX_UPSTREAM_MODE", "0") in ("1", "true")
+
+def init_features():
+    """根据模式决定是否启用 import hook"""
+    if is_upstream_mode():
+        # 上游模式：注册 import hook，加载 src/upstream/58ea488/ 的原始模块
+        sys.meta_path.insert(0, UpstreamResolver())
+```
+
+### 核心原理：文件级替换
+
+```
+上游模式（CLAWCODEX_UPSTREAM_MODE）:
+  import repl.core
+  → import hook 拦截，加载 src/upstream/58ea488/repl/core.py（纯上游版本）
+
+二开模式（默认）:
+  import repl.core
+  → 正常加载 src/repl/core.py（二开版本，同当前行为不变）
+```
+
+不需要逐段标注 FTR、不需要 30 个独立开关。只需一个开关决定：加载哪个 `src/` 下的模块。
+
+### 提取流程（584 个文件）
+
+```
+步骤 A: 补全上游快照
+  → 确保 src/upstream/58ea488/ 包含所有被修改文件的原版
+
+步骤 B: 分批还原
+  P3: 高优先级文件还原（~20 个核心文件：repl/core.py, tui/app.py 等）
+  P4: 中优先级文件还原（~100 个文件）
+  P5: 低优先级文件还原（剩余~460 个文件）
+
+步骤 C: 注册 import 映射
+  → 在 resolver.py 中注册已还原文件的映射
+  → 上游模式时加载 upstream 版本
+
+步骤 D: 可选：二开补丁提取
+  → 如果二开版本丢失了改动，需从 diff 提取补丁
+  → 放到 patches/ 目录，启动时应用
+```
+
+### 使用方式
+
+```bash
+# 默认启动（二开模式，同当前行为不变）
+clawcodex
+
+# 上游纯净模式（所有二开特性关闭）
+CLAWCODEX_UPSTREAM_MODE=1 clawcodex
+
+# 通过环境变量
+CLAWCODEX_UPSTREAM_MODE=1 clawcodex
+CLAWCODEX_UPSTREAM_MODE=true clawcodex-tui
+
+# 通过配置文件（settings.json）
+# "upstream_mode": true
+```
+
+### 实施阶段
+
+| Phase | 内容 | 工作量 | 交付物 |
+|-------|------|--------|--------|
+| **P1** | 基础设施：`features/__init__.py` + `resolver.py` + cli.py 初始化 | 1 天 | `__init__.py`, `resolver.py` |
+| **P2** | 补全上游快照：确保 `src/upstream/58ea488/` 与原版完全一致 | 1 天 | 完整的上游源码快照 |
+| **P3** | 高优先级文件提取 + 还原（~20 个核心文件） | 3 天 | repl/core.py, tui/app.py, cli.py 还原 |
+| **P4** | 中优先级文件提取 + 还原（~100 个文件） | 1 周 | 按模块分批发 |
+| **P5** | 低优先级文件提取 + 还原（剩余 ~460 个文件） | 2 周 | 批量脚本处理 |
+| **P6** | 完整验证 | 2 天 | 上游模式 = 原始 58ea488；二开模式 = 当前行为一致 |
+
+### 里程碑
+
+| 里程碑 | 内容 | 预计完成 |
+|--------|------|----------|
+| M1 | ✅ Import hook 框架可用 | P1 完成后 |
+| M2 | ✅ 高优先级核心文件可切换 | P3 完成后 |
+| M3 | ✅ 全部 584 个文件可切换 | P5 完成后 |
+| M4 | ✅ CLI 可一键切换纯上游模式 | P6 完成后 |
+
+### 对比：简化前后
+
+| 维度 | 之前（30 个独立 FTR） | 现在（一个全局开关） |
+|------|----------------------|---------------------|
+| 代码复杂度 | 需要 `toggles.py` 注册表、30+ env var 解析、依赖校验 | 只需 `is_upstream_mode()` + import hook |
+| 配置量 | 30 个 `CLAWCODEX_FTR_*` 环境变量 | 仅 1 个 `CLAWCODEX_UPSTREAM_MODE` |
+| 提取难度 | 需逐段标注 diff（行级标记 FTR-ID） | 整体文件提取即可 |
+| 用户心智负担 | 高（需要知道每个 FTR 什么含义） | 极低（开关即模式切换） |
+
+### 风险与缓解
+
+| 风险 | 缓解 |
+|------|------|
+| Import hook 与现有模块系统冲突 | P1 充分测试；备选方案：直接 `sys.path` 操作 |
+| 584 个文件还原时间过长 | 优先级分批进行，P1-P2 即可获得核心功能 |
+| 上游源码升级后 diff 过大 | 保留完整文件的二开版本副本，二开模式用 diff apply |
+| 还原后二开模式行为偏差 | 分步还原每个文件后立即验证 |
+
+---
+
+*文档更新时间: 2026-05-25*
+
+*版本 v2.0 更新：新增 F-35 二开特性统一切换架构设计，一个全局开关（CLAWCODEX_UPSTREAM_MODE）控制所有二开特性，文件级 import hook 实现模块替换，分批还原 584 个内联修改文件。*
