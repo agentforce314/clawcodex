@@ -25,6 +25,7 @@ class IssueStatus(str, Enum):
     """Lifecycle stages of a tracked issue."""
 
     PENDING = "pending"           # claimed, workspace created, not yet synced
+    RUNNING = "running"          # agent session actively processing
     SYNCED = "synced"             # git sync completed (commit + push + PR)
     COMPLETED = "completed"       # session finished successfully
     FAILED = "failed"            # session ended with a non-success status
@@ -76,9 +77,16 @@ class IssueRegistry:
             return
         try:
             data = json.loads(self._path.read_text(encoding="utf-8"))
-            self._records = {
-                k: IssueRecord(**v) for k, v in data.items()
-            }
+            self._records = {}
+            for k, v in data.items():
+                # Convert status string to IssueStatus enum
+                if isinstance(v.get("status"), str):
+                    v = dict(v)
+                    try:
+                        v["status"] = IssueStatus(v["status"])
+                    except ValueError:
+                        v["status"] = IssueStatus.PENDING
+                self._records[k] = IssueRecord(**v)
         except Exception as exc:
             logger.warning("Failed to load issue registry: %s — starting fresh", exc)
 
@@ -161,6 +169,16 @@ class IssueRegistry:
         if pr_url is not None:
             record.pr_url = pr_url
         record.status = IssueStatus.SYNCED
+        record.touch()
+        self._save()
+        return record
+
+    def mark_running(self, issue_id: str) -> IssueRecord | None:
+        """Mark an issue as actively running by an agent session."""
+        record = self._records.get(issue_id)
+        if record is None:
+            return None
+        record.status = IssueStatus.RUNNING
         record.touch()
         self._save()
         return record

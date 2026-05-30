@@ -268,6 +268,9 @@ class Orchestrator:
         )
         self._state.running[issue.id] = session
 
+        # Update persistent registry so `issue list` reflects running state
+        self._registry.mark_running(issue.id or "")
+
         self.status_dashboard.on_session_start(
             SessionStatus(
                 issue_id=issue.id or "",

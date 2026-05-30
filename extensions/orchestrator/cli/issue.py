@@ -60,7 +60,7 @@ def add_issue_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     list_parser.add_argument(
         "--status",
-        choices=["pending", "synced", "completed", "failed", "abandoned"],
+        choices=["pending", "running", "synced", "completed", "failed", "abandoned"],
         help="Filter by issue status",
     )
     list_parser.add_argument(
@@ -406,7 +406,7 @@ def _run_list(registry_path: Path | None, args: argparse.Namespace) -> int:
     from extensions.orchestrator.issue_registry import IssueRegistry
 
     registry = IssueRegistry(registry_path)
-    counts: dict[str, int] = {"PENDING": 0, "SYNCED": 0, "COMPLETED": 0, "FAILED": 0, "ABANDONED": 0}
+    counts: dict[str, int] = {"PENDING": 0, "RUNNING": 0, "SYNCED": 0, "COMPLETED": 0, "FAILED": 0, "ABANDONED": 0}
     records = list(registry._records.values())
 
     # Filter by status
@@ -434,11 +434,12 @@ def _run_list(registry_path: Path | None, args: argparse.Namespace) -> int:
         print(f"  {s:<15} {r.issue_id:<20} {branch:<30}")
 
     print()
-    print(f"  PENDING : {counts.get('PENDING', 0)}")
-    print(f"  SYNCED  : {counts.get('SYNCED', 0)}")
-    print(f"  COMPLETED : {counts.get('COMPLETED', 0)}")
-    print(f"  FAILED  : {counts.get('FAILED', 0)}")
-    print(f"  ABANDONED : {counts.get('ABANDONED', 0)}")
+    print(f"  PENDING  : {counts.get('PENDING', 0)}")
+    print(f"  RUNNING  : {counts.get('RUNNING', 0)}")
+    print(f"  SYNCED   : {counts.get('SYNCED', 0)}")
+    print(f"  COMPLETED: {counts.get('COMPLETED', 0)}")
+    print(f"  FAILED   : {counts.get('FAILED', 0)}")
+    print(f"  ABANDONED: {counts.get('ABANDONED', 0)}")
     return 0
 
 
