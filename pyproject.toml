@@ -103,7 +103,7 @@ dev = [
 ]
 
 [project.scripts]
-clawcodex-dev = "src.cli:main"
+clawcodex-dev = "src.clawcodex_ext.cli.main:main"
 
 [project.urls]
 Homepage = "https://github.com/agentforce314/clawcodex"

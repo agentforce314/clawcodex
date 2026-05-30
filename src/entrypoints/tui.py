@@ -55,6 +55,12 @@ def run_tui(options: TUIOptions) -> int:
     Returns a conventional CLI exit code.
     """
 
+    from src.tui.app import ClawCodexTUI
+
+    return _run_tui_with_app(options, app_cls=ClawCodexTUI)
+
+
+def _run_tui_with_app(options: TUIOptions, *, app_cls) -> int:
     if not _textual_available():
         cli_error(
             "error: textual is not installed. "
@@ -128,8 +134,6 @@ def run_tui(options: TUIOptions) -> int:
     tool_context.options.is_non_interactive_session = False
 
     # Build and run app ---------------------------------------------------
-    from src.tui.app import ClawCodexTUI
-
     # Session resume: if --resume was passed, load the session and
     # optionally start a TailFollower to watch for new transcript lines
     # written by the backgrounded agent.
@@ -141,7 +145,7 @@ def run_tui(options: TUIOptions) -> int:
             options.resume_session_id,
         )
 
-    app = ClawCodexTUI(
+    app = app_cls(
         provider=provider,
         provider_name=provider_name,
         workspace_root=workspace_root,
