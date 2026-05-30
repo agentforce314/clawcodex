@@ -39,9 +39,24 @@ class GitSyncError(RuntimeError):
 class GitSyncService:
     """Perform commit, push, and PR creation after a run."""
 
-    def __init__(self, tracker: TrackerAdapter, branch_prefix: str | None = None) -> None:
+    def __init__(
+        self,
+        tracker: TrackerAdapter,
+        branch_prefix: str | None = None,
+        gitignore_patterns: list[str] | None = None,
+    ) -> None:
         self.tracker = tracker
         self._branch_prefix = branch_prefix
+        self._gitignore_patterns = gitignore_patterns or [
+            ".event_logs",
+            "*.pyc",
+            "__pycache__",
+            "*.egg-info",
+            ".pytest_cache",
+            ".mypy_cache",
+            ".ruff_cache",
+            "*.log",
+        ]
 
     async def sync(self, session: Any) -> GitSyncResult | None:
         workspace: Workspace = session.workspace

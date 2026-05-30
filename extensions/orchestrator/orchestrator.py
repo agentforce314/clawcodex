@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from .agent_runner import AgentRunner, AgentSession, RetryItem
@@ -64,7 +65,11 @@ class Orchestrator:
         self.workspace = workspace
         self.agent_runner = agent_runner
         self.status_dashboard = status_dashboard or StatusDashboard()
-        self.git_sync = GitSyncService(tracker, workflow.tracker.branch_prefix)
+        self.git_sync = GitSyncService(
+            tracker,
+            workflow.tracker.branch_prefix,
+            workflow.workspace.gitignore_patterns,
+        )
         self._state = OrchestratorState(
             poll_interval_ms=workflow.polling.interval_ms,
             max_concurrent_agents=workflow.agent.max_concurrent_agents,
@@ -109,6 +114,27 @@ class Orchestrator:
                 escalation=getattr(workflow.agent, "clarification_escalation", "skip"),
             ),
         )
+
+    def _sync_gitignore_to_workspace(self, workspace: Any) -> None:
+        """Write .gitignore to workspace root from configured patterns."""
+        gitignore_path = Path(workspace.path) / ".gitignore"
+        patterns = self.git_sync._gitignore_patterns
+
+        existing: set[str] = set()
+        if gitignore_path.exists():
+            existing = {line.strip() for line in gitignore_path.read_text().splitlines() if line.strip() and not line.startswith("#")}
+
+        new_patterns = [p for p in patterns if p not in existing]
+        if not new_patterns:
+            return
+
+        with open(gitignore_path, "a", encoding="utf-8") as f:
+            if existing:
+                f.write("\n")
+            f.write("# ClawCodeX managed — do not edit manually\n")
+            for p in new_patterns:
+                f.write(f"{p}\n")
+        logger.debug("Updated .gitignore in %s with %d patterns", workspace.path, len(new_patterns))
 
     async def run(self) -> None:
         """Main polling loop. Runs until cancelled."""
@@ -270,6 +296,9 @@ class Orchestrator:
 
         # Update persistent registry so `issue list` reflects running state
         self._registry.mark_running(issue.id or "")
+
+        # Sync .gitignore to workspace so unwanted files are excluded from commit
+        self._sync_gitignore_to_workspace(session.workspace)
 
         self.status_dashboard.on_session_start(
             SessionStatus(

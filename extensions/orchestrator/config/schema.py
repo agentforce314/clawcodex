@@ -132,6 +132,7 @@ class WorkspaceConfig:
     checkout_issue_branch: bool = True
     git_username: str | None = None
     git_token: str | None = None
+    gitignore_patterns: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -274,6 +275,10 @@ class WorkflowConfig:
             git_username=_resolve_env_value(workspace_raw.get("git_username")),
             git_token=_normalize_secret_value(
                 _resolve_env_value(workspace_raw.get("git_token"))
+            ),
+            gitignore_patterns=workspace_raw.get(
+                "gitignore_patterns",
+                ["event_logs", "*.pyc", "__pycache__", "*.egg-info", ".pytest_cache"],
             ),
         )
 
