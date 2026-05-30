@@ -35,6 +35,10 @@ from .engine import (
     CommandResult,
     create_command_context,
 )
+from .moved_to_plugin import (
+    MovedToPluginCommand,
+    create_moved_to_plugin_command,
+)
 from .registry import (
     CommandRegistry,
     find_commands,
@@ -49,6 +53,11 @@ from .safe_commands import (
     REMOTE_SAFE_COMMANDS,
     filter_commands_for_remote_mode,
     is_bridge_safe_command,
+)
+from .security_review import SECURITY_REVIEW_COMMAND
+from .shell_prompt import (
+    execute_shell_commands_in_prompt,
+    make_bash_shell_executor,
 )
 from .skills_integration import (
     get_skill_command,
@@ -109,8 +118,14 @@ __all__ = [
     "INIT_COMMAND",
     "AUTO_FIX_COMMAND",
     "REVIEW_COMMAND",
+    "SECURITY_REVIEW_COMMAND",
     "get_builtin_commands",
     "register_builtin_commands",
+    # Moved-to-plugin factory + shell-at-prompt-build
+    "create_moved_to_plugin_command",
+    "MovedToPluginCommand",
+    "execute_shell_commands_in_prompt",
+    "make_bash_shell_executor",
     # Aggregator
     "get_commands",
     "clear_commands_cache",

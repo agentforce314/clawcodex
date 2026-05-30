@@ -177,3 +177,70 @@ def load_markdown_files_for_subdir(subdir: str, cwd: str) -> list[MarkdownFile]:
         _collect(project_dir, SOURCE_PROJECT)
 
     return results
+
+
+def parse_tool_list_from_cli(tools: list[str]) -> list[str]:
+    """Paren-aware tool-list splitter. Port of permissionSetup.ts:814 parseToolListFromCLI.
+
+    Splits each entry on commas AND spaces that fall OUTSIDE parentheses, so
+    ``Bash(git diff:*), Read`` -> ``["Bash(git diff:*)", "Read"]`` while a comma or
+    space *inside* ``(...)`` (e.g. ``Bash(git remote show:*)``) is preserved. Empty
+    fragments are dropped.
+    """
+    result: list[str] = []
+    for tool_string in tools:
+        if not tool_string:
+            continue
+        current = ""
+        in_parens = False
+        for ch in tool_string:
+            if ch == "(":
+                in_parens = True
+                current += ch
+            elif ch == ")":
+                in_parens = False
+                current += ch
+            elif ch == ",":
+                if in_parens:
+                    current += ch
+                elif current.strip():
+                    result.append(current.strip())
+                    current = ""
+                else:
+                    current = ""
+            elif ch == " ":
+                if in_parens:
+                    current += ch
+                elif current.strip():
+                    result.append(current.strip())
+                    current = ""
+                # else: drop a run of leading/separating spaces outside parens
+            else:
+                current += ch
+        if current.strip():
+            result.append(current.strip())
+    return result
+
+
+def parse_slash_command_tools_from_frontmatter(tools_value: Any) -> list[str]:
+    """Port of markdownConfigLoader.ts:135 parseSlashCommandToolsFromFrontmatter.
+
+    ``None`` -> ``[]`` (TS returns null and the caller coalesces to ``[]``); falsy
+    (``""`` / empty list) -> ``[]``; a ``str`` -> single-element input; a ``list`` ->
+    its string items only (non-strings dropped). A parsed ``"*"`` short-circuits to
+    ``["*"]`` (wildcard: allow everything).
+    """
+    if tools_value is None or tools_value == "" or tools_value == []:
+        return []
+    if isinstance(tools_value, str):
+        tools_array = [tools_value]
+    elif isinstance(tools_value, list):
+        tools_array = [t for t in tools_value if isinstance(t, str)]
+    else:
+        return []
+    if not tools_array:
+        return []
+    parsed = parse_tool_list_from_cli(tools_array)
+    if "*" in parsed:
+        return ["*"]
+    return parsed
