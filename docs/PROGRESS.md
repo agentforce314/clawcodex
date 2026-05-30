@@ -64,6 +64,7 @@
 | F-30 | ProgressReportTool 工具注册 | P2 | ✅ 完成 | 将 ProgressReportTool 注册到 ALL_STATIC_TOOLS，Agent 可调用阶段性进度汇报 |
 | F-31 | TUI 权限模式选择器 | P1 | ✅ 完成 | 模态对话框支持 5 种权限模式切换 (default/acceptEdits/plan/bypassPermissions/dontAsk) |
 | F-32 | 会话恢复浏览器 (Resume Conversation) | P1 | ✅ 完成 | 模糊搜索、实时过滤、会话元数据展示，支持 /resume 命令和 --tui --resume 启动选项 |
+| F-36 | LocalTracker 本地 Issue 文档源 | P1 | 📋 设计完成 | 新增 `tracker.kind: local`，从本地 Markdown/JSON issue 文档读取待处理任务，支持离线测试与私有本地工作流 |
 
 ---
 
@@ -427,6 +428,7 @@ LiteLLM (开源依赖)
 | **Orchestrator CLI 统一入口** | ✅ 已完成 | `clawcodex orchestrator server start/status/stop` + `issue list/show/tail/stop/pause/resume/takeover/clarify/inject/workspace` |
 | **Issue Clarification 三通道** | 🔄 进行中 | Dashboard → ClarificationQueue → @mention 作者（Phase A-E） |
 | **Orchestrator CLI 生命周期控制** | 🔄 进行中 | pause/resume/stop/takeover + `_process_control_commands()` |
+| **LocalTracker 本地 Issue 文档源** | 📋 设计完成 | `tracker.kind: local`，扫描本地 issue 文档目录并复用 TrackerAdapter 协议进入现有 Orchestrator 流程 |
 
 #### Phase 3 生产强化详细设计
 
@@ -468,6 +470,23 @@ LiteLLM (开源依赖)
 | 注册时机 | `_launch_issue` workspace 创建后立即写入 PENDING |
 | 更新时机 | `git_sync.sync()` 后写入 SYNCED + PR 信息；session 完成后写入 COMPLETED |
 | Abandoned 时机 | 重试达到上限后标记为 ABANDONED |
+
+**F-1.12: LocalTracker 本地 Issue 文档源**
+
+| 项 | 值 |
+|---|---|
+| 状态 | 📋 设计完成，待实现 |
+| 目标 | 在本地特定路径新增 issue 文档后，Orchestrator 可扫描、追踪、领取并处理，无需依赖 Linear/GitHub/Gitee/GitCode |
+| 配置入口 | `tracker.kind: local` + `tracker.issues_path` |
+| Issue 格式 | Markdown front matter 首期优先，JSON 后续可扩展 |
+| 状态来源 | issue 文档 front matter 的 `state` 字段，按 `active_states` / `terminal_states` 过滤 |
+| 数据模型 | 解析成本项目统一 `Issue` dataclass，字段包含 `id`、`identifier`、`title`、`description`、`state`、`branch_name`、`labels` 等 |
+| Adapter 边界 | 实现既有 `TrackerAdapter` 协议，避免在 `Orchestrator` 主循环加入 local 特判 |
+| 状态写回 | 只更新 front matter，写入 `running/completed/failed/abandoned`、`commit_sha`、`workspace_path`、`last_error` 等运行字段 |
+| 并发控制 | issue 文件旁 lock 或原子 rename，避免多个 orchestrator 实例重复领取 |
+| 与 IssueRegistry 关系 | 本地 issue 文档是任务来源与状态来源；`IssueRegistry` 继续保存 issue→workspace→commit→PR 的运行映射 |
+| CLI 行为 | 用户可直接写 `.md` issue；现有 `issue list/show/tail/inject` 继续基于 workspace registry/event logs 工作 |
+| 非目标 | 首期不创建远程 PR，不把 `issue inject` 改成初始 issue 创建入口 |
 
 #### 实施阶段
 
@@ -1642,6 +1661,128 @@ CLAWCODEX_UPSTREAM_MODE=true clawcodex-tui
 
 ---
 
-*文档更新时间: 2026-05-25*
+## F-36: LocalTracker 本地 Issue 文档源
 
-*版本 v2.0 更新：新增 F-35 二开特性统一切换架构设计，一个全局开关（CLAWCODEX_UPSTREAM_MODE）控制所有二开特性，文件级 import hook 实现模块替换，分批还原 584 个内联修改文件。*
+**状态**: 📋 设计完成
+**优先级**: P1
+**依赖**: F-1 Orchestrator 自主模式、TrackerAdapter 协议、IssueRegistry
+
+### 目标
+
+允许用户在本地特定目录中新增 issue 文档，由 Orchestrator 扫描并处理，形成无需外部 Linear/GitHub/Gitee/GitCode 的本地闭环：
+
+```text
+本地 issue 文档目录
+  ↓ LocalTrackerAdapter 扫描与解析
+统一 Issue 模型
+  ↓ Orchestrator 领取与运行
+workspace.root 下创建 per-issue workspace
+  ↓ Agent 修改代码
+issue front matter + IssueRegistry 更新状态
+```
+
+### 配置设计
+
+```yaml
+tracker:
+  kind: local
+  issues_path: /tmp/clawcodex_local_issues
+  active_states:
+    - open
+    - ready
+  terminal_states:
+    - completed
+    - closed
+    - cancelled
+
+workspace:
+  root: /tmp/clawcodex_orchestrator_test_workspaces
+  repo_clone_url: /mnt/e/Nodel/ExerciseProject/clawcodex
+```
+
+`tracker.issues_path` 是任务来源目录；`workspace.root` 是运行工作区目录。二者保持分离，避免用户误以为在 workspace root 下手写 issue 会被自动消费。
+
+### Issue 文档格式
+
+首期采用 Markdown front matter：
+
+```markdown
+---
+id: LOCAL-001
+identifier: LOCAL-001
+state: open
+priority: 1
+branch_name: local-001-fix-dashboard-workspace
+labels:
+  - orchestrator
+---
+
+# 修复 dashboard workspace 解析
+
+当前 dashboard 只读取默认 workspace 或 CLAWCODEX_WORKSPACE_ROOT。
+希望它支持从 WORKFLOW.md 的 workspace.root 解析。
+```
+
+解析规则：
+- front matter 的 `id` / `identifier` 标识本地 issue；缺失时可从文件名派生并在写回时固化。
+- 第一个一级标题作为 `title`；剩余 Markdown 正文作为 `description`。
+- `state` 在 `active_states` 内才进入候选列表；在 `terminal_states` 内则跳过。
+- `branch_name` 可选；缺失时由 identifier 和 title 生成稳定 slug。
+
+### Adapter 行为
+
+LocalTracker 应实现既有 `TrackerAdapter` 协议：
+
+| 接口 | 行为 |
+|------|------|
+| `fetch_candidate_issues()` | 扫描 `issues_path`，解析 `.md` / `.json`，过滤 active state |
+| `fetch_issue_states_by_ids(ids)` | 重新读取本地文件 state，用于 launch 前前置检查 |
+| `find_pull_request(head, base)` | 首期默认返回 `None`；若文档中已有 `pr_url` 可返回轻量结果 |
+| `ensure_pull_request(...)` | 不创建远程 PR；写回 commit/branch/status 等本地字段 |
+| `fetch_issue_comments(...)` | 可选读取 `<id>.comments.ndjson` 或 front matter comments |
+| `create_clarification_comment(...)` | 写入本地 comments/clarification 文件，不访问外部服务 |
+
+### 状态与持久化
+
+本地 issue 文档负责表达用户可见任务状态，`IssueRegistry` 继续负责运行映射。建议状态流：
+
+```text
+open/ready → running → completed
+                  ├── failed
+                  └── abandoned
+```
+
+写回字段限制在 front matter 内，避免重排或覆盖用户手写正文：
+
+```yaml
+state: completed
+updated_at: 2026-05-30T12:34:56Z
+workspace_path: /tmp/clawcodex_orchestrator_test_workspaces/LOCAL-001
+branch_name: local-001-fix-dashboard-workspace
+commit_sha: abc123
+last_error: null
+```
+
+### 并发与幂等
+
+| 风险 | 设计约束 |
+|------|----------|
+| 多个 orchestrator 同时领取同一文件 | issue 文件旁 lock 或原子 rename；领取前二次读取 state |
+| 用户运行中编辑 issue 文档 | 写回时校验 mtime/updated_at；冲突时保留正文并只合并 front matter |
+| 重启后重复处理 | `IssueRegistry.is_completed()`、terminal state、commit/pr 字段共同判定 |
+| 本地 tracker 与远程 tracker 分叉 | 主流程只依赖 `TrackerAdapter`，不在 Orchestrator 中加入 local 特判 |
+
+### 实施切片
+
+- [ ] 配置 schema 增加 `tracker.issues_path`，允许 `tracker.kind: local`。
+- [ ] 新增 LocalTracker parser/client/adapter，解析 Markdown front matter 到统一 `Issue`。
+- [ ] 接入 tracker factory 和配置校验。
+- [ ] 实现状态写回、commit 字段写回和失败字段写回。
+- [ ] 补充单元测试：解析、过滤、写回、文件锁、launch 前 state 检查。
+- [ ] 增加本地 workflow 示例和 smoke test 文档。
+
+---
+
+*文档更新时间: 2026-05-30*
+
+*版本 v2.1 更新：新增 F-36 LocalTracker 本地 Issue 文档源设计，支持 `tracker.kind: local` 从本地 Markdown/JSON issue 文档读取任务并进入 Orchestrator 流程。*

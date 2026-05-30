@@ -132,6 +132,126 @@ src/
 | **本地 Issue 注册表** | ✅ 已完成 | 持久化 issue→commit→PR 映射到 JSON，重启后可识别已处理 issue |
 | **Issue Clarification 流程** | ✅ 完成 | 三通道 ClarificationQueue + TrackerAdapter 评论接口 + CLI `clarify`（Phase A-G） |
 | **Orchestrator CLI** | ✅ 完成 | `clawcodex orchestrator` 统一入口（Phase O1-O8） |
+| **LocalTracker 本地 Issue 文档源** | 📋 规划中 | 新增 `tracker.kind: local`，从本地目录中的 Markdown/JSON issue 文档读取待处理任务，供本地离线测试与私有工作流使用 |
+
+#### 3.1.3 LocalTracker 本地 Issue 文档源设计
+
+**状态**: 📋 规划中
+**目标**: 支持在本地特定路径新增 issue 文档，并由 Orchestrator 像处理 Linear/GitHub/Gitee/GitCode issue 一样追踪、领取、运行和更新状态。
+
+##### 配置形态
+
+```yaml
+tracker:
+  kind: local
+  issues_path: /tmp/clawcodex_local_issues
+  active_states:
+    - open
+    - ready
+  terminal_states:
+    - completed
+    - closed
+    - cancelled
+
+workspace:
+  root: /tmp/clawcodex_orchestrator_test_workspaces
+  repo_clone_url: /mnt/e/Nodel/ExerciseProject/clawcodex
+```
+
+`tracker.issues_path` 是 issue 来源目录；`workspace.root` 仍只负责 per-issue workspace、registry、event logs 与运行产物，二者不应混用。
+
+##### Issue 文档格式
+
+首期支持 Markdown front matter，后续可扩展 JSON：
+
+```markdown
+---
+id: LOCAL-001
+identifier: LOCAL-001
+state: open
+priority: 1
+branch_name: local-001-fix-dashboard-workspace
+labels:
+  - orchestrator
+---
+
+# 修复 dashboard workspace 解析
+
+当前 dashboard 只读取默认 workspace 或 CLAWCODEX_WORKSPACE_ROOT。
+希望它支持从 WORKFLOW.md 的 workspace.root 解析。
+```
+
+解析规则：
+- `id` / `identifier` 必填；缺失时可由文件名派生，但写回时必须固化到 front matter。
+- Markdown 第一个一级标题作为 `title`；正文剩余内容作为 `description`。
+- `state` 必须匹配 `active_states` 才会进入候选列表。
+- `branch_name` 可选；缺失时由 `identifier + title` slug 派生。
+- `labels`、`priority`、`assignee_id`、`created_at`、`updated_at` 作为可选字段映射到统一 `Issue` 模型。
+
+##### 适配器边界
+
+新增 `LocalTrackerAdapter` 应实现既有 `TrackerAdapter` 协议，而不是在 Orchestrator 主循环中加入本地文件分支：
+
+| 接口 | LocalTracker 行为 |
+|------|-------------------|
+| `fetch_candidate_issues()` | 扫描 `issues_path` 下 `.md` / `.json` 文件，过滤 active state，返回统一 `Issue` 列表 |
+| `fetch_issue_states_by_ids(ids)` | 重新读取对应本地文件的 `state`，用于 launch 前前置检查 |
+| `find_pull_request(...)` | 本地 tracker 无远程 PR 概念，默认返回 `None`；若 front matter 有 `pr_url` 可返回轻量结果 |
+| `ensure_pull_request(...)` | 不创建远程 PR；首期写回 `commit_sha` / `branch_name` / `status`，并返回空结果或本地同步结果 |
+| `fetch_issue_comments(...)` | 首期可读取同目录下 `<id>.comments.ndjson` 或 issue front matter 的 `comments` 字段；非必需 |
+| `create_clarification_comment(...)` | 写入本地 comments 文件或 clarification queue，不访问外部服务 |
+
+##### 状态写回策略
+
+LocalTracker 的状态写回应以 issue 文档 front matter 为单一来源，`IssueRegistry` 继续保存运行态映射：
+
+```text
+open/ready → running → completed
+                  └── failed
+                  └── abandoned
+```
+
+建议写回字段：
+- `state`: `running` / `completed` / `failed` / `abandoned`
+- `claimed_at`, `completed_at`, `updated_at`
+- `workspace_path`
+- `branch_name`
+- `commit_sha`
+- `pr_url`（如后续接入本地 forge 或远程 PR）
+- `last_error`（失败时）
+
+为避免破坏用户手写正文，写回只修改 front matter，不重排 Markdown body。
+
+##### 并发与幂等
+
+- 每个 issue 文件旁使用短生命周期 lock（如 `.LOCAL-001.lock`）或原子 rename，避免多 orchestrator 实例同时领取。
+- `fetch_candidate_issues()` 必须跳过已在 `IssueRegistry` 中 `COMPLETED`、已有 PR 或 terminal state 的 issue。
+- 写回采用读-改-写，并校验 `updated_at` 或文件 mtime，检测外部编辑冲突。
+- 若本地 issue 在运行中被人工改为 terminal state，launch 前检查或下一轮 poll 应停止后续处理。
+
+##### CLI 与看板行为
+
+LocalTracker 不需要新增独立 issue 创建命令即可工作；用户可直接在 `issues_path` 新增 `.md` 文件。现有命令继续通过 registry/event logs 工作：
+
+```bash
+clawcodex orchestrator issue list --workspace /tmp/clawcodex_orchestrator_test_workspaces
+clawcodex orchestrator issue show LOCAL-001 --workspace /tmp/clawcodex_orchestrator_test_workspaces
+clawcodex orchestrator issue tail LOCAL-001 --workspace /tmp/clawcodex_orchestrator_test_workspaces
+```
+
+后续可选增强：
+- `clawcodex orchestrator issue new --local --title ...` 生成本地 issue 文档模板。
+- dashboard 显示 `source: local` 和 issue file path。
+- `issue inject` 仍作为运行中 operator hints，不替代初始 issue 文档。
+
+##### 实施切片
+
+1. 配置 schema 增加 `tracker.kind: local` 与 `tracker.issues_path`。
+2. 新增 `local_tracker` adapter/client/parser，复用 `Issue` dataclass。
+3. 接入 tracker factory，确保 Orchestrator 主循环无需感知本地/远程差异。
+4. 实现 Markdown front matter 读取、active state 过滤和状态写回。
+5. 增加单元测试：解析、过滤、写回、并发锁、launch 前 state 检查。
+6. 增加本地 workflow 示例和端到端 smoke test。
 
 ---
 
