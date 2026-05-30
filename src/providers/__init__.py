@@ -180,6 +180,24 @@ def get_provider_info(provider_name: str) -> ProviderInfo:
     return PROVIDER_INFO[provider_name]
 
 
+def should_use_litellm() -> bool:
+    """Return whether runtime provider creation should use LiteLLM."""
+    from os import getenv
+
+    return getenv("CLAW_USE_LITELLM", "").lower() in {"1", "true", "yes", "on"}
+
+
+def create_provider(provider_name: str, *args, **kwargs) -> BaseProvider:
+    """Create a provider instance for runtime use."""
+    if should_use_litellm():
+        from extensions.providers_ext import create_litellm_provider
+
+        return create_litellm_provider(provider_name, *args, **kwargs)
+
+    provider_cls = get_provider_class(provider_name)
+    return provider_cls(*args, **kwargs)
+
+
 def get_provider_class(provider_name: str):
     """Get provider class by name."""
     if provider_name == "anthropic":
@@ -221,8 +239,10 @@ __all__ = [
     "BaseProvider",
     "ChatMessage",
     "ChatResponse",
+    "create_provider",
     "get_provider_class",
     "get_provider_info",
     "PROVIDER_INFO",
     "AVAILABLE_PROVIDERS",
+    "should_use_litellm",
 ]

@@ -49,7 +49,7 @@ from src.cli_core import (
     ndjson_safe_dumps,
 )
 from src.config import get_default_provider, get_provider_config
-from src.providers import get_provider_class
+from src.providers import create_provider
 from src.tool_system.renderers import AgentLoopResult, ToolEvent
 from src.query.agent_loop_compat import (
     build_effective_system_prompt,
@@ -139,9 +139,9 @@ def run_headless(options: HeadlessOptions) -> int:
             2,
         )
 
-    provider_cls = get_provider_class(provider_name)
     model = options.model or provider_cfg.get("default_model")
-    provider = provider_cls(
+    provider = create_provider(
+        provider_name,
         api_key=provider_cfg["api_key"],
         base_url=provider_cfg.get("base_url"),
         model=model,

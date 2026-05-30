@@ -1,8 +1,6 @@
-"""Compatibility shim for the LiteLLM provider extension."""
+"""Provider extension exports."""
 
-from __future__ import annotations
-
-from extensions.providers_ext import (
+from .litellm_provider import (
     LiteLLMProvider,
     create_litellm_provider,
     is_litellm_available,

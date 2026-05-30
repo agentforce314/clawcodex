@@ -2,9 +2,54 @@
 
 > 文档路径: `docs/FEATURE_PLAN.md`
 > 基于: `clawcodex-opensource-replacement-analysis-v2.md`, `clawcodex_vs_ccb_analysis-v3.md`, `INTEGRATION.md`, `TEAM_MEMBERSHIP.md`
-> 版本: v1.6
-> 更新日期: 2026-05-27
+> 版本: v1.7
+> 更新日期: 2026-05-30
 > 上游同步: 68dc3c5 (Phase 11 bridge complete)
+
+---
+
+*版本 v1.7 更新：F-34 Phase 1-3 全部完成。CLI parser/dispatch 迁入 `clawcodex_ext/cli`；RuntimeContext 工厂 + Frontend 协议/注册表完成；`ClawCodexExtTUI` 8 个扩展钩子就绪。*
+
+---
+
+## 项目级二开边界约束
+
+> **约束层级**: 项目级（所有 downstream/custom 开发必须遵守）
+> **约束目标**: 防止二开代码污染 `src/*` 上游形状兼容区，确保未来上游同步不产生大量本地补丁累积
+
+### 核心约束
+
+1. **默认路径**: 所有 downstream/custom 开发默认进入根级 `clawcodex_ext/*`；**不得**在 `src/*` 中直接添加项目专属逻辑。
+
+2. **`src/*` 定位**: `src/*` 被视为上游形状/core 兼容区，除非文件被明确标注为项目自主拥有，否则只接受：
+   - 从 `clawcodex_ext/*` 向上的 thin forwarding seams
+   - 最小适配层（adapter/wrapper）
+   - 上游同步带来的必要更新
+   - 窄范围 bug fix
+
+3. **明确接受 minimal patch 的文件**（仅限这些文件可接受 thin forwarding/adapter 改动）：
+   - `src/cli.py`
+   - `src/entrypoints/tui.py`
+   - `src/repl/*`
+   - `src/tui/*`
+   - `src/runtime/*`（未来）
+
+4. **`src/upstream/<rev>/*`**: 仅作为上游快照同步区，**不得**在此路径下添加任何 downstream 代码。
+
+5. **二开功能目标路径**（示例）:
+   - `clawcodex_ext/cli` — CLI parser/dispatch 下游实现
+   - `clawcodex_ext/tui` — TUI 下游定制
+   - `clawcodex_ext/frontend` — Frontend 协议/注册表
+   - `clawcodex_ext/runtime` — Runtime context factory
+   - `clawcodex_ext/skills` — 下游技能/hook 扩展
+
+6. **新功能实现流程**: 新 downstream 特性、frontend 行为、runtime 接线、命令、UI 定制、provider/tool 编排变更应首先在 `clawcodex_ext/*` 实现；对 `src/*` 的改动仅限于 thin forwarding seams。
+
+### 约束起源
+
+此约束将 F-34/F-35 的 CLI/TUI 前端解耦边界推广至全项目级别。最初来源于 `CONTRIBUTING.md` 中的 CLI/TUI 二开边界规则，已不能满足多层次解耦架构（upstream-sync layer + capabilities layer + orchestrator/api layer + downstream extension layer）的需求。本约束确保 downstream 扩展开发默认在 `clawcodex_ext/*` 进行，而不是直接修改上游形状文件，从而在未来的上游快照同步中避免大量本地补丁累积。
+
+F-34/F-35 中"CLI/TUI 新功能"的描述扩展为全项目范围：所有 frontend 行为、runtime 接线、命令、UI 定制、provider/tool 编排均受此约束约束。
 
 ---
 
@@ -2006,7 +2051,7 @@ clawcodex orchestrator issue inject --id 42 --remove 1
 
 | 组件 | 替代方案 | 代码减少 | 优先级 | 状态 |
 |------|---------|----------|--------|------|
-| Provider 层 | LiteLLM | ~1,430 行 | P0 | 适配器已完成，待集成 |
+| Provider 层 | LiteLLM | ~1,430 行 | P0 | ✅ 已完成（2026-05-30） |
 | 工具语义搜索 | Qdrant | ~100 行 | P2 | 规划中 |
 | 权限规则引擎 | Casbin | ~150 行 | P2 | 规划中 |
 | 日志系统 | structlog | - | P2 | 规划中 |
@@ -4068,7 +4113,12 @@ def _background_or_exit(event):  # type: ignore[no-untyped-def]
 3. **Agent 循环单一实现**：一个 `AgentEngine` 供所有 frontend 使用
 4. **插件式 frontend 注册**：`cli.py` 不再需要知道有哪些 frontend
 
-**当前迁移约束**：CLI/TUI 新功能默认只能进入 `clawcodex_ext/cli`、`clawcodex_ext/tui`、`clawcodex_ext/frontend` 或 `clawcodex_ext/runtime`；`src/cli.py`、`src/entrypoints/tui.py`、`src/tui/*` 和 `src/upstream/<rev>/*` 只保留最小适配、上游同步或窄范围 bug fix。
+**当前迁移约束**：项目级二开边界约束已推广至全项目范围。所有下游/定制功能（frontend 行为、runtime 接线、命令、UI 定制、provider/tool 编排变更）默认只能进入 `clawcodex_ext/*`；`src/cli.py`、`src/entrypoints/tui.py`、`src/tui/*` 和 `src/upstream/<rev>/*` 只保留最小适配、上游同步或窄范围 bug fix。具体示例路径：`clawcodex_ext/cli`、`clawcodex_ext/tui`、`clawcodex_ext/frontend`、`clawcodex_ext/runtime`。
+
+**当前迁移进度**：✅ F-34 Phase 1-3 全部完成。
+- Phase 1: CLI parser/dispatch 所有权迁入 `clawcodex_ext/cli/`
+- Phase 2: `RuntimeContext` 工厂（`clawcodex_ext/runtime/context.py`）+ Frontend 协议/注册表（`clawcodex_ext/frontend/`）
+- Phase 3: `ClawCodexExtTUI` 8 个扩展钩子就绪（`clawcodex_ext/tui/app.py`）
 
 #### 2.14.3 架构概览
 
@@ -4442,9 +4492,9 @@ clawcodex  # 自动使用 claude-repl
 
 ---
 
-*文档更新时间: 2026-05-25*
+*文档更新时间: 2026-05-30*
 
-*版本 v1.7 更新：新增 F-34 CLI/TUI Frontend 解耦架构设计，三阶段渐进式前端解耦方案。*
+*版本 v1.7 更新：F-34 Phase 1-3 全部完成。CLI parser/dispatch 迁入 `clawcodex_ext/cli`；RuntimeContext 工厂 + Frontend 协议/注册表完成；`ClawCodexExtTUI` 8 个扩展钩子就绪。*
 *版本 v2.0 更新：新增 F-35 二开特性统一切换架构设计，一个全局开关（CLAWCODEX_UPSTREAM_MODE）控制所有二开特性，文件级 import hook 实现模块替换，分批还原 584 个内联修改文件。*
 
 ---
@@ -4481,7 +4531,7 @@ src/tui/app.py             ← 上游 58ea488 + 二开改动
 3. **上游兼容**：上游模式开启时，系统行为与上游 58ea488 一致
 4. **逐步迁移**：584 个文件不必一次全部提取，可以分批渐进
 
-**当前迁移切片**：先建立 `clawcodex_ext/` 二开扩展边界，并优先迁出 CLI/TUI 入口所有权。TUI Phase 4 采用方案 A：二开 TUI 拥有自己的 App class，通过 subclassing/composition 复用上游组件。
+**当前迁移切片**：✅ 已完成 `clawcodex_ext/` 扩展边界建立 + CLI parser/dispatch 所有权迁入 `clawcodex_ext/cli` + RuntimeContext 工厂 + Frontend 协议/注册表 + TUI App 扩展钩子。项目级二开约束现已覆盖所有 downstream 特性（frontend 行为、runtime 接线、命令、UI 定制、provider/tool 编排），不仅仅限于 CLI/TUI。TUI Phase 4 采用方案 A：二开 TUI 拥有自己的 App class，通过 subclassing/composition 复用上游组件，`ClawCodexExtTUI` 提供 8 个扩展钩子方法。
 
 #### 2.15.3 二开特性全景
 

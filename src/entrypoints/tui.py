@@ -21,7 +21,7 @@ from typing import Callable
 
 from src.cli_core.exit import cli_error
 from src.config import get_default_provider, get_provider_config
-from src.providers import get_provider_class
+from src.providers import create_provider
 
 
 @dataclass
@@ -94,9 +94,9 @@ def _run_tui_with_app(options: TUIOptions, *, app_cls) -> int:
                 "Run `clawcodex login` to set it up.",
                 2,
             )
-        provider_cls = get_provider_class(provider_name)
         model = options.model or provider_cfg.get("default_model")
-        provider = provider_cls(
+        provider = create_provider(
+            provider_name,
             api_key=provider_cfg["api_key"],
             base_url=provider_cfg.get("base_url"),
             model=model,

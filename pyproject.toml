@@ -132,7 +132,7 @@ filterwarnings = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["src*", "clawcodex_ext*"]
+include = ["src*", "clawcodex_ext*", "extensions*"]
 exclude = [
     "src/upstream*",
 ]

@@ -4,8 +4,6 @@ from __future__ import annotations
 
 
 def main():
-    """Delegate to the compatibility CLI entrypoint."""
-
-    from src.cli import main as cli_main
-
-    return cli_main()
+    """Delegate to the downstream CLI dispatch."""
+    from clawcodex_ext.cli.dispatch import run_cli
+    return run_cli()

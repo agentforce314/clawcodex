@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import pytest
-from unittest.mock import patch, MagicMock
-
+from extensions.providers_ext import LiteLLMProvider as ExtensionLiteLLMProvider
+from extensions.providers_ext import create_litellm_provider as extension_create_litellm_provider
+from extensions.providers_ext import is_litellm_available as extension_is_litellm_available
 from src.providers._litellm_adapter import (
     LiteLLMProvider,
     create_litellm_provider,
@@ -15,6 +15,13 @@ from src.providers._litellm_adapter import (
 class TestLiteLLMAvailable:
     def test_litellm_is_available(self):
         assert is_litellm_available() is True
+
+
+class TestExtensionImportPath:
+    def test_extension_exports_match_compatibility_shim(self):
+        assert ExtensionLiteLLMProvider is LiteLLMProvider
+        assert extension_create_litellm_provider is create_litellm_provider
+        assert extension_is_litellm_available is is_litellm_available
 
 
 class TestLiteLLMProvider:
