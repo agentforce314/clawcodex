@@ -4068,7 +4068,7 @@ def _background_or_exit(event):  # type: ignore[no-untyped-def]
 3. **Agent 循环单一实现**：一个 `AgentEngine` 供所有 frontend 使用
 4. **插件式 frontend 注册**：`cli.py` 不再需要知道有哪些 frontend
 
-**当前迁移约束**：CLI/TUI 新功能默认只能进入 `src/clawcodex_ext/cli`、`src/clawcodex_ext/tui`、`src/clawcodex_ext/frontend` 或 `src/clawcodex_ext/runtime`；`src/cli.py`、`src/entrypoints/tui.py`、`src/tui/*` 和 `src/upstream/<rev>/*` 只保留最小适配、上游同步或窄范围 bug fix。
+**当前迁移约束**：CLI/TUI 新功能默认只能进入 `clawcodex_ext/cli`、`clawcodex_ext/tui`、`clawcodex_ext/frontend` 或 `clawcodex_ext/runtime`；`src/cli.py`、`src/entrypoints/tui.py`、`src/tui/*` 和 `src/upstream/<rev>/*` 只保留最小适配、上游同步或窄范围 bug fix。
 
 #### 2.14.3 架构概览
 
@@ -4481,7 +4481,7 @@ src/tui/app.py             ← 上游 58ea488 + 二开改动
 3. **上游兼容**：上游模式开启时，系统行为与上游 58ea488 一致
 4. **逐步迁移**：584 个文件不必一次全部提取，可以分批渐进
 
-**当前迁移切片**：先建立 `src/clawcodex_ext/` 二开扩展边界，并优先迁出 CLI/TUI 入口所有权。TUI Phase 4 采用方案 A：二开 TUI 拥有自己的 App class，通过 subclassing/composition 复用上游组件。
+**当前迁移切片**：先建立 `clawcodex_ext/` 二开扩展边界，并优先迁出 CLI/TUI 入口所有权。TUI Phase 4 采用方案 A：二开 TUI 拥有自己的 App class，通过 subclassing/composition 复用上游组件。
 
 #### 2.15.3 二开特性全景
 

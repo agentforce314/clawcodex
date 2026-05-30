@@ -432,7 +432,7 @@ def _run_print_mode(args) -> int:
 def _run_tui_mode(args) -> int:
     """Boot the Textual-based interactive TUI (Phase 11)."""
 
-    from src.clawcodex_ext.tui.entrypoint import run_tui
+    from clawcodex_ext.tui.entrypoint import run_tui
     from src.entrypoints.tui import TUIOptions
 
     allowed = _split_csv(args.allowed_tools)

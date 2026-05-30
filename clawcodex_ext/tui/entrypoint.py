@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from src.clawcodex_ext.tui.app import ClawCodexExtTUI
+from clawcodex_ext.tui.app import ClawCodexExtTUI
 from src.entrypoints.tui import TUIOptions, _run_tui_with_app
 
 

@@ -3,7 +3,7 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "clawcodex-dev"
+name = "clawcodex-dev-mind"
 version = "0.5.0"
 description = "A production-oriented Python rebuild of Claude Code — real architecture, reliable CLI agent"
 readme = "README.md"
@@ -103,7 +103,7 @@ dev = [
 ]
 
 [project.scripts]
-clawcodex-dev = "src.clawcodex_ext.cli.main:main"
+clawcodex-dev = "clawcodex_ext.cli.main:main"
 
 [project.urls]
 Homepage = "https://github.com/agentforce314/clawcodex"
@@ -132,7 +132,7 @@ filterwarnings = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["src*", "upstream_sync*"]
+include = ["src*", "clawcodex_ext*"]
 exclude = [
     "src/upstream*",
 ]
