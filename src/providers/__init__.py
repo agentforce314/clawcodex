@@ -69,6 +69,15 @@ PROVIDER_INFO: dict[str, ProviderInfo] = {
             "gpt-3.5-turbo",
         ],
     },
+    "openai-codex": {
+        "label": "OpenAI Codex (ChatGPT OAuth)",
+        "default_base_url": "https://chatgpt.com/backend-api/codex",
+        "default_model": "gpt-5.3-codex",
+        "available_models": [
+            "gpt-5.3-codex",
+            "gpt-5.3-codex-spark",
+        ],
+    },
     "glm": {
         "label": "Zhipu GLM (z.ai)",
         "default_base_url": "https://open.bigmodel.cn/api/paas/v4",
@@ -208,6 +217,10 @@ def get_provider_class(provider_name: str):
         from .openai_provider import OpenAIProvider
 
         return OpenAIProvider
+    if provider_name == "openai-codex":
+        from .openai_codex_provider import OpenAICodexProvider
+
+        return OpenAICodexProvider
     if provider_name == "glm":
         from .glm_provider import GLMProvider
 

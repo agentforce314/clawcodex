@@ -50,9 +50,9 @@ class RuntimeContext:
         previously duplicated across headless.py, tui.py, and repl/core.py.
         """
         from src.agent.session import Session as AgentSession
-        from src.config import get_default_provider, get_provider_config
+        from src.config import get_default_provider
         from src.permissions.types import ToolPermissionContext
-        from src.providers import create_provider
+        from src.providers.runtime import build_provider_from_config
         from src.tool_system.context import ToolContext
         from src.tool_system.defaults import build_default_registry
 
@@ -68,14 +68,7 @@ class RuntimeContext:
 
         # Build provider
         provider_name = options.provider_name or get_default_provider()
-        provider_cfg = get_provider_config(provider_name)
-        model = options.model or provider_cfg.get("default_model")
-        provider = create_provider(
-            provider_name,
-            api_key=provider_cfg["api_key"],
-            base_url=provider_cfg.get("base_url"),
-            model=model,
-        )
+        provider = build_provider_from_config(provider_name, options.model)
 
         # Build tool registry
         tool_registry = build_default_registry(provider=provider)
