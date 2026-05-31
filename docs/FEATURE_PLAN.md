@@ -2321,859 +2321,308 @@ WORKFLOW.md → Orchestrator → LinearAdapter (轮询 Issue)
 
 ---
 
-## 九、Cron 系统执行引擎
+## 九、Cron 系统执行引擎（F-22 完整迁移版）
 
 > 优先级: P0  
-> 状态: 🔄 规划中  
-> 参考实现: claude-code-best `src/utils/cron*.ts`
+> 状态: 设计重整，待实现收敛  
+> 目标: 完整还原 `claude-code-best` 的 Cron / scheduled-task 行为  
+> 下游边界: 业务实现默认进入 `clawcodex_ext/*`，`src/*` 仅允许 thin forwarding seams
 
-### 9.1 设计目标
+### 9.1 背景与目标
 
-将 claude-code-best 的生产级别 cron 执行引擎完整移植到 ClawCodex，实现：
+本阶段不是新增一个简单的 `CronCreate/CronList/CronDelete` CRUD 工具，而是将 `claude-code-best` 中已经打通的定时任务系统完整迁移到 ClawCodex 的下游扩展层。最终用户应能在 REPL、TUI、headless/print 模式中创建、查看、删除和执行定时任务，并能查看定时任务触发后的运行状态与结果。
 
-1. **完整 cron 表达式解析** - 支持 5 字段标准 cron 语法
-2. **下次执行时间计算** - 基于本地时区的精确计算
-3. **调度器执行引擎** - 基于时间轮询的执行机制
-4. **任务持久化** - 存储到 `.claude/scheduled_tasks.json`
-5. **分布式锁** - 防止多进程/多会话重复执行
-6. **Jitter 抖动算法** - 避免雷鸣般群体效应
-7. **任务过期机制** - 周期性任务 7 天自动删除
+`claude-code-best` 的 Cron 行为跨越工具、存储、调度器、CLI skills、REPL/headless 执行队列、autonomy run 记录和 missed-task 安全确认。ClawCodex 当前已经有 `clawcodex_ext/cron_system/*` 的核心模块，但还没有把这些模块完整接入真实 CLI 运行路径，因此 F-22 的完成标准必须从“模块存在”提升为“端到端行为与 `claude-code-best` 对齐”。
 
-### 9.2 架构设计
+### 9.2 参考实现边界
 
-```
-src/cron_system/
-├── __init__.py
-├── cron_parser.py          # Cron 表达式解析器
-├── cron_scheduler.py       # 执行引擎核心
-├── cron_tasks.py           # 任务存储与 CRUD
-├── cron_tasks_lock.py      # 分布式调度器锁
-└── skills.py               # CLI 命令行界面
-```
+迁移时以 `claude-code-best` 的以下文件作为行为来源：
 
-### 9.3 核心数据结构
+| 能力 | `claude-code-best` 参考文件 | 迁移关注点 |
+|------|-----------------------------|------------|
+| Cron 工具 | `packages/builtin-tools/src/tools/ScheduleCronTool/CronCreateTool.ts` | schema、cron 校验、durable 处理、返回字段、启用 scheduler |
+| Cron 列表 | `packages/builtin-tools/src/tools/ScheduleCronTool/CronListTool.ts` | session + durable 聚合、teammate 过滤、展示字段 |
+| Cron 删除 | `packages/builtin-tools/src/tools/ScheduleCronTool/CronDeleteTool.ts` | ID 校验、权限/归属校验、删除语义 |
+| Feature gate | `packages/builtin-tools/src/tools/ScheduleCronTool/prompt.ts` | `CLAUDE_CODE_DISABLE_CRON`、durable gate、工具名常量 |
+| 存储模型 | `src/utils/cronTasks.ts` | session-only 与 durable 分离、`.claude/scheduled_tasks.json`、8 位 ID |
+| 调度器 | `src/utils/cronScheduler.ts` | 1 秒轮询、busy gate、scheduler lock、missed one-shot、filter、`onFireTask` 优先级 |
+| REPL 集成 | `src/hooks/useScheduledTasks.ts` | scheduled task 入队、系统消息、去重、pending notification |
+| Headless 集成 | `src/cli/print.ts` | print 模式定时任务入队、teammate 任务失败记录 |
+| `/loop` | `src/skills/bundled/loop.ts` | interval 解析、默认 10m、创建后立即执行一次 |
+| 管理命令 | `src/skills/bundled/cronManage.ts` | `/cron-list`、`/cron-delete` 用户可调用 skill |
+| 运行记录 | `src/utils/autonomyRuns.ts` | queued/running/completed/failed/cancelled 生命周期 |
+| 状态展示 | `src/utils/autonomyStatus.ts` | cron section、runs/status 输出 |
+| 系统消息 | `src/utils/messages.ts` | `scheduled_task_fire` 消息类型 |
 
-```python
-@dataclass
-class CronFields:
-    minute: list[int]         # 0-59
-    hour: list[int]           # 0-23
-    day_of_month: list[int]   # 1-31
-    month: list[int]          # 1-12
-    day_of_week: list[int]    # 0-6 (0=Sunday, 7=Sunday alias)
+### 9.3 当前 ClawCodex 状态诊断
 
-@dataclass
-class CronTask:
-    id: str                      # 8位十六进制UUID (uuid.uuid4().hex[:8])
-    cron: str                     # 5字段cron表达式 (本地时间)
-    prompt: str                   # 触发时执行的prompt
-    created_at: int               # 创建时间戳(毫秒)
-    last_fired_at: Optional[int]  # 最后触发时间戳
-    recurring: bool               # 是否周期性
-    permanent: bool              # 是否永久(不自动过期)
-    durable: bool                 # 是否持久化到磁盘
-    agent_id: Optional[str]       # 关联的agent ID (session-only任务)
-```
+#### 9.3.1 fallback 工具层
 
-### 9.4 组件详细设计
+`src/tool_system/tools/cron.py` 目前只是兼容用 fallback：
 
-#### 9.4.1 cron_parser.py - Cron 表达式解析
+- 任务保存在 `ToolContext.crons` 的进程内 dict 中。
+- `durable` 参数会被接受并返回，但不会写入 `.claude/scheduled_tasks.json`。
+- 不验证 5 字段 cron 语义，只检查字符串非空。
+- `humanSchedule` 直接返回原始 cron 字符串。
+- 没有 scheduler，不会自动触发任务。
+- `CronCreateTool` / `CronDeleteTool` 被标记为 read-only，但实际会修改上下文状态。
 
-**功能**:
-- 解析 5 字段 cron 表达式 (minute hour day-of-month month day-of-week)
-- 支持语法: wildcard (`*`), 步长 (`*/N`), 范围 (`N-M`), 列表 (`N,M`)
-- 计算下次执行时间
-- 将 cron 转换为人类可读描述
+该层应继续保留为静态工具兼容 fallback，但不应作为完整 Cron 行为的实现主体。
 
-**关键函数**:
+#### 9.3.2 下游扩展核心模块
 
-```python
-def parse_cron_expression(expr: str) -> CronFields | None:
-    """
-    解析5字段cron表达式。
-    支持: *, */N, N-M, N,M, 范围步长 N-M/N
-    返回 CronFields 或 None (无效表达式)
-    
-    示例:
-      "0 9 * * *"  -> CronFields(minute=[0], hour=[9], ...)
-      "*/15 * * * *" -> CronFields(minute=[0,15,30,45], ...)
-      "0 9 * * 1-5" -> CronFields(minute=[0], hour=[9], day_of_week=[1,2,3,4,5])
-    """
-
-def compute_next_cron_run(fields: CronFields, from_time: datetime) -> datetime | None:
-    """
-    计算下次执行时间。
-    - 使用本地时区
-    - 严格在未来时间(after from_time)
-    - 最多向前查找366天
-    - OR语义: dayOfMonth和dayOfWeek都约束时,任一匹配即可
-    
-    DST行为: 
-      - 固定小时crons targeting spring-forward gap 跳过转换日
-      - wildcard小时crons 在gap后第一个有效分钟触发
-      - fall-back 重复触发一次
-    """
-
-def cron_to_human(cron: str, utc: bool = False) -> str:
-    """
-    将cron表达式转为人类可读字符串。
-    
-    示例:
-      "0 9 * * *"       -> "Every day at 9:00 AM"
-      "*/15 * * * *"    -> "Every 15 minutes"
-      "0 9 * * 1-5"     -> "Weekdays at 9:00 AM"
-      "30 14 27 2 *"    -> "Every February 27 at 2:30 PM"
-    """
-```
-
-#### 9.4.2 cron_scheduler.py - 执行引擎核心
-
-**功能**:
-- 基于 `CHECK_INTERVAL_MS = 1000` (1秒) 的轮询调度器
-- 文件监控 (watchdog 替代 chokidar)
-- 调度器锁获取与释放
-- 任务触发 (onFire) 回调
-- 周期性任务重排
-- 单次任务删除
-
-**CronScheduler 类**:
-
-```python
-class CronScheduler:
-    def __init__(
-        self,
-        on_fire: Callable[[str], None],              # 任务触发回调 (prompt)
-        is_loading: Callable[[], bool],               # 加载状态检查
-        assistant_mode: bool = False,
-        on_fire_task: Optional[Callable[[CronTask], None]] = None,  # 完整任务回调
-        on_missed: Optional[Callable[[list[CronTask]], None]] = None,  # 错过的任务回调
-        dir: Optional[str] = None,                     # 自定义项目目录
-        lock_identity: Optional[str] = None,           # 锁标识(daemon用)
-        get_jitter_config: Optional[Callable[[], CronJitterConfig]] = None,
-        is_killed: Optional[Callable[[], bool]] = None,
-        filter: Optional[Callable[[CronTask], bool]] = None,  # 任务过滤器
-    ):
-        self.on_fire = on_fire
-        self.is_loading = is_loading
-        # ...
-
-    def start(self) -> None:
-        """启动调度器"""
-        # 1. 尝试获取调度器锁
-        # 2. 加载任务文件
-        # 3. 启动文件监控 (watchdog)
-        # 4. 启动1秒轮询timer
-        # 5. 非所有者启动5秒锁探测timer
-
-    def stop(self) -> None:
-        """停止调度器"""
-        # 清理所有timer和监控,释放锁
-
-    def get_next_fire_time(self) -> int | None:
-        """返回最快触发的任务时间戳(毫秒),无任务返回None"""
-```
-
-**调度器锁协议**:
+`clawcodex_ext/cron_system/*` 已经具备可复用基础：
 
 ```
-1. 启动时尝试获取锁 (.claude/scheduled_tasks.lock)
-2. 使用 O_EXCL 原子创建实现test-and-set
-3. 锁文件包含: session_id, pid, acquired_at
-4. 非所有者定期探测锁(每5秒)
-5. 所有者死亡(PID not running)后,其他会话可接管
-6. 退出时释放锁
+clawcodex_ext/cron_system/
+├── models.py          # CronFields、CronTask、路径、默认 max-age/jitter
+├── parser.py          # 5 字段 cron 解析、next run、human schedule
+├── tasks.py           # 文件存储 CRUD、due/missed/prune、storage lock
+├── lock.py            # scheduler/storage filesystem lock
+├── jitter.py          # deterministic jitter
+├── notifications.py   # missed one-shot notification
+├── scheduler.py       # scheduler thread + check_once
+├── tools.py           # replacement CronCreate/CronList/CronDelete
+└── runtime.py         # replace_cron_tools + attach_cron_runtime
 ```
 
-#### 9.4.3 cron_tasks.py - 任务存储
+这些模块是 F-22 后续实现的主战场。优先补齐语义差异，而不是把逻辑迁回 `src/*`。
 
-**功能**:
-- 读写 `.claude/scheduled_tasks.json`
-- 任务 CRUD 操作
-- 持久化 lastFiredAt
-- 计算下次执行时间 (含 jitter)
+#### 9.3.3 关键运行路径断点
 
-**关键函数**:
+目前最大缺口是 runtime/frontend 接线：
 
-```python
-CRON_FILE_PATH = ".claude/scheduled_tasks.json"
+1. `clawcodex_ext/runtime/context.py` 构造 `RuntimeContext`，调用 `replace_cron_tools(tool_registry)`，并 `attach_cron_runtime(runtime)`。
+2. 但 `clawcodex_ext/frontend/repl.py`、`clawcodex_ext/frontend/headless.py`、`clawcodex_ext/frontend/tui.py` 只把 options 传给旧入口。
+3. 旧入口内部又重新构造 `tool_registry` 和 `tool_context`，导致前一步准备好的 Cron replacement tools、scheduler、outbox 没有进入真实执行路径。
+4. `attach_cron_runtime()` 默认 `autostart=False`，即便被挂载也不会启动 scheduler。
+5. scheduler 触发后只是向 `tool_context.outbox` 追加 `cron_prompt` / `cron_missed` 事件，当前没有发现 REPL/TUI/headless drain outbox 并执行 prompt 的路径。
 
-async def read_cron_tasks(dir: Optional[str] = None) -> list[CronTask]:
-    """读取并验证cron任务,无效任务自动跳过(日志记录)"""
+因此当前扩展 Cron 更接近“有测试覆盖的核心模块”，尚未达到 `claude-code-best` 的 CLI 级完整行为。
 
-async def write_cron_tasks(tasks: list[CronTask], dir: Optional[str] = None) -> None:
-    """覆写任务文件,自动去除runtime-only字段(durable, agent_id)"""
+### 9.4 完整还原的目标行为
 
-def has_cron_tasks_sync(dir: Optional[str] = None) -> bool:
-    """同步检查任务文件是否有内容(用于启动时auto-enable)"""
+F-22 完成后应满足以下端到端行为：
 
-async def add_cron_task(
-    cron: str,
-    prompt: str,
-    recurring: bool,
-    durable: bool,
-    agent_id: Optional[str] = None,
-) -> str:
-    """添加任务,返回生成的8位hex ID"""
-    # durable=False -> session task, 只存内存
-    # durable=True -> file task, 持久化
+| 能力 | 完成标准 |
+|------|----------|
+| 工具可用性 | `CronCreate`、`CronList`、`CronDelete` 在 REPL/TUI/headless 真实路径中使用下游扩展实现，而不是 fallback `context.crons` 实现 |
+| `/loop` | `/loop [interval] <prompt>` 创建 recurring cron，默认 `10m`，确认 job ID 后立即执行 prompt 一次 |
+| 管理命令 | 提供 `/cron-list` 和 `/cron-delete <id>`，以表格展示 ID、Schedule、Prompt、Recurring、Durable |
+| session-only | `durable=False` 的任务只保存在当前 runtime/session 中，CLI 退出后消失 |
+| durable | `durable=True` 的任务写入 `.claude/scheduled_tasks.json`，重启后继续可见并可执行 |
+| 调度器 | 每秒检查 due tasks，持有 `.claude/scheduled_tasks.lock`，防止多个 CLI 实例重复触发 |
+| busy gate | 当前会话正在处理模型响应或工具调用时不抢跑 cron；assistant/headless 特殊模式按 `claude-code-best` 语义处理 |
+| dispatch | 如果提供 `on_fire_task`，只调用 task 级回调，不再同时调用 prompt 级 `on_fire`，避免重复执行 |
+| 结果追踪 | 每次 scheduled fire 都生成可查询运行记录，状态包括 `queued`、`running`、`completed`、`failed`、`cancelled` |
+| missed one-shot | durable one-shot 在 CLI 关闭期间错过时，启动后删除该任务并展示安全 fenced prompt，必须先询问用户是否现在执行 |
+| auto-expiry | recurring task 默认 7 天过期；支持配置 max-age，`0` 表示不过期 |
+| jitter | recurring jitter 为确定性、按周期比例延后、最多 15 分钟；one-shot 在配置分钟边界可提前最多 90 秒 |
+| 文件变更 | durable task 文件被外部更新后，scheduler 能重新读取或通过 mtime 轮询感知 |
+| tool metadata | `CronCreate` / `CronDelete` 是 mutating tool，不再标记为 read-only |
+| teammate parity | 如果 ClawCodex 启用 team/agent ownership，需实现 job ownership、列表过滤、删除归属校验和 orphaned task 处理；否则明确标记为后续依赖项 |
 
-async def remove_cron_tasks(ids: list[str], dir: Optional[str] = None) -> None:
-    """批量删除任务(文件+session)"""
+### 9.5 目标架构
 
-async def mark_cron_tasks_fired(ids: list[str], fired_at: int, dir: Optional[str] = None) -> None:
-    """标记周期性任务已触发,更新lastFiredAt"""
+```
+CLI parser / dispatch
+        ↓
+clawcodex_ext.runtime.RuntimeContext
+        ├── provider
+        ├── tool_registry  ── replace_cron_tools() ── CronCreate/List/Delete
+        ├── tool_context   ── session cron store + dispatch hooks
+        ├── session
+        └── cron_runtime
+              ├── CronScheduler
+              ├── CronDispatchBridge
+              └── CronRunStore / autonomy-compatible run records
+        ↓
+Frontend plugin (REPL / TUI / headless)
+        ↓
+使用预构造 RuntimeContext，而不是重新构造 registry/context
+        ↓
+Scheduled fire → queued command / run record → frontend 执行 → status 可查询
 ```
 
-#### 9.4.4 cron_tasks_lock.py - 分布式锁
+关键原则：
 
-**功能**:
-- 基于文件系统的原子锁
-- PID 存活检测
-- 陈旧锁自动恢复
+- `clawcodex_ext/cron_system/*` 持有业务实现。
+- `src/tool_system/tools/cron.py` 保留 fallback，不承载完整行为。
+- `src/repl/*`、`src/entrypoints/headless.py`、`src/entrypoints/tui.py` 如需改动，只增加可选 prebuilt runtime/context 参数或 thin forwarding seam。
+- 不为了 Cron 在 `src/*` 中复制一套下游逻辑。
 
-**关键函数**:
+### 9.6 实施阶段
 
-```python
-LOCK_FILE_PATH = ".claude/scheduled_tasks.lock"
+#### Phase A — runtime-first 接线
 
-async def try_acquire_scheduler_lock(
-    opts: Optional[SchedulerLockOptions] = None,
-) -> bool:
-    """
-    尝试获取调度器锁。
-    
-    协议:
-    - O_EXCL 原子创建
-    - 锁文件存在时检查PID是否存活(psutil)
-    - 死亡PID的锁被认定为陈旧,自动删除并重试
-    - 去重: 如果sessionId相同(重启后)则更新PID并返回True
-    
-    Returns: True=获取成功, False=被其他会话持有
-    """
+**目标**: 先让真实 CLI 路径使用 `RuntimeContext` 中已替换的工具、上下文和 scheduler。
 
-async def release_scheduler_lock(opts: Optional[SchedulerLockOptions] = None) -> None:
-    """释放调度器锁(仅当自己持有时)"""
-```
+| 文件 | 改动 |
+|------|------|
+| `clawcodex_ext/runtime/context.py` | 将 cron runtime 附加为结构化对象，包含 scheduler、dispatch bridge、session store、run store |
+| `clawcodex_ext/frontend/protocol.py` | 明确 frontend 接收完整 RuntimeContext 的协议，而不是只接收 options |
+| `clawcodex_ext/frontend/repl.py` | 让 REPL 使用 `ctx.tool_registry`、`ctx.tool_context`、`ctx.cron_scheduler` |
+| `clawcodex_ext/frontend/headless.py` | headless 入口使用预构造 registry/context，并接入 cron dispatch |
+| `clawcodex_ext/frontend/tui.py` | TUI 入口使用预构造 registry/context，并接入 cron dispatch |
+| `src/repl/core.py` | 如不可避免，仅增加 optional prebuilt provider/registry/context/session 参数 |
+| `src/entrypoints/headless.py` | 如不可避免，仅增加 optional runtime 参数 |
+| `src/entrypoints/tui.py` | 如不可避免，仅增加 optional runtime 参数 |
 
-**锁文件格式**:
+实现顺序：
+
+1. 定义 downstream runtime 对象，例如 `CronRuntime` / `CronDispatchBridge`。
+2. 让 frontend plugin 不再丢弃 `ctx`，而是把 prebuilt runtime 传到底层 runner。
+3. scheduler lifecycle 由 frontend 启动/停止，确保退出时释放 lock。
+4. 增加测试证明 `CronCreate` 命中 `clawcodex_ext/cron_system/tools.py`，而非 fallback `src/tool_system/tools/cron.py`。
+
+#### Phase B — 存储与模型语义对齐
+
+**目标**: 补齐 session-only 与 durable 分离，统一文件 schema 和工具行为。
+
+| 文件 | 改动 |
+|------|------|
+| `clawcodex_ext/cron_system/models.py` | 对齐 `CronTask` 字段：`id`、`cron`、`prompt`、`created_at`、`updated_at`、`last_fired_at`、`next_fire_at`、`expires_at`、`recurring`、`permanent`、`durable`、可选 `agent_id` |
+| `clawcodex_ext/cron_system/tasks.py` | durable 文件 CRUD 只管理 durable tasks；新增/接入 session task store；读入兼容 snake_case/camelCase，写出 canonical schema |
+| `clawcodex_ext/cron_system/tools.py` | `CronCreate` 按 `durable` 分流；`CronList` 聚合 durable + session；`CronDelete` 同时删除两类 store 并对 missing ID 报错 |
+
+关键决策：
+
+- `durable=False` 不写 `.claude/scheduled_tasks.json`。
+- durable 文件不写 runtime-only 字段，除非该字段是 `claude-code-best` 持久格式的一部分。
+- 读取时容忍旧 extension 的 snake_case 和未来兼容用 camelCase。
+- `CronCreate` / `CronDelete` 的 `is_read_only` 改为 `False`。
+- 缺失 ID 的 `CronDelete` 应返回 tool input error 或 validation error，而不是静默 `success=false`。
+
+#### Phase C — scheduler 语义对齐
+
+**目标**: 让 scheduler 行为与 `claude-code-best` 的 `src/utils/cronScheduler.ts` 对齐。
+
+| 文件 | 改动 |
+|------|------|
+| `clawcodex_ext/cron_system/scheduler.py` | 增加 `is_loading`、`assistant_mode`、`is_killed`、`filter`、`get_jitter_config`；修正 `on_fire_task` 优先级 |
+| `clawcodex_ext/cron_system/lock.py` | 保持 `O_EXCL` lock；补齐同 session 重入/接管语义（如需要） |
+| `clawcodex_ext/cron_system/jitter.py` | 实现 recurring 10% period capped by 15m；实现 one-shot configured boundary early jitter |
+| `clawcodex_ext/cron_system/notifications.py` | missed one-shot 文案要求用户确认，并用安全 fence 包裹 prompt |
+| `clawcodex_ext/cron_system/tasks.py` | due/missed/prune/mark-fired 在 storage lock 下保持原子状态转换 |
+
+调度语义：
+
+- `check_once()` 先判断 `is_killed()`，再判断 `is_loading()` 与 `assistant_mode`。
+- 对 due task，如果有 `on_fire_task`，只调用 `on_fire_task(task)`；否则调用 `on_fire(task.prompt)`。
+- recurring task fired 后更新 `last_fired_at`、`next_fire_at`、`updated_at`。
+- one-shot task fired 后删除。
+- missed durable one-shot 启动时删除并通知，不自动执行。
+- 文件变更首期可用 mtime polling 实现，避免立即引入 watchdog 依赖；如果已有项目依赖再切换 watcher。
+
+#### Phase D — 执行队列与结果追踪
+
+**目标**: scheduled fire 不只是写 outbox，而是进入真实命令执行与结果查询路径。
+
+| 文件 | 改动 |
+|------|------|
+| `clawcodex_ext/cron_system/runtime.py` | 把 `outbox` 升级为 typed dispatch bridge，负责把 task 转成 frontend 可执行命令 |
+| `clawcodex_ext/cron_system/runs.py`（新） | 若无可复用模块，新增 scheduled run 记录：queued/running/completed/failed/cancelled |
+| REPL/TUI downstream adapter | scheduled fire 时入队 prompt，渲染 scheduled-task 系统消息，避免同 sourceId 重复 active run |
+| headless downstream adapter | mirror `claude-code-best` print mode，把 due task 交给 headless runner；无法路由 teammate 时标记 failed |
+
+运行记录字段建议：
 
 ```json
 {
-  "sessionId": "550e8400-e29b-41d4-a716-446655440000",
-  "pid": 12345,
-  "acquiredAt": 1700000000000
+  "run_id": "uuid",
+  "runtime": "automatic",
+  "trigger": "scheduled-task",
+  "status": "queued",
+  "root_dir": "/path/to/project",
+  "current_dir": "/path/to/project",
+  "source_id": "a1b2c3d4",
+  "source_label": "Check deploy",
+  "workload": "cron",
+  "prompt_preview": "Check deploy",
+  "created_at": 1700000000000,
+  "updated_at": 1700000000000,
+  "ended_at": null,
+  "error": null
 }
 ```
 
-#### 9.4.5 skills.py - CLI 命令
+如果 ClawCodex 已有 orchestrator/task run 存储，优先复用；否则在 `clawcodex_ext/cron_system/runs.py` 中实现最小 run store，并在后续 autonomy 系统成熟后迁移。
 
-**技能注册**:
+#### Phase E — skills 与用户命令
 
-```python
-def register_cron_list_skill() -> None:
-    """注册 /cron-list 命令,调用 CronListTool"""
-    registerBundledSkill({
-        name: "cron-list",
-        description: "List all scheduled cron jobs in this session",
-        whenToUse: "When the user wants to see their scheduled/recurring tasks...",
-        userInvocable: True,
-        isEnabled: isKairosCronEnabled,
-    })
+**目标**: 用户无需知道底层工具名即可管理 cron。
 
-def register_cron_delete_skill() -> None:
-    """注册 /cron-delete <job-id> 命令,调用 CronDeleteTool"""
-```
+| 命令 | 行为 |
+|------|------|
+| `/loop [interval] <prompt>` | 创建 recurring task，默认 `10m`，创建后立即执行 prompt 一次 |
+| `/cron-list` | 调用 `CronList` 并以表格展示 ID、Schedule、Prompt、Recurring、Durable |
+| `/cron-delete <id>` | 调用 `CronDelete` 删除任务；ID 缺失或不存在时给出清晰错误 |
 
-### 9.5 Jitter 抖动算法
+实现路径：
 
-**目的**: 避免多个客户端同一 cron 表达式在同一时刻触发
+- 现有 `src/skills/bundled/loop.py` 可保留，但其 enable gate 需要接入 Python 侧 cron gate。
+- `/cron-list` 与 `/cron-delete` 优先在下游 skill extension 层注册；如果当前 skill extension 尚未落地，可在文档中标明这是 F-22 对 F-10 Skills Extension 的依赖点，必要时用最小 forwarding seam 过渡。
+- gate 对齐 `CLAUDE_CODE_DISABLE_CRON`：设置后隐藏/禁用 Cron 工具、skills 和 scheduler。
 
-**周期性任务**:
+#### Phase F — teammate / agent ownership
 
-```python
-def jittered_next_cron_run_ms(
-    cron: str,
-    from_ms: int,
-    task_id: str,
-    cfg: CronJitterConfig,
-) -> int | None:
-    """
-    计算周期性任务下次触发时间(含抖动)。
-    
-    抖动 = jitter_frac(task_id) * recurring_frac * (间隔, capped by recurring_cap_ms)
-    
-    示例(默认配置):
-      - hourly task -> 分散到 [:00, :06)
-      - per-minute task -> 分散几秒钟
-    """
-```
+**目标**: 在 ClawCodex 支持 teammate runtime 时，还原 `claude-code-best` 的 cron ownership 行为。
 
-**一次性任务**:
+| 场景 | 行为 |
+|------|------|
+| teammate 创建 session-only cron | job 带 `agent_id`，只在该 agent 上下文可见/可删 |
+| lead 列表 | 可按上下文过滤，避免误删其他 agent job |
+| teammate 已退出 | scheduler 触发 owned task 时记录 failed 或清理 orphaned cron |
+| headless 无 teammate runtime | 创建 failed run，错误说明无法路由 owner |
 
-```python
-def one_shot_jittered_next_cron_run_ms(
-    cron: str,
-    from_ms: int,
-    task_id: str,
-    cfg: CronJitterConfig,
-) -> int | None:
-    """
-    计算一次性任务下次触发时间(含抖动)。
-    
-    只在分钟边界匹配时应用抖动:
-    - minute % one_shot_minute_mod == 0 时触发
-    - 向后偏移 [floor, max) 毫秒
-    
-    默认: mod=30, max=90s, floor=0
-    结果: :00/:30 的任务被分散到 [t-90s, t] 区间
-    """
-```
-
-**jitter_frac 函数**:
-
-```python
-def jitter_frac(task_id: str) -> float:
-    """基于8位hex UUID计算[0,1)均匀分布值"""
-    frac = int(task_id[:8], 16) / 0x1_0000_0000
-    return frac if math.isfinite(frac) else 0
-```
-
-### 9.6 错失任务通知 (buildMissedTaskNotification)
-
-当一次性任务在 Claude 关闭期间错失了执行时间，在重启时需要询问用户是否立即执行。
-
-**功能**: 格式化错失任务的通知文本，用于向用户展示错失的任务列表。
-
-**Python 实现**:
-
-```python
-def build_missed_task_notification(missed: list[CronTask]) -> str:
-    """
-    构建错失任务通知文本。
-    
-    格式:
-    - 标题说明任务已被删除
-    - 指示用户使用 AskUserQuestion 确认后再执行
-    - 每个任务用代码块包裹,防止 prompt injection
-    
-    参数:
-        missed: 错失的一次性任务列表
-    
-    返回:
-        格式化后的通知文本
-    """
-    plural = len(missed) > 1
-    
-    # 标题
-    header = (
-        f"The following one-shot scheduled task{plural and 's were' or ' was'} "
-        f"missed while ClawCodex was not running. "
-        f"{plural and 'They have' or 'It has'} already been removed from "
-        f".claude/scheduled_tasks.json.\n\n"
-        f"Do NOT execute {plural and 'these prompts' or 'this prompt'} yet. "
-        f"First use the AskUserQuestion tool to ask whether to run "
-        f"{plural and 'each one' or 'it'} now. "
-        f"Only execute if the user confirms."
-    )
-    
-    # 任务块
-    blocks = []
-    for t in missed:
-        # 任务元信息
-        meta = f"[{cron_to_human(t.cron)}, created {datetime.fromtimestamp(t.created_at/1000).locale_string()}]"
-        
-        # 计算最长反引号序列,确保不闭合用户 prompt 中的代码块
-        longest_run = max((len(run) for run in re.findall(r"`+", t.prompt) or [""]))
-        fence = "`" * max(3, longest_run + 1)
-        
-        blocks.append(f"{meta}\n{fence}\n{t.prompt}\n{fence}")
-    
-    return header + "\n\n" + "\n\n".join(blocks)
-```
-
-**安全考虑**:
-- 使用比用户 prompt 中最长反引号序列更长的 fence 字符,防止 prompt 中的 ``` 提前关闭代码块
-- 指示模型先询问用户,再执行,防止 prompt injection 攻击
-
-**使用场景**:
-
-```python
-# 在 scheduler 的 load() 函数中,初始化时检测错失任务
-if initial_load:
-    missed = find_missed_tasks(tasks, now)
-    if missed:
-        if on_missed:
-            on_missed(missed)  # daemon 模式,直接传递任务列表
-        else:
-            on_fire(build_missed_task_notification(missed))  # REPL 模式,显示通知
-```
-
----
-
-### 9.7 GrowthBook 动态配置 (cron_jitter_config.py)
-
-**目的**: 支持运维团队在不停机的情况下动态调整 jitter 参数,用于应对突发负载。
-
-**架构设计**:
-
-```
-cron_jitter_config.py     # 动态配置读取层
-        ↓
-GrowthBook / Feature Gate # 远程配置源 (可选)
-        ↓
-CronJitterConfig          # 配置对象
-        ↓
-cron_scheduler.py         # 消费配置
-```
-
-**Python 实现**:
-
-```python
-from dataclasses import dataclass
-from typing import Optional, Callable
-
-# 配置刷新间隔 (毫秒)
-JITTER_CONFIG_REFRESH_MS = 60 * 1000
-
-# GrowthBook schema (Zod 等效 Python)
-@dataclass
-class CronJitterConfig:
-    recurring_frac: float       # 0-1, 间隔的百分比
-    recurring_cap_ms: int       # 上限,最多延迟毫秒
-    one_shot_max_ms: int        # 一次性任务最大提前毫秒
-    one_shot_floor_ms: int      # 一次性任务最小提前毫秒
-    one_shot_minute_mod: int    # 分钟模数 (:00/:30)
-    recurring_max_age_ms: int   # 周期性任务最大存活毫秒
-
-DEFAULT_CRON_JITTER_CONFIG = CronJitterConfig(
-    recurring_frac=0.1,
-    recurring_cap_ms=15 * 60 * 1000,      # 15分钟
-    one_shot_max_ms=90 * 1000,            # 90秒
-    one_shot_floor_ms=0,
-    one_shot_minute_mod=30,
-    recurring_max_age_ms=7 * 24 * 60 * 60 * 1000,  # 7天
-)
-
-# 配置验证
-HALF_HOUR_MS = 30 * 60 * 1000
-THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000
-
-def validate_jitter_config(cfg: dict) -> CronJitterConfig:
-    """验证并返回配置,无效时返回默认值"""
-    try:
-        # 范围检查
-        if not (0 <= cfg.get("recurring_frac", 0) <= 1):
-            return DEFAULT_CRON_JITTER_CONFIG
-        if not (0 <= cfg.get("recurring_cap_ms", 0) <= HALF_HOUR_MS):
-            return DEFAULT_CRON_JITTER_CONFIG
-        if not (0 <= cfg.get("one_shot_max_ms", 0) <= HALF_HOUR_MS):
-            return DEFAULT_CRON_JITTER_CONFIG
-        if cfg.get("one_shot_floor_ms", 0) > cfg.get("one_shot_max_ms", 0):
-            return DEFAULT_CRON_JITTER_CONFIG
-        return CronJitterConfig(**cfg)
-    except (TypeError, ValueError):
-        return DEFAULT_CRON_JITTER_CONFIG
-
-def get_cron_jitter_config() -> CronJitterConfig:
-    """
-    从 GrowthBook 读取 `tengu_kairos_cron_config` 配置。
-    
-    缓存过期时间: JITTER_CONFIG_REFRESH_MS (60秒)
-    支持运行时动态调整,无需重启客户端。
-    
-    Returns:
-        CronJitterConfig 实例(远程或默认)
-    """
-    # 实际实现中调用 GrowthBook SDK
-    # raw = get_feature_value_cached_with_refresh(
-    #     "tengu_kairos_cron_config",
-    #     DEFAULT_CRON_JITTER_CONFIG,
-    #     JITTER_CONFIG_REFRESH_MS,
-    # )
-    # return validate_jitter_config(raw)
-    return DEFAULT_CRON_JITTER_CONFIG
-```
-
-**与 Scheduler 的集成**:
-
-```python
-class CronScheduler:
-    def __init__(
-        self,
-        # ...
-        get_jitter_config: Optional[Callable[[], CronJitterConfig]] = None,
-        # ...
-    ):
-        self.get_jitter_config = get_jitter_config or (lambda: DEFAULT_CRON_JITTER_CONFIG)
-    
-    def check(self):
-        # 每个 tick 重新读取配置
-        jitter_cfg = self.get_jitter_config()
-        # ... 使用 jitter_cfg 计算下次触发时间
-```
-
-**配置推送示例** (ops 场景):
-
-```json
-// GrowthBook 推送的配置
-{
-  "tengu_kairos_cron_config": {
-    "recurringFrac": 0.15,
-    "recurringCapMs": 300000,
-    "oneShotMaxMs": 300000,
-    "oneShotFloorMs": 30000,
-    "oneShotMinuteMod": 15,
-    "recurringMaxAgeMs": 604800000
-  }
-}
-```
-
----
-
-### 9.8 /loop 命令 (loop_skill.py)
-
-**功能**: 提供 `/loop [interval] <prompt>` 命令,简化周期性任务的创建。
-
-**CLI 界面**:
-
-```
-/loop 5m /babysit-prs     # 每5分钟执行 /babysit-prs
-/loop 30m check the deploy # 每30分钟执行 "check the deploy"
-/loop 1h /standup 1       # 每小时执行 /standup 1
-/loop check the deploy    # 默认10分钟间隔
-/loop check the deploy every 20m  # 同上
-```
-
-**Interval → cron 转换表**:
-
-| 输入格式 | Cron 表达式 | 说明 |
-|---------|-------------|------|
-| `Nm` (N ≤ 59) | `*/N * * * *` | 每 N 分钟 |
-| `Nm` (N ≥ 60) | `0 */H * * *` | 转为小时 (H = N/60, 必须整除24) |
-| `Nh` (N ≤ 23) | `0 */N * * *` | 每 N 小时 |
-| `Nd` | `0 0 */N * *` | 每 N 天午夜 |
-| `Ns` | `ceil(N/60)m` | 秒转分钟 (最小1分钟) |
-
-**解析优先级**:
-
-1. **前导 token**: 首个 `\d+[smhd]` 匹配为间隔,其余为 prompt
-2. **尾部 "every" 从句**: `every <N><unit>` 格式,用于分离 prompt
-3. **默认**: 间隔 `10m`,整个输入为 prompt
-
-**Python 实现**:
-
-```python
-import re
-from typing import Tuple
-
-DEFAULT_INTERVAL = "10m"
-DEFAULT_MAX_AGE_DAYS = 7
-
-def parse_interval_input(args: str) -> Tuple[str, str]:
-    """
-    解析 /loop 命令输入,返回 (interval, prompt)。
-    
-    优先级:
-    1. 前导 token: 5m /foo -> interval="5m", prompt="/foo"
-    2. 尾部 every: "check every 20m" -> interval="20m", prompt="check"
-    3. 默认: "check the deploy" -> interval="10m", prompt="check the deploy"
-    """
-    args = args.strip()
-    if not args:
-        return "", ""
-    
-    # 规则1: 前导 token
-    lead_match = re.match(r"^(\d+[smhd])\s+(.+)$", args)
-    if lead_match:
-        interval = lead_match.group(1)
-        prompt = lead_match.group(2)
-        return interval, prompt
-    
-    # 规则2: 尾部 every
-    every_match = re.search(r"\s+every\s+(\d+)\s*([smhd])\s*$", args, re.IGNORECASE)
-    if every_match:
-        n, unit = every_match.groups()
-        # 检查 "every" 后面是否真的是时间表达,而不是 "check every PR"
-        before_every = args[:every_match.start()]
-        if before_every.strip():
-            interval = f"{n}{unit}"
-            prompt = before_every.strip()
-            return interval, prompt
-    
-    # 规则3: 默认
-    return DEFAULT_INTERVAL, args
-
-def interval_to_cron(interval: str) -> Tuple[str, str]:
-    """
-    将 interval 字符串转为 cron 表达式。
-    
-    Returns: (cron, human_readable)
-    """
-    match = re.match(r"^(\d+)([smhd])$", interval)
-    if not match:
-        return interval, interval  # fallback
-    
-    n, unit = int(match.group(1)), match.group(2)
-    
-    if unit == "s":
-        n = max(1, (n + 59) // 60)  # ceil to minutes
-        unit = "m"
-    
-    if unit == "m":
-        if n <= 59:
-            return f"*/{n} * * * *", f"every {n} minutes"
-        else:
-            h = n // 60
-            if n % 60 == 0 and h <= 24 and 24 % h == 0:
-                return f"0 */{h} * * *", f"every {h} hours"
-            return f"*/{n} * * * *", f"every {n} minutes (rounded)"
-    
-    if unit == "h":
-        if 1 <= n <= 23:
-            return f"0 */{n} * * *", f"every {n} hours"
-        return f"0 */{n} * * *", f"every {n} hours"
-    
-    if unit == "d":
-        return f"0 0 */{n} * *", f"every {n} days"
-    
-    return interval, interval
-
-def build_loop_prompt(args: str) -> str:
-    """
-    生成 /loop 命令的 prompt,指导 LLM 调用 CronCreateTool。
-    """
-    interval, prompt_text = parse_interval_input(args)
-    
-    if not prompt_text:
-        return f"""Usage: /loop [interval] <prompt>
-
-Run a prompt or slash command on a recurring interval.
-
-Intervals: Ns, Nm, Nh, Nd (e.g. 5m, 30m, 2h, 1d). Minimum granularity is 1 minute.
-If no interval is specified, defaults to {DEFAULT_INTERVAL}.
-
-Examples:
-  /loop 5m /babysit-prs
-  /loop 30m check the deploy
-  /loop 1h /standup 1
-  /loop check the deploy          (defaults to {DEFAULT_INTERVAL})
-  /loop check the deploy every 20m"""
-    
-    cron_expr, human_readable = interval_to_cron(interval)
-    
-    return f"""# /loop — schedule a recurring prompt
-
-Parse the input below into `[interval] <prompt…>` and schedule it with CronCreate.
-
-## Parsing
-
-- `{interval} {prompt_text}` → interval `{interval}`, prompt `{prompt_text}`
-
-## Interval → cron
-
-- `{interval}` → `{cron_expr}` ({human_readable})
-
-## Action
-
-1. Call CronCreate with:
-   - `cron`: `{cron_expr}`
-   - `prompt`: `{prompt_text}`
-   - `recurring`: `true`
-2. Confirm: what's scheduled, the cron expression, the cadence, that recurring tasks auto-expire after {DEFAULT_MAX_AGE_DAYS} days, and that they can cancel sooner with CronDelete (include the job ID).
-3. **Then immediately execute the parsed prompt now** — don't wait for the first cron fire. If it's a slash command, invoke it via the Skill tool; otherwise act on it directly.
-
-## Input
-
-{args}"""
-```
-
----
-
-### 9.9 autonomyRuns 集成
-
-**目的**: 将 cron 任务触发后的 prompt 集成到 ClawCodex 的命令队列系统,实现异步执行。
-
-**autonomyRuns 模块** (`autonomy_runs.py`) 负责:
-- 管理 autonomy runs 的生命周期 (queued/running/completed/failed/cancelled)
-- 持久化 runs 到 `~/.clawcodex/autonomy/runs.json`
-- 命令队列化 (`QueuedCommand`)
-- 防重放检查
-
-**核心函数**:
-
-```python
-@dataclass
-class AutonomyRunRecord:
-    run_id: str
-    runtime: str              # "automatic" | "flow_step"
-    trigger: str              # "scheduled-task" | ...
-    status: str               # "queued" | "running" | ...
-    root_dir: str
-    current_dir: str
-    source_id: Optional[str]   # 任务 ID (用于去重)
-    source_label: Optional[str]
-    prompt_preview: str
-    created_at: int
-    # ...
-
-async def create_autonomy_queued_prompt(
-    trigger: str,
-    base_prompt: str,
-    source_id: Optional[str] = None,
-    source_label: Optional[str] = None,
-    workload: str = "WORKLOAD_CRON",
-    should_create: Optional[Callable[[], bool]] = None,
-) -> Optional[QueuedCommand]:
-    """
-    创建 autonomy queued command。
-    
-    - 检查是否已有相同 source_id 的活跃 run (防重放)
-    - 准备 prompt
-    - 提交到命令队列
-    """
-    # 1. 防重放检查
-    if source_id and await has_active_autonomy_run_for_source(trigger, source_id):
-        return None
-    
-    # 2. 准备 autonomy turn prompt
-    prepared = await prepare_autonomy_turn_prompt(
-        base_prompt=base_prompt,
-        trigger=trigger,
-        root_dir=root_dir,
-        current_dir=current_dir,
-    )
-    
-    # 3. 提交到队列
-    return await commit_autonomy_queued_prompt(
-        prepared,
-        source_id=source_id,
-        source_label=source_label,
-        workload=workload,
-        should_create=should_create,
-    )
-```
-
-**与 Cron Scheduler 的集成**:
-
-```python
-# useScheduledTasks 中
-scheduler = createCronScheduler({
-    on_fire: lambda prompt: enqueue_scheduled_prompt(prompt),
-    on_fire_task: lambda task: handle_scheduled_task(task),
-    # ...
-})
-
-# 任务入队函数
-async def enqueue_scheduled_prompt(prompt: str):
-    command = await create_autonomy_queued_prompt(
-        trigger="scheduled-task",
-        base_prompt=prompt,
-        workload=WORKLOAD_CRON,
-    )
-    if command:
-        enqueue_pending_notification(command)
-
-# 处理任务触发 (含 agentId 路由)
-async def handle_scheduled_task(task: CronTask):
-    if task.agent_id:
-        # 路由到 teammate 队列
-        teammate = find_teammate_by_agent_id(task.agent_id)
-        if teammate and not is_terminal_status(teammate.status):
-            command = await create_scheduled_task_queued_command(task)
-            inject_message_to_teammate(teammate.id, command)
-        else:
-            # teammate 已退出,清理 orphaned cron
-            await remove_cron_tasks([task.id])
-    else:
-        # 主 REPL 队列
-        command = await create_scheduled_task_queued_command(task)
-        enqueue_pending_notification(command)
-        show_scheduled_task_fire_message(task)
-```
-
-**WORKLOAD_CRON 常量**:
-
-```python
-# 用于标识 cron 触发的 workload 类型
-WORKLOAD_CRON = "cron"
-
-# 在 autonomy_runs.py 中的使用
-command = await create_autonomy_queued_prompt(
-    trigger="scheduled-task",
-    base_prompt=task.prompt,
-    source_id=task.id,
-    source_label=task.prompt,
-    workload=WORKLOAD_CRON,  # 标记 workload 类型
-)
-```
-
-**runs.json 格式**:
-
-```json
-{
-  "runs": [
-    {
-      "runId": "uuid",
-      "runtime": "automatic",
-      "trigger": "scheduled-task",
-      "status": "queued",
-      "rootDir": "/path/to/project",
-      "currentDir": "/path/to/project",
-      "sourceId": "a1b2c3d4",
-      "sourceLabel": "Check my PRs",
-      "promptPreview": "Check my PRs",
-      "createdAt": 1700000000000
-    }
-  ]
-}
-```
-
----
-
-### 9.10 任务过期机制
-
-```python
-@dataclass
-class CronJitterConfig:
-    recurring_frac: float = 0.1          # 间隔的10%
-    recurring_cap_ms: int = 15*60*1000   # 最多15分钟
-    one_shot_max_ms: int = 90*1000       # 最多提前90秒
-    one_shot_floor_ms: int = 0           # 最小提前0秒
-    one_shot_minute_mod: int = 30        # :00/:30 边界
-    recurring_max_age_ms: int = 7*24*60*60*1000  # 7天
-
-def is_recurring_task_aged(
-    t: CronTask,
-    now_ms: int,
-    max_age_ms: int,
-) -> bool:
-    """检查周期性任务是否超过最大存活时间"""
-    if max_age_ms == 0:
-        return False  # 0 = 无限
-    return t.recurring and not t.permanent and (now_ms - t.created_at) >= max_age_ms
-```
+如果当前 ClawCodex teammate 系统尚未具备完整 runtime 注入能力，F-22 首期可把 ownership 标记为“等待 team runtime 接口”，但数据模型和删除校验应预留 `agent_id`。
 
 ### 9.7 文件格式
 
-**`.claude/scheduled_tasks.json`**:
+#### durable task 文件
+
+路径固定为项目根目录下：
+
+```text
+.claude/scheduled_tasks.json
+```
+
+写出格式建议使用 snake_case，以匹配当前 Python 模型；读取时兼容 snake_case 与 `claude-code-best` 的 camelCase：
 
 ```json
 {
+  "version": 1,
   "tasks": [
     {
       "id": "a1b2c3d4",
       "cron": "0 9 * * 1-5",
       "prompt": "Check my PRs",
-      "createdAt": 1700000000000,
-      "lastFiredAt": 1700080000000,
       "recurring": true,
-      "permanent": false
+      "durable": true,
+      "created_at": 1700000000000,
+      "updated_at": 1700000000000,
+      "last_fired_at": null,
+      "next_fire_at": 1700003600000,
+      "expires_at": 1700604800000,
+      "jitter": {
+        "recurring_frac": 0.1,
+        "recurring_cap_ms": 900000,
+        "one_shot_max_ms": 90000,
+        "one_shot_floor_ms": 0,
+        "one_shot_minute_mod": 30,
+        "recurring_max_age_ms": 604800000
+      }
     }
   ]
 }
 ```
 
-**`.claude/scheduled_tasks.lock`**:
+#### lock 文件
+
+```text
+.claude/scheduled_tasks.lock
+.claude/scheduled_tasks.storage.lock
+```
 
 ```json
 {
@@ -3183,56 +2632,46 @@ def is_recurring_task_aged(
 }
 ```
 
-### 9.8 与现有 cron.py 的关系
+### 9.8 测试计划
 
-**现有实现** (`src/tool_system/tools/cron.py`):
-- 仅提供 CronCreate/CronList/CronDelete 工具
-- 任务存储在 `context.crons` (进程内存)
-- **不执行任何调度**
+| 测试文件 | 新增/强化覆盖 |
+|----------|---------------|
+| `tests/cron/test_parser.py` | 5 字段 cron、range/list/step/name、DoM/DoW OR 语义、invalid 表达式 |
+| `tests/cron/test_tasks.py` | durable/session 分离、文件 schema 兼容、missing/invalid record skip、并发 storage lock |
+| `tests/cron/test_scheduler.py` | busy gate、`on_fire_task` 不重复 dispatch、one-shot 删除、recurring reschedule、expired prune、mtime reload |
+| `tests/cron/test_lock.py` | scheduler lock、storage lock、stale lock recovery、live lock blocking |
+| `tests/cron/test_tools_runtime.py` | runtime 替换 fallback cron tools、mutating metadata、CronDelete missing ID |
+| `tests/test_downstream_cli_dispatch.py` | CLI dispatch 后 frontend 使用预构造 RuntimeContext |
+| `tests/test_repl.py` / TUI tests | scheduled fire 入队、系统消息、run status |
+| `tests/test_skills_e2e.py` | `/loop`、`/cron-list`、`/cron-delete` prompt/tool 调用链 |
 
-**新实现**:
-- 保留现有工具作为用户接口
-- 新增执行引擎层
-- 工具创建的任务同时写入文件
-- 调度器从文件读取并执行
+### 9.9 手工验收流程
 
-**迁移策略**:
-1. 保留现有 `CronCreateTool`, `CronListTool`, `CronDeleteTool`
-2. 修改工具层的写入逻辑,同时写入 `context.crons` 和文件
-3. 新增 `CronScheduler` 作为后台服务
-4. 添加 CLI 命令 `/cron-list`, `/cron-delete`
+在临时 workspace 中执行端到端 smoke：
 
-### 9.9 实现文件清单
+1. 启动 ClawCodex，确认 cron gate 未禁用。
+2. 使用 `/loop 1m check status` 或直接调用 `CronCreate` 创建 session-only recurring task。
+3. 使用 `/cron-list` 确认任务存在，字段包含 ID、human schedule、prompt、recurring、durable。
+4. 创建 durable one-shot task，确认 `.claude/scheduled_tasks.json` 写入。
+5. 让 scheduler tick 或构造 due time，确认任务进入 queued/running/completed 或 failed run 记录。
+6. 用 status/runs 命令查看 scheduled-task 结果。
+7. 使用 `/cron-delete <id>` 删除任务，并确认 session store 与 durable file 都已更新。
+8. 重启 CLI，确认 durable task 继续存在，session-only task 消失。
+9. 构造 missed durable one-shot，确认启动后提示用户确认，而不是直接执行 prompt。
+10. 同时启动两个 CLI 实例，确认只有 lock owner 触发 durable task。
 
-| 文件路径 | 行数估算 | 依赖 |
-|---------|---------|------|
-| `src/cron_system/__init__.py` | ~20 | - |
-| `src/cron_system/cron_parser.py` | ~250 | dataclasses, datetime, re |
-| `src/cron_system/cron_scheduler.py` | ~500 | asyncio, watchdog, cron_parser, cron_tasks, cron_lock |
-| `src/cron_system/cron_tasks.py` | ~300 | asyncio, json, pathlib |
-| `src/cron_system/cron_tasks_lock.py` | ~200 | asyncio, pathlib, psutil |
-| `src/cron_system/skills.py` | ~100 | bundled_skills |
-| `tests/cron/test_parser.py` | ~150 | pytest |
-| `tests/cron/test_scheduler.py` | ~300 | pytest, pytest-asyncio |
-| `tests/cron/test_tasks.py` | ~150 | pytest, pytest-asyncio |
+### 9.10 实施顺序与完成标准
 
-### 9.10 外部依赖
+| 阶段 | 完成标准 |
+|------|----------|
+| A. Runtime 接线 | REPL/TUI/headless 真实路径使用扩展 Cron tools；scheduler 可按 frontend lifecycle 启停 |
+| B. 存储模型 | session-only 与 durable 分离；文件 schema 兼容；CronCreate/List/Delete 行为对齐 |
+| C. Scheduler | busy gate、lock、jitter、missed、expiry、reload、single dispatch 全部有测试 |
+| D. 执行结果 | scheduled fire 可入队执行并生成可查询 run status |
+| E. Skills | `/loop`、`/cron-list`、`/cron-delete` 用户路径可用 |
+| F. Ownership | teammate/agent ownership 能力按当前 runtime 成熟度实现或明确阻塞依赖 |
 
-```toml
-# pyproject.toml 新增依赖
-watchdog = ">=3.0"      # 文件监控 (chokidar 替代)
-psutil = ">=5.9"        # 进程存活检测
-```
-
-### 9.11 关键设计决策
-
-| 决策点 | 选择 | 理由 |
-|-------|------|------|
-| 轮询 vs 定时器 | 每秒轮询 | 简单可靠,cron精度本来就是分钟级 |
-| 文件监控 | watchdog | Python标准,跨平台 |
-| 锁机制 | O_EXCL原子创建 | 简洁,无需额外服务 |
-| 会话任务 | 内存存储 | 进程内通信,无需持久化 |
-| 过期删除 | 触发后检查 | 无需额外清理进程 |
+F-22 不应在只有 `clawcodex_ext/cron_system` 单元测试通过时标记完成。完成标准必须是：从 CLI 用户路径创建的任务能够被真实 scheduler 触发、执行、记录结果，并可被用户查看和删除。
 
 ---
 
