@@ -390,16 +390,9 @@ if __name__ == "__main__":
         model = getattr(meta, "model", "") or ""
 
     try:
-        from src.config import get_provider_config
-        from src.providers import get_provider_class
+        from src.providers.runtime import build_provider_from_config
 
-        cfg = get_provider_config(provider_name)
-        provider_cls = get_provider_class(provider_name)
-        provider = provider_cls(
-            api_key=cfg["api_key"],
-            base_url=cfg.get("base_url"),
-            model=model,
-        )
+        provider = build_provider_from_config(provider_name, model or None)
     except Exception:
         logger.exception("Failed to create provider for background runner")
         _update_runner_status(args.session_id, "failed", error="Provider init failed")
