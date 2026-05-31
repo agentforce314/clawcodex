@@ -9,7 +9,7 @@ import uuid
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, MutableMapping
 
 from .jitter import jittered_next_cron_run_ms
 from .lock import acquire_cron_storage_lock
@@ -66,6 +66,46 @@ def write_cron_tasks(workspace_root: Path, tasks: Iterable[CronTask]) -> None:
     tmp.replace(path)
 
 
+def read_session_cron_tasks(session_store: MutableMapping[str, CronTask | dict] | None) -> list[CronTask]:
+    if session_store is None:
+        return []
+
+    tasks: list[CronTask] = []
+    stale_ids: list[str] = []
+    for task_id, value in session_store.items():
+        if isinstance(value, CronTask):
+            task = value
+        elif isinstance(value, dict):
+            task = CronTask.from_dict(value)
+        else:
+            task = None
+        if task is None or parse_cron_expression(task.cron) is None:
+            stale_ids.append(task_id)
+            continue
+        tasks.append(task)
+
+    for task_id in stale_ids:
+        session_store.pop(task_id, None)
+
+    tasks.sort(key=lambda task: task.id)
+    return tasks
+
+
+def write_session_cron_tasks(session_store: MutableMapping[str, CronTask | dict], tasks: Iterable[CronTask]) -> None:
+    session_store.clear()
+    for task in sorted(tasks, key=lambda item: item.id):
+        session_store[task.id] = task
+
+
+def read_all_cron_tasks(
+    workspace_root: Path,
+    session_store: MutableMapping[str, CronTask | dict] | None = None,
+) -> list[CronTask]:
+    tasks = [*read_session_cron_tasks(session_store), *read_cron_tasks(workspace_root)]
+    tasks.sort(key=lambda task: task.id)
+    return tasks
+
+
 def has_cron_tasks_sync(workspace_root: Path) -> bool:
     return bool(read_cron_tasks(workspace_root))
 
@@ -76,9 +116,10 @@ def add_cron_task(
     cron: str,
     prompt: str,
     recurring: bool = True,
-    durable: bool = False,
+    durable: bool = True,
     jitter: CronJitterConfig | None = None,
     created_at: int | None = None,
+    session_store: MutableMapping[str, CronTask | dict] | None = None,
 ) -> CronTask:
     fields = parse_cron_expression(cron)
     if fields is None:
@@ -106,6 +147,14 @@ def add_cron_task(
             task.jitter,
         ),
     )
+    if not durable:
+        if session_store is None:
+            raise ValueError("session_store is required for session cron tasks")
+        tasks = read_session_cron_tasks(session_store)
+        tasks.append(task)
+        write_session_cron_tasks(session_store, tasks)
+        return task
+
     with acquire_cron_storage_lock(workspace_root, f"add-{task_id}"):
         tasks = read_cron_tasks(workspace_root)
         tasks.append(task)
@@ -113,7 +162,15 @@ def add_cron_task(
     return task
 
 
-def remove_cron_tasks(workspace_root: Path, task_id: str) -> bool:
+def remove_cron_tasks(
+    workspace_root: Path,
+    task_id: str,
+    session_store: MutableMapping[str, CronTask | dict] | None = None,
+) -> bool:
+    if session_store is not None and task_id in session_store:
+        session_store.pop(task_id, None)
+        return True
+
     with acquire_cron_storage_lock(workspace_root, f"remove-{task_id}"):
         tasks = read_cron_tasks(workspace_root)
         remaining = [task for task in tasks if task.id != task_id]
@@ -179,6 +236,17 @@ def find_missed_tasks(workspace_root: Path, at_ms: int | None = None) -> list[Cr
         for task in read_cron_tasks(workspace_root)
         if not task.recurring and task.next_fire_at is not None and task.next_fire_at < timestamp
     ]
+
+
+def remove_missed_tasks(workspace_root: Path, missed: Iterable[CronTask]) -> None:
+    missed_ids = {task.id for task in missed}
+    if not missed_ids:
+        return
+    with acquire_cron_storage_lock(workspace_root, f"remove-missed-{uuid.uuid4().hex}"):
+        tasks = read_cron_tasks(workspace_root)
+        remaining = [task for task in tasks if task.id not in missed_ids]
+        if len(remaining) != len(tasks):
+            write_cron_tasks(workspace_root, remaining)
 
 
 def prune_expired_recurring_tasks(workspace_root: Path, at_ms: int | None = None) -> list[CronTask]:

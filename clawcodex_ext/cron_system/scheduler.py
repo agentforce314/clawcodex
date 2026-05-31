@@ -12,7 +12,15 @@ from typing import Callable
 from .lock import CronTaskLock
 from .models import CronTask
 from .notifications import build_missed_task_notification
-from .tasks import find_due_tasks, find_missed_tasks, mark_cron_tasks_fired, now_ms, prune_expired_recurring_tasks, read_cron_tasks
+from .tasks import (
+    find_due_tasks,
+    find_missed_tasks,
+    mark_cron_tasks_fired,
+    now_ms,
+    prune_expired_recurring_tasks,
+    read_cron_tasks,
+    remove_missed_tasks,
+)
 
 
 @dataclass
@@ -58,16 +66,19 @@ class CronScheduler:
         if not due:
             return []
         for task in due:
-            self.on_fire(task.prompt)
             if self.on_fire_task is not None:
                 self.on_fire_task(task)
+            else:
+                self.on_fire(task.prompt)
         mark_cron_tasks_fired(self.workspace_root, due, timestamp)
         return due
 
     def notify_missed_once(self, at_ms: int | None = None) -> list[CronTask]:
         missed = find_missed_tasks(self.workspace_root, at_ms)
-        if missed and self.on_missed is not None:
-            self.on_missed(missed, build_missed_task_notification(missed))
+        if missed:
+            remove_missed_tasks(self.workspace_root, missed)
+            if self.on_missed is not None:
+                self.on_missed(missed, build_missed_task_notification(missed))
         return missed
 
     def get_next_fire_time(self) -> int | None:
