@@ -1774,15 +1774,72 @@ last_error: null
 
 ### 实施切片
 
-- [ ] 配置 schema 增加 `tracker.issues_path`，允许 `tracker.kind: local`。
-- [ ] 新增 LocalTracker parser/client/adapter，解析 Markdown front matter 到统一 `Issue`。
-- [ ] 接入 tracker factory 和配置校验。
-- [ ] 实现状态写回、commit 字段写回和失败字段写回。
+- [x] 配置 schema 增加 `tracker.issues_path`，允许 `tracker.kind: local`。
+- [x] 新增 LocalTracker parser/client/adapter，解析 Markdown front matter 到统一 `Issue`。
+- [x] 接入 tracker factory 和配置校验。
+- [x] 实现状态写回、commit 字段写回和失败字段写回。
 - [ ] 补充单元测试：解析、过滤、写回、文件锁、launch 前 state 检查。
 - [ ] 增加本地 workflow 示例和 smoke test 文档。
 
+### 本地任务看板 Human Review Gate
+
+**状态**: ✅ 完成
+**功能**: issue 处理完成后（git commit）进入 `pending_review` 状态，人类通过 CLI 审批或拒绝。
+
+#### 新增状态
+
+| 状态 | 说明 |
+|------|------|
+| `pending_review` | Agent 完成 git commit，等待人类 review |
+
+#### 新增 CLI 命令
+
+```bash
+# 查看变更概览（包含 agent summary + 文件统计）
+clawcodex orchestrator issue diff --id <issue_id>
+
+# 仅显示文件统计
+clawcodex orchestrator issue diff --id <issue_id> --stat
+
+# 显示完整 diff
+clawcodex orchestrator issue diff --id <issue_id> --full
+
+# 审批通过
+clawcodex orchestrator issue review --id <issue_id> --approve --comment "LGTM"
+
+# 审批拒绝（触发 agent 重试）
+clawcodex orchestrator issue review --id <issue_id> --reject --feedback "请修复单元测试"
+```
+
+#### 流程
+
+```
+Agent 完成 → git commit → pending_review
+                              ↓
+                    人类审查 diff
+                              ↓
+            ┌─────────────────┴─────────────────┐
+            │                               │
+       --approve                        --reject
+            │                               │
+            ↓                               ↓
+    completed（工作目录保留）        反馈注入 ClarificationQueue
+                                      ↓
+                                  agent 重试
+```
+
+#### 实现文件
+
+| 文件 | 说明 |
+|------|------|
+| `extensions/orchestrator/issue_registry.py` | 新增 `PENDING_REVIEW` 状态 + `mark_pending_review()` |
+| `extensions/orchestrator/git_sync.py` | 新增 `pending_review` 字段，LocalTracker 提交后设为 True |
+| `extensions/orchestrator/orchestrator.py` | 提交后标记 `pending_review`，新增 `pending_review` 集合处理 |
+| `extensions/orchestrator/clarification_queue.py` | 新增 `inject_feedback()` 方法 |
+| `extensions/orchestrator/cli/issue.py` | 新增 `review` + `diff` 子命令 |
+
 ---
 
-*文档更新时间: 2026-05-30*
+*文档更新时间: 2026-06-01*
 
-*版本 v2.1 更新：新增 F-36 LocalTracker 本地 Issue 文档源设计，支持 `tracker.kind: local` 从本地 Markdown/JSON issue 文档读取任务并进入 Orchestrator 流程。*
+*版本 v2.2 更新：新增 LocalTracker Human Review Gate，支持 pending_review 状态、review 审批/拒绝命令、diff 变更概览命令（含 Agent Summary）。*

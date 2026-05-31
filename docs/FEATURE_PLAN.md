@@ -132,12 +132,45 @@ src/
 | **本地 Issue 注册表** | ✅ 已完成 | 持久化 issue→commit→PR 映射到 JSON，重启后可识别已处理 issue |
 | **Issue Clarification 流程** | ✅ 完成 | 三通道 ClarificationQueue + TrackerAdapter 评论接口 + CLI `clarify`（Phase A-G） |
 | **Orchestrator CLI** | ✅ 完成 | `clawcodex orchestrator` 统一入口（Phase O1-O8） |
-| **LocalTracker 本地 Issue 文档源** | 📋 规划中 | 新增 `tracker.kind: local`，从本地目录中的 Markdown/JSON issue 文档读取待处理任务，供本地离线测试与私有工作流使用 |
+| **LocalTracker 本地 Issue 文档源** | ✅ 完成 | `tracker.kind: local` 实现 + Human Review Gate（`pending_review` 状态、review 审批/拒绝、diff 变更概览） |
 
 #### 3.1.3 LocalTracker 本地 Issue 文档源设计
 
-**状态**: 📋 规划中
+**状态**: ✅ 完成
 **目标**: 支持在本地特定路径新增 issue 文档，并由 Orchestrator 像处理 Linear/GitHub/Gitee/GitCode issue 一样追踪、领取、运行和更新状态。
+
+##### Human Review Gate
+
+LocalTracker 在 git commit 完成后不进行 push（无远程仓库），增加了 Human Review Gate 机制让人类审批代码变更：
+
+```
+Agent 完成 → git commit → pending_review
+                              ↓
+                    人类审查 diff
+                              ↓
+            ┌─────────────────┴─────────────────┐
+            │                               │
+       --approve                        --reject
+            │                               │
+            ↓                               ↓
+    completed（工作目录保留）        反馈注入 ClarificationQueue
+                                      ↓
+                                  agent 重试
+```
+
+**新增状态**: `PENDING_REVIEW` — Agent 完成 git commit，等待人类 review
+
+**新增 CLI 命令**:
+
+| 命令 | 说明 |
+|------|------|
+| `clawcodex orchestrator issue diff --id <id>` | 查看变更概览（Agent Summary + 文件统计 + diff preview） |
+| `clawcodex orchestrator issue diff --id <id> --stat` | 仅显示文件统计 |
+| `clawcodex orchestrator issue diff --id <id> --full` | 显示完整 diff |
+| `clawcodex orchestrator issue review --id <id> --approve [--comment "<text>"]` | 审批通过 |
+| `clawcodex orchestrator issue review --id <id> --reject --feedback "<text>"]` | 审批拒绝，触发重试 |
+
+**Agent Summary**: 从 `*.comments.ndjson` 中提取 `## ClawCodex Run Complete` 注释内容，显示 agent 的工作摘要。
 
 ##### 配置形态
 
