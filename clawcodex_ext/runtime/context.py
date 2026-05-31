@@ -79,6 +79,9 @@ class RuntimeContext:
 
         # Build tool registry
         tool_registry = build_default_registry(provider=provider)
+        from clawcodex_ext.cron_system.runtime import replace_cron_tools
+
+        replace_cron_tools(tool_registry)
 
         # Apply tool filtering
         _filter_registry(
@@ -106,7 +109,7 @@ class RuntimeContext:
                 options.resume_session_id,
             )
 
-        return cls(
+        runtime = cls(
             provider=provider,
             provider_name=provider_name,
             tool_registry=tool_registry,
@@ -115,6 +118,10 @@ class RuntimeContext:
             workspace_root=workspace_root,
             options=options,
         )
+        from clawcodex_ext.cron_system.runtime import attach_cron_runtime
+
+        attach_cron_runtime(runtime)
+        return runtime
 
 
 def _filter_registry(

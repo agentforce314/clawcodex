@@ -106,7 +106,7 @@ def parse_loop_args(args: str) -> ParsedLoopArgs:
     - bare interval (``5m``)       → ``fixed-maintenance``
     - ``<interval> <prompt>``      → ``fixed-prompt``
     - ``<prompt> every <interval>`` → ``fixed-prompt``
-    - anything else                → ``dynamic-prompt``
+    - anything else                → ``fixed-prompt`` with a 10m default
     """
     trimmed = args.strip()
     if not trimmed:
@@ -132,7 +132,7 @@ def parse_loop_args(args: str) -> ParsedLoopArgs:
             return ParsedLoopArgs(mode="fixed-maintenance", interval=interval)
         return ParsedLoopArgs(mode="fixed-prompt", interval=interval, prompt=prompt)
 
-    return ParsedLoopArgs(mode="dynamic-prompt", prompt=trimmed)
+    return ParsedLoopArgs(mode="fixed-prompt", interval="10m", prompt=trimmed)
 
 
 # ----------------------------------------------------------------------
@@ -256,8 +256,8 @@ def register_loop_skill() -> None:
         BundledSkillDefinition(
             name="loop",
             description=(
-                "Run a prompt on a fixed interval or dynamically reschedule "
-                "it, including bare maintenance-mode loops."
+                "Run a prompt on a fixed interval, including default 10m "
+                "prompt loops and bare maintenance-mode loops."
             ),
             when_to_use=(
                 "When the user wants to poll for status, babysit a workflow, "

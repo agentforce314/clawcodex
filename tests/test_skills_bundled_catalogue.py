@@ -135,9 +135,10 @@ class TestLoopSkillParser(unittest.TestCase):
                 f"failed for token={token!r}",
             )
 
-    def test_invalid_interval_returns_dynamic_prompt(self) -> None:
+    def test_plain_prompt_defaults_to_fixed_10m(self) -> None:
         out = parse_loop_args("just some prose with no interval")
-        self.assertEqual(out.mode, "dynamic-prompt")
+        self.assertEqual(out.mode, "fixed-prompt")
+        self.assertEqual(out.interval, "10m")
         self.assertEqual(out.prompt, "just some prose with no interval")
 
 
@@ -171,6 +172,15 @@ class TestLoopSkillEndToEnd(unittest.TestCase):
         prompt = out["prompt"]
         self.assertIn("dynamic rescheduling", prompt)
         self.assertIn("--- BEGIN MAINTENANCE PROMPT ---", prompt)
+
+    def test_loop_plain_prompt_defaults_to_10m_fixed_branch(self) -> None:
+        ctx = ToolContext(workspace_root=self.root)
+        out = SkillTool.call({"skill": "loop", "args": "check the deploy"}, ctx).output
+        self.assertTrue(out["success"])
+        prompt = out["prompt"]
+        self.assertIn("fixed recurring interval", prompt)
+        self.assertIn("Requested interval: 10m", prompt)
+        self.assertIn("check the deploy", prompt)
 
 
 class TestDebugSkill(unittest.TestCase):
