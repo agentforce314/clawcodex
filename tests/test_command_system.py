@@ -24,6 +24,8 @@ from src.command_system import (
     COMPACT_COMMAND,
     CONTEXT_COMMAND,
     COST_COMMAND,
+    CRON_DELETE_COMMAND,
+    CRON_LIST_COMMAND,
     EXIT_COMMAND,
     HELP_COMMAND,
     INIT_COMMAND,
@@ -248,7 +250,110 @@ class TestBuiltinCommands(unittest.TestCase):
         self.assertTrue(registry.has("cost"))
         self.assertTrue(registry.has("context"))
         self.assertTrue(registry.has("compact"))
+        self.assertTrue(registry.has("cron-list"))
+        self.assertTrue(registry.has("cron-delete"))
         self.assertTrue(registry.has("init"))
+
+    def test_cron_list_uses_injected_tool_runtime(self):
+        """Test that /cron-list reads jobs from the injected cron runtime."""
+        from clawcodex_ext.runtime.context import RuntimeContext, RuntimeOptions
+
+        runtime = RuntimeContext.build(
+            RuntimeOptions(workspace_root=self.workspace_root, skip_permissions=True),
+        )
+        create_tool = runtime.tool_registry.get("CronCreate")
+        self.assertIsNotNone(create_tool)
+        created = create_tool.call(
+            {"cron": "*/5 * * * *", "prompt": "session ping"},
+            runtime.tool_context,
+        ).output
+        context = create_command_context(
+            workspace_root=self.workspace_root,
+            conversation=self.conversation,
+            cost_tracker=self.cost_tracker,
+            history=self.history,
+            tool_registry=runtime.tool_registry,
+            tool_context=runtime.tool_context,
+        )
+
+        success, result, error = execute_command_sync("cron-list", "", context)
+
+        self.assertTrue(success)
+        self.assertIsNone(error)
+        self.assertIn(created["id"], result)
+        self.assertIn("session ping", result)
+
+    def test_cron_delete_uses_injected_tool_runtime(self):
+        """Test that /cron-delete deletes through the injected cron runtime."""
+        from clawcodex_ext.runtime.context import RuntimeContext, RuntimeOptions
+
+        runtime = RuntimeContext.build(
+            RuntimeOptions(workspace_root=self.workspace_root, skip_permissions=True),
+        )
+        create_tool = runtime.tool_registry.get("CronCreate")
+        list_tool = runtime.tool_registry.get("CronList")
+        self.assertIsNotNone(create_tool)
+        self.assertIsNotNone(list_tool)
+        created = create_tool.call(
+            {"cron": "*/5 * * * *", "prompt": "session ping"},
+            runtime.tool_context,
+        ).output
+        context = create_command_context(
+            workspace_root=self.workspace_root,
+            conversation=self.conversation,
+            cost_tracker=self.cost_tracker,
+            history=self.history,
+            tool_registry=runtime.tool_registry,
+            tool_context=runtime.tool_context,
+        )
+
+        success, result, error = execute_command_sync("cron-delete", created["id"], context)
+
+        self.assertTrue(success)
+        self.assertIsNone(error)
+        self.assertIn(created["id"], result)
+        listed = list_tool.call({}, runtime.tool_context).output
+        self.assertEqual(listed["jobs"], [])
+
+    def test_cron_delete_honors_tool_permission_context(self):
+        """Test that /cron-delete dispatches through permission checks."""
+        from clawcodex_ext.runtime.context import RuntimeContext, RuntimeOptions
+        from src.permissions.types import ToolPermissionContext
+
+        runtime = RuntimeContext.build(
+            RuntimeOptions(workspace_root=self.workspace_root, skip_permissions=True),
+        )
+        create_tool = runtime.tool_registry.get("CronCreate")
+        self.assertIsNotNone(create_tool)
+        created = create_tool.call(
+            {"cron": "*/5 * * * *", "prompt": "session ping"},
+            runtime.tool_context,
+        ).output
+        runtime.tool_context.permission_context = ToolPermissionContext.from_iterables(
+            deny_names=["CronDelete"],
+        )
+        context = create_command_context(
+            workspace_root=self.workspace_root,
+            conversation=self.conversation,
+            cost_tracker=self.cost_tracker,
+            history=self.history,
+            tool_registry=runtime.tool_registry,
+            tool_context=runtime.tool_context,
+        )
+
+        success, result, error = execute_command_sync("cron-delete", created["id"], context)
+
+        self.assertFalse(success)
+        self.assertIsNone(result)
+        self.assertIn("CronDelete", error or "")
+
+    def test_cron_commands_report_missing_runtime(self):
+        """Test cron commands fail clearly without injected runtime handles."""
+        success, result, error = execute_command_sync("cron-list", "", self.context)
+
+        self.assertFalse(success)
+        self.assertIsNone(result)
+        self.assertIn("Cron runtime is not available", error or "")
 
     def test_skills_command_with_project_root(self):
         """Test that /skills command can find project skills."""
