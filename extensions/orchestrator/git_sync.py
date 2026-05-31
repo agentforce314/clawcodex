@@ -30,6 +30,7 @@ class GitSyncResult:
     pushed: bool = False
     has_conflict: bool = False
     conflict_files: tuple[str, ...] = field(default_factory=tuple)
+    pending_review: bool = False  # True for LocalTracker after successful commit
 
 
 class GitSyncError(RuntimeError):
@@ -66,6 +67,11 @@ class GitSyncService:
         if not repo_root:
             return None
 
+        # Check if tracker is LocalTrackerAdapter — skip push/PR for local-only repos
+        from .local_tracker.adapter import LocalTrackerAdapter
+        is_local_tracker = isinstance(self.tracker, LocalTrackerAdapter)
+        no_push = is_local_tracker
+
         base_branch = get_default_branch(repo_root)
         branch_name = self._ensure_work_branch(repo_root, issue, base_branch)
         changed = bool(get_file_status(repo_root))
@@ -82,19 +88,23 @@ class GitSyncService:
             self._run_git_checked(["commit", "-m", commit_message], repo_root)
             commit_sha = self._run_git_output(["rev-parse", "HEAD"], repo_root)
             committed = True
-            pushed, has_conflict, conflict_files = self._push_with_recovery(
-                repo_root, branch_name,
-            )
+            if no_push:
+                # LocalTracker: no remote, skip push but record branch info
+                pass
+            else:
+                pushed, has_conflict, conflict_files = self._push_with_recovery(
+                    repo_root, branch_name,
+                )
         else:
             commit_sha = self._run_git_output(["rev-parse", "HEAD"], repo_root)
             # No staged changes but branch may have diverged from origin — still push
-            if branch_name:
+            if branch_name and not no_push:
                 pushed, has_conflict, conflict_files = self._push_with_recovery(
                     repo_root, branch_name,
                 )
 
         pr_ref: PullRequestRef | None = None
-        if branch_name != base_branch:
+        if branch_name != base_branch and not no_push:
             pr_title = self._build_pr_title(issue)
             pr_body = self._build_pr_body(issue, commit_sha, branch_name, base_branch)
             pr_ref = await self.tracker.ensure_pull_request(
@@ -105,7 +115,7 @@ class GitSyncService:
                 body=pr_body,
             )
 
-        if committed or pushed or pr_ref is not None:
+        if committed or (pushed and not no_push) or pr_ref is not None:
             await self._comment_sync_result(
                 issue=issue,
                 branch_name=branch_name,
@@ -113,7 +123,7 @@ class GitSyncService:
                 commit_sha=commit_sha,
                 pull_request=pr_ref,
                 committed=committed,
-                pushed=pushed,
+                pushed=pushed if not no_push else False,
             )
 
         return GitSyncResult(
@@ -125,6 +135,7 @@ class GitSyncService:
             pushed=pushed,
             has_conflict=has_conflict,
             conflict_files=conflict_files,
+            pending_review=bool(is_local_tracker and committed),
         )
 
     def _push_with_recovery(

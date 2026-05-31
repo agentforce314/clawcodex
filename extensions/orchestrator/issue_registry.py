@@ -27,6 +27,7 @@ class IssueStatus(str, Enum):
     PENDING = "pending"           # claimed, workspace created, not yet synced
     RUNNING = "running"          # agent session actively processing
     SYNCED = "synced"             # git sync completed (commit + push + PR)
+    PENDING_REVIEW = "pending_review"  # awaiting human review (LocalTracker only)
     COMPLETED = "completed"       # session finished successfully
     FAILED = "failed"            # session ended with a non-success status
     ABANDONED = "abandoned"      # retry limit reached, gave up
@@ -179,6 +180,16 @@ class IssueRegistry:
         if record is None:
             return None
         record.status = IssueStatus.RUNNING
+        record.touch()
+        self._save()
+        return record
+
+    def mark_pending_review(self, issue_id: str) -> IssueRecord | None:
+        """Mark an issue as awaiting human review (LocalTracker git commit done)."""
+        record = self._records.get(issue_id)
+        if record is None:
+            return None
+        record.status = IssueStatus.PENDING_REVIEW
         record.touch()
         self._save()
         return record

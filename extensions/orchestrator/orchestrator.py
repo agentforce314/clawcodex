@@ -36,6 +36,7 @@ class OrchestratorState:
     poll_check_in_progress: bool = False
     running: dict[str, AgentSession] = field(default_factory=dict)
     completed: set[str] = field(default_factory=set)
+    pending_review: set[str] = field(default_factory=set)  # awaiting human review
     claimed: set[str] = field(default_factory=set)
     retry_queue: list[RetryItem] = field(default_factory=list)
     retry_attempts: dict[str, int] = field(default_factory=dict)
@@ -343,6 +344,14 @@ class Orchestrator:
                                 pr_number=sync_result.pull_request.number if sync_result.pull_request else None,
                                 pr_url=sync_result.pull_request.url if sync_result.pull_request else None,
                             )
+                            # LocalTracker: after commit, await human review before completion
+                            if sync_result.pending_review:
+                                self._registry.mark_pending_review(session.issue.id or "")
+                                self.status_dashboard.on_session_complete(session.issue.id or "")
+                                self._state.completed.add(session.issue.id or "")
+                                self._state.pending_review.add(session.issue.id or "")
+                                # Do NOT cleanup workspace — human needs to review it
+                                return
                 finally:
                     await self.workspace.run_after_run_hook(
                         session.workspace,
@@ -604,6 +613,18 @@ class Orchestrator:
             session.status = "failed"
             session.pause_resume_event.set()  # Unblock if paused
             # Note: REPL takeover requires full session context - handled separately
+        elif cmd == "retry":
+            # Reset pending_review issue for retry with feedback
+            logger.info("Retry requested for issue %s", issue_id)
+            self._state.pending_review.discard(issue_id)
+            self._state.completed.discard(issue_id)
+            self._state.claimed.discard(issue_id)
+            record = self._registry._records.get(issue_id)
+            if record:
+                record.status = IssueStatus.PENDING
+                record.attempt_count += 1
+                self._registry._save()
+            logger.info("Issue %s queued for retry (attempt %d)", issue_id, record.attempt_count if record else 1)
 
     def get_event_stream(self, issue_id: str) -> "asyncio.Queue | None":
         """Get the event queue for a running issue session (for CLI tail)."""

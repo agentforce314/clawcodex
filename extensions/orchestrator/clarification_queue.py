@@ -364,3 +364,40 @@ class ClarificationQueue:
         if issue_id in self._records:
             del self._records[issue_id]
             self._save()
+
+    def inject_feedback(
+        self,
+        issue_id: str,
+        feedback: str,
+    ) -> ClarificationItem | None:
+        """Inject feedback from a rejected review to trigger retry.
+
+        This creates a clarification item with the feedback as the question,
+        so the agent receives it on the next turn via clarification context.
+        """
+        item = self._records.get(issue_id)
+        now = time.time()
+        if item is None:
+            # Create a new item for the feedback
+            item = ClarificationItem(
+                issue_id=issue_id,
+                issue_identifier=issue_id,
+                question=feedback,
+                options=[],
+                context_summary="Human review rejection feedback",
+                created_at=now,
+                updated_at=now,
+                status=ClarificationStatus.PENDING,
+            )
+            self._records[issue_id] = item
+        else:
+            # Update existing item with new question/feedback
+            item.question = feedback
+            item.options = []
+            item.context_summary = "Human review rejection feedback"
+            item.status = ClarificationStatus.PENDING
+            item.answer = None
+            item.answer_source = None
+            item.touch()
+        self._save()
+        return item

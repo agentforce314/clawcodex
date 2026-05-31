@@ -298,6 +298,45 @@ def add_issue_parser(subparsers: argparse._SubParsersAction) -> None:
         help="New file content (for use with --edit)",
     )
 
+    # --- issue review ---
+    review_parser = issue_sub.add_parser(
+        "review",
+        help="Approve or reject a completed issue's changes (LocalTracker)",
+        description="Review a LocalTracker issue after agent completes git commit. "
+                    "Approve to mark as completed, or reject to inject feedback and retry.",
+    )
+    review_parser.add_argument(
+        "--id",
+        type=str,
+        required=True,
+        metavar="ISSUE_ID",
+        help="Issue identifier to review",
+    )
+    review_parser.add_argument(
+        "--approve",
+        action="store_true",
+        help="Approve the changes — mark issue as completed",
+    )
+    review_parser.add_argument(
+        "--reject",
+        action="store_true",
+        help="Reject the changes — inject feedback and retry",
+    )
+    review_parser.add_argument(
+        "--feedback",
+        type=str,
+        default=None,
+        metavar="TEXT",
+        help="Feedback for rejection (required with --reject)",
+    )
+    review_parser.add_argument(
+        "--comment",
+        type=str,
+        default=None,
+        metavar="TEXT",
+        help="Optional comment for approval",
+    )
+
 
 # ---------------------------------------------------------------------------
 # Run dispatch
@@ -341,6 +380,8 @@ def run(args: argparse.Namespace) -> int:
         return _run_inject(args)
     elif cmd == "workspace":
         return _run_workspace(args)
+    elif cmd == "review":
+        return _run_review(registry_path, args)
 
     print(f"error: unknown issue subcommand '{cmd}'", file=sys.stderr)
     return 2
@@ -987,6 +1028,99 @@ def _workspace_edit_file(issue_id: str, ws_path: Path, filename: str, content: s
     except Exception as exc:
         print(f"Failed to write {filename}: {exc}", file=sys.stderr)
         return 1
+
+
+# ---------------------------------------------------------------------------
+# issue review
+# ---------------------------------------------------------------------------
+
+def _run_review(registry_path: Path | None, args: argparse.Namespace) -> int:
+    """Approve or reject a LocalTracker issue's changes."""
+    issue_id = getattr(args, "id", None)
+    if not issue_id:
+        print("error: --id is required", file=sys.stderr)
+        return 2
+
+    if not registry_path or not registry_path.exists():
+        print(f"No registry found. Cannot review issue {issue_id}.", file=sys.stderr)
+        return 1
+
+    from extensions.orchestrator.issue_registry import IssueRegistry, IssueStatus
+
+    registry = IssueRegistry(registry_path)
+    record = registry.get(issue_id)
+    if record is None:
+        print(f"Issue {issue_id} not found in registry.", file=sys.stderr)
+        return 1
+
+    if record.status != IssueStatus.PENDING_REVIEW:
+        print(f"Issue {issue_id} is not pending review (status: {record.status.value}).", file=sys.stderr)
+        print("Only issues with 'pending_review' status can be reviewed.", file=sys.stderr)
+        return 1
+
+    approve = getattr(args, "approve", False)
+    reject = getattr(args, "reject", False)
+
+    if not approve and not reject:
+        print("error: specify --approve or --reject", file=sys.stderr)
+        return 2
+
+    if reject:
+        feedback = getattr(args, "feedback", None)
+        if not feedback:
+            print("error: --reject requires --feedback", file=sys.stderr)
+            return 2
+
+        # Inject feedback as clarification request to trigger retry
+        from extensions.orchestrator.clarification_queue import ClarificationQueue
+        queue = ClarificationQueue()
+        question = f"[Human Review Rejected] {feedback}"
+        resolved = queue.inject_feedback(issue_id, question)
+        if resolved is None:
+            print(f"Failed to inject feedback for issue {issue_id}.", file=sys.stderr)
+            return 1
+
+        # Reset issue status to pending for retry
+        registry._records[issue_id].status = IssueStatus.PENDING
+        registry._save()
+
+        # Write control command to retry the issue
+        _write_control("retry", issue_id, feedback)
+
+        print(f"Issue {issue_id} rejected with feedback:")
+        print(f"  \"{feedback}\"")
+        print(f"Feedback queued — orchestrator will retry this issue.")
+        return 0
+
+    if approve:
+        comment = getattr(args, "comment", None)
+
+        # Mark issue as completed
+        registry.mark_completed(issue_id)
+
+        # Post optional comment to local tracker
+        if comment:
+            try:
+                from extensions.orchestrator.local_tracker.adapter import LocalTrackerAdapter
+                from extensions.orchestrator.workspace_locator import get_workspace_root
+
+                ws_root = get_workspace_root(
+                    workspace_arg=getattr(args, "workspace", None),
+                    workflow_path=getattr(args, "workflow", None),
+                )
+                if ws_root and ws_root.exists():
+                    issues_path = ws_root / ".clawcodex_local_issues"
+                    if issues_path.exists():
+                        tracker = LocalTrackerAdapter(issues_path=str(issues_path))
+                        import asyncio
+                        asyncio.get_event_loop().run_until_complete(
+                            tracker.create_comment(issue_id, f"## Approved\n\n{comment}")
+                        )
+            except Exception as exc:
+                print(f"Warning: could not post comment: {exc}", file=sys.stderr)
+
+        print(f"Issue {issue_id} approved and marked as completed.")
+        return 0
 
 
 # ---------------------------------------------------------------------------
