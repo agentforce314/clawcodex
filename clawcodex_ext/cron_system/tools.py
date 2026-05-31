@@ -11,7 +11,7 @@ from src.tool_system.protocol import ToolResult
 
 from .models import CronTask
 from .parser import cron_to_human, parse_cron_expression
-from .tasks import add_cron_task, read_cron_tasks, remove_cron_tasks
+from .tasks import add_cron_task, read_all_cron_tasks, remove_cron_tasks
 
 
 def _cron_create_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
@@ -32,6 +32,7 @@ def _cron_create_call(tool_input: dict[str, Any], context: ToolContext) -> ToolR
         prompt=prompt,
         recurring=recurring,
         durable=durable,
+        session_store=context.crons,
     )
     return ToolResult(
         name="CronCreate",
@@ -64,7 +65,7 @@ CronCreateTool: Tool = build_tool(
     description="Schedule a recurring or one-shot prompt.",
     strict=True,
     max_result_size_chars=100_000,
-    is_read_only=lambda _input: True,
+    is_read_only=lambda _input: False,
     is_concurrency_safe=lambda _input: True,
     to_auto_classifier_input=lambda input_data: (
         f"{(input_data or {}).get('cron', '')}: {(input_data or {}).get('prompt', '')}"
@@ -73,7 +74,7 @@ CronCreateTool: Tool = build_tool(
 
 
 def _cron_list_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
-    jobs = [_task_output(task) for task in read_cron_tasks(context.workspace_root)]
+    jobs = [_task_output(task) for task in read_all_cron_tasks(context.workspace_root, context.crons)]
     return ToolResult(name="CronList", output={"jobs": jobs})
 
 
@@ -94,8 +95,11 @@ def _cron_delete_call(tool_input: dict[str, Any], context: ToolContext) -> ToolR
     cron_id = tool_input.get("id")
     if not isinstance(cron_id, str) or not cron_id.strip():
         raise ToolInputError("id must be a non-empty string")
-    existed = remove_cron_tasks(context.workspace_root, cron_id.strip())
-    return ToolResult(name="CronDelete", output={"success": existed, "id": cron_id.strip()})
+    normalized_id = cron_id.strip()
+    existed = remove_cron_tasks(context.workspace_root, normalized_id, context.crons)
+    if not existed:
+        raise ToolInputError(f"No scheduled job with id '{normalized_id}'")
+    return ToolResult(name="CronDelete", output={"success": True, "id": normalized_id})
 
 
 CronDeleteTool: Tool = build_tool(
@@ -111,7 +115,7 @@ CronDeleteTool: Tool = build_tool(
     description="Delete a scheduled cron job.",
     strict=True,
     max_result_size_chars=100_000,
-    is_read_only=lambda _input: True,
+    is_read_only=lambda _input: False,
     is_concurrency_safe=lambda _input: True,
     to_auto_classifier_input=lambda input_data: (input_data or {}).get("id", "") or "",
 )

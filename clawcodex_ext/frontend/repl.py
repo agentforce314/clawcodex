@@ -20,6 +20,11 @@ class REPLFrontend(FrontendPlugin):
             permission_mode=ctx.options.permission_mode,
             is_bypass_permissions_mode_available=ctx.options.is_bypass_permissions_mode_available,
             resume_session_id=ctx.options.resume_session_id,
+            provider=ctx.provider,
+            session=ctx.session,
+            tool_registry=ctx.tool_registry,
+            tool_context=ctx.tool_context,
+            workspace_root=ctx.workspace_root,
         )
         repl.run()
         return 0

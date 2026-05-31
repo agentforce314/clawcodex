@@ -118,15 +118,16 @@ def _show_provider_defaults_table() -> None:
 # ----------------------------------------------------------------------
 
 def handle_login() -> int:
-    """Interactive API configuration."""
+    """Interactive provider credential configuration."""
     from rich.console import Console
     from rich.prompt import Prompt
 
     console = Console()
-    console.print("\n[bold blue]ClawCodex - API Configuration[/bold blue]\n")
+    console.print("\n[bold blue]ClawCodex - Provider Configuration[/bold blue]\n")
 
     _show_provider_defaults_table()
 
+    from src.config import get_provider_config, set_api_key, set_default_provider
     from src.providers import PROVIDER_INFO
     provider_names = list(PROVIDER_INFO.keys())
 
@@ -137,6 +138,28 @@ def handle_login() -> int:
     )
 
     info = PROVIDER_INFO[provider]
+
+    if provider == "openai-codex":
+        from src.auth.codex_oauth import login_codex_device_flow
+
+        login_codex_device_flow(console=console)
+        current = get_provider_config(provider)
+        console.print(f"\n[dim]Available models:[/dim] {', '.join(info['available_models'])}")
+        console.print(f"[dim]Default:[/dim] [bold]{info['default_model']}[/bold]")
+        default_model = Prompt.ask(
+            f"{provider.upper()} Default Model",
+            default=current.get("default_model") or info["default_model"],
+        )
+        set_api_key(
+            provider,
+            api_key="",
+            base_url=current.get("base_url") or info["default_base_url"],
+            default_model=default_model,
+        )
+        set_default_provider(provider)
+        console.print("\n[green]OpenAI Codex login saved successfully![/green]")
+        console.print(f"[green]Default provider set to: {provider}[/green]\n")
+        return 0
 
     api_key = Prompt.ask(
         f"Enter {provider.upper()} API Key",
@@ -160,13 +183,11 @@ def handle_login() -> int:
         default=info["default_model"]
     )
 
-    from src.config import set_api_key, set_default_provider
-
     set_api_key(provider, api_key=api_key, base_url=base_url, default_model=default_model)
     set_default_provider(provider)
 
-    console.print(f"\n[green]✓ {provider.upper()} API Key saved successfully![/green]")
-    console.print(f"[green]✓ Default provider set to: {provider}[/green]\n")
+    console.print(f"\n[green]{provider.upper()} API Key saved successfully![/green]")
+    console.print(f"[green]Default provider set to: {provider}[/green]\n")
     return 0
 
 
@@ -189,11 +210,24 @@ def show_config() -> int:
 
         console.print("\n[cyan]Configured Providers:[/cyan]")
         for provider_name, provider_config in config.get("providers", {}).items():
-            api_key = provider_config.get("api_key", "")
-            masked_key = f"{api_key[:8]}...{api_key[-4:]}" if len(api_key) > 12 else "Not set"
-
             console.print(f"\n  [yellow]{provider_name.upper()}:[/yellow]")
-            console.print(f"    API Key: {masked_key}")
+            if provider_name == "openai-codex":
+                from src.auth.codex_oauth import get_codex_auth_status
+
+                status = get_codex_auth_status()
+                console.print(f"    Auth Mode: ChatGPT OAuth")
+                console.print(f"    Authenticated: {'Yes' if status.is_authenticated else 'No'}")
+                console.print(f"    Auth File: {status.auth_file}")
+                if status.source:
+                    console.print(f"    Source: {status.source}")
+                if status.expires_at is not None:
+                    console.print(f"    Expires At: {status.expires_at}")
+                if status.error:
+                    console.print(f"    Status: {status.error}")
+            else:
+                api_key = provider_config.get("api_key", "")
+                masked_key = f"{api_key[:8]}...{api_key[-4:]}" if len(api_key) > 12 else "Not set"
+                console.print(f"    API Key: {masked_key}")
             console.print(f"    Base URL: {provider_config.get('base_url', 'Not set')}")
             console.print(f"    Default Model: {provider_config.get('default_model', 'Not set')}")
 

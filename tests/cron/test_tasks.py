@@ -9,7 +9,9 @@ from clawcodex_ext.cron_system.tasks import (
     add_cron_task,
     mark_cron_tasks_fired,
     prune_expired_recurring_tasks,
+    read_all_cron_tasks,
     read_cron_tasks,
+    read_session_cron_tasks,
     remove_cron_tasks,
     write_cron_tasks,
 )
@@ -33,6 +35,58 @@ def test_invalid_persisted_entries_are_skipped(tmp_path) -> None:
     )
     tasks = read_cron_tasks(tmp_path)
     assert [task.id for task in tasks] == ["ok"]
+
+
+def test_session_tasks_do_not_write_persisted_file(tmp_path) -> None:
+    session_store = {}
+    task = add_cron_task(
+        tmp_path,
+        cron="*/5 * * * *",
+        prompt="session ping",
+        durable=False,
+        session_store=session_store,
+        created_at=1_000,
+    )
+
+    assert read_session_cron_tasks(session_store) == [task]
+    assert read_cron_tasks(tmp_path) == []
+    assert not (tmp_path / SCHEDULED_TASKS_RELATIVE_PATH).exists()
+
+
+def test_read_all_cron_tasks_merges_session_and_persisted_tasks(tmp_path) -> None:
+    session_store = {}
+    session_task = add_cron_task(
+        tmp_path,
+        cron="*/5 * * * *",
+        prompt="session ping",
+        durable=False,
+        session_store=session_store,
+        created_at=1_000,
+    )
+    durable_task = add_cron_task(
+        tmp_path,
+        cron="*/10 * * * *",
+        prompt="durable ping",
+        durable=True,
+        created_at=1_000,
+    )
+
+    assert {task.id for task in read_all_cron_tasks(tmp_path, session_store)} == {session_task.id, durable_task.id}
+
+
+def test_remove_cron_tasks_deletes_session_before_persisted(tmp_path) -> None:
+    session_store = {}
+    task = add_cron_task(
+        tmp_path,
+        cron="*/5 * * * *",
+        prompt="session ping",
+        durable=False,
+        session_store=session_store,
+        created_at=1_000,
+    )
+
+    assert remove_cron_tasks(tmp_path, task.id, session_store) is True
+    assert read_session_cron_tasks(session_store) == []
 
 
 def test_mark_fired_updates_recurring_and_removes_one_shot(tmp_path) -> None:

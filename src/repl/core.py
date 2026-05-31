@@ -308,7 +308,7 @@ from typing import Any
 from src.agent import Session
 from src.config import get_provider_config
 from src.outputStyles import resolve_output_style
-from src.providers import get_provider_class
+from src.providers.runtime import build_provider_from_config
 from src.providers.anthropic_provider import AnthropicProvider
 from src.providers.base import ChatMessage
 from src.providers.minimax_provider import MinimaxProvider
@@ -384,6 +384,11 @@ class ClawcodexREPL:
         permission_mode: str = "default",
         is_bypass_permissions_mode_available: bool = False,
         resume_session_id: str | None = None,
+        provider: Any | None = None,
+        session: Session | None = None,
+        tool_registry: Any | None = None,
+        tool_context: ToolContext | None = None,
+        workspace_root: Path | None = None,
     ):
         # ``is_interactive`` is set during bootstrap phase 2 by
         # ``src.init.run_pre_action`` (called from ``cli.main``) before
@@ -404,13 +409,21 @@ class ClawcodexREPL:
         self.console = Console()
         self.provider_name = provider_name
         self.stream = stream
+        self.workspace_root = workspace_root or Path.cwd()
 
-        # Load configuration
-        config = get_provider_config(provider_name)
-        self._api_key_missing = not config.get("api_key")
+        # Initialize provider unless a downstream runtime already supplied one.
+        if provider is not None:
+            self.provider = provider
+            self._api_key_missing = False
+        else:
+            try:
+                self.provider = build_provider_from_config(provider_name)
+                self._api_key_missing = False
+            except RuntimeError:
+                self._api_key_missing = True
 
         if self._api_key_missing:
-            # No API key — initialize minimal state for read-only REPL
+            # No configured credentials — initialize minimal state for read-only REPL
             self.provider = None
             self.session = None
             self.tool_registry = None
@@ -428,19 +441,13 @@ class ClawcodexREPL:
             # Skip provider-dependent setup
             return
 
-        # Initialize provider
-        provider_class = get_provider_class(provider_name)
-        self.provider = provider_class(
-            api_key=config["api_key"],
-            base_url=config.get("base_url"),
-            model=config.get("default_model")
-        )
-
         # Create session — or resume an existing one when ``--resume ID``
         # is passed at the CLI. ``resume_session_id`` is plumbed through
         # from ``cli.py:start_repl``.
         self._resume_session_id = resume_session_id
-        if resume_session_id:
+        if session is not None:
+            self.session = session
+        elif resume_session_id:
             loaded_session = Session.resume(resume_session_id)
             if loaded_session is not None:
                 self.session = loaded_session
@@ -468,22 +475,32 @@ class ClawcodexREPL:
             clients = getattr(ctx, "mcp_clients", None) or {}
             return list(clients.keys())
 
-        self.tool_registry = build_default_registry(
+        self.tool_registry = tool_registry or build_default_registry(
             provider=self.provider,
             get_available_mcp_servers=_get_mcp_servers_for_prompt,
         )
         self._engine_messages: list[Any] = []
         from src.permissions.types import ToolPermissionContext
 
-        self.tool_context = ToolContext(
-            workspace_root=Path.cwd(),
-            permission_context=ToolPermissionContext(
+        if tool_context is None:
+            self.tool_context = ToolContext(
+                workspace_root=self.workspace_root,
+                permission_context=ToolPermissionContext(
+                    mode=self._permission_mode,  # type: ignore[arg-type]
+                    is_bypass_permissions_mode_available=(
+                        self._is_bypass_permissions_mode_available
+                    ),
+                ),
+            )
+        else:
+            self.tool_context = tool_context
+            self.tool_context.workspace_root = self.workspace_root
+            self.tool_context.permission_context = ToolPermissionContext(
                 mode=self._permission_mode,  # type: ignore[arg-type]
                 is_bypass_permissions_mode_available=(
                     self._is_bypass_permissions_mode_available
                 ),
-            ),
-        )
+            )
         self.tool_context.ask_user = self._ask_user_questions
         # Permission handler with status control for proper input handling
         self._current_status = None
@@ -1153,10 +1170,13 @@ class ClawcodexREPL:
 
         # Create command context
         self.command_context = create_command_context(
-            workspace_root=Path.cwd(),
+            workspace_root=self.workspace_root,
             conversation=self.session.conversation,
             cost_tracker=self.cost_tracker,
             history=self.history_log,
+            provider=self.provider,
+            tool_registry=self.tool_registry,
+            tool_context=self.tool_context,
         )
 
         # Merge new commands with built-in list for completion
@@ -3498,21 +3518,19 @@ class ClawcodexREPL:
             )
 
     def _handle_relogin(self):
-        """Handle re-authentication when API key fails."""
+        """Handle re-authentication when credentials fail."""
         from rich.prompt import Prompt
         from src.config import set_api_key, set_default_provider
         from src.providers import PROVIDER_INFO
 
-        self.console.print("\n[bold blue]🔑 Reconfigure API Key[/bold blue]\n")
+        self.console.print("\n[bold blue]Reconfigure Provider Credentials[/bold blue]\n")
 
-        # Show available providers and defaults
         provider_names = list(PROVIDER_INFO.keys())
         self.console.print("[bold]Available providers:[/bold]")
         for name, info in PROVIDER_INFO.items():
             self.console.print(f"  [cyan]{name}[/cyan] - {info['label']} (default model: {info['default_model']})")
         self.console.print()
 
-        # Select provider
         provider = Prompt.ask(
             "Select LLM provider",
             choices=provider_names,
@@ -3521,49 +3539,55 @@ class ClawcodexREPL:
 
         info = PROVIDER_INFO[provider]
 
-        # Input API Key
-        api_key = Prompt.ask(
-            f"Enter {provider.upper()} API Key",
-            password=True
-        )
+        if provider == "openai-codex":
+            from src.auth.codex_oauth import login_codex_device_flow
+            from src.config import get_provider_config
 
-        if not api_key:
-            self.console.print("\n[red]Error: API Key cannot be empty[/red]")
-            return
+            login_codex_device_flow(console=self.console)
+            config = get_provider_config(provider)
+            self.console.print(f"\n[dim]Available models:[/dim] {', '.join(info['available_models'])}")
+            self.console.print(f"[dim]Default:[/dim] [bold]{info['default_model']}[/bold]")
+            default_model = Prompt.ask(
+                f"{provider.upper()} Default Model",
+                default=config.get("default_model") or info["default_model"],
+            )
+            set_api_key(
+                provider,
+                api_key="",
+                base_url=config.get("base_url") or info["default_base_url"],
+                default_model=default_model,
+            )
+            set_default_provider(provider)
+            self.console.print("\n[green]OpenAI Codex login completed successfully![/green]\n")
+        else:
+            api_key = Prompt.ask(
+                f"Enter {provider.upper()} API Key",
+                password=True
+            )
 
-        # Optional: Base URL (show default)
-        self.console.print(f"\n[dim]Default:[/dim] {info['default_base_url']}")
-        base_url = Prompt.ask(
-            f"{provider.upper()} Base URL",
-            default=info["default_base_url"]
-        )
+            if not api_key:
+                self.console.print("\n[red]Error: API Key cannot be empty[/red]")
+                return
 
-        # Optional: Default Model (show options)
-        self.console.print(f"\n[dim]Available models:[/dim] {', '.join(info['available_models'])}")
-        self.console.print(f"[dim]Default:[/dim] [bold]{info['default_model']}[/bold]")
-        default_model = Prompt.ask(
-            f"{provider.upper()} Default Model",
-            default=info["default_model"]
-        )
+            self.console.print(f"\n[dim]Default:[/dim] {info['default_base_url']}")
+            base_url = Prompt.ask(
+                f"{provider.upper()} Base URL",
+                default=info["default_base_url"]
+            )
 
-        # Save configuration
-        set_api_key(provider, api_key=api_key, base_url=base_url, default_model=default_model)
-        set_default_provider(provider)
+            self.console.print(f"\n[dim]Available models:[/dim] {', '.join(info['available_models'])}")
+            self.console.print(f"[dim]Default:[/dim] [bold]{info['default_model']}[/bold]")
+            default_model = Prompt.ask(
+                f"{provider.upper()} Default Model",
+                default=info["default_model"]
+            )
 
-        self.console.print(f"\n[green]✓ {provider.upper()} API Key updated successfully![/green]\n")
+            set_api_key(provider, api_key=api_key, base_url=base_url, default_model=default_model)
+            set_default_provider(provider)
 
-        # Reinitialize provider
-        from src.config import get_provider_config
-        from src.providers import get_provider_class
+            self.console.print(f"\n[green]{provider.upper()} API Key updated successfully![/green]\n")
 
-        config = get_provider_config(provider)
-        provider_class = get_provider_class(provider)
-
-        self.provider = provider_class(
-            api_key=config["api_key"],
-            base_url=config.get("base_url"),
-            model=config.get("default_model")
-        )
+        self.provider = build_provider_from_config(provider)
         self.provider_name = provider
 
         # Rebuild tool registry with new provider so Agent tool works

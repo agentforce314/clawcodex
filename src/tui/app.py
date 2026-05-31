@@ -1030,6 +1030,8 @@ class ClawCodexTUI(App):
                 cost_tracker=CostTracker(),
                 history=HistoryLog(),
                 provider=self.provider,
+                tool_registry=self.tool_registry,
+                tool_context=self.tool_context,
             )
         except Exception:
             self._command_context = None

@@ -13,7 +13,7 @@ def build_parser() -> argparse.ArgumentParser:
         epilog="""\
 Examples:
   clawcodex --version                   Show version
-  clawcodex login                       Configure API keys
+  clawcodex login                       Configure API keys or ChatGPT OAuth
   clawcodex config                      Show current configuration
   clawcodex --stream                    Start REPL with live response rendering
   clawcodex                             Start interactive REPL
@@ -95,7 +95,7 @@ Examples:
         '--provider',
         type=str,
         default=None,
-        help='Override the provider (anthropic, openai, glm, minimax, openrouter, deepseek)',
+        help='Override the provider (anthropic, openai, openai-codex, glm, minimax, openrouter, deepseek)',
     )
     noninteractive.add_argument(
         '--allowed-tools',
@@ -166,7 +166,7 @@ Examples:
     )
     parser.epilog = (parser.epilog or "") + (
         "\nSubcommands:\n"
-        "  login    Configure API keys (interactive)\n"
+        "  login    Configure API keys or ChatGPT OAuth (interactive)\n"
         "  config   Show current configuration\n"
     )
     return parser

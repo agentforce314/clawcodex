@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import pytest
+
 from src.tool_system.context import ToolContext
+from src.tool_system.errors import ToolInputError
 from src.tool_system.defaults import build_default_registry
 from src.tool_system.tools.cron import CronCreateTool as FallbackCronCreateTool
 
@@ -21,14 +24,37 @@ def test_replace_cron_tools_swaps_fallback_implementation() -> None:
     assert registry.get("CronCreate") is CronCreateTool
 
 
-def test_extension_tools_persist_tasks(tmp_path) -> None:
+def test_extension_tools_store_session_tasks_by_default(tmp_path) -> None:
     ctx = ToolContext(workspace_root=tmp_path)
     created = CronCreateTool.call({"cron": "*/5 * * * *", "prompt": "ping"}, ctx).output
     assert len(created["id"]) == 8
+    assert created["durable"] is False
     listed = registry_tool("CronList").call({}, ctx).output
     assert [job["id"] for job in listed["jobs"]] == [created["id"]]
+    assert not (tmp_path / ".claude" / "scheduled_tasks.json").exists()
     deleted = registry_tool("CronDelete").call({"id": created["id"]}, ctx).output
     assert deleted["success"] is True
+
+
+def test_extension_tools_persist_durable_tasks(tmp_path) -> None:
+    ctx = ToolContext(workspace_root=tmp_path)
+    created = CronCreateTool.call({"cron": "*/5 * * * *", "prompt": "ping", "durable": True}, ctx).output
+    assert created["durable"] is True
+    assert (tmp_path / ".claude" / "scheduled_tasks.json").exists()
+    listed = registry_tool("CronList").call({}, ctx).output
+    assert [job["id"] for job in listed["jobs"]] == [created["id"]]
+
+
+def test_extension_delete_missing_task_errors(tmp_path) -> None:
+    ctx = ToolContext(workspace_root=tmp_path)
+    with pytest.raises(ToolInputError, match="No scheduled job"):
+        registry_tool("CronDelete").call({"id": "missing"}, ctx)
+
+
+def test_mutating_cron_tools_are_not_read_only() -> None:
+    assert CronCreateTool.is_read_only({}) is False
+    assert registry_tool("CronDelete").is_read_only({}) is False
+    assert registry_tool("CronList").is_read_only({}) is True
 
 
 def test_attach_cron_runtime_adds_scheduler_and_outbox(tmp_path) -> None:
