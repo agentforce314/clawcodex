@@ -52,15 +52,10 @@ def fake_wiring(monkeypatch):
 
     scripted_responses: list[ChatResponse] = []
 
-    def _fake_create_provider(provider_name, api_key, base_url=None, model=None):
-        return _FakeProvider(api_key, base_url, model, responses=list(scripted_responses))
+    def _fake_build_provider_from_config(provider_name, model=None):
+        return _FakeProvider("test-key", model=model, responses=list(scripted_responses))
 
-    monkeypatch.setattr(headless_mod, "create_provider", _fake_create_provider)
-    monkeypatch.setattr(
-        headless_mod,
-        "get_provider_config",
-        lambda name: {"api_key": "test-key", "default_model": "fake-model"},
-    )
+    monkeypatch.setattr(headless_mod, "build_provider_from_config", _fake_build_provider_from_config)
     monkeypatch.setattr(headless_mod, "get_default_provider", lambda: "anthropic")
     monkeypatch.setattr(headless_mod, "build_default_registry", lambda provider=None: _FakeRegistry())
 
