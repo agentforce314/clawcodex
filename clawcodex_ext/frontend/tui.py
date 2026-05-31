@@ -27,5 +27,10 @@ class TUIFrontend(FrontendPlugin):
             is_bypass_permissions_mode_available=ctx.options.is_bypass_permissions_mode_available,
             resume_session_id=ctx.options.resume_session_id,
             resume_browse=ctx.options.resume_browse,
+            workspace_root=ctx.workspace_root,
+            provider=ctx.provider,
+            session=ctx.session,
+            tool_registry=ctx.tool_registry,
+            tool_context=ctx.tool_context,
         )
         return run_tui(options)
