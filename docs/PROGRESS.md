@@ -53,7 +53,7 @@
 | F-19 | POS to Agent 转化模式 | P2 | ✅ 完成 | 三层映射（POS→Agent、workflow→Skill、SDK→工具），SDK 解析 + Skill 分组 + Agent 构建 + 持久化 |
 | F-20 | Agent 阶段性进度汇报 | P2 | ✅ 完成 | 三组合方案：检查点触发 + ProgressReportTool + ToolContext.tasks 持久化；PhaseComplete 时双重调用 ProgressReportTool + TaskUpdateTool 更新 metadata |
 | F-21 | 后台运行 + 恢复同步 | P1 | ✅ 完成 | Ctrl+B 后台化 + TailFollower 实时同步 + SessionWatcher 多终端感知，补丁 0067-0074 |
-| F-22 | Cron 系统执行引擎 | P0 | 🔄 进行中 | 工具定义和/loop skill已完成，核心执行引擎(cron_system/)待实现 |
+| F-22 | Cron 系统执行引擎 | P0 | 🔄 进行中 | 工具定义和/loop skill已完成；执行引擎还需补齐调度队列、run 账本与 /autonomy 状态查看链路 |
 | F-23 | Bridge Phase 8-11 多 Session Daemon | P1 | ✅ 完成 | 多会话桥接器完整实现，bridge_main/repl_bridge/remote_bridge_core/session_runner，Phase 1-11 全部完成 |
 | F-24 | Agent Loop Consolidation (Stage 4) | P1 | ✅ 完成 | 删除 agent_loop.py (537 行)，新增 renderers.py (+257) 和 advisor.py (+125)，重构到 src/query/ |
 | F-25 | Advisor Token 计数与状态显示 | P2 | ✅ 完成 | max_history 100→2000，Provider token 追踪增强，client-side advisor mode |
@@ -217,7 +217,7 @@ if message.subtype == "away_summary":
 
 **状态**: 🔄 进行中
 **优先级**: P0
-**参考实现**: claude-code-best `src/utils/cron*.ts`
+**参考实现**: claude-code-best `src/utils/cron*.ts`, `src/hooks/useScheduledTasks.ts`, `src/utils/autonomyRuns.ts`, `src/utils/autonomyStatus.ts`, `src/commands/autonomy*.ts`, `src/cli/print.ts`
 
 ### 目标
 
@@ -229,6 +229,34 @@ if message.subtype == "away_summary":
 5. 分布式锁（防止多进程重复执行）
 6. Jitter 抖动算法（避免雷鸣般群体效应）
 7. 任务过期机制（周期性任务7天自动删除）
+8. scheduled fire 进入真实 REPL/TUI/headless 队列，而不是只写 outbox
+9. 每次定时触发生成可查询 run 记录，状态覆盖 `queued`、`running`、`completed`、`failed`、`cancelled`
+10. 提供 `/autonomy status`、`/autonomy runs`、`/autonomy status --deep` 或 ClawCodex 等价命令查看执行状态
+11. 同一 cron task 存在 active run 时去重，避免高频任务在上一轮未完成时堆积
+
+### 执行结果/状态查看链路
+
+`claude-code-best` 不把定时任务的完整回答写回 cron job 定义表。它在 cron task 到期时创建 scheduled-task queued prompt，同时在 `.claude/autonomy/runs.json` 中创建 run 账本记录；队列消费前将 run 从 `queued` 原子切到 `running`，普通 query pipeline 执行完后再落到 `completed` / `failed` / `cancelled`。因此 ClawCodex 需要同时实现“cron job 管理视图”和“scheduled-task run 生命周期视图”，用户才能回答“任务是否执行、正在执行还是失败”。
+
+```text
+CronTask due
+  → create scheduled-task queued prompt
+  → create run record(status=queued, source_id=cron task id)
+  → enqueue prompt into REPL/TUI/headless queue
+  → queue consumer claims run: queued → running
+  → normal query pipeline executes prompt
+  → finalize run: completed / failed / cancelled
+  → /autonomy status|runs|status --deep or equivalent command reads run store
+```
+
+关键要求：
+
+- `CronList` / `/cron-list` 只展示 cron job 定义、schedule、durable/session、next fire，不承担执行结果历史。
+- `/autonomy runs` 或等价命令展示最近 run 历史，包括 run id、source id、prompt preview、创建/开始/结束时间、状态和错误摘要。
+- `/autonomy status` 汇总当前 queued/running/failed/completed 数量；`/autonomy status --deep` 额外显示 cron job section 与最近 run section。
+- run store 至少持久化 `run_id`、`trigger`、`status`、`source_id`、`source_label`、`prompt_preview`、`created_at`、`started_at`、`ended_at`、`error`、`root_dir`、`current_dir`。
+- 创建 queued run 时按 `source_id=cron task id` 做 active-run 去重：上一轮仍处于 `queued` 或 `running` 时跳过本轮触发，防止每分钟任务堆积。
+- headless 模式无法路由 teammate/agent-owned cron task 时必须把对应 run 标记为 `failed`，不能静默丢弃。
 
 ### 当前实现状态
 
@@ -241,9 +269,12 @@ if message.subtype == "away_summary":
 | cron_tasks.py | `src/cron_system/cron_tasks.py` | ❌ 待实现 | 任务存储 CRUD |
 | cron_tasks_lock.py | `src/cron_system/cron_tasks_lock.py` | ❌ 待实现 | 分布式锁 |
 | cron_jitter_config.py | `src/cron_system/cron_jitter_config.py` | ❌ 待实现 | GrowthBook 动态配置 |
-| skills.py | `src/cron_system/skills.py` | ❌ 待实现 | /cron-list, /cron-delete 命令 |
-| autonomy_runs.py | `src/cron_system/autonomy_runs.py` | ❌ 待实现 | 任务队列集成 |
-| build_missed_task_notification | `src/cron_system/missed_task_notification.py` | ❌ 待实现 | 错失任务通知构建函数 |
+| skills.py | `src/cron_system/skills.py` 或 extension command adapter | ❌ 待实现 | /cron-list, /cron-delete 命令 |
+| runs.py | `clawcodex_ext/cron_system/runs.py` | ❌ 待实现 | scheduled-task run 账本，持久化 queued/running/completed/failed/cancelled 生命周期 |
+| status.py | `clawcodex_ext/cron_system/status.py` | ❌ 待实现 | 格式化 `/autonomy status`、`/autonomy runs`、`/autonomy status --deep` 或等价输出 |
+| queue lifecycle | REPL/TUI/headless adapter | ❌ 待实现 | scheduled fire 入队、claim 为 running、执行后 finalize、active source 去重 |
+| autonomy commands | command/skill adapter | ❌ 待实现 | 暴露执行结果/状态查看命令，区分 cron job 定义与 run 生命周期 |
+| build_missed_task_notification | `src/cron_system/missed_task_notification.py` 或 extension notification adapter | ❌ 待实现 | 错失任务通知构建函数 |
 | growthbook_config.py | `src/cron_system/growthbook_config.py` | ❌ 待实现 | Jitter 参数动态配置 |
 
 ### 里程碑
@@ -255,9 +286,11 @@ if message.subtype == "away_summary":
 | 3 | cron_tasks_lock.py - 分布式锁 | ⏳ 待开始 |
 | 4 | cron_scheduler.py - 执行引擎核心 | ⏳ 待开始 |
 | 5 | cron_jitter_config.py - 动态配置 | ⏳ 待开始 |
-| 6 | skills.py - CLI 命令 (/cron-list, /cron-delete) | ⏳ 待开始 |
-| 7 | autonomy_runs.py - 任务队列集成 | ⏳ 待开始 |
-| 8 | 测试覆盖 | ⏳ 待开始 |
+| 6 | skills.py / command adapter - CLI 命令 (/cron-list, /cron-delete) | ⏳ 待开始 |
+| 7 | runs.py - scheduled-task run 账本与 active source 去重 | ⏳ 待开始 |
+| 8 | queue lifecycle - scheduled fire 入队、claim running、finalize completed/failed/cancelled | ⏳ 待开始 |
+| 9 | status.py / autonomy commands - `/autonomy status`, `/autonomy runs`, `/autonomy status --deep` 或等价命令 | ⏳ 待开始 |
+| 10 | 测试覆盖 - cron job 管理、run 生命周期、状态查看、headless 失败记录 | ⏳ 待开始 |
 
 ---
 
