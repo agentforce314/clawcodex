@@ -337,6 +337,38 @@ def add_issue_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Optional comment for approval",
     )
 
+    # --- issue diff ---
+    diff_parser = issue_sub.add_parser(
+        "diff",
+        help="Show code changes for a completed or pending_review issue",
+        description="Display a summary or full diff of changes made by the agent. "
+                    "Shows stats by default, use --full for complete diff output.",
+    )
+    diff_parser.add_argument(
+        "--id",
+        type=str,
+        required=True,
+        metavar="ISSUE_ID",
+        help="Issue identifier to show diff for",
+    )
+    diff_parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Show complete diff output (not just summary stats)",
+    )
+    diff_parser.add_argument(
+        "--stat",
+        action="store_true",
+        help="Show only file change statistics (default when no --full)",
+    )
+    diff_parser.add_argument(
+        "--workspace",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="Explicit workspace root path (optional auto-detection override)",
+    )
+
 
 # ---------------------------------------------------------------------------
 # Run dispatch
@@ -382,6 +414,8 @@ def run(args: argparse.Namespace) -> int:
         return _run_workspace(args)
     elif cmd == "review":
         return _run_review(registry_path, args)
+    elif cmd == "diff":
+        return _run_diff(registry_path, args)
 
     print(f"error: unknown issue subcommand '{cmd}'", file=sys.stderr)
     return 2
@@ -1121,6 +1155,277 @@ def _run_review(registry_path: Path | None, args: argparse.Namespace) -> int:
 
         print(f"Issue {issue_id} approved and marked as completed.")
         return 0
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+# issue diff
+# ---------------------------------------------------------------------------
+
+def _run_diff(registry_path: Path | None, args: argparse.Namespace) -> int:
+    """Show code changes for an issue using git diff."""
+    from pathlib import Path
+    issue_id = getattr(args, "id", None)
+    if not issue_id:
+        print("error: --id is required", file=sys.stderr)
+        return 2
+
+    if not registry_path or not registry_path.exists():
+        print(f"No registry found. Cannot show diff for issue {issue_id}.", file=sys.stderr)
+        return 1
+
+    from extensions.orchestrator.issue_registry import IssueRegistry
+    registry = IssueRegistry(registry_path)
+    record = registry.get(issue_id)
+    if record is None:
+        print(f"Issue {issue_id} not found in registry.", file=sys.stderr)
+        return 1
+
+    branch_name = record.branch_name
+    if not branch_name:
+        print(f"Issue {issue_id} has no branch name recorded.", file=sys.stderr)
+        return 1
+
+    # Resolve workspace path
+    workspace_root = getattr(args, "workspace", None)
+    if workspace_root is None:
+        import os
+        workspace_root = os.environ.get("CLAWCODEX_WORKSPACE_ROOT")
+
+    if not workspace_root:
+        print("Cannot resolve workspace root. Set CLAWCODEX_WORKSPACE_ROOT or use --workspace.", file=sys.stderr)
+        return 1
+
+    ws_path = Path(workspace_root)
+    if not ws_path.exists():
+        print(f"Workspace not found: {ws_path}", file=sys.stderr)
+        return 1
+
+    # Find the issue workspace directory
+    issue_ws = None
+    for wd in ws_path.iterdir():
+        if not wd.is_dir():
+            continue
+        metadata_file = wd / ".metadata"
+        if metadata_file.exists():
+            import json
+            try:
+                metadata = json.loads(metadata_file.read_text())
+                if metadata.get("issue_id") == issue_id:
+                    issue_ws = wd
+                    break
+            except Exception:
+                pass
+        if wd.name == issue_id or issue_id in wd.name:
+            issue_ws = wd
+            break
+
+    if issue_ws is None:
+        print(f"Workspace not found for issue {issue_id}.", file=sys.stderr)
+        return 1
+
+    # Check if it's a git repository
+    git_dir = issue_ws / ".git"
+    if not git_dir.exists():
+        # Not a git repo — show file tree instead
+        return _show_diff_non_git(issue_ws, issue_id, args)
+
+    import subprocess
+
+    base_branch = record.base_branch or "main"
+
+    # Get agent's run summary from comments (if available)
+    agent_summary = _fetch_agent_summary(issue_id, ws_path)
+
+    # Get diff compared to parent commit (this is what the agent actually changed)
+    diff_target = _get_diff_target(issue_ws)
+
+    # Get diff stat (summary)
+    stat_result = subprocess.run(
+        ["git", "diff", "--stat", diff_target],
+        cwd=str(issue_ws),
+        capture_output=True,
+        text=True,
+    )
+
+    # Also get the actual diff content
+    diff_result = subprocess.run(
+        ["git", "diff", "--no-color", diff_target],
+        cwd=str(issue_ws),
+        capture_output=True,
+        text=True,
+    )
+
+    show_full = getattr(args, "full", False)
+    show_stat_only = getattr(args, "stat", False) and not show_full
+
+    print(f"Issue {issue_id} — Changes")
+    print(f"  Branch    : {branch_name}")
+    print(f"  Base      : {base_branch}")
+    if record.commit_sha:
+        print(f"  Commit    : {record.commit_sha[:12]}")
+    print()
+
+    # Show agent summary if available
+    if agent_summary:
+        print("## Agent Summary")
+        print(agent_summary)
+        print()
+
+    if stat_result.stdout.strip():
+        print(stat_result.stdout)
+
+    if show_full and diff_result.stdout.strip():
+        print("--- Full Diff ---")
+        print(diff_result.stdout)
+    elif show_stat_only:
+        pass  # stat already printed above
+    else:
+        # Default: show stat + first 50 lines of diff
+        print("--- Diff Preview (use --full for complete output) ---")
+        diff_lines = diff_result.stdout.strip().split("\n")
+        if len(diff_lines) > 60:
+            print("\n".join(diff_lines[:60]))
+            print(f"\n  ... ({len(diff_lines) - 60} more lines, use --full to see all)")
+        elif diff_lines:
+            print("\n".join(diff_lines))
+
+    return 0
+
+
+def _get_diff_target(ws_path: Path) -> str:
+    """Get the diff target (compare HEAD vs its parent commit)."""
+    import subprocess
+
+    # Get the parent commit hash
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD~1"],
+        cwd=str(ws_path),
+        capture_output=True,
+        text=True,
+    )
+
+    if result.returncode == 0:
+        parent = result.stdout.strip()
+        return f"{parent}...HEAD"
+
+    # If no parent (first commit), show diff of working tree vs empty
+    return "HEAD"
+
+
+def _fetch_agent_summary(issue_id: str, ws_path: Path) -> str | None:
+    """Fetch the agent's run summary from issue comments.
+
+    Returns the first "## ClawCodex Run Complete" comment if found,
+    otherwise returns None.
+    """
+    import json
+    import re
+    from pathlib import Path
+
+    # Pattern to find safe stem for issue
+    safe_stem = re.sub(r"[^A-Za-z0-9._-]+", "-", issue_id.strip()).strip("-._")
+
+    # Search in multiple possible locations for comments
+    search_dirs = [
+        ws_path,  # workspace root
+        ws_path.parent / ".clawcodex_local_issues",
+        ws_path.parent / ".clawcodex",
+    ]
+
+    for comments_dir in search_dirs:
+        if not comments_dir.exists():
+            continue
+
+        # Find comment files matching this issue
+        comment_files = list(comments_dir.glob(f"{safe_stem}*.comments.ndjson"))
+        if not comment_files:
+            # Also try with the issue directory name
+            comment_files = list(comments_dir.glob(f"*{issue_id}*.comments.ndjson"))
+
+        for cf in comment_files:
+            try:
+                for line in cf.read_text(encoding="utf-8").splitlines():
+                    if not line.strip():
+                        continue
+                    payload = json.loads(line)
+                    body = payload.get("body", "")
+                    if "## ClawCodex Run Complete" in body:
+                        # Extract the output excerpt section
+                        if "**Output excerpt:**" in body:
+                            idx = body.index("**Output excerpt:**")
+                            return body[idx:]
+                        elif body:
+                            # Return the whole body as summary
+                            return body[:500] if len(body) > 500 else body
+            except Exception:
+                pass
+
+    return None
+
+
+def _has_origin(ws_path: Path) -> bool:
+    """Check if the workspace has an origin remote."""
+    import subprocess
+    result = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "origin/HEAD"],
+        cwd=str(ws_path),
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0
+
+
+def _show_diff_non_git(ws_path: Path, issue_id: str, args: argparse.Namespace) -> int:
+    """Show file tree for non-git workspace."""
+    print(f"Issue {issue_id} — Workspace Files (not a git repository)")
+    print(f"  Workspace: {ws_path}")
+    print()
+
+    exclude = {".metadata", ".orchestrator_control", ".operator_hints.md", ".event_logs"}
+
+    files: list[tuple[str, str, int]] = []
+    dirs: list[str] = []
+
+    for item in sorted(ws_path.iterdir()):
+        if item.name in exclude:
+            continue
+        if item.is_dir():
+            dirs.append(item.name + "/")
+        else:
+            size = item.stat().st_size
+            rel_path = item.relative_to(ws_path)
+            files.append((str(rel_path), "file", size))
+
+    if not files and not dirs:
+        print("  (empty workspace)")
+        return 0
+
+    print(f"  {'FILE':<50} {'SIZE':>10}")
+    print(f"  {'-'*50} {'-'*10}")
+
+    for name, _, size in sorted(files):
+        size_str = _format_size(size)
+        print(f"  {name:<50} {size_str:>10}")
+
+    for d in dirs:
+        print(f"  {d:<50} {'[DIR]':>10}")
+
+    print(f"\n  {len(files)} files, {len(dirs)} directories")
+    print("\n  Note: This workspace is not a git repository — no diff available.")
+    print("  Use 'clawcodex orchestrator issue workspace --id {} --cat <file>' to view file contents.".format(issue_id))
+    return 0
+
+
+def _format_size(size: int) -> str:
+    """Format file size in human-readable form."""
+    if size < 1024:
+        return f"{size}B"
+    elif size < 1024 * 1024:
+        return f"{size // 1024}KB"
+    else:
+        return f"{size // (1024 * 1024)}MB"
 
 
 # ---------------------------------------------------------------------------
