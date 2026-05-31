@@ -240,6 +240,72 @@ def exit_command_call(args: str, context: CommandContext) -> LocalCommandResult:
     )
 
 
+def _call_cron_tool(
+    context: CommandContext,
+    name: str,
+    tool_input: dict[str, Any],
+) -> Any:
+    registry = getattr(context, "tool_registry", None)
+    tool_context = getattr(context, "tool_context", None)
+    if registry is None or tool_context is None:
+        raise ValueError("Cron runtime is not available in this command context")
+
+    from src.tool_system.protocol import ToolCall
+
+    result = registry.dispatch(ToolCall(name=name, input=tool_input), tool_context)
+    if result.is_error:
+        output = result.output
+        if isinstance(output, dict) and output.get("error"):
+            raise ValueError(str(output["error"]))
+        raise ValueError(f"{name} failed")
+    return result.output
+
+
+def _format_cron_job(job: dict[str, Any]) -> str:
+    kind = "recurring" if job.get("recurring") else "one-shot"
+    durable = "durable" if job.get("durable") else "session"
+    next_fire = job.get("nextFireAt")
+    next_fire_text = str(next_fire) if next_fire is not None else "not scheduled"
+    prompt = str(job.get("prompt") or "").replace("\n", " ").strip()
+    if len(prompt) > 80:
+        prompt = f"{prompt[:77]}..."
+    return (
+        f"{job.get('id', '')}  {job.get('cron', '')}  {kind}  "
+        f"{durable}  next={next_fire_text}  {prompt}"
+    )
+
+
+def cron_list_command_call(args: str, context: CommandContext) -> LocalCommandResult:
+    output = _call_cron_tool(context, "CronList", {})
+    jobs = output.get("jobs", []) if isinstance(output, dict) else []
+    if not jobs:
+        return LocalCommandResult(type="text", value="No scheduled cron jobs.")
+
+    lines = ["Scheduled cron jobs:", ""]
+    for job in jobs:
+        if isinstance(job, dict):
+            lines.append(_format_cron_job(job))
+    return LocalCommandResult(type="text", value="\n".join(lines))
+
+
+def cron_delete_command_call(args: str, context: CommandContext) -> LocalCommandResult:
+    cron_id = (args or "").strip()
+    if not cron_id:
+        return LocalCommandResult(
+            type="text",
+            value="Usage: /cron-delete <id>",
+        )
+
+    output = _call_cron_tool(context, "CronDelete", {"id": cron_id})
+    deleted_id = cron_id
+    if isinstance(output, dict) and output.get("id"):
+        deleted_id = str(output["id"])
+    return LocalCommandResult(
+        type="text",
+        value=f"Deleted scheduled cron job {deleted_id}.",
+    )
+
+
 def cost_command_call(args: str, context: CommandContext) -> LocalCommandResult:
     """
     Handle /cost command - show session cost.
@@ -1067,6 +1133,20 @@ COMPACT_COMMAND = LocalCommand(
     supports_non_interactive=True,
 )
 
+CRON_LIST_COMMAND = LocalCommand(
+    name="cron-list",
+    description="List scheduled cron jobs",
+    argument_hint="",
+    supports_non_interactive=True,
+)
+
+CRON_DELETE_COMMAND = LocalCommand(
+    name="cron-delete",
+    description="Delete a scheduled cron job",
+    argument_hint="<id>",
+    supports_non_interactive=True,
+)
+
 # /advisor — server-side reviewer tool. Python port of
 # typescript/src/commands/advisor.ts. The `is_enabled` callable is read by
 # the help-listing and command-availability checks. We pass ``provider=None``
@@ -1128,6 +1208,10 @@ def execute_command_sync(cmd_name: str, args: str, context: CommandContext) -> t
             result = context_command_call(args, context)
         elif cmd is COMPACT_COMMAND:
             result = compact_command_call(args, context)
+        elif cmd is CRON_LIST_COMMAND:
+            result = cron_list_command_call(args, context)
+        elif cmd is CRON_DELETE_COMMAND:
+            result = cron_delete_command_call(args, context)
         else:
             return False, None, f"Command not implemented for sync execution: {cmd_name}"
 
@@ -1144,6 +1228,8 @@ SKILLS_COMMAND.set_call(skills_command_call)
 COST_COMMAND.set_call(cost_command_call)
 CONTEXT_COMMAND.set_call(context_command_call)
 COMPACT_COMMAND.set_call(compact_command_call)
+CRON_LIST_COMMAND.set_call(cron_list_command_call)
+CRON_DELETE_COMMAND.set_call(cron_delete_command_call)
 ADVISOR_COMMAND.set_call(advisor_command_call)
 
 
@@ -1157,6 +1243,8 @@ def get_builtin_commands() -> list[Command]:
         COST_COMMAND,
         CONTEXT_COMMAND,
         COMPACT_COMMAND,
+        CRON_LIST_COMMAND,
+        CRON_DELETE_COMMAND,
         ADVISOR_COMMAND,
         INIT_COMMAND,
     ]
