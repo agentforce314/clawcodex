@@ -80,25 +80,26 @@ class Orchestrator:
         # Store workflow path for metadata
         self._workflow_path: str | None = getattr(workflow, "_source_path", None)
         # Workspace root for control command polling
-        self._workspace_root = workspace.config.root
+        workspace_root = Path(workspace.config.root)
+        self._workspace_root = workspace_root
         # Persistent issue→commit→PR mapping (persists across restarts)
-        registry_path = workspace.config.root / ".clawcodex_issue_registry.json"
+        registry_path = workspace_root / ".clawcodex_issue_registry.json"
         self._registry = IssueRegistry(registry_path)
 
         # Write orchestrator metadata for CLI discovery
         from .workspace_locator import write_orchestrator_metadata
         write_orchestrator_metadata(
-            workspace_root=workspace.config.root,
+            workspace_root=workspace_root,
             workflow_path=self._workflow_path,
         )
 
         # Clarification handling (three-channel flow)
-        clarification_queue_path = workspace.config.root / ".clawcodex_clarification_queue.json"
+        clarification_queue_path = workspace_root / ".clawcodex_clarification_queue.json"
         from .clarification_queue import ClarificationQueue
         self._clarification_queue = ClarificationQueue(clarification_queue_path)
 
         # Event stream for CLI tail (shared queue directory)
-        self._event_stream_dir = workspace.config.root / ".event_streams"
+        self._event_stream_dir = workspace_root / ".event_streams"
         self._event_stream_dir.mkdir(parents=True, exist_ok=True)
         from .clarification import ClarificationResolver, ClarificationConfig
         self._clarification_resolver = ClarificationResolver(

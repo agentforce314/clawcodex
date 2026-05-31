@@ -24,7 +24,7 @@ class Comment:
     in_reply_to_id: str | None = None  # for threading
 
 
-SUPPORTED_TRACKERS = frozenset({"linear", "github", "gitee", "gitcode"})
+SUPPORTED_TRACKERS = frozenset({"linear", "github", "gitee", "gitcode", "local"})
 
 
 class TrackerAdapter(ABC):
@@ -177,6 +177,13 @@ _TRACKER_KIND_INFO: dict[str, TrackerKindInfo] = {
         assignee_env_vars=("GITCODE_ASSIGNEE", "TRACKER_ASSIGNEE"),
         requires_repository=True,
     ),
+    "local": TrackerKindInfo(
+        kind="local",
+        label="Local",
+        default_endpoint="",
+        default_clone_base_url=None,
+        api_key_env_vars=(),
+    ),
 }
 
 
@@ -208,8 +215,10 @@ def default_active_states_for_kind(kind: str) -> list[str]:
     normalized = normalize_tracker_kind(kind)
     if normalized == "linear":
         return ["Todo", "In Progress"]
+    if normalized == "local":
+        return ["open", "ready"]
     if normalized == "gitcode":
-        return ["open"]
+        return ["opened"]
     return ["open"]
 
 
@@ -218,6 +227,8 @@ def default_terminal_states_for_kind(kind: str) -> list[str]:
     normalized = normalize_tracker_kind(kind)
     if normalized == "linear":
         return ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
+    if normalized == "local":
+        return ["completed", "closed", "cancelled", "failed", "abandoned"]
     return ["closed"]
 
 
@@ -239,6 +250,14 @@ def create_tracker_adapter(
             or tracker_kind_info("linear").default_endpoint,
             active_states=list(getattr(config, "active_states", []) or []),
             assignee=getattr(config, "assignee", None),
+        )
+    if kind == "local":
+        from .local_tracker.adapter import LocalTrackerAdapter
+
+        return LocalTrackerAdapter(
+            issues_path=getattr(config, "issues_path", None) or "",
+            active_states=list(getattr(config, "active_states", []) or []),
+            terminal_states=list(getattr(config, "terminal_states", []) or []),
         )
 
     from .repo_tracker.adapter import RepositoryTrackerAdapter
@@ -264,6 +283,13 @@ class TrackerConfigError(ValueError):
 def validate_tracker_config(config: Any) -> None:
     """Validate tracker configuration before adapter creation."""
     info = tracker_kind_info(getattr(config, "kind", None))
+    if info.kind == "local":
+        if not getattr(config, "issues_path", None):
+            raise TrackerConfigError(
+                "Local issues path not configured. "
+                "Set tracker.issues_path in WORKFLOW.md"
+            )
+        return
     if not getattr(config, "api_key", None):
         env_hint = " or ".join(info.api_key_env_vars)
         raise TrackerConfigError(

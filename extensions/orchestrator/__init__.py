@@ -5,6 +5,7 @@ from .config.schema import WorkflowConfig
 from .issue import Issue
 from .linear.adapter import LinearAdapter
 from .linear.client import LinearGraphQLClient
+from .local_tracker.adapter import LocalTrackerAdapter
 from .orchestrator import Orchestrator
 from .prompt_builder import PromptBuilder
 from .repo_tracker.adapter import RepositoryTrackerAdapter
@@ -18,6 +19,7 @@ __all__ = [
     "AgentSession",
     "LinearAdapter",
     "LinearGraphQLClient",
+    "LocalTrackerAdapter",
     "Issue",
     "Orchestrator",
     "PromptBuilder",

@@ -84,6 +84,17 @@ def _normalize_state_limits(limits: dict[str, Any] | None) -> dict[str, int]:
     return result
 
 
+def _normalize_string_list(value: Any, default: list[str]) -> list[str]:
+    if value is None:
+        return list(default)
+    if isinstance(value, str):
+        stripped = value.strip()
+        return [stripped] if stripped else []
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return list(default)
+
+
 def _default_tmp_workspace() -> str:
     return os.path.join(os.environ.get("TMPDIR", "/tmp"), "symphony_workspaces")
 
@@ -104,6 +115,7 @@ class TrackerConfig:
     clone_url: str | None = None
     assignee: str | None = None
     branch_prefix: str | None = None
+    issues_path: str | None = None
     active_states: list[str] = field(
         default_factory=lambda: ["Todo", "In Progress"]
     )
@@ -230,11 +242,12 @@ class WorkflowConfig:
 
         tracker_kind = normalize_tracker_kind(tracker_raw.get("kind", "linear"))
         tracker_info = tracker_kind_info(tracker_kind)
-        tracker_active_states = tracker_raw.get(
-            "active_states", default_active_states_for_kind(tracker_kind)
+        tracker_active_states = _normalize_string_list(
+            tracker_raw.get("active_states"),
+            default_active_states_for_kind(tracker_kind),
         )
-        tracker_terminal_states = tracker_raw.get(
-            "terminal_states",
+        tracker_terminal_states = _normalize_string_list(
+            tracker_raw.get("terminal_states"),
             default_terminal_states_for_kind(tracker_kind),
         )
 
@@ -255,6 +268,9 @@ class WorkflowConfig:
             assignee=_resolve_env_value(tracker_raw.get("assignee"))
             or _resolve_first_env(tracker_info.assignee_env_vars),
             branch_prefix=_resolve_env_value(tracker_raw.get("branch_prefix")),
+            issues_path=_normalize_secret_value(
+                _expand_path(tracker_raw.get("issues_path"), "")
+            ),
             active_states=tracker_active_states,
             terminal_states=tracker_terminal_states,
         )
