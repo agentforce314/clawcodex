@@ -2,8 +2,8 @@
 
 > 文档路径: `docs/PROGRESS.md`
 > 基于: `docs/open-source-replacement-progress.md`, `docs/FEATURE_PLAN.md`
-> 版本: v1.7
-> 更新日期: 2026-05-30
+> 版本: v1.8
+> 更新日期: 2026-06-01
 > 上游同步: 68dc3c5 (Phase 11 bridge complete)
 
 ---
@@ -65,6 +65,66 @@
 | F-31 | TUI 权限模式选择器 | P1 | ✅ 完成 | 模态对话框支持 5 种权限模式切换 (default/acceptEdits/plan/bypassPermissions/dontAsk) |
 | F-32 | 会话恢复浏览器 (Resume Conversation) | P1 | ✅ 完成 | 模糊搜索、实时过滤、会话元数据展示，支持 /resume 命令和 --tui --resume 启动选项 |
 | F-36 | LocalTracker 本地 Issue 文档源 | P1 | 📋 设计完成 | 新增 `tracker.kind: local`，从本地 Markdown/JSON issue 文档读取待处理任务，支持离线测试与私有本地工作流 |
+| F-37 | Orchestrator PR 检视意见自动修复闭环 | P0 | 📋 设计完成 | 将 PR 网页检视意见、inline comments、review summary 与 CI 失败日志转化为 follow-up agent run，自动修改同一 PR 分支并提交更新 |
+
+---
+
+## F-37: Orchestrator PR 检视意见自动修复闭环
+
+**状态**: 📋 设计完成
+**优先级**: P0
+**规划文档**: `docs/FEATURE_PLAN.md` → `3.1.4 PR 检视意见自动修复闭环设计`
+
+### 目标
+
+将基于 PR 检视意见的自动修改能力产品化到 `extensions/orchestrator`：当 Orchestrator 已经根据 issue 自动实现、提交并创建 PR 后，后续网页上的 PR conversation 评论、inline review comments、review summary 和 CI/pipeline 失败日志应能被自动读取、去重、转化为 follow-up agent run，并在同一 PR 分支上完成修改、验证、提交和推送。
+
+### 当前基线
+
+| 能力 | 当前状态 | 说明 |
+|------|----------|------|
+| Issue 自动实现 | ✅ 已具备 | Orchestrator 可轮询 issue 并启动 agent run |
+| 自动 commit/push/PR | ✅ 已具备 | `GitSyncService` 在 agent 完成后提交、推送并创建/复用 PR |
+| Issue 评论读取 | ✅ 已具备 | TrackerAdapter 已有 issue comments 接口，主要服务 clarification 流程 |
+| PR conversation 评论读取 | ❌ 待实现 | 需要读取 PR 对应 issue comments 或平台 PR comments API |
+| PR inline review comments 读取 | ❌ 待实现 | 需要平台 API 支持文件路径、行号、diff hunk |
+| Review summary 读取 | ❌ 待实现 | 需要读取 PR reviews / review notes |
+| CI/pipeline 失败日志读取 | ❌ 待实现 | 需要读取 checks、jobs、pipeline logs 并做摘要/截断 |
+| Feedback 幂等处理 | ❌ 待实现 | 需要记录已处理 feedback id/check id，避免重复修复 |
+| 同 PR 分支 follow-up run | ❌ 待实现 | 需要新增 review-fix prompt 和复用原 PR 分支的 git sync 模式 |
+
+### 实施进度
+
+| 阶段 | 任务 | 状态 |
+|------|------|------|
+| 1 | 扩展 tracker 协议，新增 `PullRequestFeedback` 数据模型和 PR feedback fetch/reply 接口 | 📋 待开始 |
+| 2 | 扩展 GitHub/Gitee/GitCode repository client，读取 PR conversation、inline review comments、review summary | 📋 待开始 |
+| 3 | 接入 CI/pipeline 失败日志读取与日志截断策略 | 📋 待开始 |
+| 4 | 扩展 registry 或新增 feedback store，记录 feedback cursor、已处理 id、follow-up attempt 次数 | 📋 待开始 |
+| 5 | 在 Orchestrator poll loop 增加 review follow-up 阶段，扫描已有 open PR 的新反馈 | 📋 待开始 |
+| 6 | 新增 review-fix prompt builder，约束 agent 只处理 PR 检视意见与 CI 失败 | 📋 待开始 |
+| 7 | 调整 git sync follow-up 模式，确保只 commit/push 原 PR 分支，不创建新 PR | 📋 待开始 |
+| 8 | 增加评论回复/汇总能力，标记已处理、无法处理或需 clarification 的反馈 | 📋 待开始 |
+| 9 | 增加单元测试和端到端测试：去重、bot 评论过滤、inline 映射、CI 日志截断、重试上限 | 📋 待开始 |
+
+### 验收标准
+
+- 已有 issue 首次处理链路不回退：仍能自动实现、提交、推送并创建/复用 PR。
+- PR 上新增普通检视评论后，Orchestrator 能在下一轮 follow-up 中读取并触发同分支修改。
+- PR inline comment 能以文件路径、行号、diff hunk 形式进入 prompt，agent 能定位并做最小修改。
+- CI 失败日志能以摘要形式进入 prompt，单条日志受字符上限控制。
+- 已处理的评论或 check 不会在后续轮询中重复触发。
+- bot 自己发布的状态评论不会造成自触发循环。
+- follow-up run 不创建新分支、不创建新 PR，只更新当前 PR 分支。
+- 无法自动判断的反馈进入 clarification/operator hint 流程，而不是猜测修改。
+
+### 风险与约束
+
+- 不同平台的 PR review API 差异较大，GitHub/Gitee/GitCode 需要分别映射到统一反馈模型。
+- CI 日志可能非常大，必须摘要和截断，避免 prompt 过载。
+- 网页评论可能包含互相冲突的要求，首期应优先处理明确、可定位、可验证的反馈。
+- 自动回复评论应避免刷屏，推荐按 run 汇总回复，或仅回复明确处理完成的 inline comments。
+- 默认不做自动合并、force push、关闭 PR 等高风险动作。
 
 ---
 
