@@ -2,7 +2,7 @@
 
 > 文档路径: `docs/PROGRESS.md`
 > 基于: `docs/open-source-replacement-progress.md`, `docs/FEATURE_PLAN.md`
-> 版本: v1.8
+> 版本: v2.3
 > 更新日期: 2026-06-01
 > 上游同步: 68dc3c5 (Phase 11 bridge complete)
 
@@ -66,6 +66,7 @@
 | F-32 | 会话恢复浏览器 (Resume Conversation) | P1 | ✅ 完成 | 模糊搜索、实时过滤、会话元数据展示，支持 /resume 命令和 --tui --resume 启动选项 |
 | F-36 | LocalTracker 本地 Issue 文档源 | P1 | 📋 设计完成 | 新增 `tracker.kind: local`，从本地 Markdown/JSON issue 文档读取待处理任务，支持离线测试与私有本地工作流 |
 | F-37 | Orchestrator PR 检视意见自动修复闭环 | P0 | 📋 设计完成 | 将 PR 网页检视意见、inline comments、review summary 与 CI 失败日志转化为 follow-up agent run，自动修改同一 PR 分支并提交更新 |
+| F-38 | Orchestrator 验证与报告闭环（verification + report → PR） | P0 | 📋 设计完成 | commit/push 前自动跑 verification gate（pre_push hook + test_command），agent 跑完写结构化报告，git_sync 用报告改写 PR body 并合并为单条 issue 汇总评论；进度由 dead-code `progress_reporter` 接入主流程 |
 
 ---
 
@@ -1940,4 +1941,93 @@ Agent 完成 → git commit → pending_review
 
 *文档更新时间: 2026-06-01*
 
-*版本 v2.2 更新：新增 LocalTracker Human Review Gate，支持 pending_review 状态、review 审批/拒绝命令、diff 变更概览命令（含 Agent Summary）。*
+*版本 v2.2 更新：新增 LocalTracker Human Review Gate，支持 pending_review 状态、review 审批/拒绝命令、diff 变更命令（含 Agent Summary）。*
+
+*版本 v2.3 更新：新增 F-38 Orchestrator 验证与报告闭环。Sub-A 在 `hooks` schema 新增 `pre_commit` / `pre_push` / `post_sync` 三个生命周期点，git_sync 在 commit/push 前后自动跑 verification gate（默认 pytest -x，用户可配 test_command）；Sub-B 新增 `IssueRecord.report_path` 字段、agent_runner 跑完生成 Markdown/JSON 报告、git_sync 据此改写 PR body；Sub-C 抽象 TrackerAdapter 增 `update_pull_request`，并实现 GitCode 客户端把报告回写到 PR；Sub-D 修复 `progress_reporter` 死代码，phase completion 接入 ndjson event log。*
+
+---
+
+## F-38: Orchestrator 验证与报告闭环
+
+**状态**: 📋 设计完成
+**优先级**: P0
+**规划文档**: `docs/FEATURE_PLAN.md` → `3.1.5 验证与报告闭环设计`
+**触发场景**: 2026-06-01 在 `chadwweng/AgentSDK` 跑 issue #1 时发现 `tools=0` 仍走 success、agent 凭空返回 SessionComplete 后 commit/push/PR 全程无验证；事后 GitCode 上 PR `#1` 收到 1 条 Git Sync 评论但无 Run Complete 汇总；PR body 是静态模板不含验证/产物信息；reviewer 找不到 diff 与 workspace 路径。
+
+### 目标
+
+把 `extensions/orchestrator` 的 issue 跟踪流程从「commit/push/PR 直通」补全为「commit 验证 → push 验证 → 报告生成 → PR 反馈」的端到端闭环：
+
+1. 修改代码后，系统层强制在 commit/push 之前跑 verification gate，挡住 `tools=0` 这类空跑批。
+2. agent 跑完生成结构化报告（盘留 + 持久化）。
+3. GitCode 端用报告回写 PR body，并发**一条汇总评论**（取代现在两条独立评论）。
+4. 修复 `progress_reporter` 死代码，让阶段进度真正被 orchestrator 主流程消费。
+
+### 子特性
+
+| Sub | 名称 | 目标 | 主要工作 |
+|-----|------|------|----------|
+| Sub-A | Verification Gate | commit/push 前自动跑 `test_command` | `config/schema.py` 的 `HooksConfig` 新增 `pre_commit` / `pre_push` / `post_sync`；`git_sync.py` 调 `run_pre_commit_hook` / `run_pre_push_hook`；verification 失败时不 commit/push，将 issue 标记为 `verification_failed` |
+| Sub-B | 结构化报告 | agent 跑完写 Markdown/JSON 报告 | `issue_registry.py` 的 `IssueRecord` 新增 `report_path` 字段；`agent_runner.py` 跑完调 `report_writer.write(session, workspace)` 生成报告；`git_sync._build_pr_body` 改为模板插值报告字段（commit、diff stat、verification 结果、turns/tools 计数） |
+| Sub-C | PR 报告回写 | 把报告作为 PR 描述回写到 GitCode | `tracker.py` 抽象基类新增 `update_pull_request(pr_number, body=None, state=None)`；`repo_tracker/client.py` 实现 GitCode 客户端的 `PATCH /repos/{owner}/{repo}/pulls/{id}`；`git_sync.sync()` 末尾在 PR 开完后调一次 `update_pull_request(body=...)` 把 Sub-B 的报告写入 PR body；将原 `_post_run_comment` + `_comment_sync_result` 两条评论合并为一条带报告链接的汇总评论 |
+| Sub-D | ProgressReporter 接入 | 修死代码 | `orchestrator.py:329-336` 调 `agent_runner.run(...)` 时把 `progress_reporter` 显式传参；`progress_reporter.ProgressReporter` 把 phase completion 写入 `event_log_dir/1.ndjson`（与 agent_runner 现有 ndjson 通道合并），`issue tail` 可消费 |
+
+### 当前基线
+
+| 能力 | 当前状态 | 说明 |
+|------|----------|------|
+| commit 前自动跑测试 | ❌ 缺失 | `agent_runner.py` 跑完 LLM 直接 SessionComplete；`git_sync.py` 只 `git add/commit/push`；`workflow.md:110` 写「Run the existing test suite」仅是 LLM prompt 文本，系统不强制 |
+| push 前自动跑测试 | ❌ 缺失 | 同上 |
+| `HooksConfig` 生命周期点 | ⚠️ 不完整 | 现有 `after_create` / `before_run` / `after_run` / `before_remove` 四点；`config/schema.py:188-193`；缺 `pre_commit` / `pre_push` / `post_sync` |
+| AgentConfig / CodexConfig verification 字段 | ❌ 缺失 | `config/schema.py:157-184` 无 `test_command` / `build_command` / `lint_command` |
+| `IssueRecord` 报告字段 | ❌ 缺失 | `issue_registry.py:36-58` 字段为 `issue_id/branch_name/commit_sha/pr_number/pr_url/base_branch/status/attempt_count` + 几个 clarification 字段，无 `report_path` / `verification_result` / `test_output` |
+| 结构化报告文件 | ❌ 缺失 | `agent_runner.py:440-486` 只写 `.event_logs/{id}.ndjson`（stream events）；`git_sync.py` 不写报告 |
+| PR body 动态改写 | ❌ 缺失 | `git_sync.py:264-282 _build_pr_body` 写死静态文本；代码库 0 处 `update_pull_request` / `edit_pull_request` 调用；`tracker.py` 抽象基类未声明该方法 |
+| 单条汇总评论 | ❌ 缺失 | `_post_run_comment` (agent_runner) + `_comment_sync_result` (git_sync) 是两条独立评论，reviewer 要跳两处 |
+| `progress_reporter` 接入 | ❌ 死代码 | `orchestrator.py:329-336` 调 `agent_runner.run(...)` 不传 `progress_reporter`；模块仅 4 处引用且都是构造参数；PhaseComplete 写到 `ToolContext.tasks.metadata` 后无人读 |
+
+### 实施进度
+
+| 阶段 | 任务 | Sub | 状态 |
+|------|------|-----|------|
+| 1 | `config/schema.py` 扩展 `HooksConfig` 增 `pre_commit` / `pre_push` / `post_sync` 三点 + `AgentConfig` 增 `test_command` / `build_command` / `lint_command`（默认可空） | A | 📋 待开始 |
+| 2 | `extensions/orchestrator/git_sync.py` 在 `git commit` 前调 `run_pre_commit_hook`、在 `git push` 前调 `run_pre_push_hook`；失败时抛 `VerificationFailed`，orchestrator 捕获后 issue 标 `verification_failed` 不 push | A | 📋 待开始 |
+| 3 | `orchestrator.py` 在 git_sync.sync() 末尾 `finally` 块里调 `run_post_sync_hook(session)`，并把 verification 状态写入 `IssueRecord` | A | 📋 待开始 |
+| 4 | `issue_registry.py` 的 `IssueRecord` 新增 `report_path: str | None` / `verification_status: str | None` / `verification_output: str | None` 字段，旧 entry 加载兼容 | B | 📋 待开始 |
+| 5 | 新增 `extensions/orchestrator/report_writer.py`，`write(session, workspace) -> Path` 生成 Markdown（人读）+ JSON（机读）报告，包括 issue 摘要、turns/tools 计数、verification 结果、commit/diff stat、workspace 路径 | B | 📋 待开始 |
+| 6 | `agent_runner.py` SessionComplete 时调 `report_writer.write` 并把 `report_path` 写回 registry | B | 📋 待开始 |
+| 7 | `git_sync._build_pr_body` 改模板插值，插入 issue 摘要、commit/diff stat、verification 状态、报告链接（`/tmp/symphony_workspaces/agentsdk/_1/.reports/1.md`） | B | 📋 待开始 |
+| 8 | `tracker.py:TrackerAdapter` 增抽象 `update_pull_request(pr_number, *, body=None, state=None) -> PullRequestRef | None` | C | 📋 待开始 |
+| 9 | `repo_tracker/client.py` 增 `RepositoryIssueClient.update_pull_request`，GitCode 平台用 `PATCH /repos/{owner}/{repo}/pulls/{id}?access_token=...`，payload 含 `body` / `state`；GitHub / Gitee 暂列 TODO | C | 📋 待开始 |
+| 10 | `git_sync.py` `ensure_pull_request` 拿到 `pr.number` 后调 `tracker.update_pull_request(body=...)` 把 Sub-B 报告回写 PR | C | 📋 待开始 |
+| 11 | 合并 `agent_runner._post_run_comment` + `git_sync._comment_sync_result` 为单条 `## ClawCodex Run Summary` 汇总评论（含报告链接、verification 状态、commit、PR URL） | C | 📋 待开始 |
+| 12 | `orchestrator.py:329-336` 显式构造 `ProgressReporter` 并传入 `agent_runner.run(...)` | D | 📋 待开始 |
+| 13 | `progress_reporter.py` 把 PhaseComplete 事件写入 `event_log_dir/{id}.ndjson`（与现有 ndjson 通道合并 schema，新加 `{"type": "phase", "phase": "...", "progress": N}`） | D | 📋 待开始 |
+| 14 | 单元测试：`schema.HooksConfig` 解析新字段；`git_sync` 在 pre_push 失败时不 push；`report_writer` 产物包含必须字段；`update_pull_request` mock 测被调一次 | A/B/C | 📋 待开始 |
+| 15 | 端到端测试：用一个开 issue 跑批，断言 (1) 报告文件存在 (2) PR body 含报告链接 (3) issue 只有 1 条汇总评论 (4) `pre_push` 失败时 PR 不存在 | A/B/C/D | 📋 待开始 |
+
+### 验收标准
+
+- agent 一次工具都没调（`tools=0`）时，verification gate 拦截 push，PR 不被创建，issue 标 `verification_failed`。
+- `test_command` 默认值为空时该步骤跳过（不破坏已有无测试项目）。
+- agent 跑完 issue registry 的 `report_path` 指向一个真实存在的文件；该文件包含 issue 摘要、commit SHA、verification 状态、diff stat。
+- PR body 含「Issue / Branch / Commit / Verification / Report」五段，verification 段落根据结果渲染 ✅/❌。
+- PR 开完后 issue 收到**一条**汇总评论（合并原 Run Complete + Git Sync 两条）。
+- 完整代码库 0 处对 `tracker.update_pull_request` 之外的非 CRUD PR API 调用（保留可审计性）。
+- `progress_reporter.ProgressReporter` 在主流程被构造；`issue tail --id N` 能看到 `{"type": "phase", ...}` 事件。
+
+### 风险与约束
+
+- verification gate 默认开在 `pre_push`，失败 = 不 push。需在 `workflow.md` 文档里强调，否则用户以为 push 失败是网络问题。
+- `test_command` 跑长任务会拖慢 `max_turns=20` 的 issue 跑批，需提供 `verification.timeout_ms` 配置（默认 600s）。
+- GitCode `PATCH /pulls` 的 body / state 字段是否被支持需先打一个 dry-run 验证；不支持则回退为「把报告写到 `workspace/.reports/{id}.md` + 在汇总评论里贴报告全文」。
+- `_post_run_comment` 与 `_comment_sync_result` 合并时若平台限流，单条评论可能太长，需提供 `summary.max_comment_chars` 截断。
+- `progress_reporter` 接入需不破坏 `event_log_dir/1.ndjson` 现有 schema，扩展字段而非替换。
+- 与 F-37 的 PR review follow-up 闭环保持兼容：Sub-C 的 `update_pull_request` 应是 F-37 阶段 5/7（同 PR 分支 follow-up）的基础能力，先于 F-37 落地。
+
+### 依赖与协同
+
+- **依赖 F-1**：F-38 全部 Sub 都在 Orchestrator 主流程内，依赖现有 `git_sync` / `agent_runner` / `issue_registry`。
+- **先于 F-37**：F-37 阶段 5 需要的「同 PR 分支 follow-up 修改」依赖 F-38 Sub-C 的 `update_pull_request` 能力。
+- **与 F-36 兼容**：LocalTracker 走 `pending_review` 路径不创建 PR，F-38 Sub-C 在该路径下应跳过 PR body 改写。
+- **不破坏 `progress_reporter` 现有 4 个引用点**：Sub-D 接入后，单元测试覆盖原参数接口。
