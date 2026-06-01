@@ -21,6 +21,7 @@ class Issue:
     url: str | None = None
     assignee_id: str | None = None
     blocked_by: list[dict[str, Any]] = field(default_factory=list)
+    depends_on: list[str] = field(default_factory=list)
     labels: list[str] = field(default_factory=list)
     assigned_to_worker: bool = True
     created_at: datetime | None = None

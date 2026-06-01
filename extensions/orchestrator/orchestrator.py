@@ -213,7 +213,10 @@ class Orchestrator:
                 self._state.max_concurrent_agents - len(self._state.running)
             )
 
-            for issue in issues[:available_slots]:
+            launched_this_poll = 0
+            for issue in issues:
+                if launched_this_poll >= available_slots:
+                    break
                 if issue.id in self._state.running or issue.id in self._state.completed:
                     continue
                 if issue.id in self._state.claimed:
@@ -358,12 +361,38 @@ class Orchestrator:
                 ):
                     logger.info("Issue %s already handled (registry), skipping", issue.id)
                     continue
+                if not await self._dependencies_satisfied(issue):
+                    continue
                 self._state.claimed.add(issue.id)
                 await self._launch_issue(issue)
+                if issue.id in self._state.running:
+                    launched_this_poll += 1
 
         finally:
             self._state.poll_check_in_progress = False
             self.status_dashboard.on_poll_end()
+
+    async def _dependencies_satisfied(self, issue: Issue) -> bool:
+        dependencies = [dep for dep in getattr(issue, "depends_on", []) if dep]
+        if not dependencies:
+            return True
+
+        unresolved = [
+            dependency
+            for dependency in dependencies
+            if not (
+                self._registry.is_completed(dependency)
+                or self._registry.has_pr(dependency)
+            )
+        ]
+        if unresolved:
+            logger.info(
+                "Issue %s waiting for dependencies: %s",
+                issue.id,
+                ", ".join(unresolved),
+            )
+            return False
+        return True
 
     async def _resolve_intent(
         self, issue: Issue,
@@ -910,6 +939,10 @@ class Orchestrator:
 
     async def _launch_issue(self, issue: Issue) -> None:
         """Create workspace and run agent for one issue."""
+        if not await self._dependencies_satisfied(issue):
+            self._state.claimed.discard(issue.id)
+            return
+
         # F-39 Sub-B: if the registry carries a RETRY intent for this
         # issue, close the existing remote PR (best-effort) and reset
         # the local record so the new run starts from a clean slate.

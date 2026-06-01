@@ -308,7 +308,30 @@ priority: 0
         self.assertEqual(issues[0].title, "Open issue")
         self.assertEqual(issues[0].description, "Do this first.")
         self.assertEqual(issues[0].branch_name, "local/local-001-open-issue")
+        self.assertEqual(issues[0].depends_on, [])
         self.assertEqual(issues[1].labels, ["orchestrator"])
+
+    async def test_markdown_issue_parses_depends_on_metadata(self) -> None:
+        with TemporaryDirectory() as tmp:
+            issues_path = Path(tmp)
+            _write_issue(
+                issues_path / "dependent.md",
+                """---
+id: LOCAL-002
+identifier: LOCAL-002
+state: open
+depends_on:
+  - LOCAL-001
+  - LOCAL-003
+---
+# Dependent issue
+""",
+            )
+
+            adapter = LocalTrackerAdapter(issues_path)
+            issues = await adapter.fetch_candidate_issues()
+
+        self.assertEqual(issues[0].depends_on, ["LOCAL-001", "LOCAL-003"])
 
     async def test_fetch_issue_states_rereads_document(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -737,6 +760,75 @@ class _ReviewAgentRunner:
 class _ReviewOrchestrator(Orchestrator):
     async def _run_issue(self, session: AgentSession) -> None:
         return None
+
+
+class _DependencyTracker(TrackerAdapter):
+    active_states = ["open"]
+
+    def __init__(self, issues: list[Issue]) -> None:
+        self.issues = issues
+
+    async def fetch_candidate_issues(self) -> list[Issue]:
+        return list(self.issues)
+
+    async def fetch_issue_states_by_ids(self, issue_ids: list[str]) -> dict[str, Issue]:
+        return {issue.id or "": issue for issue in self.issues if issue.id in issue_ids}
+
+    async def create_comment(self, issue_id: str, body: str) -> None:
+        return None
+
+    async def update_issue_state(self, issue_id: str, state: str) -> None:
+        return None
+
+
+class TestOrchestratorDependencies(unittest.IsolatedAsyncioTestCase):
+    async def test_poll_skips_issue_until_dependencies_are_completed(self) -> None:
+        with TemporaryDirectory() as tmp:
+            tracker = _DependencyTracker(
+                [
+                    Issue(id="child", identifier="LOCAL-002", state="open", depends_on=["parent"]),
+                    Issue(id="independent", identifier="LOCAL-003", state="open"),
+                ]
+            )
+            orchestrator = _ReviewOrchestrator(
+                workflow=WorkflowConfig.from_dict(
+                    {
+                        "workspace": {"root": tmp},
+                        "agent": {"max_concurrent_agents": 1, "max_turns": 2},
+                    }
+                ),
+                tracker=tracker,
+                workspace=_ReviewWorkspaceManager(Path(tmp)),
+                agent_runner=_ReviewAgentRunner(),
+            )
+
+            await orchestrator._poll_and_dispatch()
+
+            self.assertNotIn("child", orchestrator._state.running)
+            self.assertIn("independent", orchestrator._state.running)
+
+    async def test_poll_launches_issue_after_dependencies_complete(self) -> None:
+        with TemporaryDirectory() as tmp:
+            tracker = _DependencyTracker(
+                [Issue(id="child", identifier="LOCAL-002", state="open", depends_on=["parent"])]
+            )
+            orchestrator = _ReviewOrchestrator(
+                workflow=WorkflowConfig.from_dict(
+                    {
+                        "workspace": {"root": tmp},
+                        "agent": {"max_concurrent_agents": 1, "max_turns": 2},
+                    }
+                ),
+                tracker=tracker,
+                workspace=_ReviewWorkspaceManager(Path(tmp)),
+                agent_runner=_ReviewAgentRunner(),
+            )
+            orchestrator._registry.register("parent", "LOCAL-001")
+            orchestrator._registry.mark_completed("parent")
+
+            await orchestrator._poll_and_dispatch()
+
+            self.assertIn("child", orchestrator._state.running)
 
 
 class TestReviewFeedbackService(unittest.IsolatedAsyncioTestCase):

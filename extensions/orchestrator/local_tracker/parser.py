@@ -50,6 +50,7 @@ def parse_markdown_issue(path: Path) -> LocalIssueDocument:
         branch_name=branch_name,
         url=_string_or_none(metadata.get("url")) or str(path),
         assignee_id=_string_or_none(metadata.get("assignee_id")),
+        depends_on=_string_list(metadata.get("depends_on")),
         labels=_string_list(metadata.get("labels")),
         created_at=_datetime_or_none(metadata.get("created_at")),
         updated_at=_datetime_or_none(metadata.get("updated_at")),
