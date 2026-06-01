@@ -1021,12 +1021,22 @@ class ClawcodexREPL:
         self.cost_tracker = CostTracker()
         self.history_log = HistoryLog()
 
+        # Reactive AppState store backing interactive commands like
+        # /permissions; held on self so the chosen mode persists for the
+        # REPL session.
+        from src.state.app_state import create_app_state_store
+        from src.repl.ui_host import ReplUIHost
+
+        self.app_state_store = create_app_state_store()
+
         # Create command context
         self.command_context = create_command_context(
             workspace_root=Path.cwd(),
             conversation=self.session.conversation,
             cost_tracker=self.cost_tracker,
             history=self.history_log,
+            app_state_store=self.app_state_store,
+            ui=ReplUIHost(self._safe_input, self.console),
         )
 
         # Merge new commands with built-in list for completion
@@ -2201,6 +2211,17 @@ class ClawcodexREPL:
                     if result.success:
                         if self._handle_command_result(result):
                             return
+                    elif result.error and self.command_registry.get(cmd_name) is not None:
+                        # Surface a real error from a command that EXISTS (e.g.
+                        # an interactive command on a null surface) instead of
+                        # letting it fall through to the "Unknown command"
+                        # else-arm. Gate on registry membership so a genuinely
+                        # unknown name — including an args-bearing skill like
+                        # ``/myskill do thing`` — still reaches the legacy
+                        # ladder's ``_try_run_skill_slash`` fallback rather than
+                        # being swallowed here as "Unknown command".
+                        self.console.print(f"[red]{result.error}[/red]")
+                        return
                 except Exception:
                     pass
 

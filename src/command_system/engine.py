@@ -16,8 +16,12 @@ from .types import (
     Command,
     CommandContext,
     CommandType,
+    InteractiveCommand,
+    InteractiveOutcome,
+    InteractiveUnavailableError,
     LocalCommand,
     LocalCommandResult,
+    NullUIHost,
     PromptCommand,
 )
 
@@ -143,6 +147,8 @@ class CommandEngine:
             result = await self._execute_local(command, args)
         elif command.command_type == CommandType.PROMPT:
             result = await self._execute_prompt(command, args)
+        elif command.command_type == CommandType.INTERACTIVE:
+            result = await self._execute_interactive(command, args)
         else:
             result = CommandResult.error(
                 command_name,
@@ -201,6 +207,58 @@ class CommandEngine:
                 str(e),
             )
 
+    async def _execute_interactive(
+        self,
+        command: InteractiveCommand,
+        args: str,
+    ) -> CommandResult:
+        """Execute an interactive command (port of TS ``local-jsx``).
+
+        Runs the command body against ``ctx.ui`` and maps its
+        :class:`InteractiveOutcome` onto a ``CommandResult``, propagating the
+        ``display`` / ``should_query`` / ``meta_messages`` fields that the
+        LOCAL arm hardcodes away (``_execute_local`` forces ``system`` /
+        ``False`` / drops meta). A surface that wired no ``ui`` gets a
+        ``NullUIHost`` so the body can always assume ``ctx.ui`` exists; that
+        host raises :class:`InteractiveUnavailableError` for mutating prompts,
+        which we surface as a clean error result.
+        """
+        # Substitute the null surface when none was wired (SDK /
+        # non-interactive). Done here, once, so command bodies never see a
+        # ``None`` ui. Idempotent: a real surface sets ``ui`` at startup.
+        if self.context.ui is None:
+            self.context.ui = NullUIHost()
+
+        try:
+            outcome = await command.run(args, self.context)
+        except InteractiveUnavailableError as e:
+            # Expected on the null surface — a clean, typed message rather
+            # than a stack trace.
+            return CommandResult.error(command.name, str(e))
+        except Exception as e:
+            return CommandResult.error(command.name, str(e))
+
+        if not isinstance(outcome, InteractiveOutcome):
+            return CommandResult.error(
+                command.name,
+                f"interactive command returned {type(outcome).__name__}, "
+                "expected InteractiveOutcome",
+            )
+
+        # ``display == 'skip'`` (e.g. the cancelled path) → no output.
+        if outcome.display == "skip":
+            return CommandResult.skip(command.name)
+
+        return CommandResult(
+            success=True,
+            command_name=command.name,
+            result_type="text",
+            text=outcome.message or "",
+            should_query=outcome.should_query,
+            display=outcome.display,
+            meta_messages=list(outcome.meta_messages),
+        )
+
     def add_command_hook(
         self,
         hook: Callable[[str, CommandResult], None],
@@ -226,6 +284,7 @@ def create_command_context(
     config: dict[str, Any] | None = None,
     app_state_store: Any = None,
     provider: Any = None,
+    ui: Any = None,
 ) -> CommandContext:
     """
     Create a command context.
@@ -238,9 +297,12 @@ def create_command_context(
         cwd: Current working directory (defaults to workspace_root)
         config: Optional configuration dict
         app_state_store: Optional reactive AppState store. Commands that
-            mutate global session state (e.g. /advisor) need this.
+            mutate global session state (e.g. /advisor, /permissions) need
+            this.
         provider: Optional active LLM provider. Commands that gate on
             provider type (e.g. /advisor) need this.
+        ui: Optional ``UIHost`` interaction port. Interactive commands drive
+            it; when None the engine substitutes a ``NullUIHost``.
 
     Returns:
         CommandContext instance
@@ -257,4 +319,5 @@ def create_command_context(
         config=config or {},
         app_state_store=app_state_store,
         provider=provider,
+        ui=ui,
     )
