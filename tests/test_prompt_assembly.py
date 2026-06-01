@@ -211,6 +211,59 @@ class TestSystemPromptBlocks(unittest.TestCase):
         self.assertNotIn("cache_control", blocks[0])
 
 
+class TestSkillSectionWiring(unittest.TestCase):
+    """P0-4 wiring: ``skills=`` → the "# Available Skills" system-prompt block.
+
+    The model-facing skill listing was previously dead code — nothing ever
+    passed ``skills=`` into ``build_full_system_prompt_blocks``, so
+    ``_build_skill_section`` always short-circuited to None. Phase 3 wires
+    ``get_skill_tool_commands(cwd)`` in at ``src/query/engine.py``; these tests
+    pin the rendering contract that wiring depends on: a non-empty list emits a
+    block carrying each skill's name + description, and an empty/None list emits
+    no such block (plan §5 — port of TS ``getSkillToolCommands`` feeding the
+    system prompt). ``use_cache=False`` so the section rebuilds from the passed
+    list rather than the SESSION-scoped ``skills`` cache key.
+    """
+
+    def setUp(self):
+        from src.context_system.prompt_assembly import _get_session_start_date_iso
+        _get_session_start_date_iso.cache_clear()
+        clear_context_caches()
+
+    @staticmethod
+    def _skill_block(blocks):
+        hits = [b for b in blocks if "# Available Skills" in b.get("text", "")]
+        return hits[0]["text"] if hits else None
+
+    def test_skills_render_into_available_skills_block(self):
+        # Drive the same attribute-read path (.name/.description) the real
+        # view feeds, using PromptCommand so the test exercises the production
+        # type rather than a bespoke stub.
+        from src.command_system.types import PromptCommand
+        from src.context_system.prompt_assembly import build_full_system_prompt_blocks
+        skills = [
+            PromptCommand(name="alpha", description="does alpha things"),
+            PromptCommand(name="beta", description="does beta things"),
+        ]
+        blocks = build_full_system_prompt_blocks(cwd="/tmp", skills=skills, use_cache=False)
+        text = self._skill_block(blocks)
+        self.assertIsNotNone(text, "Expected a '# Available Skills' block")
+        self.assertIn("alpha", text)
+        self.assertIn("does alpha things", text)
+        self.assertIn("beta", text)
+        self.assertIn("does beta things", text)
+
+    def test_empty_skills_emits_no_section(self):
+        from src.context_system.prompt_assembly import build_full_system_prompt_blocks
+        blocks = build_full_system_prompt_blocks(cwd="/tmp", skills=[], use_cache=False)
+        self.assertIsNone(self._skill_block(blocks))
+
+    def test_none_skills_emits_no_section(self):
+        from src.context_system.prompt_assembly import build_full_system_prompt_blocks
+        blocks = build_full_system_prompt_blocks(cwd="/tmp", skills=None, use_cache=False)
+        self.assertIsNone(self._skill_block(blocks))
+
+
 class TestCacheTtlSelector(unittest.TestCase):
     """WI-2.2: ``cache_control`` ttl picks 5m vs 1h via ``should_1h_cache_ttl``."""
 
