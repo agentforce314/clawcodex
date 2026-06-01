@@ -133,6 +133,10 @@ class ClawCodexTUI(App):
         )
         self._repl_screen: REPLScreen | None = None
         self._command_context: Any | None = None
+        # Reactive AppState store backing interactive commands like
+        # /permissions. Created once on first command-context build and
+        # held here so the chosen mode persists across invocations.
+        self._app_state_store: Any | None = None
         # Transcript renderables captured at exit time so entry points
         # can dump them back to the main terminal scrollback after the
         # alt-screen tears down. Mirrors the TS ink behaviour where the
@@ -793,6 +797,11 @@ class ClawCodexTUI(App):
             from src.command_system.engine import create_command_context
             from src.cost_tracker import CostTracker
             from src.history import HistoryLog
+            from src.state.app_state import create_app_state_store
+            from src.tui.ui_host import TextualUIHost
+
+            if self._app_state_store is None:
+                self._app_state_store = create_app_state_store()
 
             self._command_context = create_command_context(
                 workspace_root=self.workspace_root,
@@ -800,6 +809,8 @@ class ClawCodexTUI(App):
                 cost_tracker=CostTracker(),
                 history=HistoryLog(),
                 provider=self.provider,
+                app_state_store=self._app_state_store,
+                ui=TextualUIHost(self),
             )
         except Exception:
             self._command_context = None
