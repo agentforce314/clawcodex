@@ -2,9 +2,11 @@
 
 > 文档路径: `docs/PROGRESS.md`
 > 基于: `docs/open-source-replacement-progress.md`, `docs/FEATURE_PLAN.md`
-> 版本: v2.9
+> 版本: v2.10
 > 更新日期: 2026-06-01
 > 上游同步: 68dc3c5 (Phase 11 bridge complete)
+>
+> **v2.10 变更**：新增 F-42 Orchestrator Shared / Sequential Workspace 策略（📋 设计完成）。规划 `workspace.strategy: isolated | shared | sequential`，用于支持本地 feature-plan issue 在同一 working tree / integration branch 上按顺序叠加开发并保留每 issue 一个 commit；设计范围覆盖 WorkspaceManager、Orchestrator 并发校验、dirty tree guard、顺序锁、registry commit 链元数据、GitSync/cleanup 行为与端到端验收标准。
 >
 > **v2.9 变更**：补充 F-22 Cron 系统相对 `claude-code-best` 的最新缺口复核结论。`clawcodex_ext/cron_system/` 已覆盖 parser/storage/scheduler/jitter/lock/permanent/inFlight/基础 runs/status 等底层能力，历史 9.11 CCB 补充缺口 G1~G8 不再作为主要缺口；F-22 继续保持进行中，剩余 P0 缺口集中在真实 REPL/TUI/headless 运行路径接线、scheduled fire 执行队列、run lifecycle finalize、`/cron-list`/`/cron-delete`/trigger detail/manual fire/autonomy status 用户入口、busy gate/filter/teammate ownership 与 durable 文件变更 reload 行为。
 >
@@ -80,6 +82,7 @@
 | F-39 | Orchestrator Issue 重跑入口（label + comment 命令双通道） | P0 | ✅ 完成（Sub-A~F） | 三种 label 表达重做意图：`agent:retry`（重置本地状态、关旧 PR、重跑整个 issue）、`agent:follow-up`（保留 PR、叠 commit、对应 F-37 follow-up）、`agent:blocked`（永久跳过）；comment 命令 `/agent retry` / `/agent follow-up` 由原作者或 maintainer 触发并限频；CLI 兜底 `issue retry --id 1 --mode reset`。Sub-A label 解析+意图分发、Sub-B 重置重跑、Sub-C follow-up 叠 commit、Sub-D comment 命令解析、Sub-E CLI 兜底、Sub-F 限频+角色校验均已落地；端到端 10-11 阶段（实际 GitCode/GitHub issue 联动）待真实环境验证 |
 | F-40 | ProgressReporter Sink 协议重构 | P1 | 📋 设计完成 | 把 `Orchestrator` 上 `ProgressReporter` 单例拆为每 session 独立的 `ProgressSink` 实例；新增 `CompositeProgressSink` 扇出支持 F-37/F-39 零侵入接入；补全 `SessionComplete` / `TurnComplete` 转发；引入 `WorkflowConfig.phases` 做真实进度计算，淘汰 `phase_count * 25` 假数据 |
 | F-41 | Coordinator 轻量工具集 | P1 | ✅ 已完成 | 给 Coordinator 配置独立的轻量工具集（Read、WebSearch、WebFetch），加上原有的 Agent、SendMessage、TaskStop，共 6 个工具。Coordinator 可直接处理简单查询（搜网页、读文件），无需为每个请求创建 Worker。所有写操作工具（Write、Edit、Bash、Grep、Glob）仍隔离，强制委派复杂任务给 Worker。涉及 `src/coordinator/mode.py` 的 `_COORDINATOR_ALLOWED_TOOLS` 扩展 + `src/coordinator/prompt.py` 的 "Your Tools" 提示词更新 + `src/repl/core.py` 注释同步。231/231 orchestrator 测试通过 |
+| F-42 | Orchestrator Shared / Sequential Workspace 策略 | P0 | ✅ 完成 | 扩展 `workspace.strategy: isolated \| shared \| sequential`，保留现有 per-issue workspace，同时支持本地 feature-plan issue 在同一 working tree / integration branch 上串行叠加开发；包含单并发校验、顺序锁、dirty tree guard、每 issue commit 链元数据、shared cleanup preserve 与两 issue 端到端验收 |
 
 ---
 
@@ -1887,7 +1890,73 @@ agent:
 
 ---
 
-*文档更新时间: 2026-06-01*
+## F-42: Orchestrator Shared / Sequential Workspace 策略
+
+**状态**: ✅ 完成
+**优先级**: P0
+**规划文档**: `docs/FEATURE_PLAN.md` → `3.1.9 Shared / Sequential Workspace 策略设计（F-42）`
+**落地版本**: v2.11
+
+### 目标
+
+让 Orchestrator 支持在同一个 workspace working tree / integration branch 上顺序处理多个本地 issue。该能力用于“特性规划文档拆分 issue → LocalTracker 排序 → 每个 issue 完成后 commit → 全部 commit 人工检视后统一 PR”的开发流程。
+
+### 当前缺口
+
+当前 `WorkspaceManager` 是 per-issue isolated 语义：`create_for_issue(issue)` 会把 issue identifier 转成 `safe_id`，工作目录固定为 `workspace.root / safe_id`。这会导致每个 issue 使用独立 clone；即使多个 issue 配置同一个 branch name，前一个 issue 的未推送 commit 也不会自然出现在下一个 issue 的 workspace 中。
+
+### 设计摘要
+
+| 子项 | 设计结论 |
+|------|----------|
+| 配置入口 | 新增 `workspace.strategy: isolated | shared | sequential`，默认 `isolated` 保持向后兼容 |
+| 路径策略 | `isolated` 使用 `root/safe_issue_id`；`shared` / `sequential` 使用 `root` 本身作为 repo working tree |
+| 顺序约束 | `sequential` 强制 `agent.max_concurrent_agents == 1`，并要求 state-specific concurrency 不超过 1 |
+| 分支策略 | 新增 `base_branch` / `integration_branch`；sequential 初始化或复用 integration branch，保留 issue 间 commit 序列 |
+| 锁策略 | `sequential_lock: true` 时使用 `.clawcodex_workspace.lock` 防止多个 orchestrator 同时写同一 workspace |
+| 清洁度检查 | `require_clean_start` / `require_clean_between_issues` 默认 true，dirty tree 时 fail-closed |
+| Registry | 记录 `workspace_strategy`、`workspace_path`、`base_commit_sha`、`start_commit_sha`、`commit_sha`、`previous_issue_id`、`sequence_index` |
+| Cleanup | `shared` / `sequential` 默认 `preserve_on_terminal: true`，不自动删除包含人工未推送 commit 的 working tree |
+
+### 拆分计划
+
+| 阶段 | 内容 | 状态 |
+|------|------|------|
+| Sub-A | 扩展 `WorkspaceConfig` / schema，新增 strategy、branch、dirty guard、preserve、lock 字段 | ✅ 完成 |
+| Sub-B | 改造 `WorkspaceManager` 路径选择与 clone/reuse 流程，保留 `create_for_issue(issue)` 外部 API | ✅ 完成 |
+| Sub-C | 实现 sequential lock、clean tree 检查、integration branch 初始化 / checkout | ✅ 完成 |
+| Sub-D | Orchestrator 初始化时校验 sequential 并发配置，并在 dashboard/event log 暴露 strategy、workspace path、start SHA | ✅ 完成 |
+| Sub-E | 扩展 `IssueRecord` / registry，记录每个 issue 的 start/commit SHA 与 sequence metadata | ✅ 完成 |
+| Sub-F | 调整 GitSync / cleanup：LocalTracker sequential 默认不 push、不 PR、不 merge，cleanup preserve shared root | ✅ 完成 |
+| Sub-G | 补齐单元测试与两 issue 本地端到端测试 | ✅ 完成 |
+
+### 验收标准
+
+| # | 标准 | 期望结果 |
+|---|------|----------|
+| 1 | 未配置 `workspace.strategy` 的旧 workflow | 行为与当前 per-issue isolated 完全一致 |
+| 2 | `strategy=sequential` 且 `max_concurrent_agents > 1` | 配置加载或 Orchestrator 初始化 fail-closed |
+| 3 | 两个 LocalTracker issue 按 priority / identifier 排序 | issue 1 完成并 commit 后，issue 2 才启动 |
+| 4 | issue 2 启动时执行 `git log` | 能看到 issue 1 的 commit |
+| 5 | 每个 issue 完成后 | registry 记录对应 `start_commit_sha` / `commit_sha` / `sequence_index` |
+| 6 | sequential workspace 有未提交改动 | 默认拒绝启动下一个 issue，并提示人工处理 |
+| 7 | issue 全部完成 | integration branch 保留连续 commit，workflow 不自动 push / PR / merge / squash |
+| 8 | cleanup 或 terminal state | shared/sequential root 不被删除 |
+
+### 风险与后续决策
+
+1. **F-39 retry 语义需单独收敛**：sequential 模式下 reset 当前 issue 可能影响后续 commit 链，默认应推荐 follow-up commit；若要 reset，应要求人工回滚到 `start_commit_sha`。
+2. **shared 与 sequential 边界需保持清晰**：`shared` 可作为低约束共享工作树模式，但只要涉及“issue 间严格继承 commit”就应使用 `sequential`。
+3. **失败现场默认保留**：dirty workspace 往往是问题诊断所需现场，不应被自动 reset 或 cleanup 删除。
+4. **人工最终 PR 仍是显式步骤**：LocalTracker sequential workflow 的目标是产出可审查 commit 序列，不应自动推远端或创建 PR。
+
+---
+
+*文档更新时间: 2026-06-02*
+
+*版本 v2.11 更新: F-42 Sequential Workspace 策略实现完成。`workspace.strategy: isolated | shared | sequential` 落地，sequential 强制单并发并使用顺序锁，共享 root 上的 integration branch 叠加 commit 链，commit 元数据（base/start SHA、sequence_index）写入 registry，sequential GitSync 本地 commit 不 push/PR，shared/sequential root 在 cleanup 时保留。19 个专项测试 + 245 个 orchestrator 回归全部通过。*
+
+*版本 v2.10 更新: 新增 F-42 Orchestrator Shared / Sequential Workspace 策略设计。规划 `workspace.strategy: isolated | shared | sequential`，支持本地 feature-plan issue 在同一 working tree / integration branch 上按顺序叠加开发；保留旧 isolated 行为，并设计单并发校验、顺序锁、dirty tree guard、commit 链 registry 元数据、GitSync/cleanup preserve 语义与两 issue 端到端验收。*
 
 *版本 v2.7 更新: 新增 F-41 Coordinator 轻量工具集。扩展 `_COORDINATOR_ALLOWED_TOOLS` 使 Coordinator 获得 Read / WebSearch / WebFetch 三个轻量工具，合计 6 个。写/执行工具仍隔离，强制委派给 Worker。提示词同步更新。231/231 orchestrator 测试通过。*
 

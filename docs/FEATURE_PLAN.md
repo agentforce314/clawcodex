@@ -2,9 +2,13 @@
 
 > 文档路径: `docs/FEATURE_PLAN.md`
 > 基于: `clawcodex-opensource-replacement-analysis-v2.md`, `clawcodex_vs_ccb_analysis-v3.md`, `INTEGRATION.md`, `TEAM_MEMBERSHIP.md`
-> 版本: v2.9
-> 更新日期: 2026-06-01
+> 版本: v2.11
+> 更新日期: 2026-06-02
 > 上游同步: 68dc3c5 (Phase 11 bridge complete)
+>
+> **v2.11 变更**：F-42 Sequential Workspace 策略实现完成（✅ 完成）。`workspace.strategy: isolated | shared | sequential` 落地：isolated 保持原有 per-issue 行为；shared/sequential 复用 `workspace.root` 作为共享工作树；sequential 强制单并发、使用 `.clawcodex_workspace.lock` 顺序锁、在 integration branch 上累积 commit 链；commit 元数据（base/start SHA、sequence_index）写入 registry；GitSync sequential 模式本地 commit 不 push、不 PR；shared/sequential root 在 cleanup 时保留。19 个专项测试 + 245 个 orchestrator 回归全部通过。
+>
+> **v2.10 变更**：新增 §3.1.9 Shared / Sequential Workspace 策略设计（F-42，📋 设计完成）。为 Orchestrator 增加 `workspace.strategy: isolated | shared | sequential` 规划：保留现有 per-issue isolated 行为，同时支持多个本地 issue 在同一 shared/sequential working tree 上按顺序累积 commit；设计覆盖配置字段、WorkspaceManager 路径选择、顺序锁、dirty tree guard、issue registry commit 元数据、GitSync/cleanup 行为与端到端验收。
 >
 > **v2.9 变更**：补充 F-22 Cron 系统相对 `claude-code-best` 的最新缺口复核结论。`clawcodex_ext/cron_system/` 已覆盖 parser/storage/scheduler/jitter/lock/permanent/inFlight/基础 runs/status 等底层能力，G1~G8 不再作为主要缺口；剩余 P0 缺口集中在真实 REPL/TUI/headless 运行路径接线、scheduled fire 执行队列、run lifecycle finalize、`/cron-list`/`/cron-delete`/trigger detail/manual fire/autonomy status 用户入口、busy gate/filter/teammate ownership 与 durable 文件变更 reload 行为。
 >
@@ -145,6 +149,7 @@ src/
 > - §3.1.6 Issue 重跑入口设计（F-39，✅ 已完成）
 > - §3.1.7 ProgressReporter Sink 协议重构设计（F-40，📋 设计完成）
 > - §3.1.8 Coordinator 轻量工具集（F-41，✅ 已完成）
+> - §3.1.9 Shared / Sequential Workspace 策略设计（F-42，📋 设计完成）
 
 #### 3.1.3 LocalTracker 本地 Issue 文档源设计
 
@@ -1324,6 +1329,185 @@ _COORDINATOR_ALLOWED_TOOLS = {
 - **工具名称模糊匹配**：`filter_coordinator_tools` 用的不是精确匹配而是三后备匹配策略，如果新增一个名称以 "Web" 开头的非预期工具可能导致误放行。Mitigation：白名单设置小（仅 6 个），且新增工具需 review 白名单。
 - **不涉及 Worker 工具变更**：Worker 的 `filter_worker_tools` 逻辑不变，与 Coordinator 无关。
 - **CLAUDE.md 注释同步风险**：`src/repl/core.py:8-30` 的注释手动列出 Coordinator 工具，需保持同步。
+
+---
+
+#### 3.1.9 Shared / Sequential Workspace 策略设计（F-42）
+
+**状态**: ✅ 完成
+**优先级**: P0
+**跟踪文档**: `docs/PROGRESS.md` → `F-42: Orchestrator Shared / Sequential Workspace 策略`
+
+### 目标
+
+扩展 Orchestrator 的 workspace 策略，使本地 issue 驱动的特性规划流程既能保留现有“每个 issue 一个独立 clone”的隔离模式，也能支持多个 issue 在同一个 working tree / integration branch 上按排序顺序叠加开发。Sequential 模式的核心目标是：issue 2 启动时可以直接看到 issue 1 已提交的 commit，每个 issue 测试通过后留下一个可审查 commit，全部 issue 完成后由人工统一检视 commit 序列并创建一个 PR。
+
+### 背景与问题
+
+当前 `WorkspaceManager` 的语义是 per-issue isolated workspace：`create_for_issue(issue)` 会根据 `issue.identifier` 生成 `safe_id`，最终工作目录为 `workspace.root / safe_id`。当配置了 `repo_clone_url` 时，每个 issue 都会在自己的子目录内 clone / checkout issue branch。
+
+这对远程 issue 并行开发是安全的，但不能满足本地特性规划拆分流程：
+
+1. 多个 issue 必须按 `LocalTracker` 排序顺序逐个执行，而不是并行执行。
+2. 后一个 issue 必须建立在前一个 issue 已提交 commit 的代码状态之上。
+3. commit 序列必须保留在同一个 integration branch 上，等待人工最终合并为单个 PR。
+4. workflow 配置不能仅通过把 `branch_name` 写成同一个分支来解决问题，因为当前 workspace path 仍按 issue 分裂，未推送 commit 不会自动出现在下一个 issue 的 clone 中。
+
+### 配置设计
+
+新增 `workspace.strategy`，默认值为 `isolated`，保证现有 workflow 不改配置也保持原行为。
+
+```yaml
+workspace:
+  strategy: sequential          # isolated | shared | sequential
+  root: /tmp/clawcodex-dev
+  repo_clone_url: /mnt/e/Nodel/ExerciseProject/clawcodex
+  clone_depth: 0
+  base_branch: dev-decoupling-refactor-58ea488
+  integration_branch: dev-decoupling-refactor-58ea488
+  checkout_issue_branch: false
+  require_clean_start: true
+  require_clean_between_issues: true
+  preserve_on_terminal: true
+  sequential_lock: true
+
+agent:
+  max_concurrent_agents: 1
+  max_concurrent_agents_by_state:
+    open: 1
+    ready: 1
+```
+
+建议 schema 扩展：
+
+```python
+@dataclass
+class WorkspaceConfig:
+    root: Path
+    hooks: dict[str, Any] = None
+    repo_clone_url: str | None = None
+    clone_depth: int | None = 1
+    checkout_issue_branch: bool = True
+    git_username: str | None = None
+    git_token: str | None = None
+    strategy: Literal["isolated", "shared", "sequential"] = "isolated"
+    base_branch: str | None = None
+    integration_branch: str | None = None
+    require_clean_start: bool = True
+    require_clean_between_issues: bool = True
+    preserve_on_terminal: bool = True
+    sequential_lock: bool = True
+```
+
+### 策略语义
+
+| strategy | workspace path | 并发语义 | checkout / branch 语义 | cleanup 语义 | 适用场景 |
+|----------|----------------|----------|-------------------------|--------------|----------|
+| `isolated` | `workspace.root / safe_issue_id` | 可按现有配置并发 | 每个 issue 独立 checkout issue branch | 保持现有 per-issue cleanup | 远程 issue、互不依赖任务 |
+| `shared` | `workspace.root` | 默认要求 `max_concurrent_agents=1`，除非未来显式支持共享并发 | 多个 issue 共享同一工作树，可由 workflow 指定 branch | 不删除 shared root | 手工共享分支、少量串行本地任务 |
+| `sequential` | `workspace.root` | 强制单 agent、单 active issue | 初始化或复用 integration branch；issue 间保留 commit 序列 | 永不自动删除工作树 | 特性规划拆分 issue，按顺序叠加开发 |
+
+`shared` 和 `sequential` 都使用同一个目录，但 `sequential` 是更强约束：它必须验证调度并发为 1，必须持有顺序锁，必须在 issue 开始/结束时检查工作区清洁度，并且 registry 需要记录 issue 间 commit 链。
+
+### WorkspaceManager 改造
+
+保持 `WorkspaceManager.create_for_issue(issue)` 作为外部 API，避免影响 Orchestrator 调用方；内部按 strategy 分派：
+
+```python
+async def create_for_issue(self, issue: Any) -> Workspace:
+    if self.config.strategy == "isolated":
+        return await self._create_isolated_workspace(issue)
+    if self.config.strategy == "shared":
+        return await self._create_shared_workspace(issue)
+    if self.config.strategy == "sequential":
+        return await self._create_sequential_workspace(issue)
+    raise ValueError(f"Unsupported workspace strategy: {self.config.strategy}")
+```
+
+路径选择规则：
+
+- `isolated`: `_root / _safe_identifier(issue.identifier)`，完全沿用现状。
+- `shared` / `sequential`: `_root` 本身就是 repo working tree；如果不存在则 clone 到 `_root`；如果存在但不是 git repo，根据配置 fail-closed，不自动删除用户目录。
+
+Sequential 准备流程：
+
+1. 获取 `.clawcodex_workspace.lock`，锁文件位于 shared root 或 root parent，记录 pid / issue_id / timestamp。
+2. 如果 `root` 不存在且配置了 `repo_clone_url`，clone 到 `root`；`clone_depth: 0` 表示完整 clone，便于本地 commit 序列审查。
+3. checkout `integration_branch`；如果不存在，则从 `base_branch` 创建。
+4. 如果 `require_clean_start` 为 true，运行等价于 `git status --porcelain` 的检查，dirty 时拒绝启动当前 issue。
+5. 返回的 `Workspace` 使用相同 `path=root`，但保留当前 `issue_identifier` / `issue_id`，供 dashboard、event log、registry 区分 session。
+
+### Orchestrator 调度约束
+
+当 `workspace.strategy == "sequential"` 时，配置加载或 Orchestrator 初始化阶段应强制校验：
+
+1. `agent.max_concurrent_agents == 1`。
+2. `agent.max_concurrent_agents_by_state` 中所有 active state 的值均不超过 1。
+3. LocalTracker 场景下建议 issue frontmatter 使用 `priority: 1, 2, 3...` 与 `identifier: 001-...`，排序仍沿用 `LocalTrackerAdapter.fetch_candidate_issues()` 的现有规则。
+4. 当前 issue 未进入 terminal state 前，不派发下一个 issue。
+5. 如果当前 workspace 缺少前序 issue 应有的 commit 链，agent prompt 应停止并报告缺失前置，而不是重新实现前序 issue。
+
+### IssueRegistry / 进度元数据
+
+为 shared/sequential 模式补充 per-issue commit 链记录，便于 dashboard、报告和人工审查：
+
+```python
+@dataclass
+class IssueRecord:
+    workspace_strategy: str | None = None
+    workspace_path: str | None = None
+    base_commit_sha: str | None = None
+    start_commit_sha: str | None = None
+    commit_sha: str | None = None
+    previous_issue_id: str | None = None
+    sequence_index: int | None = None
+```
+
+字段语义：
+
+- `base_commit_sha`: sequential workspace 初始化时 integration branch 的起点。
+- `start_commit_sha`: 当前 issue agent run 开始前的 HEAD。
+- `commit_sha`: 当前 issue 测试和 commit 成功后的 HEAD。
+- `previous_issue_id`: 当前 issue 依赖的前一个已完成 issue。
+- `sequence_index`: 本轮本地 issue 排序后的序号，用于 dashboard 展示和审查报告。
+
+### GitSync / Hook / Cleanup 行为
+
+Sequential 模式下 GitSync 继续保持“一 issue 一 commit”的交付边界，但不得自动 push / PR / merge。LocalTracker workflow 中 `post_sync` 应为空，最终远端 PR 由人工在完整 commit 序列审查后创建。
+
+- `pre_commit`: 可运行测试或格式化 gate，但失败时必须阻止 commit。
+- `pre_push` / `post_sync`: sequential local workflow 默认留空。
+- `cleanup`: `isolated` 保持现有行为；`shared` / `sequential` 不调用 `shutil.rmtree(root)`，只释放锁并保留 working tree。
+- 失败时保留 dirty workspace 供人工检查；除非用户显式 retry/reset，不自动丢弃改动。
+
+### 风险与约束
+
+- **并发风险**：shared working tree 不适合并发写入。Sequential 模式必须 fail-closed 地拒绝 `max_concurrent_agents > 1`。
+- **脏工作区风险**：前一次失败可能留下未提交变更。默认 `require_clean_start=true`，避免后续 issue 混入未审查代码。
+- **分支误用风险**：`base_branch` 与 `integration_branch` 配错会导致 commit 序列落在错误分支。启动时应在日志/dashboard 中显式展示 branch 和 start SHA。
+- **cleanup 数据丢失风险**：shared/sequential workspace 可能包含人工未推送 commit，cleanup 必须默认 preserve。
+- **重跑语义风险**：F-39 retry 在 sequential 模式下不能简单 reset 当前 issue 目录；需要区分“在当前 HEAD 追加 follow-up commit”和“人工回滚到 start_commit_sha 后重跑”。
+
+### 测试计划
+
+1. `WorkspaceManager` path selection：验证 `isolated` 使用 `root/safe_id`，`shared` / `sequential` 使用 `root`。
+2. clone/reuse：sequential 第一个 issue clone repo，第二个 issue 复用同一 `.git`。
+3. branch 初始化：`integration_branch` 存在时 checkout；不存在时从 `base_branch` 创建。
+4. dirty guard：存在未提交文件且 `require_clean_start=true` 时拒绝派发。
+5. cleanup preserve：shared/sequential 完成后不删除 `root`。
+6. concurrency validation：`strategy=sequential` 且 `max_concurrent_agents>1` 时配置加载或 Orchestrator 初始化失败。
+7. registry metadata：每个 issue 写入 `start_commit_sha` / `commit_sha` / `sequence_index`。
+8. end-to-end local sequence：两个本地 issue 按 priority 执行，第二个 issue 的 `git log` 能看到第一个 issue commit，并最终形成两个连续 commit。
+
+### 验收标准
+
+1. 未配置 `workspace.strategy` 的现有 workflow 行为不变。
+2. `workspace.strategy: sequential` 下，两个 active local issue 会在同一 working tree 中按 LocalTracker 排序串行执行。
+3. 第二个 issue 启动时 HEAD 包含第一个 issue 的 commit。
+4. 每个 issue 成功后留下一个独立 commit，并在 registry / dashboard 中可追踪。
+5. sequential local workflow 默认不 push、不开 PR、不 merge、不 squash。
+6. 工作区 dirty 或并发配置不安全时 fail-closed，并给出可操作错误信息。
+7. 全部 issue 完成后，人工可以从 integration branch 上审查连续 commit 序列并创建一个 PR。
 
 ---
 
