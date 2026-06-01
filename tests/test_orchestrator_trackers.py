@@ -11,6 +11,7 @@ from typing import Any
 
 import httpx
 
+from extensions.orchestrator import report_writer
 from extensions.orchestrator.issue_registry import IssueRegistry
 from extensions.orchestrator.prompt_builder import PromptBuilder
 from extensions.orchestrator.review_feedback import ReviewFeedbackService
@@ -176,6 +177,42 @@ class TestWorkflowTrackerConfig(unittest.TestCase):
             config.tracker.terminal_states,
             ["completed", "closed", "cancelled", "failed", "abandoned"],
         )
+
+    def test_agent_verification_and_sync_hooks_parse_from_workflow(self) -> None:
+        config = WorkflowConfig.from_dict(
+            {
+                "tracker": {"kind": "local", "issues_path": "/tmp/issues"},
+                "agent": {
+                    "test_command": "pytest",
+                    "build_command": "python -m build",
+                    "lint_command": "ruff check .",
+                    "verification": {"timeout_ms": 123_000},
+                },
+                "hooks": {
+                    "pre_commit": "python -m black .",
+                    "pre_push": "pytest -q",
+                    "post_sync": "python scripts/report.py",
+                    "timeout_ms": 9_000,
+                },
+            }
+        )
+
+        self.assertEqual(config.agent.test_command, "pytest")
+        self.assertEqual(config.agent.build_command, "python -m build")
+        self.assertEqual(config.agent.lint_command, "ruff check .")
+        self.assertEqual(config.agent.verification.timeout_ms, 123_000)
+        self.assertEqual(config.hooks.pre_commit, "python -m black .")
+        self.assertEqual(config.hooks.pre_push, "pytest -q")
+        self.assertEqual(config.hooks.post_sync, "python scripts/report.py")
+        self.assertEqual(config.hooks.timeout_ms, 9_000)
+
+    def test_agent_verification_commands_default_to_empty_skip_values(self) -> None:
+        config = WorkflowConfig.from_dict({})
+
+        self.assertEqual(config.agent.test_command, "")
+        self.assertEqual(config.agent.build_command, "")
+        self.assertEqual(config.agent.lint_command, "")
+        self.assertEqual(config.agent.verification.timeout_ms, 600_000)
 
     def test_tracker_state_lists_accept_scalar_values(self) -> None:
         config = WorkflowConfig.from_dict(
@@ -350,6 +387,25 @@ Body remains.
         self.assertEqual(comments[1].body, "@alice\n\nNeed details")
         self.assertEqual(new_comments, [comments[1]])
 
+    async def test_update_comment_rewrites_matching_ndjson_record(self) -> None:
+        with TemporaryDirectory() as tmp:
+            adapter = LocalTrackerAdapter(Path(tmp))
+            first = await adapter.create_comment("LOCAL-001", "in progress")
+            second = await adapter.create_comment("LOCAL-001", "unchanged")
+            assert first is not None
+            assert second is not None
+
+            updated = await adapter.update_comment("LOCAL-001", first.id or "", "sync complete")
+            comments = await adapter.fetch_issue_comments("LOCAL-001")
+            tmp_files = list(Path(tmp).glob("*.tmp"))
+
+        assert updated is not None
+        self.assertEqual(updated.id, first.id)
+        self.assertEqual(updated.body, "sync complete")
+        self.assertEqual(comments[0].body, "sync complete")
+        self.assertEqual(comments[1].body, "unchanged")
+        self.assertEqual(tmp_files, [])
+
     async def test_comment_files_include_hash_to_avoid_sanitized_name_collision(self) -> None:
         with TemporaryDirectory() as tmp:
             issues_path = Path(tmp)
@@ -446,6 +502,64 @@ pr_title: Local PR
                 title="Local PR",
             ),
         )
+
+
+class TestReportWriter(unittest.TestCase):
+    def test_write_creates_workspace_and_persistent_markdown_json(self) -> None:
+        with TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "workspace"
+            home = Path(tmp) / "home"
+            workspace.mkdir()
+            old_home = os.environ.get("HOME")
+            os.environ["HOME"] = str(home)
+            try:
+                result = report_writer.write(
+                    run_id="run-01-20260601T000000Z",
+                    workspace_path=workspace,
+                    tracker="github",
+                    owner="acme",
+                    repo="widget",
+                    issue=Issue(id="77", identifier="ISSUE-77", title="Verify reports"),
+                    status="completed",
+                    branch_name="clawcodex/issue-77",
+                    base_branch="main",
+                    commit_sha="abc123",
+                    pr_number="9",
+                    pr_url="https://example.test/pr/9",
+                    turn_count=2,
+                    tool_count=3,
+                    verification_status="passed",
+                    verification_output="pytest passed",
+                    output_text="agent output",
+                )
+            finally:
+                if old_home is None:
+                    os.environ.pop("HOME", None)
+                else:
+                    os.environ["HOME"] = old_home
+
+            workspace_md = Path(result.workspace_markdown_path)
+            persistent_md = Path(result.persistent_markdown_path)
+            workspace_json = Path(result.workspace_json_path)
+            persistent_json = Path(result.persistent_json_path)
+            markdown = workspace_md.read_text(encoding="utf-8")
+            persistent_markdown = persistent_md.read_text(encoding="utf-8")
+            workspace_payload = workspace_json.read_text(encoding="utf-8")
+            persistent_payload = persistent_json.read_text(encoding="utf-8")
+            payload = json.loads(workspace_payload)
+
+            self.assertTrue(workspace_md.exists())
+            self.assertTrue(persistent_md.exists())
+            self.assertTrue(workspace_json.exists())
+            self.assertTrue(persistent_json.exists())
+            self.assertEqual(markdown, persistent_markdown)
+            self.assertEqual(workspace_payload, persistent_payload)
+            self.assertIn("# ClawCodex Run Report", markdown)
+            self.assertIn("- Verification: `passed`", markdown)
+            self.assertNotIn(result.workspace_markdown_path, markdown)
+            self.assertNotIn(result.persistent_markdown_path, markdown)
+            self.assertEqual(payload["run_id"], "run-01-20260601T000000Z")
+            self.assertEqual(payload["verification_output"], "pytest passed")
 
 
 class TestReviewFeedbackPrompt(unittest.TestCase):
@@ -955,6 +1069,64 @@ class TestRepositoryTrackerAdapter(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen["query"]["access_token"], "gitee-token")
         self.assertIn("body=job+finished", seen["body"])
 
+    async def test_github_update_comment_uses_issue_comment_patch(self) -> None:
+        seen: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["method"] = request.method
+            seen["path"] = request.url.path
+            seen["payload"] = json.loads(request.content.decode("utf-8"))
+            return httpx.Response(
+                200,
+                json={
+                    "id": 123,
+                    "body": "updated summary",
+                    "user": {"login": "clawcodex"},
+                },
+            )
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            adapter = RepositoryTrackerAdapter(
+                platform="github",
+                owner="acme",
+                repo="widget",
+                api_key="gh-test-token",
+                http_client=client,
+            )
+            comment = await adapter.update_comment("99", "123", "updated summary")
+
+        self.assertEqual(seen["method"], "PATCH")
+        self.assertEqual(seen["path"], "/repos/acme/widget/issues/comments/123")
+        self.assertEqual(seen["payload"], {"body": "updated summary"})
+        assert comment is not None
+        self.assertEqual(comment.id, "123")
+        self.assertEqual(comment.body, "updated summary")
+
+    async def test_gitee_update_comment_uses_access_token_form_patch(self) -> None:
+        seen: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["method"] = request.method
+            seen["path"] = request.url.path
+            seen["query"] = dict(request.url.params)
+            seen["body"] = request.content.decode("utf-8")
+            return httpx.Response(200, json={"id": 321, "body": "updated"})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            adapter = RepositoryTrackerAdapter(
+                platform="gitee",
+                owner="acme",
+                repo="widget",
+                api_key="gitee-token",
+                http_client=client,
+            )
+            await adapter.update_comment("99", "321", "updated")
+
+        self.assertEqual(seen["method"], "PATCH")
+        self.assertEqual(seen["path"], "/api/v5/repos/acme/widget/issues/comments/321")
+        self.assertEqual(seen["query"]["access_token"], "gitee-token")
+        self.assertIn("body=updated", seen["body"])
+
     async def test_github_refresh_by_ids_returns_mapping(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             issue_no = request.url.path.rsplit("/", 1)[-1]
@@ -1069,6 +1241,48 @@ class TestRepositoryTrackerAdapter(unittest.IsolatedAsyncioTestCase):
                 "base": "main",
                 "body": "PR body",
             },
+        )
+
+    async def test_update_pull_request_uses_pull_patch(self) -> None:
+        seen: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["method"] = request.method
+            seen["path"] = request.url.path
+            seen["payload"] = json.loads(request.content.decode("utf-8"))
+            return httpx.Response(
+                200,
+                json={
+                    "number": 22,
+                    "title": "Updated PR",
+                    "html_url": "https://github.com/acme/widget/pull/22",
+                },
+            )
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            adapter = RepositoryTrackerAdapter(
+                platform="github",
+                owner="acme",
+                repo="widget",
+                api_key="gh-test-token",
+                http_client=client,
+            )
+            pr = await adapter.update_pull_request(
+                pull_request=PullRequestRef(number="22", title="Old PR"),
+                title="Updated PR",
+                body="updated body",
+            )
+
+        self.assertEqual(seen["method"], "PATCH")
+        self.assertEqual(seen["path"], "/repos/acme/widget/pulls/22")
+        self.assertEqual(seen["payload"], {"title": "Updated PR", "body": "updated body"})
+        self.assertEqual(
+            pr,
+            PullRequestRef(
+                number="22",
+                title="Updated PR",
+                url="https://github.com/acme/widget/pull/22",
+            ),
         )
 
     async def test_gitcode_fetch_pull_request_feedback_normalizes_comments_and_ci(self) -> None:

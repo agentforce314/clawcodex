@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import uuid
 from pathlib import Path
@@ -75,8 +76,47 @@ class LocalTrackerAdapter(TrackerAdapter):
                 issues[issue.id or ""] = issue
         return issues
 
-    async def create_comment(self, issue_id: str, body: str) -> None:
-        self._append_comment(issue_id, body)
+    async def create_comment(self, issue_id: str, body: str) -> Comment | None:
+        return self._append_comment(issue_id, body)
+
+    async def update_comment(
+        self,
+        issue_id: str,
+        comment_id: str,
+        body: str,
+    ) -> Comment | None:
+        comment_path = self._comments_path(issue_id)
+        if not comment_path.exists():
+            return None
+        now = utc_now_iso()
+        updated_comment: Comment | None = None
+        lines: list[str] = []
+        for line in comment_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                lines.append(line)
+                continue
+            if str(payload.get("id")) == str(comment_id):
+                payload["body"] = body
+                payload["updated_at"] = now
+                updated_comment = Comment(
+                    id=_string_or_none(payload.get("id")),
+                    body=_string_or_none(payload.get("body")),
+                    author_login=_string_or_none(payload.get("author_login")),
+                    created_at=_string_or_none(payload.get("created_at")),
+                    updated_at=_string_or_none(payload.get("updated_at")),
+                    in_reply_to_id=_string_or_none(payload.get("in_reply_to_id")),
+                )
+            lines.append(json.dumps(payload, ensure_ascii=False))
+        if updated_comment is None:
+            return None
+        tmp_path = comment_path.with_suffix(comment_path.suffix + ".tmp")
+        tmp_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        os.replace(tmp_path, comment_path)
+        return updated_comment
 
     async def update_issue_state(self, issue_id: str, state: str) -> None:
         document = self._document_for_issue(issue_id)

@@ -63,7 +63,7 @@ class TrackerAdapter(ABC):
         """
 
     @abstractmethod
-    async def create_comment(self, issue_id: str, body: str) -> None:
+    async def create_comment(self, issue_id: str, body: str) -> "Comment | None":
         """Post comment to issue (used by agent to report progress)."""
 
     @abstractmethod
@@ -80,6 +80,25 @@ class TrackerAdapter(ABC):
         body: str,
     ) -> "PullRequestRef | None":
         """Ensure a pull request exists for the branch."""
+        return None
+
+    async def update_pull_request(
+        self,
+        *,
+        pull_request: "PullRequestRef",
+        title: str | None = None,
+        body: str | None = None,
+    ) -> "PullRequestRef | None":
+        """Update pull request metadata when supported."""
+        return None
+
+    async def update_comment(
+        self,
+        issue_id: str,
+        comment_id: str,
+        body: str,
+    ) -> "Comment | None":
+        """Update an existing issue comment when supported."""
         return None
 
     async def find_pull_request(

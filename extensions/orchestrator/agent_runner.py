@@ -9,6 +9,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from ..api.query import PhaseComplete, QueryConfig, QueryRunner
@@ -43,6 +44,15 @@ class AgentSession:
     event_queue: "asyncio.Queue | None" = None
     prompt_override: str | None = None
     run_kind: str = "issue"
+    run_id: str | None = None
+    summary_comment_id: str | None = None
+    tool_count: int = 0
+    verification_status: str | None = None
+    verification_output: str | None = None
+    report_path: str | None = None
+    attempt: int = 1
+    issue_attempt: int = 1
+    followup_attempt: int = 1
 
 
 @dataclass
@@ -115,6 +125,10 @@ class AgentRunner:
         """
         issue = session.issue
         workspace = session.workspace
+        if session.run_id is None:
+            session.run_id = self._build_run_id(session)
+        if comment_tracker is not None and issue.id:
+            await self._post_summary_placeholder(session, comment_tracker)
 
         logger.info(
             "Starting agent run issue_id=%s identifier=%s workspace=%s",
@@ -281,13 +295,15 @@ class AgentRunner:
                     session.turn_count = turn_number
 
                     # Emit PhaseComplete event for progress reporting
+                    phase_event = PhaseComplete(
+                        phase=turn_number,
+                        turn_count=turn_number,
+                    )
+                    self._write_event_log(session.workspace.path, issue.id, phase_event)
                     if progress_reporter is not None:
-                        phase_event = PhaseComplete(
-                            phase=turn_number,
-                            turn_count=turn_number,
-                        )
                         progress_reporter.on_event(phase_event, session)
 
+                    session.tool_count = tool_count
                     if event.reason == "success":
                         # Check if issue is still active before declaring completion
                         if tracker is not None and issue.id:
@@ -339,60 +355,42 @@ class AgentRunner:
         )
 
         # Emit PhaseComplete event for progress reporting (max_turns path)
+        phase_event = PhaseComplete(
+            phase=turn_number,
+            turn_count=turn_number,
+        )
+        self._write_event_log(session.workspace.path, issue.id, phase_event)
         if progress_reporter is not None:
-            phase_event = PhaseComplete(
-                phase=turn_number,
-                turn_count=turn_number,
-            )
             progress_reporter.on_event(phase_event, session)
 
-        # Post completion summary to Linear
-        await self._post_run_comment(
-            session, tool_count, comment_tracker, logger
-        )
+        session.tool_count = tool_count
 
-    async def _post_run_comment(
+    def _build_run_id(self, session: AgentSession) -> str:
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        attempt = getattr(session, "attempt", 1)
+        if session.run_kind == "review_followup":
+            issue_attempt = getattr(session, "issue_attempt", attempt)
+            followup_attempt = getattr(session, "followup_attempt", 1)
+            return f"run-{issue_attempt}-followup-{followup_attempt}-{timestamp}"
+        return f"run-{attempt:02d}-{timestamp}"
+
+    async def _post_summary_placeholder(
         self,
         session: AgentSession,
-        tool_count: int,
         comment_tracker: Any,
-        logger: Any,
     ) -> None:
-        """Post a run summary comment to the configured tracker."""
-        if comment_tracker is None or not session.issue.id:
-            return
-
-        identifier = session.issue.identifier or "unknown"
-        status = session.status
-        turns = session.turn_count
-        output = session.output_text
-
-        # Truncate output excerpt to avoid exceeding tracker comment limits
-        excerpt = output[-1500:] if len(output) > 1500 else output
-        if excerpt and len(output) > 1500:
-            excerpt = f"... (truncated from {len(output)} chars)\n{excerpt}"
-
-        body = (
-            f"## ClawCodex Run Complete\n\n"
-            f"**Status:** {status}\n"
-            f"**Turns:** {turns}\n"
-            f"**Tool calls:** {tool_count}\n\n"
-            f"**Output excerpt:**\n"
-            f"```\n{excerpt}\n```\n"
-        )
-
+        body = "## ClawCodex Run Summary\n\n⏳ Run in progress."
         try:
-            await comment_tracker.create_comment(session.issue.id, body)
-            logger.info(
-                "Posted completion comment for issue_id=%s",
-                session.issue.id,
-            )
+            created = await comment_tracker.create_comment(session.issue.id, body)
         except Exception as exc:
             logger.warning(
-                "Failed to post completion comment for issue_id=%s: %s",
+                "Failed to post summary placeholder issue_id=%s: %s",
                 session.issue.id,
                 exc,
             )
+            return
+        if created is not None and getattr(created, "id", None):
+            session.summary_comment_id = created.id
 
     async def _should_continue(
         self,
@@ -479,6 +477,13 @@ class AgentRunner:
                     "timestamp": time.strftime("%H:%M:%S"),
                     "type": "text_delta",
                     "content": event.content,
+                }
+            elif isinstance(event, PhaseComplete):
+                entry = {
+                    "timestamp": time.strftime("%H:%M:%S"),
+                    "type": "phase_complete",
+                    "phase": event.phase,
+                    "turn_count": event.turn_count,
                 }
             else:
                 entry = {

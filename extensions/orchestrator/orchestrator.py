@@ -13,12 +13,14 @@ from typing import Any
 
 from .agent_runner import AgentRunner, AgentSession, RetryItem
 from .config.schema import WorkflowConfig
-from .git_sync import GitSyncService
+from .git_sync import GitSyncService, HookFailedError, VerificationFailed
 from .issue import Issue
 from .issue_registry import IssueRegistry, IssueStatus
 from .prompt_builder import PromptBuilder
+from .progress_reporter import ProgressReporter
 from .review_feedback import ReviewFeedbackService, ReviewFollowup
 from .status_dashboard import SessionStatus, StatusDashboard
+from src.tool_system.context import ToolContext
 from .tracker import TrackerAdapter
 from .workspace import WorkspaceManager
 
@@ -72,6 +74,8 @@ class Orchestrator:
             tracker,
             workflow.tracker.branch_prefix,
             workflow.workspace.gitignore_patterns,
+            workflow.agent,
+            workflow.hooks,
         )
         self._state = OrchestratorState(
             poll_interval_ms=workflow.polling.interval_ms,
@@ -118,6 +122,8 @@ class Orchestrator:
                 escalation=getattr(workflow.agent, "clarification_escalation", "skip"),
             ),
         )
+        self._progress_context = ToolContext(workspace_root=workspace_root)
+        self._progress_reporter = ProgressReporter(self._progress_context)
 
     def _sync_gitignore_to_workspace(self, workspace: Any) -> None:
         """Write .gitignore to workspace root from configured patterns."""
@@ -281,7 +287,11 @@ class Orchestrator:
         session.base_branch = followup.record.base_branch
         session.feedback_ids = [item.id for item in followup.feedback]
         self._state.running[issue.id or ""] = session
-        self._registry.increment_followup_attempt(issue.id or "")
+        followup_record = self._registry.increment_followup_attempt(issue.id or "")
+        session.issue_attempt = max(1, getattr(followup.record, "attempt_count", 0) + 1)
+        session.followup_attempt = (
+            followup_record.followup_attempt_count if followup_record is not None else 1
+        )
         self._sync_gitignore_to_workspace(session.workspace)
         self.status_dashboard.on_session_start(
             SessionStatus(
@@ -377,6 +387,9 @@ class Orchestrator:
             pause_resume_event=asyncio.Event(),
             event_queue=asyncio.Queue(),
         )
+        retry_attempt = self._state.retry_attempts.get(issue.id or "", 0)
+        session.attempt = retry_attempt + 1
+        session.issue_attempt = session.attempt
         self._state.running[issue.id] = session
 
         # Update persistent registry so `issue list` reflects running state
@@ -409,6 +422,7 @@ class Orchestrator:
                 )
                 ran_agent = True
                 try:
+                    self._progress_reporter.set_task_id(session.issue.id)
                     await self.agent_runner.run(
                         session,
                         self.workflow,
@@ -416,10 +430,18 @@ class Orchestrator:
                         tracker=self.tracker,
                         comment_tracker=self.tracker,
                         clarification_resolver=self._clarification_resolver,
+                        progress_reporter=self._progress_reporter,
                     )
                     if session.status == "completed":
                         sync_result = await self.git_sync.sync(session)
                         if sync_result is not None:
+                            self._registry.update_report(
+                                session.issue.id or "",
+                                report_path=getattr(session, "report_path", None),
+                                verification_status=getattr(session, "verification_status", None),
+                                verification_output=getattr(session, "verification_output", None),
+                                summary_comment_id=getattr(session, "summary_comment_id", None),
+                            )
                             if session.run_kind == "review_followup":
                                 self._registry.mark_feedback_processed(
                                     session.issue.id or "",
@@ -448,6 +470,26 @@ class Orchestrator:
                         session.workspace,
                         session.issue,
                     )
+            except VerificationFailed as exc:
+                logger.warning(
+                    "Verification failed issue_id=%s: %s",
+                    session.issue.id,
+                    exc,
+                )
+                session.status = "verification_failed"
+                session.verification_status = "failed"
+                session.verification_output = exc.output
+            except HookFailedError as exc:
+                logger.warning(
+                    "Hook failed issue_id=%s hook=%s: %s",
+                    session.issue.id,
+                    exc.hook_name,
+                    exc,
+                )
+                session.status = "verification_failed"
+                session.verification_status = "failed"
+                session.verification_output = exc.output
+                session.last_hook_error = str(exc)
             except Exception as exc:
                 logger.exception(
                     "Agent run failed issue_id=%s: %s",
@@ -465,6 +507,17 @@ class Orchestrator:
                     self.status_dashboard.on_session_complete(session.issue.id or "")
                     self._state.completed.add(session.issue.id or "")
                     self._registry.mark_completed(session.issue.id or "")
+                elif session.status == "verification_failed":
+                    self.status_dashboard.on_session_failed(
+                        session.issue.id or "",
+                        str(session.status),
+                    )
+                    self._registry.mark_verification_failed(
+                        session.issue.id or "",
+                        output=getattr(session, "verification_output", None),
+                        hook_error=getattr(session, "last_hook_error", None),
+                    )
+                    await self._schedule_retry(session)
                 else:
                     self.status_dashboard.on_session_failed(
                         session.issue.id or "",

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from ..tracker import TrackerAdapter
+from ..tracker import Comment, TrackerAdapter
 from .client import LinearGraphQLClient
 from .issue import Issue
 
@@ -15,6 +15,28 @@ _CREATE_COMMENT_MUTATION = """
 mutation SymphonyCreateComment($issueId: String!, $body: String!) {
   commentCreate(input: {issueId: $issueId, body: $body}) {
     success
+    comment {
+      id
+      body
+      createdAt
+      updatedAt
+      user { name displayName email }
+    }
+  }
+}
+"""
+
+_UPDATE_COMMENT_MUTATION = """
+mutation SymphonyUpdateComment($commentId: String!, $body: String!) {
+  commentUpdate(id: $commentId, input: {body: $body}) {
+    success
+    comment {
+      id
+      body
+      createdAt
+      updatedAt
+      user { name displayName email }
+    }
   }
 }
 """
@@ -100,17 +122,30 @@ class LinearAdapter(TrackerAdapter):
         )
         return {issue.id: issue for issue in issues if issue.id}
 
-    async def create_comment(self, issue_id: str, body: str) -> None:
+    async def create_comment(self, issue_id: str, body: str) -> Comment | None:
         body_resp = await self.client.graphql(
             _CREATE_COMMENT_MUTATION,
             {"issueId": issue_id, "body": body},
         )
-        success = (
-            body_resp.get("data", {}).get("commentCreate", {}).get("success")
-            is True
-        )
-        if not success:
+        result = body_resp.get("data", {}).get("commentCreate", {})
+        if result.get("success") is not True:
             raise LinearAdapterError("comment_create_failed")
+        return _comment_from_node(result.get("comment"))
+
+    async def update_comment(
+        self,
+        issue_id: str,
+        comment_id: str,
+        body: str,
+    ) -> Comment | None:
+        body_resp = await self.client.graphql(
+            _UPDATE_COMMENT_MUTATION,
+            {"commentId": comment_id, "body": body},
+        )
+        result = body_resp.get("data", {}).get("commentUpdate", {})
+        if result.get("success") is not True:
+            raise LinearAdapterError("comment_update_failed")
+        return _comment_from_node(result.get("comment"))
 
     async def update_issue_state(self, issue_id: str, state: str) -> None:
         state_id = await self._resolve_state_id(issue_id, state)
@@ -137,6 +172,30 @@ class LinearAdapter(TrackerAdapter):
             if state_id:
                 return state_id
         raise LinearAdapterError(f"state_not_found: {state_name}")
+
+
+def _comment_from_node(node: Any) -> Comment | None:
+    if not isinstance(node, dict):
+        return None
+    user = node.get("user") if isinstance(node.get("user"), dict) else {}
+    return Comment(
+        id=_string_or_none(node.get("id")),
+        body=_string_or_none(node.get("body")),
+        author_login=(
+            _string_or_none(user.get("displayName"))
+            or _string_or_none(user.get("name"))
+            or _string_or_none(user.get("email"))
+        ),
+        created_at=_string_or_none(node.get("createdAt")),
+        updated_at=_string_or_none(node.get("updatedAt")),
+    )
+
+
+def _string_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 class LinearAdapterError(Exception):

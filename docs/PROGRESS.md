@@ -2,9 +2,11 @@
 
 > 文档路径: `docs/PROGRESS.md`
 > 基于: `docs/open-source-replacement-progress.md`, `docs/FEATURE_PLAN.md`
-> 版本: v2.4
+> 版本: v2.5
 > 更新日期: 2026-06-01
 > 上游同步: 68dc3c5 (Phase 11 bridge complete)
+>
+> **v2.5 变更**：表格中所有 ✅ 已完成 / ✅ 基础完成的项（R-1~R-7、F-1、F-3、F-14、F-15、F-17、F-19、F-20、F-21、F-23、F-24、F-25、F-27、F-29、F-30、F-31、F-32）详细设计已归档至 [ARCHIVED_PROGRESS.md](./ARCHIVED_PROGRESS.md) 与 [ARCHIVED_FEATURES.md](./ARCHIVED_FEATURES.md)，本文件仅保留任务总览表与仍处规划/进行中任务的详细设计。
 
 ---
 
@@ -25,10 +27,12 @@
 | R-9 | 权限规则引擎 | 手动实现 (~150 行) | Casbin | ~150 行 | P2 | ⏳ 待开始 |
 | R-10 | 日志系统 | print/logging | structlog | - | P2 | ⏳ 待开始 |
 
-**总计已减少代码**: ~3,100 行
-**预计全部完成后减少**: ~4,530+ 行
+**总计已减少代码**: ~4,530 行
+**预计全部完成后减少**: ~4,530+ 行（剩余 R-8~R-10 实施后达到完整目标）
 
 ### 1.2 功能模块开发
+
+> 状态为 ✅ 完成 / ✅ 基础完成的项（F-1、F-3、F-14、F-15、F-17、F-19、F-20、F-21、F-23、F-24、F-25、F-27、F-29、F-30、F-31、F-32）详细设计已归档；本文仅保留概览与链接，详见 [ARCHIVED_PROGRESS.md](./ARCHIVED_PROGRESS.md) 与 [ARCHIVED_FEATURES.md](./ARCHIVED_FEATURES.md)。
 
 | ID | 模块 | 优先级 | 状态 | 备注 |
 |----|------|--------|------|------|
@@ -432,51 +436,12 @@ prompt = build_full_system_prompt(
 
 ### R-7: LiteLLM 替换 Provider 层
 
-**状态**: ✅ 完成
-**完成日期**: 2026-05-30
+**状态**: ✅ 完成（2026-05-30）
 **优先级**: P0
 **预计减少代码**: ~1,430 行
 
-#### 背景
-`src/providers/` 包含多个 Provider 实现 (~1,630 行)。
-
-#### 实现方案
-使用 `LiteLLM` 统一 Provider 层，支持 100+ 模型。
-
-#### 架构
-```
-src/providers/base.py (保留 BaseProvider 抽象)
-    ↓
-src/providers/__init__.py (should_use_litellm() + create_provider() 工厂)
-    ↓
-extensions/providers_ext/litellm_provider.py (LiteLLM 实现)
-    ↓
-LiteLLM (开源依赖)
-```
-
-#### 进度
-- [x] `src/providers/_litellm_adapter.py` 适配器文件已创建
-- [x] 实现 `LiteLLMProvider` 类
-- [x] 集成到 Provider 注册系统（`should_use_litellm()` + `create_provider()` 工厂）
-- [x] 移除硬编码的 anthropic/openai/zhipuai 必装依赖（通过 `CLAW_USE_LITELLM` 环境变量切换）
-- [x] 端到端测试（49 个目标测试全部通过）
-
-#### 关键文件
-- `extensions/providers_ext/__init__.py` — 扩展包导出
-- `extensions/providers_ext/litellm_provider.py` — LiteLLM Provider 实现（含 `_get_litellm_model()` 提取）
-- `src/providers/__init__.py` — 工厂函数 `should_use_litellm()` / `create_provider()`
-- `src/providers/_litellm_adapter.py` — 兼容垫片（重新导出扩展包符号）
-- `src/entrypoints/headless.py` — 使用 `create_provider()`
-- `src/entrypoints/tui.py` — 使用 `create_provider()`
-- `pyproject.toml` — 包发现包含 `extensions*`
-
-#### 环境开关
-- `CLAW_USE_LITELLM=false`（默认）— 使用原始 Provider 类
-- `CLAW_USE_LITELLM=1|true|yes|on` — 使用 LiteLLM 统一 Provider
-
-#### 注意事项
-- LiteLLM 保留 `BaseProvider` 接口可回退
-- 向后兼容：旧导入路径 `from src.providers._litellm_adapter import ...` 继续有效
+> 背景、架构图、关键文件清单、环境开关（`CLAW_USE_LITELLM`）、兼容性说明、49 个端到端测试通过等已归档。
+> 详见 [ARCHIVED_PROGRESS.md R-7](./ARCHIVED_PROGRESS.md#r-7-litellm-替换-provider-层) 与 [ARCHIVED_FEATURES.md §3.3](./ARCHIVED_FEATURES.md#33-litellm-provider-替换开源替代组件-r-7)。
 
 ---
 
@@ -486,385 +451,7 @@ LiteLLM (开源依赖)
 **完成日期**: 2026-05-20
 **优先级**: P0
 
-#### 目标
-支持 `clawcodex --workflow WORKFLOW.md` 自主运行模式
-
-#### 组件进度
-
-| 组件 | 文件 | 状态 |
-|------|------|------|
-| Orchestrator | `orchestrator/orchestrator.py` | ✅ 完成 |
-| WorkspaceManager | `orchestrator/workspace.py` | ✅ 完成 |
-| LinearAdapter | `orchestrator/linear/adapter.py` | ✅ 完成 |
-| LinearClient | `orchestrator/linear/client.py` | ✅ 完成 |
-| Issue | `orchestrator/linear/issue.py` | ✅ 完成 |
-| AgentRunner | `orchestrator/agent_runner.py` | ✅ 完成 |
-| PromptBuilder | `orchestrator/prompt_builder.py` | ✅ 完成 |
-| WorkflowLoader | `orchestrator/workflow.py` | ✅ 完成 |
-| ApprovalPolicy | `orchestrator/approval_policy.py` | ✅ 完成 |
-| StatusDashboard | `orchestrator/status_dashboard.py` | ✅ 完成 |
-| TrackerAdapter | `orchestrator/tracker.py` | ✅ 完成 |
-| GitSyncService | `orchestrator/git_sync.py` | ✅ 完成 |
-| GitHub/Gitee/GitCode Adapter | `orchestrator/repo_tracker/adapter.py` | ✅ 完成 |
-| Repository Issue Client | `orchestrator/repo_tracker/client.py` | ✅ 完成 |
-| **重试上限保护** | `orchestrator/orchestrator.py` | ✅ 完成 |
-| **Issue State 前置检查** | `orchestrator/orchestrator.py` | ✅ 完成 |
-| **ClarificationQueue** | `orchestrator/clarification_queue.py` | ✅ 完成 |
-| **TrackerAdapter 评论接口** | `orchestrator/tracker.py` + `repo_tracker/adapter.py` | ✅ 完成 |
-| **Orchestrator CLI** | `orchestrator/cli/` | 🔄 进行中 |
-
-#### 待完成
-
-| 功能 | 优先级 | 说明 |
-|------|--------|------|
-| 多 Tracker 支持 | ✅ 已完成 | GitHub/Gitee/GitCode REST 适配器已实现并通过实际测试（GitCode live test 完成 PR 创建） |
-| 重试队列 + 退避 | ✅ 已完成 | 失败任务自动重试，指数退避机制已实现 |
-| CLI 集成 | ✅ 已完成 | `--workflow` flag 已集成到 cli.py |
-| **重试上限保护** | ✅ 已完成 | `_schedule_retry` 增加最大重试次数限制（建议默认 5 次），超过后停止自动重试 |
-| **Issue State 前置检查** | ✅ 已完成 | `_launch_issue` 前调用 `tracker.fetch_issue_states_by_ids` 确认 issue 仍处于 active state，非 active 则跳过 |
-| **已有 PR 跳过后续处理** | ✅ 已完成 | `_launch_issue` 前调用 `tracker.find_pull_request`，若存在已关联 PR 则标记 completed 并跳过 |
-| **ClarificationQueue 文件队列** | ✅ 已完成 | `orchestrator/clarification_queue.py:ClarificationQueue` |
-| **TrackerAdapter 评论接口** | ✅ 已完成 | `fetch_issue_comments()` / `fetch_new_comments_since()` / `create_clarification_comment()` |
-| **Orchestrator CLI 统一入口** | ✅ 已完成 | `clawcodex orchestrator server start/status/stop` + `issue list/show/tail/stop/pause/resume/takeover/clarify/inject/workspace` |
-| **Issue Clarification 三通道** | 🔄 进行中 | Dashboard → ClarificationQueue → @mention 作者（Phase A-E） |
-| **Orchestrator CLI 生命周期控制** | 🔄 进行中 | pause/resume/stop/takeover + `_process_control_commands()` |
-| **LocalTracker 本地 Issue 文档源** | 📋 设计完成 | `tracker.kind: local`，扫描本地 issue 文档目录并复用 TrackerAdapter 协议进入现有 Orchestrator 流程 |
-
-#### Phase 3 生产强化详细设计
-
-**F-1.1: 重试上限保护**
-
-| 项 | 值 |
-|---|---|
-| 实现位置 | `orchestrator/orchestrator.py:_schedule_retry` |
-| 新增字段 | `workflow.agent.max_retry_attempts: int = 5`（默认值 5） |
-| 触发条件 | `attempt > max_retry_attempts` 时跳过调度，打印 warning 并从 `claimed` 集合移除 |
-| 副作用 | 不写入 `completed`（需人工确认后手动关闭 issue） |
-
-**F-1.2: Issue State 前置检查**
-
-| 项 | 值 |
-|---|---|
-| 实现位置 | `orchestrator/orchestrator.py:_launch_issue`（创建 workspace 后、agent 运行前） |
-| 检查方式 | 调用 `tracker.fetch_issue_states_by_ids([issue.id])`，若 state 不在 `active_states` 则跳过 |
-| 副作用 | 从 `claimed` 集合移除，不进入 `completed` 集合 |
-
-**F-1.3: 已有 PR 跳过后续处理**
-
-| 项 | 值 |
-|---|---|
-| 实现位置 | `orchestrator/orchestrator.py:_launch_issue`（Issue State 检查之后） |
-| 检查方式 | 调用 `tracker.find_pull_request(head_branch, base_branch)`，若存在 PR 则跳过 |
-| 适用范围 | 仅 RepositoryTrackerAdapter（GitHub/Gitee/GitCode）；Linear 无 PR 概念，返回 None |
-| 副作用 | 从 `claimed` 移除，写入 `completed`（重启后不重复处理） |
-
-**F-1.4: 本地 Issue 注册表（持久化映射）**
-
-| 项 | 值 |
-|---|---|
-| 文件位置 | `{workspace.root}/.clawcodex_issue_registry.json` |
-| 实现文件 | `orchestrator/issue_registry.py:IssueRegistry` |
-| 记录字段 | `issue_id / identifier / branch_name / commit_sha / pr_number / pr_url / status / attempt_count` |
-| Status 枚举 | `PENDING → SYNCED → COMPLETED / FAILED / ABANDONED` |
-| 启动时检查 | `_poll_and_dispatch` 遍历候选 issue 时跳过 `is_completed` 或 `has_pr` 的记录 |
-| 注册时机 | `_launch_issue` workspace 创建后立即写入 PENDING |
-| 更新时机 | `git_sync.sync()` 后写入 SYNCED + PR 信息；session 完成后写入 COMPLETED |
-| Abandoned 时机 | 重试达到上限后标记为 ABANDONED |
-
-**F-1.12: LocalTracker 本地 Issue 文档源**
-
-| 项 | 值 |
-|---|---|
-| 状态 | 📋 设计完成，待实现 |
-| 目标 | 在本地特定路径新增 issue 文档后，Orchestrator 可扫描、追踪、领取并处理，无需依赖 Linear/GitHub/Gitee/GitCode |
-| 配置入口 | `tracker.kind: local` + `tracker.issues_path` |
-| Issue 格式 | Markdown front matter 首期优先，JSON 后续可扩展 |
-| 状态来源 | issue 文档 front matter 的 `state` 字段，按 `active_states` / `terminal_states` 过滤 |
-| 数据模型 | 解析成本项目统一 `Issue` dataclass，字段包含 `id`、`identifier`、`title`、`description`、`state`、`branch_name`、`labels` 等 |
-| Adapter 边界 | 实现既有 `TrackerAdapter` 协议，避免在 `Orchestrator` 主循环加入 local 特判 |
-| 状态写回 | 只更新 front matter，写入 `running/completed/failed/abandoned`、`commit_sha`、`workspace_path`、`last_error` 等运行字段 |
-| 并发控制 | issue 文件旁 lock 或原子 rename，避免多个 orchestrator 实例重复领取 |
-| 与 IssueRegistry 关系 | 本地 issue 文档是任务来源与状态来源；`IssueRegistry` 继续保存 issue→workspace→commit→PR 的运行映射 |
-| CLI 行为 | 用户可直接写 `.md` issue；现有 `issue list/show/tail/inject` 继续基于 workspace registry/event logs 工作 |
-| 非目标 | 首期不创建远程 PR，不把 `issue inject` 改成初始 issue 创建入口 |
-
-#### 实施阶段
-
-- [x] **Phase 1: Foundation (Week 1-2)** - 基础框架
-- [x] **Phase 2: Agent Integration (Week 3-4)** - Agent 集成 + GitHub/Gitee/GitCode 支持
-- [ ] **Phase 3: Production Hardening (Week 5-6)** - 重试上限保护 + Issue State 前置检查 + 冲突恢复
-- [ ] **Phase 4: Issue Clarification (Week 7-8)** - 语义澄清流程
-- [ ] **Phase 5: Observability (Week 9-10)** - 可观测性
-
-#### Phase 4: Issue Clarification 详细设计
-
-**F-1.5: Issue 语义澄清流程（三通道优先机制）**
-
-| 项 | 值 |
-|---|---|
-| 核心思路 | **三通道优先机制**：本地操作员优先（Dashboard / ClarificationQueue），@mention 作者兜底 |
-| 通道一 | StatusDashboard 交互提示（非 headless，操作员在线时即时响应） |
-| 通道二 | ClarificationQueue 文件队列（~/.clawcodex/clarification_queue.json，操作员异步 CLI 应答） |
-| 通道三 | @mention Issue 评论（操作员无响应后降级，完全异步等待作者回复） |
-| 触发条件 | Agent 检测到 Issue 语义模糊，调用 AskIssueAuthor(question, context) 工具 |
-| 降级时机 | 通道一 timeout（无 Dashboard 或 headless）→ 通道二 timeout（30min）→ 通道三（72h）→ escalation |
-| 次数限制 | max_questions_per_issue（默认 3 次），超过后标记 EXHAUSTED |
-| 状态机 | NONE → AWAITING_LOCAL → AWAITING_AUTHOR → RESOLVED / TIMED_OUT / EXHAUSTED |
-| 持久化 | ClarificationQueue 文件 + IssueRegistry clarification_status + question_history |
-| 平台约束 | GitHub/Gitee/GitCode 均无 DM/私信 API，外部通道唯一是 @mention 评论 |
-
-**F-1.6: 三通道详细设计**
-
-**通道一：StatusDashboard 交互提示**
-
-| 项 | 值 |
-|---|---|
-| 文件 | `orchestrator/status_dashboard.py` |
-| 触发条件 | 非 headless 模式 + 操作员在线 + `dashboard.interactive_clarification=true` |
-| UI 形式 | 面板中内联选项列表（1-4 选项 + 跳过 + 转发给作者） |
-| 优点 | 响应最快（即时），操作员可结合代码上下文判断 |
-| 降级条件 | headless 模式或 timeout（默认 5 分钟无操作） |
-
-**通道二：ClarificationQueue 文件队列**
-
-| 项 | 值 |
-|---|---|
-| 文件 | `orchestrator/clarification_queue.py:ClarificationQueue` |
-| 队列路径 | `~/.clawcodex/clarification_queue.json` |
-| CLI 命令 | `clawcodex clarify --issue <id> --answer <text>` |
-| 轮询机制 | Orchestrator 每轮 poll 检查队列（与 Issue 轮询同步） |
-| 超时 | timeout_local_minutes（默认 30 分钟），过期后降级通道三 |
-| 优点 | 完全异步，操作员无需盯屏，不阻塞 orchestrator |
-| 降级条件 | timeout_local_minutes 内无应答则发 @mention |
-
-**通道三：@mention 评论**
-
-| 项 | 值 |
-|---|---|
-| 接口 | `TrackerAdapter.create_clarification_comment()` → Issue 下发评论 + @mention |
-| 轮询机制 | Orchestrator 轮询检查 Issue 新评论（每 poll_interval_ms） |
-| 超时 | timeout_author_hours（默认 72 小时） |
-| escalation | 超时后 skip / mark_failed / notify |
-
-**F-1.7: ClarificationStatus 枚举（扩展）**
-
-```python
-class ClarificationStatus(str, Enum):
-    NONE = "none"
-    AWAITING_LOCAL = "awaiting_local"        # 等待本地操作员
-    AWAITING_AUTHOR = "awaiting_author"     # 已发 @mention，等待作者
-    RECEIVED = "received"
-    RESOLVED_LOCAL = "resolved_local"        # 来自本地操作员
-    RESOLVED_AUTHOR = "resolved_author"     # 来自 @mention 作者
-    TIMED_OUT_LOCAL = "timed_out_local"     # 本地超时，降级通道三
-    TIMED_OUT_AUTHOR = "timed_out_author"   # 作者超时
-    EXHAUSTED = "exhausted"
-```
-
-**F-1.8: TrackerAdapter 评论接口扩展**
-
-| 接口 | 说明 |
-|------|------|
-| `fetch_issue_comments(issue_id)` | 获取 Issue 所有评论，返回 `list[Comment]` |
-| `create_clarification_comment(issue_id, body, mentions)` | 发评论并 @mention，触发通知 |
-| `find_clarification_replies(since_comment_id)` | 查找某条评论之后的新回复（用于轮询增量检查） |
-
-**F-1.9: IssueRegistry 澄清字段**
-
-```python
-clarification_status: ClarificationStatus = ClarificationStatus.NONE
-question_history: list[str] = field(default_factory=list)
-author_login: str | None = None
-awaiting_since: float | None = None
-last_checked_comment_id: str | None = None
-local_answer: str | None = None           # 本地操作员的回答
-local_answer_source: str | None = None    # "dashboard" | "clarification_queue"
-```
-
-**F-1.10: 关键约束 & 风险**
-
-| 风险 | 缓解措施 |
-|------|----------|
-| 操作员不在线 + 作者不回复 | escalation 策略（skip/mark_failed/notify）+ 双通道降级 |
-| Agent 反复提问 | max_questions_per_issue（默认 3 次）上限 |
-| @mention 噪音 | 通道一二优先消耗模糊 Issue；仅置信度 > threshold（0.7）时触发 |
-| 作者回复无效/误解 | LLM 重判定 + 计入重试次数 |
-| 评论顺序错乱 | in_reply_to_comment_id + 时间戳重建对话树 |
-| 重启丢失上下文 | ClarificationQueue 文件持久化 + IssueRegistry clarification_status |
-| 多操作员同时应答 | ClarificationQueue 加锁；resolved 后其他应答者收到提示 |
-| Headless 无 Dashboard | headless 模式下自动跳过通道一直达 ClarificationQueue |
-
-**F-1.11: 多渠道冲突处理方案**
-
-**问题场景**:
-
-| 场景 | 描述 |
-|------|------|
-| 同时多渠道应答 | 操作员和作者在同一时间窗口内同时回答 |
-| 超时后迟到 | 通道二超时升级通道三后，操作员的本地回答才到达 |
-| 重复提交 | 同一渠道内同一答案被多次提交 |
-| 升级通知丢失 | 操作员在不知情的情况下回答了已升级的 Issue |
-
-**核心原则**:
-
-| 原则 | 说明 |
-|------|------|
-| 第一响应者优先 | 第一个被 Orchestrator 检测到的有效答案被采纳 |
-| 操作员优先级 | 操作员答案始终比作者更可信（`operator_priority: true`） |
-| 单向升级不可逆 | 通道二超时 → 通道三后，原通道迟来答案标记 STALE_REJECTED |
-| 过期主动通知 | 所有被拒绝的答案都要通知对应应答者，避免无谓等待 |
-| 去重幂等 | 同一答案重复提交第二次标记 DUPLICATE_REJECTED |
-
-**ClarificationStatus 扩展（冲突处理相关）**:
-
-```python
-DUPLICATE_REJECTED = "duplicate_rejected"   # 重复提交，被去重丢弃
-STALE_REJECTED = "stale_rejected"           # 超时升级后收到的过时答案
-CONFLICT_RESOLVED = "conflict_resolved"    # 多渠道冲突已裁决
-```
-
-**冲突处理状态机**:
-
-```
-收到任意渠道答案
-        ↓
-本通道第一响应？ → 否 → DUPLICATE_REJECTED 丢弃
-        ↓ 是
-当前 status = AWAITING_LOCAL:
-    LOCAL 答案 → RESOLVED_LOCAL
-    AUTHOR 答案（在 AWAITING_LOCAL 期间）→ RESOLVED_AUTHOR
-    → 操作员收到："作者已先回复，您的窗口已关闭"
-
-当前 status = AWAITING_AUTHOR:
-    AUTHOR 答案 → RESOLVED_AUTHOR
-    LOCAL 答案（在 AWAITING_AUTHOR 期间）→ STALE_REJECTED
-    → 操作员收到："通道二已超时，@mention 已发出，您的回答已过时"
-
-当前 status = TIMED_OUT_LOCAL / TIMED_OUT_AUTHOR / EXHAUSTED:
-    任何答案 → STALE_REJECTED
-    → 通知应答者："Issue 已超时升级/结束"
-```
-
-**同时应答检测**:
-
-```python
-# Orchestrator 同轮 poll 中同时检查 ClarificationQueue 和 Issue 评论
-candidates = []
-if local_item.answer:
-    candidates.append(("local", answer, local_item.answered_at))
-if author_comments:
-    candidates.append(("author", latest.body, latest.created_at))
-
-if len(candidates) > 1:
-    delta_ms = abs(candidates[0][2] - candidates[1][2]) * 1000
-    if delta_ms < 5000 and operator_priority:
-        winner, loser = 0, 1   # 操作员优先
-    else:
-        winner = min(range(len(candidates)), key=lambda i: candidates[i][2])
-    self._notify_rejected(candidates[1-winner][0], issue_id)
-```
-
-**超时告知机制**:
-
-| 升级事件 | 通知内容 |
-|---------|---------|
-| 通道二超时 → 通道三 | "您的本地回答窗口已关闭，@mention 已发给作者" |
-| 通道三超时 → escalation | "Issue #42 澄清超时，最终处理：skip/mark_failed/notify" |
-| 迟到操作员答案（通道三之后） | "您的回答已过时，@mention 已发出，作者回复已被采纳" |
-| 迟到作者答案（escalation 之后） | 忽略，不更新状态 |
-
-**冲突场景汇总**:
-
-| 场景 | 处理结果 | 是否通知 |
-|------|---------|---------|
-| T4a < T3（操作员先答） | RESOLVED_LOCAL | 无（正常） |
-| T3 < T4a（作者先回复） | RESOLVED_AUTHOR | ✅ 操作员超时通知 |
-| T4a ≈ T4b（同时 < 5ms） | 操作员优先 RESOLVED_LOCAL | ✅ 双方均通知 |
-| 通道三已升级后操作员才答 | STALE_REJECTED | ✅ "已超时升级" |
-| 多操作员同时写队列 | 先写入者 RESOLVED | ✅ 落败方"已被抢先" |
-| 同一答案重复提交 | DUPLICATE_REJECTED | ❌ 幂等，无需通知 |
-
-**新增配置**:
-
-```yaml
-agent:
-  clarification:
-    operator_priority: true        # 操作员答案优先于作者（默认 true）
-    stale_notification: "all"      # "all" | "operator_only" | "none"
-    simultaneous_grace_ms: 5000   # 5ms 内视为同时，由 operator_priority 决胜
-```
-
-**F-1.12: 实施检查清单**
-
-- [x] Phase A: `ClarificationQueue` 文件队列 + Orchestrator 轮询逻辑（`orchestrator/clarification_queue.py`）
-- [x] Phase A: 冲突处理状态机（`orchestrator/clarification.py`）：DUPLICATE_REJECTED / STALE_REJECTED / CONFLICT_RESOLVED
-- [x] Phase A: 超时告知机制（escalation_notified + stale_notification）
-- [x] Phase A: 同时应答检测逻辑（simultaneous_grace_ms + operator_priority）
-- [x] Phase B: StatusDashboard 交互提示组件（`orchestrator/status_dashboard.py`）
-- [x] Phase C: `AskIssueAuthor` 工具（`tool_system/tools/ask_issue_author.py`）
-- [x] Phase C: `ClarificationResolver` 三通道降级 + 冲突裁决
-- [x] Phase D: CLI `clarify` 子命令（`orchestrator/cli/clarify.py`）
-- [x] Phase E: `TrackerAdapter.fetch_issue_comments()` / `create_clarification_comment()` 接口
-- [x] Phase E: `RepositoryTrackerAdapter` 实现（GitHub / Gitee / GitCode）
-- [x] Phase F: IssueRegistry 澄清字段持久化（`clarification_status`、`local_answer`、`first_response_source`、`stale_answers`）
-- [x] Phase F: PromptBuilder 澄清内容注入（`prompt_builder.py`：`build_clarification_context()` + AgentRunner 集成）
-- [x] Phase G: escalation 策略实现（skip / mark_failed / notify）
-
-**F-1.13: Orchestrator CLI 运维操作界面**
-
-| 命令 | 说明 | 优先级 | 状态 |
-|------|------|--------|------|
-| `clawcodex orchestrator server start --workflow PATH` | 启动 orchestrator daemon | P1 | ✅ 完成 |
-| `clawcodex orchestrator server status` | 查看 daemon 运行状态（PID、uptime） | P1 | ✅ 完成 |
-| `clawcodex orchestrator server stop` | 停止 orchestrator daemon | P1 | ✅ 完成 |
-| `clawcodex orchestrator issue list [--status]` | 列出所有 issue 及状态 | P1 | ✅ 完成 |
-| `clawcodex orchestrator issue tail --id <id>` | 实时 tail tool call 日志 | P1 | ✅ 完成 |
-| `clawcodex orchestrator issue show --id <id>` | 查看 issue 详情（理解上下文、token 用量） | P1 | ✅ 完成 |
-| `clawcodex orchestrator issue pause --id <id>` | 暂停 agent（停在当前 tool call 边界） | P1 | ✅ 完成 |
-| `clawcodex orchestrator issue resume --id <id>` | 恢复暂停中的 agent | P1 | ✅ 完成 |
-| `clawcodex orchestrator issue stop --id <id>` | 强制终止 agent | P1 | ✅ 完成 |
-| `clawcodex orchestrator issue inject --id <id> <hint>` | 向运行中的 agent 注入提示 | P1 | ✅ 完成 |
-| `clawcodex orchestrator issue inject --id <id> --list` | 查看已注入的提示 | P1 | ✅ 完成 |
-| `clawcodex orchestrator issue inject --id <id> --remove <n>` | 删除某条提示 | P1 | ✅ 完成 |
-| `clawcodex orchestrator issue clarify --id <id> --answer <text>` | 操作员澄清应答 | P1 | ✅ 完成 |
-| `clawcodex orchestrator issue workspace --id <id> --ls` | 列出 workspace 文件 | P1 | ✅ 完成 |
-| `clawcodex orchestrator issue workspace --id <id> --cat <file>` | 查看文件内容 | P1 | ✅ 完成 |
-| `clawcodex orchestrator issue workspace --id <id> --edit <file> --with <content>` | 修改文件 | P2 | ✅ 完成 |
-| `clawcodex orchestrator issue takeover --id <id>` | 完全接管（终止 + REPL） | P2 | ✅ 完成 |
-| `clawcodex orchestrator dashboard --port` | 独立 dashboard UI | P2 | ✅ 完成 |
-
-**不兼容变更**：
-
-> ⚠️ `clawcodex --workflow` 已废弃，替换为 `clawcodex orchestrator server start --workflow PATH`。
-> 原有扁平子命令（`run`、`status`、`issues`、`pause`、`resume`、`stop`、`inject`、`clarify`、`workspace`、`takeover`）已移除，
-> 统一使用 noun-verb 结构：`server <verb>` / `issue <verb> --id <id>`。
-> ```bash
-> # 新命令
-> clawcodex orchestrator server start --workflow test_gitcode_workflow.md
-> clawcodex orchestrator server status
-> clawcodex orchestrator issue list
-> clawcodex orchestrator issue pause --id 42
-> clawcodex orchestrator issue inject --id 42 "hint text"
-> ```
-
-**实施检查清单**：
-
-- [x] Phase O1: CLI `orchestrator` group 框架（`cli.py`：`clawcodex orchestrator`）
-- [x] Phase O1: `orchestrator server start`（替代 `--workflow` 和 `run`）
-- [x] Phase O1: `orchestrator server status` / `orchestrator issue list`
-- [x] Phase O2: `orchestrator issue pause --id <id>` / `issue resume --id <id>` / `issue stop --id <id>`
-- [x] Phase O2: Orchestrator pause/resume 状态支持（running → paused → running）
-- [x] Phase O3: `orchestrator issue tail --id <id>`（AgentRunner event stream → 流式推送 tool calls）
-- [x] Phase O3: StatusDashboard 实时渲染（event stream 消费）
-- [x] Phase O4: `orchestrator issue inject --id <id>` Hint 注入（`.operator_hints.md` 机制）
-- [x] Phase O5: `orchestrator issue workspace --id <id> --ls` / `--cat`（文件查看）
-- [x] Phase O5: `orchestrator issue workspace --id <id> --edit`（文件修改，协作场景）
-- [x] Phase O6: `orchestrator issue takeover --id <id>`（终止 + REPL 接管）
-- [x] Phase O7: `orchestrator issue clarify --id <id>`（澄清应答）
-- [x] Phase O8: Dashboard LiveView 增强（event stream 完整推送 LLM 摘要 + tool calls）
-
----
-
+> 14 个核心组件（Orchestrator / WorkspaceManager / Linear / Tracker / IssueRegistry / ClarificationQueue / CLI group 等）、生产强化（F-1.1~F-1.4）、三通道澄清（F-1.5~F-1.11，Phase A-G）、Orchestrator CLI 运维界面（F-1.13，O1-O8 共 18 条命令）等已归档。
 ### R-8 到 R-10: 其他开源替代
 
 | 任务 | 替代方案 | 优先级 | 状态 |
@@ -1132,64 +719,6 @@ def parse_command(command: str):
 **优先级**: P1
 **目标**: 仿照 `tool_system_ext` 模式，构建独立的技能系统扩展层
 **完成日期**: 2026-05-24
-
-### 背景
-
-当前 `src/skills/loader.py` 存在以下问题：
-- 硬编码 clawcodex 特定路径（`~/.clawcodex/skills` 等）
-- `get_all_skills()` 职责过于集中
-- 难以独立更新上游
-
-### 设计模式
-
-| 组件 | Tool System | Skills System |
-|------|-------------|---------------|
-| 上游核心 | `tool_system/registry.py` | `skills/loader.py` |
-| 扩展目录 | `tool_system_ext/` | `skills_ext/` (新) |
-| 扩展包装类 | `ToolRegistryExt` | `SkillRegistryExt` (新) |
-| Bundle机制 | `TOOL_BUNDLES` | `SKILL_BUNDLES` (新) |
-| Agent配置 | `AgentToolConfig` | `AgentSkillConfig` (新) |
-
-### 实现文件清单
-
-| 文件路径 | 优先级 | 状态 | 说明 |
-|---------|--------|------|------|
-| `src/skills_ext/__init__.py` | P0 | ✅ 完成 | 扩展层入口 |
-| `src/skills_ext/registry_ext.py` | P0 | ✅ 完成 | SkillRegistryExt 包装类 |
-| `src/skills_ext/bundles.py` | P0 | ✅ 完成 | Skill Bundle 定义 |
-| `src/skills_ext/agent_config.py` | P1 | ✅ 完成 | Agent Skill 配置 |
-| `src/skills_ext/paths.py` | P1 | ✅ 完成 | clawcodex 特定路径解析 |
-| `src/skills_ext/hooks.py` | P2 | ✅ 完成 | Skill 生命周期钩子 |
-| `src/skills_ext/cache.py` | P2 | ✅ 完成 | 扩展层缓存管理 |
-
-### 迁移策略
-
-| 阶段 | 任务 | 状态 |
-|------|------|------|
-| 1 | 创建 `src/skills_ext/` 目录和基础结构 | ✅ 完成 |
-| 2 | 迁移 clawcodex 特定路径逻辑到 `skills_ext/paths.py` | ✅ 完成 |
-| 3 | 添加 Bundle 机制和 AgentSkillConfig | ✅ 完成 |
-| 4 | 添加 Hook 机制和回调系统 | ✅ 完成 |
-| 5 | 更新 `get_all_skills()` 调用点使用 `SkillRegistryExt` | ✅ 完成 |
-
-### 核心组件设计
-
-```python
-# src/skills_ext/registry_ext.py
-class SkillRegistryExt:
-    """包装上游 loader，添加 clawcodex 特定功能"""
-    
-    def get_all_skills(self, **kwargs) -> list[Skill]:
-        base = self._loader.get_all_skills(**kwargs)  # 上游 skills
-        clawcodex = self._load_clawcodex_paths()      # clawcodex 特定
-        return self._merge_skills(base, clawcodex)     # 合并去重
-    
-    def on_skill_registered(self, callback):
-        """Skill 注册回调通知"""
-        ...
-```
-
----
 
 ## F-28: Ctrl+B Agent 后台持续运行 + `--resume` 恢复会话
 
@@ -1952,7 +1481,7 @@ Agent 完成 → git commit → pending_review
 
 ## F-38: Orchestrator 验证与报告闭环
 
-**状态**: 📋 设计完成
+**状态**: ✅ 完成（2026-06-01）
 **优先级**: P0
 **规划文档**: `docs/FEATURE_PLAN.md` → `3.1.5 验证与报告闭环设计`
 **触发场景**: 2026-06-01 在 `chadwweng/AgentSDK` 跑 issue #1 时发现 `tools=0` 仍走 success、agent 凭空返回 SessionComplete 后 commit/push/PR 全程无验证；事后 GitCode 上 PR `#1` 收到 1 条 Git Sync 评论但无 Run Complete 汇总；PR body 是静态模板不含验证/产物信息；reviewer 找不到 diff 与 workspace 路径。
@@ -1993,21 +1522,21 @@ Agent 完成 → git commit → pending_review
 
 | 阶段 | 任务 | Sub | 状态 |
 |------|------|-----|------|
-| 1 | `config/schema.py` 扩展 `HooksConfig` 增 `pre_commit` / `pre_push` / `post_sync` 三点 + `AgentConfig` 增 `test_command` / `build_command` / `lint_command`（默认可空） | A | 📋 待开始 |
-| 2 | `extensions/orchestrator/git_sync.py` 在 `git commit` 前调 `run_pre_commit_hook`、在 `git push` 前调 `run_pre_push_hook`；失败时抛 `VerificationFailed`，orchestrator 捕获后 issue 标 `verification_failed` 不 push | A | 📋 待开始 |
-| 3 | `orchestrator.py` 在 git_sync.sync() 末尾 `finally` 块里调 `run_post_sync_hook(session)`，并把 verification 状态写入 `IssueRecord` | A | 📋 待开始 |
-| 4 | `issue_registry.py` 的 `IssueRecord` 新增 `report_path: str | None` / `verification_status: str | None` / `verification_output: str | None` 字段，旧 entry 加载兼容 | B | 📋 待开始 |
-| 5 | 新增 `extensions/orchestrator/report_writer.py`，`write(session, workspace) -> Path` 生成 Markdown（人读）+ JSON（机读）报告，包括 issue 摘要、turns/tools 计数、verification 结果、commit/diff stat、workspace 路径 | B | 📋 待开始 |
-| 6 | `agent_runner.py` SessionComplete 时调 `report_writer.write` 并把 `report_path` 写回 registry | B | 📋 待开始 |
-| 7 | `git_sync._build_pr_body` 改模板插值，插入 issue 摘要、commit/diff stat、verification 状态、报告链接（`/tmp/symphony_workspaces/agentsdk/_1/.reports/1.md`） | B | 📋 待开始 |
-| 8 | `tracker.py:TrackerAdapter` 增抽象 `update_pull_request(pr_number, *, body=None, state=None) -> PullRequestRef | None` | C | 📋 待开始 |
-| 9 | `repo_tracker/client.py` 增 `RepositoryIssueClient.update_pull_request`，GitCode 平台用 `PATCH /repos/{owner}/{repo}/pulls/{id}?access_token=...`，payload 含 `body` / `state`；GitHub / Gitee 暂列 TODO | C | 📋 待开始 |
-| 10 | `git_sync.py` `ensure_pull_request` 拿到 `pr.number` 后调 `tracker.update_pull_request(body=...)` 把 Sub-B 报告回写 PR | C | 📋 待开始 |
-| 11 | 合并 `agent_runner._post_run_comment` + `git_sync._comment_sync_result` 为单条 `## ClawCodex Run Summary` 汇总评论（含报告链接、verification 状态、commit、PR URL） | C | 📋 待开始 |
-| 12 | `orchestrator.py:329-336` 显式构造 `ProgressReporter` 并传入 `agent_runner.run(...)` | D | 📋 待开始 |
-| 13 | `progress_reporter.py` 把 PhaseComplete 事件写入 `event_log_dir/{id}.ndjson`（与现有 ndjson 通道合并 schema，新加 `{"type": "phase", "phase": "...", "progress": N}`） | D | 📋 待开始 |
-| 14 | 单元测试：`schema.HooksConfig` 解析新字段；`git_sync` 在 pre_push 失败时不 push；`report_writer` 产物包含必须字段；`update_pull_request` mock 测被调一次 | A/B/C | 📋 待开始 |
-| 15 | 端到端测试：用一个开 issue 跑批，断言 (1) 报告文件存在 (2) PR body 含报告链接 (3) issue 只有 1 条汇总评论 (4) `pre_push` 失败时 PR 不存在 | A/B/C/D | 📋 待开始 |
+| 1 | `config/schema.py` 扩展 `HooksConfig` 增 `pre_commit` / `pre_push` / `post_sync` 三点 + `AgentConfig` 增 `test_command` / `build_command` / `lint_command`（默认可空） | A | ✅ 完成 |
+| 2 | `extensions/orchestrator/git_sync.py` 在 `git commit` 前调 `run_pre_commit_hook`、在 `git push` 前调 `run_pre_push_verification`；失败时抛 `VerificationFailed` / `HookFailedError`，orchestrator 捕获后 issue 标 `verification_failed` 不 push | A | ✅ 完成 |
+| 3 | `orchestrator.py` 在 git_sync.sync() 末尾 `finally` 块里调 `run_post_sync_hook(session)`，并把 verification 状态写入 `IssueRecord` | A | ✅ 完成 |
+| 4 | `issue_registry.py` 的 `IssueRecord` 新增 `report_path: str \| None` / `verification_status: str \| None` / `verification_output: str \| None` / `summary_comment_id: str \| None` 字段，旧 entry 加载兼容 | B | ✅ 完成 |
+| 5 | 新增 `extensions/orchestrator/report_writer.py`，`write(...)` 同步写 `workspace/.reports/{run_id}.md` + `~/.clawcodex/reports/{tracker}/{owner}/{repo}/{issue_id}/{run_id}.{md,json}`，markdown 不含自身路径 | B | ✅ 完成 |
+| 6 | `agent_runner.py` SessionComplete 时计算 `run_id = run-{attempt:02d}-{UTC_ts}`，F-39 follow-up 用 `run-N-followup-M-{UTC_ts}`；agent_runner 立刻发 `⏳` placeholder 评论并把 `comment_id` 写回 `session.summary_comment_id` | B/C | ✅ 完成 |
+| 7 | `git_sync._build_pr_body` 改模板插值，插入 issue 摘要、branch、commit、diff stat、verification 状态、报告链接（`~/.clawcodex/reports/...` 持久化路径）；审计用 `<!-- metadata: report_path=... -->` HTML 注释单独存 | B | ✅ 完成 |
+| 8 | `tracker.py:TrackerAdapter` 增抽象 `update_pull_request(pr_number, *, body=None, state=None) -> PullRequestRef \| None` 与 `update_comment(issue_id, comment_id, body) -> Comment \| None` | C | ✅ 完成 |
+| 9 | `repo_tracker/client.py` 增 `RepositoryIssueClient.update_pull_request`（GitHub/Gitee/GitCode PATCH `/repos/{o}/{r}/pulls/{id}`）与 `update_comment`（PATCH `/repos/{o}/{r}/issues/comments/{id}`），Linear GraphQL `updateIssueComment` | C | ✅ 完成 |
+| 10 | `git_sync.py` `ensure_pull_request` 拿到 `pr.number` 后调 `tracker.update_pull_request(body=...)` 把 Sub-B 报告回写 PR | C | ✅ 完成 |
+| 11 | 合并 `agent_runner._post_run_comment` + `git_sync._comment_sync_result` 为单条 `## ClawCodex Run Summary` 汇总评论（git_sync.sync 末尾调 `tracker.update_comment(session.summary_comment_id, body=完整汇总)`，无 `summary_comment_id` 时 fallback 到 `create_comment`） | C | ✅ 完成 |
+| 12 | `orchestrator.py:_run_issue` 显式构造共享 `ProgressReporter(ToolContext(workspace_root=workspace_root))` 并传入 `agent_runner.run(...)` | D | ✅ 完成 |
+| 13 | `progress_reporter.py` 在 `PhaseComplete` 时写 `event_log_dir/{id}.ndjson` 追加 `{"type": "phase_complete", "phase": N}` 行（与 agent_runner 既有 schema 兼容，新增字段不替换） | D | ✅ 完成 |
+| 14 | 单元测试：`schema.HooksConfig/AgentConfig` 解析新字段；`git_sync` 在 pre_push 失败时不 push；`report_writer` 产物包含必须字段；`update_pull_request` / `update_comment` mock 测被调一次；`LocalTracker.update_comment` 原子替换不残留 `.tmp` | A/B/C | ✅ 完成 |
+| 15 | 端到端测试：临时 bare origin + WorkspaceManager 跑批，断言 (1) 报告文件存在 (2) PR body 含报告链接 (3) issue 收到单条汇总评论（含报告/verification/branch/commit） (4) `pre_push` 失败时 PR 不存在 (5) `pre_commit` 改文件后 commit 被 amend | A/B/C/D | ✅ 完成 |
 
 ### 验收标准
 

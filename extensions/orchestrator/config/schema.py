@@ -176,6 +176,11 @@ class WorkerConfig:
 
 
 @dataclass
+class VerificationConfig:
+    timeout_ms: int = 600_000
+
+
+@dataclass
 class AgentConfig:
     max_concurrent_agents: int = 10
     max_turns: int = 20
@@ -185,6 +190,10 @@ class AgentConfig:
     # NEW: ClawCodex-specific fields
     provider: str = "anthropic"
     permission_mode: str = "dontAsk"
+    test_command: str = ""
+    build_command: str = ""
+    lint_command: str = ""
+    verification: VerificationConfig = field(default_factory=VerificationConfig)
 
 
 @dataclass
@@ -212,6 +221,9 @@ class HooksConfig:
     before_run: str | None = None
     after_run: str | None = None
     before_remove: str | None = None
+    pre_commit: str | None = None
+    pre_push: str | None = None
+    post_sync: str | None = None
     timeout_ms: int = 60_000
 
 
@@ -335,12 +347,14 @@ class WorkflowConfig:
             ),
         )
 
+        verification_raw = agent_raw.get("verification", {})
         agent = AgentConfig(
             max_concurrent_agents=agent_raw.get("max_concurrent_agents", 10),
             max_turns=agent_raw.get("max_turns", 20),
             max_retry_backoff_ms=agent_raw.get(
                 "max_retry_backoff_ms", 300_000
             ),
+            max_retry_attempts=agent_raw.get("max_retry_attempts", 5),
             max_concurrent_agents_by_state=_normalize_state_limits(
                 agent_raw.get("max_concurrent_agents_by_state")
             ),
@@ -348,6 +362,12 @@ class WorkflowConfig:
             permission_mode=_resolve_orchestrator_permission_mode(
                 agent_raw.get("permission_mode"),
                 is_orchestrator=bool(tracker_raw),
+            ),
+            test_command=_resolve_env_value(agent_raw.get("test_command")) or "",
+            build_command=_resolve_env_value(agent_raw.get("build_command")) or "",
+            lint_command=_resolve_env_value(agent_raw.get("lint_command")) or "",
+            verification=VerificationConfig(
+                timeout_ms=verification_raw.get("timeout_ms", 600_000)
             ),
         )
 
@@ -368,6 +388,9 @@ class WorkflowConfig:
             before_remove=_resolve_env_value(
                 hooks_raw.get("before_remove")
             ),
+            pre_commit=_resolve_env_value(hooks_raw.get("pre_commit")),
+            pre_push=_resolve_env_value(hooks_raw.get("pre_push")),
+            post_sync=_resolve_env_value(hooks_raw.get("post_sync")),
             timeout_ms=hooks_raw.get("timeout_ms", 60_000),
         )
 

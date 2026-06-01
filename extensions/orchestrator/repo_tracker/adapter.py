@@ -67,8 +67,36 @@ class RepositoryTrackerAdapter(TrackerAdapter):
         )
         return {issue.id: issue for issue in issues if issue.id}
 
-    async def create_comment(self, issue_id: str, body: str) -> None:
-        await self.client.create_comment(issue_id, body)
+    async def create_comment(self, issue_id: str, body: str) -> Comment | None:
+        created = await self.client.create_comment(issue_id, body)
+        if created is None:
+            return None
+        return Comment(
+            id=str(created.get("id", "")),
+            body=created.get("body"),
+            author_login=_extract_comment_author(created),
+            created_at=created.get("created_at"),
+            updated_at=created.get("updated_at"),
+            in_reply_to_id=created.get("in_reply_to_id"),
+        )
+
+    async def update_comment(
+        self,
+        issue_id: str,
+        comment_id: str,
+        body: str,
+    ) -> Comment | None:
+        updated = await self.client.update_comment(comment_id, body)
+        if updated is None:
+            return None
+        return Comment(
+            id=str(updated.get("id", "")),
+            body=updated.get("body"),
+            author_login=_extract_comment_author(updated),
+            created_at=updated.get("created_at"),
+            updated_at=updated.get("updated_at"),
+            in_reply_to_id=updated.get("in_reply_to_id"),
+        )
 
     async def update_issue_state(self, issue_id: str, state: str) -> None:
         issue = await self.client.fetch_issue_states_by_ids(
@@ -134,6 +162,19 @@ class RepositoryTrackerAdapter(TrackerAdapter):
             title=title,
             head_branch=head_branch,
             base_branch=base_branch,
+            body=body,
+        )
+
+    async def update_pull_request(
+        self,
+        *,
+        pull_request: PullRequestRef,
+        title: str | None = None,
+        body: str | None = None,
+    ) -> PullRequestRef | None:
+        return await self.client.update_pull_request(
+            pull_request=pull_request,
+            title=title,
             body=body,
         )
 

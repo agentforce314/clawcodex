@@ -31,6 +31,17 @@ class IssueStatus(str, Enum):
     COMPLETED = "completed"       # session finished successfully
     FAILED = "failed"            # session ended with a non-success status
     ABANDONED = "abandoned"      # retry limit reached, gave up
+    VERIFICATION_FAILED = "verification_failed"
+
+
+TERMINAL_STATUSES = frozenset(
+    {
+        IssueStatus.COMPLETED,
+        IssueStatus.FAILED,
+        IssueStatus.ABANDONED,
+        IssueStatus.VERIFICATION_FAILED,
+    }
+)
 
 
 @dataclass
@@ -45,6 +56,11 @@ class IssueRecord:
     pr_url: str | None = None
     base_branch: str = "main"
     status: IssueStatus = IssueStatus.PENDING
+    report_path: str | None = None
+    verification_status: str | None = None
+    verification_output: str | None = None
+    last_hook_error: str | None = None
+    summary_comment_id: str | None = None
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
     attempt_count: int = 0
@@ -134,6 +150,10 @@ class IssueRegistry:
     def is_completed(self, issue_id: str) -> bool:
         record = self._records.get(issue_id)
         return record is not None and record.status == IssueStatus.COMPLETED
+
+    def is_terminal(self, issue_id: str) -> bool:
+        record = self._records.get(issue_id)
+        return record is not None and record.status in TERMINAL_STATUSES
 
     def iter_records_with_pr(self) -> list[IssueRecord]:
         return [
@@ -239,6 +259,25 @@ class IssueRegistry:
         self._save()
         return record
 
+    def mark_verification_failed(
+        self,
+        issue_id: str,
+        *,
+        output: str | None = None,
+        hook_error: str | None = None,
+    ) -> IssueRecord | None:
+        record = self._records.get(issue_id)
+        if record is None:
+            return None
+        record.status = IssueStatus.VERIFICATION_FAILED
+        record.verification_status = "failed"
+        record.verification_output = output
+        record.last_hook_error = hook_error
+        record.attempt_count += 1
+        record.touch()
+        self._save()
+        return record
+
     def mark_abandoned(self, issue_id: str) -> IssueRecord | None:
         record = self._records.get(issue_id)
         if record is None:
@@ -253,6 +292,30 @@ class IssueRegistry:
         if record is None:
             return None
         record.branch_name = branch_name
+        record.touch()
+        self._save()
+        return record
+
+    def update_report(
+        self,
+        issue_id: str,
+        *,
+        report_path: str | None = None,
+        verification_status: str | None = None,
+        verification_output: str | None = None,
+        summary_comment_id: str | None = None,
+    ) -> IssueRecord | None:
+        record = self._records.get(issue_id)
+        if record is None:
+            return None
+        if report_path is not None:
+            record.report_path = report_path
+        if verification_status is not None:
+            record.verification_status = verification_status
+        if verification_output is not None:
+            record.verification_output = verification_output
+        if summary_comment_id is not None:
+            record.summary_comment_id = summary_comment_id
         record.touch()
         self._save()
         return record

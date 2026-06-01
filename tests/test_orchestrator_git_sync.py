@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-from src.orchestrator.git_sync import GitSyncService, GitSyncError
+from src.orchestrator.config.schema import AgentConfig, HooksConfig
+from src.orchestrator.git_sync import GitSyncService, GitSyncError, HookFailedError, VerificationFailed
 from src.orchestrator.issue import Issue
 from src.orchestrator.tracker import PullRequestRef, TrackerAdapter
 from src.orchestrator.workspace import Workspace, WorkspaceConfig, WorkspaceManager
@@ -32,10 +34,18 @@ def _git_output(args: list[str], cwd: Path) -> str:
     return result.stdout.strip()
 
 
+class _Comment:
+    def __init__(self, id: str, body: str) -> None:
+        self.id = id
+        self.body = body
+
+
 class _Tracker(TrackerAdapter):
     def __init__(self) -> None:
         self.comments: list[tuple[str, str]] = []
+        self.updated_comments: list[tuple[str, str, str]] = []
         self.pr_requests: list[tuple[str, str, str, str]] = []
+        self.pr_updates: list[tuple[PullRequestRef, str | None, str | None]] = []
 
     async def fetch_candidate_issues(self) -> list[Issue]:
         return []
@@ -45,8 +55,18 @@ class _Tracker(TrackerAdapter):
     ) -> dict[str, Issue]:
         return {}
 
-    async def create_comment(self, issue_id: str, body: str) -> None:
+    async def create_comment(self, issue_id: str, body: str) -> _Comment:
         self.comments.append((issue_id, body))
+        return _Comment(str(len(self.comments)), body)
+
+    async def update_comment(
+        self,
+        issue_id: str,
+        comment_id: str,
+        body: str,
+    ) -> _Comment | None:
+        self.updated_comments.append((issue_id, comment_id, body))
+        return _Comment(comment_id, body)
 
     async def update_issue_state(self, issue_id: str, state: str) -> None:
         return None
@@ -67,11 +87,33 @@ class _Tracker(TrackerAdapter):
             title=title,
         )
 
+    async def update_pull_request(
+        self,
+        *,
+        pull_request: PullRequestRef,
+        title: str | None = None,
+        body: str | None = None,
+    ) -> PullRequestRef | None:
+        self.pr_updates.append((pull_request, title, body))
+        return PullRequestRef(
+            number=pull_request.number,
+            url=pull_request.url,
+            title=title or pull_request.title,
+        )
+
 
 class _Session:
     def __init__(self, issue: Issue, workspace: Workspace) -> None:
         self.issue = issue
         self.workspace = workspace
+        self.status = "completed"
+        self.run_id = "run-01-20260601T000000Z"
+        self.summary_comment_id = "summary-1"
+        self.turn_count = 1
+        self.tool_count = 1
+        self.verification_status = None
+        self.verification_output = None
+        self.output_text = "done"
 
 
 def _build_origin_repo(base: Path) -> Path:
@@ -138,8 +180,13 @@ class TestGitSyncService(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(tracker.pr_requests), 1)
             self.assertEqual(tracker.pr_requests[0][0], result.branch_name)
             self.assertEqual(tracker.pr_requests[0][1], "main")
-            self.assertEqual(len(tracker.comments), 1)
-            self.assertIn("Pull request: https://example.test/pr/9", tracker.comments[0][1])
+            self.assertEqual(tracker.comments, [])
+            self.assertEqual(len(tracker.updated_comments), 1)
+            self.assertIn("Pull request: https://example.test/pr/9", tracker.updated_comments[0][2])
+            self.assertEqual(len(tracker.pr_updates), 1)
+            assert tracker.pr_updates[0][2] is not None
+            self.assertIn("Verification: `passed`", tracker.pr_updates[0][2])
+            self.assertIn("Report: `", tracker.pr_updates[0][2])
 
     async def test_followup_sync_reuses_existing_pr_and_uses_fix_commit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -175,13 +222,14 @@ class TestGitSyncService(unittest.IsolatedAsyncioTestCase):
             assert result is not None
             self.assertTrue(result.committed)
             self.assertTrue(result.pushed)
-            self.assertEqual(result.pull_request, session.pull_request)
+            self.assertEqual(result.pull_request.number, session.pull_request.number)
+            self.assertEqual(result.pull_request.url, session.pull_request.url)
             self.assertEqual(tracker.pr_requests, [])
             self.assertEqual(
                 _git_output(["log", "-1", "--pretty=%s"], workspace.path),
                 "fix: ISSUE-77 Automate git sync",
             )
-            self.assertIn("Pull request: https://example.test/pr/9", tracker.comments[0][1])
+            self.assertIn("Pull request: https://example.test/pr/9", tracker.updated_comments[0][2])
 
     async def test_sync_push_non_fast_forward_recovers(self) -> None:
         """Non-fast-forward push triggers rebase and returns conflict state."""
@@ -236,3 +284,76 @@ class TestGitSyncService(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(result.pushed)
             self.assertTrue(result.has_conflict)
             self.assertGreater(len(result.conflict_files), 0)
+
+    async def test_pre_push_verification_failure_prevents_push(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            origin = _build_origin_repo(base)
+            manager = WorkspaceManager(
+                WorkspaceConfig(
+                    root=base / "workspaces",
+                    repo_clone_url=str(origin),
+                    checkout_issue_branch=True,
+                )
+            )
+            issue = Issue(id="77", identifier="ISSUE-77", title="Verify before push")
+            workspace = await manager.create_for_issue(issue)
+            (workspace.path / "README.md").write_text("changed\n", encoding="utf-8")
+
+            service = GitSyncService(
+                _Tracker(),
+                agent_config=AgentConfig(test_command="python -c 'raise SystemExit(7)'"),
+            )
+
+            with self.assertRaises(VerificationFailed):
+                await service.sync(_Session(issue, workspace))
+            self.assertEqual(
+                _git_output(["ls-remote", "--heads", "origin", "clawcodex/issue-77-verify-before-push"], workspace.path),
+                "",
+            )
+
+    async def test_pre_commit_hook_modifies_files_and_amends_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            origin = _build_origin_repo(base)
+            manager = WorkspaceManager(
+                WorkspaceConfig(
+                    root=base / "workspaces",
+                    repo_clone_url=str(origin),
+                    checkout_issue_branch=True,
+                )
+            )
+            issue = Issue(id="77", identifier="ISSUE-77", title="Format before commit")
+            workspace = await manager.create_for_issue(issue)
+            (workspace.path / "README.md").write_text("changed\n", encoding="utf-8")
+
+            service = GitSyncService(
+                _Tracker(),
+                hooks_config=HooksConfig(pre_commit=f"{sys.executable} -c \"from pathlib import Path; Path('formatted.txt').write_text('ok\\n')\""),
+            )
+            await service.sync(_Session(issue, workspace))
+
+            self.assertIn("formatted.txt", _git_output(["show", "--name-only", "--pretty="], workspace.path))
+
+    async def test_pre_push_hook_cannot_modify_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            origin = _build_origin_repo(base)
+            manager = WorkspaceManager(
+                WorkspaceConfig(
+                    root=base / "workspaces",
+                    repo_clone_url=str(origin),
+                    checkout_issue_branch=True,
+                )
+            )
+            issue = Issue(id="77", identifier="ISSUE-77", title="Dirty pre push")
+            workspace = await manager.create_for_issue(issue)
+            (workspace.path / "README.md").write_text("changed\n", encoding="utf-8")
+
+            service = GitSyncService(
+                _Tracker(),
+                hooks_config=HooksConfig(pre_push="python -c \"from pathlib import Path; Path('dirty.txt').write_text('dirty\\n')\""),
+            )
+
+            with self.assertRaises(HookFailedError):
+                await service.sync(_Session(issue, workspace))

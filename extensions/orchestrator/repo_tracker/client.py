@@ -152,14 +152,25 @@ class RepositoryIssueClient:
                 issues.append(issue)
         return issues
 
-    async def create_comment(self, issue_id: str, body: str) -> None:
+    async def create_comment(self, issue_id: str, body: str) -> dict[str, Any] | None:
         data: dict[str, Any] = {"body": body}
-        await self._request_json(
+        result = await self._request_json(
             "POST",
             f"/repos/{self.owner}/{self.repo}/issues/{issue_id}/comments",
             json=data if self.platform.auth_mode == "bearer" else None,
             data=data if self.platform.auth_mode != "bearer" else None,
         )
+        return result if isinstance(result, dict) else None
+
+    async def update_comment(self, comment_id: str, body: str) -> dict[str, Any] | None:
+        data: dict[str, Any] = {"body": body}
+        result = await self._request_json(
+            "PATCH",
+            f"/repos/{self.owner}/{self.repo}/issues/comments/{comment_id}",
+            json=data if self.platform.auth_mode == "bearer" else None,
+            data=data if self.platform.auth_mode != "bearer" else None,
+        )
+        return result if isinstance(result, dict) else None
 
     async def fetch_comments(self, issue_id: str) -> list[dict[str, Any]]:
         """Fetch all comments on an issue."""
@@ -296,6 +307,30 @@ class RepositoryIssueClient:
             data=payload if self.platform.auth_mode != "bearer" else None,
         )
         return result if isinstance(result, dict) else None
+
+    async def update_pull_request(
+        self,
+        *,
+        pull_request: PullRequestRef,
+        title: str | None = None,
+        body: str | None = None,
+    ) -> PullRequestRef | None:
+        if pull_request.number is None:
+            return None
+        payload: dict[str, Any] = {}
+        if title is not None:
+            payload["title"] = title
+        if body is not None:
+            payload["body"] = body
+        if not payload:
+            return pull_request
+        result = await self._request_json(
+            "PATCH",
+            f"/repos/{self.owner}/{self.repo}/pulls/{pull_request.number}",
+            json=payload if self.platform.auth_mode == "bearer" else None,
+            data=payload if self.platform.auth_mode != "bearer" else None,
+        )
+        return _normalize_pull_request(result)
 
     async def create_pull_request(
         self,

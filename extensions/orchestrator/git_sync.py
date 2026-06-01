@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
+import subprocess
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from src.utils.git import (
@@ -13,6 +16,8 @@ from src.utils.git import (
     get_repo_root,
     _run_git,
 )
+from .config.schema import AgentConfig, HooksConfig
+from . import report_writer
 from .issue import Issue
 from .tracker import PullRequestRef, TrackerAdapter
 from .workspace import Workspace
@@ -37,6 +42,23 @@ class GitSyncError(RuntimeError):
     """Raised when post-run git sync fails."""
 
 
+class VerificationFailed(GitSyncError):
+    """Raised when configured verification commands fail."""
+
+    def __init__(self, message: str, output: str = "") -> None:
+        super().__init__(message)
+        self.output = output
+
+
+class HookFailedError(GitSyncError):
+    """Raised when a configured sync hook fails."""
+
+    def __init__(self, hook_name: str, message: str, output: str = "") -> None:
+        super().__init__(message)
+        self.hook_name = hook_name
+        self.output = output
+
+
 class GitSyncService:
     """Perform commit, push, and PR creation after a run."""
 
@@ -45,9 +67,13 @@ class GitSyncService:
         tracker: TrackerAdapter,
         branch_prefix: str | None = None,
         gitignore_patterns: list[str] | None = None,
+        agent_config: AgentConfig | None = None,
+        hooks_config: HooksConfig | None = None,
     ) -> None:
         self.tracker = tracker
         self._branch_prefix = branch_prefix
+        self._agent_config = agent_config or AgentConfig()
+        self._hooks_config = hooks_config or HooksConfig()
         self._gitignore_patterns = gitignore_patterns or [
             ".event_logs",
             "*.pyc",
@@ -89,6 +115,9 @@ class GitSyncService:
             self._run_git_checked(["commit", "-m", commit_message], repo_root)
             commit_sha = self._run_git_output(["rev-parse", "HEAD"], repo_root)
             committed = True
+            await self._run_pre_commit_hook(repo_root, session)
+            commit_sha = self._run_git_output(["rev-parse", "HEAD"], repo_root)
+            await self._run_pre_push_verification(repo_root, session)
             if no_push:
                 # LocalTracker: no remote, skip push but record branch info
                 pass
@@ -98,6 +127,7 @@ class GitSyncService:
                 )
         else:
             commit_sha = self._run_git_output(["rev-parse", "HEAD"], repo_root)
+            await self._run_pre_push_verification(repo_root, session)
             # No staged changes but branch may have diverged from origin — still push
             if branch_name and not no_push:
                 pushed, has_conflict, conflict_files = self._push_with_recovery(
@@ -105,26 +135,70 @@ class GitSyncService:
                 )
 
         pr_ref: PullRequestRef | None = followup_pr
+        pr_title = self._build_pr_title(issue)
         if pr_ref is None and branch_name != base_branch and not no_push:
-            pr_title = self._build_pr_title(issue)
-            pr_body = self._build_pr_body(issue, commit_sha, branch_name, base_branch)
             pr_ref = await self.tracker.ensure_pull_request(
                 issue=issue,
                 head_branch=branch_name,
                 base_branch=base_branch,
                 title=pr_title,
-                body=pr_body,
+                body=self._build_pr_body(
+                    issue,
+                    commit_sha,
+                    branch_name,
+                    base_branch,
+                    session=session,
+                    pull_request=None,
+                ),
             )
 
+        report_result = self._write_report(
+            session=session,
+            branch_name=branch_name,
+            base_branch=base_branch,
+            commit_sha=commit_sha,
+            pull_request=pr_ref,
+        )
+
+        if pr_ref is not None and not no_push:
+            updated_pr = await self.tracker.update_pull_request(
+                pull_request=pr_ref,
+                title=pr_title,
+                body=self._build_pr_body(
+                    issue,
+                    commit_sha,
+                    branch_name,
+                    base_branch,
+                    session=session,
+                    pull_request=pr_ref,
+                ),
+            )
+            if updated_pr is not None:
+                pr_ref = updated_pr
+                self._write_report(
+                    session=session,
+                    branch_name=branch_name,
+                    base_branch=base_branch,
+                    commit_sha=commit_sha,
+                    pull_request=pr_ref,
+                )
+
+        await self._run_post_sync_hook(repo_root, session)
+
         if committed or (pushed and not no_push) or pr_ref is not None:
-            await self._comment_sync_result(
-                issue=issue,
+            await self._update_summary_comment(
+                session=session,
                 branch_name=branch_name,
                 base_branch=base_branch,
                 commit_sha=commit_sha,
                 pull_request=pr_ref,
                 committed=committed,
                 pushed=pushed if not no_push else False,
+                report_path=(
+                    report_result.persistent_markdown_path
+                    if report_result is not None
+                    else None
+                ),
             )
 
         return GitSyncResult(
@@ -138,6 +212,104 @@ class GitSyncService:
             conflict_files=conflict_files,
             pending_review=bool(is_local_tracker and committed),
         )
+
+    async def _run_pre_commit_hook(self, repo_root: str, session: Any) -> None:
+        command = self._hooks_config.pre_commit
+        if not command:
+            return
+        output = await self._run_shell(command, repo_root, self._hooks_config.timeout_ms)
+        if get_file_status(repo_root):
+            self._run_git_checked(["add", "-A"], repo_root)
+            self._run_git_checked(["commit", "--amend", "--no-edit"], repo_root)
+        setattr(session, "pre_commit_output", output)
+
+    async def _run_pre_push_verification(self, repo_root: str, session: Any) -> None:
+        outputs: list[str] = []
+        for label, command in (
+            ("test", self._agent_config.test_command),
+            ("build", self._agent_config.build_command),
+            ("lint", self._agent_config.lint_command),
+        ):
+            if not command:
+                continue
+            try:
+                output = await self._run_shell(
+                    command,
+                    repo_root,
+                    self._agent_config.verification.timeout_ms,
+                )
+            except VerificationFailed as exc:
+                raise VerificationFailed(f"{label} verification failed", exc.output) from exc
+            outputs.append(f"## {label}\n{output}".strip())
+        hook_command = self._hooks_config.pre_push
+        if hook_command:
+            before = self._status_snapshot(repo_root)
+            try:
+                output = await self._run_shell(
+                    hook_command,
+                    repo_root,
+                    self._hooks_config.timeout_ms,
+                )
+            except VerificationFailed as exc:
+                raise HookFailedError("pre_push", "pre_push hook failed", exc.output) from exc
+            if self._status_snapshot(repo_root) != before:
+                raise HookFailedError(
+                    "pre_push",
+                    "pre_push hook modified the workspace",
+                    output,
+                )
+            outputs.append(f"## pre_push\n{output}".strip())
+        setattr(session, "verification_status", "passed")
+        setattr(session, "verification_output", "\n\n".join(outputs))
+
+    async def _run_post_sync_hook(self, repo_root: str, session: Any) -> None:
+        command = self._hooks_config.post_sync
+        if not command:
+            return
+        before = self._status_snapshot(repo_root)
+        try:
+            output = await self._run_shell(command, repo_root, self._hooks_config.timeout_ms)
+        except VerificationFailed as exc:
+            raise HookFailedError("post_sync", "post_sync hook failed", exc.output) from exc
+        if self._status_snapshot(repo_root) != before:
+            raise HookFailedError(
+                "post_sync",
+                "post_sync hook modified the workspace",
+                output,
+            )
+        setattr(session, "post_sync_output", output)
+
+    async def _run_shell(self, command: str, repo_root: str, timeout_ms: int) -> str:
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                command,
+                cwd=repo_root,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(),
+                timeout=timeout_ms / 1000.0,
+            )
+        except asyncio.TimeoutError as exc:
+            raise VerificationFailed(
+                f"command timed out after {timeout_ms}ms: {command}",
+                "",
+            ) from exc
+        output = "\n".join(
+            part.decode("utf-8", errors="replace").strip()
+            for part in (stdout, stderr)
+            if part
+        ).strip()
+        if proc.returncode != 0:
+            raise VerificationFailed(
+                f"command failed with exit code {proc.returncode}: {command}",
+                output,
+            )
+        return output
+
+    def _status_snapshot(self, repo_root: str) -> str:
+        return "\n".join(sorted(get_file_status(repo_root)))
 
     def _push_with_recovery(
         self, repo_root: str, branch_name: str,
@@ -269,47 +441,133 @@ class GitSyncService:
         commit_sha: str | None,
         branch_name: str,
         base_branch: str,
+        *,
+        session: Any,
+        pull_request: PullRequestRef | None,
     ) -> str:
+        report_path = getattr(session, "report_path", None)
+        verification_status = getattr(session, "verification_status", None) or "skipped"
         lines = [
             "## ClawCodex Automated Change",
             "",
             f"- Issue: {issue.identifier or issue.id or 'unknown'}",
             f"- Branch: `{branch_name}`",
             f"- Base: `{base_branch}`",
+            f"- Commit: `{commit_sha or 'n/a'}`",
+            f"- Verification: `{verification_status}`",
+            f"- Report: `{report_path or 'n/a'}`",
         ]
-        if commit_sha:
-            lines.append(f"- Commit: `{commit_sha}`")
         if issue.url:
             lines.append(f"- Source issue: {issue.url}")
+        if pull_request and pull_request.url:
+            lines.append(f"- Pull request: {pull_request.url}")
+        if report_path:
+            lines.extend(["", f"<!-- metadata: report_path={report_path} -->"])
         return "\n".join(lines)
 
-    async def _comment_sync_result(
+    def _write_report(
         self,
         *,
-        issue: Issue,
+        session: Any,
+        branch_name: str,
+        base_branch: str,
+        commit_sha: str | None,
+        pull_request: PullRequestRef | None,
+    ) -> report_writer.ReportResult | None:
+        run_id = getattr(session, "run_id", None)
+        workspace = getattr(session, "workspace", None)
+        issue = getattr(session, "issue", None)
+        if not run_id or workspace is None or issue is None:
+            return None
+        result = report_writer.write(
+            run_id=run_id,
+            workspace_path=Path(workspace.path),
+            tracker=getattr(self.tracker, "platform", self.tracker.__class__.__name__),
+            owner=getattr(self.tracker, "owner", None),
+            repo=getattr(self.tracker, "repo", None),
+            issue=issue,
+            status=getattr(session, "status", "unknown"),
+            branch_name=branch_name,
+            base_branch=base_branch,
+            commit_sha=commit_sha,
+            pr_number=str(pull_request.number) if pull_request and pull_request.number is not None else None,
+            pr_url=pull_request.url if pull_request else None,
+            turn_count=getattr(session, "turn_count", 0),
+            tool_count=getattr(session, "tool_count", 0),
+            verification_status=getattr(session, "verification_status", None),
+            verification_output=getattr(session, "verification_output", None),
+            output_text=getattr(session, "output_text", ""),
+        )
+        setattr(session, "report_path", result.persistent_markdown_path)
+        return result
+
+    async def _update_summary_comment(
+        self,
+        *,
+        session: Any,
         branch_name: str,
         base_branch: str,
         commit_sha: str | None,
         pull_request: PullRequestRef | None,
         committed: bool,
         pushed: bool,
+        report_path: str | None,
     ) -> None:
+        issue = session.issue
         if not issue.id:
             return
 
+        body = self._build_summary_comment_body(
+            session=session,
+            branch_name=branch_name,
+            base_branch=base_branch,
+            commit_sha=commit_sha,
+            pull_request=pull_request,
+            committed=committed,
+            pushed=pushed,
+            report_path=report_path,
+        )
+        comment_id = getattr(session, "summary_comment_id", None)
+        if comment_id:
+            updated = await self.tracker.update_comment(issue.id, comment_id, body)
+            if updated is not None:
+                return
+        created = await self.tracker.create_comment(issue.id, body)
+        if created is not None and getattr(created, "id", None):
+            setattr(session, "summary_comment_id", created.id)
+
+    def _build_summary_comment_body(
+        self,
+        *,
+        session: Any,
+        branch_name: str,
+        base_branch: str,
+        commit_sha: str | None,
+        pull_request: PullRequestRef | None,
+        committed: bool,
+        pushed: bool,
+        report_path: str | None,
+    ) -> str:
+        verification_status = getattr(session, "verification_status", None) or "skipped"
         body_lines = [
-            "## ClawCodex Git Sync",
+            "## ClawCodex Run Summary",
             "",
+            f"- Run: `{getattr(session, 'run_id', 'unknown')}`",
+            f"- Status: `{getattr(session, 'status', 'unknown')}`",
             f"- Branch: `{branch_name}`",
             f"- Base: `{base_branch}`",
             f"- Committed: {'yes' if committed else 'no'}",
             f"- Pushed: {'yes' if pushed else 'no'}",
+            f"- Verification: `{verification_status}`",
+            f"- Report: `{report_path or 'n/a'}`",
         ]
         if commit_sha:
             body_lines.append(f"- Commit: `{commit_sha}`")
         if pull_request and pull_request.url:
             body_lines.append(f"- Pull request: {pull_request.url}")
-        await self.tracker.create_comment(issue.id, "\n".join(body_lines))
+        if report_path:
+            body_lines.extend(["", f"<!-- metadata: report_path={report_path} -->"])
+        return "\n".join(body_lines)
 
     def _default_branch_name(self, issue: Issue) -> str:
         identifier = issue.identifier or issue.id or "issue"
