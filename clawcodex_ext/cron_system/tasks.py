@@ -18,6 +18,7 @@ from .models import (
     SCHEDULED_TASKS_RELATIVE_PATH,
     CronJitterConfig,
     CronTask,
+    validate_jitter_config,
 )
 from .parser import parse_cron_expression
 
@@ -162,6 +163,90 @@ def add_cron_task(
     return task
 
 
+def write_permanent_task_if_missing(
+    workspace_root: Path,
+    *,
+    cron: str,
+    prompt: str,
+    recurring: bool = True,
+    jitter: CronJitterConfig | None = None,
+    created_at: int | None = None,
+    task_id: str | None = None,
+) -> tuple[CronTask, bool]:
+    """F-22-G4 installer entry point.
+
+    Idempotent: writes the task only if no existing task matches the
+    ``cron`` expression AND ``prompt`` (case-insensitive trimmed match).
+    Returns ``(task, created)`` so the installer can log "skipped" on
+    re-install.
+
+    Raises ``PermissionError`` if any pre-existing task has
+    ``permanent=True`` but a different ``cron`` or ``prompt`` — this guards
+    against the installer accidentally overwriting a system task.
+    """
+    fields = parse_cron_expression(cron)
+    if fields is None:
+        raise ValueError("cron must be a valid five-field expression")
+
+    normalized_cron = cron.strip()
+    normalized_prompt = prompt.strip()
+    with acquire_cron_storage_lock(workspace_root, f"permanent-{task_id or 'install'}"):
+        existing = read_cron_tasks(workspace_root)
+        for task in existing:
+            if task.permanent:
+                same_schedule = task.cron.strip() == normalized_cron
+                same_prompt = task.prompt.strip() == normalized_prompt
+                if same_schedule and same_prompt:
+                    return task, False
+                if not (same_schedule and same_prompt):
+                    raise PermissionError(
+                        f"refusing to overwrite permanent task {task.id!r} "
+                        f"(cron={task.cron!r}, prompt={task.prompt[:40]!r})"
+                    )
+
+        # If a non-permanent task with the same shape exists, replace it
+        # with the permanent version. Installers should converge to a
+        # permanent record on first run.
+        filtered = [
+            t
+            for t in existing
+            if not (
+                t.cron.strip() == normalized_cron
+                and t.prompt.strip() == normalized_prompt
+            )
+        ]
+        timestamp = created_at if created_at is not None else now_ms()
+        new_id = task_id or uuid.uuid4().hex[:8]
+        permanent_task = CronTask(
+            id=new_id,
+            cron=normalized_cron,
+            prompt=normalized_prompt,
+            recurring=recurring,
+            durable=True,
+            created_at=timestamp,
+            updated_at=timestamp,
+            # Permanent tasks intentionally never auto-expire.
+            expires_at=None,
+            jitter=validate_jitter_config(jitter) if jitter is not None else None,
+            permanent=True,
+        )
+        # Compute next_fire_at with the (recurring) jitter path.
+        from .jitter import jittered_next_cron_run_ms
+
+        permanent_task = replace(
+            permanent_task,
+            next_fire_at=jittered_next_cron_run_ms(
+                permanent_task.id,
+                fields,
+                _datetime_from_ms(timestamp),
+                permanent_task.jitter,
+            ),
+        )
+        filtered.append(permanent_task)
+        write_cron_tasks(workspace_root, filtered)
+        return permanent_task, True
+
+
 def remove_cron_tasks(
     workspace_root: Path,
     task_id: str,
@@ -249,15 +334,38 @@ def remove_missed_tasks(workspace_root: Path, missed: Iterable[CronTask]) -> Non
             write_cron_tasks(workspace_root, remaining)
 
 
-def prune_expired_recurring_tasks(workspace_root: Path, at_ms: int | None = None) -> list[CronTask]:
+def prune_expired_recurring_tasks(
+    workspace_root: Path,
+    at_ms: int | None = None,
+    *,
+    max_age_ms: int | None = None,
+) -> list[CronTask]:
+    """Remove recurring tasks past their expiry.
+
+    ``max_age_ms`` (F-22-G2) lets the scheduler pass a live config value
+    so an operator tightening ``recurringMaxAgeMs`` mid-session prunes
+    stale tasks immediately. When None, the per-task ``expires_at`` is
+    used (the value baked at creation time). ``max_age_ms == 0`` disables
+    age-based pruning entirely (matches CCB recurringMaxAgeMs=0).
+    """
     timestamp = at_ms if at_ms is not None else now_ms()
     with acquire_cron_storage_lock(workspace_root, f"prune-{uuid.uuid4().hex}"):
         tasks = read_cron_tasks(workspace_root)
-        kept = [
-            task
-            for task in tasks
-            if not task.recurring or task.expires_at is None or task.expires_at > timestamp
-        ]
+        # F-22-G4: permanent tasks are exempt from auto-expiry. The
+        # assistant-mode installer writes them directly; they must survive
+        # restart loops (write_if_missing skips existing files, so a
+        # deleted permanent task cannot be recreated).
+        def _is_kept(task: CronTask) -> bool:
+            if task.permanent or not task.recurring:
+                return True
+            if max_age_ms is not None:
+                if max_age_ms == 0:
+                    return True
+                return task.created_at + max_age_ms > timestamp
+            if task.expires_at is None:
+                return True
+            return task.expires_at > timestamp
+        kept = [task for task in tasks if _is_kept(task)]
         removed = [task for task in tasks if task not in kept]
         if removed:
             write_cron_tasks(workspace_root, kept)
