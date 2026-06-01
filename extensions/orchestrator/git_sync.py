@@ -72,7 +72,8 @@ class GitSyncService:
         is_local_tracker = isinstance(self.tracker, LocalTrackerAdapter)
         no_push = is_local_tracker
 
-        base_branch = get_default_branch(repo_root)
+        followup_pr = getattr(session, "pull_request", None)
+        base_branch = getattr(session, "base_branch", None) or get_default_branch(repo_root)
         branch_name = self._ensure_work_branch(repo_root, issue, base_branch)
         changed = bool(get_file_status(repo_root))
 
@@ -84,7 +85,7 @@ class GitSyncService:
         if changed:
             self._ensure_commit_identity(repo_root)
             self._run_git_checked(["add", "-A"], repo_root)
-            commit_message = self._build_commit_message(issue)
+            commit_message = self._build_commit_message(issue, followup=followup_pr is not None)
             self._run_git_checked(["commit", "-m", commit_message], repo_root)
             commit_sha = self._run_git_output(["rev-parse", "HEAD"], repo_root)
             committed = True
@@ -103,8 +104,8 @@ class GitSyncService:
                     repo_root, branch_name,
                 )
 
-        pr_ref: PullRequestRef | None = None
-        if branch_name != base_branch and not no_push:
+        pr_ref: PullRequestRef | None = followup_pr
+        if pr_ref is None and branch_name != base_branch and not no_push:
             pr_title = self._build_pr_title(issue)
             pr_body = self._build_pr_body(issue, commit_sha, branch_name, base_branch)
             pr_ref = await self.tracker.ensure_pull_request(
@@ -250,10 +251,11 @@ class GitSyncService:
                 repo_root,
             )
 
-    def _build_commit_message(self, issue: Issue) -> str:
+    def _build_commit_message(self, issue: Issue, *, followup: bool = False) -> str:
         identifier = (issue.identifier or "issue").strip()
         title = (issue.title or "automated update").strip()
-        message = f"feat: {identifier} {title}"
+        prefix = "fix" if followup else "feat"
+        message = f"{prefix}: {identifier} {title}"
         return message[:72]
 
     def _build_pr_title(self, issue: Issue) -> str:

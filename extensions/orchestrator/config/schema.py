@@ -95,6 +95,28 @@ def _normalize_string_list(value: Any, default: list[str]) -> list[str]:
     return list(default)
 
 
+def _resolve_orchestrator_permission_mode(
+    raw_value: Any,
+    *,
+    is_orchestrator: bool,
+) -> str:
+    """Resolve permission_mode with headless auto-override.
+
+    When a workflow.md is being loaded for the orchestrator (detected by the
+    presence of a ``tracker`` section), a ``dontAsk`` value — whether explicit
+    or default — is auto-promoted to ``bypassPermissions``. This ensures
+    fully unattended execution, since ``dontAsk`` may still trigger
+    ``ApprovalPolicy`` checks that can block tool calls in headless mode.
+
+    Explicit non-default values are preserved so users can opt back into a
+    more restrictive mode if needed.
+    """
+    normalized = str(raw_value).strip().lower() if raw_value else "dontask"
+    if is_orchestrator and normalized == "dontask":
+        return "bypassPermissions"
+    return normalized or "dontAsk"
+
+
 def _default_tmp_workspace() -> str:
     return os.path.join(os.environ.get("TMPDIR", "/tmp"), "symphony_workspaces")
 
@@ -194,6 +216,19 @@ class HooksConfig:
 
 
 @dataclass
+class ReviewFeedbackConfig:
+    enabled: bool = False
+    mode: str = "manual"
+    poll_interval_ms: int = 60_000
+    max_feedback_items_per_run: int = 20
+    include_ci_failures: bool = True
+    reply_to_comments: bool = True
+    ignore_authors: list[str] = field(default_factory=list)
+    max_log_chars_per_check: int = 12_000
+    max_followup_attempts_per_pr: int = 5
+
+
+@dataclass
 class ObservabilityConfig:
     dashboard_enabled: bool = True
     refresh_ms: int = 1_000
@@ -220,6 +255,7 @@ class WorkflowConfig:
     agent: AgentConfig = field(default_factory=AgentConfig)
     codex: CodexConfig = field(default_factory=CodexConfig)
     hooks: HooksConfig = field(default_factory=HooksConfig)
+    review_feedback: ReviewFeedbackConfig = field(default_factory=ReviewFeedbackConfig)
     observability: ObservabilityConfig = field(
         default_factory=ObservabilityConfig
     )
@@ -237,6 +273,7 @@ class WorkflowConfig:
         agent_raw = raw.get("agent", {})
         codex_raw = raw.get("codex", {})
         hooks_raw = raw.get("hooks", {})
+        review_feedback_raw = raw.get("review_feedback", {})
         observability_raw = raw.get("observability", {})
         server_raw = raw.get("server", {})
 
@@ -308,7 +345,10 @@ class WorkflowConfig:
                 agent_raw.get("max_concurrent_agents_by_state")
             ),
             provider=agent_raw.get("provider", "anthropic"),
-            permission_mode=agent_raw.get("permission_mode", "dontAsk"),
+            permission_mode=_resolve_orchestrator_permission_mode(
+                agent_raw.get("permission_mode"),
+                is_orchestrator=bool(tracker_raw),
+            ),
         )
 
         codex = CodexConfig(
@@ -346,6 +386,27 @@ class WorkflowConfig:
             agent=agent,
             codex=codex,
             hooks=hooks,
+            review_feedback=ReviewFeedbackConfig(
+                enabled=bool(review_feedback_raw.get("enabled", False)),
+                mode=str(review_feedback_raw.get("mode", "manual")).strip().lower() or "manual",
+                poll_interval_ms=review_feedback_raw.get("poll_interval_ms", 60_000),
+                max_feedback_items_per_run=review_feedback_raw.get(
+                    "max_feedback_items_per_run", 20
+                ),
+                include_ci_failures=bool(
+                    review_feedback_raw.get("include_ci_failures", True)
+                ),
+                reply_to_comments=bool(review_feedback_raw.get("reply_to_comments", True)),
+                ignore_authors=_normalize_string_list(
+                    review_feedback_raw.get("ignore_authors"), []
+                ),
+                max_log_chars_per_check=review_feedback_raw.get(
+                    "max_log_chars_per_check", 12_000
+                ),
+                max_followup_attempts_per_pr=review_feedback_raw.get(
+                    "max_followup_attempts_per_pr", 5
+                ),
+            ),
             observability=ObservabilityConfig(
                 dashboard_enabled=observability_raw.get(
                     "dashboard_enabled", True

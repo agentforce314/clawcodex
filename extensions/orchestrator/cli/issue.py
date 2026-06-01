@@ -589,8 +589,15 @@ def _run_tail(registry_path: Path | None, args: argparse.Namespace) -> int:
     log_file = event_log_dir / f"{issue_id}.ndjson"
 
     if not log_file.exists():
-        print(f"No event log found for issue {issue_id}.", file=sys.stderr)
-        return 1
+        # Fallback: per-issue workspace at ws/_{id}/.event_logs
+        per_issue_dir = ws / f"_{issue_id}" / ".event_logs"
+        per_issue_log = per_issue_dir / f"{issue_id}.ndjson"
+        if per_issue_log.exists():
+            event_log_dir = per_issue_dir
+            log_file = per_issue_log
+        else:
+            print(f"No event log found for issue {issue_id}.", file=sys.stderr)
+            return 1
 
     print(f"Tailing events for issue {issue_id} (Ctrl+C to stop)...")
     try:

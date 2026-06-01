@@ -10,7 +10,7 @@ from typing import Any
 import httpx
 
 from ..issue import Issue
-from ..tracker import PullRequestRef
+from ..tracker import PullRequestFeedback, PullRequestRef
 
 _PAGE_SIZE = 100
 
@@ -251,6 +251,52 @@ class RepositoryIssueClient:
                 return pr
         return None
 
+    async def fetch_pull_request_feedback(
+        self,
+        *,
+        pull_request: PullRequestRef,
+        include_ci_failures: bool = True,
+        max_log_chars_per_check: int = 12_000,
+    ) -> list[PullRequestFeedback]:
+        if pull_request.number is None:
+            return []
+
+        feedback: list[PullRequestFeedback] = []
+        feedback.extend(await self._fetch_pull_request_conversation_feedback(pull_request.number))
+        feedback.extend(await self._fetch_pull_request_inline_feedback(pull_request.number))
+        feedback.extend(await self._fetch_pull_request_review_feedback(pull_request.number))
+        if include_ci_failures:
+            feedback.extend(
+                await self._fetch_pull_request_ci_feedback(
+                    pull_request.number,
+                    max_log_chars_per_check=max_log_chars_per_check,
+                )
+            )
+        return feedback
+
+    async def reply_to_pull_request_feedback(
+        self,
+        *,
+        pull_request: PullRequestRef,
+        feedback: PullRequestFeedback,
+        body: str,
+    ) -> dict[str, Any] | None:
+        if pull_request.number is None:
+            return None
+        if feedback.source == "inline_review" and feedback.id:
+            comment_id = feedback.id.split(":", 1)[1] if ":" in feedback.id else feedback.id
+            endpoint = f"/repos/{self.owner}/{self.repo}/pulls/{pull_request.number}/comments/{comment_id}/replies"
+        else:
+            endpoint = f"/repos/{self.owner}/{self.repo}/issues/{pull_request.number}/comments"
+        payload = {"body": body}
+        result = await self._request_json(
+            "POST",
+            endpoint,
+            json=payload if self.platform.auth_mode == "bearer" else None,
+            data=payload if self.platform.auth_mode != "bearer" else None,
+        )
+        return result if isinstance(result, dict) else None
+
     async def create_pull_request(
         self,
         *,
@@ -275,6 +321,103 @@ class RepositoryIssueClient:
         if pr is None:
             raise RepositoryTrackerError("invalid_pull_request_response")
         return pr
+
+    async def _fetch_pull_request_conversation_feedback(
+        self,
+        pr_number: str,
+    ) -> list[PullRequestFeedback]:
+        comments = await self.fetch_comments(pr_number)
+        return [
+            feedback
+            for feedback in (
+                _normalize_conversation_feedback(comment) for comment in comments
+            )
+            if feedback is not None
+        ]
+
+    async def _fetch_pull_request_inline_feedback(
+        self,
+        pr_number: str,
+    ) -> list[PullRequestFeedback]:
+        payload = await self._fetch_paginated(
+            f"/repos/{self.owner}/{self.repo}/pulls/{pr_number}/comments"
+        )
+        return [
+            feedback
+            for feedback in (_normalize_inline_feedback(item) for item in payload)
+            if feedback is not None
+        ]
+
+    async def _fetch_pull_request_review_feedback(
+        self,
+        pr_number: str,
+    ) -> list[PullRequestFeedback]:
+        payload = await self._fetch_paginated(
+            f"/repos/{self.owner}/{self.repo}/pulls/{pr_number}/reviews"
+        )
+        return [
+            feedback
+            for feedback in (_normalize_review_feedback(item) for item in payload)
+            if feedback is not None
+        ]
+
+    async def _fetch_pull_request_ci_feedback(
+        self,
+        pr_number: str,
+        *,
+        max_log_chars_per_check: int,
+    ) -> list[PullRequestFeedback]:
+        payload = await self._request_json(
+            "GET",
+            f"/repos/{self.owner}/{self.repo}/pulls/{pr_number}",
+        )
+        head = payload.get("head") if isinstance(payload, dict) else None
+        sha = head.get("sha") if isinstance(head, dict) else None
+        if not isinstance(sha, str) or not sha:
+            return []
+
+        checks = await self._fetch_ci_checks(sha)
+        return [
+            feedback
+            for feedback in (
+                _normalize_ci_feedback(
+                    item,
+                    commit_sha=sha,
+                    max_log_chars_per_check=max_log_chars_per_check,
+                )
+                for item in checks
+            )
+            if feedback is not None
+        ]
+
+    async def _fetch_ci_checks(self, sha: str) -> list[dict[str, Any]]:
+        if self.platform.name == "github":
+            payload = await self._request_json(
+                "GET",
+                f"/repos/{self.owner}/{self.repo}/commits/{sha}/check-runs",
+            )
+            check_runs = payload.get("check_runs") if isinstance(payload, dict) else None
+            return check_runs if isinstance(check_runs, list) else []
+        return await self._fetch_paginated(
+            f"/repos/{self.owner}/{self.repo}/commits/{sha}/statuses"
+        )
+
+    async def _fetch_paginated(self, path: str) -> list[dict[str, Any]]:
+        page = 1
+        items: list[dict[str, Any]] = []
+        while True:
+            payload = await self._request_json(
+                "GET",
+                path,
+                params={"per_page": _PAGE_SIZE, "page": page},
+            )
+            if not isinstance(payload, list):
+                break
+            items.extend(item for item in payload if isinstance(item, dict))
+            if len(payload) < _PAGE_SIZE:
+                break
+            page += 1
+        return items
 
     async def _request_json(
         self,
@@ -373,6 +516,117 @@ def _normalize_pull_request(payload: Any) -> PullRequestRef | None:
         url=url if isinstance(url, str) else None,
         title=title if isinstance(title, str) else None,
     )
+
+
+def _normalize_conversation_feedback(payload: dict[str, Any]) -> PullRequestFeedback | None:
+    body = payload.get("body")
+    feedback_id = payload.get("id")
+    if not isinstance(body, str) or not body.strip() or feedback_id is None:
+        return None
+    return PullRequestFeedback(
+        id=f"conversation:{feedback_id}",
+        source="conversation",
+        body=body,
+        author_login=_extract_comment_author(payload),
+        status="open",
+        created_at=payload.get("created_at"),
+        updated_at=payload.get("updated_at"),
+        url=_string_value(payload.get("html_url") or payload.get("url")),
+    )
+
+
+def _normalize_inline_feedback(payload: dict[str, Any]) -> PullRequestFeedback | None:
+    body = payload.get("body")
+    feedback_id = payload.get("id")
+    if not isinstance(body, str) or not body.strip() or feedback_id is None:
+        return None
+    return PullRequestFeedback(
+        id=f"inline_review:{feedback_id}",
+        source="inline_review",
+        body=body,
+        author_login=_extract_comment_author(payload),
+        file_path=_string_value(payload.get("path") or payload.get("file_path")),
+        line=_int_value(payload.get("line") or payload.get("new_line") or payload.get("position")),
+        diff_hunk=_string_value(payload.get("diff_hunk")),
+        severity="warning",
+        status=_normalize_feedback_status(payload),
+        created_at=payload.get("created_at"),
+        updated_at=payload.get("updated_at"),
+        commit_sha=_string_value(payload.get("commit_id") or payload.get("commit_sha")),
+        url=_string_value(payload.get("html_url") or payload.get("url")),
+    )
+
+
+def _normalize_review_feedback(payload: dict[str, Any]) -> PullRequestFeedback | None:
+    body = payload.get("body")
+    feedback_id = payload.get("id")
+    if not isinstance(body, str) or not body.strip() or feedback_id is None:
+        return None
+    state = str(payload.get("state") or "").strip().lower()
+    severity = "error" if state in {"changes_requested", "request_changes"} else "info"
+    return PullRequestFeedback(
+        id=f"review_summary:{feedback_id}",
+        source="review_summary",
+        body=body,
+        author_login=_extract_comment_author(payload),
+        severity=severity,
+        status="open",
+        created_at=payload.get("submitted_at") or payload.get("created_at"),
+        updated_at=payload.get("updated_at"),
+        commit_sha=_string_value(payload.get("commit_id") or payload.get("commit_sha")),
+        url=_string_value(payload.get("html_url") or payload.get("url")),
+    )
+
+
+def _normalize_ci_feedback(
+    payload: dict[str, Any],
+    *,
+    commit_sha: str,
+    max_log_chars_per_check: int,
+) -> PullRequestFeedback | None:
+    state = str(payload.get("conclusion") or payload.get("state") or "").strip().lower()
+    if state not in {"failure", "failed", "error", "cancelled", "timed_out"}:
+        return None
+    name = _string_value(payload.get("name") or payload.get("context")) or "CI check"
+    summary = _string_value(payload.get("output", {}).get("summary") if isinstance(payload.get("output"), dict) else None)
+    description = _string_value(payload.get("description"))
+    details_url = _string_value(payload.get("details_url") or payload.get("html_url") or payload.get("target_url"))
+    parts = [f"{name} reported {state}."]
+    if description:
+        parts.append(description)
+    if summary:
+        parts.append(summary)
+    body = "\n\n".join(parts)
+    if len(body) > max_log_chars_per_check:
+        body = body[:max_log_chars_per_check] + "\n...<truncated>"
+    feedback_id = payload.get("id") or payload.get("context") or name
+    return PullRequestFeedback(
+        id=f"ci:{commit_sha}:{feedback_id}",
+        source="ci",
+        body=body,
+        severity="error",
+        status="open",
+        created_at=payload.get("started_at") or payload.get("created_at"),
+        updated_at=payload.get("completed_at") or payload.get("updated_at"),
+        commit_sha=commit_sha,
+        url=details_url,
+    )
+
+
+def _normalize_feedback_status(payload: dict[str, Any]) -> str:
+    if payload.get("resolved") is True:
+        return "resolved"
+    if payload.get("outdated") is True:
+        return "outdated"
+    return "open"
+
+
+def _string_value(value: Any) -> str | None:
+    return value if isinstance(value, str) and value.strip() else None
+
+
+def _int_value(value: Any) -> int | None:
+    return value if isinstance(value, int) else None
 
 
 def _build_identifier(payload: dict[str, Any], issue_number: Any) -> str | None:

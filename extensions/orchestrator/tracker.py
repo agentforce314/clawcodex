@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from .issue import Issue
 
@@ -22,6 +22,25 @@ class Comment:
     created_at: str | None = None
     updated_at: str | None = None
     in_reply_to_id: str | None = None  # for threading
+
+
+@dataclass(frozen=True)
+class PullRequestFeedback:
+    """Normalized pull request review feedback."""
+
+    id: str
+    source: Literal["conversation", "inline_review", "review_summary", "ci"]
+    body: str
+    author_login: str | None = None
+    file_path: str | None = None
+    line: int | None = None
+    diff_hunk: str | None = None
+    severity: Literal["info", "warning", "error"] | None = None
+    status: Literal["open", "resolved", "outdated"] | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+    commit_sha: str | None = None
+    url: str | None = None
 
 
 SUPPORTED_TRACKERS = frozenset({"linear", "github", "gitee", "gitcode", "local"})
@@ -73,6 +92,26 @@ class TrackerAdapter(ABC):
 
         Used as a guard to skip already-handled issues before launching a new agent run.
         """
+        return None
+
+    async def fetch_pull_request_feedback(
+        self,
+        *,
+        pull_request: "PullRequestRef",
+        include_ci_failures: bool = True,
+        max_log_chars_per_check: int = 12_000,
+    ) -> list[PullRequestFeedback]:
+        """Fetch review feedback and CI failures for a pull request."""
+        return []
+
+    async def reply_to_pull_request_feedback(
+        self,
+        *,
+        pull_request: "PullRequestRef",
+        feedback: PullRequestFeedback,
+        body: str,
+    ) -> "Comment | None":
+        """Reply to a pull request feedback item after a follow-up run."""
         return None
 
     async def fetch_issue_comments(self, issue_id: str) -> list["Comment"]:
@@ -217,6 +256,8 @@ def default_active_states_for_kind(kind: str) -> list[str]:
         return ["Todo", "In Progress"]
     if normalized == "local":
         return ["open", "ready"]
+    if normalized == "gitcode":
+        return ["opened"]
     return ["open"]
 
 

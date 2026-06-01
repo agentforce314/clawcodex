@@ -41,6 +41,8 @@ class AgentSession:
     pause_resume_event: "asyncio.Event | None" = None
     # Event stream for CLI tail command
     event_queue: "asyncio.Queue | None" = None
+    prompt_override: str | None = None
+    run_kind: str = "issue"
 
 
 @dataclass
@@ -134,35 +136,38 @@ class AgentRunner:
         while turn_number < self.max_turns:
             # Build prompt for this turn
             if turn_number == 0:
-                # Build clarification context if issue is in clarification flow
-                clarification_context = ""
-                pending_question = None
-                options = None
+                if session.prompt_override:
+                    prompt = session.prompt_override
+                else:
+                    # Build clarification context if issue is in clarification flow
+                    clarification_context = ""
+                    pending_question = None
+                    options = None
 
-                if clarification_resolver is not None and issue.id:
-                    # Check if this issue has a pending clarification
-                    resolved = clarification_resolver.get_answer(issue.id)
-                    if resolved and resolved.status.value in (
-                        "pending",
-                        "awaiting_local",
-                        "awaiting_author",
-                    ):
-                        # Get the pending item from queue to retrieve question + options
-                        pending_item = clarification_resolver._queue.get(issue.id)
-                        if pending_item:
-                            pending_question = pending_item.question
-                            options = pending_item.options if pending_item.options else None
-                            clarification_context = PromptBuilder.build_clarification_context(
-                                pending_question=pending_question,
-                                options=options,
-                            )
+                    if clarification_resolver is not None and issue.id:
+                        # Check if this issue has a pending clarification
+                        resolved = clarification_resolver.get_answer(issue.id)
+                        if resolved and resolved.status.value in (
+                            "pending",
+                            "awaiting_local",
+                            "awaiting_author",
+                        ):
+                            # Get the pending item from queue to retrieve question + options
+                            pending_item = clarification_resolver._queue.get(issue.id)
+                            if pending_item:
+                                pending_question = pending_item.question
+                                options = pending_item.options if pending_item.options else None
+                                clarification_context = PromptBuilder.build_clarification_context(
+                                    pending_question=pending_question,
+                                    options=options,
+                                )
 
-                prompt = PromptBuilder.render(
-                    issue,
-                    clarification_context=clarification_context,
-                    pending_question=pending_question,
-                    options=options,
-                )
+                    prompt = PromptBuilder.render(
+                        issue,
+                        clarification_context=clarification_context,
+                        pending_question=pending_question,
+                        options=options,
+                    )
                 session._issue_context = prompt  # Store for continuation
             else:
                 prompt = PromptBuilder.build_continuation_prompt(

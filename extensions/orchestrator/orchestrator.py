@@ -16,6 +16,8 @@ from .config.schema import WorkflowConfig
 from .git_sync import GitSyncService
 from .issue import Issue
 from .issue_registry import IssueRegistry, IssueStatus
+from .prompt_builder import PromptBuilder
+from .review_feedback import ReviewFeedbackService, ReviewFollowup
 from .status_dashboard import SessionStatus, StatusDashboard
 from .tracker import TrackerAdapter
 from .workspace import WorkspaceManager
@@ -185,6 +187,8 @@ class Orchestrator:
             # Handle escalated (clarification-exhausted) issues
             await self._process_escalated_issues()
 
+            await self._process_review_feedback()
+
             # Fetch new candidate issues
             try:
                 issues = await self.tracker.fetch_candidate_issues()
@@ -211,6 +215,85 @@ class Orchestrator:
         finally:
             self._state.poll_check_in_progress = False
             self.status_dashboard.on_poll_end()
+
+    async def _process_review_feedback(self) -> None:
+        config = self.workflow.review_feedback
+        if not config.enabled:
+            return
+        available_slots = self._state.max_concurrent_agents - len(self._state.running)
+        if available_slots <= 0:
+            return
+
+        service = ReviewFeedbackService(
+            tracker=self.tracker,
+            registry=self._registry,
+            config=config,
+        )
+        try:
+            followups = await service.collect_followups(available_slots)
+        except Exception as exc:
+            logger.error("Failed to collect PR review feedback: %s", exc)
+            return
+
+        for followup in followups:
+            issue_id = followup.issue.id or ""
+            if issue_id in self._state.running or issue_id in self._state.claimed:
+                continue
+            if config.mode != "auto":
+                self._registry.mark_feedback_pending(
+                    issue_id,
+                    [item.id for item in followup.feedback],
+                )
+                logger.info(
+                    "PR feedback pending manual follow-up issue_id=%s feedback_count=%d",
+                    issue_id,
+                    len(followup.feedback),
+                )
+                continue
+            self._state.claimed.add(issue_id)
+            await self._launch_review_followup(followup)
+
+    async def _launch_review_followup(self, followup: ReviewFollowup) -> None:
+        issue = followup.issue
+        issue.branch_name = followup.record.branch_name
+        prompt = PromptBuilder.render_review_feedback(
+            issue=issue,
+            pull_request=followup.pull_request,
+            branch_name=followup.record.branch_name or "",
+            feedback=followup.feedback,
+        )
+        try:
+            workspace = await self.workspace.create_for_issue(issue)
+        except Exception as exc:
+            logger.error("Workspace creation failed for PR follow-up issue_id=%s: %s", issue.id, exc)
+            self._state.claimed.discard(issue.id or "")
+            return
+
+        session = AgentSession(
+            issue=issue,
+            workspace=workspace,
+            pause_resume_event=asyncio.Event(),
+            event_queue=asyncio.Queue(),
+            prompt_override=prompt,
+            run_kind="review_followup",
+        )
+        session.pull_request = followup.pull_request
+        session.base_branch = followup.record.base_branch
+        session.feedback_ids = [item.id for item in followup.feedback]
+        self._state.running[issue.id or ""] = session
+        self._registry.increment_followup_attempt(issue.id or "")
+        self._sync_gitignore_to_workspace(session.workspace)
+        self.status_dashboard.on_session_start(
+            SessionStatus(
+                issue_id=issue.id or "",
+                issue_identifier=issue.identifier or "",
+                max_turns=self.agent_runner.max_turns,
+                workspace_path=str(workspace.path),
+            )
+        )
+        task = asyncio.create_task(self._run_issue(session))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
 
     async def _launch_issue(self, issue: Issue) -> None:
         """Create workspace and run agent for one issue."""
@@ -337,13 +420,21 @@ class Orchestrator:
                     if session.status == "completed":
                         sync_result = await self.git_sync.sync(session)
                         if sync_result is not None:
-                            self._registry.mark_synced(
-                                session.issue.id or "",
-                                branch_name=sync_result.branch_name,
-                                commit_sha=sync_result.commit_sha,
-                                pr_number=sync_result.pull_request.number if sync_result.pull_request else None,
-                                pr_url=sync_result.pull_request.url if sync_result.pull_request else None,
-                            )
+                            if session.run_kind == "review_followup":
+                                self._registry.mark_feedback_processed(
+                                    session.issue.id or "",
+                                    list(getattr(session, "feedback_ids", [])),
+                                    commit_sha=sync_result.commit_sha,
+                                )
+                                await self._reply_to_processed_feedback(session)
+                            else:
+                                self._registry.mark_synced(
+                                    session.issue.id or "",
+                                    branch_name=sync_result.branch_name,
+                                    commit_sha=sync_result.commit_sha,
+                                    pr_number=sync_result.pull_request.number if sync_result.pull_request else None,
+                                    pr_url=sync_result.pull_request.url if sync_result.pull_request else None,
+                                )
                             # LocalTracker: after commit, await human review before completion
                             if sync_result.pending_review:
                                 self._registry.mark_pending_review(session.issue.id or "")
@@ -394,6 +485,39 @@ class Orchestrator:
                     )
 
                 self._state.claimed.discard(session.issue.id or "")
+
+    async def _reply_to_processed_feedback(self, session: AgentSession) -> None:
+        if not self.workflow.review_feedback.reply_to_comments:
+            return
+        pull_request = getattr(session, "pull_request", None)
+        feedback_ids = set(getattr(session, "feedback_ids", []))
+        if pull_request is None or not feedback_ids:
+            return
+        try:
+            feedback = await self.tracker.fetch_pull_request_feedback(
+                pull_request=pull_request,
+                include_ci_failures=False,
+            )
+        except Exception as exc:
+            logger.warning("Failed to refresh feedback for replies issue_id=%s: %s", session.issue.id, exc)
+            return
+        body = "Handled in the latest ClawCodex follow-up commit."
+        for item in feedback:
+            if item.id not in feedback_ids:
+                continue
+            try:
+                await self.tracker.reply_to_pull_request_feedback(
+                    pull_request=pull_request,
+                    feedback=item,
+                    body=body,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to reply to PR feedback issue_id=%s feedback_id=%s: %s",
+                    session.issue.id,
+                    item.id,
+                    exc,
+                )
 
     async def _schedule_retry(self, session: AgentSession) -> None:
         """Schedule a retry for a failed session."""

@@ -141,6 +141,48 @@ class TestGitSyncService(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(tracker.comments), 1)
             self.assertIn("Pull request: https://example.test/pr/9", tracker.comments[0][1])
 
+    async def test_followup_sync_reuses_existing_pr_and_uses_fix_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            origin = _build_origin_repo(base)
+            manager = WorkspaceManager(
+                WorkspaceConfig(
+                    root=base / "workspaces",
+                    repo_clone_url=str(origin),
+                    checkout_issue_branch=True,
+                )
+            )
+            issue = Issue(
+                id="77",
+                identifier="ISSUE-77",
+                title="Automate git sync",
+                branch_name="clawcodex/issue-77",
+            )
+            workspace = await manager.create_for_issue(issue)
+            (workspace.path / "README.md").write_text("follow-up\n", encoding="utf-8")
+
+            session = _Session(issue, workspace)
+            session.pull_request = PullRequestRef(
+                number="9",
+                url="https://example.test/pr/9",
+            )
+            session.base_branch = "main"
+            tracker = _Tracker()
+            service = GitSyncService(tracker)
+            result = await service.sync(session)
+
+            self.assertIsNotNone(result)
+            assert result is not None
+            self.assertTrue(result.committed)
+            self.assertTrue(result.pushed)
+            self.assertEqual(result.pull_request, session.pull_request)
+            self.assertEqual(tracker.pr_requests, [])
+            self.assertEqual(
+                _git_output(["log", "-1", "--pretty=%s"], workspace.path),
+                "fix: ISSUE-77 Automate git sync",
+            )
+            self.assertIn("Pull request: https://example.test/pr/9", tracker.comments[0][1])
+
     async def test_sync_push_non_fast_forward_recovers(self) -> None:
         """Non-fast-forward push triggers rebase and returns conflict state."""
         with tempfile.TemporaryDirectory() as tmp:

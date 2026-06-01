@@ -7,12 +7,13 @@ import httpx
 from ..issue import Issue
 from ..tracker import (
     Comment,
+    PullRequestFeedback,
     PullRequestRef,
     TrackerAdapter,
     default_active_states_for_kind,
     default_terminal_states_for_kind,
 )
-from .client import RepositoryIssueClient
+from .client import RepositoryIssueClient, _extract_comment_author
 
 
 class RepositoryTrackerAdapter(TrackerAdapter):
@@ -134,6 +135,42 @@ class RepositoryTrackerAdapter(TrackerAdapter):
             head_branch=head_branch,
             base_branch=base_branch,
             body=body,
+        )
+
+    async def fetch_pull_request_feedback(
+        self,
+        *,
+        pull_request: PullRequestRef,
+        include_ci_failures: bool = True,
+        max_log_chars_per_check: int = 12_000,
+    ) -> list[PullRequestFeedback]:
+        return await self.client.fetch_pull_request_feedback(
+            pull_request=pull_request,
+            include_ci_failures=include_ci_failures,
+            max_log_chars_per_check=max_log_chars_per_check,
+        )
+
+    async def reply_to_pull_request_feedback(
+        self,
+        *,
+        pull_request: PullRequestRef,
+        feedback: PullRequestFeedback,
+        body: str,
+    ) -> Comment | None:
+        created = await self.client.reply_to_pull_request_feedback(
+            pull_request=pull_request,
+            feedback=feedback,
+            body=body,
+        )
+        if created is None:
+            return None
+        return Comment(
+            id=str(created.get("id", "")),
+            body=created.get("body"),
+            author_login=_extract_comment_author(created),
+            created_at=created.get("created_at"),
+            updated_at=created.get("updated_at"),
+            in_reply_to_id=feedback.id,
         )
 
     async def fetch_issue_comments(self, issue_id: str) -> list[Comment]:

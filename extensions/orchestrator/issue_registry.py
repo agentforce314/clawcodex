@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from enum import Enum
 from pathlib import Path
 
@@ -56,6 +56,12 @@ class IssueRecord:
     local_answer_source: str | None = None    # "dashboard" | "clarification_queue"
     first_response_source: str | None = None  # "local" | "author"
     stale_answers: list[str] = field(default_factory=list)
+    processed_feedback_ids: list[str] = field(default_factory=list)
+    pending_feedback_ids: list[str] = field(default_factory=list)
+    feedback_cursor: str | None = None
+    followup_attempt_count: int = 0
+    last_followup_commit_sha: str | None = None
+    last_feedback_checked_at: float | None = None
 
     def touch(self) -> None:
         self.updated_at = time.time()
@@ -87,7 +93,10 @@ class IssueRegistry:
                         v["status"] = IssueStatus(v["status"])
                     except ValueError:
                         v["status"] = IssueStatus.PENDING
-                self._records[k] = IssueRecord(**v)
+                known_fields = {field.name for field in fields(IssueRecord)}
+                self._records[k] = IssueRecord(
+                    **{field_name: value for field_name, value in v.items() if field_name in known_fields}
+                )
         except Exception as exc:
             logger.warning("Failed to load issue registry: %s — starting fresh", exc)
 
@@ -125,6 +134,23 @@ class IssueRegistry:
     def is_completed(self, issue_id: str) -> bool:
         record = self._records.get(issue_id)
         return record is not None and record.status == IssueStatus.COMPLETED
+
+    def iter_records_with_pr(self) -> list[IssueRecord]:
+        return [
+            record
+            for record in self._records.values()
+            if record.pr_number and record.branch_name
+        ]
+
+    def has_processed_feedback(self, issue_id: str, feedback_id: str) -> bool:
+        record = self._records.get(issue_id)
+        return record is not None and feedback_id in record.processed_feedback_ids
+
+    def can_follow_up(self, issue_id: str, max_attempts: int) -> bool:
+        record = self._records.get(issue_id)
+        if record is None:
+            return False
+        return record.followup_attempt_count < max_attempts
 
     # ------------------------------------------------------------------
     # Mutations
@@ -227,6 +253,76 @@ class IssueRegistry:
         if record is None:
             return None
         record.branch_name = branch_name
+        record.touch()
+        self._save()
+        return record
+
+    def mark_feedback_pending(
+        self,
+        issue_id: str,
+        feedback_ids: list[str],
+        *,
+        cursor: str | None = None,
+    ) -> IssueRecord | None:
+        record = self._records.get(issue_id)
+        if record is None:
+            return None
+        seen = set(record.pending_feedback_ids)
+        for feedback_id in feedback_ids:
+            if feedback_id not in seen and feedback_id not in record.processed_feedback_ids:
+                record.pending_feedback_ids.append(feedback_id)
+                seen.add(feedback_id)
+        if cursor is not None:
+            record.feedback_cursor = cursor
+        record.last_feedback_checked_at = time.time()
+        record.touch()
+        self._save()
+        return record
+
+    def mark_feedback_processed(
+        self,
+        issue_id: str,
+        feedback_ids: list[str],
+        *,
+        commit_sha: str | None = None,
+        cursor: str | None = None,
+    ) -> IssueRecord | None:
+        record = self._records.get(issue_id)
+        if record is None:
+            return None
+        processed = set(record.processed_feedback_ids)
+        for feedback_id in feedback_ids:
+            if feedback_id not in processed:
+                record.processed_feedback_ids.append(feedback_id)
+                processed.add(feedback_id)
+        record.pending_feedback_ids = [
+            feedback_id
+            for feedback_id in record.pending_feedback_ids
+            if feedback_id not in processed
+        ]
+        if commit_sha is not None:
+            record.last_followup_commit_sha = commit_sha
+        if cursor is not None:
+            record.feedback_cursor = cursor
+        record.last_feedback_checked_at = time.time()
+        record.touch()
+        self._save()
+        return record
+
+    def increment_followup_attempt(self, issue_id: str) -> IssueRecord | None:
+        record = self._records.get(issue_id)
+        if record is None:
+            return None
+        record.followup_attempt_count += 1
+        record.touch()
+        self._save()
+        return record
+
+    def mark_feedback_checked(self, issue_id: str) -> IssueRecord | None:
+        record = self._records.get(issue_id)
+        if record is None:
+            return None
+        record.last_feedback_checked_at = time.time()
         record.touch()
         self._save()
         return record

@@ -10,6 +10,7 @@ from typing import Any
 
 from jinja2 import Environment, StrictUndefined, TemplateError
 
+from .tracker import PullRequestFeedback, PullRequestRef
 from .workflow_store import get_workflow_store
 
 logger = logging.getLogger(__name__)
@@ -60,6 +61,35 @@ When requesting clarification:
 {% endif %}
 {% endif %}
 ---"""
+
+_REVIEW_FEEDBACK_TEMPLATE = """You are an autonomous software engineering agent fixing pull request feedback.
+
+Issue: {{ issue.identifier }} - {{ issue.title }}
+Pull request: {% if pull_request.number %}#{{ pull_request.number }}{% else %}unknown{% endif %}{% if pull_request.url %} ({{ pull_request.url }}){% endif %}
+Branch: {{ branch_name }}
+
+Current task:
+- Fix only the PR review feedback and CI failures listed below.
+- Do not expand scope or reimplement unrelated issue requirements.
+- Work on the current branch only; do not create a new branch or pull request.
+- Prefer the smallest correct change that addresses the feedback.
+- If feedback is conflicting or unclear, leave code unchanged for that item and explain what clarification is needed.
+- Run relevant tests or record why they cannot be run.
+
+Feedback:
+{% for item in feedback %}
+{{ loop.index }}. [{{ item.source }}] {{ item.id }}{% if item.severity %} severity={{ item.severity }}{% endif %}{% if item.status %} status={{ item.status }}{% endif %}
+{% if item.file_path %}   File: {{ item.file_path }}{% if item.line %}:{{ item.line }}{% endif %}
+{% endif %}{% if item.commit_sha %}   Commit: {{ item.commit_sha }}
+{% endif %}{% if item.url %}   URL: {{ item.url }}
+{% endif %}{% if item.diff_hunk %}   Diff hunk:
+```diff
+{{ item.diff_hunk }}
+```
+{% endif %}   Body:
+{{ item.body | indent(3) }}
+{% endfor %}
+"""
 
 
 class PromptBuilder:
@@ -115,6 +145,27 @@ class PromptBuilder:
             # Fallback to default prompt
             fallback = _jinja_env.from_string(_DEFAULT_PROMPT)
             return fallback.render(context).strip()
+
+    @staticmethod
+    def render_review_feedback(
+        *,
+        issue: Any,
+        pull_request: PullRequestRef,
+        branch_name: str,
+        feedback: list[PullRequestFeedback],
+    ) -> str:
+        issue_dict = issue.to_dict() if hasattr(issue, "to_dict") else issue
+        context = {
+            "issue": _to_jinja_value(issue_dict),
+            "pull_request": pull_request,
+            "branch_name": branch_name,
+            "feedback": feedback,
+        }
+        try:
+            return _jinja_env.from_string(_REVIEW_FEEDBACK_TEMPLATE).render(context).strip()
+        except TemplateError as exc:
+            logger.error("Review feedback template render error: %s", exc)
+            return _DEFAULT_PROMPT
 
     @staticmethod
     def build_continuation_prompt(

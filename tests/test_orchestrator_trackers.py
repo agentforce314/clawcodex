@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import unittest
@@ -10,16 +11,25 @@ from typing import Any
 
 import httpx
 
+from extensions.orchestrator.issue_registry import IssueRegistry
+from extensions.orchestrator.prompt_builder import PromptBuilder
+from extensions.orchestrator.review_feedback import ReviewFeedbackService
+from src.orchestrator.agent_runner import AgentSession
 from src.orchestrator.config.schema import WorkflowConfig
+from src.orchestrator.issue import Issue
 from src.orchestrator.local_tracker.adapter import LocalTrackerAdapter
+from src.orchestrator.orchestrator import Orchestrator
 from src.orchestrator.repo_tracker.adapter import RepositoryTrackerAdapter
 from src.orchestrator.tracker import (
+    PullRequestFeedback,
     PullRequestRef,
+    TrackerAdapter,
     TrackerConfigError,
     create_tracker_adapter,
     repository_clone_url_for_tracker,
     validate_tracker_config,
 )
+from src.orchestrator.workspace import Workspace, WorkspaceManager
 
 
 @contextmanager
@@ -68,6 +78,43 @@ class TestWorkflowTrackerConfig(unittest.TestCase):
         config = WorkflowConfig.from_dict({"tracker": {"kind": "gitcode"}})
         self.assertEqual(config.tracker.active_states, ["opened"])
         self.assertEqual(config.tracker.endpoint, "https://api.gitcode.com/api/v5")
+
+    def test_review_feedback_config_defaults_to_manual_disabled(self) -> None:
+        config = WorkflowConfig.from_dict({})
+
+        self.assertFalse(config.review_feedback.enabled)
+        self.assertEqual(config.review_feedback.mode, "manual")
+        self.assertTrue(config.review_feedback.include_ci_failures)
+        self.assertTrue(config.review_feedback.reply_to_comments)
+        self.assertEqual(config.review_feedback.max_feedback_items_per_run, 20)
+        self.assertEqual(config.review_feedback.max_followup_attempts_per_pr, 5)
+
+    def test_review_feedback_config_parses_workflow_values(self) -> None:
+        config = WorkflowConfig.from_dict(
+            {
+                "review_feedback": {
+                    "enabled": True,
+                    "mode": "AUTO",
+                    "poll_interval_ms": 5_000,
+                    "max_feedback_items_per_run": 3,
+                    "include_ci_failures": False,
+                    "reply_to_comments": False,
+                    "ignore_authors": "clawcodex-bot",
+                    "max_log_chars_per_check": 800,
+                    "max_followup_attempts_per_pr": 2,
+                }
+            }
+        )
+
+        self.assertTrue(config.review_feedback.enabled)
+        self.assertEqual(config.review_feedback.mode, "auto")
+        self.assertEqual(config.review_feedback.poll_interval_ms, 5_000)
+        self.assertEqual(config.review_feedback.max_feedback_items_per_run, 3)
+        self.assertFalse(config.review_feedback.include_ci_failures)
+        self.assertFalse(config.review_feedback.reply_to_comments)
+        self.assertEqual(config.review_feedback.ignore_authors, ["clawcodex-bot"])
+        self.assertEqual(config.review_feedback.max_log_chars_per_check, 800)
+        self.assertEqual(config.review_feedback.max_followup_attempts_per_pr, 2)
 
     def test_validate_tracker_config_requires_repository_for_repo_trackers(self) -> None:
         config = WorkflowConfig.from_dict(
@@ -401,6 +448,405 @@ pr_title: Local PR
         )
 
 
+class TestReviewFeedbackPrompt(unittest.TestCase):
+    def test_review_feedback_prompt_constrains_followup_scope(self) -> None:
+        prompt = PromptBuilder.render_review_feedback(
+            issue={
+                "id": "42",
+                "identifier": "#42",
+                "title": "Implement feature",
+            },
+            pull_request=PullRequestRef(number="9", url="https://example.test/pr/9"),
+            branch_name="clawcodex/issue-42",
+            feedback=[
+                PullRequestFeedback(
+                    id="inline_review:202",
+                    source="inline_review",
+                    body="Use the existing helper here.",
+                    file_path="src/app.py",
+                    line=12,
+                    diff_hunk="@@ -1 +1 @@",
+                    severity="warning",
+                    status="open",
+                )
+            ],
+        )
+
+        self.assertIn("fixing pull request feedback", prompt)
+        self.assertIn("Fix only the PR review feedback", prompt)
+        self.assertIn("Work on the current branch only", prompt)
+        self.assertIn("Pull request: #9", prompt)
+        self.assertIn("Branch: clawcodex/issue-42", prompt)
+        self.assertIn("File: src/app.py:12", prompt)
+        self.assertIn("Use the existing helper here.", prompt)
+
+
+class TestIssueRegistryFeedbackState(unittest.TestCase):
+    def test_feedback_state_is_persisted_and_idempotent(self) -> None:
+        with TemporaryDirectory() as tmp:
+            registry_path = Path(tmp) / "registry.json"
+            registry = IssueRegistry(registry_path)
+            registry.register(
+                "42",
+                "#42",
+                branch_name="clawcodex/issue-42",
+            )
+            registry.mark_synced(
+                "42",
+                branch_name="clawcodex/issue-42",
+                pr_number="7",
+                pr_url="https://example.test/pr/7",
+            )
+
+            registry.mark_feedback_pending(
+                "42",
+                ["conversation:1", "inline_review:2", "conversation:1"],
+                cursor="cursor-1",
+            )
+            registry.mark_feedback_processed(
+                "42",
+                ["conversation:1"],
+                commit_sha="abc123",
+            )
+            registry.increment_followup_attempt("42")
+
+            reloaded = IssueRegistry(registry_path)
+            record = reloaded.get("42")
+
+        assert record is not None
+        self.assertEqual(record.pending_feedback_ids, ["inline_review:2"])
+        self.assertEqual(record.processed_feedback_ids, ["conversation:1"])
+        self.assertEqual(record.feedback_cursor, "cursor-1")
+        self.assertEqual(record.last_followup_commit_sha, "abc123")
+        self.assertEqual(record.followup_attempt_count, 1)
+        self.assertTrue(reloaded.can_follow_up("42", 2))
+        self.assertFalse(reloaded.can_follow_up("42", 1))
+        self.assertEqual(len(reloaded.iter_records_with_pr()), 1)
+
+    def test_registry_load_ignores_unknown_fields(self) -> None:
+        with TemporaryDirectory() as tmp:
+            registry_path = Path(tmp) / "registry.json"
+            registry_path.write_text(
+                json.dumps(
+                    {
+                        "42": {
+                            "issue_id": "42",
+                            "issue_identifier": "#42",
+                            "branch_name": "clawcodex/issue-42",
+                            "unknown_future_field": "ignored",
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            registry = IssueRegistry(registry_path)
+            record = registry.get("42")
+
+        assert record is not None
+        self.assertEqual(record.issue_identifier, "#42")
+        self.assertEqual(record.pending_feedback_ids, [])
+
+
+class _ReviewFeedbackTracker(TrackerAdapter):
+    def __init__(self, feedback: list[PullRequestFeedback]) -> None:
+        self.feedback = feedback
+        self.fetch_requests: list[tuple[PullRequestRef, bool]] = []
+        self.replies: list[tuple[PullRequestRef, PullRequestFeedback, str]] = []
+
+    async def fetch_candidate_issues(self) -> list[Issue]:
+        return []
+
+    async def fetch_issue_states_by_ids(
+        self, issue_ids: list[str]
+    ) -> dict[str, Issue]:
+        return {}
+
+    async def create_comment(self, issue_id: str, body: str) -> None:
+        return None
+
+    async def update_issue_state(self, issue_id: str, state: str) -> None:
+        return None
+
+    async def fetch_pull_request_feedback(
+        self,
+        *,
+        pull_request: PullRequestRef,
+        include_ci_failures: bool = True,
+        max_log_chars_per_check: int = 12_000,
+    ) -> list[PullRequestFeedback]:
+        self.fetch_requests.append((pull_request, include_ci_failures))
+        return list(self.feedback)
+
+    async def reply_to_pull_request_feedback(
+        self,
+        *,
+        pull_request: PullRequestRef,
+        feedback: PullRequestFeedback,
+        body: str,
+    ):
+        self.replies.append((pull_request, feedback, body))
+        return None
+
+
+class _ReviewWorkspaceManager(WorkspaceManager):
+    def __init__(self, root: Path) -> None:
+        super().__init__(WorkflowConfig.from_dict({"workspace": {"root": str(root)}}).workspace)
+        self.created_for: list[Issue] = []
+
+    async def create_for_issue(self, issue: Issue) -> Workspace:
+        self.created_for.append(issue)
+        path = Path(self.config.root) / (issue.id or "issue")
+        path.mkdir(parents=True, exist_ok=True)
+        return Workspace(path=path, issue_identifier=issue.identifier or "issue", issue_id=issue.id)
+
+    async def run_before_run_hook(self, workspace: Workspace, issue: Issue) -> None:
+        return None
+
+    async def run_after_run_hook(self, workspace: Workspace, issue: Issue) -> None:
+        return None
+
+    async def cleanup(self, issue: Issue) -> None:
+        return None
+
+    async def run_terminal_workspace_cleanup(self) -> None:
+        return None
+
+
+class _ReviewAgentRunner:
+    max_turns = 2
+
+    async def run(self, session: AgentSession, workflow: WorkflowConfig, **kwargs) -> None:
+        session.status = "completed"
+
+
+class _ReviewOrchestrator(Orchestrator):
+    async def _run_issue(self, session: AgentSession) -> None:
+        return None
+
+
+class TestReviewFeedbackService(unittest.IsolatedAsyncioTestCase):
+    def _registry_with_pr(self, path: Path) -> IssueRegistry:
+        registry = IssueRegistry(path)
+        registry.register("42", "#42", branch_name="clawcodex/issue-42")
+        registry.mark_synced(
+            "42",
+            branch_name="clawcodex/issue-42",
+            pr_number="9",
+            pr_url="https://example.test/pr/9",
+        )
+        return registry
+
+    async def test_collect_followups_filters_processed_ignored_resolved_and_outdated(self) -> None:
+        with TemporaryDirectory() as tmp:
+            registry = self._registry_with_pr(Path(tmp) / "registry.json")
+            registry.mark_feedback_processed("42", ["conversation:processed"])
+            config = WorkflowConfig.from_dict(
+                {
+                    "review_feedback": {
+                        "enabled": True,
+                        "ignore_authors": ["clawcodex-bot"],
+                    }
+                }
+            ).review_feedback
+            tracker = _ReviewFeedbackTracker(
+                [
+                    PullRequestFeedback(
+                        id="conversation:processed",
+                        source="conversation",
+                        body="already done",
+                    ),
+                    PullRequestFeedback(
+                        id="conversation:ignored",
+                        source="conversation",
+                        body="bot comment",
+                        author_login="clawcodex-bot",
+                    ),
+                    PullRequestFeedback(
+                        id="inline_review:resolved",
+                        source="inline_review",
+                        body="resolved",
+                        status="resolved",
+                    ),
+                    PullRequestFeedback(
+                        id="inline_review:outdated",
+                        source="inline_review",
+                        body="outdated",
+                        status="outdated",
+                    ),
+                    PullRequestFeedback(
+                        id="conversation:new",
+                        source="conversation",
+                        body="please fix this",
+                        updated_at="cursor-new",
+                    ),
+                ]
+            )
+
+            followups = await ReviewFeedbackService(
+                tracker=tracker,
+                registry=registry,
+                config=config,
+            ).collect_followups(available_slots=1)
+            reloaded = IssueRegistry(Path(tmp) / "registry.json")
+            record = reloaded.get("42")
+
+        self.assertEqual(len(followups), 1)
+        self.assertEqual([item.id for item in followups[0].feedback], ["conversation:new"])
+        assert record is not None
+        self.assertEqual(record.pending_feedback_ids, ["conversation:new"])
+        self.assertEqual(record.feedback_cursor, "cursor-new")
+
+    async def test_collect_followups_skips_feedback_already_pending(self) -> None:
+        with TemporaryDirectory() as tmp:
+            registry_path = Path(tmp) / "registry.json"
+            registry = self._registry_with_pr(registry_path)
+            config = WorkflowConfig.from_dict(
+                {"review_feedback": {"enabled": True}}
+            ).review_feedback
+            tracker = _ReviewFeedbackTracker(
+                [
+                    PullRequestFeedback(
+                        id="conversation:dupe",
+                        source="conversation",
+                        body="please fix once",
+                    )
+                ]
+            )
+            service = ReviewFeedbackService(
+                tracker=tracker,
+                registry=registry,
+                config=config,
+            )
+
+            first = await service.collect_followups(available_slots=1)
+            second = await service.collect_followups(available_slots=1)
+            record = IssueRegistry(registry_path).get("42")
+
+        self.assertEqual(len(first), 1)
+        self.assertEqual(second, [])
+        assert record is not None
+        self.assertEqual(record.pending_feedback_ids, ["conversation:dupe"])
+        self.assertEqual(record.processed_feedback_ids, [])
+
+    async def test_collect_followups_persists_empty_feedback_check_time(self) -> None:
+        with TemporaryDirectory() as tmp:
+            registry_path = Path(tmp) / "registry.json"
+            registry = self._registry_with_pr(registry_path)
+            config = WorkflowConfig.from_dict(
+                {"review_feedback": {"enabled": True}}
+            ).review_feedback
+            tracker = _ReviewFeedbackTracker([])
+
+            followups = await ReviewFeedbackService(
+                tracker=tracker,
+                registry=registry,
+                config=config,
+            ).collect_followups(available_slots=1)
+            record = IssueRegistry(registry_path).get("42")
+
+        self.assertEqual(followups, [])
+        assert record is not None
+        self.assertIsNotNone(record.last_feedback_checked_at)
+
+
+class TestOrchestratorReviewFeedback(unittest.IsolatedAsyncioTestCase):
+    def _workflow(self, tmp: str, mode: str) -> WorkflowConfig:
+        return WorkflowConfig.from_dict(
+            {
+                "workspace": {"root": tmp},
+                "agent": {"max_concurrent_agents": 1, "max_turns": 2},
+                "review_feedback": {"enabled": True, "mode": mode},
+            }
+        )
+
+    def _orchestrator(
+        self,
+        tmp: str,
+        mode: str,
+        tracker: _ReviewFeedbackTracker,
+    ) -> Orchestrator:
+        workflow = self._workflow(tmp, mode)
+        workspace = _ReviewWorkspaceManager(Path(tmp))
+        orchestrator = _ReviewOrchestrator(
+            workflow=workflow,
+            tracker=tracker,
+            workspace=workspace,
+            agent_runner=_ReviewAgentRunner(),
+        )
+        orchestrator._registry.register(
+            "42",
+            "#42",
+            branch_name="clawcodex/issue-42",
+        )
+        orchestrator._registry.mark_synced(
+            "42",
+            branch_name="clawcodex/issue-42",
+            pr_number="9",
+            pr_url="https://example.test/pr/9",
+        )
+        return orchestrator
+
+    async def asyncTearDown(self) -> None:
+        pending = [task for task in asyncio.all_tasks() if task is not asyncio.current_task()]
+        for task in pending:
+            if task.get_coro().__qualname__.startswith("Orchestrator."):
+                task.cancel()
+
+    async def test_manual_mode_records_pending_feedback_without_launching(self) -> None:
+        with TemporaryDirectory() as tmp:
+            tracker = _ReviewFeedbackTracker(
+                [
+                    PullRequestFeedback(
+                        id="conversation:1",
+                        source="conversation",
+                        body="Please fix this.",
+                    )
+                ]
+            )
+            orchestrator = self._orchestrator(tmp, "manual", tracker)
+
+            await orchestrator._process_review_feedback()
+            record = orchestrator._registry.get("42")
+
+        assert record is not None
+        self.assertEqual(record.pending_feedback_ids, ["conversation:1"])
+        self.assertEqual(orchestrator._state.running, {})
+        self.assertEqual(orchestrator._state.claimed, set())
+        self.assertEqual(len(orchestrator._tasks), 0)
+
+    async def test_auto_mode_launches_review_followup_session(self) -> None:
+        with TemporaryDirectory() as tmp:
+            tracker = _ReviewFeedbackTracker(
+                [
+                    PullRequestFeedback(
+                        id="inline_review:202",
+                        source="inline_review",
+                        body="Use the existing helper here.",
+                        file_path="src/app.py",
+                        line=12,
+                    )
+                ]
+            )
+            orchestrator = self._orchestrator(tmp, "auto", tracker)
+
+            await orchestrator._process_review_feedback()
+            session = orchestrator._state.running.get("42")
+            record = orchestrator._registry.get("42")
+
+        assert session is not None
+        assert record is not None
+        self.assertEqual(session.run_kind, "review_followup")
+        self.assertEqual(session.pull_request, PullRequestRef(number="9", url="https://example.test/pr/9"))
+        self.assertEqual(session.feedback_ids, ["inline_review:202"])
+        self.assertIn("Fix only the PR review feedback", session.prompt_override or "")
+        self.assertIn("Use the existing helper here.", session.prompt_override or "")
+        self.assertEqual(record.pending_feedback_ids, ["inline_review:202"])
+        self.assertEqual(record.followup_attempt_count, 1)
+        self.assertEqual(orchestrator._state.claimed, {"42"})
+        self.assertEqual(len(orchestrator._tasks), 1)
+
+
 class TestRepositoryTrackerAdapter(unittest.IsolatedAsyncioTestCase):
     async def test_github_candidate_fetch_normalizes_and_filters_issues(self) -> None:
         requests: list[httpx.Request] = []
@@ -624,3 +1070,183 @@ class TestRepositoryTrackerAdapter(unittest.IsolatedAsyncioTestCase):
                 "body": "PR body",
             },
         )
+
+    async def test_gitcode_fetch_pull_request_feedback_normalizes_comments_and_ci(self) -> None:
+        requests: list[httpx.Request] = []
+        long_summary = "x" * 40
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            self.assertEqual(request.url.params.get("access_token"), "gitcode-token")
+            if request.method == "GET" and request.url.path == "/api/v5/repos/acme/widget/issues/9/comments":
+                return httpx.Response(
+                    200,
+                    json=[
+                        {
+                            "id": 101,
+                            "body": "Please update docs",
+                            "user": {"login": "reviewer"},
+                            "html_url": "https://gitcode.test/comment/101",
+                            "created_at": "2026-01-01T00:00:00Z",
+                        }
+                    ],
+                )
+            if request.method == "GET" and request.url.path == "/api/v5/repos/acme/widget/pulls/9/comments":
+                return httpx.Response(
+                    200,
+                    json=[
+                        {
+                            "id": 202,
+                            "body": "This branch is wrong",
+                            "user": {"login": "reviewer"},
+                            "path": "src/app.py",
+                            "line": 12,
+                            "diff_hunk": "@@ -1 +1 @@",
+                            "commit_id": "headsha",
+                            "outdated": False,
+                        }
+                    ],
+                )
+            if request.method == "GET" and request.url.path == "/api/v5/repos/acme/widget/pulls/9/reviews":
+                return httpx.Response(
+                    200,
+                    json=[
+                        {
+                            "id": 303,
+                            "body": "Changes requested",
+                            "state": "changes_requested",
+                            "user": {"login": "lead"},
+                            "commit_id": "headsha",
+                        }
+                    ],
+                )
+            if request.method == "GET" and request.url.path == "/api/v5/repos/acme/widget/pulls/9":
+                return httpx.Response(200, json={"head": {"sha": "headsha"}})
+            if request.method == "GET" and request.url.path == "/api/v5/repos/acme/widget/commits/headsha/statuses":
+                return httpx.Response(
+                    200,
+                    json=[
+                        {
+                            "id": "ci-1",
+                            "context": "pytest",
+                            "state": "failed",
+                            "description": "Unit tests failed",
+                            "target_url": "https://ci.test/1",
+                        },
+                        {
+                            "id": "ci-2",
+                            "context": "lint",
+                            "state": "success",
+                        },
+                        {
+                            "id": "ci-3",
+                            "context": "integration",
+                            "state": "error",
+                            "description": long_summary,
+                        },
+                    ],
+                )
+            raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            adapter = RepositoryTrackerAdapter(
+                platform="gitcode",
+                owner="acme",
+                repo="widget",
+                api_key="gitcode-token",
+                http_client=client,
+            )
+            feedback = await adapter.fetch_pull_request_feedback(
+                pull_request=PullRequestRef(number="9"),
+                max_log_chars_per_check=30,
+            )
+
+        self.assertEqual(
+            [item.id for item in feedback],
+            [
+                "conversation:101",
+                "inline_review:202",
+                "review_summary:303",
+                "ci:headsha:ci-1",
+                "ci:headsha:ci-3",
+            ],
+        )
+        self.assertEqual(feedback[1].file_path, "src/app.py")
+        self.assertEqual(feedback[1].line, 12)
+        self.assertEqual(feedback[1].status, "open")
+        self.assertEqual(feedback[2].severity, "error")
+        self.assertEqual(feedback[3].severity, "error")
+        self.assertTrue(feedback[4].body.endswith("...<truncated>"))
+        self.assertEqual(len(requests), 5)
+
+    async def test_gitcode_reply_to_inline_feedback_strips_normalized_prefix(self) -> None:
+        seen: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["path"] = request.url.path
+            seen["query"] = dict(request.url.params)
+            seen["body"] = request.content.decode("utf-8")
+            return httpx.Response(
+                201,
+                json={
+                    "id": 404,
+                    "body": "Handled",
+                    "user": {"login": "clawcodex"},
+                },
+            )
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            adapter = RepositoryTrackerAdapter(
+                platform="gitcode",
+                owner="acme",
+                repo="widget",
+                api_key="gitcode-token",
+                http_client=client,
+            )
+            comment = await adapter.reply_to_pull_request_feedback(
+                pull_request=PullRequestRef(number="9"),
+                feedback=PullRequestFeedback(
+                    id="inline_review:202",
+                    source="inline_review",
+                    body="Fix this",
+                ),
+                body="Handled",
+            )
+
+        self.assertEqual(
+            seen["path"],
+            "/api/v5/repos/acme/widget/pulls/9/comments/202/replies",
+        )
+        self.assertEqual(seen["query"]["access_token"], "gitcode-token")
+        self.assertIn("body=Handled", seen["body"])
+        assert comment is not None
+        self.assertEqual(comment.in_reply_to_id, "inline_review:202")
+
+    async def test_conversation_feedback_reply_posts_pr_issue_comment(self) -> None:
+        seen: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["path"] = request.url.path
+            seen["payload"] = json.loads(request.content.decode("utf-8"))
+            return httpx.Response(201, json={"id": 505, "body": "Handled"})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            adapter = RepositoryTrackerAdapter(
+                platform="github",
+                owner="acme",
+                repo="widget",
+                api_key="gh-test-token",
+                http_client=client,
+            )
+            await adapter.reply_to_pull_request_feedback(
+                pull_request=PullRequestRef(number="9"),
+                feedback=PullRequestFeedback(
+                    id="conversation:101",
+                    source="conversation",
+                    body="Please update docs",
+                ),
+                body="Handled",
+            )
+
+        self.assertEqual(seen["path"], "/repos/acme/widget/issues/9/comments")
+        self.assertEqual(seen["payload"], {"body": "Handled"})
