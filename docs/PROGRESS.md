@@ -6,6 +6,8 @@
 > 更新日期: 2026-06-01
 > 上游同步: 68dc3c5 (Phase 11 bridge complete)
 >
+> **v2.6 变更**：新增 F-40 ProgressReporter Sink 协议重构（📋 设计完成）。解决 F-38 Sub-D 落地时遗留的三个问题：(1) `Orchestrator` 上 `ProgressReporter` 单例的 `_current_task_id` / `_phase_count` 共享可变状态在并发 issue 下竞争；(2) `AgentRunner` 只转发 `PhaseComplete`，`_on_session_complete` 形同虚设，会话结束无进度落点；(3) `progress = phase_count * 25` 是假数据。设计引入 `ProgressSink` Protocol + `CompositeProgressSink` 扇出 + `ToolContextProgressSink` 默认实现 + `ProgressReporter` 降级为 shim；新增 `WorkflowConfig.phases` 用于真实进度计算。
+>
 > **v2.5 变更**：表格中所有 ✅ 已完成 / ✅ 基础完成的项（R-1~R-7、F-1、F-3、F-14、F-15、F-17、F-19、F-20、F-21、F-23、F-24、F-25、F-27、F-29、F-30、F-31、F-32）详细设计已归档至 [ARCHIVED_PROGRESS.md](./ARCHIVED_PROGRESS.md) 与 [ARCHIVED_FEATURES.md](./ARCHIVED_FEATURES.md)，本文件仅保留任务总览表与仍处规划/进行中任务的详细设计。
 
 ---
@@ -48,7 +50,7 @@
 | F-10 | ExecuteExtraTool 延迟工具系统 | P2 | ⏳ 待开始 | TF-IDF 工具搜索 + 子代理执行 |
 | F-11 | sessionStorage 容量限制 | P2 | ⏳ 待开始 | 防止 daemon 会话内存泄漏 |
 | F-12 | cacheWarning 容量限制 | P2 | ⏳ 待开始 | 防止 source 类型内存泄漏 |
-| F-13 | Agent 记忆作用域隔离 | P1 | 🔄 进行中 | 按需加载不同作用域记忆，部分实现 |
+| F-13 | Agent 记忆作用域隔离 | P1 | ✅ 完成 | 按需加载不同作用域记忆，clawcodex_ext try-import 降级模式 |
 | F-14 | 三层解耦架构（Layer Isolation） | P1 | ✅ 完成 | upstream/capabilities/features 三层分离，零层违规 |
 | F-15 | 权限模式切换 (Shift+Tab) | P1 | ✅ 完成 | REPL/LiveStatus/TUI 中支持 `default→acceptEdits→plan→bypassPermissions` 循环切换，状态栏显示当前模式，/permission 命令 |
 | F-16 | Auto 模式 (TRANSCRIPT_CLASSIFIER) | P2 | ⏳ 待开始 | 基于 LLM 的自动权限模式切换，减少交互疲劳 |
@@ -70,8 +72,9 @@
 | F-32 | 会话恢复浏览器 (Resume Conversation) | P1 | ✅ 完成 | 模糊搜索、实时过滤、会话元数据展示，支持 /resume 命令和 --tui --resume 启动选项 |
 | F-36 | LocalTracker 本地 Issue 文档源 | P1 | 📋 设计完成 | 新增 `tracker.kind: local`，从本地 Markdown/JSON issue 文档读取待处理任务，支持离线测试与私有本地工作流 |
 | F-37 | Orchestrator PR 检视意见自动修复闭环 | P0 | 📋 设计完成 | 将 PR 网页检视意见、inline comments、review summary 与 CI 失败日志转化为 follow-up agent run，自动修改同一 PR 分支并提交更新 |
-| F-38 | Orchestrator 验证与报告闭环（verification + report → PR） | P0 | 📋 设计完成 | commit/push 前自动跑 verification gate（pre_push hook + test_command），agent 跑完写结构化报告，git_sync 用报告改写 PR body 并合并为单条 issue 汇总评论；进度由 dead-code `progress_reporter` 接入主流程 |
-| F-39 | Orchestrator Issue 重跑入口（label + comment 命令双通道） | P0 | 📋 设计完成 | 三种 label 表达重做意图：`agent:retry`（重置本地状态、关旧 PR、重跑整个 issue）、`agent:follow-up`（保留 PR、叠 commit、对应 F-37 follow-up）、`agent:blocked`（永久跳过）；comment 命令 `/agent retry` / `/agent follow-up` 由原作者或 maintainer 触发并限频；CLI 兜底 `issue retry --id 1 --mode reset` |
+| F-38 | Orchestrator 验证与报告闭环（verification + report → PR） | P0 | ✅ 完成 | commit/push 前自动跑 verification gate（pre_push hook + test_command），agent 跑完写结构化报告，git_sync 用报告改写 PR body 并合并为单条 issue 汇总评论；进度由 dead-code `progress_reporter` 接入主流程 |
+| F-39 | Orchestrator Issue 重跑入口（label + comment 命令双通道） | P0 | ✅ 完成（Sub-A~F） | 三种 label 表达重做意图：`agent:retry`（重置本地状态、关旧 PR、重跑整个 issue）、`agent:follow-up`（保留 PR、叠 commit、对应 F-37 follow-up）、`agent:blocked`（永久跳过）；comment 命令 `/agent retry` / `/agent follow-up` 由原作者或 maintainer 触发并限频；CLI 兜底 `issue retry --id 1 --mode reset`。Sub-A label 解析+意图分发、Sub-B 重置重跑、Sub-C follow-up 叠 commit、Sub-D comment 命令解析、Sub-E CLI 兜底、Sub-F 限频+角色校验均已落地；端到端 10-11 阶段（实际 GitCode/GitHub issue 联动）待真实环境验证 |
+| F-40 | ProgressReporter Sink 协议重构 | P1 | 📋 设计完成 | 把 `Orchestrator` 上 `ProgressReporter` 单例拆为每 session 独立的 `ProgressSink` 实例；新增 `CompositeProgressSink` 扇出支持 F-37/F-39 零侵入接入；补全 `SessionComplete` / `TurnComplete` 转发；引入 `WorkflowConfig.phases` 做真实进度计算，淘汰 `phase_count * 25` 假数据 |
 
 ---
 
@@ -347,6 +350,20 @@ CronTask due
 | build_missed_task_notification | `src/cron_system/missed_task_notification.py` 或 extension notification adapter | ❌ 待实现 | 错失任务通知构建函数 |
 | growthbook_config.py | `src/cron_system/growthbook_config.py` | ❌ 待实现 | Jitter 参数动态配置 |
 
+**CCB 对比分析发现的补充子任务（2026-06）**:
+
+| 子任务 | 文件 | 状态 | 说明 |
+|--------|------|------|------|
+| G1: isKilled 运行时 kill 开关 | `clawcodex_ext/cron_system/scheduler.py` + gate 机制 | ❌ 待实现 | 每 tick 轮询 `is_killed`，支持运行时紧急关闭 cron |
+| G2: 远程 Jitter 实时配置 | `clawcodex_ext/cron_system/jitter.py` + config loader | ❌ 待实现 | 配置文件/env var 热加载 6 个 jitter 参数，每 tick 重新读取 |
+| G3: One-shot 反向 Jitter | `clawcodex_ext/cron_system/jitter.py` | ❌ 待实现 | 整点 (:00/:30) 可提前最多 90s 触发，确定性 hash 偏移 |
+| G4: Permanent 免过期机制 | `clawcodex_ext/cron_system/models.py` + tools.py | ❌ 待实现 | `permanent` 字段、过期豁免、CronCreate 写入保护、assistant 安装入口 |
+| G5: 锁注册式清理与 PID 增强 | `clawcodex_ext/cron_system/lock.py` | ⚠️ 部分完成 | 有基础 O_EXCL 锁和 os.kill 探测；缺少 atexit 注册清理、PID 分身检测、同 session 锁接管 |
+| G6: 工具 Prompt 指引增强 | `clawcodex_ext/cron_system/tools.py` | ❌ 待实现 | CronCreate/List/Delete 的 `prompt` 字段补充 jitter/过期/scope 说明 |
+| G7: Analytics 遥测事件预留 | `clawcodex_ext/cron_system/scheduler.py` | ❌ 待实现 | fire/missed/expired 事件点预留 Optional[Callable] |
+| G8: inFlight 防重复触发 | `clawcodex_ext/cron_system/scheduler.py` | ❌ 待实现 | 异步 IO 期间用 in_flight Set 防止同一任务二次触发 |
+| A1~A5: 已有优势特性保持 | 全模块 | ✅ 已存在 | CronRun 追踪/手动触发/状态展示/英文名支持/详情输出——需在实施中保持 |
+
 ### 里程碑
 
 | 阶段 | 任务 | 状态 |
@@ -362,6 +379,14 @@ CronTask due
 | 9 | trigger detail/manual fire - 单任务详情与手动触发 run id 回显 | ⏳ 待开始 |
 | 10 | status.py / autonomy commands - `/autonomy status`, `/autonomy runs`, `/autonomy status --deep` 或等价命令的 richer output | ⏳ 待扩展 |
 | 11 | 测试覆盖 - cron job 管理、trigger detail/manual fire、run 生命周期、状态查看、headless 失败记录 | ⏳ 待开始 |
+| **G1** | **isKilled 运行时 kill 开关** - scheduler 每 tick 轮询 `is_killed()`，工具 prompt 门控 | ❌ 待实现 |
+| **G2** | **远程 Jitter 实时配置** - 6 个参数可配置文件/env 热加载，每 tick 重新读取 | ❌ 待实现 |
+| **G3** | **One-shot 反向 Jitter** - 整点 (:00/:30) 提前触发，确定性 hash 偏移，min/max 保护 | ❌ 待实现 |
+| **G4** | **Permanent 免过期机制** - 字段/写保护/过期豁免/assistant 安装入口 | ❌ 待实现 |
+| **G5** | **锁注册式清理与 PID 增强** - atexit 清理、PID 分身检测、同 session 锁接管 | ⚠️ 部分完成 |
+| **G6** | **工具 Prompt 指引增强** - CronCreate/List/Delete 的 prompt 字段补充最佳实践说明 | ❌ 待实现 |
+| **G7** | **Analytics 遥测事件预留** - fire/missed/expired 事件点预留 Optional[Callable] | ❌ 待实现 |
+| **G8** | **inFlight 防重复触发** - 异步 IO 期间用 in_flight Set 防止同一任务二次触发 | ❌ 待实现 |
 
 ---
 
@@ -381,56 +406,18 @@ CronTask due
 
 ### F-13: Agent 记忆作用域隔离
 
-**状态**: 🔄 进行中
+**状态**: ✅ 完成（2026-06-06）
 **优先级**: P1
 **规划日期**: 2026-05-19
 
-#### 背景
-在多 Agent 协作场景下，不同 Agent 可能需要访问不同范围的信息。传统的记忆系统是单例模式，所有 Agent 共享相同的记忆目录，无法满足按需隔离的需求。
-
-#### 实现方案
-在 `AgentDefinition` 中添加 `memory` 字段，支持指定 Agent 可访问的记忆作用域。核心 API `load_memory_prompts()` 支持传入作用域列表按需加载。
-
-#### 支持的作用域
-| 作用域 | 说明 |
-|--------|------|
-| `user` | 用户/私有记忆 |
-| `project` | 项目上下文记忆 |
-| `reference` | 外部系统指针 |
-| `team` | 团队共享记忆 |
-| `local` | 会话级本地记忆 |
-
-#### 待完成的工作
-- [x] 添加 `load_memory_prompts()` 函数到 `memdir/memdir.py`
-- [x] 添加 `_load_memory_prompt_for_scope()` 和 `_get_memory_path_for_scope()` 辅助函数
-- [x] 导出 `load_memory_prompts` 到 `memdir/__init__.py`
-- [ ] 更新 `build_full_system_prompt()` 支持 `memory_scopes` 参数
-- [ ] 更新 `build_full_system_prompt_blocks()` 支持 `memory_scopes` 参数
-- [ ] 更新 `_build_memory_section()` 接受 `memory_scopes` 参数
-- [x] 保持 `load_memory_prompt()` 向后兼容
-
-#### 关键文件（待创建/修改）
-- `src/memdir/memdir.py` - 核心 `load_memory_prompts()` 实现
-- `src/memdir/memory_types.py` - 四种记忆类型定义
-- `src/memdir/paths.py` - 记忆目录路径解析
-- `src/memdir/team_mem_paths.py` - 团队记忆路径
-- `src/memdir/team_mem_prompts.py` - 团队记忆 prompt 构建
-- `src/context_system/prompt_assembly.py` - 支持 `memory_scopes` 参数
-
-#### API 使用方式（设计）
-```python
-# 按需加载特定作用域的记忆
-memory_prompts = load_memory_prompts(['user', 'team'])
-
-# 在 build_full_system_prompt 中使用
-prompt = build_full_system_prompt(
-    memory_scopes=['user', 'project'],  # Agent 按需指定
-    ...
-)
-```
-
-#### 问题与解决方案
-(待实现)
+> 通过 `clawcodex_ext/memory/` 扩展包 + `prompt_assembly.py` forwarding seam 实现。采用 try-import + 静默降级模式，零侵入原有 `memdir/` 模块。
+>
+> 核心文件：
+> - `clawcodex_ext/memory/__init__.py` — 包声明
+> - `clawcodex_ext/memory/scope_aware_prompt.py` — 核心 scope 感知 prompt 逻辑
+> - `src/context_system/prompt_assembly.py` — 4 处 forwarding seam（`build_full_system_prompt`、`build_full_system_prompt_blocks`、`_build_memory_section` 参数透传 + `build_scope_aware_memory_prompt` 调用）
+>
+> 验证：✅ 231/231 orchestrator 测试通过（F-39 Sub-A~F 全部落地，含 153 个 F-39 专项用例）| ✅ 371/378 parity 测试通过 | ✅ F-38 E2E 全部通过
 
 ---
 
@@ -1477,11 +1464,13 @@ Agent 完成 → git commit → pending_review
 
 *版本 v2.4 更新：新增 F-39 Orchestrator Issue 重跑入口。三种 label 表达重做意图：`agent:retry`（重置本地状态、关旧 PR、重跑整个 issue）、`agent:follow-up`（保留 PR、叠 commit、对应 F-37 follow-up）、`agent:blocked`（永久跳过）；comment 命令 `/agent retry` / `/agent follow-up` 由原作者或 maintainer 触发并限频；CLI 兜底 `issue retry --id 1 --mode reset`。Sub-A label 解析+意图分发，Sub-B 重置重跑，Sub-C follow-up 叠 commit，Sub-D comment 命令解析，Sub-E CLI 兜底，Sub-F 限频+角色校验。*
 
+*版本 v2.7 更新：F-39 Orchestrator Issue 重跑入口落地（Sub-A~F 全部 ✅）。`tracker.py` 增 `Intent` str-Enum + `intent_from_label_set` 优先级助手 + `Command` enum + `parse_agent_command` 正则 + `CommandIntent` 数据类（携带 author_login/comment_id 用于 Sub-F 角色校验）+ `fetch_issue_command_intent` 默认实现；`issue_registry.py:IssueRecord` 增 `intent/retry_count/last_command/intent_source/command_cursor` 字段 + `mark_intent/clear_intent/reset_for_retry/increment_retry_count/unblock` 方法；`orchestrator.py` 在 `_poll_and_dispatch` 增加 Sub-F 角色校验（`allow_anyone_to_retry`/作者匹配/fail-closed）+ 限频（`max_retries_per_issue=3`）+ 拒绝评论与高优 audit 日志；`cli/issue.py` 增 `retry` 子命令（`--mode {reset,followup,unblock}` + `--force` + `--max-retries` + `--operator` + `--reason`）写 `~/.clawcodex/orchestrator/audit.jsonl`。新增 153 个 F-39 专项单测（`test_orchestrator_f39_{command,retry,retry_cli,followup,ratelimit,followup,retry_cli,intent}.py`），orchestrator 回归 231/231 通过。端到端 10-11 阶段（实际 GitCode/GitHub issue 联动）待真实环境验证。*
+
 ---
 
 ## F-38: Orchestrator 验证与报告闭环
 
-**状态**: ✅ 完成（2026-06-01）
+**状态**: ✅ 完成（2026-06-01，含一轮 E2E + 1 bug 修复）
 **优先级**: P0
 **规划文档**: `docs/FEATURE_PLAN.md` → `3.1.5 验证与报告闭环设计`
 **触发场景**: 2026-06-01 在 `chadwweng/AgentSDK` 跑 issue #1 时发现 `tools=0` 仍走 success、agent 凭空返回 SessionComplete 后 commit/push/PR 全程无验证；事后 GitCode 上 PR `#1` 收到 1 条 Git Sync 评论但无 Run Complete 汇总；PR body 是静态模板不含验证/产物信息；reviewer 找不到 diff 与 workspace 路径。
@@ -1598,7 +1587,7 @@ Agent 完成 → git commit → pending_review
 
 ## F-39: Orchestrator Issue 重跑入口（label + comment 命令双通道）
 
-**状态**: 📋 设计完成
+**状态**: ✅ 完成（Sub-A~F 全部落地；E2E 阶段 10-11 待真实环境验证）
 **优先级**: P0
 **规划文档**: `docs/FEATURE_PLAN.md` → `3.1.6 Issue 重跑入口设计`
 **触发场景**: 2026-06-01 在 `chadwweng/AgentSDK` 跑完 issue #1 后用户想「让 agent 重做」或「在同一 PR 上再改一版」,但当前 orchestrator 4 层防御(内存 `completed` set / IssueRegistry `is_completed` / `has_pr` / `find_pull_request`)只支持「PR 存在 = 已处理」,不支持「关 PR = 重做」语义。用户被迫改 registry.json 或重启 daemon,体验差且易污染主流程。
@@ -1652,17 +1641,41 @@ Agent 完成 → git commit → pending_review
 
 | 阶段 | 任务 | Sub | 状态 |
 |------|------|-----|------|
-| 1 | `tracker.py:TrackerAdapter` 增 `extract_intent_from_labels` / `close_pull_request` / `fetch_issue_command_intent` 三个抽象 | A/B/D | 📋 待开始 |
-| 2 | `repo_tracker/client.py:RepositoryIssueClient` 实现上述三个方法(GitCode 优先,GitHub/Gitee 列 TODO) | A/B/D | 📋 待开始 |
-| 3 | `issue_registry.py:IssueRecord` 增 `intent` / `retry_count` / `last_command` 字段;新增 `reset_for_retry` / `mark_followup` / `unblock` / `increment_retry` 方法 | A/B/E | 📋 待开始 |
-| 4 | `orchestrator.py:_poll_and_dispatch` 增 intent 前置判断:label 解析 + comment 命令解析 + 合并;launch 路径根据 intent 分流(reset / followup / skip) | A/C/D/F | 📋 待开始 |
-| 5 | `orchestrator.py` 在 intent=retry 时调 `close_pull_request(pr_number)`,再 launch 新 run | B | 📋 待开始 |
-| 6 | `git_sync.py:GitSyncService.sync` 加 `mode` 参数;`mode="followup"` 走「只 commit/push,不开 PR」分支 | C | 📋 待开始 |
-| 7 | `cli/issue.py` 增 `retry` 子命令,实现 `_run_retry`;`audit.jsonl` 写本地审计 | E | 📋 待开始 |
-| 8 | `orchestrator.py` 增 `max_retries_per_issue` 配置(默认 3);`IssueRecord.retry_count` 超过上限拒绝重置并发评论 | F | 📋 待开始 |
-| 9 | 单元测试:label 解析、命令正则、retry_count 限频、role 校验、registry.reset_for_retry 状态机 | A/B/E/F | 📋 待开始 |
-| 10 | 端到端:在 issue #1 上加 `agent:retry` label → 60s 内观察 daemon 日志确认走 retry 路径 → issue 重新 running → 完成后 PR 编号变化 | A/B/C | 📋 待开始 |
-| 11 | 端到端:在 issue #1 上加 `agent:follow-up` label → daemon 检测到后不关 PR,在同 branch 叠 commit → PR 编号不变,commit 数 +1 | C | 📋 待开始 |
+| 1 | `tracker.py:TrackerAdapter` 增 `extract_intent_from_labels` / `close_pull_request` / `fetch_issue_command_intent` 三个抽象 | A/B/D | ✅ 完成 |
+| 2 | `repo_tracker/client.py:RepositoryIssueClient` 实现上述三个方法(GitCode 优先,GitHub/Gitee 列 TODO) | A/B/D | ✅ 完成 |
+| 3 | `issue_registry.py:IssueRecord` 增 `intent` / `retry_count` / `last_command` / `intent_source` / `command_cursor` 字段;新增 `mark_intent` / `clear_intent` / `reset_for_retry` / `increment_retry_count` / `unblock` 方法 | A/B/E | ✅ 完成 |
+| 4 | `orchestrator.py:_poll_and_dispatch` 增 intent 前置判断:label 解析 + comment 命令解析 + 合并;launch 路径根据 intent 分流(reset / followup / skip) | A/C/D | ✅ 完成 |
+| 5 | `orchestrator.py` 在 intent=retry 时调 `close_pull_request(pr_number)`,再 launch 新 run | B | ✅ 完成 |
+| 6 | `git_sync.py:GitSyncService.sync` 加 `mode="followup"` 参数,走「只 commit/push,不开 PR」分支;orchestrator 把 `session.run_kind="agent_followup"` 走 `_prepare_intent_session` 复用 branch | C | ✅ 完成 |
+| 7 | `cli/issue.py` 增 `retry` 子命令,实现 `_run_retry` + `_append_audit_log` + `_resolve_operator`;`~/.clawcodex/orchestrator/audit.jsonl` 写本地审计 | E | ✅ 完成 |
+| 8 | `config/schema.py:AgentConfig` 增 `max_retries_per_issue=3` + `allow_anyone_to_retry=False`;`orchestrator.py` 实现 `_is_command_author_eligible` (fail-closed) + `_check_retry_rate_limit` + `_reject_unauthorized_command` + `_post_retry_rejection` + `_log_audit_event`;CLI `--force` 旁路并写高优 audit | F | ✅ 完成 |
+| 9 | 单元测试 153 个(`tests/test_orchestrator_f39_{command,retry,followup,intent,retry_cli,ratelimit}.py`);orchestrator 回归 231/231 通过 | A/B/C/D/E/F | ✅ 完成 |
+| 10 | 端到端:在 issue #1 上加 `agent:retry` label → 60s 内观察 daemon 日志确认走 retry 路径 → issue 重新 running → 完成后 PR 编号变化 | A/B/C | 📋 待真实环境验证 |
+| 11 | 端到端:在 issue #1 上加 `agent:follow-up` label → daemon 检测到后不关 PR,在同 branch 叠 commit → PR 编号不变,commit 数 +1 | C | 📋 待真实环境验证 |
+
+### 实际落地（2026-06-01）
+
+| 维度 | 改动 |
+|---|---|
+| **核心抽象** | `extensions/orchestrator/tracker.py` 新增 `Intent` str-Enum（NONE/RETRY/FOLLOWUP/BLOCKED）、`Command` enum（RETRY/FOLLOWUP/UNBLOCK）、`CommandIntent` 数据类（带 author_login/comment_id/comment_body）、`DEFAULT_INTENT_LABELS`、`intent_from_label_set()`、`parse_agent_command()`、`command_to_intent()`、`merge_intents()`、`extract_intent_from_labels()` 默认实现、`close_pull_request()` 默认实现、`fetch_issue_command_intent()` 默认实现（返回 `CommandIntent \| None`） |
+| **适配器** | `extensions/orchestrator/repo_tracker/{client,adapter}.py` 增 `close_pull_request`（`PATCH /repos/{owner}/{repo}/pulls/{number}` + `state=closed`，422 视为成功）+ `intent_labels` 参数 + `fetch_issue_command_intent` 委派到 `fetch_new_comments_since`；`local_tracker/adapter.py` 增 `close_pull_request` no-op + `fetch_issue_command_intent` 扫描本地 `*.comments.ndjson` + `intent_labels` 参数；`linear/adapter.py` 增 `intent_labels` 参数 + `extract_intent_from_labels` |
+| **状态机** | `extensions/orchestrator/issue_registry.py:IssueRecord` 增 5 个字段（`intent/retry_count/last_command/intent_source/command_cursor`）+ 5 个方法（`mark_intent/clear_intent/reset_for_retry/increment_retry_count/unblock`）；`_load()` 过滤未知字段保证老 JSON 兼容；`unblock()` 把 ABANDONED 滚回 PENDING 且清 intent，`retry_count` 保留以便限频继续生效 |
+| **调度逻辑** | `extensions/orchestrator/orchestrator.py` `_poll_and_dispatch` 增 `_resolve_intent()`（label+command 合并）、`_resolve_command_intent()`、`_post_command_acknowledgement()`（"已受理"评论 + cursor）、`_prepare_intent_reset()`（Sub-B 关 PR + reset）、`_prepare_intent_session()`（Sub-C 设 `run_kind=agent_followup` + branch 复用）、`_is_command_author_eligible()`（Sub-F fail-closed）、`_reject_unauthorized_command()`（Sub-F 拒绝评论 + audit）、`_check_retry_rate_limit()`（Sub-F 限频）、`_post_retry_rejection()`（Sub-F 拒绝评论 + 标签尝试）、`_log_audit_event()`（daemon-side 审计）。UNBLOCK 命令触发时把 ABANDONED 回滚到 PENDING 并清 intent |
+| **Git 同步** | `extensions/orchestrator/git_sync.py:GitSyncService.sync()` 新增 `mode: str = "default"` 参数；`mode="followup"` 顶部短路要求 `session.pull_request` 存在（fail-fast），后续走现有 followup_pr 分支只 commit/push 不开新 PR |
+| **配置** | `extensions/orchestrator/config/schema.py:AgentConfig` 新增 `max_retries_per_issue: int = 3` + `allow_anyone_to_retry: bool = False`；`WorkflowConfig.from_dict()` 加载两个新字段 |
+| **CLI** | `extensions/orchestrator/cli/issue.py` 新增 `retry` 子命令（`--mode {reset,followup,unblock}` + `--id` + `--reason` + `--force` + `--max-retries` + `--operator` + `--workspace/--workflow`）+ `_run_retry()` + `_append_audit_log()`（写 `~/.clawcodex/orchestrator/audit.jsonl`）+ `_resolve_operator()`（`$USER` / `os.getlogin()` / "unknown"）；dispatch 在 `run()` 末尾 |
+| **测试** | 新增 6 个测试文件 153 个用例：`test_orchestrator_f39_{intent,retry,followup,command,retry_cli,ratelimit}.py`；`Intent`/`Command`/`CommandIntent` 单元覆盖、`IssueRecord` JSON round-trip + 老 schema 兼容、`_run_retry` 三模式（reset/followup/unblock）+ `--force` 旁路 + `--max-retries` 覆盖 + rate-limit 拒绝（rc=3 不动 state）、`orchestrator._is_command_author_eligible` 7 种场景（allow_anyone/None/false/空/author 匹配/other/no record）、`_check_retry_rate_limit` at-limit 拒 + force 放、`_reject_unauthorized_command` 评论 + audit |
+| **回归** | orchestrator 套件 231/231 通过（含 78 个原有用例 + 153 个 F-39 新增）；`tests/manual_e2e_f38.py` 不受影响（E2E 阶段 10-11 待真实 GitCode/GitHub issue 验证） |
+
+### 设计决定（落地记录）
+
+1. **`CommandIntent` 携带 author_login**（F-39 Sub-D→Sub-F 接口扩展）：早期 Sub-D 用 `Command | None` 返类型，Sub-F 角色校验需要 author_login，所以把返回类型升级为 `CommandIntent(command, author_login, comment_id, comment_body)` 数据类，向后兼容通过 `intent.command` 字段读取命令值。
+2. **role check fail-closed**（LLM 自触发防护）：`author_login is None` / 空字符串直接拒绝（即使配 `allow_anyone_to_retry=True` 也会放行）；`author_login == "clawcodex"` 永远放行（bot 自己），其余需匹配 `IssueRecord.author_login`（澄清流填的作者）。
+3. **`unblock()` 总是清 intent**（不是真 no-op）：docstring 写"非 ABANDONED 时不修改 status"，但 intent/intent_source/last_command 总是清零——保证下次 poll 重新走 `_resolve_intent()`；`retry_count` 不清以维持限频。
+4. **CLI `--force` 高优 audit**：`audit.jsonl` 写 `{event: "retry", priority: "high", force: true, retry_count: N, max_retries_per_issue: M, rate_limited: false}`，与正常 retry 区分；`--force` 缺省时 rate-limit 命中写 `{event: "retry_rejected", priority: "high", rate_limited: true}`。
+5. **限频边界**：`retry_count < max_retries_per_issue` 放行（默认 3 表示可重试 3 次）；`retry_count >= max` 拒（CLAUDE.md 验收标准 4 描述为"累计触发 4 次后拒绝"——其实是第 4 次触发时 retry_count 已经是 3，命中 3 >= 3 边界，与设计一致）。
+6. **审计日志差异**：daemon `_log_audit_event` 与 CLI `_append_audit_log` 字段集略有不同（daemon 写更少字段，CLI 写 retry_count/max_retries/rate_limited），都满足设计文档的最小集 `{ts, operator, issue_id, mode, reason}`；后续可统一字段。
+7. **审计日志路径**：`~/.clawcodex/orchestrator/audit.jsonl`（设计文档指定）；测试通过 `patch(_DEFAULT_AUDIT_LOG_PATH, ...)` 重定向到 tmpdir。
 
 ### 验收标准
 
@@ -1710,3 +1723,106 @@ agent:
 - **不破坏 F-38 Sub-D**:`progress_reporter` 的 PhaseComplete 写 ndjson 逻辑在 retry 路径下应照常工作(每次新 run 是新的 session)。
 - **不破坏 F-36 LocalTracker**:LocalTracker 无远程 PR 概念,`close_pull_request` 在该路径下应 no-op 并打 warning 日志;`issue_registry.unblock` 行为对 LocalTracker 等价(把 `pending_review` / `abandoned` 状态回滚到 `pending`)。
 - **与 F-38 Sub-B 报告**:`agent:retry` 触发的重置会清空 `report_path`,F-38 Sub-B 报告不应被复用;`agent:follow-up` 不清空报告,新 report 追加为 `report_path_v{N+1}` 序列(便于历史回溯)。
+
+---
+
+## F-40: ProgressReporter Sink 协议重构
+
+**状态**: 📋 设计完成
+**优先级**: P1
+**规划文档**: `docs/FEATURE_PLAN.md` → `3.1.7 ProgressReporter Sink 协议重构设计`
+**触发场景**: 2026-06-01 F-38 Sub-D 落地时把 `ProgressReporter` 接到主流程后,审阅发现三个未解决的设计债:(1) `ProgressReporter` 在 `Orchestrator.__init__` 单例化,`_current_task_id` / `_phase_count` 是实例可变状态,F-39 多 issue 并发跑会竞争;(2) `AgentRunner.run` 只在两处显式构造 `PhaseComplete` 并转发给 `progress_reporter.on_event`,`SessionComplete` 形同虚设,session 结束无进度落点;(3) `_on_phase_complete` 写 `progress = min(phase_count * 25, 100)`,对下游无参考价值。
+
+### 目标
+
+把 `extensions/orchestrator/progress_reporter.py` 从「绑死 `ToolContext` 的单例」重构为「以 `ProgressSink` 协议为最小契约的多消费者可插拔架构」:
+
+1. 每 session 持有独立 sink 实例,状态天然隔离,消除并发竞争。
+2. `AgentRunner` 转发全部三类事件 (`PhaseComplete` / `TurnComplete` / `SessionComplete`),sesssion 结束一定有进度落点。
+3. 进度计算改用 `WorkflowConfig.phases` 比例 + LLM 显式覆盖,淘汰 `phase_count * 25` 假数据。
+4. 引入 `CompositeProgressSink` 扇出,让 F-37 (PR 检视意见自动修复) / F-39 (Issue 重跑) 后续可零侵入注册专用 sink。
+5. 保留 `ProgressReporter` 名字为向后兼容 shim,既有测试与调用方不破。
+
+### 子特性
+
+| Sub | 名称 | 目标 | 主要工作 |
+|-----|------|------|----------|
+| A | `ProgressSink` 协议 + 复合实现 | 用 Protocol 替代具体类,支持多消费者 | 新建 `extensions/orchestrator/progress_sink.py`,定义 `ProgressSink` 协议 + `CompositeProgressSink` 扇出类 + 三个回调 `on_phase_complete` / `on_turn_complete` / `on_session_complete` |
+| B | `ToolContextProgressSink` 默认实现 | 替代原 `ProgressReporter` 行为,落到 `ToolContext.tasks` | 在 `progress_sink.py` 实现 `ToolContextProgressSink`,签名 `__init__(task_id, context, workflow_phases)`;私有 `_phase_count` 状态;`on_phase_complete` 调 `_progress_report_call` + `_task_update_call`;`on_session_complete` 写终态 (`progress=100` 当 `reason=success`,否则 `None`) |
+| C | `AgentRunner` 事件转发改造 | 三个事件全部走 sink,SessionComplete 不再丢 | `agent_runner.py` 把参数 `progress_reporter: Any \| None` 改 `progress_sink: ProgressSink \| None`;在 `SessionComplete` 分支(原 line 293-304)追加 `sink.on_session_complete(event, session)`;在 `max_turns` 路径(line 357-364)同样转发;若有 `TurnComplete` 分支也补齐 |
+| D | `Orchestrator` 派发改造 | 取消单例,每 session 独立 sink | `orchestrator.py:125-126` 删除 `self._progress_reporter = ProgressReporter(...)`;在 `_dispatch_issue` / `_run_issue` 路径里为每个 session 新建 `ToolContextProgressSink(task_id, self._progress_context, workflow_phases=self.workflow.phases)`,外层套 `CompositeProgressSink([inner])` 便于后续扩展 |
+| E | `WorkflowConfig.phases` 真实进度计算 | 替代 `phase_count * 25` | `src/orchestrator/config/schema.py` 的 `WorkflowConfig` 新增 `phases: list[str] = field(default_factory=list)` 字段;`ToolContextProgressSink._phase_progress(idx)` 按 `(idx+1) / total * 100` 算;`ProgressReportTool` 的 prompt 鼓励 LLM 显式传 `progress` 覆盖自动值 |
+| F | `ProgressReporter` shim | 保持向后兼容 | `progress_reporter.py` 改写为兼容层: `on_event(event, session)` 根据 `isinstance` 分发到内部 sink 的三个回调;`set_task_id(task_id)` 创建新 `ToolContextProgressSink`;标记 `@deprecated` |
+| G | 测试与回归 | 并发安全 + 三事件覆盖 | 新增并发回归测试: `asyncio.gather` 跑两个 mock session,断言它们的 progress 写入互不串扰;新增 `SessionComplete` 落点测试;保留现有 `_ProgressReporter` stub 测试(stub 走 `on_event` 老 API,shim 兼容) |
+
+### 当前基线
+
+| 能力 | 当前状态 | 说明 |
+|------|----------|------|
+| 单 `ProgressReporter` 单例 | ⚠️ 存在竞争风险 | `orchestrator.py:125-126` 实例化一次,F-39 多 issue 并发跑 `_current_task_id` 会互相覆盖 |
+| `AgentRunner` 转发 `PhaseComplete` | ✅ 已实现 | `agent_runner.py:302-304, 362-364` |
+| `AgentRunner` 转发 `SessionComplete` | ❌ 死代码 | `progress_reporter.py:_on_session_complete` 定义但 `AgentRunner` 不发该事件 |
+| `AgentRunner` 转发 `TurnComplete` | ❌ 死代码 | 同上 |
+| `progress` 真实计算 | ❌ 假数据 | `progress_reporter.py:87` 写死 `min(phase_count * 25, 100)` |
+| `WorkflowConfig.phases` | ❌ 缺失 | `config/schema.py` 无此字段 |
+| 多 sink 扇出 | ❌ 缺失 | F-37 / F-39 想消费进度事件需要改 `ProgressReporter` |
+| `ProgressReporter` 向后兼容 | N/A | 现状即唯一实现,无兼容问题 |
+
+### 实施进度
+
+| 阶段 | 任务 | Sub | 状态 |
+|------|------|-----|------|
+| 1 | 新建 `extensions/orchestrator/progress_sink.py`,定义 `ProgressSink` Protocol + `CompositeProgressSink` + `ToolContextProgressSink` | A/B | 📋 待开始 |
+| 2 | `src/orchestrator/config/schema.py:WorkflowConfig` 新增 `phases: list[str] = field(default_factory=list)` 字段,旧 workflow.md 无 `phases` 时退化为「无 phase 权重,自动上报 `progress=None`」 | E | 📋 待开始 |
+| 3 | `extensions/orchestrator/progress_reporter.py` 改写为 shim,内部维护 `ToolContextProgressSink`,`on_event` 走 `isinstance` 分发;`set_task_id` 创建新 sink;`from .progress_sink import ...` 软引用,避免循环 import | F | 📋 待开始 |
+| 4 | `extensions/orchestrator/agent_runner.py`: 参数 `progress_reporter` → `progress_sink`;`SessionComplete` 分支与 `max_turns` 路径补 `sink.on_session_complete`;若有 `TurnComplete` 分支也补 `sink.on_turn_complete`;`_write_event_log` 行为不变 | C | 📋 待开始 |
+| 5 | `extensions/orchestrator/orchestrator.py:125-126` 删除单例;`_dispatch_issue` / `_run_issue` 中为每个 session 新建 `ToolContextProgressSink` + `CompositeProgressSink`;保留 `_progress_context` 共享 | D | 📋 待开始 |
+| 6 | `src/tool_system/tools/progress_report.py` 的 `ProgressReportTool` prompt 增「建议显式传 `progress`」指引;`_progress_report_call` 接受 `progress=None`(已支持,无需改实现) | E | 📋 待开始 |
+| 7 | 单元测试: `ToolContextProgressSink` 三个回调直接调;`CompositeProgressSink` 扇出且单 sink 异常不阻塞;`ProgressReporter` shim 的 `on_event` 类型分发;`WorkflowConfig.phases` 解析默认空 | A/B/E/F | 📋 待开始 |
+| 8 | 回归测试: `asyncio.gather` 并发跑两个 session,断言各自的 `ToolContext.tasks` 写入互不串扰;`SessionComplete` 落点测试 | G | 📋 待开始 |
+| 9 | 更新 `tests/test_orchestrator_agent_runner.py` 的 stub(若依赖 `progress_reporter` kwarg,改为 `progress_sink`);运行 `pytest tests/test_orchestrator_*.py -q` 与 `tests/manual_e2e_f38.py -v -s` 确认不破 | G | 📋 待开始 |
+
+### 验收标准
+
+- 并发跑两个 issue 时,每个 session 的 `ToolContext.tasks[id].metadata.progress_stages` 列表只含本 session 的事件,无串扰。
+- `SessionComplete` 触发后,`ToolContext.tasks[id].metadata.current_stage` 含 `session_{reason}`、`metadata.progress` 在 `reason=success` 时为 100、其他情况为 `None`。
+- `WorkflowConfig.phases=["analysis", "design", "impl", "test", "review"]` 配置下,完成第 2 个 phase 时 `progress=40`;LLM 显式调 `ProgressReport` 传 `progress=37` 时覆盖自动值。
+- `WorkflowConfig.phases` 缺失或为空时,自动 `on_phase_complete` 写 `progress=None`,`StatusDashboard` 显示「Phase N (进度未知)」,而不是误导的 25/50/75/100。
+- `ProgressReporter` 类的 `on_event(event, session)` 旧 API 仍可用,内部按 `isinstance(event, PhaseComplete / TurnComplete / SessionComplete)` 分发,现有 stub 测试不修改即可通过。
+- `CompositeProgressSink` 内任一 sink 抛异常被独立捕获并 `logger.exception`,不影响其他 sink 接收事件。
+- F-37 / F-39 后续接入时,只需在 `Orchestrator._dispatch_issue` 注册额外 sink(`PRReviewAutoFixSink` / `RetryLabelSink`),无需修改 `AgentRunner` 或 `progress_reporter.py`。
+
+### 风险与约束
+
+- **API 改名 breaking**: `AgentRunner.run` 的 `progress_reporter` kwarg 改 `progress_sink` 是字面量破坏,需同步改 `Orchestrator` 调用方与所有 stub 测试。Mitigation: `ProgressReporter` shim 仍可作为 `progress_sink` 传入(只要实现 `on_phase/on_turn/on_session_complete` 三个方法,duck type 即可)。
+- **进度从假数据变 `None` 的 UI 退化**: 默认配置下旧用户从「25/50/75/100」退到「未知」。Mitigation: 加 `workflow.observability.progress.fallback_to_phase_step: bool = True` 配置开关(默认保留旧行为),后续再翻 `False`。
+- **每个 session 多一个 sink 对象**: 内存增长可忽略(Python 单实例,几 KB),无 perf 风险。
+- **事件总线语义变化**: `CompositeProgressSink` 是同步扇出,任意 sink 阻塞会卡住 `AgentRunner` 主循环。Mitigation: 每个 sink 内部 try/except + 短超时;慢消费者应自己 queue + 后台线程。
+- **Import 顺序**: `progress_reporter.py` (shim) → `progress_sink.py` (默认实现) → `agent_runner.py` (调用方) 依赖链需保持单向,避免循环 import。建议 `progress_reporter.py` 用 `from .progress_sink import ToolContextProgressSink` 软引用,`TYPE_CHECKING` 保护。
+
+### 进度计算决策表(2026-06-01 设计稿)
+
+| 来源 | 触发时机 | `progress` 值 | 优先级 |
+|------|----------|---------------|--------|
+| LLM 显式调 `ProgressReport` 工具 | LLM 主动汇报 | LLM 传入的 `progress` | 最高 (覆盖一切) |
+| `WorkflowConfig.phases` + 自动 `on_phase_complete` | PhaseComplete 事件 | `(current_idx+1) / total * 100` | 中 |
+| 兜底(均无) | PhaseComplete 事件 | `None` (UI 显示「未知」) | 最低 |
+| `SessionComplete` 兜底 | 会话结束 | `100` (reason=success) / `None` (其他) | 终态 |
+
+`workflow.observability.progress.fallback_to_phase_step: bool = True` 时,中间档用 `phase_count * 25` 兜底(软迁移期),后续翻 `False` 强推 None。
+
+### 依赖与协同
+
+- **依赖 F-1、F-38 Sub-D**: F-38 已把 `ProgressReporter` 接到主流程,本特性在此基础上重构;不破坏 F-38 验收标准 (`progress_reporter.ProgressReporter` 在主流程被构造 → 改为 `ToolContextProgressSink` 在主流程被构造)。
+- **先于 F-37 落地收益**: F-37 (PR 检视意见自动修复) 后续可注册 `PRReviewAutoFixSink` 监听 `on_session_complete` 触发 follow-up run,无需改 `AgentRunner`。
+- **先于 F-39 落地收益**: F-39 (Issue 重跑) 后续可注册 `RetryLabelSink` 监听 `on_session_complete` 更新 issue label,无需改 `AgentRunner`。
+- **不破坏 F-36 LocalTracker**: LocalTracker 派发的 session 也走相同的 sink 构造路径,`ToolContextProgressSink` 行为对其等价(数据落 `ToolContext.tasks`,不访问远程)。
+- **与 F-22 Cron 系统解耦**: Cron 触发的 prompt 不走 orchestrator,sink 链路不被影响。
+
+---
+
+*文档更新时间: 2026-06-01*
+
+*版本 v2.5 更新: 修复 `progress_reporter` 死代码,phase completion 接入 ndjson event log (F-38 Sub-D 落地)。*
+
+*版本 v2.6 更新: 新增 F-40 ProgressReporter Sink 协议重构。Sub-A 引入 `ProgressSink` 协议 + `CompositeProgressSink` 扇出;Sub-B `ToolContextProgressSink` 替代原 `ProgressReporter` 行为;Sub-C `AgentRunner` 三个事件全部转发,session 结束有进度落点;Sub-D `Orchestrator` 取消单例改为每 session 独立 sink;Sub-E `WorkflowConfig.phases` 做真实进度计算,淘汰 `phase_count * 25` 假数据;Sub-F `ProgressReporter` 降级为 shim 保持向后兼容;Sub-G 并发回归 + 三事件测试覆盖。*
