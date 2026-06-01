@@ -168,5 +168,6 @@ Examples:
         "\nSubcommands:\n"
         "  login    Configure API keys or ChatGPT OAuth (interactive)\n"
         "  config   Show current configuration\n"
+        "  autonomy Show scheduled-task status and runs\n"
     )
     return parser

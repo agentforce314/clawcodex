@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .models import CronTask
+from .runs import CronRun
 from .scheduler import CronScheduler
 from .tools import CronCreateTool, CronDeleteTool, CronListTool
 
@@ -31,6 +32,16 @@ def attach_cron_runtime(ctx: Any, *, autostart: bool = False) -> CronScheduler:
     def on_fire(prompt: str) -> None:
         outbox.append({"type": "cron_prompt", "prompt": prompt})
 
+    def on_fire_task(task: CronTask, run: CronRun) -> None:
+        outbox.append(
+            {
+                "type": "cron_prompt",
+                "prompt": task.prompt,
+                "task_id": task.id,
+                "run_id": run.id,
+            }
+        )
+
     def on_missed(tasks: list[CronTask], notification: str) -> None:
         outbox.append(
             {
@@ -40,7 +51,7 @@ def attach_cron_runtime(ctx: Any, *, autostart: bool = False) -> CronScheduler:
             }
         )
 
-    scheduler = CronScheduler(ctx.workspace_root, on_fire=on_fire, on_missed=on_missed)
+    scheduler = CronScheduler(ctx.workspace_root, on_fire=on_fire, on_fire_task=on_fire_task, on_missed=on_missed)
     setattr(ctx, "cron_scheduler", scheduler)
     if autostart:
         scheduler.start()

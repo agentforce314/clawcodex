@@ -69,6 +69,22 @@ def run_cli(argv: list[str] | None = None) -> int:
         if token == 'orchestrator':
             from src.entrypoints.orchestrator import run_orchestrator_subcommand
             return run_orchestrator_subcommand(rest_args)
+        if token == 'autonomy':
+            from pathlib import Path
+
+            from clawcodex_ext.cron_system.status import build_autonomy_runs, build_autonomy_status
+
+            deep = '--deep' in rest_args
+            filtered_args = [arg for arg in rest_args if arg != '--deep']
+            command = filtered_args[0] if filtered_args else 'status'
+            if command == 'status':
+                print(build_autonomy_status(Path.cwd(), deep=deep))
+                return 0
+            if command == 'runs':
+                print(build_autonomy_runs(Path.cwd(), deep=deep))
+                return 0
+            print("usage: clawcodex autonomy [status|runs] [--deep]", file=sys.stderr)
+            return 2
 
     from clawcodex_ext.cli.parser import build_parser
     parser = build_parser()

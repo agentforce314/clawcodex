@@ -9,6 +9,7 @@ from src.tool_system.tools.cron import CronCreateTool as FallbackCronCreateTool
 
 from clawcodex_ext.cron_system.runtime import attach_cron_runtime, replace_cron_tools
 from clawcodex_ext.cron_system.tools import CronCreateTool
+from clawcodex_ext.cron_system.runs import read_cron_runs
 
 
 class _Runtime:
@@ -63,6 +64,26 @@ def test_attach_cron_runtime_adds_scheduler_and_outbox(tmp_path) -> None:
     assert runtime.cron_scheduler is scheduler
     scheduler.on_fire("ping")
     assert runtime.tool_context.outbox == [{"type": "cron_prompt", "prompt": "ping"}]
+
+
+def test_attach_cron_runtime_task_callback_records_run(tmp_path) -> None:
+    runtime = _Runtime(tmp_path)
+    scheduler = attach_cron_runtime(runtime)
+    task = CronCreateTool.call({"cron": "*/5 * * * *", "prompt": "ping", "durable": True}, runtime.tool_context).output
+    stored_task = scheduler.load()[0]
+
+    scheduler.check_once(at_ms=task["nextFireAt"])
+
+    runs = read_cron_runs(tmp_path)
+    assert len(runs) == 1
+    assert runtime.tool_context.outbox == [
+        {
+            "type": "cron_prompt",
+            "prompt": "ping",
+            "task_id": stored_task.id,
+            "run_id": runs[0].id,
+        }
+    ]
 
 
 def registry_tool(name: str):

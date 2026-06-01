@@ -12,6 +12,7 @@ from typing import Callable
 from .lock import CronTaskLock
 from .models import CronTask
 from .notifications import build_missed_task_notification
+from .runs import CronRun, create_queued_run_for_task
 from .tasks import (
     find_due_tasks,
     find_missed_tasks,
@@ -27,7 +28,7 @@ from .tasks import (
 class CronScheduler:
     workspace_root: Path
     on_fire: Callable[[str], None]
-    on_fire_task: Callable[[CronTask], None] | None = None
+    on_fire_task: Callable[[CronTask, CronRun], None] | None = None
     on_missed: Callable[[list[CronTask], str], None] | None = None
     session_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     check_interval_seconds: float = 1.0
@@ -65,13 +66,18 @@ class CronScheduler:
         due = find_due_tasks(self.workspace_root, timestamp)
         if not due:
             return []
+        fired: list[CronTask] = []
         for task in due:
+            run = create_queued_run_for_task(self.workspace_root, task, queued_at=timestamp)
+            if run is None:
+                continue
+            fired.append(task)
             if self.on_fire_task is not None:
-                self.on_fire_task(task)
+                self.on_fire_task(task, run)
             else:
                 self.on_fire(task.prompt)
-        mark_cron_tasks_fired(self.workspace_root, due, timestamp)
-        return due
+        mark_cron_tasks_fired(self.workspace_root, fired, timestamp)
+        return fired
 
     def notify_missed_once(self, at_ms: int | None = None) -> list[CronTask]:
         missed = find_missed_tasks(self.workspace_root, at_ms)
