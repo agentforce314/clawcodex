@@ -116,6 +116,27 @@ def test_run_cli_permission_flags_resolved(monkeypatch):
     assert built_options[0].is_bypass_permissions_mode_available is True
 
 
+def test_run_cli_schedule_get_and_run_fast_paths(tmp_path, monkeypatch, capsys):
+    from clawcodex_ext.cli.dispatch import run_cli
+    from clawcodex_ext.cron_system.tasks import add_cron_task
+
+    task = add_cron_task(tmp_path, cron="*/5 * * * *", prompt="ping", durable=True, created_at=1_000)
+    monkeypatch.chdir(tmp_path)
+
+    get_rc = run_cli(['clawcodex', 'schedule', 'get', task.id])
+    get_output = capsys.readouterr().out
+    run_rc = run_cli(['clawcodex', 'schedule', 'run', task.id])
+    run_output = capsys.readouterr().out
+
+    assert get_rc == 0
+    assert f"Trigger: {task.id}" in get_output
+    assert "Prompt: ping" in get_output
+    assert run_rc == 0
+    assert f"Trigger {task.id} fired." in run_output
+    assert "Run ID:" in run_output
+
+
+
 def test_build_parser_produces_functional_parser():
     """build_parser() returns a parser that handles permission flags."""
     from clawcodex_ext.cli.parser import build_parser

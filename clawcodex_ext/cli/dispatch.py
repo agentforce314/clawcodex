@@ -85,6 +85,39 @@ def run_cli(argv: list[str] | None = None) -> int:
                 return 0
             print("usage: clawcodex autonomy [status|runs] [--deep]", file=sys.stderr)
             return 2
+        if token == 'schedule':
+            from pathlib import Path
+
+            from clawcodex_ext.cron_system.schedule import (
+                format_cron_task_detail,
+                format_manual_fire_result,
+                get_cron_task_detail,
+                manual_fire_cron_task,
+            )
+            from clawcodex_ext.cron_system.status import build_schedule_list
+
+            command = rest_args[0] if rest_args else 'list'
+            if command == 'list':
+                print(build_schedule_list(Path.cwd()))
+                return 0
+            if command == 'get' and len(rest_args) >= 2:
+                cwd = Path.cwd()
+                detail = get_cron_task_detail(cwd, rest_args[1])
+                if detail is None:
+                    print(f"No scheduled job with id '{rest_args[1]}'", file=sys.stderr)
+                    return 1
+                print(format_cron_task_detail(detail))
+                return 0
+            if command == 'run' and len(rest_args) >= 2:
+                cwd = Path.cwd()
+                run = manual_fire_cron_task(cwd, rest_args[1], current_dir=cwd)
+                if run is None and get_cron_task_detail(cwd, rest_args[1]) is None:
+                    print(f"No scheduled job with id '{rest_args[1]}'", file=sys.stderr)
+                    return 1
+                print(format_manual_fire_result(rest_args[1], run))
+                return 0
+            print("usage: clawcodex schedule [list|get ID|run ID]", file=sys.stderr)
+            return 2
 
     from clawcodex_ext.cli.parser import build_parser
     parser = build_parser()

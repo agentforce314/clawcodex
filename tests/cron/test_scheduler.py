@@ -63,6 +63,7 @@ def test_check_once_skips_due_task_with_active_run(tmp_path) -> None:
     assert runs[0].status == "queued"
 
 
+def test_notify_missed_once_reports_and_removes_due_one_shot(tmp_path) -> None:
     notifications: list[str] = []
     task = add_cron_task(tmp_path, cron="*/5 * * * *", prompt="once", recurring=False, created_at=1_000)
     write_cron_tasks(tmp_path, [replace(task, next_fire_at=2_000)])
