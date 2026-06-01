@@ -136,16 +136,22 @@ def make_agent_tool(
         """Resolve agents visible to this call.
 
         SDK / test callers can pre-populate ``options.agent_definitions
-        ["active_agents"]`` to override discovery. Otherwise we walk the
-        managed / user / project ``agents`` directories via
-        ``get_agent_definitions_with_overrides`` and apply the MCP filter
-        keyed on the context's available MCP server inventory.
+        ["active_agents"]`` to override discovery. Otherwise, in coordinator
+        mode (``CLAUDE_CODE_COORDINATOR_MODE=true``), inject WORKER_AGENT
+        so the coordinator system prompt's ``subagent_type: "worker"`` calls
+        resolve. Falls through to filesystem-based discovery.
         """
         agent_defs = getattr(context.options, "agent_definitions", None)
         if agent_defs and isinstance(agent_defs, dict):
             active = agent_defs.get("active_agents")
             if active and isinstance(active, list):
                 return active
+        # Coordinator mode: inject WORKER_AGENT so
+        # ``subagent_type: "worker"`` resolves correctly.
+        from src.coordinator.mode import is_coordinator_mode
+        if is_coordinator_mode():
+            from src.coordinator.worker_agent import get_coordinator_agents
+            return get_coordinator_agents()
         cwd = str(context.cwd or context.workspace_root)
         agents = get_agent_definitions_with_overrides(cwd)
         available_mcp = list(context.mcp_clients.keys()) if context.mcp_clients else []
