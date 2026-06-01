@@ -8,7 +8,7 @@ tracker:
     - open
 
 workspace:
-  repo_clone_url: https://token:WV9arqgZdsAPdL3TQYgASrrR@gitcode.com/chadwweng/AgentLearning.git
+  repo_clone_url: https://token:$GITCODE_TOKEN@gitcode.com/chadwweng/AgentLearning.git
   clone_depth: 1
   checkout_issue_branch: true
 
