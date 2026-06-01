@@ -236,7 +236,9 @@ if message.subtype == "away_summary":
 
 ### 执行结果/状态查看链路
 
-`claude-code-best` 不把定时任务的完整回答写回 cron job 定义表。它在 cron task 到期时创建 scheduled-task queued prompt，同时在 `.claude/autonomy/runs.json` 中创建 run 账本记录；队列消费前将 run 从 `queued` 原子切到 `running`，普通 query pipeline 执行完后再落到 `completed` / `failed` / `cancelled`。因此 ClawCodex 需要同时实现“cron job 管理视图”和“scheduled-task run 生命周期视图”，用户才能回答“任务是否执行、正在执行还是失败”。
+`claude-code-best` 不把定时任务的完整回答写回 cron job 定义表。它在 cron task 到期时创建 scheduled-task queued prompt，同时在 `.claude/autonomy/runs.json` 中创建 run 账本记录；队列消费前将 run 从 `queued` 原子切到 `running`，普通 query pipeline 执行完后再落到 `completed` / `failed` / `cancelled`。此外，`/schedule get <id>` 的 detail 视图展示 trigger 的 status、schedule、agent、next run、last run、created 和 prompt，`/schedule run <id>` 手动触发后直接回显 run id。因此 ClawCodex 需要同时实现“cron job 管理视图”、“trigger detail/manual-fire 视图”和“scheduled-task run 生命周期视图”，用户才能回答“任务是否已配置、上次/下次何时执行、是否正在执行还是失败”。
+
+当前 ClawCodex 已有基础 `clawcodex_ext/cron_system/runs.py` 与 `status.py`，可读取 `.claude/scheduled_task_runs.json` 并输出 status/runs 文本表格；缺口在于它们尚未接入真实 REPL/TUI/headless 执行队列，run schema 也比 `claude-code-best` 的 autonomy run 记录更窄，缺少来源、路径、预览和 ownership/session 等操作追溯字段。
 
 ```text
 CronTask due
@@ -252,9 +254,10 @@ CronTask due
 关键要求：
 
 - `CronList` / `/cron-list` 只展示 cron job 定义、schedule、durable/session、next fire，不承担执行结果历史。
+- trigger detail 或等价命令展示单个任务的 status、schedule、agent、next run、last run、created 和 prompt；manual fire 或等价命令创建 queued run 并回显 run id。
 - `/autonomy runs` 或等价命令展示最近 run 历史，包括 run id、source id、prompt preview、创建/开始/结束时间、状态和错误摘要。
 - `/autonomy status` 汇总当前 queued/running/failed/completed 数量；`/autonomy status --deep` 额外显示 cron job section 与最近 run section。
-- run store 至少持久化 `run_id`、`trigger`、`status`、`source_id`、`source_label`、`prompt_preview`、`created_at`、`started_at`、`ended_at`、`error`、`root_dir`、`current_dir`。
+- run store 至少持久化 `run_id`、`runtime`、`trigger`、`status`、`source_id`、`source_label`、`prompt_preview`、`created_at`、`started_at`、`ended_at`、`error`、`root_dir`、`current_dir`，并在支持 teammate/agent 后补齐 ownership/session 元数据。
 - 创建 queued run 时按 `source_id=cron task id` 做 active-run 去重：上一轮仍处于 `queued` 或 `running` 时跳过本轮触发，防止每分钟任务堆积。
 - headless 模式无法路由 teammate/agent-owned cron task 时必须把对应 run 标记为 `failed`，不能静默丢弃。
 
@@ -270,10 +273,11 @@ CronTask due
 | cron_tasks_lock.py | `src/cron_system/cron_tasks_lock.py` | ❌ 待实现 | 分布式锁 |
 | cron_jitter_config.py | `src/cron_system/cron_jitter_config.py` | ❌ 待实现 | GrowthBook 动态配置 |
 | skills.py | `src/cron_system/skills.py` 或 extension command adapter | ❌ 待实现 | /cron-list, /cron-delete 命令 |
-| runs.py | `clawcodex_ext/cron_system/runs.py` | ❌ 待实现 | scheduled-task run 账本，持久化 queued/running/completed/failed/cancelled 生命周期 |
-| status.py | `clawcodex_ext/cron_system/status.py` | ❌ 待实现 | 格式化 `/autonomy status`、`/autonomy runs`、`/autonomy status --deep` 或等价输出 |
+| runs.py | `clawcodex_ext/cron_system/runs.py` | ⚠️ 基础完成，待扩展 | 已有 `.claude/scheduled_task_runs.json` 账本和 queued/running/completed/failed/cancelled 生命周期；缺少 autonomy-compatible 字段、真实执行队列 claim/finalize 接线、`.claude/autonomy/runs.json` 等价布局决策 |
+| status.py | `clawcodex_ext/cron_system/status.py` | ⚠️ 基础完成，待扩展 | 已有 status/runs 文本表格；缺少 deep status 的 richer section、trigger detail、manual-fire run id outcome、错误摘要/路径/来源字段展示 |
 | queue lifecycle | REPL/TUI/headless adapter | ❌ 待实现 | scheduled fire 入队、claim 为 running、执行后 finalize、active source 去重 |
-| autonomy commands | command/skill adapter | ❌ 待实现 | 暴露执行结果/状态查看命令，区分 cron job 定义与 run 生命周期 |
+| trigger detail / manual fire | command/skill adapter | ❌ 待实现 | 暴露等价 `/schedule get <id>` 与 `/schedule run <id>` 的用户路径，展示 last/next run、created、prompt，并在手动触发后返回 run id |
+| autonomy commands | command/skill adapter | ⚠️ fast-path 存在，待接线 | `clawcodex_ext/cli/dispatch.py` 已有 `autonomy status/runs` 分发；仍需接入真实运行账本和 richer output，区分 cron job 定义、trigger detail 与 run 生命周期 |
 | build_missed_task_notification | `src/cron_system/missed_task_notification.py` 或 extension notification adapter | ❌ 待实现 | 错失任务通知构建函数 |
 | growthbook_config.py | `src/cron_system/growthbook_config.py` | ❌ 待实现 | Jitter 参数动态配置 |
 
@@ -287,10 +291,11 @@ CronTask due
 | 4 | cron_scheduler.py - 执行引擎核心 | ⏳ 待开始 |
 | 5 | cron_jitter_config.py - 动态配置 | ⏳ 待开始 |
 | 6 | skills.py / command adapter - CLI 命令 (/cron-list, /cron-delete) | ⏳ 待开始 |
-| 7 | runs.py - scheduled-task run 账本与 active source 去重 | ⏳ 待开始 |
+| 7 | runs.py - scheduled-task run 账本扩展到 autonomy-compatible schema 与 active source 去重 | ⏳ 待扩展 |
 | 8 | queue lifecycle - scheduled fire 入队、claim running、finalize completed/failed/cancelled | ⏳ 待开始 |
-| 9 | status.py / autonomy commands - `/autonomy status`, `/autonomy runs`, `/autonomy status --deep` 或等价命令 | ⏳ 待开始 |
-| 10 | 测试覆盖 - cron job 管理、run 生命周期、状态查看、headless 失败记录 | ⏳ 待开始 |
+| 9 | trigger detail/manual fire - 单任务详情与手动触发 run id 回显 | ⏳ 待开始 |
+| 10 | status.py / autonomy commands - `/autonomy status`, `/autonomy runs`, `/autonomy status --deep` 或等价命令的 richer output | ⏳ 待扩展 |
+| 11 | 测试覆盖 - cron job 管理、trigger detail/manual fire、run 生命周期、状态查看、headless 失败记录 | ⏳ 待开始 |
 
 ---
 
