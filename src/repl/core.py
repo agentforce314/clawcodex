@@ -2345,6 +2345,16 @@ class ClawcodexREPL:
             padding=(1, 2),
         )
         self.console.print(header)
+
+        # Show coordinator mode badge when active
+        from src.coordinator.mode import is_coordinator_mode
+        if is_coordinator_mode():
+            self.console.print(
+                "[bold yellow]  ⚡ Coordinator Mode ACTIVE[/bold yellow]  "
+                "[dim]— Agent / SendMessage / TaskStop only[/dim]"
+            )
+            self.console.print()
+
         self.console.print()
 
     def run(self):
@@ -3122,6 +3132,36 @@ class ClawcodexREPL:
 
             tools = self.tool_registry.list_tools()
 
+            # Coordinator Mode — when ``CLAUDE_CODE_COORDINATOR_MODE=true``,
+            # restrict the tool list to Agent / SendMessage / TaskStop only,
+            # replace the system prompt with the coordinator-specific prompt,
+            # and inject the worker-tools context block.
+            from src.coordinator.mode import (
+                is_coordinator_mode,
+                filter_coordinator_tools,
+                get_coordinator_user_context,
+            )
+            from src.coordinator.prompt import get_coordinator_system_prompt
+
+            if is_coordinator_mode():
+                tools = filter_coordinator_tools(tools)
+                # Get MCP clients for worker context block
+                mcp_clients = getattr(
+                    self.tool_context, "mcp_clients", None
+                ) or {}
+                engine_system_prompt = get_coordinator_system_prompt()
+                engine_user_context = get_coordinator_user_context(
+                    mcp_clients=mcp_clients.values(),
+                )
+                # style_prompt is irrelevant in coordinator mode — the
+                # coordinator has its own prompt body that replaces the
+                # default system prompt entirely.
+                append_prompt: str | None = None
+            else:
+                engine_system_prompt = None
+                engine_user_context = None
+                append_prompt = style_prompt
+
             prior_messages = list(self._engine_messages)
 
             engine_config = QueryEngineConfig(
@@ -3130,7 +3170,9 @@ class ClawcodexREPL:
                 tool_registry=self.tool_registry,
                 tools=tools,
                 tool_context=self.tool_context,
-                append_system_prompt=style_prompt,
+                system_prompt=engine_system_prompt,
+                user_context=engine_user_context,
+                append_system_prompt=append_prompt,
                 max_turns=max_turns,
                 initial_messages=prior_messages,
             )
