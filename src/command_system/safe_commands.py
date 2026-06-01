@@ -38,15 +38,20 @@ def is_bridge_safe_command(cmd: Command) -> bool:
     Remote Control bridge. Port of commands.ts:697-701.
 
     Rule: 'prompt' commands expand to text -> always safe; 'local' commands need an
-    explicit opt-in via BRIDGE_SAFE_COMMANDS; any future interactive ('local-jsx')
-    type renders UI and is always blocked. Python has no interactive type yet, so the
-    branches reduce to PROMPT -> True, LOCAL -> allowlist.
+    explicit opt-in via BRIDGE_SAFE_COMMANDS; interactive ('local-jsx') commands render
+    UI and are always blocked.
     """
     if cmd.command_type == CommandType.PROMPT:
         return True  # prompt commands expand to text -> always safe
     if cmd.command_type == CommandType.LOCAL:
         return cmd.name in BRIDGE_SAFE_COMMANDS
-    # Any future interactive ('local-jsx') type renders UI -> blocked by default.
+    if cmd.command_type == CommandType.INTERACTIVE:
+        # 'local-jsx' renders UI -> always blocked, BY TYPE. Naming an
+        # interactive command in BRIDGE_SAFE_COMMANDS must NOT unblock it
+        # (the gate is structural, not name-driven). Matches TS rule
+        # "local-jsx always blocked" (gap analysis §2.4).
+        return False
+    # Defensive default for any future command type.
     return False
 
 

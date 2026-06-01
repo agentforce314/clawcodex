@@ -18,6 +18,12 @@ class CommandType(Enum):
     """Types of commands."""
     PROMPT = "prompt"
     LOCAL = "local"
+    # Ports TS ``type: 'local-jsx'`` — a command that drives an interactive
+    # UI (via the surface-agnostic ``UIHost`` port) and returns an
+    # ``InteractiveOutcome``. A *distinct* type (not a LocalCommand subtype)
+    # so the engine routes it to ``_execute_interactive`` and the
+    # remote-safety gate blocks it by type (see ``safe_commands``).
+    INTERACTIVE = "interactive"
 
 
 class CommandAvailability(Enum):
@@ -68,6 +74,11 @@ class CommandContext:
     # (only first-party Anthropic supports it).
     app_state_store: Any = None
     provider: Any = None
+    # ``ui`` is the surface-agnostic interaction port (a ``UIHost``) that
+    # interactive commands drive. None on surfaces that didn't wire one;
+    # the engine substitutes a ``NullUIHost`` (which raises for mutating
+    # prompts) so a command body can always assume ``ctx.ui`` is present.
+    ui: Any = None  # UIHost | None
 
 
 # Protocol for local command callables
@@ -161,8 +172,142 @@ class LocalCommand(CommandBase):
         return LocalCommandResult(type="text", value=f"Command {self.name} not implemented")
 
 
+# ---------------------------------------------------------------------------
+# Interactive command bridge (port of TS ``local-jsx`` commands)
+# ---------------------------------------------------------------------------
+#
+# TS interactive commands (``type: 'local-jsx'``) render an Ink element and
+# resolve via an ``onDone`` callback. The Python port replaces "render an
+# element" with "drive a surface-agnostic ``UIHost`` port", so one command
+# body works headless (REPL), in the Textual TUI, and (raising) under the
+# SDK / non-interactive null surface. See
+# my-docs/get-parity-by-folder/commands-phase2-interactive-bridge-plan.md.
+
+
+@dataclass(frozen=True)
+class UIOption:
+    """One selectable row passed to :meth:`UIHost.select`.
+
+    ``value`` is what the host returns on selection; ``label`` is shown to
+    the user; ``description`` is optional secondary text (rendered dim in
+    the TUI, parenthesized in the REPL menu).
+    """
+
+    value: str
+    label: str
+    description: Optional[str] = None
+
+
+class InteractiveUnavailableError(RuntimeError):
+    """Raised by :class:`NullUIHost` when an interactive command tries to
+    prompt on a surface with no UI (SDK / non-interactive). The engine turns
+    this into a clean error ``CommandResult`` rather than a crash.
+    """
+
+
+class UIHost(Protocol):
+    """Surface-agnostic interaction port injected as ``CommandContext.ui``.
+
+    Adapters: ``ReplUIHost`` (numbered menu), ``TextualUIHost``
+    (``push_screen_wait`` modal), ``NullUIHost`` (raises for the mutating
+    ``select``; ``display`` no-ops). Mirrors the TS pattern of injecting host
+    callbacks into the command context.
+
+    The slice ships the two primitives every in-scope Class-B command needs:
+    a single ``select`` plus read-only ``display``. Multi-step primitives
+    (``confirm`` / ``text``) land with their first consumer in a later
+    chapter — the port grows by adding a method here and one line per adapter.
+    """
+
+    async def select(
+        self,
+        title: str,
+        options: Sequence[UIOption],
+        *,
+        current: Optional[str] = None,
+    ) -> Optional[str]:
+        """Prompt the user to pick one option. Returns the chosen
+        ``UIOption.value``, or ``None`` if cancelled."""
+        ...
+
+    async def display(self, title: str, body: str) -> None:
+        """Show read-only information. No return value."""
+        ...
+
+
+class NullUIHost:
+    """UIHost for surfaces without a UI (SDK / non-interactive).
+
+    The *mutating* :meth:`select` raises :class:`InteractiveUnavailableError`
+    — deliberately NOT returning a default/``current`` value, which would read
+    as a false success. Only the read-only :meth:`display` no-ops. (Resolved
+    contract — see plan §4/§7.)
+    """
+
+    _MSG = "This command needs an interactive surface (TUI or REPL)."
+
+    async def select(
+        self,
+        title: str,
+        options: "Sequence[UIOption]",
+        *,
+        current: Optional[str] = None,
+    ) -> Optional[str]:
+        raise InteractiveUnavailableError(self._MSG)
+
+    async def display(self, title: str, body: str) -> None:
+        return None
+
+
+@dataclass(frozen=True)
+class InteractiveOutcome:
+    """What an interactive command returns to the engine — the Python
+    analogue of the TS ``onDone`` payload (``command.ts:117-126``).
+
+    The engine maps this onto a :class:`CommandResult`, propagating
+    ``display`` / ``should_query`` / ``meta_messages`` (which the LOCAL arm
+    hardcodes away). ``display == "skip"`` signals "produce no output" (TS
+    ``display: 'skip'``); use :meth:`skip` for the cancelled path.
+    """
+
+    message: Optional[str] = None          # TS onDone.result
+    display: str = "system"                # "skip" | "system" | "user"
+    should_query: bool = False             # TS onDone.shouldQuery
+    meta_messages: list[str] = field(default_factory=list)  # TS onDone.metaMessages
+
+    @classmethod
+    def skip(cls) -> "InteractiveOutcome":
+        """Cancelled / no-op outcome — the engine returns
+        ``CommandResult.skip`` for it."""
+        return cls(display="skip")
+
+
+@dataclass(frozen=True)
+class InteractiveCommand(CommandBase):
+    """Base for commands that drive ``ctx.ui`` and return an
+    :class:`InteractiveOutcome`.
+
+    Reports ``CommandType.INTERACTIVE`` so the engine routes it to
+    ``_execute_interactive`` and the remote-safety gate blocks it *by type*
+    (``safe_commands.is_bridge_safe_command``). Concrete commands subclass
+    this and override :meth:`run` (the ``StatuslineCommand`` pattern — no new
+    dataclass fields required).
+    """
+
+    @property
+    def command_type(self) -> CommandType:
+        return CommandType.INTERACTIVE
+
+    async def run(self, args: str, context: CommandContext) -> InteractiveOutcome:
+        """Drive ``context.ui`` and return the outcome. Override in
+        subclasses."""
+        raise NotImplementedError(
+            "InteractiveCommand subclasses must implement run()"
+        )
+
+
 # Type alias for any command
-Command = PromptCommand | LocalCommand
+Command = PromptCommand | LocalCommand | InteractiveCommand
 
 
 def get_command_name(cmd: CommandBase) -> str:
