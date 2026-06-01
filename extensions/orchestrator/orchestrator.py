@@ -77,6 +77,7 @@ class Orchestrator:
         self.workspace = workspace
         self.agent_runner = agent_runner
         self.status_dashboard = status_dashboard or StatusDashboard()
+        self._validate_workspace_strategy()
         self.git_sync = GitSyncService(
             tracker,
             workflow.tracker.branch_prefix,
@@ -131,6 +132,24 @@ class Orchestrator:
         )
         self._progress_context = ToolContext(workspace_root=workspace_root)
         self._progress_reporter = ProgressReporter(self._progress_context)
+
+    def _validate_workspace_strategy(self) -> None:
+        if self.workflow.workspace.strategy != "sequential":
+            return
+        if self.workflow.agent.max_concurrent_agents != 1:
+            raise ValueError(
+                "workspace.strategy=sequential requires agent.max_concurrent_agents=1"
+            )
+        over_limit_states = [
+            state
+            for state, limit in self.workflow.agent.max_concurrent_agents_by_state.items()
+            if limit > 1
+        ]
+        if over_limit_states:
+            raise ValueError(
+                "workspace.strategy=sequential requires all "
+                "agent.max_concurrent_agents_by_state values to be <= 1"
+            )
 
     def _sync_gitignore_to_workspace(self, workspace: Any) -> None:
         """Write .gitignore to workspace root from configured patterns."""
@@ -212,6 +231,8 @@ class Orchestrator:
             available_slots = (
                 self._state.max_concurrent_agents - len(self._state.running)
             )
+            if self.workflow.workspace.strategy == "sequential" and self._state.running:
+                return
 
             launched_this_poll = 0
             for issue in issues:
@@ -962,13 +983,31 @@ class Orchestrator:
             return
 
         # Register as pending so restart won't re-launch this issue
+        workspace_strategy = self.workflow.workspace.strategy
         branch_name = getattr(issue, "branch_name", None) or "main"
-        base_branch = getattr(issue, "base_branch", "main") or "main"
+        base_branch = getattr(issue, "base_branch", None) or self.workflow.workspace.base_branch or "main"
+        integration_branch = self.workflow.workspace.integration_branch
+        if workspace_strategy == "sequential" and integration_branch:
+            branch_name = integration_branch
+        start_commit_sha = await self.workspace.current_head(workspace.path)
+        base_commit_sha = start_commit_sha if workspace_strategy == "sequential" else None
+        previous_issue_id = None
+        sequence_index = None
+        if workspace_strategy == "sequential":
+            previous_record = self._registry.latest_sequential_record()
+            previous_issue_id = previous_record.issue_id if previous_record else None
+            sequence_index = (previous_record.sequence_index or 0) + 1 if previous_record else 1
         self._registry.register(
             issue_id=issue.id or "",
             issue_identifier=issue.identifier or "",
             branch_name=branch_name,
             base_branch=base_branch,
+            workspace_strategy=workspace_strategy,
+            workspace_path=str(workspace.path),
+            base_commit_sha=base_commit_sha,
+            start_commit_sha=start_commit_sha,
+            previous_issue_id=previous_issue_id,
+            sequence_index=sequence_index,
         )
 
         # Pre-check: verify issue is still in an active state and has no
@@ -1033,6 +1072,13 @@ class Orchestrator:
         retry_attempt = self._state.retry_attempts.get(issue.id or "", 0)
         session.attempt = retry_attempt + 1
         session.issue_attempt = session.attempt
+        session.workspace_strategy = workspace_strategy
+        session.workspace_path = str(workspace.path)
+        session.start_commit_sha = start_commit_sha
+        session.base_commit_sha = base_commit_sha
+        session.previous_issue_id = previous_issue_id
+        session.sequence_index = sequence_index
+        session.integration_branch = integration_branch
         # F-39 Sub-C: if the registry intent is FOLLOWUP, wire the
         # session so the agent + git_sync know to reuse the existing
         # branch / PR rather than create a new run.

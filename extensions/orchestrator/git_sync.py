@@ -76,6 +76,7 @@ class GitSyncService:
         self._hooks_config = hooks_config or HooksConfig()
         self._gitignore_patterns = gitignore_patterns or [
             ".event_logs",
+            ".reports",
             "*.pyc",
             "__pycache__",
             "*.egg-info",
@@ -122,15 +123,25 @@ class GitSyncService:
         repo_root = get_repo_root(str(workspace.path))
         if not repo_root:
             return None
+        self._sync_gitignore(repo_root)
 
         # Check if tracker is LocalTrackerAdapter — skip push/PR for local-only repos
         from .local_tracker.adapter import LocalTrackerAdapter
         is_local_tracker = isinstance(self.tracker, LocalTrackerAdapter)
-        no_push = is_local_tracker
+        workspace_strategy = getattr(session, "workspace_strategy", "isolated")
+        is_sequential = workspace_strategy == "sequential"
+        no_push = is_local_tracker or is_sequential
 
         followup_pr = getattr(session, "pull_request", None)
         base_branch = getattr(session, "base_branch", None) or get_default_branch(repo_root)
-        branch_name = self._ensure_work_branch(repo_root, issue, base_branch)
+        if is_sequential:
+            branch_name = (
+                getattr(session, "integration_branch", None)
+                or get_current_branch(repo_root)
+                or base_branch
+            )
+        else:
+            branch_name = self._ensure_work_branch(repo_root, issue, base_branch)
         changed = bool(get_file_status(repo_root))
 
         commit_sha: str | None = None
@@ -140,13 +151,16 @@ class GitSyncService:
         conflict_files: tuple[str, ...] = ()
         if changed:
             self._ensure_commit_identity(repo_root)
+            if is_sequential:
+                await self._run_pre_commit_hook(repo_root, session)
             self._run_git_checked(["add", "-A"], repo_root)
             commit_message = self._build_commit_message(issue, followup=followup_pr is not None)
             self._run_git_checked(["commit", "-m", commit_message], repo_root)
             commit_sha = self._run_git_output(["rev-parse", "HEAD"], repo_root)
             committed = True
-            await self._run_pre_commit_hook(repo_root, session)
-            commit_sha = self._run_git_output(["rev-parse", "HEAD"], repo_root)
+            if not is_sequential:
+                await self._run_pre_commit_hook(repo_root, session)
+                commit_sha = self._run_git_output(["rev-parse", "HEAD"], repo_root)
             await self._run_pre_push_verification(repo_root, session)
             if no_push:
                 # LocalTracker: no remote, skip push but record branch info
@@ -248,7 +262,7 @@ class GitSyncService:
         if not command:
             return
         output = await self._run_shell(command, repo_root, self._hooks_config.timeout_ms)
-        if get_file_status(repo_root):
+        if get_file_status(repo_root) and getattr(session, "workspace_strategy", "isolated") != "sequential":
             self._run_git_checked(["add", "-A"], repo_root)
             self._run_git_checked(["commit", "--amend", "--no-edit"], repo_root)
         setattr(session, "pre_commit_output", output)
@@ -340,6 +354,27 @@ class GitSyncService:
 
     def _status_snapshot(self, repo_root: str) -> str:
         return "\n".join(sorted(s.path for s in get_file_status(repo_root)))
+
+    def _sync_gitignore(self, repo_root: str) -> None:
+        gitignore_path = Path(repo_root) / ".gitignore"
+        existing: set[str] = set()
+        if gitignore_path.exists():
+            existing = {
+                line.strip()
+                for line in gitignore_path.read_text(encoding="utf-8").splitlines()
+                if line.strip() and not line.startswith("#")
+            }
+        new_patterns = [
+            pattern for pattern in self._gitignore_patterns if pattern not in existing
+        ]
+        if not new_patterns:
+            return
+        with gitignore_path.open("a", encoding="utf-8") as handle:
+            if gitignore_path.exists() and gitignore_path.stat().st_size > 0:
+                handle.write("\n")
+            handle.write("# ClawCodeX managed — do not edit manually\n")
+            for pattern in new_patterns:
+                handle.write(f"{pattern}\n")
 
     def _push_with_recovery(
         self, repo_root: str, branch_name: str,

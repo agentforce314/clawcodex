@@ -123,3 +123,137 @@ class TestWorkspaceRepositoryClone(unittest.IsolatedAsyncioTestCase):
                 (workspace.path / "README.md").read_text(encoding="utf-8"),
                 "main branch\n",
             )
+
+    async def test_default_strategy_uses_per_issue_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            origin, _ = _build_origin_repo(base)
+            manager = WorkspaceManager(
+                WorkspaceConfig(root=base / "workspaces", repo_clone_url=str(origin))
+            )
+
+            workspace = await manager.create_for_issue(
+                _Issue(id="125", identifier="ISSUE-125", title="Default strategy")
+            )
+
+            self.assertEqual(workspace.path, base / "workspaces" / "ISSUE-125")
+
+    async def test_shared_and_sequential_use_root_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            origin, _ = _build_origin_repo(base)
+            for strategy in ("shared", "sequential"):
+                root = base / strategy
+                manager = WorkspaceManager(
+                    WorkspaceConfig(
+                        root=root,
+                        repo_clone_url=str(origin),
+                        strategy=strategy,
+                        checkout_issue_branch=False,
+                        sequential_lock=False,
+                    )
+                )
+
+                workspace = await manager.create_for_issue(
+                    _Issue(id=strategy, identifier=f"ISSUE-{strategy}", title=strategy)
+                )
+
+                self.assertEqual(workspace.path, root)
+                self.assertTrue((root / ".git").exists())
+
+    async def test_sequential_reuses_existing_repo(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            origin, _ = _build_origin_repo(base)
+            root = base / "workspace"
+            manager = WorkspaceManager(
+                WorkspaceConfig(
+                    root=root,
+                    repo_clone_url=str(origin),
+                    strategy="sequential",
+                    checkout_issue_branch=False,
+                )
+            )
+
+            first = await manager.create_for_issue(
+                _Issue(id="1", identifier="ISSUE-1", title="First")
+            )
+            await manager.cleanup(first)
+            second = await manager.create_for_issue(
+                _Issue(id="2", identifier="ISSUE-2", title="Second")
+            )
+
+            self.assertEqual(first.path, second.path)
+            self.assertTrue((root / ".git").exists())
+            await manager.cleanup(second)
+
+    async def test_sequential_creates_integration_branch_from_base(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            origin, _ = _build_origin_repo(base)
+            root = base / "workspace"
+            manager = WorkspaceManager(
+                WorkspaceConfig(
+                    root=root,
+                    repo_clone_url=str(origin),
+                    strategy="sequential",
+                    checkout_issue_branch=False,
+                    base_branch="main",
+                    integration_branch="integration/f42",
+                    sequential_lock=False,
+                )
+            )
+
+            workspace = await manager.create_for_issue(
+                _Issue(id="1", identifier="ISSUE-1", title="First")
+            )
+
+            self.assertEqual(
+                _git_output(["rev-parse", "--abbrev-ref", "HEAD"], workspace.path),
+                "integration/f42",
+            )
+
+    async def test_sequential_dirty_guard_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            origin, _ = _build_origin_repo(base)
+            root = base / "workspace"
+            manager = WorkspaceManager(
+                WorkspaceConfig(
+                    root=root,
+                    repo_clone_url=str(origin),
+                    strategy="sequential",
+                    checkout_issue_branch=False,
+                )
+            )
+
+            issue = _Issue(id="1", identifier="ISSUE-1", title="First")
+            workspace = await manager.create_for_issue(issue)
+            (workspace.path / "dirty.txt").write_text("dirty\n", encoding="utf-8")
+            await manager.cleanup(issue)
+
+            with self.assertRaises(Exception):
+                await manager.create_for_issue(
+                    _Issue(id="2", identifier="ISSUE-2", title="Second")
+                )
+
+    async def test_shared_and_sequential_cleanup_preserves_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            origin, _ = _build_origin_repo(base)
+            for strategy in ("shared", "sequential"):
+                root = base / f"{strategy}-root"
+                manager = WorkspaceManager(
+                    WorkspaceConfig(
+                        root=root,
+                        repo_clone_url=str(origin),
+                        strategy=strategy,
+                        checkout_issue_branch=False,
+                        sequential_lock=False,
+                    )
+                )
+                issue = _Issue(id=strategy, identifier=strategy, title=strategy)
+                await manager.create_for_issue(issue)
+                await manager.cleanup(issue)
+
+                self.assertTrue(root.exists())

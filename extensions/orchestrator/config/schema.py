@@ -95,6 +95,15 @@ def _normalize_string_list(value: Any, default: list[str]) -> list[str]:
     return list(default)
 
 
+def _normalize_workspace_strategy(value: Any) -> str:
+    strategy = str(value or "isolated").strip().lower()
+    if strategy not in {"isolated", "shared", "sequential"}:
+        raise ValueError(
+            "workspace.strategy must be one of: isolated, shared, sequential"
+        )
+    return strategy
+
+
 def _resolve_orchestrator_permission_mode(
     raw_value: Any,
     *,
@@ -167,6 +176,13 @@ class WorkspaceConfig:
     git_username: str | None = None
     git_token: str | None = None
     gitignore_patterns: list[str] = field(default_factory=list)
+    strategy: str = "isolated"
+    base_branch: str | None = None
+    integration_branch: str | None = None
+    require_clean_start: bool = True
+    require_clean_between_issues: bool = True
+    preserve_on_terminal: bool = True
+    sequential_lock: bool = True
 
 
 @dataclass
@@ -339,6 +355,9 @@ class WorkflowConfig:
         workspace_root = _expand_path(
             workspace_raw.get("root"), _default_tmp_workspace()
         )
+        workspace_strategy = _normalize_workspace_strategy(
+            workspace_raw.get("strategy")
+        )
         workspace = WorkspaceConfig(
             root=workspace_root,
             hooks=workspace_raw.get("hooks", {}),
@@ -357,6 +376,21 @@ class WorkflowConfig:
                 "gitignore_patterns",
                 ["event_logs", "*.pyc", "__pycache__", "*.egg-info", ".pytest_cache"],
             ),
+            strategy=workspace_strategy,
+            base_branch=_resolve_env_value(workspace_raw.get("base_branch")),
+            integration_branch=_resolve_env_value(
+                workspace_raw.get("integration_branch")
+            ),
+            require_clean_start=bool(
+                workspace_raw.get("require_clean_start", True)
+            ),
+            require_clean_between_issues=bool(
+                workspace_raw.get("require_clean_between_issues", True)
+            ),
+            preserve_on_terminal=bool(
+                workspace_raw.get("preserve_on_terminal", True)
+            ),
+            sequential_lock=bool(workspace_raw.get("sequential_lock", True)),
         )
 
         verification_raw = agent_raw.get("verification", {})
@@ -387,6 +421,21 @@ class WorkflowConfig:
                 agent_raw.get("allow_anyone_to_retry", False)
             ),
         )
+        if workspace.strategy == "sequential":
+            if agent.max_concurrent_agents != 1:
+                raise ValueError(
+                    "workspace.strategy=sequential requires agent.max_concurrent_agents=1"
+                )
+            over_limit_states = [
+                state
+                for state, limit in agent.max_concurrent_agents_by_state.items()
+                if limit > 1
+            ]
+            if over_limit_states:
+                raise ValueError(
+                    "workspace.strategy=sequential requires all "
+                    "agent.max_concurrent_agents_by_state values to be <= 1"
+                )
 
         codex = CodexConfig(
             command=codex_raw.get("command", "codex app-server"),

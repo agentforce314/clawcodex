@@ -364,3 +364,97 @@ class TestGitSyncService(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(HookFailedError) as cm:
                 await service.sync(_Session(issue, workspace))
             self.assertIn("modified the workspace", str(cm.exception))
+
+    async def test_sequential_sync_commits_without_push_or_pr(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            origin = _build_origin_repo(base)
+            manager = WorkspaceManager(
+                WorkspaceConfig(
+                    root=base / "workspace",
+                    repo_clone_url=str(origin),
+                    strategy="sequential",
+                    checkout_issue_branch=False,
+                    base_branch="main",
+                    integration_branch="integration/f42",
+                )
+            )
+            issue = Issue(id="77", identifier="ISSUE-77", title="Sequential commit")
+            workspace = await manager.create_for_issue(issue)
+            (workspace.path / "README.md").write_text("sequential\n", encoding="utf-8")
+
+            session = _Session(issue, workspace)
+            session.workspace_strategy = "sequential"
+            session.integration_branch = "integration/f42"
+            tracker = _Tracker()
+            service = GitSyncService(tracker)
+            result = await service.sync(session)
+
+            self.assertIsNotNone(result)
+            assert result is not None
+            self.assertTrue(result.committed)
+            self.assertFalse(result.pushed)
+            self.assertIsNone(result.pull_request)
+            self.assertEqual(result.branch_name, "integration/f42")
+            self.assertEqual(tracker.pr_requests, [])
+            self.assertEqual(tracker.pr_updates, [])
+            self.assertEqual(
+                _git_output(["rev-parse", "--abbrev-ref", "HEAD"], workspace.path),
+                "integration/f42",
+            )
+            self.assertEqual(
+                _git_output(["log", "-1", "--pretty=%s"], workspace.path),
+                "feat: ISSUE-77 Sequential commit",
+            )
+            self.assertEqual(
+                _git_output(["ls-remote", "--heads", "origin", "integration/f42"], workspace.path),
+                "",
+            )
+            await manager.cleanup(issue)
+
+    async def test_sequential_second_commit_builds_on_first(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            origin = _build_origin_repo(base)
+            manager = WorkspaceManager(
+                WorkspaceConfig(
+                    root=base / "workspace",
+                    repo_clone_url=str(origin),
+                    strategy="sequential",
+                    checkout_issue_branch=False,
+                    base_branch="main",
+                    integration_branch="integration/f42",
+                )
+            )
+            service = GitSyncService(_Tracker())
+
+            issue_one = Issue(id="1", identifier="ISSUE-1", title="First")
+            workspace = await manager.create_for_issue(issue_one)
+            (workspace.path / "one.txt").write_text("one\n", encoding="utf-8")
+            session_one = _Session(issue_one, workspace)
+            session_one.workspace_strategy = "sequential"
+            session_one.integration_branch = "integration/f42"
+            result_one = await service.sync(session_one)
+            await manager.cleanup(issue_one)
+
+            issue_two = Issue(id="2", identifier="ISSUE-2", title="Second")
+            workspace = await manager.create_for_issue(issue_two)
+            (workspace.path / "two.txt").write_text("two\n", encoding="utf-8")
+            session_two = _Session(issue_two, workspace)
+            session_two.workspace_strategy = "sequential"
+            session_two.integration_branch = "integration/f42"
+            result_two = await service.sync(session_two)
+
+            self.assertIsNotNone(result_one)
+            self.assertIsNotNone(result_two)
+            assert result_one is not None
+            assert result_two is not None
+            self.assertEqual(
+                _git_output(["rev-parse", f"{result_two.commit_sha}^"], workspace.path),
+                result_one.commit_sha,
+            )
+            self.assertEqual(
+                _git_output(["log", "--pretty=%s", "-2"], workspace.path).splitlines(),
+                ["feat: ISSUE-2 Second", "feat: ISSUE-1 First"],
+            )
+            await manager.cleanup(issue_two)

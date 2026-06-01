@@ -102,6 +102,7 @@ class PromptBuilder:
         clarification_context: str | None = None,
         pending_question: str | None = None,
         options: list[str] | None = None,
+        session: Any | None = None,
     ) -> str:
         """Build prompt using workflow's WORKFLOW.md body template + issue data.
 
@@ -139,12 +140,15 @@ class PromptBuilder:
         }
 
         try:
-            return template.render(context).strip()
+            rendered = template.render(context).strip()
         except TemplateError as exc:
             logger.error("Template render error: %s", exc)
             # Fallback to default prompt
             fallback = _jinja_env.from_string(_DEFAULT_PROMPT)
-            return fallback.render(context).strip()
+            rendered = fallback.render(context).strip()
+        if session is not None and getattr(session, "workspace_strategy", None) == "sequential":
+            rendered = f"{rendered}\n\n{_build_sequential_workspace_context(session)}"
+        return rendered
 
     @staticmethod
     def render_review_feedback(
@@ -221,6 +225,27 @@ class PromptBuilder:
         except TemplateError as exc:
             logger.error("Clarification template render error: %s", exc)
             return ""
+
+
+def _build_sequential_workspace_context(session: Any) -> str:
+    return "\n".join(
+        [
+            "---",
+            "## Sequential Workspace Context",
+            "",
+            "This issue is running in a sequential shared workspace.",
+            f"- Workspace strategy: `{getattr(session, 'workspace_strategy', 'sequential')}`",
+            f"- Integration branch: `{getattr(session, 'integration_branch', None) or 'current branch'}`",
+            f"- Start commit: `{getattr(session, 'start_commit_sha', None) or 'unknown'}`",
+            f"- Base commit: `{getattr(session, 'base_commit_sha', None) or 'unknown'}`",
+            f"- Previous issue: `{getattr(session, 'previous_issue_id', None) or 'none'}`",
+            f"- Sequence index: `{getattr(session, 'sequence_index', None) or 'unknown'}`",
+            "",
+            "Build on the existing commit chain in this workspace. Do not redo earlier issues.",
+            "If the expected prior commit chain appears to be missing, stop and report it.",
+            "---",
+        ]
+    )
 
 
 def _to_jinja_value(value: Any) -> Any:

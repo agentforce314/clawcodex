@@ -58,7 +58,7 @@ class TestAgentRunnerF38(unittest.IsolatedAsyncioTestCase):
             progress = _ProgressReporter()
             runner = AgentRunner(AgentConfig(max_turns=1), CodexConfig())
 
-            with patch("src.orchestrator.agent_runner.QueryRunner", _QueryRunnerStub):
+            with patch("extensions.orchestrator.agent_runner.QueryRunner", _QueryRunnerStub):
                 await runner.run(
                     session,
                     WorkflowConfig.from_dict({}),

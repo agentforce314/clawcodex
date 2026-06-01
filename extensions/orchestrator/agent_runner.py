@@ -181,6 +181,7 @@ class AgentRunner:
                         clarification_context=clarification_context,
                         pending_question=pending_question,
                         options=options,
+                        session=session,
                     )
                 session._issue_context = prompt  # Store for continuation
             else:

@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import shutil
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -36,10 +38,22 @@ class WorkspaceConfig:
     checkout_issue_branch: bool = True
     git_username: str | None = None
     git_token: str | None = None
+    strategy: str = "isolated"
+    base_branch: str | None = None
+    integration_branch: str | None = None
+    require_clean_start: bool = True
+    require_clean_between_issues: bool = True
+    preserve_on_terminal: bool = True
+    sequential_lock: bool = True
 
     def __post_init__(self) -> None:
         if self.hooks is None:
             self.hooks = {}
+        self.strategy = str(self.strategy or "isolated").strip().lower()
+        if self.strategy not in {"isolated", "shared", "sequential"}:
+            raise ValueError(
+                "workspace.strategy must be one of: isolated, shared, sequential"
+            )
 
 
 class WorkspaceManager:
@@ -58,8 +72,18 @@ class WorkspaceManager:
         identifier = getattr(issue, "identifier", None) or "issue"
         safe_id = _safe_identifier(identifier)
 
-        workspace_path = self._build_path(safe_id)
-        created = await self._prepare_workspace(workspace_path, issue)
+        if self.config.strategy == "isolated":
+            workspace_path = self._build_path(safe_id)
+            created = await self._prepare_workspace(workspace_path, issue)
+        else:
+            workspace_path = self._root
+            created = await self._prepare_shared_workspace(workspace_path)
+            if self.config.strategy == "sequential":
+                try:
+                    await self._prepare_sequential_workspace(workspace_path, issue)
+                except Exception:
+                    await self._release_sequential_lock()
+                    raise
 
         if created:
             hook = self.config.hooks.get("after_create")
@@ -76,7 +100,11 @@ class WorkspaceManager:
         """Remove workspace directory. Runs before_remove hook."""
         identifier = getattr(issue, "identifier", None) or "issue"
         safe_id = _safe_identifier(identifier)
-        workspace_path = self._build_path(safe_id)
+        workspace_path = (
+            self._build_path(safe_id)
+            if self.config.strategy == "isolated"
+            else self._root
+        )
 
         if workspace_path.exists():
             hook = self.config.hooks.get("before_remove")
@@ -84,12 +112,15 @@ class WorkspaceManager:
                 await self._run_hook(
                     hook, workspace_path, issue, "before_remove", ignore_fail=True
                 )
-            try:
-                shutil.rmtree(workspace_path)
-            except Exception as exc:
-                logger.warning(
-                    "Failed to remove workspace %s: %s", workspace_path, exc
-                )
+            if self.config.strategy == "isolated":
+                try:
+                    shutil.rmtree(workspace_path)
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to remove workspace %s: %s", workspace_path, exc
+                    )
+        if self.config.strategy == "sequential":
+            await self._release_sequential_lock()
 
     async def run_before_run_hook(
         self, workspace: Workspace, issue: Any
@@ -128,6 +159,32 @@ class WorkspaceManager:
             return created
 
         return await self._ensure_workspace(path)
+
+    async def _prepare_shared_workspace(self, path: Path) -> bool:
+        if self.config.repo_clone_url:
+            if not path.exists():
+                await self._clone_repository(path)
+                return True
+            if not path.is_dir():
+                raise WorkspaceHookError(
+                    f"Shared workspace path exists and is not a directory: {path}"
+                )
+            if not (path / ".git").exists():
+                raise WorkspaceHookError(
+                    f"Shared workspace path is not a git repository: {path}"
+                )
+            return False
+        return await self._ensure_workspace(path)
+
+    async def _prepare_sequential_workspace(self, path: Path, issue: Any) -> None:
+        await self._checkout_integration_branch(path)
+        if self.config.require_clean_start:
+            await self._ensure_clean_workspace(
+                path,
+                "sequential workspace must be clean before starting an issue",
+            )
+        await self._acquire_sequential_lock(issue)
+        self._exclude_sequential_lock(path)
 
     async def _ensure_workspace(self, path: Path) -> bool:
         """Ensure workspace exists. Returns True if newly created."""
@@ -208,6 +265,85 @@ class WorkspaceManager:
                 path,
             )
 
+    async def _checkout_integration_branch(self, path: Path) -> None:
+        if not (path / ".git").exists():
+            return
+        integration_branch = (
+            self.config.integration_branch or self.config.base_branch or ""
+        ).strip()
+        if not integration_branch:
+            return
+        if await self._try_process(["git", "checkout", integration_branch], cwd=str(path)):
+            return
+        base_branch = (self.config.base_branch or "").strip()
+        if base_branch:
+            await self._run_process(["git", "checkout", base_branch], cwd=str(path))
+        await self._run_process(
+            ["git", "checkout", "-b", integration_branch], cwd=str(path)
+        )
+
+    async def _ensure_clean_workspace(self, path: Path, reason: str) -> None:
+        if not (path / ".git").exists():
+            return
+        output = await self._run_process(
+            ["git", "status", "--porcelain"], cwd=str(path)
+        )
+        if output.decode("utf-8", errors="replace").strip():
+            raise WorkspaceHookError(reason)
+
+    async def current_head(self, path: Path | str | None = None) -> str | None:
+        workspace_path = Path(path) if path is not None else self._root
+        if not (workspace_path / ".git").exists():
+            return None
+        output = await self._run_process(
+            ["git", "rev-parse", "HEAD"], cwd=str(workspace_path)
+        )
+        return output.decode("utf-8", errors="replace").strip() or None
+
+    async def _acquire_sequential_lock(self, issue: Any) -> None:
+        if not self.config.sequential_lock:
+            return
+        lock_path = self._sequential_lock_path()
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError as exc:
+            raise WorkspaceHookError(
+                f"Sequential workspace lock already exists: {lock_path}"
+            ) from exc
+        issue_id = getattr(issue, "id", None) or ""
+        identifier = getattr(issue, "identifier", None) or "issue"
+        content = "\n".join(
+            [
+                f"pid={os.getpid()}",
+                f"issue_id={issue_id}",
+                f"issue_identifier={identifier}",
+                f"timestamp={time.time()}",
+                "",
+            ]
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+
+    async def _release_sequential_lock(self) -> None:
+        if not self.config.sequential_lock:
+            return
+        self._sequential_lock_path().unlink(missing_ok=True)
+
+    def _sequential_lock_path(self) -> Path:
+        return self._root / ".clawcodex_workspace.lock"
+
+    def _exclude_sequential_lock(self, path: Path) -> None:
+        exclude_path = path / ".git" / "info" / "exclude"
+        if not exclude_path.exists():
+            return
+        existing = exclude_path.read_text(encoding="utf-8")
+        pattern = ".clawcodex_workspace.lock"
+        if pattern in {line.strip() for line in existing.splitlines()}:
+            return
+        suffix = "" if existing.endswith("\n") or not existing else "\n"
+        exclude_path.write_text(f"{existing}{suffix}{pattern}\n", encoding="utf-8")
+
     async def _run_hook(
         self,
         command: str,
@@ -261,6 +397,8 @@ class WorkspaceManager:
 
         Called once by the orchestrator during initialization.
         """
+        if self.config.strategy != "isolated":
+            return
         if not self._root.exists():
             return
         for entry in self._root.iterdir():

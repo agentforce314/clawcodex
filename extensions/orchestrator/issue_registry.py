@@ -57,6 +57,12 @@ class IssueRecord:
     pr_number: str | None = None
     pr_url: str | None = None
     base_branch: str = "main"
+    workspace_strategy: str | None = None
+    workspace_path: str | None = None
+    base_commit_sha: str | None = None
+    start_commit_sha: str | None = None
+    previous_issue_id: str | None = None
+    sequence_index: int | None = None
     status: IssueStatus = IssueStatus.PENDING
     report_path: str | None = None
     verification_status: str | None = None
@@ -187,6 +193,19 @@ class IssueRegistry:
             if record.pr_number and record.branch_name
         ]
 
+    def latest_sequential_record(self) -> IssueRecord | None:
+        sequential_records = (
+            record
+            for record in self._records.values()
+            if record.workspace_strategy == "sequential"
+            and record.sequence_index is not None
+        )
+        return max(
+            sequential_records,
+            key=lambda record: record.sequence_index or 0,
+            default=None,
+        )
+
     def has_processed_feedback(self, issue_id: str, feedback_id: str) -> bool:
         record = self._records.get(issue_id)
         return record is not None and feedback_id in record.processed_feedback_ids
@@ -207,6 +226,12 @@ class IssueRegistry:
         issue_identifier: str,
         branch_name: str | None = None,
         base_branch: str = "main",
+        workspace_strategy: str | None = None,
+        workspace_path: str | None = None,
+        base_commit_sha: str | None = None,
+        start_commit_sha: str | None = None,
+        previous_issue_id: str | None = None,
+        sequence_index: int | None = None,
     ) -> IssueRecord:
         """Create a pending record for a newly claimed issue."""
         record = IssueRecord(
@@ -214,6 +239,12 @@ class IssueRegistry:
             issue_identifier=issue_identifier,
             branch_name=branch_name,
             base_branch=base_branch,
+            workspace_strategy=workspace_strategy,
+            workspace_path=workspace_path,
+            base_commit_sha=base_commit_sha,
+            start_commit_sha=start_commit_sha,
+            previous_issue_id=previous_issue_id,
+            sequence_index=sequence_index,
         )
         self._records[issue_id] = record
         self._save()
