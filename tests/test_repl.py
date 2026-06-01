@@ -611,6 +611,72 @@ class TestREPL(unittest.TestCase):
                     self.assertEqual(second, (True, False))
                     self.assertEqual(prompt_calls, 1)
 
+    def test_ask_user_questions_other_branch_uses_safe_input(self):
+        """Regression: the 'Other' follow-up must read through ``_safe_input``.
+
+        Bug: ``src/repl/core.py:1037`` used bare ``input("Other > ")``. When
+        ``chat()`` had mounted a ``LiveStatus`` spinner (its
+        ``prompt_toolkit.Application`` runs on a background thread and reads
+        from the same TTY), the foreground ``input()`` raced the spinner —
+        keystrokes for the custom text were eaten by the spinner's buffer
+        and the session appeared stuck, with Ctrl+C / Ctrl+D unreachable
+        because the spinner captured them first.
+
+        The fix routes the 'Other' follow-up through ``_safe_input`` (same
+        path used by the surrounding ``Select >`` and the permission
+        prompt), which pauses ``LiveStatus`` around the read.
+        """
+        with patch('src.repl.core.get_provider_config', return_value={
+            "api_key": "test_api_key_12345678",
+            "base_url": "https://open.bigmodel.cn/api/paas/v4",
+            "default_model": "glm-4.5",
+        }), patch('src.repl.core.PromptSession') as mock_prompt_session, \
+                patch('src.repl.core.Session.create'), \
+                patch('src.providers.runtime.build_provider_from_config') as mock_build_provider:
+            mock_prompt_session.return_value = Mock(prompt=Mock(return_value=""))
+            mock_provider = Mock()
+            mock_provider.model = "glm-4.5"
+            mock_build_provider.return_value = mock_provider
+            repl = ClawcodexREPL(provider_name="glm")
+            repl.console.print = Mock()
+
+            prompts_seen: list[str] = []
+
+            def fake_safe_input(prompt: str) -> str:
+                prompts_seen.append(prompt)
+                if len(prompts_seen) == 1:
+                    return "4"  # synthetic "Other" option
+                return "心跳一下 ⏰"
+
+            repl._safe_input = fake_safe_input  # type: ignore[assignment]
+
+            # If the bug regresses, bare input() is reached for the 'Other'
+            # follow-up and the AssertionError makes the test fail loudly.
+            with patch("builtins.input", side_effect=AssertionError(
+                "bare input() reached the 'Other' branch — regression of "
+                "src/repl/core.py:1037; 'Other' must read through "
+                "_safe_input so LiveStatus can pause the spinner."
+            )):
+                answers = repl._ask_user_questions([{
+                    "question": "每分钟发送的消息内容应该是什么？",
+                    "header": "msg",
+                    "options": [
+                        {"label": "简单心跳提醒",
+                         "description": "每分钟发送一条简短的状态消息"},
+                        {"label": "健康检查报告",
+                         "description": "汇报工作树与运行中的任务"},
+                        {"label": "自定义内容",
+                         "description": "我会告诉你具体想发的内容"},
+                    ],
+                    "multiSelect": False,
+                }])
+
+            self.assertEqual(answers, {
+                "每分钟发送的消息内容应该是什么？": "心跳一下 ⏰",
+            })
+            # Both prompts went through _safe_input, in order.
+            self.assertEqual(prompts_seen, ["Select > ", "Other > "])
+
 
 class TestConversation(unittest.TestCase):
     """Test conversation management."""

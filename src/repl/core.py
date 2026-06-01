@@ -1034,7 +1034,12 @@ class ClawcodexREPL:
                 except ValueError:
                     idx = -1
                 if idx == other_idx:
-                    free = input("Other > ").strip()
+                    # Use _safe_input so the active LiveStatus spinner is
+                    # paused around the read. A bare input() races with the
+                    # spinner's prompt_toolkit Application on the same TTY,
+                    # which made the "Other >" follow-up hang and the session
+                    # become unresponsive to Ctrl+C / Ctrl+D.
+                    free = self._safe_input("Other > ").strip()
                     if free:
                         selected.append(free)
                     continue
