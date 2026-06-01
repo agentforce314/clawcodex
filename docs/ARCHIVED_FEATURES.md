@@ -2,8 +2,10 @@
 
 > 文档路径: `docs/ARCHIVED_FEATURES.md`
 > 源文档: `docs/FEATURE_PLAN.md` 第2节 (已实现功能模块)
-> 版本: v1.0
+> 版本: v1.1
 > 创建日期: 2026-05-30
+> 最后更新: 2026-06-01
+> 新增归档: R-7 LiteLLM Provider 适配器、F-23 Skills System Extension、F-1.x 子特性（生产强化、三通道澄清、Orchestrator CLI 运维界面）
 
 ---
 
@@ -138,6 +140,57 @@
 | 文件 | `src/providers/_litellm_adapter.py` |
 | 功能 | P0，统一 100+ 模型 |
 | 状态 | ✅ 已归档 |
+
+### 3.3 LiteLLM Provider 替换（开源替代组件 R-7）
+
+| 属性 | 值 |
+|------|-----|
+| 适配器文件 | `src/providers/_litellm_adapter.py` + `extensions/providers_ext/litellm_provider.py` |
+| 工厂入口 | `src/providers/__init__.py:create_provider()` / `should_use_litellm()` |
+| 环境变量 | `CLAW_USE_LITELLM=true|1|yes|on` |
+| 状态 | ✅ 已归档（2026-05-30） |
+
+#### 架构
+
+```
+src/providers/base.py (保留 BaseProvider 抽象)
+    ↓
+src/providers/__init__.py (should_use_litellm() + create_provider() 工厂)
+    ↓
+extensions/providers_ext/litellm_provider.py (LiteLLM 实现)
+    ↓
+LiteLLM (开源依赖)
+```
+
+#### 关键文件
+
+| 文件 | 功能 |
+|------|------|
+| `extensions/providers_ext/__init__.py` | 扩展包导出 |
+| `extensions/providers_ext/litellm_provider.py` | LiteLLM Provider 实现（含 `_get_litellm_model()` 提取）|
+| `src/providers/__init__.py` | 工厂函数 `should_use_litellm()` / `create_provider()` |
+| `src/providers/_litellm_adapter.py` | 兼容垫片（重新导出扩展包符号） |
+| `src/entrypoints/headless.py` | 使用 `create_provider()` |
+| `src/entrypoints/tui.py` | 使用 `create_provider()` |
+| `pyproject.toml` | 包发现包含 `extensions*` |
+
+#### 代码减少
+
+- 原始 Provider 类：~1,630 行
+- 替换后：~200 行
+- **减少代码**：~1,430 行
+
+#### 环境开关行为
+
+| `CLAW_USE_LITELLM` | 行为 |
+|--------------------|------|
+| `false`（默认） | 使用原始 Provider 类 |
+| `1` / `true` / `yes` / `on` | 使用 LiteLLM 统一 Provider |
+
+#### 兼容性
+
+- LiteLLM 保留 `BaseProvider` 接口可回退
+- 旧导入路径 `from src.providers._litellm_adapter import ...` 继续有效
 
 ---
 
@@ -577,6 +630,156 @@ src/repl/live_status.py  # 新增 Live Status 实时状态组件
 | `clawcodex orchestrator issue takeover --id <id>` | 完全接管 |
 | `clawcodex orchestrator dashboard --port` | 独立 dashboard UI |
 
+### 16.4 生产强化（F-1.1~F-1.4）
+
+#### F-1.1 重试上限保护
+
+| 项 | 值 |
+|---|---|
+| 实现位置 | `orchestrator/orchestrator.py:_schedule_retry` |
+| 新增字段 | `workflow.agent.max_retry_attempts: int = 5` |
+| 触发条件 | `attempt > max_retry_attempts` 时跳过调度 |
+| 副作用 | 不写入 `completed`（需人工确认后手动关闭 issue） |
+| 状态 | ✅ 已归档 |
+
+#### F-1.2 Issue State 前置检查
+
+| 项 | 值 |
+|---|---|
+| 实现位置 | `orchestrator/orchestrator.py:_launch_issue` |
+| 检查方式 | `tracker.fetch_issue_states_by_ids([issue.id])`，非 active 跳过 |
+| 副作用 | 从 `claimed` 集合移除，不进入 `completed` |
+| 状态 | ✅ 已归档 |
+
+#### F-1.3 已有 PR 跳过后续处理
+
+| 项 | 值 |
+|---|---|
+| 实现位置 | `orchestrator/orchestrator.py:_launch_issue` |
+| 检查方式 | `tracker.find_pull_request(head_branch, base_branch)` |
+| 适用范围 | 仅 RepositoryTrackerAdapter（GitHub/Gitee/GitCode） |
+| 副作用 | 标记 completed，重启后不重复处理 |
+| 状态 | ✅ 已归档 |
+
+#### F-1.4 本地 Issue 注册表
+
+| 项 | 值 |
+|---|---|
+| 文件位置 | `{workspace.root}/.clawcodex_issue_registry.json` |
+| 实现文件 | `orchestrator/issue_registry.py:IssueRegistry` |
+| 记录字段 | `issue_id / identifier / branch_name / commit_sha / pr_number / pr_url / status / attempt_count / clarification_status / question_history` |
+| Status 枚举 | `PENDING → SYNCED → COMPLETED / FAILED / ABANDONED` |
+| 状态 | ✅ 已归档 |
+
+### 16.5 Issue 语义澄清流程（F-1.5~F-1.11）
+
+| 通道 | 实现 | 触发 | 降级 |
+|------|------|------|------|
+| 通道一 | `StatusDashboard` 交互提示 | 非 headless + 操作员在线 | 5 分钟无操作 |
+| 通道二 | `ClarificationQueue` 文件队列（`~/.clawcodex/clarification_queue.json`） | 异步 CLI `clarify` 应答 | 30 分钟 |
+| 通道三 | `TrackerAdapter.create_clarification_comment()` | @mention Issue 作者 | 72 小时 |
+
+#### ClarificationStatus 枚举
+
+```python
+class ClarificationStatus(str, Enum):
+    NONE = "none"
+    AWAITING_LOCAL = "awaiting_local"        # 等待本地操作员
+    AWAITING_AUTHOR = "awaiting_author"     # 已发 @mention，等待作者
+    RECEIVED = "received"
+    RESOLVED_LOCAL = "resolved_local"        # 来自本地操作员
+    RESOLVED_AUTHOR = "resolved_author"     # 来自 @mention 作者
+    TIMED_OUT_LOCAL = "timed_out_local"     # 本地超时，降级通道三
+    TIMED_OUT_AUTHOR = "timed_out_author"   # 作者超时
+    EXHAUSTED = "exhausted"
+    DUPLICATE_REJECTED = "duplicate_rejected"  # 重复提交，被去重丢弃
+    STALE_REJECTED = "stale_rejected"          # 超时升级后收到的过时答案
+    CONFLICT_RESOLVED = "conflict_resolved"    # 多渠道冲突已裁决
+```
+
+#### 冲突处理原则
+
+- **第一响应者优先**：第一个被 Orchestrator 检测到的有效答案被采纳
+- **操作员优先级**：操作员答案始终比作者更可信（`operator_priority: true`）
+- **单向升级不可逆**：通道二超时 → 通道三后，原通道迟来答案标记 STALE_REJECTED
+- **过期主动通知**：所有被拒绝的答案都要通知对应应答者
+- **去重幂等**：同一答案重复提交第二次标记 DUPLICATE_REJECTED
+
+#### 完成阶段（Phase A-G）
+
+- [x] Phase A: `ClarificationQueue` 文件队列 + 冲突处理状态机 + 超时告知
+- [x] Phase B: StatusDashboard 交互提示组件
+- [x] Phase C: `AskIssueAuthor` 工具 + `ClarificationResolver` 三通道降级
+- [x] Phase D: CLI `clarify` 子命令
+- [x] Phase E: `TrackerAdapter.fetch_issue_comments()` / `create_clarification_comment()` 接口 + GitHub/Gitee/GitCode 实现
+- [x] Phase F: IssueRegistry 澄清字段持久化 + PromptBuilder 澄清内容注入
+- [x] Phase G: escalation 策略实现（skip / mark_failed / notify）
+
+#### 新增配置
+
+```yaml
+agent:
+  clarification:
+    operator_priority: true        # 操作员答案优先于作者（默认 true）
+    stale_notification: "all"      # "all" | "operator_only" | "none"
+    simultaneous_grace_ms: 5000    # 5ms 内视为同时，由 operator_priority 决胜
+```
+
+#### 状态
+
+✅ 已归档
+
+### 16.6 Orchestrator CLI 运维操作界面（F-1.13）
+
+完整 CLI 命令集（O1-O8 阶段）：
+
+| 命令 | 阶段 | 状态 |
+|------|------|------|
+| `clawcodex orchestrator server start --workflow PATH` | O1 | ✅ 已归档 |
+| `clawcodex orchestrator server status` | O1 | ✅ 已归档 |
+| `clawcodex orchestrator server stop` | O1 | ✅ 已归档 |
+| `clawcodex orchestrator issue list [--status]` | O1 | ✅ 已归档 |
+| `clawcodex orchestrator issue tail --id <id>` | O3 | ✅ 已归档 |
+| `clawcodex orchestrator issue show --id <id>` | O3 | ✅ 已归档 |
+| `clawcodex orchestrator issue pause --id <id>` | O2 | ✅ 已归档 |
+| `clawcodex orchestrator issue resume --id <id>` | O2 | ✅ 已归档 |
+| `clawcodex orchestrator issue stop --id <id>` | O2 | ✅ 已归档 |
+| `clawcodex orchestrator issue inject --id <id> <hint>` | O4 | ✅ 已归档 |
+| `clawcodex orchestrator issue inject --id <id> --list` | O4 | ✅ 已归档 |
+| `clawcodex orchestrator issue inject --id <id> --remove <n>` | O4 | ✅ 已归档 |
+| `clawcodex orchestrator issue clarify --id <id> --answer <text>` | O7 | ✅ 已归档 |
+| `clawcodex orchestrator issue workspace --id <id> --ls` | O5 | ✅ 已归档 |
+| `clawcodex orchestrator issue workspace --id <id> --cat <file>` | O5 | ✅ 已归档 |
+| `clawcodex orchestrator issue workspace --id <id> --edit <file> --with <content>` | O5 | ✅ 已归档 |
+| `clawcodex orchestrator issue takeover --id <id>` | O6 | ✅ 已归档 |
+| `clawcodex orchestrator dashboard --port` | O8 | ✅ 已归档 |
+
+#### 实施阶段
+
+- [x] O1: CLI `orchestrator` group 框架（替代旧 `--workflow` 顶层 flag）
+- [x] O2: pause/resume/stop + 状态机
+- [x] O3: `issue tail` 流式 event stream + StatusDashboard 实时渲染
+- [x] O4: `issue inject` Hint 注入（`.operator_hints.md` 机制）
+- [x] O5: `issue workspace --ls/--cat/--edit`
+- [x] O6: `issue takeover` 终止 + REPL 接管
+- [x] O7: `issue clarify` 澄清应答
+- [x] O8: Dashboard LiveView 增强（LLM 摘要 + tool calls 推送）
+
+#### 不兼容变更
+
+- `clawcodex --workflow` 已废弃，替换为 `clawcodex orchestrator server start --workflow PATH`
+- 原有扁平子命令（`run`、`status`、`issues`、`pause`、`resume`、`stop`、`inject`、`clarify`、`workspace`、`takeover`）已移除
+- 统一使用 noun-verb 结构：`server <verb>` / `issue <verb> --id <id>`
+
+```bash
+# 新命令
+clawcodex orchestrator server start --workflow test_gitcode_workflow.md
+clawcodex orchestrator server status
+clawcodex orchestrator issue list
+clawcodex orchestrator issue pause --id 42
+clawcodex orchestrator issue inject --id 42 "hint text"
+```
+
 ---
 
 ## 十七、MCP 协议扩展
@@ -645,4 +848,68 @@ src/repl/live_status.py  # 新增 Live Status 实时状态组件
 
 ---
 
-*本文档由 `docs/FEATURE_PLAN.md` 第2节归档生成，最后更新于 2026-05-30*
+## 二十、Skills System Extension（技能系统扩展层）
+
+> 对应 **F-23**（2026-05-24 完成）
+
+### 20.1 背景
+
+`src/skills/loader.py` 存在以下问题：
+- 硬编码 clawcodex 特定路径（`~/.clawcodex/skills` 等）
+- `get_all_skills()` 职责过于集中
+- 难以独立更新上游
+
+### 20.2 与 Tool System Ext 的对齐设计
+
+| 组件 | Tool System | Skills System |
+|------|-------------|---------------|
+| 上游核心 | `tool_system/registry.py` | `skills/loader.py` |
+| 扩展目录 | `tool_system_ext/` | `skills_ext/` |
+| 扩展包装类 | `ToolRegistryExt` | `SkillRegistryExt` |
+| Bundle 机制 | `TOOL_BUNDLES` | `SKILL_BUNDLES` |
+| Agent 配置 | `AgentToolConfig` | `AgentSkillConfig` |
+
+### 20.3 实现文件清单
+
+| 文件路径 | 优先级 | 状态 | 说明 |
+|---------|--------|------|------|
+| `src/skills_ext/__init__.py` | P0 | ✅ 已归档 | 扩展层入口 |
+| `src/skills_ext/registry_ext.py` | P0 | ✅ 已归档 | `SkillRegistryExt` 包装类 |
+| `src/skills_ext/bundles.py` | P0 | ✅ 已归档 | Skill Bundle 定义 |
+| `src/skills_ext/agent_config.py` | P1 | ✅ 已归档 | Agent Skill 配置 |
+| `src/skills_ext/paths.py` | P1 | ✅ 已归档 | clawcodex 特定路径解析 |
+| `src/skills_ext/hooks.py` | P2 | ✅ 已归档 | Skill 生命周期钩子 |
+| `src/skills_ext/cache.py` | P2 | ✅ 已归档 | 扩展层缓存管理 |
+
+### 20.4 核心组件
+
+```python
+# src/skills_ext/registry_ext.py
+class SkillRegistryExt:
+    """包装上游 loader，添加 clawcodex 特定功能"""
+
+    def get_all_skills(self, **kwargs) -> list[Skill]:
+        base = self._loader.get_all_skills(**kwargs)  # 上游 skills
+        clawcodex = self._load_clawcodex_paths()      # clawcodex 特定
+        return self._merge_skills(base, clawcodex)     # 合并去重
+
+    def on_skill_registered(self, callback):
+        """Skill 注册回调通知"""
+        ...
+```
+
+### 20.5 迁移阶段
+
+- [x] 阶段 1：创建 `src/skills_ext/` 目录和基础结构
+- [x] 阶段 2：迁移 clawcodex 特定路径逻辑到 `skills_ext/paths.py`
+- [x] 阶段 3：添加 Bundle 机制和 AgentSkillConfig
+- [x] 阶段 4：添加 Hook 机制和回调系统
+- [x] 阶段 5：更新 `get_all_skills()` 调用点使用 `SkillRegistryExt`
+
+### 20.6 状态
+
+✅ 已归档（2026-05-24）
+
+---
+
+*本文档由 `docs/FEATURE_PLAN.md` 第2节归档生成，最后更新于 2026-06-01*
