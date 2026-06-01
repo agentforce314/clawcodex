@@ -2,7 +2,7 @@
 
 > 文档路径: `docs/PROGRESS.md`
 > 基于: `docs/open-source-replacement-progress.md`, `docs/FEATURE_PLAN.md`
-> 版本: v2.3
+> 版本: v2.4
 > 更新日期: 2026-06-01
 > 上游同步: 68dc3c5 (Phase 11 bridge complete)
 
@@ -67,6 +67,7 @@
 | F-36 | LocalTracker 本地 Issue 文档源 | P1 | 📋 设计完成 | 新增 `tracker.kind: local`，从本地 Markdown/JSON issue 文档读取待处理任务，支持离线测试与私有本地工作流 |
 | F-37 | Orchestrator PR 检视意见自动修复闭环 | P0 | 📋 设计完成 | 将 PR 网页检视意见、inline comments、review summary 与 CI 失败日志转化为 follow-up agent run，自动修改同一 PR 分支并提交更新 |
 | F-38 | Orchestrator 验证与报告闭环（verification + report → PR） | P0 | 📋 设计完成 | commit/push 前自动跑 verification gate（pre_push hook + test_command），agent 跑完写结构化报告，git_sync 用报告改写 PR body 并合并为单条 issue 汇总评论；进度由 dead-code `progress_reporter` 接入主流程 |
+| F-39 | Orchestrator Issue 重跑入口（label + comment 命令双通道） | P0 | 📋 设计完成 | 三种 label 表达重做意图：`agent:retry`（重置本地状态、关旧 PR、重跑整个 issue）、`agent:follow-up`（保留 PR、叠 commit、对应 F-37 follow-up）、`agent:blocked`（永久跳过）；comment 命令 `/agent retry` / `/agent follow-up` 由原作者或 maintainer 触发并限频；CLI 兜底 `issue retry --id 1 --mode reset` |
 
 ---
 
@@ -1945,6 +1946,8 @@ Agent 完成 → git commit → pending_review
 
 *版本 v2.3 更新：新增 F-38 Orchestrator 验证与报告闭环。Sub-A 在 `hooks` schema 新增 `pre_commit` / `pre_push` / `post_sync` 三个生命周期点，git_sync 在 commit/push 前后自动跑 verification gate（默认 pytest -x，用户可配 test_command）；Sub-B 新增 `IssueRecord.report_path` 字段、agent_runner 跑完生成 Markdown/JSON 报告、git_sync 据此改写 PR body；Sub-C 抽象 TrackerAdapter 增 `update_pull_request`，并实现 GitCode 客户端把报告回写到 PR；Sub-D 修复 `progress_reporter` 死代码，phase completion 接入 ndjson event log。*
 
+*版本 v2.4 更新：新增 F-39 Orchestrator Issue 重跑入口。三种 label 表达重做意图：`agent:retry`（重置本地状态、关旧 PR、重跑整个 issue）、`agent:follow-up`（保留 PR、叠 commit、对应 F-37 follow-up）、`agent:blocked`（永久跳过）；comment 命令 `/agent retry` / `/agent follow-up` 由原作者或 maintainer 触发并限频；CLI 兜底 `issue retry --id 1 --mode reset`。Sub-A label 解析+意图分发，Sub-B 重置重跑，Sub-C follow-up 叠 commit，Sub-D comment 命令解析，Sub-E CLI 兜底，Sub-F 限频+角色校验。*
+
 ---
 
 ## F-38: Orchestrator 验证与报告闭环
@@ -2025,9 +2028,156 @@ Agent 完成 → git commit → pending_review
 - `progress_reporter` 接入需不破坏 `event_log_dir/1.ndjson` 现有 schema，扩展字段而非替换。
 - 与 F-37 的 PR review follow-up 闭环保持兼容：Sub-C 的 `update_pull_request` 应是 F-37 阶段 5/7（同 PR 分支 follow-up）的基础能力，先于 F-37 落地。
 
+### 已拟定的设计决定（2026-06-01 设计稿审阅产出）
+
+设计稿 7 个 Open Questions 的拟定方案。详细版见 `docs/FEATURE_PLAN.md` → `3.1.5 验证与报告闭环设计` → `拟定的设计决定`。实施时按依赖顺序落地，每完成一组更新本节。
+
+| # | 问题 | 拟定方案 | 涉及 Sub |
+|---|------|---------|---------|
+| 1 | `ProgressReporter` 接口与设计目标错位（绑死 `ToolContext`） | 拆成「翻译层 + 通道层」：新增 `ProgressSink` 协议（`ToolContextSink` / `NdjsonSink` / `CompositeSink`），`ProgressReporter.__init__` 改收 `sinks: list[ProgressSink]`；orchestrator 根据 `workflow.observability.progress_sinks` 显式构造 | D |
+| 2 | Hook 执行上下文未约定 | 固化「Hook Env Contract」表：`ISSUE_ID/IDENTIFIER/BRANCH` 必传；`pre_commit`/`pre_push`/`post_sync` 各自加 `BRANCH_NAME/COMMIT_SHA/PR_NUMBER/PR_URL/VERIFICATION_STATUS`；抽 `_run_named_hook` helper 统一 cwd/env/timeout | A |
+| 3 | Hook 失败 vs 测试失败语义重叠 | 配置分层：verification 字段（typed）失败 = `VerificationFailed` + 标 `VERIFICATION_FAILED` 状态；hook 字段（opaque）失败 = `HookFailedError` + 走 `FAILED`/retry；新增 `IssueStatus.VERIFICATION_FAILED` 枚举值与 `mark_verification_failed` 方法；新增 `last_hook_error` 字段 | A |
+| 4 | Hook 修改文件的副作用 | verification 字段默认只读（`VerificationCommand(cmd, write=False)`），写工作区后记 WARN；`pre_commit` hook 改文件后 git_sync 自动 `git add -A && git commit --amend`；`pre_push`/`post_sync` 改工作区直接报错 | A |
+| 5 | 报告文件生命周期（cleanup 会清掉） | 双层存储：`report_writer.write()` 同步写 `workspace/.reports/{id}.md`（瞬态）+ `~/.clawcodex/reports/{tracker}/{owner}/{repo}/{issue_id}/run-{N}-{ts}.md`（持久）；复用 `before_remove` 钩子作为双写失败的 fallback 复制口；`workflow.reports.retention_days=90` | B |
+| 6 | 「报告路径」字段循环引用 | 报告文件内部**不写自身路径**，只写摘要/计数/verification/commit/diff/run_id；路径由 PR body 与汇总评论外部引用；若审计需要可以 HTML 注释 `<!-- metadata: report_path -->` 单独存 | B/C |
+| 7 | 配置示例具有误导性（`echo` 永远成功） | 替换为四组示例：典型 Python 项目（`pytest -x -q` + `ruff check .`）/ 无测试项目（空 = 跳过）/ hook 副作用（`black . && isort .` + auto amend）/ 显式 no-op（`"true"`）；所有字段留空等价于 3.1.5 之前行为 | A/B/C |
+
+**实施顺序建议**：1 → (2 + 3) → 4 → 5 → 6 → 7。
+
+### 第二轮审阅补遗（2026-06-01）
+
+针对首轮 7 项之外 5 个未决项的补遗，详细版见 `docs/FEATURE_PLAN.md` → `3.1.5 验证与报告闭环设计（F-38）` → `第二轮审阅补遗（2026-06-01）`。
+
+| # | 项 | 补遗内容 | 涉及 Sub |
+|---|----|---------|---------|
+| 1 | IssueStatus 枚举 | 新增 `VERIFICATION_FAILED` 枚举值 + `mark_verification_failed()` 方法 + `TERMINAL_STATUSES` 冻结集合（含 `COMPLETED/FAILED/ABANDONED/VERIFICATION_FAILED`）统一终态判断；F-39 `agent:retry` 触发时把 `VERIFICATION_FAILED` 也重置回 `PENDING` | A |
+| 2 | 汇总评论时序（Option A） | `agent_runner.SessionComplete` 立刻发 placeholder 评论（含 `⏳ This summary is being prepared...`），把 comment_id 存到 `AgentSession.summary_comment_id`；git_sync.sync 末尾调 `tracker.update_comment(summary_comment_id, body=完整汇总)`；新增 `TrackerAdapter.update_comment` 抽象 + 4 平台实现（GitHub/Gitee/GitCode `PATCH /repos/{o}/{r}/issues/comments/{id}`，Linear GraphQL `updateIssueComment`，LocalTracker ndjson 临时文件 + `os.replace` 原子替换） | C |
+| 3 | 重跑 run_id | `run_id` 由 agent_runner 显式构造并传入 `report_writer.write(session, workspace, run_id=...)`；格式 `run-{attempt_count:02d}-{UTC_ts}`；F-39 follow-up 用 `run-N-followup-M-{UTC_ts}` 避免冲突；持久化路径 `~/.clawcodex/reports/{tracker}/{owner}/{repo}/{issue_id}/{run_id}.{md,json}` | B |
+| 4 | 文档 ID 一致性 | FEATURE_PLAN.md 节标题已加 `(F-38)` 标识；PROGRESS.md 「规划文档」列已写 `docs/FEATURE_PLAN.md → 3.1.5 验证与报告闭环设计`；设计文档（按主题编排）与跟踪文档（按 F-N 索引）的正常分层，不需要合并 ID 系统 | 文档 |
+| 5 | test_command 触发器归属 | `agent.test_command` / `build_command` / `lint_command` 只在 pre_push 阶段跑（不在 pre_commit）；`hooks.pre_commit` 保留 Git 术语不重命名，跑改文件类副作用（formatter + auto amend）；`workflow.md` 注释里说明「pre_commit 改文件 / verification 跑 pre_push」分工；pre_commit amend 失败 → 抛 `HookFailedError("pre_commit", "amend failed: <reason>")` 标 FAILED | A |
+
+**合并实施顺序**：首轮 1 → (首轮 2 + 3 + 补遗 1) → (首轮 4 + 补遗 5) → (首轮 5 + 补遗 3) → 补遗 2 → 首轮 6 → 7。
+
 ### 依赖与协同
 
 - **依赖 F-1**：F-38 全部 Sub 都在 Orchestrator 主流程内，依赖现有 `git_sync` / `agent_runner` / `issue_registry`。
 - **先于 F-37**：F-37 阶段 5 需要的「同 PR 分支 follow-up 修改」依赖 F-38 Sub-C 的 `update_pull_request` 能力。
 - **与 F-36 兼容**：LocalTracker 走 `pending_review` 路径不创建 PR，F-38 Sub-C 在该路径下应跳过 PR body 改写。
 - **不破坏 `progress_reporter` 现有 4 个引用点**：Sub-D 接入后，单元测试覆盖原参数接口。
+
+---
+
+## F-39: Orchestrator Issue 重跑入口（label + comment 命令双通道）
+
+**状态**: 📋 设计完成
+**优先级**: P0
+**规划文档**: `docs/FEATURE_PLAN.md` → `3.1.6 Issue 重跑入口设计`
+**触发场景**: 2026-06-01 在 `chadwweng/AgentSDK` 跑完 issue #1 后用户想「让 agent 重做」或「在同一 PR 上再改一版」,但当前 orchestrator 4 层防御(内存 `completed` set / IssueRegistry `is_completed` / `has_pr` / `find_pull_request`)只支持「PR 存在 = 已处理」,不支持「关 PR = 重做」语义。用户被迫改 registry.json 或重启 daemon,体验差且易污染主流程。
+
+### 目标
+
+在 `extensions/orchestrator` 引入「重做意图」显式表达通道,与现有 4 层防御并存而非替换:
+
+1. **三种 label 表达重做意图**,orchestrator 轮询时按 label 决定走「重置重跑」还是「同 PR 叠 commit」还是「永久跳过」。
+2. **comment 命令**作为 label 的实时替代(原作者/maintainer 触发),适合自动化流水线。
+3. **CLI 兜底命令**作为本地调试 / label 不便时的紧急入口。
+4. 与 F-37(PR 检视意见自动修复)、F-38(报告回写)对齐,提供「同 PR branch follow-up」入口。
+
+### 三种重做意图的语义矩阵
+
+| Label / 命令 | 语义 | 对本地 IssueRecord | 对远程 PR | 对远程 issue | 对 agent run |
+|---|---|---|---|---|---|
+| `agent:retry` | 重置 + 重跑整个 issue | 清空 `status` → `pending`,删 `commit_sha` / `pr_number` / `pr_url` / `report_path` | 关闭旧 PR(状态 `closed` `not merged`) | 加 `agent:retry` 自检注释(可选) | 新 workspace、新 agent run |
+| `agent:follow-up` | 保留 PR,在同 PR branch 叠 commit | `status` 保持 `completed`,`pr_number` 不变,`attempt_count++` | 不动;`update_pull_request` 走 F-38 Sub-C 入口追加 commit | 不动 | 同 workspace 同 branch,prompt 强调「只处理 follow-up」 |
+| `agent:blocked` | 永久跳过该 issue | `status` 写 `abandoned` | 不动 | 加 `agent:blocked` 自检注释 | 永不 launch |
+
+`agent:retry` 与 `agent:follow-up` 互斥:同一 issue 上若同时存在两个 label,以更保守的 `agent:follow-up` 为准(保留 PR 改动证据);若同时存在 `agent:blocked`,直接视为「永久跳过」。
+
+### 现状基线(2026-06-01)
+
+| 能力 | 当前状态 | 说明 |
+|---|---|---|
+| 内存 `completed` set | ✅ 已实现 | `orchestrator.py:200` 拦截;只在进程生命周期内有效 |
+| `IssueRegistry.is_completed` / `has_pr` | ✅ 已实现 | `orchestrator.py:205` 拦截;持久化到 `.clawcodex_issue_registry.json`,daemon 重启不丢 |
+| `tracker.find_pull_request` 远程校验 | ✅ 已实现 | `orchestrator.py:265-281` 拦截;只看 PR 是否存在,不看 PR state(open/closed/merged) |
+| Tracker 端 issue state 前置检查 | ✅ 已实现 | `orchestrator.py:247-262`;`active_states` 命中才 launch |
+| Label 读取 | ❌ 缺失 | `RepositoryIssueClient.fetch_candidate_issues` 未把 labels 透传到 `Issue.labels` 之外的使用方;无 label 驱动的 dispatch 逻辑 |
+| Comment 命令解析 | ❌ 缺失 | `RepositoryIssueClient.fetch_new_comments_since` 已实现但 orchestrator 未消费 |
+| 重置 API | ❌ 缺失 | `IssueRegistry` 无 `reset_for_retry(issue_id)` / `mark_followup(issue_id)` 方法 |
+| 远程 PR 关闭能力 | ❌ 缺失 | `tracker.py:TrackerAdapter` 无 `close_pull_request`;`repo_tracker/client.py` 0 处 `PATCH /pulls` 调用 |
+| CLI 兜底命令 | ❌ 缺失 | `cli/issue.py` 有 `review` / `diff` / `inject` 但无 `retry` |
+| 限频 / 角色校验 | ❌ 缺失 | comment 命令无 anti-replay / author 校验,易被 LLM 自触发 |
+
+### 子特性拆分
+
+| Sub | 名称 | 目标 | 主要工作 |
+|-----|------|------|----------|
+| A | Label 解析 + 意图分发 | 把 label 映射到「重置/follow-up/跳过」三态 | `tracker.py:TrackerAdapter` 增 `extract_intent_from_labels(labels) -> Intent` 抽象;`repo_tracker/client.py:RepositoryIssueClient.fetch_candidate_issues` 在返回前用 `_OPEN_STATE_ALIASES` 之外的「intent label」识别;`issue_registry.py:IssueRecord` 新增 `intent: Literal["none","retry","followup","blocked"]` + `retry_count: int`;`orchestrator.py:_poll_and_dispatch` 在 `has_pr` 判断之前先看 intent |
+| B | 重置重跑 (`agent:retry`) | 清空本地状态 + 关闭远程 PR | 新增 `IssueRegistry.reset_for_retry(issue_id)` 方法;`tracker.py:TrackerAdapter.close_pull_request(pr_number) -> bool` 抽象;`repo_tracker/client.py:RepositoryIssueClient.close_pull_request` 实现 `PATCH /repos/{owner}/{repo}/pulls/{id}?state=closed`;`orchestrator.py` 在 launch 前若 intent=retry,先调 close_pull_request 再 launch |
+| C | Follow-up 叠 commit (`agent:follow-up`) | 不开新 PR,复用原 branch | `orchestrator.py` 检测 intent=followup 时,跳过 workspace 创建(复用现有 branch),用上次 run 的报告作为上下文;`git_sync.py:GitSyncService.sync` 加 `mode="followup"` 分支,只 `git commit` + `git push`,不创建新 PR;`IssueRecord.attempt_count++`;依赖 F-38 Sub-C 写新 commit 到 PR body(等 F-38 落地) |
+| D | Comment 命令解析 | `/agent retry` `/agent follow-up` 触发 | `tracker.py:TrackerAdapter` 增 `fetch_issue_command_intent(issue_id, since_comment_id) -> Intent | None`;`repo_tracker/client.py` 复用 `fetch_new_comments_since` 拉新评论,正则匹配 `^/agent\s+(retry|follow-up|unblock)`;orchestrator 在 launch 前调用,合并 label 意图与 command 意图(以更保守者为准);comment 触发后由 orchestrator 发 bot 确认评论 `## ClawCodex: 已受理 ${command},下一轮 poll 开始执行` |
+| E | CLI 兜底命令 | `issue retry` 提供本地入口 | `cli/issue.py` 增 `add_retry_parser` 与 `_run_retry(registry, args)`;支持 `--mode {reset,followup,unblock}` + `--id` + `--reason`;`IssueRegistry` 增 `unblock(issue_id)` 方法(把 `abandoned` 状态回滚);命令发一条本地 audit 日志 `~/.clawcodex/orchestrator/audit.jsonl` 记录 `{ts, operator, issue_id, mode, reason}` 便于追溯 |
+| F | 限频 + 角色校验 | 防滥用 | comment 命令默认要求「issue 作者」或「仓库 maintainer」才能触发;`IssueRecord.retry_count >= max_retries_per_issue(默认 3)` 时即使加 label 也拒绝重置(写一条 `agent:retry-rejected` label + 评论说明);`audit.jsonl` 记 limit 触发 |
+
+### 实施进度
+
+| 阶段 | 任务 | Sub | 状态 |
+|------|------|-----|------|
+| 1 | `tracker.py:TrackerAdapter` 增 `extract_intent_from_labels` / `close_pull_request` / `fetch_issue_command_intent` 三个抽象 | A/B/D | 📋 待开始 |
+| 2 | `repo_tracker/client.py:RepositoryIssueClient` 实现上述三个方法(GitCode 优先,GitHub/Gitee 列 TODO) | A/B/D | 📋 待开始 |
+| 3 | `issue_registry.py:IssueRecord` 增 `intent` / `retry_count` / `last_command` 字段;新增 `reset_for_retry` / `mark_followup` / `unblock` / `increment_retry` 方法 | A/B/E | 📋 待开始 |
+| 4 | `orchestrator.py:_poll_and_dispatch` 增 intent 前置判断:label 解析 + comment 命令解析 + 合并;launch 路径根据 intent 分流(reset / followup / skip) | A/C/D/F | 📋 待开始 |
+| 5 | `orchestrator.py` 在 intent=retry 时调 `close_pull_request(pr_number)`,再 launch 新 run | B | 📋 待开始 |
+| 6 | `git_sync.py:GitSyncService.sync` 加 `mode` 参数;`mode="followup"` 走「只 commit/push,不开 PR」分支 | C | 📋 待开始 |
+| 7 | `cli/issue.py` 增 `retry` 子命令,实现 `_run_retry`;`audit.jsonl` 写本地审计 | E | 📋 待开始 |
+| 8 | `orchestrator.py` 增 `max_retries_per_issue` 配置(默认 3);`IssueRecord.retry_count` 超过上限拒绝重置并发评论 | F | 📋 待开始 |
+| 9 | 单元测试:label 解析、命令正则、retry_count 限频、role 校验、registry.reset_for_retry 状态机 | A/B/E/F | 📋 待开始 |
+| 10 | 端到端:在 issue #1 上加 `agent:retry` label → 60s 内观察 daemon 日志确认走 retry 路径 → issue 重新 running → 完成后 PR 编号变化 | A/B/C | 📋 待开始 |
+| 11 | 端到端:在 issue #1 上加 `agent:follow-up` label → daemon 检测到后不关 PR,在同 branch 叠 commit → PR 编号不变,commit 数 +1 | C | 📋 待开始 |
+
+### 验收标准
+
+- 用户在 GitCode issue #1 上加 `agent:retry` label 后,**60s 内**(下一轮 poll)daemon 日志输出 `Issue 1 retry intent detected`,issue 状态从 `completed` 回到 `running`,旧 PR 被关闭,新 PR 编号(原 PR 编号 + N)。
+- 用户在 issue #1 上加 `agent:follow-up` label 后,daemon 在同 branch 上 commit + push,**不开新 PR**,原 PR 编号不变,commit 数 +1。
+- 用户在 issue comment 发 `/agent retry`,且非原作者时,**daemon 拒绝执行**并发评论 `## ClawCodex: 仅 issue 作者或 maintainer 可触发 /agent retry`。
+- `agent:retry` 累计触发 4 次(超过 `max_retries_per_issue=3`)后,daemon 拒绝再次 reset,issue 上自动加 `agent:retry-rejected` label,评论中说明「已达到最大重试次数,需人工处理」。
+- `clawcodex orchestrator issue retry --id 1 --mode reset --reason "wrong approach"` 立即生效,等价于 label 触发的 reset 路径,audit.jsonl 有一行 `{ts, operator, issue_id, "reset", "wrong approach"}`。
+- 重置不污染已有 issue_registry.json 旧 entry schema:加载老 JSON 时 `intent` / `retry_count` 默认值生效。
+- 与 F-37 协同:`agent:follow-up` 触发的 follow-up run,行为与 F-37 阶段 6 的「review-fix prompt builder」一致(只改检视意见,不改 issue 范围)。
+- 与 F-38 协同:`agent:follow-up` 触发的 follow-up run 完成后,F-38 Sub-C 调 `update_pull_request` 把新 commit / 新 diff stat / 新 verification 结果追加到 PR body 末尾(以 `## ClawCodex Follow-up #N` 段落追加,非覆盖)。
+
+### 风险与约束
+
+- **LLM 自触发风险**:comment 命令必须做 role 校验,否则 LLM 在自动响应里写 `/agent retry` 会自触发。
+- **label 互斥冲突**:`agent:retry` + `agent:follow-up` 同时存在时需定义优先级;本期以「更保守 = follow-up」为准,后续可加 `intent_priority` 配置。
+- **重置不删 git history**:reset 走「关 PR + 删本地 registry entry」,但 git remote 的 commit/branch 仍存在,这是预期行为(便于审计)。
+- **限频与人工 bypass**:CLI 兜底命令的 `--force` 参数可绕过 `max_retries_per_issue` 限频,需写 `audit.jsonl` 高优条目。
+- **与 F-37 耦合**:`agent:follow-up` 依赖 F-37 阶段 6 的「review-fix prompt builder」;F-37 未落地时,follow-up 路径退化为「同 branch agent run」(语义较弱的 follow-up)。
+- **平台差异**:GitCode `PATCH /pulls?state=closed` 与 GitHub `PATCH /repos/{owner}/{repo}/pulls/{number}` 端点路径不同,需在 `repo_tracker/client.py` 平台分发处分别实现;Gitee / GitHub 暂列 TODO(同 F-38 Sub-C 的处理)。
+- **comment 命令回放**:用户编辑老评论(非最新一条)发命令时,应只处理 `created_at > since_comment_id` 的新评论;`fetch_new_comments_since` 已实现该语义,直接复用。
+
+### 配置示例
+
+在 `extensions/orchestrator/workflow.md` front matter 增:
+
+```yaml
+agent:
+  retry:
+    enabled: true
+    intent_labels:
+      retry: "agent:retry"
+      followup: "agent:follow-up"
+      blocked: "agent:blocked"
+    max_retries_per_issue: 3
+    comment_command_enabled: true
+    comment_command_required_role: "author_or_maintainer"
+    audit_log_path: "~/.clawcodex/orchestrator/audit.jsonl"
+```
+
+### 依赖与协同
+
+- **依赖 F-1、F-38 Sub-C**:`close_pull_request` 与 F-38 Sub-C 共享 `PATCH /pulls` 协议层(Sub-C 改 body,F-39 Sub-B 改 state);先于 F-38 落地要冗余实现一次,建议先做 F-38 Sub-C,F-39 复用。
+- **与 F-37 强协同**:`agent:follow-up` 路径是 F-37「PR 检视意见自动修复」的 label 入口;F-37 未落地时 follow-up 退化为「同 branch 普通 agent run」。
+- **不破坏 F-38 Sub-D**:`progress_reporter` 的 PhaseComplete 写 ndjson 逻辑在 retry 路径下应照常工作(每次新 run 是新的 session)。
+- **不破坏 F-36 LocalTracker**:LocalTracker 无远程 PR 概念,`close_pull_request` 在该路径下应 no-op 并打 warning 日志;`issue_registry.unblock` 行为对 LocalTracker 等价(把 `pending_review` / `abandoned` 状态回滚到 `pending`)。
+- **与 F-38 Sub-B 报告**:`agent:retry` 触发的重置会清空 `report_path`,F-38 Sub-B 报告不应被复用;`agent:follow-up` 不清空报告,新 report 追加为 `report_path_v{N+1}` 序列(便于历史回溯)。
