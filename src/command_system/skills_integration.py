@@ -56,6 +56,13 @@ def skill_to_prompt_command(skill: PromptSkill) -> PromptCommand:
         user_invocable=skill.user_invocable,
         loaded_from=skill.loaded_from,
         is_hidden=skill.is_hidden,
+        # R2 (Phase 3 / P0-4): propagate the loader-computed flag so the
+        # model-tool views can distinguish a real author-written description
+        # from an auto-derived first-line one. ``get_slash_command_tool_skills``
+        # *requires* this (or ``when_to_use``) to include a skill; without it
+        # the predicate could never fire for managed/MCP/plugin skills. See
+        # my-docs/get-parity-by-folder/commands-phase3-model-tool-exposure-plan.md §6 R2.
+        has_user_specified_description=skill.has_user_specified_description,
     )
 
 
@@ -81,6 +88,27 @@ def load_and_register_skills(
 ) -> list[PromptCommand]:
     """
     Load all skills and register them as commands.
+
+    .. note:: **P0-6 / why this is NOT called at bootstrap (intentional).**
+
+        The TS gap item "auto-register skills in bootstrap (call
+        ``load_and_register_skills``)" does NOT translate to a literal startup
+        call in Python, because Python split TS's single command list into three
+        surfaces (aggregator / ``CommandRegistry`` / skills-loader). The
+        aggregator (:func:`~src.command_system.aggregator.get_commands`) already
+        merges skills into the unified set, so listing/filtering/the P0-4 views
+        need no registration. The ONLY new behavior a literal call would add is
+        making skills resolvable via ``CommandRegistry.get(name)`` — and that is
+        a *regression*: it reroutes REPL ``/myskill arg`` execution onto
+        :meth:`PromptCommand.get_prompt_for_command` (bare arg-substitution),
+        dropping the base-dir header, ``${CLAUDE_SKILL_DIR}`` /
+        ``${CLAUDE_SESSION_ID}`` substitution, the gated shell-exec pass, and the
+        bundled-skill callable that ``_run_markdown_skill`` provides. So under
+        Phase 3 **Option A** this function stays available (tests, future
+        unification) but is deliberately left out of the REPL/TUI bootstrap.
+        Unifying execution correctly (fix the renderer first, then register) is
+        Phase 3.5 **Option B**. See
+        my-docs/get-parity-by-folder/commands-phase3-model-tool-exposure-plan.md §3 D-6.
 
     Args:
         project_root: Optional project root directory

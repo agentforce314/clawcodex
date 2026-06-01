@@ -1733,18 +1733,30 @@ async def test_perpetual_pointer_updates_when_work_spawns_session(
     assert initial is not None
     assert initial.session_id == 'cse_test'
 
-    # Wait for the work item to be processed.
-    for _ in range(50):
+    # Wait for the work item to be processed AND the pointer rewrite to
+    # land. The spawn (which populates ``spawner.handles`` in
+    # ``_process_work``) and the pointer write are SEPARATE async steps —
+    # ``_update_pointer`` runs after the spawn and off-loads the file write
+    # to a worker thread via ``run_in_executor``. So breaking the poll on
+    # ``spawner.handles`` alone races ahead of the executor-thread pointer
+    # write under load, intermittently reading the stale bootstrap pointer.
+    # Poll the real post-condition (the pointer reflecting the work's id).
+    after_spawn = None
+    for _ in range(200):
         await asyncio.sleep(0.01)
-        if spawner.handles:
+        after_spawn = read_pointer(
+            params.dir, machine_name=params.machine_name,
+        )
+        if (
+            spawner.handles
+            and after_spawn is not None
+            and after_spawn.session_id == 'cse_from_work'
+        ):
             break
     assert spawner.handles
 
     # Pointer should now reflect the work's session_id, not the
     # bootstrap one.
-    after_spawn = read_pointer(
-        params.dir, machine_name=params.machine_name,
-    )
     assert after_spawn is not None
     assert after_spawn.session_id == 'cse_from_work'
     # ``created_at_ms`` is preserved across the update.
@@ -1778,14 +1790,23 @@ async def test_perpetual_pointer_clears_session_when_session_completes(
         params, api_client=api, spawner=spawner,
     )
     assert handle is not None
-    for _ in range(50):
+    # Same two-step race as
+    # test_perpetual_pointer_updates_when_work_spawns_session: the spawn
+    # populates spawner.handles, but the pointer write lands later via
+    # _update_pointer's run_in_executor hop. Poll the pointer itself.
+    mid = None
+    for _ in range(200):
         await asyncio.sleep(0.01)
-        if spawner.handles:
+        mid = read_pointer(
+            params.dir, machine_name=params.machine_name,
+        )
+        if (
+            spawner.handles
+            and mid is not None
+            and mid.session_id == 'cse_short_lived'
+        ):
             break
     # Pointer has the active session id at this point.
-    mid = read_pointer(
-        params.dir, machine_name=params.machine_name,
-    )
     assert mid is not None
     assert mid.session_id == 'cse_short_lived'
 

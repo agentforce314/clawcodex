@@ -445,6 +445,99 @@ class TestEngineProducesCacheableSystemBlocks(unittest.TestCase):
             "Engine must emit exactly one boundary-marker block",
         )
 
+    def test_engine_wires_skill_listing_into_system_prompt(self):
+        """P0-4 end-to-end: a discoverable project skill reaches the model.
+
+        The unit tests in ``tests/test_aggregator.py`` prove the two filtered
+        views compute the right set, and ``tests/test_prompt_assembly.py``
+        proves ``_build_skill_section`` renders a listing. But neither
+        exercises the actual engine wiring at ``engine.py`` —
+        ``skills=get_skill_tool_commands(cwd)``. A regression that drops the
+        ``skills=`` kwarg, threads the wrong ``cwd``, or calls the slash-command
+        view instead would pass every one of those unit tests yet silently stop
+        advertising skills to the model.
+
+        This plants a real project skill under the engine's ``cwd``, drives one
+        turn, and asserts the assembled system-prompt block list contains the
+        ``# Available Skills`` listing with the fixture skill — closing the gap.
+        """
+        from src.command_system.aggregator import clear_commands_cache
+        from src.context_system.prompt_assembly import get_system_prompt_cache
+        from src.providers.anthropic_provider import AnthropicProvider
+        from src.skills.create import create_skill
+
+        # Plant a project skill discoverable from the engine's cwd:
+        # <cwd>/.claude/skills/<name>/SKILL.md → loaded_from="project", which
+        # is in SKILLS_DIR_BUCKET so get_skill_tool_commands includes it.
+        create_skill(
+            directory=self.workspace / ".claude" / "skills",
+            name="wiringdemo",
+            description="a wiring demo skill",
+            body="Hello from the wiring demo.",
+        )
+        # Refresh BOTH cache layers (see clear_commands_cache's docstring): the
+        # command-aggregation cwd cache AND the prompt-assembly session cache
+        # that holds the rendered "# Available Skills" prose. The latter is
+        # SESSION-scoped and keyed only by section-id (NOT cwd), so an earlier
+        # cold-start engine test in this run would otherwise serve its own
+        # (wiringdemo-less) listing here. Clean up after ourselves so a later
+        # test isn't served OUR wiringdemo listing.
+        skill_cache = get_system_prompt_cache()
+        clear_commands_cache()
+        skill_cache.invalidate("skills")
+        self.addCleanup(skill_cache.invalidate, "skills")
+        self.addCleanup(clear_commands_cache)
+
+        provider = MagicMock(spec=AnthropicProvider)
+        provider.model = "claude-sonnet-4-20250514"
+        provider.chat_stream_response.side_effect = NotImplementedError()
+        provider.chat.return_value = ChatResponse(
+            content="ok",
+            model="claude-sonnet-4-20250514",
+            usage={
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+            },
+            finish_reason="end_turn",
+            tool_uses=None,
+        )
+
+        engine = self._make_engine_no_system_prompt(provider)
+
+        async def run():
+            async for _ in engine.submit_message("Hello"):
+                pass
+
+        _run(run())
+
+        self.assertTrue(provider.chat.called, "engine must invoke provider.chat")
+        system_arg = provider.chat.call_args.kwargs.get("system")
+        self.assertIsInstance(
+            system_arg, list,
+            f"Expected block-list shape, got {type(system_arg).__name__}",
+        )
+        skill_blocks = [
+            b for b in system_arg
+            if isinstance(b.get("text"), str) and "# Available Skills" in b["text"]
+        ]
+        self.assertEqual(
+            len(skill_blocks), 1,
+            "engine must emit exactly one '# Available Skills' block when a "
+            "project skill is discoverable — skills=get_skill_tool_commands(cwd) "
+            "must be threaded through _build_system_prompt_parts",
+        )
+        listing = skill_blocks[0]["text"]
+        self.assertIn(
+            "wiringdemo", listing,
+            "the fixture skill name must appear in the model-facing listing",
+        )
+        self.assertIn(
+            "a wiring demo skill", listing,
+            "the fixture skill description must appear in the listing",
+        )
+
     def test_engine_threads_mcp_servers_to_block_assembly(self):
         """Critic Phase 2 M1: engine MUST forward mcp_servers to the block builder.
 
