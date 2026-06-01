@@ -2,9 +2,11 @@
 
 > 文档路径: `docs/PROGRESS.md`
 > 基于: `docs/open-source-replacement-progress.md`, `docs/FEATURE_PLAN.md`
-> 版本: v2.5
+> 版本: v2.7
 > 更新日期: 2026-06-01
 > 上游同步: 68dc3c5 (Phase 11 bridge complete)
+>
+> **v2.7 变更**：新增 F-41 Coordinator 轻量工具集（✅ 已完成）。给 Coordinator 配置独立的轻量工具集（Read、WebSearch、WebFetch），加上原有的 Agent、SendMessage、TaskStop，共 6 个工具。Coordinator 可直接处理简单查询（搜网页、读文件），无需为每个请求创建 Worker。所有写操作工具（Write、Edit、Bash、Grep、Glob）仍隔离，强制委派复杂任务给 Worker。涉及 `src/coordinator/mode.py` 的 `_COORDINATOR_ALLOWED_TOOLS` 扩展 + `src/coordinator/prompt.py` 的 "Your Tools" 提示词更新 + `src/repl/core.py` 注释同步。231/231 orchestrator 测试通过。
 >
 > **v2.6 变更**：新增 F-40 ProgressReporter Sink 协议重构（📋 设计完成）。解决 F-38 Sub-D 落地时遗留的三个问题：(1) `Orchestrator` 上 `ProgressReporter` 单例的 `_current_task_id` / `_phase_count` 共享可变状态在并发 issue 下竞争；(2) `AgentRunner` 只转发 `PhaseComplete`，`_on_session_complete` 形同虚设，会话结束无进度落点；(3) `progress = phase_count * 25` 是假数据。设计引入 `ProgressSink` Protocol + `CompositeProgressSink` 扇出 + `ToolContextProgressSink` 默认实现 + `ProgressReporter` 降级为 shim；新增 `WorkflowConfig.phases` 用于真实进度计算。
 >
@@ -75,6 +77,7 @@
 | F-38 | Orchestrator 验证与报告闭环（verification + report → PR） | P0 | ✅ 完成 | commit/push 前自动跑 verification gate（pre_push hook + test_command），agent 跑完写结构化报告，git_sync 用报告改写 PR body 并合并为单条 issue 汇总评论；进度由 dead-code `progress_reporter` 接入主流程 |
 | F-39 | Orchestrator Issue 重跑入口（label + comment 命令双通道） | P0 | ✅ 完成（Sub-A~F） | 三种 label 表达重做意图：`agent:retry`（重置本地状态、关旧 PR、重跑整个 issue）、`agent:follow-up`（保留 PR、叠 commit、对应 F-37 follow-up）、`agent:blocked`（永久跳过）；comment 命令 `/agent retry` / `/agent follow-up` 由原作者或 maintainer 触发并限频；CLI 兜底 `issue retry --id 1 --mode reset`。Sub-A label 解析+意图分发、Sub-B 重置重跑、Sub-C follow-up 叠 commit、Sub-D comment 命令解析、Sub-E CLI 兜底、Sub-F 限频+角色校验均已落地；端到端 10-11 阶段（实际 GitCode/GitHub issue 联动）待真实环境验证 |
 | F-40 | ProgressReporter Sink 协议重构 | P1 | 📋 设计完成 | 把 `Orchestrator` 上 `ProgressReporter` 单例拆为每 session 独立的 `ProgressSink` 实例；新增 `CompositeProgressSink` 扇出支持 F-37/F-39 零侵入接入；补全 `SessionComplete` / `TurnComplete` 转发；引入 `WorkflowConfig.phases` 做真实进度计算，淘汰 `phase_count * 25` 假数据 |
+| F-41 | Coordinator 轻量工具集 | P1 | ✅ 已完成 | 给 Coordinator 配置独立的轻量工具集（Read、WebSearch、WebFetch），加上原有的 Agent、SendMessage、TaskStop，共 6 个工具。Coordinator 可直接处理简单查询（搜网页、读文件），无需为每个请求创建 Worker。所有写操作工具（Write、Edit、Bash、Grep、Glob）仍隔离，强制委派复杂任务给 Worker。涉及 `src/coordinator/mode.py` 的 `_COORDINATOR_ALLOWED_TOOLS` 扩展 + `src/coordinator/prompt.py` 的 "Your Tools" 提示词更新 + `src/repl/core.py` 注释同步。231/231 orchestrator 测试通过 |
 
 ---
 
@@ -1821,8 +1824,54 @@ agent:
 
 ---
 
+## F-41: Coordinator 轻量工具集
+
+**状态**: ✅ 已完成
+**优先级**: P1
+**规划文档**: `docs/FEATURE_PLAN.md` → `3.1.8 Coordinator 轻量工具集（F-41）`
+**落地版本**: v2.7
+
+### 目标
+
+给 Coordinator Agent 配置独立的轻量工具集（Read、WebSearch、WebFetch），使其可直接处理简单查询而非为每个请求创建 Worker，同时确保写操作类工具（Edit、Write、Bash、Grep、Glob）始终隔离。
+
+### 变更清单
+
+| 文件 | 改动 |
+|------|------|
+| `src/coordinator/mode.py` | `_COORDINATOR_ALLOWED_TOOLS` 新增 `Read` / `WebSearch` / `WebFetch` |
+| `src/coordinator/prompt.py` | 提示词 §2 "Your Tools" 列出 Read、WebSearch、WebFetch 的用途说明 |
+| `src/repl/core.py` | 注释同步更新 Coordinator 工具列表 |
+
+### 验收标准验证
+
+| # | 标准 | 结果 |
+|---|------|------|
+| 1 | Coordinator 可调用 `Read` 读取文件 | ✅ 通过 |
+| 2 | Coordinator 可调用 `WebSearch` / `WebFetch` | ✅ 通过 |
+| 3 | Coordinator **不能**调用 `Bash`、`Write`、`Edit`、`Grep`、`Glob` | ✅ 通过（6 工具精确匹配） |
+| 4 | Worker Agent 不受影响 | ✅ 通过 |
+| 5 | Prompt 列出正确的 6 个工具 | ✅ 通过 |
+| 6 | `filter_coordinator_tools()` 正确过滤 | ✅ 通过 |
+| 7 | 231/231 orchestrator 测试通过 | ✅ 通过 |
+
+### 工具隔离矩阵
+
+| 角色 | 可用工具 | 能力边界 |
+|------|---------|---------|
+| **Coordinator** | Agent / SendMessage / TaskStop / Read / WebSearch / WebFetch | 读文件、搜索、管理 Worker，**不可**执行代码或写文件 |
+| **Worker** | 完整工具套件 | 完整的编码与调试能力 |
+
+### 设计决定
+
+1. **模糊名称匹配**：`filter_coordinator_tools` 用 `startswith` > `in` > `inverse in` 三级后备匹配，而不是精确集合成员判断；好处是 Coordinator 不感知工具实例 ID 变化，坏处是名称前缀重叠的工具可能误放行。
+2. **提示词手动同步**：`prompt.py` 的 "Your Tools" 列表无自动校验机制保证与 `_COORDINATOR_ALLOWED_TOOLS` 一致，需人工 review。
+3. **不涉及 Worker 工具变更**：Coordinator 工具过滤是独立的半透明白名单，与 Worker 的 `filter_worker_tools` 无关。
+
+---
+
 *文档更新时间: 2026-06-01*
 
-*版本 v2.5 更新: 修复 `progress_reporter` 死代码,phase completion 接入 ndjson event log (F-38 Sub-D 落地)。*
+*版本 v2.7 更新: 新增 F-41 Coordinator 轻量工具集。扩展 `_COORDINATOR_ALLOWED_TOOLS` 使 Coordinator 获得 Read / WebSearch / WebFetch 三个轻量工具，合计 6 个。写/执行工具仍隔离，强制委派给 Worker。提示词同步更新。231/231 orchestrator 测试通过。*
 
-*版本 v2.6 更新: 新增 F-40 ProgressReporter Sink 协议重构。Sub-A 引入 `ProgressSink` 协议 + `CompositeProgressSink` 扇出;Sub-B `ToolContextProgressSink` 替代原 `ProgressReporter` 行为;Sub-C `AgentRunner` 三个事件全部转发,session 结束有进度落点;Sub-D `Orchestrator` 取消单例改为每 session 独立 sink;Sub-E `WorkflowConfig.phases` 做真实进度计算,淘汰 `phase_count * 25` 假数据;Sub-F `ProgressReporter` 降级为 shim 保持向后兼容;Sub-G 并发回归 + 三事件测试覆盖。*
+*版本 v2.6 更新: 修复 `progress_reporter` 死代码,phase completion 接入 ndjson event log (F-38 Sub-D 落地)。新增 F-40 ProgressReporter Sink 协议重构。Sub-A 引入 `ProgressSink` 协议 + `CompositeProgressSink` 扇出;Sub-B `ToolContextProgressSink` 替代原 `ProgressReporter` 行为;Sub-C `AgentRunner` 三个事件全部转发,session 结束有进度落点;Sub-D `Orchestrator` 取消单例改为每 session 独立 sink;Sub-E `WorkflowConfig.phases` 做真实进度计算,淘汰 `phase_count * 25` 假数据;Sub-F `ProgressReporter` 降级为 shim 保持向后兼容;Sub-G 并发回归 + 三事件测试覆盖。*

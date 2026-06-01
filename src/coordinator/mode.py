@@ -9,7 +9,8 @@ the ~370-line system prompt body which lives in
 * ``INTERNAL_WORKER_TOOLS`` — frozenset of tool names workers cannot
   use (TeamCreate / TeamDelete / SendMessage / StructuredOutput).
 * ``filter_coordinator_tools`` — produce the coordinator's restricted
-  tool list (``Agent`` / ``SendMessage`` / ``TaskStop`` only).
+  tool list (``Agent`` / ``SendMessage`` / ``TaskStop`` plus lightweight
+  tools ``Read`` / ``WebSearch`` / ``WebFetch``).
 * ``filter_worker_tools`` — produce a worker's tool list (everything
   the parent has, minus ``INTERNAL_WORKER_TOOLS``).
 * ``get_coordinator_user_context`` — produce the
@@ -101,18 +102,22 @@ INTERNAL_WORKER_TOOLS: Final[frozenset[str]] = frozenset({
     "StructuredOutput",
 })
 
-# The coordinator gets EXACTLY these three tools. The chapter calls
-# this out as core: "the coordinator's power comes not from having
-# more tools, but from having fewer." No Read, no Edit, no Bash.
+# The coordinator gets Agent/SendMessage/TaskStop plus three lightweight
+# read-only tools so simple queries (read a file, search the web) don't
+# force a worker spawn. Writing tools (Edit/Write/Bash/Grep) stay off
+# so meaningful work still requires delegation.
 _COORDINATOR_ALLOWED_TOOLS: Final[frozenset[str]] = frozenset({
     "Agent",
     "SendMessage",
     "TaskStop",
+    "Read",
+    "WebSearch",
+    "WebFetch",
 })
 
 
 def filter_coordinator_tools(all_tools: Iterable["Tool"]) -> list["Tool"]:
-    """Return only the three tools the coordinator may use."""
+    """Return the coordinator's allowed tool set — delegation + lightweight read-only tools."""
     return [t for t in all_tools if t.name in _COORDINATOR_ALLOWED_TOOLS]
 
 

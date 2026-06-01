@@ -2,9 +2,11 @@
 
 > 文档路径: `docs/FEATURE_PLAN.md`
 > 基于: `clawcodex-opensource-replacement-analysis-v2.md`, `clawcodex_vs_ccb_analysis-v3.md`, `INTEGRATION.md`, `TEAM_MEMBERSHIP.md`
-> 版本: v2.5
+> 版本: v2.8
 > 更新日期: 2026-06-01
 > 上游同步: 68dc3c5 (Phase 11 bridge complete)
+>
+> **v2.8 变更**：新增 §3.1.8 Coordinator 轻量工具集（F-41，✅ 已完成）。给 Coordinator 配置独立的轻量工具集（Read、WebSearch、WebFetch），加上原有的 Agent、SendMessage、TaskStop，共 6 个工具。 Coordinator 可直接处理简单查询（搜网页、读文件），无需为每个请求创建 Worker。所有写操作工具（Write、Edit、Bash、Grep、Glob）仍隔离，强制委派复杂任务给 Worker。涉及 `src/coordinator/mode.py` 的 `_COORDINATOR_ALLOWED_TOOLS` 扩展 + `src/coordinator/prompt.py` 的 "Your Tools" 提示词更新 + `src/repl/core.py` 注释同步。231/231 orchestrator 测试通过。
 >
 > **v2.7 变更**：F-39 Orchestrator Issue 重跑入口落地（Sub-A~F 全部 ✅）。`tracker.py` 增 `Intent` str-Enum + `intent_from_label_set` 优先级助手 + `Command` enum + `parse_agent_command` 正则 + `CommandIntent` 数据类（携带 `author_login`/`comment_id` 用于 Sub-F 角色校验）+ `fetch_issue_command_intent` 默认实现；`issue_registry.py:IssueRecord` 增 `intent/retry_count/last_command/intent_source/command_cursor` 字段 + `mark_intent/clear_intent/reset_for_retry/increment_retry_count/unblock` 方法；`orchestrator.py` 在 `_poll_and_dispatch` 增加 Sub-F 角色校验（`allow_anyone_to_retry`/作者匹配/fail-closed）+ 限频（`max_retries_per_issue=3`）+ 拒绝评论与高优 audit 日志；`cli/issue.py` 增 `retry` 子命令（`--mode {reset,followup,unblock}` + `--force` + `--max-retries` + `--operator` + `--reason`）写 `~/.clawcodex/orchestrator/audit.jsonl`。新增 153 个 F-39 专项单测，orchestrator 回归 231/231 通过。端到端 10-11 阶段（实际 GitCode/GitHub issue 联动）待真实环境验证。
 
@@ -140,6 +142,7 @@ src/
 > - §3.1.5 Orchestrator 验证与报告闭环设计（F-38，📋 设计完成）
 > - §3.1.6 Issue 重跑入口设计（F-39，✅ 已完成）
 > - §3.1.7 ProgressReporter Sink 协议重构设计（F-40，📋 设计完成）
+> - §3.1.8 Coordinator 轻量工具集（F-41，✅ 已完成）
 
 #### 3.1.3 LocalTracker 本地 Issue 文档源设计
 
@@ -1258,6 +1261,67 @@ class ProgressReporter:
 - **先于 F-39 落地收益**：F-39 (Issue 重跑) 后续可注册 `RetryLabelSink` 监听 `on_session_complete` 更新 issue label，无需改 `AgentRunner`。
 - **不破坏 F-36 LocalTracker**：LocalTracker 派发的 session 也走相同的 sink 构造路径，`ToolContextProgressSink` 行为对其等价（数据落 `ToolContext.tasks`，不访问远程）。
 - **与 F-22 Cron 系统解耦**：Cron 触发的 prompt 不走 orchestrator，sink 链路不被影响。
+
+---
+
+#### 3.1.8 Coordinator 轻量工具集（F-41）
+
+**状态**: ✅ 已完成
+**优先级**: P1
+**跟踪文档**: `docs/PROGRESS.md` → `F-41: Coordinator 轻量工具集`
+
+### 目标
+
+给 Coordinator Agent 配置独立的轻量工具集，使其可直接处理简单查询而不必为每个请求创建 Worker Agent，同时确保写操作类工具（Edit、Write、Bash、Grep、Glob）始终隔离，强制委派复杂任务给 Worker。
+
+### 背景
+
+Coordination 模式启用时（`CLAUDE_CODE_COORDINATOR_MODE=true`），Coordinator 需要同时扮演两个角色：(a) 快速响应简单用户请求（搜索网页、读取文件），(b) 将复杂实现任务委派给 Worker Agent。此前 Coordinator 只有三个管理工具（Agent / SendMessage / TaskStop），任何实际工作——包括读文件、搜网页——都必须创建 Worker，不仅增加延迟，而且浪费模型 token 做无意义的任务分配。
+
+### 设计方案
+
+在 `src/coordinator/mode.py` 定义 `_COORDINATOR_ALLOWED_TOOLS` 白名单：
+
+```python
+_COORDINATOR_ALLOWED_TOOLS = {
+    "Agent", "SendMessage", "TaskStop",       # 原有的 Agent 管理工具
+    "Read", "WebSearch", "WebFetch",          # 新增：轻量读/查工具
+}
+```
+
+`filter_coordinator_tools(tools)` 通过模糊名称匹配（`startswith` 优先、`in` 兜底、`inverse in` 后备）从全部工具中筛选出属于白名单的工具实例。
+
+### 变更清单
+
+| 文件 | 改动 |
+|------|------|
+| `src/coordinator/mode.py` | `_COORDINATOR_ALLOWED_TOOLS` 新增 `Read` / `WebSearch` / `WebFetch`；`filter_coordinator_tools` 逻辑不变 |
+| `src/coordinator/prompt.py` | 提示词 §2 "Your Tools" 各区段展开列出 Read、WebSearch、WebFetch 的用途说明 |
+| `src/repl/core.py` | 注释同步更新，反映 Coordinator 的实际工具能力 |
+
+### 工具隔离策略
+
+| 角色 | 拥有的工具 | 能力边界 |
+|------|-----------|---------|
+| **Coordinator** | Agent / SendMessage / TaskStop / Read / WebSearch / WebFetch | 读文件、搜网页、管理 Worker，**不可**执行代码或写文件 |
+| **Worker** | 完整工具套件（Bash / Write / Edit / Read / Grep / Glob / WebSearch / WebFetch / ...） | 完整的编码与调试能力 |
+
+### 验收标准
+
+1. `CLAUDE_CODE_COORDINATOR_MODE=true` 下 Coordinator 可调用 `Read` 读取文件内容。
+2. Coordinator 可调用 `WebSearch` 进行网络搜索，`WebFetch` 获取指定 URL 内容。
+3. Coordinator **不能**调用 `Bash`、`Write`、`Edit`、`Grep`、`Glob`——这些工具在 `filter_coordinator_tools` 输出中被过滤。
+4. Worker Agent 不受影响，工具集保持不变。
+5. Coordinator 提示词中列出 6 个可用工具（Agent / SendMessage / TaskStop / Read / WebSearch / WebFetch），且不误列被过滤的工具。
+6. `filter_coordinator_tools()` 返回正确的 6 个工具实例（名称模糊匹配正确）。
+7. 231/231 orchestrator 回归测试通过。
+
+### 风险与约束
+
+- **提示词与实现需同步**：`prompt.py` 的 "Your Tools" 列表必须与 `_COORDINATOR_ALLOWED_TOOLS` 手动保持同步——无自动校验机制。
+- **工具名称模糊匹配**：`filter_coordinator_tools` 用的不是精确匹配而是三后备匹配策略，如果新增一个名称以 "Web" 开头的非预期工具可能导致误放行。Mitigation：白名单设置小（仅 6 个），且新增工具需 review 白名单。
+- **不涉及 Worker 工具变更**：Worker 的 `filter_worker_tools` 逻辑不变，与 Coordinator 无关。
+- **CLAUDE.md 注释同步风险**：`src/repl/core.py:8-30` 的注释手动列出 Coordinator 工具，需保持同步。
 
 ---
 

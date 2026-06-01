@@ -3133,7 +3133,8 @@ class ClawcodexREPL:
             tools = self.tool_registry.list_tools()
 
             # Coordinator Mode — when ``CLAUDE_CODE_COORDINATOR_MODE=true``,
-            # restrict the tool list to Agent / SendMessage / TaskStop only,
+            # restrict the tool list to read-only + delegation tools
+            # (Agent / SendMessage / TaskStop / Read / WebSearch / WebFetch),
             # replace the system prompt with the coordinator-specific prompt,
             # and inject the worker-tools context block.
             from src.coordinator.mode import (
