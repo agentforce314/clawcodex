@@ -24,6 +24,8 @@ class RepositoryPlatform:
     auth_mode: str
     open_state: str
     closed_state: str
+    # API parameter name for filtering issues by state (all platforms use "state")
+    state_param: str = "state"
     accept_header: str | None = None
 
 
@@ -48,7 +50,7 @@ _PLATFORMS: dict[str, RepositoryPlatform] = {
         name="gitcode",
         default_endpoint="https://api.gitcode.com/api/v5",
         auth_mode="access_token",
-        open_state="opened",
+        open_state="open",
         closed_state="closed",
         accept_header="application/json",
     ),
