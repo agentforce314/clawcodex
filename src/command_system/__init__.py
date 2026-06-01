@@ -11,7 +11,12 @@ from src.utils.startup_profiler import profile_checkpoint
 
 profile_checkpoint("command_system_imported")
 
-from .aggregator import clear_commands_cache, get_commands
+from .aggregator import (
+    clear_commands_cache,
+    get_commands,
+    get_skill_tool_commands,
+    get_slash_command_tool_skills,
+)
 from .argument_substitution import parse_argument_names, substitute_arguments
 from .builtins import (
     AUTO_FIX_COMMAND,
@@ -146,6 +151,8 @@ __all__ = [
     "make_bash_shell_executor",
     # Aggregator
     "get_commands",
+    "get_skill_tool_commands",
+    "get_slash_command_tool_skills",
     "clear_commands_cache",
     # Safe commands
     "REMOTE_SAFE_COMMANDS",
