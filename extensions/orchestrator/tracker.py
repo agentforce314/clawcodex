@@ -2,14 +2,170 @@
 
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal
 
 from .issue import Issue
 
 if TYPE_CHECKING:
     import httpx
+
+
+class Intent(str, Enum):
+    """Operator intent expressed via issue labels or comment commands.
+
+    F-39: each issue may carry an intent that overrides the default
+    4-layer "already handled" defense in the orchestrator.
+
+      - NONE: no operator intent recorded
+      - RETRY: reset local registry entry + close remote PR + new run
+      - FOLLOWUP: keep PR, append commit on same branch
+      - BLOCKED: permanently skip the issue
+    """
+
+    NONE = "none"
+    RETRY = "retry"
+    FOLLOWUP = "followup"
+    BLOCKED = "blocked"
+
+
+# Default label conventions for the three retry intents. Adapters accept an
+# override at construction time; the keys map Intent values to label names.
+DEFAULT_INTENT_LABELS: dict[str, str] = {
+    "retry": "agent:retry",
+    "followup": "agent:follow-up",
+    "blocked": "agent:blocked",
+}
+
+
+def _normalize_label(value: str) -> str:
+    return value.strip().lower()
+
+
+def intent_from_label_set(
+    labels: list[str] | None,
+    intent_labels: dict[str, str] | None = None,
+) -> Intent:
+    """Resolve an Intent from a list of issue labels.
+
+    Priority rules (per F-39 design):
+      - `agent:blocked` wins over any other intent (permanent skip).
+      - `agent:retry` + `agent:follow-up` together → FOLLOWUP is more
+        conservative (keeps PR evidence), so it wins.
+      - Otherwise return whichever single intent label is present, or NONE.
+    """
+    if not labels:
+        return Intent.NONE
+    mapping = intent_labels or DEFAULT_INTENT_LABELS
+    retry_label = _normalize_label(mapping.get("retry", ""))
+    followup_label = _normalize_label(mapping.get("followup", ""))
+    blocked_label = _normalize_label(mapping.get("blocked", ""))
+    normalized = {_normalize_label(label) for label in labels if label}
+    if blocked_label and blocked_label in normalized:
+        return Intent.BLOCKED
+    if followup_label and followup_label in normalized:
+        return Intent.FOLLOWUP
+    if retry_label and retry_label in normalized:
+        return Intent.RETRY
+    return Intent.NONE
+
+
+# ---------------------------------------------------------------------------
+# F-39 Sub-D: comment command parsing
+# ---------------------------------------------------------------------------
+
+
+class Command(str, Enum):
+    """Operator command expressed via an issue comment.
+
+    Distinct from `Intent` because commands may carry side effects
+    (e.g. UNBLOCK clears an abandoned status) and because not every
+    command maps to a run-mode intent.
+    """
+
+    RETRY = "retry"
+    FOLLOWUP = "followup"
+    UNBLOCK = "unblock"
+
+
+# Regex for `/agent <subcommand> [args]` at the start of a line / body.
+# Permissive trailing text: any args / reason after the subcommand.
+_AGENT_COMMAND_RE = re.compile(
+    r"^/agent\s+(retry|follow-up|unblock)\b[^\n]*",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def parse_agent_command(body: str | None) -> Command | None:
+    """Extract a ClawCodex operator command from a comment body.
+
+    Recognized forms (case-insensitive, anywhere in the body):
+      - `/agent retry [reason...]`
+      - `/agent follow-up [note...]`
+      - `/agent unblock`
+
+    Returns the matched `Command` or `None` if no recognized command
+    is present. Only the first match is returned — operators that
+    pile commands into one comment will get the first one honored.
+    """
+    if not body:
+        return None
+    match = _AGENT_COMMAND_RE.search(body)
+    if not match:
+        return None
+    raw = match.group(1).lower()
+    if raw == "retry":
+        return Command.RETRY
+    if raw == "follow-up":
+        return Command.FOLLOWUP
+    if raw == "unblock":
+        return Command.UNBLOCK
+    return None
+
+
+def command_to_intent(command: Command) -> Intent:
+    """Map a Command to the Intent the orchestrator should run with.
+
+    `UNBLOCK` is a state-clearing meta-command and has no direct
+    run-mode intent; it returns Intent.NONE so the next poll re-
+    applies the label-based intent (or stays NONE if the operator
+    removed the agent:blocked label too).
+    """
+    if command is Command.RETRY:
+        return Intent.RETRY
+    if command is Command.FOLLOWUP:
+        return Intent.FOLLOWUP
+    return Intent.NONE
+
+
+# Priority merge: a comment command can override a label intent, but
+# BLOCKED is sticky (per F-39 design: blocked is a permanent skip and
+# only the unblock command / CLI override can lift it).
+#
+# Conservative rule between RETRY and FOLLOWUP: FOLLOWUP wins (preserves
+# PR evidence). This mirrors the label-only priority in
+# `intent_from_label_set`.
+def merge_intents(label_intent: Intent, command_intent: Intent) -> Intent:
+    """Merge a label-derived Intent with a command-derived Intent.
+
+    Precedence (high → low):
+      1. Intent.BLOCKED — sticky permanent skip.
+      2. The more conservative of {RETRY, FOLLOWUP} = FOLLOWUP.
+      3. Otherwise: command_intent wins over label_intent.
+      4. Otherwise: whichever is non-NONE; else NONE.
+    """
+    if label_intent is Intent.BLOCKED or command_intent is Intent.BLOCKED:
+        return Intent.BLOCKED
+    if label_intent is Intent.FOLLOWUP or command_intent is Intent.FOLLOWUP:
+        return Intent.FOLLOWUP
+    if command_intent is not Intent.NONE:
+        return command_intent
+    if label_intent is not Intent.NONE:
+        return label_intent
+    return Intent.NONE
 
 
 @dataclass(frozen=True)
@@ -22,6 +178,22 @@ class Comment:
     created_at: str | None = None
     updated_at: str | None = None
     in_reply_to_id: str | None = None  # for threading
+
+
+@dataclass(frozen=True)
+class CommandIntent:
+    """F-39 Sub-F: a parsed `/agent ...` command plus provenance.
+
+    The orchestrator needs the author login to perform the F-39 Sub-F
+    role check ("only the issue author or a maintainer may trigger
+    `/agent retry`"). Older callers that only need the command value
+    should use ``intent.command``.
+    """
+
+    command: Command
+    author_login: str | None = None
+    comment_id: str | None = None
+    comment_body: str | None = None
 
 
 @dataclass(frozen=True)
@@ -163,6 +335,67 @@ class TrackerAdapter(ABC):
 
         Returns:
             The created comment, or None if not supported.
+        """
+        return None
+
+    async def extract_intent_from_labels(
+        self,
+        labels: list[str] | None,
+    ) -> Intent:
+        """Resolve an operator Intent from the issue's label set (F-39).
+
+        Default implementation is a no-op (returns Intent.NONE) — it has
+        no platform-specific label conventions. Subclasses that ship
+        labels through `Issue.labels` should override this to apply
+        platform-specific intent label resolution.
+
+        See `intent_from_label_set` for the priority rules.
+        """
+        return Intent.NONE
+
+    async def close_pull_request(
+        self,
+        pull_request: "PullRequestRef",
+    ) -> bool:
+        """Close a remote pull request (F-39 Sub-B reset path).
+
+        Default implementation is a no-op (returns False). Subclasses
+        for platforms that support closing a PR (GitHub, Gitee, GitCode
+        via `PATCH /repos/{owner}/{repo}/pulls/{number}` with
+        `{"state": "closed"}`) should override and return True on
+        success.
+
+        Returns True if the PR was closed (or was already closed).
+        Returns False if the platform does not support PR closure.
+        """
+        return False
+
+    async def fetch_issue_command_intent(
+        self,
+        issue_id: str,
+        since_comment_id: str | None,
+    ) -> "CommandIntent | None":
+        """F-39 Sub-D + Sub-F: scan recent issue comments for a `/agent ...` command.
+
+        Default implementation returns None (no command found). Subclasses
+        that can fetch issue comments should override this to call
+        `fetch_new_comments_since(issue_id, since_comment_id)`, iterate
+        the results oldest-first, and return the first `Command` returned
+        by `parse_agent_command(body)`. The returned `CommandIntent`
+        MUST include the comment's `author_login` (F-39 Sub-F role
+        check) and `comment_id` (for the `command_cursor`).
+
+        Back-compat note: F-39 Sub-D callers that only need the
+        `Command` value should read `intent.command`.
+
+        Operators can pass `since_comment_id=None` to scan the full
+        comment history; the orchestrator will typically pass the
+        most recent `IssueRecord.command_cursor` so already-
+        processed commands are skipped.
+
+        Returns the first `CommandIntent` found, or `None` if no
+        command is present in the unscanned portion of the comment
+        stream.
         """
         return None
 

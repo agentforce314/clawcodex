@@ -18,6 +18,8 @@ from dataclasses import asdict, dataclass, field, fields
 from enum import Enum
 from pathlib import Path
 
+from .tracker import Intent
+
 logger = logging.getLogger(__name__)
 
 
@@ -78,6 +80,19 @@ class IssueRecord:
     followup_attempt_count: int = 0
     last_followup_commit_sha: str | None = None
     last_feedback_checked_at: float | None = None
+    # F-39: operator intent + retry bookkeeping. These fields are
+    # absent from registry.json files written before F-39, so they
+    # default to NONE / 0 / None and the existing _load() filter
+    # (known_fields) handles back-compat transparently.
+    intent: Intent = Intent.NONE
+    retry_count: int = 0
+    last_command: str | None = None
+    intent_source: str | None = None  # "label" | "command" | "cli"
+    # F-39 Sub-D: comment-command incremental-scan cursor. Set to
+    # the bot's confirmation-comment ID after a command is honored;
+    # the next poll uses it as `since_comment_id` so the same
+    # command isn't re-processed.
+    command_cursor: str | None = None
 
     def touch(self) -> None:
         self.updated_at = time.time()
@@ -109,6 +124,16 @@ class IssueRegistry:
                         v["status"] = IssueStatus(v["status"])
                     except ValueError:
                         v["status"] = IssueStatus.PENDING
+                # Convert intent string to Intent enum (F-39 back-compat:
+                # records written before F-39 have no `intent` field, so
+                # the dict-comprehension filter below drops it and the
+                # dataclass default Intent.NONE kicks in).
+                if isinstance(v.get("intent"), str):
+                    v = dict(v)
+                    try:
+                        v["intent"] = Intent(v["intent"])
+                    except ValueError:
+                        v["intent"] = Intent.NONE
                 known_fields = {field.name for field in fields(IssueRecord)}
                 self._records[k] = IssueRecord(
                     **{field_name: value for field_name, value in v.items() if field_name in known_fields}
@@ -431,6 +456,135 @@ class IssueRegistry:
         if record is None:
             return None
         record.stale_answers.append(stale_answer)
+        record.touch()
+        self._save()
+        return record
+
+    # ------------------------------------------------------------------
+    # F-39 intent + retry bookkeeping
+    # ------------------------------------------------------------------
+
+    def mark_intent(
+        self,
+        issue_id: str,
+        intent: Intent,
+        *,
+        source: str | None = None,
+        command: str | None = None,
+    ) -> IssueRecord | None:
+        """Record an operator intent (F-39 Sub-A) on an existing record.
+
+        If the record does not exist yet, this is a no-op — the orchestrator
+        creates the record on first claim via `register()`. Callers that need
+        to capture intent on a brand-new issue should call `register()` first.
+
+        `source` is informational ("label" | "command" | "cli") and is
+        persisted on the record for audit purposes.
+        """
+        record = self._records.get(issue_id)
+        if record is None:
+            return None
+        record.intent = intent
+        if source is not None:
+            record.intent_source = source
+        if command is not None:
+            record.last_command = command
+        record.touch()
+        self._save()
+        return record
+
+    def clear_intent(
+        self,
+        issue_id: str,
+        *,
+        record_intent_history: bool = False,
+    ) -> IssueRecord | None:
+        """Reset intent back to NONE (F-39 Sub-A).
+
+        Used by Sub-B / Sub-C after the intent has been honored (reset
+        succeeded / follow-up commit landed). If the record doesn't
+        exist, returns None.
+        """
+        record = self._records.get(issue_id)
+        if record is None:
+            return None
+        record.intent = Intent.NONE
+        if not record_intent_history:
+            record.intent_source = None
+        record.touch()
+        self._save()
+        return record
+
+    def increment_retry_count(self, issue_id: str) -> IssueRecord | None:
+        """Bump retry_count by one (F-39 Sub-A → Sub-F rate limiting)."""
+        record = self._records.get(issue_id)
+        if record is None:
+            return None
+        record.retry_count += 1
+        record.touch()
+        self._save()
+        return record
+
+    def reset_for_retry(
+        self,
+        issue_id: str,
+        *,
+        increment_retry: bool = True,
+    ) -> IssueRecord | None:
+        """F-39 Sub-B: clear transient PR / commit state for a retry.
+
+        Per the design doc: "对本地 IssueRecord ... 清空 status → pending,
+        删 commit_sha / pr_number / pr_url / report_path".
+
+        `retry_count` is incremented (unless caller passes
+        `increment_retry=False` — useful for tests / CLI dry-runs).
+        The intent field is preserved so audit trails can still
+        answer "why was this re-run?" after the new run completes.
+        """
+        record = self._records.get(issue_id)
+        if record is None:
+            return None
+        record.status = IssueStatus.PENDING
+        record.commit_sha = None
+        record.pr_number = None
+        record.pr_url = None
+        record.report_path = None
+        record.summary_comment_id = None
+        record.verification_status = None
+        record.verification_output = None
+        record.last_hook_error = None
+        if increment_retry:
+            record.retry_count += 1
+        record.touch()
+        self._save()
+        return record
+
+    def unblock(self, issue_id: str) -> IssueRecord | None:
+        """F-39 Sub-E: roll an ABANDONED issue back to PENDING.
+
+        Used by the CLI ``issue retry --mode unblock`` fallback and
+        by the orchestrator's UNBLOCK comment-command handler. Per
+        the design doc: "IssueRegistry 增 unblock(issue_id) 方法
+        (把 abandoned 状态回滚)".
+
+        Behaviour:
+          * If the record doesn't exist, returns None.
+          * If the record exists and is in ABANDONED, flip status
+            back to PENDING and clear intent.
+          * For any other status this is a no-op (intentionally
+            idempotent — calling unblock on a healthy issue is fine).
+
+        Note: `retry_count` is NOT touched, so the rate limit
+        still applies to the next retry attempt after unblock.
+        """
+        record = self._records.get(issue_id)
+        if record is None:
+            return None
+        if record.status is IssueStatus.ABANDONED:
+            record.status = IssueStatus.PENDING
+        record.intent = Intent.NONE
+        record.intent_source = None
+        record.last_command = None
         record.touch()
         self._save()
         return record

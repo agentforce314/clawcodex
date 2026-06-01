@@ -85,7 +85,37 @@ class GitSyncService:
             "*.log",
         ]
 
-    async def sync(self, session: Any) -> GitSyncResult | None:
+    async def sync(
+        self,
+        session: Any,
+        *,
+        mode: str = "default",
+    ) -> GitSyncResult | None:
+        """Commit/push/PR sync.
+
+        F-39 Sub-C: when `mode == "followup"`, the session is expected
+        to already carry a `pull_request` attribute (set by the
+        orchestrator from the registry record) and the run is treated
+        as a same-branch follow-up commit. The commit message uses
+        the "fix:" prefix (vs. "feat:" for new runs) and the existing
+        `update_pull_request` path appends a `## ClawCodex Follow-up
+        #N` section to the PR body (F-38 Sub-C, already in place).
+
+        Other modes (default / future) are unchanged.
+        """
+        # F-39 Sub-C: validate followup-mode prerequisites BEFORE any
+        # workspace / repo_root I/O. A follow-up that forgot to wire
+        # the existing PR would otherwise silently open a brand-new
+        # PR, which is exactly what follow-up is trying to avoid.
+        if mode == "followup":
+            existing_pr = getattr(session, "pull_request", None)
+            if existing_pr is None:
+                raise GitSyncError(
+                    "GitSyncService.sync(mode='followup') requires "
+                    "session.pull_request to be set; orchestrator "
+                    "should populate it from the IssueRegistry record"
+                )
+
         workspace: Workspace = session.workspace
         issue: Issue = session.issue
 
@@ -309,7 +339,7 @@ class GitSyncService:
         return output
 
     def _status_snapshot(self, repo_root: str) -> str:
-        return "\n".join(sorted(get_file_status(repo_root)))
+        return "\n".join(sorted(s.path for s in get_file_status(repo_root)))
 
     def _push_with_recovery(
         self, repo_root: str, branch_name: str,

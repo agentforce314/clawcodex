@@ -332,6 +332,43 @@ class RepositoryIssueClient:
         )
         return _normalize_pull_request(result)
 
+    async def close_pull_request(
+        self,
+        pull_request: PullRequestRef,
+    ) -> bool:
+        """F-39 Sub-B: close a remote PR so a fresh one can be opened.
+
+        Uses `PATCH /repos/{owner}/{repo}/pulls/{number}` with
+        `{"state": "closed"}`. Compatible with GitHub, Gitee, GitCode —
+        all three expose the same endpoint shape and accept the
+        `state=closed` payload.
+
+        Returns True if the API call succeeded, False on transport /
+        authorization error. The caller (orchestrator) decides whether
+        to surface a comment to the issue; the registry will still
+        be reset even if the remote close fails (best-effort).
+        """
+        if pull_request.number is None:
+            return False
+        payload: dict[str, Any] = {"state": "closed"}
+        try:
+            await self._request_json(
+                "PATCH",
+                f"/repos/{self.owner}/{self.repo}/pulls/{pull_request.number}",
+                json=payload if self.platform.auth_mode == "bearer" else None,
+                data=payload if self.platform.auth_mode != "bearer" else None,
+            )
+            return True
+        except RepositoryTrackerError as exc:
+            # 422 (merged PRs cannot be closed) is acceptable: the
+            # operator's intent was honored, the registry just needs
+            # to be reset locally. We only treat 4xx/5xx other than
+            # 422 as a hard failure.
+            message = str(exc)
+            if "status=422" in message:
+                return True
+            return False
+
     async def create_pull_request(
         self,
         *,

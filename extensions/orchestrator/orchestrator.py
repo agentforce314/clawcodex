@@ -21,7 +21,14 @@ from .progress_reporter import ProgressReporter
 from .review_feedback import ReviewFeedbackService, ReviewFollowup
 from .status_dashboard import SessionStatus, StatusDashboard
 from src.tool_system.context import ToolContext
-from .tracker import TrackerAdapter
+from .tracker import (
+    Command,
+    Intent,
+    PullRequestRef,
+    TrackerAdapter,
+    command_to_intent,
+    merge_intents,
+)
 from .workspace import WorkspaceManager
 
 logger = logging.getLogger(__name__)
@@ -211,8 +218,144 @@ class Orchestrator:
                     continue
                 if issue.id in self._state.claimed:
                     continue
-                # Skip if registry marks this issue as already completed or has a PR
-                if self._registry.is_completed(issue.id) or self._registry.has_pr(issue.id):
+
+                # F-39 Sub-A + Sub-D: intent pre-check happens BEFORE
+                # the `has_pr` / `is_completed` skip. Operators can
+                # trigger an intent either via labels (Sub-A) or via
+                # comment commands (Sub-D). The merged intent here
+                # already applies the priority rules from
+                # `merge_intents`.
+                intent, command_intent_obj = await self._resolve_intent(issue)
+                # `command_intent_obj` may carry the comment author
+                # for F-39 Sub-F role checks; the bare `Command` value
+                # is in `command_intent_obj.command`.
+                command = (
+                    command_intent_obj.command
+                    if command_intent_obj is not None
+                    else None
+                )
+                command_author = (
+                    command_intent_obj.author_login
+                    if command_intent_obj is not None
+                    else None
+                )
+
+                # F-39 Sub-F: role check. If a comment command is
+                # what triggered the intent, only the issue author or
+                # a maintainer (or `allow_anyone_to_retry=True`) is
+                # allowed to fire it. The check happens BEFORE the
+                # acknowledgement comment is posted, so a rejected
+                # command never advances the cursor.
+                if (
+                    command_intent_obj is not None
+                    and intent in (Intent.RETRY, Intent.FOLLOWUP)
+                    and not self._is_command_author_eligible(
+                        issue, command_author
+                    )
+                ):
+                    await self._reject_unauthorized_command(
+                        issue, command_intent_obj
+                    )
+                    continue
+
+                # F-39 Sub-F: rate limit on RETRY intent. If the issue
+                # has hit `max_retries_per_issue`, refuse the reset
+                # (even with `--force`; only the label-based retry
+                # honors force in the daemon path).
+                if intent is Intent.RETRY:
+                    if not self._check_retry_rate_limit(issue, force=False):
+                        continue
+
+                # F-39 Sub-D: when a comment command is honored, post
+                # a bot acknowledgement so the operator sees the
+                # intent was received, and record the command on the
+                # registry for audit.
+                if command is not None:
+                    await self._post_command_acknowledgement(issue, command)
+                    record = self._registry.get(issue.id or "")
+                    if record is not None:
+                        record.last_command = f"/agent {command.value}"
+                        record.touch()
+                        self._registry._save()
+                    logger.info(
+                        "Issue %s command received: /agent %s",
+                        issue.id,
+                        command.value,
+                    )
+
+                    # UNBLOCK is a meta-command: clear any BLOCKED
+                    # state so the next poll re-applies the (now
+                    # possibly cleared) label-based intent.
+                    if command is Command.UNBLOCK:
+                        record = self._registry.get(issue.id or "")
+                        if (
+                            record is not None
+                            and record.status is IssueStatus.ABANDONED
+                        ):
+                            logger.info(
+                                "Issue %s unblocked, status reset to pending",
+                                issue.id,
+                            )
+                            record.status = IssueStatus.PENDING
+                            record.intent = Intent.NONE
+                            record.intent_source = None
+                            self._registry._save()
+
+                if intent is Intent.BLOCKED:
+                    logger.info(
+                        "Issue %s blocked intent detected, marking abandoned",
+                        issue.id,
+                    )
+                    record = self._registry.get(issue.id or "")
+                    if record is None:
+                        self._registry.register(
+                            issue_id=issue.id or "",
+                            issue_identifier=issue.identifier or "",
+                            branch_name=getattr(issue, "branch_name", None) or "main",
+                        )
+                    self._registry.mark_intent(
+                        issue.id or "", intent,
+                        source=("command" if command is not None else "label"),
+                        command=(f"/agent {command.value}" if command is not None else None),
+                    )
+                    self._registry.mark_abandoned(issue.id or "")
+                    self._state.completed.add(issue.id or "")
+                    continue
+
+                if intent is Intent.RETRY:
+                    logger.info(
+                        "Issue %s retry intent detected, will reset on launch",
+                        issue.id,
+                    )
+                    self._registry.mark_intent(
+                        issue.id or "", intent,
+                        source=("command" if command is not None else "label"),
+                        command=(f"/agent {command.value}" if command is not None else None),
+                    )
+                    # F-39 Sub-B will perform the actual reset+close.
+                elif intent is Intent.FOLLOWUP:
+                    logger.info(
+                        "Issue %s follow-up intent detected, will reuse branch",
+                        issue.id,
+                    )
+                    self._registry.mark_intent(
+                        issue.id or "", intent,
+                        source=("command" if command is not None else "label"),
+                        command=(f"/agent {command.value}" if command is not None else None),
+                    )
+                    # F-39 Sub-C will perform the actual follow-up.
+
+                # Skip if registry marks this issue as already completed
+                # or has a PR — UNLESS we have a retry/follow-up intent
+                # (in which case the appropriate Sub-B/C will handle the
+                # reset / branch-reuse path before launch).
+                if (
+                    intent is Intent.NONE
+                    and (
+                        self._registry.is_completed(issue.id)
+                        or self._registry.has_pr(issue.id)
+                    )
+                ):
                     logger.info("Issue %s already handled (registry), skipping", issue.id)
                     continue
                 self._state.claimed.add(issue.id)
@@ -221,6 +364,466 @@ class Orchestrator:
         finally:
             self._state.poll_check_in_progress = False
             self.status_dashboard.on_poll_end()
+
+    async def _resolve_intent(
+        self, issue: Issue,
+    ) -> tuple[Intent, "CommandIntent | None"]:
+        """Resolve the current operator intent for an issue.
+
+        Merges two sources (F-39 Sub-A + Sub-D):
+          1. Label-based intent (Sub-A: `agent:retry` / `agent:follow-up`
+             / `agent:blocked`).
+          2. Comment-based command (Sub-D: `/agent retry` / `/agent
+             follow-up` / `/agent unblock`).
+
+        Returns the merged `Intent` plus the raw `CommandIntent` (with
+        the comment's author login for the F-39 Sub-F role check) if a
+        comment command was honored. Priority: BLOCKED is sticky; the
+        more conservative of {RETRY, FOLLOWUP} wins; command beats
+        label otherwise.
+        """
+        labels = list(getattr(issue, "labels", None) or [])
+        label_intent = Intent.NONE
+        if labels:
+            try:
+                label_intent = await self.tracker.extract_intent_from_labels(labels)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to extract intent from labels for issue %s: %s",
+                    issue.id,
+                    exc,
+                )
+
+        # F-39 Sub-D: comment command intent.
+        command_intent_obj = await self._resolve_command_intent(issue)
+        command = command_intent_obj.command if command_intent_obj is not None else None
+        command_intent = command_to_intent(command) if command is not None else Intent.NONE
+        merged = merge_intents(label_intent, command_intent)
+        return merged, command_intent_obj
+
+    async def _resolve_command_intent(self, issue: Issue) -> "CommandIntent | None":
+        """F-39 Sub-D: fetch and parse the most recent /agent command.
+
+        F-39 Sub-F: the returned `CommandIntent` carries the comment
+        author so the caller can perform the role check. Adapters that
+        don't expose author info will return `author_login=None`, in
+        which case `_is_command_author_eligible` will reject the
+        command (fail-closed) to avoid the LLM-self-trigger risk.
+        """
+        issue_id = issue.id or ""
+        if not issue_id:
+            return None
+        record = self._registry.get(issue_id)
+        cursor = record.command_cursor if record is not None else None
+        try:
+            return await self.tracker.fetch_issue_command_intent(
+                issue_id, cursor
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to fetch issue command intent for %s: %s",
+                issue_id,
+                exc,
+            )
+            return None
+
+    async def _post_command_acknowledgement(
+        self,
+        issue: Issue,
+        command: "Command",
+    ) -> str | None:
+        """F-39 Sub-D: post a bot confirmation comment and update cursor.
+
+        The confirmation comment includes a metadata HTML comment
+        with `command_cursor` so the next poll knows where to resume
+        scanning. Returns the created comment ID, or None on
+        failure.
+        """
+        issue_id = issue.id or ""
+        body = (
+            f"## ClawCodex: 已受理 /agent {command.value}\n\n"
+            f"下一轮 poll 开始执行。\n"
+        )
+        try:
+            comment = await self.tracker.create_comment(issue_id, body)
+        except Exception as exc:
+            logger.warning(
+                "Failed to post command acknowledgement for %s: %s",
+                issue_id,
+                exc,
+            )
+            return None
+        comment_id = getattr(comment, "id", None) if comment is not None else None
+        if comment_id:
+            record = self._registry.get(issue_id)
+            if record is not None:
+                record.command_cursor = comment_id
+                self._registry._save()
+        return comment_id
+
+    # ------------------------------------------------------------------
+    # F-39 Sub-F: role check + rate-limit guard
+    # ------------------------------------------------------------------
+
+    def _is_command_author_eligible(
+        self,
+        issue: Issue,
+        author_login: str | None,
+    ) -> bool:
+        """Return True if `author_login` may trigger a retry/follow-up.
+
+        Per the F-39 Sub-F design doc: "comment 命令默认要求「issue
+        作者」或「仓库 maintainer」才能触发". The check has three
+        short-circuits:
+
+          1. `workflow.agent.allow_anyone_to_retry` — disables the
+             role check entirely (trusted-team mode).
+          2. `author_login` is None — fail-closed. Adapters that
+             don't expose author info cannot pass the check; this
+             prevents the LLM-self-trigger risk where a bot
+             accidentally writes `/agent retry` in its own reply
+             and the daemon can't tell it wasn't a human.
+          3. The bot itself (`clawcodex`) is always allowed so the
+             CLI fallback (`/agent retry` from a local operator
+             routed through the bot) isn't rejected. NOTE: the CLI
+             path doesn't actually go through this code path; this
+             branch is only here to be lenient on platform quirks
+             where the bot appears as the author of its own ack
+             comment.
+
+        Otherwise, the author must equal the issue author login
+        (kept in `IssueRecord.author_login`, populated by the
+        clarification flow) or a maintainer login (platform
+        metadata; we fall back to None for now and rely on the
+        author check).
+        """
+        if getattr(
+            self.workflow.agent, "allow_anyone_to_retry", False
+        ):
+            return True
+        if not author_login:
+            # Fail-closed: if we don't know who wrote the command,
+            # we cannot certify they are not the LLM itself.
+            return False
+        if author_login == "clawcodex":
+            return True
+        record = self._registry.get(issue.id or "")
+        issue_author = getattr(record, "author_login", None) if record else None
+        return bool(issue_author and author_login == issue_author)
+
+    async def _reject_unauthorized_command(
+        self,
+        issue: Issue,
+        command_intent: "CommandIntent",
+    ) -> None:
+        """F-39 Sub-F: post a comment rejecting an unauthorized command.
+
+        Per the design acceptance criteria: "用户在 issue comment 发
+        `/agent retry`,且非原作者时,**daemon 拒绝执行**并发评论
+        `## ClawCodex: 仅 issue 作者或 maintainer 可触发 /agent retry`".
+        """
+        issue_id = issue.id or ""
+        body = (
+            f"## ClawCodex: 仅 issue 作者或 maintainer 可触发 "
+            f"/agent {command_intent.command.value}\n\n"
+            f"author=`{command_intent.author_login or '<unknown>'}` "
+            f"not authorized; ignored.\n"
+        )
+        try:
+            await self.tracker.create_comment(issue_id, body)
+        except Exception as exc:
+            logger.warning(
+                "Failed to post unauthorized-command rejection for %s: %s",
+                issue_id, exc,
+            )
+        logger.info(
+            "Issue %s command rejected: /agent %s by %s (not authorized)",
+            issue_id,
+            command_intent.command.value,
+            command_intent.author_login,
+        )
+        self._log_audit_event(
+            issue_id=issue_id,
+            event="unauthorized_command",
+            mode=f"command:{command_intent.command.value}",
+            reason="role_check_failed",
+            author=command_intent.author_login or "unknown",
+        )
+
+    def _check_retry_rate_limit(
+        self,
+        issue: Issue,
+        *,
+        force: bool = False,
+    ) -> bool:
+        """F-39 Sub-F: refuse a RETRY when retry_count >= max_retries_per_issue.
+
+        Returns True if the retry is allowed (and bumps
+        `retry_count` for the record), or False if the rate limit
+        was hit. The caller is responsible for the actual reset
+        work; this helper is a guard.
+
+        On a hit, this method:
+          * Logs the rejection.
+          * Appends an `agent:retry-rejected` label to the issue
+            (best-effort).
+          * Posts a comment explaining the rejection.
+          * Records a high-priority audit.jsonl entry.
+        """
+        issue_id = issue.id or ""
+        max_retries = getattr(
+            self.workflow.agent, "max_retries_per_issue", 3
+        )
+        record = self._registry.get(issue_id)
+        current = record.retry_count if record else 0
+        if current < max_retries:
+            return True
+        if force:
+            # `force=True` is reserved for the CLI path, which
+            # logs its own audit entry. The daemon path passes
+            # `force=False` and is therefore rejected on the
+            # `current >= max_retries` branch.
+            return True
+        # Rate limit hit; do the side-effects.
+        logger.warning(
+            "Issue %s retry rate limit hit: %d >= %d",
+            issue_id, current, max_retries,
+        )
+        self._log_audit_event(
+            issue_id=issue_id,
+            event="retry_rejected",
+            mode="label:agent:retry",
+            reason=f"retry_count={current} >= max_retries_per_issue={max_retries}",
+            author="daemon",
+        )
+        # Best-effort: add the agent:retry-rejected label and
+        # post a comment. Failures here are logged but do not
+        # change the verdict (False = reject).
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = None
+        if loop is not None and loop.is_running():
+            asyncio.create_task(
+                self._post_retry_rejection(issue_id, current, max_retries)
+            )
+        else:
+            asyncio.run(
+                self._post_retry_rejection(issue_id, current, max_retries)
+            )
+        return False
+
+    async def _post_retry_rejection(
+        self,
+        issue_id: str,
+        current: int,
+        max_retries: int,
+    ) -> None:
+        """F-39 Sub-F: best-effort label + comment for rate-limit hits."""
+        body = (
+            f"## ClawCodex: retry rate limit reached\n\n"
+            f"This issue has been retried {current} times "
+            f"(limit: {max_retries}). The `agent:retry` label "
+            f"is being ignored. Please review manually and "
+            f"either remove the label or use "
+            f"`clawcodex orchestrator issue retry --id {issue_id} "
+            f"--mode reset --force` to bypass.\n"
+        )
+        try:
+            await self.tracker.create_comment(issue_id, body)
+        except Exception as exc:
+            logger.warning(
+                "Failed to post retry-rejection comment for %s: %s",
+                issue_id, exc,
+            )
+        # Adding the rejection label is platform-specific. We use
+        # `update_issue_state` as a no-op state-setter and try to
+        # pass the label through the same channel; the adapter
+        # implementations that support labels will route it.
+        try:
+            update_labels = getattr(
+                self.tracker, "add_label", None
+            )
+            if callable(update_labels):
+                result = update_labels(issue_id, "agent:retry-rejected")
+                if hasattr(result, "__await__"):
+                    await result
+        except Exception as exc:
+            logger.warning(
+                "Failed to add agent:retry-rejected label to %s: %s",
+                issue_id, exc,
+            )
+
+    def _log_audit_event(
+        self,
+        *,
+        issue_id: str,
+        event: str,
+        mode: str,
+        reason: str,
+        author: str,
+    ) -> None:
+        """F-39 Sub-F: write a daemon-side audit log entry.
+
+        Best-effort: writes to `~/.clawcodex/orchestrator/audit.jsonl`
+        (the same file the CLI uses). Failure to write is logged
+        but does not affect the orchestrator's main loop.
+        """
+        try:
+            import json
+            import time
+            from pathlib import Path
+            log_path = Path.home() / ".clawcodex" / "orchestrator" / "audit.jsonl"
+            payload = {
+                "ts": time.time(),
+                "ts_iso": time.strftime(
+                    "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+                ),
+                "operator": author,
+                "issue_id": issue_id,
+                "mode": mode,
+                "reason": reason,
+                "event": event,
+                "force": False,
+                "priority": "high",
+            }
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with log_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        except Exception as exc:
+            logger.warning(
+                "Failed to write daemon audit log: %s", exc,
+            )
+
+    async def _prepare_intent_reset(self, issue: Issue) -> None:
+        """F-39 Sub-B: apply registry-side reset before launching an issue.
+
+        Reads the persisted intent from the registry (set in
+        `_poll_and_dispatch`) and, when intent == RETRY:
+          1. Closes the existing remote PR (best-effort; failure is
+             logged but does not block the reset).
+          2. Calls `reset_for_retry(issue_id)` to clear local
+             commit_sha / pr_number / pr_url / report_path / status.
+
+        For Intent.FOLLOWUP, no reset is performed here — Sub-C will
+        handle the follow-up commit path inside git_sync.sync().
+
+        For Intent.NONE / Intent.BLOCKED, this is a no-op. The
+        BLOCKED case never reaches `_launch_issue` because
+        `_poll_and_dispatch` skips it.
+        """
+        issue_id = issue.id or ""
+        if not issue_id:
+            return
+        record = self._registry.get(issue_id)
+        if record is None:
+            return
+        intent = record.intent
+        if intent is not Intent.RETRY:
+            return
+
+        # 1. Close the existing PR (best-effort).
+        pr_number = record.pr_number
+        pr_url = record.pr_url
+        if pr_number:
+            pr_ref = PullRequestRef(number=pr_number, url=pr_url)
+            try:
+                closed = await self.tracker.close_pull_request(pr_ref)
+                if closed:
+                    logger.info(
+                        "Issue %s retry: closed remote PR %s",
+                        issue_id,
+                        pr_number,
+                    )
+                else:
+                    logger.warning(
+                        "Issue %s retry: tracker could not close PR %s; "
+                        "continuing with local reset",
+                        issue_id,
+                        pr_number,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Issue %s retry: close_pull_request raised %s; "
+                    "continuing with local reset",
+                    issue_id,
+                    exc,
+                )
+
+        # 2. Reset the local registry entry. retry_count is bumped
+        # inside reset_for_retry by default.
+        self._registry.reset_for_retry(issue_id)
+        logger.info(
+            "Issue %s retry: registry reset (attempt %d)",
+            issue_id,
+            (self._registry.get(issue_id) or record).retry_count,
+        )
+
+    def _prepare_intent_session(self, session: AgentSession) -> None:
+        """F-39 Sub-C: wire the session for an intent-driven run.
+
+        Called from `_launch_issue` immediately after the AgentSession
+        is constructed. Reads the registry's intent field and:
+
+          - Intent.FOLLOWUP → set `run_kind = "agent_followup"`, copy
+            the existing PR (number + url) and base_branch onto the
+            session, and pin `issue.branch_name` to the registry
+            branch so `_ensure_work_branch` reuses it.
+          - Intent.RETRY → the registry was already reset by
+            `_prepare_intent_reset`; nothing more to do here. The
+            session is a fresh issue-style run.
+          - Intent.NONE / Intent.BLOCKED → no-op.
+
+        Sub-C mirrors the F-37 review_followup pattern (see
+        `_launch_review_followup`): we reuse the same branch + PR
+        and append a commit via git_sync(mode="followup").
+        """
+        issue_id = session.issue.id or ""
+        if not issue_id:
+            return
+        record = self._registry.get(issue_id)
+        if record is None or record.intent is not Intent.FOLLOWUP:
+            return
+
+        session.run_kind = "agent_followup"
+
+        # Wire the existing PR so git_sync reuses it instead of
+        # creating a new one.
+        if record.pr_number:
+            session.pull_request = PullRequestRef(
+                number=record.pr_number,
+                url=record.pr_url,
+            )
+
+        # Pin base_branch so git_sync.push targets the right base.
+        if record.base_branch:
+            session.base_branch = record.base_branch
+
+        # Pin issue.branch_name so _ensure_work_branch reuses the
+        # existing feature branch (otherwise it would fall back to
+        # the default name and create a new one).
+        if record.branch_name and hasattr(session.issue, "branch_name"):
+            try:
+                session.issue.branch_name = record.branch_name
+            except Exception:
+                # Issue is a frozen dataclass in some contexts; in
+                # that case the registry's branch_name still wins
+                # because git_sync.sync also reads from the
+                # registry-aware session.base_branch.
+                logger.debug(
+                    "Could not pin issue.branch_name for followup "
+                    "issue %s; relying on session.base_branch",
+                    issue_id,
+                )
+
+        logger.info(
+            "Issue %s followup: session wired (branch=%s pr=%s base=%s)",
+            issue_id,
+            getattr(session.issue, "branch_name", None),
+            getattr(getattr(session, "pull_request", None), "number", None),
+            session.base_branch,
+        )
 
     async def _process_review_feedback(self) -> None:
         config = self.workflow.review_feedback
@@ -307,6 +910,13 @@ class Orchestrator:
 
     async def _launch_issue(self, issue: Issue) -> None:
         """Create workspace and run agent for one issue."""
+        # F-39 Sub-B: if the registry carries a RETRY intent for this
+        # issue, close the existing remote PR (best-effort) and reset
+        # the local record so the new run starts from a clean slate.
+        # This must happen BEFORE workspace creation so the new run
+        # does not try to push a follow-up commit to a closed PR.
+        await self._prepare_intent_reset(issue)
+
         try:
             workspace = await self.workspace.create_for_issue(issue)
         except Exception as exc:
@@ -390,6 +1000,10 @@ class Orchestrator:
         retry_attempt = self._state.retry_attempts.get(issue.id or "", 0)
         session.attempt = retry_attempt + 1
         session.issue_attempt = session.attempt
+        # F-39 Sub-C: if the registry intent is FOLLOWUP, wire the
+        # session so the agent + git_sync know to reuse the existing
+        # branch / PR rather than create a new run.
+        self._prepare_intent_session(session)
         self._state.running[issue.id] = session
 
         # Update persistent registry so `issue list` reflects running state
@@ -433,7 +1047,17 @@ class Orchestrator:
                         progress_reporter=self._progress_reporter,
                     )
                     if session.status == "completed":
-                        sync_result = await self.git_sync.sync(session)
+                        # F-39 Sub-C: a followup run passes mode="followup"
+                        # to git_sync so it reuses the existing branch + PR
+                        # instead of creating a new one.
+                        sync_mode = (
+                            "followup"
+                            if session.run_kind == "agent_followup"
+                            else "default"
+                        )
+                        sync_result = await self.git_sync.sync(
+                            session, mode=sync_mode
+                        )
                         if sync_result is not None:
                             self._registry.update_report(
                                 session.issue.id or "",
@@ -449,6 +1073,29 @@ class Orchestrator:
                                     commit_sha=sync_result.commit_sha,
                                 )
                                 await self._reply_to_processed_feedback(session)
+                            elif session.run_kind == "agent_followup":
+                                # F-39 Sub-C: a follow-up keeps the
+                                # existing pr_number / pr_url / status;
+                                # only the followup_attempt_count and
+                                # last_followup_commit_sha change.
+                                self._registry.increment_followup_attempt(
+                                    session.issue.id or ""
+                                )
+                                if sync_result.commit_sha:
+                                    record = self._registry.get(
+                                        session.issue.id or ""
+                                    )
+                                    if record is not None:
+                                        record.last_followup_commit_sha = (
+                                            sync_result.commit_sha
+                                        )
+                                        self._registry._save()
+                                logger.info(
+                                    "Issue %s followup committed: %s on %s",
+                                    session.issue.id,
+                                    sync_result.commit_sha,
+                                    sync_result.branch_name,
+                                )
                             else:
                                 self._registry.mark_synced(
                                     session.issue.id or "",

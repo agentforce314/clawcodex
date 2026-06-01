@@ -29,7 +29,10 @@ Design principles:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
+from pathlib import Path
+from typing import Any
 
 
 # ---------------------------------------------------------------------------
@@ -369,6 +372,80 @@ def add_issue_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Explicit workspace root path (optional auto-detection override)",
     )
 
+    # --- issue retry (F-39 Sub-E: CLI 兜底命令) ---
+    retry_parser = issue_sub.add_parser(
+        "retry",
+        help="Retry/follow-up/unblock an issue via the CLI fallback",
+        description="Operator-driven fallback for F-39 intents when label / "
+                    "comment paths are inconvenient. Records the action in "
+                    "~/.clawcodex/orchestrator/audit.jsonl and updates the "
+                    "local issue registry so the next daemon poll picks up "
+                    "the new intent.",
+    )
+    retry_parser.add_argument(
+        "--id",
+        type=str,
+        required=True,
+        metavar="ISSUE_ID",
+        help="Issue identifier to retry / follow-up / unblock",
+    )
+    retry_parser.add_argument(
+        "--mode",
+        type=str,
+        choices=["reset", "followup", "unblock"],
+        required=True,
+        help="Intent mode: 'reset' clears state and re-runs (agent:retry), "
+             "'followup' appends a commit to the existing branch "
+             "(agent:follow-up), 'unblock' rolls an abandoned issue back "
+             "to pending so the daemon reconsiders it.",
+    )
+    retry_parser.add_argument(
+        "--reason",
+        type=str,
+        default="",
+        metavar="TEXT",
+        help="Free-form reason recorded in audit.jsonl",
+    )
+    retry_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Bypass the max_retries_per_issue rate limit (CLI-only "
+             "override; logged as a high-priority audit entry).",
+    )
+    retry_parser.add_argument(
+        "--max-retries",
+        type=int,
+        default=3,
+        metavar="N",
+        help="Operator override for max_retries_per_issue (default: 3). "
+             "Has no effect unless --force is also set; the audit "
+             "log records both the configured limit and the actual "
+             "retry_count when --force triggers a bypass.",
+    )
+    retry_parser.add_argument(
+        "--operator",
+        type=str,
+        default=None,
+        metavar="LOGIN",
+        help="Operator login recorded in audit.jsonl "
+             "(defaults to $USER / os.getlogin())",
+    )
+    retry_parser.add_argument(
+        "--workspace",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="Explicit workspace root path "
+             "(optional auto-detection override)",
+    )
+    retry_parser.add_argument(
+        "--workflow",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="Path to WORKFLOW.md (resolution hint when metadata is missing)",
+    )
+
 
 # ---------------------------------------------------------------------------
 # Run dispatch
@@ -416,6 +493,8 @@ def run(args: argparse.Namespace) -> int:
         return _run_review(registry_path, args)
     elif cmd == "diff":
         return _run_diff(registry_path, args)
+    elif cmd == "retry":
+        return _run_retry(registry_path, args)
 
     print(f"error: unknown issue subcommand '{cmd}'", file=sys.stderr)
     return 2
@@ -1444,3 +1523,202 @@ def _get_status_str(status) -> str:
     if hasattr(status, 'value'):
         return status.value
     return str(status)
+
+
+# ---------------------------------------------------------------------------
+# issue retry  (F-39 Sub-E: CLI 兜底命令)
+# ---------------------------------------------------------------------------
+
+# Single source of truth for the on-disk audit log location. Tests
+# override this by monkey-patching `_DEFAULT_AUDIT_LOG_PATH` to a
+# tempdir, so the production path is the only constant we expose.
+_DEFAULT_AUDIT_LOG_PATH = Path.home() / ".clawcodex" / "orchestrator" / "audit.jsonl"
+
+
+def _resolve_operator(explicit: str | None) -> str:
+    """Resolve the operator login for audit logging.
+
+    Priority: explicit --operator arg > $USER env > os.getlogin() > 'unknown'.
+    """
+    if explicit:
+        return explicit
+    env_user = os.environ.get("USER") or os.environ.get("USERNAME")
+    if env_user:
+        return env_user
+    try:
+        return os.getlogin()
+    except Exception:
+        return "unknown"
+
+
+def _append_audit_log(
+    *,
+    issue_id: str,
+    mode: str,
+    reason: str,
+    operator: str,
+    force: bool,
+    extra: dict[str, Any] | None = None,
+    path: Path | None = None,
+) -> Path | None:
+    """Append a single JSONL line to the local audit log.
+
+    F-39 design: "~/.clawcodex/orchestrator/audit.jsonl 记录
+    {ts, operator, issue_id, mode, reason} 便于追溯".
+
+    Returns the path written, or None on I/O failure (the CLI surfaces
+    audit failures to the operator as a warning but does not abort —
+    the registry update is the user-visible side-effect).
+    """
+    import json
+    import time
+    from pathlib import Path as _Path
+
+    target = path or _DEFAULT_AUDIT_LOG_PATH
+    payload: dict[str, Any] = {
+        "ts": time.time(),
+        "ts_iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "operator": operator,
+        "issue_id": issue_id,
+        "mode": mode,
+        "reason": reason,
+        "force": force,
+        "priority": "high" if force else "normal",
+    }
+    if extra:
+        payload.update(extra)
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        return target
+    except Exception as exc:
+        print(
+            f"warning: failed to write audit log {target}: {exc}",
+            file=sys.stderr,
+        )
+        return None
+
+
+def _run_retry(registry_path: Path | None, args: argparse.Namespace) -> int:
+    """F-39 Sub-E: CLI 兜底命令 — record an operator-driven retry intent.
+
+    Behaviour (per the design doc):
+
+      * ``--mode reset``    — mark intent=RETRY on the registry so the
+                              daemon's next poll picks it up and runs
+                              Sub-B (close PR + reset_for_retry).
+      * ``--mode followup`` — mark intent=FOLLOWUP so Sub-C reuses the
+                              existing branch.
+      * ``--mode unblock``  — call IssueRegistry.unblock() to roll an
+                              ABANDONED issue back to PENDING.
+
+    All three branches append a JSONL entry to the local audit log
+    (~/.clawcodex/orchestrator/audit.jsonl) so the action is
+    traceable. ``--force`` flags the audit entry as high-priority
+    and signals that the rate limit (Sub-F) was bypassed.
+    """
+    issue_id = getattr(args, "id", None)
+    if not issue_id:
+        print("error: --id is required for retry", file=sys.stderr)
+        return 2
+    mode = getattr(args, "mode", None)
+    if mode not in {"reset", "followup", "unblock"}:
+        print(f"error: --mode must be reset|followup|unblock, got {mode!r}",
+              file=sys.stderr)
+        return 2
+    reason = getattr(args, "reason", "") or ""
+    force = bool(getattr(args, "force", False))
+    operator = _resolve_operator(getattr(args, "operator", None))
+    max_retries = int(getattr(args, "max_retries", 3) or 3)
+
+    if registry_path is None or not registry_path.exists():
+        print(
+            "error: no issue registry found for this workspace.\n"
+            "hint: run from a project root or pass --workspace / --workflow.",
+            file=sys.stderr,
+        )
+        return 1
+
+    from extensions.orchestrator.issue_registry import IssueRegistry
+    from extensions.orchestrator.tracker import Intent
+
+    registry = IssueRegistry(registry_path)
+    record = registry.get(issue_id)
+    if record is None:
+        # Auto-register so the daemon can find the record on its next
+        # poll. CLI retry is a legitimate way to bootstrap an issue
+        # record when the local daemon hasn't seen the issue yet.
+        registry.register(
+            issue_id=issue_id,
+            issue_identifier=issue_id,
+        )
+        record = registry.get(issue_id)
+        assert record is not None  # just registered
+
+    # F-39 Sub-F: rate-limit guard for --mode reset. The CLI path is
+    # the only one with a --force escape hatch, and any bypass MUST
+    # be recorded as a high-priority audit entry per the design doc:
+    # "限频与人工 bypass:CLI 兜底命令的 --force 参数可绕过
+    # max_retries_per_issue 限频,需写 audit.jsonl 高优条目".
+    rate_limited = False
+    if mode == "reset" and record.retry_count >= max_retries and not force:
+        rate_limited = True
+
+    if rate_limited:
+        action = "rate-limited (--force required)"
+        audit_priority = "high"
+        audit_event = "retry_rejected"
+    else:
+        if mode == "reset":
+            registry.mark_intent(
+                issue_id, Intent.RETRY,
+                source="cli", command=f"cli:reset:{reason[:64]}",
+            )
+            registry.increment_retry_count(issue_id)
+            action = "marked for reset"
+        elif mode == "followup":
+            registry.mark_intent(
+                issue_id, Intent.FOLLOWUP,
+                source="cli", command=f"cli:followup:{reason[:64]}",
+            )
+            action = "marked for follow-up"
+        else:  # mode == "unblock"
+            registry.unblock(issue_id)
+            action = "unblocked"
+        audit_priority = "high" if force else "normal"
+        audit_event = "retry" if mode == "reset" else mode
+
+    audit_path = _append_audit_log(
+        issue_id=issue_id,
+        mode=mode,
+        reason=reason,
+        operator=operator,
+        force=force,
+        extra={
+            "issue_identifier": record.issue_identifier,
+            "event": audit_event,
+            "priority": audit_priority,
+            "retry_count": record.retry_count,
+            "max_retries_per_issue": max_retries,
+            "rate_limited": rate_limited,
+        },
+    )
+
+    print(f"Issue {issue_id} ({record.issue_identifier}): {action}.")
+    if reason:
+        print(f"  reason: {reason}")
+    print(f"  operator: {operator}")
+    if rate_limited:
+        print(
+            f"  rate limit: retry_count={record.retry_count} >= "
+            f"max_retries_per_issue={max_retries}.\n"
+            f"  Re-run with --force to bypass (logged as high-priority audit).",
+            file=sys.stderr,
+        )
+    if force and not rate_limited:
+        print("  (--force set: rate limit bypassed, audit entry marked high-priority)")
+    if audit_path is not None:
+        print(f"  audit log: {audit_path}")
+    print("  The orchestrator will pick this up on its next poll cycle.")
+    return 0 if not rate_limited else 3

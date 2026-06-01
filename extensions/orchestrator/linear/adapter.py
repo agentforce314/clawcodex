@@ -72,12 +72,43 @@ class LinearAdapter(TrackerAdapter):
         endpoint: str = "https://api.linear.app/graphql",
         active_states: list[str] | None = None,
         assignee: str | None = None,
+        intent_labels: dict[str, str] | None = None,
     ) -> None:
         self.client = LinearGraphQLClient(api_key=api_key, endpoint=endpoint)
         self.project_slug = project_slug
         self.active_states = active_states or ["Todo", "In Progress"]
         self.assignee = assignee
+        # F-39: same label conventions as the other adapters.
+        from ..tracker import DEFAULT_INTENT_LABELS, intent_from_label_set
+        self.intent_labels: dict[str, str] = (
+            dict(intent_labels) if intent_labels else dict(DEFAULT_INTENT_LABELS)
+        )
+        self._resolve_intent = intent_from_label_set
         self._assignee_filter: dict[str, Any] | None = None
+
+    async def extract_intent_from_labels(
+        self,
+        labels: list[str] | None,
+    ) -> "Intent":
+        from ..tracker import Intent
+        return self._resolve_intent(labels, self.intent_labels) or Intent.NONE
+
+    async def close_pull_request(
+        self,
+        pull_request: "PullRequestRef",
+    ) -> bool:
+        # TODO(F-39 Sub-B extension): LinearAdapter does not have a
+        # remote GitHub-style PR to close. Linear's PR model is
+        # implicit; the issue's state transitions to "Cancelled" or
+        # similar. For now we report the operation as unsupported and
+        # rely on the orchestrator to record the intent as FAILED
+        # (or move on without remote close, since the registry will
+        # still reset the local state — F-39 design §Sub-B).
+        logger.warning(
+            "LinearAdapter.close_pull_request is not implemented; "
+            "local registry will still be reset (F-39 Sub-B fallback)"
+        )
+        return False
 
     async def _resolve_assignee_filter(self) -> dict[str, Any] | None:
         if self._assignee_filter is not None:

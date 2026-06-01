@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import uuid
@@ -11,7 +12,16 @@ from pathlib import Path
 from typing import Any
 
 from ..issue import Issue
-from ..tracker import Comment, PullRequestRef, TrackerAdapter
+
+logger = logging.getLogger(__name__)
+from ..tracker import (
+    Comment,
+    DEFAULT_INTENT_LABELS,
+    Intent,
+    PullRequestRef,
+    TrackerAdapter,
+    intent_from_label_set,
+)
 from .parser import (
     LocalIssueDocument,
     parse_markdown_issue,
@@ -28,6 +38,7 @@ class LocalTrackerAdapter(TrackerAdapter):
         issues_path: str | Path,
         active_states: list[str] | None = None,
         terminal_states: list[str] | None = None,
+        intent_labels: dict[str, str] | None = None,
     ) -> None:
         self.issues_path = Path(issues_path).expanduser()
         self._active_states = tuple(
@@ -39,6 +50,10 @@ class LocalTrackerAdapter(TrackerAdapter):
             else ["completed", "closed", "cancelled", "failed", "abandoned"]
         )
         self._active_state_set = _normalize_states(self._active_states)
+        # F-39: same label conventions as the repository-backed adapters.
+        self.intent_labels: dict[str, str] = (
+            dict(intent_labels) if intent_labels else dict(DEFAULT_INTENT_LABELS)
+        )
 
     @property
     def active_states(self) -> list[str]:
@@ -221,6 +236,47 @@ class LocalTrackerAdapter(TrackerAdapter):
         prefix = " ".join(f"@{mention}" for mention in mentions or [])
         comment_body = f"{prefix}\n\n{body}".strip() if prefix else body
         return self._append_comment(issue_id, comment_body)
+
+    async def extract_intent_from_labels(
+        self,
+        labels: list[str] | None,
+    ) -> Intent:
+        return intent_from_label_set(labels, self.intent_labels)
+
+    async def close_pull_request(
+        self,
+        pull_request: PullRequestRef,
+    ) -> bool:
+        # LocalTracker has no remote PR — issue_registry tracks the
+        # "PR" via frontmatter (pr_number / pr_url). Closing a local
+        # PR is a no-op; the orchestrator's reset_for_retry will clear
+        # the frontmatter fields directly.
+        logger.info(
+            "LocalTrackerAdapter.close_pull_request: no-op (pr_number=%s)",
+            pull_request.number,
+        )
+        return True
+
+    async def fetch_issue_command_intent(
+        self,
+        issue_id: str,
+        since_comment_id: str | None,
+    ) -> "CommandIntent | None":
+        from ..tracker import CommandIntent, parse_agent_command
+        comments = await self.fetch_new_comments_since(
+            issue_id, since_comment_id
+        )
+        for comment in comments:
+            body = comment.body or ""
+            command = parse_agent_command(body)
+            if command is not None:
+                return CommandIntent(
+                    command=command,
+                    author_login=comment.author_login,
+                    comment_id=comment.id,
+                    comment_body=body,
+                )
+        return None
 
     def _load_documents(self) -> list[LocalIssueDocument]:
         if not self.issues_path.exists():

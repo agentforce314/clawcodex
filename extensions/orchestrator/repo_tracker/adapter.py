@@ -2,16 +2,23 @@
 
 from __future__ import annotations
 
+import logging
+
 import httpx
 
 from ..issue import Issue
+
+logger = logging.getLogger(__name__)
 from ..tracker import (
     Comment,
+    DEFAULT_INTENT_LABELS,
+    Intent,
     PullRequestFeedback,
     PullRequestRef,
     TrackerAdapter,
     default_active_states_for_kind,
     default_terminal_states_for_kind,
+    intent_from_label_set,
 )
 from .client import RepositoryIssueClient, _extract_comment_author
 
@@ -30,6 +37,7 @@ class RepositoryTrackerAdapter(TrackerAdapter):
         active_states: list[str] | None = None,
         terminal_states: list[str] | None = None,
         assignee: str | None = None,
+        intent_labels: dict[str, str] | None = None,
         http_client: httpx.AsyncClient | None = None,
     ) -> None:
         self.platform = platform
@@ -42,6 +50,11 @@ class RepositoryTrackerAdapter(TrackerAdapter):
         self.terminal_states = (
             terminal_states or default_terminal_states_for_kind(platform)
         )
+        # F-39: intent label conventions (operator-driven retry/followup/blocked).
+        # If caller passes None, fall back to the standard "agent:*" set.
+        self.intent_labels: dict[str, str] = (
+            dict(intent_labels) if intent_labels else dict(DEFAULT_INTENT_LABELS)
+        )
         self.client = RepositoryIssueClient(
             platform=platform,
             owner=owner,
@@ -50,6 +63,46 @@ class RepositoryTrackerAdapter(TrackerAdapter):
             endpoint=endpoint,
             http_client=http_client,
         )
+
+    async def extract_intent_from_labels(
+        self,
+        labels: list[str] | None,
+    ) -> Intent:
+        return intent_from_label_set(labels, self.intent_labels)
+
+    async def close_pull_request(
+        self,
+        pull_request: PullRequestRef,
+    ) -> bool:
+        return await self.client.close_pull_request(pull_request)
+
+    async def fetch_issue_command_intent(
+        self,
+        issue_id: str,
+        since_comment_id: str | None,
+    ) -> "CommandIntent | None":
+        from ..tracker import CommandIntent, parse_agent_command
+        try:
+            comments = await self.fetch_new_comments_since(
+                issue_id, since_comment_id
+            )
+        except Exception as exc:
+            logger.warning(
+                "fetch_issue_command_intent(%s) failed: %s",
+                issue_id, exc,
+            )
+            return None
+        for comment in comments:
+            body = comment.body or ""
+            command = parse_agent_command(body)
+            if command is not None:
+                return CommandIntent(
+                    command=command,
+                    author_login=comment.author_login,
+                    comment_id=comment.id,
+                    comment_body=body,
+                )
+        return None
 
     async def fetch_candidate_issues(self) -> list[Issue]:
         return await self.client.fetch_candidate_issues(

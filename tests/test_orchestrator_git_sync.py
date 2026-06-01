@@ -352,8 +352,15 @@ class TestGitSyncService(unittest.IsolatedAsyncioTestCase):
 
             service = GitSyncService(
                 _Tracker(),
-                hooks_config=HooksConfig(pre_push="python -c \"from pathlib import Path; Path('dirty.txt').write_text('dirty\\n')\""),
+                hooks_config=HooksConfig(
+                    pre_push=(
+                        f"{sys.executable} -c "
+                        "\"from pathlib import Path; "
+                        "Path('dirty.txt').write_text('dirty\\n')\""
+                    ),
+                ),
             )
 
-            with self.assertRaises(HookFailedError):
+            with self.assertRaises(HookFailedError) as cm:
                 await service.sync(_Session(issue, workspace))
+            self.assertIn("modified the workspace", str(cm.exception))

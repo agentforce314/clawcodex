@@ -194,6 +194,18 @@ class AgentConfig:
     build_command: str = ""
     lint_command: str = ""
     verification: VerificationConfig = field(default_factory=VerificationConfig)
+    # F-39 Sub-F: rate limit on operator-driven retries. When an
+    # issue's `IssueRecord.retry_count` reaches this value, the
+    # orchestrator refuses to honor further `agent:retry` labels /
+    # `/agent retry` comment commands, even with a force flag from
+    # the CLI (which is logged as a high-priority audit entry).
+    max_retries_per_issue: int = 3
+    # F-39 Sub-F: allow `agent:retry` / `agent:follow-up` /
+    # `/agent retry` to be triggered by any GitHub-style user, not
+    # just the issue author. By default we enforce the strict
+    # "author or maintainer only" rule. Setting this to True
+    # disables the role check (e.g. for trusted-team scenarios).
+    allow_anyone_to_retry: bool = False
 
 
 @dataclass
@@ -368,6 +380,11 @@ class WorkflowConfig:
             lint_command=_resolve_env_value(agent_raw.get("lint_command")) or "",
             verification=VerificationConfig(
                 timeout_ms=verification_raw.get("timeout_ms", 600_000)
+            ),
+            # F-39 Sub-F
+            max_retries_per_issue=agent_raw.get("max_retries_per_issue", 3),
+            allow_anyone_to_retry=bool(
+                agent_raw.get("allow_anyone_to_retry", False)
             ),
         )
 
