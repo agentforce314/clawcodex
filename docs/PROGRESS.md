@@ -2,9 +2,11 @@
 
 > 文档路径: `docs/PROGRESS.md`
 > 基于: `docs/open-source-replacement-progress.md`, `docs/FEATURE_PLAN.md`
-> 版本: v2.10
-> 更新日期: 2026-06-01
+> 版本: v2.12
+> 更新日期: 2026-06-02
 > 上游同步: 68dc3c5 (Phase 11 bridge complete)
+>
+> **v2.12 变更**：新增 F-43 CLI 模型供应商与模型切换（📋 设计完成）。规划 `clawcodex provider` / `clawcodex model` 子命令族（list/show/current/use/unset）+ REPL/TUI 内 `/provider` / `/model` 斜杠命令，覆盖查看、列出、切换当前生效的 LLM 供应商与模型。所有新代码落在 `clawcodex_ext/cli/` 下，遵守 "src/* 不动" 边界；持久化借道 `src.config`，不重写 I/O；错误文案统一英文。`--scope project` 落入后续规划。
 >
 > **v2.10 变更**：新增 F-42 Orchestrator Shared / Sequential Workspace 策略（📋 设计完成）。规划 `workspace.strategy: isolated | shared | sequential`，用于支持本地 feature-plan issue 在同一 working tree / integration branch 上按顺序叠加开发并保留每 issue 一个 commit；设计范围覆盖 WorkspaceManager、Orchestrator 并发校验、dirty tree guard、顺序锁、registry commit 链元数据、GitSync/cleanup 行为与端到端验收标准。
 >
@@ -83,6 +85,7 @@
 | F-40 | ProgressReporter Sink 协议重构 | P1 | 📋 设计完成 | 把 `Orchestrator` 上 `ProgressReporter` 单例拆为每 session 独立的 `ProgressSink` 实例；新增 `CompositeProgressSink` 扇出支持 F-37/F-39 零侵入接入；补全 `SessionComplete` / `TurnComplete` 转发；引入 `WorkflowConfig.phases` 做真实进度计算，淘汰 `phase_count * 25` 假数据 |
 | F-41 | Coordinator 轻量工具集 | P1 | ✅ 已完成 | 给 Coordinator 配置独立的轻量工具集（Read、WebSearch、WebFetch），加上原有的 Agent、SendMessage、TaskStop，共 6 个工具。Coordinator 可直接处理简单查询（搜网页、读文件），无需为每个请求创建 Worker。所有写操作工具（Write、Edit、Bash、Grep、Glob）仍隔离，强制委派复杂任务给 Worker。涉及 `src/coordinator/mode.py` 的 `_COORDINATOR_ALLOWED_TOOLS` 扩展 + `src/coordinator/prompt.py` 的 "Your Tools" 提示词更新 + `src/repl/core.py` 注释同步。231/231 orchestrator 测试通过 |
 | F-42 | Orchestrator Shared / Sequential Workspace 策略 | P0 | ✅ 完成 | 扩展 `workspace.strategy: isolated \| shared \| sequential`，保留现有 per-issue workspace，同时支持本地 feature-plan issue 在同一 working tree / integration branch 上串行叠加开发；包含单并发校验、顺序锁、dirty tree guard、每 issue commit 链元数据、shared cleanup preserve 与两 issue 端到端验收 |
+| F-43 | CLI 模型供应商与模型切换 | P1 | 📋 设计完成 | 新增 `clawcodex provider` / `clawcodex model` 子命令族（list/show/current/use/unset）+ REPL/TUI 内 `/provider` / `/model` 斜杠命令，支持查看、列出、切换当前生效的 LLM 供应商与模型；所有新代码落在 `clawcodex_ext/cli/` 下，持久化借道 `src.config` 不重写 I/O；错误文案统一英文；`--scope project` 落入后续规划 |
 
 ---
 
@@ -1949,6 +1952,121 @@ agent:
 2. **shared 与 sequential 边界需保持清晰**：`shared` 可作为低约束共享工作树模式，但只要涉及“issue 间严格继承 commit”就应使用 `sequential`。
 3. **失败现场默认保留**：dirty workspace 往往是问题诊断所需现场，不应被自动 reset 或 cleanup 删除。
 4. **人工最终 PR 仍是显式步骤**：LocalTracker sequential workflow 的目标是产出可审查 commit 序列，不应自动推远端或创建 PR。
+
+---
+
+## F-43: CLI 模型供应商与模型切换
+
+**状态**: 📋 设计完成
+**优先级**: P1
+**规划文档**: `docs/FEATURE_PLAN.md` → `§3.15 CLI 模型供应商与模型切换设计`
+**落地版本**: v2.12
+
+### 目标
+
+新增 `clawcodex provider` 与 `clawcodex model` 两个子命令族，让用户能在 CLI 内**查看、切换、列出**当前生效的 LLM 供应商与模型；并在 REPL/TUI 内部以 `/provider` 与 `/model` 斜杠命令提供运行期热切换。所有新代码落在 `clawcodex_ext/cli/` 下，不动 `src/*` 或 `extensions/*`。
+
+### 子特性
+
+| 编号 | 子特性 | 内容 |
+|------|--------|------|
+| Sub-A | 子命令族 | `clawcodex provider list/show/current/use/unset` + `clawcodex model list/show/current/use` |
+| Sub-B | 解析器（resolver） | 单一函数 `resolve(cli_provider, cli_model, project_root) -> Resolution`，返回 provider/model/source |
+| Sub-C | 持久化（store） | `ModelStore` 包装 `src.config.set_default_provider` 与 `set_api_key(default_model=...)`，不重写 I/O |
+| Sub-D | 注册表（registry） | `ModelRegistry` 包装 `PROVIDER_INFO` 与 `get_provider_config`，提供 list / has_credentials / resolve_model |
+| Sub-E | Dispatcher 集成 | `subcommand_registry.py` 把 fast-path 从 if/elif 链改为查表 |
+| Sub-F | REPL `/provider` / `/model` | 在 `clawcodex_ext/repl` 注册两个斜杠命令，热切换 runtime provider |
+| Sub-G | TUI `/provider` / `/model` | 在 `clawcodex_ext/tui` 注册两个斜杠命令，触发与 REPL 相同的 `swap_provider` 流程 |
+| Sub-H | 错误模型 | `UnknownProviderError` / `UnknownModelError` / `ProviderMismatchError` / `NotConfiguredError`，全英文文案 |
+| Sub-I | 测试 | resolver / store / commands 三层单测 + dispatch 集成测试 + slash command 集成测试 |
+
+### 当前基线
+
+- 一次性覆盖：CLI 已支持 `--provider NAME` / `--model NAME`（`parser.py:88-99`），仅对本次调用生效
+- 持久化：仅 `clawcodex login` 在 `runners.py:120-191` 调用 `set_api_key` 写入 `default_model`，并通过 `set_default_provider` 写默认供应商
+- 运行时：`RuntimeContext.build`（`clawcodex_ext/runtime/context.py:46`）按 "CLI 标志 > `get_default_provider` > provider default_model" 硬编码解析
+- 扩展钩子：`extensions/providers_ext` 已为 LiteLLM 提供 `create_litellm_provider`；本方案不依赖、不修改
+- 现有 `clawcodex_ext/cli/` 已有 main / parser / dispatch / runners / permissions 五个文件，子命令走 fast-path 分支
+
+### 实施进度
+
+| 阶段 | 内容 | 状态 |
+|------|------|------|
+| Sub-A | `subcommand_registry.py` 注册表骨架 + `dispatch.py` 接入 | 📋 待开始 |
+| Sub-B | `model_cmd/registry.py` + `errors.py` | 📋 待开始 |
+| Sub-C | `model_cmd/resolver.py`（6 级优先级） | 📋 待开始 |
+| Sub-D | `model_cmd/store.py`（通过 `src.config` 持久化） | 📋 待开始 |
+| Sub-E | `model_cmd/commands.py` + `provider_cmd/commands.py`（5 + 4 handler） | 📋 待开始 |
+| Sub-F | REPL `/provider` / `/model` 斜杠命令 | 📋 待开始 |
+| Sub-G | TUI `/provider` / `/model` 斜杠命令 | 📋 待开始 |
+| Sub-H | 单测 + dispatch 集成测试 | 📋 待开始 |
+
+### 验收标准
+
+| # | 标准 | 期望结果 |
+|---|------|----------|
+| 1 | `clawcodex provider list` | 列出 `PROVIDER_INFO` 中所有供应商，含 label / default_model / base_url |
+| 2 | `clawcodex model list --provider glm` | 仅列出该 provider 的 `available_models` |
+| 3 | `clawcodex provider use glm` | 写盘 `default_provider=glm`；再次启动 CLI 时默认 provider 为 glm |
+| 4 | `clawcodex model use zai/glm-4 --provider glm` | 校验模型在 `available_models` 后写 `providers.glm.default_model`；模型不在白名单时报 `UnknownModelError` |
+| 5 | `clawcodex model use gpt-5 --provider anthropic` | 报 `ProviderMismatchError` 并提示 anthropic 下有哪些合法模型 |
+| 6 | `clawcodex -p "hi" --provider glm --model zai/glm-4` | 本次调用覆盖默认；不修改配置文件 |
+| 7 | REPL 内 `/model zai/glm-4` | 不重启即热切换，下一轮对话用新模型 |
+| 8 | TUI 内 `/provider list` | 弹出可用 provider 列表，选中后立即生效 |
+| 9 | 现有 `login` 子命令 | 行为不变，仍可一次性配置凭证 + default_model |
+| 10 | 单元测试 | `pytest tests/clawcodex_ext/cli -q` 全绿；`pytest tests/test_orchestrator_*.py -q` 无回归 |
+
+### 风险与约束
+
+1. **文件写并发**：多窗口同时 `model use` 现有 `src.config` 无文件锁；接受 "最后写者赢"，G-1 阶段加 `fcntl` 锁
+2. **子命令冲突**：`model` 是英文通用词；fast-path 仅匹配 `argv[0]`，无歧义；未来若 argparse 接管需重新审视
+3. **热切换语义**：`swap_provider` 会重建 tool registry（部分工具可能绑定 model context）；session 复用但 history 保留
+4. **错误信息一致性**：所有用户可见错误走 `errors.py` 中的英文文案；不让异常 traceback 直接落到用户终端
+5. **`--scope project` 推迟**：第一版只实现 user（全局）scope；project scope 落到后续规划（G-1）
+6. **不修改 `src/*`**：所有新代码落在 `clawcodex_ext/cli/`；唯一例外是 `dispatch.py` 的一行改写（fast-path 改查表）
+
+### 已拟定的设计决定
+
+| # | 决定 | 理由 |
+|---|------|------|
+| 1 | 子命令族走 `provider` / `model`（非 `providers` / `models`） | 与现有 `login` / `config` 单数风格一致；fast-path 匹配更短 |
+| 2 | 写盘借道 `set_api_key(default_model=...)` | `src.config` 无独立 `set_default_model`；借道避免复制 I/O |
+| 3 | 解析器返回 `Resolution(source=...)` | `model current` 需要标注 "当前来源"，方便用户理解为何生效 |
+| 4 | `login` 行为保留 | 向后兼容；同时不重复维护两套凭证配置入口 |
+| 5 | 错误文案统一英文 | 与现有 `cli_error` / `PROGRESS.md` 全英文风格一致 |
+| 6 | 错误类型独立模块 | `provider_cmd/errors.py` / `model_cmd/errors.py` 各自一组；避免一个上帝异常类 |
+| 7 | Dispatcher 用注册表 + 装饰器 | 解耦命令注册位置（每个子包自己 `@register`），避免 `dispatch.py` 长 if 链 |
+| 8 | Slash 命令复用 resolver + store | 不另写实现；REPL/TUI 斜杠命令直接调 `resolve()` / `store.set_*` |
+| 9 | `RuntimeContext.build` 不动 | 本方案只新增友好入口；后续若需 "启动时也用 resolver"，单独议题 |
+
+### 依赖与协同
+
+- **依赖**：
+  - `src.config.get_default_provider` / `set_default_provider` / `set_api_key` / `get_provider_config` / `load_config`
+  - `src.providers.PROVIDER_INFO` / `get_provider_info`
+  - `clawcodex_ext/cli/dispatch.py:run_cli` 的 fast-path 分支
+  - `clawcodex_ext/runtime/context.py:RuntimeContext`（仅消费 `provider_name` / `model` 字段，不修改）
+- **协同**：
+  - 与 `F-34`（CLI/TUI Frontend 解耦）一致，本方案遵守 "`src/*` 不动" 边界
+  - 与 `F-41`（Coordinator 工具集）正交，不影响 Worker/Coordinator 工具策略
+  - 与 `extensions/providers_ext`（LiteLLM 适配）正交，registry 不感知 LiteLLM 存在
+- **后续议题（G-1, 推迟到 v2.13+）**：
+  - `clawcodex provider use --scope project` 落入 `<project>/.clawcodex/config.local.json`；默认加入 `.gitignore`
+  - `clawcodex model use --scope project` 同上
+  - 项目级 scope 的 resolver 优先级插在 user 之前
+  - 多窗口并发写盘的 `fcntl` 文件锁
+
+### 拆分计划
+
+| 阶段 | 内容 | 状态 |
+|------|------|------|
+| Sub-A | 注册表骨架 + dispatch 接入（纯重构，无新功能） | 📋 待开始 |
+| Sub-B | `model_cmd` 核心（registry / errors / resolver / store） | 📋 待开始 |
+| Sub-C | `model_cmd/commands.py`（list / show / current / use） | 📋 待开始 |
+| Sub-D | `provider_cmd` 5 个 handler，复用 registry / store | 📋 待开始 |
+| Sub-E | REPL `/provider` / `/model` 斜杠命令 | 📋 待开始 |
+| Sub-F | TUI `/provider` / `/model` 斜杠命令 | 📋 待开始 |
+| Sub-G | 端到端测试 + 文档 | 📋 待开始 |
 
 ---
 
