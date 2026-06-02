@@ -133,6 +133,9 @@ class ClawCodexTUI(App):
         )
         self._repl_screen: REPLScreen | None = None
         self._command_context: Any | None = None
+        # P0-6 Option B: guards one-time global registration of builtins +
+        # user-invocable skills (see _ensure_command_context).
+        self._skills_registered: bool = False
         # Reactive AppState store backing interactive commands like
         # /permissions. Created once on first command-context build and
         # held here so the chosen mode persists across invocations.
@@ -790,7 +793,33 @@ class ClawCodexTUI(App):
         # Fallback: just the active model.
         return [self.model or "default"]
 
+    def _register_skills_once(self) -> None:
+        """Register builtins + user-invocable skills into the GLOBAL registry,
+        exactly once (P0-6 Option B / Phase 3.5).
+
+        ``dispatch_registry_command`` executes through
+        ``execute_command_async``, which resolves names from the GLOBAL
+        registry — so skills must land there, not in a TUI-local registry.
+        Builtins are registered first so the shadowing guard in
+        ``load_and_register_skills`` lets them win on a name collision. Idempotent
+        via ``self._skills_registered``; failures must never block command
+        dispatch (builtins still resolve from the suggestion-builder path)."""
+        if self._skills_registered:
+            return
+        try:
+            from src.command_system import (
+                load_and_register_skills,
+                register_builtin_commands,
+            )
+
+            register_builtin_commands(None)
+            load_and_register_skills(registry=None)
+        except Exception:
+            pass
+        self._skills_registered = True
+
     def _ensure_command_context(self) -> Any:
+        self._register_skills_once()
         if self._command_context is not None:
             return self._command_context
         try:
@@ -811,6 +840,10 @@ class ClawCodexTUI(App):
                 provider=self.provider,
                 app_state_store=self._app_state_store,
                 ui=TextualUIHost(self),
+                # P0-6 Option B: lets a SkillPromptCommand render via the same
+                # _run_markdown_skill path the Skill tool uses (session id +
+                # gated shell-exec) rather than lossy bare substitution.
+                tool_context=self.tool_context,
             )
         except Exception:
             self._command_context = None

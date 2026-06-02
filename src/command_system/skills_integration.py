@@ -21,21 +21,28 @@ from ..skills.loader import (
 )
 from ..skills.model import Skill as BaseSkill
 from .argument_substitution import substitute_arguments
-from .registry import CommandRegistry, register_command
-from .types import Command, CommandType, PromptCommand
+from .registry import CommandRegistry, get_command_registry, register_command
+from .types import Command, CommandType, PromptCommand, SkillPromptCommand
 
 
 def skill_to_prompt_command(skill: PromptSkill) -> PromptCommand:
     """
-    Convert a PromptSkill to a PromptCommand.
+    Convert a PromptSkill to a ``SkillPromptCommand``.
+
+    Returns a ``SkillPromptCommand`` (a ``PromptCommand`` subclass) so that when
+    this command is executed via the registry, its prompt is rendered through the
+    same ``_run_markdown_skill`` path the Skill tool uses — preserving the
+    base-dir header, ``${CLAUDE_SKILL_DIR}`` / ``${CLAUDE_SESSION_ID}``
+    substitution, and gated shell-exec. The plain base ``PromptCommand`` renderer
+    would drop all of that (P0-6 Option B / Phase 3.5).
 
     Args:
         skill: The PromptSkill to convert
 
     Returns:
-        PromptCommand instance
+        SkillPromptCommand instance (typed as its ``PromptCommand`` base)
     """
-    return PromptCommand(
+    return SkillPromptCommand(
         name=skill.name,
         description=skill.description,
         progress_message=f"Executing {skill.name}...",
@@ -89,26 +96,30 @@ def load_and_register_skills(
     """
     Load all skills and register them as commands.
 
-    .. note:: **P0-6 / why this is NOT called at bootstrap (intentional).**
+    .. note:: **P0-6 Option B / Phase 3.5 — this IS now called at bootstrap.**
 
-        The TS gap item "auto-register skills in bootstrap (call
-        ``load_and_register_skills``)" does NOT translate to a literal startup
-        call in Python, because Python split TS's single command list into three
-        surfaces (aggregator / ``CommandRegistry`` / skills-loader). The
-        aggregator (:func:`~src.command_system.aggregator.get_commands`) already
-        merges skills into the unified set, so listing/filtering/the P0-4 views
-        need no registration. The ONLY new behavior a literal call would add is
-        making skills resolvable via ``CommandRegistry.get(name)`` — and that is
-        a *regression*: it reroutes REPL ``/myskill arg`` execution onto
-        :meth:`PromptCommand.get_prompt_for_command` (bare arg-substitution),
-        dropping the base-dir header, ``${CLAUDE_SKILL_DIR}`` /
-        ``${CLAUDE_SESSION_ID}`` substitution, the gated shell-exec pass, and the
-        bundled-skill callable that ``_run_markdown_skill`` provides. So under
-        Phase 3 **Option A** this function stays available (tests, future
-        unification) but is deliberately left out of the REPL/TUI bootstrap.
-        Unifying execution correctly (fix the renderer first, then register) is
-        Phase 3.5 **Option B**. See
-        my-docs/get-parity-by-folder/commands-phase3-model-tool-exposure-plan.md §3 D-6.
+        The REPL and TUI call this at startup (after builtins are registered)
+        so user-invocable skills resolve via ``CommandRegistry.get(name)`` and
+        execute through the global-registry path in
+        :func:`~src.command_system.builtins.execute_command_async`. This is safe
+        only because :func:`skill_to_prompt_command` now produces a
+        ``SkillPromptCommand``, whose renderer is byte-for-byte identical to the
+        Skill tool's (``_run_markdown_skill``). Registering plain
+        ``PromptCommand`` instances here would *regress* execution to bare
+        argument substitution — that hazard is what kept Phase 3 on Option A.
+
+        **Call globally (``registry=None``).** Execution reads the GLOBAL
+        registry (``builtins.py`` hardcodes ``get_command_registry()``), not the
+        REPL-local one, so a skill registered only into a local registry would
+        never execute. Registering global-only (and *not* into the REPL's local
+        registry) also keeps bare ``/myskill`` routing to the command palette,
+        since the REPL seeds ``_built_in_commands`` from its local registry.
+
+        **Shadowing guard (below).** Builtins are registered first and win:
+        a skill whose name collides with an existing command (or alias) is
+        skipped rather than silently overwriting it (``registry.py`` register is
+        unconditional). See
+        my-docs/get-parity-by-folder/commands-phase3.5-skill-registration-plan.md §4 D-4.
 
     Args:
         project_root: Optional project root directory
@@ -123,13 +134,19 @@ def load_and_register_skills(
         user_skills_dir=user_skills_dir,
     )
 
+    target = registry if registry is not None else get_command_registry()
+
     registered_commands: list[PromptCommand] = []
     for skill in skills:
+        # Shadowing guard (N2): never overwrite a name already in the target
+        # registry. Builtins register first, so a skill colliding with a builtin
+        # name or alias is skipped and the builtin wins — matching the
+        # aggregator's precedence and avoiding the unconditional overwrite at
+        # registry.py register(). Skill-vs-skill ties resolve first-wins.
+        if target.get(skill.name) is not None:
+            continue
         command = skill_to_prompt_command(skill)
-        if registry:
-            registry.register(command)
-        else:
-            register_command(command)
+        target.register(command)
         registered_commands.append(command)
 
     return registered_commands

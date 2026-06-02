@@ -313,7 +313,6 @@ async def dispatch_registry_command(
 
     try:
         from src.command_system.builtins import execute_command_async
-        from src.command_system.types import CommandResult  # noqa: F401
 
         result = await execute_command_async(name, args, command_context)
     except Exception as exc:

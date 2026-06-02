@@ -285,6 +285,7 @@ def create_command_context(
     app_state_store: Any = None,
     provider: Any = None,
     ui: Any = None,
+    tool_context: Any = None,
 ) -> CommandContext:
     """
     Create a command context.
@@ -303,6 +304,10 @@ def create_command_context(
             provider type (e.g. /advisor) need this.
         ui: Optional ``UIHost`` interaction port. Interactive commands drive
             it; when None the engine substitutes a ``NullUIHost``.
+        tool_context: Optional ``ToolContext``. Threaded onto the context so a
+            ``SkillPromptCommand`` can render via the same ``_run_markdown_skill``
+            path the Skill tool uses (session id + gated shell-exec). When None,
+            skill prompts degrade to a headless render.
 
     Returns:
         CommandContext instance
@@ -320,4 +325,5 @@ def create_command_context(
         app_state_store=app_state_store,
         provider=provider,
         ui=ui,
+        tool_context=tool_context,
     )
