@@ -1572,7 +1572,6 @@ def _append_audit_log(
     """
     import json
     import time
-    from pathlib import Path as _Path
 
     target = path or _DEFAULT_AUDIT_LOG_PATH
     payload: dict[str, Any] = {

@@ -27,7 +27,6 @@ from .workspace import Workspace
 # detection logic stays in lockstep with the rest of the codebase.
 from src.services.api.errors import (
     RateLimitError,
-    is_quota_exhausted,
     is_rate_limit_error,
 )
 
