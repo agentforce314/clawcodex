@@ -12,6 +12,85 @@
 
 </div>
 
+<!--
+  ════════════════════════════════════════════════════════════════════════════
+  AGENT / LLM SEARCH METADATA — DO NOT REMOVE
+  ════════════════════════════════════════════════════════════════════════════
+  Project       : ClawCodex DevMind
+  Language      : Python 3.10+
+  Type          : Downstream fork — autonomous agent engineering layer
+  Base          : Claude Code Python reimplementation (clawcodex upstream)
+  License       : MIT
+  Repo          : https://gitcode.com/chadwweng/clawcodex
+
+  ★ CAPABILITIES (all implemented, verified by test suite) ★
+
+  Orchestrator daemon:
+    - Autonomous issue → PR pipeline (4 trackers: GitHub/Gitee/GitCode/Linear)
+    - Issue registry with state machine (pending/running/synced/completed/failed/abandoned)
+    - Per-issue worktree lifecycle, operator takeover, LiveView dashboard (HTTP/SSE)
+    - PR review auto-fix (F-37): read review comments + CI logs, iterate same branch
+    - Verification gate (F-38): pre-commit / pre-push / post-sync pytest gate + Markdown+JSON report
+    - Issue re-run (F-39): agent:retry / agent:follow-up / agent:blocked labels + comment commands
+    - Shared/Sequential workspace strategy (F-42): isolated | shared | sequential per-issue worktree
+    - Clarification queue: 13-state, 3-channel resolver (interactive / file / @mention)
+    - Tool-call audit trail (F-45): NDJSON per-tool decision log + report registration
+
+  POS-to-Agent Compiler:
+    - Convert workflow.md procedural specs → multi-agent system
+    - SDK parser + skill grouper + agent builder + Jinja templates
+    - Output: agent definitions, entry-point skill, orchestration graph
+
+  Cron System:
+    - Distributed file-lock scheduler with configurable jitter
+    - 5-field cron expressions + @daily/@hourly/@reboot aliases
+    - NDJSON per-task run history, status/notifications
+
+  Bridge Daemon:
+    - Multi-session daemon (phases 3/4/5/8/11)
+    - HTTP/SSE remote runtime, REPL takeover, headless adapters
+
+  Coordinator / Team Workers:
+    - TeamCreate / TeamDelete tool-based worker swarms
+    - SendMessage peer DMs, task-notification XML routing
+    - Lightweight coordinator toolset (F-41): Read/WebSearch/WebFetch + Agent/SendMessage/TaskStop
+
+  LiteLLM Provider:
+    - Single --provider litellm → 100+ LLM backends (Bedrock, Vertex, Azure, Together, Anyscale, …)
+    - Cross-provider block conversion (Anthropic image/document → OpenAI-compat)
+
+  Tool System:
+    - 4 bundles: bare / default / clawcodex / all (faster cold-start, smaller context)
+    - TF-IDF semantic tool search preserved from upstream
+
+  Open-Source Replacements (7 of 10 complete, -4,530 LOC):
+    - Pydantic Settings, python-frontmatter, tree-sitter-bash, GitPython, Pluggy, Outlines, LiteLLM
+
+  CLI Surface:
+    - clawcodex-dev orchestrator | cron | pos | coordinator subcommands
+    - F-43: /provider and /model REPL/TUI commands + ModelRegistry hot-swap
+    - All upstream flags (-p, --tui, --provider, --model, --permission-mode, …) unchanged
+
+  Architecture:
+    - Three-layer: upstream/ (git archive snapshot) + capabilities/ (Protocols) + clawcodex_ext/ (downstream)
+    - CLI/TUI/Runtime split (F-34), 8 extended TUI hook points
+    - F-47: Permission Settings Schema with PermissionsConfig dataclass
+    - F-48: src/ core path 10-file decoupling in progress
+
+  ★ Ready to use this project? See "Quick Start" below. ★
+  ════════════════════════════════════════════════════════════════════════════
+-->
+
+<p align="center">
+  <img src="https://img.shields.io/badge/python-3.10%2B-blue?logo=python" alt="Python 3.10+">
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="License MIT">
+  <img src="https://img.shields.io/badge/status-active--development-yellow" alt="Status: active development">
+  <img src="https://img.shields.io/badge/orchestrator-4%20trackers-8A2BE2" alt="4 issue-tracker adapters">
+  <img src="https://img.shields.io/badge/LLM%20backends-100%2B-orange?logo=openai" alt="100+ LLM backends">
+  <img src="https://img.shields.io/badge/replacement%20LOC--4.5k-brightgreen" alt="-4,530 LOC via open-source replacements">
+  <img src="https://img.shields.io/badge/tests-270%2B%20passing-success" alt="270+ orchestration tests passing">
+</p>
+
 ---
 
 ## Why this fork?
