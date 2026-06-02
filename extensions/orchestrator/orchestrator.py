@@ -997,13 +997,24 @@ class Orchestrator:
             previous_record = self._registry.latest_sequential_record()
             previous_issue_id = previous_record.issue_id if previous_record else None
             sequence_index = (previous_record.sequence_index or 0) + 1 if previous_record else 1
+        # F-42: in sequential mode the registry's workspace_path must
+        # record the configured root (not whatever WorkspaceManager
+        # happened to return for the current issue), so that subsequent
+        # issues can resolve the previous commit chain against the same
+        # path. In isolated / shared modes the per-issue workspace.path
+        # is already the canonical location, so keep that.
+        recorded_workspace_path = (
+            str(self._workspace_root)
+            if workspace_strategy == "sequential"
+            else str(workspace.path)
+        )
         self._registry.register(
             issue_id=issue.id or "",
             issue_identifier=issue.identifier or "",
             branch_name=branch_name,
             base_branch=base_branch,
             workspace_strategy=workspace_strategy,
-            workspace_path=str(workspace.path),
+            workspace_path=recorded_workspace_path,
             base_commit_sha=base_commit_sha,
             start_commit_sha=start_commit_sha,
             previous_issue_id=previous_issue_id,
@@ -1244,6 +1255,16 @@ class Orchestrator:
                         hook_error=getattr(session, "last_hook_error", None),
                     )
                     await self._schedule_retry(session)
+                elif session.status == "max_turns_exceeded":
+                    self.status_dashboard.on_session_failed(
+                        session.issue.id or "",
+                        str(session.status),
+                    )
+                    self._registry.mark_failed(session.issue.id or "")
+                    await self._schedule_retry(
+                        session,
+                        delay_base_ms=self.workflow.agent.max_turns_retry_delay_ms,
+                    )
                 else:
                     self.status_dashboard.on_session_failed(
                         session.issue.id or "",
@@ -1298,8 +1319,20 @@ class Orchestrator:
                     exc,
                 )
 
-    async def _schedule_retry(self, session: AgentSession) -> None:
-        """Schedule a retry for a failed session."""
+    async def _schedule_retry(
+        self,
+        session: AgentSession,
+        *,
+        delay_base_ms: int | None = None,
+    ) -> None:
+        """Schedule a retry for a failed session.
+
+        ``delay_base_ms`` overrides the base delay for the exponential backoff
+        curve. When ``None`` the default ``_FAILURE_RETRY_BASE_MS`` is used
+        (10s). The orchestrator passes ``workflow.agent.max_turns_retry_delay_ms``
+        for ``max_turns_exceeded`` sessions so the longer wait default kicks in
+        without forcing all retries to share it.
+        """
         issue_id = session.issue.id or ""
         attempt = self._state.retry_attempts.get(issue_id, 0) + 1
         self._state.retry_attempts[issue_id] = attempt
@@ -1317,7 +1350,11 @@ class Orchestrator:
             return
 
         # Exponential backoff capped at max_retry_backoff_ms
-        base_ms = _FAILURE_RETRY_BASE_MS
+        base_ms = (
+            delay_base_ms
+            if delay_base_ms is not None
+            else _FAILURE_RETRY_BASE_MS
+        )
         max_ms = self.workflow.agent.max_retry_backoff_ms
         delay_ms = min(base_ms * (1 << (attempt - 1)), max_ms)
 

@@ -29,7 +29,9 @@ from extensions.orchestrator.issue_registry import (
     IssueStatus,
 )
 from extensions.orchestrator.local_tracker.adapter import LocalTrackerAdapter
-from extensions.orchestrator.orchestrator import Orchestrator
+from extensions.orchestrator.orchestrator import Orchestrator, OrchestratorState
+from extensions.orchestrator.agent_runner import AgentSession, RetryItem
+from extensions.orchestrator.issue import Issue
 from extensions.orchestrator.repo_tracker.adapter import (
     RepositoryTrackerAdapter,
 )
@@ -517,6 +519,102 @@ class TestPrepareIntentReset(unittest.IsolatedAsyncioTestCase):
             assert record is not None
             self.assertEqual(record.status, IssueStatus.PENDING)
             self.assertEqual(record.retry_count, 1)
+
+
+# ---------------------------------------------------------------------------
+# _schedule_retry: max_turns_exceeded uses a different delay base
+# ---------------------------------------------------------------------------
+
+
+def _make_orchestrator_for_schedule_retry_test(
+    *,
+    registry: IssueRegistry,
+    workflow: WorkflowConfig,
+) -> Orchestrator:
+    """Bypass __init__ but keep a real _state so retry_queue /
+    retry_attempts writes actually land in a real container."""
+    orch = Orchestrator.__new__(Orchestrator)
+    orch.workflow = workflow
+    orch.tracker = MagicMock()
+    orch.workspace = MagicMock()
+    orch.agent_runner = MagicMock()
+    orch.status_dashboard = MagicMock()
+    orch._registry = registry
+    orch._state = OrchestratorState()
+    return orch
+
+
+def _make_session(status: str, issue_id: str = "77") -> AgentSession:
+    return AgentSession(
+        issue=Issue(id=issue_id, identifier=f"ISSUE-{issue_id}", title="retry test"),
+        workspace=MagicMock(),
+        status=status,
+    )
+
+
+class TestScheduleRetryMaxTurns(unittest.IsolatedAsyncioTestCase):
+    async def test_schedule_retry_default_uses_failure_base(self) -> None:
+        """Without delay_base_ms, the default _FAILURE_RETRY_BASE_MS (10s)
+        is used as the base for attempt=1."""
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = IssueRegistry(Path(tmp) / "registry.json")
+            orch = _make_orchestrator_for_schedule_retry_test(
+                registry=reg,
+                workflow=WorkflowConfig(),
+            )
+            session = _make_session(status="failed")
+
+            await orch._schedule_retry(session)
+
+            self.assertEqual(len(orch._state.retry_queue), 1)
+            retry = orch._state.retry_queue[0]
+            self.assertEqual(retry.attempt, 1)
+            self.assertEqual(retry.delay_seconds, 10.0)
+            self.assertEqual(retry.error, "agent failed: failed")
+
+    async def test_schedule_retry_uses_custom_base_for_max_turns(self) -> None:
+        """When delay_base_ms=30_000 is passed, that value (not the 10s
+        default) is used for attempt=1."""
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = IssueRegistry(Path(tmp) / "registry.json")
+            orch = _make_orchestrator_for_schedule_retry_test(
+                registry=reg,
+                workflow=WorkflowConfig(),
+            )
+            session = _make_session(status="max_turns_exceeded")
+
+            await orch._schedule_retry(session, delay_base_ms=30_000)
+
+            retry = orch._state.retry_queue[0]
+            self.assertEqual(retry.delay_seconds, 30.0)
+            self.assertEqual(retry.error, "agent failed: max_turns_exceeded")
+            self.assertEqual(
+                orch._state.retry_attempts[session.issue.id], 1
+            )
+
+    async def test_schedule_retry_uses_max_turns_retry_delay_from_workflow(
+        self,
+    ) -> None:
+        """Integration check: the orchestrator should be able to read
+        workflow.agent.max_turns_retry_delay_ms and pass it through."""
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = IssueRegistry(Path(tmp) / "registry.json")
+            workflow = WorkflowConfig.from_dict(
+                {"agent": {"max_turns_retry_delay_ms": 1234}}
+            )
+            orch = _make_orchestrator_for_schedule_retry_test(
+                registry=reg,
+                workflow=workflow,
+            )
+            session = _make_session(status="max_turns_exceeded")
+
+            await orch._schedule_retry(
+                session,
+                delay_base_ms=workflow.agent.max_turns_retry_delay_ms,
+            )
+
+            retry = orch._state.retry_queue[0]
+            self.assertEqual(retry.delay_seconds, 1.234)
 
 
 if __name__ == "__main__":

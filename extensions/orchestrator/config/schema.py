@@ -202,6 +202,9 @@ class AgentConfig:
     max_turns: int = 20
     max_retry_backoff_ms: int = 300_000
     max_retry_attempts: int = 5
+    # Base delay (ms) for retries triggered by max_turns being exhausted.
+    # Shared retry budget; capped at max_retry_backoff_ms via exponential backoff.
+    max_turns_retry_delay_ms: int = 30_000
     max_concurrent_agents_by_state: dict[str, int] = field(default_factory=dict)
     # NEW: ClawCodex-specific fields
     provider: str = "anthropic"
@@ -401,6 +404,9 @@ class WorkflowConfig:
                 "max_retry_backoff_ms", 300_000
             ),
             max_retry_attempts=agent_raw.get("max_retry_attempts", 5),
+            max_turns_retry_delay_ms=agent_raw.get(
+                "max_turns_retry_delay_ms", 30_000
+            ),
             max_concurrent_agents_by_state=_normalize_state_limits(
                 agent_raw.get("max_concurrent_agents_by_state")
             ),

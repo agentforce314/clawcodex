@@ -5,7 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from extensions.api.query import SessionComplete
+from extensions.api.query import SessionComplete, TextDelta
 from src.orchestrator.agent_runner import AgentRunner, AgentSession
 from src.orchestrator.config.schema import AgentConfig, CodexConfig, WorkflowConfig
 from src.orchestrator.issue import Issue
@@ -18,6 +18,20 @@ class _QueryRunnerStub:
 
     async def stream(self):
         yield SessionComplete(reason="success")
+
+
+class _NoSessionCompleteStub:
+    """Stub that yields a TextDelta but never SessionComplete, forcing
+    AgentRunner.run to exhaust max_turns and fall through to the
+    max_turns_exceeded branch."""
+
+    def __init__(self, config) -> None:
+        self.config = config
+
+    async def stream(self):
+        yield TextDelta(content="noop")
+        # Generator ends without SessionComplete → while loop spins
+        # until turn_number reaches max_turns, then exits.
 
 
 class _Comment:
@@ -100,3 +114,33 @@ class TestAgentRunnerF38(unittest.IsolatedAsyncioTestCase):
             run_id = runner._build_run_id(session)
 
         self.assertRegex(run_id, r"^run-3-followup-2-\d{8}T\d{6}Z$")
+
+
+class TestAgentRunnerMaxTurns(unittest.IsolatedAsyncioTestCase):
+    async def test_run_max_turns_sets_max_turns_exceeded_status(self) -> None:
+        """When the QueryRunner stream never yields SessionComplete, the
+        while loop in AgentRunner.run should exhaust max_turns and fall
+        through to set session.status = 'max_turns_exceeded'."""
+        with TemporaryDirectory() as tmp:
+            workspace = Workspace(
+                path=Path(tmp),
+                issue_identifier="ISSUE-99",
+                issue_id="99",
+            )
+            session = AgentSession(
+                issue=Issue(id="99", identifier="ISSUE-99", title="Max turns"),
+                workspace=workspace,
+            )
+            runner = AgentRunner(AgentConfig(max_turns=2), CodexConfig())
+
+            with patch(
+                "extensions.orchestrator.agent_runner.QueryRunner",
+                _NoSessionCompleteStub,
+            ):
+                await runner.run(
+                    session,
+                    WorkflowConfig.from_dict({}),
+                )
+
+        self.assertEqual(session.status, "max_turns_exceeded")
+        self.assertEqual(session.turn_count, 2)

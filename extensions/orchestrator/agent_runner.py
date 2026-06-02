@@ -346,7 +346,7 @@ class AgentRunner:
                 session.turn_count = turn_number
 
         # Reached max_turns
-        session.status = "completed"
+        session.status = "max_turns_exceeded"
         logger.info(
             "Agent run reached max_turns issue_id=%s turns=%s/%s tools=%s",
             issue.id,
