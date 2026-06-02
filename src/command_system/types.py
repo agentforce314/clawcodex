@@ -68,9 +68,34 @@ class CommandContext:
     # (only first-party Anthropic supports it).
     app_state_store: Any = None
     provider: Any = None
-    tool_registry: Any = None
-    tool_context: Any = None
-    runtime_context: Any = None
+
+
+# ---------------------------------------------------------------------------
+# Downstream context extension — attach extra handles without modifying
+# CommandContext's upstream signature.  Extensions call
+# ``attach_downstream_context(ctx, ...)`` after creating a CommandContext
+# to inject tool_registry / tool_context / runtime_context.
+# ---------------------------------------------------------------------------
+
+def attach_downstream_context(
+    context: CommandContext,
+    *,
+    tool_registry: Any = None,
+    tool_context: Any = None,
+    runtime_context: Any = None,
+) -> None:
+    """Post-init injection of downstream-only fields onto *context*.
+
+    This keeps CommandContext's dataclass signature identical to upstream
+    while still allowing ext commands (e.g. /provider, /model) to read
+    tool and runtime state via ``getattr(context, 'tool_registry', None)``.
+    """
+    if tool_registry is not None:
+        context.tool_registry = tool_registry  # type: ignore[attr-defined]
+    if tool_context is not None:
+        context.tool_context = tool_context  # type: ignore[attr-defined]
+    if runtime_context is not None:
+        context.runtime_context = runtime_context  # type: ignore[attr-defined]
 
 
 # Protocol for local command callables

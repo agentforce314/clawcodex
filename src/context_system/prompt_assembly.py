@@ -41,6 +41,31 @@ _user_context_cache: dict[str, str] | None = None
 _system_context_cache: dict[str, str] | None = None
 
 
+# ---------------------------------------------------------------------------
+# Memory-section builder registry — downstream extensions can register
+# callbacks that produce a ``SystemPromptSection`` for the "memory" slot
+# without modifying this file.  See ``register_memory_section_builder()``.
+# ---------------------------------------------------------------------------
+
+_memory_section_builders: list[Any] = []
+
+
+def register_memory_section_builder(builder: Any) -> None:
+    """Register a callable that builds the memory system-prompt section.
+
+    *builder* is called with no arguments and must return either a
+    :class:`SystemPromptSection` or ``None``.  Builders are consulted in
+    registration order; the first non-``None`` result wins.  If all
+    builders return ``None``, the default upstream ``load_memory_prompt()``
+    path is used.
+
+    This is the decoupling seam for ``clawcodex_ext.memory.scope_aware_prompt``
+    so the ``memory_scopes`` parameter does not need to appear in
+    ``build_full_system_prompt`` / ``build_full_system_prompt_blocks``.
+    """
+    _memory_section_builders.append(builder)
+
+
 def clear_context_caches() -> None:
     """
     Clear all memoized context caches.
@@ -374,7 +399,6 @@ def build_full_system_prompt(
     custom_system_prompt: str | None = None,
     append_system_prompt: str | None = None,
     use_cache: bool = True,
-    memory_scopes: list[str] | None = None,
 ) -> str:
     """
     Build the full system prompt matching TypeScript getSystemPrompt().
@@ -401,22 +425,28 @@ def build_full_system_prompt(
     """
     if custom_system_prompt:
         base = custom_system_prompt
-        # SDK custom-prompt branch: when CLAUDE_COWORK_MEMORY_PATH_OVERRIDE
-        # is set, the caller has explicitly opted into the auto-memory
-        # mechanics. Mirror QueryEngine.ts:317-320: append the memory
-        # prompt AFTER the custom prompt and BEFORE append_system_prompt.
-        try:
-            from src.memdir import (
-                has_auto_mem_path_override,
-                load_memory_prompt,
-            )
-            if has_auto_mem_path_override():
-                memory_prompt = load_memory_prompt()
-                if memory_prompt:
-                    base += "\n\n" + memory_prompt
-        except Exception:
-            # Memory subsystem failures must never block prompt building.
-            pass
+        # Consult registered downstream memory-section builders first.
+        memory_injected = False
+        for builder in _memory_section_builders:
+            section = builder()
+            if section is not None and section.content:
+                base += "\n\n" + section.content
+                memory_injected = True
+                break
+        # Default upstream auto-mem path override logic.
+        if not memory_injected:
+            try:
+                from src.memdir import (
+                    has_auto_mem_path_override,
+                    load_memory_prompt,
+                )
+                if has_auto_mem_path_override():
+                    memory_prompt = load_memory_prompt()
+                    if memory_prompt:
+                        base += "\n\n" + memory_prompt
+            except Exception:
+                # Memory subsystem failures must never block prompt building.
+                pass
         if append_system_prompt:
             base += "\n\n" + append_system_prompt
         return base
@@ -473,7 +503,7 @@ def build_full_system_prompt(
         sections.append(env_section)
 
     # 25. Auto-memory section (MEMORY.md + behavioral instructions)
-    memory_section = _build_memory_section(memory_scopes)
+    memory_section = _build_memory_section()
     if memory_section:
         sections.append(memory_section)
 
@@ -568,7 +598,6 @@ def build_full_system_prompt_blocks(
     use_cache: bool = True,
     query_source: str = "main",
     provider: Any | None = None,
-    memory_scopes: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Block-list version of ``build_full_system_prompt``.
 
@@ -596,20 +625,16 @@ def build_full_system_prompt_blocks(
     # using custom prompts opt out of the section taxonomy.
     if custom_system_prompt:
         base = custom_system_prompt
-        # Memory insertion for custom prompt paths.
-        # Priority: explicit memory_scopes → auto-mem path override → none.
-        memory_prompt: str | None = None
-        if memory_scopes is not None:
-            # Scope-aware: delegate to ext module if available.
-            try:
-                from clawcodex_ext.memory.scope_aware_prompt import (  # type: ignore[import-untyped]
-                    build_scope_aware_memory_prompt,
-                )
-                memory_prompt = build_scope_aware_memory_prompt(memory_scopes)
-            except Exception:
-                pass
-        if memory_prompt is None:
-            # Fall back to existing auto-mem path override logic.
+        # Consult registered downstream memory-section builders first.
+        memory_injected = False
+        for builder in _memory_section_builders:
+            section = builder()
+            if section is not None and section.content:
+                base += "\n\n" + section.content
+                memory_injected = True
+                break
+        # Default upstream auto-mem path override logic.
+        if not memory_injected:
             try:
                 from src.memdir import (
                     has_auto_mem_path_override,
@@ -617,11 +642,10 @@ def build_full_system_prompt_blocks(
                 )
                 if has_auto_mem_path_override():
                     memory_prompt = load_memory_prompt()
+                    if memory_prompt:
+                        base += "\n\n" + memory_prompt
             except Exception:
-                # Memory subsystem failures must never block prompt building.
                 pass
-        if memory_prompt:
-            base += "\n\n" + memory_prompt
         if append_system_prompt:
             base += "\n\n" + append_system_prompt
         return [{"type": "text", "text": base}]
@@ -658,7 +682,7 @@ def build_full_system_prompt_blocks(
     env_section = _build_env_section(cwd, use_cache)
     if env_section:
         sections.append(env_section)
-    memory_section = _build_memory_section(memory_scopes)
+    memory_section = _build_memory_section()
     if memory_section:
         sections.append(memory_section)
     mcp_section = _build_mcp_section(mcp_servers, use_cache)
@@ -1091,15 +1115,8 @@ def _build_env_section(cwd: str | None, use_cache: bool) -> SystemPromptSection 
     return SystemPromptSection(id="environment", content=content, cache_scope=CacheScope.REQUEST, order=20)
 
 
-def _build_memory_section(
-    memory_scopes: list[str] | None = None,
-) -> SystemPromptSection | None:
+def _build_memory_section() -> SystemPromptSection | None:
     """Build the auto-memory system-prompt section.
-
-    When *memory_scopes* is provided, delegates to the scope-aware ext
-    module (``clawcodex_ext.memory.scope_aware_prompt``) instead of the
-    default ``load_memory_prompt()`` singleton.  Falls back to the
-    singleton if the ext module is not available.
 
     Mirrors TS ``constants/prompts.ts:495`` (``systemPromptSection('memory',
     () => loadMemoryPrompt())``). Returned with ``REQUEST`` scope so any
@@ -1107,24 +1124,23 @@ def _build_memory_section(
     can change mid-session as the model writes to it, and none of the
     existing cache scopes invalidate on file mtime. The work is small
     (one read of a ≤25KB file), so correctness over cache hit-rate.
+
+    Downstream extensions that need scope-aware memory (e.g.
+    ``clawcodex_ext.memory.scope_aware_prompt``) should register a builder
+    via :func:`register_memory_section_builder` instead of modifying this
+    function.
     """
-    content: str | None = None
-    if memory_scopes is not None:
-        # Scope-aware: delegate to ext module if available.
-        try:
-            from clawcodex_ext.memory.scope_aware_prompt import (  # type: ignore[import-untyped]
-                build_scope_aware_memory_prompt,
-            )
-            content = build_scope_aware_memory_prompt(memory_scopes)
-        except Exception:
-            pass
-    if content is None:
-        # Fall back to existing auto-memory.
-        try:
-            from src.memdir import load_memory_prompt
-            content = load_memory_prompt()
-        except Exception:
-            return None
+    # Consult registered downstream builders first.
+    for builder in _memory_section_builders:
+        result = builder()
+        if result is not None:
+            return result
+    # Default upstream behaviour.
+    try:
+        from src.memdir import load_memory_prompt
+    except Exception:
+        return None
+    content = load_memory_prompt()
     if not content:
         return None
     return SystemPromptSection(

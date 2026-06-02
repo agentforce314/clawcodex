@@ -41,7 +41,6 @@ LOCAL_BUILTINS: tuple[str, ...] = (
     "/render-last",
     "/skills",
     # Phase 2 dialogs:
-    "/models",
     "/effort",
     "/history",
     "/cost",
@@ -113,7 +112,7 @@ _LOCAL_BUILTIN_DESCRIPTIONS: dict[str, str] = {
     "/stream": "Toggle streaming output",
     "/render-last": "Re-render the last assistant message",
     "/skills": "List discovered skills",
-    "/model": "Choose the active model",
+    "/model": "Show current model and available list, or switch to a named model",
     "/effort": "Choose reasoning effort",
     "/history": "Open prompt history",
     "/cost": "Show session token + cost usage",
@@ -276,8 +275,6 @@ def dispatch_local_command(
 
     # Phase 2 dialogs: the command itself has no state to resolve here,
     # it just asks the app to push the corresponding modal screen.
-    if name in ("/model", "/models"):
-        return CommandDispatchResult(handled=True, open_dialog="model")
     if name == "/effort":
         return CommandDispatchResult(handled=True, open_dialog="effort")
     if name in ("/history", "/hist"):

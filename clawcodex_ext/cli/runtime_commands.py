@@ -1,4 +1,19 @@
-"""Runtime slash commands for provider/model switching."""
+"""Runtime slash commands for provider/model switching.
+
+Both ``/provider`` and ``/model`` share a unified surface that mirrors the
+CLI subcommands in :mod:`clawcodex_ext.cli.provider_cmd` and
+:mod:`clawcodex_ext.cli.model_cmd`:
+
+* ``/provider`` (no args)            — show current provider + list all
+* ``/provider <NAME>``               — switch to ``<NAME>``
+* ``/model``    (no args)            — show current provider/model + list all
+* ``/model <NAME> [--provider P]``   — switch to ``<NAME>`` (inferred or
+  explicit provider)
+
+The legacy ``list`` / ``current`` / ``use <NAME>`` subcommand spellings are
+no longer recognised — they were folded into the unified form so the
+slash command behaves identically in REPL and TUI.
+"""
 
 from __future__ import annotations
 
@@ -22,8 +37,8 @@ def register_runtime_commands(registry: Any | None = None) -> None:
 def _provider_command() -> LocalCommand:
     command = LocalCommand(
         name="provider",
-        description="Show or switch the active provider",
-        argument_hint="[list|current|NAME|use NAME]",
+        description="Show current provider (and available list), or switch to a named provider",
+        argument_hint="[NAME]",
     )
     command.set_call(_provider_call)
     return command
@@ -32,8 +47,8 @@ def _provider_command() -> LocalCommand:
 def _model_command() -> LocalCommand:
     command = LocalCommand(
         name="model",
-        description="Show or switch the active model",
-        argument_hint="[list|current|NAME|use NAME] [--provider NAME]",
+        description="Show current model (and available list), or switch to a named model",
+        argument_hint="[NAME [--provider NAME]]",
     )
     command.set_call(_model_call)
     return command
@@ -41,41 +56,41 @@ def _model_command() -> LocalCommand:
 
 def _provider_call(args: str, context: Any) -> LocalCommandResult:
     tokens = args.split()
-    command = tokens[0] if tokens else "current"
 
-    if command == "list":
-        return _text(format_provider_list())
-    if command == "current":
-        return _text(_format_runtime_current(context))
-    if command == "use" and len(tokens) >= 2:
-        provider = tokens[1]
-    elif command not in {"use"}:
-        provider = command
-    else:
-        return _text("usage: /provider [list|current|NAME|use NAME]")
+    if not tokens:
+        lines = [
+            _format_runtime_current(context),
+            "",
+            format_provider_list(),
+        ]
+        return _text("\n".join(lines))
 
+    provider = tokens[0]
     runtime = _runtime(context)
     ModelStore().set_default_provider(provider)
     runtime.swap_provider(provider)
     _sync_context(context, runtime)
-    return _text(_format_runtime_current(context, prefix=f"Provider switched to: {provider}"))
+    return _text(
+        _format_runtime_current(context, prefix=f"Provider switched to: {provider}")
+    )
 
 
 def _model_call(args: str, context: Any) -> LocalCommandResult:
     tokens = args.split()
-    command = tokens[0] if tokens else "current"
 
-    if command == "list":
-        provider = _parse_provider_flag(tokens[1:])
-        return _text(format_model_list(provider))
-    if command == "current":
-        return _text(_format_runtime_current(context))
+    if not tokens:
+        lines = [
+            _format_runtime_current(context),
+            "",
+            format_model_list(),
+        ]
+        return _text("\n".join(lines))
 
-    rest = tokens[1:] if command == "use" else tokens
-    if not rest:
-        return _text("usage: /model [list|current|NAME|use NAME] [--provider NAME]")
+    try:
+        model, provider = _parse_model_args(tokens)
+    except ValueError as exc:
+        return _text(f"usage: /model [NAME [--provider NAME]]\n{exc}")
 
-    model, provider = _parse_model_args(rest)
     registry = ModelRegistry()
     if provider is None:
         provider = registry.infer_provider_for_model(model)
@@ -88,7 +103,9 @@ def _model_call(args: str, context: Any) -> LocalCommandResult:
     runtime = _runtime(context)
     runtime.swap_provider(provider, model)
     _sync_context(context, runtime)
-    return _text(_format_runtime_current(context, prefix=f"Model switched to: {model}"))
+    return _text(
+        _format_runtime_current(context, prefix=f"Model switched to: {model}")
+    )
 
 
 def _parse_provider_flag(tokens: list[str]) -> str | None:

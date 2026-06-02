@@ -226,9 +226,6 @@ def create_command_context(
     config: dict[str, Any] | None = None,
     app_state_store: Any = None,
     provider: Any = None,
-    tool_registry: Any = None,
-    tool_context: Any = None,
-    runtime_context: Any = None,
 ) -> CommandContext:
     """
     Create a command context.
@@ -244,12 +241,6 @@ def create_command_context(
             mutate global session state (e.g. /advisor) need this.
         provider: Optional active LLM provider. Commands that gate on
             provider type (e.g. /advisor) need this.
-        tool_registry: Optional active tool registry for commands that
-            delegate to tools.
-        tool_context: Optional active tool context for commands that
-            delegate to tools.
-        runtime_context: Optional downstream runtime object for commands that
-            need to swap provider/tool state together.
 
     Returns:
         CommandContext instance
@@ -266,7 +257,4 @@ def create_command_context(
         config=config or {},
         app_state_store=app_state_store,
         provider=provider,
-        tool_registry=tool_registry,
-        tool_context=tool_context,
-        runtime_context=runtime_context,
     )

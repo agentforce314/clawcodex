@@ -4,11 +4,12 @@ This module sits entirely in ``clawcodex_ext/`` and relies on the existing
 ``src.memdir.load_memory_prompts()`` interface. No changes to ``src/memdir/``
 are required.
 
-The only integration points needed in ``src/`` are thin forwarding seams
-(see ``src/context_system/prompt_assembly.py``):
-1. ``build_full_system_prompt(memory_scopes=...)``
-2. ``build_full_system_prompt_blocks(memory_scopes=...)``
-3. ``_build_memory_section(memory_scopes=...)``
+Integration is handled via the memory-section builder registry defined in
+``src/context_system/prompt_assembly.py``.  Calling
+:func:`install_memory_extension` (done automatically by
+``clawcodex_ext.__init__``) registers a builder that produces scope-aware
+memory sections.  No ``memory_scopes`` parameter is needed in the upstream
+``build_full_system_prompt`` / ``build_full_system_prompt_blocks`` signatures.
 """
 
 from __future__ import annotations
@@ -21,6 +22,10 @@ logger = logging.getLogger(__name__)
 # Mirror of src/agent/parse_agent_markdown.VALID_MEMORY_SCOPES.
 # Kept here so the ext module does not import from src for validation.
 VALID_MEMORY_SCOPES: frozenset[str] = frozenset({"user", "project", "local"})
+
+# Default scopes used when building scope-aware memory.  Can be overridden
+# by calling ``set_default_memory_scopes()`` before the first prompt build.
+_default_memory_scopes: list[str] = ["user", "project", "local"]
 
 
 def _validate_scopes(memory_scopes: Iterable[str]) -> list[str]:
@@ -41,6 +46,17 @@ def _validate_scopes(memory_scopes: Iterable[str]) -> list[str]:
                 ", ".join(sorted(VALID_MEMORY_SCOPES)),
             )
     return validated
+
+
+def set_default_memory_scopes(scopes: list[str]) -> None:
+    """Override the default memory scopes used by the registered builder.
+
+    Call this before the first prompt build (e.g. at app startup) to
+    customise which scopes are included.  The default is
+    ``["user", "project", "local"]``.
+    """
+    global _default_memory_scopes
+    _default_memory_scopes = list(scopes)
 
 
 def build_scope_aware_memory_prompt(
@@ -86,3 +102,33 @@ def build_scope_aware_memory_prompt(
     # Each individual prompt already has its own heading and structure.
     combined = "\n\n".join(prompts)
     return combined
+
+
+def _memory_section_builder():
+    """Builder callback for ``register_memory_section_builder``.
+
+    Produces a scope-aware ``SystemPromptSection`` using the default scopes.
+    Returns ``None`` if scope-aware memory is not available or has no content,
+    allowing the upstream default memory path to take over.
+    """
+    from src.context_system.prompt_assembly import SystemPromptSection, CacheScope
+
+    prompt = build_scope_aware_memory_prompt(_default_memory_scopes)
+    if prompt is None:
+        return None
+    return SystemPromptSection(
+        id="memory",
+        content=prompt,
+        cache_scope=CacheScope.REQUEST,
+        order=25,
+    )
+
+
+def install_memory_extension() -> None:
+    """Register the scope-aware memory builder with the prompt-assembly registry.
+
+    Idempotent — safe to call more than once.
+    """
+    from src.context_system.prompt_assembly import register_memory_section_builder
+
+    register_memory_section_builder(_memory_section_builder)

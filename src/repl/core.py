@@ -581,10 +581,13 @@ class ClawcodexREPL:
             "/login",
             # F-43 runtime commands: /provider and /model are implemented via
             # the new command system (clawcodex_ext/cli/runtime_commands.py)
-            # and work in both REPL and TUI. /models (with 's') stays as the
-            # legacy TUI dialog entry.
+            # and work in both REPL and TUI. Both slash commands share a
+            # unified surface: no args shows current + available list, with
+            # arg switches.
             "/provider",
-            "/models",
+            # Permission mode command (REPL-native, supports both interactive
+            # menu and direct argument e.g. /permission dontAsk):
+            "/permission",
             # Phase 2 dialogs (TUI-only, show in palette with placeholder):
             "/effort",
             "/history",
@@ -598,6 +601,17 @@ class ClawcodexREPL:
             "/rewind",
         ]
         self._built_in_commands = list(self._original_built_ins)
+
+        # Create cost tracker and history. The F-43 refactor (commit
+        # 21e370b) accidentally removed these two lines, but
+        # ``_init_command_system`` still passes them to
+        # ``create_command_context`` below, which is what blew up at
+        # startup with ``AttributeError: 'ClawcodexREPL' object has no
+        # attribute 'cost_tracker'``. Kept as attributes (rather than
+        # inlined like the TUI's ``_ensure_command_context``) to match
+        # the original design and avoid drifting further from upstream.
+        self.cost_tracker = CostTracker()
+        self.history_log = HistoryLog()
 
         # Initialize new command system
         if getattr(self, '_api_key_missing', False):
@@ -2484,6 +2498,7 @@ class ClawcodexREPL:
                 'save', 'load', 'stream', 'render-last',
                 'skill',
                 'context', 'compact',  # These need special handling
+                'permission',  # REPL-native permission mode command
                 'tui',  # handoff to Textual TUI
                 # TUI-only commands (not implemented in REPL, show placeholder):
                 'repl', 'effort', 'history', 'idle', 'theme',
@@ -2519,6 +2534,12 @@ class ClawcodexREPL:
                         self.console.print(f"[red]{result.error}[/red]")
                 except Exception as e:
                     self.console.print(f"[red]Error executing /init: {e}[/red]")
+                return
+
+            # Handle /permission natively (REPL) — supports both interactive menu
+            # and direct argument e.g. /permission dontAsk
+            if cmd_name == 'permission':
+                self._handle_permission_command(args)
                 return
 
             if cmd_name not in special_commands:
@@ -2695,6 +2716,124 @@ class ClawcodexREPL:
                     return
             self.console.print(f"[red]Unknown command: {command}[/red]")
 
+    def _handle_permission_command(self, args: str = "") -> None:
+        """Handle the /permission command.
+
+        Without arguments: show current mode + interactive selection menu.
+        With a mode name: directly set the permission mode.
+        """
+        from src.permissions import (
+            EXTERNAL_PERMISSION_MODES,
+            PermissionMode,
+            permission_mode_short_title,
+            permission_mode_title,
+        )
+
+        mode = args.strip()
+
+        if mode:
+            # Direct mode selection
+            if mode not in EXTERNAL_PERMISSION_MODES:
+                valid = ", ".join(EXTERNAL_PERMISSION_MODES)
+                self.console.print(
+                    f"[red]Invalid permission mode: '{mode}'[/red]\n"
+                    f"[dim]Valid modes: {valid}[/dim]"
+                )
+                return
+
+            self._apply_permission_mode(mode)
+            title = permission_mode_title(mode)
+            self.console.print(f"[green]Permission mode set to: {title}[/green]")
+            return
+
+        # Interactive mode: show current mode + numbered menu
+        current = self._permission_mode
+        current_title = permission_mode_title(current)
+        current_short = permission_mode_short_title(current)
+
+        self.console.print()
+        self.console.print(f"[bold]Current permission mode:[/bold] {current_title} ({current_short})")
+        self.console.print()
+        self.console.print("[bold]Select a permission mode:[/bold]")
+
+        modes = list(EXTERNAL_PERMISSION_MODES)
+        for i, m in enumerate(modes, 1):
+            title = permission_mode_title(m)
+            desc = self._permission_mode_description(m)
+            marker = " ✓" if m == current else ""
+            self.console.print(f"  [cyan]{i}.[/cyan] {title}{' [green]' + marker + '[/green]' if marker else ''}")
+            self.console.print(f"       [dim]{desc}[/dim]")
+
+        self.console.print()
+        self.console.print("  [dim]or any other key to cancel[/dim]")
+        self.console.print()
+
+        try:
+            choice = self._safe_input("Choose mode [1-5]: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            self.console.print("[dim]Cancelled.[/dim]")
+            return
+
+        if not choice:
+            return
+
+        try:
+            idx = int(choice)
+            if 1 <= idx <= len(modes):
+                chosen = modes[idx - 1]
+                if chosen == current:
+                    self.console.print("[dim]Already in that mode.[/dim]")
+                    return
+                self._apply_permission_mode(chosen)
+                title = permission_mode_title(chosen)
+                self.console.print(f"[green]Permission mode set to: {title}[/green]")
+            else:
+                self.console.print(f"[red]Invalid choice: {idx}. Enter 1–{len(modes)}.[/red]")
+        except ValueError:
+            self.console.print("[dim]Cancelled.[/dim]")
+
+    @staticmethod
+    def _permission_mode_description(mode: PermissionMode) -> str:
+        """Return a human-readable description for each permission mode."""
+        descriptions = {
+            "default": "Prompt before every tool use (default behavior)",
+            "plan": "No write operations — only plan and read code",
+            "acceptEdits": "Auto-accept file edits; ask for other tools",
+            "bypassPermissions": "Auto-approve all tool requests (caution!)",
+            "dontAsk": "Never prompt — fail if permission would be needed",
+        }
+        return descriptions.get(mode, "")
+
+    def _apply_permission_mode(self, mode: PermissionMode) -> None:
+        """Apply a permission mode change to all stateful objects."""
+        from src.permissions import apply_permission_update, PermissionUpdateSetMode
+
+        ctx = self.tool_context
+        if ctx is None:
+            return
+
+        # Build an updated permission context
+        next_ctx = apply_permission_update(
+            ctx.permission_context,
+            PermissionUpdateSetMode(
+                type="setMode",
+                destination="session",
+                mode=mode,
+            ),
+        )
+
+        # Update all stateful references
+        self._permission_mode = mode
+        ctx.permission_context = next_ctx
+
+        # Update the handler based on the new mode
+        if mode == "bypassPermissions":
+            ctx.permission_handler = lambda _tn, _msg, _sug: (True, False)
+            ctx.allow_docs = True
+        else:
+            ctx.permission_handler = self._handle_permission_request
+            ctx.allow_docs = False
+
     def _try_run_skill_slash(self, raw: str) -> bool:
         text = raw.strip()
         if not text.startswith("/"):
@@ -2752,7 +2891,7 @@ class ClawcodexREPL:
 
     def show_help(self):
         """Show help message."""
-        help_text = """
+        help_text = r"""
 **Available Commands:**
 
 - `/` - Show all commands and skills

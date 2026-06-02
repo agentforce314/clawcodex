@@ -32,9 +32,9 @@ class TestGetNextPermissionMode(unittest.TestCase):
         )
         self.assertEqual(get_next_permission_mode(ctx), "default")
 
-    def test_bypassPermissions_to_default(self) -> None:
+    def test_bypassPermissions_to_dontAsk(self) -> None:
         ctx = ToolPermissionContext(mode="bypassPermissions")
-        self.assertEqual(get_next_permission_mode(ctx), "default")
+        self.assertEqual(get_next_permission_mode(ctx), "dontAsk")
 
     def test_dontAsk_to_default(self) -> None:
         ctx = ToolPermissionContext(mode="dontAsk")
@@ -75,9 +75,9 @@ class TestCyclePermissionMode(unittest.TestCase):
         for _ in range(5):
             mode, ctx = cycle_permission_mode(ctx)
             modes.append(mode)
-        # default → acceptEdits → plan → bypassPermissions → default → acceptEdits
+        # default → acceptEdits → plan → bypassPermissions → dontAsk → default
         self.assertEqual(
-            modes, ["acceptEdits", "plan", "bypassPermissions", "default", "acceptEdits"],
+            modes, ["acceptEdits", "plan", "bypassPermissions", "dontAsk", "default"],
         )
 
     def test_cycle_preserves_other_context_fields(self) -> None:

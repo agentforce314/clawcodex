@@ -92,6 +92,16 @@ class ClawCodexExtTUI(ClawCodexTUI):
         restores focus. Override to add downstream-only initialization;
         call super() to preserve the standard bootstrap sequence.
         """
+        # Install F-43 runtime commands + observer before the user can
+        # issue a /provider or /model slash command. The TUI dispatches
+        # through the global command registry, so a single registration
+        # here is enough for the lifetime of the app.
+        try:
+            from clawcodex_ext.frontend.tui_extensions import install_tui_extensions
+
+            install_tui_extensions(self, self.runtime_context)
+        except Exception:
+            pass
         return super().on_mount()
 
     # ---- slash commands ----
