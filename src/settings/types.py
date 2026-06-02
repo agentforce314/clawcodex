@@ -3,21 +3,101 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any
 
 
-PermissionModeType = Literal["default", "plan", "bypassPermissions"]
+# --- F-47: PermissionsConfig replaces the legacy `list[PermissionRule]` ---
+
+_PERMISSIONS_KNOWN_SUBKEYS: frozenset[str] = frozenset({
+    "allow",
+    "deny",
+    "ask",
+    "defaultMode",
+    "additionalDirectories",
+    "allowBypassPermissionsMode",
+    "rules",
+})
 
 
 @dataclass
-class PermissionRule:
-    """A single permission rule."""
-    tool: str = ""
-    allow: bool = True
-    glob: str | None = None
-    regex: str | None = None
-    description: str = ""
-    source: str = "user"  # "user" | "project" | "managed" | "cli"
+class PermissionsConfig:
+    """Structured `permissions` block — matches on-disk + TS upstream contract.
+
+    F-47 (2026-06-02): replaces the legacy ``list[PermissionRule]`` shape that
+    was drifting from the on-disk dict format
+    (``src/permissions/updates.py:persist_permission_update``) and the TS
+    upstream ``permissions.*`` contract. Field names are Python snake_case;
+    ``from_dict`` / ``to_dict`` translate to/from the camelCase on-disk keys
+    used by the rest of the system.
+
+    Unknown sub-keys land in :attr:`additional` (forward-compat bag) so
+    newer schema additions do not require touching this dataclass.
+    """
+
+    allow_bypass_permissions_mode: bool = False
+    default_mode: str | None = None
+    # Always-initialized 3-behavior skeleton: downstream code can read
+    # ``rules["allow"]`` / ``rules["deny"]`` / ``rules["ask"]`` without a
+    # KeyError. ``to_dict()`` still drops the empty rules dict to keep
+    # the on-disk shape minimal.
+    rules: dict[str, list[str]] = field(
+        default_factory=lambda: {"allow": [], "deny": [], "ask": []}
+    )
+    additional_directories: list[str] = field(default_factory=list)
+    additional: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "PermissionsConfig":
+        if not isinstance(data, dict):
+            return cls()
+
+        rules: dict[str, list[str]] = {}
+        rules_raw = data.get("rules")
+        rules_source: dict[str, Any] = rules_raw if isinstance(rules_raw, dict) else {}
+        for behavior in ("allow", "deny", "ask"):
+            bucket = rules_source.get(behavior)
+            if not isinstance(bucket, list):
+                bucket = data.get(behavior, [])
+            if isinstance(bucket, list):
+                rules[behavior] = [str(x) for x in bucket]
+
+        add_dirs = data.get("additionalDirectories")
+        if not isinstance(add_dirs, list):
+            add_dirs = []
+        additional_directories = [str(d) for d in add_dirs]
+
+        allow_bypass = data.get("allowBypassPermissionsMode", False)
+        allow_bypass_permissions_mode = bool(allow_bypass)
+
+        default_mode_raw = data.get("defaultMode")
+        default_mode: str | None
+        if isinstance(default_mode_raw, str) and default_mode_raw:
+            default_mode = default_mode_raw
+        else:
+            default_mode = None
+
+        additional = {
+            k: v for k, v in data.items() if k not in _PERMISSIONS_KNOWN_SUBKEYS
+        }
+
+        return cls(
+            allow_bypass_permissions_mode=allow_bypass_permissions_mode,
+            default_mode=default_mode,
+            rules=rules,
+            additional_directories=additional_directories,
+            additional=additional,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = dict(self.additional)
+        d["allowBypassPermissionsMode"] = self.allow_bypass_permissions_mode
+        if self.default_mode is not None:
+            d["defaultMode"] = self.default_mode
+        if self.rules:
+            d["rules"] = {k: list(v) for k, v in self.rules.items()}
+        if self.additional_directories:
+            d["additionalDirectories"] = list(self.additional_directories)
+        return d
 
 
 @dataclass
@@ -93,11 +173,19 @@ class SettingsSchema:
     # Provider
     provider: str = "anthropic"
 
-    # Permission mode
-    permission_mode: PermissionModeType = "default"
+    # Permission mode — F-47 back-compat reading channel.
+    # Reads through ``permissions.defaultMode`` first; this top-level
+    # field is kept for older binaries that wrote the mode outside the
+    # ``permissions`` block. Empty string means "unset" and is skipped
+    # by ``validate_settings``. F-46.2 will mark this deprecated.
+    permission_mode: str = ""
 
-    # Permission rules
-    permissions: list[PermissionRule] = field(default_factory=list)
+    # Permission configuration — F-47 dict-shaped block.
+    # Replaces the legacy ``list[PermissionRule]`` (deleted in F-47 Sub-H).
+    # Matches on-disk format produced by
+    # ``src/permissions/updates.py:persist_permission_update`` and the
+    # TS upstream ``permissions.*`` contract.
+    permissions: PermissionsConfig = field(default_factory=PermissionsConfig)
 
     # Tool settings
     tools: dict[str, ToolSettings] = field(default_factory=dict)
@@ -160,7 +248,18 @@ class SettingsSchema:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SettingsSchema:
-        """Deserialize from dict."""
+        """Deserialize from dict.
+
+        F-47: ``permissions`` is now a structured dict (PermissionsConfig)
+        matching the on-disk + TS upstream contract. ``from_dict`` accepts
+        any of dict / list / None / missing and degrades safely to an
+        empty :class:`PermissionsConfig`; unknown sub-keys land in
+        ``PermissionsConfig.additional`` (forward-compat bag).
+
+        ``SettingsSchema.extra`` continues to receive *unknown top-level*
+        keys (sub-keys of ``permissions`` are NOT extra — they are owned by
+        ``PermissionsConfig``).
+        """
         import dataclasses
         known_fields = {f.name for f in dataclasses.fields(cls)}
         known: dict[str, Any] = {}
@@ -172,11 +271,8 @@ class SettingsSchema:
                 extra[k] = v
 
         # Convert nested objects
-        if "permissions" in known and isinstance(known["permissions"], list):
-            known["permissions"] = [
-                PermissionRule(**r) if isinstance(r, dict) else r
-                for r in known["permissions"]
-            ]
+        if "permissions" in known:
+            known["permissions"] = PermissionsConfig.from_dict(known["permissions"])
         if "output_style" in known and isinstance(known["output_style"], dict):
             known["output_style"] = OutputStyleSettings(**known["output_style"])
         if "compact" in known and isinstance(known["compact"], dict):

@@ -1,4 +1,4 @@
-"""Downstream CLI permissions — owns resolve_permission_state(args)."""
+"""Downstream CLI permissions -- owns resolve_permission_state(args)."""
 
 from __future__ import annotations
 
@@ -23,19 +23,43 @@ def resolve_permission_state(args) -> None:
         has_allow_bypass_permissions_mode,
         initial_permission_mode_from_cli,
     )
+    # F-47: plumb ``settings.permissions.default_mode`` into the mode
+    # resolver. Import lazily so the CLI module stays importable in tests
+    # that never touch settings (e.g. permission-only unit tests).
+    try:
+        from src.settings.settings import get_settings as _get_settings
+    except Exception:  # pragma: no cover - defensive
+        _get_settings = None
 
     dangerously = bool(getattr(args, 'dangerously_skip_permissions', False))
     allow_dangerously = bool(getattr(args, 'allow_dangerously_skip_permissions', False))
     permission_mode_cli = getattr(args, 'permission_mode', None)
 
-    # Safety gate first — refuse to run as root outside a sandbox.
+    # Safety gate first -- refuse to run as root outside a sandbox.
     enforce_dangerous_skip_permissions_safety(
         bypass_requested=dangerously or allow_dangerously,
     )
 
+    # F-47: resolve settings-side default mode from the structured
+    # ``permissions.default_mode`` field. The legacy top-level
+    # ``settings.permission_mode`` channel has been removed; on-disk
+    # values at that key are no longer consulted at startup.
+    settings_default_mode: str | None = None
+    if _get_settings is not None:
+        try:
+            s = _get_settings()
+        except Exception:
+            s = None
+        if s is not None:
+            pc = getattr(s, "permissions", None)
+            structured_default = getattr(pc, "default_mode", None) if pc is not None else None
+            if structured_default:
+                settings_default_mode = structured_default
+
     mode = initial_permission_mode_from_cli(
         permission_mode_cli=permission_mode_cli,
         dangerously_skip_permissions=dangerously,
+        settings_default_mode=settings_default_mode,
     )
 
     is_bypass_available = (

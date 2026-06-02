@@ -17,6 +17,24 @@ class ValidationError:
     value: Any = None
 
 
+def _effective_default_permission_mode(settings: SettingsSchema) -> str | None:
+    """Resolve the effective default permission mode from F-47 channels.
+
+    Priority:
+
+    1. ``settings.permissions.default_mode`` (preferred, structured).
+    2. Top-level ``settings.permission_mode`` (back-compat reading channel
+       kept for older binaries that wrote the mode outside the
+       ``permissions`` block).
+    """
+    pc = settings.permissions
+    default_mode = getattr(pc, "default_mode", None)
+    if default_mode:
+        return default_mode
+    legacy = (settings.permission_mode or "").strip()
+    return legacy or None
+
+
 def validate_settings(settings: SettingsSchema) -> list[ValidationError]:
     """Validate a SettingsSchema, returning a list of errors (empty = valid)."""
     errors: list[ValidationError] = []
@@ -29,12 +47,17 @@ def validate_settings(settings: SettingsSchema) -> list[ValidationError]:
             value=settings.effort,
         ))
 
-    # Permission mode
-    if settings.permission_mode not in VALID_PERMISSION_MODES:
+    # F-47: permission default mode is read from ``permissions.default_mode``
+    # first, then the top-level ``permission_mode`` (back-compat). Empty
+    # strings on both are treated as "unset" and skip the enum check --
+    # this avoids F-47 defaulting `permission_mode` to ``""`` from being
+    # reported as an invalid mode.
+    effective_default_mode = _effective_default_permission_mode(settings)
+    if effective_default_mode is not None and effective_default_mode not in VALID_PERMISSION_MODES:
         errors.append(ValidationError(
-            field="permission_mode",
-            message=f"Invalid permission mode: {settings.permission_mode!r}",
-            value=settings.permission_mode,
+            field="permissions.defaultMode",
+            message=f"Invalid default permission mode: {effective_default_mode!r}",
+            value=effective_default_mode,
         ))
 
     # Output style
@@ -93,12 +116,25 @@ def validate_settings(settings: SettingsSchema) -> list[ValidationError]:
             value=settings.hooks.timeout_ms,
         ))
 
-    # Permission rules
-    for i, rule in enumerate(settings.permissions):
-        if not rule.tool:
+    # F-47: permissions.rules is a dict[str, list[str]] (allow/deny/ask).
+    # The legacy list[PermissionRule] path is gone (Sub-H); rule strings
+    # are kept verbatim on disk and validated as non-empty here.
+    rules = settings.permissions.rules
+    for behavior in ("allow", "deny", "ask"):
+        bucket = rules.get(behavior, [])
+        if not isinstance(bucket, list):
             errors.append(ValidationError(
-                field=f"permissions[{i}].tool",
-                message="Permission rule must have a 'tool' field",
+                field=f"permissions.rules.{behavior}",
+                message=f"permissions.rules.{behavior} must be a list",
+                value=bucket,
             ))
+            continue
+        for j, rule_str in enumerate(bucket):
+            if not isinstance(rule_str, str) or not rule_str.strip():
+                errors.append(ValidationError(
+                    field=f"permissions.rules.{behavior}[{j}]",
+                    message="Rule must be a non-empty string",
+                    value=rule_str,
+                ))
 
     return errors

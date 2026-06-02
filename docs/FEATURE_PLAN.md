@@ -2921,7 +2921,9 @@ class WorkflowConfig:
 3. `clawcodex_ext/cli/permissions.py:36-39` 调 `initial_permission_mode_from_cli` 时没传 `settings_default_mode`
 4. 顶层 `settings.permission_mode` 字段未被 `resolve_permission_state` 读
 
-核心方案：把 `permissions` 改为 `PermissionsConfig` dataclass（dict 形态），与磁盘 + TS 上游契约对齐；`resolve_permission_state` 真正 plumb 启动模式；顶层 `permission_mode` 保留为 back-compat 读取通道；删除 settings 层"假" `PermissionRule` 死代码。后续 `permissions.*` 新增 sub-key 不需要改 schema —— 走 `PermissionsConfig.additional` 前向兼容包。
+核心方案：把 `permissions` 改为 `PermissionsConfig` dataclass（dict 形态），与磁盘 + TS 上游契约对齐；`resolve_permission_state` 真正 plumb 启动模式；删除 settings 层"假" `PermissionRule` 死代码。后续 `permissions.*` 新增 sub-key 不需要改 schema —— 走 `PermissionsConfig.additional` 前向兼容包。
+
+> **F-47.1 (2026-06-02) hotfix**：F-47 设计阶段在 `resolve_permission_state` 保留顶层 `settings.permission_mode` 作为 back-compat 读取通道。F-47.1 在项目尚未发布的前提下直接删除该通道——`SettingsSchema.permission_mode` 字段保留为兼容形态但启动时不再被读，磁盘上残留的旧值在启动时被静默忽略。F-46.2 的 deprecation 步骤因此 N/A。详见 `docs/PROGRESS.md` F-47.1 备注。
 
 #### 触发背景
 
@@ -3001,7 +3003,9 @@ class PermissionsConfig:
 @dataclass
 class SettingsSchema:
     permissions: PermissionsConfig = field(default_factory=PermissionsConfig)
-    permission_mode: str = ""   # 顶层 back-compat 读取通道；空串视为未设置
+    permission_mode: str = ""   # 顶层 back-compat 形态保留；空串视为未设置。
+    # F-47.1 (2026-06-02) 已删除启动模式 plumb 时的 fallback 读取，
+    # 磁盘上残留的 settings.permission_mode 字段在启动时被忽略。
 ```
 
 #### 加载路径改造
@@ -3085,19 +3089,15 @@ def resolve_permission_state(args) -> None:
         bypass_requested=dangerously or allow_dangerously,
     )
 
-    # F-47: 启动模式 plumb —— 先读 permissions.default_mode，再 fallback 顶层 permission_mode
+    # F-47: 启动模式 plumb —— 读 permissions.default_mode。
+    # F-47.1 (2026-06-02) 已删除"再 fallback 顶层 permission_mode"分支，
+    # 磁盘上残留的 settings.permission_mode 字段在启动时被忽略。
     settings_default_mode: str | None = None
     try:
         s = get_settings()
         pc = getattr(s, "permissions", None)
         if pc is not None:
             settings_default_mode = getattr(pc, "default_mode", None) or None
-        if not settings_default_mode:
-            legacy = (getattr(s, "permission_mode", "") or "").strip()
-            if legacy in PERMISSION_MODES:
-                settings_default_mode = legacy
-    except Exception:
-        pass
 
     mode = initial_permission_mode_from_cli(
         permission_mode_cli=permission_mode_cli,
@@ -3158,7 +3158,7 @@ for behavior in ("allow", "deny", "ask"):
 
 1. **`permissions` 改 dict 形态（`PermissionsConfig` dataclass）**：对齐磁盘格式（`updates.py:persist_permission_update` 写 dict）+ TS 上游契约（`modes.py:118-141` docstring 明确 TS 是 dict），消除运行时 + schema + 磁盘三处形态漂移。
 2. **强类型 sub-key + `additional` 前向兼容 bag**：已知 sub-key（`allowBypassPermissionsMode` / `defaultMode` / `rules` / `additionalDirectories`）给类型化访问，未知 sub-key 进 `additional` 兜底。新增 sub-key 不需要改 schema。
-3. **顶层 `settings.permission_mode` 字段保留为 back-compat 读取通道**：本次不引入一次性 breaking change；F-46 后续阶段会统一 deprecate。空串视为未设置、不触发 `validation.py` enum 校验误报。
+3. **顶层 `settings.permission_mode` 字段保留为 back-compat 读取通道**：本次不引入一次性 breaking change；F-46 后续阶段会统一 deprecate。空串视为未设置、不触发 `validation.py` enum 校验误报。**F-47.1 (2026-06-02) hotfix：在项目尚未发布的前提下直接删除该通道**（磁盘上没有需要迁移的旧配置），F-46 deprecate 步骤 N/A。`validation.py` 跳过空串校验的规则保留（无副作用，不删以避免引入额外变更面）。
 4. **删除 settings 层"假" `PermissionRule` 死代码**：与运行时 `PermissionRule` 同名异构（一个带 `tool/allow/glob/regex/description/source`，一个带 `source/rule_behavior/rule_value`），混淆读者。`grep` 确认唯一引用是 `from_dict:176-179`（本次同时改写），可安全删。
 5. **`has_allow_bypass_permissions_mode` 加 `_settings_perms` 聚合器**：保留 `extra["permissions"]` fallback，F-47 落地前的旧 binary 不炸；同时支持过渡期调试（直接写 `extra` 也能读出）。
 6. **`PermissionsConfig.rules` 用 `dict[str, list[str]]` 而不是 `list[PermissionRule]`**：与磁盘原样（字符串数组）对齐；`PermissionRule` 字符串解析走运行时现成的 `permissions/rule_parser.py:permission_rule_value_from_string`，不重新引入 dataclass 死代码。
@@ -3171,7 +3171,7 @@ for behavior in ("allow", "deny", "ask"):
 |------|------|
 | 死代码清理连带引用 | `grep -r "from src.settings.types import PermissionRule" src/ tests/` 确认唯一引用是 `from_dict:176-179`（本次同时改写） |
 | pydantic-settings 后端 schema 漂移 | 本期只覆盖 dataclass 后端；F-47.1 单独补 pydantic 路径对齐，TODO 标在 `from_dict` 注释里 |
-| 顶层 `permission_mode` 字段 deprecation 风险 | 本次只保留读取、不标 deprecated；F-46 后续阶段统一 deprecate |
+| 顶层 `permission_mode` 字段 deprecation 风险 | 本次只保留读取、不标 deprecated；F-46 后续阶段统一 deprecate。**F-47.1 (2026-06-02) hotfix 已先一步直接删除读取通道**，deprecation 步骤 N/A。 |
 | `extra` 字段语义迁移 | `SettingsSchema.extra` 仍是"未识别 sub-key 的兜底"；F-47 之后 `permissions` 已知 sub-key 不再溢出到 `extra`，但其它未知 sub-key 仍走 `extra`（行为不变） |
 | 改动 6 个文件 | 每个文件改动局部，git revert 风险可控；阶段化落地每步可独立 PR |
 | F-47 与 F-46 顺序 | 两者不耦合，可独立 PR、并行落地；F-47 落地后 `permissions.defaultMode` 字段自动成为 F-46.0 拆 `audit_log` 后的"启动默认模式"读路径 |
@@ -3204,7 +3204,7 @@ for behavior in ("allow", "deny", "ask"):
 - **F-31**（TUI 权限模式选择器）：TUI 模态对话框消费 `permissions.defaultMode` 字段。
 - **F-46** 弱相关：F-46 后续 `interactive` / `default_decision` 字段落地时，`PermissionsConfig` 是天然的承接结构。
 - **F-40** 无关：ProgressSink 重构不涉及 settings schema。
-- **`docs/new-features-guide.md`**：F-47.1 阶段补"permission settings 配置迁移"章节，给新 schema 形态 + back-compat 读取通道做用户级解释。
+- **`docs/new-features-guide.md`**：F-47.1 阶段补"permission settings 配置迁移"章节，给新 schema 形态做用户级解释。**F-47.1 hotfix 后**：旧字段 `settings.permission_mode` 不再做 back-compat 读取，迁移章节需直接建议用户把顶层 `permission_mode` 改成 `permissions.defaultMode`，而不是"两种写法都生效"。
 
 ---
 
@@ -5604,6 +5604,8 @@ CLAWCODEX_UPSTREAM_MODE=true clawcodex-tui
 *版本 v2.13 更新：新增 §3.1.10 Tool-call 审计旁路设计（F-45，📋 设计完成，P1）。在 `agent_runner._handle_tool_call` 后加 NDJSON 旁路落 `~/.clawcodex/tool-events/{run_id}/events.ndjson`，与 permission_mode 解耦（bypass / dontAsk / acceptEdits / default 四种 mode 一视同仁全写）；扩展 `report_writer.RunReport.tool_events_path` 字段与 markdown 模板登记路径；dual-write 到 `~/.clawcodex/reports/.../{run_id}/` 持久化层。NDJSON 每行 8 字段：ts / tool / params / approved / deny_reason / permission_mode / turn / session_run_id。修复 TS 注释 "bypass = no logging" 在 Python 端的事实偏差——ApprovalPolicy 一直在跑，只是决策没落盘。*
 
 *版本 v2.13 更新：新增 §3.16 permission_mode enum 正交拆分设计（F-46，⏳ 规划中，P2）。把 `permission_mode` 混合 enum 拆为三个正交字段 `interactive: bool` / `default_decision: Literal["allow","deny","ask"]` / `audit_log: Literal["none","minimal","full"]`。F-46.0（v2.13）只拆 `audit_log`，依赖 F-45 落地后端到端验证；`permission_mode` 保留为 backward-compat shim 标 deprecated。F-46.1（v2.15+）拆其余两字段，F-46.2（v2.16+）移除 `permission_mode`。三字段组合爆炸风险用 `validate()` 互斥规则 + 启动 warning 缓解。*
+
+*F-47.1 (2026-06-02) v2.13 hotfix：F-47 原本保留的顶层 `settings.permission_mode` back-compat 读取通道在项目尚未发布的前提下直接删除（`SettingsSchema.permission_mode` 字段保留为兼容形态但启动时不再被读）。F-46 计划中的"标 deprecated → 打 warning → 移除"路径因此提前在 v2.13 完成第一步（直接删读取），F-46.2 的 deprecation 步骤 N/A。*
 
 *版本 v2.0 更新：新增 F-35 二开特性可切换架构设计，Feature Toggle 系统 + 584 个内联修改文件特性提取方案。*
 

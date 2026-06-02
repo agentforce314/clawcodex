@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import os
 from unittest.mock import patch
 
 import pytest
@@ -10,7 +11,7 @@ import pytest
 from src.settings.types import (
     CompactSettings,
     OutputStyleSettings,
-    PermissionRule,
+    PermissionsConfig,
     SettingsSchema,
     ToolSettings,
 )
@@ -18,7 +19,6 @@ from src.settings.constants import DEFAULT_SETTINGS
 from src.settings.validation import validate_settings, ValidationError
 from src.settings.change_detector import SettingsChangeDetector, SettingsDiff
 from src.settings.settings import load_settings, invalidate_settings_cache
-from src.settings.permission_validation import validate_permission_rules
 from src.settings.managed_path import resolve_managed_settings_path
 
 
@@ -42,17 +42,37 @@ class TestSettingsSchema:
         assert s.extra.get("unknown_field") == 42
 
     def test_from_dict_nested_objects(self):
+        # F-47: ``permissions`` is now a structured dict, not a list.
         data = {
             "output_style": {"style": "concise", "max_width": 80},
             "compact": {"auto_compact": False, "threshold_tokens": 50000},
-            "permissions": [{"tool": "Bash", "allow": True, "glob": "*.py"}],
+            "permissions": {
+                "allowBypassPermissionsMode": True,
+                "defaultMode": "bypassPermissions",
+                "rules": {"allow": ["Bash"], "deny": [], "ask": []},
+            },
         }
         s = SettingsSchema.from_dict(data)
         assert s.output_style.style == "concise"
         assert s.output_style.max_width == 80
         assert s.compact.auto_compact is False
-        assert len(s.permissions) == 1
-        assert s.permissions[0].tool == "Bash"
+        assert isinstance(s.permissions, PermissionsConfig)
+        assert s.permissions.allow_bypass_permissions_mode is True
+        assert s.permissions.default_mode == "bypassPermissions"
+        assert s.permissions.rules == {"allow": ["Bash"], "deny": [], "ask": []}
+
+    def test_from_dict_permissions_none_safe(self):
+        # F-47: ``None``/``[]``/``{}`` should all degrade to an empty
+        # PermissionsConfig without raising. ``rules`` is always
+        # initialized to the 3-behavior skeleton so downstream code can
+        # read ``rules["allow"]`` without a KeyError.
+        for payload in (None, [], {}, {"rules": "not-a-dict"}):
+            s = SettingsSchema.from_dict({"permissions": payload})
+            assert isinstance(s.permissions, PermissionsConfig)
+            assert s.permissions.allow_bypass_permissions_mode is False
+            assert s.permissions.default_mode is None
+            assert s.permissions.rules == {"allow": [], "deny": [], "ask": []}
+            assert s.permissions.additional == {}
 
 
 class TestValidation:
@@ -65,10 +85,27 @@ class TestValidation:
         errors = validate_settings(s)
         assert any(e.field == "effort" for e in errors)
 
-    def test_invalid_permission_mode(self):
-        s = SettingsSchema(permission_mode="bad")  # type: ignore
+    def test_invalid_permission_mode_via_structured(self):
+        # F-47: bad default mode is reported against ``permissions.defaultMode``
+        # when written through the structured field.
+        s = SettingsSchema(
+            permissions=PermissionsConfig(default_mode="not-a-mode")
+        )
         errors = validate_settings(s)
-        assert any(e.field == "permission_mode" for e in errors)
+        assert any(e.field == "permissions.defaultMode" for e in errors)
+
+    def test_invalid_permission_mode_via_legacy_top_level(self):
+        # F-47: top-level ``permission_mode`` still works as back-compat.
+        s = SettingsSchema(permission_mode="bad")
+        errors = validate_settings(s)
+        assert any(e.field == "permissions.defaultMode" for e in errors)
+
+    def test_empty_permission_mode_is_unset(self):
+        # F-47: the new default ``""`` is treated as "unset" and skips the
+        # enum check (no false-positive ValidationError).
+        s = SettingsSchema(permission_mode="")
+        errors = validate_settings(s)
+        assert not any("defaultMode" in e.field for e in errors)
 
     def test_invalid_output_style(self):
         s = SettingsSchema(output_style=OutputStyleSettings(style="nonexistent"))
@@ -85,10 +122,15 @@ class TestValidation:
         errors = validate_settings(s)
         assert any(e.field == "max_turns" for e in errors)
 
-    def test_permission_rule_missing_tool(self):
-        s = SettingsSchema(permissions=[PermissionRule(tool="")])
+    def test_permission_rule_empty_string_in_allow(self):
+        # F-47: rules is a dict[str, list[str]]; empty strings are invalid.
+        s = SettingsSchema(
+            permissions=PermissionsConfig(rules={"allow": ["Bash", ""], "deny": [], "ask": []})
+        )
         errors = validate_settings(s)
-        assert any("permissions[0]" in e.field for e in errors)
+        assert any(
+            e.field == "permissions.rules.allow[1]" for e in errors
+        )
 
 
 class TestChangeDetector:
@@ -122,47 +164,13 @@ class TestChangeDetector:
         assert not diff2.has_changes
 
 
-class TestPermissionValidation:
-    def test_valid_rules(self):
-        rules = [
-            PermissionRule(tool="Bash", allow=True),
-            PermissionRule(tool="Read", allow=True, glob="*.py"),
-        ]
-        errors = validate_permission_rules(rules)
-        assert errors == []
-
-    def test_missing_tool(self):
-        rules = [PermissionRule(tool="")]
-        errors = validate_permission_rules(rules)
-        assert len(errors) == 1
-
-    def test_invalid_regex(self):
-        rules = [PermissionRule(tool="Bash", regex="[invalid")]
-        errors = validate_permission_rules(rules)
-        assert len(errors) >= 1
-        assert "regex" in errors[0].lower()
-
-    def test_both_glob_and_regex(self):
-        rules = [PermissionRule(tool="Bash", glob="*.py", regex=".*\\.py")]
-        errors = validate_permission_rules(rules)
-        assert any("both" in e.lower() for e in errors)
-
-    def test_duplicate_rules(self):
-        rules = [
-            PermissionRule(tool="Bash", glob="*.py"),
-            PermissionRule(tool="Bash", glob="*.py"),
-        ]
-        errors = validate_permission_rules(rules)
-        assert any("duplicate" in e.lower() for e in errors)
-
-
 class TestManagedPath:
     def test_returns_none_when_no_managed_file(self):
         with patch.dict(os.environ, {}, clear=False):
             with patch("os.environ.get", side_effect=lambda k, *a: None if k == "CLAUDE_MANAGED_SETTINGS_PATH" else os.environ.get(k, *a)):
                 # Most environments won't have the managed file
                 result = resolve_managed_settings_path()
-                # Just verify it doesn't crash — result may be None
+                # Just verify it doesn't crash -- result may be None
 
     def test_env_var_override(self, tmp_path):
         managed = tmp_path / "managed.json"
@@ -208,4 +216,64 @@ class TestLoadSettings:
             assert s.fast_mode is True
 
 
-import os
+class TestPermissionsConfig:
+    def test_from_dict_full_camelcase(self):
+        data = {
+            "allowBypassPermissionsMode": True,
+            "defaultMode": "bypassPermissions",
+            "rules": {"allow": ["Bash", "Edit"], "deny": ["WebFetch"], "ask": []},
+            "additionalDirectories": ["/tmp/extra", "/var/data"],
+        }
+        pc = PermissionsConfig.from_dict(data)
+        assert pc.allow_bypass_permissions_mode is True
+        assert pc.default_mode == "bypassPermissions"
+        assert pc.rules == {"allow": ["Bash", "Edit"], "deny": ["WebFetch"], "ask": []}
+        assert pc.additional_directories == ["/tmp/extra", "/var/data"]
+        assert pc.additional == {}
+
+    def test_from_dict_top_level_behavior_keys(self):
+        # F-47: top-level allow/deny/ask keys (alternative to ``rules``)
+        # are also accepted, matching the on-disk format produced by
+        # older binaries.
+        data = {
+            "allowBypassPermissionsMode": False,
+            "allow": ["Read"],
+            "deny": ["Bash"],
+            "ask": ["WebFetch"],
+        }
+        pc = PermissionsConfig.from_dict(data)
+        assert pc.allow_bypass_permissions_mode is False
+        assert pc.rules == {"allow": ["Read"], "deny": ["Bash"], "ask": ["WebFetch"]}
+
+    def test_from_dict_unknown_subkey_preserved(self):
+        data = {"myCustomFlag": 42, "anotherFlag": "hello"}
+        pc = PermissionsConfig.from_dict(data)
+        assert pc.additional == {"myCustomFlag": 42, "anotherFlag": "hello"}
+
+    def test_to_dict_round_trip(self):
+        pc = PermissionsConfig(
+            allow_bypass_permissions_mode=True,
+            default_mode="plan",
+            rules={"allow": ["Bash"], "deny": [], "ask": []},
+            additional_directories=["/extra"],
+            additional={"myCustomFlag": 7},
+        )
+        d = pc.to_dict()
+        pc2 = PermissionsConfig.from_dict(d)
+        assert pc2.allow_bypass_permissions_mode is True
+        assert pc2.default_mode == "plan"
+        assert pc2.rules == {"allow": ["Bash"], "deny": [], "ask": []}
+        assert pc2.additional_directories == ["/extra"]
+        assert pc2.additional == {"myCustomFlag": 7}
+
+    def test_to_dict_omits_default_and_empty(self):
+        pc = PermissionsConfig()
+        d = pc.to_dict()
+        # The 3-behavior rules skeleton is always present (downstream
+        # code reads ``rules["allow"]`` without a KeyError), so it
+        # appears in ``to_dict()``. ``defaultMode`` and
+        # ``additionalDirectories`` stay absent when unset.
+        assert d == {
+            "allowBypassPermissionsMode": False,
+            "rules": {"allow": [], "deny": [], "ask": []},
+        }

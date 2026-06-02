@@ -6,6 +6,7 @@ from .types import (
     CompactSettings,
     HookSettings,
     OutputStyleSettings,
+    PermissionsConfig,
     SettingsSchema,
 )
 
@@ -13,8 +14,14 @@ DEFAULT_SETTINGS = SettingsSchema(
     model="claude-sonnet-4-20250514",
     small_fast_model="claude-3-5-haiku-20241022",
     provider="anthropic",
-    permission_mode="default",
-    permissions=[],
+    # F-47: top-level permission_mode left as "" (the new back-compat default).
+    # The actual default mode for new binaries is `default`; if a user wants
+    # to start in a non-default mode, they set ``permissions.defaultMode``
+    # (preferred) or this top-level field (legacy).
+    permission_mode="",
+    # F-47: structured permissions block — empty default keeps the binary
+    # in ``default`` mode with no allow/deny rules and bypass disabled.
+    permissions=PermissionsConfig(),
     tools={},
     output_style=OutputStyleSettings(
         style="default",

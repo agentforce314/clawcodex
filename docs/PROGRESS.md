@@ -2404,7 +2404,9 @@ agent:
 
 ### 目标
 
-把 `SettingsSchema.permissions` 从 `list[PermissionRule]` 改为结构化 `PermissionsConfig` dataclass（dict 形态），与磁盘格式 + TS 上游契约对齐；让 `settings.permissions.defaultMode` / `settings.permissions.allowBypassPermissionsMode` 真正生效；`resolve_permission_state` 一次 plumb 到位；顶层 `settings.permission_mode` 字段保留为 back-compat 读取通道；删除 settings 层"假" `PermissionRule` 死代码。后续 `permissions.*` 新增 sub-key 不需要改 schema —— 走 `PermissionsConfig.additional` 前向兼容包。
+把 `SettingsSchema.permissions` 从 `list[PermissionRule]` 改为结构化 `PermissionsConfig` dataclass（dict 形态），与磁盘格式 + TS 上游契约对齐；让 `settings.permissions.defaultMode` / `settings.permissions.allowBypassPermissionsMode` 真正生效；`resolve_permission_state` 一次 plumb 到位；删除 settings 层"假" `PermissionRule` 死代码。后续 `permissions.*` 新增 sub-key 不需要改 schema —— 走 `PermissionsConfig.additional` 前向兼容包。
+
+> **F-47.1 (2026-06-02)**：F-47 设计阶段曾在 `clawcodex_ext/cli/permissions.py` 保留顶层 `settings.permission_mode` 作为 back-compat 读取通道。F-47.1 在项目尚未发布的前提下直接删除该通道：`resolve_permission_state` 只读 `settings.permissions.default_mode`，磁盘上残留的 `settings.permission_mode` 字段在启动时被忽略。F-46.2 计划的"标 deprecated"步骤因此不再需要。
 
 ### 子特性
 
@@ -2413,7 +2415,7 @@ agent:
 | A | `PermissionsConfig` dataclass 定义（`src/settings/types.py`） | 把 `permissions` 从 `list[PermissionRule]` 改为结构化 dict 形态 | 新增 `PermissionsConfig` dataclass，含 `allow_bypass_permissions_mode: bool` / `default_mode: str \| None` / `rules: dict[str, list[str]]` / `additional_directories: list[str]` / `additional: dict[str, Any]` 字段；`from_dict()` / `to_dict()` 双向互转，未知 sub-key 进 `additional`；`SettingsSchema.permissions: PermissionsConfig = field(default_factory=PermissionsConfig)` |
 | B | `SettingsSchema.from_dict` 加载改造（`src/settings/types.py:161-198`） | dict / list / None 形态都安全降级到 `PermissionsConfig` | 把 `if "permissions" in known and isinstance(known["permissions"], list): ...` 替换为 `if "permissions" in known: known["permissions"] = PermissionsConfig.from_dict(known["permissions"])`；保留 `default` 值（`field(default_factory=PermissionsConfig)`）兜底 |
 | C | `has_allow_bypass_permissions_mode` 加 fallback（`src/permissions/modes.py:113-140`） | 读路径兼容结构化字段 + 旧 `extra["permissions"]` 旁路 | 新增私有 `_settings_perms(settings)` 聚合器：先 `settings.permissions.additional`，再 `to_dict()`，最后 `extra["permissions"]`；`has_allow_bypass_permissions_mode` 改读该聚合结果 |
-| D | `resolve_permission_state` plumb（`clawcodex_ext/cli/permissions.py:36-39`） | 启动模式读 `permissions.defaultMode`，fallback 顶层 `settings.permission_mode` | 加 `try: get_settings()` 块读 `settings.permissions.default_mode` 和 `settings.permission_mode`（兼容），传给 `initial_permission_mode_from_cli(settings_default_mode=...)`；模块顶部加 `from src.settings.settings import get_settings` 和 `from src.permissions.modes import PERMISSION_MODES` |
+| D | `resolve_permission_state` plumb（`clawcodex_ext/cli/permissions.py:36-39`） | 启动模式读 `permissions.defaultMode` | 加 `try: get_settings()` 块读 `settings.permissions.default_mode`，传给 `initial_permission_mode_from_cli(settings_default_mode=...)`；模块顶部加 `from src.settings.settings import get_settings`。**F-47.1 (2026-06-02) 已删除顶层 `settings.permission_mode` fallback 读取**，磁盘上残留的旧字段在启动时被忽略。 |
 | E | `validate_settings` 重写（`src/settings/validation.py:32-38, 96-103`） | dict 形态不再被当成 list 遍历 | 改 `settings.permission_mode not in VALID_PERMISSION_MODES` 校验为：先取 `settings.permissions.default_mode`，空再取顶层 `settings.permission_mode`（空串视为未设置跳过校验）；删除 `for i, rule in enumerate(settings.permissions): ...` 整段，替换为对 `settings.permissions.rules["allow"/"deny"/"ask"]` 的字符串非空检查 |
 | F | `DEFAULT_SETTINGS` 改造（`src/settings/constants.py:12-46`） | 默认 settings 也能跑新 schema | `permissions=[]` 改为 `permissions=PermissionsConfig()`；`permission_mode="default"` 留作兼容字段默认值（保持不变） |
 | G | 单元测试 + e2e（`tests/test_permission_settings_schema.py` + `tests/manual_e2e_f38_permissions.py`） | 七条单元测试覆盖关键路径 | 详见"验收标准"节 |
@@ -2424,7 +2426,7 @@ agent:
 | 能力 | 当前状态 | 说明 |
 |------|----------|------|
 | 启动模式从 `settings.permissions.defaultMode` 读 | ❌ 缺 | `clawcodex_ext/cli/permissions.py:36-39` 没传 `settings_default_mode` |
-| 启动模式从顶层 `settings.permission_mode` 读 | ❌ 缺 | 字段存在但 `resolve_permission_state` 不读 |
+| 启动模式从顶层 `settings.permission_mode` 读 | ❌ 缺 | 字段存在但 `resolve_permission_state` 不读。**F-47.1 (2026-06-02) 已直接删除该通道**：磁盘上残留的 `settings.permission_mode` 字段在启动时被忽略，详见 风险 #3 / 设计决定 #3 / F-47.1 备注。 |
 | `settings.permissions.allowBypassPermissionsMode` 读到 | ❌ 缺 | dict 落进 known field,`extra["permissions"]` 永远 None |
 | `SettingsSchema.permissions` 形状 | ❌ 错 | `list[PermissionRule]`，与磁盘 dict 形态、TS 上游契约都不一致 |
 | `src/settings/types.py:13-20` `PermissionRule` | ❌ 死代码 | 唯一引用点是 `from_dict:176-179`，且永远走不到（磁盘不是 list） |
@@ -2451,13 +2453,13 @@ agent:
 - 用户 `~/.clawcodex/config.json` 写 `{settings: {permissions: {allowBypassPermissionsMode: true, defaultMode: "bypassPermissions"}}}` 启动 `python3 -m src.cli` 后，`args._resolved_permission_mode == "bypassPermissions"` 且 `args._resolved_is_bypass_available is True`。
 - REPL 内 Shift+Tab 连续按能切到第四档 `Bypass`（cycle 路径 `default → acceptEdits → plan → bypassPermissions → default`）。
 - 旧 binary 不炸：`settings.extra["permissions"] = {"allowBypassPermissionsMode": True}`（F-47 落地前已运行的实例）仍能被 `_settings_perms` 聚合到，`has_allow_bypass_permissions_mode` 返回 True。
-- 顶层 back-compat：`settings.permission_mode: "bypassPermissions"`（旧字段单独写、不嵌在 `permissions` 里）仍能被 `resolve_permission_state` 解析；空串视为未设置、不触发 `validation.py` 的 enum 校验报错。
+- 顶层 back-compat（F-47.1 已删除）：`settings.permission_mode: "bypassPermissions"`（旧字段单独写、不嵌在 `permissions` 里）原本在 F-47 阶段作为回退读取通道被 `resolve_permission_state` 解析。**F-47.1 (2026-06-02) 已直接删除该通道**：磁盘上残留的 `settings.permission_mode` 字段在启动时被忽略；空串视为未设置、不触发 `validation.py` 的 enum 校验报错（保留后者是为了不影响后续字段写入）。
 - 单元测试至少覆盖七条：
   1. `test_permissions_dict_loads_into_struct`：从 `{permissions: {allowBypassPermissionsMode: True}}` 加载后 `settings.permissions.allow_bypass_permissions_mode is True`。
   2. `test_default_mode_resolved_from_permissions_dict`：`initial_permission_mode_from_cli(settings_default_mode="bypassPermissions", ...)` 返回 `"bypassPermissions"`。
   3. `test_has_allow_bypass_true_after_settings_loaded`：`has_allow_bypass_permissions_mode()` 在 settings 注入后 True。
   4. `test_legacy_extra_permissions_fallback`：`settings.extra["permissions"] = {"allowBypassPermissionsMode": True}` 时仍 True。
-  5. `test_legacy_top_level_permission_mode_still_resolves`：settings.permission_mode="bypassPermissions" 时 `resolve_permission_state` 解析到 bypass。
+  5. `test_legacy_top_level_permission_mode_is_ignored`（F-47.1 改名）：`settings.permission_mode="bypassPermissions"`（仅设旧字段、不嵌 `permissions`）时 `resolve_permission_state` 把 `_resolved_permission_mode` 解析为内置 `"default"` fallback；磁盘上的旧字段对启动 mode 不再有任何影响。`allowBypassPermissionsMode=True` 仍让 `_resolved_is_bypass_available` 为 True（这与 default-mode 解析是两条独立路径）。
   6. `test_unknown_subkey_preserved`：`{permissions: {myCustomFlag: 42}}` 加载后 `settings.permissions.additional["myCustomFlag"] == 42`。
   7. `test_dict_shape_no_longer_crashes_validation`：`validate_settings` 对 dict 形态 `permissions` 不抛。
 - e2e：新增 `tests/manual_e2e_f38_permissions.py`，断言 "config.json 配 `defaultMode=bypassPermissions` + `allowBypassPermissionsMode=true` → 启动后 `is_bypass_available=True` 且首屏 `args._resolved_permission_mode == 'bypassPermissions'`"。
@@ -2467,7 +2469,7 @@ agent:
 
 1. **死代码清理**：`src/settings/types.py:13-20` 的 `PermissionRule` 删除前需 `grep -r "from src.settings.types import PermissionRule" src/ tests/` 确认唯一引用是 `from_dict:176-179`（本次同时改写），无第三处。`grep` 实际结果：仅 `src/settings/types.py:177` 一处自引用，可安全删。
 2. **pydantic-settings 后端**：`src/config.py:27-33` 的 `CLAW_USE_PYDANTIC_SETTINGS=true` 旁路有独立的 schema 定义。本次重构集中在 `src/settings/types.py` 的 dataclass 后端；pydantic 后端需单独 review 是否仍把 `permissions` 声明为 list，若是，需同步改。本期可只覆盖 dataclass 后端，pydantic 路径补一个 TODO 在 F-47.1。
-3. **顶层 `permission_mode` 字段 deprecation**：本次保留读取、不标 deprecated，避免一次性引入太多变化；F-46 后续阶段会统一 deprecate enum 字段。
+3. **顶层 `permission_mode` 字段 deprecation**：F-47 原计划保留读取、不标 deprecated，避免一次性引入太多变化；F-46 后续阶段会统一 deprecate enum 字段。**F-47.1 (2026-06-02) 已先一步直接删除读取通道**，deprecation 步骤不再需要。
 4. **`extra` 字段语义迁移**：`SettingsSchema.extra` 原来是"未识别 sub-key 的兜底"。F-47 之后 `permissions` 已知 sub-key 不再溢出到 `extra`，但其它未知 sub-key 仍走 `extra`（行为不变）。F-47 在 `from_dict` 注释里写清楚这一点，避免后续维护者困惑。
 5. **改动 6 个文件 + 1 个测试新建**：`src/settings/types.py` / `src/settings/validation.py` / `src/settings/constants.py` / `src/permissions/modes.py` / `src/permissions/setup.py`（可选）/ `clawcodex_ext/cli/permissions.py` / `tests/test_permission_settings_schema.py`（新建）。每个文件改动局部，git revert 风险可控。
 6. **F-47 与 F-46 顺序无关**：F-47 修 schema 形状 + 启动模式 plumb；F-46 拆 `permission_mode` enum 为三字段。两者不耦合，可独立 PR、并行落地。F-47 落地后 `permissions.defaultMode` 字段自动成为 F-46.0 拆 `audit_log` 后的"启动默认模式"读路径。
@@ -2479,10 +2481,10 @@ agent:
 |---|------|------|
 | 1 | `permissions` 改 dict 形态（`PermissionsConfig` dataclass） | 对齐磁盘格式（`updates.py:persist_permission_update`）+ TS 上游契约（`modes.py:118-141` docstring 明确 TS 是 dict） |
 | 2 | 用 dataclass 承载已知 sub-key，未知 sub-key 进 `additional` | 强类型 + 前向兼容；新增 sub-key 不需要改 schema |
-| 3 | 顶层 `settings.permission_mode` 字段保留为 back-compat 读取通道 | 不引入一次性 breaking change；F-46 后续阶段会统一 deprecate |
+| 3 | 顶层 `settings.permission_mode` 字段保留为 back-compat 读取通道 | 不引入一次性 breaking change；F-46 后续阶段会统一 deprecate。**F-47.1 (2026-06-02) 已直接删除该通道**（项目尚未发布、磁盘上没有需要迁移的旧配置），F-46 deprecate 步骤不再需要。 |
 | 4 | 删除 settings 层"假" `PermissionRule` 死代码 | 与运行时 `PermissionRule` 同名异构，混淆读者；唯一引用点 `from_dict:176-179` 本次同时改写 |
 | 5 | `has_allow_bypass_permissions_mode` 加 `_settings_perms` 聚合器，保留 `extra["permissions"]` fallback | F-47 落地前的旧 binary 不炸；同时支持过渡期调试（写 extra 也能读出） |
-| 6 | `validate_settings` 对空 `permission_mode` 跳过校验 | 避免 F-47 改默认值为 `""` 后旧校验逻辑误报；与 back-compat 读取通道一致 |
+| 6 | `validate_settings` 对空 `permission_mode` 跳过校验 | 避免 F-47 改默认值为 `""` 后旧校验逻辑误报；F-47.1 删除 back-compat 读取通道后这条规则失去直接触发场景，但保留是为了让"磁盘上残留 `permission_mode=""`"的旧配置不报错（行为无副作用、不删除以避免引入额外变更面） |
 | 7 | 阶段化落地：1→2→3→4→5→6（可选）→7→8→9 | 自包含 schema 改造先闭环（1+2），读路径 + 校验（3+4），启动模式 plumb（5），可选 setup 改造（6），最后清死代码（7）+ 测试（8+9）。每步独立可回滚 |
 | 8 | `PermissionsConfig.rules` 用 `dict[str, list[str]]`（`{"allow": [...], "deny": [...], "ask": [...]}`） | 对齐磁盘格式与 `loader.py:settings_to_rules` 读路径；`PermissionRule` 字符串原样保留，不强转 dataclass |
 | 9 | `PermissionsConfig` 不导出 `PermissionRule` dataclass（虽然内部 rules 存字符串） | 避免重新引入死代码；`PermissionRule` 字符串是磁盘原样，运行时 `permissions/rule_parser.py` 已有 `permission_rule_value_from_string` 解析路径 |
@@ -2505,13 +2507,15 @@ agent:
   - pydantic-settings 后端的 `permissions` schema 同步改造
   - `setup_permissions` 签名扩 `default_mode`（F-47 范围可选 → 后续必做）
   - F-46.1 拆 `interactive` / `default_decision` 落到 `PermissionsConfig`
-  - F-46.2 `permission_mode` 标 deprecated 时，back-compat 通道改成"打 warning 不读"
+  - F-46.2 `permission_mode` 标 deprecated 时，back-compat 通道改成"打 warning 不读"。**F-47.1 已先一步直接删除读取通道**（无 deprecation 阶段），该议题 N/A。
 
 ---
 
 *文档更新时间: 2026-06-02*
 
-*版本 v2.13 更新：新增 F-45 / F-46 / F-47。F-45 P1 在 `agent_runner._handle_tool_call` 后加 NDJSON 旁路落 `~/.clawcodex/tool-events/{run_id}/events.ndjson`，与 permission_mode 解耦；扩展 `report_writer.RunReport.tool_events_path` 字段 + markdown 模板登记路径；终结 "bypass ≠ 无审计" 误读。F-46 P2 把 `permission_mode` enum 拆为 `interactive` / `default_decision` / `audit_log` 三个正交字段，F-46.0（v2.13）只拆 `audit_log`，依赖 F-45 落地后端到端验证；`permission_mode` 保留为 backward-compat shim 标 deprecated；F-46.1+ 拆其余两字段推到 v2.15+。F-47 P1 修 `SettingsSchema.permissions: list[PermissionRule]` 与磁盘 dict 形态不一致 / `has_allow_bypass_permissions_mode` 永远读不到 / `resolve_permission_state` 没传 `settings_default_mode` / 顶层 `settings.permission_mode` 字段未读 四个串联 bug；引入 `PermissionsConfig` dataclass 对齐磁盘 + TS 上游契约，让 `permissions.defaultMode` 与 `permissions.allowBypassPermissionsMode` 真正生效；顶层 `permission_mode` 字段保留为 back-compat fallback；删除 settings 层"假" `PermissionRule` 死代码。*
+*版本 v2.13 更新：新增 F-45 / F-46 / F-47。F-45 P1 在 `agent_runner._handle_tool_call` 后加 NDJSON 旁路落 `~/.clawcodex/tool-events/{run_id}/events.ndjson`，与 permission_mode 解耦；扩展 `report_writer.RunReport.tool_events_path` 字段 + markdown 模板登记路径；终结 "bypass ≠ 无审计" 误读。F-46 P2 把 `permission_mode` enum 拆为 `interactive` / `default_decision` / `audit_log` 三个正交字段，F-46.0（v2.13）只拆 `audit_log`，依赖 F-45 落地后端到端验证；`permission_mode` 保留为 backward-compat shim 标 deprecated；F-46.1+ 拆其余两字段推到 v2.15+。F-47 P1 修 `SettingsSchema.permissions: list[PermissionRule]` 与磁盘 dict 形态不一致 / `has_allow_bypass_permissions_mode` 永远读不到 / `resolve_permission_state` 没传 `settings_default_mode` / 顶层 `settings.permission_mode` 字段未读 四个串联 bug；引入 `PermissionsConfig` dataclass 对齐磁盘 + TS 上游契约，让 `permissions.defaultMode` 与 `permissions.allowBypassPermissionsMode` 真正生效；删除 settings 层"假" `PermissionRule` 死代码。*
+
+*F-47.1 (2026-06-02) v2.13 hotfix：在项目尚未发布、磁盘上没有需要迁移的旧配置的前提下，直接删除 F-47 原本保留的顶层 `settings.permission_mode` back-compat 读取通道（`clawcodex_ext/cli/permissions.py:resolve_permission_state` 不再 fallback 到 `s.permission_mode`）；`SettingsSchema.permission_mode` 字段保留为兼容形态但启动时不再被读，磁盘上残留的旧值被静默忽略。F-46.2 的 deprecation 步骤因此不再需要。*
 
 *文档更新时间: 2026-06-02*
 
