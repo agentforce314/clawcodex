@@ -1265,6 +1265,34 @@ class Orchestrator:
                         session,
                         delay_base_ms=self.workflow.agent.max_turns_retry_delay_ms,
                     )
+                elif session.status == "rate_limit_circuit_open":
+                    # The AgentRunner's 429 backoff circuit breaker tripped
+                    # after ``rate_limit_max_retries`` consecutive rate
+                    # limit hits. Surface it on the dashboard and hand it
+                    # off to the inter-run retry queue with the longest
+                    # configured base delay so the provider's rate window
+                    # has a chance to reset before the next attempt.
+                    backoff_s = (
+                        self.workflow.agent.rate_limit_max_backoff_ms
+                    )
+                    logger.warning(
+                        "Rate limit circuit open issue_id=%s — scheduling "
+                        "inter-run retry with base delay %dms (session "
+                        "spent %.1fs in in-turn backoff across %d hits)",
+                        session.issue.id or "",
+                        backoff_s,
+                        getattr(session, "total_429_backoff_seconds", 0.0),
+                        getattr(session, "consecutive_429_count", 0),
+                    )
+                    self.status_dashboard.on_session_failed(
+                        session.issue.id or "",
+                        "rate_limit_circuit_open",
+                    )
+                    self._registry.mark_failed(session.issue.id or "")
+                    await self._schedule_retry(
+                        session,
+                        delay_base_ms=backoff_s,
+                    )
                 else:
                     self.status_dashboard.on_session_failed(
                         session.issue.id or "",

@@ -7,10 +7,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from ..api.query import PhaseComplete, QueryConfig, QueryRunner
 from ..api.query import SessionComplete, TextDelta, ToolCallEvent, ToolResultEvent
@@ -19,6 +20,14 @@ from .config.schema import AgentConfig, CodexConfig, WorkflowConfig
 from .issue import Issue
 from .prompt_builder import PromptBuilder
 from .workspace import Workspace
+
+# Reuse the project's typed rate-limit error and helpers so the 429
+# detection logic stays in lockstep with the rest of the codebase.
+from src.services.api.errors import (
+    RateLimitError,
+    is_quota_exhausted,
+    is_rate_limit_error,
+)
 
 if TYPE_CHECKING:
     from .progress_reporter import ProgressReporter
@@ -53,6 +62,16 @@ class AgentSession:
     attempt: int = 1
     issue_attempt: int = 1
     followup_attempt: int = 1
+    # 429-aware backoff bookkeeping. ``consecutive_429_count`` is
+    # incremented on each rate-limit hit and reset on the next
+    # successful turn. ``total_429_backoff_seconds`` is the cumulative
+    # sleep time spent in in-turn backoff (visible on the dashboard
+    # and useful for cost analysis). ``rate_limit_pending_turn``
+    # records the turn number being re-issued after a 429 sleep so
+    # the SessionComplete handler skips its turn_number increment.
+    consecutive_429_count: int = 0
+    total_429_backoff_seconds: float = 0.0
+    rate_limit_pending_turn: int | None = None
 
 
 @dataclass
@@ -83,6 +102,10 @@ class AgentRunner:
         self._approval_policy: ApprovalPolicy = get_approval_policy(
             getattr(codex_config, "approval_policy", "never") or "never"
         )
+        # Injectable sleep hook for 429 backoff. Tests monkey-patch
+        # this with a recording coroutine; production paths use the
+        # real ``asyncio.sleep`` so cancellation still works.
+        self._sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
 
     def _handle_tool_call(
         self,
@@ -106,6 +129,130 @@ class AgentRunner:
         event._approved = policy_event._approved
         event._deny_reason = policy_event._deny_reason
         return event
+
+    def _is_429_response(self, turn_output: str) -> bool:
+        """Detect an upstream 429 rate limit in the accumulated turn output.
+
+        The headless runner currently catches the provider's HTTPError
+        and surfaces the message string in ``aggregate_text`` /
+        ``stdout``, which the QueryRunner yields as a final ``TextDelta``
+        before the ``SessionComplete(reason="exit_code=1")``. The string
+        typically contains ``"Error code: 429"`` and a JSON body with
+        ``"type": "rate_limit_error"``.
+
+        Quota exhaustion is short-circuited to ``False`` — a permanent
+        quota error is not helped by sleeping, and the normal failure
+        path is the right place to surface it. Quota is detected by
+        string match because the upstream message text mixes the
+        429/rate_limit_error markers with quota-specific language
+        ("exceeded your current quota", "limit: 0", or
+        ``"Token Plan 主要面向个人开发者"``), and the typed
+        ``is_quota_exhausted`` helper requires an exception object
+        with a ``.status`` attribute that we don't have here.
+        """
+        if not turn_output:
+            return False
+        low = turn_output.lower()
+        # Quota-style indicators win over rate-limit indicators. The
+        # provider wraps quota in the same 429/rate_limit_error
+        # envelope, so substring matching is the most robust signal
+        # available without parsing the JSON body.
+        quota_indicators = (
+            "exceeded your current quota",
+            "limit: 0",
+            "token plan",  # MiniMax "Token Plan 主要面向个人开发者"
+            "quota",
+        )
+        if any(ind in low for ind in quota_indicators):
+            return False
+        return (
+            "error code: 429" in low
+            or "rate_limit_error" in low
+            or '"type": "rate_limit_error"' in low
+            or "rate limit" in low
+        )
+
+    def _compute_rate_limit_backoff(self, session: AgentSession) -> float:
+        """Compute the next 429 backoff delay (seconds) for ``session``.
+
+        Sequence: ``base * factor**(count-1)`` capped at
+        ``rate_limit_max_backoff_ms``. A small jitter (±10% of delay)
+        is added to avoid thundering-herd if the operator ever flips
+        the workflow to parallel agents.
+        """
+        base_ms = self.agent_config.rate_limit_base_delay_ms
+        max_ms = self.agent_config.rate_limit_max_backoff_ms
+        factor = self.agent_config.rate_limit_exponential_factor
+        count = max(1, session.consecutive_429_count)
+        delay_ms = min(base_ms * (factor ** (count - 1)), max_ms)
+        delay_s = delay_ms / 1000.0
+        # Light jitter: up to +10% of the delay.  Keep it non-negative.
+        jitter = random.uniform(0, 0.1 * delay_s) if delay_s > 0 else 0.0
+        return delay_s + jitter
+
+    async def _handle_rate_limit(
+        self,
+        session: AgentSession,
+        turn_output: str,
+        turn_number: int,
+        status_dashboard: Any | None,
+    ) -> str:
+        """Apply 429 backoff for one cycle. Returns the new status.
+
+        Increments ``session.consecutive_429_count``, computes the
+        backoff delay, emits a ``TextDelta`` to the dashboard and
+        event log, sleeps, and returns either ``"running"`` (re-issued
+        the same turn) or ``"rate_limit_circuit_open"`` (circuit
+        breaker tripped — caller should ``return``).
+        """
+        issue = session.issue
+        session.consecutive_429_count += 1
+        max_retries = self.agent_config.rate_limit_max_retries
+
+        if session.consecutive_429_count > max_retries:
+            session.status = "rate_limit_circuit_open"
+            logger.error(
+                "Rate limit circuit breaker open issue_id=%s consecutive=%d max=%d",
+                issue.id,
+                session.consecutive_429_count,
+                max_retries,
+            )
+            return session.status
+
+        delay_s = self._compute_rate_limit_backoff(session)
+        session.total_429_backoff_seconds += delay_s
+        notice = (
+            f"\n[rate-limit] 429 detected "
+            f"(attempt {session.consecutive_429_count}/{max_retries}); "
+            f"sleeping {delay_s:.0f}s before retry\n"
+        )
+        session.output_text += notice
+
+        # Surface to dashboard / event log so the operator sees
+        # liveness during the backoff.
+        text_event = TextDelta(content=notice)
+        if status_dashboard is not None:
+            try:
+                status_dashboard.on_event(text_event, session)
+            except Exception:
+                pass
+        self._write_event_log(session.workspace.path, issue.id, text_event)
+
+        logger.warning(
+            "Rate limit backoff issue_id=%s attempt=%d delay=%.1fs",
+            issue.id,
+            session.consecutive_429_count,
+            delay_s,
+        )
+
+        # Mark the turn we are about to re-issue so the SessionComplete
+        # handler (if it ever runs again on the same turn) skips its
+        # own turn_number increment. Defensive — the current control
+        # flow ``continue``s before incrementing.
+        session.rate_limit_pending_turn = turn_number
+
+        await self._sleep(delay_s)
+        return "running"
 
     async def run(
         self,
@@ -209,134 +356,193 @@ class AgentRunner:
             turn_has_tool_calls = False
             turn_output = ""
 
-            async for event in runner.stream():
-                if isinstance(event, TextDelta):
-                    session.output_text += event.content
-                    turn_output += event.content
-                    if status_dashboard is not None:
-                        try:
-                            status_dashboard.on_event(event, session)
-                        except Exception:
-                            pass
+            try:
+                stream_iter = runner.stream()
+                while True:
+                    try:
+                        event = await stream_iter.__anext__()
+                    except StopAsyncIteration:
+                        break
+                    if isinstance(event, TextDelta):
+                        session.output_text += event.content
+                        turn_output += event.content
+                        if status_dashboard is not None:
+                            try:
+                                status_dashboard.on_event(event, session)
+                            except Exception:
+                                pass
 
-                    # Push to event queue for CLI tail
-                    if session.event_queue is not None:
-                        try:
-                            session.event_queue.put_nowait(event)
-                        except Exception:
-                            pass
+                        # Push to event queue for CLI tail
+                        if session.event_queue is not None:
+                            try:
+                                session.event_queue.put_nowait(event)
+                            except Exception:
+                                pass
 
-                    # Also write to event log file for cross-process tail
-                    self._write_event_log(session.workspace.path, issue.id, event)
+                        # Also write to event log file for cross-process tail
+                        self._write_event_log(session.workspace.path, issue.id, event)
 
-                elif isinstance(event, ToolCallEvent):
-                    turn_has_tool_calls = True
-                    tool_count += 1
+                    elif isinstance(event, ToolCallEvent):
+                        turn_has_tool_calls = True
+                        tool_count += 1
 
-                    # Pause support: wait for resume if session is paused
-                    if session.pause_resume_event is not None:
-                        await session.pause_resume_event.wait()
+                        # Pause support: wait for resume if session is paused
+                        if session.pause_resume_event is not None:
+                            await session.pause_resume_event.wait()
 
-                    # Operator hint injection: check .operator_hints.md
-                    self._inject_operator_hints(session.workspace)
+                        # Operator hint injection: check .operator_hints.md
+                        self._inject_operator_hints(session.workspace)
 
-                    # In headless (orchestrator) mode the permission system
-                    # is bypassed via ToolContext.approval_policy =
-                    # "bypassPermissions" + permission_handler = None, so all
-                    # tool calls are auto-approved.  The orchestrator's
-                    # ApprovalPolicy (ToolCallEvent) is not consulted here —
-                    # decisions live in the headless agent loop, not in
-                    # QueryRunner.stream() output.
-                    if status_dashboard is not None:
-                        try:
-                            status_dashboard.on_event(event, session)
-                        except Exception:
-                            pass
+                        # In headless (orchestrator) mode the permission system
+                        # is bypassed via ToolContext.approval_policy =
+                        # "bypassPermissions" + permission_handler = None, so all
+                        # tool calls are auto-approved.  The orchestrator's
+                        # ApprovalPolicy (ToolCallEvent) is not consulted here —
+                        # decisions live in the headless agent loop, not in
+                        # QueryRunner.stream() output.
+                        if status_dashboard is not None:
+                            try:
+                                status_dashboard.on_event(event, session)
+                            except Exception:
+                                pass
 
-                    # Push to event queue for CLI tail
-                    if session.event_queue is not None:
-                        try:
-                            session.event_queue.put_nowait(event)
-                        except Exception:
-                            pass
+                        # Push to event queue for CLI tail
+                        if session.event_queue is not None:
+                            try:
+                                session.event_queue.put_nowait(event)
+                            except Exception:
+                                pass
 
-                    # Also write to event log file for cross-process tail
-                    self._write_event_log(session.workspace.path, issue.id, event)
+                        # Also write to event log file for cross-process tail
+                        self._write_event_log(session.workspace.path, issue.id, event)
 
-                elif isinstance(event, ToolResultEvent):
-                    logger.debug(
-                        "Tool result issue_id=%s tool=%s is_error=%s",
-                        issue.id,
-                        event.tool_name,
-                        event.result.get("is_error", False),
-                    )
-                    if status_dashboard is not None:
-                        try:
-                            status_dashboard.on_event(event, session)
-                        except Exception:
-                            pass
+                    elif isinstance(event, ToolResultEvent):
+                        logger.debug(
+                            "Tool result issue_id=%s tool=%s is_error=%s",
+                            issue.id,
+                            event.tool_name,
+                            event.result.get("is_error", False),
+                        )
+                        if status_dashboard is not None:
+                            try:
+                                status_dashboard.on_event(event, session)
+                            except Exception:
+                                pass
 
-                    # Push to event queue for CLI tail
-                    if session.event_queue is not None:
-                        try:
-                            session.event_queue.put_nowait(event)
-                        except Exception:
-                            pass
+                        # Push to event queue for CLI tail
+                        if session.event_queue is not None:
+                            try:
+                                session.event_queue.put_nowait(event)
+                            except Exception:
+                                pass
 
-                    # Also write to event log file for cross-process tail
-                    self._write_event_log(session.workspace.path, issue.id, event)
-                    if status_dashboard is not None:
-                        try:
-                            status_dashboard.on_event(event, session)
-                        except Exception:
-                            pass
+                        # Also write to event log file for cross-process tail
+                        self._write_event_log(session.workspace.path, issue.id, event)
+                        if status_dashboard is not None:
+                            try:
+                                status_dashboard.on_event(event, session)
+                            except Exception:
+                                pass
 
-                elif isinstance(event, SessionComplete):
-                    turn_number += 1
-                    session.turn_count = turn_number
-
-                    # Emit PhaseComplete event for progress reporting
-                    phase_event = PhaseComplete(
-                        phase=turn_number,
-                        turn_count=turn_number,
-                    )
-                    self._write_event_log(session.workspace.path, issue.id, phase_event)
-                    if progress_reporter is not None:
-                        progress_reporter.on_event(phase_event, session)
-
-                    session.tool_count = tool_count
-                    if event.reason == "success":
-                        # Check if issue is still active before declaring completion
-                        if tracker is not None and issue.id:
-                            is_active, refreshed_issue = await self._should_continue(
-                                issue, tracker
+                    elif isinstance(event, SessionComplete):
+                        # 429-aware backoff: detect rate limit BEFORE the
+                        # normal completion handling so we can re-issue
+                        # the same turn after sleeping instead of failing.
+                        if self._is_429_response(turn_output):
+                            new_status = await self._handle_rate_limit(
+                                session,
+                                turn_output,
+                                turn_number,
+                                status_dashboard,
                             )
-                            if is_active and turn_number < self.max_turns:
-                                logger.info(
-                                    "Issue %s still active, continuing turn %d/%d",
-                                    issue.id,
-                                    turn_number,
-                                    self.max_turns,
-                                )
-                                continue  # Go to next turn
-                            session.issue = refreshed_issue or session.issue
+                            if new_status == "rate_limit_circuit_open":
+                                return
+                            # Reset the per-turn accumulators so the
+                            # re-issued turn starts with a clean slate.
+                            turn_output = ""
+                            turn_has_tool_calls = False
+                            # Do NOT increment turn_number; the same
+                            # turn's prompt will be re-rendered below
+                            # when the outer while loop iterates.
+                            continue
 
-                        session.status = "completed"
-                        logger.info(
-                            "Agent run completed issue_id=%s turns=%s/%s tools=%s",
-                            issue.id,
-                            turn_number,
-                            self.max_turns,
-                            tool_count,
+                        # Normal completion path — increment the turn
+                        # counter and emit PhaseComplete.
+                        turn_number += 1
+                        session.turn_count = turn_number
+
+                        # Emit PhaseComplete event for progress reporting
+                        phase_event = PhaseComplete(
+                            phase=turn_number,
+                            turn_count=turn_number,
                         )
-                    else:
-                        session.status = "failed"
-                        logger.warning(
-                            "Agent run failed issue_id=%s reason=%s",
-                            issue.id,
-                            event.reason,
-                        )
-                    return
+                        self._write_event_log(session.workspace.path, issue.id, phase_event)
+                        if progress_reporter is not None:
+                            progress_reporter.on_event(phase_event, session)
+
+                        session.tool_count = tool_count
+                        if event.reason == "success":
+                            # A successful turn resets the 429 backoff
+                            # counter — a 429 followed by a clean run is
+                            # a sign the rate window has passed.
+                            session.consecutive_429_count = 0
+                            session.rate_limit_pending_turn = None
+
+                            # Check if issue is still active before declaring completion
+                            if tracker is not None and issue.id:
+                                is_active, refreshed_issue = await self._should_continue(
+                                    issue, tracker
+                                )
+                                if is_active and turn_number < self.max_turns:
+                                    logger.info(
+                                        "Issue %s still active, continuing turn %d/%d",
+                                        issue.id,
+                                        turn_number,
+                                        self.max_turns,
+                                    )
+                                    continue  # Go to next turn
+                                session.issue = refreshed_issue or session.issue
+
+                            session.status = "completed"
+                            logger.info(
+                                "Agent run completed issue_id=%s turns=%s/%s tools=%s",
+                                issue.id,
+                                turn_number,
+                                self.max_turns,
+                                tool_count,
+                            )
+                        else:
+                            session.status = "failed"
+                            logger.warning(
+                                "Agent run failed issue_id=%s reason=%s",
+                                issue.id,
+                                event.reason,
+                            )
+                        return
+            except RateLimitError as exc:
+                # Typed fallback: if the headless runner ever propagates
+                # a RateLimitError directly (e.g. via ``await future``
+                # at extensions/api/query.py:173), treat it the same as
+                # a 429 detected in the text stream.
+                if is_rate_limit_error(exc):
+                    # Synthesize a minimal turn_output so the standard
+                    # detection helper recognizes the case.
+                    synthetic_output = turn_output or (
+                        f"Error code: 429 - {exc!s}"
+                    )
+                    new_status = await self._handle_rate_limit(
+                        session,
+                        synthetic_output,
+                        turn_number,
+                        status_dashboard,
+                    )
+                    if new_status == "rate_limit_circuit_open":
+                        return
+                    turn_output = ""
+                    turn_has_tool_calls = False
+                    continue
+                # Not a 429 — re-raise to preserve existing behavior.
+                raise
 
             # If we consumed all events without SessionComplete (shouldn't
             # happen with current QueryRunner, but be defensive), count the

@@ -225,6 +225,21 @@ class AgentConfig:
     # "author or maintainer only" rule. Setting this to True
     # disables the role check (e.g. for trusted-team scenarios).
     allow_anyone_to_retry: bool = False
+    # 429-aware in-turn backoff. When the upstream provider returns
+    # HTTP 429 (rate limit) inside a single QueryRunner turn, the
+    # AgentRunner sleeps for an exponentially-growing delay and
+    # re-issues the same prompt instead of failing immediately. After
+    # ``rate_limit_max_retries`` consecutive 429s the circuit breaker
+    # opens (``status="rate_limit_circuit_open"``) and the run is
+    # handed back to the orchestrator's inter-run retry queue.
+    #
+    # Distinct from ``max_turns_retry_delay_ms``: that field governs
+    # the inter-run retry queue between separate AgentRunner.run()
+    # invocations; these fields govern backoff WITHIN a single run.
+    rate_limit_base_delay_ms: int = 30_000
+    rate_limit_max_backoff_ms: int = 600_000
+    rate_limit_exponential_factor: float = 2.0
+    rate_limit_max_retries: int = 5
 
 
 @dataclass
@@ -425,6 +440,19 @@ class WorkflowConfig:
             max_retries_per_issue=agent_raw.get("max_retries_per_issue", 3),
             allow_anyone_to_retry=bool(
                 agent_raw.get("allow_anyone_to_retry", False)
+            ),
+            # 429-aware in-turn backoff (see AgentConfig docstring above)
+            rate_limit_base_delay_ms=agent_raw.get(
+                "rate_limit_base_delay_ms", 30_000
+            ),
+            rate_limit_max_backoff_ms=agent_raw.get(
+                "rate_limit_max_backoff_ms", 600_000
+            ),
+            rate_limit_exponential_factor=float(
+                agent_raw.get("rate_limit_exponential_factor", 2.0)
+            ),
+            rate_limit_max_retries=agent_raw.get(
+                "rate_limit_max_retries", 5
             ),
         )
         if workspace.strategy == "sequential":
