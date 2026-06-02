@@ -86,6 +86,8 @@
 | F-41 | Coordinator 轻量工具集 | P1 | ✅ 已完成 | 给 Coordinator 配置独立的轻量工具集（Read、WebSearch、WebFetch），加上原有的 Agent、SendMessage、TaskStop，共 6 个工具。Coordinator 可直接处理简单查询（搜网页、读文件），无需为每个请求创建 Worker。所有写操作工具（Write、Edit、Bash、Grep、Glob）仍隔离，强制委派复杂任务给 Worker。涉及 `src/coordinator/mode.py` 的 `_COORDINATOR_ALLOWED_TOOLS` 扩展 + `src/coordinator/prompt.py` 的 "Your Tools" 提示词更新 + `src/repl/core.py` 注释同步。231/231 orchestrator 测试通过 |
 | F-42 | Orchestrator Shared / Sequential Workspace 策略 | P0 | ✅ 完成 | 扩展 `workspace.strategy: isolated \| shared \| sequential`，保留现有 per-issue workspace，同时支持本地 feature-plan issue 在同一 working tree / integration branch 上串行叠加开发；包含单并发校验、顺序锁、dirty tree guard、每 issue commit 链元数据、shared cleanup preserve 与两 issue 端到端验收 |
 | F-43 | CLI 模型供应商与模型切换 | P1 | 📋 设计完成 | 新增 `clawcodex provider` / `clawcodex model` 子命令族（list/show/current/use/unset）+ REPL/TUI 内 `/provider` / `/model` 斜杠命令，支持查看、列出、切换当前生效的 LLM 供应商与模型；所有新代码落在 `clawcodex_ext/cli/` 下，持久化借道 `src.config` 不重写 I/O；错误文案统一英文；`--scope project` 落入后续规划 |
+| F-45 | Orchestrator tool-call 审计旁路（tool-events.ndjson + 报告登记） | P1 | 📋 设计完成 | 在 `extensions/orchestrator/agent_runner.py:_handle_tool_call` 之后追加 NDJSON 旁路落盘到 `~/.clawcodex/tool-events/{run_id}/events.ndjson`，与 `permission_mode` 解耦（`bypassPermissions` / `dontAsk` / `acceptEdits` / `default` 一视同仁全写）；扩展 `report_writer.RunReport` 加 `tool_events_path` 字段并在 markdown 模板登记路径，让审计员从 run 报告直接定位完整 per-tool 决策流水。修复 TS 注释 "bypass = no logging" 在 Python 端的事实偏差 —— `ApprovalPolicy` 一直在跑，只是决策没落盘。 |
+| F-46 | permission_mode enum 正交拆分 | P2 | ⏳ 规划中 | 把 `permission_mode` 混合 enum（`default` / `plan` / `bypassPermissions` / `acceptEdits` / `dontAsk` / `auto` / `bubble`）拆为三个正交字段：`interactive: bool`（是否要 TTY 弹 prompt）、`default_decision: Literal["allow", "deny", "ask"]`（无人值守默认）、`audit_log: Literal["none", "minimal", "full"]`（per-tool 决策是否落盘）。F-46.0（v2.13）只拆 `audit_log`，等 F-45 落地后端到端验证；`permission_mode` 保留为 backward-compat shim 标 deprecated；F-46.1+ 拆其余两字段推到 v2.15+。 |
 
 ---
 
@@ -2070,7 +2072,200 @@ agent:
 
 ---
 
+## F-45: Orchestrator tool-call 审计旁路（tool-events.ndjson + 报告登记）
+
+**状态**: 📋 设计完成
+**优先级**: P1
+**规划文档**: `docs/FEATURE_PLAN.md` → `§3.1.10 Tool-call 审计旁路设计（F-45）`
+**触发场景**: 2026-06-02 F-38 落地后审阅发现，`extensions/orchestrator/report_writer.py:write()` 只持久化 `tool_count: int` 与末尾 4000 字符的 `output_excerpt`，**per-tool 决策流水不落盘**。`extensions/orchestrator/agent_runner.py:87-108` 的 `_handle_tool_call` 始终调 `ApprovalPolicy.evaluate()`，把 `_approved` / `_deny_reason` 写回 `ToolCallEvent` 内存对象 —— 进程崩溃即丢。在 orchestrator headless 场景下 `permission_mode` 走 auto-upgrade 到 `bypassPermissions`（`patches/upstream/58ea488/merged/0026.tui_app_py.patch:1287-1291`），TS 注释说 "no logging"，**但 Python 端 ApprovalPolicy 一直在跑**——审计数据其实有，只是没落盘。
+
+### 目标
+
+在 `_handle_tool_call` 之后追加一段 NDJSON 旁路落盘，**与 `permission_mode` 解耦**（`bypassPermissions` / `dontAsk` / `acceptEdits` / `default` 一视同仁全写），并扩展 `report_writer.RunReport` 字段 + markdown 模板，让审计员从 run 报告就能定位到 `~/.clawcodex/tool-events/{run_id}/events.ndjson` 完整 tool-call 流水。**终结 "bypass ≠ 无审计" 这个误读**——bypass 关闭的是 user-prompt audit 层，本特性补上 per-tool 决策 audit 层。
+
+### 子特性
+
+| Sub | 名称 | 目标 | 主要工作 |
+|-----|------|------|----------|
+| A | `_append_tool_event_log` 旁路方法 | 把 `_handle_tool_call` 的决策序列化到 NDJSON | 在 `agent_runner.py` 新增私有方法，接 `event: ToolCallEvent` + `session_context`，`json.dumps` 一行写 `~/.clawcodex/tool-events/{run_id}/events.ndjson`；不依赖 permission_mode |
+| B | `ToolEventLog` 数据契约 | 明确每行 NDJSON 字段 | `ts: float` / `tool: str` / `params: dict` / `approved: bool` / `deny_reason: str \| None` / `permission_mode: str` / `turn: int` / `session_run_id: str` 共 8 字段 |
+| C | `RunReport` 增 `tool_events_path` 字段 | 把旁路文件路径登记到报告 | `report_writer.py:RunReport` 加 `tool_events_path: str \| None`；`write()` 多接收一个 `tool_events_path` 参数；`_render_markdown` 加一行 `Tool events: <path>`；`_copy_with_fallback` 把 NDJSON 拷到 `~/.clawcodex/reports/.../{run_id}/` 持久化层 |
+| D | `AgentRunner.run` 衔接 | 把 `run_id` 注入 `session_context` | `agent_runner.py:run()` 在创建 session 时把 `session.run_id` 写到 `session_context`；`_handle_tool_call` 闭包拿 `session_context.get("run_id", "unknown")` 当目录名 |
+| E | 关闭策略与轮转 | 限制磁盘占用，避免长跑撑爆 | NDJSON 文件超过 50MB 时 rotate 为 `events.ndjson.1` 等；`tool-events/` 路径加入 `.gitignore` 默认 patterns；7 天清理任务可挂 cron（本期只做 rotate，清理推 v2.14） |
+| F | 测试 | 端到端验证旁路 + 报告登记 | 单测：`_append_tool_event_log` 在 mock session 下写出合法 NDJSON，字段齐全；集成测试：`report_writer.write` 接收 `tool_events_path` 后 markdown 报告含该路径，NDJSON 拷到持久化层；回归：`bypassPermissions` / `dontAsk` / `acceptEdits` / `default` 四种 mode 下，tool-call 数量与 NDJSON 行数一致 |
+
+### 当前基线
+
+| 能力 | 当前状态 | 说明 |
+|------|----------|------|
+| `report_writer.RunReport.tool_count` 持久化 | ✅ 已实现 | `report_writer.py:85` 写单个 int，粗粒度 |
+| `report_writer.RunReport.output_excerpt` 持久化 | ✅ 已实现 | `report_writer.py:88` + `_excerpt` 末尾 4000 字符 |
+| `_handle_tool_call` 拦截每个 tool call | ✅ 已实现 | `agent_runner.py:87-108` 永远跑 `ApprovalPolicy.evaluate()` |
+| Per-tool 决策持久化（NDJSON / 其他） | ❌ 缺失 | `_approved` / `_deny_reason` 只在内存 |
+| `~/.clawcodex/tool-events/` 目录 | ❌ 缺失 | grep `tool_events` 在 `extensions/orchestrator/` 零匹配 |
+| `RunReport.tool_events_path` 字段 | ❌ 缺失 | `report_writer.py:22-42` dataclass 不含此字段 |
+| NDJSON 落盘 + dual-write 模式 | ⚠️ 部分 | F-40 落 `PhaseComplete` / `TurnComplete` / `SessionComplete` 到 `ToolContext.tasks` metadata，非文件系统 NDJSON |
+
+### 实施进度
+
+| 阶段 | 任务 | Sub | 状态 |
+|------|------|-----|------|
+| 1 | `agent_runner.py:_append_tool_event_log` + `~/.clawcodex/tool-events/{run_id}/events.ndjson` 旁路 | A | 📋 待开始 |
+| 2 | `ToolEventLog` 字段契约 + JSON serializer（8 字段） | B | 📋 待开始 |
+| 3 | `report_writer.RunReport` 增 `tool_events_path` 字段，`write()` 多接收该参数，markdown 模板加一行，NDJSON 走 `_copy_with_fallback` 拷到 `~/.clawcodex/reports/.../{run_id}/` | C | 📋 待开始 |
+| 4 | `AgentRunner.run` 注入 `run_id` 到 `session_context` | D | 📋 待开始 |
+| 5 | NDJSON rotate 阈值 50MB + `tool-events/` 加入 `.gitignore` 默认 patterns | E | 📋 待开始 |
+| 6 | 单测 + 集成测试 + 四种 mode 回归 | F | 📋 待开始 |
+
+### 验收标准
+
+- Orchestrator 跑完一个 issue 后，`~/.clawcodex/tool-events/{run_id}/events.ndjson` 存在，行数 == `RunReport.tool_count`。
+- NDJSON 每行含 `ts` / `tool` / `params` / `approved` / `deny_reason` / `permission_mode` / `turn` / `session_run_id` 八个字段，deny_reason 在允许时为 `None`。
+- `report_writer.write()` 接收 `tool_events_path` 后，生成的 `~/.clawcodex/reports/.../{run_id}/{run_id}.md` 报告含 `Tool events: <path>` 一行，`.json` 报告含 `tool_events_path` 字段。
+- `~/.clawcodex/reports/.../{run_id}/events.ndjson` 与 workspace 内 NDJSON 内容一致（`_copy_with_fallback` 走 `.tmp` + `os.replace` 原子化）。
+- `permission_mode=bypassPermissions` / `dontAsk` / `acceptEdits` / `default` 四种 mode 下，NDJSON 都生成，字段一致，仅 `permission_mode` 列值不同。
+- 跑 `pytest tests/test_orchestrator_*.py -q` 与 `tests/manual_e2e_f38.py -v -s`，**无回归**。
+- 端到端：在 `bypassPermissions` 模式下 review 一次 issue run，能从 `events.ndjson` 看到所有 tool call 的完整 params + approval 决策。
+
+### 风险与约束
+
+1. **磁盘占用**：NDJSON 不压缩，长跑（几百 turn）会撑大。Mitigation：rotate 阈值 50MB，7 天清理任务（v2.14 挂 cron）。
+2. **写并发**：`events.ndjson` 多 session 同 run_id 时 append 冲突。Mitigation：单 run_id 单 session，`AgentRunner.run` 持有写锁；`fdopen` + 行级 `flush`，O_APPEND 原子写。
+3. **敏感数据泄露**：`params` 字段含 agent 输入，可能含 token / 路径 / 代码片段。Mitigation：文档明示 "events.ndjson 在 `~/.clawcodex/` 目录，用户自管 ACL"；考虑后续加 `--redact` 字段（本期不做）。
+4. **Failure 隔离**：`_append_tool_event_log` 抛异常不能阻塞 agent run。Mitigation：try/except 包住，异常 `logger.exception` 即可，不 raise。
+5. **不动 `extensions/api/query.py`**：旁路挂在 `agent_runner.py:_handle_tool_call`，**不修改** `ToolCallEvent` 本身；不破坏 `extensions.api` 的 stream 协议。
+6. **依赖 F-40 sink 互不重叠**：F-40 落 `PhaseComplete` / `TurnComplete` / `SessionComplete` 到 `ToolContext.tasks` metadata（进程内），本特性落 per-tool 决策到 NDJSON（文件系统）；两套审计通道并存，职责分离。
+
+### 已拟定的设计决定
+
+| # | 决定 | 理由 |
+|---|------|------|
+| 1 | 旁路挂 `agent_runner._handle_tool_call` 之后，不动 `ApprovalPolicy` 内部 | `ApprovalPolicy` 是策略层，不感知 run_id / session_context；在 `agent_runner` 层加旁路对策略零侵入 |
+| 2 | 落盘用 NDJSON 而非 SQLite / Parquet | NDJSON 追加写 O(1)，`tail` / `grep` 友好，无需引入新依赖；审计场景 "看尾部" 占 90% |
+| 3 | 落盘在 `~/.clawcodex/tool-events/` 而非 workspace 内 | workspace 内文件会被 `git_sync` 推到 PR，导致审计数据污染仓库；`~/.clawcodex/` 是用户私有目录 |
+| 4 | 不修改 `permission_mode` 语义 | bypass / dontAsk / acceptEdits / default 各自行为不变；旁路只是**追加观察**，不改决策 |
+| 5 | `RunReport.tool_events_path` 字段加在末尾，非破坏性 | 旧 run 报告 reader 不识别此字段就忽略，向前兼容 |
+| 6 | rotate 阈值 50MB，清理推到 v2.14 | rotate 是单文件级别，清理是跨文件级别，降低本 PR 风险 |
+| 7 | `params` 字段**不**做 redact | 与 TS upstream `dontAsk` "All allowed, logged" 行为对齐 |
+| 8 | 不动 `extensions/api/query.py` 的 stream 协议 | `_handle_tool_call` 是 orchestrator 内部拦截，`api.query` 是 stream 出口，职责分离 |
+
+### 依赖与协同
+
+- **依赖**：
+  - `extensions/orchestrator/agent_runner.py:_handle_tool_call`（line 87-108）作为挂点
+  - `extensions/orchestrator/report_writer.py:RunReport`（line 22-42）+ `write()`（line 44-123）作为报告层
+  - `extensions/orchestrator/orchestrator.py:AgentSession` 已有 `run_id: str | None` 字段（line 47），可直接用
+- **协同**：
+  - 与 F-38 互补：F-38 写的是 "run-level summary"（tool_count + output_excerpt），本特性写 "per-tool detail"
+  - 与 F-40 互补：F-40 走 `ToolContext.tasks` 进程内 metadata；本特性走文件系统 NDJSON；两套审计通道并存
+  - 与 F-22 cron 无关：本特性是 orchestrator 内部，cron 触发不直接走 audit
+  - **先于 F-46 落地收益**：F-46 拆分 enum 时，`audit_log` 字段的实现就是 F-45 的 NDJSON 旁路；先做 F-45 减少 F-46 落地风险
+- **不破坏 F-37 / F-39**：follow-up run / 重跑 run 走相同旁路路径
+
+---
+
+## F-46: permission_mode enum 正交拆分
+
+**状态**: ⏳ 规划中
+**优先级**: P2
+**规划文档**: `docs/FEATURE_PLAN.md` → `§3.16 permission_mode enum 正交拆分设计（F-46）`
+**触发场景**: 2026-06-02 F-45 设计时发现，`permission_mode` 这个 enum（`default` / `plan` / `bypassPermissions` / `acceptEdits` / `dontAsk` / `auto` / `bubble`）把**三个正交概念压在一个字段里**：(1) 是否要 TTY 弹 prompt（`interactive`）；(2) 无人值守时的默认决策（`default_decision: allow|deny|ask`）；(3) per-tool 决策是否落盘（`audit_log: none|minimal|full`）。这种 "超级 enum" 导致设计债累积：`dontAsk` 听上去像 "headless + audit" 但实际在 orchestrator 会被 auto-upgrade 到 `bypassPermissions`；`bypassPermissions` 听上去像 "全开" 但 TS 注释说 "no logging"，而 Python 端其实有 ApprovalPolicy 拦截。schema 层把语义耦合在一起，下游所有 "我想加一种 mode" 的尝试都得新增一个 enum case。
+
+### 目标
+
+把 `permission_mode` 拆为三个正交字段：
+- `interactive: bool` — 是否需要 TTY 弹 prompt
+- `default_decision: Literal["allow", "deny", "ask"]` — 没 policy 命中时的默认
+- `audit_log: Literal["none", "minimal", "full"]` — per-tool 决策是否落盘（由 F-45 的 `tool-events.ndjson` 旁路支撑）
+
+实现分阶段：
+- **F-46.0**（v2.13，本期）：仅在 `WorkflowConfig` 加 `audit_log` 字段；`permission_mode` 暂保留做 backward-compat shim
+- **F-46.1**（v2.15+，后续）：把 `interactive` / `default_decision` 也显式化
+- **F-46.2**（v2.16+，后续）：`permission_mode` 标 deprecated，v2.16 移除
+
+### 子特性
+
+| Sub | 名称 | 目标 | 主要工作 |
+|-----|------|------|----------|
+| A | `WorkflowConfig.audit_log` 字段（F-46.0） | 先把 audit_log 这一维拆出 | `src/orchestrator/config/schema.py:WorkflowConfig` 新增 `audit_log: Literal["none", "minimal", "full"] = "minimal"`；`report_writer` 读该字段决定是否调 `_append_tool_event_log`（F-45 旁路） |
+| B | `permission_mode` → 三字段语义糖（F-46.0） | 兼容旧 workflow.yaml | `extensions/orchestrator/config/schema.py:AgentConfig` 的 `permission_mode` 仍保留，但在 docstring 标 deprecated；`orchestrator.py` 启动时把 `permission_mode` 自动 translate 为三字段，logger warning 一次 |
+| C | `interactive` 字段（F-46.1，后续） | 显式化 "是否要 TTY 弹 prompt" | `WorkflowConfig.interactive: bool = True`；`extensions/api/query.py:29` 的 `permission_mode: str = "dontAsk"` 默认值迁移为 `interactive: bool = True` |
+| D | `default_decision` 字段（F-46.1，后续） | 显式化 "无人值守默认决策" | `WorkflowConfig.default_decision: Literal["allow", "deny", "ask"] = "ask"`；`orchestrator.py` auto-upgrade 逻辑从 `if has_tracker: bypassPermissions` 改为 `if not interactive: default_decision = "allow"` |
+| E | `permission_mode` 降级为 shim（F-46.2，后续） | 彻底摆脱 enum | `permission_mode` 字段在 v2.15 标 `@deprecated`，v2.16 移除；期间只 accept 已知值，未知值 `logger.warning` + fallback 到 `default` |
+| F | 文档与迁移指南 | 让用户跟得上 | `docs/new-features-guide.md` 加一节 "permission 三字段迁移"；`extensions/orchestrator/templates/workflow.template.md` 顶部加注释指向新字段 |
+
+### 当前基线
+
+| 能力 | 当前状态 | 说明 |
+|------|----------|------|
+| `permission_mode: Literal["default", "plan", "bypassPermissions"]`（schema 声明） | ⚠️ 太窄 | `src/settings/types.py:9` 仅 3 值；`src/permissions/modes.py:20` 实际接受 5 值（`acceptEdits` / `dontAsk` 也支持），Schema 与 runtime 漂移 |
+| `dontAsk` 模式触发 ApprovalPolicy headless 卡死 | ❌ 已知 | `test_gitcode_workflow.md:58-60` 描述；orchestrator `schema.py` 已做 auto-upgrade |
+| TS 上游 `bypassPermissions` 注释 "no logging" | ❌ 误导 | Python 端 `ApprovalPolicy` 总跑，语义与 TS 不完全一致；F-45 旁路是修复点 |
+| 三个正交概念合在一字段 | ❌ 设计债 | 任何新增需求都得扩 enum case |
+| `WorkflowConfig.audit_log` 字段 | ❌ 缺失 | `src/orchestrator/config/schema.py:WorkflowConfig` 无此字段 |
+
+### 实施进度
+
+| 阶段 | 任务 | Sub | 状态 |
+|------|------|-----|------|
+| 1 | `WorkflowConfig.audit_log` 字段 + `report_writer` 读该字段决定是否写旁路（依赖 F-45 落地） | A | 📋 待开始（等 F-45） |
+| 2 | `permission_mode` → 三字段 translate 函数 + docstring 标 deprecated | B | 📋 待开始 |
+| 3 | （F-46.1）`interactive` 字段落 WorkflowConfig，`extensions/api/query.py` 默认值迁移 | C | 📋 规划中 |
+| 4 | （F-46.1）`default_decision` 字段 + orchestrator auto-upgrade 改写 | D | 📋 规划中 |
+| 5 | （F-46.2）`permission_mode` 标 deprecated，v2.16 移除 | E | 📋 规划中 |
+| 6 | `docs/new-features-guide.md` "permission 三字段迁移" 章节 + `extensions/orchestrator/templates/workflow.template.md` 顶部注释 | F | 📋 待开始 |
+
+### 验收标准
+
+- F-46.0 落地后，`workflow.yaml` 写 `audit_log: full` 时，`tool-events.ndjson` 落盘；写 `audit_log: none` 时，旁路不写；写 `audit_log: minimal`（默认）时，只写 deny 决策（节省空间）。
+- 旧 workflow.yaml 不写 `audit_log`，默认 `minimal` 行为不破坏现有 run。
+- `permission_mode: bypassPermissions` + `audit_log: full` 的组合，与 F-45 的 NDJSON 一致。
+- `permission_mode: dontAsk` 不再触发 ApprovalPolicy 卡死：auto-upgrade 在 orchestrator 启动时发生，即使 workflow 没显式写 `audit_log` 也至少走 `minimal`。
+- `permission_mode` → 三字段 translate 启动时打一条 `logger.warning` 提示 "已废弃，请改用三字段"，不报错。
+- `pytest tests/test_orchestrator_*.py -q` 与 `tests/manual_e2e_f38.py -v -s` 无回归。
+- 端到端：用旧 workflow.yaml（只写 `permission_mode: bypassPermissions`）跑一个 issue，`tool-events.ndjson` 落盘且 `audit_log` 字段在 NDJSON 中正确标注。
+
+### 风险与约束
+
+1. **enum 拆分 breaking change**：旧 workflow.yaml 写 `permission_mode: dontAsk` 的人看到 "deprecated" 会慌。Mitigation：旧值仍 accept，新字段可选；`docs/new-features-guide.md` 给迁移路径。
+2. **F-46.0 与 F-45 顺序**：F-46.0 的 `audit_log` 字段要消费 F-45 的 NDJSON 旁路；F-45 未落地时 F-46.0 只能写 "字段定义"，无法端到端验证。
+3. **上游 TS 未拆分**：clawcodex 跟随 TS 上游；若 TS 仍用 enum，我们只能做本地 schema 扩展，跨工具兼容差。Mitigation：在 `extensions/orchestrator/templates/workflow.template.md` 加注释 "建议同步升级上游"。
+4. **三字段组合爆炸**：理论上 `interactive` × `default_decision` × `audit_log` = 18 种组合，部分无意义（如 `interactive=true` + `audit_log=none` 让人 prompt 但不记，可能让用户误以为有 audit）。Mitigation：加 `validate()` 互斥规则，启动时报 warning。
+5. **不影响 `app_state` / `AppState.permission_mode`**：`src/state/app_state.py:87` 的 `permission_mode: str = "default"` 是运行时态，与 workflow.yaml 配置是两个层；F-46 仅改 workflow 层，AppState 不动。
+
+### 已拟定的设计决定
+
+| # | 决定 | 理由 |
+|---|------|------|
+| 1 | F-46.0 只拆 `audit_log`，暂不拆 `interactive` / `default_decision` | 拆得越多，本 PR 风险越大；F-45 已证明 "audit_log" 这一维是真正缺口的，先闭环 |
+| 2 | `permission_mode` 保留为 backward-compat shim，标 deprecated | TS 上游仍用 enum，跨工具兼容需要这个 shim |
+| 3 | `audit_log` 默认 `"minimal"`（只记 deny） | 节省磁盘；`"full"` 是用户显式 opt-in |
+| 4 | `WorkflowConfig.audit_log` 在 schema 顶层，不在 `agent` 子段 | audit 是 workflow 概念，跨 agent run 共享 |
+| 5 | 不动 `src/settings/types.py:PermissionModeType` | 那是 user-level settings，跟 workflow-level 不同概念 |
+| 6 | 阶段化：F-46.0 → F-46.1 → F-46.2 | 把 "风险高 + 受益晚" 的 `interactive` / `default_decision` 推到 F-46.1，等 F-45 + F-46.0 在生产中跑一阵后再说 |
+| 7 | `auto` / `bubble` 内部 mode 不动 | 它们是 sub-agent 内部机制，不是用户配置；F-46 不影响 |
+
+### 依赖与协同
+
+- **依赖**：
+  - F-45 落地后才有 `tool-events.ndjson` 旁路可消费
+  - `extensions/orchestrator/config/schema.py:WorkflowConfig` 作为字段挂点
+  - `extensions/orchestrator/report_writer.py` 作为 audit_log 字段 reader
+- **协同**：
+  - 与 F-45 强协同：F-46.0 的 `audit_log` 字段是 F-45 NDJSON 旁路的 "开关"
+  - 与 F-40 弱相关：ProgressSink 走 `ToolContext.tasks` metadata，不与 `audit_log` 重叠
+  - 与 F-37 / F-39 无关：follow-up / 重跑 run 都继承 workflow 的 `audit_log` 字段
+- **先于**：`docs/new-features-guide.md` "permission 三字段迁移" 章节；`extensions/orchestrator/templates/workflow.template.md` 顶部注释
+- **后续议题（G-1 / v2.15+）**：
+  - `interactive` 字段落地 + `extensions/api/query.py` 默认值迁移
+  - `default_decision` 字段落地 + orchestrator auto-upgrade 改写
+  - `permission_mode` 标 deprecated，v2.16 移除
+
+---
+
 *文档更新时间: 2026-06-02*
+
+*版本 v2.13 更新：新增 F-45 / F-46。F-45 P1 在 `agent_runner._handle_tool_call` 后加 NDJSON 旁路落 `~/.clawcodex/tool-events/{run_id}/events.ndjson`，与 permission_mode 解耦；扩展 `report_writer.RunReport.tool_events_path` 字段 + markdown 模板登记路径；终结 "bypass ≠ 无审计" 误读。F-46 P2 把 `permission_mode` enum 拆为 `interactive` / `default_decision` / `audit_log` 三个正交字段，F-46.0（v2.13）只拆 `audit_log`，依赖 F-45 落地后端到端验证；`permission_mode` 保留为 backward-compat shim 标 deprecated；F-46.1+ 拆其余两字段推到 v2.15+。*
 
 *版本 v2.11 更新: F-42 Sequential Workspace 策略实现完成。`workspace.strategy: isolated | shared | sequential` 落地，sequential 强制单并发并使用顺序锁，共享 root 上的 integration branch 叠加 commit 链，commit 元数据（base/start SHA、sequence_index）写入 registry，sequential GitSync 本地 commit 不 push/PR，shared/sequential root 在 cleanup 时保留。19 个专项测试 + 245 个 orchestrator 回归全部通过。*
 
