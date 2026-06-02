@@ -392,7 +392,12 @@ class WorkflowConfig:
             ),
             gitignore_patterns=workspace_raw.get(
                 "gitignore_patterns",
-                ["event_logs", "*.pyc", "__pycache__", "*.egg-info", ".pytest_cache"],
+                # F-45: ".reports" added so the orchestrator's per-workspace
+                # report markdown/json files don't show up as "dirty" in
+                # the pre-commit hook. The per-tool audit log lives in
+                # ~/.clawcodex/, not the workspace, so it doesn't need
+                # gitignore treatment here.
+                ["event_logs", "*.pyc", "__pycache__", "*.egg-info", ".pytest_cache", ".reports"],
             ),
             strategy=workspace_strategy,
             base_branch=_resolve_env_value(workspace_raw.get("base_branch")),

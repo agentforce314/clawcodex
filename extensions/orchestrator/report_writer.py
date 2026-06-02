@@ -39,6 +39,11 @@ class RunReport:
     verification_status: str | None
     verification_output: str | None
     output_excerpt: str
+    # F-45: path to ~/.clawcodex/tool-events/{run_id}/events.ndjson
+    # (per-tool audit bypass). Added at the end of the dataclass so
+    # existing reader code that constructs ``RunReport(**legacy_dict)``
+    # keeps working (the field defaults to None).
+    tool_events_path: str | None = None
 
 
 def write(
@@ -60,6 +65,7 @@ def write(
     verification_status: str | None = None,
     verification_output: str | None = None,
     output_text: str = "",
+    tool_events_path: str | None = None,
 ) -> ReportResult:
     issue_id = str(getattr(issue, "id", None) or "unknown")
     safe_tracker = _safe_segment(tracker or "unknown")
@@ -86,6 +92,7 @@ def write(
         verification_status=verification_status,
         verification_output=verification_output,
         output_excerpt=_excerpt(output_text),
+        tool_events_path=tool_events_path,
     )
 
     workspace_dir = workspace_path / ".reports"
@@ -114,6 +121,16 @@ def write(
     _copy_with_fallback(workspace_md, persistent_md)
     _copy_with_fallback(workspace_json, persistent_json)
 
+    # F-45 Sub-C: dual-write the per-tool NDJSON into the persistent
+    # layer so the audit log survives workspace cleanup. We copy the
+    # source file (under ~/.clawcodex/tool-events/) into the persistent
+    # reports dir using _copy_with_fallback for atomic semantics.
+    if tool_events_path:
+        tool_events = Path(tool_events_path)
+        if tool_events.exists():
+            persistent_events = persistent_dir / f"{run_id}.events.ndjson"
+            _copy_with_fallback(tool_events, persistent_events)
+
     return ReportResult(
         run_id=run_id,
         workspace_markdown_path=str(workspace_md),
@@ -138,19 +155,27 @@ def _render_markdown(report: RunReport) -> str:
         f"- Turns: {report.turn_count}",
         f"- Tool calls: {report.tool_count}",
         f"- Verification: `{report.verification_status or 'skipped'}`",
-        "",
-        "## Verification Output",
-        "",
-        "```",
-        report.verification_output or "",
-        "```",
-        "",
-        "## Agent Output Excerpt",
-        "",
-        "```",
-        report.output_excerpt,
-        "```",
     ]
+    # F-45: register the per-tool audit log path so the report reader
+    # can `cat` it without grepping ~/.clawcodex/ first.
+    if report.tool_events_path:
+        lines.append(f"- Tool events: `{report.tool_events_path}`")
+    lines.extend(
+        [
+            "",
+            "## Verification Output",
+            "",
+            "```",
+            report.verification_output or "",
+            "```",
+            "",
+            "## Agent Output Excerpt",
+            "",
+            "```",
+            report.output_excerpt,
+            "```",
+        ]
+    )
     return "\n".join(lines).rstrip() + "\n"
 
 

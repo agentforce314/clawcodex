@@ -11,6 +11,7 @@ import random
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from ..api.query import PhaseComplete, QueryConfig, QueryRunner
@@ -19,6 +20,7 @@ from .approval_policy import ApprovalPolicy, get_approval_policy, ToolCallEvent 
 from .config.schema import AgentConfig, CodexConfig, WorkflowConfig
 from .issue import Issue
 from .prompt_builder import PromptBuilder
+from .tool_event_log import ToolEventLog
 from .workspace import Workspace
 
 # Reuse the project's typed rate-limit error and helpers so the 429
@@ -33,6 +35,11 @@ if TYPE_CHECKING:
     from .progress_reporter import ProgressReporter
 
 logger = logging.getLogger(__name__)
+
+# F-45: tool-event audit log rotation threshold. When events.ndjson
+# exceeds this size on next append, rotate to events.ndjson.1 (single
+# generation, overwrite). v2.14 will hook a cron for 7-day cleanup.
+_TOOL_EVENT_LOG_ROTATE_BYTES = 50 * 1024 * 1024
 
 
 @dataclass
@@ -59,6 +66,10 @@ class AgentSession:
     verification_status: str | None = None
     verification_output: str | None = None
     report_path: str | None = None
+    # F-45: canonical path to ~/.clawcodex/tool-events/{run_id}/events.ndjson.
+    # Set in AgentRunner.run() at session start; consumed by
+    # report_writer.write() to dual-write the NDJSON to the persistent layer.
+    tool_events_path: str | None = None
     attempt: int = 1
     issue_attempt: int = 1
     followup_attempt: int = 1
@@ -129,6 +140,82 @@ class AgentRunner:
         event._approved = policy_event._approved
         event._deny_reason = policy_event._deny_reason
         return event
+
+    def _append_tool_event_log(
+        self,
+        event: ToolCallEvent,
+        session_context: dict[str, Any],
+    ) -> None:
+        """Persist a per-tool decision row to events.ndjson (F-45).
+
+        Writes one NDJSON line to
+        ``~/.clawcodex/tool-events/{run_id}/events.ndjson``.  Decoupled
+        from ``permission_mode`` — all 7 modes (default / plan /
+        bypassPermissions / acceptEdits / dontAsk / auto / bubble) write
+        the same row shape; only the ``permission_mode`` column value
+        varies.  Failures are logged and swallowed: the audit log must
+        never block the agent run.
+        """
+        try:
+            run_id = session_context.get("run_id") or "unknown"
+            base_dir = Path.home() / ".clawcodex" / "tool-events" / run_id
+            try:
+                base_dir.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                # mkdir may fail in a sandboxed HOME; skip the rest
+                # gracefully so the agent loop is never affected.
+                logger.exception(
+                    "tool-event log mkdir failed run_id=%s path=%s",
+                    run_id,
+                    base_dir,
+                )
+                return
+
+            log_path = base_dir / "events.ndjson"
+
+            # Single-generation rotate (F-45 Sub-E decision: 50MB
+            # threshold, single backup). v2.14 will add 7-day cleanup.
+            try:
+                if log_path.exists() and log_path.stat().st_size >= _TOOL_EVENT_LOG_ROTATE_BYTES:
+                    rotated = log_path.with_suffix(log_path.suffix + ".1")
+                    try:
+                        rotated.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                    log_path.replace(rotated)
+            except Exception:
+                # Rotation is best-effort — log and continue writing to
+                # the live file. A single oversized file is still better
+                # than a failed write.
+                logger.exception(
+                    "tool-event log rotate failed path=%s", log_path
+                )
+
+            row = ToolEventLog(
+                tool=event.tool_name,
+                params=event.params,
+                approved=event._approved,
+                deny_reason=event._deny_reason,
+                permission_mode=session_context.get(
+                    "permission_mode", "unknown"
+                ),
+                turn=session_context.get("turn", 0),
+                session_run_id=run_id,
+            )
+            try:
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(row.to_json() + "\n")
+            except Exception:
+                logger.exception(
+                    "tool-event log append failed run_id=%s path=%s",
+                    run_id,
+                    log_path,
+                )
+        except Exception:
+            # Defensive outer guard: never let audit logging break the
+            # agent run. The audit log is observable infrastructure, not
+            # a correctness gate.
+            logger.exception("tool-event log unexpected failure")
 
     def _is_429_response(self, turn_output: str) -> bool:
         """Detect an upstream 429 rate limit in the accumulated turn output.
@@ -289,7 +376,19 @@ class AgentRunner:
             "issue_identifier": issue.identifier,
             "workspace_path": str(workspace.path),
             "workflow": workflow,
+            # F-45: run_id + permission_mode are consumed by
+            # _append_tool_event_log to write per-tool rows to
+            # ~/.clawcodex/tool-events/{run_id}/events.ndjson.
+            "run_id": session.run_id,
+            "permission_mode": self.agent_config.permission_mode,
         }
+        # F-45: stash the canonical NDJSON path on the session so
+        # report_writer.write() can dual-write it to the persistent
+        # layer (Sub-C).  Resolved here (not in the property) so the
+        # path is concrete before the first event is appended.
+        session.tool_events_path = str(
+            Path.home() / ".clawcodex" / "tool-events" / (session.run_id or "unknown") / "events.ndjson"
+        )
 
         turn_number = 0
         tool_count = 0
@@ -393,13 +492,22 @@ class AgentRunner:
                         # Operator hint injection: check .operator_hints.md
                         self._inject_operator_hints(session.workspace)
 
-                        # In headless (orchestrator) mode the permission system
-                        # is bypassed via ToolContext.approval_policy =
-                        # "bypassPermissions" + permission_handler = None, so all
-                        # tool calls are auto-approved.  The orchestrator's
-                        # ApprovalPolicy (ToolCallEvent) is not consulted here —
-                        # decisions live in the headless agent loop, not in
-                        # QueryRunner.stream() output.
+                        # F-45: in headless (orchestrator) mode the api.query
+                        # stream yields ToolCallEvent with _approved=None
+                        # (TS upstream's ToolContext.approval_policy =
+                        # "bypassPermissions" + permission_handler = None
+                        # bypasses the user-prompt layer, not the policy
+                        # decision layer).  The orchestrator's ApprovalPolicy
+                        # is the authoritative source of "allowed vs denied";
+                        # call it here so the audit log captures real
+                        # decisions.  Then mirror the policy's verdict into
+                        # the per-tool NDJSON bypass.
+                        event = self._handle_tool_call(event, session_context)
+                        # Tag session_context with the current turn so the
+                        # NDJSON row carries the right `turn` value.
+                        session_context["turn"] = turn_number
+                        self._append_tool_event_log(event, session_context)
+
                         if status_dashboard is not None:
                             try:
                                 status_dashboard.on_event(event, session)

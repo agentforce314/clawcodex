@@ -562,6 +562,9 @@ class GitSyncService:
             verification_status=getattr(session, "verification_status", None),
             verification_output=getattr(session, "verification_output", None),
             output_text=getattr(session, "output_text", ""),
+            # F-45: forward the per-tool audit log path so report_writer
+            # can dual-write the NDJSON into the persistent layer.
+            tool_events_path=getattr(session, "tool_events_path", None),
         )
         setattr(session, "report_path", result.persistent_markdown_path)
         return result
