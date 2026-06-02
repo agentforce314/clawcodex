@@ -14,6 +14,8 @@ class REPLFrontend(FrontendPlugin):
     def run(self, ctx, argv: list[str]) -> int:
         from src.repl import ClawcodexREPL
 
+        from clawcodex_ext.frontend.repl_extensions import install_repl_extensions
+
         repl = ClawcodexREPL(
             provider_name=ctx.provider_name,
             stream=ctx.options.stream,
@@ -27,5 +29,6 @@ class REPLFrontend(FrontendPlugin):
             workspace_root=ctx.workspace_root,
             runtime_context=ctx,
         )
+        install_repl_extensions(repl, ctx)
         repl.run()
         return 0

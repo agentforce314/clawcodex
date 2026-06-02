@@ -163,12 +163,6 @@ def build_command_suggestions(
         from src.command_system.registry import CommandRegistry, get_command_registry
 
         register_builtin_commands(None)
-        try:
-            from clawcodex_ext.cli.runtime_commands import register_runtime_commands
-
-            register_runtime_commands(None)
-        except Exception:
-            pass
         registry: CommandRegistry = get_command_registry()
         for cmd in registry.list_commands():
             if getattr(cmd, "is_hidden", False):

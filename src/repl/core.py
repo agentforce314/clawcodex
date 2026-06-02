@@ -1172,26 +1172,9 @@ class ClawcodexREPL:
         # Also register to global registry so execute_command_async can find commands
         register_builtin_commands(None)  # None = use global registry
 
-        try:
-            from clawcodex_ext.cli.runtime_commands import register_runtime_commands
-
-            register_runtime_commands(None)
-        except Exception:
-            pass
-
         # Create command registry and register built-ins
         self.command_registry = CommandRegistry()
         register_builtin_commands(self.command_registry)
-        try:
-            from clawcodex_ext.cli.runtime_commands import register_runtime_commands
-
-            register_runtime_commands(self.command_registry)
-        except Exception:
-            pass
-
-        # Create cost tracker and history
-        self.cost_tracker = CostTracker()
-        self.history_log = HistoryLog()
 
         # Create command context
         self.command_context = create_command_context(
@@ -1238,25 +1221,11 @@ class ClawcodexREPL:
                 command, args, self.command_context
             )
             if success:
-                self._sync_from_runtime_context()
                 return True, result_text
             else:
                 return False, error
         except Exception as e:
             return False, str(e)
-
-    def _sync_from_runtime_context(self) -> None:
-        runtime = getattr(self, "runtime_context", None)
-        if runtime is None:
-            return
-        self.provider = runtime.provider
-        self.provider_name = runtime.provider_name
-        self.tool_registry = runtime.tool_registry
-        self.tool_context = runtime.tool_context
-        if hasattr(self, "command_context"):
-            self.command_context.provider = runtime.provider
-            self.command_context.tool_registry = runtime.tool_registry
-            self.command_context.tool_context = runtime.tool_context
 
     async def _try_execute_command_async(self, command: str, args: str) -> CommandResult:
         """Execute a command asynchronously, supporting both LocalCommand and PromptCommand.

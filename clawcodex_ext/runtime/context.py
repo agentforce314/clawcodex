@@ -8,6 +8,12 @@ from typing import Any
 
 from clawcodex_ext.cli.model_cmd.resolver import resolve
 from clawcodex_ext.cron_system.runtime import attach_cron_runtime, replace_cron_tools
+from clawcodex_ext.runtime.observer import (
+    RuntimeObserver,
+    attach_observer,
+    detach_observer,
+    notify_observers,
+)
 
 
 @dataclass
@@ -155,6 +161,10 @@ class RuntimeContext:
         ):
             if hasattr(self.tool_context, attr):
                 setattr(self.tool_context, attr, value)
+
+        # Fan-out to downstream observers (REPL, TUI, AgentBridge).
+        # See clawcodex_ext/runtime/observer.py for the Protocol contract.
+        notify_observers(self)
 
 
 def _filter_registry(

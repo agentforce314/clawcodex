@@ -493,7 +493,6 @@ class ClawCodexTUI(App):
             transcript.append_user(text)
             self.submit_to_agent(text)
             return
-        self._sync_from_runtime_context()
         self._apply_command_result(result, transcript)
 
     def _apply_command_result(
@@ -1023,14 +1022,12 @@ class ClawCodexTUI(App):
         if self._command_context is not None:
             return self._command_context
         try:
-            from clawcodex_ext.cli.runtime_commands import register_runtime_commands
             from src.command_system.builtins import register_builtin_commands
             from src.command_system.engine import create_command_context
             from src.cost_tracker import CostTracker
             from src.history import HistoryLog
 
             register_builtin_commands(None)
-            register_runtime_commands(None)
             self._command_context = create_command_context(
                 workspace_root=self.workspace_root,
                 conversation=self.session.conversation,
@@ -1044,35 +1041,6 @@ class ClawCodexTUI(App):
         except Exception:
             self._command_context = None
         return self._command_context
-
-    def _sync_from_runtime_context(self) -> None:
-        runtime = self.runtime_context
-        if runtime is None:
-            return
-
-        self.provider = runtime.provider
-        self.provider_name = runtime.provider_name
-        self.model = getattr(runtime.provider, "model", runtime.options.model)
-        self.tool_registry = runtime.tool_registry
-        self.tool_context = runtime.tool_context
-        self.app_state.provider = self.provider_name
-        self.app_state.model = self.model or ""
-
-        if self._command_context is not None:
-            self._command_context.provider = self.provider
-            self._command_context.tool_registry = self.tool_registry
-            self._command_context.tool_context = self.tool_context
-
-        self._agent_bridge.replace_runtime(
-            provider=self.provider,
-            tool_registry=self.tool_registry,
-            tool_context=self.tool_context,
-        )
-        if self._repl_screen is not None:
-            self._repl_screen.status_bar.refresh_identity(
-                provider=self.provider_name,
-                model=self.model,
-            )
 
     # ---- agent loop plumbing ----
     def submit_to_agent(self, prompt: str) -> None:
