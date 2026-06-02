@@ -272,7 +272,7 @@ python -m pytest tests/ -v
 - **[SETUP_GUIDE.md](../guide/SETUP_GUIDE.md)** — Подробная установка
 - **[CONTRIBUTING.md](../../CONTRIBUTING.md)** — Руководство по разработке
 - **[TESTING.md](../guide/TESTING.md)** — Руководство по тестированию
-- **[CHANGELOG.md](../../CHANGELOG.md)** — История версий
+- **[CHANGELOG.md](../../CHANGELOG.md.raw)** — История версий
 
 ***
 

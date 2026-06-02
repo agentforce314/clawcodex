@@ -272,7 +272,7 @@ Voir [CONTRIBUTING.md](../../CONTRIBUTING.md) pour les directives.
 - **[SETUP_GUIDE.md](../guide/SETUP_GUIDE.md)** — Installation détaillée
 - **[CONTRIBUTING.md](../../CONTRIBUTING.md)** — Guide de développement
 - **[TESTING.md](../guide/TESTING.md)** — Guide de test
-- **[CHANGELOG.md](../../CHANGELOG.md)** — Historique des versions
+- **[CHANGELOG.md](../../CHANGELOG.md.raw)** — Historique des versions
 
 ***
 

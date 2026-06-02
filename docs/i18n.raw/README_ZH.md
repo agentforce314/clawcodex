@@ -133,7 +133,7 @@ clawcodex --max-turns 10 --allowed-tools Read,Grep -p "查找 TODO"
 | REPL 命令 | ✅ 完成   | 内置命令 + `/tools`、`/stream`、`/context`、`/compact`、技能等 |
 | 工具系统 | ✅ 完成   | 30+ 工具 |
 | 自动化测试 | ✅ 已覆盖  | 工具、agent loop、providers、parity、REPL 等 |
-| 文档    | ✅ 完成   | 指南、多语言 README、[FEATURE_LIST.md](../../FEATURE_LIST.md) |
+| 文档    | ✅ 完成   | 指南、多语言 README、[FEATURE_LIST.md](../../FEATURE_LIST.md.raw) |
 
 ### 核心系统
 
@@ -172,7 +172,7 @@ clawcodex --max-turns 10 --allowed-tools Read,Grep -p "查找 TODO"
 - 🟡 **阶段 4**：MCP 运行时、插件与扩展（工具已有，平台能力持续推进）
 - ⏳ **阶段 5**：Python 原生差异化特性
 
-**详细功能状态和 PR 指南请查看 [FEATURE_LIST.md](../../FEATURE_LIST.md)。**
+**详细功能状态和 PR 指南请查看 [FEATURE_LIST.md](../../FEATURE_LIST.md.raw)。**
 
 ## 🚀 快速开始
 
@@ -392,7 +392,7 @@ python -m pytest tests/ -v
 - **[SETUP_GUIDE.md](../guide/SETUP_GUIDE.md)** — 详细安装说明
 - **[CONTRIBUTING.md](../../CONTRIBUTING.md)** — 开发指南
 - **[TESTING.md](../guide/TESTING.md)** — 测试指南
-- **[CHANGELOG.md](../../CHANGELOG.md)** — 版本历史
+- **[CHANGELOG.md](../../CHANGELOG.md.raw)** — 版本历史
 
 ***
 

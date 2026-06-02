@@ -272,7 +272,7 @@ python -m pytest tests/ -v
 - **[SETUP_GUIDE.md](../guide/SETUP_GUIDE.md)** — विस्तृत स्थापना
 - **[CONTRIBUTING.md](../../CONTRIBUTING.md)** — विकास मार्गदर्शिका
 - **[TESTING.md](../guide/TESTING.md)** — परीक्षण मार्गदर्शिका
-- **[CHANGELOG.md](../../CHANGELOG.md)** — संस्करण इतिहास
+- **[CHANGELOG.md](../../CHANGELOG.md.raw)** — संस्करण इतिहास
 
 ***
 

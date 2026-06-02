@@ -129,7 +129,7 @@ ClawCodex基于以下开源项目构建：
 
 # 版本说明
 
-ClawCodex版本详情请参考：[版本说明](CHANGELOG.md)。
+ClawCodex版本详情请参考：[版本说明](CHANGELOG.md.raw)。
 
 # 兼容性信息
 

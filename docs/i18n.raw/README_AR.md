@@ -272,7 +272,7 @@ python -m pytest tests/ -v
 - **[SETUP_GUIDE.md](../guide/SETUP_GUIDE.md)** — التثبيت المفصل
 - **[CONTRIBUTING.md](../../CONTRIBUTING.md)** — دليل التطوير
 - **[TESTING.md](../guide/TESTING.md)** — دليل الاختبار
-- **[CHANGELOG.md](../../CHANGELOG.md)** — تاريخ الإصدارات
+- **[CHANGELOG.md](../../CHANGELOG.md.raw)** — تاريخ الإصدارات
 
 ***
 
