@@ -73,6 +73,7 @@ from .skills_integration import (
     skill_to_prompt_command,
 )
 from .permissions_command import PERMISSIONS_COMMAND, PermissionsCommand
+from .output_style_command import OUTPUT_STYLE_COMMAND, OutputStyleCommand
 from .types import (
     Command,
     CommandAvailability,
@@ -144,6 +145,8 @@ __all__ = [
     "StatuslineCommand",
     "PERMISSIONS_COMMAND",
     "PermissionsCommand",
+    "OUTPUT_STYLE_COMMAND",
+    "OutputStyleCommand",
     "get_builtin_commands",
     "register_builtin_commands",
     # Moved-to-plugin factory + shell-at-prompt-build
