@@ -30,6 +30,7 @@ from urllib.parse import urlparse
 # the strings are stable for the frontend.
 
 ISSUE_STATUSES: tuple[str, ...] = (
+    "queued",
     "pending",
     "running",
     "synced",
@@ -41,6 +42,7 @@ ISSUE_STATUSES: tuple[str, ...] = (
 )
 
 STATUS_META: dict[str, dict[str, str]] = {
+    "queued":              {"label": "Queued",             "color": "#6e7681", "icon": "◷", "group": "active"},
     "pending":             {"label": "Pending",            "color": "#d29922", "icon": "○", "group": "active"},
     "running":             {"label": "Running",            "color": "#58a6ff", "icon": "◉", "group": "active"},
     "synced":              {"label": "Synced",             "color": "#a371f7", "icon": "⇄", "group": "active"},
@@ -235,62 +237,109 @@ def _gather_issue_metadata(workspace: Path) -> dict[str, Any]:
     }
 
 
+def _event_log_dirs(workspace: Path) -> list[Path]:
+    """Return list of ``.event_logs`` directories to scan.
+
+    Includes the top-level ``{workspace}/.event_logs/`` (legacy layout),
+    per-issue subdirectories referenced by the issue registry (sequential /
+    isolated workspace layout), and a scan of first-level subdirectories
+    for per-issue ``.event_logs/`` that may not be directly referenced in
+    the registry (e.g. sequential per-issue workspaces).
+    """
+    dirs: list[Path] = []
+    seen: set[str] = set()
+
+    # 1. Top-level event logs
+    top = workspace / ".event_logs"
+    if top.exists():
+        dirs.append(top)
+        seen.add(str(top))
+
+    # 2. Registry-referenced per-issue workspaces
+    registry = _safe_read_json(workspace / ".clawcodex_issue_registry.json") or {}
+    for record in registry.values():
+        if not isinstance(record, dict):
+            continue
+        ws = record.get("workspace_path")
+        if ws:
+            p = Path(ws) / ".event_logs"
+            sp = str(p)
+            if sp not in seen and p.exists():
+                dirs.append(p)
+                seen.add(sp)
+
+    # 3. First-level subdirectories that may contain per-issue event logs
+    #    (sequential workspace layout: each issue has its own subdirectory)
+    if workspace.is_dir():
+        for child in workspace.iterdir():
+            if not child.is_dir():
+                continue
+            p = child / ".event_logs"
+            sp = str(p)
+            if sp not in seen and p.exists():
+                dirs.append(p)
+                seen.add(sp)
+
+    return dirs
+
+
 def _gather_event_stats(workspace: Path) -> dict[str, Any]:
     """Aggregate event counts and recent tail per issue from .event_logs/."""
-    event_dir = workspace / ".event_logs"
     stats: dict[str, Any] = {
         "event_count": 0,
         "by_issue": {},
         "recent": [],   # list of {issue_id, identifier, timestamp, event}
         "by_type": {t: 0 for t in ("tool_call", "tool_result", "text_delta", "phase_complete")},
     }
-    if not event_dir.exists():
+    event_dirs = _event_log_dirs(workspace)
+    if not event_dirs:
         return stats
 
     # Read tail of each ndjson log to build per-issue stats + recent list.
-    for log_file in event_dir.glob("*.ndjson"):
-        issue_id = log_file.stem
-        try:
-            size = log_file.stat().st_size
-            if size == 0:
-                continue
-            # Read up to last ~64 KiB to stay cheap.
-            with open(log_file, "rb") as fh:
-                if size > 64 * 1024:
-                    fh.seek(size - 64 * 1024)
-                raw = fh.read().decode("utf-8", errors="replace")
-        except Exception:
-            continue
-        lines = [ln for ln in raw.splitlines() if ln.strip()]
-        per_issue_count = len(lines)
-        stats["event_count"] += per_issue_count
-        last_event_at = None
-        for line in lines:
+    for event_dir in event_dirs:
+        for log_file in event_dir.glob("*.ndjson"):
+            issue_id = log_file.stem
             try:
-                obj = json.loads(line)
+                size = log_file.stat().st_size
+                if size == 0:
+                    continue
+                # Read up to last ~64 KiB to stay cheap.
+                with open(log_file, "rb") as fh:
+                    if size > 64 * 1024:
+                        fh.seek(size - 64 * 1024)
+                    raw = fh.read().decode("utf-8", errors="replace")
             except Exception:
                 continue
-            et = obj.get("type")
-            if et in stats["by_type"]:
-                stats["by_type"][et] += 1
-            ts = obj.get("timestamp") or ""
-            if ts and (last_event_at is None or ts > last_event_at):
-                last_event_at = ts
-        stats["by_issue"][issue_id] = {
-            "count": per_issue_count,
-            "last_event_at": last_event_at,
-        }
-        # Capture last event for "recent" tail.
-        if lines:
-            try:
-                last = json.loads(lines[-1])
-                stats["recent"].append({
-                    "issue_id": issue_id,
-                    "timestamp": last.get("timestamp") or "",
-                    "event": last,
-                })
-            except Exception:
-                pass
+            lines = [ln for ln in raw.splitlines() if ln.strip()]
+            per_issue_count = len(lines)
+            stats["event_count"] += per_issue_count
+            last_event_at = None
+            for line in lines:
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    continue
+                et = obj.get("type")
+                if et in stats["by_type"]:
+                    stats["by_type"][et] += 1
+                ts = obj.get("timestamp") or ""
+                if ts and (last_event_at is None or ts > last_event_at):
+                    last_event_at = ts
+            stats["by_issue"][issue_id] = {
+                "count": per_issue_count,
+                "last_event_at": last_event_at,
+            }
+            # Capture last event for "recent" tail.
+            if lines:
+                try:
+                    last = json.loads(lines[-1])
+                    stats["recent"].append({
+                        "issue_id": issue_id,
+                        "timestamp": last.get("timestamp") or "",
+                        "event": last,
+                    })
+                except Exception:
+                    pass
 
     # Keep the most recent N events sorted by timestamp string desc.
     stats["recent"].sort(key=lambda e: e.get("timestamp") or "", reverse=True)
@@ -388,64 +437,66 @@ class EventTailer:
         so the live stream only needs to forward events appended from this
         point onward.
         """
-        event_dir = workspace / ".event_logs"
+        event_dirs = _event_log_dirs(workspace)
+        if not event_dirs:
+            return
         with self._lock:
-            if not event_dir.exists():
-                return
-            for log_file in event_dir.glob("*.ndjson"):
-                try:
-                    self._offsets[str(log_file)] = log_file.stat().st_size
-                except Exception:
-                    continue
+            for event_dir in event_dirs:
+                for log_file in event_dir.glob("*.ndjson"):
+                    try:
+                        self._offsets[str(log_file)] = log_file.stat().st_size
+                    except Exception:
+                        continue
 
     def read_new(self, workspace: Path, since: dict[str, int] | None = None) -> list[dict[str, Any]]:
         """Return new events emitted since `since` (or last call from this tailer)."""
-        event_dir = workspace / ".event_logs"
+        event_dirs = _event_log_dirs(workspace)
         out: list[dict[str, Any]] = []
-        if not event_dir.exists():
+        if not event_dirs:
             return out
 
         with self._lock:
             offsets = self._offsets
 
-        for log_file in event_dir.glob("*.ndjson"):
-            issue_id = log_file.stem
-            try:
-                size = log_file.stat().st_size
-            except Exception:
-                continue
-
-            if since is not None:
-                start = since.get(str(log_file), 0)
-            else:
-                start = offsets.get(str(log_file), 0)
-
-            if size <= start:
-                continue
-
-            try:
-                with open(log_file, "rb") as fh:
-                    fh.seek(start)
-                    chunk = fh.read(size - start)
-            except Exception:
-                continue
-
-            text = chunk.decode("utf-8", errors="replace")
-            for line in text.splitlines():
-                line = line.strip()
-                if not line:
-                    continue
+        for event_dir in event_dirs:
+            for log_file in event_dir.glob("*.ndjson"):
+                issue_id = log_file.stem
                 try:
-                    obj = json.loads(line)
+                    size = log_file.stat().st_size
                 except Exception:
                     continue
-                out.append({
-                    "issue_id": issue_id,
-                    "timestamp": obj.get("timestamp") or time.strftime("%H:%M:%S"),
-                    "event": obj,
-                })
 
-            offsets[str(log_file)] = size
+                if since is not None:
+                    start = since.get(str(log_file), 0)
+                else:
+                    start = offsets.get(str(log_file), 0)
+
+                if size <= start:
+                    continue
+
+                try:
+                    with open(log_file, "rb") as fh:
+                        fh.seek(start)
+                        chunk = fh.read(size - start)
+                except Exception:
+                    continue
+
+                text = chunk.decode("utf-8", errors="replace")
+                for line in text.splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except Exception:
+                        continue
+                    out.append({
+                        "issue_id": issue_id,
+                        "timestamp": obj.get("timestamp") or time.strftime("%H:%M:%S"),
+                        "event": obj,
+                    })
+
+                offsets[str(log_file)] = size
         return out
 
 
@@ -793,8 +844,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         <div class="kv">Workspace <b id="hdr-workspace" class="mono">…</b></div>
         <div class="kv">Daemon <b id="hdr-daemon">…</b></div>
         <div class="kv">Uptime <b id="hdr-uptime">—</b></div>
-        <div class="kv">PRs <b id="hdr-prs">0</b></div>
-        <div class="kv">Events <b id="hdr-events">0</b></div>
+        <div class="kv">Pull Requests <b id="hdr-prs">0</b></div>
+        <div class="kv">Event Count <b id="hdr-events">0</b></div>
       </div>
       <div id="conn" class="conn"><span class="dot"></span><span id="conn-text">connecting…</span></div>
     </div>
@@ -895,10 +946,10 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     const TERMINAL = new Set(STATUSES.filter(s => STATUS_META[s].group === "terminal"));
 
     const EVENT_TYPE_META = {
-      tool_call:      { color: "#a371f7", label: "TOOL" },
-      tool_result:    { color: "#3fb950", label: "RES"  },
-      text_delta:     { color: "#79c0ff", label: "TEXT" },
-      phase_complete: { color: "#d29922", label: "PHASE" },
+      tool_call:      { color: "#a371f7", label: "Tool Call" },
+      tool_result:    { color: "#3fb950", label: "Tool Result" },
+      text_delta:     { color: "#79c0ff", label: "Text Delta" },
+      phase_complete: { color: "#d29922", label: "Phase Complete" },
     };
     const MAX_FEED_ROWS = 500;
 

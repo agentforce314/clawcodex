@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 class IssueStatus(str, Enum):
     """Lifecycle stages of a tracked issue."""
 
+    QUEUED = "queued"             # in candidate queue, awaiting dispatch
     PENDING = "pending"           # claimed, workspace created, not yet synced
     RUNNING = "running"          # agent session actively processing
     SYNCED = "synced"             # git sync completed (commit + push + PR)
@@ -232,6 +233,7 @@ class IssueRegistry:
         start_commit_sha: str | None = None,
         previous_issue_id: str | None = None,
         sequence_index: int | None = None,
+        status: IssueStatus | None = None,
     ) -> IssueRecord:
         """Create a pending record for a newly claimed issue."""
         record = IssueRecord(
@@ -245,6 +247,7 @@ class IssueRegistry:
             start_commit_sha=start_commit_sha,
             previous_issue_id=previous_issue_id,
             sequence_index=sequence_index,
+            status=status or IssueStatus.PENDING,
         )
         self._records[issue_id] = record
         self._save()

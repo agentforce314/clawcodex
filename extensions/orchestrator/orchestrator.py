@@ -231,6 +231,24 @@ class Orchestrator:
             available_slots = (
                 self._state.max_concurrent_agents - len(self._state.running)
             )
+
+            # Pre-register all unregistered candidates with QUEUED status
+            # so the dashboard / registry reflects the full backlog.
+            for issue in issues:
+                if not self._registry.get(issue.id or ""):
+                    base_branch = (
+                        getattr(issue, "base_branch", None)
+                        or self.workflow.workspace.base_branch
+                        or "main"
+                    )
+                    self._registry.register(
+                        issue_id=issue.id or "",
+                        issue_identifier=issue.identifier or "",
+                        branch_name=issue.branch_name,
+                        base_branch=base_branch,
+                        status=IssueStatus.QUEUED,
+                    )
+
             if self.workflow.workspace.strategy == "sequential" and self._state.running:
                 return
 
