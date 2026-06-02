@@ -15,12 +15,14 @@ from .mcp_dialogs import (
 )
 from .message_selector import MessageSelectorScreen, TranscriptMessage
 from .model_picker import ModelPickerScreen
+from .ask_user_question import AskUserQuestionModal
 from .permission_modal import PermissionModal
 from .permission_mode_picker import PermissionModePickerScreen
 from .repl import REPLScreen
 from .theme_picker import ThemePickerScreen
 
 __all__ = [
+    "AskUserQuestionModal",
     "CostThresholdScreen",
     "DialogScreen",
     "DiffDialogScreen",

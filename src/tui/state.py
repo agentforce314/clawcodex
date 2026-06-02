@@ -78,6 +78,22 @@ class PendingPermission:
 
 
 @dataclass
+class PendingAskUser:
+    """An ``AskUserQuestion`` request awaiting the user's answers.
+
+    ``decide`` is called from the AskUserQuestion modal with the final
+    answer dict (``{question_text: chosen_label_or_free_text}``). It is
+    safe to invoke from either thread. ``questions`` is the normalized
+    question list — the modal renders it directly.
+    """
+
+    request_id: str
+    questions: list[dict[str, Any]]
+    decide: Callable[[dict[str, str] | None], None]
+    created_at: float = field(default_factory=time.time)
+
+
+@dataclass
 class AppState:
     """Observable UI state. See module docstring for semantics."""
 
@@ -91,6 +107,7 @@ class AppState:
     streaming_text: str = ""
     queued_prompts: list[str] = field(default_factory=list)
     pending_permissions: list[PendingPermission] = field(default_factory=list)
+    pending_ask_users: list[PendingAskUser] = field(default_factory=list)
     focused_dialog: FocusedDialog = FocusedDialog.PROMPT
     usage: dict[str, int] = field(default_factory=lambda: {"input_tokens": 0, "output_tokens": 0})
     last_error: str | None = None
@@ -111,6 +128,13 @@ class AppState:
             candidates: list[FocusedDialog] = [FocusedDialog.PROMPT]
             if self.pending_permissions:
                 candidates.append(FocusedDialog.TOOL_PERMISSION)
+            if self.pending_ask_users:
+                # AskUserQuestion is the TUI-side counterpart of MCP
+                # elicitation — both block the worker on user input. We
+                # reuse the existing ``ELICITATION`` slot so the focus
+                # router doesn't need a new entry just for the legacy
+                # ``AskUserQuestion`` tool.
+                candidates.append(FocusedDialog.ELICITATION)
             # Future phases populate more candidates (COST/IDLE/HOOK/...).
             best = max(candidates, key=priority_of)
             self.focused_dialog = best
@@ -152,6 +176,31 @@ class AppState:
             if not self.pending_permissions:
                 return None
             return self.pending_permissions[0]
+
+    # ---- ask_user queue ----
+    def enqueue_ask_user(
+        self,
+        questions: list[dict[str, Any]],
+        decide: Callable[[dict[str, str] | None], None],
+    ) -> PendingAskUser:
+        with self._lock:
+            request = PendingAskUser(
+                request_id=f"ask-{next(self._ids)}",
+                questions=list(questions),
+                decide=decide,
+            )
+            self.pending_ask_users.append(request)
+        self.recompute_focus()
+        self._notify()
+        return request
+
+    def resolve_ask_user(self, request_id: str) -> None:
+        with self._lock:
+            self.pending_ask_users = [
+                p for p in self.pending_ask_users if p.request_id != request_id
+            ]
+        self.recompute_focus()
+        self._notify()
 
     # ---- in-progress tool tracking ----
     def mark_tool_started(self, tool_use_id: str) -> None:

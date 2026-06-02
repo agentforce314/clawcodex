@@ -42,6 +42,7 @@ from .messages import (
     AdvisorEventMessage,
     AgentRunFinished,
     AgentRunStarted,
+    AskUserQuestionRequested,
     AssistantChunk,
     AssistantMessage,
     PermissionRequested,
@@ -87,6 +88,14 @@ class AgentBridge:
         # Wire permission handler: the tool dispatcher calls this from
         # the worker thread, we post to the UI and block on an Event.
         tool_context.permission_handler = self._permission_handler
+        # Wire AskUserQuestion handler: the AskUserQuestion tool calls
+        # ``context.ask_user(questions)`` from the worker thread. We
+        # mirror the permission pattern — post a request to the UI,
+        # block on an Event, return the answer dict when the modal
+        # resolves. Without this wiring the tool would receive an
+        # empty ``{}`` (or nothing at all) and the agent loop would
+        # never see the user's choices.
+        tool_context.ask_user = self._ask_user_handler
         # Advisor IDs we've already mirrored to the UI. The high-level
         # SDK stream doesn't give us per-event hooks for server tools,
         # so the bridge inspects the assembled conversation after each
@@ -692,6 +701,54 @@ class AgentBridge:
         # dismissed itself and emitted ``PermissionResolved``.
         self._state.resolve_permission(pending.request_id)
         return outcome["allowed"], outcome["enable"]
+
+    # ---- ask_user bridge ----
+    def _ask_user_handler(
+        self, questions: list[dict[str, Any]]
+    ) -> dict[str, str]:
+        """Called from the worker thread when ``AskUserQuestion`` runs.
+
+        Posts :class:`AskUserQuestionRequested` to the UI, which pushes
+        :class:`~src.tui.screens.ask_user_question.AskUserQuestionModal`;
+        blocks the worker until the modal resolves via
+        :class:`AskUserQuestionResolved`. Mirrors
+        :meth:`_permission_handler` so the failure modes (UI never
+        responds → worker thread stuck) are identical to those of the
+        permission flow.
+
+        Returns a dict ``{question_text: chosen_label_or_free_text}``.
+        On cancellation (Esc / Ctrl+C) returns an empty dict so the
+        agent loop can proceed without a real answer.
+        """
+
+        done = threading.Event()
+        outcome: dict[str, dict[str, str] | None] = {"answers": None}
+
+        def _decide(answers: dict[str, str] | None) -> None:
+            outcome["answers"] = answers or {}
+            done.set()
+
+        pending = self._state.enqueue_ask_user(
+            questions=list(questions),
+            decide=_decide,
+        )
+        self._post(
+            AskUserQuestionRequested(
+                request_id=pending.request_id,
+                questions=list(questions),
+            )
+        )
+        # Same "no timeout" contract as permissions: a stuck modal will
+        # hold the worker, which is the same failure mode as the legacy
+        # REPL's ``_ask_user_questions``. The agent loop can be cancelled
+        # via ESC → ``AgentBridge.cancel()`` → AbortController, which
+        # raises through the call into this handler and unwinds the
+        # worker thread.
+        done.wait()
+        # Remove the entry from the state queue; the modal already
+        # dismissed itself and emitted ``AskUserQuestionResolved``.
+        self._state.resolve_ask_user(pending.request_id)
+        return outcome["answers"] or {}
 
 
 def _safe_copy(value: Any) -> Any:

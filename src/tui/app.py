@@ -1087,11 +1087,15 @@ class ClawCodexTUI(App):
             pass
 
     def _build_default_tool_context(self) -> ToolContext:
-        ctx = ToolContext(workspace_root=self.workspace_root)
-        ctx.ask_user = lambda questions: {
-            q["id"]: "" for q in questions if isinstance(q, dict) and "id" in q
-        }
-        return ctx
+        # ``ask_user`` and ``permission_handler`` are wired by
+        # :class:`AgentBridge.__init__` (see ``tui/agent_bridge.py``)
+        # which mounts the bridge-to-UI plumbing that posts modal
+        # requests and blocks the worker thread on user input. We
+        # intentionally leave the defaults ``None`` here so that any
+        # code path that constructs a tool context without the bridge
+        # fails loudly instead of silently swallowing user questions
+        # the way the old no-op lambda did.
+        return ToolContext(workspace_root=self.workspace_root)
 
     def _replay_history(self) -> None:
         """Replay conversation messages from a resumed session to the transcript.

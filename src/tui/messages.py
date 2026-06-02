@@ -160,6 +160,44 @@ class PermissionResolved(Message):
 
 
 @dataclass
+class AskUserQuestionRequested(Message):
+    """The agent is asking the user one or more clarifying questions.
+
+    Mirrors the wire shape of :class:`~src.tui.messages.PermissionRequested`
+    for the ``AskUserQuestion`` tool. The worker thread enqueues a
+    :class:`~src.tui.state.PendingAskUser` on :class:`AppState` before
+    posting this message; the REPL screen reacts by pushing an
+    :class:`~src.tui.screens.ask_user_question.AskUserQuestionModal`.
+
+    ``request_id`` correlates the modal's resolution back to the queued
+    entry so multiple concurrent prompts can be chained. ``questions``
+    is the normalized question list (see
+    ``src/tool_system/tools/ask_user_question.py::_ask_user_question_call``):
+    each entry is a dict with ``question``, optional ``header``,
+    ``multiSelect``, and ``options`` (a list of ``{label, description,
+    preview}``).
+    """
+
+    request_id: str
+    questions: list[dict[str, Any]]
+
+
+@dataclass
+class AskUserQuestionResolved(Message):
+    """Emitted by the AskUserQuestion modal once the user has answered.
+
+    ``answers`` maps the question text (``questions[i].question``) to
+    the chosen option label(s). For multiSelect questions, the value
+    is the comma-joined labels in user-pick order. Always paired with
+    a call to :meth:`AppState.resolve_ask_user` so the worker thread
+    is unblocked *before* this message is posted.
+    """
+
+    request_id: str
+    answers: dict[str, str]
+
+
+@dataclass
 class StateChanged(Message):
     """Coalesced notification that :class:`AppState` was mutated.
 

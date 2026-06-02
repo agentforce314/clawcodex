@@ -38,6 +38,8 @@ from ..messages import (
     AdvisorEventMessage,
     AgentRunFinished,
     AgentRunStarted,
+    AskUserQuestionRequested,
+    AskUserQuestionResolved,
     AssistantChunk,
     AssistantMessage,
     PermissionModeCycleRequested,
@@ -274,6 +276,40 @@ class REPLScreen(Screen):
         app.push_screen(PermissionModal(pending))
 
     def on_permission_resolved(self, _: PermissionResolved) -> None:
+        self.prompt_input.set_enabled(True)
+        self.prompt_input.focus_input()
+
+    # ---- AskUserQuestion modal handlers ----
+    def on_ask_user_question_requested(
+        self, message: AskUserQuestionRequested
+    ) -> None:
+        app: "ClawCodexTUI" = self.app  # type: ignore[assignment]
+        state = getattr(app, "app_state", None)
+        if state is None:
+            return
+        # Find the pending entry by id; fall back to the head of the
+        # queue if the worker thread posted the message before the
+        # state enqueue (Textual's message pump order is not strict).
+        pending = None
+        for candidate in list(state.pending_ask_users):
+            if candidate.request_id == message.request_id:
+                pending = candidate
+                break
+        if pending is None and state.pending_ask_users:
+            pending = state.pending_ask_users[0]
+        if pending is None:
+            return
+        from .ask_user_question import AskUserQuestionModal
+
+        self.prompt_input.set_enabled(False)
+        if hasattr(app, "announcer"):
+            app.announcer.announce(
+                f"Question: {pending.questions[0].get('question', '') if pending.questions else ''}",
+                level="assertive",
+            )
+        app.push_screen(AskUserQuestionModal(pending))
+
+    def on_ask_user_question_resolved(self, _: AskUserQuestionResolved) -> None:
         self.prompt_input.set_enabled(True)
         self.prompt_input.focus_input()
 
