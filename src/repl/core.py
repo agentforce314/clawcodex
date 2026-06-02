@@ -579,8 +579,13 @@ class ClawcodexREPL:
             "/init",
             "/tui",
             "/login",
+            # F-43 runtime commands: /provider and /model are implemented via
+            # the new command system (clawcodex_ext/cli/runtime_commands.py)
+            # and work in both REPL and TUI. /models (with 's') stays as the
+            # legacy TUI dialog entry.
+            "/provider",
+            "/models",
             # Phase 2 dialogs (TUI-only, show in palette with placeholder):
-            "/model",
             "/effort",
             "/history",
             "/cost",
@@ -2512,13 +2517,16 @@ class ClawcodexREPL:
                 'context', 'compact',  # These need special handling
                 'tui',  # handoff to Textual TUI
                 # TUI-only commands (not implemented in REPL, show placeholder):
-                'repl', 'model', 'effort', 'history', 'idle', 'theme',
+                'repl', 'effort', 'history', 'idle', 'theme',
                 'diff', 'mcp', 'tasks', 'rewind',
+                # F-43 runtime commands: /provider and /model are routed via
+                # the new command system (clawcodex_ext/cli/runtime_commands.py)
+                # and work in both REPL and TUI; do NOT mark them TUI-only.
                 ''
             }
 
             # Handle TUI-only commands that don't exist in REPL
-            if cmd_name in ('repl', 'model', 'effort', 'history', 'idle', 'theme',
+            if cmd_name in ('repl', 'effort', 'history', 'idle', 'theme',
                            'diff', 'mcp', 'tasks', 'rewind'):
                 self.console.print(f"[dim]/{cmd_name} is only available in the Textual TUI. Use /tui to switch.[/dim]")
                 return
