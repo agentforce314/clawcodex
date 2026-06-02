@@ -25,6 +25,7 @@ class REPLFrontend(FrontendPlugin):
             tool_registry=ctx.tool_registry,
             tool_context=ctx.tool_context,
             workspace_root=ctx.workspace_root,
+            runtime_context=ctx,
         )
         repl.run()
         return 0

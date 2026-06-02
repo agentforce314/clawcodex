@@ -389,6 +389,7 @@ class ClawcodexREPL:
         tool_registry: Any | None = None,
         tool_context: ToolContext | None = None,
         workspace_root: Path | None = None,
+        runtime_context: Any | None = None,
     ):
         # ``is_interactive`` is set during bootstrap phase 2 by
         # ``src.init.run_pre_action`` (called from ``cli.main``) before
@@ -407,6 +408,7 @@ class ClawcodexREPL:
         )
 
         self.console = Console()
+        self.runtime_context = runtime_context
         self.provider_name = provider_name
         self.stream = stream
         self.workspace_root = workspace_root or Path.cwd()
@@ -1165,9 +1167,22 @@ class ClawcodexREPL:
         # Also register to global registry so execute_command_async can find commands
         register_builtin_commands(None)  # None = use global registry
 
+        try:
+            from clawcodex_ext.cli.runtime_commands import register_runtime_commands
+
+            register_runtime_commands(None)
+        except Exception:
+            pass
+
         # Create command registry and register built-ins
         self.command_registry = CommandRegistry()
         register_builtin_commands(self.command_registry)
+        try:
+            from clawcodex_ext.cli.runtime_commands import register_runtime_commands
+
+            register_runtime_commands(self.command_registry)
+        except Exception:
+            pass
 
         # Create cost tracker and history
         self.cost_tracker = CostTracker()
@@ -1182,6 +1197,7 @@ class ClawcodexREPL:
             provider=self.provider,
             tool_registry=self.tool_registry,
             tool_context=self.tool_context,
+            runtime_context=self.runtime_context,
         )
 
         # Merge new commands with built-in list for completion
@@ -1217,11 +1233,25 @@ class ClawcodexREPL:
                 command, args, self.command_context
             )
             if success:
+                self._sync_from_runtime_context()
                 return True, result_text
             else:
                 return False, error
         except Exception as e:
             return False, str(e)
+
+    def _sync_from_runtime_context(self) -> None:
+        runtime = getattr(self, "runtime_context", None)
+        if runtime is None:
+            return
+        self.provider = runtime.provider
+        self.provider_name = runtime.provider_name
+        self.tool_registry = runtime.tool_registry
+        self.tool_context = runtime.tool_context
+        if hasattr(self, "command_context"):
+            self.command_context.provider = runtime.provider
+            self.command_context.tool_registry = runtime.tool_registry
+            self.command_context.tool_context = runtime.tool_context
 
     async def _try_execute_command_async(self, command: str, args: str) -> CommandResult:
         """Execute a command asynchronously, supporting both LocalCommand and PromptCommand.

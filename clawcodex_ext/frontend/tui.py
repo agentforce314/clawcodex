@@ -32,5 +32,6 @@ class TUIFrontend(FrontendPlugin):
             session=ctx.session,
             tool_registry=ctx.tool_registry,
             tool_context=ctx.tool_context,
+            runtime_context=ctx,
         )
         return run_tui(options)

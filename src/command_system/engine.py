@@ -228,6 +228,7 @@ def create_command_context(
     provider: Any = None,
     tool_registry: Any = None,
     tool_context: Any = None,
+    runtime_context: Any = None,
 ) -> CommandContext:
     """
     Create a command context.
@@ -247,6 +248,8 @@ def create_command_context(
             delegate to tools.
         tool_context: Optional active tool context for commands that
             delegate to tools.
+        runtime_context: Optional downstream runtime object for commands that
+            need to swap provider/tool state together.
 
     Returns:
         CommandContext instance
@@ -265,4 +268,5 @@ def create_command_context(
         provider=provider,
         tool_registry=tool_registry,
         tool_context=tool_context,
+        runtime_context=runtime_context,
     )

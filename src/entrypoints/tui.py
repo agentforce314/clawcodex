@@ -49,6 +49,7 @@ class TUIOptions:
     session: Any | None = None
     tool_registry: Any | None = None
     tool_context: Any | None = None
+    runtime_context: Any | None = None
     # Resume a previous session by ID (e.g. after Ctrl+B background).
     resume_session_id: str | None = None
     # --resume without SESSION_ID: show session browser on TUI mount.
@@ -167,6 +168,7 @@ def _run_tui_with_app(options: TUIOptions, *, app_cls) -> int:
         stream=options.stream,
         tail_follower=tail_follower,
         resume_browse=options.resume_browse,
+        runtime_context=options.runtime_context,
     )
     try:
         result = app.run()

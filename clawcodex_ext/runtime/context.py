@@ -6,6 +6,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from clawcodex_ext.cli.model_cmd.resolver import resolve
+from clawcodex_ext.cron_system.runtime import attach_cron_runtime, replace_cron_tools
+
 
 @dataclass
 class RuntimeOptions:
@@ -50,7 +53,6 @@ class RuntimeContext:
         previously duplicated across headless.py, tui.py, and repl/core.py.
         """
         from src.agent.session import Session as AgentSession
-        from src.config import get_default_provider
         from src.permissions.types import ToolPermissionContext
         from src.providers.runtime import build_provider_from_config
         from src.tool_system.context import ToolContext
@@ -67,8 +69,15 @@ class RuntimeContext:
             bypass_available = options.is_bypass_permissions_mode_available
 
         # Build provider
-        provider_name = options.provider_name or get_default_provider()
-        provider = build_provider_from_config(provider_name, options.model)
+        resolution = resolve(
+            cli_provider=options.provider_name,
+            cli_model=options.model,
+            project_root=workspace_root,
+        )
+        provider_name = resolution.provider
+        provider = build_provider_from_config(provider_name, resolution.model)
+        options.provider_name = provider_name
+        options.model = resolution.model
 
         # Build tool registry
         tool_registry = build_default_registry(provider=provider)
@@ -111,10 +120,41 @@ class RuntimeContext:
             workspace_root=workspace_root,
             options=options,
         )
-        from clawcodex_ext.cron_system.runtime import attach_cron_runtime
-
         attach_cron_runtime(runtime)
         return runtime
+
+    def swap_provider(self, provider_name: str, model: str | None = None) -> None:
+        from clawcodex_ext.cli.model_cmd.registry import ModelRegistry
+        from src.providers.runtime import build_provider_from_config
+        from src.tool_system.defaults import build_default_registry
+
+        registry = ModelRegistry()
+        registry.validate_provider(provider_name)
+        if model is not None:
+            registry.validate_model(model, provider_name)
+
+        provider = build_provider_from_config(provider_name, model)
+        tool_registry = build_default_registry(provider=provider)
+        replace_cron_tools(tool_registry)
+        _filter_registry(
+            tool_registry,
+            allowed=self.options.allowed_tools,
+            denied=self.options.disallowed_tools,
+        )
+
+        self.provider = provider
+        self.provider_name = provider_name
+        self.tool_registry = tool_registry
+        self.options.provider_name = provider_name
+        self.options.model = getattr(provider, "model", model)
+
+        for attr, value in (
+            ("provider", provider),
+            ("provider_name", provider_name),
+            ("tool_registry", tool_registry),
+        ):
+            if hasattr(self.tool_context, attr):
+                setattr(self.tool_context, attr, value)
 
 
 def _filter_registry(

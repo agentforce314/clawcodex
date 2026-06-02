@@ -2,9 +2,11 @@
 
 > 文档路径: `docs/PROGRESS.md`
 > 基于: `docs/open-source-replacement-progress.md`, `docs/FEATURE_PLAN.md`
-> 版本: v2.12
+> 版本: v2.13
 > 更新日期: 2026-06-02
 > 上游同步: 68dc3c5 (Phase 11 bridge complete)
+>
+> **v2.13 变更**：新增 F-43 实现 + F-45 / F-46 / F-47。F-43 P1 落地 `clawcodex provider` / `clawcodex model` 子命令族（list/show/current/use/unset）+ REPL/TUI 内 `/provider` / `/model` 斜杠命令；新增 fast-path `subcommand_registry` + `ModelRegistry` / `ModelStore` / `Resolver` + `RuntimeContext.swap_provider` 热切换；所有新代码落在 `clawcodex_ext/cli/`，`src/*` 仅追加 `CommandContext.runtime_context` seam 与 `TUIOptions.runtime_context` 透传。F-45 P1 在 `agent_runner._handle_tool_call` 后加 NDJSON 旁路落 `~/.clawcodex/tool-events/{run_id}/events.ndjson`，与 permission_mode 解耦；扩展 `report_writer.RunReport.tool_events_path` 字段 + markdown 模板登记路径；终结 "bypass ≠ 无审计" 误读。F-46 P2 把 `permission_mode` enum 拆为 `interactive` / `default_decision` / `audit_log` 三个正交字段，F-46.0（v2.13）只拆 `audit_log`，依赖 F-45 落地后端到端验证；`permission_mode` 保留为 backward-compat shim 标 deprecated；F-46.1+ 拆其余两字段推到 v2.15+。F-47 P1 修 `SettingsSchema.permissions` schema 形状（`list[PermissionRule]`）与磁盘 dict 形态不一致 / `has_allow_bypass_permissions_mode` 永远读不到 / `resolve_permission_state` 没传 `settings_default_mode` / 顶层 `settings.permission_mode` 字段未读 四个串联 bug；引入 `PermissionsConfig` dataclass 对齐磁盘 + TS 上游契约，让 `permissions.defaultMode` 与 `permissions.allowBypassPermissionsMode` 真正生效；顶层 `permission_mode` 字段保留为 back-compat fallback；删除 settings 层"假" `PermissionRule` 死代码。
 >
 > **v2.12 变更**：新增 F-43 CLI 模型供应商与模型切换（📋 设计完成）。规划 `clawcodex provider` / `clawcodex model` 子命令族（list/show/current/use/unset）+ REPL/TUI 内 `/provider` / `/model` 斜杠命令，覆盖查看、列出、切换当前生效的 LLM 供应商与模型。所有新代码落在 `clawcodex_ext/cli/` 下，遵守 "src/* 不动" 边界；持久化借道 `src.config`，不重写 I/O；错误文案统一英文。`--scope project` 落入后续规划。
 >
@@ -85,9 +87,10 @@
 | F-40 | ProgressReporter Sink 协议重构 | P1 | 📋 设计完成 | 把 `Orchestrator` 上 `ProgressReporter` 单例拆为每 session 独立的 `ProgressSink` 实例；新增 `CompositeProgressSink` 扇出支持 F-37/F-39 零侵入接入；补全 `SessionComplete` / `TurnComplete` 转发；引入 `WorkflowConfig.phases` 做真实进度计算，淘汰 `phase_count * 25` 假数据 |
 | F-41 | Coordinator 轻量工具集 | P1 | ✅ 已完成 | 给 Coordinator 配置独立的轻量工具集（Read、WebSearch、WebFetch），加上原有的 Agent、SendMessage、TaskStop，共 6 个工具。Coordinator 可直接处理简单查询（搜网页、读文件），无需为每个请求创建 Worker。所有写操作工具（Write、Edit、Bash、Grep、Glob）仍隔离，强制委派复杂任务给 Worker。涉及 `src/coordinator/mode.py` 的 `_COORDINATOR_ALLOWED_TOOLS` 扩展 + `src/coordinator/prompt.py` 的 "Your Tools" 提示词更新 + `src/repl/core.py` 注释同步。231/231 orchestrator 测试通过 |
 | F-42 | Orchestrator Shared / Sequential Workspace 策略 | P0 | ✅ 完成 | 扩展 `workspace.strategy: isolated \| shared \| sequential`，保留现有 per-issue workspace，同时支持本地 feature-plan issue 在同一 working tree / integration branch 上串行叠加开发；包含单并发校验、顺序锁、dirty tree guard、每 issue commit 链元数据、shared cleanup preserve 与两 issue 端到端验收 |
-| F-43 | CLI 模型供应商与模型切换 | P1 | 📋 设计完成 | 新增 `clawcodex provider` / `clawcodex model` 子命令族（list/show/current/use/unset）+ REPL/TUI 内 `/provider` / `/model` 斜杠命令，支持查看、列出、切换当前生效的 LLM 供应商与模型；所有新代码落在 `clawcodex_ext/cli/` 下，持久化借道 `src.config` 不重写 I/O；错误文案统一英文；`--scope project` 落入后续规划 |
-| F-45 | Orchestrator tool-call 审计旁路（tool-events.ndjson + 报告登记） | P1 | 📋 设计完成 | 在 `extensions/orchestrator/agent_runner.py:_handle_tool_call` 之后追加 NDJSON 旁路落盘到 `~/.clawcodex/tool-events/{run_id}/events.ndjson`，与 `permission_mode` 解耦（`bypassPermissions` / `dontAsk` / `acceptEdits` / `default` 一视同仁全写）；扩展 `report_writer.RunReport` 加 `tool_events_path` 字段并在 markdown 模板登记路径，让审计员从 run 报告直接定位完整 per-tool 决策流水。修复 TS 注释 "bypass = no logging" 在 Python 端的事实偏差 —— `ApprovalPolicy` 一直在跑，只是决策没落盘。 |
-| F-46 | permission_mode enum 正交拆分 | P2 | ⏳ 规划中 | 把 `permission_mode` 混合 enum（`default` / `plan` / `bypassPermissions` / `acceptEdits` / `dontAsk` / `auto` / `bubble`）拆为三个正交字段：`interactive: bool`（是否要 TTY 弹 prompt）、`default_decision: Literal["allow", "deny", "ask"]`（无人值守默认）、`audit_log: Literal["none", "minimal", "full"]`（per-tool 决策是否落盘）。F-46.0（v2.13）只拆 `audit_log`，等 F-45 落地后端到端验证；`permission_mode` 保留为 backward-compat shim 标 deprecated；F-46.1+ 拆其余两字段推到 v2.15+。 |
+| F-43 | CLI 模型供应商与模型切换 | P1 | ✅ 已完成 (2026-06-02) | 新增 `clawcodex provider` / `clawcodex model` 子命令族（list/show/current/use/unset）+ REPL/TUI 内 `/provider` / `/model` 斜杠命令；fast-path 注册表 + `ModelRegistry` / `ModelStore` / `Resolver` + `RuntimeContext.swap_provider` 热切换；所有新代码落在 `clawcodex_ext/cli/`，`src/*` 仅追加 `CommandContext.runtime_context` seam 与 `TUIOptions.runtime_context` 透传；持久化借道 `src.config` 不重写 I/O；错误文案统一英文；`--scope project` 落入后续规划 |
+| F-45 | Orchestrator tool-call 审计旁路（tool-events.ndjson + 报告登记） | P1 | ✅ 已完成 (2026-06-02) | 在 `extensions/orchestrator/agent_runner.py:_handle_tool_call` 之后追加 NDJSON 旁路落盘到 `~/.clawcodex/tool-events/{run_id}/events.ndjson`，与 `permission_mode` 解耦（`bypassPermissions` / `dontAsk` / `acceptEdits` / `default` 一视同仁全写）；扩展 `report_writer.RunReport` 加 `tool_events_path` 字段并在 markdown 模板登记路径，让审计员从 run 报告直接定位完整 per-tool 决策流水。修复 TS 注释 "bypass = no logging" 在 Python 端的事实偏差 —— `ApprovalPolicy` 一直在跑，只是决策没落盘。落地时同步修复了 `_handle_tool_call` 死代码调用链 + 加 50MB rotate + `.reports` 进默认 gitignore。16 个新测试 + 全 271 回归 + F-38 E2E 4/4 全绿。 |
+| F-46 | permission_mode enum 正交拆分 | P2 | ⏳ 规划中 | 把 `permission_mode` 混合 enum（`default` / `plan` / `bypassPermissions` / `acceptEdits` / `dontAsk` / `auto` / `bubble`）拆为三个正交字段：`interactive: bool`（是否要 TTY 弹 prompt）、`default_decision: Literal["allow", "deny", "ask"]`（无人值守默认）、`audit_log: Literal["none", "minimal", "full"]`（per-tool 决策是否落盘）。F-46.0（v2.13）只拆 `audit_log`，**F-45 已落地**可消费 NDJSON 旁路做端到端验证；`permission_mode` 保留为 backward-compat shim 标 deprecated；F-46.1+ 拆其余两字段推到 v2.15+。 |
+| F-47 | Permission Settings Schema 重构（`permissions` 改 dict 形态 + plumb 启动模式） | P1 | 📋 设计完成 | 修四层串联 bug：`SettingsSchema.permissions: list[PermissionRule]` 与磁盘实际 dict 形态不一致 → dict 落进 known 字段，`allowBypassPermissionsMode` 进不到 `extra` → `has_allow_bypass_permissions_mode` 永远 False → Shift+Tab cycle 看不到 Bypass；同时 `resolve_permission_state` 没把 `permissions.defaultMode` 喂给 `initial_permission_mode_from_cli`、顶层 `settings.permission_mode` 字段未读。引入 `PermissionsConfig` dataclass 对齐磁盘 + TS 上游契约；`has_allow_bypass_permissions_mode` 加 `extra["permissions"]` fallback；`resolve_permission_state` 真正 plumb `settings_default_mode`；顶层 `permission_mode` 保留为 back-compat 读取通道；删除 settings 层"假" `PermissionRule` 死代码。 |
 
 ---
 
@@ -147,6 +150,109 @@
 - 网页评论可能包含互相冲突的要求，首期应优先处理明确、可定位、可验证的反馈。
 - 自动回复评论应避免刷屏，推荐按 run 汇总回复，或仅回复明确处理完成的 inline comments。
 - 默认不做自动合并、force push、关闭 PR 等高风险动作。
+
+---
+
+## F-43: CLI 模型供应商与模型切换
+
+**状态**: ✅ 已完成 (2026-06-02)
+**优先级**: P1
+**规划文档**: `docs/FEATURE_PLAN.md` → `3.15 CLI 模型供应商与模型切换设计`
+
+### 目标
+
+新增 `clawcodex provider` 与 `clawcodex model` 子命令族，让用户能在 CLI 内**查看、列出、切换**当前生效的 LLM 供应商与模型；并在 REPL/TUI 内部以 `/provider` 与 `/model` 斜杠命令提供运行期热切换。所有新代码落在 `clawcodex_ext/cli/` 下，遵守"src/* 不动"边界；持久化借道 `src.config`，不重写 I/O；错误文案统一英文。
+
+### 子特性
+
+| ID | 名称 | 状态 | 说明 |
+|----|------|------|------|
+| F-43.a | `provider` 子命令族（list/show/current/use/unset） | ✅ 完成 | fast-path 注册；`use NAME` 持久化默认供应商；`unset` 回退到 `anthropic` |
+| F-43.b | `model` 子命令族（list/show/current/use） | ✅ 完成 | fast-path 注册；`use NAME [--provider NAME]` 持久化默认模型并保留现有 `api_key`/`base_url` |
+| F-43.c | `ModelRegistry` / `ModelStore` / `Resolver` 核心 | ✅ 完成 | `ModelRegistry` 包装 `PROVIDER_INFO` + 校验；`ModelStore` 通过 `src.config` 持久化；`Resolver` 6 级优先级合并 CLI/env/cli-model/env-model/user/provider-default |
+| F-43.d | `RuntimeContext.swap_provider` 热切换 | ✅ 完成 | 重建 provider + tool registry + cron 工具；保留 session / tool_context / workspace_root；更新 `options` 上的 provider/model 引用 |
+| F-43.e | REPL `/provider` / `/model` 斜杠命令 | ✅ 完成 | 注册到全局 `CommandRegistry`；`execute_command_sync` 支持 `LocalCommand`；REPL `_sync_from_runtime_context` 同步本地 handle |
+| F-43.f | TUI `/provider` / `/model` 斜杠命令 | ✅ 完成 | `TUIOptions.runtime_context` 透传；`AgentBridge.replace_runtime` 替换私有引用；保留 `/models` 作为旧版 `ModelPickerScreen` UI 入口 |
+| F-43.g | `--scope project` 拒绝 + 后续规划 | ⏳ 规划中 | 当前 `ModelStore` 在 `scope != "user"` 时直接抛 `UnsupportedScopeError`；project scope 落入 G-1 后续议题 |
+
+### 当前基线（实施前）
+
+- 一次性覆盖：CLI 已支持 `--provider NAME` / `--model NAME`（`parser.py:88-99`），仅对本次调用生效；想换默认需要重跑 `login`
+- 持久化入口耦合：仅 `runners.py:120-191` 的 `handle_login` 在配凭证时同步写 `default_model`，没有独立的"切换默认模型"命令
+- 没有 `clawcodex model show` 这类查询入口，用户看不到当前生效的 provider / model
+- REPL/TUI 运行期无法热切换：`RuntimeContext` 只在启动时构造一次
+- 解析优先级在 `RuntimeContext.build` 中硬编码 "CLI flag > default_provider > provider default_model"，无法扩展环境变量 / 项目级 scope
+
+### 实施进度
+
+| 阶段 | 任务 | 状态 |
+|------|------|------|
+| 1 | `clawcodex_ext/cli/subcommand_registry.py` 装饰器注册 + dispatch 改查表 | ✅ 完成 |
+| 2 | `provider_cmd/commands.py`（list/show/current/use/unset）+ `errors.py` | ✅ 完成 |
+| 3 | `model_cmd/registry.py` 包装 `PROVIDER_INFO` + 校验 | ✅ 完成 |
+| 4 | `model_cmd/resolver.py` 6 级优先级 + source 标记 | ✅ 完成 |
+| 5 | `model_cmd/store.py` 持久化（保留 `api_key`/`base_url`） | ✅ 完成 |
+| 6 | `model_cmd/commands.py`（list/show/current/use） | ✅ 完成 |
+| 7 | `RuntimeContext.build` 接入 Resolver；新增 `swap_provider` | ✅ 完成 |
+| 8 | `CommandContext.runtime_context` seam + `create_command_context` 透传 | ✅ 完成 |
+| 9 | `execute_command_sync` 支持注册到全局 registry 的 `LocalCommand` | ✅ 完成 |
+| 10 | `clawcodex_ext/cli/runtime_commands.py` `/provider` / `/model` `LocalCommand` | ✅ 完成 |
+| 11 | REPL `_sync_from_runtime_context` + `_init_command_system` 注册 | ✅ 完成 |
+| 12 | `TUIOptions.runtime_context` + `_run_tui_with_app` 透传 | ✅ 完成 |
+| 13 | `ClawCodexTUI._sync_from_runtime_context` + `AgentBridge.replace_runtime` | ✅ 完成 |
+| 14 | 错误模型：英文 `UnknownProviderError` / `UnknownModelError` / `ProviderMismatchError` / `UnsupportedScopeError` | ✅ 完成 |
+| 15 | 测试：model_registry / resolver / store / provider_model_commands / runtime_switching / slash_commands | ✅ 完成（20/20 通过） |
+| 16 | `--scope project` 支持 | ⏳ 规划中（G-1） |
+
+### 验收标准
+
+- ✅ `clawcodex provider list|show [NAME]|current|use NAME|unset` 全部端到端跑通
+- ✅ `clawcodex model list [--provider NAME]|show [NAME] [--provider NAME]|current|use NAME [--provider NAME]` 全部端到端跑通
+- ✅ 所有新子命令走 fast-path，不触发 `run_pre_action`、不加载 TUI/REPL
+- ✅ `--model provider` 不会误路由为子命令（保留原 `argv[1]` 路由行为）
+- ✅ 显式 CLI/env model 严格校验；配置中无效 `default_model` 静默回退到 provider 内置默认
+- ✅ `provider use` / `model use` 不破坏现有 `api_key` / `base_url`
+- ✅ REPL `/provider <name>` / `/model <name>` 触发运行时切换，同一会话内立即生效
+- ✅ TUI `/provider <name>` / `/model <name>` 触发运行时切换，`AgentBridge` 私有引用同步
+- ✅ `--scope project` 拒绝并返回 `UnsupportedScopeError`
+- ✅ 20/20 F-43 单元测试通过；orchestrator 回归 271/271 通过
+
+### 风险与约束
+
+- **写盘并发**：现有 `src.config` 没有文件锁；第一版接受"最后写者赢"，G-1 加 `fcntl` 锁
+- **`--model` 与子命令 `model` 同名**：fast-path 只看 `argv[1]`，无歧义；未来 argparse 接管需重新审视
+- **环境变量命名**：使用 `CLAWCODEX_PROVIDER` / `CLAWCODEX_MODEL`，与现有 `CLAW_USE_LITELLM` / `CLAUDE_CONFIG_DIR` 一致
+- **`login` 仍可写 `default_model`**：保持原行为，文档化"用 `clawcodex model use` 更轻量"
+- **REPL/TUI 热切换**：当前 `swap_provider` 重建 provider + tool registry；session / conversation 不重建；如果未来 `swap_provider` 影响 tool registry 行为，需单测覆盖
+
+### 已拟定的设计决定
+
+- **fast-path 注册表**：`clawcodex_ext/cli/subcommand_registry.py` 用 `@register("provider")` / `@register("model")` 装饰器，dispatch 在 `argv[1]` 路由阶段查表，避免 argparse 开销
+- **scope 限制**：第一版只支持 `user`（全局）；`--scope project` 接受后立即抛 `UnsupportedScopeError`，避免 silently write 到 `project_root`
+- **持久化借道 `src.config`**：`set_default_provider` + `set_api_key(default_model=X)` 保留其它字段；不重写 I/O
+- **6 级优先级**：`cli_provider` > `env_provider` > `cli_model` 推断 > `env_model` 推断 > `default_provider` > `default_model`（user config）> `provider default_model`（fallback）
+- **source 标记**：每次解析都记录 `provider_source` / `model_source`，`provider current` / `model current` 输出形如 `provider: glm [user]`
+- **模块化复用**：`ModelRegistry` / `Resolver` / `Store` 三层分离；CLI 命令、REPL 斜杠命令、TUI 斜杠命令共享同一套核心
+- **thin seams**：`src/*` 只追加 `CommandContext.runtime_context` 字段与 `TUIOptions.runtime_context` 字段；不引入项目专属逻辑
+
+### 依赖与协同
+
+- **依赖**：
+  - `src.providers.PROVIDER_INFO`（只读）
+  - `src.config.{get_default_provider,get_provider_config,set_default_provider,set_api_key}`（只读 + 有限写入）
+  - `src.command_system.{types,engine,builtins,registry}` 已有 `LocalCommand` + `CommandContext` 通路
+  - `clawcodex_ext.runtime.context.RuntimeContext` 作为下游统一 runtime 工厂
+- **协同**：
+  - 与 F-42（Orchestrator Shared / Sequential Workspace 策略）正交：F-43 不影响 workspace 行为
+  - 与 F-45（tool-call 审计旁路）正交：F-43 切换 provider 后，审计落 `tool_events_path` 仍按 run_id 归档
+  - 与 F-47（Permission Settings Schema）正交：F-43 不读 `settings.permissions`
+- **先于**：
+  - 无（无其它特性阻塞 F-43）
+- **后续议题（G-1 / v2.14+）**：
+  - `clawcodex provider use --scope project` 落入 `<project>/.clawcodex/config.local.json`
+  - `clawcodex model use --scope project` 同上
+  - 项目级 scope 的 resolver 优先级插在 user 之前
+  - 多窗口并发写盘的 `fcntl` 文件锁
 
 ---
 
@@ -2074,7 +2180,7 @@ agent:
 
 ## F-45: Orchestrator tool-call 审计旁路（tool-events.ndjson + 报告登记）
 
-**状态**: 📋 设计完成
+**状态**: ✅ 已完成 (2026-06-02)
 **优先级**: P1
 **规划文档**: `docs/FEATURE_PLAN.md` → `§3.1.10 Tool-call 审计旁路设计（F-45）`
 **触发场景**: 2026-06-02 F-38 落地后审阅发现，`extensions/orchestrator/report_writer.py:write()` 只持久化 `tool_count: int` 与末尾 4000 字符的 `output_excerpt`，**per-tool 决策流水不落盘**。`extensions/orchestrator/agent_runner.py:87-108` 的 `_handle_tool_call` 始终调 `ApprovalPolicy.evaluate()`，把 `_approved` / `_deny_reason` 写回 `ToolCallEvent` 内存对象 —— 进程崩溃即丢。在 orchestrator headless 场景下 `permission_mode` 走 auto-upgrade 到 `bypassPermissions`（`patches/upstream/58ea488/merged/0026.tui_app_py.patch:1287-1291`），TS 注释说 "no logging"，**但 Python 端 ApprovalPolicy 一直在跑**——审计数据其实有，只是没落盘。
@@ -2100,22 +2206,47 @@ agent:
 |------|----------|------|
 | `report_writer.RunReport.tool_count` 持久化 | ✅ 已实现 | `report_writer.py:85` 写单个 int，粗粒度 |
 | `report_writer.RunReport.output_excerpt` 持久化 | ✅ 已实现 | `report_writer.py:88` + `_excerpt` 末尾 4000 字符 |
-| `_handle_tool_call` 拦截每个 tool call | ✅ 已实现 | `agent_runner.py:87-108` 永远跑 `ApprovalPolicy.evaluate()` |
-| Per-tool 决策持久化（NDJSON / 其他） | ❌ 缺失 | `_approved` / `_deny_reason` 只在内存 |
-| `~/.clawcodex/tool-events/` 目录 | ❌ 缺失 | grep `tool_events` 在 `extensions/orchestrator/` 零匹配 |
-| `RunReport.tool_events_path` 字段 | ❌ 缺失 | `report_writer.py:22-42` dataclass 不含此字段 |
-| NDJSON 落盘 + dual-write 模式 | ⚠️ 部分 | F-40 落 `PhaseComplete` / `TurnComplete` / `SessionComplete` 到 `ToolContext.tasks` metadata，非文件系统 NDJSON |
+| `_handle_tool_call` 拦截每个 tool call | ✅ 已实现 | `agent_runner.py:121-142` 跑 `ApprovalPolicy.evaluate()`；本期同步修复了 run-loop 调用链（详见 实施记录） |
+| Per-tool 决策持久化（NDJSON） | ✅ 已实现 | `agent_runner.py:144-218` `_append_tool_event_log` 写 `~/.clawcodex/tool-events/{run_id}/events.ndjson`，8 字段契约见 `tool_event_log.py:42-58` |
+| `~/.clawcodex/tool-events/` 目录 | ✅ 已实现 | `Path.home() / ".clawcodex" / "tool-events" / {run_id}`，`agent_runner.py:382-391` 启动时落定到 `session.tool_events_path` |
+| `RunReport.tool_events_path` 字段 | ✅ 已实现 | `report_writer.py:42-45` 加在 dataclass 末尾默认 `None`（向前兼容），`write()` 接收并 dual-write NDJSON（`report_writer.py:128-132`） |
+| NDJSON 落盘 + dual-write 模式 | ✅ 已实现 | 旁路走文件系统 NDJSON（`agent_runner.py`），与 F-40 进程内 `ToolContext.tasks` metadata 通道并存，职责分离 |
 
 ### 实施进度
 
 | 阶段 | 任务 | Sub | 状态 |
 |------|------|-----|------|
-| 1 | `agent_runner.py:_append_tool_event_log` + `~/.clawcodex/tool-events/{run_id}/events.ndjson` 旁路 | A | 📋 待开始 |
-| 2 | `ToolEventLog` 字段契约 + JSON serializer（8 字段） | B | 📋 待开始 |
-| 3 | `report_writer.RunReport` 增 `tool_events_path` 字段，`write()` 多接收该参数，markdown 模板加一行，NDJSON 走 `_copy_with_fallback` 拷到 `~/.clawcodex/reports/.../{run_id}/` | C | 📋 待开始 |
-| 4 | `AgentRunner.run` 注入 `run_id` 到 `session_context` | D | 📋 待开始 |
-| 5 | NDJSON rotate 阈值 50MB + `tool-events/` 加入 `.gitignore` 默认 patterns | E | 📋 待开始 |
-| 6 | 单测 + 集成测试 + 四种 mode 回归 | F | 📋 待开始 |
+| 1 | `agent_runner.py:_append_tool_event_log` + `~/.clawcodex/tool-events/{run_id}/events.ndjson` 旁路 | A | ✅ 已完成 (2026-06-02) |
+| 2 | `ToolEventLog` 字段契约 + JSON serializer（8 字段） | B | ✅ 已完成 (2026-06-02) |
+| 3 | `report_writer.RunReport` 增 `tool_events_path` 字段，`write()` 多接收该参数，markdown 模板加一行，NDJSON 走 `_copy_with_fallback` 拷到 `~/.clawcodex/reports/.../{run_id}/` | C | ✅ 已完成 (2026-06-02) |
+| 4 | `AgentRunner.run` 注入 `run_id` 到 `session_context` + 同步修复 `_handle_tool_call` 调用链 | D | ✅ 已完成 (2026-06-02) |
+| 5 | NDJSON rotate 阈值 50MB + `.reports` 加入 `.gitignore` 默认 patterns | E | ✅ 已完成 (2026-06-02) |
+| 6 | 单测（16 例）+ 集成测试 + 四种 mode 回归 | F | ✅ 已完成 (2026-06-02) |
+
+### 实施记录 (2026-06-02)
+
+实现过程中发现并同步修复了设计文档的一处隐藏缺口：
+
+**问题**: `extensions/orchestrator/agent_runner.py:run()` 的 `ToolCallEvent` 分支（设计文档声称在 line 87-108）实际上**从未调用** `_handle_tool_call` —— 注释明确说 "the orchestrator's ApprovalPolicy (ToolCallEvent) is not consulted here"。如果按设计字面落地，NDJSON 的 `approved` 字段会永远是 `None`，审计数据无意义。
+
+**修复**: 在 `agent_runner.py:505-509` 显式调用 `event = self._handle_tool_call(event, session_context)`，再追加 `_append_tool_event_log`，并把 `turn` 写回 `session_context`。改动后 `TestAgentRunnerWiresAuditBypass.test_run_writes_ndjson_row_and_sets_session_path` 端到端验证 `approved` 字段被真实填充。
+
+**新增/修改文件**:
+- `extensions/orchestrator/tool_event_log.py`（新增，~50 行）— `ToolEventLog` 8 字段 frozen dataclass + `to_dict()` / `to_json()`
+- `extensions/orchestrator/agent_runner.py`（修改）— `_append_tool_event_log`（~75 行,带嵌套 try/except + 50MB rotate），常量 `_TOOL_EVENT_LOG_ROTATE_BYTES = 50 * 1024 * 1024`，`AgentSession.tool_events_path` 字段，`session_context` 注入 `run_id` / `permission_mode` / `turn`，ToolCallEvent 分支接 `_handle_tool_call`
+- `extensions/orchestrator/report_writer.py`（修改）— `RunReport.tool_events_path` 字段（末尾，默认 `None`），`write()` 接收参数并 dual-write NDJSON，`_render_markdown` 追加 `Tool events: <path>` 行
+- `extensions/orchestrator/git_sync.py`（修改）— `_write_report` 转发 `session.tool_events_path` 到 `report_writer.write()`
+- `extensions/orchestrator/config/schema.py`（修改）— `WorkspaceConfig.gitignore_patterns` 默认 list 追加 `.reports`
+- `tests/test_orchestrator_f45_audit_bypass.py`（新增，~400 行）— 16 个测试覆盖 7 个类
+
+**测试结果**:
+- `pytest tests/test_orchestrator_f45_audit_bypass.py -v` → **16/16 通过**
+- `pytest tests/test_orchestrator_*.py -q` → **271/271 通过**（含 4 个 backward-compat 探针）
+- `pytest tests/manual_e2e_f38.py -v` → **4/4 通过**（CLAUDE.md 强制 git_sync 修改时跑）
+
+**与设计文档的两处偏差**（均已与用户确认）:
+1. **同步修复 `_handle_tool_call` 调用链**（见上方"问题"段）—— 否则 `approved` 字段永远是 `None`。
+2. **单文件 50MB rotate**：旧 `events.ndjson` 直接 rename 为 `events.ndjson.1`（覆盖），无多代轮转；7 天清理推 v2.14。
 
 ### 验收标准
 
@@ -2152,9 +2283,10 @@ agent:
 ### 依赖与协同
 
 - **依赖**：
-  - `extensions/orchestrator/agent_runner.py:_handle_tool_call`（line 87-108）作为挂点
-  - `extensions/orchestrator/report_writer.py:RunReport`（line 22-42）+ `write()`（line 44-123）作为报告层
+  - `extensions/orchestrator/agent_runner.py:_handle_tool_call`（line 121-142）作为挂点（本期同步修复了调用链）
+  - `extensions/orchestrator/report_writer.py:RunReport`（line 23-46）+ `write()`（line 49-141）作为报告层
   - `extensions/orchestrator/orchestrator.py:AgentSession` 已有 `run_id: str | None` 字段（line 47），可直接用
+  - **新文件** `extensions/orchestrator/tool_event_log.py`（~60 行）— `ToolEventLog` 8 字段契约 + serializer
 - **协同**：
   - 与 F-38 互补：F-38 写的是 "run-level summary"（tool_count + output_excerpt），本特性写 "per-tool detail"
   - 与 F-40 互补：F-40 走 `ToolContext.tasks` 进程内 metadata；本特性走文件系统 NDJSON；两套审计通道并存
@@ -2208,7 +2340,7 @@ agent:
 
 | 阶段 | 任务 | Sub | 状态 |
 |------|------|-----|------|
-| 1 | `WorkflowConfig.audit_log` 字段 + `report_writer` 读该字段决定是否写旁路（依赖 F-45 落地） | A | 📋 待开始（等 F-45） |
+| 1 | `WorkflowConfig.audit_log` 字段 + `report_writer` 读该字段决定是否写旁路（F-45 已落地，可端到端验证） | A | 📋 待开始 |
 | 2 | `permission_mode` → 三字段 translate 函数 + docstring 标 deprecated | B | 📋 待开始 |
 | 3 | （F-46.1）`interactive` 字段落 WorkflowConfig，`extensions/api/query.py` 默认值迁移 | C | 📋 规划中 |
 | 4 | （F-46.1）`default_decision` 字段 + orchestrator auto-upgrade 改写 | D | 📋 规划中 |
@@ -2262,6 +2394,124 @@ agent:
   - `permission_mode` 标 deprecated，v2.16 移除
 
 ---
+
+## F-47: Permission Settings Schema 重构（`permissions` 改 dict 形态 + plumb 启动模式）
+
+**状态**: 📋 设计完成
+**优先级**: P1
+**规划文档**: `docs/FEATURE_PLAN.md` → `§3.17 Permission Settings Schema 重构设计（F-47）`
+**触发场景**: 2026-06-02 用户报告"配置 `~/.clawcodex/config.json` 的 `settings.permissions.allowBypassPermissionsMode: true` 后,REPL Shift+Tab 仍然只循环 3 档"。排查发现四层串联 bug 互相纠缠：(1) `SettingsSchema.permissions: list[PermissionRule]` 的 schema 形状与磁盘实际 dict 形态(`updates.py:291-343` / `setup.py:62-67` / `loader.py:14-30` 写入)不一致 —— dict 落进 known 字段,`isinstance(..., list)` 是 False 不转换,`allowBypassPermissionsMode` 既进不了 `extra` 也不被结构化读取；(2) `has_allow_bypass_permissions_mode()` 写死了 `settings.extra["permissions"]` 路径，永远读不到；(3) `clawcodex_ext/cli/permissions.py:36-39` 调 `initial_permission_mode_from_cli` 时没传 `settings_default_mode`，`settings.permissions.defaultMode` 形同虚设；(4) 顶层 `settings.permission_mode` 字段虽然存在但 `resolve_permission_state` 根本没读它。同时 `src/settings/types.py:13-20` 的 `PermissionRule`（带 `tool/allow/glob/regex/description/source` 字段）与运行时实际使用的 `src/permissions/types.py:80-84` frozen `PermissionRule`（带 `source/rule_behavior/rule_value`）不是同一个东西，且前者没有任何 caller —— 死代码。
+
+### 目标
+
+把 `SettingsSchema.permissions` 从 `list[PermissionRule]` 改为结构化 `PermissionsConfig` dataclass（dict 形态），与磁盘格式 + TS 上游契约对齐；让 `settings.permissions.defaultMode` / `settings.permissions.allowBypassPermissionsMode` 真正生效；`resolve_permission_state` 一次 plumb 到位；顶层 `settings.permission_mode` 字段保留为 back-compat 读取通道；删除 settings 层"假" `PermissionRule` 死代码。后续 `permissions.*` 新增 sub-key 不需要改 schema —— 走 `PermissionsConfig.additional` 前向兼容包。
+
+### 子特性
+
+| Sub | 名称 | 目标 | 主要工作 |
+|-----|------|------|----------|
+| A | `PermissionsConfig` dataclass 定义（`src/settings/types.py`） | 把 `permissions` 从 `list[PermissionRule]` 改为结构化 dict 形态 | 新增 `PermissionsConfig` dataclass，含 `allow_bypass_permissions_mode: bool` / `default_mode: str \| None` / `rules: dict[str, list[str]]` / `additional_directories: list[str]` / `additional: dict[str, Any]` 字段；`from_dict()` / `to_dict()` 双向互转，未知 sub-key 进 `additional`；`SettingsSchema.permissions: PermissionsConfig = field(default_factory=PermissionsConfig)` |
+| B | `SettingsSchema.from_dict` 加载改造（`src/settings/types.py:161-198`） | dict / list / None 形态都安全降级到 `PermissionsConfig` | 把 `if "permissions" in known and isinstance(known["permissions"], list): ...` 替换为 `if "permissions" in known: known["permissions"] = PermissionsConfig.from_dict(known["permissions"])`；保留 `default` 值（`field(default_factory=PermissionsConfig)`）兜底 |
+| C | `has_allow_bypass_permissions_mode` 加 fallback（`src/permissions/modes.py:113-140`） | 读路径兼容结构化字段 + 旧 `extra["permissions"]` 旁路 | 新增私有 `_settings_perms(settings)` 聚合器：先 `settings.permissions.additional`，再 `to_dict()`，最后 `extra["permissions"]`；`has_allow_bypass_permissions_mode` 改读该聚合结果 |
+| D | `resolve_permission_state` plumb（`clawcodex_ext/cli/permissions.py:36-39`） | 启动模式读 `permissions.defaultMode`，fallback 顶层 `settings.permission_mode` | 加 `try: get_settings()` 块读 `settings.permissions.default_mode` 和 `settings.permission_mode`（兼容），传给 `initial_permission_mode_from_cli(settings_default_mode=...)`；模块顶部加 `from src.settings.settings import get_settings` 和 `from src.permissions.modes import PERMISSION_MODES` |
+| E | `validate_settings` 重写（`src/settings/validation.py:32-38, 96-103`） | dict 形态不再被当成 list 遍历 | 改 `settings.permission_mode not in VALID_PERMISSION_MODES` 校验为：先取 `settings.permissions.default_mode`，空再取顶层 `settings.permission_mode`（空串视为未设置跳过校验）；删除 `for i, rule in enumerate(settings.permissions): ...` 整段，替换为对 `settings.permissions.rules["allow"/"deny"/"ask"]` 的字符串非空检查 |
+| F | `DEFAULT_SETTINGS` 改造（`src/settings/constants.py:12-46`） | 默认 settings 也能跑新 schema | `permissions=[]` 改为 `permissions=PermissionsConfig()`；`permission_mode="default"` 留作兼容字段默认值（保持不变） |
+| G | 单元测试 + e2e（`tests/test_permission_settings_schema.py` + `tests/manual_e2e_f38_permissions.py`） | 七条单元测试覆盖关键路径 | 详见"验收标准"节 |
+| H | 死代码清理（`src/settings/types.py:13-20`） | 删 settings 层"假" `PermissionRule` | 删除 `PermissionRule` dataclass；`grep -r "from src.settings.types import PermissionRule" src/ tests/` 确认无引用（实际只有 `from_dict:176-179` 一处） |
+
+### 当前基线
+
+| 能力 | 当前状态 | 说明 |
+|------|----------|------|
+| 启动模式从 `settings.permissions.defaultMode` 读 | ❌ 缺 | `clawcodex_ext/cli/permissions.py:36-39` 没传 `settings_default_mode` |
+| 启动模式从顶层 `settings.permission_mode` 读 | ❌ 缺 | 字段存在但 `resolve_permission_state` 不读 |
+| `settings.permissions.allowBypassPermissionsMode` 读到 | ❌ 缺 | dict 落进 known field,`extra["permissions"]` 永远 None |
+| `SettingsSchema.permissions` 形状 | ❌ 错 | `list[PermissionRule]`，与磁盘 dict 形态、TS 上游契约都不一致 |
+| `src/settings/types.py:13-20` `PermissionRule` | ❌ 死代码 | 唯一引用点是 `from_dict:176-179`，且永远走不到（磁盘不是 list） |
+| `validation.py:97-102` `for i, rule in enumerate(settings.permissions)` | ❌ 隐式 bug | 一旦磁盘 dict 形态进来会抛 `TypeError: dict is not iterable`（被 `isinstance(..., list)` 短路掩盖） |
+| 磁盘格式契约（`updates.py:persist_permission_update`） | ✅ 稳定 | dict 形态：`{allow: [...], deny: [...], ask: [...], defaultMode, additionalDirectories, allowBypassPermissionsMode}` |
+| `setup_permissions` / `loader.py` 旁路读 dict | ✅ 兼容 | 直接 `settings["permissions"]` 当 dict 用，路径独立于 `SettingsSchema` |
+
+### 实施进度
+
+| 阶段 | 任务 | Sub | 状态 |
+|------|------|-----|------|
+| 1 | `PermissionsConfig` dataclass + `SettingsSchema.from_dict` 改造（自包含 schema 改动） | A, B | 📋 待开始 |
+| 2 | `DEFAULT_SETTINGS` 改造 + 现有测试回归 | F | 📋 待开始 |
+| 3 | `has_allow_bypass_permissions_mode` 聚合器 + `_settings_perms` 私有函数 | C | 📋 待开始 |
+| 4 | `validate_settings` 重写（dict 形态 + 顶层字段 fallback） | E | 📋 待开始 |
+| 5 | `resolve_permission_state` plumb（`get_settings()` 注入 `settings_default_mode`） | D | 📋 待开始 |
+| 6 | `setup_permissions` 签名扩 `default_mode`（F-47 范围内可选） | — | 📋 规划中 |
+| 7 | 删除 settings 层"假" `PermissionRule`（grep 确认无引用后落地） | H | 📋 待开始 |
+| 8 | 七条单元测试 + 一条 e2e（`test_permission_settings_schema.py` + `manual_e2e_f38_permissions.py`） | G | 📋 待开始 |
+| 9 | `pytest tests/test_orchestrator_*.py -q` + `tests/manual_e2e_f38.py -v -s` 无回归 | — | 📋 待开始 |
+
+### 验收标准
+
+- 用户 `~/.clawcodex/config.json` 写 `{settings: {permissions: {allowBypassPermissionsMode: true, defaultMode: "bypassPermissions"}}}` 启动 `python3 -m src.cli` 后，`args._resolved_permission_mode == "bypassPermissions"` 且 `args._resolved_is_bypass_available is True`。
+- REPL 内 Shift+Tab 连续按能切到第四档 `Bypass`（cycle 路径 `default → acceptEdits → plan → bypassPermissions → default`）。
+- 旧 binary 不炸：`settings.extra["permissions"] = {"allowBypassPermissionsMode": True}`（F-47 落地前已运行的实例）仍能被 `_settings_perms` 聚合到，`has_allow_bypass_permissions_mode` 返回 True。
+- 顶层 back-compat：`settings.permission_mode: "bypassPermissions"`（旧字段单独写、不嵌在 `permissions` 里）仍能被 `resolve_permission_state` 解析；空串视为未设置、不触发 `validation.py` 的 enum 校验报错。
+- 单元测试至少覆盖七条：
+  1. `test_permissions_dict_loads_into_struct`：从 `{permissions: {allowBypassPermissionsMode: True}}` 加载后 `settings.permissions.allow_bypass_permissions_mode is True`。
+  2. `test_default_mode_resolved_from_permissions_dict`：`initial_permission_mode_from_cli(settings_default_mode="bypassPermissions", ...)` 返回 `"bypassPermissions"`。
+  3. `test_has_allow_bypass_true_after_settings_loaded`：`has_allow_bypass_permissions_mode()` 在 settings 注入后 True。
+  4. `test_legacy_extra_permissions_fallback`：`settings.extra["permissions"] = {"allowBypassPermissionsMode": True}` 时仍 True。
+  5. `test_legacy_top_level_permission_mode_still_resolves`：settings.permission_mode="bypassPermissions" 时 `resolve_permission_state` 解析到 bypass。
+  6. `test_unknown_subkey_preserved`：`{permissions: {myCustomFlag: 42}}` 加载后 `settings.permissions.additional["myCustomFlag"] == 42`。
+  7. `test_dict_shape_no_longer_crashes_validation`：`validate_settings` 对 dict 形态 `permissions` 不抛。
+- e2e：新增 `tests/manual_e2e_f38_permissions.py`，断言 "config.json 配 `defaultMode=bypassPermissions` + `allowBypassPermissionsMode=true` → 启动后 `is_bypass_available=True` 且首屏 `args._resolved_permission_mode == 'bypassPermissions'`"。
+- `pytest tests/test_orchestrator_*.py -q` 与 `tests/manual_e2e_f38.py -v -s` 无回归；`tests/test_permission_updates.py`（走 `updates.py` 旁路、不经 SettingsSchema）继续通过。
+
+### 风险与约束
+
+1. **死代码清理**：`src/settings/types.py:13-20` 的 `PermissionRule` 删除前需 `grep -r "from src.settings.types import PermissionRule" src/ tests/` 确认唯一引用是 `from_dict:176-179`（本次同时改写），无第三处。`grep` 实际结果：仅 `src/settings/types.py:177` 一处自引用，可安全删。
+2. **pydantic-settings 后端**：`src/config.py:27-33` 的 `CLAW_USE_PYDANTIC_SETTINGS=true` 旁路有独立的 schema 定义。本次重构集中在 `src/settings/types.py` 的 dataclass 后端；pydantic 后端需单独 review 是否仍把 `permissions` 声明为 list，若是，需同步改。本期可只覆盖 dataclass 后端，pydantic 路径补一个 TODO 在 F-47.1。
+3. **顶层 `permission_mode` 字段 deprecation**：本次保留读取、不标 deprecated，避免一次性引入太多变化；F-46 后续阶段会统一 deprecate enum 字段。
+4. **`extra` 字段语义迁移**：`SettingsSchema.extra` 原来是"未识别 sub-key 的兜底"。F-47 之后 `permissions` 已知 sub-key 不再溢出到 `extra`，但其它未知 sub-key 仍走 `extra`（行为不变）。F-47 在 `from_dict` 注释里写清楚这一点，避免后续维护者困惑。
+5. **改动 6 个文件 + 1 个测试新建**：`src/settings/types.py` / `src/settings/validation.py` / `src/settings/constants.py` / `src/permissions/modes.py` / `src/permissions/setup.py`（可选）/ `clawcodex_ext/cli/permissions.py` / `tests/test_permission_settings_schema.py`（新建）。每个文件改动局部，git revert 风险可控。
+6. **F-47 与 F-46 顺序无关**：F-47 修 schema 形状 + 启动模式 plumb；F-46 拆 `permission_mode` enum 为三字段。两者不耦合，可独立 PR、并行落地。F-47 落地后 `permissions.defaultMode` 字段自动成为 F-46.0 拆 `audit_log` 后的"启动默认模式"读路径。
+7. **`validate_settings` 空 `permission_mode` 误报**：旧 `permission_mode: PermissionModeType = "default"` 默认值是 `"default"`，合法；F-47 改成 `permission_mode: str = ""` 后空串会被旧校验逻辑当成"非法 mode"误报。E 阶段把空串视为未设置并跳过校验。
+
+### 已拟定的设计决定
+
+| # | 决定 | 理由 |
+|---|------|------|
+| 1 | `permissions` 改 dict 形态（`PermissionsConfig` dataclass） | 对齐磁盘格式（`updates.py:persist_permission_update`）+ TS 上游契约（`modes.py:118-141` docstring 明确 TS 是 dict） |
+| 2 | 用 dataclass 承载已知 sub-key，未知 sub-key 进 `additional` | 强类型 + 前向兼容；新增 sub-key 不需要改 schema |
+| 3 | 顶层 `settings.permission_mode` 字段保留为 back-compat 读取通道 | 不引入一次性 breaking change；F-46 后续阶段会统一 deprecate |
+| 4 | 删除 settings 层"假" `PermissionRule` 死代码 | 与运行时 `PermissionRule` 同名异构，混淆读者；唯一引用点 `from_dict:176-179` 本次同时改写 |
+| 5 | `has_allow_bypass_permissions_mode` 加 `_settings_perms` 聚合器，保留 `extra["permissions"]` fallback | F-47 落地前的旧 binary 不炸；同时支持过渡期调试（写 extra 也能读出） |
+| 6 | `validate_settings` 对空 `permission_mode` 跳过校验 | 避免 F-47 改默认值为 `""` 后旧校验逻辑误报；与 back-compat 读取通道一致 |
+| 7 | 阶段化落地：1→2→3→4→5→6（可选）→7→8→9 | 自包含 schema 改造先闭环（1+2），读路径 + 校验（3+4），启动模式 plumb（5），可选 setup 改造（6），最后清死代码（7）+ 测试（8+9）。每步独立可回滚 |
+| 8 | `PermissionsConfig.rules` 用 `dict[str, list[str]]`（`{"allow": [...], "deny": [...], "ask": [...]}`） | 对齐磁盘格式与 `loader.py:settings_to_rules` 读路径；`PermissionRule` 字符串原样保留，不强转 dataclass |
+| 9 | `PermissionsConfig` 不导出 `PermissionRule` dataclass（虽然内部 rules 存字符串） | 避免重新引入死代码；`PermissionRule` 字符串是磁盘原样，运行时 `permissions/rule_parser.py` 已有 `permission_rule_value_from_string` 解析路径 |
+| 10 | `PermissionsConfig.additional_directories` 单独字段（不混在 `additional`） | 已知 sub-key 给类型化访问；`additional` 只装真正未知的 sub-key |
+
+### 依赖与协同
+
+- **依赖**：
+  - `src/settings/settings.py:load_settings` 现成可用，不需要改
+  - `src/permissions/modes.py:initial_permission_mode_from_cli` 签名已有 `settings_default_mode` 形参，本次只调通 plumb
+  - `src/permissions/types.py:PERMISSION_MODES` 现成可用
+- **协同**：
+  - 与 F-15（Shift+Tab cycle）强协同：F-15 实现了 `default→acceptEdits→plan→bypassPermissions→default` cycle；F-47 让 cycle 真正能切到 `bypassPermissions`
+  - 与 F-31（TUI 权限模式选择器）协同：TUI 模态对话框也是消费 `permissions.defaultMode` 字段
+  - 与 F-46 弱相关：F-46 后续 `interactive` / `default_decision` 字段落地时，`PermissionsConfig` 是天然的承接结构
+  - 与 F-40 无关：ProgressSink 重构不涉及 settings schema
+- **先于**：
+  - 无（无其它特性阻塞 F-47）
+- **后续议题（v2.13+ / F-47.1）**：
+  - pydantic-settings 后端的 `permissions` schema 同步改造
+  - `setup_permissions` 签名扩 `default_mode`（F-47 范围可选 → 后续必做）
+  - F-46.1 拆 `interactive` / `default_decision` 落到 `PermissionsConfig`
+  - F-46.2 `permission_mode` 标 deprecated 时，back-compat 通道改成"打 warning 不读"
+
+---
+
+*文档更新时间: 2026-06-02*
+
+*版本 v2.13 更新：新增 F-45 / F-46 / F-47。F-45 P1 在 `agent_runner._handle_tool_call` 后加 NDJSON 旁路落 `~/.clawcodex/tool-events/{run_id}/events.ndjson`，与 permission_mode 解耦；扩展 `report_writer.RunReport.tool_events_path` 字段 + markdown 模板登记路径；终结 "bypass ≠ 无审计" 误读。F-46 P2 把 `permission_mode` enum 拆为 `interactive` / `default_decision` / `audit_log` 三个正交字段，F-46.0（v2.13）只拆 `audit_log`，依赖 F-45 落地后端到端验证；`permission_mode` 保留为 backward-compat shim 标 deprecated；F-46.1+ 拆其余两字段推到 v2.15+。F-47 P1 修 `SettingsSchema.permissions: list[PermissionRule]` 与磁盘 dict 形态不一致 / `has_allow_bypass_permissions_mode` 永远读不到 / `resolve_permission_state` 没传 `settings_default_mode` / 顶层 `settings.permission_mode` 字段未读 四个串联 bug；引入 `PermissionsConfig` dataclass 对齐磁盘 + TS 上游契约，让 `permissions.defaultMode` 与 `permissions.allowBypassPermissionsMode` 真正生效；顶层 `permission_mode` 字段保留为 back-compat fallback；删除 settings 层"假" `PermissionRule` 死代码。*
 
 *文档更新时间: 2026-06-02*
 

@@ -1,0 +1,1 @@
+"""Model CLI command package."""

@@ -70,6 +70,7 @@ class CommandContext:
     provider: Any = None
     tool_registry: Any = None
     tool_context: Any = None
+    runtime_context: Any = None
 
 
 # Protocol for local command callables

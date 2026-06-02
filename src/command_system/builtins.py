@@ -1182,36 +1182,21 @@ def execute_command_sync(cmd_name: str, args: str, context: CommandContext) -> t
     Returns:
         Tuple of (success: bool, result_text: str | None, error: str | None)
     """
-    cmd = None
-    for builtin_cmd in get_builtin_commands():
-        if builtin_cmd.name.lower() == cmd_name.lower() or cmd_name.lower() in [a.lower() for a in builtin_cmd.aliases]:
-            cmd = builtin_cmd
-            break
+    cmd = get_command_registry().get(cmd_name)
+    if cmd is None:
+        for builtin_cmd in get_builtin_commands():
+            if builtin_cmd.name.lower() == cmd_name.lower() or cmd_name.lower() in [a.lower() for a in builtin_cmd.aliases]:
+                cmd = builtin_cmd
+                break
 
     if cmd is None:
         return False, None, f"Unknown command: {cmd_name}"
+    if cmd.command_type != CommandType.LOCAL:
+        return False, None, f"Command not implemented for sync execution: {cmd_name}"
 
     try:
-        # This is a synchronous wrapper - we directly call the underlying function
-        # instead of going through the async call() method
-        if cmd is HELP_COMMAND:
-            result = help_command_call(args, context)
-        elif cmd is CLEAR_COMMAND:
-            result = clear_command_call(args, context)
-        elif cmd is EXIT_COMMAND:
-            result = exit_command_call(args, context)
-        elif cmd is SKILLS_COMMAND:
-            result = skills_command_call(args, context)
-        elif cmd is COST_COMMAND:
-            result = cost_command_call(args, context)
-        elif cmd is CONTEXT_COMMAND:
-            result = context_command_call(args, context)
-        elif cmd is COMPACT_COMMAND:
-            result = compact_command_call(args, context)
-        elif cmd is CRON_LIST_COMMAND:
-            result = cron_list_command_call(args, context)
-        elif cmd is CRON_DELETE_COMMAND:
-            result = cron_delete_command_call(args, context)
+        if isinstance(cmd, LocalCommand) and cmd._call_impl is not None:
+            result = cmd._call_impl(args, context)
         else:
             return False, None, f"Command not implemented for sync execution: {cmd_name}"
 

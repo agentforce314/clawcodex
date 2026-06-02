@@ -57,6 +57,12 @@ def run_cli(argv: list[str] | None = None) -> int:
             return src_cli.handle_login()
         if token == 'config':
             return src_cli.show_config()
+
+        from clawcodex_ext.cli.subcommand_registry import get_subcommand
+        subcommand = get_subcommand(token)
+        if subcommand is not None:
+            return subcommand(rest_args)
+
         if token == 'mcp':
             from src.entrypoints.mcp import run_mcp_subcommand
             return run_mcp_subcommand(rest_args)
