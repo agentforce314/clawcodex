@@ -329,6 +329,8 @@ from src.command_system import (
     create_command_context,
     execute_command_async,
     execute_command_sync,
+    get_command_registry,
+    load_and_register_skills,
     register_builtin_commands,
 )
 from src.cost_tracker import CostTracker
@@ -1013,6 +1015,19 @@ class ClawcodexREPL:
         # Also register to global registry so execute_command_async can find commands
         register_builtin_commands(None)  # None = use global registry
 
+        # P0-6 Option B / Phase 3.5: register user-invocable skills into the
+        # GLOBAL registry (registry=None) AFTER builtins, so they resolve in
+        # execute_command_async (which hardcodes the global registry) and so the
+        # shadowing guard lets builtins win on a name collision. Register
+        # global-ONLY (not into self.command_registry below): that keeps
+        # _built_in_commands builtins-only, so a bare "/myskill" still routes to
+        # the command palette while "/myskill arg" executes the skill.
+        try:
+            load_and_register_skills(registry=None)
+        except Exception:
+            # Skill discovery must never block REPL startup; builtins still work.
+            pass
+
         # Create command registry and register built-ins
         self.command_registry = CommandRegistry()
         register_builtin_commands(self.command_registry)
@@ -1037,6 +1052,10 @@ class ClawcodexREPL:
             history=self.history_log,
             app_state_store=self.app_state_store,
             ui=ReplUIHost(self._safe_input, self.console),
+            # P0-6 Option B: lets a SkillPromptCommand render via the same
+            # _run_markdown_skill path the Skill tool uses (session id +
+            # gated shell-exec), instead of lossy bare substitution.
+            tool_context=self.tool_context,
         )
 
         # Merge new commands with built-in list for completion
@@ -1114,9 +1133,15 @@ class ClawcodexREPL:
                     break
 
             if prompt_text:
-                # Send the prompt to the LLM for interactive execution
-                # Use higher max_turns for complex commands like /init
-                self.console.print("[dim]Initializing workspace setup...[/dim]")
+                # Send the prompt to the LLM for interactive execution.
+                # Neutral, command-aware launch line (D-6): this method now
+                # handles every prompt command — including skills registered
+                # under P0-6 Option B — so the old "/init"-specific copy would
+                # mislead on "/myskill". Recovers a minimal echo of the
+                # "Launching skill: …" affordance the registry path otherwise
+                # loses relative to _try_run_skill_slash.
+                launch_name = (result.command_name or "command").lstrip("/")
+                self.console.print(f"[dim]Launching /{launch_name}…[/dim]")
                 self.chat(prompt_text)
             return True
 
@@ -2211,15 +2236,18 @@ class ClawcodexREPL:
                     if result.success:
                         if self._handle_command_result(result):
                             return
-                    elif result.error and self.command_registry.get(cmd_name) is not None:
-                        # Surface a real error from a command that EXISTS (e.g.
-                        # an interactive command on a null surface) instead of
-                        # letting it fall through to the "Unknown command"
-                        # else-arm. Gate on registry membership so a genuinely
-                        # unknown name — including an args-bearing skill like
-                        # ``/myskill do thing`` — still reaches the legacy
-                        # ladder's ``_try_run_skill_slash`` fallback rather than
-                        # being swallowed here as "Unknown command".
+                    elif result.error and get_command_registry().get(cmd_name) is not None:
+                        # Surface a real error from a command that EXISTS in the
+                        # GLOBAL registry (D-5). Gate on the GLOBAL registry, not
+                        # self.command_registry: under P0-6 Option B skills are
+                        # registered global-ONLY, so the local registry holds
+                        # builtins only and would miss an args-bearing skill like
+                        # ``/myskill do thing`` — letting its render error fall
+                        # through to ``_try_run_skill_slash`` and double-dispatch.
+                        # With the global lookup, a registered skill that errors
+                        # surfaces its error here; a genuinely unknown name (not
+                        # in the global registry) still reaches the legacy
+                        # fallback below as before.
                         self.console.print(f"[red]{result.error}[/red]")
                         return
                 except Exception:
