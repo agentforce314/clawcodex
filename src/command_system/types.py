@@ -8,6 +8,8 @@ Implements the core command types inspired by Claude Code's command system:
 
 from __future__ import annotations
 
+import asyncio
+
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -79,6 +81,12 @@ class CommandContext:
     # the engine substitutes a ``NullUIHost`` (which raises for mutating
     # prompts) so a command body can always assume ``ctx.ui`` is present.
     ui: Any = None  # UIHost | None
+    # ``tool_context`` is the surface's ToolContext (REPL/TUI), threaded
+    # through so a SkillPromptCommand can render with the *same* session id +
+    # shell executor the model's Skill tool uses (P0-6 Option B / Phase 3.5).
+    # None on listing/aggregation paths, which never call
+    # get_prompt_for_command, so the default is correct there.
+    tool_context: Any = None  # ToolContext | None
 
 
 # Protocol for local command callables
@@ -149,6 +157,73 @@ class PromptCommand(CommandBase):
         from .argument_substitution import substitute_arguments
         content = substitute_arguments(self.markdown_content, args, self.arg_names)
         return [{"type": "text", "text": content}]
+
+
+@dataclass(frozen=True)
+class SkillPromptCommand(PromptCommand):
+    """A PromptCommand backed by a markdown skill (P0-6 Option B / Phase 3.5).
+
+    The base ``PromptCommand.get_prompt_for_command`` does only bare argument
+    substitution, which is lossy for skills (it drops the base-dir header,
+    ``${CLAUDE_SKILL_DIR}`` / ``${CLAUDE_SESSION_ID}`` substitution, and gated
+    shell-exec). This subclass overrides it with a render that is identical *by
+    construction* to the model's Skill-tool path: when the surface threads its
+    ``ToolContext`` onto the ``CommandContext`` (REPL/TUI execution), it
+    delegates to ``_run_markdown_skill`` — the same function the Skill tool runs
+    — re-resolving the skill by ``self.name`` so session id and shell-exec are
+    byte-for-byte the same. Off that path (no ToolContext: SDK / listing
+    callers) it degrades to a headless render with no shell executor.
+    """
+
+    async def get_prompt_for_command(
+        self,
+        args: str,
+        context: CommandContext,
+    ) -> list[dict[str, Any]]:
+        tc = getattr(context, "tool_context", None)
+        if tc is not None:
+            # Function-scope import: command_system must not import tool_system
+            # at module load (would cycle). The edge is one private helper, and
+            # command_system already imports ..skills.
+            from src.tool_system.tools.skill import _run_markdown_skill
+
+            # ``_run_markdown_skill`` is sync and may block (disk I/O + a gated
+            # BashTool subprocess for embedded shell blocks). Run it off the
+            # event loop so neither the REPL thread-pool loop nor the Textual
+            # loop stalls. Note: it mutates a process-global skill registry
+            # (clear + re-resolve), which is unsynchronized — safe only because
+            # both surfaces serialize command dispatch, so no two renders run
+            # concurrently. A future concurrent-dispatch change would need a lock.
+            res = await asyncio.to_thread(
+                _run_markdown_skill, self.name, args or "", tc
+            )
+            payload = res.output if isinstance(res.output, dict) else {}
+            prompt = payload.get("prompt")
+            if isinstance(prompt, str) and prompt.strip():
+                return [{"type": "text", "text": prompt}]
+            # error / empty (e.g. the skill was removed since registration) →
+            # fall through to a headless render from the cached fields.
+        return self._render_headless(args)
+
+    def _render_headless(self, args: str) -> list[dict[str, Any]]:
+        """Best-effort render with no ToolContext: base-dir header + argument /
+        ``${CLAUDE_SKILL_DIR}`` / ``${CLAUDE_SESSION_ID}`` substitution, with
+        embedded shell blocks left verbatim (no executor). Only reachable off
+        the REPL/TUI execution paths, which always thread a ToolContext."""
+        from src.bootstrap.state import get_session_id
+        from src.skills.runtime_substitution import render_skill_prompt
+
+        text = render_skill_prompt(
+            body=self.markdown_content,
+            args=args or "",
+            base_dir=self.skill_root,
+            argument_names=self.arg_names,
+            session_id=get_session_id(),
+            loaded_from=self.loaded_from,
+            slash_command_name=f"/{self.name}",
+            shell_executor=None,
+        )
+        return [{"type": "text", "text": text}]
 
 
 @dataclass(frozen=True)
