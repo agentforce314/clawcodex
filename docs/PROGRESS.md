@@ -92,6 +92,7 @@
 | F-41 | Coordinator 轻量工具集 | P1 | ✅ 已完成 | 给 Coordinator 配置独立的轻量工具集（Read、WebSearch、WebFetch），加上原有的 Agent、SendMessage、TaskStop，共 6 个工具。Coordinator 可直接处理简单查询（搜网页、读文件），无需为每个请求创建 Worker。所有写操作工具（Write、Edit、Bash、Grep、Glob）仍隔离，强制委派复杂任务给 Worker。涉及 `src/coordinator/mode.py` 的 `_COORDINATOR_ALLOWED_TOOLS` 扩展 + `src/coordinator/prompt.py` 的 "Your Tools" 提示词更新 + `src/repl/core.py` 注释同步。231/231 orchestrator 测试通过 |
 | F-42 | Orchestrator Shared / Sequential Workspace 策略 | P0 | ✅ 完成 | 扩展 `workspace.strategy: isolated \| shared \| sequential`，保留现有 per-issue workspace，同时支持本地 feature-plan issue 在同一 working tree / integration branch 上串行叠加开发；包含单并发校验、顺序锁、dirty tree guard、每 issue commit 链元数据、shared cleanup preserve 与两 issue 端到端验收 |
 | F-43 | CLI 模型供应商与模型切换 | P1 | ✅ 已完成 (2026-06-02) | 新增 `clawcodex provider` / `clawcodex model` 子命令族（list/show/current/use/unset）+ REPL/TUI 内 `/provider` / `/model` 斜杠命令；fast-path 注册表 + `ModelRegistry` / `ModelStore` / `Resolver` + `RuntimeContext.swap_provider` 热切换；所有新代码落在 `clawcodex_ext/cli/`，`src/*` 仅追加 `CommandContext.runtime_context` seam 与 `TUIOptions.runtime_context` 透传；持久化借道 `src.config` 不重写 I/O；错误文案统一英文；`--scope project` 落入后续规划 |
+| F-44 | Orchestrator 人工检视闸门（Review Gate） | P1 | ✅ 完成 | 可选的人工检视闸门，`workflow.md` 中 `agent.review_required: true` 启用。sync 后有代码变更时标记 `PENDING_REVIEW` 而非直接 `COMPLETED`；CLI `issue review --approve/--reject` 审批或驳回；驳回自动触发 F-39 retry。向后兼容，默认关闭。 |
 | F-45 | Orchestrator tool-call 审计旁路（tool-events.ndjson + 报告登记） | P1 | ✅ 已完成 (2026-06-02) | 在 `extensions/orchestrator/agent_runner.py:_handle_tool_call` 之后追加 NDJSON 旁路落盘到 `~/.clawcodex/tool-events/{run_id}/events.ndjson`，与 `permission_mode` 解耦（`bypassPermissions` / `dontAsk` / `acceptEdits` / `default` 一视同仁全写）；扩展 `report_writer.RunReport` 加 `tool_events_path` 字段并在 markdown 模板登记路径，让审计员从 run 报告直接定位完整 per-tool 决策流水。修复 TS 注释 "bypass = no logging" 在 Python 端的事实偏差 —— `ApprovalPolicy` 一直在跑，只是决策没落盘。落地时同步修复了 `_handle_tool_call` 死代码调用链 + 加 50MB rotate + `.reports` 进默认 gitignore。16 个新测试 + 全 271 回归 + F-38 E2E 4/4 全绿。 |
 | F-46 | permission_mode enum 正交拆分 | P2 | ⏳ 规划中 | 把 `permission_mode` 混合 enum（`default` / `plan` / `bypassPermissions` / `acceptEdits` / `dontAsk` / `auto` / `bubble`）拆为三个正交字段：`interactive: bool`（是否要 TTY 弹 prompt）、`default_decision: Literal["allow", "deny", "ask"]`（无人值守默认）、`audit_log: Literal["none", "minimal", "full"]`（per-tool 决策是否落盘）。F-46.0（v2.13）只拆 `audit_log`，**F-45 已落地**可消费 NDJSON 旁路做端到端验证；`permission_mode` 保留为 backward-compat shim 标 deprecated；F-46.1+ 拆其余两字段推到 v2.15+。 |
 | F-47 | Permission Settings Schema 重构（`permissions` 改 dict 形态 + plumb 启动模式） | P1 | ✅ 完成（含 F-47.1 hotfix） | 修四层串联 bug：`SettingsSchema.permissions: list[PermissionRule]` 与磁盘实际 dict 形态不一致 → dict 落进 known 字段，`allowBypassPermissionsMode` 进不到 `extra` → `has_allow_bypass_permissions_mode` 永远 False → Shift+Tab cycle 看不到 Bypass；同时 `resolve_permission_state` 没把 `permissions.defaultMode` 喂给 `initial_permission_mode_from_cli`、顶层 `settings.permission_mode` 字段未读。引入 `PermissionsConfig` dataclass 对齐磁盘 + TS 上游契约；`has_allow_bypass_permissions_mode` 加 `extra["permissions"]` fallback；`resolve_permission_state` 真正 plumb `settings_default_mode`；删除 settings 层"假" `PermissionRule` 死代码。**F-47.1 (2026-06-02) hotfix**：项目尚未发布、磁盘上没有需要迁移的旧配置，直接删除原本保留的顶层 `settings.permission_mode` back-compat 读取通道——`SettingsSchema.permission_mode` 字段保留为兼容形态但启动时不再被读；详见 风险 #3 / 设计决定 #3 / F-47.1 备注。 |
@@ -786,6 +787,7 @@ session = Session.resume(issue_session_id)
 | AgentBuilder — 总览 Agent 自动调用 | `extensions/pos_converter/agent_builder.py` | ✅ 完成 | `build()` 检测多组件 → 自动生成 overview agent |
 | `resolve_default_agent()` | `extensions/pos_converter/default_agent.py` | ✅ 完成 | 扫描 `.claude/agents/clawcodex-overview.md`，返回覆盖 prompt |
 | `--agent CLI` 参数 | `clawcodex_ext/cli/pos_cmd/commands.py` + repl 启动路径 | ✅ 完成 | 启动时指定默认 agent |
+| 启动 Agent 标识 Banner | `clawcodex_ext/cli/dispatch.py` | ✅ 完成 | `_resolve_startup_agent()` 在 stderr 输出 `⚡ Using agent: <name> (<n> sub-agents)` |
 | 单元测试 | `tests/test_pos_converter_source_parser.py` | ✅ 完成 | 33 个测试覆盖提取/分组/生成 |
 | E2E 验收 | — | ✅ 完成 | 33/33 测试通过，回归 271/271 通过 |
 
@@ -850,6 +852,53 @@ session = Session.resume(issue_session_id)
 3. 日志中出现 `No-op detection triggered issue_id=X` 记录
 4. Orchestrator 不 retry，issue 标记为 completed
 5. 增量轮次成本：每次 SessionComplete 读取一次 `get_file_status()`（<1ms）
+
+---
+
+## F-44: Orchestrator 人工检视闸门（Review Gate）
+
+**状态**: ✅ 完成
+**优先级**: P1
+**规划文档**: `docs/FEATURE_PLAN.md` → `§3.1.13 人工检视闸门设计（F-44）`
+**依赖**: F-38（验证与报告闭环）、F-39（Issue 重跑入口）
+
+### 目标
+
+为 Orchestrator 自动开发流程添加可选的人工检视闸门，实现"自动开发 + 人工合并"的协作模式，对应选项 A 架构。
+
+### 当前基线
+
+- GitSyncService 已有 `pending_review` 状态位，但仅 `LocalTracker` 下触发
+- `Orchestrator.run_issue()` 的 `finally` 块中 `mark_completed()` 会覆盖 `pending_review` 状态
+- CLI 已有 `issue review --approve/--reject` 命令，但从未被触发
+- 远程 tracker（GitHub/Gitee/GitCode）没有人工检视环节
+
+### 实施进度
+
+| 组件 | 文件 | 状态 | 说明 |
+|------|------|------|------|
+| 配置字段 | `schema.py` | ✅ 完成 | `AgentConfig.review_required: bool = False` + `from_dict` 解析 |
+| 同步层 | `git_sync.py` | ✅ 完成 | `pending_review` 条件扩展为 `is_local_tracker or review_required` |
+| 编排器 | `orchestrator.py` | ✅ 完成 | `finally` 块跳过 `mark_completed()` 当 `pending_review` 存在 |
+| 工作流配置 | `workflow.md` | ✅ 完成 | `review_required: true` 示例 |
+| 测试 | 全部测试 | ✅ 通过 | 82 个 orchestrator 测试无回归 |
+
+### 文件变更
+
+| 文件 | 改动 |
+|------|------|
+| `extensions/orchestrator/config/schema.py` | +6 行：新字段 + `from_dict` 解析 |
+| `extensions/orchestrator/git_sync.py` | +1 行：`pending_review` 条件扩展 |
+| `extensions/orchestrator/orchestrator.py` | +16 行：`finally` 块检测修复 |
+| `workflow.md` | +1 注释：开启 `review_required: true` |
+
+### 验收标准
+
+1. `review_required: false` → 行为不变，不阻塞任何现有流程
+2. `review_required: true` + 有代码变更 → 状态为 `PENDING_REVIEW`
+3. `clawcodex-dev orchestrator issue review --id <id> --approve` → 状态变 `COMPLETED`
+4. `clawcodex-dev orchestrator issue review --id <id> --reject --feedback "..."` → 自动 retry
+5. Orchestrator 重启后 `PENDING_REVIEW` 状态持久化，CLI 可继续操作
 
 ---
 
