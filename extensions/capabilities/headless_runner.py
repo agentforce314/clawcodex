@@ -76,9 +76,8 @@ def run_headless_session(
         return 0
 
     # Default: lazy import of the real upstream headless runner.
-    # Note: ``HeadlessOptions`` does not have an ``on_event`` field;
-    # the event bridge is built internally by ``run_headless`` via
-    # ``_build_event_bridge`` at line 257 of ``headless.py``.
+    # Forward the on_event callback so tool events from the headless
+    # session reach the orchestrator's event stream (e.g. for tool_count).
     from src.entrypoints.headless import HeadlessOptions, run_headless
 
     options_legacy = HeadlessOptions(
@@ -91,6 +90,7 @@ def run_headless_session(
         workspace_root=options.workspace_root,
         stdout=options.stdout,
         stderr=options.stderr,
+        on_event=options.on_event,
     )
     return run_headless(options_legacy)
 

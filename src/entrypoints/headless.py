@@ -103,6 +103,10 @@ class HeadlessOptions:
     # Optional system prompt body to append (from resolved default agent).
     append_system_prompt: str = ""
 
+    # External tool-event callback (orchestrator's QueryRunner wires this).
+    # Called alongside the internal NDJSON writer when set.
+    on_event: Callable[[Any], None] | None = None
+
 
 def run_headless(options: HeadlessOptions) -> int:
     """Run one or more prompts in headless mode. Returns the exit code."""
@@ -264,6 +268,20 @@ def run_headless(options: HeadlessOptions) -> int:
                 session.conversation.add_user_message(user_msg.text)
 
                 on_event = _build_event_bridge(writer, aggregate_tool_events)
+                # F-37: if an external on_event callback was provided
+                # (orchestrator's QueryRunner wires this), call it
+                # alongside the internal bridge so tool events reach
+                # the orchestrator's event stream and tool_count.
+                _on_event = on_event
+                _ext_cb = options.on_event
+                if _ext_cb is not None:
+                    _internal_on_event = _on_event
+                    def on_event(event: ToolEvent) -> None:
+                        _internal_on_event(event)
+                        try:
+                            _ext_cb(event)
+                        except Exception:
+                            pass
                 on_text_chunk = None
                 if writer is not None and options.include_partial_messages:
                     def _emit_partial(chunk: str) -> None:
