@@ -3189,6 +3189,10 @@ class ClawcodexREPL:
                 engine_system_prompt = None
                 engine_user_context = None
                 append_prompt = style_prompt
+                # Inject resolved agent system prompt if present
+                extra = getattr(self, "_append_system_prompt", "")
+                if extra:
+                    append_prompt = f"{append_prompt}\n\n{extra}"
 
             prior_messages = list(self._engine_messages)
 

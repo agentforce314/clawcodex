@@ -148,6 +148,20 @@ Examples:
             'no internet access.'
         ),
     )
+    # ---- Agent type selection ----
+    parser.add_argument(
+        '--agent',
+        type=str,
+        default=None,
+        nargs='?',
+        const='auto',
+        metavar='AGENT_TYPE',
+        help=(
+            'Start with a specific agent type. Without a value, auto-detect '
+            'clawcodex-overview.md in .claude/agents/. Default: general-purpose agent.'
+        ),
+    )
+
     permissions_group.add_argument(
         '--permission-mode',
         dest='permission_mode',

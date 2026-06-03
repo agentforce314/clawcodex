@@ -67,12 +67,14 @@ class ClawCodexExtREPL(ClawcodexREPL):
         tool_context: Any | None = None,
         workspace_root: Path | None = None,
         runtime_context: Any | None = None,
+        append_system_prompt: str = "",
     ) -> None:
         # ---- Shared setup (identical to upstream) ----
         self._permission_mode = permission_mode
         self._is_bypass_permissions_mode_available = bool(
             is_bypass_permissions_mode_available
         )
+        self._append_system_prompt = append_system_prompt
 
         from rich.console import Console
 

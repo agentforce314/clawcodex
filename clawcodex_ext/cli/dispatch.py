@@ -203,6 +203,9 @@ def run_cli(argv: list[str] | None = None) -> int:
     )
     ctx = RuntimeContext.build(runtime_opts)
 
+    # ---- Agent type resolution: --agent flag or auto-detect ----
+    _resolve_startup_agent(args, ctx)
+
     # Select frontend by name; dispatch stays as the thin orchestration layer.
     if args.print:
         profile_checkpoint("mode_dispatch_print")
@@ -223,3 +226,55 @@ def run_cli(argv: list[str] | None = None) -> int:
 
     frontend = get_frontend("repl")
     return frontend.run(ctx, argv[1:])
+
+
+# ---------------------------------------------------------------------------
+# Agent resolution: --agent flag or auto-detect clawcodex-overview.md
+# ---------------------------------------------------------------------------
+
+def _resolve_startup_agent(args, ctx) -> None:
+    """Resolve agent type from ``--agent`` flag or auto-detect.
+
+    Priority:
+      1. ``--agent <name>``  → ``resolve_agent_by_type(cwd, name)``
+      2. ``--agent`` (const) → ``resolve_default_agent(cwd)``
+      3. No ``--agent``      → ``resolve_default_agent(cwd)`` (auto-detect)
+      4. Nothing found       → keep the default GENERAL_PURPOSE_AGENT
+
+    Injects the agent's ``system_prompt_body`` into
+    ``ctx.options.append_system_prompt``.  Prints a startup banner
+    showing the resolved agent name and sub-agent count.
+    """
+    from pathlib import Path
+
+    from extensions.pos_converter.default_agent import (
+        resolve_agent_by_type,
+        resolve_default_agent,
+    )
+
+    cwd = ctx.workspace_root or Path.cwd()
+    agent_type = getattr(args, "agent", None)
+
+    if agent_type is not None and agent_type != "auto":
+        # Explicit ``--agent <name>``
+        agent = resolve_agent_by_type(cwd, agent_type)
+    else:
+        # Auto-detect (always check, even with ``--agent`` bare)
+        agent = resolve_default_agent(cwd)
+
+    if agent and agent.get("system_prompt_body"):
+        body = agent["system_prompt_body"].strip()
+        if body:
+            existing = getattr(ctx.options, "append_system_prompt", "")
+            ctx.options.append_system_prompt = (
+                f"{existing}\n\n{body}" if existing else body
+            )
+
+        # Startup banner — show agent name and sub-agent count on stderr
+        agent_name = agent.get("name", "unknown")
+        skills = agent.get("skills", [])
+        sub_count = len([s for s in skills if isinstance(s, str) and s.startswith("skill-")])
+        if sub_count:
+            print(f"⚡ Using agent: {agent_name} ({sub_count} sub-agents)", file=sys.stderr)
+        else:
+            print(f"⚡ Using agent: {agent_name}", file=sys.stderr)
