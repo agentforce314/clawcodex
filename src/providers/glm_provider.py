@@ -6,7 +6,7 @@ from typing import Any, Optional
 
 try:
     from zhipuai import ZhipuAI  # type: ignore
-except ModuleNotFoundError:  # pragma: no cover
+except ImportError:  # catches both ModuleNotFoundError and bare ImportError (e.g. zhipuai<2.0 where ZhipuAI symbol moved)
     ZhipuAI = None
 
 from .openai_compatible import OpenAICompatibleProvider
