@@ -33,3 +33,4 @@ def load_builtin_subcommands() -> None:
 
     from clawcodex_ext.cli.provider_cmd import commands as _provider_commands  # noqa: F401
     from clawcodex_ext.cli.model_cmd import commands as _model_commands  # noqa: F401
+    from clawcodex_ext.cli.pos_cmd import commands as _pos_commands  # noqa: F401
