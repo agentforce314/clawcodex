@@ -58,6 +58,7 @@ class OrchestrationSubsystem:
                 ),
                 git_username=workflow_config.workspace.git_username,
                 git_token=workflow_config.workspace.git_token,
+                strategy=workflow_config.workspace.strategy,
             )
         )
         self.tracker_adapter = create_tracker_adapter(workflow_config.tracker)

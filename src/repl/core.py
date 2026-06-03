@@ -337,6 +337,14 @@ from src.repl.at_file_completer import AtFileCompleter
 from src.repl.live_status import LiveStatus
 
 try:
+    from clawcodex_ext.cron_system.runtime import attach_cron_runtime, replace_cron_tools
+    _HAS_CRON = True
+except ImportError:
+    _HAS_CRON = False
+    attach_cron_runtime = None  # type: ignore[assignment]
+    replace_cron_tools = None  # type: ignore[assignment]
+
+try:
     from prompt_toolkit.patch_stdout import patch_stdout as _pt_patch_stdout
 except ModuleNotFoundError:  # pragma: no cover - prompt_toolkit guarded above
     from contextlib import nullcontext as _pt_patch_stdout  # type: ignore
@@ -440,6 +448,8 @@ class ClawcodexREPL:
             provider=self.provider,
             get_available_mcp_servers=_get_mcp_servers_for_prompt,
         )
+        if _HAS_CRON:
+            replace_cron_tools(self.tool_registry)
         self._engine_messages: list[Any] = []
         from src.permissions.types import ToolPermissionContext
 
@@ -452,6 +462,8 @@ class ClawcodexREPL:
                 ),
             ),
         )
+        if _HAS_CRON:
+            attach_cron_runtime(self.tool_context, autostart=True)
         self.tool_context.ask_user = self._ask_user_questions
         # Permission handler with status control for proper input handling
         self._current_status = None
@@ -1773,6 +1785,34 @@ class ClawcodexREPL:
                 return None
             return self._queued_prompts.pop(0)
 
+    def _drain_cron_outbox(self) -> None:
+        """Drain ``cron_prompt`` / ``cron_missed`` events from the
+        tool context outbox and enqueue them as user-submitted prompts.
+
+        Called every iteration in ``run()`` before the normal prompt check,
+        so a background cron firing is injected as if the user typed it.
+        """
+        if not _HAS_CRON:
+            return
+        outbox = getattr(self.tool_context, "outbox", None)
+        if not outbox:
+            return
+        drained: list[str] = []
+        while outbox:
+            entry = outbox.pop(0)
+            if isinstance(entry, dict):
+                etype = entry.get("type", "")
+                if etype == "cron_prompt":
+                    prompt = (entry.get("prompt") or "").strip()
+                    if prompt:
+                        drained.append(prompt)
+                elif etype == "cron_missed":
+                    notification = (entry.get("notification") or "").strip()
+                    if notification:
+                        drained.append(notification)
+        for text in drained:
+            self._enqueue_prompt(text)
+
     def _queued_count(self) -> int:
         with self._queued_prompts_lock:
             return len(self._queued_prompts)
@@ -2260,6 +2300,7 @@ class ClawcodexREPL:
         while True:
             try:
                 self._refresh_completer()
+                self._drain_cron_outbox()
                 queued = self._pop_queued_prompt()
                 if queued is not None:
                     # Echo queued submissions with a dim background so
