@@ -13,6 +13,40 @@ from uuid import uuid4
 
 _log_lock = threading.Lock()
 
+# Tracks the last provider API call timestamp (monotonic clock) for the
+# delay_between_requests_ms mechanism. Module-level so the cooldown is
+# enforced across all call sites in the same process. Initialised to 0
+# so the first request is never delayed.
+_last_provider_request_time: float = 0.0
+_request_delay_lock = threading.Lock()
+
+
+def _enforce_request_delay() -> None:
+    """Sleep if necessary to maintain the per-request minimum interval.
+
+    Reads ``CLAWCODEX_PROVIDER_REQUEST_DELAY_MS`` from the environment
+    (set by the orchestrator's ``AgentConfig.delay_between_requests_ms``).
+    Under the hood uses a module-level monotonic-clock timestamp so the
+    delay is measured wall-clock to wall-clock across all concurrent callers.
+    """
+    delay_ms_str = os.environ.get("CLAWCODEX_PROVIDER_REQUEST_DELAY_MS", "0")
+    try:
+        delay_ms = int(delay_ms_str)
+    except (ValueError, TypeError):
+        delay_ms = 0
+    if delay_ms <= 0:
+        return
+
+    global _last_provider_request_time  # noqa: PLW0603
+    now = time.monotonic()
+    with _request_delay_lock:
+        elapsed = now - _last_provider_request_time
+        remaining = (delay_ms / 1000.0) - elapsed
+        if remaining > 0 and _last_provider_request_time > 0:
+            time.sleep(remaining)
+        _last_provider_request_time = time.monotonic()
+
+
 def _log(msg: str) -> None:
     with _log_lock:
         with open('/tmp/tui_flow.log', 'a') as f:
@@ -555,6 +589,12 @@ async def _call_model_sync(
     # synchronous chat() if the provider doesn't support structured streaming.
     if _diag:
         logger.warning("[DIAG] _call_model_sync: calling provider (streaming)...")
+
+    # Enforce minimum interval between successive provider requests.
+    # The interval is configured via AgentConfig.delay_between_requests_ms
+    # and propagated through the CLAWCODEX_PROVIDER_REQUEST_DELAY_MS env var.
+    _enforce_request_delay()
+
     try:
         try:
             # ``abort_signal`` reaches the provider so a tripped controller

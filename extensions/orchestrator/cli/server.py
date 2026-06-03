@@ -146,6 +146,15 @@ def _find_metadata(args: argparse.Namespace) -> tuple[Path | None, dict | None]:
         get_workspace_root,
     )
 
+    # 0. 多项目歧义检测：无显式参数且有多个存活项目时提示
+    if not getattr(args, "workspace", None) and not getattr(args, "workflow", None):
+        from extensions.orchestrator.workspace_locator import get_live_projects, print_multi_project_hint
+        live = get_live_projects()
+        if len(live) > 1:
+            subcmd = getattr(args, "server_subcommand", "server")
+            print_multi_project_hint(live, f"orchestrator server {subcmd}")
+            return None, None
+
     # Priority: explicit --workspace > --workflow > env var > latest metadata
     workspace_root = get_workspace_root(
         workspace_arg=getattr(args, "workspace", None),
