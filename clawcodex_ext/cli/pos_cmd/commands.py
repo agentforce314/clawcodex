@@ -231,9 +231,9 @@ def _handle_convert_from_source(
         print(f"     Component {i + 1}: {comp.name}")
         print(f"       Description: {comp.description}")
         print(f"       Operations: {len(comp.operations)}")
-    if group_result.warnings:
-        for w in group_result.warnings:
-            print(f"   Warning: {w}", file=sys.stderr)
+    if group_result.unmatched_tools:
+        for w in group_result.unmatched_tools:
+            print(f"   Warning: unmatched tool: {w}", file=sys.stderr)
 
     return 0
 

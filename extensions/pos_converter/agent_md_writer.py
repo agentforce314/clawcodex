@@ -58,7 +58,7 @@ class WorkflowStage:
 _AGENT_MD_TEMPLATE_SRC = """\
 ---
 name: {{ name }}
-description: {{ description }}
+description: '{{ description | replace("'", "''") }}'
 {% if model %}model: {{ model }}{% endif %}
 tools:
 {% for tool in tools %}
@@ -68,7 +68,7 @@ tools:
 {% for skill in skills %}
   - {{ skill }}
 {% endfor %}{% endif %}
-{% if when_to_use %}when_to_use: {{ when_to_use }}{% endif %}
+{% if when_to_use %}when_to_use: '{{ when_to_use | replace("'", "''") }}'{% endif %}
 ---
 
 # Agent: {{ name }}

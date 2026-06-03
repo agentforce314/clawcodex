@@ -417,7 +417,7 @@ class TestAgentMarkdownWriter:
             assert path.exists()
             content = path.read_text(encoding="utf-8")
             assert "name: test-agent" in content
-            assert "description: A test agent" in content
+            assert "description: 'A test agent'" in content
             assert "model: claude-4" in content
             assert "tool_a" in content
             assert "skill_x" in content
