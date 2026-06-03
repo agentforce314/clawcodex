@@ -13,6 +13,8 @@ from typing import Any
 
 from src.agent.agent_definitions import AgentDefinition, AgentSource
 from src.skills.model import Skill
+from .source_parser import SourceComponent
+from .agent_md_writer import AgentMarkdownWriter, AgentComponentInfo, WorkflowStage
 from .skill_grouper import SkillSpec, MappingRule
 from .templates import AGENT_TEMPLATE, SKILL_TEMPLATE
 
@@ -22,6 +24,7 @@ class AgentBuildResult:
     """Result of building an Agent from POS conversion."""
     agent: AgentDefinition
     skill_files: list[Path] = field(default_factory=list)
+    markdown_files: list[Path] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
 
@@ -44,6 +47,8 @@ class AgentBuilder:
         memory_scope: list[str] | None = None,
         persistent: bool = True,
         mapping_rules: list[MappingRule] | None = None,
+        source_components: list[SourceComponent] | None = None,
+        output_dir: str | Path | None = None,
     ) -> None:
         self._skills = skills
         self._agent_name = agent_name
@@ -53,12 +58,26 @@ class AgentBuilder:
         self._memory_scope = memory_scope or []
         self._persistent = persistent
         self._mapping_rules = mapping_rules
+        self._source_components = source_components or []
+        self._output_dir = Path(output_dir) if output_dir else Path.cwd()
         self._result: AgentBuildResult | None = None
 
-    def build(self) -> AgentBuildResult:
-        """Build the AgentDefinition and optionally persist Skill files."""
+    def build(self, format: str = "agent_definition") -> AgentBuildResult:
+        """Build the AgentDefinition and optionally persist Skill files.
+
+        Args:
+            format: Output format — ``"agent_definition"`` (default, old behavior),
+                    ``"markdown"``, or ``"both"``.
+
+        Returns:
+            AgentBuildResult with the built AgentDefinition and generated file paths.
+        """
         if self._result is not None:
             return self._result
+
+        valid_formats = {"agent_definition", "markdown", "both"}
+        if format not in valid_formats:
+            raise ValueError(f"Invalid format {format!r}. Must be one of {valid_formats}")
 
         skill_names = [s.name for s in self._skills]
         allowed_tools = self._tools or self._collect_tools()
@@ -83,11 +102,19 @@ class AgentBuilder:
             except Exception as exc:
                 warnings.append(f"Failed to write skill file for {spec.name}: {exc}")
 
+        md_files: list[Path] = []
+        if format in ("markdown", "both"):
+            try:
+                md_files = self._write_agent_markdown()
+            except Exception as exc:
+                warnings.append(f"Failed to write agent markdown: {exc}")
+
         self._result = AgentBuildResult(
             agent=agent,
             skill_files=skill_files,
             warnings=warnings,
         )
+        self._result.markdown_files = md_files
         return self._result
 
     def _collect_tools(self) -> list[str]:
@@ -97,6 +124,64 @@ class AgentBuilder:
             for tool in spec.allowed_tools:
                 tools[tool] = True
         return list(tools.keys())
+
+    def _write_agent_markdown(self) -> list[Path]:
+        """Generate agent markdown files using AgentMarkdownWriter.
+
+        Returns list of generated file paths.
+        """
+        writer = AgentMarkdownWriter()
+        md_files: list[Path] = []
+
+        # Write agent definition
+        agent_def = {
+            "name": self._agent_name,
+            "description": self._agent_description,
+            "model": self._model,
+            "tools": self._tools or self._collect_tools(),
+            "skills": [s.name for s in self._skills],
+        }
+        agent_path = writer.write_agent(agent_def, self._output_dir)
+        md_files.append(agent_path)
+
+        # Write skills
+        skill_dicts = []
+        for spec in self._skills:
+            skill_dicts.append({
+                "name": spec.name,
+                "description": spec.description,
+                "allowed_tools": spec.allowed_tools,
+                "parameters": [],
+                "source_code": "",
+            })
+        skill_paths = writer.write_skills(skill_dicts, self._output_dir)
+        md_files.extend(skill_paths)
+
+        # If multiple source components, auto-generate overview agent
+        if len(self._source_components) > 1:
+            overview_info = []
+            for comp in self._source_components:
+                overview_info.append(
+                    AgentComponentInfo(
+                        name=f"{comp.name}-agent",
+                        description=comp.description,
+                        capabilities=[op.name for op in comp.operations[:5]],
+                        input_types=list(comp.input_schema.keys()),
+                        output_types=list(comp.output_schema.keys()),
+                        invoke_pattern=f"@{comp.name}-agent {{task}}",
+                    )
+                )
+            overview_path = writer.write_overview_agent(
+                name="clawcodex-overview",
+                description=f"Overview agent for {self._agent_name}",
+                component_agents=overview_info,
+                workflow_stages=[],
+                output_dir=self._output_dir,
+                model=self._model or "default",
+            )
+            md_files.append(overview_path)
+
+        return md_files
 
 
 def _write_skill_file(spec: SkillSpec, *, mapping_rules: list[MappingRule] | None = None) -> Path:

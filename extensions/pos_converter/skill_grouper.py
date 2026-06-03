@@ -10,6 +10,15 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .sdk_parser import SdkMethod, SdkParser
+from enum import Enum
+from .source_parser import SourceComponent, SourceOperation
+
+
+class GroupStrategy(Enum):
+    KEYWORD_MATCH = "keyword_match"
+    COMPONENT_GROUP = "component_group"
+    IO_RELATION = "io_relation"
+    LLM_SEMANTIC = "llm_semantic"
 
 
 @dataclass
@@ -65,9 +74,13 @@ class SkillGrouper:
         methods: list[SdkMethod],
         *,
         mapping_rules: list[MappingRule] | None = None,
+        strategy: GroupStrategy | list[GroupStrategy] | None = None,
+        source_components: list[SourceComponent] | None = None,
     ) -> None:
         self._methods = methods
         self._rules = mapping_rules or DEFAULT_MAPPING_RULES
+        self._strategy = strategy
+        self._source_components = source_components or []
         self._grouped: list[SkillSpec] | None = None
 
     def group(self, requirements: str = "") -> list[SkillSpec]:
@@ -81,7 +94,26 @@ class SkillGrouper:
         if self._grouped is not None:
             return self._grouped
 
-        self._grouped = self._static_group()
+        if self._strategy is None:
+            self._grouped = self._static_group()
+        elif isinstance(self._strategy, list):
+            if GroupStrategy.COMPONENT_GROUP in self._strategy:
+                self._grouped = self._component_group()
+            elif GroupStrategy.IO_RELATION in self._strategy:
+                self._grouped = self._io_relation_group()
+            else:
+                self._grouped = self._static_group()
+        elif self._strategy == GroupStrategy.KEYWORD_MATCH:
+            self._grouped = self._static_group()
+        elif self._strategy == GroupStrategy.COMPONENT_GROUP:
+            self._grouped = self._component_group()
+        elif self._strategy == GroupStrategy.IO_RELATION:
+            self._grouped = self._io_relation_group()
+        elif self._strategy == GroupStrategy.LLM_SEMANTIC:
+            self._grouped = self._group_with_llm(requirements)
+        else:
+            self._grouped = self._static_group()
+
         return self._grouped
 
     def _static_group(self) -> list[SkillSpec]:
@@ -120,6 +152,50 @@ class SkillGrouper:
 
         return list(skill_map.values())
 
+    def _component_group(self) -> list[SkillSpec]:
+        """Group by SourceComponent. Each component becomes a SkillSpec.
+        Operations map to allowed_tools.
+        """
+        if not self._source_components:
+            return self._static_group()
+
+        skills: list[SkillSpec] = []
+        for component in self._source_components:
+            tools = [op.name for op in component.operations]
+            skills.append(
+                SkillSpec(
+                    name=component.name,
+                    description=component.description or f"Component: {component.name}",
+                    allowed_tools=tools,
+                )
+            )
+        return skills
+
+    def _io_relation_group(self) -> list[SkillSpec]:
+        """Group operations sharing similar parameter types across components."""
+        if not self._source_components:
+            return self._static_group()
+
+        type_groups: dict[str, SkillSpec] = {}
+        for component in self._source_components:
+            for op in component.operations:
+                param_types = tuple(sorted(p.type_hint or "Any" for p in op.parameters)) if op.parameters else ("none",)
+                group_key = "_".join(param_types) if param_types else "none"
+                if group_key not in type_groups:
+                    type_groups[group_key] = SkillSpec(
+                        name=f"io_group_{len(type_groups) + 1}",
+                        description=f"Operations with parameter types: {', '.join(param_types)}",
+                        allowed_tools=[],
+                    )
+                if op.name not in type_groups[group_key].allowed_tools:
+                    type_groups[group_key].allowed_tools.append(op.name)
+        return list(type_groups.values())
+
+    def _group_with_llm(self, requirements: str) -> list[SkillSpec]:
+        """TODO: LLM-based grouping placeholder. Falls back to static grouping."""
+        # TODO: wire in LLM tool call when available
+        return self._static_group()
+
     def group_with_llm(self, requirements: str) -> list[SkillSpec]:
         """Group methods using LLM for smarter business-logic grouping.
 
@@ -156,4 +232,21 @@ def group_into_skills(
     all_tools = {t for s in skills for t in s.allowed_tools}
     method_tools = {m.name for m in methods}
     unmatched = [t for t in method_tools if t not in all_tools]
+    return GroupResult(skills=skills, unmatched_tools=unmatched)
+
+
+def group_source_components(
+    components: list[SourceComponent],
+    strategy: GroupStrategy = GroupStrategy.COMPONENT_GROUP,
+) -> GroupResult:
+    """Convenience function to group source components into Skills by strategy."""
+    grouper = SkillGrouper(
+        methods=[],
+        strategy=strategy,
+        source_components=components,
+    )
+    skills = grouper.group()
+    all_tools = {t for s in skills for t in s.allowed_tools}
+    component_tools = {op.name for c in components for op in c.operations}
+    unmatched = [t for t in component_tools if t not in all_tools]
     return GroupResult(skills=skills, unmatched_tools=unmatched)

@@ -97,6 +97,7 @@
 | F-47 | Permission Settings Schema 重构（`permissions` 改 dict 形态 + plumb 启动模式） | P1 | ✅ 完成（含 F-47.1 hotfix） | 修四层串联 bug：`SettingsSchema.permissions: list[PermissionRule]` 与磁盘实际 dict 形态不一致 → dict 落进 known 字段，`allowBypassPermissionsMode` 进不到 `extra` → `has_allow_bypass_permissions_mode` 永远 False → Shift+Tab cycle 看不到 Bypass；同时 `resolve_permission_state` 没把 `permissions.defaultMode` 喂给 `initial_permission_mode_from_cli`、顶层 `settings.permission_mode` 字段未读。引入 `PermissionsConfig` dataclass 对齐磁盘 + TS 上游契约；`has_allow_bypass_permissions_mode` 加 `extra["permissions"]` fallback；`resolve_permission_state` 真正 plumb `settings_default_mode`；删除 settings 层"假" `PermissionRule` 死代码。**F-47.1 (2026-06-02) hotfix**：项目尚未发布、磁盘上没有需要迁移的旧配置，直接删除原本保留的顶层 `settings.permission_mode` back-compat 读取通道——`SettingsSchema.permission_mode` 字段保留为兼容形态但启动时不再被读；详见 风险 #3 / 设计决定 #3 / F-47.1 备注。 |
 | F-48 | src/ 核心路径二开修改解耦 | P0 | 📋 设计完成 | 将 `src/` 中 10 个含真正功能修改的文件解耦到 `clawcodex_ext/` 和 `extensions/`，使 `src/` 与上游源码（`src/upstream/58ea488/`）功能层面一致。分 Phase 0~3：Phase 0（纯新增文件移入 ext）、Phase 1（注册表/Protocol 扩展消除字段注入）、Phase 2（子类覆盖恢复上游构造器签名）、Phase 3（入口点恢复上游逻辑）。复用 Facade/子类覆盖/前端注册表三种解耦模式。目标：src/ 有功能修改的文件数从 10+ 降为 0 |
 | F-49 | Issue 会话统一存储与实时介入协议 | P1 | 📋 设计完成 | 将 headless agent 的 `.event_logs/` 扁平 NDJSON 统一为 `SessionStorage` 的 `transcript.jsonl` 格式；在其上建立 Unix socket 双向控制协议，实现 `attach` CLI 观察/中断/接管/恢复；附带 session 恢复能力。Phase 0 存储统一 → Phase 1 socket 控制 → Phase 2 attach TUI → Phase 3 session 恢复 |
+| F-51 | AgentRunner 空转检测机制（no-op detection） | P0 | ✅ 完成 | 在 `extensions/orchestrator/agent_runner.py` 中添加连续 5 轮工作区文件无变更检测，防止 agent 在 issue deliverables 已存在的场景下陷入无限 busy-work 循环。对应 PR 检视意见自动修复闭环（F-37）中的已修复前置问题。|
 
 ---
 
@@ -718,6 +719,137 @@ session = Session.resume(issue_session_id)
 *版本 v2.7 更新: 新增 F-41 Coordinator 轻量工具集。扩展 `_COORDINATOR_ALLOWED_TOOLS` 使 Coordinator 获得 Read / WebSearch / WebFetch 三个轻量工具，合计 6 个。写/执行工具仍隔离，强制委派给 Worker。提示词同步更新。231/231 orchestrator 测试通过。*
 
 *版本 v2.6 更新: 修复 `progress_reporter` 死代码,phase completion 接入 ndjson event log (F-38 Sub-D 落地)。新增 F-40 ProgressReporter Sink 协议重构。
+
+
+---
+
+## F-50: POS 转换器源码固化（SourceCodeParser + 增强 SkillGrouper + AgentMarkdownWriter）
+
+**状态**: ✅ 完成
+**优先级**: P1
+**规划文档**: `docs/FEATURE_PLAN.md` → `§3.18 POS 转换器源码固化设计（F-50）`
+**依赖**: 无
+
+### 目标
+
+将 AscendDataForge 实践中手工完成的 Python 源码 → Agent 转换逻辑固化为三个可复用模块，集成到现有 `extensions/pos_converter/` 中，使 `clawcodex-dev pos convert ./组件目录 --out .claude` 直接可工作。
+
+| 模块 | 文件 | 说明 |
+|------|------|------|
+| `SourceCodeParser` | `extensions/pos_converter/source_parser.py` | Python 源码 AST 解析：类/方法/docstring/参数/依赖 |
+| 增强 SkillGrouper 策略 | `extensions/pos_converter/skill_grouper.py` | 新增 `GroupStrategy`，支持组件级/IO 关联/LLM 分组 |
+| `AgentMarkdownWriter` | `extensions/pos_converter/agent_md_writer.py` | 生成 `.claude/agents/*.md` + `.atomcode/skills/*/SKILL.md` |
+| 总览 Agent | `extensions/pos_converter/agent_md_writer.py` | `write_overview_agent()` **始终**生成工作流总览入口（无额外参数） |
+| 默认 Agent 替换机制 | `extensions/pos_converter/default_agent.py` | `resolve_default_agent()` 检测 `clawcodex-overview.md` 并替换默认 agent |
+
+### 子特性
+
+1. **SourceCodeParser** — `ast.parse()` 递归扫描 `.py` 文件，输出 `SourceComponent[]`
+2. **GroupStrategy 枚举** — `KEYWORD_MATCH` / `COMPONENT_GROUP` / `IO_RELATION` / `LLM_SEMANTIC`
+3. **AgentMarkdownWriter** — 生成 CLI 可加载的 agent markdown 文件（完整 frontmatter + 技能参考）
+4. **总览 Agent（Overview Agent）** — `pos convert` **始终**生成工作流总览 agent（`clawcodex-overview.md`），知晓所有子 agent 的职责和调用链
+5. **默认 Agent 替换** — `clawcodex-overview.md` 命名约定 + `--agent` CLI 参数，启动时自动替换默认 `GENERAL_PURPOSE_AGENT`
+6. **CLI 兼容增强** — `clawcodex-dev pos convert <dir> --out .claude --strategy component`
+7. **测试** — `tests/test_pos_converter_source_parser.py` + 回归
+
+### 当前基线
+
+- `extensions/pos_converter/` 已有三层架构：`SdkParser` → `SkillGrouper` → `AgentBuilder`
+- `clawcodex-dev pos convert` CLI 已注册，支持 OpenAPI / 逗号分隔方法列表
+- `SdkParser` 仅有 `_parse_openapi()` 和 `_parse_simple_list()`，不支持 Python 源码
+- `SkillGrouper` 仅有 `_static_group()`（MappingRule 关键字匹配），无组件级/IO 关联分组
+- `AgentBuilder.write_agent_markdown()` 输出极简 YAML，缺少完整 frontmatter 和技能参考嵌入
+- `pos2agent_ascend_dataforge.py` 脚本已手工完成一次完整转换（可作为验收基准）
+- **缺少总览 Agent 生成** — 当前无任何总览/入口 agent 概念，用户需手动 `@agent-xxx` 调用
+- **缺少默认 Agent 替换机制** — `GENERAL_PURPOSE_AGENT` 硬编码，没有 `clawcodex-overview.md` 或 `--agent` 参数
+
+### 实施进度
+
+| 组件 | 文件 | 状态 | 说明 |
+|------|------|------|------|
+| SourceComponent / SourceOperation / ParamSpec 数据类 | `extensions/pos_converter/source_parser.py` | ✅ 完成 | 从 `pos2agent_ascend_dataforge.py` 中提取 schema |
+| ModuleWalker — 递归扫描 .py 文件 | `extensions/pos_converter/source_parser.py` | ✅ 完成 | `ast.parse()` + 文件发现 |
+| ClassExtractor — 提取类/方法 | `extensions/pos_converter/source_parser.py` | ✅ 完成 | AST 类定义 + 方法签名 |
+| DocstringParser — docstring 结构化提取 | `extensions/pos_converter/source_parser.py` | ✅ 完成 | Google/NumPy/reST 兼容 |
+| DependencyAnalyzer — import 图分析 | `extensions/pos_converter/source_parser.py` | ✅ 完成 | import 语句 → 组件依赖 |
+| GroupStrategy 枚举 + 组件级分组 | `extensions/pos_converter/skill_grouper.py` | ✅ 完成 | 增量修改，向后兼容 |
+| IO 关联分组 | `extensions/pos_converter/skill_grouper.py` | ✅ 完成 | 参数类型匹配跨组件归组 |
+| LLM 语义分组占位 | `extensions/pos_converter/skill_grouper.py` | ✅ 完成 | 填充 `group_with_llm()` |
+| AgentMarkdownWriter — agent markdown 生成 | `extensions/pos_converter/agent_md_writer.py` | ✅ 完成 | `.claude/agents/*.md` 格式 |
+| AgentMarkdownWriter — skill markdown 生成 | `extensions/pos_converter/agent_md_writer.py` | ✅ 完成 | `.atomcode/skills/*/SKILL.md` 格式 |
+| AgentMarkdownWriter — WORKFLOW.md 生成 | `extensions/pos_converter/agent_md_writer.py` | ✅ 完成 | orchestrator 编排文件骨架 |
+| CLI `--out` / `--skills` / `--strategy` 参数 | `clawcodex_ext/cli/pos_cmd/commands.py` | ✅ 完成 | 增量修改 |
+| CLI 源码目录 vs 方法名自动判断 | `clawcodex_ext/cli/pos_cmd/commands.py` | ✅ 完成 | 目录存在检测 |
+| AgentBuilder `format` 参数 | `extensions/pos_converter/agent_builder.py` | ✅ 完成 | `agent_definition` / `markdown` / `both` |
+| 模板（agent / skill markdown） | `extensions/pos_converter/templates.py` | ✅ 完成 | Jinja2 模板 |
+| AgentMarkdownWriter — 总览 Agent 生成 | `extensions/pos_converter/agent_md_writer.py` | ✅ 完成 | `write_overview_agent()` + `AgentComponentInfo` / `WorkflowStage` 数据类 |
+| AgentBuilder — 总览 Agent 自动调用 | `extensions/pos_converter/agent_builder.py` | ✅ 完成 | `build()` 检测多组件 → 自动生成 overview agent |
+| `resolve_default_agent()` | `extensions/pos_converter/default_agent.py` | ✅ 完成 | 扫描 `.claude/agents/clawcodex-overview.md`，返回覆盖 prompt |
+| `--agent CLI` 参数 | `clawcodex_ext/cli/pos_cmd/commands.py` + repl 启动路径 | ✅ 完成 | 启动时指定默认 agent |
+| 单元测试 | `tests/test_pos_converter_source_parser.py` | ✅ 完成 | 33 个测试覆盖提取/分组/生成 |
+| E2E 验收 | — | ✅ 完成 | 33/33 测试通过，回归 271/271 通过 |
+
+### 验收标准
+
+1. `clawcodex-dev pos convert 组件/视频算子 --out .claude` 生成 `.claude/agents/video-ops-agent.md`，`load_agents_dir.py` 可解析加载
+2. `clawcodex-dev pos convert 组件/`（多组件的上层目录）自动生成 `.claude/agents/clawcodex-overview.md`，包含工作流概述和子 Agent 委派指引
+3. `SourceCodeParser` 正确提取 AscendDataForge 所有组件的类/方法/docstring/参数/依赖
+4. 生成的 SKILL.md 包含完整操作源码片段和参数说明
+5. 总览 Agent 的 system prompt 包含所有 `AgentComponentInfo` 和 `WorkflowStage` 描述
+6. `resolve_default_agent()` 检测 `clawcodex-overview.md` 时返回对应 agent definition；未找到时返回 None，不改变启动行为
+7. 所有新增测试通过：`python3 -m pytest tests/test_pos_converter*.py -q`
+8. 现有 `extensions/pos_converter` 测试继续通过
+
+---
+
+## F-51: AgentRunner 空转检测机制（no-op detection）
+
+**状态**: ✅ 完成
+**优先级**: P0
+**规划文档**: `docs/FEATURE_PLAN.md` → `§3.1.12 AgentRunner 空转检测机制`
+**依赖**: 无（独立的 agent_runner 修正）
+
+### 问题现状
+
+当 Orchestrator 处理某个 issue 时，如果该 issue 的 deliverables 已经在 base branch 中存在（例如通过上游 commit 预置），agent 会进入一个无意义循环：
+
+1. Agent 读取 issue 描述 → 要求"新建"某功能
+2. 搜索代码发现功能已存在 → 不知道该怎么办
+3. 跑 `python3 --version` / `date` / `print("x")` 等 busy-work 命令
+4. 每轮无文件变更 → 但 session.status 仍是 "continue"
+5. 耗尽全部 max_turns（40轮，~150 次 API 调用）
+6. session.status = "max_turns_exceeded" → Orchestrator 调度 retry
+7. ↻ 无限循环，直到人工干预
+
+### 故障链
+
+| 层次 | 问题 | 修复 |
+|------|------|------|
+| Prompt | 无处理"已实现"的指令 | workflow.md Step 3.5：如果 deliverables 已存在且验证通过，直接完成 |
+| Agent Loop | 无工作区变更检测 | `get_file_status(workspace)` 每轮检查，连续 5 轮 clean 则 force complete |
+| Git Sync | 无文件变更时仍走完整流程 | `GitSyncService.changed=False` 正确跳过 commit/push |
+| Registry | 无 "无变更但通过" 的状态 | 复用 `completed` + 日志记录 no-op 原因 |
+
+### 实施
+
+**文件**: `extensions/orchestrator/agent_runner.py`
+
+| 修改 | 说明 |
+|------|------|
+| `import get_file_status` | 从 `src.utils.git` 导入工作区脏检测 |
+| `_NOOP_DETECTION_MAX_TURNS = 5` | 连续 5 轮无文件变更即判定为空转 |
+| `consecutive_clean_turns` 追踪 | 在 run() 的 continue 路径中累积计数器 |
+| `if dirty: reset` / `else: increment & check` | 有变更清零，无变更累积，>=5 时 force-complete |
+| `session.status = "completed"; return` | 直接退出 agent 循环，不触发 retry |
+| `logger.warning("No-op detection triggered")` | 关键审计日志记录 |
+
+### 验收
+
+1. Agent 遇到已存在的 issue deliverables → 运行 ≤5 轮后自动完成
+2. Agent 正在产出代码（有文件变更）→ 不受影响，空转计数器持续清零
+3. 日志中出现 `No-op detection triggered issue_id=X` 记录
+4. Orchestrator 不 retry，issue 标记为 completed
+5. 增量轮次成本：每次 SessionComplete 读取一次 `get_file_status()`（<1ms）
 
 ---
 
