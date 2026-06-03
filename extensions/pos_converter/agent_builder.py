@@ -131,6 +131,7 @@ def _write_skill_file(spec: SkillSpec, *, mapping_rules: list[MappingRule] | Non
     content = "\n".join(frontmatter_lines) + "\n\n" + SKILL_TEMPLATE.format(
         skill_name=spec.name,
         description=spec.description,
+        description_lower=spec.description.lower(),
         tools=", ".join(spec.allowed_tools),
     )
     skill_file.write_text(content, encoding="utf-8")
