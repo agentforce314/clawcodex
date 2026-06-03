@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import random
 import time
 from dataclasses import dataclass, field
@@ -375,6 +376,17 @@ class AgentRunner:
             session.run_id = self._build_run_id(session)
         if comment_tracker is not None and issue.id:
             await self._post_summary_placeholder(session, comment_tracker)
+
+        # Pass delay_between_requests_ms to the query layer via env var.
+        # _call_model_sync in src/query/query.py reads this to enforce a
+        # minimum interval between successive provider API calls.
+        delay_env = str(self.agent_config.delay_between_requests_ms)
+        os.environ["CLAWCODEX_PROVIDER_REQUEST_DELAY_MS"] = delay_env
+        if delay_env != "0":
+            logger.info(
+                "Provider request delay set to %s ms",
+                delay_env,
+            )
 
         logger.info(
             "Starting agent run issue_id=%s identifier=%s workspace=%s",

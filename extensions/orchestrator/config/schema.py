@@ -240,6 +240,12 @@ class AgentConfig:
     rate_limit_max_backoff_ms: int = 600_000
     rate_limit_exponential_factor: float = 2.0
     rate_limit_max_retries: int = 5
+    # Minimum interval (ms) between successive provider API requests within
+    # a single agent run. When non-zero, the agent sleeps for the remaining
+    # time before issuing each new request. Useful for rate limit avoidance
+    # on providers with tight per-minute quotas (e.g. MiniMax personal plan).
+    # Default 0 means no delay (unlimited request rate).
+    delay_between_requests_ms: int = 0
 
 
 @dataclass

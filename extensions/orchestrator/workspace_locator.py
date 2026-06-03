@@ -242,6 +242,86 @@ def list_orchestrator_projects() -> list[dict]:
     return projects
 
 
+def get_live_projects(projects: list[dict] | None = None) -> list[dict]:
+    """Filter orchestrator metadata to projects whose PID is still alive.
+
+    Args:
+        projects: List of project metadata dicts. If None, fetches from
+                  ``list_orchestrator_projects()``.
+
+    Returns:
+        List of live project dicts, each containing at minimum:
+        workspace_root, pid, started_at, project_slug, workflow_path.
+    """
+    import time
+
+    if projects is None:
+        projects = list_orchestrator_projects()
+
+    live: list[dict] = []
+    now = time.time()
+
+    for p in projects:
+        pid = p.get("pid")
+        if pid is None:
+            continue
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            continue  # Process not alive
+
+        live.append({
+            "workspace_root": p.get("workspace_root"),
+            "pid": pid,
+            "started_at": p.get("started_at"),
+            "project_slug": p.get("project_slug"),
+            "workflow_path": p.get("workflow_path"),
+        })
+
+    return live
+
+
+def print_multi_project_hint(
+    live_projects: list[dict],
+    command_hint: str,
+) -> None:
+    """Print a hint to stderr when multiple live orchestrator projects exist.
+
+    The hint tells the user to use ``--workspace`` or ``--workflow`` to
+    disambiguate.
+
+    Args:
+        live_projects: List of live project dicts (from ``get_live_projects``).
+        command_hint: The command the user ran, for context in the message.
+    """
+    import time
+    import sys
+
+    lines: list[str] = [
+        f"⚠  {len(live_projects)} running orchestrator projects detected.",
+        f"   Command: {command_hint}",
+        "",
+        "   Running projects:",
+    ]
+
+    now = time.time()
+    for p in live_projects:
+        ws = p.get("workspace_root", "?")
+        slug = p.get("project_slug", "?")
+        pid = p.get("pid", "?")
+        uptime_s = now - p.get("started_at", now) if p.get("started_at") else 0
+        uptime_str = f"{uptime_s:.0f}s" if uptime_s < 120 else f"{uptime_s / 60:.0f}m"
+        lines.append(f"     [{slug}]  pid={pid}  uptime={uptime_str}  workspace={ws}")
+
+    lines.extend([
+        "",
+        f"   Use --workspace <path> or --workflow <path> to target a specific project.",
+        "",
+    ])
+
+    print("\n".join(lines), file=sys.stderr)
+
+
 # ---------------------------------------------------------------------------
 # CLI helper
 # ---------------------------------------------------------------------------

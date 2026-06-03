@@ -539,6 +539,18 @@ def _run_list(registry_path: Path | None, args: argparse.Namespace) -> int:
     if not registry_path or not registry_path.exists():
         ws = getattr(args, "workspace", None)
         wf = getattr(args, "workflow", None)
+
+        # 当 --workspace / --workflow 都没传时，检查是否有多个活跃 orch 项目
+        if not ws and not wf:
+            from extensions.orchestrator.workspace_locator import (
+                get_live_projects,
+                print_multi_project_hint,
+            )
+            live = get_live_projects()
+            if len(live) > 1:
+                print_multi_project_hint(live, "orchestrator issue list")
+                return 0
+
         from extensions.orchestrator.workspace_locator import (
             get_workspace_root,
             list_orchestrator_projects,
