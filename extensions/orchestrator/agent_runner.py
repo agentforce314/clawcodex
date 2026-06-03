@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 from ..api.query import PhaseComplete, QueryConfig, QueryRunner
 from ..api.query import SessionComplete, TextDelta, ToolCallEvent, ToolResultEvent
 from .approval_policy import ApprovalPolicy, get_approval_policy, ToolCallEvent as PolicyToolCallEvent
+from src.utils.git import get_file_status
 from .config.schema import AgentConfig, CodexConfig, WorkflowConfig
 from .issue import Issue
 from .prompt_builder import PromptBuilder
@@ -35,6 +36,12 @@ if TYPE_CHECKING:
     from .progress_reporter import ProgressReporter
 
 logger = logging.getLogger(__name__)
+
+# If the agent runs this many consecutive turns without making any
+# file changes, the runner assumes it is stuck (e.g. the issue
+# deliverables already exist in the base branch / workspace) and
+# force-completes the session to avoid wasting API calls and retries.
+_NOOP_DETECTION_MAX_TURNS = 5
 
 # F-45: tool-event audit log rotation threshold. When events.ndjson
 # exceeds this size on next append, rotate to events.ndjson.1 (single
@@ -416,6 +423,7 @@ class AgentRunner:
 
         turn_number = 0
         tool_count = 0
+        consecutive_clean_turns = 0  # no-op detection counter
 
         while turn_number < self.max_turns:
             # Build prompt for this turn
@@ -632,6 +640,27 @@ class AgentRunner:
                                         turn_number,
                                         self.max_turns,
                                     )
+                                    # No-op detection: if the agent has run multiple
+                                    # consecutive turns without making any file changes,
+                                    # it is likely stuck (e.g. the issue deliverables
+                                    # already exist in the workspace). Force-complete
+                                    # instead of wasting API calls and retry loops.
+                                    workspace_path = str(session.workspace.path)
+                                    dirty = bool(get_file_status(workspace_path))
+                                    if dirty:
+                                        consecutive_clean_turns = 0
+                                    else:
+                                        consecutive_clean_turns += 1
+                                        if consecutive_clean_turns >= _NOOP_DETECTION_MAX_TURNS:
+                                            logger.warning(
+                                                "No-op detection triggered issue_id=%s — "
+                                                "agent performed %d consecutive turns with "
+                                                "zero file changes, force-completing",
+                                                issue.id,
+                                                consecutive_clean_turns,
+                                            )
+                                            session.status = "completed"
+                                            return
                                     continue  # Go to next turn
                                 session.issue = refreshed_issue or session.issue
 
