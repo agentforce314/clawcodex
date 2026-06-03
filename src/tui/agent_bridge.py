@@ -67,6 +67,7 @@ class AgentBridge:
         max_turns: int = 20,
         stream: bool = True,
         tail_follower: Any | None = None,
+        append_system_prompt: str = "",
     ) -> None:
         self._post = post_message
         self._session = session
@@ -77,6 +78,7 @@ class AgentBridge:
         self._run_worker = run_worker
         self._max_turns = max_turns
         self._stream = stream
+        self._append_system_prompt = append_system_prompt
         self._busy_lock = threading.Lock()
         self._busy = False
         # Per-run abort controller. Created fresh in :meth:`submit` and
@@ -322,6 +324,10 @@ class AgentBridge:
             effective_system_prompt = build_effective_system_prompt(
                 _style_prompt, self._tool_context,
             )
+            if self._append_system_prompt:
+                effective_system_prompt = (
+                    f"{effective_system_prompt}\n\n{self._append_system_prompt}"
+                )
 
             def _persist(msg: Any) -> None:
                 # BLOCKING #2 fix: persist FULL message (tool_use /

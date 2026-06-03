@@ -194,6 +194,7 @@ def _run_tui_with_app(
         runtime_context=runtime_context,
         tail_follower=tail_follower,
         resume_browse=resume_browse,
+        append_system_prompt=options.append_system_prompt,
     )
 
     try:

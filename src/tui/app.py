@@ -129,9 +129,11 @@ class ClawCodexTUI(App):
         tail_follower: Any | None = None,
         resume_browse: bool = False,
         runtime_context: Any | None = None,
+        append_system_prompt: str = "",
     ) -> None:
         super().__init__()
         self.runtime_context = runtime_context
+        self._append_system_prompt = append_system_prompt
         self.provider = provider
         self.provider_name = provider_name
         self.workspace_root = Path(workspace_root)
@@ -174,6 +176,7 @@ class ClawCodexTUI(App):
             max_turns=self.max_turns,
             stream=self.stream,
             tail_follower=tail_follower,
+            append_system_prompt=self._append_system_prompt,
         )
         self._resume_browse = resume_browse
 
