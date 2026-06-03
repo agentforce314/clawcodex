@@ -246,6 +246,12 @@ class AgentConfig:
     # on providers with tight per-minute quotas (e.g. MiniMax personal plan).
     # Default 0 means no delay (unlimited request rate).
     delay_between_requests_ms: int = 0
+    # F-44: Human review gating. When True, the orchestrator marks each
+    # completed issue as PENDING_REVIEW instead of COMPLETED after sync,
+    # requiring a human to run `orchestrator issue review --id <id> --approve`
+    # before the issue transitions to COMPLETED.
+    # Works with all tracker kinds (local, GitHub, Gitee, GitCode, Linear).
+    review_required: bool = False
 
 
 @dataclass
@@ -465,6 +471,9 @@ class WorkflowConfig:
             rate_limit_max_retries=agent_raw.get(
                 "rate_limit_max_retries", 5
             ),
+            # F-44: review gate — when True, sync ends at PENDING_REVIEW
+            # instead of COMPLETED, requiring human approve CLI command.
+            review_required=bool(agent_raw.get("review_required", False)),
         )
         if workspace.strategy == "sequential":
             if agent.max_concurrent_agents != 1:

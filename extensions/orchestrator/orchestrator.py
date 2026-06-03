@@ -1244,7 +1244,9 @@ class Orchestrator:
                                     pr_number=sync_result.pull_request.number if sync_result.pull_request else None,
                                     pr_url=sync_result.pull_request.url if sync_result.pull_request else None,
                                 )
-                            # LocalTracker: after commit, await human review before completion
+                            # F-44 review gate: after commit, await human review before completion.
+                            # Triggered when GitSyncResult.pending_review is True (LocalTracker
+                            # by default, or any tracker when agent.review_required=True in workflow).
                             if sync_result.pending_review:
                                 self._registry.mark_pending_review(session.issue.id or "")
                                 self.status_dashboard.on_session_complete(session.issue.id or "")
@@ -1290,7 +1292,19 @@ class Orchestrator:
                 if session.issue.id in self._state.running:
                     del self._state.running[session.issue.id]
 
-                if session.status == "completed":
+                # F-44 review gate: if the issue is already in pending_review
+                # (set by the early return above), skip the final status
+                # transition so the outer finally does NOT overwrite it with
+                # COMPLETED. The human must run `orchestrator issue review
+                # --id ... --approve` to move it to COMPLETED.
+                if session.issue.id in self._state.pending_review:
+                    # Issue is waiting for human review — do nothing further.
+                    # Workspace preservation is handled by the early return.
+                    logger.info(
+                        "Issue %s left in pending_review state — human review required",
+                        session.issue.id,
+                    )
+                elif session.status == "completed":
                     self.status_dashboard.on_session_complete(session.issue.id or "")
                     self._state.completed.add(session.issue.id or "")
                     self._registry.mark_completed(session.issue.id or "")

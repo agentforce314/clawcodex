@@ -254,7 +254,7 @@ class GitSyncService:
             pushed=pushed,
             has_conflict=has_conflict,
             conflict_files=conflict_files,
-            pending_review=bool(is_local_tracker and committed),
+            pending_review=bool((is_local_tracker or self._agent_config.review_required) and committed),
         )
 
     async def _run_pre_commit_hook(self, repo_root: str, session: Any) -> None:
