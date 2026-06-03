@@ -96,8 +96,11 @@
 | F-46 | permission_mode enum 正交拆分 | P2 | ⏳ 规划中 | 把 `permission_mode` 混合 enum（`default` / `plan` / `bypassPermissions` / `acceptEdits` / `dontAsk` / `auto` / `bubble`）拆为三个正交字段：`interactive: bool`（是否要 TTY 弹 prompt）、`default_decision: Literal["allow", "deny", "ask"]`（无人值守默认）、`audit_log: Literal["none", "minimal", "full"]`（per-tool 决策是否落盘）。F-46.0（v2.13）只拆 `audit_log`，**F-45 已落地**可消费 NDJSON 旁路做端到端验证；`permission_mode` 保留为 backward-compat shim 标 deprecated；F-46.1+ 拆其余两字段推到 v2.15+。 |
 | F-47 | Permission Settings Schema 重构（`permissions` 改 dict 形态 + plumb 启动模式） | P1 | ✅ 完成（含 F-47.1 hotfix） | 修四层串联 bug：`SettingsSchema.permissions: list[PermissionRule]` 与磁盘实际 dict 形态不一致 → dict 落进 known 字段，`allowBypassPermissionsMode` 进不到 `extra` → `has_allow_bypass_permissions_mode` 永远 False → Shift+Tab cycle 看不到 Bypass；同时 `resolve_permission_state` 没把 `permissions.defaultMode` 喂给 `initial_permission_mode_from_cli`、顶层 `settings.permission_mode` 字段未读。引入 `PermissionsConfig` dataclass 对齐磁盘 + TS 上游契约；`has_allow_bypass_permissions_mode` 加 `extra["permissions"]` fallback；`resolve_permission_state` 真正 plumb `settings_default_mode`；删除 settings 层"假" `PermissionRule` 死代码。**F-47.1 (2026-06-02) hotfix**：项目尚未发布、磁盘上没有需要迁移的旧配置，直接删除原本保留的顶层 `settings.permission_mode` back-compat 读取通道——`SettingsSchema.permission_mode` 字段保留为兼容形态但启动时不再被读；详见 风险 #3 / 设计决定 #3 / F-47.1 备注。 |
 | F-48 | src/ 核心路径二开修改解耦 | P0 | 📋 设计完成 | 将 `src/` 中 10 个含真正功能修改的文件解耦到 `clawcodex_ext/` 和 `extensions/`，使 `src/` 与上游源码（`src/upstream/58ea488/`）功能层面一致。分 Phase 0~3：Phase 0（纯新增文件移入 ext）、Phase 1（注册表/Protocol 扩展消除字段注入）、Phase 2（子类覆盖恢复上游构造器签名）、Phase 3（入口点恢复上游逻辑）。复用 Facade/子类覆盖/前端注册表三种解耦模式。目标：src/ 有功能修改的文件数从 10+ 降为 0 |
+| F-49 | Issue 会话统一存储与实时介入协议 | P1 | 📋 设计完成 | 将 headless agent 的 `.event_logs/` 扁平 NDJSON 统一为 `SessionStorage` 的 `transcript.jsonl` 格式；在其上建立 Unix socket 双向控制协议，实现 `attach` CLI 观察/中断/接管/恢复；附带 session 恢复能力。Phase 0 存储统一 → Phase 1 socket 控制 → Phase 2 attach TUI → Phase 3 session 恢复 |
 
 ---
+
+
 
 ## F-22: Cron 系统执行引擎
 
@@ -583,6 +586,122 @@ CronTask due
   - 与 F-28（Ctrl+B 后台运行）强协同：`background_runner.py` 移入 ext 是 F-28 解耦的前提
 - **先于**：
   - F-35 的 584 文件还原需要 F-48 先完成核心 10 文件的解耦
+
+---
+
+## F-49: Issue 会话统一存储与实时介入协议
+
+**状态**: 📋 设计完成
+**优先级**: P1
+**规划文档**: `docs/FEATURE_PLAN.md` → `§3.1.11 Issue 会话统一存储与实时介入协议（F-49）`
+**依赖**: F-21（后台运行 + 恢复同步）、F-38（验证与报告闭环）、F-40（ProgressReporter Sink 协议重构）
+
+### 问题现状
+
+当前系统存在两套互不兼容的事件记录系统：
+
+| 维度 | REPL 会话（`SessionStorage`） | Headless Issue Agent（`_write_event_log`） |
+|------|------|------|
+| 存储位置 | `~/.clawcodex/sessions/{sid}/transcript.jsonl` | `{workspace}/.event_logs/{issue_id}.ndjson` |
+| 格式 | Message dict (role, content blocks, tool_use_id) | 扁平 `{timestamp, type, tool_name, params}` |
+| 配套设施 | `TailFollower`、`Session.load/resume`、`session_resume.resume_session()` | 仅 `_run_tail` CLI |
+| 可恢复性 | ✅ 可重建 LLM context | ❌ 不能用于 `--resume` |
+| 控制通道 | asyncio.Event + Unix socket（F-21） | 文件轮询 `{.orchestrator_control/}` |
+
+核心矛盾：headless agent 写 `.event_logs/` 扁平 NDJSON，上游已完备的 `SessionStorage` + `TailFollower` + `session_resume` 基础设施完全无法消费。Observe/tail/takeover/resume 每个功能都需要在两条路径上重复实现。
+
+### 目标
+
+统一 headless agent 和 REPL 会话的存储格式，在此之上建立 Unix socket 双向实时介入协议，使 operator 可通过 `attach` CLI 观察、中断、接管、恢复 issue agent 的运行。
+
+| 场景 | 当前 | 目标 |
+|------|------|------|
+| 实时观察 | `tail` CLI 读 `.event_logs/` | `attach` CLI 通过 socket 流式接收事件 |
+| Ctrl+C 中断 | ❌ 不支持 | socket `pause` → agent 挂起等待 operator |
+| 人工接管 | ❌ 不支持 | pause 后 operator 键入 hint |
+| `/resume` 恢复 | ❌ 不支持 | socket `resume`（可选附带 prompt） |
+| Session 恢复 | ❌ `.event_logs/` 无法重建 | 统一 `SessionStorage` → `session_resume.resume_session()` |
+| detach | ❌ 不支持 | socket `detach` → agent 继续运行 |
+
+### 实施阶段
+
+#### Phase 0 — 统一事件存储（1-2天）
+
+| 文件 | 改动 |
+|------|------|
+| `extensions/orchestrator/agent_runner.py` | `AgentSession` 增加 `session_storage: SessionStorage`；`run()` 中 `init_metadata(model, cwd, title)`；替换 `_write_event_log()` → `session_storage.write_raw(msg_dict)` + `flush()` |
+| `extensions/orchestrator/agent_runner.py` | 删除 `_write_event_log()` 方法；删除 `.event_logs/` 目录创建逻辑 |
+| `extensions/orchestrator/cli/issue.py` | `_run_tail` 改为读 `transcript.jsonl`（或兼容双读） |
+
+验收：headless agent 的每个 tool_use / tool_result / text_delta 以 Message dict 格式写入 session JSONL，`TailFollower` 可直接 follow，`session_resume` 可直接重建 LLM context。
+
+#### Phase 1 — Unix Socket 控制通道（2-3天）
+
+新增 `extensions/orchestrator/control_socket.py`：
+
+```
+ControlSocket
+  ├── start()        → 监听 {workspace}/.run_control/{id}.sock
+  ├── poll_commands() → AsyncIterator[ControlCommand]
+  ├── send_event()   → 广播事件给所有客户端
+  └── stop()         → 关闭 socket
+```
+
+`ControlCommand` 类型：
+
+```python
+@dataclass
+class ControlCommand:
+    cmd: Literal["pause", "resume", "inject", "stop", "detach", "takeover"]
+    payload: str = ""
+```
+
+集成到 `AgentRunner.run()`：每轮 turn 前调用 `poll_commands()`；pause 时 await `pause_resume_event.wait()`；resume 时 set event + 可选覆盖 prompt。
+
+#### Phase 2 — `attach` CLI TUI（2-3天）
+
+新增 `extensions/orchestrator/cli/attach.py`，提供实时 TUI：
+
+| 交互 | 动作 |
+|------|------|
+| 连接 | 发送 attach → 接收 session state + 最近事件 |
+| Ctrl+C | 发送 pause → 显示 `(Paused) >` 提示符 |
+| 普通文本 | 发送 inject hint |
+| `/resume` | 发送 resume |
+| `/resume ...` | resume + prompt payload |
+| `/inspect` | 从 `SessionStorage.read_transcript()` 读取消息历史 |
+| `/stop` | 停止 agent |
+| `/takeover` | 停止 agent + 启动 REPL |
+| `/detach` / Ctrl+D | 断开 socket，agent 继续运行 |
+
+#### Phase 3 — Session 恢复（0.5天，Phase 0 增量产出）
+
+统一存储后，Session 恢复变为零额外工作：
+
+```python
+session = Session.resume(issue_session_id)
+# SessionStorage 已包含所有历史消息
+# session_resume.resume_session() 重建 LLM context
+# 新的 AgentRunner 可从此处继续
+```
+
+### 风险与约束
+
+| 风险 | 缓解 |
+|------|------|
+| `.event_logs/` 存量用户 | Phase 0 向后兼容双写，Phase 2 发 deprecation warning |
+| Windows 无 Unix socket | 回退 Named Pipe 或 TCP localhost；`BindAddress` Protocol |
+| pause 时 agent 在 tool call 中间 | 不中断执行中 tool call，返回后检查 paused flag |
+| 多客户端冲突 | `ControlSocket` 广播 + last-write-wins |
+| 安全 | socket `umask 0077`；`/takeover` 需身份确认 |
+
+### 设计决定
+
+1. **Phase 0 优先于一切** — 存储不统一，后面所有基础设施用不上
+2. **Unix domain socket** — 非文件轮询、非 SSE、非 gRPC；asyncio 原生最轻量双向方案
+3. **`SessionStorage` 不改一行** — `write_raw()` 就是为此场景设计的
+4. **`ControlSocket` 在 `extensions/orchestrator/`** — 遵守 F-48 解耦约束
+5. **attach TUI 不需 curses/textual** — `select.poll()` + `sys.stdin.read()` + `print()` 避免新增依赖
 
 ---
 

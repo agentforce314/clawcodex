@@ -602,6 +602,290 @@ class ProgressReporter:
 
 > 详细设计与落地记录已归档至 [ARCHIVED_FEATURES.md §二十一.6 F-45 Orchestrator tool-call 审计旁路](./ARCHIVED_FEATURES.md#二十一6-f-45-orchestrator-tool-call-审计旁路)。
 
+#### 3.1.11 Issue 会话统一存储与实时介入协议（F-49）
+
+**状态**: 📋 设计完成
+**优先级**: P1
+**依赖**: F-21（后台运行 + 恢复同步）、F-38（验证与报告闭环）、F-40（ProgressReporter Sink 协议重构）
+
+##### 问题现状：两条互不兼容的事件路径
+
+当前系统存在**两套并行但不可互操作的事件记录系统**：
+
+| 维度 | 路径 A：正常 REPL 会话（`SessionStorage`） | 路径 B：Headless Issue Agent（`_write_event_log`） |
+|------|------|------|
+| 存储位置 | `~/.clawcodex/sessions/{sid}/` | `{workspace}/.event_logs/{issue_id}.ndjson` |
+| 格式 | `transcript.jsonl` — 每行一个 `Message` dict (`role`, `content` blocks, `tool_use_id`) | 每行扁平事件 `{timestamp, type, tool_name, params}` |
+| 可读性 | `session_resume.py` → `list[Message]` | 仅 `_run_tail` CLI 命令显示 |
+| 配套设施 | `TailFollower`、`Session.load/resume`、`SessionStorage.read_transcript()` | 无 |
+| 可恢复性 | ✅ 可重建 LLM context | ❌ 不能用于 `--resume` |
+| 控制通道 | `asyncio.Event` + Unix socket（F-21） | 文件轮询 `{.orchestrator_control/{cmd}.control}` |
+
+核心矛盾：**Headless agent 写 `.event_logs/` 扁平 NDJSON，上游已完备的 `SessionStorage` + `TailFollower` + `session_resume` 基础设施完全无法消费**。Observe/tail/takeover/resume 每个功能都需要在两条路径上重复实现。
+
+##### 目标
+
+统一 headless agent 和 REPL 会话的存储格式，在此之上建立双向实时介入协议（Unix socket），使 operator 可以通过 `attach` CLI 观察、中断、接管、恢复 issue agent 的运行。
+
+| 场景 | 当前状态 | 目标状态 |
+|------|---------|---------|
+| 实时观察 | `tail` CLI 读 `.event_logs/` | `attach` CLI 通过 socket 流式接收 `TextDelta` / `ToolCallEvent` / `ToolResultEvent` / `PhaseComplete` |
+| Ctrl+C 中断 | ❌ 不支持（仅 `stop` 控制文件） | socket 发送 `pause` → agent 挂起等待 operator 输入 |
+| 人工接管 | ❌ 不支持 | `pause` 后 operator 键入 hint，agent 恢复后消费 |
+| `/resume` 恢复自动值守 | ❌ 不支持 | socket 发送 `resume`（可选附带 prompt）→ agent 继续 loop |
+| Session 恢复崩溃 | ❌ `.event_logs/` 无法重建 LLM context | 统一使用 `SessionStorage` → `session_resume.resume_session()` |
+| detach | ❌ 不支持 | socket `detach` → agent 继续运行，operator 断开 |
+
+##### 核心设计
+
+```
+AgentRunner (headless)
+  │
+  ├── prompt → QueryRunner → LLM → events
+  │                                  │
+  │                                  ├── SessionStorage.write_raw(msg_dict)
+  │                                  │    └── ~/.clawcodex/sessions/{run_id}/transcript.jsonl
+  │                                  │         （同一格式，非 .event_logs/）
+  │                                  │
+  │                                  ├── event_bus (asyncio.Queue)
+  │                                  │    └── ControlSocket → Unix socket
+  │                                  │         └── attach CLI (TUI)
+  │                                  │
+  │                                  └── ProgressSink (F-40)
+  │
+  └── session.pause_resume_event (asyncio.Event)
+       └── ControlSocket → "pause" / "resume" / "inject"
+```
+
+##### 改造点清单
+
+**Phase 0 — 统一事件存储**（1-2天，核心基础）
+
+| 文件 | 改动 |
+|------|------|
+| `extensions/orchestrator/agent_runner.py` | `AgentSession` 增加 `session_storage: SessionStorage`；`run()` 中 `init_metadata(model, cwd, title)`；替换 `_write_event_log()` → `session_storage.write_raw(msg_dict)` + `flush()` |
+| `extensions/orchestrator/agent_runner.py` | 删除 `_write_event_log()` 方法；删除 `.event_logs/` 目录创建逻辑 |
+| `extensions/orchestrator/cli/issue.py` | `_run_tail` 改为读 `transcript.jsonl`（或保留兼容双读） |
+| `src/services/session_storage.py` | 无改动（复用现有 `SessionStorage`） |
+
+统一后的效果：headless agent 的每个 tool_use / tool_result / text_delta **都以 Message dict 格式写入 session JSONL**，`TailFollower` 可以直接 follow，`session_resume` 可以直接重建 LLM context。
+
+**Phase 1 — Unix Socket 控制通道**（2-3天）
+
+| 新增文件 | 说明 |
+|----------|------|
+| `extensions/orchestrator/control_socket.py` | `ControlSocket` 类：在 `{workspace}/.run_control/{issue_id}.sock` 监听 Unix domain socket；暴露 `poll_commands() → AsyncIterator[ControlCommand]` 和 `send_events()` |
+|  | `ControlCommand` dataclass：`cmd: Literal["pause", "resume", "inject", "stop", "detach", "takeover"]` + `payload: str` |
+|  | `EventFrame` dataclass：事件序列化帧 `{type, data, ts}` 供 socket 客户端流式接收 |
+
+关键接口：
+
+```python
+# control_socket.py
+@dataclass
+class ControlCommand:
+    cmd: Literal["pause", "resume", "inject", "stop", "detach", "takeover"]
+    payload: str = ""  # resume 时附带 prompt，inject 时附带 hint
+
+class ControlSocket:
+    """Bidirectional control via Unix domain socket."""
+    def __init__(self, sock_path: str):
+        self._path = Path(sock_path)
+        self._server: asyncio.AbstractServer | None = None
+        self._clients: set[asyncio.StreamWriter] = set()
+        self._command_queue: asyncio.Queue[ControlCommand] = asyncio.Queue()
+        self._event_queue: asyncio.Queue[dict] | None = None
+
+    async def start(self):
+        """Start listening on Unix socket."""
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._server = await asyncio.start_unix_server(
+            self._handle_client, str(self._path))
+
+    async def poll_commands(self) -> AsyncIterator[ControlCommand]:
+        while not self._stopped:
+            cmd = await asyncio.wait_for(
+                self._command_queue.get(), timeout=0.5)
+            yield cmd
+
+    async def send_event(self, event: dict):
+        """Broadcast event to all connected clients."""
+        frame = json.dumps(event) + "\n"
+        for w in self._clients:
+            try:
+                w.write(frame.encode())
+                await w.drain()
+            except Exception:
+                pass
+
+    async def _handle_client(self, reader, writer):
+        self._clients.add(writer)
+        try:
+            while True:
+                line = await reader.readline()
+                if not line:
+                    break  # EOF → disconnect
+                cmd = ControlCommand(**json.loads(line))
+                await self._command_queue.put(cmd)
+        finally:
+            self._clients.discard(writer)
+            writer.close()
+
+    async def stop(self):
+        self._server.close()
+        if self._path.exists():
+            self._path.unlink()
+```
+
+**在 `AgentRunner.run()` 中的集成点**：
+
+```python
+# 启动时
+session.control_socket = ControlSocket(
+    workspace.path / ".run_control" / issue.id)
+await session.control_socket.start()
+
+# 事件循环内 — 发送事件给附加的客户端
+await session.control_socket.send_event({
+    "type": "tool_call",
+    "tool_name": event.tool_name,
+    "params": event.params,
+    "ts": time.time(),
+})
+
+# 每轮 turn 开始前检查控制命令
+async for cmd in session.control_socket.poll_commands():
+    if cmd.cmd == "pause":
+        session.paused = True
+        session.pause_reason = "operator_interrupt"
+        # 挂起直到 resume 或接管
+        await session.pause_resume_event.wait()
+        session.pause_resume_event.clear()
+    elif cmd.cmd == "resume":
+        if cmd.payload:
+            session.prompt_override = cmd.payload
+        session.paused = False
+        session.pause_resume_event.set()
+    elif cmd.cmd == "inject":
+        # 注入 hint，不中断当前循环
+        # 写入 operator_hints 文件
+        ...
+    elif cmd.cmd == "stop":
+        return  # 退出 run()
+    elif cmd.cmd == "takeover":
+        # 停止 agent，operator 通过 CLI 直接交互
+        return
+```
+
+**Phase 2 — `attach` CLI TUI**（2-3天）
+
+| 新增/修改文件 | 说明 |
+|---------------|------|
+| `extensions/orchestrator/cli/attach.py` | `attach` 子命令：连接 Unix socket + 渲染实时事件流 |
+
+交互设计：
+
+```
+$ clawcodex-dev orchestrator issue attach --id 003-F-12-cache-warning
+┌─────────────────────────────────────────────────────┐
+│ 🔗 Attached to issue 003-F-12 (running)             │
+│ Session: 9a8b7c6d5e  |  Turn: 3/25  |  Tools: 7   │
+├─────────────────────────────────────────────────────┤
+│  Reading src/utils/cache.py...                       │
+│  ✓ Found CacheWarning.__init__ at line 142           │
+│  ✓ ...                                              │
+│                                                      │
+│ 📋 Pending tool call: Edit src/utils/cache.py        │
+│   param: path = src/utils/cache.py                  │
+│   param: old_string = "MAX_CACHE_SIZE = 1000"       │
+│   param: new_string = "MAX_CACHE_SIZE = 500"        │
+├─────────────────────────────────────────────────────┤
+│ ⏸ Paused — press Ctrl+D to resume, Ctrl+C to       │
+│   disconnect, or type a hint below:                 │
+│ > 注意也检查一下 tests/ 中的对应的测试用例         │
+│ (hint sent, agent will resume)                      │
+└─────────────────────────────────────────────────────┘
+```
+
+| 交互 | 行为 |
+|------|------|
+| 连接 | 发送 `{"cmd": "attach"}` → 接收当前 session state + 最近事件 |
+| 事件到达 | 实时渲染 `PhaseComplete` / `TextDelta` / `ToolCallEvent` / `ToolResultEvent` |
+| **Ctrl+C** | 发送 `{"cmd": "pause"}` → 显示 `(Paused) >` 提示符 |
+| `>` 输入普通文本 | 发送 `{"cmd": "inject", "payload": "..."}` |
+| **`/resume`** | 发送 `{"cmd": "resume"}` |
+| **`/resume 尝试用 pip install 解决依赖** | 发送 `{"cmd": "resume", "payload": "尝试用 pip install 解决依赖"}` |
+| **`/inspect`** | 通过 `SessionStorage.read_transcript()` 读取消息历史 |
+| **`/stop`** | 发送 `{"cmd": "stop"}` |
+| **`/takeover`** | 发送 `{"cmd": "takeover"}` → 停掉 agent + 启动 REPL |
+| **`/detach`** | 发送 `{"cmd": "detach"}` → 断开 socket，agent 继续运行 |
+| Ctrl+D | detach（同 `/detach`） |
+
+**Phase 3 — Session 恢复**（0.5天，Phase 0 的增量产出）
+
+统一存储后，Session 恢复变为零额外工作：
+
+```python
+# 当 agent 崩溃或 operator 想从 checkpoint 恢复
+session = Session.resume(issue_session_id)
+# SessionStorage 已包含所有历史消息
+# session_resume.resume_session() 重建 LLM context
+# 新的 AgentRunner 可从此处继续
+```
+
+##### 实施阶段总结
+
+| Phase | 工作量 | 交付物 | 验收标志 |
+|-------|--------|--------|---------|
+| **Phase 0** — 存储统一 | 1-2天 | `agent_runner.py` 使用 `SessionStorage`；`.event_logs/` 废弃 | `transcript.jsonl` 在 headless 和 REPL 路径格式一致 |
+| **Phase 1** — Socket 控制 | 2-3天 | `control_socket.py`；AgentRunner 集成 pause/resume/inject/stop | 外部进程可通过 Unix socket 暂停/恢复 headless agent |
+| **Phase 2** — attach CLI | 2-3天 | `cli/attach.py`；实时 TUI | `issue attach --id X` 可观察、打断、接管、恢复 |
+| **Phase 3** — Session 恢复 | 0.5天 | 利用现有 `Session.resume()` | 崩溃后从 `SessionStorage` 重建 LLM context 继续 |
+
+##### 与现有组件的集成
+
+| 组件 | 协作方式 |
+|------|---------|
+| `SessionStorage` (services) | Phase 0 核心依赖 — headless agent 写入同格式 `transcript.jsonl` |
+| `TailFollower` (services) | Phase 1 可选依赖 — socket 客户端可 fallback 到 tail JSONL |
+| `session_resume.resume_session()` | Phase 3 — 从统一 JSONL 重建 `list[Message]` |
+| `F-40 ProgressSink` | Phase 1 合并事件扇出 — `ControlSocket.send_event()` 可注册为额外 sink |
+| `F-21 bg` / `--resume` | Phase 2 复用 Ctrl+B / 后台运行的行为语义 |
+| `F-38 git_sync` | Phase 0 无影响 — git_sync 操作 workspace git，不改 session 存储 |
+| `F-39 retry` | Phase 2 扩展 — retry 可携带 `--attach` 参数在新 run 上立即 attach |
+
+##### 风险与约束
+
+| 风险 | 缓解措施 |
+|------|---------|
+| `.event_logs/` 有存量用户 | Phase 0 保持向后兼容写入（双写），Phase 2 删除时发 deprecation warning |
+| Unix socket 在 Windows 不可用 | 回退到 Named Pipe 或 TCP localhost socket；socket path 抽象为 `BindAddress` Protocol |
+| Phase 1 pause 时 agent 在 tool call 中间 | 不中断正在执行的 tool call；tool call 返回后检查 `paused` flag 再挂起 |
+| 多客户端 attach 冲突 | `ControlSocket` 广播 + 最后写入者优先（Last-write-wins） |
+| 安全：任意本地进程可连接 socket | socket 设置 `umask 0077`（仅 owner）；`/takeover` 需额外的身份确认 |
+
+##### 已拟定的设计决定
+
+1. **Phase 0 优先于一切**。存储不统一，后面所有基础设施 `SessionStorage` / `TailFollower` / `session_resume` 全用不上。不完成 Phase 0 不开始 Phase 1。
+2. **使用 Unix domain socket**（非文件轮询、非 SSE、非 gRPC）。轮询延迟高；SSE 单向；gRPC 依赖重。Unix socket 是 asyncio 原生支持的最轻量双向方案。
+3. **`SessionStorage` 不改一行**。Phase 0 零改动上游文件 — `SessionStorage` 的 `write_raw()` 方法就是为这种场景设计的。
+4. **`ControlSocket` 落地在 `extensions/orchestrator/`**，不入侵 `src/`。遵守 F-48 解耦约束。
+5. **attach TUI 不需要 curses/textual**。用最简单的 `select.poll()` + `sys.stdin.read()` + `print()` 实现，避免新增依赖。
+
+##### 依赖与协同
+
+| 依赖 | 类型 | 说明 |
+|------|------|------|
+| F-21 bg + `--resume` | 行为参考 | Ctrl+B / TailFollower 的用户体验作为 F-49 attach 的设计基线 |
+| F-38 git_sync | 无依赖 | git_sync 不改 session 存储，Phase 0 无影响 |
+| F-40 ProgressSink | 可复用 | Phase 1 `ControlSocket` 可注册为 `ProgressSink` 消费事件 |
+| F-48 解耦约束 | 架构约束 | 所有新代码落在 `extensions/orchestrator/` |
+| F-39 retry | Phase 2 联动 | retry 新 run 可 `--attach` 即时观察 |
+| `src/services/session_storage.py` | 硬依赖 | Phase 0 核心依赖，但零修改 |
+| `src/services/tail_follower.py` | 可选 | Phase 1 可读 transcript.jsonl 替代 socket |
+
+---
+
 ### 3.2 Agent 阶段性进度汇报
 
 **状态**: ✅ 已完成（F-20）
