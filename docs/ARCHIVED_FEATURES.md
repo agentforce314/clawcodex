@@ -2210,6 +2210,29 @@ class ModelRegistry:
     def list_models(self, provider: str) -> list[str]: ...
     def resolve_model(self, provider: str, name: str) -> ModelSpec: ...   # 校验白名单
     def has_credentials(self, provider: str) -> bool: ...
+
+# Post-archival: 动态模型发现注册表 (2026-06)
+_DISCOVERY_HOOKS: dict[str, list[Callable[[], list[str]]]] = {}
+
+def register_discovery_hook(provider_name: str, hook: Callable[[], list[str]]) -> None:
+    """由 ext 代码调用，注册一个 provider 的模型发现函数。幂等。"""
+    _DISCOVERY_HOOKS.setdefault(provider_name, []).append(hook)
+
+class ModelRegistry:
+    def __init__(self, *, discovery_hooks: dict[str, list[Callable]] | None = None):
+        self._hooks = discovery_hooks or _DISCOVERY_HOOKS
+
+    def available_models(self, provider_name: str) -> list[str]:
+        """合并静态基线 + hooks 返回的模型。去重、异常静默。"""
+        baseline = list(STATIC_MODEL_MAP.get(provider_name, []))
+        for hook in self._hooks.get(provider_name, []):
+            try:
+                extra = hook()
+                if extra:
+                    baseline.extend(m for m in extra if m not in baseline)
+            except Exception:
+                logger.debug("discovery hook failed for %s", provider_name, exc_info=True)
+        return baseline
 ```
 
 ```python
@@ -2290,7 +2313,23 @@ REPL 与 TUI 的 `/provider` / `/model` 斜杠命令复用 `model_cmd.resolver` 
 
 所有错误统一在 `provider_cmd/errors.py` 与 `model_cmd/errors.py` 定义；`commands.py` 捕获后用 `rich.console` 打印，exit code = 2。
 
-#### 后续规划（推迟到 G-1 / v2.13+）
+#### 后续规划（已落地）
+
+##### 动态模型发现注册表 (2026-06) ✅
+
+| 任务 | 文件 | 说明 |
+|------|------|------|
+| `register_discovery_hook()` 全局注册表 | `clawcodex_ext/cli/model_cmd/registry.py` | `_DISCOVERY_HOOKS` dict + register 函数；`ModelRegistry.__init__` 接受 `discovery_hooks` 参数 |
+| `available_models()` 合并 hook | `clawcodex_ext/cli/model_cmd/registry.py` | 静态基线 + hook 结果去重合并，异常静默 |
+| `openai-codex` API 发现钩子 | `clawcodex_ext/providers/hooks.py` ★ 新建 | 调用 `get_codex_model_ids()`，无 token 时静默返回空 |
+| 自动注册 | `clawcodex_ext/providers/__init__.py` ★ 新建 + `clawcodex_ext/__init__.py` | import 时自动注册 |
+| `resolve()` 信任已保存配置 | `clawcodex_ext/cli/model_cmd/resolver.py` | `validate_model` 失败时走 `user-warn`，不再降级回默认 |
+| 移除 `gpt-5.5` 硬编码 | `src/providers/__init__.py` | 回归静态基线，由 hook 动态发现 |
+| 测试 | `tests/test_f43_model_registry.py` | 新增 6 个测试，24/24 全部通过 |
+
+**验收**: 扩展方只需 `register_discovery_hook("my-provider", my_fn)` 即可为任意 provider 添加动态模型发现，无需修改 `src/`。
+
+##### 后续规划（原封推迟）
 
 - `clawcodex provider use --scope project` 落入 `<project>/.clawcodex/config.local.json`
 - `clawcodex model use --scope project` 同上

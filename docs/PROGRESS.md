@@ -2,9 +2,11 @@
 
 > 文档路径: `docs/PROGRESS.md`
 > 基于: `docs/open-source-replacement-progress.md`, `docs/FEATURE_PLAN.md`
-> 版本: v2.14
+> 版本: v2.15
 > 更新日期: 2026-06-03
 > 上游同步: 58ea488 (dev-decoupling-refactor)
+>
+> **v2.15 变更**：F-22 Cron 系统 Phase A runtime-first 接线完成（✅ 已完成）。三层打通：`clawcodex_ext/runtime/context.py` 中 `RuntimeContext.build()` 调用 `attach_cron_runtime(tool_context, autostart=True)` 启动后台 cron 调度器；`src/repl/core.py` 中 `ClawcodexREPL.__init__()` 注册 `replace_cron_tools()` 替换 fallback 工具 + `attach_cron_runtime()` 启动调度器；新增 `_drain_cron_outbox()` 每条迭代前从 `tool_context.outbox` 弹出 `cron_prompt`/`cron_missed` 事件，经 `_enqueue_prompt` 注入为自动用户输入提交 `chat()`。Headless/TUI 通过 `RuntimeContext.build()` 共用同一路径，调度器已在后台运行（TUI 循环的 outbox drain 尚未接线，属后续阶段）。F22-R1 标记为 ✅ 完成，其余 F22-R2~R8 保持进行中。271/271 orchestrator 测试全部通过。v2.9 的 "剩余 P0 缺口列表" 更新为反映 R1~R8 口径。
 >
 > **v2.14 变更**：新增 F-48 src/ 核心路径二开修改解耦方案（📋 设计完成）。通过对比 `src/` 与 `src/upstream/58ea488/`，识别出 10 个含真正功能修改的 src/ 文件（其余 600+ 为行尾/格式差异），分 Phase 0~3 四阶段制定解耦方案：Phase 0（纯新增文件移入 ext）、Phase 1（注册表/Protocol 扩展消除字段注入）、Phase 2（子类覆盖恢复上游构造器签名）、Phase 3（入口点恢复上游逻辑）。复用已有 Facade/子类覆盖/前端注册表三种解耦模式。目标：src/ 有功能修改的文件数从 10+ 降为 0。
 >
@@ -68,10 +70,10 @@
 | F-16 | Auto 模式 (TRANSCRIPT_CLASSIFIER) | P2 | ⏳ 待开始 | 基于 LLM 的自动权限模式切换，减少交互疲劳 |
 | F-17 | 工具系统按需加载（Tool System Extension） | P1 | ✅ 完成 | 四种工具模式（bare/default/clawcodex/all），4 bundle 简化设计，bundle 引用前缀 ":"，与上游解耦 |
 | F-18 | CreateAgentTool 动态工具创建 | P2 | 🔄 规划中 | Agent 可根据 CLI/API 规范动态创建工具，Meta Tool 能力，bash/http/python 三种 call_impl 安全限制 |
-| F-19 | POS to Agent 转化模式 | P2 | ✅ 完成 | 三层映射（POS→Agent、workflow→Skill、SDK→工具），SDK 解析 + Skill 分组 + Agent 构建 + 持久化 |
+| F-19 | POS to Agent 转化模式 | P2 | 🔄 进行中 | 三层映射（POS→Agent、workflow→Skill、SDK→工具），SDK 解析 + Skill 分组 + Agent 构建 + 持久化已完成；**`clawcodex-dev pos convert` CLI 子命令待注册**（dispatch.py/subcommand_registry.py 中未实现），当前仅支持斜杠命令和 Python API 调用 |
 | F-20 | Agent 阶段性进度汇报 | P2 | ✅ 完成 | 三组合方案：检查点触发 + ProgressReportTool + ToolContext.tasks 持久化；PhaseComplete 时双重调用 ProgressReportTool + TaskUpdateTool 更新 metadata |
 | F-21 | 后台运行 + 恢复同步 | P1 | ✅ 完成 | Ctrl+B 后台化 + TailFollower 实时同步 + SessionWatcher 多终端感知，补丁 0067-0074 |
-| F-22 | Cron 系统执行引擎 | P0 | 🔄 进行中 | `clawcodex_ext/cron_system/` 已补齐 parser/storage/scheduler/jitter/lock/permanent/inFlight/基础 runs/status；历史 G1~G8 已落地。剩余缺口转为 F22-R1~R8：真实 REPL/TUI/headless 接线、scheduled fire 执行队列、run lifecycle finalize、用户管理/status 入口、busy gate/filter、durable reload、teammate ownership 与 CCB env gate 兼容。 |
+| F-22 | Cron 系统执行引擎 | P0 | 🔄 进行中（Phase A ✅ 已完成） | `clawcodex_ext/cron_system/` 已补齐 parser/storage/scheduler/jitter/lock/permanent/inFlight/基础 runs/status；历史 G1~G8 已落地；Phase A runtime-first 接线完成——REPL/TUI/headless 均通过 `RuntimeContext.build()` 获得后台 cron 调度器，REPL 新增 `_drain_cron_outbox()` 将 `tool_context.outbox` 中的 `cron_prompt`/`cron_missed` 事件经 `_enqueue_prompt` 注入为自动用户输入。剩余缺口保持 F22-R2~R8：scheduled fire 执行队列、run lifecycle finalize、用户管理/status 入口、busy gate/filter、durable reload、teammate ownership 与 CCB env gate 兼容。 |
 | F-23 | Bridge Phase 8-11 多 Session Daemon | P1 | ✅ 完成 | 多会话桥接器完整实现，bridge_main/repl_bridge/remote_bridge_core/session_runner，Phase 1-11 全部完成 |
 | F-24 | Agent Loop Consolidation (Stage 4) | P1 | ✅ 完成 | 删除 agent_loop.py (537 行)，新增 renderers.py (+257) 和 advisor.py (+125)，重构到 src/query/ |
 | F-25 | Advisor Token 计数与状态显示 | P2 | ✅ 完成 | max_history 100→2000，Provider token 追踪增强，client-side advisor mode |
@@ -99,7 +101,7 @@
 
 ## F-22: Cron 系统执行引擎
 
-**状态**: 🔄 进行中（`clawcodex_ext/cron_system/` 已覆盖多数底层语义；9.11 历史 G1~G8 已于 2026-06 完成；最新 CCB 对比剩余 F22-R1~R8 端到端集成缺口）
+**状态**: 🔄 进行中（Phase A runtime-first 接线 ✅ 已完成：REPL/TUI/headless 运行路径打通，调度器后台运行，REPL 主循环通过 `_drain_cron_outbox()` 消费 `cron_prompt`/`cron_missed` 事件；Phase B~F 分阶段推进）
 **优先级**: P0
 **参考实现**: claude-code-best `src/utils/cron*.ts`, `src/hooks/useScheduledTasks.ts`, `src/utils/autonomyRuns.ts`, `src/utils/autonomyStatus.ts`, `src/commands/autonomy*.ts`, `src/cli/print.ts`
 
@@ -157,10 +159,10 @@ CronTask due
 | cron scheduler | `clawcodex_ext/cron_system/scheduler.py` | ✅ 基础完成，待接线 | 1 秒轮询、lock ownership、due/missed/expired、jitter、kill switch、inFlight 和事件 hook 已有；仍需接入真实 frontend queue 与 busy/filter 语义。 |
 | cron jitter config | `clawcodex_ext/cron_system/{models,jitter}.py` | ✅ 基础完成 | 6 参数 jitter 配置、文件/env 热加载、recurring forward jitter、one-shot backward jitter 与过期 max-age。 |
 | extension Cron tools | `clawcodex_ext/cron_system/tools.py` | ✅ 基础完成，待入口验证 | 替换版 CronCreate/List/Delete 已支持持久化、disabled 软返回、prompt 指引和 permanent 写保护；仍需端到端证明 REPL/TUI/headless 都命中该实现。 |
-| runtime glue | `clawcodex_ext/cron_system/runtime.py` | ⚠️ 基础完成，待接线 | 可替换 fallback 工具、挂载 scheduler、写入 outbox；缺口是前端主循环消费 outbox 并进入真实 query pipeline。 |
+| runtime glue | `clawcodex_ext/cron_system/runtime.py` | ✅ 完成，已接线 | 可替换 fallback 工具、挂载 scheduler、写入 outbox；REPL 主循环通过 `_drain_cron_outbox()` 消费 outbox 并进入真实 query pipeline。 |
 | runs.py | `clawcodex_ext/cron_system/runs.py` | ⚠️ 基础完成，待扩展 | 已有 `.claude/scheduled_task_runs.json` 账本和 queued/running/completed/failed/cancelled 生命周期；缺少 autonomy-compatible 字段、真实执行队列 claim/finalize 接线、`.claude/autonomy/runs.json` 等价布局决策。 |
 | status.py | `clawcodex_ext/cron_system/status.py` | ⚠️ 基础完成，待扩展 | 已有 status/runs 文本表格；缺少 deep status 的 richer section、trigger detail、manual-fire run id outcome、错误摘要/路径/来源字段展示。 |
-| queue lifecycle | REPL/TUI/headless adapter | ❌ 待实现 | scheduled fire 入队、claim 为 running、执行后 finalize、active source 去重。 |
+| queue lifecycle | REPL/TUI/headless adapter | ⚠️ 基础完成（REPL 已接线，TUI 待续） | REPL 通过 `_drain_cron_outbox()` 已接通 scheduled fire 入队路径；claim running、最终 finalize 与 active-source 去重依赖 F22-R2。 |
 | trigger detail / manual fire | command/skill adapter | ❌ 待实现 | 暴露等价 `/schedule get <id>` 与 `/schedule run <id>` 的用户路径，展示 last/next run、created、prompt，并在手动触发后返回 run id。 |
 | autonomy commands | command/skill adapter | ⚠️ fast-path 存在，待接线 | `clawcodex_ext/cli/dispatch.py` 已有 `autonomy status/runs` 分发；仍需接入真实运行账本和 richer output，区分 cron job 定义、trigger detail 与 run 生命周期。 |
 | missed notification | extension notification adapter | ⚠️ 基础完成，待产品化 | scheduler/runtime 已能产生 missed notification outbox 事件；仍需前端展示与端到端验收。 |
@@ -183,7 +185,7 @@ CronTask due
 
 | ID | 缺口 | 当前状态 | 进度口径 |
 |----|------|----------|----------|
-| F22-R1 | 真实 REPL/TUI/headless 运行路径接线 | ⏳ 待开始 | `attach_cron_runtime()` 目前把触发写入 `tool_context.outbox`，还需要证明或补齐真实前端启动 scheduler、替换 fallback 工具、并消费 outbox 进入 query loop。 |
+| F22-R1 | 真实 REPL/TUI/headless 运行路径接线 | ✅ 完成 | `attach_cron_runtime()` 所有前端路径已接线。REPL (`src/repl/core.py`)：`__init__` 注册 `replace_cron_tools()` + `attach_cron_runtime(autostart=True)`；`run()` 循环新增 `_drain_cron_outbox()` 消费 `tool_context.outbox` 中的 `cron_prompt`/`cron_missed` 事件，经 `_enqueue_prompt` 注入为自动用户输入。Headless/TUI：通过 `RuntimeContext.build()` 自动获得后台 cron 调度器。TUI 循环的 outbox drain 尚未接线，属后续阶段。 |
 | F22-R2 | scheduled fire 执行队列 | ⏳ 待开始 | 到期任务需要创建 queued prompt/run，并由普通 query pipeline claim、执行、取消和失败收敛；不能只停留在 scheduler callback。 |
 | F22-R3 | run lifecycle finalize 与更完整账本 | ⏳ 待扩展 | `runs.py` 已有基础状态，但还要补齐 started/ended/error/root/current/source/prompt preview/ownership 等字段，并把执行结果 finalize 到 completed/failed/cancelled。 |
 | F22-R4 | 用户管理与状态入口 | ⏳ 待扩展 | 需要 `/cron-list`、`/cron-delete`、trigger detail、manual fire、`/autonomy status|runs|status --deep` 或等价命令接到真实账本，而不是只保留工具层或 fast-path。 |
@@ -201,7 +203,7 @@ CronTask due
 | 3 | cron task lock - 多进程调度锁与清理（extension 路径） | ✅ 基础完成 |
 | 4 | cron scheduler - 轮询、due/missed/expired、inFlight、jitter（extension 路径） | ✅ 基础完成 |
 | 5 | cron jitter config - 文件/env 动态配置与每 tick reload（extension 路径） | ✅ 基础完成 |
-| 6 | tools / command adapter - CronCreate/List/Delete 替换 fallback 工具，补齐 `/cron-list`、`/cron-delete` 用户入口 | ⏳ 待接线 |
+| 6 | tools / command adapter - CronCreate/List/Delete 替换 fallback 工具，补齐 `/cron-list`、`/cron-delete` 用户入口 | ✅ 完成（工具替换已接线，用户入口待细节验证） |
 | 7 | runs.py - scheduled-task run 账本扩展到 autonomy-compatible schema 与 active source 去重 | ⏳ 待扩展 |
 | 8 | queue lifecycle - scheduled fire 入队、claim running、finalize completed/failed/cancelled | ⏳ 待开始 |
 | 9 | trigger detail/manual fire - 单任务详情与手动触发 run id 回显 | ⏳ 待开始 |
@@ -259,6 +261,10 @@ CronTask due
 **状态**: ✅ 完成
 
 > 详细进度已归档至 [ARCHIVED_PROGRESS.md §五.11 F-42 Orchestrator Shared / Sequential Workspace 策略](./ARCHIVED_PROGRESS.md#五11-f-42-orchestrator-shared-sequential-workspace-策略)。
+
+**2026-06-03 后修复记录**:
+- **`extensions/api/orchestration.py`** — `WorkspaceConfig(...)` 构造器缺少 `strategy=workflow_config.workspace.strategy` 参数传递。`workflow.md` 中配置的 `workspace.strategy`（`isolated | shared | sequential`）被静默丢弃，所有 issue 均使用默认 `isolated` 行为。已修复。
+- **Dashboard `ISSUE_STATUSES`** — `ISSUE_STATUSES` 集合缺少 `queued` 状态，导致排队 issue 在 Dashboard 上显示为 `pending` 而非 `queued`。已补充。
 
 ---
 
@@ -326,6 +332,21 @@ CronTask due
 **状态**: ✅ 已完成 (2026-06-02)
 
 > 详细进度已归档至 [ARCHIVED_PROGRESS.md §五.8 F-43 CLI 模型供应商与模型切换](./ARCHIVED_PROGRESS.md#五8-f-43-cli-模型供应商与模型切换)。
+
+### Sub-feature: 动态模型发现注册表 (post-archival)
+
+**状态**: ✅ 已完成 (2026-06-03)
+
+| 任务 | 文件 | 状态 | 说明 |
+|------|------|------|------|
+| `register_discovery_hook()` 全局注册表 | `clawcodex_ext/cli/model_cmd/registry.py` | ✅ | `_DISCOVERY_HOOKS` dict + register 函数；`ModelRegistry.__init__` 接受 `discovery_hooks` 参数 |
+| `available_models()` 合并 hook | `clawcodex_ext/cli/model_cmd/registry.py` | ✅ | 静态基线 + hook 结果去重合并，异常静默；`validate_model`/`infer_provider_for_model` 天然支持 |
+| `openai-codex` API 发现钩子 | `clawcodex_ext/providers/hooks.py` | ✅ | 调用 `get_codex_model_ids(token)`，无 token 或 API 失败时静默返回空 |
+| 自动注册 | `clawcodex_ext/providers/__init__.py` + `clawcodex_ext/__init__.py` | ✅ | import 时自动注册，在 ModelRegistry 首次实例化前完成 |
+| `resolve()` 信任已保存配置 | `clawcodex_ext/cli/model_cmd/resolver.py` | ✅ | `validate_model` 失败时走 `user-warn`，不再降级回默认 |
+| 移除 `gpt-5.5` 硬编码 | `src/providers/__init__.py` | ✅ | 回归静态基线，由 hook 动态发现 |
+| 回归测试 | `tests/test_f43_model_registry.py` | ✅ | 新增 6 个发现钩子测试（添加/隔离/异常静默/去重/validate_model/infer_provider），14/14 F-43 全部通过 |
+| **端到端验证** | 手动确认 | ✅ | 模拟第三方扩展注册 `my-llm` 钩子，`available_models`/`validate_model`/`infer_provider_for_model` 全链路通过 |
 
 ## F-45: Orchestrator tool-call 审计旁路（tool-events.ndjson + 报告登记）
 
