@@ -26,6 +26,7 @@ class TUIFrontend(FrontendPlugin):
             permission_mode=ctx.options.permission_mode,
             is_bypass_permissions_mode_available=ctx.options.is_bypass_permissions_mode_available,
             workspace_root=ctx.workspace_root,
+            append_system_prompt=ctx.options.append_system_prompt,
         )
         return run_tui(
             options,

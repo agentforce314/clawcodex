@@ -28,6 +28,7 @@ class REPLFrontend(FrontendPlugin):
             tool_context=ctx.tool_context,
             workspace_root=ctx.workspace_root,
             runtime_context=ctx,
+            append_system_prompt=ctx.options.append_system_prompt,
         )
         install_repl_extensions(repl, ctx)
         repl.run()
