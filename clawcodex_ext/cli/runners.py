@@ -258,10 +258,10 @@ def start_repl(
     so ``clawcodex --resume abc123`` continues that conversation.
     """
     from src.config import get_default_provider
-    from src.repl import ClawcodexREPL
+    from clawcodex_ext.repl.app import ClawCodexExtREPL
 
     provider = get_default_provider()
-    repl = ClawcodexREPL(
+    repl = ClawCodexExtREPL(
         provider_name=provider,
         stream=stream,
         permission_mode=permission_mode,

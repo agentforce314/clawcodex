@@ -17,11 +17,11 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Callable
 
 from src.cli_core.exit import cli_error
-from src.config import get_default_provider
-from src.providers.runtime import build_provider_from_config
+from src.config import get_default_provider, get_provider_config
+from src.providers import get_provider_class
 
 
 @dataclass
@@ -43,17 +43,6 @@ class TUIOptions:
     is_bypass_permissions_mode_available: bool = False
     # Test hook: replace the provider instance we'd otherwise build from config.
     provider_factory: Callable[[], object] | None = None
-    # Downstream runtime injection seam. When supplied, these objects already
-    # carry extension-owned tool replacements and context state.
-    provider: Any | None = None
-    session: Any | None = None
-    tool_registry: Any | None = None
-    tool_context: Any | None = None
-    runtime_context: Any | None = None
-    # Resume a previous session by ID (e.g. after Ctrl+B background).
-    resume_session_id: str | None = None
-    # --resume without SESSION_ID: show session browser on TUI mount.
-    resume_browse: bool = False
 
 
 def run_tui(options: TUIOptions) -> int:
@@ -62,12 +51,6 @@ def run_tui(options: TUIOptions) -> int:
     Returns a conventional CLI exit code.
     """
 
-    from src.tui.app import ClawCodexTUI
-
-    return _run_tui_with_app(options, app_cls=ClawCodexTUI)
-
-
-def _run_tui_with_app(options: TUIOptions, *, app_cls) -> int:
     if not _textual_available():
         cli_error(
             "error: textual is not installed. "
@@ -84,14 +67,7 @@ def _run_tui_with_app(options: TUIOptions, *, app_cls) -> int:
     workspace_root = options.workspace_root or Path.cwd()
 
     # Build provider ------------------------------------------------------
-    if options.provider is not None:
-        provider = options.provider
-        provider_name = options.provider_name or getattr(
-            provider,
-            "provider_name",
-            "unknown",
-        )
-    elif options.provider_factory is not None:
+    if options.provider_factory is not None:
         provider = options.provider_factory()
         provider_name = options.provider_name or getattr(
             provider, "provider_name", "unknown"
@@ -99,22 +75,34 @@ def _run_tui_with_app(options: TUIOptions, *, app_cls) -> int:
     else:
         provider_name = options.provider_name or get_default_provider()
         try:
-            provider = build_provider_from_config(provider_name, options.model)
+            provider_cfg = get_provider_config(provider_name)
         except Exception as exc:
-            cli_error(f"error: {exc}", 2)
+            cli_error(f"error: unable to load provider config: {exc}", 2)
+        if not provider_cfg.get("api_key"):
+            cli_error(
+                f"error: API key for provider '{provider_name}' is not configured. "
+                "Run `clawcodex login` to set it up.",
+                2,
+            )
+        provider_cls = get_provider_class(provider_name)
+        model = options.model or provider_cfg.get("default_model")
+        provider = provider_cls(
+            api_key=provider_cfg["api_key"],
+            base_url=provider_cfg.get("base_url"),
+            model=model,
+        )
 
     # Build tool registry + context --------------------------------------
     from src.tool_system.context import ToolContext
     from src.tool_system.defaults import build_default_registry
 
-    tool_registry = options.tool_registry or build_default_registry(provider=provider)
-    if options.tool_registry is None:
-        if options.allowed_tools:
-            allow = {name.lower() for name in options.allowed_tools}
-            _filter_registry(tool_registry, keep=lambda n: n.lower() in allow)
-        if options.disallowed_tools:
-            deny = {name.lower() for name in options.disallowed_tools}
-            _filter_registry(tool_registry, keep=lambda n: n.lower() not in deny)
+    tool_registry = build_default_registry(provider=provider)
+    if options.allowed_tools:
+        allow = {name.lower() for name in options.allowed_tools}
+        _filter_registry(tool_registry, keep=lambda n: n.lower() in allow)
+    if options.disallowed_tools:
+        deny = {name.lower() for name in options.disallowed_tools}
+        _filter_registry(tool_registry, keep=lambda n: n.lower() not in deny)
 
     # Apply the resolved permission state (from ``--dangerously-skip-permissions``
     # or ``--permission-mode``). When bypass is in effect we also flip
@@ -122,103 +110,44 @@ def _run_tui_with_app(options: TUIOptions, *, app_cls) -> int:
     # second-guess the user's explicit opt-in.
     from src.permissions.types import ToolPermissionContext
 
-    tool_context = options.tool_context
-    if tool_context is None:
-        tool_context = ToolContext(
-            workspace_root=workspace_root,
-            permission_context=ToolPermissionContext(
-                mode=options.permission_mode or "default",  # type: ignore[arg-type]
-                is_bypass_permissions_mode_available=bool(
-                    options.is_bypass_permissions_mode_available
-                ),
-            ),
-        )
-    else:
-        tool_context.workspace_root = workspace_root
-        tool_context.permission_context = ToolPermissionContext(
+    tool_context = ToolContext(
+        workspace_root=workspace_root,
+        permission_context=ToolPermissionContext(
             mode=options.permission_mode or "default",  # type: ignore[arg-type]
             is_bypass_permissions_mode_available=bool(
                 options.is_bypass_permissions_mode_available
             ),
-        )
+        ),
+    )
     if options.permission_mode == "bypassPermissions":
         tool_context.allow_docs = True
     tool_context.options.is_non_interactive_session = False
 
     # Build and run app ---------------------------------------------------
-    # Session resume: if --resume was passed, load the session and
-    # optionally start a TailFollower to watch for new transcript lines
-    # written by the backgrounded agent.
-    resumed_session = options.session
-    tail_follower = None
-    if resumed_session is None and options.resume_session_id:
-        from src.agent.session import Session as AgentSession
-        resumed_session, tail_follower = AgentSession.resume_with_tail(
-            options.resume_session_id,
-        )
+    from src.tui.app import ClawCodexTUI
 
-    app = app_cls(
+    app = ClawCodexTUI(
         provider=provider,
         provider_name=provider_name,
         workspace_root=workspace_root,
         tool_registry=tool_registry,
         tool_context=tool_context,
-        session=resumed_session,
         max_turns=options.max_turns,
         stream=options.stream,
-        tail_follower=tail_follower,
-        resume_browse=options.resume_browse,
-        runtime_context=options.runtime_context,
     )
     try:
-        result = app.run()
+        # ``inline=True`` renders the app in-place at the bottom of the
+        # terminal rather than grabbing the alt-screen — previous shell
+        # output stays in scrollback, and ``/exit`` leaves the rendered
+        # transcript intact (``inline_no_clear=True``). Matches the
+        # TS / ink reference's terminal-native experience.
+        # ``mouse=False`` lets the host terminal handle mouse events so
+        # the user can drag-select and copy text natively. The trade-off
+        # is no in-app mouse scroll on the transcript — keyboard scroll
+        # bindings (PgUp/PgDn) still work.
+        app.run(inline=True, inline_no_clear=True, mouse=False)
     except KeyboardInterrupt:
         return 130
-
-    # /repl exit: hand off to the legacy REPL instead of returning to CLI.
-    if result == "__REPL__":
-        from src.cli import start_repl
-
-        # Save TUI session before handing off to REPL so history is preserved
-        if hasattr(app, "session") and app.session:
-            try:
-                app.session.save()
-            except Exception:
-                pass
-
-        return start_repl(
-            stream=options.stream,
-            permission_mode=options.permission_mode,
-            is_bypass_permissions_mode_available=options.is_bypass_permissions_mode_available,
-            resume_session_id=getattr(app.session, "session_id", None),
-        )
-
-    # Ctrl+B / background exit — print the appropriate resume hint.
-    if isinstance(result, tuple) and result[0] in (
-        "__BACKGROUND_EXIT__",
-        "__FULL_EXIT__",
-    ):
-        marker = result[0]
-        session_id = result[1] if len(result) > 1 else ""
-        has_bg_agent = result[2] if len(result) > 2 else False
-        from rich.console import Console as RichConsole
-
-        rc = RichConsole()
-        if marker == "__BACKGROUND_EXIT__" and has_bg_agent:
-            if session_id:
-                rc.print(
-                    f"\n  [bold green]Agent is running in background.[/bold green] Resume with:\n"
-                    f"    [cyan]clawcodex --tui --resume {session_id}[/cyan]"
-                )
-            else:
-                rc.print("\n  [bold green]Agent is running in background.[/bold green]")
-        elif session_id:
-            rc.print(
-                f"\n  [bold yellow]Session {session_id} saved.[/bold yellow] Resume with:\n"
-                f"    [cyan]clawcodex --tui --resume {session_id}[/cyan]"
-            )
-        else:
-            rc.print("\n  [dim]Session saved.[/dim]")
     return 0
 
 

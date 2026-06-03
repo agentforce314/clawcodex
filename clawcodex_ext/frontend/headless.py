@@ -29,9 +29,5 @@ class HeadlessFrontend(FrontendPlugin):
             include_partial_messages=getattr(ctx.options, 'include_partial_messages', False),
             verbose=ctx.options.verbose,
             workspace_root=ctx.workspace_root,
-            provider=ctx.provider,
-            session=ctx.session,
-            tool_registry=ctx.tool_registry,
-            tool_context=ctx.tool_context,
         )
         return run_headless(options)

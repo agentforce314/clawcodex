@@ -383,13 +383,7 @@ class ClawcodexREPL:
         *,
         permission_mode: str = "default",
         is_bypass_permissions_mode_available: bool = False,
-        resume_session_id: str | None = None,
-        provider: Any | None = None,
-        session: Session | None = None,
-        tool_registry: Any | None = None,
-        tool_context: ToolContext | None = None,
-        workspace_root: Path | None = None,
-        runtime_context: Any | None = None,
+        **kwargs: Any,
     ):
         # ``is_interactive`` is set during bootstrap phase 2 by
         # ``src.init.run_pre_action`` (called from ``cli.main``) before
@@ -408,64 +402,29 @@ class ClawcodexREPL:
         )
 
         self.console = Console()
-        self.runtime_context = runtime_context
         self.provider_name = provider_name
         self.stream = stream
-        self.workspace_root = workspace_root or Path.cwd()
 
-        # Initialize provider unless a downstream runtime already supplied one.
-        if provider is not None:
-            self.provider = provider
-            self._api_key_missing = False
-        else:
-            try:
-                self.provider = build_provider_from_config(provider_name)
-                self._api_key_missing = False
-            except RuntimeError:
-                self._api_key_missing = True
+        # Load configuration
+        config = get_provider_config(provider_name)
+        if not config.get("api_key"):
+            self.console.print("[red]Error: API key not configured.[/red]")
+            self.console.print("Run [bold]clawcodex login[/bold] to configure.")
+            sys.exit(1)
 
-        if self._api_key_missing:
-            # No configured credentials — initialize minimal state for read-only REPL
-            self.provider = None
-            self.session = None
-            self.tool_registry = None
-            self.tool_context = None
-            self._engine_messages = []
-            self._queued_prompts = []
-            self._queued_prompts_lock = threading.Lock()
-            # Commands needed for read-only mode
-            self._original_built_ins = [
-                "/", "/help", "/exit", "/quit", "/q", "/clear",
-                "/save", "/load", "/stream", "/render-last", "/tools",
-                "/tool", "/skills", "/init", "/tui", "/login",
-            ]
-            self._built_in_commands = list(self._original_built_ins)
-            # Skip provider-dependent setup
-            return
+        # Initialize provider
+        provider_class = get_provider_class(provider_name)
+        self.provider = provider_class(
+            api_key=config["api_key"],
+            base_url=config.get("base_url"),
+            model=config.get("default_model")
+        )
 
-        # Create session — or resume an existing one when ``--resume ID``
-        # is passed at the CLI. ``resume_session_id`` is plumbed through
-        # from ``cli.py:start_repl``.
-        self._resume_session_id = resume_session_id
-        if session is not None:
-            self.session = session
-        elif resume_session_id:
-            loaded_session = Session.resume(resume_session_id)
-            if loaded_session is not None:
-                self.session = loaded_session
-                self.console.print(f"[green]Resumed session: {resume_session_id}[/green]")
-                self.console.print(f"[dim]Provider: {loaded_session.provider}, Model: {loaded_session.model}[/dim]")
-                # Sync conversation from JSONL transcript (has full history
-                # including background agent output not in .json snapshot)
-                self._sync_conversation_from_transcript(resume_session_id)
-            else:
-                self.console.print(f"[yellow]Session not found: {resume_session_id}. Starting new session.[/yellow]")
-                self.session = Session.create(provider_name, self.provider.model)
-        else:
-            self.session = Session.create(
-                provider_name,
-                self.provider.model
-            )
+        # Create session
+        self.session = Session.create(
+            provider_name,
+            self.provider.model
+        )
 
         # Late-binding closure: ``tool_context`` is built below, but the
         # Agent tool's prompt builder won't read this until much later,
@@ -477,32 +436,22 @@ class ClawcodexREPL:
             clients = getattr(ctx, "mcp_clients", None) or {}
             return list(clients.keys())
 
-        self.tool_registry = tool_registry or build_default_registry(
+        self.tool_registry = build_default_registry(
             provider=self.provider,
             get_available_mcp_servers=_get_mcp_servers_for_prompt,
         )
         self._engine_messages: list[Any] = []
         from src.permissions.types import ToolPermissionContext
 
-        if tool_context is None:
-            self.tool_context = ToolContext(
-                workspace_root=self.workspace_root,
-                permission_context=ToolPermissionContext(
-                    mode=self._permission_mode,  # type: ignore[arg-type]
-                    is_bypass_permissions_mode_available=(
-                        self._is_bypass_permissions_mode_available
-                    ),
-                ),
-            )
-        else:
-            self.tool_context = tool_context
-            self.tool_context.workspace_root = self.workspace_root
-            self.tool_context.permission_context = ToolPermissionContext(
+        self.tool_context = ToolContext(
+            workspace_root=Path.cwd(),
+            permission_context=ToolPermissionContext(
                 mode=self._permission_mode,  # type: ignore[arg-type]
                 is_bypass_permissions_mode_available=(
                     self._is_bypass_permissions_mode_available
                 ),
-            )
+            ),
+        )
         self.tool_context.ask_user = self._ask_user_questions
         # Permission handler with status control for proper input handling
         self._current_status = None
@@ -554,12 +503,6 @@ class ClawcodexREPL:
         # grow unboundedly during a long session.
         self._expandable_blocks: deque[tuple[str, str]] = deque(maxlen=20)
 
-        # Thinking content visibility state. When False, thinking content
-        # is stashed for later expansion via ctrl+o (like expandable blocks).
-        # Mirrors the TypeScript reference's "thinking collapsed" UI state.
-        self._thinking_visible: bool = True
-        self._thinking_chunks: list[str] = []  # Accumulated thinking content
-
         # Original built-in commands - define this FIRST!
         self._original_built_ins = [
             "/",
@@ -567,7 +510,6 @@ class ClawcodexREPL:
             "/exit",
             "/quit",
             "/q",
-            "/repl",
             "/clear",
             "/save",
             "/load",
@@ -578,45 +520,10 @@ class ClawcodexREPL:
             "/skills",
             "/init",
             "/tui",
-            "/login",
-            # F-43 runtime commands: /provider and /model are implemented via
-            # the new command system (clawcodex_ext/cli/runtime_commands.py)
-            # and work in both REPL and TUI. Both slash commands share a
-            # unified surface: no args shows current + available list, with
-            # arg switches.
-            "/provider",
-            # Permission mode command (REPL-native, supports both interactive
-            # menu and direct argument e.g. /permission dontAsk):
-            "/permission",
-            # Phase 2 dialogs (TUI-only, show in palette with placeholder):
-            "/effort",
-            "/history",
-            "/cost",
-            "/idle",
-            "/theme",
-            # Phase 3 dialogs (TUI-only, show in palette with placeholder):
-            "/diff",
-            "/mcp",
-            "/tasks",
-            "/rewind",
         ]
         self._built_in_commands = list(self._original_built_ins)
 
-        # Create cost tracker and history. The F-43 refactor (commit
-        # 21e370b) accidentally removed these two lines, but
-        # ``_init_command_system`` still passes them to
-        # ``create_command_context`` below, which is what blew up at
-        # startup with ``AttributeError: 'ClawcodexREPL' object has no
-        # attribute 'cost_tracker'``. Kept as attributes (rather than
-        # inlined like the TUI's ``_ensure_command_context``) to match
-        # the original design and avoid drifting further from upstream.
-        self.cost_tracker = CostTracker()
-        self.history_log = HistoryLog()
-
         # Initialize new command system
-        if getattr(self, '_api_key_missing', False):
-            return
-
         self._init_command_system()
 
         # Prompt toolkit with tab completion
@@ -759,29 +666,6 @@ class ClawcodexREPL:
                 """Meta+Enter (and Kitty-protocol Shift+Enter): insert ``\\n``."""
                 event.current_buffer.insert_text("\n")
 
-            @self.bindings.add("c-b")  # type: ignore[attr-defined]
-            def _background_or_exit(event):  # type: ignore[no-untyped-def]
-                """Ctrl+B: save session and exit to shell.
-
-                When the agent is idle (prompt is showing), this just
-                saves and exits.  When the agent is active (LiveStatus
-                is showing), the LiveStatus's own Ctrl+B binding fires
-                instead and triggers BackgroundEscape.
-                """
-                try:
-                    self.session.save()
-                except Exception:
-                    pass
-                session_id = self.session.session_id
-                self.console.print(
-                    f"\n  [bold yellow]Session {session_id} saved.[/bold yellow]"
-                )
-                self.console.print(
-                    f"  [dim]Resume with: clawcodex --resume {session_id}[/dim]"
-                )
-                self.console.print("[dim]Exiting clawcodex...[/dim]")
-                self.prompt_session.app.exit()
-
             @self.bindings.add("c-o")  # type: ignore[attr-defined]
             def _expand_last(event):  # type: ignore[no-untyped-def]
                 """Ctrl+O: re-print the most recent truncated block in
@@ -796,55 +680,6 @@ class ClawcodexREPL:
                     # Fallback: print directly. Prompt may redraw oddly
                     # but at least the expansion lands in scrollback.
                     self._do_expand_last()
-
-            @self.bindings.add("c-t")  # type: ignore[attr-defined]
-            def _toggle_thinking(event):  # type: ignore[no-untyped-def]
-                """Ctrl+T: toggle thinking content visibility.
-
-                When thinking is hidden, chunks are stashed for later
-                expansion via ctrl+o (same as truncated tool blocks).
-                """
-                self._thinking_visible = not self._thinking_visible
-                label = "shown" if self._thinking_visible else "hidden"
-                self.console.print(f"[dim]Thinking content: {label}[/dim]")
-
-            @self.bindings.add("s-tab")  # type: ignore[attr-defined]
-            def _cycle_permission_mode(event):  # type: ignore[no-untyped-def]
-                """Shift+Tab: cycle through permission modes.
-
-                Mirrors the TypeScript Ink reference's Shift+Tab binding
-                for cycling through default → acceptEdits → plan →
-                bypassPermissions → default.
-                """
-                from src.permissions import cycle_permission_mode
-
-                ctx = self.tool_context
-                if ctx is None:
-                    return
-                current_mode = ctx.permission_context.mode
-                is_bypass_available = (
-                    self._is_bypass_permissions_mode_available
-                )
-                # Build a context for cycle_permission_mode
-                from src.permissions.types import ToolPermissionContext
-                cycle_ctx = ToolPermissionContext(
-                    mode=current_mode,
-                    is_bypass_permissions_mode_available=is_bypass_available,
-                )
-                next_mode, next_ctx = cycle_permission_mode(cycle_ctx)
-                # Update the REPL's permission state
-                self._permission_mode = next_mode
-                ctx.permission_context = next_ctx
-                # Update the tool context's permission handler if mode changed
-                if next_mode == "bypassPermissions":
-                    ctx.permission_handler = lambda _tn, _msg, _sug: (True, False)
-                    ctx.allow_docs = True
-                else:
-                    ctx.permission_handler = self._handle_permission_request
-                    ctx.allow_docs = False
-
-        if getattr(self, '_api_key_missing', False):
-            return
 
         self.prompt_session = PromptSession(
             history=FileHistory(str(history_file)),
@@ -1190,16 +1025,16 @@ class ClawcodexREPL:
         self.command_registry = CommandRegistry()
         register_builtin_commands(self.command_registry)
 
+        # Create cost tracker and history
+        self.cost_tracker = CostTracker()
+        self.history_log = HistoryLog()
+
         # Create command context
         self.command_context = create_command_context(
-            workspace_root=self.workspace_root,
+            workspace_root=Path.cwd(),
             conversation=self.session.conversation,
             cost_tracker=self.cost_tracker,
             history=self.history_log,
-            provider=self.provider,
-            tool_registry=self.tool_registry,
-            tool_context=self.tool_context,
-            runtime_context=self.runtime_context,
         )
 
         # Merge new commands with built-in list for completion

@@ -12,11 +12,11 @@ class REPLFrontend(FrontendPlugin):
     display_name = "Interactive REPL"
 
     def run(self, ctx, argv: list[str]) -> int:
-        from src.repl import ClawcodexREPL
+        from clawcodex_ext.repl.app import ClawCodexExtREPL
 
         from clawcodex_ext.frontend.repl_extensions import install_repl_extensions
 
-        repl = ClawcodexREPL(
+        repl = ClawCodexExtREPL(
             provider_name=ctx.provider_name,
             stream=ctx.options.stream,
             permission_mode=ctx.options.permission_mode,

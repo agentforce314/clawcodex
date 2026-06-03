@@ -32,7 +32,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, Any, Callable, Iterable, Optional
+from typing import IO, Callable, Iterable, Optional
 
 from src.agent import Session
 from src.cli_core import (
@@ -48,8 +48,8 @@ from src.cli_core import (
     cli_error,
     ndjson_safe_dumps,
 )
-from src.config import get_default_provider
-from src.providers.runtime import build_provider_from_config
+from src.config import get_default_provider, get_provider_config
+from src.providers import get_provider_class
 from src.tool_system.renderers import AgentLoopResult, ToolEvent
 from src.query.agent_loop_compat import (
     build_effective_system_prompt,
@@ -100,18 +100,6 @@ class HeadlessOptions:
     # Workspace root override (default: cwd).
     workspace_root: Path | None = None
 
-    # Optional external event handler for tool-use / tool-result events.
-    # Used by the orchestrator's QueryRunner to intercept tool calls for
-    # approval policy evaluation and streaming dashboards.
-    on_event: Callable[[ToolEvent], None] | None = None
-
-    # Downstream runtime injection seam. When provided by clawcodex_ext, these
-    # prebuilt objects already carry extension tool replacements such as Cron.
-    provider: Any | None = None
-    session: Session | None = None
-    tool_registry: Any | None = None
-    tool_context: ToolContext | None = None
-
 
 def run_headless(options: HeadlessOptions) -> int:
     """Run one or more prompts in headless mode. Returns the exit code."""
@@ -135,27 +123,36 @@ def run_headless(options: HeadlessOptions) -> int:
     stdin = options.stdin or sys.stdin
 
     provider_name = options.provider_name or get_default_provider()
+    try:
+        provider_cfg = get_provider_config(provider_name)
+    except Exception as exc:
+        cli_error(f"error: unable to load provider config: {exc}", 2)
+    if not provider_cfg.get("api_key"):
+        cli_error(
+            f"error: API key for provider '{provider_name}' is not configured. "
+            "Run `clawcodex login` to set it up.",
+            2,
+        )
+
+    provider_cls = get_provider_class(provider_name)
+    model = options.model or provider_cfg.get("default_model")
+    provider = provider_cls(
+        api_key=provider_cfg["api_key"],
+        base_url=provider_cfg.get("base_url"),
+        model=model,
+    )
+
+    session = Session.create(provider_name, getattr(provider, "model", model or ""))
+
+    tool_registry = build_default_registry(provider=provider)
+    if options.allowed_tools:
+        allow = {name.lower() for name in options.allowed_tools}
+        _filter_registry(tool_registry, keep=lambda n: n.lower() in allow)
+    if options.disallowed_tools:
+        deny = {name.lower() for name in options.disallowed_tools}
+        _filter_registry(tool_registry, keep=lambda n: n.lower() not in deny)
+
     workspace_root = options.workspace_root or Path.cwd()
-    provider = options.provider
-    if provider is None:
-        try:
-            provider = build_provider_from_config(provider_name, options.model)
-        except Exception as exc:
-            cli_error(f"error: {exc}", 2)
-        model = getattr(provider, "model", options.model or "")
-    else:
-        model = options.model or getattr(provider, "model", "")
-
-    session = options.session or Session.create(provider_name, getattr(provider, "model", model or ""))
-
-    tool_registry = options.tool_registry or build_default_registry(provider=provider)
-    if options.tool_registry is None:
-        if options.allowed_tools:
-            allow = {name.lower() for name in options.allowed_tools}
-            _filter_registry(tool_registry, keep=lambda n: n.lower() in allow)
-        if options.disallowed_tools:
-            deny = {name.lower() for name in options.disallowed_tools}
-            _filter_registry(tool_registry, keep=lambda n: n.lower() not in deny)
 
     # Compute the effective permission context. ``skip_permissions=True`` is
     # the legacy alias and means "user passed --dangerously-skip-permissions";
@@ -179,23 +176,14 @@ def run_headless(options: HeadlessOptions) -> int:
     # the next safe boundary — which can be several minutes for a
     # subprocess.wait() or an in-flight subagent.
     abort_controller = AbortController()
-    tool_context = options.tool_context
-    if tool_context is None:
-        tool_context = ToolContext(
-            workspace_root=workspace_root,
-            permission_context=ToolPermissionContext(
-                mode=effective_mode,  # type: ignore[arg-type]
-                is_bypass_permissions_mode_available=bypass_available,
-            ),
-            abort_controller=abort_controller,
-        )
-    else:
-        tool_context.workspace_root = workspace_root
-        tool_context.permission_context = ToolPermissionContext(
+    tool_context = ToolContext(
+        workspace_root=workspace_root,
+        permission_context=ToolPermissionContext(
             mode=effective_mode,  # type: ignore[arg-type]
             is_bypass_permissions_mode_available=bypass_available,
-        )
-        tool_context.abort_controller = abort_controller
+        ),
+        abort_controller=abort_controller,
+    )
     tool_context.options.is_non_interactive_session = True
     if options.skip_permissions or effective_mode == "bypassPermissions":
         tool_context.allow_docs = True
@@ -272,9 +260,7 @@ def run_headless(options: HeadlessOptions) -> int:
             for user_msg in inputs:
                 session.conversation.add_user_message(user_msg.text)
 
-                on_event = _build_event_bridge(
-                    writer, aggregate_tool_events, external=options.on_event
-                )
+                on_event = _build_event_bridge(writer, aggregate_tool_events)
                 on_text_chunk = None
                 if writer is not None and options.include_partial_messages:
                     def _emit_partial(chunk: str) -> None:
@@ -624,20 +610,8 @@ def _noop_ask_user(questions):  # type: ignore[override]
     return answers
 
 
-def _build_event_bridge(
-    writer: StreamJsonWriter | None,
-    sink: list[dict],
-    external: Callable[[ToolEvent], None] | None = None,
-):
+def _build_event_bridge(writer: StreamJsonWriter | None, sink: list[dict]):
     def on_event(event: ToolEvent) -> None:
-        # Forward to external handler first (orchestrator interception)
-        if external is not None:
-            try:
-                external(event)
-            except Exception:
-                # External handlers must not break the core event pipeline
-                pass
-
         if event.kind == "tool_use":
             record = {
                 "type": "tool_use",
