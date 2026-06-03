@@ -131,13 +131,29 @@ class RuntimeContext:
 
     def swap_provider(self, provider_name: str, model: str | None = None) -> None:
         from clawcodex_ext.cli.model_cmd.registry import ModelRegistry
+        from clawcodex_ext.cli.model_cmd.errors import (
+            ProviderMismatchError,
+            UnknownModelError,
+        )
+        from clawcodex_ext.cli.provider_cmd.errors import UnknownProviderError
         from src.providers.runtime import build_provider_from_config
         from src.tool_system.defaults import build_default_registry
 
         registry = ModelRegistry()
-        registry.validate_provider(provider_name)
+        try:
+            registry.validate_provider(provider_name)
+        except UnknownProviderError:
+            import sys
+            print(
+                f"Warning: provider '{provider_name}' is not in the built-in list — "
+                f"proceeding anyway",
+                file=sys.stderr,
+            )
         if model is not None:
-            registry.validate_model(model, provider_name)
+            try:
+                registry.validate_model(model, provider_name)
+            except (UnknownModelError, ProviderMismatchError):
+                pass  # Unknown model on unknown provider is fine
 
         provider = build_provider_from_config(provider_name, model)
         tool_registry = build_default_registry(provider=provider)

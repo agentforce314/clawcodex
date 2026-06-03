@@ -203,7 +203,14 @@ def create_provider(provider_name: str, *args, **kwargs) -> BaseProvider:
 
         return create_litellm_provider(provider_name, *args, **kwargs)
 
-    provider_cls = get_provider_class(provider_name)
+    try:
+        provider_cls = get_provider_class(provider_name)
+    except ValueError:
+        # Unknown provider — fallback to LiteLLM
+        from extensions.providers_ext import create_litellm_provider
+
+        return create_litellm_provider(provider_name, *args, **kwargs)
+
     return provider_cls(*args, **kwargs)
 
 

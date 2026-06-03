@@ -22,7 +22,9 @@ from typing import Any
 from clawcodex_ext.cli.model_cmd.commands import format_model_list
 from clawcodex_ext.cli.model_cmd.registry import ModelRegistry
 from clawcodex_ext.cli.model_cmd.store import ModelStore
+from clawcodex_ext.cli.model_cmd.errors import UnknownModelError, ProviderMismatchError
 from clawcodex_ext.cli.provider_cmd.commands import format_provider_list
+from clawcodex_ext.cli.provider_cmd.errors import UnknownProviderError
 from src.command_system.types import LocalCommand, LocalCommandResult
 
 
@@ -67,12 +69,23 @@ def _provider_call(args: str, context: Any) -> LocalCommandResult:
 
     provider = tokens[0]
     runtime = _runtime(context)
-    ModelStore().set_default_provider(provider)
+
+    warnings: list[str] = []
+    try:
+        ModelStore().set_default_provider(provider)
+    except UnknownProviderError:
+        warnings.append(f"Warning: unknown provider '{provider}' — proceeding anyway")
+        from src.config import set_default_provider as _set_dp
+        _set_dp(provider)
+
     runtime.swap_provider(provider)
     _sync_context(context, runtime)
-    return _text(
-        _format_runtime_current(context, prefix=f"Provider switched to: {provider}")
-    )
+
+    lines = [f"Provider switched to: {provider}"]
+    lines.extend(warnings)
+    lines.append("")
+    lines.append(_format_runtime_current(context))
+    return _text("\n".join(lines))
 
 
 def _model_call(args: str, context: Any) -> LocalCommandResult:
@@ -91,21 +104,60 @@ def _model_call(args: str, context: Any) -> LocalCommandResult:
     except ValueError as exc:
         return _text(f"usage: /model [NAME [--provider NAME]]\n{exc}")
 
+    warnings: list[str] = []
     registry = ModelRegistry()
     if provider is None:
-        provider = registry.infer_provider_for_model(model)
-    registry.validate_model(model, provider)
+        try:
+            provider = registry.infer_provider_for_model(model)
+        except UnknownModelError:
+            provider = "anthropic"
+            warnings.append(f"Warning: unknown model '{model}' — defaulting to provider 'anthropic'")
+    else:
+        try:
+            registry.validate_provider(provider)
+        except UnknownProviderError:
+            warnings.append(f"Warning: unknown provider '{provider}' — proceeding anyway")
+
+    try:
+        registry.validate_model(model, provider)
+    except UnknownModelError:
+        warnings.append(f"Warning: unknown model '{model}' — proceeding anyway")
+    except ProviderMismatchError:
+        warnings.append(f"Warning: model '{model}' not listed for provider '{provider}' — proceeding anyway")
 
     store = ModelStore(registry)
-    store.set_default_provider(provider)
-    store.set_default_model(provider, model)
+    try:
+        store.set_default_provider(provider)
+    except UnknownProviderError:
+        from src.config import set_default_provider as _set_dp
+        _set_dp(provider)
+    try:
+        store.set_default_model(provider, model)
+    except (UnknownModelError, ProviderMismatchError):
+        from src.config import get_provider_config, set_api_key
+        current = get_provider_config(provider)
+        base_url = current.get("base_url")
+        if base_url is None:
+            try:
+                from src.providers import PROVIDER_INFO
+                base_url = PROVIDER_INFO[provider]["default_base_url"]
+            except (KeyError, ImportError):
+                base_url = ""
+        set_api_key(
+            provider,
+            api_key=current.get("api_key", ""),
+            base_url=base_url,
+            default_model=model,
+        )
 
     runtime = _runtime(context)
     runtime.swap_provider(provider, model)
     _sync_context(context, runtime)
-    return _text(
-        _format_runtime_current(context, prefix=f"Model switched to: {model}")
-    )
+    lines = [f"Model switched to: {model} (provider: {provider})"]
+    lines.extend(warnings)
+    lines.append("")
+    lines.append(_format_runtime_current(context))
+    return _text("\n".join(lines))
 
 
 def _parse_provider_flag(tokens: list[str]) -> str | None:

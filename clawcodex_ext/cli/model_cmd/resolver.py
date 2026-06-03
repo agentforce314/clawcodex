@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 from clawcodex_ext.cli.model_cmd.registry import ModelRegistry
+from clawcodex_ext.cli.provider_cmd.errors import UnknownProviderError
 from src.config import get_default_provider, get_provider_config
 
 
@@ -52,7 +54,16 @@ def resolve(
         provider = get_default_provider()
         provider_source = "user"
 
-    registry.validate_provider(provider)
+    provider_unknown = False
+    try:
+        registry.validate_provider(provider)
+    except UnknownProviderError:
+        provider_unknown = True
+        print(
+            f"Warning: provider '{provider}' is not in the built-in list — "
+            f"proceeding anyway",
+            file=sys.stderr,
+        )
 
     model = _nonempty(cli_model)
     model_source = "cli" if model else ""
@@ -60,20 +71,33 @@ def resolve(
         model = env_model
         model_source = "env"
     if model is None:
-        provider_cfg = get_provider_config(provider) or {}
+        try:
+            provider_cfg = get_provider_config(provider) or {}
+        except ValueError:
+            provider_cfg = {}
         configured_model = _nonempty(provider_cfg.get("default_model"))
         if configured_model:
-            try:
-                registry.validate_model(configured_model, provider)
+            if not provider_unknown:
+                try:
+                    registry.validate_model(configured_model, provider)
+                    model = configured_model
+                    model_source = "user"
+                except Exception:
+                    model = None
+            else:
+                # Unknown provider — trust the configured model as-is
                 model = configured_model
                 model_source = "user"
-            except Exception:
-                model = None
-    if model is None:
+    if model is None and not provider_unknown:
         model = registry.provider_default_model(provider)
         model_source = "default"
+    elif model is None and provider_unknown:
+        # No configured model and unknown provider — use provider name as model
+        model = provider
+        model_source = "fallback"
 
-    registry.validate_model(model, provider)
+    if not provider_unknown:
+        registry.validate_model(model, provider)
     return Resolution(
         provider=provider,
         model=model,
