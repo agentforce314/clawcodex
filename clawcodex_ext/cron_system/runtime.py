@@ -41,10 +41,10 @@ def attach_cron_runtime(
     if is_killed is None:
         is_killed = is_cron_disabled
 
-    outbox = getattr(ctx.tool_context, "outbox", None)
+    outbox = getattr(ctx, "outbox", None)
     if outbox is None:
         outbox = []
-        setattr(ctx.tool_context, "outbox", outbox)
+        setattr(ctx, "outbox", outbox)
 
     def on_fire(prompt: str) -> None:
         if is_cron_disabled():

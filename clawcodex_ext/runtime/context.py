@@ -110,6 +110,11 @@ class RuntimeContext:
             tool_context.allow_docs = True
         tool_context.options.is_non_interactive_session = False
 
+        # Wire persistent cron scheduler to the tool context (F-22).
+        # Runs a background daemon thread that checks for due tasks
+        # every second and pushes cron_prompt events to the outbox.
+        attach_cron_runtime(tool_context, autostart=True)
+
         # Resume session if requested
         session = None
         if options.resume_session_id:
