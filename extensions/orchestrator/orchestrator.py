@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -102,10 +103,12 @@ class Orchestrator:
         self._registry = IssueRegistry(registry_path)
 
         # Write orchestrator metadata for CLI discovery
+        self._metadata_started_at = time.time()
         from .workspace_locator import write_orchestrator_metadata
         write_orchestrator_metadata(
             workspace_root=workspace_root,
             workflow_path=self._workflow_path,
+            started_at=self._metadata_started_at,
         )
 
         # Clarification handling (three-channel flow)
@@ -181,6 +184,10 @@ class Orchestrator:
         # Clean up terminal workspaces on startup
         await self.workspace.run_terminal_workspace_cleanup()
 
+        # Start metadata heartbeat for CLI discovery
+        heartbeat_task = asyncio.create_task(self._metadata_heartbeat_loop())
+        self._tasks.add(heartbeat_task)
+
         while not self._shutdown_event.is_set():
             await self._poll_and_dispatch()
             try:
@@ -193,6 +200,31 @@ class Orchestrator:
 
         logger.info("Orchestrator shutting down")
         await self._cancel_all_tasks()
+
+    async def _metadata_heartbeat_loop(self) -> None:
+        """Periodically rewrite metadata so CLI can always discover the orchestrator.
+
+        If metadata.json is accidentally deleted, this recreates it within
+        the heartbeat interval (30s), preventing the ``server start`` PID
+        guard from being bypassed for a running instance.
+        """
+        from .workspace_locator import write_orchestrator_metadata
+
+        while not self._shutdown_event.is_set():
+            try:
+                await asyncio.wait_for(
+                    self._shutdown_event.wait(),
+                    timeout=30.0,
+                )
+                break  # shutdown requested
+            except asyncio.TimeoutError:
+                pass
+
+            write_orchestrator_metadata(
+                workspace_root=self._workspace_root,
+                workflow_path=self._workflow_path,
+                started_at=self._metadata_started_at,
+            )
 
     async def shutdown(self) -> None:
         """Signal graceful shutdown and clean up metadata."""

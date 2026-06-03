@@ -156,6 +156,7 @@ def _find_latest_metadata() -> Path | None:
 def write_orchestrator_metadata(
     workspace_root: str | Path,
     workflow_path: str | None = None,
+    started_at: float | None = None,
 ) -> Path:
     """Write orchestrator metadata for later CLI discovery.
 
@@ -201,7 +202,7 @@ def write_orchestrator_metadata(
     data = {
         "workspace_root": ws_str,
         "pid": os.getpid(),
-        "started_at": time.time(),
+        "started_at": started_at if started_at is not None else time.time(),
         "project_slug": project_slug or slug,
         "workflow_path": str(workflow_path) if workflow_path else None,
     }
