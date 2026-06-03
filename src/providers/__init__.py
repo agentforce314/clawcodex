@@ -74,6 +74,9 @@ PROVIDER_INFO: dict[str, ProviderInfo] = {
         "default_base_url": "https://chatgpt.com/backend-api/codex",
         "default_model": "gpt-5.3-codex",
         "available_models": [
+            # Static baseline — the actual model list can be extended at
+            # runtime via ModelRegistry.register_discovery_hook() from
+            # extensions/ or clawcodex_ext/.
             "gpt-5.3-codex",
             "gpt-5.3-codex-spark",
         ],

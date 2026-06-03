@@ -83,7 +83,17 @@ def resolve(
                     model = configured_model
                     model_source = "user"
                 except Exception:
-                    model = None
+                    # User-configured model is not in the known list —
+                    # the API may have added it dynamically. Trust the
+                    # user's configured value and log a warning instead
+                    # of silently dropping back to the built-in default.
+                    print(
+                        f"Warning: model '{configured_model}' is not in the known list "
+                        f"for provider '{provider}' — using it anyway (saved config)",
+                        file=sys.stderr,
+                    )
+                    model = configured_model
+                    model_source = "user-warn"
             else:
                 # Unknown provider — trust the configured model as-is
                 model = configured_model
@@ -96,7 +106,7 @@ def resolve(
         model = provider
         model_source = "fallback"
 
-    if not provider_unknown:
+    if not provider_unknown and model_source != "user-warn":
         registry.validate_model(model, provider)
     return Resolution(
         provider=provider,

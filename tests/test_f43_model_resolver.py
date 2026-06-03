@@ -41,9 +41,9 @@ def test_resolve_falls_back_from_invalid_configured_model(monkeypatch) -> None:
     resolution = resolve()
 
     assert resolution.provider == "glm"
-    assert resolution.model == "zai/glm-5"
+    assert resolution.model == "not-valid-for-glm"
     assert resolution.provider_source == "user"
-    assert resolution.model_source == "default"
+    assert resolution.model_source == "user-warn"
 
 
 def test_resolve_inferrs_provider_from_cli_model(monkeypatch) -> None:

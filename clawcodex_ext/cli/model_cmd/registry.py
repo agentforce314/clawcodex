@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from clawcodex_ext.cli.model_cmd.errors import (
     AmbiguousModelError,
@@ -11,6 +11,26 @@ from clawcodex_ext.cli.model_cmd.errors import (
     UnknownModelError,
 )
 from clawcodex_ext.cli.provider_cmd.errors import UnknownProviderError
+
+
+# ---- Dynamic model discovery hooks ----
+# Extension code can register discovery callables at import time.
+# `ModelRegistry.available_models()` merges the static list with
+# all registered hook results (best-effort, de-duplicated).
+_DISCOVERY_HOOKS: dict[str, list[Callable[[], list[str]]]] = {}
+
+
+def register_discovery_hook(
+    provider: str, hook: Callable[[], list[str]]
+) -> None:
+    """Register a callable that returns extra models for *provider* at runtime.
+
+    The hook is called each time ``available_models()`` is invoked for this
+    provider.  Exceptions are silently swallowed (best-effort discovery).
+    Hooks registered after a ``ModelRegistry`` instance is created affect
+    **all** future calls — the instance reads the global registry lazily.
+    """
+    _DISCOVERY_HOOKS.setdefault(provider, []).append(hook)
 
 
 @dataclass(frozen=True)
@@ -26,12 +46,21 @@ class ProviderStatus:
 class ModelRegistry:
     """Wrap built-in provider metadata with validation helpers."""
 
-    def __init__(self, provider_info: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        provider_info: dict[str, Any] | None = None,
+        discovery_hooks: dict[str, list[Callable[[], list[str]]]] | None = None,
+    ) -> None:
         if provider_info is None:
             from src.providers import PROVIDER_INFO
 
             provider_info = PROVIDER_INFO
         self.provider_info = provider_info
+        # If no custom hooks dict, reference the global registry so any
+        # import-time registration is visible to every ModelRegistry instance.
+        self._discovery_hooks = (
+            _DISCOVERY_HOOKS if discovery_hooks is None else discovery_hooks
+        )
 
     def provider_names(self) -> list[str]:
         return list(self.provider_info.keys())
@@ -47,7 +76,16 @@ class ModelRegistry:
 
     def available_models(self, provider: str) -> list[str]:
         self.validate_provider(provider)
-        return list(self.provider_info[provider].get("available_models", []))
+        baseline = list(self.provider_info[provider].get("available_models", []))
+        for hook in self._discovery_hooks.get(provider, []):
+            try:
+                extra = hook()
+                for m in extra:
+                    if m not in baseline:
+                        baseline.append(m)
+            except Exception:
+                pass  # best-effort discovery — never fails the caller
+        return baseline
 
     def validate_model(self, model: str, provider: str) -> str:
         self.validate_provider(provider)

@@ -73,10 +73,12 @@ def run_tui_mode(args) -> int:
         stream=True,
         permission_mode=args._resolved_permission_mode,
         is_bypass_permissions_mode_available=args._resolved_is_bypass_available,
+    )
+    return run_tui(
+        options,
         resume_session_id=resume_session_id,
         resume_browse=resume_browse,
     )
-    return run_tui(options)
 
 
 # ----------------------------------------------------------------------
