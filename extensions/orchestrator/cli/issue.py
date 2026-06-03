@@ -639,6 +639,51 @@ def _run_show(registry_path: Path | None, args: argparse.Namespace) -> int:
     return 0
 
 
+def _resolve_issue_workspace_path(issue_id: str) -> Path | None:
+    """Resolve an issue workspace, including sequential registry layouts."""
+    from extensions.orchestrator.workspace_locator import get_registry_path, get_workspace_root
+
+    workspace_root = get_workspace_root(workspace_arg=os.environ.get("CLAWCODEX_WORKSPACE_ROOT"))
+    registry_path = get_registry_path(workspace_arg=str(workspace_root)) if workspace_root else None
+    if registry_path and registry_path.exists():
+        import json
+
+        try:
+            registry = json.loads(registry_path.read_text(encoding="utf-8"))
+            record = registry.get(issue_id)
+            if record:
+                root = Path(record.get("workspace_path") or workspace_root)
+                candidates = []
+                identifier = record.get("issue_identifier")
+                if identifier:
+                    candidates.append(root / identifier)
+                candidates.append(root)
+                for candidate in candidates:
+                    if candidate.exists():
+                        return candidate
+        except Exception:
+            pass
+
+    base = workspace_root or Path.home() / ".clawcodex" / "workspace"
+    if not base.exists():
+        return None
+    for wd in base.iterdir():
+        if not wd.is_dir():
+            continue
+        metadata_file = wd / ".metadata"
+        if metadata_file.exists():
+            import json
+            try:
+                metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
+                if metadata.get("issue_id") == issue_id:
+                    return wd
+            except Exception:
+                pass
+        if wd.name == issue_id or issue_id in wd.name:
+            return wd
+    return None
+
+
 # ---------------------------------------------------------------------------
 # issue tail
 # ---------------------------------------------------------------------------
@@ -875,35 +920,8 @@ def _run_inject(args: argparse.Namespace) -> int:
         print("error: --id is required", file=sys.stderr)
         return 2
 
-    import os
-    from pathlib import Path
-
-    def _resolve_hints_file(issue_id: str) -> Path | None:
-        ws_root = os.environ.get("CLAWCODEX_WORKSPACE_ROOT")
-        if ws_root:
-            base = Path(ws_root)
-        else:
-            base = Path.home() / ".clawcodex" / "workspace"
-
-        if not base.exists():
-            return None
-        for wd in base.iterdir():
-            if not wd.is_dir():
-                continue
-            metadata_file = wd / ".metadata"
-            if metadata_file.exists():
-                import json
-                try:
-                    metadata = json.loads(metadata_file.read_text())
-                    if metadata.get("issue_id") == issue_id:
-                        return wd / ".operator_hints.md"
-                except Exception:
-                    pass
-            if wd.name == issue_id or issue_id in wd.name:
-                return wd / ".operator_hints.md"
-        return None
-
-    hints_file = _resolve_hints_file(issue_id)
+    ws_path = _resolve_issue_workspace_path(issue_id)
+    hints_file = ws_path / ".operator_hints.md" if ws_path else None
     if hints_file is None:
         print(
             f"Could not find workspace for issue {issue_id}.\n"
@@ -1037,34 +1055,7 @@ def _run_workspace(args: argparse.Namespace) -> int:
         print("error: --id is required", file=sys.stderr)
         return 2
 
-    import os
-    from pathlib import Path
-
-    def _resolve_workspace_path(issue_id: str) -> Path | None:
-        ws_root = os.environ.get("CLAWCODEX_WORKSPACE_ROOT")
-        if ws_root:
-            base = Path(ws_root)
-        else:
-            base = Path.home() / ".clawcodex" / "workspace"
-        if not base.exists():
-            return None
-        for wd in base.iterdir():
-            if not wd.is_dir():
-                continue
-            metadata_file = wd / ".metadata"
-            if metadata_file.exists():
-                import json
-                try:
-                    metadata = json.loads(metadata_file.read_text())
-                    if metadata.get("issue_id") == issue_id:
-                        return wd
-                except Exception:
-                    pass
-            if wd.name == issue_id or issue_id in wd.name:
-                return wd
-        return None
-
-    ws_path = _resolve_workspace_path(issue_id)
+    ws_path = _resolve_issue_workspace_path(issue_id)
     if ws_path is None:
         print(f"Could not find workspace for issue {issue_id}.", file=sys.stderr)
         return 1

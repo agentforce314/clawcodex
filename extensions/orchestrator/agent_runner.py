@@ -243,14 +243,27 @@ class AgentRunner:
         # provider wraps quota in the same 429/rate_limit_error
         # envelope, so substring matching is the most robust signal
         # available without parsing the JSON body.
-        quota_indicators = (
-            "exceeded your current quota",
-            "limit: 0",
-            "token plan",  # MiniMax "Token Plan 主要面向个人开发者"
-            "quota",
+        # Temporary rate-limit phrasing from MiniMax that looks like quota
+        # but is actually a retryable 429.  Check these FIRST so they
+        # don't get caught by the broader "token plan" / "quota" match.
+        temporary_rate_limit_indicators = (
+            "请稍后重试",       # "please retry later"
+            "当前请求量较高",   # "current request volume is high"
+            "稍后重试",         # "retry later" (shorter variant)
         )
-        if any(ind in low for ind in quota_indicators):
-            return False
+        if any(ind in turn_output for ind in temporary_rate_limit_indicators):
+            # This is a temporary rate limit, not quota — fall through
+            # to the 429/rate_limit_error detection below.
+            pass
+        else:
+            quota_indicators = (
+                "exceeded your current quota",
+                "limit: 0",
+                "token plan",  # MiniMax "Token Plan 主要面向个人开发者"
+                "quota",
+            )
+            if any(ind in low for ind in quota_indicators):
+                return False
         return (
             "error code: 429" in low
             or "rate_limit_error" in low

@@ -19,6 +19,7 @@ from .types import (
     LocalCommand,
     LocalCommandResult,
     PromptCommand,
+    attach_downstream_context,
 )
 
 
@@ -226,6 +227,9 @@ def create_command_context(
     config: dict[str, Any] | None = None,
     app_state_store: Any = None,
     provider: Any = None,
+    tool_registry: Any = None,
+    tool_context: Any = None,
+    runtime_context: Any = None,
 ) -> CommandContext:
     """
     Create a command context.
@@ -241,6 +245,9 @@ def create_command_context(
             mutate global session state (e.g. /advisor) need this.
         provider: Optional active LLM provider. Commands that gate on
             provider type (e.g. /advisor) need this.
+        tool_registry: Optional active tool registry for downstream commands.
+        tool_context: Optional active tool execution context for downstream commands.
+        runtime_context: Optional active runtime context for downstream commands.
 
     Returns:
         CommandContext instance
@@ -248,7 +255,7 @@ def create_command_context(
     root = Path(workspace_root).expanduser().resolve()
     current = Path(cwd).expanduser().resolve() if cwd is not None else root
 
-    return CommandContext(
+    context = CommandContext(
         workspace_root=root,
         cwd=current,
         conversation=conversation,
@@ -258,3 +265,10 @@ def create_command_context(
         app_state_store=app_state_store,
         provider=provider,
     )
+    attach_downstream_context(
+        context,
+        tool_registry=tool_registry,
+        tool_context=tool_context,
+        runtime_context=runtime_context,
+    )
+    return context
