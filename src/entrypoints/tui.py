@@ -41,6 +41,8 @@ class TUIOptions:
     # flags as the headless entrypoint.
     permission_mode: str = "default"
     is_bypass_permissions_mode_available: bool = False
+    # Optional system prompt body to append (from resolved default agent).
+    append_system_prompt: str = ""
     # Test hook: replace the provider instance we'd otherwise build from config.
     provider_factory: Callable[[], object] | None = None
 

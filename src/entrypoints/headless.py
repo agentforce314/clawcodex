@@ -100,6 +100,9 @@ class HeadlessOptions:
     # Workspace root override (default: cwd).
     workspace_root: Path | None = None
 
+    # Optional system prompt body to append (from resolved default agent).
+    append_system_prompt: str = ""
+
 
 def run_headless(options: HeadlessOptions) -> int:
     """Run one or more prompts in headless mode. Returns the exit code."""
@@ -289,6 +292,10 @@ def run_headless(options: HeadlessOptions) -> int:
                         effective_system_prompt = (
                             build_effective_system_prompt(_style_prompt, tool_context)
                         )
+                        if options.append_system_prompt:
+                            effective_system_prompt = (
+                                f"{effective_system_prompt}\n\n{options.append_system_prompt}"
+                            )
 
                         def _persist(msg: Any) -> None:
                             # BLOCKING #2 fix: persist FULL message

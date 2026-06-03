@@ -33,6 +33,7 @@ class RuntimeOptions:
     resume_session_id: str | None = None
     resume_browse: bool = False
     verbose: bool = False
+    append_system_prompt: str = ""
 
 
 @dataclass
