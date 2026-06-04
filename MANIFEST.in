@@ -4,3 +4,5 @@ include CLAUDE.md
 include MVP_PLAN.md
 recursive-include src *.py
 recursive-include src *.json
+recursive-include extensions *.md *.txt
+prune src/upstream
