@@ -1766,7 +1766,21 @@ class ClawcodexREPL:
             cwd = str(
                 self.tool_context.cwd or self.tool_context.workspace_root
             )
-            return list(get_agent_definitions_with_overrides(cwd))
+            agents = list(get_agent_definitions_with_overrides(cwd))
+
+            # If a runtime-context agent_dir_override exists, also load
+            # agents from that directory (e.g. ``--agent <dir>``).
+            rc = getattr(self, "runtime_context", None)
+            if rc is not None:
+                ad_override = getattr(rc.options, "agent_dir_override", None)
+                if ad_override is not None:
+                    override_cwd = str(ad_override)
+                    extra = list(get_agent_definitions_with_overrides(override_cwd))
+                    for agent in extra:
+                        if agent.agent_type not in {a.agent_type for a in agents}:
+                            agents.append(agent)
+
+            return agents
         except Exception:
             return list(get_built_in_agents())
 

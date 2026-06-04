@@ -154,6 +154,14 @@ def make_agent_tool(
             return get_coordinator_agents()
         cwd = str(context.cwd or context.workspace_root)
         agents = get_agent_definitions_with_overrides(cwd)
+        # Also load agents from the custom agent directory override
+        # (set by ``--agent <dir>``).
+        ad_override = getattr(context, "_agent_dir_override", None)
+        if ad_override is not None:
+            extra = get_agent_definitions_with_overrides(str(ad_override))
+            for agent in extra:
+                if agent.agent_type not in {a.agent_type for a in agents}:
+                    agents.append(agent)
         available_mcp = list(context.mcp_clients.keys()) if context.mcp_clients else []
         return filter_agents_by_mcp_requirements(agents, available_mcp)
 

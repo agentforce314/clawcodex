@@ -50,42 +50,76 @@ def resolve_default_agent(cwd: str | Path = ".") -> dict[str, Any] | None:
 def resolve_agent_by_type(
     cwd: str | Path,
     agent_type: str,
+    agent_dir_override: str | Path | None = None,
 ) -> dict[str, Any] | None:
     """按 agent type（frontmatter name）查找 agent 定义。
 
     扫描 ``.claude/agents/*.md``，返回匹配的第一个 agent。
+
+    如果 ``agent_type`` 是一个已存在的目录路径，则直接
+    从该目录的 ``.claude/agents/`` 下查找 overview agent。
+    如果 ``agent_dir_override`` 非空，优先从该目录搜索。
 
     Parameters
     ----------
     cwd : str | Path
         工作目录。
     agent_type : str
-        frontmatter ``name`` 字段的值。
+        frontmatter ``name`` 字段的值。如果指向已存在的目录，
+        也尝试从该目录的 ``.claude/agents/`` 下加载 overview agent。
+    agent_dir_override : str | Path | None
+        如果指定，优先从该目录搜索 agent。
 
     Returns
     -------
     dict | None
         匹配的 agent 定义，或 None。
     """
-    agents_dir = Path(cwd).resolve() / ".claude" / "agents"
-    if not agents_dir.is_dir():
-        return None
+    # 确定搜索基目录
+    search_dirs: list[Path] = []
 
-    for md_file in _list_markdown_files(agents_dir):
-        try:
-            frontmatter, body = _parse_frontmatter(md_file.read_text(encoding="utf-8"))
-            if frontmatter.get("name") == agent_type:
-                return {
-                    "name": frontmatter.get("name", agent_type),
-                    "description": frontmatter.get("description", ""),
-                    "model": frontmatter.get("model"),
-                    "tools": frontmatter.get("tools", []),
-                    "skills": frontmatter.get("skills", []),
-                    "system_prompt_body": body,
-                }
-        except (ValueError, OSError) as exc:
-            logger.warning("Failed to parse %s: %s", md_file, exc)
+    if agent_dir_override is not None:
+        override_dir = Path(agent_dir_override).resolve()
+        search_dirs.append(override_dir)
+
+    # 如果 agent_type 本身是一个目录，也加入搜索
+    agent_type_path = Path(str(agent_type)).resolve()
+    if agent_type_path.is_dir():
+        search_dirs.append(agent_type_path)
+
+    # cwd 下的 .claude/agents/ 兜底
+    cwd_agents = Path(cwd).resolve() / ".claude" / "agents"
+    if cwd_agents.is_dir():
+        search_dirs.append(cwd_agents)
+
+    # 去重
+    seen: set[Path] = set()
+    unique_dirs: list[Path] = []
+    for d in search_dirs:
+        resolved = d.resolve()
+        if resolved not in seen:
+            seen.add(resolved)
+            unique_dirs.append(resolved)
+
+    for base in unique_dirs:
+        agents_dir = base if base.name == "agents" else base / ".claude" / "agents"
+        if not agents_dir.is_dir():
             continue
+        for md_file in _list_markdown_files(agents_dir):
+            try:
+                frontmatter, body = _parse_frontmatter(md_file.read_text(encoding="utf-8"))
+                if frontmatter.get("name") == agent_type:
+                    return {
+                        "name": frontmatter.get("name", agent_type),
+                        "description": frontmatter.get("description", ""),
+                        "model": frontmatter.get("model"),
+                        "tools": frontmatter.get("tools", []),
+                        "skills": frontmatter.get("skills", []),
+                        "system_prompt_body": body,
+                    }
+            except (ValueError, OSError) as exc:
+                logger.warning("Failed to parse %s: %s", md_file, exc)
+                continue
 
     return None
 
@@ -102,6 +136,10 @@ def _parse_agent_file(file_path: Path) -> dict[str, Any]:
         "skills": frontmatter.get("skills", []),
         "system_prompt_body": body,
     }
+
+
+# Public alias
+parse_agent_file = _parse_agent_file
 
 
 def _parse_frontmatter(content: str) -> tuple[dict[str, Any], str]:

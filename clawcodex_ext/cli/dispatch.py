@@ -237,9 +237,10 @@ def _resolve_startup_agent(args, ctx) -> None:
 
     Priority:
       1. ``--agent <name>``  → ``resolve_agent_by_type(cwd, name)``
-      2. ``--agent`` (const) → ``resolve_default_agent(cwd)``
-      3. No ``--agent``      → ``resolve_default_agent(cwd)`` (auto-detect)
-      4. Nothing found       → keep the default GENERAL_PURPOSE_AGENT
+      2. ``--agent /path``   → load from directory's ``.claude/agents/``
+      3. ``--agent`` (const) → ``resolve_default_agent(cwd)``
+      4. No ``--agent``      → ``resolve_default_agent(cwd)`` (auto-detect)
+      5. Nothing found       → keep the default GENERAL_PURPOSE_AGENT
 
     Injects the agent's ``system_prompt_body`` into
     ``ctx.options.append_system_prompt``.  Prints a startup banner
@@ -248,6 +249,7 @@ def _resolve_startup_agent(args, ctx) -> None:
     from pathlib import Path
 
     from extensions.pos_converter.default_agent import (
+        parse_agent_file,
         resolve_agent_by_type,
         resolve_default_agent,
     )
@@ -255,9 +257,45 @@ def _resolve_startup_agent(args, ctx) -> None:
     cwd = ctx.workspace_root or Path.cwd()
     agent_type = getattr(args, "agent", None)
 
+    # Check if agent_type is a directory path
+    agent_dir_override: Path | None = None
+    if agent_type is not None and agent_type != "auto":
+        agent_type_path = Path(str(agent_type)).resolve()
+        if agent_type_path.is_dir():
+            agent_dir_override = agent_type_path
+            ctx.options.agent_dir_override = agent_dir_override
+            ctx.tool_context._agent_dir_override = agent_dir_override
+            # Use directory as cwd for agent resolution; pass the
+            # agent_type as the directory path so resolve_agent_by_type
+            # finds the overview agent inside it.
+            cwd = agent_type_path
+            # Try default overview name first, then scan for any agent
+            agent = resolve_default_agent(cwd)
+            if agent is None:
+                # Fallback: scan .claude/agents/ for the best candidate
+                agent = _resolve_first_agent_in_dir(cwd)
+            # Inject and return early — agent is already resolved
+            if agent and agent.get("system_prompt_body"):
+                body = agent["system_prompt_body"].strip()
+                if body:
+                    existing = getattr(ctx.options, "append_system_prompt", "")
+                    ctx.options.append_system_prompt = (
+                        f"{existing}\n\n{body}" if existing else body
+                    )
+                agent_name = agent.get("name", "unknown")
+                sub_count = len([
+                    s for s in agent.get("skills", [])
+                    if isinstance(s, str) and s.startswith("skill-")
+                ])
+                if sub_count:
+                    print(f"⚡ Using agent: {agent_name} ({sub_count} sub-agents)", file=sys.stderr)
+                else:
+                    print(f"⚡ Using agent: {agent_name}", file=sys.stderr)
+            return
+
     if agent_type is not None and agent_type != "auto":
         # Explicit ``--agent <name>``
-        agent = resolve_agent_by_type(cwd, agent_type)
+        agent = resolve_agent_by_type(cwd, agent_type, agent_dir_override=agent_dir_override)
     else:
         # Auto-detect (always check, even with ``--agent`` bare)
         agent = resolve_default_agent(cwd)
@@ -278,3 +316,44 @@ def _resolve_startup_agent(args, ctx) -> None:
             print(f"⚡ Using agent: {agent_name} ({sub_count} sub-agents)", file=sys.stderr)
         else:
             print(f"⚡ Using agent: {agent_name}", file=sys.stderr)
+
+
+def _resolve_first_agent_in_dir(cwd: Path) -> dict[str, Any] | None:
+    """Scan ``.claude/agents/`` in *cwd* for the best overview agent.
+
+    Serves as fallback when ``resolve_default_agent()`` (which looks for the
+    hardcoded ``clawcodex-overview.md`` name) finds nothing, but the directory
+    contains agent files with different names (e.g. ``ascend-data-forge.md``).
+
+    Uses a scoring heuristic: the overview agent is the file with the most
+    ``skill-`` prefixed items in its ``skills`` list + the longest body.
+    This reliably distinguishes the overview (dozens of skills, >>1k body)
+    from sub-agents (1 skill, <200 body).
+    """
+    from extensions.pos_converter.default_agent import parse_agent_file
+
+    agents_dir = cwd / ".claude" / "agents"
+    if not agents_dir.is_dir():
+        return None
+
+    best: dict[str, Any] | None = None
+    best_score = -1
+
+    for md_file in sorted(agents_dir.glob("*.md")):
+        try:
+            agent = parse_agent_file(md_file)
+            if not agent:
+                continue
+            skills = agent.get("skills", [])
+            sub_skills = len(
+                [s for s in skills if isinstance(s, str) and s.startswith("skill-")]
+            )
+            body_len = len(agent.get("system_prompt_body", "") or "")
+            score = sub_skills * 1000 + body_len
+            if score > best_score:
+                best_score = score
+                best = agent
+        except Exception:
+            continue
+
+    return best

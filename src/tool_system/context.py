@@ -104,6 +104,10 @@ class ToolContext:
     # block without I/O).
     tool_result_chars_so_far: int = 0
     _aggregate_lock: threading.Lock = field(default_factory=threading.Lock)
+    # Custom agent directory override (set by ``--agent <dir>``).
+    # When non-None, ``get_agent_definitions`` will also scan this
+    # directory's ``.claude/agents/`` for agent definitions.
+    _agent_dir_override: Path | None = None
     # Session-cumulative tokens spent on client-side advisor calls.
     # ``src/tool_system/tools/advisor.py`` accumulates here on every
     # consultation; the REPL bottom_toolbar + TUI StatusLine read

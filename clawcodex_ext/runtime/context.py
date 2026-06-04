@@ -34,6 +34,7 @@ class RuntimeOptions:
     resume_browse: bool = False
     verbose: bool = False
     append_system_prompt: str = ""
+    agent_dir_override: Path | None = None
 
 
 @dataclass
