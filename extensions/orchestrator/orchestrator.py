@@ -116,9 +116,6 @@ class Orchestrator:
         from .clarification_queue import ClarificationQueue
         self._clarification_queue = ClarificationQueue(clarification_queue_path)
 
-        # Event stream for CLI tail (shared queue directory)
-        self._event_stream_dir = workspace_root / ".event_streams"
-        self._event_stream_dir.mkdir(parents=True, exist_ok=True)
         from .clarification import ClarificationResolver, ClarificationConfig
         self._clarification_resolver = ClarificationResolver(
             clarification_queue=self._clarification_queue,
