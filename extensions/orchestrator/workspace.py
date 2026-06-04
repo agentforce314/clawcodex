@@ -170,9 +170,31 @@ class WorkspaceManager:
                     f"Shared workspace path exists and is not a directory: {path}"
                 )
             if not (path / ".git").exists():
-                raise WorkspaceHookError(
-                    f"Shared workspace path is not a git repository: {path}"
+                # 如果目录存在但不是 git 仓库，自动 init 并设置 remote
+                logger.info(
+                    "Shared workspace %s is not a git repo, initializing...",
+                    path,
                 )
+                await self._run_process(["git", "init"], cwd=str(path))
+                await self._run_process(
+                    ["git", "remote", "add", "origin", self.config.repo_clone_url],
+                    cwd=str(path),
+                )
+                integration_branch = (
+                    self.config.integration_branch
+                    or self.config.base_branch
+                    or ""
+                ).strip()
+                if integration_branch:
+                    # 从本地来源仓库 fetch 集成 branch
+                    fetch_cmd = [
+                        "git",
+                        "fetch",
+                        "origin",
+                        f"{integration_branch}:refs/remotes/origin/{integration_branch}",
+                    ]
+                    await self._try_process(fetch_cmd, cwd=str(path))
+                return True
             return False
         return await self._ensure_workspace(path)
 
