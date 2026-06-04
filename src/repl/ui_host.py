@@ -74,6 +74,29 @@ class ReplUIHost:
             return None  # out of range -> cancel
         return opts[choice - 1].value
 
+    async def prompt_text(
+        self,
+        title: str,
+        *,
+        default: str = "",
+        placeholder: Optional[str] = None,
+    ) -> Optional[str]:
+        # Surface the default (else the placeholder) as an inline hint. Unlike
+        # select, an empty line is a VALID empty submit ('') — we do NOT
+        # substitute the default — and only EOF / Ctrl-C cancels (-> None).
+        hint = (
+            f" [{default}]"
+            if default
+            else (f" ({placeholder})" if placeholder else "")
+        )
+        prompt = f"{title}{hint}: "
+        loop = asyncio.get_running_loop()
+        try:
+            raw = await loop.run_in_executor(None, self._safe_input, prompt)
+        except (EOFError, KeyboardInterrupt):
+            return None
+        return "" if raw is None else raw
+
     async def display(self, title: str, body: str) -> None:
         self._print(f"\n{title}")
         if body:

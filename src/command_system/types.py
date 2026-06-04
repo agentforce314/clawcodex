@@ -288,10 +288,12 @@ class UIHost(Protocol):
     ``select``; ``display`` no-ops). Mirrors the TS pattern of injecting host
     callbacks into the command context.
 
-    The slice ships the two primitives every in-scope Class-B command needs:
-    a single ``select`` plus read-only ``display``. Multi-step primitives
-    (``confirm`` / ``text``) land with their first consumer in a later
-    chapter — the port grows by adding a method here and one line per adapter.
+    The slice ships the primitives in-scope Class-B commands need:
+    ``select`` (single choice), ``prompt_text`` (free-text line), plus
+    read-only ``display``. ``prompt_text`` lands with its first consumer
+    ``/export``. ``confirm`` stays deferred — TS expresses it as a 2-option
+    ``select`` over Yes/No, so it needs no new method. The port grows by
+    adding a method here and one line per adapter.
     """
 
     async def select(
@@ -305,6 +307,22 @@ class UIHost(Protocol):
         ``UIOption.value``, or ``None`` if cancelled."""
         ...
 
+    async def prompt_text(
+        self,
+        title: str,
+        *,
+        default: str = "",
+        placeholder: Optional[str] = None,
+    ) -> Optional[str]:
+        """Prompt for a single free-text line. Returns the submitted string,
+        which MAY be ``''`` — an empty submit is valid input, not a cancel
+        (mirrors TS ``TextInput.onSubmit('')``). Returns ``None`` *only* when
+        cancelled (Esc / EOF / Ctrl-C).
+
+        ``default`` pre-fills the editable value; ``placeholder`` is a hint
+        shown while the field is empty and is never submitted."""
+        ...
+
     async def display(self, title: str, body: str) -> None:
         """Show read-only information. No return value."""
         ...
@@ -313,10 +331,10 @@ class UIHost(Protocol):
 class NullUIHost:
     """UIHost for surfaces without a UI (SDK / non-interactive).
 
-    The *mutating* :meth:`select` raises :class:`InteractiveUnavailableError`
-    — deliberately NOT returning a default/``current`` value, which would read
-    as a false success. Only the read-only :meth:`display` no-ops. (Resolved
-    contract — see plan §4/§7.)
+    The *mutating* primitives :meth:`select` and :meth:`prompt_text` raise
+    :class:`InteractiveUnavailableError` — deliberately NOT returning a
+    default/``current`` value, which would read as a false success. Only the
+    read-only :meth:`display` no-ops. (Resolved contract — see plan §4/§7.)
     """
 
     _MSG = "This command needs an interactive surface (TUI or REPL)."
@@ -327,6 +345,15 @@ class NullUIHost:
         options: "Sequence[UIOption]",
         *,
         current: Optional[str] = None,
+    ) -> Optional[str]:
+        raise InteractiveUnavailableError(self._MSG)
+
+    async def prompt_text(
+        self,
+        title: str,
+        *,
+        default: str = "",
+        placeholder: Optional[str] = None,
     ) -> Optional[str]:
         raise InteractiveUnavailableError(self._MSG)
 
