@@ -101,6 +101,7 @@
 | F-51 | AgentRunner 空转检测机制（no-op detection） | P0 | ✅ 完成 | 在 `extensions/orchestrator/agent_runner.py` 中添加连续 5 轮工作区文件无变更检测，防止 agent 在 issue deliverables 已存在的场景下陷入无限 busy-work 循环。对应 PR 检视意见自动修复闭环（F-37）中的已修复前置问题。|
 | F-52 | Python SDK 方法注册为 Tool | P2 | 📋 规划中 | 将 POS→Agent 生成的 ADF 方法（`detect_modality`、`load_dataset` 等）注册为真实的 `Tool` 对象，使 sub-agent 可直接调用而非通过 Bash 回退。`extensions/pos_converter/tool_registry.py` — `ToolWrapper` + `register_source_operations()`。依赖 F-50。 |
 | F-53 | Tool 自动暴露为 CLI 斜杠命令 | P3 | 📋 规划中 | 已注册的 Tool 自动映射为 REPL/TUI 中的 `/tool-name` 命令（如 `/detect_modality --path /data/raw`），参数从 Tool schema 自动推导。`clawcodex_ext/cli/tool_cmd/`。依赖 F-52。 |
+| F-54 | AgentRunner / QueryRunner 运行期可观测性 | P0 | 📋 设计完成 | 补齐 headless issue agent 从 provider request 到 `SessionComplete` 之间的 debug 观测点：`QueryRunner.stream()` heartbeat、`AgentRunner` turn/event counters、watchdog timeout snapshot、持久化 `debug.ndjson` 与 registry/CLI 诊断字段，用于定位 agent run 有请求但无文件改动/报告/commit 的 stuck-run。 |
 
 ---
 
@@ -958,6 +959,102 @@ session = Session.resume(issue_session_id)
 2. `/detect_modality --path /data/sample.mp4` 等价于 `Tool("detect_modality").execute({"path": "/data/sample.mp4"})`
 3. TUI 斜杠补全包含已注册工具
 4. `python3 -m pytest tests/test_tool_cmd*.py -q` 通过
+
+---
+
+## F-54: AgentRunner / QueryRunner 运行期可观测性
+
+**状态**: 📋 设计完成
+**优先级**: P0
+**规划文档**: `docs/FEATURE_PLAN.md` → `§3.1.13 AgentRunner / QueryRunner 运行期可观测性与 stuck-run debug（F-54）`
+**依赖**: F-38（验证与报告闭环）、F-40（ProgressSink 事件扇出）、F-45（tool-events 审计旁路）、F-49（会话统一存储，长期目标）
+
+### 背景
+
+2026-06-04 本地 sequential orchestrator 运行 F-40 issue 时，daemon 日志显示 headless agent 已启动并向 MiniMax Anthropic-compatible endpoint 发起 provider request，但 issue 长时间停留在 `running`：workspace 无文件改动、`.event_logs/` 无有效事件、无 report、无 commit，registry 也没有终态更新。
+
+已落地的 orchestrator-level watchdog 可以防止永久 `running`：`agent.run_timeout_ms` 超时后标记 `agent_timeout` 并进入 retry。但 watchdog 只能终止卡死 session，不能解释 agent 卡在 headless/query 的哪一层。
+
+### 问题根因
+
+当前 `QueryRunner.stream()` 只有在 `run_headless_session(...)` 返回后才把 stdout 作为 `TextDelta` 发出；如果 headless future 长时间 pending，且 `on_event` 没有桥接任何 tool event，`AgentRunner.run()` 看不到 `TextDelta` / `ToolCallEvent` / `ToolResultEvent` / `SessionComplete`，下游 `ProgressReporter`、event log、report writer、git sync 都没有可消费信号。
+
+### 设计目标
+
+1. 在不修改 `src/` 核心代码的前提下，为 `extensions/api/query.py` 与 `extensions/orchestrator/agent_runner.py` 的 headless issue 路径补齐 debug 观测点。
+2. 能区分 stuck-run 卡在 provider 请求、headless future、事件桥接、AgentRunner 事件消费、workspace/git sync 哪一层。
+3. watchdog timeout 时持久化最后一次可观测状态，避免只留下 `agent_timeout` 这一类粗粒度原因。
+4. 将诊断摘要写入 registry / CLI 可见字段，让 `clawcodex-dev orchestrator issue list/status` 能直接解释“最后一次 agent 事件是什么”。
+5. 与 F-49 长期会话统一存储兼容：短期写轻量 `debug.ndjson`，长期可并入 `SessionStorage` / attach socket。
+
+### 观测点计划
+
+| 层级 | 观测点 | 记录内容 |
+|------|--------|----------|
+| `QueryRunner.stream()` start | headless session 启动 | workspace、provider、model、permission_mode、max_turns、prompt length、run_id（若可获得） |
+| `QueryRunner.on_event` | headless bridge 收到事件 | kind、tool_name、tool_use_id、event_count、seconds_since_start |
+| `QueryRunner.stream()` heartbeat | future pending 期间周期性输出 debug | future done/pending、seconds_since_last_event、event counts、stdout length |
+| `AgentRunner.run()` turn start/end | 每轮 turn 生命周期 | issue_id、run_id、turn、turn_has_tool_calls、turn_output_len、tool_count、workspace dirty 状态、no-op counter |
+| `AgentRunner.run()` event receive | 每个 QueryEvent 被消费 | event type、tool name、text length、session_complete reason、last_event_at |
+| `Orchestrator._run_issue()` timeout | watchdog 触发 | session status、turn_count、tool_count、last_event_type、last_tool_name、workspace_dirty、event_log_path、tool_events_path |
+
+### 持久化格式
+
+短期新增 per-run debug NDJSON，建议路径：
+
+```text
+{workspace}/.orchestrator_control/runs/{run_id}/debug.ndjson
+```
+
+示例行：
+
+```json
+{"ts": "2026-06-04T20:01:26Z", "stage": "agent_runner.start", "issue_id": "F-40-progress-sink", "run_id": "..."}
+{"ts": "2026-06-04T20:01:27Z", "stage": "query_runner.start", "provider": "minimax", "permission_mode": "bypassPermissions", "prompt_len": 18420}
+{"ts": "2026-06-04T20:03:27Z", "stage": "query_runner.heartbeat", "future_done": false, "seconds_since_last_event": 120, "stdout_len": 0, "tool_events": 0}
+{"ts": "2026-06-04T20:29:57Z", "stage": "orchestrator.timeout", "turn_count": 0, "tool_count": 0, "last_event_type": null, "workspace_dirty": false}
+```
+
+### Registry / CLI 摘要字段
+
+优先复用现有 `IssueRecord.verification_output` / `last_hook_error` 存放 timeout 摘要；若需要结构化查询，再新增字段：
+
+| 字段 | 含义 |
+|------|------|
+| `run_id` | 当前或最后一次 agent run id |
+| `last_agent_event_at` | AgentRunner 最近收到 QueryEvent 的时间 |
+| `last_agent_event` | 最近事件类型，如 `ToolCallEvent:Read` / `TextDelta` / `SessionComplete:success` |
+| `last_tool_name` | 最近 tool call / result 名称 |
+| `turn_count` | 当前 session 已完成 turn 数 |
+| `tool_count` | 当前 session 已消费 tool event 数 |
+| `timeout_deadline_at` | watchdog 预计触发时间 |
+| `debug_log_path` | `debug.ndjson` 路径 |
+
+### 实施阶段
+
+| 阶段 | 任务 | 状态 |
+|------|------|------|
+| 1 | 新增轻量 debug writer，写入 `{workspace}/.orchestrator_control/runs/{run_id}/debug.ndjson`，并确保 sequential workspace 下不会进入 git commit | 📋 待开始 |
+| 2 | 在 `QueryRunner.stream()` 增加 start / event / heartbeat 观测点；heartbeat 只写 debug log，不产生用户可见 `TextDelta`，避免污染 agent 输出 | 📋 待开始 |
+| 3 | 在 `AgentRunner.run()` 增加 turn/event counters 与 last-event snapshot；每轮结束记录 workspace dirty/no-op 状态 | 📋 待开始 |
+| 4 | watchdog timeout 时写 diagnostic snapshot，并把摘要同步到 registry 可见字段 | 📋 待开始 |
+| 5 | CLI issue status/list 增加 debug 摘要展示，至少显示 run_id、last_agent_event、turn_count、tool_count、debug_log_path | 📋 待开始 |
+| 6 | 增加 focused tests：hanging QueryRunner heartbeat、agent timeout snapshot、registry debug fields、debug log 不进入 git diff | 📋 待开始 |
+
+### 验收标准
+
+1. 当 headless future pending 且无 tool event 时，`debug.ndjson` 至少周期性出现 `query_runner.heartbeat`。
+2. 当 `ToolCallEvent` / `ToolResultEvent` / `SessionComplete` 正常出现时，`AgentRunner` 记录 last event 与 counters，并在 registry/CLI 中可见。
+3. watchdog timeout 后，registry 中的 failure reason 包含 run_id、turn_count、tool_count、last event、debug log path。
+4. sequential workspace 下 debug 文件写入 `.orchestrator_control/` 或等价控制目录，且不会被 `git_sync` 提交。
+5. F-49 落地后，`debug.ndjson` 可被迁移或双写到统一 `SessionStorage`，不形成第二套长期事件源。
+
+### 依赖与协同
+
+- 与 F-40 协同：F-40 解决 progress event 扇出与 session 结束落点；F-54 解决 QueryRunner/AgentRunner 在没有 progress event 时的诊断盲区。
+- 与 F-45 协同：F-45 的 `tool-events.ndjson` 记录已通过 tool approval/handler 的事件；F-54 记录更早的 headless bridge 与 AgentRunner 消费状态。
+- 与 F-49 协同：F-54 是低成本 debug 先行层；F-49 后续把长期 transcript、attach、resume 统一到 `SessionStorage`。
+- 与 watchdog 协同：watchdog 负责 fail-closed 和 retry，F-54 负责解释为什么 watchdog 被触发。
 
 ---
 
