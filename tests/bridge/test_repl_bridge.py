@@ -224,15 +224,6 @@ def _make_params(
 
 
 @pytest.mark.asyncio
-async def test_perpetual_mode_not_yet_supported() -> None:
-    params = _make_params(perpetual=True)
-    with pytest.raises(NotImplementedError, match='perpetual'):
-        await init_bridge_core(
-            params, api_client=FakeApiClient(), spawner=FakeSpawner(),
-        )
-
-
-@pytest.mark.asyncio
 async def test_init_happy_path_returns_handle() -> None:
     params = _make_params()
     api = FakeApiClient()

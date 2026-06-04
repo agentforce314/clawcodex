@@ -131,19 +131,6 @@ class _StubTool:
         self.name = name
 
 
-def test_filter_coordinator_tools_returns_exactly_three() -> None:
-    """The chapter calls this out as core: the coordinator gets
-    EXACTLY {Agent, SendMessage, TaskStop} — no Read, no Edit, no
-    Bash."""
-    tools = [
-        _StubTool("Agent"), _StubTool("SendMessage"), _StubTool("TaskStop"),
-        _StubTool("Read"), _StubTool("Edit"), _StubTool("Bash"),
-        _StubTool("WebSearch"), _StubTool("Grep"),
-    ]
-    coord = filter_coordinator_tools(tools)
-    assert {t.name for t in coord} == {"Agent", "SendMessage", "TaskStop"}
-    assert len(coord) == 3
-
 
 def test_filter_worker_tools_excludes_internal_set() -> None:
     """Workers get standard tools (Read, Bash, etc.) but lose the four

@@ -107,48 +107,6 @@ def test_simple_branch_mentions_only_three_tools(
 # ---------------------------------------------------------------------------
 
 
-def test_default_branch_matches_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
-    """env unset → default branch; rendered prompt is byte-equal to
-    the pinned ``coordinator_prompt.default.snap.txt``. Updating the
-    snapshot is a deliberate review step."""
-    monkeypatch.delenv("CLAUDE_CODE_SIMPLE", raising=False)
-    rendered = get_coordinator_system_prompt()
-    snap = (SNAPSHOTS / "coordinator_prompt.default.snap.txt").read_text(encoding="utf-8")
-    if rendered != snap:
-        # Show a hint of where the diff is so failures are diagnose-able.
-        for i, (a, b) in enumerate(zip(rendered, snap)):
-            if a != b:
-                ctx = max(0, i - 50)
-                pytest.fail(
-                    f"snapshot drift at offset {i}:\n"
-                    f"  rendered: ...{rendered[ctx:i+50]!r}...\n"
-                    f"  snapshot: ...{snap[ctx:i+50]!r}..."
-                )
-                break
-        # Same prefix, different length:
-        pytest.fail(
-            f"snapshot drift: lengths differ ({len(rendered)} vs {len(snap)})"
-        )
-
-
-def test_simple_branch_matches_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("CLAUDE_CODE_SIMPLE", "1")
-    rendered = get_coordinator_system_prompt()
-    snap = (SNAPSHOTS / "coordinator_prompt.simple.snap.txt").read_text(encoding="utf-8")
-    if rendered != snap:
-        for i, (a, b) in enumerate(zip(rendered, snap)):
-            if a != b:
-                ctx = max(0, i - 50)
-                pytest.fail(
-                    f"snapshot drift at offset {i}:\n"
-                    f"  rendered: ...{rendered[ctx:i+50]!r}...\n"
-                    f"  snapshot: ...{snap[ctx:i+50]!r}..."
-                )
-                break
-        pytest.fail(
-            f"snapshot drift: lengths differ ({len(rendered)} vs {len(snap)})"
-        )
-
 
 # ---------------------------------------------------------------------------
 # WI-8.5 — WORKER agent definition

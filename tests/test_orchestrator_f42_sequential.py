@@ -9,12 +9,28 @@ import unittest
 from pathlib import Path
 
 from src.orchestrator.config.schema import WorkflowConfig
+from extensions.api.orchestration import OrchestrationSubsystem
 from extensions.orchestrator.cli.issue import _run_diff
 from extensions.orchestrator.issue_registry import IssueRegistry
+from extensions.orchestrator.orchestrator import Orchestrator
+from extensions.orchestrator.workspace import WorkspaceConfig, WorkspaceManager
 
 
 def _git(args: list[str], cwd: Path) -> None:
     subprocess.run(["git", *args], cwd=str(cwd), check=True, capture_output=True, text=True)
+
+
+class _Tracker:
+    pass
+
+
+class _Runner:
+    pass
+
+
+class _Workspace:
+    def __init__(self, path: Path) -> None:
+        self.path = path
 
 
 class TestF42SequentialWorkspace(unittest.TestCase):
@@ -38,6 +54,67 @@ class TestF42SequentialWorkspace(unittest.TestCase):
                     },
                 }
             )
+
+    def test_sequential_ignore_sync_writes_git_exclude(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _git(["init"], root)
+            workflow = WorkflowConfig.from_dict(
+                {
+                    "tracker": {"kind": "local", "issues_path": str(root / "issues")},
+                    "workspace": {
+                        "root": str(root),
+                        "strategy": "sequential",
+                        "gitignore_patterns": [".clawcodex_workspace.lock"],
+                    },
+                    "agent": {"max_concurrent_agents": 1},
+                }
+            )
+            workspace = WorkspaceManager(WorkspaceConfig(root=root, strategy="sequential"))
+            orchestrator = Orchestrator(
+                workflow=workflow,
+                tracker=_Tracker(),  # type: ignore[arg-type]
+                workspace=workspace,
+                agent_runner=_Runner(),  # type: ignore[arg-type]
+            )
+
+            orchestrator._sync_gitignore_to_workspace(_Workspace(root))
+
+            self.assertFalse((root / ".gitignore").exists())
+            self.assertIn(
+                ".clawcodex_workspace.lock",
+                (root / ".git" / "info" / "exclude").read_text(encoding="utf-8"),
+            )
+
+    def test_orchestration_subsystem_forwards_sequential_workspace_config(self) -> None:
+        config = WorkflowConfig.from_dict(
+            {
+                "tracker": {"kind": "local", "issues_path": "/tmp/issues"},
+                "workspace": {
+                    "root": "/tmp/workspace",
+                    "repo_clone_url": "/tmp/source",
+                    "strategy": "sequential",
+                    "base_branch": "dev-decoupling",
+                    "integration_branch": "dev-decoupling-refactor",
+                    "require_clean_start": False,
+                    "require_clean_between_issues": False,
+                    "preserve_on_terminal": False,
+                    "sequential_lock": False,
+                },
+                "agent": {"max_concurrent_agents": 1},
+            }
+        )
+
+        subsystem = OrchestrationSubsystem(config)
+        workspace_config = subsystem.workspace_manager.config
+
+        self.assertEqual(workspace_config.strategy, "sequential")
+        self.assertEqual(workspace_config.base_branch, "dev-decoupling")
+        self.assertEqual(workspace_config.integration_branch, "dev-decoupling-refactor")
+        self.assertFalse(workspace_config.require_clean_start)
+        self.assertFalse(workspace_config.require_clean_between_issues)
+        self.assertFalse(workspace_config.preserve_on_terminal)
+        self.assertFalse(workspace_config.sequential_lock)
 
     def test_registry_round_trip_preserves_sequential_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

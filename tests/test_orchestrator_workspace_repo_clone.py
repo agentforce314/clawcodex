@@ -213,6 +213,47 @@ class TestWorkspaceRepositoryClone(unittest.IsolatedAsyncioTestCase):
                 "integration/f42",
             )
 
+    async def test_sequential_fetches_integration_branch_for_existing_empty_repo(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            origin, _ = _build_origin_repo(base)
+            seed = base / "seed"
+            _git(["checkout", "-b", "integration/f42"], seed)
+            (seed / "README.md").write_text("integration branch\n", encoding="utf-8")
+            _git(["add", "README.md"], seed)
+            _git(["commit", "-m", "integration"], seed)
+            _git(["push", "-u", "origin", "integration/f42"], seed)
+
+            root = base / "workspace"
+            root.mkdir()
+            _git(["init"], root)
+            _git(["remote", "add", "origin", str(origin)], root)
+            manager = WorkspaceManager(
+                WorkspaceConfig(
+                    root=root,
+                    repo_clone_url=str(origin),
+                    strategy="sequential",
+                    checkout_issue_branch=False,
+                    base_branch="main",
+                    integration_branch="integration/f42",
+                    sequential_lock=False,
+                    require_clean_start=False,
+                )
+            )
+
+            workspace = await manager.create_for_issue(
+                _Issue(id="1", identifier="ISSUE-1", title="First")
+            )
+
+            self.assertEqual(
+                _git_output(["rev-parse", "--abbrev-ref", "HEAD"], workspace.path),
+                "integration/f42",
+            )
+            self.assertEqual(
+                (workspace.path / "README.md").read_text(encoding="utf-8"),
+                "integration branch\n",
+            )
+
     async def test_sequential_dirty_guard_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)

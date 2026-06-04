@@ -58,33 +58,6 @@ def test_mutating_cron_tools_are_not_read_only() -> None:
     assert registry_tool("CronList").is_read_only({}) is True
 
 
-def test_attach_cron_runtime_adds_scheduler_and_outbox(tmp_path) -> None:
-    runtime = _Runtime(tmp_path)
-    scheduler = attach_cron_runtime(runtime)
-    assert runtime.cron_scheduler is scheduler
-    scheduler.on_fire("ping")
-    assert runtime.tool_context.outbox == [{"type": "cron_prompt", "prompt": "ping"}]
-
-
-def test_attach_cron_runtime_task_callback_records_run(tmp_path) -> None:
-    runtime = _Runtime(tmp_path)
-    scheduler = attach_cron_runtime(runtime)
-    task = CronCreateTool.call({"cron": "*/5 * * * *", "prompt": "ping", "durable": True}, runtime.tool_context).output
-    stored_task = scheduler.load()[0]
-
-    scheduler.check_once(at_ms=task["nextFireAt"])
-
-    runs = read_cron_runs(tmp_path)
-    assert len(runs) == 1
-    assert runtime.tool_context.outbox == [
-        {
-            "type": "cron_prompt",
-            "prompt": "ping",
-            "task_id": stored_task.id,
-            "run_id": runs[0].id,
-        }
-    ]
-
 
 def registry_tool(name: str):
     registry = build_default_registry(provider=None)

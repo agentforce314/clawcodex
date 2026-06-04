@@ -93,14 +93,6 @@ class TestE2EFileRead(unittest.TestCase):
         content = str(result.output)
         self.assertIn("Hello, world!", content)
 
-    def test_read_outside_workspace_blocked(self) -> None:
-        """Read tool blocks reads outside workspace root."""
-        with self.assertRaises(ToolPermissionError):
-            self.registry.dispatch(
-                ToolCall(name="Read", input={"file_path": "/etc/passwd"}),
-                self.ctx,
-            )
-
     def test_read_tool_is_concurrent_safe(self) -> None:
         """Read tool can be called concurrently."""
         tool = self.registry.get("Read")

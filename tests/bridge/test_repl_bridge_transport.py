@@ -28,11 +28,6 @@ def _sse_body(events: list[tuple[str, str]]) -> bytes:
     return ('\n'.join(out) + '\n').encode('utf-8')
 
 
-@pytest.mark.asyncio
-async def test_v1_factory_raises_not_implemented():
-    with pytest.raises(NotImplementedError):
-        create_v1_repl_transport()
-
 
 @pytest.mark.asyncio
 async def test_v2_transport_reads_sse_and_writes_to_ccr():

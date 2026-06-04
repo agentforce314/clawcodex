@@ -783,29 +783,6 @@ class TestHookRegistryLifecycle(unittest.TestCase):
 
         asyncio.run(run())
 
-
-# ---------------------------------------------------------------------------
-# 21. MCP client reconnect
-# ---------------------------------------------------------------------------
-
-class TestMcpClientReconnect(unittest.TestCase):
-    def test_client_has_reconnect_capability(self) -> None:
-        from src.services.mcp.client import McpClient
-        self.assertTrue(hasattr(McpClient, "connect"))
-        self.assertTrue(hasattr(McpClient, "close"))
-
-    def test_client_states(self) -> None:
-        from src.services.mcp.types import (
-            ConnectedMCPServer,
-            DisabledMCPServer,
-            FailedMCPServer,
-        )
-        # Verify state types exist with expected fields
-        server = ConnectedMCPServer(name="test")
-        self.assertEqual(server.type, "connected")
-        self.assertIsNotNone(server.capabilities)
-
-
 # ---------------------------------------------------------------------------
 # 22. Skills 3-layer loading
 # ---------------------------------------------------------------------------

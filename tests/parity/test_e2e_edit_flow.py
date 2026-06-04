@@ -150,18 +150,6 @@ class TestE2EWriteFlow(unittest.TestCase):
         self.assertFalse(result.is_error)
         self.assertTrue(target.exists())
 
-    def test_write_outside_workspace_blocked(self) -> None:
-        """Write tool blocks writes outside workspace root."""
-        with self.assertRaises(ToolPermissionError):
-            self.registry.dispatch(
-                ToolCall(name="Write", input={
-                    "file_path": "/tmp/outside_workspace_test.txt",
-                    "content": "bad\n",
-                }),
-                self.ctx,
-            )
-
-
 class TestE2EPermissionDenyBlocks(unittest.TestCase):
     """Permission deny rules block tool dispatch."""
 

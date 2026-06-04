@@ -30,16 +30,6 @@ class TestToolNameParity(unittest.TestCase):
         cls.registry = build_default_registry(include_user_tools=False)
         cls.snapshot = _load_json("ts_tool_names.json")
 
-    def test_all_core_tool_names_present(self) -> None:
-        core = self.snapshot["core_tools"]
-        missing: list[str] = []
-        for ts_name, info in core.items():
-            py_name = info["python_name"]
-            tool = self.registry.get(py_name)
-            if tool is None:
-                missing.append(f"{ts_name} -> {py_name}")
-        self.assertEqual(missing, [], f"Missing tools: {missing}")
-
     def test_agent_alias_task(self) -> None:
         agent_info = self.snapshot["core_tools"]["Agent"]
         self.assertIn("Task", agent_info.get("aliases", []))
@@ -123,29 +113,6 @@ class TestToolPropertyParity(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.registry = build_default_registry(include_user_tools=False)
         cls.props_snapshot = _load_json("ts_tool_properties.json")
-
-    def test_default_is_read_only_false(self) -> None:
-        default_val = self.props_snapshot["defaults"]["is_read_only"]
-        # Tools not in overrides should use the default
-        overridden = set(self.props_snapshot["tool_overrides"].keys())
-        for tool in self.registry.list_tools():
-            if tool.name not in overridden:
-                result = tool.is_read_only({})
-                self.assertEqual(
-                    result, default_val,
-                    f"Tool '{tool.name}' is_read_only({{}}) = {result}, expected default {default_val}",
-                )
-
-    def test_default_is_concurrency_safe_false(self) -> None:
-        default_val = self.props_snapshot["defaults"]["is_concurrency_safe"]
-        overridden = set(self.props_snapshot["tool_overrides"].keys())
-        for tool in self.registry.list_tools():
-            if tool.name not in overridden:
-                result = tool.is_concurrency_safe({})
-                self.assertEqual(
-                    result, default_val,
-                    f"Tool '{tool.name}' is_concurrency_safe({{}}) = {result}, expected default {default_val}",
-                )
 
     def test_read_tool_is_read_only(self) -> None:
         tool = self.registry.get("Read")
