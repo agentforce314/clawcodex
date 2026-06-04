@@ -99,6 +99,8 @@
 | F-48 | src/ 核心路径二开修改解耦 | P0 | 📋 设计完成 | 将 `src/` 中 10 个含真正功能修改的文件解耦到 `clawcodex_ext/` 和 `extensions/`，使 `src/` 与上游源码（`src/upstream/58ea488/`）功能层面一致。分 Phase 0~3：Phase 0（纯新增文件移入 ext）、Phase 1（注册表/Protocol 扩展消除字段注入）、Phase 2（子类覆盖恢复上游构造器签名）、Phase 3（入口点恢复上游逻辑）。复用 Facade/子类覆盖/前端注册表三种解耦模式。目标：src/ 有功能修改的文件数从 10+ 降为 0 |
 | F-49 | Issue 会话统一存储与实时介入协议 | P1 | 📋 设计完成 | 将 headless agent 的 `.event_logs/` 扁平 NDJSON 统一为 `SessionStorage` 的 `transcript.jsonl` 格式；在其上建立 Unix socket 双向控制协议，实现 `attach` CLI 观察/中断/接管/恢复；附带 session 恢复能力。Phase 0 存储统一 → Phase 1 socket 控制 → Phase 2 attach TUI → Phase 3 session 恢复 |
 | F-51 | AgentRunner 空转检测机制（no-op detection） | P0 | ✅ 完成 | 在 `extensions/orchestrator/agent_runner.py` 中添加连续 5 轮工作区文件无变更检测，防止 agent 在 issue deliverables 已存在的场景下陷入无限 busy-work 循环。对应 PR 检视意见自动修复闭环（F-37）中的已修复前置问题。|
+| F-52 | Python SDK 方法注册为 Tool | P2 | 📋 规划中 | 将 POS→Agent 生成的 ADF 方法（`detect_modality`、`load_dataset` 等）注册为真实的 `Tool` 对象，使 sub-agent 可直接调用而非通过 Bash 回退。`extensions/pos_converter/tool_registry.py` — `ToolWrapper` + `register_source_operations()`。依赖 F-50。 |
+| F-53 | Tool 自动暴露为 CLI 斜杠命令 | P3 | 📋 规划中 | 已注册的 Tool 自动映射为 REPL/TUI 中的 `/tool-name` 命令（如 `/detect_modality --path /data/raw`），参数从 Tool schema 自动推导。`clawcodex_ext/cli/tool_cmd/`。依赖 F-52。 |
 
 ---
 
@@ -899,6 +901,63 @@ session = Session.resume(issue_session_id)
 3. `clawcodex-dev orchestrator issue review --id <id> --approve` → 状态变 `COMPLETED`
 4. `clawcodex-dev orchestrator issue review --id <id> --reject --feedback "..."` → 自动 retry
 5. Orchestrator 重启后 `PENDING_REVIEW` 状态持久化，CLI 可继续操作
+
+---
+
+## F-52: Python SDK 方法注册为 Tool
+
+**状态**: 📋 规划中
+**优先级**: P2
+**规划文档**: `docs/FEATURE_PLAN.md` → `§3.19 Python SDK 方法注册为 Tool（F-52）`
+**依赖**: F-50（SourceCodeParser 已输出 SourceOperation）
+
+### 目标
+
+将 POS→Agent 转换解析出的 `SourceOperation`（如 `detect_modality`、`load_dataset`）注册为 clawcodex 可调用的 `Tool` 对象。使 sub-agent 的 `tools` 列表中的方法名从字符串占位符变为可执行的 Tool，不再需要通过 `Bash` subprocess 回退。
+
+### 实现计划
+
+| 组件 | 文件 | 说明 |
+|------|------|------|
+| `ToolWrapper` | `extensions/pos_converter/tool_registry.py` | 将 `SourceOperation` 包装为 `Tool` 对象，ParamSpec→JSON Schema |
+| `register_source_operations` | `extensions/pos_converter/tool_registry.py` | 批量注册某 agent 的所有 operations 到 ToolRegistry |
+| `AgentBuilder` 增量 | `extensions/pos_converter/agent_builder.py` | `build()` 在生成 markdown 后自动注册 tool |
+| `agent_loader_hook.py` | `extensions/pos_converter/agent_loader_hook.py` | 加载 agent markdown 时按 `source_path` 字段自动注册 |
+
+### 验收标准
+
+1. `ToolWrapper(operation).to_tool().name == "detect_modality"`
+2. 注册后 `registry.get_tool("detect_modality")` 返回有效 `Tool`
+3. 无 Python 源文件时优雅降级
+4. `python3 -m pytest tests/test_pos_converter_tool_registry.py -q` 通过
+
+---
+
+## F-53: Tool 自动暴露为 CLI 斜杠命令
+
+**状态**: 📋 规划中
+**优先级**: P3
+**规划文档**: `docs/FEATURE_PLAN.md` → `§3.20 Tool 自动暴露为 CLI 斜杠命令（F-53）`
+**依赖**: F-52（Tool 注册机制是前置条件）
+
+### 目标
+
+将已注册的 `Tool` 自动暴露为 REPL/TUI 中的 `/tool-name` 斜杠命令，使用户可在 CLI 直接输入 `/detect_modality --path /data/raw` 执行已注册的 ADF 方法。
+
+### 实现计划
+
+| 组件 | 路径 | 说明 |
+|------|------|------|
+| `DynamicCommandDiscovery` | `clawcodex_ext/cli/tool_cmd/discovery.py` | 扫描 ToolRegistry 中非核心工具，自动生成命令定义 |
+| `DynamicToolCommand` | `clawcodex_ext/cli/tool_cmd/command.py` | tool→command 适配器，ParamSpec→argparse 参数 |
+| 注册钩子 | `clawcodex_ext/cli/tool_cmd/hooks.py` | subcommand_registry 加载时注册 `/<name>` 命令 |
+
+### 验收标准
+
+1. 核心工具（Read/Write/Bash）不产生 `/read` 等命令
+2. `/detect_modality --path /data/sample.mp4` 等价于 `Tool("detect_modality").execute({"path": "/data/sample.mp4"})`
+3. TUI 斜杠补全包含已注册工具
+4. `python3 -m pytest tests/test_tool_cmd*.py -q` 通过
 
 ---
 
