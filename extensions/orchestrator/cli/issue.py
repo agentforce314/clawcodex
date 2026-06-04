@@ -711,29 +711,42 @@ def _run_tail(registry_path: Path | None, args: argparse.Namespace) -> int:
     import json
     from pathlib import Path
 
-    # Find the issue workspace
     from extensions.orchestrator.workspace_locator import get_workspace_root
-    ws = get_workspace_root(
-        workspace_arg=getattr(args, "workspace", None),
+
+    workspace_arg = getattr(args, "workspace", None)
+    previous_workspace = os.environ.get("CLAWCODEX_WORKSPACE_ROOT")
+    if workspace_arg:
+        os.environ["CLAWCODEX_WORKSPACE_ROOT"] = str(workspace_arg)
+    try:
+        ws = _resolve_issue_workspace_path(issue_id)
+    finally:
+        if workspace_arg:
+            if previous_workspace is None:
+                os.environ.pop("CLAWCODEX_WORKSPACE_ROOT", None)
+            else:
+                os.environ["CLAWCODEX_WORKSPACE_ROOT"] = previous_workspace
+
+    workspace_root = get_workspace_root(
+        workspace_arg=workspace_arg,
         workflow_path=None,
     )
+    if ws is None:
+        ws = workspace_root
     if ws is None:
         print("Cannot resolve workspace root.", file=sys.stderr)
         return 1
 
-    event_log_dir = ws / ".event_logs"
-    log_file = event_log_dir / f"{issue_id}.ndjson"
+    candidates = [ws / ".event_logs" / f"{issue_id}.ndjson"]
+    if workspace_root is not None and workspace_root != ws:
+        candidates.append(workspace_root / ".event_logs" / f"{issue_id}.ndjson")
+        candidates.append(workspace_root / f"_{issue_id}" / ".event_logs" / f"{issue_id}.ndjson")
+    else:
+        candidates.append(ws / f"_{issue_id}" / ".event_logs" / f"{issue_id}.ndjson")
 
-    if not log_file.exists():
-        # Fallback: per-issue workspace at ws/_{id}/.event_logs
-        per_issue_dir = ws / f"_{issue_id}" / ".event_logs"
-        per_issue_log = per_issue_dir / f"{issue_id}.ndjson"
-        if per_issue_log.exists():
-            event_log_dir = per_issue_dir
-            log_file = per_issue_log
-        else:
-            print(f"No event log found for issue {issue_id}.", file=sys.stderr)
-            return 1
+    log_file = next((candidate for candidate in candidates if candidate.exists()), None)
+    if log_file is None:
+        print(f"No event log found for issue {issue_id}.", file=sys.stderr)
+        return 1
 
     print(f"Tailing events for issue {issue_id} (Ctrl+C to stop)...")
     try:
@@ -1279,7 +1292,6 @@ def _run_diff(registry_path: Path | None, args: argparse.Namespace) -> int:
     # Resolve workspace path
     workspace_root = getattr(args, "workspace", None)
     if workspace_root is None:
-        import os
         workspace_root = os.environ.get("CLAWCODEX_WORKSPACE_ROOT")
 
     if not workspace_root:
@@ -1291,24 +1303,33 @@ def _run_diff(registry_path: Path | None, args: argparse.Namespace) -> int:
         print(f"Workspace not found: {ws_path}", file=sys.stderr)
         return 1
 
-    # Find the issue workspace directory
-    issue_ws = None
-    for wd in ws_path.iterdir():
-        if not wd.is_dir():
-            continue
-        metadata_file = wd / ".metadata"
-        if metadata_file.exists():
-            import json
-            try:
-                metadata = json.loads(metadata_file.read_text())
-                if metadata.get("issue_id") == issue_id:
-                    issue_ws = wd
-                    break
-            except Exception:
-                pass
-        if wd.name == issue_id or issue_id in wd.name:
-            issue_ws = wd
-            break
+    previous_workspace = os.environ.get("CLAWCODEX_WORKSPACE_ROOT")
+    os.environ["CLAWCODEX_WORKSPACE_ROOT"] = str(ws_path)
+    try:
+        issue_ws = _resolve_issue_workspace_path(issue_id)
+    finally:
+        if previous_workspace is None:
+            os.environ.pop("CLAWCODEX_WORKSPACE_ROOT", None)
+        else:
+            os.environ["CLAWCODEX_WORKSPACE_ROOT"] = previous_workspace
+
+    if issue_ws is None:
+        for wd in ws_path.iterdir():
+            if not wd.is_dir():
+                continue
+            metadata_file = wd / ".metadata"
+            if metadata_file.exists():
+                import json
+                try:
+                    metadata = json.loads(metadata_file.read_text())
+                    if metadata.get("issue_id") == issue_id:
+                        issue_ws = wd
+                        break
+                except Exception:
+                    pass
+            if wd.name == issue_id or issue_id in wd.name:
+                issue_ws = wd
+                break
 
     if issue_ws is None:
         print(f"Workspace not found for issue {issue_id}.", file=sys.stderr)

@@ -14,7 +14,12 @@ from typing import Any
 
 from .agent_runner import AgentRunner, AgentSession, RetryItem
 from .config.schema import WorkflowConfig
-from .git_sync import GitSyncService, HookFailedError, VerificationFailed
+from .git_sync import (
+    GitSyncPostCommitError,
+    GitSyncService,
+    HookFailedError,
+    VerificationFailed,
+)
 from .issue import Issue
 from .issue_registry import IssueRegistry, IssueStatus
 from .prompt_builder import PromptBuilder
@@ -1256,6 +1261,47 @@ class Orchestrator:
                         session.workspace,
                         session.issue,
                     )
+            except GitSyncPostCommitError as exc:
+                sync_result = exc.result
+                self._registry.update_report(
+                    session.issue.id or "",
+                    report_path=getattr(session, "report_path", None),
+                    verification_status=getattr(session, "verification_status", None),
+                    verification_output=getattr(session, "verification_output", None),
+                    summary_comment_id=getattr(session, "summary_comment_id", None),
+                )
+                if session.run_kind == "agent_followup":
+                    record = self._registry.get(session.issue.id or "")
+                    if record is not None and sync_result.commit_sha:
+                        record.last_followup_commit_sha = sync_result.commit_sha
+                        self._registry._save()
+                elif session.run_kind != "review_followup":
+                    self._registry.mark_synced(
+                        session.issue.id or "",
+                        branch_name=sync_result.branch_name,
+                        commit_sha=sync_result.commit_sha,
+                        pr_number=(
+                            sync_result.pull_request.number
+                            if sync_result.pull_request
+                            else None
+                        ),
+                        pr_url=(
+                            sync_result.pull_request.url
+                            if sync_result.pull_request
+                            else None
+                        ),
+                    )
+                logger.warning(
+                    "Post-commit sync failed issue_id=%s commit=%s: %s",
+                    session.issue.id,
+                    sync_result.commit_sha,
+                    exc,
+                )
+                session.status = "verification_failed"
+                session.verification_status = "failed"
+                session.verification_output = exc.output
+                if exc.hook_name:
+                    session.last_hook_error = str(exc.cause)
             except VerificationFailed as exc:
                 logger.warning(
                     "Verification failed issue_id=%s: %s",

@@ -1,11 +1,20 @@
 from __future__ import annotations
 
+import argparse
+import contextlib
+import io
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
 from src.orchestrator.config.schema import WorkflowConfig
+from extensions.orchestrator.cli.issue import _run_diff
 from extensions.orchestrator.issue_registry import IssueRegistry
+
+
+def _git(args: list[str], cwd: Path) -> None:
+    subprocess.run(["git", *args], cwd=str(cwd), check=True, capture_output=True, text=True)
 
 
 class TestF42SequentialWorkspace(unittest.TestCase):
@@ -59,3 +68,37 @@ class TestF42SequentialWorkspace(unittest.TestCase):
             self.assertEqual(record.previous_issue_id, "0")
             self.assertEqual(record.sequence_index, 2)
             self.assertEqual(reloaded.latest_sequential_record(), record)
+
+    def test_issue_diff_uses_registry_workspace_for_sequential_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "workspace"
+            workspace.mkdir()
+            _git(["init"], workspace)
+            _git(["config", "user.email", "test@example.com"], workspace)
+            _git(["config", "user.name", "Test User"], workspace)
+            (workspace / "README.md").write_text("before\n", encoding="utf-8")
+            _git(["add", "README.md"], workspace)
+            _git(["commit", "-m", "initial"], workspace)
+            (workspace / "README.md").write_text("after\n", encoding="utf-8")
+            _git(["add", "README.md"], workspace)
+            _git(["commit", "-m", "change"], workspace)
+
+            registry_path = workspace / ".clawcodex_issue_registry.json"
+            registry = IssueRegistry(registry_path)
+            registry.register(
+                issue_id="1",
+                issue_identifier="ISSUE-1",
+                branch_name="integration/f42",
+                base_branch="main",
+                workspace_strategy="sequential",
+                workspace_path=str(workspace),
+            )
+            registry.mark_synced("1", commit_sha="abc123")
+
+            args = argparse.Namespace(id="1", workspace=str(workspace), full=False, stat=True)
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                exit_code = _run_diff(registry_path, args)
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("Issue 1 — Changes", stdout.getvalue())

@@ -20,7 +20,12 @@ import unittest
 from pathlib import Path
 
 from src.orchestrator.config.schema import AgentConfig, HooksConfig
-from src.orchestrator.git_sync import GitSyncService, HookFailedError, VerificationFailed
+from src.orchestrator.git_sync import (
+    GitSyncPostCommitError,
+    GitSyncService,
+    HookFailedError,
+    VerificationFailed,
+)
 from src.orchestrator.issue import Issue
 from src.orchestrator.local_tracker.adapter import LocalTrackerAdapter
 from src.orchestrator.tracker import PullRequestRef
@@ -331,9 +336,12 @@ class TestRound2VerificationFailure(unittest.IsolatedAsyncioTestCase):
 
             (workspace.path / "README.md").write_text("changes\n", encoding="utf-8")
 
-            with self.assertRaises(VerificationFailed) as cm:
+            with self.assertRaises(GitSyncPostCommitError) as cm:
                 await ctx["service"].sync(session)
+            self.assertIsInstance(cm.exception.cause, VerificationFailed)
             self.assertIn("test", str(cm.exception).lower())
+            self.assertTrue(cm.exception.result.committed)
+            self.assertIsNotNone(cm.exception.result.commit_sha)
 
             # 1. NO push happened
             branch_name = "clawcodex/issue-e2e-2-verify-with-failing-test"
@@ -467,9 +475,12 @@ class TestRound4PrePushDirtyHook(unittest.IsolatedAsyncioTestCase):
 
             (workspace.path / "README.md").write_text("dirty test\n", encoding="utf-8")
 
-            with self.assertRaises(HookFailedError) as cm:
+            with self.assertRaises(GitSyncPostCommitError) as cm:
                 await ctx["service"].sync(session)
+            self.assertIsInstance(cm.exception.cause, HookFailedError)
             self.assertIn("modified the workspace", str(cm.exception))
+            self.assertTrue(cm.exception.result.committed)
+            self.assertIsNotNone(cm.exception.result.commit_sha)
 
             # NO push happened
             branch_name = "clawcodex/issue-e2e-4-dirty-pre-push"

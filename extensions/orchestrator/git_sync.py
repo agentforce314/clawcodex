@@ -59,6 +59,17 @@ class HookFailedError(GitSyncError):
         self.output = output
 
 
+class GitSyncPostCommitError(GitSyncError):
+    """Raised when post-commit sync steps fail after a commit exists."""
+
+    def __init__(self, cause: VerificationFailed | HookFailedError, result: GitSyncResult) -> None:
+        super().__init__(str(cause))
+        self.cause = cause
+        self.result = result
+        self.output = getattr(cause, "output", "")
+        self.hook_name = getattr(cause, "hook_name", None)
+
+
 class GitSyncService:
     """Perform commit, push, and PR creation after a run."""
 
@@ -76,6 +87,7 @@ class GitSyncService:
         self._hooks_config = hooks_config or HooksConfig()
         self._gitignore_patterns = gitignore_patterns or [
             ".event_logs",
+            ".operator_hints.md",
             ".reports",
             "*.pyc",
             "__pycache__",
@@ -146,6 +158,7 @@ class GitSyncService:
 
         commit_sha: str | None = None
         committed = False
+        has_run_commit = False
         pushed = False
         has_conflict = False
         conflict_files: tuple[str, ...] = ()
@@ -158,10 +171,24 @@ class GitSyncService:
             self._run_git_checked(["commit", "-m", commit_message], repo_root)
             commit_sha = self._run_git_output(["rev-parse", "HEAD"], repo_root)
             committed = True
-            if not is_sequential:
-                await self._run_pre_commit_hook(repo_root, session)
-                commit_sha = self._run_git_output(["rev-parse", "HEAD"], repo_root)
-            await self._run_pre_push_verification(repo_root, session)
+            try:
+                if not is_sequential:
+                    await self._run_pre_commit_hook(repo_root, session)
+                    commit_sha = self._run_git_output(["rev-parse", "HEAD"], repo_root)
+                await self._run_pre_push_verification(repo_root, session)
+            except (VerificationFailed, HookFailedError) as exc:
+                raise self._post_commit_error(
+                    exc,
+                    branch_name=branch_name,
+                    base_branch=base_branch,
+                    commit_sha=commit_sha,
+                    committed=committed,
+                    pushed=pushed,
+                    has_conflict=has_conflict,
+                    conflict_files=conflict_files,
+                    pull_request=followup_pr,
+                    is_local_tracker=is_local_tracker,
+                ) from exc
             if no_push:
                 # LocalTracker: no remote, skip push but record branch info
                 pass
@@ -171,6 +198,8 @@ class GitSyncService:
                 )
         else:
             commit_sha = self._run_git_output(["rev-parse", "HEAD"], repo_root)
+            start_commit_sha = getattr(session, "start_commit_sha", None)
+            has_run_commit = bool(start_commit_sha and commit_sha != start_commit_sha)
             await self._run_pre_push_verification(repo_root, session)
             # No staged changes but branch may have diverged from origin — still push
             if branch_name and not no_push:
@@ -227,16 +256,33 @@ class GitSyncService:
                     pull_request=pr_ref,
                 )
 
-        await self._run_post_sync_hook(repo_root, session)
+        has_reviewable_commit = committed or has_run_commit
+        try:
+            await self._run_post_sync_hook(repo_root, session)
+        except (VerificationFailed, HookFailedError) as exc:
+            if has_reviewable_commit:
+                raise self._post_commit_error(
+                    exc,
+                    branch_name=branch_name,
+                    base_branch=base_branch,
+                    commit_sha=commit_sha,
+                    committed=has_reviewable_commit,
+                    pushed=pushed,
+                    has_conflict=has_conflict,
+                    conflict_files=conflict_files,
+                    pull_request=pr_ref,
+                    is_local_tracker=is_local_tracker,
+                ) from exc
+            raise
 
-        if committed or (pushed and not no_push) or pr_ref is not None:
+        if has_reviewable_commit or (pushed and not no_push) or pr_ref is not None:
             await self._update_summary_comment(
                 session=session,
                 branch_name=branch_name,
                 base_branch=base_branch,
                 commit_sha=commit_sha,
                 pull_request=pr_ref,
-                committed=committed,
+                committed=has_reviewable_commit,
                 pushed=pushed if not no_push else False,
                 report_path=(
                     report_result.persistent_markdown_path
@@ -250,12 +296,39 @@ class GitSyncService:
             base_branch=base_branch,
             commit_sha=commit_sha,
             pull_request=pr_ref,
+            committed=has_reviewable_commit,
+            pushed=pushed,
+            has_conflict=has_conflict,
+            conflict_files=conflict_files,
+            pending_review=bool((is_local_tracker or self._agent_config.review_required) and has_reviewable_commit),
+        )
+
+    def _post_commit_error(
+        self,
+        cause: VerificationFailed | HookFailedError,
+        *,
+        branch_name: str,
+        base_branch: str,
+        commit_sha: str | None,
+        committed: bool,
+        pushed: bool,
+        has_conflict: bool,
+        conflict_files: tuple[str, ...],
+        pull_request: PullRequestRef | None,
+        is_local_tracker: bool,
+    ) -> GitSyncPostCommitError:
+        result = GitSyncResult(
+            branch_name=branch_name,
+            base_branch=base_branch,
+            commit_sha=commit_sha,
+            pull_request=pull_request,
             committed=committed,
             pushed=pushed,
             has_conflict=has_conflict,
             conflict_files=conflict_files,
             pending_review=bool((is_local_tracker or self._agent_config.review_required) and committed),
         )
+        return GitSyncPostCommitError(cause, result)
 
     async def _run_pre_commit_hook(self, repo_root: str, session: Any) -> None:
         command = self._hooks_config.pre_commit

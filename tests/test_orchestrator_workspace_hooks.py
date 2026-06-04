@@ -13,7 +13,13 @@ from src.orchestrator.config.schema import (
     WorkflowConfig,
     WorkspaceConfig,
 )
+from src.orchestrator.git_sync import (
+    GitSyncPostCommitError,
+    GitSyncResult,
+    VerificationFailed,
+)
 from src.orchestrator.issue import Issue
+from extensions.orchestrator.issue_registry import IssueStatus
 from src.orchestrator.orchestrator import Orchestrator
 from src.orchestrator.tracker import TrackerAdapter
 from src.orchestrator.workspace import Workspace, WorkspaceHookError, WorkspaceManager
@@ -71,6 +77,21 @@ class _Runner:
         if self._should_fail:
             raise RuntimeError("agent failed")
         session.status = "completed"
+
+
+class _PostCommitFailingSync:
+    async def sync(self, session: AgentSession, *, mode: str = "default") -> None:
+        result = GitSyncResult(
+            branch_name="integration/f46",
+            base_branch="main",
+            commit_sha="abc123",
+            committed=True,
+            pending_review=True,
+        )
+        raise GitSyncPostCommitError(
+            VerificationFailed("test verification failed", "pytest failed"),
+            result,
+        )
 
 
 class TestOrchestratorWorkspaceHooks(unittest.IsolatedAsyncioTestCase):
@@ -161,3 +182,32 @@ class TestOrchestratorWorkspaceHooks(unittest.IsolatedAsyncioTestCase):
             ["before_run", "agent_run", "after_run", "cleanup"],
         )
         self.assertEqual(session.status, "failed")
+
+    async def test_post_commit_sync_failure_records_commit_before_failure(self) -> None:
+        workspace = _HookWorkspaceManager()
+        runner = _Runner(workspace.events)
+        orchestrator = Orchestrator(
+            workflow=self._workflow(),
+            tracker=_Tracker(),
+            workspace=workspace,
+            agent_runner=runner,
+        )
+        orchestrator.git_sync = _PostCommitFailingSync()
+        session = self._session()
+        orchestrator._registry.register(
+            issue_id=session.issue.id or "1",
+            issue_identifier=session.issue.identifier or "ISSUE-1",
+            branch_name="integration/f46",
+            base_branch="main",
+        )
+        orchestrator._state.running[session.issue.id or "1"] = session
+
+        await orchestrator._run_issue(session)
+
+        record = orchestrator._registry.get(session.issue.id or "1")
+        self.assertIsNotNone(record)
+        assert record is not None
+        self.assertEqual(record.commit_sha, "abc123")
+        self.assertEqual(record.branch_name, "integration/f46")
+        self.assertEqual(record.status, IssueStatus.VERIFICATION_FAILED)
+        self.assertEqual(record.verification_output, "pytest failed")

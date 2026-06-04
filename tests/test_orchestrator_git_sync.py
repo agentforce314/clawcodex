@@ -7,7 +7,13 @@ import unittest
 from pathlib import Path
 
 from src.orchestrator.config.schema import AgentConfig, HooksConfig
-from src.orchestrator.git_sync import GitSyncService, GitSyncError, HookFailedError, VerificationFailed
+from src.orchestrator.git_sync import (
+    GitSyncPostCommitError,
+    GitSyncService,
+    GitSyncError,
+    HookFailedError,
+    VerificationFailed,
+)
 from src.orchestrator.issue import Issue
 from src.orchestrator.tracker import PullRequestRef, TrackerAdapter
 from src.orchestrator.workspace import Workspace, WorkspaceConfig, WorkspaceManager
@@ -305,8 +311,15 @@ class TestGitSyncService(unittest.IsolatedAsyncioTestCase):
                 agent_config=AgentConfig(test_command="python -c 'raise SystemExit(7)'"),
             )
 
-            with self.assertRaises(VerificationFailed):
+            with self.assertRaises(GitSyncPostCommitError) as cm:
                 await service.sync(_Session(issue, workspace))
+            self.assertIsInstance(cm.exception.cause, VerificationFailed)
+            self.assertTrue(cm.exception.result.committed)
+            self.assertIsNotNone(cm.exception.result.commit_sha)
+            self.assertEqual(
+                _git_output(["rev-parse", "HEAD"], workspace.path),
+                cm.exception.result.commit_sha,
+            )
             self.assertEqual(
                 _git_output(["ls-remote", "--heads", "origin", "clawcodex/issue-77-verify-before-push"], workspace.path),
                 "",
@@ -361,8 +374,12 @@ class TestGitSyncService(unittest.IsolatedAsyncioTestCase):
                 ),
             )
 
-            with self.assertRaises(HookFailedError) as cm:
+            with self.assertRaises(GitSyncPostCommitError) as cm:
                 await service.sync(_Session(issue, workspace))
+            self.assertIsInstance(cm.exception.cause, HookFailedError)
+            self.assertEqual(cm.exception.hook_name, "pre_push")
+            self.assertTrue(cm.exception.result.committed)
+            self.assertIsNotNone(cm.exception.result.commit_sha)
             self.assertIn("modified the workspace", str(cm.exception))
 
     async def test_sequential_sync_commits_without_push_or_pr(self) -> None:
@@ -410,6 +427,47 @@ class TestGitSyncService(unittest.IsolatedAsyncioTestCase):
                 _git_output(["ls-remote", "--heads", "origin", "integration/f42"], workspace.path),
                 "",
             )
+            await manager.cleanup(issue)
+
+    async def test_sequential_agent_created_commit_enters_pending_review(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            origin = _build_origin_repo(base)
+            manager = WorkspaceManager(
+                WorkspaceConfig(
+                    root=base / "workspace",
+                    repo_clone_url=str(origin),
+                    strategy="sequential",
+                    checkout_issue_branch=False,
+                    base_branch="main",
+                    integration_branch="integration/f42",
+                )
+            )
+            issue = Issue(id="77", identifier="ISSUE-77", title="Already committed")
+            workspace = await manager.create_for_issue(issue)
+            service = GitSyncService(_Tracker())
+            service._sync_gitignore(str(workspace.path))
+            _git(["add", ".gitignore"], workspace.path)
+            _git(["commit", "-m", "test: prepare ignore baseline"], workspace.path)
+            start_commit_sha = _git_output(["rev-parse", "HEAD"], workspace.path)
+            (workspace.path / "README.md").write_text("agent committed\n", encoding="utf-8")
+            _git(["add", "README.md"], workspace.path)
+            _git(["commit", "-m", "feat: ISSUE-77 Already committed"], workspace.path)
+            agent_commit_sha = _git_output(["rev-parse", "HEAD"], workspace.path)
+
+            session = _Session(issue, workspace)
+            session.workspace_strategy = "sequential"
+            session.integration_branch = "integration/f42"
+            session.start_commit_sha = start_commit_sha
+            service = GitSyncService(_Tracker(), agent_config=AgentConfig(review_required=True))
+            result = await service.sync(session)
+
+            self.assertIsNotNone(result)
+            assert result is not None
+            self.assertEqual(result.commit_sha, agent_commit_sha)
+            self.assertTrue(result.committed)
+            self.assertTrue(result.pending_review)
+            self.assertFalse(result.pushed)
             await manager.cleanup(issue)
 
     async def test_sequential_second_commit_builds_on_first(self) -> None:

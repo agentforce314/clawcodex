@@ -649,14 +649,17 @@ class TestFourPermissionModes(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Sub-D: config defaults include .reports
+# Sub-D: config defaults ignore workspace runtime artifacts
 # ---------------------------------------------------------------------------
 
 
 class TestWorkspaceConfigDefaults(unittest.TestCase):
-    def test_reports_added_to_gitignore_patterns(self) -> None:
+    def test_runtime_artifacts_added_to_gitignore_patterns(self) -> None:
         wf = WorkflowConfig.from_dict({})
+        self.assertIn(".event_logs", wf.workspace.gitignore_patterns)
+        self.assertIn(".operator_hints.md", wf.workspace.gitignore_patterns)
         self.assertIn(".reports", wf.workspace.gitignore_patterns)
+        self.assertNotIn("event_logs", wf.workspace.gitignore_patterns)
 
 
 if __name__ == "__main__":
