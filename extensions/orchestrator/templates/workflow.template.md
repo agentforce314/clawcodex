@@ -93,10 +93,9 @@ agent:
   permission_mode: bypassPermissions
 
 # ============================================================================
-# Codex — optional codex app-server integration
+# Codex — optional codex integration config
 # ============================================================================
 codex:
-  command: codex app-server
   thread_sandbox: workspace-write
   turn_timeout_ms: 3600000                                 # 1h per turn
   read_timeout_ms: 5000

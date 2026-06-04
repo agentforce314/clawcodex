@@ -199,7 +199,7 @@ class VerificationConfig:
 @dataclass
 class AgentConfig:
     max_concurrent_agents: int = 10
-    max_turns: int = 20
+    max_turns: int = 600
     max_retry_backoff_ms: int = 300_000
     max_retry_attempts: int = 5
     # Base delay (ms) for retries triggered by max_turns being exhausted.
@@ -239,13 +239,13 @@ class AgentConfig:
     rate_limit_base_delay_ms: int = 30_000
     rate_limit_max_backoff_ms: int = 600_000
     rate_limit_exponential_factor: float = 2.0
-    rate_limit_max_retries: int = 5
+    rate_limit_max_retries: int = 40
     # Minimum interval (ms) between successive provider API requests within
     # a single agent run. When non-zero, the agent sleeps for the remaining
-    # time before issuing each new request. Useful for rate limit avoidance
-    # on providers with tight per-minute quotas (e.g. MiniMax personal plan).
-    # Default 0 means no delay (unlimited request rate).
-    delay_between_requests_ms: int = 0
+    # time before issuing each new request. Default 1000ms (1s delay) to avoid
+    # rate limits on providers with tight per-minute quotas (e.g. MiniMax
+    # personal plan). Set to 0 for unlimited request rate.
+    delay_between_requests_ms: int = 2000
     # F-44: Human review gating. When True, the orchestrator marks each
     # completed issue as PENDING_REVIEW instead of COMPLETED after sync,
     # requiring a human to run `orchestrator issue review --id <id> --approve`
@@ -256,7 +256,7 @@ class AgentConfig:
 
 @dataclass
 class CodexConfig:
-    command: str = "codex app-server"
+    command: str = ""
     approval_policy: str | dict[str, Any] = field(
         default_factory=lambda: {
             "reject": {
@@ -431,7 +431,7 @@ class WorkflowConfig:
         verification_raw = agent_raw.get("verification", {})
         agent = AgentConfig(
             max_concurrent_agents=agent_raw.get("max_concurrent_agents", 10),
-            max_turns=agent_raw.get("max_turns", 20),
+            max_turns=agent_raw.get("max_turns", 600),
             max_retry_backoff_ms=agent_raw.get(
                 "max_retry_backoff_ms", 300_000
             ),
@@ -469,7 +469,7 @@ class WorkflowConfig:
                 agent_raw.get("rate_limit_exponential_factor", 2.0)
             ),
             rate_limit_max_retries=agent_raw.get(
-                "rate_limit_max_retries", 5
+                "rate_limit_max_retries", 40
             ),
             # F-44: review gate — when True, sync ends at PENDING_REVIEW
             # instead of COMPLETED, requiring human approve CLI command.
@@ -492,7 +492,7 @@ class WorkflowConfig:
                 )
 
         codex = CodexConfig(
-            command=codex_raw.get("command", "codex app-server"),
+            command=codex_raw.get("command", ""),
             approval_policy=codex_raw.get("approval_policy", CodexConfig().approval_policy),
             thread_sandbox=codex_raw.get("thread_sandbox", "workspace-write"),
             turn_sandbox_policy=codex_raw.get("turn_sandbox_policy"),

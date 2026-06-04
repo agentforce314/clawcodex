@@ -92,7 +92,6 @@ agent:
   allow_anyone_to_retry: false
 
 codex:
-  command: codex app-server
   thread_sandbox: workspace-write
   turn_timeout_ms: 3600000
   read_timeout_ms: 5000

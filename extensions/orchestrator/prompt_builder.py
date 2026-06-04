@@ -179,12 +179,20 @@ class PromptBuilder:
     ) -> str:
         """Build continuation prompt for subsequent turns."""
         context_block = f"\n\nCurrent issue context:\n{issue_context}\n" if issue_context else ""
+        urgency = (
+            f"\n- ⚠️  You have only {max_turns - turn_number + 1} turn(s) remaining. "
+            f"Prioritize code implementation over reading more files. "
+            f"Use Write/Edit to make concrete changes NOW."
+            if turn_number >= max_turns // 2
+            else ""
+        )
         return (
             f"Continuation guidance:\n\n"
-            f"- This is continuation turn #{turn_number} of {max_turns}.{context_block}\n"
+            f"- This is continuation turn #{turn_number} of {max_turns}.{context_block}{urgency}\n"
             f"- Resume from the current workspace state and continue implementing.\n"
             f"- Use available tools (Bash, Write, Edit, Grep, Glob, etc.) to make changes.\n"
-            f"- Focus on completing the issue requirements.\n"
+            f"- Focus on completing the issue requirements. Do NOT re-read files you have already explored.\n"
+            f"- Your FIRST action should be a Write or Edit to implement the feature.\n"
         )
 
     @staticmethod

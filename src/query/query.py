@@ -684,6 +684,14 @@ async def _call_model_sync(
             err_msg._api_error = "prompt_too_long"  # type: ignore[attr-defined]
             return [err_msg], []
 
+        if "429" in error_str or "rate_limit" in error_str.lower():
+            err_msg = _create_assistant_api_error_message(
+                "Rate limit exceeded. Please wait and retry.",
+                error="rate_limit",
+            )
+            err_msg._api_error = "rate_limit"  # type: ignore[attr-defined]
+            return [err_msg], []
+
         if "max_tokens" in error_str.lower() or "max_output_tokens" in error_str.lower():
             err_msg = _create_assistant_api_error_message(
                 "Output token limit reached.",
