@@ -305,6 +305,19 @@ class WorkspaceManager:
             return
         lock_path = self._sequential_lock_path()
         lock_path.parent.mkdir(parents=True, exist_ok=True)
+        # Stale lock recovery: if lock exists, check if its PID is still alive
+        if lock_path.exists():
+            if not self._lock_pid_alive(lock_path):
+                logger.warning(
+                    "Stale sequential lock found at %s, removing (owner process dead)",
+                    lock_path,
+                )
+                lock_path.unlink()
+            else:
+                raise WorkspaceHookError(
+                    f"Sequential workspace lock already held by live process: "
+                    f"{lock_path}"
+                )
         try:
             fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError as exc:
@@ -332,6 +345,21 @@ class WorkspaceManager:
 
     def _sequential_lock_path(self) -> Path:
         return self._root / ".clawcodex_workspace.lock"
+
+    def _lock_pid_alive(self, lock_path: Path) -> bool:
+        """Check if the PID recorded in the lock file is still alive."""
+        try:
+            content = lock_path.read_text(encoding="utf-8")
+            for line in content.splitlines():
+                if line.startswith("pid="):
+                    pid_str = line.split("=", 1)[1].strip()
+                    if pid_str:
+                        pid = int(pid_str)
+                        os.kill(pid, 0)
+                        return True
+        except (ValueError, OSError, FileNotFoundError):
+            pass
+        return False
 
     def _exclude_sequential_lock(self, path: Path) -> None:
         exclude_path = path / ".git" / "info" / "exclude"
