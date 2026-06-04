@@ -592,12 +592,14 @@ def _run_list(registry_path: Path | None, args: argparse.Namespace) -> int:
         counts[s.upper()] = counts.get(s.upper(), 0) + 1
 
     print(f"Issues ({len(records)} total)")
-    print(f"  {'STATUS':<15} {'ISSUE ID':<20} {'BRANCH':<30}")
-    print(f"  {'-'*15} {'-'*20} {'-'*30}")
+    print(f"  {'STATUS':<15} {'ISSUE ID':<20} {'TURN/TOOL':<9} {'LAST EVENT':<18} {'BRANCH':<30}")
+    print(f"  {'-'*15} {'-'*20} {'-'*9} {'-'*18} {'-'*30}")
     for r in records:
         s = _get_status_str(r.status)
         branch = r.branch_name or "-"
-        print(f"  {s:<15} {r.issue_id:<20} {branch:<30}")
+        turn_tool = f"{getattr(r, 'run_turn_count', 0)}/{getattr(r, 'run_tool_count', 0)}"
+        last_event = getattr(r, "run_last_event", None) or "-"
+        print(f"  {s:<15} {r.issue_id:<20} {turn_tool:<9} {last_event:<18} {branch:<30}")
 
     print()
     print(f"  PENDING  : {counts.get('PENDING', 0)}")
@@ -644,6 +646,21 @@ def _run_show(registry_path: Path | None, args: argparse.Namespace) -> int:
     print(f"  PR Number      : {record.pr_number or '-'}")
     print(f"  PR URL         : {record.pr_url or '-'}")
     print(f"  Attempts       : {record.attempt_count}")
+    print(f"  Run ID         : {getattr(record, 'run_id', None) or '-'}")
+    print(f"  Turns / Tools  : {getattr(record, 'run_turn_count', 0)} / {getattr(record, 'run_tool_count', 0)}")
+    print(f"  Last Event     : {getattr(record, 'run_last_event', None) or '-'}")
+    print(f"  Last Tool      : {getattr(record, 'run_last_tool', None) or '-'}")
+    print(f"  Output Chars   : {getattr(record, 'run_output_len', 0)}")
+    deadline = getattr(record, 'run_timeout_deadline_at', None)
+    if deadline:
+        deadline_text = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(deadline))
+    else:
+        deadline_text = "-"
+    print(f"  Timeout By     : {deadline_text}")
+    workspace_dirty = getattr(record, 'run_workspace_dirty', None)
+    dirty_text = "-" if workspace_dirty is None else str(workspace_dirty).lower()
+    print(f"  Workspace Dirty: {dirty_text}")
+    print(f"  Debug Log      : {getattr(record, 'debug_log_path', None) or '-'}")
     print(f"  Created        : {created}")
     print(f"  Updated        : {updated}")
     if record.clarification_status:

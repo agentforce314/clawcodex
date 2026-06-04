@@ -100,6 +100,15 @@ class IssueRecord:
     # the next poll uses it as `since_comment_id` so the same
     # command isn't re-processed.
     command_cursor: str | None = None
+    run_id: str | None = None
+    debug_log_path: str | None = None
+    run_turn_count: int = 0
+    run_tool_count: int = 0
+    run_last_event: str | None = None
+    run_last_tool: str | None = None
+    run_output_len: int = 0
+    run_timeout_deadline_at: float | None = None
+    run_workspace_dirty: bool | None = None
 
     def touch(self) -> None:
         self.updated_at = time.time()
@@ -292,6 +301,45 @@ class IssueRegistry:
         if record is None:
             return None
         record.status = IssueStatus.RUNNING
+        record.touch()
+        self._save()
+        return record
+
+    def update_run_diagnostics(
+        self,
+        issue_id: str,
+        *,
+        run_id: str | None = None,
+        debug_log_path: str | None = None,
+        turn_count: int | None = None,
+        tool_count: int | None = None,
+        last_event: str | None = None,
+        last_tool: str | None = None,
+        output_len: int | None = None,
+        timeout_deadline_at: float | None = None,
+        workspace_dirty: bool | None = None,
+    ) -> IssueRecord | None:
+        record = self._records.get(issue_id)
+        if record is None:
+            return None
+        if run_id is not None:
+            record.run_id = run_id
+        if debug_log_path is not None:
+            record.debug_log_path = debug_log_path
+        if turn_count is not None:
+            record.run_turn_count = turn_count
+        if tool_count is not None:
+            record.run_tool_count = tool_count
+        if last_event is not None:
+            record.run_last_event = last_event
+        if last_tool is not None:
+            record.run_last_tool = last_tool
+        if output_len is not None:
+            record.run_output_len = output_len
+        if timeout_deadline_at is not None:
+            record.run_timeout_deadline_at = timeout_deadline_at
+        if workspace_dirty is not None:
+            record.run_workspace_dirty = workspace_dirty
         record.touch()
         self._save()
         return record

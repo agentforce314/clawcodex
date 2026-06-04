@@ -8,9 +8,12 @@ from __future__ import annotations
 import asyncio
 import io
 import queue
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncIterator
+
+from extensions.orchestrator.debug_log import append_debug_event
 
 if TYPE_CHECKING:
     from ..capabilities.event_protocol import ToolEventProtocol
@@ -28,6 +31,8 @@ class QueryConfig:
     tools: list[str] | None = None  # tool names to enable; None = all
     permission_mode: str = "dontAsk"
     max_turns: int = 20
+    run_id: str | None = None
+    debug_log_path: str | Path | None = None
 
 
 @dataclass
@@ -104,10 +109,37 @@ class QueryRunner:
         # loaded lazily inside run_headless_session.
         from ..capabilities.headless_runner import HeadlessSessionOptions, run_headless_session
 
+        debug_log_path = self.config.debug_log_path
+        append_debug_event(
+            debug_log_path,
+            "query_runner.start",
+            run_id=self.config.run_id,
+            provider=self.config.provider,
+            model=self.config.model,
+            permission_mode=self.config.permission_mode,
+            prompt_len=len(self.config.prompt),
+            workspace=str(self.config.workspace),
+            max_turns=self.config.max_turns,
+        )
+
         event_queue: queue.Queue[Any] = queue.Queue()
+        tool_event_count = 0
+        last_event_at = time.monotonic()
 
         def on_event(tool_event: Any) -> None:
+            nonlocal tool_event_count, last_event_at
             try:
+                tool_event_count += 1
+                last_event_at = time.monotonic()
+                append_debug_event(
+                    debug_log_path,
+                    "headless.event",
+                    run_id=self.config.run_id,
+                    kind=getattr(tool_event, "kind", None),
+                    tool=getattr(tool_event, "tool_name", ""),
+                    tool_use_id=getattr(tool_event, "tool_use_id", None),
+                    is_error=getattr(tool_event, "is_error", False),
+                )
                 event_queue.put(tool_event)
             except Exception:
                 pass
@@ -127,6 +159,7 @@ class QueryRunner:
 
         loop = asyncio.get_running_loop()
         future = loop.run_in_executor(None, run_headless_session, session_opts)
+        next_heartbeat_at = time.monotonic() + 30.0
 
         # Drain the event queue while the headless session runs in the background.
         # A short timeout lets us poll for completion without busy-waiting.
@@ -168,6 +201,18 @@ class QueryRunner:
             except queue.Empty:
                 if future.done():
                     break
+                now = time.monotonic()
+                if now >= next_heartbeat_at:
+                    append_debug_event(
+                        debug_log_path,
+                        "query_runner.heartbeat",
+                        run_id=self.config.run_id,
+                        future_done=future.done(),
+                        seconds_since_last_event=round(now - last_event_at, 3),
+                        stdout_len=len(stdout.getvalue()),
+                        tool_events=tool_event_count,
+                    )
+                    next_heartbeat_at = now + 30.0
                 await asyncio.sleep(0.01)
 
         exit_code = await future

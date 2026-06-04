@@ -407,6 +407,7 @@ class WorkflowConfig:
                 "gitignore_patterns",
                 [
                     ".event_logs",
+                    ".orchestrator_control",
                     ".operator_hints.md",
                     ".reports",
                     "*.pyc",

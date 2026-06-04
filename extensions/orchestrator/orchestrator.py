@@ -14,6 +14,7 @@ from typing import Any
 
 from .agent_runner import AgentRunner, AgentSession, RetryItem
 from .config.schema import WorkflowConfig
+from .debug_log import append_debug_event
 from .git_sync import (
     GitSyncPostCommitError,
     GitSyncService,
@@ -27,6 +28,7 @@ from .progress_reporter import ProgressReporter
 from .review_feedback import ReviewFeedbackService, ReviewFollowup
 from .status_dashboard import SessionStatus, StatusDashboard
 from src.tool_system.context import ToolContext
+from src.utils.git import get_file_status
 from .tracker import (
     Command,
     Intent,
@@ -1192,6 +1194,7 @@ class Orchestrator:
         """Run agent for one issue with concurrency control."""
         async with self._semaphore:
             ran_agent = False
+            workspace_dirty: bool | None = None
             try:
                 await self.workspace.run_before_run_hook(
                     session.workspace,
@@ -1201,6 +1204,7 @@ class Orchestrator:
                 try:
                     self._progress_reporter.set_task_id(session.issue.id)
                     run_timeout_seconds = self.workflow.agent.run_timeout_ms / 1000.0
+                    session.timeout_deadline_at = time.time() + run_timeout_seconds
                     await asyncio.wait_for(
                         self.agent_runner.run(
                             session,
@@ -1361,6 +1365,20 @@ class Orchestrator:
                 session.verification_status = "failed"
                 session.verification_output = reason
                 session.last_hook_error = reason
+                workspace_dirty = bool(get_file_status(str(session.workspace.path)))
+                append_debug_event(
+                    session.debug_log_path,
+                    "orchestrator.timeout",
+                    issue_id=session.issue.id,
+                    run_id=session.run_id,
+                    turn_count=session.turn_count,
+                    tool_count=session.tool_count,
+                    last_event_type=session.last_agent_event,
+                    last_tool=session.last_tool_name,
+                    output_len=len(session.output_text),
+                    timeout_deadline_at=session.timeout_deadline_at,
+                    workspace_dirty=workspace_dirty,
+                )
             except Exception as exc:
                 logger.exception(
                     "Agent run failed issue_id=%s: %s",
@@ -1371,6 +1389,19 @@ class Orchestrator:
                     "before_run_failed" if not ran_agent else "failed"
                 )
             finally:
+                self._registry.update_run_diagnostics(
+                    session.issue.id or "",
+                    run_id=getattr(session, "run_id", None),
+                    debug_log_path=getattr(session, "debug_log_path", None),
+                    turn_count=getattr(session, "turn_count", 0),
+                    tool_count=getattr(session, "tool_count", 0),
+                    last_event=getattr(session, "last_agent_event", None),
+                    last_tool=getattr(session, "last_tool_name", None),
+                    output_len=len(getattr(session, "output_text", "") or ""),
+                    timeout_deadline_at=getattr(session, "timeout_deadline_at", None),
+                    workspace_dirty=workspace_dirty,
+                )
+
                 if session.issue.id in self._state.running:
                     del self._state.running[session.issue.id]
 

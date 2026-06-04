@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -35,6 +36,13 @@ class _HangingRunner:
     max_turns = 1
 
     async def run(self, session: AgentSession, workflow: WorkflowConfig, **kwargs: Any) -> None:
+        session.run_id = "run-timeout"
+        session.debug_log_path = str(session.workspace.path / ".orchestrator_control" / "runs" / session.run_id / "debug.ndjson")
+        session.turn_count = 2
+        session.tool_count = 3
+        session.last_agent_event = "ToolCallEvent"
+        session.last_tool_name = "Read"
+        session.output_text = "partial output"
         await asyncio.Event().wait()
 
 
@@ -110,12 +118,33 @@ class TestOrchestratorAgentWatchdog(unittest.IsolatedAsyncioTestCase):
 
             await orchestrator._run_issue(session)
             record = orchestrator._registry.get("1")
+            assert session.debug_log_path is not None
+            rows = [
+                json.loads(line)
+                for line in Path(session.debug_log_path).read_text(encoding="utf-8").splitlines()
+            ]
 
         assert record is not None
         self.assertEqual(session.status, "agent_timeout")
         self.assertEqual(record.status, IssueStatus.FAILED)
         self.assertEqual(record.attempt_count, 1)
         self.assertIn("Agent run exceeded configured timeout", record.verification_output or "")
+        self.assertEqual(record.run_id, "run-timeout")
+        self.assertEqual(record.debug_log_path, session.debug_log_path)
+        self.assertEqual(record.run_turn_count, 2)
+        self.assertEqual(record.run_tool_count, 3)
+        self.assertEqual(record.run_last_event, "ToolCallEvent")
+        self.assertEqual(record.run_last_tool, "Read")
+        self.assertEqual(record.run_output_len, len("partial output"))
+        self.assertIsNotNone(record.run_timeout_deadline_at)
+        timeout_event = next(row for row in rows if row["stage"] == "orchestrator.timeout")
+        self.assertEqual(record.run_workspace_dirty, timeout_event["workspace_dirty"])
+        self.assertEqual(timeout_event["run_id"], "run-timeout")
+        self.assertEqual(timeout_event["turn_count"], 2)
+        self.assertEqual(timeout_event["tool_count"], 3)
+        self.assertEqual(timeout_event["last_event_type"], "ToolCallEvent")
+        self.assertEqual(timeout_event["last_tool"], "Read")
+        self.assertEqual(timeout_event["output_len"], len("partial output"))
         self.assertEqual(len(orchestrator._state.retry_queue), 1)
         self.assertEqual(orchestrator._state.retry_queue[0].issue_id, "1")
         self.assertEqual(workspace.cleaned, ["1"])

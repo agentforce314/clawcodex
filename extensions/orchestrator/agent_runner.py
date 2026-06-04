@@ -20,6 +20,7 @@ from ..api.query import SessionComplete, TextDelta, ToolCallEvent, ToolResultEve
 from .approval_policy import ApprovalPolicy, get_approval_policy, ToolCallEvent as PolicyToolCallEvent
 from src.utils.git import get_file_status
 from .config.schema import AgentConfig, CodexConfig, WorkflowConfig
+from .debug_log import append_debug_event
 from .issue import Issue
 from .prompt_builder import PromptBuilder
 from .tool_event_log import ToolEventLog
@@ -90,6 +91,11 @@ class AgentSession:
     consecutive_429_count: int = 0
     total_429_backoff_seconds: float = 0.0
     rate_limit_pending_turn: int | None = None
+    debug_log_path: str | None = None
+    last_agent_event_at: float | None = None
+    last_agent_event: str | None = None
+    last_tool_name: str | None = None
+    timeout_deadline_at: float | None = None
 
 
 @dataclass
@@ -420,6 +426,20 @@ class AgentRunner:
         session.tool_events_path = str(
             Path.home() / ".clawcodex" / "tool-events" / (session.run_id or "unknown") / "events.ndjson"
         )
+        session.debug_log_path = str(
+            workspace.path / ".orchestrator_control" / "runs" / (session.run_id or "unknown") / "debug.ndjson"
+        )
+        append_debug_event(
+            session.debug_log_path,
+            "agent_runner.start",
+            issue_id=issue.id,
+            issue_identifier=issue.identifier,
+            run_id=session.run_id,
+            workspace=str(workspace.path),
+            max_turns=self.max_turns,
+            provider=self.agent_config.provider,
+            permission_mode=self.agent_config.permission_mode,
+        )
 
         turn_number = 0
         tool_count = 0
@@ -475,12 +495,23 @@ class AgentRunner:
                     issue.id,
                 )
 
+            append_debug_event(
+                session.debug_log_path,
+                "agent_runner.turn_start",
+                issue_id=issue.id,
+                run_id=session.run_id,
+                turn=turn_number,
+                prompt_len=len(prompt),
+                output_len=len(session.output_text),
+            )
             query_config = QueryConfig(
                 prompt=prompt,
                 workspace=workspace.path,
                 provider=self.agent_config.provider,
                 max_turns=self.max_turns,
                 permission_mode=self.agent_config.permission_mode,
+                run_id=session.run_id,
+                debug_log_path=session.debug_log_path,
             )
             runner = QueryRunner(query_config)
 
@@ -494,6 +525,23 @@ class AgentRunner:
                         event = await stream_iter.__anext__()
                     except StopAsyncIteration:
                         break
+                    event_type = type(event).__name__
+                    session.last_agent_event_at = time.time()
+                    session.last_agent_event = event_type
+                    event_tool_name = getattr(event, "tool_name", None)
+                    if event_tool_name:
+                        session.last_tool_name = event_tool_name
+                    append_debug_event(
+                        session.debug_log_path,
+                        "agent_runner.event",
+                        issue_id=issue.id,
+                        run_id=session.run_id,
+                        type=event_type,
+                        tool=event_tool_name,
+                        turn=turn_number,
+                        tool_count=tool_count,
+                        output_len=len(session.output_text),
+                    )
                     if isinstance(event, TextDelta):
                         session.output_text += event.content
                         turn_output += event.content
@@ -610,6 +658,16 @@ class AgentRunner:
                         # counter and emit PhaseComplete.
                         turn_number += 1
                         session.turn_count = turn_number
+                        append_debug_event(
+                            session.debug_log_path,
+                            "agent_runner.turn_complete",
+                            issue_id=issue.id,
+                            run_id=session.run_id,
+                            turn=turn_number,
+                            reason=event.reason,
+                            tool_count=tool_count,
+                            output_len=len(session.output_text),
+                        )
 
                         # Emit PhaseComplete event for progress reporting
                         phase_event = PhaseComplete(
@@ -732,6 +790,17 @@ class AgentRunner:
             progress_reporter.on_event(phase_event, session)
 
         session.tool_count = tool_count
+        append_debug_event(
+            session.debug_log_path,
+            "agent_runner.max_turns_exceeded",
+            issue_id=issue.id,
+            run_id=session.run_id,
+            turn_count=session.turn_count,
+            tool_count=session.tool_count,
+            output_len=len(session.output_text),
+            last_event_type=session.last_agent_event,
+            last_tool=session.last_tool_name,
+        )
 
     def _build_run_id(self, session: AgentSession) -> str:
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
