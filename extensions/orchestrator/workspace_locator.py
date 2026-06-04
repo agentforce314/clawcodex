@@ -119,14 +119,20 @@ def _parse_workspace_from_workflow(workflow_path: str | Path) -> Path | None:
         import yaml
 
         content = Path(workflow_path).read_text(encoding="utf-8")
-        # Split front matter from body
         if content.startswith("---"):
-            parts = content.split("---", 2)
-            if len(parts) >= 3:
-                front_matter = yaml.safe_load(parts[1])
-                ws_root = front_matter.get("workspace", {}).get("root")
-                if ws_root:
-                    return Path(os.path.expanduser(ws_root))
+            lines = content.splitlines()
+            end_idx = None
+            for i in range(1, len(lines)):
+                if lines[i].strip() == "---":
+                    end_idx = i
+                    break
+            if end_idx is not None:
+                fm_raw = "\n".join(lines[1:end_idx])
+                front_matter = yaml.safe_load(fm_raw)
+                if isinstance(front_matter, dict):
+                    ws_root = front_matter.get("workspace", {}).get("root")
+                    if ws_root:
+                        return Path(os.path.expanduser(ws_root))
     except Exception:
         pass
 
@@ -188,14 +194,21 @@ def write_orchestrator_metadata(
             import yaml
             content = Path(workflow_path).read_text(encoding="utf-8")
             if content.startswith("---"):
-                parts = content.split("---", 2)
-                if len(parts) >= 3:
-                    fm = yaml.safe_load(parts[1])
-                    tracker = fm.get("tracker", {})
-                    owner = tracker.get("owner", "")
-                    repo = tracker.get("repo", "")
-                    if owner and repo:
-                        project_slug = f"{owner}-{repo}"
+                lines = content.splitlines()
+                end_idx = None
+                for i in range(1, len(lines)):
+                    if lines[i].strip() == "---":
+                        end_idx = i
+                        break
+                if end_idx is not None:
+                    fm_raw = "\n".join(lines[1:end_idx])
+                    fm = yaml.safe_load(fm_raw)
+                    if isinstance(fm, dict):
+                        tracker = fm.get("tracker", {})
+                        owner = tracker.get("owner", "")
+                        repo = tracker.get("repo", "")
+                        if owner and repo:
+                            project_slug = f"{owner}-{repo}"
         except Exception:
             pass
 

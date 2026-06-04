@@ -163,8 +163,9 @@ tracker:
 The `local` adapter expects one markdown file per issue in
 `issues_path`, with YAML frontmatter (`id`, `identifier`, `title`,
 `state`, `priority`, `labels`, `branch_name`, `base_branch`, …) and a
-free-form body. See `extensions/orchestrator/issue-local.md` for the
-template and the field semantics. Comments are stored as
+free-form body. See `templates/issue-card.template.md` for the
+canonical template and field semantics. A concrete example lives at
+`extensions/orchestrator/issue-local.md`. Comments are stored as
 `<safe_id>.comments.ndjson` next to the issue file.
 
 Local tracker runs **skip the remote push** (`git_sync.no_push=True`)
@@ -949,10 +950,16 @@ from the last 3 path segments of the workspace root.
 ## See also
 
 - `extensions/orchestrator/templates/workflow.template.md` — the
-  authoritative placeholder template with per-field comments.
-- `extensions/orchestrator/workflow-local.md` — the local-tracker
-  template with the F-38 verification trio and F-39 retry knobs.
-- `extensions/orchestrator/issue-local.md` — local-tracker issue card
-  template.
+  authoritative placeholder template with per-field comments (generic,
+  covers all tracker kinds).
+- `extensions/orchestrator/templates/workflow-local.template.md` — the
+  local-tracker workflow template with the F-38 verification trio and
+  F-39 retry knobs (Chinese-l10n agent prompt).
+- `extensions/orchestrator/templates/issue-card.template.md` — local-tracker
+  issue card template (frontmatter + body skeleton).
+- `extensions/orchestrator/workflow-local.md` — concrete local-tracker
+  workflow; copy `templates/workflow-local.template.md` to create yours.
+- `extensions/orchestrator/issue-local.md` — concrete local issue card;
+  copy `templates/issue-card.template.md` to create yours.
 - `docs/FEATURE_PLAN.md` (F-37, F-38, F-39) — design docs.
 - `docs/PROGRESS.md` — per-feature status and acceptance criteria.

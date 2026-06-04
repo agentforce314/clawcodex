@@ -79,11 +79,11 @@ workspace:
 # Agent — Claude invocation parameters
 # ============================================================================
 agent:
-  max_concurrent_agents: 3                                 # global concurrency cap
+  max_concurrent_agents: 1                                 # global concurrency cap
   max_concurrent_agents_by_state:                          # per-state cap (keys = active state names)
     open: 3
-  max_turns: 20                                            # tool-call turns per issue run
-  max_retry_attempts: 3
+  max_turns: 200                                            # tool-call turns per issue run
+  max_retry_attempts: 6
   max_retry_backoff_ms: 300000                             # 5 min backoff between retries
   provider: anthropic                                      # anthropic | openai | ...
   # permission_mode MUST be bypassPermissions for unattended orchestrator runs.
