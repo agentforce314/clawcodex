@@ -58,7 +58,16 @@ class OrchestrationSubsystem:
                 ),
                 git_username=workflow_config.workspace.git_username,
                 git_token=workflow_config.workspace.git_token,
+                gitignore_patterns=workflow_config.workspace.gitignore_patterns,
                 strategy=workflow_config.workspace.strategy,
+                base_branch=workflow_config.workspace.base_branch,
+                integration_branch=workflow_config.workspace.integration_branch,
+                require_clean_start=workflow_config.workspace.require_clean_start,
+                require_clean_between_issues=(
+                    workflow_config.workspace.require_clean_between_issues
+                ),
+                preserve_on_terminal=workflow_config.workspace.preserve_on_terminal,
+                sequential_lock=workflow_config.workspace.sequential_lock,
             )
         )
         self.tracker_adapter = create_tracker_adapter(workflow_config.tracker)

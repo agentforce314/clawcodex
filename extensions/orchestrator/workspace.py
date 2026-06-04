@@ -11,7 +11,7 @@ import os
 import re
 import shutil
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +38,7 @@ class WorkspaceConfig:
     checkout_issue_branch: bool = True
     git_username: str | None = None
     git_token: str | None = None
+    gitignore_patterns: list[str] = field(default_factory=list)
     strategy: str = "isolated"
     base_branch: str | None = None
     integration_branch: str | None = None
@@ -91,6 +92,9 @@ class WorkspaceManager:
                 await self._run_hook(
                     hook, workspace_path, issue, "after_create"
                 )
+
+        # Ensure orchestrator control files are git-ignored locally
+        self._exclude_orchestrator_files(workspace_path)
 
         return Workspace(
             path=workspace_path, issue_identifier=safe_id, issue_id=issue_id
@@ -206,7 +210,6 @@ class WorkspaceManager:
                 "sequential workspace must be clean before starting an issue",
             )
         await self._acquire_sequential_lock(issue)
-        self._exclude_sequential_lock(path)
 
     async def _ensure_workspace(self, path: Path) -> bool:
         """Ensure workspace exists. Returns True if newly created."""
@@ -297,9 +300,51 @@ class WorkspaceManager:
             return
         if await self._try_process(["git", "checkout", integration_branch], cwd=str(path)):
             return
+
+        await self._try_process(
+            [
+                "git",
+                "fetch",
+                "origin",
+                f"{integration_branch}:refs/remotes/origin/{integration_branch}",
+            ],
+            cwd=str(path),
+        )
+        if await self._try_process(
+            ["git", "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{integration_branch}"],
+            cwd=str(path),
+        ):
+            if await self._try_process(
+                ["git", "checkout", "-b", integration_branch, "--track", f"origin/{integration_branch}"],
+                cwd=str(path),
+            ):
+                return
+
         base_branch = (self.config.base_branch or "").strip()
         if base_branch:
-            await self._run_process(["git", "checkout", base_branch], cwd=str(path))
+            if not await self._try_process(["git", "checkout", base_branch], cwd=str(path)):
+                await self._try_process(
+                    [
+                        "git",
+                        "fetch",
+                        "origin",
+                        f"{base_branch}:refs/remotes/origin/{base_branch}",
+                    ],
+                    cwd=str(path),
+                )
+                if await self._try_process(
+                    ["git", "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{base_branch}"],
+                    cwd=str(path),
+                ):
+                    if not await self._try_process(
+                        ["git", "checkout", "-b", base_branch, "--track", f"origin/{base_branch}"],
+                        cwd=str(path),
+                    ):
+                        await self._run_process(["git", "checkout", base_branch], cwd=str(path))
+                else:
+                    await self._run_process(["git", "checkout", base_branch], cwd=str(path))
+            if integration_branch == base_branch:
+                return
         await self._run_process(
             ["git", "checkout", "-b", integration_branch], cwd=str(path)
         )
@@ -383,16 +428,22 @@ class WorkspaceManager:
             pass
         return False
 
-    def _exclude_sequential_lock(self, path: Path) -> None:
+    def _exclude_orchestrator_files(self, path: Path) -> None:
+        """Write orchestrator control file patterns to .git/info/exclude so they
+        never appear in git status inside the workspace. This is the local-only
+        equivalent of .gitignore and works regardless of whether the workspace
+        clone has a tracked .gitignore."""
         exclude_path = path / ".git" / "info" / "exclude"
         if not exclude_path.exists():
             return
         existing = exclude_path.read_text(encoding="utf-8")
-        pattern = ".clawcodex_workspace.lock"
-        if pattern in {line.strip() for line in existing.splitlines()}:
+        existing_set = {line.strip() for line in existing.splitlines()}
+        patterns = [p for p in self.config.gitignore_patterns if p not in existing_set]
+        if not patterns:
             return
         suffix = "" if existing.endswith("\n") or not existing else "\n"
-        exclude_path.write_text(f"{existing}{suffix}{pattern}\n", encoding="utf-8")
+        lines = "\n".join(patterns)
+        exclude_path.write_text(f"{existing}{suffix}# ClawCodeX managed — do not edit manually\n{lines}\n", encoding="utf-8")
 
     async def _run_hook(
         self,

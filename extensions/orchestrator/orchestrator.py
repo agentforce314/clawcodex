@@ -157,25 +157,35 @@ class Orchestrator:
             )
 
     def _sync_gitignore_to_workspace(self, workspace: Any) -> None:
-        """Write .gitignore to workspace root from configured patterns."""
-        gitignore_path = Path(workspace.path) / ".gitignore"
-        patterns = self.git_sync._gitignore_patterns
+        """Write ignore patterns for orchestrator-managed workspace files."""
+        workspace_path = Path(workspace.path)
+        if self.workflow.workspace.strategy == "sequential":
+            ignore_path = workspace_path / ".git" / "info" / "exclude"
+        else:
+            ignore_path = workspace_path / ".gitignore"
+        if not ignore_path.parent.exists():
+            return
 
+        patterns = self.git_sync._gitignore_patterns
         existing: set[str] = set()
-        if gitignore_path.exists():
-            existing = {line.strip() for line in gitignore_path.read_text().splitlines() if line.strip() and not line.startswith("#")}
+        if ignore_path.exists():
+            existing = {
+                line.strip()
+                for line in ignore_path.read_text(encoding="utf-8").splitlines()
+                if line.strip() and not line.startswith("#")
+            }
 
         new_patterns = [p for p in patterns if p not in existing]
         if not new_patterns:
             return
 
-        with open(gitignore_path, "a", encoding="utf-8") as f:
-            if existing:
+        with ignore_path.open("a", encoding="utf-8") as f:
+            if ignore_path.exists() and ignore_path.stat().st_size > 0:
                 f.write("\n")
             f.write("# ClawCodeX managed — do not edit manually\n")
             for p in new_patterns:
                 f.write(f"{p}\n")
-        logger.debug("Updated .gitignore in %s with %d patterns", workspace.path, len(new_patterns))
+        logger.debug("Updated %s with %d patterns", ignore_path, len(new_patterns))
 
     async def run(self) -> None:
         """Main polling loop. Runs until cancelled."""
@@ -185,6 +195,7 @@ class Orchestrator:
 
         # Clean up terminal workspaces on startup
         await self.workspace.run_terminal_workspace_cleanup()
+        self._recover_stale_running_records()
 
         # Start metadata heartbeat for CLI discovery
         heartbeat_task = asyncio.create_task(self._metadata_heartbeat_loop())
@@ -202,6 +213,16 @@ class Orchestrator:
 
         logger.info("Orchestrator shutting down")
         await self._cancel_all_tasks()
+
+    def _recover_stale_running_records(self) -> None:
+        reason = "Recovered stale running issue on orchestrator startup"
+        stale_records = self._registry.running_records()
+        for record in stale_records:
+            self._registry.mark_failed_with_reason(record.issue_id, reason)
+            logger.warning(
+                "Recovered stale running issue_id=%s on orchestrator startup",
+                record.issue_id,
+            )
 
     async def _metadata_heartbeat_loop(self) -> None:
         """Periodically rewrite metadata so CLI can always discover the orchestrator.
@@ -1179,14 +1200,18 @@ class Orchestrator:
                 ran_agent = True
                 try:
                     self._progress_reporter.set_task_id(session.issue.id)
-                    await self.agent_runner.run(
-                        session,
-                        self.workflow,
-                        status_dashboard=self.status_dashboard,
-                        tracker=self.tracker,
-                        comment_tracker=self.tracker,
-                        clarification_resolver=self._clarification_resolver,
-                        progress_reporter=self._progress_reporter,
+                    run_timeout_seconds = self.workflow.agent.run_timeout_ms / 1000.0
+                    await asyncio.wait_for(
+                        self.agent_runner.run(
+                            session,
+                            self.workflow,
+                            status_dashboard=self.status_dashboard,
+                            tracker=self.tracker,
+                            comment_tracker=self.tracker,
+                            clarification_resolver=self._clarification_resolver,
+                            progress_reporter=self._progress_reporter,
+                        ),
+                        timeout=run_timeout_seconds,
                     )
                     if session.status == "completed":
                         # F-39 Sub-C: a followup run passes mode="followup"
@@ -1322,6 +1347,20 @@ class Orchestrator:
                 session.verification_status = "failed"
                 session.verification_output = exc.output
                 session.last_hook_error = str(exc)
+            except asyncio.TimeoutError:
+                reason = (
+                    "Agent run exceeded configured timeout "
+                    f"({self.workflow.agent.run_timeout_ms}ms)"
+                )
+                logger.warning(
+                    "Agent run timed out issue_id=%s timeout_ms=%s",
+                    session.issue.id,
+                    self.workflow.agent.run_timeout_ms,
+                )
+                session.status = "agent_timeout"
+                session.verification_status = "failed"
+                session.verification_output = reason
+                session.last_hook_error = reason
             except Exception as exc:
                 logger.exception(
                     "Agent run failed issue_id=%s: %s",
@@ -1360,6 +1399,18 @@ class Orchestrator:
                         session.issue.id or "",
                         output=getattr(session, "verification_output", None),
                         hook_error=getattr(session, "last_hook_error", None),
+                    )
+                    await self._schedule_retry(session)
+                elif session.status == "agent_timeout":
+                    self.status_dashboard.on_session_failed(
+                        session.issue.id or "",
+                        str(session.status),
+                    )
+                    self._registry.mark_failed_with_reason(
+                        session.issue.id or "",
+                        getattr(session, "last_hook_error", None)
+                        or getattr(session, "verification_output", None)
+                        or "Agent run timed out",
                     )
                     await self._schedule_retry(session)
                 elif session.status == "max_turns_exceeded":

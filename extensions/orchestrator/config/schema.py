@@ -246,6 +246,7 @@ class AgentConfig:
     # rate limits on providers with tight per-minute quotas (e.g. MiniMax
     # personal plan). Set to 0 for unlimited request rate.
     delay_between_requests_ms: int = 2000
+    run_timeout_ms: int = 1_800_000
     # F-44: Human review gating. When True, the orchestrator marks each
     # completed issue as PENDING_REVIEW instead of COMPLETED after sync,
     # requiring a human to run `orchestrator issue review --id <id> --approve`
@@ -477,6 +478,10 @@ class WorkflowConfig:
             rate_limit_max_retries=agent_raw.get(
                 "rate_limit_max_retries", 40
             ),
+            delay_between_requests_ms=agent_raw.get(
+                "delay_between_requests_ms", 2000
+            ),
+            run_timeout_ms=agent_raw.get("run_timeout_ms", 1_800_000),
             # F-44: review gate — when True, sync ends at PENDING_REVIEW
             # instead of COMPLETED, requiring human approve CLI command.
             review_required=bool(agent_raw.get("review_required", False)),

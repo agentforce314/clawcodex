@@ -87,8 +87,13 @@ class GitSyncService:
         self._hooks_config = hooks_config or HooksConfig()
         self._gitignore_patterns = gitignore_patterns or [
             ".event_logs",
+            ".event_streams",
+            ".orchestrator_control",
             ".operator_hints.md",
             ".reports",
+            ".clawcodex_clarification_queue.json",
+            ".clawcodex_issue_registry.json",
+            ".clawcodex_workspace.lock",
             "*.pyc",
             "__pycache__",
             "*.egg-info",
@@ -135,13 +140,16 @@ class GitSyncService:
         repo_root = get_repo_root(str(workspace.path))
         if not repo_root:
             return None
-        self._sync_gitignore(repo_root)
 
         # Check if tracker is LocalTrackerAdapter — skip push/PR for local-only repos
         from .local_tracker.adapter import LocalTrackerAdapter
         is_local_tracker = isinstance(self.tracker, LocalTrackerAdapter)
         workspace_strategy = getattr(session, "workspace_strategy", "isolated")
         is_sequential = workspace_strategy == "sequential"
+        if is_sequential:
+            self._sync_git_exclude(repo_root)
+        else:
+            self._sync_gitignore(repo_root)
         no_push = is_local_tracker or is_sequential
 
         followup_pr = getattr(session, "pull_request", None)
@@ -430,11 +438,18 @@ class GitSyncService:
 
     def _sync_gitignore(self, repo_root: str) -> None:
         gitignore_path = Path(repo_root) / ".gitignore"
+        self._append_ignore_patterns(gitignore_path)
+
+    def _sync_git_exclude(self, repo_root: str) -> None:
+        exclude_path = Path(repo_root) / ".git" / "info" / "exclude"
+        self._append_ignore_patterns(exclude_path)
+
+    def _append_ignore_patterns(self, path: Path) -> None:
         existing: set[str] = set()
-        if gitignore_path.exists():
+        if path.exists():
             existing = {
                 line.strip()
-                for line in gitignore_path.read_text(encoding="utf-8").splitlines()
+                for line in path.read_text(encoding="utf-8").splitlines()
                 if line.strip() and not line.startswith("#")
             }
         new_patterns = [
@@ -442,8 +457,8 @@ class GitSyncService:
         ]
         if not new_patterns:
             return
-        with gitignore_path.open("a", encoding="utf-8") as handle:
-            if gitignore_path.exists() and gitignore_path.stat().st_size > 0:
+        with path.open("a", encoding="utf-8") as handle:
+            if path.exists() and path.stat().st_size > 0:
                 handle.write("\n")
             handle.write("# ClawCodeX managed — do not edit manually\n")
             for pattern in new_patterns:

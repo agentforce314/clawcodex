@@ -207,6 +207,13 @@ class IssueRegistry:
             default=None,
         )
 
+    def running_records(self) -> list[IssueRecord]:
+        return [
+            record
+            for record in self._records.values()
+            if record.status == IssueStatus.RUNNING
+        ]
+
     def has_processed_feedback(self, issue_id: str, feedback_id: str) -> bool:
         record = self._records.get(issue_id)
         return record is not None and feedback_id in record.processed_feedback_ids
@@ -313,6 +320,23 @@ class IssueRegistry:
         if record is None:
             return None
         record.status = IssueStatus.FAILED
+        record.attempt_count += 1
+        record.touch()
+        self._save()
+        return record
+
+    def mark_failed_with_reason(
+        self,
+        issue_id: str,
+        reason: str,
+    ) -> IssueRecord | None:
+        record = self._records.get(issue_id)
+        if record is None:
+            return None
+        record.status = IssueStatus.FAILED
+        record.verification_status = "failed"
+        record.verification_output = reason
+        record.last_hook_error = reason
         record.attempt_count += 1
         record.touch()
         self._save()
