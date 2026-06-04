@@ -19,6 +19,7 @@ from typing import Optional, Sequence
 
 from src.command_system.types import UIOption
 
+from .screens.generic_input import GenericInputScreen
 from .screens.generic_select import GenericSelectScreen
 
 
@@ -44,6 +45,22 @@ class TextualUIHost:
                     title=title,
                     options=list(options),
                     current=current,
+                )
+            )
+
+    async def prompt_text(
+        self,
+        title: str,
+        *,
+        default: str = "",
+        placeholder: Optional[str] = None,
+    ) -> Optional[str]:
+        async with self._lock:
+            return await self._app.push_screen_wait(  # type: ignore[attr-defined]
+                GenericInputScreen(
+                    title=title,
+                    default=default,
+                    placeholder=placeholder,
                 )
             )
 
