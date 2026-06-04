@@ -1,13 +1,13 @@
 ---
 # ---------------------------------------------------------------------------
-# Tracker: GitCode (https://gitcode.com/chadwweng/AgentSDK) master branch
+# Tracker: GitCode (https://gitcode.com/chadwweng/clawcodex) master branch
 # ---------------------------------------------------------------------------
 tracker:
   kind: gitcode
   endpoint: https://api.gitcode.com/api/v5
   owner: chadwweng
   repo: AgentSDK
-  clone_url: https://gitcode.com/chadwweng/AgentSDK.git
+  clone_url: https://gitcode.com/chadwweng/clawcodex.git
   # GitCode personal access token. 优先读取 $GITCODE_TOKEN / $GITCODE_API_KEY;
   # 若必须内联,使用 $GITCODE_TOKEN 形式让 schema 在加载时从 env 解析。
   api_key: WV9arqgZdsAPdL3TQYgASrrR
@@ -31,7 +31,7 @@ polling:
 # ---------------------------------------------------------------------------
 workspace:
   root: /tmp/symphony_workspaces/agentsdk
-  repo_clone_url: https://gitcode.com/chadwweng/AgentSDK.git
+  repo_clone_url: https://gitcode.com/chadwweng/clawcodex.git
   clone_depth: 1
   checkout_issue_branch: true
   git_username: chadwweng
@@ -98,7 +98,7 @@ server:
 # Orchestrator Agent Prompt
 
 You are an autonomous development agent working on a GitCode issue from the
-**AgentSDK** repository (https://gitcode.com/chadwweng/AgentSDK). The issue has
+**AgentSDK** repository (https://gitcode.com/chadwweng/clawcodex). The issue has
 already been assigned to you.
 
 **Current state (do NOT repeat these steps):**
