@@ -106,7 +106,6 @@
 ---
 
 
-
 ## F-22: Cron 系统执行引擎
 
 **状态**: 🔄 进行中（Phase A runtime-first 接线 ✅ 已完成：REPL/TUI/headless 运行路径打通，调度器后台运行，REPL 主循环通过 `_drain_cron_outbox()` 消费 `cron_prompt`/`cron_missed` 事件；Phase B~F 分阶段推进）
@@ -234,11 +233,13 @@ CronTask due
 
 ---
 
+
 ## F-34: CLI/TUI Frontend 解耦架构
 
 **状态**: ✅ 已完成 Phase 1-3
 
 > 详细进度已归档至 [ARCHIVED_PROGRESS.md §五.3 F-34 CLI/TUI Frontend 解耦架构](./ARCHIVED_PROGRESS.md#五3-f-34-clitui-frontend-解耦架构已完成-phase-1-3)。
+
 
 ## F-36: LocalTracker 本地 Issue 文档源
 
@@ -246,35 +247,6 @@ CronTask due
 
 > 详细进度已归档至 [ARCHIVED_PROGRESS.md §五.4 F-36 LocalTracker 本地 Issue 文档源](./ARCHIVED_PROGRESS.md#五4-f-36-localtracker-本地-issue-文档源)。
 
-## F-38: Orchestrator 验证与报告闭环
-
-**状态**: ✅ 完成
-
-> 详细进度已归档至 [ARCHIVED_PROGRESS.md §五.5 F-38 Orchestrator 验证与报告闭环](./ARCHIVED_PROGRESS.md#五5-f-38-orchestrator-验证与报告闭环)。
-
-## F-39: Orchestrator Issue 重跑入口（label + comment 命令双通道）
-
-**状态**: ✅ 完成（Sub-A~F）
-
-> 详细进度已归档至 [ARCHIVED_PROGRESS.md §五.6 F-39 Orchestrator Issue 重跑入口](./ARCHIVED_PROGRESS.md#五6-f-39-orchestrator-issue-重跑入口label-comment-命令双通道)。
-
-## F-41: Coordinator 轻量工具集
-
-**状态**: ✅ 已完成
-
-> 详细进度已归档至 [ARCHIVED_PROGRESS.md §五.10 F-41 Coordinator 轻量工具集](./ARCHIVED_PROGRESS.md#五10-f-41-coordinator-轻量工具集)。
-
-## F-42: Orchestrator Shared / Sequential Workspace 策略
-
-**状态**: ✅ 完成
-
-> 详细进度已归档至 [ARCHIVED_PROGRESS.md §五.11 F-42 Orchestrator Shared / Sequential Workspace 策略](./ARCHIVED_PROGRESS.md#五11-f-42-orchestrator-shared-sequential-workspace-策略)。
-
-**2026-06-03 后修复记录**:
-- **`extensions/api/orchestration.py`** — `WorkspaceConfig(...)` 构造器缺少 `strategy=workflow_config.workspace.strategy` 参数传递。`workflow.md` 中配置的 `workspace.strategy`（`isolated | shared | sequential`）被静默丢弃，所有 issue 均使用默认 `isolated` 行为。已修复。
-- **Dashboard `ISSUE_STATUSES`** — `ISSUE_STATUSES` 集合缺少 `queued` 状态，导致排队 issue 在 Dashboard 上显示为 `pending` 而非 `queued`。已补充。
-
----
 
 ## F-37: Orchestrator PR 检视意见自动修复闭环
 
@@ -335,6 +307,41 @@ CronTask due
 
 ---
 
+
+## F-38: Orchestrator 验证与报告闭环
+
+**状态**: ✅ 完成
+
+> 详细进度已归档至 [ARCHIVED_PROGRESS.md §五.5 F-38 Orchestrator 验证与报告闭环](./ARCHIVED_PROGRESS.md#五5-f-38-orchestrator-验证与报告闭环)。
+
+
+## F-39: Orchestrator Issue 重跑入口（label + comment 命令双通道）
+
+**状态**: ✅ 完成（Sub-A~F）
+
+> 详细进度已归档至 [ARCHIVED_PROGRESS.md §五.6 F-39 Orchestrator Issue 重跑入口](./ARCHIVED_PROGRESS.md#五6-f-39-orchestrator-issue-重跑入口label-comment-命令双通道)。
+
+
+## F-41: Coordinator 轻量工具集
+
+**状态**: ✅ 已完成
+
+> 详细进度已归档至 [ARCHIVED_PROGRESS.md §五.10 F-41 Coordinator 轻量工具集](./ARCHIVED_PROGRESS.md#五10-f-41-coordinator-轻量工具集)。
+
+
+## F-42: Orchestrator Shared / Sequential Workspace 策略
+
+**状态**: ✅ 完成
+
+> 详细进度已归档至 [ARCHIVED_PROGRESS.md §五.11 F-42 Orchestrator Shared / Sequential Workspace 策略](./ARCHIVED_PROGRESS.md#五11-f-42-orchestrator-shared-sequential-workspace-策略)。
+
+**2026-06-03 后修复记录**:
+- **`extensions/api/orchestration.py`** — `WorkspaceConfig(...)` 构造器缺少 `strategy=workflow_config.workspace.strategy` 参数传递。`workflow.md` 中配置的 `workspace.strategy`（`isolated | shared | sequential`）被静默丢弃，所有 issue 均使用默认 `isolated` 行为。已修复。
+- **Dashboard `ISSUE_STATUSES`** — `ISSUE_STATUSES` 集合缺少 `queued` 状态，导致排队 issue 在 Dashboard 上显示为 `pending` 而非 `queued`。已补充。
+
+---
+
+
 ## F-43: CLI 模型供应商与模型切换
 
 **状态**: ✅ 已完成 (2026-06-02)
@@ -356,11 +363,23 @@ CronTask due
 | 回归测试 | `tests/test_f43_model_registry.py` | ✅ | 新增 6 个发现钩子测试（添加/隔离/异常静默/去重/validate_model/infer_provider），14/14 F-43 全部通过 |
 | **端到端验证** | 手动确认 | ✅ | 模拟第三方扩展注册 `my-llm` 钩子，`available_models`/`validate_model`/`infer_provider_for_model` 全链路通过 |
 
+
+## F-44: Orchestrator 人工检视闸门（Review Gate）
+
+**状态**: ✅ 完成
+**优先级**: P1
+
+> 详细进度已归档至 [ARCHIVED_PROGRESS.md §五.13 F-44 Orchestrator 人工检视闸门](./ARCHIVED_PROGRESS.md#五13-f-44-orchestrator-人工检视闸门review-gate)。
+
+---
+
+
 ## F-45: Orchestrator tool-call 审计旁路（tool-events.ndjson + 报告登记）
 
 **状态**: ✅ 已完成 (2026-06-02)
 
 > 详细进度已归档至 [ARCHIVED_PROGRESS.md §五.7 F-45 Orchestrator tool-call 审计旁路](./ARCHIVED_PROGRESS.md#五7-f-45-orchestrator-tool-call-审计旁路)。
+
 
 ## F-46: permission_mode enum 正交拆分
 
@@ -461,11 +480,13 @@ CronTask due
 
 ---
 
+
 ## F-47: Permission Settings Schema 重构（`permissions` 改 dict 形态 + plumb 启动模式）
 
 **状态**: ✅ 完成（含 F-47.1 hotfix）
 
 > 详细进度已归档至 [ARCHIVED_PROGRESS.md §五.9 F-47 Permission Settings Schema 重构](./ARCHIVED_PROGRESS.md#五9-f-47-permission-settings-schema-重构)。
+
 
 ## F-48: src/ 核心路径二开修改解耦
 
@@ -593,6 +614,7 @@ CronTask due
   - F-35 的 584 文件还原需要 F-48 先完成核心 10 文件的解耦
 
 ---
+
 
 ## F-49: Issue 会话统一存储与实时介入协议
 
@@ -727,6 +749,7 @@ session = Session.resume(issue_session_id)
 
 ---
 
+
 ## F-50: POS 转换器源码固化（SourceCodeParser + 增强 SkillGrouper + AgentMarkdownWriter）
 
 **状态**: ✅ 完成
@@ -735,6 +758,7 @@ session = Session.resume(issue_session_id)
 > 详细进度已归档至 [ARCHIVED_PROGRESS.md §五.14 F-50 POS 转换器源码固化](./ARCHIVED_PROGRESS.md#五14-f-50-pos-转换器源码固化sourcecodeparser--增强-skillgrouper--agentmarkdownwriter)。
 
 ---
+
 
 ## F-51: AgentRunner 空转检测机制（no-op detection）
 
@@ -745,14 +769,6 @@ session = Session.resume(issue_session_id)
 
 ---
 
-## F-44: Orchestrator 人工检视闸门（Review Gate）
-
-**状态**: ✅ 完成
-**优先级**: P1
-
-> 详细进度已归档至 [ARCHIVED_PROGRESS.md §五.13 F-44 Orchestrator 人工检视闸门](./ARCHIVED_PROGRESS.md#五13-f-44-orchestrator-人工检视闸门review-gate)。
-
----
 
 ## F-52: Python SDK 方法注册为 Tool
 
@@ -783,6 +799,7 @@ session = Session.resume(issue_session_id)
 
 ---
 
+
 ## F-53: Tool 自动暴露为 CLI 斜杠命令
 
 **状态**: 📋 规划中
@@ -810,6 +827,7 @@ session = Session.resume(issue_session_id)
 4. `python3 -m pytest tests/test_tool_cmd*.py -q` 通过
 
 ---
+
 
 ## F-54: AgentRunner / QueryRunner 运行期可观测性
 
@@ -907,17 +925,18 @@ session = Session.resume(issue_session_id)
 
 ---
 
-## 九、死代码排查记录
+
+## 五、死代码排查记录
 
 > 扫描时间: 2026-06-XX | 工具: vulture 2.16 | 对照基线: `src/upstream/58ea488/`
 
-### 9.1 排查方法
+### 5.1 排查方法
 
 1. 运行 `vulture src/ src/upstream/58ea488/` 对当前代码和上游基线分别扫描
 2. 逐项对照：若死代码在上游同类文件中同样存在，则判定为 **继承性死代码（UPSTREAM）**，保留不动
 3. 若死代码仅存在于本 fork 新实现文件中（`extensions/` 或 `src/services/bridge/` 等上游不存在的文件），则判定为 **新引入死代码（NEW）**，应清理
 
-### 9.2 应清理项（NEW — 本 fork 新引入）
+### 5.2 应清理项（NEW — 本 fork 新引入）
 
 | # | 文件 | 行 | 类型 | 严重程度 | 说明 |
 |---|------|----|------|---------|------|
@@ -926,7 +945,7 @@ session = Session.resume(issue_session_id)
 | 3 | `extensions/orchestrator/cli/dashboard.py` | 18 | 未使用的 import | 🟠 P1 | `deque` 从 `collections` 导入，全文无任何使用 |
 | 4 | `extensions/orchestrator/cli/issue.py` | 1575 | 未使用的 import | 🟠 P1 | `from pathlib import Path as _Path` 局部导入，`_Path` 从未被实例化。模块级已在第34行有 `from pathlib import Path` |
 
-### 9.3 继承性死代码（UPSTREAM — 保留不动）
+### 5.3 继承性死代码（UPSTREAM — 保留不动）
 
 上游 `src/upstream/58ea488/` 中存在相同死代码，按原则保留不做清理。涉及约 50 处，主要为以下模式：
 
@@ -940,7 +959,7 @@ session = Session.resume(issue_session_id)
 
 > 典型继承项：`src/utils/messages.py` 导入的 `ToolUseBlock`、`RedactedThinkingBlock`、`ImageBlock`、`MessageContent` 在上游同样未使用；`src/bridge/bridge_permission_callbacks.py` 和 `src/bridge/types.py` 的未用参数在上游完全一致。
 
-### 9.4 误报项（已确认有使用）
+### 5.4 误报项（已确认有使用）
 
 | 文件 | vulture 报告项 | 实际使用说明 |
 |------|--------------|-------------|
@@ -948,7 +967,7 @@ session = Session.resume(issue_session_id)
 | `src/services/tool_execution/tool_execution.py:53` `get_all_base_tools` | 未用 import | 懒导入，在函数体内被调用 |
 | `src/services/api/errors.py:21` `RateLimitError` | 未导出 | 已在 `__init__.py` 中 re-export |
 
-### 9.5 清理建议
+### 5.5 清理建议
 
 | 优先级 | 文件 | 建议操作 |
 |--------|------|---------|
