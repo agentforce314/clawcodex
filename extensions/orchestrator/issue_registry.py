@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import json
 import logging
+import tempfile
 import time
+from contextlib import suppress
 from dataclasses import asdict, dataclass, field, fields
 from enum import Enum
 from pathlib import Path
@@ -158,17 +160,29 @@ class IssueRegistry:
             logger.warning("Failed to load issue registry: %s — starting fresh", exc)
 
     def _save(self) -> None:
+        tmp_path: Path | None = None
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
-            self._path.write_text(
-                json.dumps(
-                    {k: asdict(v) for k, v in self._records.items()},
-                    indent=2,
-                    ensure_ascii=False,
-                ),
-                encoding="utf-8",
+            payload = json.dumps(
+                {k: asdict(v) for k, v in self._records.items()},
+                indent=2,
+                ensure_ascii=False,
             )
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                dir=self._path.parent,
+                prefix=f".{self._path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as tmp_file:
+                tmp_path = Path(tmp_file.name)
+                tmp_file.write(payload)
+            tmp_path.replace(self._path)
         except Exception as exc:
+            if tmp_path is not None:
+                with suppress(OSError):
+                    tmp_path.unlink()
             logger.warning("Failed to save issue registry: %s", exc)
 
     # ------------------------------------------------------------------
@@ -177,6 +191,15 @@ class IssueRegistry:
 
     def get(self, issue_id: str) -> IssueRecord | None:
         return self._records.get(issue_id)
+
+    def get_by_identifier(self, issue_identifier: str) -> IssueRecord | None:
+        for record in self._records.values():
+            if record.issue_identifier == issue_identifier:
+                return record
+        return None
+
+    def get_by_issue_ref(self, issue_ref: str) -> IssueRecord | None:
+        return self.get(issue_ref) or self.get_by_identifier(issue_ref)
 
     def get_by_branch(self, branch_name: str) -> IssueRecord | None:
         for record in self._records.values():
@@ -301,6 +324,15 @@ class IssueRegistry:
         if record is None:
             return None
         record.status = IssueStatus.RUNNING
+        record.run_id = None
+        record.debug_log_path = None
+        record.run_turn_count = 0
+        record.run_tool_count = 0
+        record.run_last_event = None
+        record.run_last_tool = None
+        record.run_output_len = 0
+        record.run_timeout_deadline_at = None
+        record.run_workspace_dirty = None
         record.touch()
         self._save()
         return record

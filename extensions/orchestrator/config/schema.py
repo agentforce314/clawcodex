@@ -120,10 +120,18 @@ def _resolve_orchestrator_permission_mode(
     Explicit non-default values are preserved so users can opt back into a
     more restrictive mode if needed.
     """
-    normalized = str(raw_value).strip().lower() if raw_value else "dontask"
-    if is_orchestrator and normalized == "dontask":
+    raw = str(raw_value).strip() if raw_value else "dontAsk"
+    canonical_modes = {
+        "acceptedits": "acceptEdits",
+        "bypasspermissions": "bypassPermissions",
+        "default": "default",
+        "dontask": "dontAsk",
+        "plan": "plan",
+    }
+    normalized = canonical_modes.get(raw.lower(), raw)
+    if is_orchestrator and normalized == "dontAsk":
         return "bypassPermissions"
-    return normalized or "dontAsk"
+    return normalized
 
 
 def _default_tmp_workspace() -> str:

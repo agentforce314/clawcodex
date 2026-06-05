@@ -125,20 +125,31 @@ class QueryRunner:
         event_queue: queue.Queue[Any] = queue.Queue()
         tool_event_count = 0
         last_event_at = time.monotonic()
+        tool_names_by_id: dict[str, str] = {}
 
         def on_event(tool_event: Any) -> None:
             nonlocal tool_event_count, last_event_at
             try:
                 tool_event_count += 1
                 last_event_at = time.monotonic()
+                kind = getattr(tool_event, "kind", None)
+                tool_use_id = getattr(tool_event, "tool_use_id", None)
+                tool_name = getattr(tool_event, "tool_name", "")
+                if kind == "tool_use" and tool_use_id and tool_name:
+                    tool_names_by_id[str(tool_use_id)] = str(tool_name)
+                elif not tool_name and tool_use_id:
+                    tool_name = tool_names_by_id.get(str(tool_use_id), "")
+                is_error = getattr(tool_event, "is_error", False)
+                error = getattr(tool_event, "error", None)
                 append_debug_event(
                     debug_log_path,
                     "headless.event",
                     run_id=self.config.run_id,
-                    kind=getattr(tool_event, "kind", None),
-                    tool=getattr(tool_event, "tool_name", ""),
-                    tool_use_id=getattr(tool_event, "tool_use_id", None),
-                    is_error=getattr(tool_event, "is_error", False),
+                    kind=kind,
+                    tool=tool_name,
+                    tool_use_id=tool_use_id,
+                    is_error=is_error,
+                    error=str(error)[:500] if error is not None and is_error else None,
                 )
                 event_queue.put(tool_event)
             except Exception:
@@ -161,45 +172,53 @@ class QueryRunner:
         future = loop.run_in_executor(None, run_headless_session, session_opts)
         next_heartbeat_at = time.monotonic() + 30.0
 
+        def convert_tool_event(ev: Any) -> QueryEvent | None:
+            kind = getattr(ev, "kind", None)
+            tool_name = getattr(ev, "tool_name", "")
+            tool_input = getattr(ev, "tool_input", None)
+            tool_use_id = getattr(ev, "tool_use_id", None)
+            if kind == "tool_use" and tool_use_id and tool_name:
+                tool_names_by_id[str(tool_use_id)] = str(tool_name)
+            elif not tool_name and tool_use_id:
+                tool_name = tool_names_by_id.get(str(tool_use_id), "")
+            tool_output = getattr(ev, "tool_output", None)
+            is_error = getattr(ev, "is_error", False)
+            error = getattr(ev, "error", None)
+
+            if kind == "tool_use":
+                return ToolCallEvent(
+                    tool_name=tool_name,
+                    params=tool_input or {},
+                    tool_use_id=tool_use_id,
+                )
+            if kind in {"tool_result", "tool_error"}:
+                result = {
+                    "output": tool_output,
+                    "is_error": bool(is_error) or kind == "tool_error",
+                }
+                if error is not None:
+                    result["error"] = error
+                return ToolResultEvent(tool_name=tool_name, result=result)
+            return None
+
         # Drain the event queue while the headless session runs in the background.
         # A short timeout lets us poll for completion without busy-waiting.
         while True:
             try:
                 ev: Any = event_queue.get(timeout=0.05)
-                # Access via duck-typed attributes (matches ToolEventProtocol)
-                kind = getattr(ev, "kind", None)
-                tool_name = getattr(ev, "tool_name", "")
-                tool_input = getattr(ev, "tool_input", None)
-                tool_use_id = getattr(ev, "tool_use_id", None)
-                tool_output = getattr(ev, "tool_output", None)
-                is_error = getattr(ev, "is_error", False)
-                error = getattr(ev, "error", None)
-
-                if kind == "tool_use":
-                    yield ToolCallEvent(
-                        tool_name=tool_name,
-                        params=tool_input or {},
-                        tool_use_id=tool_use_id,
-                    )
-                elif kind == "tool_result":
-                    yield ToolResultEvent(
-                        tool_name=tool_name,
-                        result={
-                            "output": tool_output,
-                            "is_error": False,
-                        },
-                    )
-                elif kind == "tool_error":
-                    yield ToolResultEvent(
-                        tool_name=tool_name,
-                        result={
-                            "output": tool_output,
-                            "error": error,
-                            "is_error": True,
-                        },
-                    )
+                event = convert_tool_event(ev)
+                if event is not None:
+                    yield event
             except queue.Empty:
                 if future.done():
+                    while True:
+                        try:
+                            ev = event_queue.get_nowait()
+                        except queue.Empty:
+                            break
+                        event = convert_tool_event(ev)
+                        if event is not None:
+                            yield event
                     break
                 now = time.monotonic()
                 if now >= next_heartbeat_at:

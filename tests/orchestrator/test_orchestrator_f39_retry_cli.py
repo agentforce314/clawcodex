@@ -8,7 +8,7 @@ Covers:
   - _append_audit_log(): creates parent directories
   - _append_audit_log(): force flag → priority=high
   - _resolve_operator(): --operator > $USER > os.getlogin() > "unknown"
-  - _run_retry(): --mode reset  → mark_intent(RETRY) + increment_retry_count
+  - _run_retry(): --mode reset  → mark_intent(RETRY) + reset_for_retry() + tracker open
   - _run_retry(): --mode followup → mark_intent(FOLLOWUP)
   - _run_retry(): --mode unblock → registry.unblock()
   - _run_retry(): audit log entry written for every mode
@@ -20,10 +20,12 @@ Covers:
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import os
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -33,6 +35,7 @@ from extensions.orchestrator.cli.issue import (
     _append_audit_log,
     _resolve_operator,
     _run_retry,
+    _run_show,
     add_issue_parser,
 )
 from extensions.orchestrator.issue_registry import (
@@ -101,6 +104,43 @@ class TestIssueRegistryUnblock(unittest.TestCase):
             reg = IssueRegistry(Path(tmp) / "r.json")
             self.assertIsNone(reg.unblock("999"))
 
+    def test_mark_running_resets_run_diagnostics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            reg_path = Path(tmp) / "r.json"
+            reg = IssueRegistry(reg_path)
+            reg.register(issue_id="1", issue_identifier="ISSUE-1")
+            reg.update_run_diagnostics(
+                "1",
+                run_id="run-old",
+                debug_log_path="/tmp/old/debug.ndjson",
+                turn_count=3,
+                tool_count=4,
+                last_event="SessionComplete",
+                last_tool="Bash",
+                output_len=123,
+                timeout_deadline_at=999.0,
+                workspace_dirty=True,
+            )
+
+            record = reg.mark_running("1")
+            assert record is not None
+            self.assertIs(record.status, IssueStatus.RUNNING)
+            self.assertIsNone(record.run_id)
+            self.assertIsNone(record.debug_log_path)
+            self.assertEqual(record.run_turn_count, 0)
+            self.assertEqual(record.run_tool_count, 0)
+            self.assertIsNone(record.run_last_event)
+            self.assertIsNone(record.run_last_tool)
+            self.assertEqual(record.run_output_len, 0)
+            self.assertIsNone(record.run_timeout_deadline_at)
+            self.assertIsNone(record.run_workspace_dirty)
+
+            reloaded = IssueRegistry(reg_path).get("1")
+            assert reloaded is not None
+            self.assertIsNone(reloaded.run_last_event)
+            self.assertIsNone(reloaded.run_last_tool)
+            self.assertIsNone(reloaded.run_workspace_dirty)
+
     def test_preserves_retry_count(self) -> None:
         # F-39 design note: rate limit still applies after unblock.
         with tempfile.TemporaryDirectory() as tmp:
@@ -114,6 +154,33 @@ class TestIssueRegistryUnblock(unittest.TestCase):
             record = reg.unblock("1")
             assert record is not None
             self.assertEqual(record.retry_count, 3)
+
+
+# ---------------------------------------------------------------------------
+# issue show
+# ---------------------------------------------------------------------------
+
+
+class TestIssueShow(unittest.TestCase):
+    def test_show_resolves_issue_identifier(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            registry_path = Path(tmp) / "registry.json"
+            registry = IssueRegistry(registry_path)
+            registry.register(
+                issue_id="F-40-progress-sink",
+                issue_identifier="F-40",
+                branch_name="dev-decoupling-refactor-58ea488",
+            )
+
+            args = argparse.Namespace(id="F-40", issue_id=None)
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                result = _run_show(registry_path, args)
+
+            self.assertEqual(result, 0)
+            output = buf.getvalue()
+            self.assertIn("Issue: F-40-progress-sink", output)
+            self.assertIn("Identifier     : F-40", output)
 
 
 # ---------------------------------------------------------------------------
@@ -306,6 +373,94 @@ class TestRunRetry(unittest.TestCase):
             self.assertEqual(len(entries), 1)
             self.assertEqual(entries[0]["mode"], "reset")
             self.assertEqual(entries[0]["reason"], "wrong approach")
+
+    def test_failed_reset_reopens_tracker_issue(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            issues_path = root / "issues"
+            issues_path.mkdir()
+            issue_path = issues_path / "issue.md"
+            issue_path.write_text(
+                """---
+id: 1
+identifier: ISSUE-1
+state: failed
+---
+# Retry me
+""",
+                encoding="utf-8",
+            )
+            workflow_path = root / "workflow.md"
+            workflow_path.write_text(
+                f"""---
+tracker:
+  kind: local
+  issues_path: {issues_path}
+---
+Run the issue.
+""",
+                encoding="utf-8",
+            )
+            reg_path = root / "registry.json"
+            seed = IssueRegistry(reg_path)
+            seed.register(issue_id="1", issue_identifier="ISSUE-1")
+            seed.mark_failed_with_reason("1", "stale running recovery")
+
+            args = _make_args(mode="reset", workflow=str(workflow_path))
+            rc = _run_retry(reg_path, args)
+
+            self.assertEqual(rc, 0)
+            record = IssueRegistry(reg_path).get("1")
+            assert record is not None
+            self.assertIs(record.status, IssueStatus.PENDING)
+            self.assertIs(record.intent, Intent.RETRY)
+            self.assertIsNone(record.verification_status)
+            self.assertIsNone(record.verification_output)
+            self.assertIn("state: open", issue_path.read_text(encoding="utf-8"))
+
+    def test_reset_resolves_issue_identifier_to_existing_record(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            issues_path = root / "issues"
+            issues_path.mkdir()
+            issue_path = issues_path / "issue.md"
+            issue_path.write_text(
+                """---
+id: 1
+identifier: ISSUE-1
+state: failed
+---
+# Retry me
+""",
+                encoding="utf-8",
+            )
+            workflow_path = root / "workflow.md"
+            workflow_path.write_text(
+                f"""---
+tracker:
+  kind: local
+  issues_path: {issues_path}
+---
+Run the issue.
+""",
+                encoding="utf-8",
+            )
+            reg_path = root / "registry.json"
+            seed = IssueRegistry(reg_path)
+            seed.register(issue_id="1", issue_identifier="ISSUE-1")
+            seed.mark_failed("1")
+
+            args = _make_args(id="ISSUE-1", mode="reset", workflow=str(workflow_path))
+            rc = _run_retry(reg_path, args)
+
+            self.assertEqual(rc, 0)
+            reloaded = IssueRegistry(reg_path)
+            record = reloaded.get("1")
+            assert record is not None
+            self.assertIs(record.status, IssueStatus.PENDING)
+            self.assertIs(record.intent, Intent.RETRY)
+            self.assertIsNone(reloaded.get("ISSUE-1"))
+            self.assertIn("state: open", issue_path.read_text(encoding="utf-8"))
 
     def test_followup_marks_intent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

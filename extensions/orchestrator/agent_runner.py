@@ -376,6 +376,7 @@ class AgentRunner:
         comment_tracker: Any | None = None,
         clarification_resolver: Any | None = None,
         progress_reporter: Any | None = None,
+        diagnostics_callback: Callable[[AgentSession], None] | None = None,
     ) -> None:
         """Execute issue until completion or max_turns.
 
@@ -444,6 +445,19 @@ class AgentRunner:
         turn_number = 0
         tool_count = 0
         consecutive_clean_turns = 0  # no-op detection counter
+
+        def update_diagnostics() -> None:
+            session.tool_count = tool_count
+            if diagnostics_callback is not None:
+                try:
+                    diagnostics_callback(session)
+                except Exception:
+                    logger.exception(
+                        "run diagnostics callback failed issue_id=%s",
+                        issue.id,
+                    )
+
+        update_diagnostics()
 
         while turn_number < self.max_turns:
             # Build prompt for this turn
@@ -545,6 +559,7 @@ class AgentRunner:
                     if isinstance(event, TextDelta):
                         session.output_text += event.content
                         turn_output += event.content
+                        update_diagnostics()
                         if status_dashboard is not None:
                             try:
                                 status_dashboard.on_event(event, session)
@@ -564,9 +579,10 @@ class AgentRunner:
                     elif isinstance(event, ToolCallEvent):
                         turn_has_tool_calls = True
                         tool_count += 1
+                        update_diagnostics()
 
                         # Pause support: wait for resume if session is paused
-                        if session.pause_resume_event is not None:
+                        if session.paused and session.pause_resume_event is not None:
                             await session.pause_resume_event.wait()
 
                         # Operator hint injection: check .operator_hints.md
@@ -626,6 +642,7 @@ class AgentRunner:
 
                         # Also write to event log file for cross-process tail
                         self._write_event_log(session.workspace.path, issue.id, event)
+                        update_diagnostics()
                         if status_dashboard is not None:
                             try:
                                 status_dashboard.on_event(event, session)
@@ -678,7 +695,7 @@ class AgentRunner:
                         if progress_reporter is not None:
                             progress_reporter.on_event(phase_event, session)
 
-                        session.tool_count = tool_count
+                        update_diagnostics()
                         if event.reason == "success":
                             # A successful turn resets the 429 backoff
                             # counter — a 429 followed by a clean run is

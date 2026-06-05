@@ -661,6 +661,24 @@ class TestWorkspaceConfigDefaults(unittest.TestCase):
         self.assertIn(".reports", wf.workspace.gitignore_patterns)
         self.assertNotIn("event_logs", wf.workspace.gitignore_patterns)
 
+    def test_orchestrator_permission_mode_preserves_canonical_spelling(self) -> None:
+        wf = WorkflowConfig.from_dict(
+            {
+                "tracker": {"kind": "local"},
+                "agent": {"permission_mode": "bypassPermissions"},
+            }
+        )
+        self.assertEqual(wf.agent.permission_mode, "bypassPermissions")
+
+    def test_orchestrator_permission_mode_canonicalizes_lowercase_values(self) -> None:
+        wf = WorkflowConfig.from_dict(
+            {
+                "tracker": {"kind": "local"},
+                "agent": {"permission_mode": "bypasspermissions"},
+            }
+        )
+        self.assertEqual(wf.agent.permission_mode, "bypassPermissions")
+
 
 if __name__ == "__main__":
     unittest.main()

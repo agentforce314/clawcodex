@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path(__file__).parent.parent
+REPO_ROOT = Path(__file__).parents[2]
 
 # Current upstream version tag (matches upstream-sync.yaml version_tag_format)
 UPSTREAM_VERSION = "b125e16"  # git rev-parse --short upstream/vendor
@@ -48,7 +48,7 @@ class TestCapabilityProtocols:
 
     def test_agent_protocol_methods_exist(self):
         """AgentLoopProtocol has the required method signatures."""
-        from src.capabilities.agent_protocol import AgentLoopProtocol
+        from extensions.capabilities.agent_protocol import AgentLoopProtocol
         assert hasattr(AgentLoopProtocol, 'run_agent_loop')
         assert hasattr(AgentLoopProtocol, 'summarize_tool_result')
         assert hasattr(AgentLoopProtocol, 'summarize_tool_use')
@@ -56,7 +56,7 @@ class TestCapabilityProtocols:
 
     def test_tool_protocol_methods_exist(self):
         """ToolSystemProtocol has the required method signatures."""
-        from src.capabilities.tool_protocol import ToolSystemProtocol
+        from extensions.capabilities.tool_protocol import ToolSystemProtocol
         assert hasattr(ToolSystemProtocol, 'get_tools')
         assert hasattr(ToolSystemProtocol, 'find_tool_by_name')
         assert hasattr(ToolSystemProtocol, 'build_tool')
@@ -65,18 +65,18 @@ class TestCapabilityProtocols:
 
     def test_context_protocol_has_build_context_prompt(self):
         """ContextBuilderProtocol has build_context_prompt method."""
-        from src.capabilities.context_protocol import ContextBuilderProtocol
+        from extensions.capabilities.context_protocol import ContextBuilderProtocol
         assert hasattr(ContextBuilderProtocol, 'build_context_prompt')
 
     def test_provider_protocol_methods_exist(self):
         """LLMProviderProtocol has the required method signatures."""
-        from src.capabilities.provider_protocol import LLMProviderProtocol
+        from extensions.capabilities.provider_protocol import LLMProviderProtocol
         assert hasattr(LLMProviderProtocol, 'chat')
         assert hasattr(LLMProviderProtocol, 'chat_stream')
 
     def test_event_protocol_methods_exist(self):
         """ToolEventProtocol has the required property signatures."""
-        from src.capabilities.event_protocol import ToolEventProtocol
+        from extensions.capabilities.event_protocol import ToolEventProtocol
         assert hasattr(ToolEventProtocol, 'kind')
         assert hasattr(ToolEventProtocol, 'tool_name')
         assert hasattr(ToolEventProtocol, 'tool_input')
@@ -87,7 +87,7 @@ class TestCapabilityProtocols:
 
     def test_headless_protocol_methods_exist(self):
         """HeadlessOptionsProtocol and HeadlessRunnerProtocol have required signatures."""
-        from src.capabilities.headless_protocol import HeadlessOptionsProtocol, HeadlessRunnerProtocol
+        from extensions.capabilities.headless_protocol import HeadlessOptionsProtocol, HeadlessRunnerProtocol
         assert hasattr(HeadlessOptionsProtocol, 'prompt')
         assert hasattr(HeadlessOptionsProtocol, 'output_format')
         assert hasattr(HeadlessOptionsProtocol, 'max_turns')
@@ -100,7 +100,7 @@ class TestCapabilityProtocols:
         # Use stub backend — no upstream import possible
         os.environ["CLAW_HEADLESS_BACKEND"] = "stub"
         try:
-            from src.capabilities.headless_runner import HeadlessSessionOptions, run_headless_session
+            from extensions.capabilities.headless_runner import HeadlessSessionOptions, run_headless_session
             from pathlib import Path
             import io
             stdout = io.StringIO()
@@ -126,7 +126,7 @@ class TestPatchSeriesIntegrity:
 
     def test_series_has_entries(self):
         """Current version's series file should have at least one entry."""
-        series_file = REPO_ROOT / "patches" / "upstream" / f"{self.version}_series"
+        series_file = REPO_ROOT / "patches" / "upstream" / self.version / f"{self.version}_series"
         series = series_file.read_text()
         lines = [l.strip() for l in series.splitlines()
                  if l.strip() and not l.startswith("#")]
@@ -134,12 +134,13 @@ class TestPatchSeriesIntegrity:
 
     def test_patch_file_exists(self):
         """The patch file referenced in series should exist."""
-        series_file = REPO_ROOT / "patches" / "upstream" / f"{self.version}_series"
+        series_dir = REPO_ROOT / "patches" / "upstream" / self.version
+        series_file = series_dir / f"{self.version}_series"
         series = series_file.read_text()
         lines = [l.strip() for l in series.splitlines()
                  if l.strip() and not l.startswith("#")]
         for patch_name in lines:
-            patch_file = REPO_ROOT / "patches" / "upstream" / patch_name
+            patch_file = series_dir / patch_name
             assert patch_file.exists(), f"Patch file not found: {patch_file}"
 
     def test_metadata_status_valid(self):

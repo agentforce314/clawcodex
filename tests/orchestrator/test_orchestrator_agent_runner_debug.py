@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import unittest
 from pathlib import Path
@@ -61,3 +62,74 @@ class TestOrchestratorAgentRunnerDebug(unittest.IsolatedAsyncioTestCase):
         self.assertIn("agent_runner.event", stages)
         self.assertIn("agent_runner.turn_complete", stages)
         self.assertTrue(str(debug_log).endswith("debug.ndjson"))
+
+    async def test_run_invokes_diagnostics_callback_for_stream_events(self) -> None:
+        with TemporaryDirectory() as tmp:
+            workspace = Workspace(
+                path=Path(tmp),
+                issue_identifier="ISSUE-79",
+                issue_id="79",
+            )
+            session = AgentSession(
+                issue=Issue(id="79", identifier="ISSUE-79", title="Debug updates"),
+                workspace=workspace,
+            )
+            runner = AgentRunner(AgentConfig(max_turns=1), CodexConfig())
+            snapshots: list[tuple[str | None, int, int, int]] = []
+
+            def diagnostics_callback(active_session: AgentSession) -> None:
+                snapshots.append(
+                    (
+                        active_session.last_agent_event,
+                        active_session.turn_count,
+                        active_session.tool_count,
+                        len(active_session.output_text),
+                    )
+                )
+
+            with patch(
+                "extensions.orchestrator.agent_runner.QueryRunner",
+                _ToolCallThenSuccessStub,
+            ):
+                await runner.run(
+                    session,
+                    WorkflowConfig.from_dict({}),
+                    diagnostics_callback=diagnostics_callback,
+                )
+
+        self.assertEqual(snapshots[0][0], None)
+        self.assertEqual(snapshots[0][1:], (0, 0, 0))
+        self.assertEqual(
+            [event for event, _, _, _ in snapshots[1:]],
+            ["ToolCallEvent", "TextDelta", "SessionComplete"],
+        )
+        self.assertEqual(snapshots[1][2], 1)
+        self.assertEqual(snapshots[2][2], 1)
+        self.assertEqual(snapshots[3][1], 1)
+        self.assertGreater(snapshots[3][3], 0)
+
+    async def test_run_does_not_wait_on_resume_event_unless_paused(self) -> None:
+        with TemporaryDirectory() as tmp:
+            workspace = Workspace(
+                path=Path(tmp),
+                issue_identifier="ISSUE-80",
+                issue_id="80",
+            )
+            session = AgentSession(
+                issue=Issue(id="80", identifier="ISSUE-80", title="Not paused"),
+                workspace=workspace,
+                pause_resume_event=asyncio.Event(),
+            )
+            runner = AgentRunner(AgentConfig(max_turns=1), CodexConfig())
+
+            with patch(
+                "extensions.orchestrator.agent_runner.QueryRunner",
+                _ToolCallThenSuccessStub,
+            ):
+                await asyncio.wait_for(
+                    runner.run(session, WorkflowConfig.from_dict({})),
+                    timeout=1,
+                )
+
+        self.assertEqual(session.status, "completed")
+        self.assertEqual(session.tool_count, 1)

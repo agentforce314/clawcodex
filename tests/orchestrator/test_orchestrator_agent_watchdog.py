@@ -169,7 +169,7 @@ class TestOrchestratorAgentWatchdog(unittest.IsolatedAsyncioTestCase):
                 agent_runner=_HangingRunner(),  # type: ignore[arg-type]
             )
 
-            orchestrator._recover_stale_running_records()
+            await orchestrator._recover_stale_running_records()
             record = orchestrator._registry.get("1")
 
         assert record is not None

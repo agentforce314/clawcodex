@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import os
@@ -12,6 +13,7 @@ from typing import Any
 import httpx
 
 from extensions.orchestrator import report_writer
+from extensions.orchestrator.cli.issue import _run_review
 from extensions.orchestrator.issue_registry import IssueRegistry
 from extensions.orchestrator.prompt_builder import PromptBuilder
 from extensions.orchestrator.review_feedback import ReviewFeedbackService
@@ -527,6 +529,56 @@ pr_title: Local PR
         )
 
 
+class TestIssueReviewCli(unittest.TestCase):
+    def test_review_approve_syncs_local_issue_state_from_workflow(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            issues_path = root / "issues"
+            issues_path.mkdir()
+            issue_path = issues_path / "issue.md"
+            _write_issue(
+                issue_path,
+                """---
+id: LOCAL-001
+identifier: LOCAL-001
+state: pending_review
+---
+# Review me
+""",
+            )
+            workflow_path = root / "workflow.md"
+            workflow_path.write_text(
+                f"""---
+tracker:
+  kind: local
+  issues_path: {issues_path}
+---
+Run the issue.
+""",
+                encoding="utf-8",
+            )
+            registry_path = root / "registry.json"
+            registry = IssueRegistry(registry_path)
+            registry.register("LOCAL-001", "LOCAL-001")
+            registry.mark_pending_review("LOCAL-001")
+            args = argparse.Namespace(
+                id="LOCAL-001",
+                approve=True,
+                reject=False,
+                feedback=None,
+                comment="Looks good",
+                workflow=str(workflow_path),
+                workspace=str(root),
+            )
+
+            rc = _run_review(registry_path, args)
+            updated = issue_path.read_text(encoding="utf-8")
+
+        self.assertEqual(rc, 0)
+        self.assertIn("state: completed", updated)
+        self.assertIn("updated_at:", updated)
+
+
 class TestReportWriter(unittest.TestCase):
     def test_write_creates_workspace_and_persistent_markdown_json(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -767,6 +819,7 @@ class _DependencyTracker(TrackerAdapter):
 
     def __init__(self, issues: list[Issue]) -> None:
         self.issues = issues
+        self.updated_states: list[tuple[str, str]] = []
 
     async def fetch_candidate_issues(self) -> list[Issue]:
         return list(self.issues)
@@ -778,7 +831,7 @@ class _DependencyTracker(TrackerAdapter):
         return None
 
     async def update_issue_state(self, issue_id: str, state: str) -> None:
-        return None
+        self.updated_states.append((issue_id, state))
 
 
 class TestOrchestratorDependencies(unittest.IsolatedAsyncioTestCase):
@@ -829,6 +882,73 @@ class TestOrchestratorDependencies(unittest.IsolatedAsyncioTestCase):
             await orchestrator._poll_and_dispatch()
 
             self.assertIn("child", orchestrator._state.running)
+
+    async def test_poll_skips_terminal_registry_issue_still_active_in_tracker(self) -> None:
+        with TemporaryDirectory() as tmp:
+            tracker = _DependencyTracker(
+                [Issue(id="done", identifier="LOCAL-001", state="open")]
+            )
+            orchestrator = _ReviewOrchestrator(
+                workflow=WorkflowConfig.from_dict(
+                    {
+                        "workspace": {"root": tmp},
+                        "agent": {"max_concurrent_agents": 1, "max_turns": 2},
+                    }
+                ),
+                tracker=tracker,
+                workspace=_ReviewWorkspaceManager(Path(tmp)),
+                agent_runner=_ReviewAgentRunner(),
+            )
+            orchestrator._registry.register("done", "LOCAL-001")
+            orchestrator._registry.mark_abandoned("done")
+
+            await orchestrator._poll_and_dispatch()
+
+            self.assertNotIn("done", orchestrator._state.running)
+            self.assertEqual(orchestrator.workspace.created_for, [])
+
+    async def test_escalated_issue_syncs_terminal_tracker_state(self) -> None:
+        with TemporaryDirectory() as tmp:
+            tracker = _DependencyTracker([])
+            orchestrator = _ReviewOrchestrator(
+                workflow=WorkflowConfig.from_dict(
+                    {
+                        "workspace": {"root": tmp},
+                        "agent": {"max_concurrent_agents": 1, "max_turns": 2},
+                    }
+                ),
+                tracker=tracker,
+                workspace=_ReviewWorkspaceManager(Path(tmp)),
+                agent_runner=_ReviewAgentRunner(),
+            )
+            orchestrator._registry.register("blocked", "LOCAL-001")
+            sentinel_path = Path(tmp) / ".escalated_issues.json"
+            sentinel_path.write_text(json.dumps({"blocked": {}}, indent=2), encoding="utf-8")
+
+            await orchestrator._process_escalated_issues()
+
+            self.assertEqual(tracker.updated_states, [("blocked", "abandoned")])
+
+    async def test_recover_stale_running_syncs_tracker_state(self) -> None:
+        with TemporaryDirectory() as tmp:
+            tracker = _DependencyTracker([])
+            orchestrator = _ReviewOrchestrator(
+                workflow=WorkflowConfig.from_dict(
+                    {
+                        "workspace": {"root": tmp},
+                        "agent": {"max_concurrent_agents": 1, "max_turns": 2},
+                    }
+                ),
+                tracker=tracker,
+                workspace=_ReviewWorkspaceManager(Path(tmp)),
+                agent_runner=_ReviewAgentRunner(),
+            )
+            orchestrator._registry.register("stale", "LOCAL-001")
+            orchestrator._registry.mark_running("stale")
+
+            await orchestrator._recover_stale_running_records()
+
+            self.assertEqual(tracker.updated_states, [("stale", "failed")])
 
 
 class TestReviewFeedbackService(unittest.IsolatedAsyncioTestCase):

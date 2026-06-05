@@ -628,7 +628,7 @@ def _run_show(registry_path: Path | None, args: argparse.Namespace) -> int:
 
     from extensions.orchestrator.issue_registry import IssueRegistry
     registry = IssueRegistry(registry_path)
-    record = registry.get(issue_id)
+    record = registry.get_by_issue_ref(issue_id)
     if record is None:
         print(f"Issue {issue_id} not found in registry.", file=sys.stderr)
         return 1
@@ -768,37 +768,47 @@ def _run_tail(registry_path: Path | None, args: argparse.Namespace) -> int:
     print(f"Tailing events for issue {issue_id} (Ctrl+C to stop)...")
     try:
         last_size = log_file.stat().st_size
+        pending = ""
         while True:
             current_size = log_file.stat().st_size
-            if current_size > last_size:
-                with open(log_file, "r", encoding="utf-8") as f:
-                    f.seek(last_size)
-                    for line in f:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            event = json.loads(line)
-                            ts = event.get("timestamp", "")[-8:] if event.get("timestamp") else ""
-                            etype = event.get("type", "?")
-                            if etype == "tool_call":
-                                tool_name = event.get("tool_name", "?")
-                                print(f"  [{ts}] CALL  {tool_name}")
-                            elif etype == "tool_result":
-                                err = " [ERR]" if event.get("is_error") else ""
-                                print(f"  [{ts}] RESULT{err} {event.get('tool_name', '?')}")
-                            elif etype == "text_delta":
-                                content = event.get("content", "")
-                                if content:
-                                    text = content[:80].replace("\n", " ")
-                                    print(f"  [{ts}] TEXT  {text}")
-                            else:
-                                print(f"  [{ts}] {etype}")
-                        except json.JSONDecodeError:
-                            pass
-                last_size = current_size
-            else:
+            if current_size <= last_size:
                 time.sleep(0.5)
+                continue
+
+            with open(log_file, "r", encoding="utf-8") as f:
+                f.seek(last_size)
+                chunk = f.read()
+
+            lines = (pending + chunk).splitlines(keepends=True)
+            if lines and not lines[-1].endswith("\n"):
+                pending = lines.pop()
+            else:
+                pending = ""
+
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                    ts = event.get("timestamp", "")[-8:] if event.get("timestamp") else ""
+                    etype = event.get("type", "?")
+                    if etype == "tool_call":
+                        tool_name = event.get("tool_name", "?")
+                        print(f"  [{ts}] CALL  {tool_name}")
+                    elif etype == "tool_result":
+                        err = " [ERR]" if event.get("is_error") else ""
+                        print(f"  [{ts}] RESULT{err} {event.get('tool_name', '?')}")
+                    elif etype == "text_delta":
+                        content = event.get("content", "")
+                        if content:
+                            text = content[:80].replace("\n", " ")
+                            print(f"  [{ts}] TEXT  {text}")
+                    else:
+                        print(f"  [{ts}] {etype}")
+                except json.JSONDecodeError as exc:
+                    print(f"[tail] warning: malformed event in {log_file}: {exc}", file=sys.stderr)
+            last_size = current_size
     except KeyboardInterrupt:
         print("\n[tail] stopped")
     except Exception as exc:
@@ -1187,6 +1197,21 @@ def _workspace_edit_file(issue_id: str, ws_path: Path, filename: str, content: s
 # issue review
 # ---------------------------------------------------------------------------
 
+def _tracker_from_workflow_arg(args: argparse.Namespace) -> Any | None:
+    workflow_path = getattr(args, "workflow", None)
+    if not workflow_path:
+        return None
+    try:
+        from extensions.orchestrator.tracker import create_tracker_adapter
+        from extensions.orchestrator.workflow import WorkflowLoader
+
+        workflow, _ = WorkflowLoader.load(workflow_path)
+        return create_tracker_adapter(workflow.tracker)
+    except Exception as exc:
+        print(f"Warning: could not initialize tracker from workflow: {exc}", file=sys.stderr)
+        return None
+
+
 def _run_review(registry_path: Path | None, args: argparse.Namespace) -> int:
     """Approve or reject a LocalTracker issue's changes."""
     issue_id = getattr(args, "id", None)
@@ -1251,26 +1276,19 @@ def _run_review(registry_path: Path | None, args: argparse.Namespace) -> int:
         # Mark issue as completed
         registry.mark_completed(issue_id)
 
-        # Post optional comment to local tracker
-        if comment:
+        tracker = _tracker_from_workflow_arg(args)
+        if tracker is not None:
             try:
-                from extensions.orchestrator.local_tracker.adapter import LocalTrackerAdapter
-                from extensions.orchestrator.workspace_locator import get_workspace_root
+                import asyncio
 
-                ws_root = get_workspace_root(
-                    workspace_arg=getattr(args, "workspace", None),
-                    workflow_path=getattr(args, "workflow", None),
-                )
-                if ws_root and ws_root.exists():
-                    issues_path = ws_root / ".clawcodex_local_issues"
-                    if issues_path.exists():
-                        tracker = LocalTrackerAdapter(issues_path=str(issues_path))
-                        import asyncio
-                        asyncio.get_event_loop().run_until_complete(
-                            tracker.create_comment(issue_id, f"## Approved\n\n{comment}")
-                        )
+                async def update_tracker() -> None:
+                    await tracker.update_issue_state(issue_id, "completed")
+                    if comment:
+                        await tracker.create_comment(issue_id, f"## Approved\n\n{comment}")
+
+                asyncio.run(update_tracker())
             except Exception as exc:
-                print(f"Warning: could not post comment: {exc}", file=sys.stderr)
+                print(f"Warning: could not update tracker: {exc}", file=sys.stderr)
 
         print(f"Issue {issue_id} approved and marked as completed.")
         return 0
@@ -1645,9 +1663,9 @@ def _run_retry(registry_path: Path | None, args: argparse.Namespace) -> int:
 
     Behaviour (per the design doc):
 
-      * ``--mode reset``    — mark intent=RETRY on the registry so the
-                              daemon's next poll picks it up and runs
-                              Sub-B (close PR + reset_for_retry).
+      * ``--mode reset``    — mark intent=RETRY, reset the registry record
+                              to PENDING, and reopen the workflow tracker
+                              issue so the daemon can pick it up.
       * ``--mode followup`` — mark intent=FOLLOWUP so Sub-C reuses the
                               existing branch.
       * ``--mode unblock``  — call IssueRegistry.unblock() to roll an
@@ -1684,7 +1702,7 @@ def _run_retry(registry_path: Path | None, args: argparse.Namespace) -> int:
     from extensions.orchestrator.tracker import Intent
 
     registry = IssueRegistry(registry_path)
-    record = registry.get(issue_id)
+    record = registry.get_by_issue_ref(issue_id)
     if record is None:
         # Auto-register so the daemon can find the record on its next
         # poll. CLI retry is a legitimate way to bootstrap an issue
@@ -1695,6 +1713,7 @@ def _run_retry(registry_path: Path | None, args: argparse.Namespace) -> int:
         )
         record = registry.get(issue_id)
         assert record is not None  # just registered
+    registry_issue_id = record.issue_id
 
     # F-39 Sub-F: rate-limit guard for --mode reset. The CLI path is
     # the only one with a --force escape hatch, and any bypass MUST
@@ -1712,19 +1731,35 @@ def _run_retry(registry_path: Path | None, args: argparse.Namespace) -> int:
     else:
         if mode == "reset":
             registry.mark_intent(
-                issue_id, Intent.RETRY,
+                registry_issue_id, Intent.RETRY,
                 source="cli", command=f"cli:reset:{reason[:64]}",
             )
-            registry.increment_retry_count(issue_id)
+            registry.reset_for_retry(registry_issue_id)
+            tracker = _tracker_from_workflow_arg(args)
+            if tracker is not None:
+                try:
+                    import asyncio
+
+                    async def reopen_tracker_issue() -> None:
+                        try:
+                            await tracker.update_issue_state(issue_id, "open")
+                        except FileNotFoundError:
+                            if registry_issue_id == issue_id:
+                                raise
+                            await tracker.update_issue_state(registry_issue_id, "open")
+
+                    asyncio.run(reopen_tracker_issue())
+                except Exception as exc:
+                    print(f"Warning: could not update tracker: {exc}", file=sys.stderr)
             action = "marked for reset"
         elif mode == "followup":
             registry.mark_intent(
-                issue_id, Intent.FOLLOWUP,
+                registry_issue_id, Intent.FOLLOWUP,
                 source="cli", command=f"cli:followup:{reason[:64]}",
             )
             action = "marked for follow-up"
         else:  # mode == "unblock"
-            registry.unblock(issue_id)
+            registry.unblock(registry_issue_id)
             action = "unblocked"
         audit_priority = "high" if force else "normal"
         audit_event = "retry" if mode == "reset" else mode

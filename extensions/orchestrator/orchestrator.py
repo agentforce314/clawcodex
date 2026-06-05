@@ -197,7 +197,7 @@ class Orchestrator:
 
         # Clean up terminal workspaces on startup
         await self.workspace.run_terminal_workspace_cleanup()
-        self._recover_stale_running_records()
+        await self._recover_stale_running_records()
 
         # Start metadata heartbeat for CLI discovery
         heartbeat_task = asyncio.create_task(self._metadata_heartbeat_loop())
@@ -216,11 +216,12 @@ class Orchestrator:
         logger.info("Orchestrator shutting down")
         await self._cancel_all_tasks()
 
-    def _recover_stale_running_records(self) -> None:
+    async def _recover_stale_running_records(self) -> None:
         reason = "Recovered stale running issue on orchestrator startup"
         stale_records = self._registry.running_records()
         for record in stale_records:
             self._registry.mark_failed_with_reason(record.issue_id, reason)
+            await self._sync_tracker_issue_state(record.issue_id, "failed")
             logger.warning(
                 "Recovered stale running issue_id=%s on orchestrator startup",
                 record.issue_id,
@@ -418,6 +419,7 @@ class Orchestrator:
                         command=(f"/agent {command.value}" if command is not None else None),
                     )
                     self._registry.mark_abandoned(issue.id or "")
+                    await self._sync_tracker_issue_state(issue.id or "", "abandoned")
                     self._state.completed.add(issue.id or "")
                     continue
 
@@ -444,16 +446,12 @@ class Orchestrator:
                     )
                     # F-39 Sub-C will perform the actual follow-up.
 
-                # Skip if registry marks this issue as already completed
-                # or has a PR — UNLESS we have a retry/follow-up intent
-                # (in which case the appropriate Sub-B/C will handle the
-                # reset / branch-reuse path before launch).
-                if (
-                    intent is Intent.NONE
-                    and (
-                        self._registry.is_completed(issue.id)
-                        or self._registry.has_pr(issue.id)
-                    )
+                # Skip terminal registry records even if the tracker still
+                # exposes the issue in an active state. Explicit retry/follow-up
+                # intents are the only daemon path that may reopen handled work.
+                if intent is Intent.NONE and (
+                    self._registry.is_terminal(issue.id or "")
+                    or self._registry.has_pr(issue.id or "")
                 ):
                     logger.info("Issue %s already handled (registry), skipping", issue.id)
                     continue
@@ -1015,6 +1013,11 @@ class Orchestrator:
         session.base_branch = followup.record.base_branch
         session.feedback_ids = [item.id for item in followup.feedback]
         self._state.running[issue.id or ""] = session
+        if self._registry.mark_running(issue.id or "") is None:
+            logger.warning(
+                "Review follow-up started without registry record issue_id=%s",
+                issue.id,
+            )
         followup_record = self._registry.increment_followup_attempt(issue.id or "")
         session.issue_attempt = max(1, getattr(followup.record, "attempt_count", 0) + 1)
         session.followup_attempt = (
@@ -1190,6 +1193,41 @@ class Orchestrator:
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
+    async def _sync_tracker_issue_state(self, issue_id: str, state: str) -> None:
+        if not issue_id:
+            return
+        try:
+            await self.tracker.update_issue_state(issue_id, state)
+        except Exception as exc:
+            logger.warning(
+                "Failed to sync tracker state issue_id=%s state=%s: %s",
+                issue_id,
+                state,
+                exc,
+            )
+
+    def _update_run_diagnostics(self, session: AgentSession) -> None:
+        issue_id = session.issue.id or ""
+        record = self._registry.update_run_diagnostics(
+            issue_id,
+            run_id=getattr(session, "run_id", None),
+            debug_log_path=getattr(session, "debug_log_path", None),
+            turn_count=getattr(session, "turn_count", 0),
+            tool_count=getattr(session, "tool_count", 0),
+            last_event=getattr(session, "last_agent_event", None),
+            last_tool=getattr(session, "last_tool_name", None),
+            output_len=len(getattr(session, "output_text", "") or ""),
+            timeout_deadline_at=getattr(session, "timeout_deadline_at", None),
+            workspace_dirty=getattr(session, "run_workspace_dirty", None),
+        )
+        if record is None:
+            logger.warning(
+                "Skipped run diagnostics update because registry record is missing issue_id=%s run_id=%s status=%s",
+                issue_id,
+                getattr(session, "run_id", None),
+                getattr(session, "status", None),
+            )
+
     async def _run_issue(self, session: AgentSession) -> None:
         """Run agent for one issue with concurrency control."""
         async with self._semaphore:
@@ -1214,6 +1252,7 @@ class Orchestrator:
                             comment_tracker=self.tracker,
                             clarification_resolver=self._clarification_resolver,
                             progress_reporter=self._progress_reporter,
+                            diagnostics_callback=self._update_run_diagnostics,
                         ),
                         timeout=run_timeout_seconds,
                     )
@@ -1280,6 +1319,9 @@ class Orchestrator:
                             # by default, or any tracker when agent.review_required=True in workflow).
                             if sync_result.pending_review:
                                 self._registry.mark_pending_review(session.issue.id or "")
+                                await self._sync_tracker_issue_state(
+                                    session.issue.id or "", "pending_review"
+                                )
                                 self.status_dashboard.on_session_complete(session.issue.id or "")
                                 self._state.completed.add(session.issue.id or "")
                                 self._state.pending_review.add(session.issue.id or "")
@@ -1389,18 +1431,9 @@ class Orchestrator:
                     "before_run_failed" if not ran_agent else "failed"
                 )
             finally:
-                self._registry.update_run_diagnostics(
-                    session.issue.id or "",
-                    run_id=getattr(session, "run_id", None),
-                    debug_log_path=getattr(session, "debug_log_path", None),
-                    turn_count=getattr(session, "turn_count", 0),
-                    tool_count=getattr(session, "tool_count", 0),
-                    last_event=getattr(session, "last_agent_event", None),
-                    last_tool=getattr(session, "last_tool_name", None),
-                    output_len=len(getattr(session, "output_text", "") or ""),
-                    timeout_deadline_at=getattr(session, "timeout_deadline_at", None),
-                    workspace_dirty=workspace_dirty,
-                )
+                if workspace_dirty is not None:
+                    session.run_workspace_dirty = workspace_dirty
+                self._update_run_diagnostics(session)
 
                 if session.issue.id in self._state.running:
                     del self._state.running[session.issue.id]
@@ -1421,6 +1454,9 @@ class Orchestrator:
                     self.status_dashboard.on_session_complete(session.issue.id or "")
                     self._state.completed.add(session.issue.id or "")
                     self._registry.mark_completed(session.issue.id or "")
+                    await self._sync_tracker_issue_state(
+                        session.issue.id or "", "completed"
+                    )
                 elif session.status == "verification_failed":
                     self.status_dashboard.on_session_failed(
                         session.issue.id or "",
@@ -1564,6 +1600,7 @@ class Orchestrator:
             )
             self._state.claimed.discard(issue_id)
             self._registry.mark_abandoned(issue_id)
+            await self._sync_tracker_issue_state(issue_id, "abandoned")
             return
 
         # Exponential backoff capped at max_retry_backoff_ms
@@ -1624,13 +1661,16 @@ class Orchestrator:
             policy = self._clarification_resolver._config.escalation
             if policy == "mark_failed":
                 self._registry.mark_failed(issue_id)
+                await self._sync_tracker_issue_state(issue_id, "failed")
                 self._state.completed.add(issue_id)
             elif policy == "notify":
                 self._registry.mark_failed(issue_id)
+                await self._sync_tracker_issue_state(issue_id, "failed")
                 self._state.completed.add(issue_id)
                 logger.warning("Escalation notify for issue %s", issue_id)
             else:  # skip → mark as abandoned
                 self._registry.mark_abandoned(issue_id)
+                await self._sync_tracker_issue_state(issue_id, "abandoned")
                 self._state.completed.add(issue_id)
                 logger.info("Escalation skip for issue %s", issue_id)
 
