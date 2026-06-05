@@ -274,7 +274,20 @@ class IssueRegistry:
         sequence_index: int | None = None,
         status: IssueStatus | None = None,
     ) -> IssueRecord:
-        """Create a pending record for a newly claimed issue."""
+        """Create a pending record for a newly claimed issue.
+
+        F-40 follow-up: ``_launch_issue`` calls ``register`` at the
+        start of every run, including re-launches after a previous
+        ``mark_synced`` already recorded a ``commit_sha`` /
+        ``pr_number`` / ``pr_url``.  Naively overwriting
+        ``self._records[issue_id]`` with a fresh ``IssueRecord`` would
+        drop those sync-state fields, even though the underlying
+        branch state on disk is unchanged.  When the record already
+        exists, preserve the sync-state fields so the
+        "registerable commit produced by this run" stays visible
+        across retry / verification_failed re-dispatches.
+        """
+        existing = self._records.get(issue_id)
         record = IssueRecord(
             issue_id=issue_id,
             issue_identifier=issue_identifier,
@@ -288,6 +301,16 @@ class IssueRegistry:
             sequence_index=sequence_index,
             status=status or IssueStatus.PENDING,
         )
+        if existing is not None:
+            record.commit_sha = existing.commit_sha
+            record.pr_number = existing.pr_number
+            record.pr_url = existing.pr_url
+            record.report_path = existing.report_path
+            record.verification_status = existing.verification_status
+            record.verification_output = existing.verification_output
+            record.last_hook_error = existing.last_hook_error
+            record.summary_comment_id = existing.summary_comment_id
+            record.last_followup_commit_sha = existing.last_followup_commit_sha
         self._records[issue_id] = record
         self._save()
         return record

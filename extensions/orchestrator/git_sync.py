@@ -208,7 +208,27 @@ class GitSyncService:
             commit_sha = self._run_git_output(["rev-parse", "HEAD"], repo_root)
             start_commit_sha = getattr(session, "start_commit_sha", None)
             has_run_commit = bool(start_commit_sha and commit_sha != start_commit_sha)
-            await self._run_pre_push_verification(repo_root, session)
+            try:
+                await self._run_pre_push_verification(repo_root, session)
+            except (VerificationFailed, HookFailedError) as exc:
+                # No new commit was created in this run, but HEAD may
+                # already carry the issue's implementation from a prior
+                # run on the same branch. Surface the existing HEAD as
+                # the registerable commit so the orchestrator's
+                # GitSyncPostCommitError handler can call mark_synced()
+                # with it, instead of dropping the commit_sha entirely.
+                raise self._post_commit_error(
+                    exc,
+                    branch_name=branch_name,
+                    base_branch=base_branch,
+                    commit_sha=commit_sha,
+                    committed=has_run_commit,
+                    pushed=False,
+                    has_conflict=False,
+                    conflict_files=(),
+                    pull_request=followup_pr,
+                    is_local_tracker=is_local_tracker,
+                ) from exc
             # No staged changes but branch may have diverged from origin — still push
             if branch_name and not no_push:
                 pushed, has_conflict, conflict_files = self._push_with_recovery(

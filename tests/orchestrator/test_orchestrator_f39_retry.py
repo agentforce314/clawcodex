@@ -352,6 +352,113 @@ def _make_orchestrator_for_test(
     return orch
 
 
+class TestIssueRegistryRegisterPreservesSyncState(unittest.TestCase):
+    """F-40 follow-up: ``_launch_issue`` calls ``register`` at the
+    start of every run, including re-launches after a previous
+    ``mark_synced`` already recorded a ``commit_sha`` / ``pr_number``
+    / ``pr_url``.  The old implementation replaced the entire record
+    with a fresh ``IssueRecord``, dropping those fields even though
+    the branch state on disk was unchanged.  These tests pin the
+    fix: the sync-state fields survive a re-``register``, while the
+    per-run positional fields (``start_commit_sha``,
+    ``base_commit_sha``, ``workspace_path``, ``sequence_index``)
+    follow the new arguments.
+    """
+
+    def test_register_preserves_commit_sha_pr_and_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = IssueRegistry(Path(tmp) / "registry.json")
+            reg.register(issue_id="1", issue_identifier="ISSUE-1")
+            reg.mark_synced(
+                "1",
+                branch_name="clawcodex/issue-1-foo",
+                commit_sha="abc123",
+                pr_number="42",
+                pr_url="https://example.test/pr/42",
+            )
+            reg.update_report(
+                "1",
+                report_path="/tmp/report.md",
+                verification_status="passed",
+                verification_output="ok",
+                summary_comment_id="cmt-7",
+            )
+
+            # Simulate ``_launch_issue`` re-registering the same issue
+            # for a fresh run, with new start / base commit SHAs and a
+            # new sequence index.
+            reg.register(
+                issue_id="1",
+                issue_identifier="ISSUE-1",
+                branch_name="clawcodex/issue-1-foo",
+                base_branch="main",
+                workspace_strategy="sequential",
+                workspace_path="/tmp/ws-new",
+                base_commit_sha="newsha-base",
+                start_commit_sha="newsha-start",
+                sequence_index=5,
+            )
+
+            record = reg.get("1")
+            assert record is not None
+            # Sync-state fields preserved.
+            self.assertEqual(record.commit_sha, "abc123")
+            self.assertEqual(record.pr_number, "42")
+            self.assertEqual(record.pr_url, "https://example.test/pr/42")
+            self.assertEqual(record.report_path, "/tmp/report.md")
+            self.assertEqual(record.verification_status, "passed")
+            self.assertEqual(record.verification_output, "ok")
+            self.assertEqual(record.summary_comment_id, "cmt-7")
+            # Per-run positional fields follow the new arguments.
+            self.assertEqual(record.start_commit_sha, "newsha-start")
+            self.assertEqual(record.base_commit_sha, "newsha-base")
+            self.assertEqual(record.workspace_path, "/tmp/ws-new")
+            self.assertEqual(record.sequence_index, 5)
+            self.assertEqual(record.workspace_strategy, "sequential")
+
+    def test_register_preserves_last_followup_commit_sha(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = IssueRegistry(Path(tmp) / "registry.json")
+            reg.register(issue_id="1", issue_identifier="ISSUE-1")
+            reg.mark_synced(
+                "1",
+                branch_name="clawcodex/issue-1-foo",
+                commit_sha="feat-sha",
+            )
+            record = reg.get("1")
+            assert record is not None
+            record.last_followup_commit_sha = "fixup-sha"
+            reg._save()
+
+            reg.register(
+                issue_id="1",
+                issue_identifier="ISSUE-1",
+                start_commit_sha="newsha",
+            )
+            record = reg.get("1")
+            assert record is not None
+            self.assertEqual(record.commit_sha, "feat-sha")
+            self.assertEqual(record.last_followup_commit_sha, "fixup-sha")
+            self.assertEqual(record.start_commit_sha, "newsha")
+
+    def test_register_for_brand_new_issue_initialises_sync_fields_none(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = IssueRegistry(Path(tmp) / "registry.json")
+            record = reg.register(
+                issue_id="1",
+                issue_identifier="ISSUE-1",
+                start_commit_sha="newsha",
+            )
+            self.assertIsNone(record.commit_sha)
+            self.assertIsNone(record.pr_number)
+            self.assertIsNone(record.pr_url)
+            self.assertIsNone(record.report_path)
+            self.assertIsNone(record.verification_status)
+            self.assertIsNone(record.verification_output)
+            self.assertIsNone(record.last_hook_error)
+            self.assertEqual(record.start_commit_sha, "newsha")
+
+
 class TestPrepareIntentReset(unittest.IsolatedAsyncioTestCase):
     async def test_retry_intent_closes_pr_and_resets_registry(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -325,6 +325,77 @@ class TestGitSyncService(unittest.IsolatedAsyncioTestCase):
                 "",
             )
 
+    async def test_pre_push_verification_failure_with_existing_commit_registers_head(self) -> None:
+        """No-staged-changes path: when the implementation is already on
+        the branch (HEAD == start_commit_sha, e.g. from a prior run on
+        the same sequential integration branch), a pre-push verification
+        failure must still surface the existing HEAD via
+        GitSyncPostCommitError so the orchestrator's handler can call
+        mark_synced(commit_sha=HEAD) instead of dropping it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            origin = _build_origin_repo(base)
+            manager = WorkspaceManager(
+                WorkspaceConfig(
+                    root=base / "workspace",
+                    repo_clone_url=str(origin),
+                    strategy="sequential",
+                    checkout_issue_branch=False,
+                    base_branch="main",
+                    integration_branch="integration/f40",
+                )
+            )
+            issue = Issue(id="40", identifier="F-40", title="Existing implementation")
+            workspace = await manager.create_for_issue(issue)
+            # Pre-existing implementation commit on the integration
+            # branch — represents a prior run that already produced the
+            # F-40 work. This session makes no further file changes.
+            (workspace.path / "progress_sink.py").write_text(
+                "# implementation\n", encoding="utf-8",
+            )
+            _git(["add", "progress_sink.py"], workspace.path)
+            _git(
+                ["commit", "-m", "refactor: pre-existing F-40 implementation"],
+                workspace.path,
+            )
+            head_sha = _git_output(["rev-parse", "HEAD"], workspace.path)
+            # Sanity: no staged changes (the untracked workspace lock
+            # file from WorkspaceManager is irrelevant to git_sync's
+            # staged-changes detection).
+            self.assertEqual(
+                _git_output(["diff", "--cached", "--name-only"], workspace.path),
+                "",
+            )
+
+            session = _Session(issue, workspace)
+            session.workspace_strategy = "sequential"
+            session.integration_branch = "integration/f40"
+            # Session started with HEAD already at the implementation
+            # commit (e.g. after a reset/retry that didn't roll back
+            # the branch). This is the exact F-40 shape.
+            session.start_commit_sha = head_sha
+
+            service = GitSyncService(
+                _Tracker(),
+                agent_config=AgentConfig(
+                    test_command="python -c 'raise SystemExit(7)'",
+                ),
+            )
+
+            with self.assertRaises(GitSyncPostCommitError) as cm:
+                await service.sync(session)
+            self.assertIsInstance(cm.exception.cause, VerificationFailed)
+            # The fix surfaces the existing HEAD as the registerable
+            # commit so mark_synced() can record it.
+            self.assertEqual(cm.exception.result.commit_sha, head_sha)
+            # No new commit was produced in this session, so the result
+            # flags it accordingly. The orchestrator still calls
+            # mark_synced() with the commit_sha from the result.
+            self.assertFalse(cm.exception.result.committed)
+            self.assertEqual(
+                cm.exception.result.branch_name, "integration/f40",
+            )
+
     async def test_pre_commit_hook_modifies_files_and_amends_commit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
