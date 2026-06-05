@@ -925,6 +925,124 @@ session = Session.resume(issue_session_id)
 
 ---
 
+## F-55: 会话恢复（Session Resume）增强
+
+**状态**: 📋 设计完成
+**优先级**: P0
+**规划文档**: `docs/FEATURE_PLAN.md` → `§五 会话恢复（Session Resume）增强`
+**依赖**: 无
+
+### 目标
+
+对标 claude-code-best（CCB）的会话恢复体验，补齐以下三个核心特性缺口：
+
+1. **退出时打印 Resume Hint**（S-R1）：所有退出路径在 TTY 主缓冲区打印 `Resume this session with: clawcodex --tui --resume <sessionId>`
+2. **Resume 后历史消息渲染完整**（S-R2）：`_replay_history()` 中 user 消息不应被跳过
+3. **`--continue` CLI 快捷命令**（S-R3）：无需记忆 session ID，自动恢复最近会话
+
+### 当前基线
+
+ClawCodex 已有：
+- `Session.resume()` — 核心恢复逻辑（`src/session/session_resume.py`）
+- `_sync_conversation_from_transcript()` — 从 transcript 重建消息列表（`src/repl/core.py`）
+- `ResumeConversation` — 交互式 session 浏览器（`src/session/resume_conversation.py`）
+- `_replay_history()` — TUI 启动后重放历史（`src/tui/app.py` L1108-1161，但跳过 user 消息）
+- `__FULL_EXIT__` 路径的打印 hint（`src/repl/core.py` L2143-2153，仅单个退出路径）
+
+CCB 还具备但 ClawCodex 缺失的：
+- `printResumeHint()` 在所有退出路径调用（`src/utils/gracefulShutdown.ts` L141-176）
+- `loadConversationForResume(undefined)` 自动查找最新会话（`src/services/sessionManagement/sessionRestore.ts`）
+- `launchRepl({initialMessages: loaded.messages})` 完整消息直通渲染
+- `checkResumeConsistency()` 一致性检查
+- `restoreCostStateForSession()` / `restoreSessionMetadata()` / `restoreAgentFromSession()` 状态恢复
+
+### 实施阶段
+
+#### Phase 0 — 退出路径统一打印 Resume Hint（S-R1，1-2天）
+
+**目标**：所有退出路径都能在 TTY 主缓冲区打印 session ID。
+
+| 任务 | 文件 | 说明 |
+|------|------|------|
+| 提取 `_print_resume_hint()` 工具函数 | `src/repl/core.py` 或新模块 | 判断 TTY + 交互 + 持久化启用，打印 hint |
+| 在 `__FULL_EXIT__` 路径复用该函数 | `src/repl/core.py` | 去重，替换现有硬编码打印 |
+| 在正常 `/exit` 退出路径调用 | `src/repl/core.py` `exit()` | 确保非 FULL_EXIT 也打印 |
+| 在 `Ctrl+C` / `KeyboardInterrupt` 路径调用 | `src/tui/app.py` 或入口点 | 捕获 KeyboardInterrupt 后打印 |
+| 在 SIGTERM handler 中调用 | 注册 signal handler | 可选（P1） |
+| 确保退出 alt-screen 后再打印 | `src/entrypoints/tui.py` `run_tui()` | `app.run()` 返回后，打印到主缓冲区 |
+
+**验收标准**：
+- `/exit` 后终端可见 `Resume this session with:` 提示
+- `Ctrl+C` 后同样可见（`KeyboardInterrupt` 捕获后打印）
+- session ID 或自定义标题正确显示
+- 仅 TTY + 交互 + 持久化启用时才打印
+
+#### Phase 1 — Resume 后完整历史渲染（S-R2，0.5-1天）
+
+**目标**：`--resume` 启动后所有消息（含 user 消息）完整渲染。
+
+| 任务 | 文件 | 说明 |
+|------|------|------|
+| 移除 `_replay_history()` 中 `if role == "user": continue` | `src/tui/app.py` L1108-1161 | 改为渲染所有 role 的消息 |
+| 确保 user 消息的文本格式与原始输入一致 | `src/tui/app.py` `_flatten_message_text()` | 验证消息内容提取逻辑 |
+| 格式一致性检查：resume 渲染 vs 原始 exit 前显示 | 手动测试 | 确认无格式退化 |
+
+**验收标准**：
+- `--resume <sessionId>` 后历史完整，能看到自己之前的所有输入
+- user + assistant + tool 消息交替显示，如同从未退出
+
+#### Phase 2 — `--continue` CLI 支持（S-R3，2-3天）
+
+**目标**：`-c` / `--continue` 自动恢复最近会话。
+
+| 任务 | 文件 | 说明 |
+|------|------|------|
+| 在 CLI argument parser 注册 `-c` / `--continue` | `src/cli.py` | 布尔标志，与 `--resume` 互斥 |
+| 实现 `session_resume.latest()` 查找最新 transcript | `src/session/session_resume.py` | 扫描 transcript 目录，按修改时间排序 |
+| 在 `main()` 中处理 `--continue` 分支 | `src/main.py` / 入口点 | 等价于 `--resume <latest_session_id>` |
+| 与 `--fork-session` 组合支持 | 后续扩展（P1） | 先做基础 `--continue` |
+
+**验收标准**：
+- `clawcodex --tui --continue` 恢复最近会话
+- 无最近会话时给出清晰错误提示
+- 交互式浏览器仍可用
+
+#### Phase 3 — 元数据与状态恢复（S-R4，3-5天，P1-P2）
+
+**目标**：resume 时恢复 cost、metadata、agent 设置等旁路状态。
+
+| 子项 | 预计工作量 | 优先级 |
+|------|:----------:|:------:|
+| S-R4-C: 恢复 Cost 累计状态 | 1-2天 | P1 |
+| S-R4-F: `--fork-session` 支持 | 1-2天 | P1 |
+| S-R4-T: 按自定义标题恢复 | 1天 | P2 |
+| S-R4-M: 恢复 session metadata | 1天 | P2 |
+| S-R4-A: 恢复 Agent 设置 | 1-2天 | P2 |
+| S-R4-CP: 交叉项目路径调整 | 1-2天 | P2 |
+| S-R4-CK: 一致性检查 | 1天 | P2 |
+| S-R4-AT: resume 到指定消息位置 | 2-3天 | P3 |
+
+### 验收标准
+
+- ✅ `/exit` 后终端可见 resume hint
+- ✅ `Ctrl+C` 后同样可见 resume hint
+- ✅ `--resume <sessionId>` 后历史完整渲染（含 user 消息）
+- ✅ `-c` / `--continue` 自动恢复最近会话
+- ✅ 恢复的 session 在 LLM context 中与原始退出时一致
+- ⏳ Resume 后 cost 累计值正确（P1）
+- ⏳ `--fork-session` 创建新 session ID（P1）
+- ⏳ 按自定义标题查找并恢复 session（P2）
+- ⏳ Resume 后 agent 设置恢复（P2）
+- ⏳ 跨目录 resume 路径正确调整（P2）
+
+### 风险与约束
+
+- **alt-screen 生命周期**：Textual `inline=True` 已经规避了 alt-screen 擦除的问题，但 hint 必须在 `app.run()` 返回后（而非在 app 内部）打印，否则会被文本渲染覆盖。
+- **`--continue` vs `--resume` 互斥**：同时在 CLI 层做校验，避免二义性。
+- **Session ID 格式**：ClawCodex 的 session ID 格式与 CCB 可能不同，确认 transcript 路径解析兼容。
+- **与 F-49 的边界**：F-49（Issue 会话统一存储）定义了 `SessionStorage` 协议和 `attach/resume` 流程。F-55 专注 TUI 层 resume UX 细节（S-R1~S-R3），二者不冲突。
+
+---
 
 ## 五、死代码排查记录
 

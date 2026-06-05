@@ -3127,7 +3127,124 @@ ClawCodex 当前 scheduler 无此保护。
 
 ---
 
-*文档更新时间: 2026-06-03*
+## 五、会话恢复（Session Resume）增强（F-55）
+
+### 5.1 问题现状
+
+> 与 claude-code-best（CCB）对比，ClawCodex 的 TUI 会话恢复在以下方面存在特性缺口。CCB 提供了包括退出后打印 session 信息（用于 `--resume` 指定）、`--continue` 继续最近会话、以及 `--resume` 启动后完整加载历史会话信息且渲染格式保持一致（如同从未退出）的完整体验。
+
+ClawCodex 已有会话恢复的基础框架（`Session.resume()`、`_sync_conversation_from_transcript()`、`ResumeConversation` 浏览器），但关键的 UX 细节未对齐。
+
+### 5.2 CCB 对比发现的补充缺口
+
+#### 5.2.1 缺口 1：退出时打印 Resume Hint（S-R1）
+
+**CCB 行为**：所有退出路径（`/exit`、`Ctrl+C`、SIGTERM、failsafe 超时）最终都会调用 `gracefulShutdown` → `printResumeHint()`，在 TTY 主缓冲区打印：
+
+```
+Resume this session with: claude --resume <sessionId>
+```
+
+实现守卫：`process.stdout.isTTY && getIsInteractive() && !isSessionPersistenceDisabled()`。同时支持自定义标题（fallback UUID）。
+
+**ClawCodex 现状**：仅在 `__FULL_EXIT__` 路径（Ctrl+B 完全退出）有打印 hint。普通退出（`/exit`、`Ctrl+C`）无任何打印，用户退出后无法知道 session ID。
+
+| 子项 | CCB | ClawCodex | 优先级 |
+|------|:---:|:---------:|:------:|
+| `/exit` 正常退出打印 | ✅ `printResumeHint()` | ❌ | P0 |
+| `Ctrl+C` 退出打印 | ✅ | ❌ | P0 |
+| SIGTERM 退出打印 | ✅ `gracefulShutdownSync` | ❌ | P1 |
+| failsafe 超时退出打印 | ✅ failsafe timer | ❌ | P1 |
+| 退出 alt-screen 后打印（确保主缓冲区可见） | ✅ `cleanupTerminalModes()` → hint | ❌ | P1 |
+| 仅 TTY + 交互 + 持久化启用时打印 | ✅ 三重守卫 | ❌ | P0 |
+| 支持自定义标题（fallback UUID） | ✅ `customTitle ? escaped : sessionId` | ❌ 只打印 session_id | P2 |
+
+**涉及参考代码**：
+- CCB: `src/utils/gracefulShutdown.ts` L141-176 `printResumeHint()`
+- ClawCodex: `src/repl/core.py` L2143-2153 `__FULL_EXIT__` 路径
+
+---
+
+#### 5.2.2 缺口 2：Resume 后历史消息渲染不完整（S-R2）
+
+**CCB 行为**：`--resume <sessionId>` 启动后，通过 `loadConversationForResume()` 加载完整 transcript，以 `initialMessages` 参数传入 `launchRepl()`。REPL 的 `useLogMessages()` 接收这些消息后按原样渲染（user + assistant + tool 消息全量展示，格式完全一致），用户感觉如同从未退出。
+
+**ClawCodex 现状**：`_replay_history()`（`src/tui/app.py` L1108-1161）有 `if role == "user": continue` 跳过用户消息，认为"用户提示已经显示在输入行，不需要重复渲染"。导致 resume 后历史看起来残缺不全，只显示 assistant 回复，看不到用户之前说了什么。
+
+| 子项 | CCB | ClawCodex | 优先级 |
+|------|:---:|:---------:|:------:|
+| user 消息完整渲染 | ✅ | ❌ `_replay_history` 中 `continue` | P0 |
+| assistant 消息渲染 | ✅ | ✅ | ✅ |
+| tool_use/tool_result 消息渲染 | ✅ | ⚠️ 部分 | P2 |
+| 渲染格式保持退出前一致性 | ✅ `initialMessages` 直通 REPL | ❌ `_post_to_screen` 路径不同 | P1 |
+| 一致性检查（transcript ↔ 显示） | ✅ `checkResumeConsistency(chain)` | ❌ | P2 |
+| 路径交叉调整（跨目录） | ✅ `_adjust_paths()` 完整实现 | ❌ 空函数（`return msg`） | P2 |
+| 孤立 tool_use 修复 | ❌（不适用，CCB 同步 IO） | ✅ `_fix_orphaned_tool_uses()` | ✅ 已具备 |
+
+**涉及参考代码**：
+- CCB: `src/main.tsx` L3660-3718 `--continue` / `--resume` 启动路径
+- CCB: `src/screens/components/chat/chat.ts` `useLogMessages(initialMessages)`
+- ClawCodex: `src/tui/app.py` L1108-1161 `_replay_history()`
+
+---
+
+#### 5.2.3 缺口 3：`--continue` CLI 快捷命令（S-R3）
+
+**CCB 行为**：`-c` / `--continue` 参数自动找回最近会话恢复，无需指定 session ID。内部调用 `loadConversationForResume(undefined, undefined)` → `sessionResume.latest()` 查找最新 transcript。同时支持与 `--fork-session` 组合使用，创建新 session ID 但保留历史上下文。
+
+**ClawCodex 现状**：不支持 `--continue`。用户必须使用 `--resume <sessionId>` 并记住/查找 session ID。
+
+| 子项 | CCB | ClawCodex | 优先级 |
+|------|:---:|:---------:|:------:|
+| `-c` / `--continue` 命令行参数 | ✅ | ❌ | P0 |
+| 自动查找最近会话 | ✅ `loadConversationForResume(undefined)` | ❌ | P0 |
+| 与 `--fork-session` 组合 | ✅ | ❌ | P1 |
+| 与 `/resume` 交互式浏览器互通 | ✅ | ⚠️ 浏览器单独存在 | P2 |
+
+**涉及参考代码**：
+- CCB: `src/main.tsx` L3660-3718
+- CCB: `src/services/sessionManagement/sessionRestore.ts` `sessionResume.latest()`
+- ClawCodex: `src/session/resume_conversation.py`（浏览器已实现）
+
+---
+
+#### 5.2.4 缺口 4：Resume 时元数据与状态恢复不完整（S-R4）
+
+**CCB 行为**：resume 不仅恢复消息列表，还恢复以下旁路状态：
+
+| 状态项 | CCB 恢复机制 | ClawCodex | 优先级 |
+|--------|-------------|:---------:|:------:|
+| Cost 累计（totalCostUSD） | `restoreCostStateForSession(sid)` | ❌ 每次从 0 开始 | P1 |
+| 自定义标题（session name） | `restoreSessionMetadata(result)` | ❌ | P2 |
+| Agent 设置 | `restoreAgentFromSession()` | ❌ | P2 |
+| Context Collapse 状态 | `restoreFromEntries(commits, snapshot)` | ❌ | P3 |
+| Fork 创建新 session ID | `forkSession: true` | ❌ 每次覆盖原 session | P1 |
+| 按自定义标题恢复 | `searchSessionsByCustomTitle()` | ❌ 只能按 UUID | P2 |
+| 按文件路径恢复 | `.jsonl` 文件路径 | ❌ | P3 |
+| Resume 到指定消息位置 | `--resume-session-at <msgId>` | ❌ | P3 |
+
+---
+
+### 5.3 补充缺口实施优先级矩阵
+
+| 编号 | 缺口 | 类别 | 优先级 | 预计工作量 | 依赖 |
+|:----:|------|------|:------:|:----------:|:----:|
+| S-R1 | 所有退出路径打印 Resume Hint | UX 退出 | P0 | 1-2天 | 无 |
+| S-R2 | `_replay_history()` 渲染 user 消息 | 恢复准确性 | P0 | 0.5-1天 | 无 |
+| S-R3 | `--continue` 命令行支持 | CLI | P0 | 2-3天 | S-R1 |
+| S-R4-C | Resume 恢复 Cost 累计状态 | 状态恢复 | P1 | 1-2天 | 无 |
+| S-R4-F | `--fork-session` 支持 | 会话管理 | P1 | 1-2天 | 无 |
+| S-R4-M | Resume 恢复 session metadata | 状态恢复 | P2 | 1天 | 无 |
+| S-R4-A | Resume 恢复 Agent 设置 | 状态恢复 | P2 | 1-2天 | 无 |
+| S-R4-T | 按自定义标题恢复 | 发现 | P2 | 1天 | 无 |
+| S-R4-CP | 交叉项目路径调整 | 准确性 | P2 | 1-2天 | 无 |
+| S-R4-CK | Resume 一致性检查 | 健壮性 | P2 | 1天 | 无 |
+| S-R4-AT | Resume 指定消息位置 | 高级 | P3 | 2-3天 | S-R3 |
+
+> **建议实施顺序**：S-R1 → S-R2 → S-R3 → S-R4-C → S-R4-F → S-R4-T → S-R4-M → S-R4-A → S-R4-CP → S-R4-CK → S-R4-AT
+
+---
+
 
 *v2.15 更新：F-22 Phase A runtime-first 接线完成。`RuntimeContext.build()` 启动后台 cron 调度器；`src/repl/core.py` 注册 `replace_cron_tools()` + `attach_cron_runtime()` + `_drain_cron_outbox()`；REPL 主循环每条迭代前消费 `tool_context.outbox` 中的 `cron_prompt`/`cron_missed` 事件，注入为自动用户输入。Headless/TUI 通过共用 `RuntimeContext.build()` 路径获得调度器（TUI outbox drain 待后续）。271/271 orchestrator 测试通过。*
 
