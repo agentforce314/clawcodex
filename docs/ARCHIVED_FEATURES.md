@@ -3091,6 +3091,358 @@ clawcodex  # 自动使用 claude-repl
 
 ---
 
-*文档更新时间: 2026-05-30*
+*文档更新时间: 2026-06-07*
 
-*版本 v1.7 更新：F-34 Phase 1-3 全部完成。CLI parser/dispatch 迁入 `clawcodex_ext/cli`；RuntimeContext 工厂 + Frontend 协议/注册表完成；`ClawCodexExtTUI` 8 个扩展钩子就绪。*
+*版本 v1.8 更新：新增 F-44 人工检视闸门、F-51 AgentRunner 空转检测、F-50 POS 转换器源码固化、cacheWarning 容量限制等 4 项已实现功能归档。*
+
+---
+
+### 二十一.11 F-44 Orchestrator 人工检视闸门（Review Gate）
+
+#### 目标
+
+为 Orchestrator 自动开发流程添加可选的人工检视闸门，实现"自动开发 + 人工合并"的协作模式，对应选项 A 架构。
+
+#### 设计目标
+
+- **配置可控**：`workflow.md` 中 `agent.review_required: true/false` 决定是否启用
+- **向后兼容**：默认 `false`，不影响现有 LocalTracker 和远程 tracker 流程
+- **状态准确**：`PENDING_REVIEW` 状态不被后续 `mark_completed()` 覆盖
+- **CLI 操作**：支持 `clawcodex-dev orchestrator issue review --id <id> --approve | --reject`
+
+#### 配置模型
+
+```yaml
+# workflow.md
+agent:
+  review_required: true   # F-44: 启用人工检视闸门
+```
+
+- `AgentConfig.review_required: bool = False`（默认关闭）
+- `from_dict()` 从 YAML 解析
+
+#### 状态流转
+
+```
+无变更 ────────────────────────────────────→ COMPLETED（跳过闸门）
+
+有变更 + review_required=false ────────────→ COMPLETED（跳过闸门）
+有变更 + review_required=true  ─────┐
+                                    ├──[approve]──→ COMPLETED
+                                    └──[reject]──→ 自动 retry（F-39）
+```
+
+#### 架构变更
+
+| 组件 | 变更 |
+|------|------|
+| `schema.py` | `AgentConfig.review_required: bool` 新字段 + `from_dict` 解析 |
+| `git_sync.py` | `pending_review` 触发条件：`is_local_tracker or review_required` |
+| `orchestrator.py` | `finally` 块新增 `pending_review` 检测，修复状态覆盖 bug |
+
+#### 与已有组件的关系
+
+| 组件 | 关系 |
+|------|------|
+| `GitSyncService.sync()` | `result.pending_review=True` 时不上传 manifest |
+| `IssueRegistry` | `pending_review` 集等待人工 approve；Orchestrator 重启后持久化 |
+| F-39 retry | reject 自动触发 retry，重置 review 状态 |
+| CLI issue review | 已有 review/approve/reject 命令，无需改造 |
+| F-38 验证闭环 | 验证通过 + review gate → PENDING_REVIEW，非直接 COMPLETED |
+
+#### 验收标准
+
+1. `review_required: false` → 行为不变，自动完成
+2. `review_required: true` + 有代码变更 → PENDING_REVIEW，等待审批
+3. `clawcodex-dev orchestrator issue review --id <id> --approve` → 标记完成
+4. `clawcodex-dev orchestrator issue review --id <id> --reject --feedback "..."` → 自动 retry
+5. Orchestrator 重启后 PENDING_REVIEW 状态仍可查看和操作
+6. 全部 orchestrator 测试通过（82 passed）
+
+---
+
+### 二十一.12 F-51 AgentRunner 空转检测机制（no-op detection）
+
+#### 背景
+
+Orchestrator 处理 issue 时，若该 issue 的 deliverables 已在 base branch 中存在（例如通过上游 commit 预置、或在 shared workspace 中被前一个 issue 实现），agent 会陷入无意义循环：反复运行 `python3 --version` / `date` 等 busy-work 命令 → 无文件变更 → session 持续 continue → 耗尽 max_turns → retry → 再循环。
+
+#### 问题根因
+
+| 缺口 | 描述 |
+|------|------|
+| Prompt 层 | 无指令告诉 agent "如果 deliverables 已实现且验证通过，直接完成" |
+| Agent Loop 层 | 无工作区文件变更检测：SessionComplete 后不检查是否产生了实际代码变更 |
+| Retry 层 | `max_turns_exceeded` → retry 循环，但 agent 仍然面对同一场景 |
+
+#### 解法
+
+**代码层**（`extensions/orchestrator/agent_runner.py`）：
+
+```
+每轮 SessionComplete 后:
+    dirty = bool(get_file_status(workspace))
+    if dirty: consecutive_clean_turns = 0
+    else:     consecutive_clean_turns += 1
+    if consecutive_clean_turns >= 5:
+        force session.status = "completed"
+        return
+```
+
+- 导入 `get_file_status`（O(1) 本地 git status 缓存）
+- 常量 `_NOOP_DETECTION_MAX_TURNS = 5`（微调：适当值 3~10）
+- 计数器跟随 session 生命周期，不跨 session 持久化
+
+**Prompt 层**（`workflow.md`）：
+
+Step 3 末尾增加一条："如果该 issue 的功能已经在代码库中实现且验证通过，直接报告完成，无需修改。"
+
+#### 与已有组件的关系
+
+| 组件 | 关系 |
+|------|------|
+| `AgentRunner.run()` | 修改入口：在 continue 路径中添加空转检测 |
+| `GitSyncService.sync()` | 下游：`changed=False` 时跳过 git commit/push |
+| `IssueRegistry` | 下游：标记 completed，无 push 不触发 PR |
+| `ProgressReporter` | 无影响：空转检测在 SessionComplete 之后进行 |
+| F-39 retry 逻辑 | 修复后：不再对"已完成但 issue 未更新"场景 retry |
+
+#### 文件变更
+
+| 文件 | 改动 |
+|------|------|
+| `extensions/orchestrator/agent_runner.py` | +29 行：import + 常量 + 检测逻辑 + 日志 |
+| `workflow.md`（本地编排配置） | +1 条 prompt 指令 |
+
+#### 验收
+
+1. Agent 面对已存在的 deliverables → ≤5 轮自动完成
+2. 主动开发中 → 空转计数器持续重置，不影响
+3. 日志可审计：`No-op detection triggered issue_id=...`
+4. 不增加 retry 循环，issue 正常 closed
+
+---
+
+### 二十一.13 F-50 POS 转换器源码固化（SourceCodeParser + 增强 SkillGrouper + AgentMarkdownWriter）
+
+#### 背景
+
+`extensions/pos_converter/` 现有 SDK-to-Agent 三层映射（`SdkParser` → `SkillGrouper` → `AgentBuilder`）只支持 **OpenAPI / 逗号分隔方法名** 等轻量输入，无法处理真实的 **Python 源码级 SDK**。
+
+AscendDataForge 实践中手动完成了 Python 源码到 Agent 的转换，揭示了三个通用缺口：
+
+| 缺口 | 现有组件 | 上限 | 需要的新组件 |
+|------|----------|------|-------------|
+| Python 源码解析 | `SdkParser._parse_simple_list()` 仅按字符拆分 | 不支持类/方法/docstring/参数/返回类型 | `SourceCodeParser` |
+| 组件级分组 | `SkillGrouper._static_group()` 仅关键字匹配 | 不理解模块层次、输入输出关联 | 增强 `SkillGrouper` 策略 |
+| `.claude/agents/*.md` 生成 | `AgentBuilder.write_agent_markdown()` 只输出极简 YAML | 缺少完整 frontmatter、技能参考文档 | `AgentMarkdownWriter` |
+
+#### 架构总览
+
+```
+Python 源码目录（.py 文件）
+     │
+     ▼
+ SourceCodeParser（新增）
+  ├── ModuleWalker → 递归扫描 .py 文件
+  ├── ClassExtractor → 提取类定义、方法签名
+  ├── DocstringParser → Google/NumPy/reST docstring → 结构化描述
+  ├── ParamInferer → 参数名 + 类型注解 + 默认值 → ParamSpec
+  └── DependencyAnalyzer → import 图 → 组件依赖关系
+     │
+     ├──► SourceComponent[]（正式 schema）
+     │
+     ▼
+ SkillGrouper 策略增强（增量修改）
+  ├── 组件级分组（现有 _static_group 保留）
+  ├── 输入输出关联分组（共享同类型参数的 operations 归组）
+  └── 语义 LLM 分组（预留 _group_with_llm 实现）
+     │
+     ├──► SkillSpec[]
+     │
+     ▼
+ AgentBuilder（增量修改）
+  └──► AgentDefinition → AgentMarkdownWriter（新增）
+       ├── .claude/agents/<name>.md（CLI 直接加载）
+       ├── .atomcode/skills/<name>/SKILL.md
+       └── 技能参考脚本目录（操作源码片段嵌入）
+```
+
+#### 子模块一：SourceCodeParser（`extensions/pos_converter/source_parser.py`）
+
+```python
+@dataclass
+class SourceComponent:
+    name: str                       # "VideoOperations"
+    file_path: str                  # "组件/视频算子/video_ops/video_operations.py"
+    description: str                # docstring 首段
+    operations: list[SourceOperation]
+    dependencies: list[str]         # import 列表（去重本地文件）
+    input_schema: dict              # 解析出的输入字段 {name: type_hint}
+    output_schema: dict             # {name: type_hint}
+
+@dataclass
+class SourceOperation:
+    name: str
+    description: str                # 方法 docstring
+    parameters: list[ParamSpec]
+    return_type: str | None
+    source_code: str                # 完整源码片段，嵌入技能参考
+
+@dataclass
+class ParamSpec:
+    name: str
+    type_hint: str | None
+    default: Any | None
+    required: bool
+```
+
+输入：一个目录路径（递归扫描 `.py` 文件）。输出：`list[SourceComponent]`。
+
+#### 子模块二：增强 SkillGrouper 策略（`extensions/pos_converter/skill_grouper.py` 增量）
+
+```python
+class GroupStrategy(Enum):
+    KEYWORD_MATCH = "keyword_match"      # 现有：MappingRule 静态匹配
+    COMPONENT_GROUP = "component_group"  # 新增：按 SourceComponent 归属
+    IO_RELATION = "io_relation"          # 新增：按输入输出关联
+    LLM_SEMANTIC = "llm_semantic"        # 预留：LLM 语义分组
+```
+
+| 策略 | 输入 | 分组逻辑 | 适用场景 |
+|------|------|----------|---------|
+| `KEYWORD_MATCH` | `MappingRule[]` | `method_pattern in method.name` | SDK 方法名规范 |
+| `COMPONENT_GROUP` | `SourceComponent[]` | 同一组件的 operations 归为一个 Skill | 结构化 Python SDK |
+| `IO_RELATION` | `SourceComponent[]` | 参数类型匹配的跨组件操作归组 | 编排场景 |
+| `LLM_SEMANTIC` | `SdkMethod[]` + `requirements` | LLM 判断业务相关性 | 任意 DSL |
+
+#### 子模块三：AgentMarkdownWriter（`extensions/pos_converter/agent_md_writer.py`）
+
+```python
+@dataclass
+class AgentMarkdownWriter:
+    def write_agent(self, agent_def: AgentDefinition, output_dir: Path) -> Path
+        """生成 <name>.md，包含完整 frontmatter + system prompt。"""
+    def write_skills(self, skills: list[SkillSpec], output_dir: Path) -> list[Path]
+        """生成 .atomcode/skills/<name>/SKILL.md，包含完整操作参考。"""
+    def write_workflow(self, name: str, skills: list[SkillSpec], output_dir: Path) -> Path
+        """可选：生成 orchestrator WORKFLOW.md。"""
+```
+
+输出目录结构：
+
+```
+<output_dir>/
+├── .claude/
+│   └── agents/
+│       └── <agent-name>.md            ← CLI `@agent-name` 加载
+└── .atomcode/
+    └── skills/
+        └── <skill-name>/
+            ├── SKILL.md               ← skill 定义 + 参数说明
+            └── reference/             ← 嵌入的操作源码/文档片段
+                └── ...
+```
+
+#### 子模块四：总览 Agent（Overview Agent）
+
+除了为每个组件生成独立 Agent 外，POS to Agent **始终生成**一个**总览 Agent**（无需额外参数），它：
+- 知晓所有组件 Agent 的名称和职责
+- 理解整体工作流的阶段顺序（如 数据接入 → 视频处理 → 质量检测 → 结果输出）
+- 在收到用户请求时，能判断应交给哪个 `@agent-<component>` 处理，或执行跨组件的编排
+- 提供一站式入口，用户无需了解内部组件划分即可使用
+
+生成逻辑在 `AgentMarkdownWriter` 中新增 `write_overview_agent()` 方法。
+
+#### 启动时默认 Agent 替换机制
+
+生成的 `clawcodex-overview.md` 需要能被 clawcodex **加载为默认 Agent**（替换通用 Claw Codex agent）：
+
+```
+优先级（高→低）：
+ 1. --agent <agent-type> 显式指定             # 明确覆盖
+ 2. .claude/agents/clawcodex-overview.md 存在   # 自动检测
+ 3. GENERAL_PURPOSE_AGENT（当前默认行为）        # 兜底
+```
+
+实现方式：在 `extensions/pos_converter/default_agent.py` 中新增 `resolve_default_agent()`，在 REPL 启动路径中调用。
+
+#### 启动时 Agent 标识 Banner
+
+在 `_resolve_startup_agent()`（`clawcodex_ext/cli/dispatch.py`）中增加了启动 banner：
+
+```
+⚡ Using agent: ascend-dataforge (28 sub-agents)
+```
+
+- 当解析到的 agent 的 `skills` 列表中有 `skill-` 前缀项时，统计为 sub-agent 数量并显示
+- 无自定义 Agent 时不输出，保持零 banner 启动
+- 所有输出走 `stderr`，不干扰 stdout 管道
+
+#### CLI 集成增强
+
+```
+clawcodex-dev pos convert <sdk_spec>          # 现有：OpenAPI / 方法列表
+clawcodex-dev pos convert ./path/to/src       # 新增：Python 源码目录
+                     --out .claude            # 输出到 .claude/agents/
+                     --skills .atomcode/skills
+                     --workflow               # 额外生成 WORKFLOW.md
+                     --name my-agent          # 指定 agent 名称
+                     --strategy component     # 分组策略
+clawcodex-dev --agent clawcodex-overview      # 以总览 Agent 为默认 agent 启动
+```
+
+#### 验收标准
+
+1. `clawcodex-dev pos convert ./组件/视频算子 --out .claude` 生成可被 CLI 加载的 agent markdown
+2. 多组件目录自动生成 `clawcodex-overview.md`，包含工作流概述和子 Agent 委派指引
+3. `SourceCodeParser` 正确提取类名、方法名、参数、docstring、import 依赖
+4. 生成的 Agent markdown 符合 `load_agents_dir.py` 的解析格式
+5. 生成的 `SKILL.md` 可在 CLI 中通过 `@skill-name` 调用
+6. 所有新增代码通过 `python3 -m pytest tests/test_pos_converter*.py -q`
+7. `resolve_default_agent()` 检测到 `clawcodex-overview.md` 时返回对应 definition；未找到时返回 None
+
+#### 已拟定的设计决定
+
+1. **`SourceCodeParser` 不对源码做语义分析**——只做结构化提取。语义理解归 LLM。
+2. **`SourceComponent` 是纯数据容器**——不包含业务逻辑，保持可序列化、可测试。
+3. **`.claude/agents/*.md` 是本路径的默认输出格式**。
+4. **`GroupStrategy` 支持组合**——例如 `component | io_relation`。
+5. **保留 `_static_group()` 作为所有策略的 fallback**。
+6. **技能参考脚本用文件嵌入而非模板渲染**——保持源码的原样性。
+7. **总览 Agent 命名使用 `clawcodex-overview`**。
+8. **`--agent` CLI 参数覆盖 > `clawcodex-overview.md` 自动检测 > 默认 `GENERAL_PURPOSE_AGENT`**。
+9. **总览 Agent 的 system prompt 以 `append_system_prompt` 形式注入**。
+10. **总览 Agent 的 system prompt 是静态生成的**。
+
+---
+
+### 二十一.14 cacheWarning 容量限制（F-12）
+
+#### 功能说明
+
+为 `cacheWarningStateBySource` Map 设置容量上限以防止内存泄漏：
+
+```python
+MAX_SOURCE_ENTRIES = 50
+
+def update_cache_warning(source: str, state: CacheWarningState):
+    if len(cacheWarningStateBySource) >= MAX_SOURCE_ENTRIES:
+        oldest_key = next(iter(cacheWarningStateBySource))
+        del cacheWarningStateBySource[oldest_key]
+    cacheWarningStateBySource[source] = state
+```
+
+#### 问题场景
+
+- querySource 类型为 any
+- 长时间会话产生大量唯一 source 值
+- Map 无限增长导致内存泄漏
+
+#### 实现文件
+
+| 文件 | 位置 |
+|------|------|
+| cacheWarning | `utils/cacheWarning.ts` → `utils/cache_warning.py` |
+
+---

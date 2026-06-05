@@ -731,79 +731,8 @@ session = Session.resume(issue_session_id)
 
 **状态**: ✅ 完成
 **优先级**: P1
-**规划文档**: `docs/FEATURE_PLAN.md` → `§3.18 POS 转换器源码固化设计（F-50）`
-**依赖**: 无
 
-### 目标
-
-将 AscendDataForge 实践中手工完成的 Python 源码 → Agent 转换逻辑固化为三个可复用模块，集成到现有 `extensions/pos_converter/` 中，使 `clawcodex-dev pos convert ./组件目录 --out .claude` 直接可工作。
-
-| 模块 | 文件 | 说明 |
-|------|------|------|
-| `SourceCodeParser` | `extensions/pos_converter/source_parser.py` | Python 源码 AST 解析：类/方法/docstring/参数/依赖 |
-| 增强 SkillGrouper 策略 | `extensions/pos_converter/skill_grouper.py` | 新增 `GroupStrategy`，支持组件级/IO 关联/LLM 分组 |
-| `AgentMarkdownWriter` | `extensions/pos_converter/agent_md_writer.py` | 生成 `.claude/agents/*.md` + `.atomcode/skills/*/SKILL.md` |
-| 总览 Agent | `extensions/pos_converter/agent_md_writer.py` | `write_overview_agent()` **始终**生成工作流总览入口（无额外参数） |
-| 默认 Agent 替换机制 | `extensions/pos_converter/default_agent.py` | `resolve_default_agent()` 检测 `clawcodex-overview.md` 并替换默认 agent |
-
-### 子特性
-
-1. **SourceCodeParser** — `ast.parse()` 递归扫描 `.py` 文件，输出 `SourceComponent[]`
-2. **GroupStrategy 枚举** — `KEYWORD_MATCH` / `COMPONENT_GROUP` / `IO_RELATION` / `LLM_SEMANTIC`
-3. **AgentMarkdownWriter** — 生成 CLI 可加载的 agent markdown 文件（完整 frontmatter + 技能参考）
-4. **总览 Agent（Overview Agent）** — `pos convert` **始终**生成工作流总览 agent（`clawcodex-overview.md`），知晓所有子 agent 的职责和调用链
-5. **默认 Agent 替换** — `clawcodex-overview.md` 命名约定 + `--agent` CLI 参数，启动时自动替换默认 `GENERAL_PURPOSE_AGENT`
-6. **CLI 兼容增强** — `clawcodex-dev pos convert <dir> --out .claude --strategy component`
-7. **测试** — `tests/test_pos_converter_source_parser.py` + 回归
-
-### 当前基线
-
-- `extensions/pos_converter/` 已有三层架构：`SdkParser` → `SkillGrouper` → `AgentBuilder`
-- `clawcodex-dev pos convert` CLI 已注册，支持 OpenAPI / 逗号分隔方法列表
-- `SdkParser` 仅有 `_parse_openapi()` 和 `_parse_simple_list()`，不支持 Python 源码
-- `SkillGrouper` 仅有 `_static_group()`（MappingRule 关键字匹配），无组件级/IO 关联分组
-- `AgentBuilder.write_agent_markdown()` 输出极简 YAML，缺少完整 frontmatter 和技能参考嵌入
-- `pos2agent_ascend_dataforge.py` 脚本已手工完成一次完整转换（可作为验收基准）
-- **缺少总览 Agent 生成** — 当前无任何总览/入口 agent 概念，用户需手动 `@agent-xxx` 调用
-- **缺少默认 Agent 替换机制** — `GENERAL_PURPOSE_AGENT` 硬编码，没有 `clawcodex-overview.md` 或 `--agent` 参数
-
-### 实施进度
-
-| 组件 | 文件 | 状态 | 说明 |
-|------|------|------|------|
-| SourceComponent / SourceOperation / ParamSpec 数据类 | `extensions/pos_converter/source_parser.py` | ✅ 完成 | 从 `pos2agent_ascend_dataforge.py` 中提取 schema |
-| ModuleWalker — 递归扫描 .py 文件 | `extensions/pos_converter/source_parser.py` | ✅ 完成 | `ast.parse()` + 文件发现 |
-| ClassExtractor — 提取类/方法 | `extensions/pos_converter/source_parser.py` | ✅ 完成 | AST 类定义 + 方法签名 |
-| DocstringParser — docstring 结构化提取 | `extensions/pos_converter/source_parser.py` | ✅ 完成 | Google/NumPy/reST 兼容 |
-| DependencyAnalyzer — import 图分析 | `extensions/pos_converter/source_parser.py` | ✅ 完成 | import 语句 → 组件依赖 |
-| GroupStrategy 枚举 + 组件级分组 | `extensions/pos_converter/skill_grouper.py` | ✅ 完成 | 增量修改，向后兼容 |
-| IO 关联分组 | `extensions/pos_converter/skill_grouper.py` | ✅ 完成 | 参数类型匹配跨组件归组 |
-| LLM 语义分组占位 | `extensions/pos_converter/skill_grouper.py` | ✅ 完成 | 填充 `group_with_llm()` |
-| AgentMarkdownWriter — agent markdown 生成 | `extensions/pos_converter/agent_md_writer.py` | ✅ 完成 | `.claude/agents/*.md` 格式 |
-| AgentMarkdownWriter — skill markdown 生成 | `extensions/pos_converter/agent_md_writer.py` | ✅ 完成 | `.atomcode/skills/*/SKILL.md` 格式 |
-| AgentMarkdownWriter — WORKFLOW.md 生成 | `extensions/pos_converter/agent_md_writer.py` | ✅ 完成 | orchestrator 编排文件骨架 |
-| CLI `--out` / `--skills` / `--strategy` 参数 | `clawcodex_ext/cli/pos_cmd/commands.py` | ✅ 完成 | 增量修改 |
-| CLI 源码目录 vs 方法名自动判断 | `clawcodex_ext/cli/pos_cmd/commands.py` | ✅ 完成 | 目录存在检测 |
-| AgentBuilder `format` 参数 | `extensions/pos_converter/agent_builder.py` | ✅ 完成 | `agent_definition` / `markdown` / `both` |
-| 模板（agent / skill markdown） | `extensions/pos_converter/templates.py` | ✅ 完成 | Jinja2 模板 |
-| AgentMarkdownWriter — 总览 Agent 生成 | `extensions/pos_converter/agent_md_writer.py` | ✅ 完成 | `write_overview_agent()` + `AgentComponentInfo` / `WorkflowStage` 数据类 |
-| AgentBuilder — 总览 Agent 自动调用 | `extensions/pos_converter/agent_builder.py` | ✅ 完成 | `build()` 检测多组件 → 自动生成 overview agent |
-| `resolve_default_agent()` | `extensions/pos_converter/default_agent.py` | ✅ 完成 | 扫描 `.claude/agents/clawcodex-overview.md`，返回覆盖 prompt |
-| `--agent CLI` 参数 | `clawcodex_ext/cli/pos_cmd/commands.py` + repl 启动路径 | ✅ 完成 | 启动时指定默认 agent |
-| 启动 Agent 标识 Banner | `clawcodex_ext/cli/dispatch.py` | ✅ 完成 | `_resolve_startup_agent()` 在 stderr 输出 `⚡ Using agent: <name> (<n> sub-agents)` |
-| 单元测试 | `tests/test_pos_converter_source_parser.py` | ✅ 完成 | 33 个测试覆盖提取/分组/生成 |
-| E2E 验收 | — | ✅ 完成 | 33/33 测试通过，回归 271/271 通过 |
-
-### 验收标准
-
-1. `clawcodex-dev pos convert 组件/视频算子 --out .claude` 生成 `.claude/agents/video-ops-agent.md`，`load_agents_dir.py` 可解析加载
-2. `clawcodex-dev pos convert 组件/`（多组件的上层目录）自动生成 `.claude/agents/clawcodex-overview.md`，包含工作流概述和子 Agent 委派指引
-3. `SourceCodeParser` 正确提取 AscendDataForge 所有组件的类/方法/docstring/参数/依赖
-4. 生成的 SKILL.md 包含完整操作源码片段和参数说明
-5. 总览 Agent 的 system prompt 包含所有 `AgentComponentInfo` 和 `WorkflowStage` 描述
-6. `resolve_default_agent()` 检测 `clawcodex-overview.md` 时返回对应 agent definition；未找到时返回 None，不改变启动行为
-7. 所有新增测试通过：`python3 -m pytest tests/test_pos_converter*.py -q`
-8. 现有 `extensions/pos_converter` 测试继续通过
+> 详细进度已归档至 [ARCHIVED_PROGRESS.md §五.14 F-50 POS 转换器源码固化](./ARCHIVED_PROGRESS.md#五14-f-50-pos-转换器源码固化sourcecodeparser--增强-skillgrouper--agentmarkdownwriter)。
 
 ---
 
@@ -811,50 +740,8 @@ session = Session.resume(issue_session_id)
 
 **状态**: ✅ 完成
 **优先级**: P0
-**规划文档**: `docs/FEATURE_PLAN.md` → `§3.1.12 AgentRunner 空转检测机制`
-**依赖**: 无（独立的 agent_runner 修正）
 
-### 问题现状
-
-当 Orchestrator 处理某个 issue 时，如果该 issue 的 deliverables 已经在 base branch 中存在（例如通过上游 commit 预置），agent 会进入一个无意义循环：
-
-1. Agent 读取 issue 描述 → 要求"新建"某功能
-2. 搜索代码发现功能已存在 → 不知道该怎么办
-3. 跑 `python3 --version` / `date` / `print("x")` 等 busy-work 命令
-4. 每轮无文件变更 → 但 session.status 仍是 "continue"
-5. 耗尽全部 max_turns（40轮，~150 次 API 调用）
-6. session.status = "max_turns_exceeded" → Orchestrator 调度 retry
-7. ↻ 无限循环，直到人工干预
-
-### 故障链
-
-| 层次 | 问题 | 修复 |
-|------|------|------|
-| Prompt | 无处理"已实现"的指令 | workflow.md Step 3.5：如果 deliverables 已存在且验证通过，直接完成 |
-| Agent Loop | 无工作区变更检测 | `get_file_status(workspace)` 每轮检查，连续 5 轮 clean 则 force complete |
-| Git Sync | 无文件变更时仍走完整流程 | `GitSyncService.changed=False` 正确跳过 commit/push |
-| Registry | 无 "无变更但通过" 的状态 | 复用 `completed` + 日志记录 no-op 原因 |
-
-### 实施
-
-**文件**: `extensions/orchestrator/agent_runner.py`
-
-| 修改 | 说明 |
-|------|------|
-| `import get_file_status` | 从 `src.utils.git` 导入工作区脏检测 |
-| `_NOOP_DETECTION_MAX_TURNS = 5` | 连续 5 轮无文件变更即判定为空转 |
-| `consecutive_clean_turns` 追踪 | 在 run() 的 continue 路径中累积计数器 |
-| `if dirty: reset` / `else: increment & check` | 有变更清零，无变更累积，>=5 时 force-complete |
-| `session.status = "completed"; return` | 直接退出 agent 循环，不触发 retry |
-| `logger.warning("No-op detection triggered")` | 关键审计日志记录 |
-
-### 验收
-
-1. Agent 遇到已存在的 issue deliverables → 运行 ≤5 轮后自动完成
-2. Agent 正在产出代码（有文件变更）→ 不受影响，空转计数器持续清零
-3. 日志中出现 `No-op detection triggered issue_id=X` 记录
-4. Orchestrator 不 retry，issue 标记为 completed
-5. 增量轮次成本：每次 SessionComplete 读取一次 `get_file_status()`（<1ms）
+> 详细进度已归档至 [ARCHIVED_PROGRESS.md §五.12 F-51 AgentRunner 空转检测机制](./ARCHIVED_PROGRESS.md#五12-f-51-agentrunner-空转检测机制no-op-detection)。
 
 ---
 
@@ -862,46 +749,8 @@ session = Session.resume(issue_session_id)
 
 **状态**: ✅ 完成
 **优先级**: P1
-**规划文档**: `docs/FEATURE_PLAN.md` → `§3.1.13 人工检视闸门设计（F-44）`
-**依赖**: F-38（验证与报告闭环）、F-39（Issue 重跑入口）
 
-### 目标
-
-为 Orchestrator 自动开发流程添加可选的人工检视闸门，实现"自动开发 + 人工合并"的协作模式，对应选项 A 架构。
-
-### 当前基线
-
-- GitSyncService 已有 `pending_review` 状态位，但仅 `LocalTracker` 下触发
-- `Orchestrator.run_issue()` 的 `finally` 块中 `mark_completed()` 会覆盖 `pending_review` 状态
-- CLI 已有 `issue review --approve/--reject` 命令，但从未被触发
-- 远程 tracker（GitHub/Gitee/GitCode）没有人工检视环节
-
-### 实施进度
-
-| 组件 | 文件 | 状态 | 说明 |
-|------|------|------|------|
-| 配置字段 | `schema.py` | ✅ 完成 | `AgentConfig.review_required: bool = False` + `from_dict` 解析 |
-| 同步层 | `git_sync.py` | ✅ 完成 | `pending_review` 条件扩展为 `is_local_tracker or review_required` |
-| 编排器 | `orchestrator.py` | ✅ 完成 | `finally` 块跳过 `mark_completed()` 当 `pending_review` 存在 |
-| 工作流配置 | `workflow.md` | ✅ 完成 | `review_required: true` 示例 |
-| 测试 | 全部测试 | ✅ 通过 | 82 个 orchestrator 测试无回归 |
-
-### 文件变更
-
-| 文件 | 改动 |
-|------|------|
-| `extensions/orchestrator/config/schema.py` | +6 行：新字段 + `from_dict` 解析 |
-| `extensions/orchestrator/git_sync.py` | +1 行：`pending_review` 条件扩展 |
-| `extensions/orchestrator/orchestrator.py` | +16 行：`finally` 块检测修复 |
-| `workflow.md` | +1 注释：开启 `review_required: true` |
-
-### 验收标准
-
-1. `review_required: false` → 行为不变，不阻塞任何现有流程
-2. `review_required: true` + 有代码变更 → 状态为 `PENDING_REVIEW`
-3. `clawcodex-dev orchestrator issue review --id <id> --approve` → 状态变 `COMPLETED`
-4. `clawcodex-dev orchestrator issue review --id <id> --reject --feedback "..."` → 自动 retry
-5. Orchestrator 重启后 `PENDING_REVIEW` 状态持久化，CLI 可继续操作
+> 详细进度已归档至 [ARCHIVED_PROGRESS.md §五.13 F-44 Orchestrator 人工检视闸门](./ARCHIVED_PROGRESS.md#五13-f-44-orchestrator-人工检视闸门review-gate)。
 
 ---
 
