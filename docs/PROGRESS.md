@@ -2,11 +2,13 @@
 
 > 文档路径: `docs/PROGRESS.md`
 > 基于: `docs/open-source-replacement-progress.md`, `docs/FEATURE_PLAN.md`
-> 版本: v2.15
-> 更新日期: 2026-06-03
+> 版本: v2.16
+> 更新日期: 2026-06-04
 > 上游同步: 58ea488 (dev-decoupling-refactor)
 >
-> **v2.15 变更**：F-22 Cron 系统 Phase A runtime-first 接线完成（✅ 已完成）。三层打通：`clawcodex_ext/runtime/context.py` 中 `RuntimeContext.build()` 调用 `attach_cron_runtime(tool_context, autostart=True)` 启动后台 cron 调度器；`src/repl/core.py` 中 `ClawcodexREPL.__init__()` 注册 `replace_cron_tools()` 替换 fallback 工具 + `attach_cron_runtime()` 启动调度器；新增 `_drain_cron_outbox()` 每条迭代前从 `tool_context.outbox` 弹出 `cron_prompt`/`cron_missed` 事件，经 `_enqueue_prompt` 注入为自动用户输入提交 `chat()`。Headless/TUI 通过 `RuntimeContext.build()` 共用同一路径，调度器已在后台运行（TUI 循环的 outbox drain 尚未接线，属后续阶段）。F22-R1 标记为 ✅ 完成，其余 F22-R2~R8 保持进行中。271/271 orchestrator 测试全部通过。v2.9 的 "剩余 P0 缺口列表" 更新为反映 R1~R8 口径。
+> **v2.16 变更**：完成 CCB（claude-code-best）全面对标分析，识别 clawcodex 的 8 个重大特性缺口纳入规划管线。新增 F-60 Pipe IPC + LAN 群控（P0）、F-61 Computer Use 屏幕操控（P0）、F-62 Chrome 浏览器控制（P1）、F-63 Channels 频道通知（P1）、F-64 Voice Mode 语音输入（P2）、F-65 Langfuse Agent 可观测性（P1）、F-66 ACP 协议支持（P2）、F-67 Buddy / Proactive 模式（P2）。同时更新 §四 CCB 对标优势特性总表，明确 clawcodex 对比 CCB 的 5 项领先特性（Orchestrator 自动流水线、Verification Gate、POS-to-Agent 编译器、LiteLLM Provider、Manager/Worker 增强通信）。所有 F-60~F-67 设置为 ⏳ 待开始状态，详见 §四。
+> >
+> > **v2.15 变更**
 >
 > **v2.14 变更**：新增 F-48 src/ 核心路径二开修改解耦方案（📋 设计完成）。通过对比 `src/` 与 `src/upstream/58ea488/`，识别出 10 个含真正功能修改的 src/ 文件（其余 600+ 为行尾/格式差异），分 Phase 0~3 四阶段制定解耦方案：Phase 0（纯新增文件移入 ext）、Phase 1（注册表/Protocol 扩展消除字段注入）、Phase 2（子类覆盖恢复上游构造器签名）、Phase 3（入口点恢复上游逻辑）。复用已有 Facade/子类覆盖/前端注册表三种解耦模式。目标：src/ 有功能修改的文件数从 10+ 降为 0。
 >
@@ -56,10 +58,10 @@
 | F-2 | Team 成员管理 (Phase-7) | P1 | ⏳ 规划中 | members 数组 |
 | F-3 | MCP 协议扩展 | P1 | ✅ 基础完成 | Stdio/HTTP/SSE/WS |
 | F-4 | 结构化输出集成 | P2 | 🔄 进行中 | Outlines 适配器已就绪 |
-| F-5 | Voice Mode | P3 | ⏳ 待开始 | 对标 CCB |
-| F-6 | Computer Use | P3 | ⏳ 待开始 | 对标 CCB |
+| F-5 | Voice Mode | P2 (→F-64) | ⏳ 待开始 | 对标 CCB（升级为 F-64 P2 级） |
+| F-6 | Computer Use | P0 (→F-61) | ⏳ 待开始 | 对标 CCB（升级为 F-61 P0 级） |
 | F-7 | Remote Control | P2 | ⏳ 待开始 | Docker + WebUI |
-| F-8 | ACP/Zed/Cursor 集成 | P3 | ⏳ 待开始 | IDE 集成 |
+| F-8 | ACP/Zed/Cursor 集成 | P2 (→F-66) | ⏳ 待开始 | IDE 集成（升级为 F-66 P2 级） |
 | F-9 | /goal 命令 | P2 | ⏳ 待开始 | 长时间任务目标管理 |
 | F-10 | ExecuteExtraTool 延迟工具系统 | P2 | ⏳ 待开始 | TF-IDF 工具搜索 + 子代理执行 |
 | F-11 | sessionStorage 容量限制 | P2 | ⏳ 待开始 | 防止 daemon 会话内存泄漏 |
@@ -102,6 +104,15 @@
 | F-52 | Python SDK 方法注册为 Tool | P2 | 📋 规划中 | 将 POS→Agent 生成的 ADF 方法（`detect_modality`、`load_dataset` 等）注册为真实的 `Tool` 对象，使 sub-agent 可直接调用而非通过 Bash 回退。`extensions/pos_converter/tool_registry.py` — `ToolWrapper` + `register_source_operations()`。依赖 F-50。 |
 | F-53 | Tool 自动暴露为 CLI 斜杠命令 | P3 | 📋 规划中 | 已注册的 Tool 自动映射为 REPL/TUI 中的 `/tool-name` 命令（如 `/detect_modality --path /data/raw`），参数从 Tool schema 自动推导。`clawcodex_ext/cli/tool_cmd/`。依赖 F-52。 |
 | F-54 | AgentRunner / QueryRunner 运行期可观测性 | P0 | 📋 设计完成 | 补齐 headless issue agent 从 provider request 到 `SessionComplete` 之间的 debug 观测点：`QueryRunner.stream()` heartbeat、`AgentRunner` turn/event counters、watchdog timeout snapshot、持久化 `debug.ndjson` 与 registry/CLI 诊断字段，用于定位 agent run 有请求但无文件改动/报告/commit 的 stuck-run。 |
+| F-55 | 会话恢复（Session Resume）增强 | P1 | 📋 设计完成 | 补齐 CCB 对标发现的 4 个 Resume UX 缺口：退出时打印 Resume Hint（S-R1）、Resume 后历史消息渲染完整（S-R2）、`--continue` CLI 快捷命令（S-R3）、元数据与状态恢复增强（S-R4）。Phase 0-3 分阶段实施，详见 [FEATURE_PLAN.md §5](./FEATURE_PLAN.md#五会话恢复session-resume增强f-55)。 |
+| F-60 | Pipe IPC + LAN 群控系统 | P0 | ⏳ 待开始 | 对标 CCB Pipe IPC 多实例协作 + LAN UDP Multicast 自动发现。支持同机 Unix Domain Socket 命名管道通信、跨机器零配置发现、消息广播路由、权限转发。预计 3-4 周。 |
+| F-61 | Computer Use 屏幕操控 | P0 | ⏳ 待开始 | 对标 CCB Computer Use。支持跨平台截图（macOS screencapture / Windows PowerShell / Linux scrot）、跨平台键鼠模拟、应用/窗口管理、剪贴板读写。预计 2-3 周。 |
+| F-62 | Chrome 浏览器自动化控制 | P1 | ⏳ 待开始 | 对标 CCB Chrome Use。Chrome MCP 扩展桥接，支持页面导航、点击、填表、截图、执行 JS。预计 1-2 周。 |
+| F-63 | Channels 频道通知系统 | P1 | ⏳ 待开始 | 对标 CCB Channels。支持飞书、Slack、Discord、微信等渠道的通知推送与 MCP 服务器消息转发。预计 2 周。 |
+| F-64 | Voice Mode 语音输入 | P2 | ⏳ 待开始 | 对标 CCB Voice Mode。ASR 语音识别（豆包 doubaoime-asr / Whisper）、Push-to-Talk 语音交互、音频流 WebSocket 传输。预计 1-2 周。 |
+| F-65 | Langfuse Agent 可观测性 | P1 | ⏳ 待开始 | 对标 CCB Langfuse。OpenTelemetry + Langfuse SDK 集成，Agent Loop 级追踪，一键转化为训练数据集。预计 1 周。 |
+| F-66 | ACP 协议支持 | P2 | ⏳ 待开始 | 对标 CCB ACP（Agent Client Protocol）。Zed/Cursor 等 IDE 集成协议支持，会话恢复与 Skills 桥接。预计 1-2 周。 |
+| F-67 | Buddy 伴侣 / Proactive 自主模式 | P2 | ⏳ 待开始 | 对标 CCB Buddy 伴侣系统 + Proactive 自主模式。后台 AI 伴侣异步观察会话、主动提供调试建议、检测文件变更自动提出优化。预计 2 周。 |
 
 ---
 
@@ -199,7 +210,9 @@ CronTask due
 | F22-R5 | busy gate / assistant/headless/filter 语义 | ⏳ 待开始 | 需要对齐 `claude-code-best` 的 `isLoading`、assistantMode、filter 语义，避免繁忙时重入、headless 无法路由时静默丢任务。 |
 | F22-R6 | durable 文件 reload 行为 | ⏳ 待确认 | 已有文件存储和锁，但还需端到端验证多会话/外部编辑 `.claude/scheduled_tasks.json` 后 scheduler 热加载与稳定性。 |
 | F22-R7 | teammate/agent ownership | ⏳ 待设计 | CCB task schema 有 `agentId`；ClawCodex 需要决定 coordinator/team cron ownership、可见性、路由和失败策略。 |
-| F22-R8 | CCB-compatible gate 命名与用户心智 | ⏳ 待确认 | 当前主要使用 `CLAWCODEX_DISABLE_CRON`；若用户从 CCB 迁移，建议兼容 `CLAUDE_CODE_DISABLE_CRON` 或在文档/CLI 中明确差异。 |
+| | F22-R8 | CCB-compatible gate 命名与用户心智 | ⏳ 待确认 | 当前主要使用 `CLAWCODEX_DISABLE_CRON`；若用户从 CCB 迁移，建议兼容 `CLAUDE_CODE_DISABLE_CRON` 或在文档/CLI 中明确差异。 |
+| | **G9** | **SDK daemon 模式（`dir`/`lockIdentity`）** | ⏳ 待设计 | scheduler 当前依赖 bootstrap session state；daemon/headless 独立运行需支持可选 `dir` 和 `lock_identity` 参数，无 session 时自动降级。详见 FEATURE_PLAN §4.11.11。 |
+| | **G10** | **`cronToHuman(utc)` UTC 模式显示** | ⏳ 待设计 | `cron_to_human()` 无 UTC 参数；需增加 `utc=True` 时按本地时区偏移显示，远程 agent 场景使用。详见 FEATURE_PLAN §4.11.11。 |
 
 ### 里程碑
 
@@ -225,7 +238,9 @@ CronTask due
 | **G5** | **锁注册式清理与 PID 增强** - atexit 清理、PID 分身检测、同 session 锁接管 | ✅ 完成 |
 | **G6** | **工具 Prompt 指引增强** - CronCreate/List/Delete 的 prompt 字段补充最佳实践说明 | ✅ 完成 |
 | **G7** | **Analytics 遥测事件预留** - fire/missed/expired 事件点预留 Optional[Callable] | ✅ 完成 |
-| **G8** | **inFlight 防重复触发** - 异步 IO 期间用 in_flight Set 防止同一任务二次触发 | ✅ 完成 |
+| | **G8** | **inFlight 防重复触发** — 异步 IO 期间用 in_flight Set 防止同一任务二次触发 | ✅ 完成 |
+| | **G9** | **SDK daemon 模式（`dir`/`lockIdentity`）** — 可选脱离 session state 独立运行 | ⏳ 待设计 |
+| | **G10** | **`cronToHuman(utc)` UTC 模式** — `cron_to_human()` 增加 `utc` 参数 | ⏳ 待设计 |
 
 ---
 
@@ -1041,6 +1056,141 @@ CCB 还具备但 ClawCodex 缺失的：
 - **`--continue` vs `--resume` 互斥**：同时在 CLI 层做校验，避免二义性。
 - **Session ID 格式**：ClawCodex 的 session ID 格式与 CCB 可能不同，确认 transcript 路径解析兼容。
 - **与 F-49 的边界**：F-49（Issue 会话统一存储）定义了 `SessionStorage` 协议和 `attach/resume` 流程。F-55 专注 TUI 层 resume UX 细节（S-R1~S-R3），二者不冲突。
+
+---
+
+## 四、CCB 对标特性补缺跟踪
+
+> 本节跟踪 CCB（claude-code-best）对标发现的 clawcodex 特性缺口实施进度。
+> F-60~F-67 均参照 CCB 对应功能设计，以确保功能完整对标为目标。
+
+### F-60: Pipe IPC + LAN 群控系统
+
+**状态**: ⏳ 待开始 | **优先级**: P0 | **对标**: CCB Pipe IPC + LAN Pipes
+
+| 编号 | 子特性 | 状态 | 预计工作量 |
+|:----:|--------|:----:|:----------:|
+| P60-A | Unix Domain Socket 命名管道通信 | ⏳ 待开始 | 5-7天 |
+| P60-B | 多实例主从编排 + 面板选择 | ⏳ 待开始 | 3-5天 |
+| P60-C | LAN UDP Multicast 零配置自动发现 | ⏳ 待开始 | 5-7天 |
+| P60-D | 消息广播路由与权限转发 | ⏳ 待开始 | 3-5天 |
+| P60-E | 跨机器 Source/Destination 选择 | ⏳ 待开始 | 3-5天 |
+| P60-F | `/pipes` 面板与 Shfit+↓ 面板切换 | ⏳ 待开始 | 5-7天 |
+
+**估算总工时**: 3-4 周
+
+### F-61: Computer Use 屏幕操控
+
+**状态**: ⏳ 待开始 | **优先级**: P0 | **对标**: CCB Computer Use
+
+| 编号 | 子特性 | 状态 | 预计工作量 |
+|:----:|--------|:----:|:----------:|
+| P61-A | 跨平台截图 (macOS/Windows/Linux) | ⏳ 待开始 | 3-5天 |
+| P61-B | 跨平台键鼠模拟 (xdotool/CGEvent/SendInput) | ⏳ 待开始 | 5-7天 |
+| P61-C | 应用/窗口管理 (打开/关闭/焦点/移动) | ⏳ 待开始 | 3-5天 |
+| P61-D | 剪贴板读/写 (文本/图片/文件) | ⏳ 待开始 | 2-3天 |
+
+**估算总工时**: 2-3 周
+
+### F-62: Chrome 浏览器自动化控制
+
+**状态**: ⏳ 待开始 | **优先级**: P1 | **对标**: CCB Chrome Use
+
+| 编号 | 子特性 | 状态 | 预计工作量 |
+|:----:|--------|:----:|:----------:|
+| P62-A | Chrome MCP 扩展桥接 | ⏳ 待开始 | 3-5天 |
+| P62-B | 页面导航与元素交互 | ⏳ 待开始 | 2-3天 |
+| P62-C | 截图与 JS 执行 | ⏳ 待开始 | 2-3天 |
+| P62-D | 操作 GIF 录制 | ⏳ 待开始 | 2-3天 |
+
+**估算总工时**: 1-2 周
+
+### F-63: Channels 频道通知系统
+
+**状态**: ⏳ 待开始 | **优先级**: P1 | **对标**: CCB Channels
+
+| 编号 | 子特性 | 状态 | 预计工作量 |
+|:----:|--------|:----:|:----------:|
+| P63-A | 飞书通知集成 | ⏳ 待开始 | 3-5天 |
+| P63-B | Slack 通知集成 | ⏳ 待开始 | 2-3天 |
+| P63-C | Discord 通知集成 | ⏳ 待开始 | 2-3天 |
+| P63-D | 微信通知集成 | ⏳ 待开始 | 3-5天 |
+| P63-E | MCP 服务器推送外部消息 | ⏳ 待开始 | 2-3天 |
+
+**估算总工时**: 2 周
+
+### F-64: Voice Mode 语音输入
+
+**状态**: ⏳ 待开始 | **优先级**: P2 | **对标**: CCB Voice Mode
+
+| 编号 | 子特性 | 状态 | 预计工作量 |
+|:----:|--------|:----:|:----------:|
+| P64-A | ASR 语音识别 (豆包 doubaoime-asr / Whisper) | ⏳ 待开始 | 3-5天 |
+| P64-B | Push-to-Talk 语音交互 | ⏳ 待开始 | 3-5天 |
+| P64-C | 音频流 WebSocket 传输 | ⏳ 待开始 | 2-3天 |
+
+**估算总工时**: 1-2 周
+
+### F-65: Langfuse Agent 可观测性
+
+**状态**: ⏳ 待开始 | **优先级**: P1 | **对标**: CCB Langfuse
+
+| 编号 | 子特性 | 状态 | 预计工作量 |
+|:----:|--------|:----:|:----------:|
+| P65-A | OpenTelemetry + Langfuse SDK 集成 | ⏳ 待开始 | 3-5天 |
+| P65-B | Agent Loop 级追踪 | ⏳ 待开始 | 2-3天 |
+| P65-C | 一键转化为训练数据集 | ⏳ 待开始 | 2-3天 |
+
+**估算总工时**: 1 周
+
+### F-66: ACP 协议支持
+
+**状态**: ⏳ 待开始 | **优先级**: P2 | **对标**: CCB ACP (Agent Client Protocol)
+
+| 编号 | 子特性 | 状态 | 预计工作量 |
+|:----:|--------|:----:|:----------:|
+| P66-A | ACP SDK 基础协议实现 | ⏳ 待开始 | 3-5天 |
+| P66-B | Zed IDE 集成接入 | ⏳ 待开始 | 2-3天 |
+| P66-C | Cursor IDE 集成接入 | ⏳ 待开始 | 2-3天 |
+| P66-D | 会话恢复与 Skills 桥接 | ⏳ 待开始 | 2-3天 |
+
+**估算总工时**: 1-2 周
+
+### F-67: Buddy 伴侣 / Proactive 自主模式
+
+**状态**: ⏳ 待开始 | **优先级**: P2 | **对标**: CCB Buddy + Proactive
+
+| 编号 | 子特性 | 状态 | 预计工作量 |
+|:----:|--------|:----:|:----------:|
+| P67-A | 后台 AI 伴侣异步观察会话 | ⏳ 待开始 | 3-5天 |
+| P67-B | 主动提供调试建议 | ⏳ 待开始 | 2-3天 |
+| P67-C | 文件变更自动检测与优化建议 | ⏳ 待开始 | 3-5天 |
+| P67-D | Proactive 自主模式 (独立上下文) | ⏳ 待开始 | 3-5天 |
+
+**估算总工时**: 2 周
+
+### CCB 对标实施总览
+
+| 编号 | 特性 | 优先级 | 对标级别 | 状态 | 工时估算 |
+|:----:|------|:------:|:--------:|:----:|:--------:|
+| F-60 | Pipe IPC + LAN 群控 | P0 | 🔴 严重缺口 | ⏳ 待开始 | 3-4周 |
+| F-61 | Computer Use 屏幕操控 | P0 | 🔴 严重缺口 | ⏳ 待开始 | 2-3周 |
+| F-62 | Chrome 浏览器控制 | P1 | 🟡 重要缺口 | ⏳ 待开始 | 1-2周 |
+| F-63 | Channels 频道通知 | P1 | 🟡 重要缺口 | ⏳ 待开始 | 2周 |
+| F-64 | Voice Mode 语音输入 | P2 | 🟢 增强体验 | ⏳ 待开始 | 1-2周 |
+| F-65 | Langfuse 可观测性 | P1 | 🟡 重要缺口 | ⏳ 待开始 | 1周 |
+| F-66 | ACP 协议支持 | P2 | 🟢 增强体验 | ⏳ 待开始 | 1-2周 |
+| F-67 | Buddy / Proactive | P2 | 🟢 增强体验 | ⏳ 待开始 | 2周 |
+
+### 实施建议顺序
+
+```
+F-60 (Pipe IPC) ──→ F-61 (Computer Use) ──→ F-63 (Channels) ──→ F-62 (Chrome) ──→ F-65 (Langfuse) ──→ F-64 (Voice) + F-66 (ACP) + F-67 (Buddy)
+   ↑ 架构基础          ↑ 高频交互              ↑ 团队协作               ↑ 自动化             ↑ 可观测性           ↑ 体验增强
+   P0                  P0                      P1                       P1                  P1                   P2
+```
+
+> **建议**: F-60（Pipe IPC）和 F-61（Computer Use）为 P0 级特性，建议优先实施。F-63（Channels）和 F-65（Langfuse）可在中期并行开发。F-64/F-66/F-67 为长期迭代方向。
 
 ---
 

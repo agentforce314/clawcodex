@@ -2,11 +2,13 @@
 
 > 文档路径: `docs/FEATURE_PLAN.md`
 > 基于: `clawcodex-opensource-replacement-analysis-v2.md`, `clawcodex_vs_ccb_analysis-v3.md`, `INTEGRATION.md`, `TEAM_MEMBERSHIP.md`
-> 版本: v2.15
-> 更新日期: 2026-06-03
+> 版本: v2.16
+> 更新日期: 2026-06-04
 > 上游同步: 58ea488 (dev-decoupling-refactor)
 >
-> **v2.15 变更**：F-22 Cron 系统 Phase A runtime-first 接线完成（✅ 已完成）。三层打通：`clawcodex_ext/runtime/context.py` 中 `RuntimeContext.build()` 调用 `attach_cron_runtime(tool_context, autostart=True)` 启动后台 cron 调度器；`src/repl/core.py` 中 `ClawcodexREPL.__init__()` 注册 `replace_cron_tools()` 替换 fallback 工具 + `attach_cron_runtime()` 启动调度器；新增 `_drain_cron_outbox()` 每条迭代前从 `tool_context.outbox` 弹出 `cron_prompt`/`cron_missed` 事件，经 `_enqueue_prompt` 注入为自动用户输入提交 `chat()`。Headless/TUI 通过 `RuntimeContext.build()` 共用同一路径，调度器已在后台运行（TUI 循环的 outbox drain 尚未接线，属后续阶段）。271/271 orchestrator 测试全部通过。
+> **v2.16 变更**：完成 CCB（claude-code-best）全面对标分析，识别 clawcodex 的 8 个重大特性缺口并纳入规划（见 §6 CCB 对标特性补缺规划）。新设 F-60（Pipe IPC 多实例群控 + LAN 发现）、F-61（Computer Use 屏幕操控）、F-62（Chrome 浏览器自动化控制）、F-63（Channels 频道通知）、F-64（Voice Mode 语音输入）、F-65（Langfuse Agent 可观测性）、F-66（ACP 协议支持）、F-67（Buddy 伴侣 / Proactive 自主模式）。同时识别出 clawcodex 对比 CCB 的 5 项领先优势（Orchestrator 自动流水线、Verification Gate、POS-to-Agent 编译器、LiteLLM Provider、Manager/Worker 增强通信）。缺口项目按 P0~P2 优先级排序纳入开发管线。
+> >
+> > **v2.15 变更**
 >
 > **v2.14 变更**：新增 §3.17 src/ 核心路径二开修改解耦方案（F-48，📋 设计完成）。通过对比 `src/` 与 `src/upstream/58ea488/`，识别出 10 个含真正功能修改的 src/ 文件（其余 600+ 为行尾/格式差异），分三优先级制定解耦方案：Phase 0（纯新增文件移入 ext）、Phase 1（注册表/Protocol 扩展消除字段注入）、Phase 2（子类覆盖恢复上游构造器签名）、Phase 3（入口点恢复上游逻辑）。复用已有 3 种解耦模式：Facade 模式（`src/cli.py` 已走通）、子类覆盖模式（`ClawCodexExtTUI` 已走通）、前端注册表模式（`@register_frontend` 已走通）。目标：src/ 有功能修改的文件数从 10+ 降为 0。
 >
@@ -3125,6 +3127,58 @@ ClawCodex 当前 scheduler 无此保护。
 
 ---
 
+#### 4.11.11 分析缺口与已有 F22-R/G 交叉映射
+
+以下将早期 CCB 对比分析中识别的特性缺口映射到已有 F22-R/R8 和 G1~G8，并标记本文档尚未显式记录的补充缺口。
+
+| 分析类别 | 分析识别的缺口 | 对应已有标识 | 差异 |
+|----------|---------------|-------------|------|
+| 核心架构 | `agentId` 队友级任务路由 | F22-R7 / Phase F | 已覆盖 |
+| 核心架构 | `filter` per-task gate | F22-R5 / Phase C | 已覆盖 |
+| 核心架构 | `assistantMode` 自动启用 | F22-R5 / Phase C | 已覆盖 |
+| 核心架构 | SDK daemon 模式 `dir`/`lockIdentity` | ❌ 未覆盖 | **新增缺口 F-22-G9** |
+| 调度器生命周期 | `lastFiredAt` 跨进程持久化（重启重放风险） | Phase C（已计划更新，但风险未明确） | **增强说明** |
+| 调度器生命周期 | Chokidar 文件实时监听 | F22-R6（首期 mtime polling，后续 watcher） | 已覆盖 |
+| 调度器生命周期 | `getScheduledTasksEnabled()` 条件启用 | F22-R5（busy gate 相关） | 已覆盖 |
+| Jitter 配置 | GrowthBook 远程配置 | G2（文件/env 热加载） | 已覆盖 |
+| 可观测性 | 遥测事件 | G7（预留钩子） | 已覆盖 |
+| 计算/功能 | `nextCronRunMs()` 纯函数 | Parsers 已有等效 | ✅ 已有 |
+| 计算/功能 | `cronToHuman(utc)` UTC 模式 | ❌ 未覆盖 | **新增缺口 F-22-G10** |
+
+##### lastFiredAt 跨进程重启风险（Phase C 增强说明）
+
+Phase C 已规划 "recurring task fired 后更新 `last_fired_at`、`next_fire_at`" 行为。需特别强调其**正确性影响**：
+
+- **风险场景**：scheduler 进程在某一 tick 中计算 due tasks 但尚未 fire（或 fire 后进程崩溃，未写入 `last_fired_at`），重启后 `next_fire_at` 仍为任务创建时的旧值，导致已到期的 task 被**重复触发**。
+- **缓解措施**：启动时应当遍历所有 recurring tasks，检查 `last_fired_at` 是否存在。若缺失（首次运行或崩溃后恢复），应重新计算 `next_fire_at = now + jitter`，而非沿用任务创建时的 `next_fire_at`。同时可在锁获取后执行一次 "reconcile" 步骤，清除或标记上次 crash 残留的 queued run。
+- **验收标准**：在 `scheduler.check_once()` 启动 tick 之前，所有 tasks 的 `next_fire_at` 均 >= `now`；不存在因旧快照回退导致的过期 due。
+
+##### F-22-G9: SDK daemon 模式（dir / lockIdentity 独立运行）
+
+**对标 `claude-code-best` 行为**：`CronScheduler` 构造函数支持可选的 `dir`（项目目录）和 `lockIdentity`（锁所有者 UUID），允许完全脱离 bootstrap session state 运行。headless/daemon 场景下无需 session_id、无需 bootstrap state 即可独立启动调度器。
+
+**ClawCodex 当前状态**：scheduler 始终依赖 `workspace_root` 和 session_id（从 bootstrap state 获取）。
+
+**补齐要求**：
+- `CronScheduler.__init__` 增加可选 `dir: str | None` 和 `lock_identity: str | None` 参数
+- 未提供时回退当前行为（取 bootstrap state）
+- daemon/长期运行模式可通过改接口独立启动，无需前端 session
+
+**优先级**: P1（daemon 模式预研阶段实现）
+
+##### F-22-G10: cronToHuman(utc) UTC 模式显示
+
+**对标 `claude-code-best` 行为**：`cronToHuman(cron, {utc: true})` 在展示 cron 表达式的可读时间时，将 UTC cron 时间按本地时区转换显示，而非直接展示 UTC 时间戳。对远程 agent/跨境团队场景尤为重要。
+
+**ClawCodex 当前状态**：仅支持本地时区显示；`cron_to_human()`（parser.py）无 UTC 参数。
+
+**补齐要求**：
+- 在 `parser.py` 中增加 `cron_to_human(cron: str, *, utc: bool = False) -> str`
+- `utc=True` 时将 cron 的 UTC 时间偏移到本地时区显示
+- 状态展示（`CronList` / status 表格）中可选使用 UTC 模式
+
+**优先级**: P2
+
 ---
 
 ## 五、会话恢复（Session Resume）增强（F-55）
@@ -3262,8 +3316,340 @@ Resume this session with: claude --resume <sessionId>
 
 *版本 v2.3 更新：新增 3.1.5 Orchestrator 验证与报告闭环设计（F-38）。Sub-A 在 `HooksConfig` 增 `pre_commit` / `pre_push` / `post_sync` 三点，git_sync 在 commit/push 前后自动跑 verification gate（默认 `pytest -x`，用户可配 `test_command`）；Sub-B 新增 `report_writer` 生成 Markdown/JSON 报告，`IssueRecord` 增 `report_path` 字段，`git_sync._build_pr_body` 改模板插值；Sub-C 抽象 `TrackerAdapter.update_pull_request`，GitCode 客户端实现 `PATCH /repos/{owner}/{repo}/pulls/{id}`，把报告回写到 PR body 并合并为单条汇总评论；Sub-D 修复 `progress_reporter` 死代码，PhaseComplete 接入 ndjson event log。*
 
-*版本 v2.7 更新：F-39 Orchestrator Issue 重跑入口落地（Sub-A~F 全部 ✅）。`tracker.py` 增 `Intent` str-Enum + `Command` enum + `CommandIntent` 数据类 + 默认 `fetch_issue_command_intent`；`issue_registry.py:IssueRecord` 增 5 字段 + 5 方法（`mark_intent/clear_intent/reset_for_retry/increment_retry_count/unblock`）；`orchestrator.py` 在 `_poll_and_dispatch` 增加 Sub-F 角色校验（fail-closed）+ 限频（`max_retries_per_issue=3`）+ 拒绝评论与高优 audit；`cli/issue.py` 增 `retry` 子命令（`--mode {reset,followup,unblock}` + `--force` + `--max-retries` + `--operator` + `--reason`）写 `~/.clawcodex/orchestrator/audit.jsonl`。新增 153 个 F-39 专项单测，orchestrator 回归 231/231 通过。端到端 10-11 阶段（实际 GitCode/GitHub issue 联动）待真实环境验证。*
-
-*版本 v2.6 更新：新增 §3.1.7 ProgressReporter Sink 协议重构设计（F-40）。把 `Orchestrator` 上 `ProgressReporter` 单例拆为每 session 独立的 `ProgressSink` 实例；新增 `CompositeProgressSink` 扇出支持 F-37/F-39 零侵入接入；补全 `SessionComplete` / `TurnComplete` 转发；引入 `WorkflowConfig.phases` 做真实进度计算，淘汰 `phase_count * 25` 假数据。*
-
 *版本 v2.4 更新：新增 3.1.6 Issue 重跑入口设计（F-39）。三种 label 表达重做意图：`agent:retry`（重置本地状态、关旧 PR、重跑整个 issue）、`agent:follow-up`（保留 PR、叠 commit、对应 F-37 follow-up）、`agent:blocked`（永久跳过）；comment 命令 `/agent retry` / `/agent follow-up` 由原作者或 maintainer 触发并限频；CLI 兜底 `issue retry --id 1 --mode reset`。Sub-A label 解析+意图分发，Sub-B 重置重跑，Sub-C follow-up 叠 commit，Sub-D comment 命令解析，Sub-E CLI 兜底，Sub-F 限频+角色校验。*
+
+---
+
+## 六、CCB 对标特性补缺规划
+
+> 本节规划 CCB（claude-code-best）对标发现的 clawcodex 特性缺口。
+> F-60~F-67 均参照 CCB 对应功能设计，以确保功能完整对标为目标。
+
+### F-60: Pipe IPC + LAN 群控系统
+
+**状态**: ⏳ 待开始 | **优先级**: P0 | **对标**: CCB Pipe IPC + LAN Pipes
+
+#### 背景
+
+CCB 的 Pipe IPC 是其最独特的能力之一：在同机或 LAN 上、通过 Unix Domain Socket / UDP Multicast 将多个 claude-code 实例组成协作网络。核心体验包括 `/pipes` 面板、Shift+↓ 跨实例选择、Source/Destination 路由、权限转发。clawcodex 目前仅支持单实例运行，完全缺失此项能力。
+
+#### 子特性分解
+
+| 编号 | 子特性 | 说明 | 状态 | 预计工作量 |
+|:----:|--------|------|:----:|:----------:|
+| P60-A | Unix Domain Socket 命名管道 | 同机多实例间通过 UDS 建立双向通信管道 | ⏳ 待开始 | 5-7天 |
+| P60-B | 多实例主从编排 + 面板选择 | 主实例管理子实例列表、面板 UI 展示/Pick | ⏳ 待开始 | 3-5天 |
+| P60-C | LAN UDP Multicast 自动发现 | 跨机器零配置发现：UDP Multicast 广播心跳 | ⏳ 待开始 | 5-7天 |
+| P60-D | 消息广播路由与权限转发 | 实例间消息路由、Slave 权限自动转发到 Master 确认 | ⏳ 待开始 | 3-5天 |
+| P60-E | 跨机器 Source/Destination 选择 | 跨局域网实例的选择与消息路由 | ⏳ 待开始 | 3-5天 |
+| P60-F | `/pipes` 面板与 Shfit+↓ 面板切换 | 面板 UI：列出所有可用管道/实例，键盘快速切换 | ⏳ 待开始 | 5-7天 |
+
+#### 架构建议
+
+```
+┌───────────────────────────────────────────────────┐
+│                  Master Instance                   │
+│  ┌──────────────┐  ┌──────────────┐               │
+│  │ PipeRegistry  │  │ Panel UI     │               │
+│  │ (peer list)   │  │ (/pipes)     │               │
+│  └──────┬───────┘  └──────────────┘               │
+│         │                                          │
+│  ┌──────▼───────┐                                 │
+│  │ PipeRouter   │  (UDS server / UDP listener)    │
+│  └──────────────┘                                 │
+└──────────────────┬────────────────────────────────┘
+                   │ UDS / LAN
+   ┌───────────────┴───────────────┐
+   │          Slave Instance        │
+   │  ┌──────────┐  ┌────────────┐ │
+   │  │Permission│  │ PipeClient │ │
+   │  │Forwarder │  │ (heartbeat) │ │
+   │  └──────────┘  └────────────┘ │
+   └───────────────────────────────┘
+```
+
+#### 依赖
+
+- Python `asyncio` / `socket` / `multiprocessing`（标准库）
+- UDP Multicast 使用标准 socket API
+- TUI 扩展点用于 `/pipes` 面板（Textual Screen override）
+- UDS 路径 `~/.clawcodex/pipes/*.sock`
+
+---
+
+### F-61: Computer Use 屏幕操控
+
+**状态**: ⏳ 待开始 | **优先级**: P0 | **对标**: CCB Computer Use
+
+#### 背景
+
+CCB 的 Computer Use 功能允许 Claude 截图分析屏幕画面、操控鼠标键盘、管理应用窗口、读写剪贴板。这是实现"AI 操作桌面"场景的核心能力。clawcodex 完全不支持。
+
+#### 子特性分解
+
+| 编号 | 子特性 | 说明 | 状态 | 预计工作量 |
+|:----:|--------|------|:----:|:----------:|
+| P61-A | 跨平台截图 | macOS: `screencapture` / Windows: `[System.Drawing]` / Linux: `scrot`/`import` | ⏳ 待开始 | 3-5天 |
+| P61-B | 跨平台键鼠模拟 | macOS: `CGEvent` / Windows: `SendInput` / Linux: `xdotool` / `ydotool` | ⏳ 待开始 | 5-7天 |
+| P61-C | 应用/窗口管理 | 打开/关闭/焦点/移动/resize | ⏳ 待开始 | 3-5天 |
+| P61-D | 剪贴板读/写 | 文本/图片/文件跨应用粘贴 | ⏳ 待开始 | 2-3天 |
+
+#### 架构建议
+
+```python
+# 平台抽象层（src/services/computer_use/）
+computer_use/
+├── base.py              # ComputerUseTool (BaseTool)
+├── platform/
+│   ├── macos.py         # screencapture, CGEvent
+│   ├── windows.py       # PowerShell, SendInput
+│   └── linux.py         # scrot, xdotool
+├── screenshot.py        # 截图统一接口
+├── input.py             # 键鼠模拟统一接口
+├── clipboard.py         # 剪贴板统一接口
+└── window.py            # 窗口管理统一接口
+```
+
+#### 依赖
+
+- Linux: `scrot` / `xdotool`（可选 `ydotool` 用于 Wayland）
+- macOS: 系统内置 `screencapture` + `Quartz`/`CGEvent`（via `pyobjc` 或 `subprocess`）
+- Windows: `pywin32` + `PIL`（`python -m pip install pywin32 pillow`）
+
+---
+
+### F-62: Chrome 浏览器自动化控制
+
+**状态**: ⏳ 待开始 | **优先级**: P1 | **对标**: CCB Chrome Use
+
+#### 背景
+
+CCB 通过 Chrome MCP 扩展桥接，可以在浏览器中执行导航、点击、填表、截图、执行 JS 等操作，并录制操作过程为 GIF。clawcodex 目前没有任何 Web 自动化能力。
+
+#### 子特性分解
+
+| 编号 | 子特性 | 说明 | 状态 | 预计工作量 |
+|:----:|--------|------|:----:|:----------:|
+| P62-A | Chrome MCP 扩展桥接 | 通过 MCP 协议桥接 Chrome DevTools Protocol | ⏳ 待开始 | 3-5天 |
+| P62-B | 页面导航与元素交互 | 导航到 URL、点击按钮、填写表单、选择下拉 | ⏳ 待开始 | 2-3天 |
+| P62-C | 截图与 JS 执行 | 页面截图/元素截图，在页面中执行任意 JS | ⏳ 待开始 | 2-3天 |
+| P62-D | 操作 GIF 录制 | 记录浏览器操作过程并合成为 GIF | ⏳ 待开始 | 2-3天 |
+
+#### 架构建议
+
+推荐使用现有 Python 生态替代 Chrome DevTools Protocol 手动实现：
+- `Playwright`（推荐，支持 Chromium/Firefox/WebKit）
+- 或 `Selenium` + `undetected-chromedriver`
+
+MCP 桥接方案作为可选的后备方案。
+
+---
+
+### F-63: Channels 频道通知系统
+
+**状态**: ⏳ 待开始 | **优先级**: P1 | **对标**: CCB Channels
+
+#### 背景
+
+CCB 的 Channels 系统支持多渠道消息通知推送，包括飞书、Slack、Discord、微信（企业微信），可在任务完成/出错时自动通知团队。clawcodex 目前无任何通知推送机制。
+
+#### 子特性分解
+
+| 编号 | 子特性 | 说明 | 状态 | 预计工作量 |
+|:----:|--------|------|:----:|:----------:|
+| P63-A | 飞书通知集成 | 通过飞书 Webhook/Bot API 发送消息 | ⏳ 待开始 | 3-5天 |
+| P63-B | Slack 通知集成 | 通过 Slack Webhook/API 发送消息 | ⏳ 待开始 | 2-3天 |
+| P63-C | Discord 通知集成 | 通过 Discord Webhook 发送消息 | ⏳ 待开始 | 2-3天 |
+| P63-D | 微信通知集成 | 通过企业微信 Bot Webhook 发送消息 | ⏳ 待开始 | 3-5天 |
+| P63-E | MCP 服务器推送外部消息 | 通过 MCP 协议推送通知到外部系统 | ⏳ 待开始 | 2-3天 |
+
+#### 架构建议
+
+```python
+# 通知抽象层
+channels/
+├── base.py              # BaseChannel (发送/格式化)
+├── feishu.py            # 飞书 Webhook
+├── slack.py             # Slack Webhook
+├── discord.py           # Discord Webhook
+├── weixin.py            # 企业微信 Bot
+├── mcp_push.py          # MCP 服务器推送
+└── manager.py           # ChannelManager (统一注册分发)
+```
+
+---
+
+### F-64: Voice Mode 语音输入
+
+**状态**: ⏳ 待开始 | **优先级**: P2 | **对标**: CCB Voice Mode
+
+#### 子特性分解
+
+| 编号 | 子特性 | 说明 | 状态 | 预计工作量 |
+|:----:|--------|------|:----:|:----------:|
+| P64-A | ASR 语音识别 | 对接豆包 doubaoime-asr / OpenAI Whisper 实现语音→文本 | ⏳ 待开始 | 3-5天 |
+| P64-B | Push-to-Talk 语音交互 | 按键触发录音→释放即识别的交互模式 | ⏳ 待开始 | 3-5天 |
+| P64-C | 音频流 WebSocket 传输 | 实时音频流通过 WebSocket 传输到 ASR 服务 | ⏳ 待开始 | 2-3天 |
+
+#### 实现建议
+
+Python 生态可使用：
+- `speech_recognition` + `whisper` 本地模型（离线可用）
+- 或调用云端 ASR API（阿里云/腾讯云/百度 ASR）
+- 音频采集使用 `pyaudio` / `sounddevice`
+
+---
+
+### F-65: Langfuse Agent 可观测性
+
+**状态**: ⏳ 待开始 | **优先级**: P1 | **对标**: CCB Langfuse
+
+#### 背景
+
+CCB 集成 Langfuse（OpenTelemetry 兼容）实现 Agent Loop 级可观测性：记录每次 LLM 调用的输入/输出/token 用量/延迟，并支持一键导出为训练数据集。clawcodex 目前仅通过 Bridge Dashboard 提供有限的远程可观测性。
+
+#### 子特性分解
+
+| 编号 | 子特性 | 说明 | 状态 | 预计工作量 |
+|:----:|--------|------|:----:|:----------:|
+| P65-A | OpenTelemetry + Langfuse SDK 集成 | 引入 OpenTelemetry Python SDK + Langfuse exporter | ⏳ 待开始 | 3-5天 |
+| P65-B | Agent Loop 级追踪 | 每次 request/response 自动追踪：model/prompt/completion/token/timing | ⏳ 待开始 | 2-3天 |
+| P65-C | 一键转化为训练数据集 | 将追踪数据导出为训练集格式（JSONL/ChatML） | ⏳ 待开始 | 2-3天 |
+
+#### 架构建议
+
+```python
+# 在 provider 层插入追踪
+class LangfuseProviderWrapper(BaseProvider):
+    def __init__(self, inner: BaseProvider):
+        self._inner = inner
+        self._langfuse = Langfuse()
+
+    async def stream(self, request):
+        span = self._langfuse.span(...)
+        try:
+            async for chunk in self._inner.stream(request):
+                yield chunk
+        finally:
+            span.end(...)
+```
+
+---
+
+### F-66: ACP 协议支持
+
+**状态**: ⏳ 待开始 | **优先级**: P2 | **对标**: CCB ACP (Agent Client Protocol)
+
+#### 背景
+
+ACP（Agent Client Protocol）是 Anthropic 与 Zed/Cursor 等 IDE 合作推出的 Agent-IDE 通信协议，支持会话恢复、Skills 桥接等功能。CCB 通过 `@agentclientprotocol/sdk` 原生支持 ACP。clawcodex 目前无对应实现。
+
+#### 子特性分解
+
+| 编号 | 子特性 | 说明 | 状态 | 预计工作量 |
+|:----:|--------|------|:----:|:----------:|
+| P66-A | ACP SDK 基础协议实现 | 实现 ACP 协议核心：session/skill/tool 通信 | ⏳ 待开始 | 3-5天 |
+| P66-B | Zed IDE 集成接入 | 通过 ACP 协议桥接到 Zed AI 插件 | ⏳ 待开始 | 2-3天 |
+| P66-C | Cursor IDE 集成接入 | 通过 ACP 协议桥接到 Cursor | ⏳ 待开始 | 2-3天 |
+| P66-D | 会话恢复与 Skills 桥接 | ACP session resume + skill 桥接 | ⏳ 待开始 | 2-3天 |
+
+---
+
+### F-67: Buddy 伴侣 / Proactive 自主模式
+
+**状态**: ⏳ 待开始 | **优先级**: P2 | **对标**: CCB Buddy + Proactive
+
+#### 背景
+
+CCB 的 Buddy 是一个"后台 AI 伴侣"，在用户工作的同时异步观察会话，主动提供调试建议。Proactive 模式则是 Agent 在文件变更时主动发起建议。clawcodex 目前两者均无。
+
+#### 子特性分解
+
+| 编号 | 子特性 | 说明 | 状态 | 预计工作量 |
+|:----:|--------|------|:----:|:----------:|
+| P67-A | 后台 AI 伴侣异步观察会话 | 独立进程运行，消费 transcript 流，提供异步建议 | ⏳ 待开始 | 3-5天 |
+| P67-B | 主动提供调试建议 | 在 Agent 遇到困难时，Buddy 从旁观察并给出建议 | ⏳ 待开始 | 2-3天 |
+| P67-C | 文件变更自动检测与优化建议 | 监听工作区文件变更，自动提出优化/修复建议 | ⏳ 待开始 | 3-5天 |
+| P67-D | Proactive 自主模式 | Agent 自主检查项目状态（无需用户触发），提出改进建议 | ⏳ 待开始 | 3-5天 |
+
+---
+
+### CCB 对标实施总览
+
+| 编号 | 特性 | 优先级 | 对标级别 | 状态 | 工时估算 |
+|:----:|------|:------:|:--------:|:----:|:--------:|
+| F-60 | Pipe IPC + LAN 群控 | P0 | 🔴 严重缺口 | ⏳ 待开始 | 3-4周 |
+| F-61 | Computer Use 屏幕操控 | P0 | 🔴 严重缺口 | ⏳ 待开始 | 2-3周 |
+| F-62 | Chrome 浏览器控制 | P1 | 🟡 重要缺口 | ⏳ 待开始 | 1-2周 |
+| F-63 | Channels 频道通知 | P1 | 🟡 重要缺口 | ⏳ 待开始 | 2周 |
+| F-64 | Voice Mode 语音输入 | P2 | 🟢 增强体验 | ⏳ 待开始 | 1-2周 |
+| F-65 | Langfuse 可观测性 | P1 | 🟡 重要缺口 | ⏳ 待开始 | 1周 |
+| F-66 | ACP 协议支持 | P2 | 🟢 增强体验 | ⏳ 待开始 | 1-2周 |
+| F-67 | Buddy / Proactive | P2 | 🟢 增强体验 | ⏳ 待开始 | 2周 |
+
+### 实施建议顺序
+
+```
+F-60 (Pipe IPC) ──→ F-61 (Computer Use) ──→ F-63 (Channels) ──→ F-62 (Chrome) ──→ F-65 (Langfuse) ──→ F-64 (Voice) + F-66 (ACP) + F-67 (Buddy)
+   ↑ 架构基础          ↑ 高频交互              ↑ 团队协作               ↑ 自动化             ↑ 可观测性           ↑ 体验增强
+   P0                  P0                      P1                       P1                  P1                   P2
+```
+
+> **建议**: F-60（Pipe IPC）和 F-61（Computer Use）为 P0 级特性，建议优先实施。F-63（Channels）和 F-65（Langfuse）可在中期并行开发。F-64/F-66/F-67 为长期迭代方向。
+
+---
+
+### clawcodex 对比 CCB 的领先优势
+
+以下 5 项特性是 clawcodex **已有**而 CCB **缺失**的优势能力，应在补缺过程中保持并强化：
+
+#### 优势 1: Orchestrator 自动 Issue→PR 流水线
+
+| 子能力 | clawcodex | CCB |
+|--------|-----------|-----|
+| 4 Trackers (GitHub/Gitee/GitCode/Linear) | ✅ | ❌ |
+| Issue 状态机 (6 状态) | ✅ | ❌ |
+| Per-issue worktree 生命周期管理 | ✅ | ❌ |
+| LiveView Dashboard (HTTP/SSE) | ✅ | ❌ |
+| Operator Takeover | ✅ | ❌ |
+
+> **保持策略**: 在 F-60 Pipe IPC 中为 Orchestrator 预留通信接口，使 Orchestrator 工作流可通过 Pipe IPC 通知其他实例。
+
+#### 优势 2: Verification Gate（F-38）
+
+| 子能力 | clawcodex | CCB |
+|--------|-----------|-----|
+| pre-commit / pre-push / post-sync pytest 门禁 | ✅ | ❌ |
+| Markdown + JSON 报告植入 PR body | ✅ | ❌ |
+
+> **保持策略**: 确保新的 Computer Use / Chrome Use 功能产生的代码变更同样经过 Verification Gate。
+
+#### 优势 3: POS-to-Agent 编译器
+
+| 子能力 | clawcodex | CCB |
+|--------|-----------|-----|
+| `workflow.md` → 多 Agent 系统 | ✅ | ❌ |
+| SDK 接口→Tool 规范三层映射 | ✅ | ❌ |
+
+> **保持策略**: 无冲突，保持现状。
+
+#### 优势 4: LiteLLM Provider（100+ 模型统一接口）
+
+| 子能力 | clawcodex | CCB |
+|--------|-----------|-----|
+| 单 `--provider litellm` 覆盖 100+ 模型 | ✅ | ❌ |
+| Anthropic block → OpenAI block 自动转换 | ✅ | ❌ |
+| Bedrock/Vertex/Azure/Together 等 | ✅ | ❌ |
+
+> **保持策略**: 确保新增的 Langfuse + OpenTelemetry 追踪层兼容 LiteLLM provider wrapper。
+
+#### 优势 5: Manager/Worker 增强通信（TaskInspect/TaskDirectives）
+
+| 子能力 | clawcodex | CCB |
+|--------|-----------|-----|
+| 广播指令给所有 Worker | ✅ | ❌ |
+| critical/high/normal 优先级队列 | ✅ | ❌ |
+| Worker 权限模式独立控制 | ✅ | ❌ |
+| 消息标签系统 | ✅ | ❌ |
+
+> **保持策略**: F-60 Pipe IPC 可以扩展此模式到跨实例通信。
