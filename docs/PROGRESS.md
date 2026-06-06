@@ -398,7 +398,7 @@ CronTask due
 
 **状态**: ⏳ 规划中
 **优先级**: P2
-**规划文档**: `docs/FEATURE_PLAN.md` → `§3.16 permission_mode enum 正交拆分设计（F-46）`
+**规划文档**: `docs/FEATURE_PLAN.md` → `§5.2 permission_mode enum 正交拆分设计（F-46）`
 **触发场景**: 2026-06-02 F-45 设计时发现，`permission_mode` 这个 enum（`default` / `plan` / `bypassPermissions` / `acceptEdits` / `dontAsk` / `auto` / `bubble`）把**三个正交概念压在一个字段里**：(1) 是否要 TTY 弹 prompt（`interactive`）；(2) 无人值守时的默认决策（`default_decision: allow|deny|ask`）；(3) per-tool 决策是否落盘（`audit_log: none|minimal|full`）。这种 "超级 enum" 导致设计债累积：`dontAsk` 听上去像 "headless + audit" 但实际在 orchestrator 会被 auto-upgrade 到 `bypassPermissions`；`bypassPermissions` 听上去像 "全开" 但 TS 注释说 "no logging"，而 Python 端其实有 ApprovalPolicy 拦截。schema 层把语义耦合在一起，下游所有 "我想加一种 mode" 的尝试都得新增一个 enum case。
 
 ### 目标
@@ -505,7 +505,7 @@ CronTask due
 
 **状态**: 📋 设计完成
 **优先级**: P0
-**规划文档**: `docs/FEATURE_PLAN.md` → `3.17 F-48: src/ 核心路径二开修改解耦方案`
+**规划文档**: `docs/FEATURE_PLAN.md` → `6.1 F-48: src/ 核心路径二开修改解耦方案`
 
 ### 目标
 
@@ -787,7 +787,7 @@ session = Session.resume(issue_session_id)
 
 **状态**: 📋 规划中
 **优先级**: P2
-**规划文档**: `docs/FEATURE_PLAN.md` → `§3.19 Python SDK 方法注册为 Tool（F-52）`
+**规划文档**: `docs/FEATURE_PLAN.md` → `§6.3 Python SDK 方法注册为 Tool（F-52）`
 **依赖**: F-50（SourceCodeParser 已输出 SourceOperation）
 
 ### 目标
@@ -817,7 +817,7 @@ session = Session.resume(issue_session_id)
 
 **状态**: 📋 规划中
 **优先级**: P3
-**规划文档**: `docs/FEATURE_PLAN.md` → `§3.20 Tool 自动暴露为 CLI 斜杠命令（F-53）`
+**规划文档**: `docs/FEATURE_PLAN.md` → `§6.4 Tool 自动暴露为 CLI 斜杠命令（F-53）`
 **依赖**: F-52（Tool 注册机制是前置条件）
 
 ### 目标
@@ -942,7 +942,7 @@ session = Session.resume(issue_session_id)
 
 **状态**: 📋 设计完成
 **优先级**: P0
-**规划文档**: `docs/FEATURE_PLAN.md` → `§五 会话恢复（Session Resume）增强`
+**规划文档**: `docs/FEATURE_PLAN.md` → `§八 会话恢复（Session Resume）增强（F-55）`
 **依赖**: 无
 
 ### 目标

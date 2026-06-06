@@ -3399,7 +3399,7 @@ Resume this session with: claude --resume <sessionId>
 
 *版本 v2.13 更新：新增 §3.1.10 Tool-call 审计旁路设计（F-45，📋 设计完成，P1）。在 `agent_runner._handle_tool_call` 后加 NDJSON 旁路落 `~/.clawcodex/tool-events/{run_id}/events.ndjson`，与 permission_mode 解耦（bypass / dontAsk / acceptEdits / default 四种 mode 一视同仁全写）；扩展 `report_writer.RunReport.tool_events_path` 字段与 markdown 模板登记路径；dual-write 到 `~/.clawcodex/reports/.../{run_id}/` 持久化层。NDJSON 每行 8 字段：ts / tool / params / approved / deny_reason / permission_mode / turn / session_run_id。修复 TS 注释 "bypass = no logging" 在 Python 端的事实偏差——ApprovalPolicy 一直在跑，只是决策没落盘。*
 
-*版本 v2.13 更新：新增 §3.16 permission_mode enum 正交拆分设计（F-46，⏳ 规划中，P2）。把 `permission_mode` 混合 enum 拆为三个正交字段 `interactive: bool` / `default_decision: Literal["allow","deny","ask"]` / `audit_log: Literal["none","minimal","full"]`。F-46.0（v2.13）只拆 `audit_log`，依赖 F-45 落地后端到端验证；`permission_mode` 保留为 backward-compat shim 标 deprecated。F-46.1（v2.15+）拆其余两字段，F-46.2（v2.16+）移除 `permission_mode`。三字段组合爆炸风险用 `validate()` 互斥规则 + 启动 warning 缓解。*
+*版本 v2.13 更新：新增 §5.2 permission_mode enum 正交拆分设计（F-46，⏳ 规划中，P2）。把 `permission_mode` 混合 enum 拆为三个正交字段 `interactive: bool` / `default_decision: Literal["allow","deny","ask"]` / `audit_log: Literal["none","minimal","full"]`。F-46.0（v2.13）只拆 `audit_log`，依赖 F-45 落地后端到端验证；`permission_mode` 保留为 backward-compat shim 标 deprecated。F-46.1（v2.15+）拆其余两字段，F-46.2（v2.16+）移除 `permission_mode`。三字段组合爆炸风险用 `validate()` 互斥规则 + 启动 warning 缓解。*
 
 *F-47.1 (2026-06-02) v2.13 hotfix：F-47 原本保留的顶层 `settings.permission_mode` back-compat 读取通道在项目尚未发布的前提下直接删除（`SettingsSchema.permission_mode` 字段保留为兼容形态但启动时不再被读）。F-46 计划中的"标 deprecated → 打 warning → 移除"路径因此提前在 v2.13 完成第一步（直接删读取），F-46.2 的 deprecation 步骤 N/A。*
 

@@ -461,7 +461,7 @@
 
 **状态**: ✅ 已完成 (2026-06-02)
 **优先级**: P1
-**规划文档**: `docs/FEATURE_PLAN.md` → `3.15 CLI 模型供应商与模型切换设计`
+**规划文档**: `docs/FEATURE_PLAN.md` → `5.1 CLI 模型供应商与模型切换设计（F-43）`
 
 ### 目标
 
@@ -1445,7 +1445,7 @@ agent:
 
 **状态**: 📋 设计完成
 **优先级**: P1
-**规划文档**: `docs/FEATURE_PLAN.md` → `§3.17 Permission Settings Schema 重构设计（F-47）`
+**规划文档**: `docs/FEATURE_PLAN.md` → `§5.3 Permission Settings Schema 重构设计（F-47）`
 **触发场景**: 2026-06-02 用户报告"配置 `~/.clawcodex/config.json` 的 `settings.permissions.allowBypassPermissionsMode: true` 后,REPL Shift+Tab 仍然只循环 3 档"。排查发现四层串联 bug 互相纠缠：(1) `SettingsSchema.permissions: list[PermissionRule]` 的 schema 形状与磁盘实际 dict 形态(`updates.py:291-343` / `setup.py:62-67` / `loader.py:14-30` 写入)不一致 —— dict 落进 known 字段,`isinstance(..., list)` 是 False 不转换,`allowBypassPermissionsMode` 既进不了 `extra` 也不被结构化读取；(2) `has_allow_bypass_permissions_mode()` 写死了 `settings.extra["permissions"]` 路径，永远读不到；(3) `clawcodex_ext/cli/permissions.py:36-39` 调 `initial_permission_mode_from_cli` 时没传 `settings_default_mode`，`settings.permissions.defaultMode` 形同虚设；(4) 顶层 `settings.permission_mode` 字段虽然存在但 `resolve_permission_state` 根本没读它。同时 `src/settings/types.py:13-20` 的 `PermissionRule`（带 `tool/allow/glob/regex/description/source` 字段）与运行时实际使用的 `src/permissions/types.py:80-84` frozen `PermissionRule`（带 `source/rule_behavior/rule_value`）不是同一个东西，且前者没有任何 caller —— 死代码。
 
 ### 目标
