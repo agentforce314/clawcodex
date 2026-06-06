@@ -7,8 +7,6 @@
 > 上游同步: 58ea488 (dev-decoupling-refactor)
 >
 > **v2.16 变更**：完成 CCB（claude-code-best）全面对标分析，识别 clawcodex 的 8 个重大特性缺口纳入规划管线。新增 F-60 Pipe IPC + LAN 群控（P0）、F-61 Computer Use 屏幕操控（P0）、F-62 Chrome 浏览器控制（P1）、F-63 Channels 频道通知（P1）、F-64 Voice Mode 语音输入（P2）、F-65 Langfuse Agent 可观测性（P1）、F-66 ACP 协议支持（P2）、F-67 Buddy / Proactive 模式（P2）。同时更新 §四 CCB 对标优势特性总表，明确 clawcodex 对比 CCB 的 5 项领先特性（Orchestrator 自动流水线、Verification Gate、POS-to-Agent 编译器、LiteLLM Provider、Manager/Worker 增强通信）。所有 F-60~F-67 设置为 ⏳ 待开始状态，详见 §四。
-> >
-> > **v2.15 变更**
 >
 > **v2.14 变更**：新增 F-48 src/ 核心路径二开修改解耦方案（📋 设计完成）。通过对比 `src/` 与 `src/upstream/58ea488/`，识别出 10 个含真正功能修改的 src/ 文件（其余 600+ 为行尾/格式差异），分 Phase 0~3 四阶段制定解耦方案：Phase 0（纯新增文件移入 ext）、Phase 1（注册表/Protocol 扩展消除字段注入）、Phase 2（子类覆盖恢复上游构造器签名）、Phase 3（入口点恢复上游逻辑）。复用已有 Facade/子类覆盖/前端注册表三种解耦模式。目标：src/ 有功能修改的文件数从 10+ 降为 0。
 >
