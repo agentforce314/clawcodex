@@ -28,6 +28,7 @@ from .output_style_command import OUTPUT_STYLE_COMMAND
 from .permissions_command import PERMISSIONS_COMMAND
 from .security_review import SECURITY_REVIEW_COMMAND
 from .statusline import STATUSLINE_COMMAND
+from .theme_command import THEME_COMMAND
 from .types import Command, CommandType, CompactionResult, LocalCommand, PromptCommand
 
 
@@ -1234,6 +1235,7 @@ def get_builtin_commands() -> list[Command]:
         PERMISSIONS_COMMAND,
         OUTPUT_STYLE_COMMAND,
         EXPORT_COMMAND,
+        THEME_COMMAND,
     ]
     if is_buddy_command_enabled():
         cmds.append(BUDDY_COMMAND)

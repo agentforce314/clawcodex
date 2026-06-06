@@ -547,10 +547,18 @@ class ClawCodexTUI(App):
             self.apply_theme(name, transcript=transcript)
 
         self.announcer.announce("Opened theme picker.", notify=False)
+        # D2: persist the pick like TS (setTheme always saves to the global config).
+        # The screen fires on_persist only on selection, not on cancel
+        # (theme_picker.py:76-93), so Esc leaves the saved theme untouched — matching
+        # TS (cancel ⇒ no setTheme). The live hot-swap still runs via _on_selected;
+        # persistence (disk) and apply_theme (live palette) are complementary.
+        from src.config import set_theme
+
         self.push_screen(
             ThemePickerScreen(
                 themes=list_theme_names(),
                 current=self._theme_name,
+                on_persist=set_theme,
                 on_preview=_on_preview,
             ),
             callback=_on_selected,
