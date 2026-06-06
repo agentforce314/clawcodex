@@ -6,6 +6,8 @@ Port of Symphony's PromptBuilder (Solid template → Jinja2).
 from __future__ import annotations
 
 import logging
+import subprocess
+from pathlib import Path
 from typing import Any
 
 from jinja2 import Environment, StrictUndefined, TemplateError
@@ -148,6 +150,29 @@ class PromptBuilder:
             rendered = fallback.render(context).strip()
         if session is not None and getattr(session, "workspace_strategy", None) == "sequential":
             rendered = f"{rendered}\n\n{_build_sequential_workspace_context(session)}"
+
+        # F-40 root-cause fix: inject workspace diff context so the
+        # agent sees exactly which files are already modified and can
+        # skip re-exploration when code already exists on disk.
+        # Only injected when there are uncommitted changes (first turn).
+        ws_path = _resolve_workspace_path(session)
+        ws_diff = _get_workspace_diff(ws_path) if ws_path else None
+        if ws_diff:
+            rendered = (
+                "---\n"
+                "## Current Workspace Changes\n"
+                "\n"
+                "The following files have already been modified or created in the\n"
+                "workspace but are not yet committed. If these changes match the\n"
+                "current issue's requirements, **do not re-implement them**.\n"
+                "Skip directly to `git add` + `git commit`.\n"
+                "\n"
+                f"{ws_diff}\n"
+                "---\n"
+                "\n"
+                f"{rendered}"
+            )
+
         return rendered
 
     @staticmethod
@@ -263,3 +288,58 @@ def _to_jinja_value(value: Any) -> Any:
     if isinstance(value, list):
         return [_to_jinja_value(v) for v in value]
     return value
+
+
+def _resolve_workspace_path(session: Any) -> Path | None:
+    """Extract the workspace root path from a session object.
+    
+    Returns None when there is no session or no workspace, which means
+    the workspace-diff context is silently skipped.
+    """
+    if session is None:
+        return None
+    ws = getattr(session, "workspace", None)
+    if ws is None:
+        return None
+    path = getattr(ws, "path", None)
+    if path is None:
+        return None
+    return Path(path)
+
+
+def _get_workspace_diff(ws_path: Path) -> str | None:
+    """Run ``git diff --stat`` and ``git status --short`` in the
+    workspace to produce a compact summary of uncommitted changes.
+    
+    Returns ``None`` when the workspace is clean (no changes), so the
+    caller can skip injecting the diff context block entirely.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "diff", "--stat", "HEAD"],
+            cwd=str(ws_path),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        diff_stat = proc.stdout.strip()
+        proc2 = subprocess.run(
+            ["git", "status", "--short"],
+            cwd=str(ws_path),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        status_short = proc2.stdout.strip()
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        logger.warning("Failed to read workspace diff for prompt_builder", exc_info=True)
+        return None
+
+    if not diff_stat and not status_short:
+        return None  # clean workspace — nothing to inject
+    parts = []
+    if diff_stat:
+        parts.append(f"```\n{diff_stat}\n```")
+    if status_short:
+        parts.append(f"Uncommitted files:\n```\n{status_short}\n```")
+    return "\n".join(parts)

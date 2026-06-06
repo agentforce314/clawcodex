@@ -49,6 +49,19 @@ _NOOP_DETECTION_MAX_TURNS = 5
 # generation, overwrite). v2.14 will hook a cron for 7-day cleanup.
 _TOOL_EVENT_LOG_ROTATE_BYTES = 50 * 1024 * 1024
 
+# F-40 root-cause fix: tool names that modify workspace files.
+# Only Write / Edit tools count toward ``has_made_progress`` so the
+# stagnation guard can distinguish "exploring the codebase" turns
+# from actual code-production work.  ``Bash`` is intentionally omitted
+# because it can be used for both read (ls / grep / cat) and write
+# (git add / rm / mv) and trying to classify it at this level would
+# require deep output analysis that is better done elsewhere.
+_MODIFYING_TOOL_NAMES = frozenset({
+    "Write", "Edit",
+    "FileWrite", "FileWriteTool", "FileEdit", "FileEditTool",
+    "WriteTool", "EditTool",
+})
+
 
 @dataclass
 class AgentSession:
@@ -500,6 +513,21 @@ class AgentRunner:
         # empty output. tool_signature_history tracks recent turn
         # signatures to detect repeated tool-call loops.
         no_work_streak = 0
+        # F-40 root-cause fix: has_made_progress dual-threshold stagnation.
+        # ``has_made_progress`` is set to True the first time the LLM
+        # emits a modifying tool call (Write / Edit / …) in any turn.
+        # When True, the stagnation guard requires 2× the configured
+        # max_no_op_turns before triggering, because the agent has
+        # already demonstrated it *can* produce useful work and the
+        # empty-turn pattern is more likely a recoverable LLM tail
+        # than a fundamental deadlock (as seen in F-40's run-06).
+        has_made_progress = False
+        # Pre-existing bug (commit 8fb1b78): ``_dispatch_sink`` was added
+        # but the ``sink`` variable was never assigned in ``run()``,
+        # so stagnation/loop guard calls to ``_dispatch_sink(sink, ...)``
+        # would raise ``NameError``.  Default to ``progress_reporter``
+        # (None in test stubs, which ``_dispatch_sink`` treats as no-op).
+        sink = progress_reporter
         tool_signature_history: list[str] = []
         max_no_op_turns = max(
             1, int(getattr(self.agent_config, "max_no_op_turns", 3) or 3)
@@ -587,6 +615,7 @@ class AgentRunner:
                 prompt=prompt,
                 workspace=workspace.path,
                 provider=self.agent_config.provider,
+                model=self.agent_config.model,
                 max_turns=self.max_turns,
                 permission_mode=self.agent_config.permission_mode,
                 run_id=session.run_id,
@@ -653,6 +682,12 @@ class AgentRunner:
                         # spot repeated tool-call patterns across turns.
                         if event.tool_name:
                             turn_tool_names.append(event.tool_name)
+                        # F-40 root-cause fix: has_made_progress tracking.
+                        # Once the LLM emits a modifying tool call, set the
+                        # flag so the stagnation guard uses the relaxed
+                        # (2×) threshold for subsequent empty turns.
+                        if event.tool_name in _MODIFYING_TOOL_NAMES:
+                            has_made_progress = True
 
                         # Pause support: wait for resume if session is paused
                         if session.paused and session.pause_resume_event is not None:
@@ -830,7 +865,22 @@ class AgentRunner:
                                     else:
                                         no_work_streak = 0
 
-                                    if no_work_streak >= max_no_op_turns:
+                                    # F-40 root-cause fix: dual-threshold.
+                                    # An agent that has already made progress
+                                    # (emitted at least one modifying tool
+                                    # call — Write / Edit / …) is given 2× the
+                                    # configured max_no_op_turns before
+                                    # stagnation fires, because empty-turn
+                                    # streaks after productive work are
+                                    # more likely recoverable (the LLM may be
+                                    # in a temporary tail loop) than true
+                                    # deadlocks from a broken provider.
+                                    _stagnation_threshold = (
+                                        max_no_op_turns * 2
+                                        if has_made_progress
+                                        else max_no_op_turns
+                                    )
+                                    if no_work_streak >= _stagnation_threshold:
                                         session.session_end_reason = "stagnation"
                                         session.session_end_summary = (
                                             f"{no_work_streak} consecutive "

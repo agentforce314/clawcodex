@@ -241,7 +241,12 @@ class AgentConfig:
     # opens (``status="rate_limit_circuit_open"``) and the run is
     # handed back to the orchestrator's inter-run retry queue.
     #
-    # Distinct from ``max_turns_retry_delay_ms``: that field governs
+    # Model name override. When set, overrides the provider's default
+    # model (e.g. ``gpt-4o`` for OpenAI, ``claude-sonnet-4-20250514``
+    # for Anthropic).  Leave ``None`` to use the provider's built-in
+    # default (which may be a placeholder like ``gpt-5.4`` that does
+    # not exist on the real API — see F-40 root-cause analysis).
+    model: str | None = None
     # the inter-run retry queue between separate AgentRunner.run()
     # invocations; these fields govern backoff WITHIN a single run.
     rate_limit_base_delay_ms: int = 30_000
@@ -273,19 +278,13 @@ class AgentConfig:
     max_no_op_turns: int = 3
     loop_detection_window: int = 5
     loop_detection_threshold: int = 3
-    # F-40: ProgressReporter Sink 协议重构. ``phases`` is the ordered
-    # list of named workflow phases the orchestrator drives a session
-    # through. When the LLM completes a phase, :class:`ToolContextProgressSink`
-    # uses ``(n / total) * 100`` to compute an honest progress
-    # percentage; when ``phases`` is empty, the sink reports
-    # ``progress=None`` (the dashboard shows "Phase N (进度未知)")
-    # instead of the misleading 25/50/75/100 sequence.
-    # ``fallback_to_phase_step`` keeps the old ``phase_count * 25``
-    # behavior for soft migration periods; new workflows should leave
-    # it False and rely on ``phases`` (or explicit LLM ``ProgressReport``
-    # calls) for percentage.
-    phases: list[str] = field(default_factory=list)
-    fallback_to_phase_step: bool = False
+    # F-?? root-cause fix: per-turn tool call cap. When the LLM
+    # produces more than this many tool calls in a single turn,
+    # the agent runner stops processing tool events and waits for
+    # SessionComplete to force a turn boundary. This prevents
+    # infinite tool-call loops (no SessionComplete emitted) while
+    # still allowing complex multi-step operations.
+    max_tools_per_turn: int = 50
 
 
 @dataclass
@@ -520,20 +519,20 @@ class WorkflowConfig:
             # instead of COMPLETED, requiring human approve CLI command.
             review_required=bool(agent_raw.get("review_required", False)),
             auto_approve=bool(agent_raw.get("auto_approve", False)),
-            # F-40: named workflow phases drive honest progress
-            # percentages in ToolContextProgressSink. ``phases`` is
-            # normalized to a stripped, non-empty list of strings
-            # (reusing the same normalizer as ``tracker.active_states``)
-            # so workflow authors can write ``["  analysis ", ""]``
-            # without crashing the loader. ``fallback_to_phase_step``
-            # preserves the legacy ``phase_count * 25`` behavior for
-            # soft-migration workflows.
-            phases=_normalize_string_list(
-                agent_raw.get("phases"), default=[]
+            # F-40 root-cause fix: stagnation / loop guard knobs.
+            # These were defined in AgentConfig (schema.py) and set in
+            # workflow.md, but ``from_dict`` never forwarded them to the
+            # dataclass constructor, so the schema defaults (3/5/3) were
+            # always used regardless of the YAML config.
+            max_no_op_turns=int(agent_raw.get("max_no_op_turns", 3)),
+            loop_detection_window=int(
+                agent_raw.get("loop_detection_window", 5)
             ),
-            fallback_to_phase_step=bool(
-                agent_raw.get("fallback_to_phase_step", False)
+            loop_detection_threshold=int(
+                agent_raw.get("loop_detection_threshold", 3)
             ),
+            # F-40 root-cause fix: model name override.
+            model=_resolve_env_value(agent_raw.get("model")) or None,
         )
         if workspace.strategy == "sequential":
             if agent.max_concurrent_agents != 1:
