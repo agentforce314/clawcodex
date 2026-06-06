@@ -24,7 +24,6 @@ from .git_sync import (
 from .issue import Issue
 from .issue_registry import IssueRegistry, IssueStatus
 from .prompt_builder import PromptBuilder
-from .progress_reporter import ProgressReporter
 from .review_feedback import ReviewFeedbackService, ReviewFollowup
 from .status_dashboard import SessionStatus, StatusDashboard
 from src.tool_system.context import ToolContext
@@ -100,9 +99,6 @@ class Orchestrator:
         self._semaphore = asyncio.Semaphore(workflow.agent.max_concurrent_agents)
         self._shutdown_event = asyncio.Event()
         self._tasks: set[asyncio.Task] = set()
-        # F-?? root-cause fix: map issue_id → asyncio.Task so the stop
-        # command can cancel a specific running issue by task.cancel().
-        self._issue_tasks: dict[str, asyncio.Task] = {}
         # Store workflow path for metadata
         self._workflow_path: str | None = getattr(workflow, "_source_path", None)
         # Workspace root for control command polling
@@ -141,7 +137,49 @@ class Orchestrator:
             ),
         )
         self._progress_context = ToolContext(workspace_root=workspace_root)
-        self._progress_reporter = ProgressReporter(self._progress_context)
+        # F-40: do NOT keep a single :class:`ProgressReporter` here.
+        # Per-session progress is fanned out via
+        # :meth:`_build_session_sink` (a fresh
+        # :class:`CompositeProgressSink` rooted in a private
+        # :class:`ToolContextProgressSink`) so concurrent issues can no
+        # longer share ``_current_task_id`` / ``_phase_count`` state.
+        # The shared ``_progress_context`` stays because every
+        # per-session :class:`ToolContextProgressSink` writes into the
+        # same ``ToolContext.tasks[id].metadata.progress_stages`` dict.
+
+    def _build_session_sink(self, task_id: str) -> Any:
+        """Build a fresh :class:`CompositeProgressSink` for one session.
+
+        The returned sink is bound to ``task_id`` and owns a private
+        :class:`ToolContextProgressSink` instance. Two sinks built for
+        different task ids share the underlying ``ToolContext`` (so
+        progress stages land in the right place) but have independent
+        phase counters, eliminating the F-38-era single-instance
+        cross-talk.
+
+        Future issues (F-37 PRReviewAutoFixSink, F-39 RetryLabelSink)
+        can register additional sinks on the returned composite via
+        :meth:`CompositeProgressSink.add` without touching
+        :class:`AgentRunner` or ``progress_reporter.py``.
+        """
+        # Local import to avoid a circular dependency: the progress
+        # sink module imports :class:`AgentSession` under
+        # ``TYPE_CHECKING``; the orchestrator is the one constructing
+        # sinks, so we keep the runtime import on the consumer side.
+        from .progress_sink import (
+            CompositeProgressSink,
+            ToolContextProgressSink,
+        )
+
+        inner = ToolContextProgressSink(
+            task_id=task_id,
+            context=self._progress_context,
+            workflow_phases=self.workflow.agent.phases,
+            fallback_to_phase_step=bool(
+                self.workflow.agent.fallback_to_phase_step
+            ),
+        )
+        return CompositeProgressSink([inner])
 
     def _validate_workspace_strategy(self) -> None:
         if self.workflow.workspace.strategy != "sequential":
@@ -1038,13 +1076,6 @@ class Orchestrator:
         task = asyncio.create_task(self._run_issue(session))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
-        # F-?? root-cause fix: register issue_id → task mapping so the
-        # stop command can cancel a specific running issue.
-        issue_id = issue.id or ""
-        self._issue_tasks[issue_id] = task
-        def _unregister_issue_task(t: asyncio.Task) -> None:
-            self._issue_tasks.pop(issue_id, None)
-        task.add_done_callback(_unregister_issue_task)
 
     async def _launch_issue(self, issue: Issue) -> None:
         """Create workspace and run agent for one issue."""
@@ -1250,7 +1281,17 @@ class Orchestrator:
                 )
                 ran_agent = True
                 try:
-                    self._progress_reporter.set_task_id(session.issue.id)
+                    # F-40: build a fresh per-session progress sink so
+                    # concurrent issues no longer share the
+                    # ``_current_task_id`` / ``_phase_count`` mutable
+                    # state of the F-38-era :class:`ProgressReporter`
+                    # singleton. ``AgentRunner.run`` is duck-typed on
+                    # the kwarg: anything with ``on_phase_complete`` /
+                    # ``on_turn_complete`` / ``on_session_complete``
+                    # methods works.
+                    progress_sink = self._build_session_sink(
+                        session.issue.id or ""
+                    )
                     run_timeout_seconds = self.workflow.agent.run_timeout_ms / 1000.0
                     session.timeout_deadline_at = time.time() + run_timeout_seconds
                     await asyncio.wait_for(
@@ -1261,7 +1302,7 @@ class Orchestrator:
                             tracker=self.tracker,
                             comment_tracker=self.tracker,
                             clarification_resolver=self._clarification_resolver,
-                            progress_reporter=self._progress_reporter,
+                            progress_reporter=progress_sink,
                             diagnostics_callback=self._update_run_diagnostics,
                         ),
                         timeout=run_timeout_seconds,
@@ -1440,20 +1481,21 @@ class Orchestrator:
                 session.status = "agent_timeout"
                 session.verification_status = "failed"
                 session.verification_output = reason
-            except asyncio.CancelledError:
-                # F-?? root-cause fix: clean cancellation path.
-                # When the stop command cancels the task, capture
-                # the reason so the registry marks the issue as
-                # cancelled instead of silently dropping it.
-                logger.warning(
-                    "Agent run cancelled issue_id=%s",
-                    session.issue.id,
+                session.last_hook_error = reason
+                workspace_dirty = bool(get_file_status(str(session.workspace.path)))
+                append_debug_event(
+                    session.debug_log_path,
+                    "orchestrator.timeout",
+                    issue_id=session.issue.id,
+                    run_id=session.run_id,
+                    turn_count=session.turn_count,
+                    tool_count=session.tool_count,
+                    last_event_type=session.last_agent_event,
+                    last_tool=session.last_tool_name,
+                    output_len=len(session.output_text),
+                    timeout_deadline_at=session.timeout_deadline_at,
+                    workspace_dirty=workspace_dirty,
                 )
-                session.status = "cancelled"
-                session.session_end_reason = "operator_stopped"
-                session.session_end_summary = "cancelled by operator"
-                session.verification_status = "cancelled"
-                session.verification_output = "Operator requested stop"
             except Exception as exc:
                 logger.exception(
                     "Agent run failed issue_id=%s: %s",
@@ -1890,14 +1932,6 @@ class Orchestrator:
             logger.info("Stop requested for issue %s", issue_id)
             session.status = "failed"
             session.pause_resume_event.set()  # Unblock if paused
-            # F-?? root-cause fix: cancel the asyncio task so the
-            # CancelledError handler in _run_issue fires immediately
-            # instead of leaving the agent running until the next
-            # session end check.
-            task = self._issue_tasks.get(issue_id)
-            if task is not None and not task.done():
-                task.cancel()
-                logger.info("Cancelled task for issue %s", issue_id)
         elif cmd == "takeover":
             logger.info("Takeover requested for issue %s", issue_id)
             session.status = "failed"

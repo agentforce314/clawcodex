@@ -273,13 +273,19 @@ class AgentConfig:
     max_no_op_turns: int = 3
     loop_detection_window: int = 5
     loop_detection_threshold: int = 3
-    # F-?? root-cause fix: per-turn tool call cap. When the LLM
-    # produces more than this many tool calls in a single turn,
-    # the agent runner stops processing tool events and waits for
-    # SessionComplete to force a turn boundary. This prevents
-    # infinite tool-call loops (no SessionComplete emitted) while
-    # still allowing complex multi-step operations.
-    max_tools_per_turn: int = 50
+    # F-40: ProgressReporter Sink 协议重构. ``phases`` is the ordered
+    # list of named workflow phases the orchestrator drives a session
+    # through. When the LLM completes a phase, :class:`ToolContextProgressSink`
+    # uses ``(n / total) * 100`` to compute an honest progress
+    # percentage; when ``phases`` is empty, the sink reports
+    # ``progress=None`` (the dashboard shows "Phase N (进度未知)")
+    # instead of the misleading 25/50/75/100 sequence.
+    # ``fallback_to_phase_step`` keeps the old ``phase_count * 25``
+    # behavior for soft migration periods; new workflows should leave
+    # it False and rely on ``phases`` (or explicit LLM ``ProgressReport``
+    # calls) for percentage.
+    phases: list[str] = field(default_factory=list)
+    fallback_to_phase_step: bool = False
 
 
 @dataclass
@@ -514,6 +520,20 @@ class WorkflowConfig:
             # instead of COMPLETED, requiring human approve CLI command.
             review_required=bool(agent_raw.get("review_required", False)),
             auto_approve=bool(agent_raw.get("auto_approve", False)),
+            # F-40: named workflow phases drive honest progress
+            # percentages in ToolContextProgressSink. ``phases`` is
+            # normalized to a stripped, non-empty list of strings
+            # (reusing the same normalizer as ``tracker.active_states``)
+            # so workflow authors can write ``["  analysis ", ""]``
+            # without crashing the loader. ``fallback_to_phase_step``
+            # preserves the legacy ``phase_count * 25`` behavior for
+            # soft-migration workflows.
+            phases=_normalize_string_list(
+                agent_raw.get("phases"), default=[]
+            ),
+            fallback_to_phase_step=bool(
+                agent_raw.get("fallback_to_phase_step", False)
+            ),
         )
         if workspace.strategy == "sequential":
             if agent.max_concurrent_agents != 1:

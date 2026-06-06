@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from ..api.query import PhaseComplete, QueryConfig, QueryRunner
-from ..api.query import SessionComplete, TextDelta, ToolCallEvent, ToolResultEvent
+from ..api.query import SessionComplete, TextDelta, ToolCallEvent, ToolResultEvent, TurnComplete
 from .approval_policy import ApprovalPolicy, get_approval_policy, ToolCallEvent as PolicyToolCallEvent
 from src.utils.git import get_file_status
 from .config.schema import AgentConfig, CodexConfig, WorkflowConfig
@@ -107,11 +107,6 @@ class AgentSession:
     # silently inheriting ``status="completed"``.
     session_end_reason: str | None = None
     session_end_summary: str = ""
-    # F-?? root-cause fix: completion hint flag. When set, the next
-    # turn's prompt will include a task-completion hint telling the
-    # agent to wrap up. Set by the run() loop after detecting that
-    # the workspace is clean and the agent has done meaningful work.
-    completion_hinted: bool = False
 
 
 @dataclass
@@ -487,6 +482,16 @@ class AgentRunner:
         turn_number = 0
         tool_count = 0
         consecutive_clean_turns = 0  # legacy workspace-dirty no-op counter
+        # F-40: F-38 used a shared ``ProgressReporter`` singleton; the
+        # orchestrator now passes a per-session :class:`ProgressSink`
+        # via the ``progress_reporter`` kwarg. Bind it to ``sink`` so
+        # the three ``_dispatch_sink`` calls (stagnation / loop /
+        # no-op paths) reach a private, task-bound fan-out, and the
+        # three PhaseComplete / TurnComplete / SessionComplete
+        # dispatches below stay symmetric. ``sink`` is allowed to be
+        # ``None`` for tests / direct call sites that don't wire a
+        # reporter.
+        sink = progress_reporter
         # F-?? root-cause fix: stagnation + loop guards. Independent of
         # the workspace-dirty heuristic above (which never fires when
         # the workspace has untracked files — the exact pattern observed
@@ -505,13 +510,6 @@ class AgentRunner:
         loop_threshold = max(
             2, int(getattr(self.agent_config, "loop_detection_threshold", 3) or 3)
         )
-        # F-?? root-cause fix: per-turn tool call cap. When the LLM
-        # produces more than this many tool calls in a single turn,
-        # the agent runner skips remaining tool events and waits for
-        # SessionComplete to force a turn boundary.
-        max_tools_per_turn = max(
-            0, int(getattr(self.agent_config, "max_tools_per_turn", 50) or 50)
-        )
 
         def update_diagnostics() -> None:
             session.tool_count = tool_count
@@ -528,13 +526,7 @@ class AgentRunner:
 
         while turn_number < self.max_turns:
             # Build prompt for this turn
-            # F-?? root-cause fix: check prompt_override for ANY turn
-            # (not just turn 0) so the completion-hint injected after
-            # a successful commit can guide the agent to wrap up.
-            if session.prompt_override:
-                prompt = session.prompt_override
-                session.prompt_override = None  # One-shot; consumed once
-            elif turn_number == 0:
+            if turn_number == 0:
                 if session.prompt_override:
                     prompt = session.prompt_override
                 else:
@@ -604,11 +596,6 @@ class AgentRunner:
 
             turn_has_tool_calls = False
             turn_output = ""
-            # F-?? root-cause fix: per-turn tool-call tracking. Counts
-            # tool calls within a single turn so the max_tools_per_turn
-            # guard can stop processing tool events and force a turn
-            # boundary when the LLM enters an infinite tool-call loop.
-            tools_in_current_turn = 0
             # F-?? root-cause fix: per-turn tool-name accumulator feeding
             # the loop-detection signature history.
             turn_tool_names: list[str] = []
@@ -660,22 +647,6 @@ class AgentRunner:
                     elif isinstance(event, ToolCallEvent):
                         turn_has_tool_calls = True
                         tool_count += 1
-                        tools_in_current_turn += 1
-                        # F-?? root-cause fix: per-turn tool call cap.
-                        # When the LLM produces too many tool calls
-                        # within a single turn, skip processing and
-                        # wait for SessionComplete. The turn will still
-                        # complete normally, feeding the post-turn
-                        # guards (stagnation / loop / no-op) in
-                        # subsequent outer-loop iterations.
-                        if max_tools_per_turn > 0 and tools_in_current_turn > max_tools_per_turn:
-                            logger.debug(
-                                "Max tools per turn (%d) exceeded issue_id=%s — "
-                                "skipping tool events until SessionComplete",
-                                max_tools_per_turn,
-                                issue.id,
-                            )
-                            continue
                         update_diagnostics()
                         # F-?? root-cause fix: collect tool names for the
                         # turn signature so the loop-detection guard can
@@ -794,8 +765,22 @@ class AgentRunner:
                             turn_count=turn_number,
                         )
                         self._write_event_log(session.workspace.path, issue.id, phase_event, turn=turn_number)
-                        if progress_reporter is not None:
-                            progress_reporter.on_event(phase_event, session)
+                        if sink is not None:
+                            # F-40: dispatch PhaseComplete + TurnComplete
+                            # through the new protocol methods. The old
+                            # ``on_event`` shim is no longer used by
+                            # AgentRunner; the F-38 stub tests were
+                            # already updated to record on these
+                            # callbacks.
+                            self._dispatch_sink(
+                                sink, "on_phase_complete", phase_event, session
+                            )
+                            self._dispatch_sink(
+                                sink,
+                                "on_turn_complete",
+                                TurnComplete(turn=turn_number),
+                                session,
+                            )
 
                         update_diagnostics()
                         if event.reason == "success":
@@ -984,41 +969,6 @@ class AgentRunner:
                                                 session,
                                             )
                                             return
-
-                                    # F-?? root-cause fix: Layer 1 completion hint.
-                                    # When the agent produced meaningful tool calls
-                                    # and the workspace is clean (all changes
-                                    # committed), inject a prompt hint telling the
-                                    # agent to wrap up.  This fires on the first
-                                    # clean-successful turn only; subsequent turns
-                                    # rely on Layer 2 (max_tools_per_turn) +
-                                    # loop-detection guards as a safety net.
-                                    if (
-                                        event.reason == "success"
-                                        and turn_has_tool_calls
-                                        and not dirty
-                                        and not session.completion_hinted
-                                    ):
-                                        session.completion_hinted = True
-                                        session.prompt_override = (
-                                            "✅ All changes have been committed and the "
-                                            "workspace is clean. If you believe the task "
-                                            "requirements have been met, please provide a "
-                                            "concise summary of what was accomplished and "
-                                            "signal task completion. "
-                                            "Do NOT run additional verification commands "
-                                            "or make further modifications unless the "
-                                            "issue requirements are not yet satisfied."
-                                        )
-                                        logger.info(
-                                            "Injected completion hint for issue_id=%s "
-                                            "turn=%d tools=%d dirty=%s",
-                                            issue.id,
-                                            turn_number,
-                                            tools_in_current_turn,
-                                            dirty,
-                                        )
-
                                     continue  # Go to next turn
                                 session.issue = refreshed_issue or session.issue
 
@@ -1069,10 +1019,38 @@ class AgentRunner:
                                 )
                         else:
                             session.status = "failed"
+                            if session.session_end_reason is None:
+                                # F-40: capture a per-reason end reason
+                                # so downstream sinks can distinguish
+                                # ``exit_code=N`` style failures from
+                                # clean termination paths.
+                                session.session_end_reason = (
+                                    f"exit_code={event.reason}"
+                                )
+                                session.session_end_summary = (
+                                    f"QueryRunner ended with reason={event.reason}"
+                                )
                             logger.warning(
                                 "Agent run failed issue_id=%s reason=%s",
                                 issue.id,
                                 event.reason,
+                            )
+                        # F-40: terminal SessionComplete is the only
+                        # event the F-38 design never dispatched. The
+                        # reason we record on the wire is
+                        # ``session_end_reason`` (set by the success /
+                        # noop / max_turns / failure paths above) so
+                        # the dashboard sees a uniform
+                        # ``session_{reason}`` stage.
+                        if sink is not None:
+                            self._dispatch_sink(
+                                sink,
+                                "on_session_complete",
+                                SessionComplete(
+                                    reason=session.session_end_reason
+                                    or event.reason
+                                ),
+                                session,
                             )
                         return
             except RateLimitError as exc:
@@ -1127,8 +1105,30 @@ class AgentRunner:
             turn_count=turn_number,
         )
         self._write_event_log(session.workspace.path, issue.id, phase_event, turn=turn_number)
-        if progress_reporter is not None:
-            progress_reporter.on_event(phase_event, session)
+        if sink is not None:
+            # F-40: max_turns path now dispatches BOTH PhaseComplete
+            # (so the trailing phase is recorded with its progress)
+            # AND SessionComplete(reason="budget_exhausted") so
+            # downstream consumers always see a terminal event. The
+            # ``on_session_complete`` call uses the runner's
+            # ``session_end_reason`` (set above) as the wire reason.
+            self._dispatch_sink(
+                sink, "on_phase_complete", phase_event, session
+            )
+            self._dispatch_sink(
+                sink,
+                "on_turn_complete",
+                TurnComplete(turn=turn_number),
+                session,
+            )
+            self._dispatch_sink(
+                sink,
+                "on_session_complete",
+                SessionComplete(
+                    reason=session.session_end_reason or "budget_exhausted"
+                ),
+                session,
+            )
 
         session.tool_count = tool_count
         append_debug_event(
