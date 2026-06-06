@@ -278,6 +278,19 @@ class AgentConfig:
     max_no_op_turns: int = 3
     loop_detection_window: int = 5
     loop_detection_threshold: int = 3
+    # F-40: ProgressReporter Sink 协议重构. ``phases`` is the ordered
+    # list of named workflow phases the orchestrator drives a session
+    # through. When the LLM completes a phase, :class:`ToolContextProgressSink`
+    # uses ``(n / total) * 100`` to compute an honest progress
+    # percentage; when ``phases`` is empty, the sink reports
+    # ``progress=None`` (the dashboard shows "Phase N (进度未知)")
+    # instead of the misleading 25/50/75/100 sequence.
+    # ``fallback_to_phase_step`` keeps the old ``phase_count * 25``
+    # behavior for soft migration periods; new workflows should leave
+    # it False and rely on ``phases`` (or explicit LLM ``ProgressReport``
+    # calls) for percentage.
+    phases: list[str] = field(default_factory=list)
+    fallback_to_phase_step: bool = False
     # F-?? root-cause fix: per-turn tool call cap. When the LLM
     # produces more than this many tool calls in a single turn,
     # the agent runner stops processing tool events and waits for
@@ -519,6 +532,20 @@ class WorkflowConfig:
             # instead of COMPLETED, requiring human approve CLI command.
             review_required=bool(agent_raw.get("review_required", False)),
             auto_approve=bool(agent_raw.get("auto_approve", False)),
+            # F-40: named workflow phases drive honest progress
+            # percentages in ToolContextProgressSink. ``phases`` is
+            # parsed as a list (the YAML ``- a`` / ``- b`` syntax)
+            # and defaults to empty. ``fallback_to_phase_step``
+            # reverts to the legacy ``phase_count * 25`` step function
+            # without crashing the loader. ``fallback_to_phase_step``
+            # defaults to ``False`` so new workflows see ``None``
+            # instead of misleading 25/50/75/100.
+            phases=_normalize_string_list(
+                agent_raw.get("phases"), default=[]
+            ),
+            fallback_to_phase_step=bool(
+                agent_raw.get("fallback_to_phase_step", False)
+            ),
             # F-40 root-cause fix: stagnation / loop guard knobs.
             # These were defined in AgentConfig (schema.py) and set in
             # workflow.md, but ``from_dict`` never forwarded them to the

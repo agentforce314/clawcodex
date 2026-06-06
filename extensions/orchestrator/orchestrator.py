@@ -24,7 +24,6 @@ from .git_sync import (
 from .issue import Issue
 from .issue_registry import IssueRegistry, IssueStatus
 from .prompt_builder import PromptBuilder
-from .progress_reporter import ProgressReporter
 from .review_feedback import ReviewFeedbackService, ReviewFollowup
 from .status_dashboard import SessionStatus, StatusDashboard
 from src.tool_system.context import ToolContext
@@ -141,7 +140,45 @@ class Orchestrator:
             ),
         )
         self._progress_context = ToolContext(workspace_root=workspace_root)
-        self._progress_reporter = ProgressReporter(self._progress_context)
+        # F-40: do NOT keep a single :class:`ProgressReporter` here.
+        # Per-session progress is fanned out via
+        # :meth:`_build_session_sink` (a fresh
+        # :class:`CompositeProgressSink` rooted in a private
+        # :class:`ToolContextProgressSink`) so concurrent issues can no
+        # longer share ``_current_task_id`` / ``_phase_count`` state.
+        # The shared ``_progress_context`` stays because every
+        # per-session :class:`ToolContextProgressSink` writes into the
+        # same ``ToolContext.tasks[id].metadata.progress_stages`` dict.
+
+    def _build_session_sink(self, task_id: str) -> Any:
+        """Build a fresh :class:`CompositeProgressSink` for one session.
+
+        The returned sink is bound to ``task_id`` and owns a private
+        :class:`ToolContextProgressSink` instance. Two sinks built for
+        different task ids share the underlying ``ToolContext`` (so
+        progress stages land in the right place) but have independent
+        phase counters, eliminating the F-38-era single-instance
+        cross-talk.
+
+        Future issues (F-37 PRReviewAutoFixSink, F-39 RetryLabelSink)
+        can register additional sinks on the returned composite via
+        :meth:`CompositeProgressSink.add` without touching
+        :class:`AgentRunner` or ``progress_reporter.py``.
+        """
+        from .progress_sink import (
+            CompositeProgressSink,
+            ToolContextProgressSink,
+        )
+
+        inner = ToolContextProgressSink(
+            task_id=task_id,
+            context=self._progress_context,
+            workflow_phases=self.workflow.agent.phases,
+            fallback_to_phase_step=bool(
+                self.workflow.agent.fallback_to_phase_step
+            ),
+        )
+        return CompositeProgressSink([inner])
 
     def _validate_workspace_strategy(self) -> None:
         if self.workflow.workspace.strategy != "sequential":
@@ -1250,7 +1287,17 @@ class Orchestrator:
                 )
                 ran_agent = True
                 try:
-                    self._progress_reporter.set_task_id(session.issue.id)
+                    # F-40: build a fresh per-session progress sink so
+                    # concurrent issues no longer share the
+                    # ``_current_task_id`` / ``_phase_count`` mutable
+                    # state of the F-38-era :class:`ProgressReporter`
+                    # singleton. ``AgentRunner.run`` is duck-typed on
+                    # the kwarg: anything with ``on_phase_complete`` /
+                    # ``on_turn_complete`` / ``on_session_complete``
+                    # methods works.
+                    progress_sink = self._build_session_sink(
+                        session.issue.id or ""
+                    )
                     run_timeout_seconds = self.workflow.agent.run_timeout_ms / 1000.0
                     session.timeout_deadline_at = time.time() + run_timeout_seconds
                     await asyncio.wait_for(
@@ -1261,7 +1308,7 @@ class Orchestrator:
                             tracker=self.tracker,
                             comment_tracker=self.tracker,
                             clarification_resolver=self._clarification_resolver,
-                            progress_reporter=self._progress_reporter,
+                            progress_reporter=progress_sink,
                             diagnostics_callback=self._update_run_diagnostics,
                         ),
                         timeout=run_timeout_seconds,
