@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import tempfile
@@ -14,7 +15,14 @@ import yaml
 
 from ..issue import Issue
 
+logger = logging.getLogger(__name__)
+
+# Canonical YAML frontmatter delimiter. ``write_markdown_frontmatter`` always
+# emits exactly three dashes, but ``_find_frontmatter`` accepts any run of
+# two-or-more dashes on its own line so that hand-authored issues with the
+# common ``--`` typo are still parsed correctly.
 _FRONTMATTER_DELIMITER = "---"
+_FRONTMATTER_DELIMITER_RE = re.compile(r"^\s*-{2,}\s*$")
 
 
 @dataclass(frozen=True)
@@ -81,17 +89,56 @@ def write_markdown_frontmatter(path: Path, updates: dict[str, Any]) -> None:
 
 
 def _split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
-    lines = text.splitlines(keepends=True)
-    if not lines or lines[0].strip() != _FRONTMATTER_DELIMITER:
-        return {}, text
+    """Parse a markdown document into (frontmatter metadata, body).
 
-    for index, line in enumerate(lines[1:], start=1):
-        if line.strip() == _FRONTMATTER_DELIMITER:
-            raw = "".join(lines[1:index])
-            body = "".join(lines[index + 1 :])
-            parsed = yaml.safe_load(raw) if raw.strip() else {}
-            return (parsed if isinstance(parsed, dict) else {}), body
-    return {}, text
+    Tolerant of:
+      * Common ``--`` (two-dash) typo in place of the canonical ``---``
+        delimiter. Any run of two-or-more dashes on a line by itself
+        is treated as a frontmatter fence.
+      * Leading blank / whitespace-only lines before the opening
+        delimiter. Many editors prepend a blank line at the top of the
+        file and a strict ``lines[0]`` check would silently drop the
+        whole frontmatter block — the same silent failure that hid the
+        F-40 dispatch bug.
+    """
+    lines = text.splitlines(keepends=True)
+    span = _find_frontmatter_span(lines)
+    if span is None:
+        if logger.isEnabledFor(logging.WARNING):
+            head = text[:80].replace("\n", "\\n")
+            logger.warning(
+                "Local issue parser found no YAML frontmatter (first 80 chars=%r); "
+                "the issue will be treated as a no-state candidate and rejected "
+                "by the active-state filter",
+                head,
+            )
+        return {}, text
+    start, end = span
+    raw = "".join(lines[start + 1 : end])
+    body = "".join(lines[end + 1 :])
+    parsed = yaml.safe_load(raw) if raw.strip() else {}
+    return (parsed if isinstance(parsed, dict) else {}), body
+
+
+def _find_frontmatter_span(lines: list[str]) -> tuple[int, int] | None:
+    """Return (start, end) indices of a YAML frontmatter block.
+
+    The returned indices point to the opening and closing fence lines
+    (both inclusive). Leading blank / whitespace-only lines are skipped
+    so editors that prepend a blank line at the top of the file do not
+    break the parse.
+    """
+    if not lines:
+        return None
+    start = 0
+    while start < len(lines) and not lines[start].strip():
+        start += 1
+    if start >= len(lines) or not _FRONTMATTER_DELIMITER_RE.match(lines[start]):
+        return None
+    for end in range(start + 1, len(lines)):
+        if _FRONTMATTER_DELIMITER_RE.match(lines[end]):
+            return start, end
+    return None
 
 
 def _title_and_description(
