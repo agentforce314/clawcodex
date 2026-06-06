@@ -23,6 +23,7 @@ from ..history import HistoryLog
 from ..providers.base import BaseProvider
 from .engine import CommandContext, CommandResult, LocalCommandResult
 from .registry import CommandRegistry, get_command_registry, list_commands
+from .export_command import EXPORT_COMMAND
 from .output_style_command import OUTPUT_STYLE_COMMAND
 from .permissions_command import PERMISSIONS_COMMAND
 from .security_review import SECURITY_REVIEW_COMMAND
@@ -1232,6 +1233,7 @@ def get_builtin_commands() -> list[Command]:
         STATUSLINE_COMMAND,
         PERMISSIONS_COMMAND,
         OUTPUT_STYLE_COMMAND,
+        EXPORT_COMMAND,
     ]
     if is_buddy_command_enabled():
         cmds.append(BUDDY_COMMAND)
