@@ -74,6 +74,7 @@ from .skills_integration import (
 )
 from .permissions_command import PERMISSIONS_COMMAND, PermissionsCommand
 from .output_style_command import OUTPUT_STYLE_COMMAND, OutputStyleCommand
+from .export_command import EXPORT_COMMAND, ExportCommand
 from .types import (
     Command,
     CommandAvailability,
@@ -147,6 +148,8 @@ __all__ = [
     "PermissionsCommand",
     "OUTPUT_STYLE_COMMAND",
     "OutputStyleCommand",
+    "EXPORT_COMMAND",
+    "ExportCommand",
     "get_builtin_commands",
     "register_builtin_commands",
     # Moved-to-plugin factory + shell-at-prompt-build
