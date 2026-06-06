@@ -273,6 +273,13 @@ class AgentConfig:
     max_no_op_turns: int = 3
     loop_detection_window: int = 5
     loop_detection_threshold: int = 3
+    # F-?? root-cause fix: per-turn tool call cap. When the LLM
+    # produces more than this many tool calls in a single turn,
+    # the agent runner stops processing tool events and waits for
+    # SessionComplete to force a turn boundary. This prevents
+    # infinite tool-call loops (no SessionComplete emitted) while
+    # still allowing complex multi-step operations.
+    max_tools_per_turn: int = 50
 
 
 @dataclass

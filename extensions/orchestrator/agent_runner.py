@@ -107,6 +107,11 @@ class AgentSession:
     # silently inheriting ``status="completed"``.
     session_end_reason: str | None = None
     session_end_summary: str = ""
+    # F-?? root-cause fix: completion hint flag. When set, the next
+    # turn's prompt will include a task-completion hint telling the
+    # agent to wrap up. Set by the run() loop after detecting that
+    # the workspace is clean and the agent has done meaningful work.
+    completion_hinted: bool = False
 
 
 @dataclass
@@ -500,6 +505,13 @@ class AgentRunner:
         loop_threshold = max(
             2, int(getattr(self.agent_config, "loop_detection_threshold", 3) or 3)
         )
+        # F-?? root-cause fix: per-turn tool call cap. When the LLM
+        # produces more than this many tool calls in a single turn,
+        # the agent runner skips remaining tool events and waits for
+        # SessionComplete to force a turn boundary.
+        max_tools_per_turn = max(
+            0, int(getattr(self.agent_config, "max_tools_per_turn", 50) or 50)
+        )
 
         def update_diagnostics() -> None:
             session.tool_count = tool_count
@@ -516,7 +528,13 @@ class AgentRunner:
 
         while turn_number < self.max_turns:
             # Build prompt for this turn
-            if turn_number == 0:
+            # F-?? root-cause fix: check prompt_override for ANY turn
+            # (not just turn 0) so the completion-hint injected after
+            # a successful commit can guide the agent to wrap up.
+            if session.prompt_override:
+                prompt = session.prompt_override
+                session.prompt_override = None  # One-shot; consumed once
+            elif turn_number == 0:
                 if session.prompt_override:
                     prompt = session.prompt_override
                 else:
@@ -586,6 +604,11 @@ class AgentRunner:
 
             turn_has_tool_calls = False
             turn_output = ""
+            # F-?? root-cause fix: per-turn tool-call tracking. Counts
+            # tool calls within a single turn so the max_tools_per_turn
+            # guard can stop processing tool events and force a turn
+            # boundary when the LLM enters an infinite tool-call loop.
+            tools_in_current_turn = 0
             # F-?? root-cause fix: per-turn tool-name accumulator feeding
             # the loop-detection signature history.
             turn_tool_names: list[str] = []
@@ -637,6 +660,22 @@ class AgentRunner:
                     elif isinstance(event, ToolCallEvent):
                         turn_has_tool_calls = True
                         tool_count += 1
+                        tools_in_current_turn += 1
+                        # F-?? root-cause fix: per-turn tool call cap.
+                        # When the LLM produces too many tool calls
+                        # within a single turn, skip processing and
+                        # wait for SessionComplete. The turn will still
+                        # complete normally, feeding the post-turn
+                        # guards (stagnation / loop / no-op) in
+                        # subsequent outer-loop iterations.
+                        if max_tools_per_turn > 0 and tools_in_current_turn > max_tools_per_turn:
+                            logger.debug(
+                                "Max tools per turn (%d) exceeded issue_id=%s — "
+                                "skipping tool events until SessionComplete",
+                                max_tools_per_turn,
+                                issue.id,
+                            )
+                            continue
                         update_diagnostics()
                         # F-?? root-cause fix: collect tool names for the
                         # turn signature so the loop-detection guard can
@@ -945,6 +984,41 @@ class AgentRunner:
                                                 session,
                                             )
                                             return
+
+                                    # F-?? root-cause fix: Layer 1 completion hint.
+                                    # When the agent produced meaningful tool calls
+                                    # and the workspace is clean (all changes
+                                    # committed), inject a prompt hint telling the
+                                    # agent to wrap up.  This fires on the first
+                                    # clean-successful turn only; subsequent turns
+                                    # rely on Layer 2 (max_tools_per_turn) +
+                                    # loop-detection guards as a safety net.
+                                    if (
+                                        event.reason == "success"
+                                        and turn_has_tool_calls
+                                        and not dirty
+                                        and not session.completion_hinted
+                                    ):
+                                        session.completion_hinted = True
+                                        session.prompt_override = (
+                                            "✅ All changes have been committed and the "
+                                            "workspace is clean. If you believe the task "
+                                            "requirements have been met, please provide a "
+                                            "concise summary of what was accomplished and "
+                                            "signal task completion. "
+                                            "Do NOT run additional verification commands "
+                                            "or make further modifications unless the "
+                                            "issue requirements are not yet satisfied."
+                                        )
+                                        logger.info(
+                                            "Injected completion hint for issue_id=%s "
+                                            "turn=%d tools=%d dirty=%s",
+                                            issue.id,
+                                            turn_number,
+                                            tools_in_current_turn,
+                                            dirty,
+                                        )
+
                                     continue  # Go to next turn
                                 session.issue = refreshed_issue or session.issue
 

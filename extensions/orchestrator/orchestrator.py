@@ -100,6 +100,9 @@ class Orchestrator:
         self._semaphore = asyncio.Semaphore(workflow.agent.max_concurrent_agents)
         self._shutdown_event = asyncio.Event()
         self._tasks: set[asyncio.Task] = set()
+        # F-?? root-cause fix: map issue_id → asyncio.Task so the stop
+        # command can cancel a specific running issue by task.cancel().
+        self._issue_tasks: dict[str, asyncio.Task] = {}
         # Store workflow path for metadata
         self._workflow_path: str | None = getattr(workflow, "_source_path", None)
         # Workspace root for control command polling
@@ -1035,6 +1038,13 @@ class Orchestrator:
         task = asyncio.create_task(self._run_issue(session))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+        # F-?? root-cause fix: register issue_id → task mapping so the
+        # stop command can cancel a specific running issue.
+        issue_id = issue.id or ""
+        self._issue_tasks[issue_id] = task
+        def _unregister_issue_task(t: asyncio.Task) -> None:
+            self._issue_tasks.pop(issue_id, None)
+        task.add_done_callback(_unregister_issue_task)
 
     async def _launch_issue(self, issue: Issue) -> None:
         """Create workspace and run agent for one issue."""
@@ -1430,21 +1440,20 @@ class Orchestrator:
                 session.status = "agent_timeout"
                 session.verification_status = "failed"
                 session.verification_output = reason
-                session.last_hook_error = reason
-                workspace_dirty = bool(get_file_status(str(session.workspace.path)))
-                append_debug_event(
-                    session.debug_log_path,
-                    "orchestrator.timeout",
-                    issue_id=session.issue.id,
-                    run_id=session.run_id,
-                    turn_count=session.turn_count,
-                    tool_count=session.tool_count,
-                    last_event_type=session.last_agent_event,
-                    last_tool=session.last_tool_name,
-                    output_len=len(session.output_text),
-                    timeout_deadline_at=session.timeout_deadline_at,
-                    workspace_dirty=workspace_dirty,
+            except asyncio.CancelledError:
+                # F-?? root-cause fix: clean cancellation path.
+                # When the stop command cancels the task, capture
+                # the reason so the registry marks the issue as
+                # cancelled instead of silently dropping it.
+                logger.warning(
+                    "Agent run cancelled issue_id=%s",
+                    session.issue.id,
                 )
+                session.status = "cancelled"
+                session.session_end_reason = "operator_stopped"
+                session.session_end_summary = "cancelled by operator"
+                session.verification_status = "cancelled"
+                session.verification_output = "Operator requested stop"
             except Exception as exc:
                 logger.exception(
                     "Agent run failed issue_id=%s: %s",
@@ -1881,6 +1890,14 @@ class Orchestrator:
             logger.info("Stop requested for issue %s", issue_id)
             session.status = "failed"
             session.pause_resume_event.set()  # Unblock if paused
+            # F-?? root-cause fix: cancel the asyncio task so the
+            # CancelledError handler in _run_issue fires immediately
+            # instead of leaving the agent running until the next
+            # session end check.
+            task = self._issue_tasks.get(issue_id)
+            if task is not None and not task.done():
+                task.cancel()
+                logger.info("Cancelled task for issue %s", issue_id)
         elif cmd == "takeover":
             logger.info("Takeover requested for issue %s", issue_id)
             session.status = "failed"
