@@ -262,6 +262,17 @@ class AgentConfig:
     # Works with all tracker kinds (local, GitHub, Gitee, GitCode, Linear).
     review_required: bool = False
     auto_approve: bool = False
+    # F-?? root-cause fix: stagnation / loop guards. After
+    # ``max_no_op_turns`` consecutive turns where the LLM made zero
+    # tool calls and produced empty output, the runner emits
+    # session_end_reason="stagnation" and breaks the outer while
+    # loop. Loop detection: if the same tool-call signature appears
+    # ``loop_detection_threshold`` times within the last
+    # ``loop_detection_window`` turns, emit
+    # session_end_reason="loop_detected".
+    max_no_op_turns: int = 3
+    loop_detection_window: int = 5
+    loop_detection_threshold: int = 3
 
 
 @dataclass

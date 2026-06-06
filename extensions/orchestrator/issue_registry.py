@@ -72,6 +72,16 @@ class IssueRecord:
     verification_output: str | None = None
     last_hook_error: str | None = None
     summary_comment_id: str | None = None
+    # F-?? root-cause fix: explicit end-of-session reason captured by
+    # AgentRunner before returning. Possible values:
+    #   None | "stagnation" | "loop_detected" | "noop_completed" |
+    #   "budget_exhausted" | "user_abort" | "task_complete"
+    # ``session_end_summary`` is a short human-readable string the
+    # runner appends (e.g. "3 consecutive no-op turns"). Absent from
+    # registry.json files written before this fix; _load() handles
+    # back-compat via the known_fields filter.
+    session_end_reason: str | None = None
+    session_end_summary: str = ""
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
     attempt_count: int = 0
@@ -490,6 +500,8 @@ class IssueRegistry:
         verification_status: str | None = None,
         verification_output: str | None = None,
         summary_comment_id: str | None = None,
+        session_end_reason: str | None = None,
+        session_end_summary: str | None = None,
     ) -> IssueRecord | None:
         record = self._records.get(issue_id)
         if record is None:
@@ -502,6 +514,10 @@ class IssueRegistry:
             record.verification_output = verification_output
         if summary_comment_id is not None:
             record.summary_comment_id = summary_comment_id
+        if session_end_reason is not None:
+            record.session_end_reason = session_end_reason
+        if session_end_summary is not None:
+            record.session_end_summary = session_end_summary
         record.touch()
         self._save()
         return record

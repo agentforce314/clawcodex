@@ -5,7 +5,12 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from extensions.api.query import SessionComplete, TextDelta
+from extensions.api.query import (
+    SessionComplete,
+    TextDelta,
+    ToolCallEvent,
+    ToolResultEvent,
+)
 from extensions.orchestrator.agent_runner import AgentRunner, AgentSession
 from extensions.orchestrator.config.schema import AgentConfig, CodexConfig, WorkflowConfig
 from extensions.orchestrator.issue import Issue
@@ -50,11 +55,25 @@ class _CommentTracker:
 
 
 class _ProgressReporter:
+    """F-40: implements the new :class:`ProgressSink` protocol.
+
+    The old ``on_event`` shim is no longer used by
+    :class:`AgentRunner`; the runner now dispatches the three
+    ``on_*_complete`` methods directly.  This stub records every
+    event so tests can assert dispatch order / counts.
+    """
+
     def __init__(self) -> None:
         self.events: list[object] = []
 
-    def on_event(self, event, session) -> None:
-        self.events.append(event)
+    def on_phase_complete(self, event, session) -> None:
+        self.events.append(("phase", event))
+
+    def on_turn_complete(self, event, session) -> None:
+        self.events.append(("turn", event))
+
+    def on_session_complete(self, event, session) -> None:
+        self.events.append(("session", event))
 
 
 class TestAgentRunnerF38(unittest.IsolatedAsyncioTestCase):
@@ -92,7 +111,14 @@ class TestAgentRunnerF38(unittest.IsolatedAsyncioTestCase):
             [("77", "## ClawCodex Run Summary\n\n⏳ Run in progress.")],
         )
         self.assertEqual(session.turn_count, 1)
-        self.assertEqual(len(progress.events), 1)
+        # F-40: AgentRunner now dispatches three events per turn
+        # (PhaseComplete, TurnComplete, SessionComplete).  The old
+        # F-38 assertion expected only the PhaseComplete — the count
+        # is intentionally 3 here.
+        self.assertEqual(len(progress.events), 3)
+        self.assertEqual(progress.events[0][0], "phase")
+        self.assertEqual(progress.events[1][0], "turn")
+        self.assertEqual(progress.events[2][0], "session")
         self.assertIn('"type": "phase_complete"', contents)
         self.assertIn('"phase": 1', contents)
 
@@ -465,3 +491,230 @@ class TestAgentRunnerRateLimitBackoff(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(session.status, "completed")
             self.assertEqual(session.consecutive_429_count, 0)
             self.assertGreater(session.total_429_backoff_seconds, 0)
+
+
+# ---------------------------------------------------------------------------
+# F-?? root-cause fix: stagnation / loop / budget exit paths
+# ---------------------------------------------------------------------------
+#
+# The new ``max_no_op_turns`` / ``loop_detection_window`` /
+# ``loop_detection_threshold`` knobs in ``AgentConfig`` guard against
+# the SessionComplete infinite loop observed in F-09's repeated 30-min
+# timeouts (debug log run-06 had 328 SessionComplete events with zero
+# real tool calls).  These tests pin the four exit paths so future
+# refactors can't silently regress them.
+
+
+class TestAgentRunnerStagnationAndLoop(unittest.IsolatedAsyncioTestCase):
+    """Pins the stagnation, loop-detected, and budget-exhausted exit
+    paths introduced by the SessionEnd root-cause fix.
+
+    Each test uses a :class:`_BehaviorsStub` to feed a deterministic
+    stream of events to :class:`AgentRunner.run` and asserts the
+    resulting ``session.status`` and ``session.session_end_reason``.
+    """
+
+    async def test_stagnation_breaks_after_max_no_op_turns(self) -> None:
+        """Three consecutive SessionComplete(success) with no tool
+        calls and empty output must trigger the stagnation guard and
+        break the outer while loop with
+        ``session_end_reason='stagnation'`` and
+        ``session.status='stagnation'``."""
+        with TemporaryDirectory() as tmp:
+            session = _build_429_session(tmp)
+            tracker = _ActiveTrackerStub(["open", "ready"])
+            runner = AgentRunner(
+                AgentConfig(max_turns=20, max_no_op_turns=3),
+                CodexConfig(),
+            )
+            # Each turn: no tool calls, no output, then
+            # SessionComplete(success).  After the 3rd such turn the
+            # runner must break out of the outer while.
+            stub = _BehaviorsStub([
+                [SessionComplete(reason="success")],
+                [SessionComplete(reason="success")],
+                [SessionComplete(reason="success")],
+                [SessionComplete(reason="success")],
+                [SessionComplete(reason="success")],
+            ])
+
+            with patch(
+                "extensions.orchestrator.agent_runner.QueryRunner",
+                lambda cfg: stub,
+            ):
+                await runner.run(
+                    session,
+                    WorkflowConfig.from_dict({}),
+                    tracker=tracker,
+                )
+
+            self.assertEqual(session.status, "stagnation")
+            self.assertEqual(session.session_end_reason, "stagnation")
+            self.assertIn("3 consecutive", session.session_end_summary)
+            # F-09 pattern: only 3 turns consumed before break.
+            self.assertLessEqual(stub.call_count, 4)
+
+    async def test_loop_detected_breaks_on_repeated_signature(self) -> None:
+        """Five turns each calling the same single tool in the same
+        order must trip the loop guard at threshold=3 and break with
+        ``session_end_reason='loop_detected'``."""
+        with TemporaryDirectory() as tmp:
+            session = _build_429_session(tmp)
+            tracker = _ActiveTrackerStub(["open", "ready"])
+            runner = AgentRunner(
+                AgentConfig(
+                    max_turns=20,
+                    max_no_op_turns=10,  # don't trip stagnation first
+                    loop_detection_window=5,
+                    loop_detection_threshold=3,
+                ),
+                CodexConfig(),
+            )
+            # Each turn calls Read then Write (same signature). The
+            # 3rd turn should trip loop_detected.
+            def _build_turn():
+                return [
+                    ToolCallEvent(
+                        tool_name="Read",
+                        params={},
+                        tool_use_id="rid",
+                    ),
+                    ToolResultEvent(
+                        tool_name="Read",
+                        result={"output": "ok", "is_error": False},
+                    ),
+                    ToolCallEvent(
+                        tool_name="Write",
+                        params={"path": "/tmp/x"},
+                        tool_use_id="wid",
+                    ),
+                    ToolResultEvent(
+                        tool_name="Write",
+                        result={"output": "ok", "is_error": False},
+                    ),
+                    SessionComplete(reason="success"),
+                ]
+            stub = _BehaviorsStub([_build_turn() for _ in range(5)])
+
+            with patch(
+                "extensions.orchestrator.agent_runner.QueryRunner",
+                lambda cfg: stub,
+            ):
+                await runner.run(
+                    session,
+                    WorkflowConfig.from_dict({}),
+                    tracker=tracker,
+                )
+
+            self.assertEqual(session.status, "loop_detected")
+            self.assertEqual(session.session_end_reason, "loop_detected")
+            self.assertIn("Read|Write", session.session_end_summary)
+            self.assertLessEqual(stub.call_count, 4)
+
+    async def test_budget_exhausted_keeps_reason(self) -> None:
+        """When the runner hits max_turns, ``session_end_reason`` must
+        be set to ``'budget_exhausted'`` and ``status`` to
+        ``'max_turns_exceeded'`` (regression pin for the new field)."""
+        with TemporaryDirectory() as tmp:
+            session = _build_429_session(tmp)
+            tracker = _ActiveTrackerStub(["open", "ready"])
+            runner = AgentRunner(AgentConfig(max_turns=2), CodexConfig())
+            # Always productive: one tool call per turn. The
+            # stagnation/loop guards must NOT trip, and the runner
+            # should reach max_turns naturally.
+            def _build_turn():
+                return [
+                    ToolCallEvent(
+                        tool_name="Read",
+                        params={},
+                        tool_use_id="rid",
+                    ),
+                    ToolResultEvent(
+                        tool_name="Read",
+                        result={"output": "ok", "is_error": False},
+                    ),
+                    SessionComplete(reason="success"),
+                ]
+            stub = _BehaviorsStub([_build_turn() for _ in range(3)])
+
+            with patch(
+                "extensions.orchestrator.agent_runner.QueryRunner",
+                lambda cfg: stub,
+            ):
+                await runner.run(
+                    session,
+                    WorkflowConfig.from_dict({}),
+                    tracker=tracker,
+                )
+
+            self.assertEqual(session.status, "max_turns_exceeded")
+            self.assertEqual(session.session_end_reason, "budget_exhausted")
+            self.assertIn("max_turns=2", session.session_end_summary)
+
+    async def test_productive_turns_do_not_trip_stagnation(self) -> None:
+        """A single turn with a tool call AND a follow-up success
+        must reset the stagnation streak and let the runner reach
+        the natural session end (regression pin for the
+        no_work_streak reset logic)."""
+        with TemporaryDirectory() as tmp:
+            session = _build_429_session(tmp)
+            tracker = _ActiveTrackerStub(["open", "ready"])
+            runner = AgentRunner(
+                AgentConfig(max_turns=3, max_no_op_turns=2),
+                CodexConfig(),
+            )
+            stub = _BehaviorsStub([
+                # Turn 1: no-op (streak=1)
+                [SessionComplete(reason="success")],
+                # Turn 2: productive — should reset streak
+                [
+                    ToolCallEvent(
+                        tool_name="Read",
+                        params={},
+                        tool_use_id="rid",
+                    ),
+                    ToolResultEvent(
+                        tool_name="Read",
+                        result={"output": "ok", "is_error": False},
+                    ),
+                    SessionComplete(reason="success"),
+                ],
+                # Turn 3: no-op (streak=1, well under threshold=2)
+                [SessionComplete(reason="success")],
+            ])
+
+            with patch(
+                "extensions.orchestrator.agent_runner.QueryRunner",
+                lambda cfg: stub,
+            ):
+                await runner.run(
+                    session,
+                    WorkflowConfig.from_dict({}),
+                    tracker=tracker,
+                )
+
+            # All 3 turns consumed; status fell through to
+            # max_turns_exceeded (not stagnation).
+            self.assertEqual(session.status, "max_turns_exceeded")
+            self.assertEqual(stub.call_count, 3)
+            self.assertNotEqual(
+                getattr(session, "session_end_reason", None),
+                "stagnation",
+            )
+
+
+class _ActiveTrackerStub:
+    """Minimal :class:`TrackerAdapter` stub that reports the issue as
+    active for every ``fetch_issue_states_by_ids`` call. Required for
+    the stagnation/loop guards to enter the continuation branch
+    (without a tracker, the runner completes the session on the
+    first SessionComplete(success))."""
+
+    def __init__(self, active_states: list[str]) -> None:
+        self.active_states = active_states
+
+    async def fetch_issue_states_by_ids(self, issue_ids):
+        from extensions.orchestrator.issue import Issue
+        return {
+            iid: Issue(id=iid, state="open") for iid in issue_ids
+        }

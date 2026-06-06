@@ -96,6 +96,17 @@ class AgentSession:
     last_agent_event: str | None = None
     last_tool_name: str | None = None
     timeout_deadline_at: float | None = None
+    # F-09 / F-40 root-cause fix: capture the reason the session ended
+    # before the registry writeback. ``session_end_reason`` is one of
+    # ``task_complete`` / ``noop_completed`` / ``budget_exhausted`` /
+    # ``stagnation`` / ``loop_detected`` / ``failed`` / ``paused`` /
+    # ``cancelled``; ``session_end_summary`` is a short human-readable
+    # explanation surfaced in dashboard + registry.  The agent_runner
+    # sets these on the appropriate exit branch so the orchestrator
+    # can pass them to ``IssueRegistry.update_report`` instead of
+    # silently inheriting ``status="completed"``.
+    session_end_reason: str | None = None
+    session_end_summary: str = ""
 
 
 @dataclass
@@ -285,6 +296,32 @@ class AgentRunner:
             or "rate limit" in low
         )
 
+    def _dispatch_sink(
+        self,
+        sink: Any,
+        method: str,
+        event: Any,
+        session: "AgentSession",
+    ) -> None:
+        """Call ``sink.<method>(event, session)`` with logging on failure.
+
+        A no-op shim for local-source-repo compatibility: the workspace
+        has a full ProgressSink / CompositeProgressSink fan-out layer
+        that this delegates to; in the local source repo the runner
+        just calls back to ``sink.<method>`` directly.  Exceptions are
+        caught and logged so a bad sink never crashes the agent run.
+        """
+        if sink is None:
+            return
+        try:
+            getattr(sink, method)(event, session)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "progress_sink.%s dispatch failed: %s",
+                method,
+                exc,
+            )
+
     def _compute_rate_limit_backoff(self, session: AgentSession) -> float:
         """Compute the next 429 backoff delay (seconds) for ``session``.
 
@@ -444,7 +481,25 @@ class AgentRunner:
 
         turn_number = 0
         tool_count = 0
-        consecutive_clean_turns = 0  # no-op detection counter
+        consecutive_clean_turns = 0  # legacy workspace-dirty no-op counter
+        # F-?? root-cause fix: stagnation + loop guards. Independent of
+        # the workspace-dirty heuristic above (which never fires when
+        # the workspace has untracked files — the exact pattern observed
+        # in F-09's repeated 30-min timeouts). no_work_streak counts
+        # consecutive turns where the LLM produced zero tool calls AND
+        # empty output. tool_signature_history tracks recent turn
+        # signatures to detect repeated tool-call loops.
+        no_work_streak = 0
+        tool_signature_history: list[str] = []
+        max_no_op_turns = max(
+            1, int(getattr(self.agent_config, "max_no_op_turns", 3) or 3)
+        )
+        loop_window = max(
+            2, int(getattr(self.agent_config, "loop_detection_window", 5) or 5)
+        )
+        loop_threshold = max(
+            2, int(getattr(self.agent_config, "loop_detection_threshold", 3) or 3)
+        )
 
         def update_diagnostics() -> None:
             session.tool_count = tool_count
@@ -531,6 +586,9 @@ class AgentRunner:
 
             turn_has_tool_calls = False
             turn_output = ""
+            # F-?? root-cause fix: per-turn tool-name accumulator feeding
+            # the loop-detection signature history.
+            turn_tool_names: list[str] = []
 
             try:
                 stream_iter = runner.stream()
@@ -580,6 +638,11 @@ class AgentRunner:
                         turn_has_tool_calls = True
                         tool_count += 1
                         update_diagnostics()
+                        # F-?? root-cause fix: collect tool names for the
+                        # turn signature so the loop-detection guard can
+                        # spot repeated tool-call patterns across turns.
+                        if event.tool_name:
+                            turn_tool_names.append(event.tool_name)
 
                         # Pause support: wait for resume if session is paused
                         if session.paused and session.pause_resume_event is not None:
@@ -715,6 +778,120 @@ class AgentRunner:
                                         turn_number,
                                         self.max_turns,
                                     )
+                                    # F-?? root-cause fix: stagnation guard.
+                                    # Counts consecutive turns where the LLM
+                                    # produced zero tool calls AND empty
+                                    # output — the exact pattern observed in
+                                    # F-09's repeated 30-min timeouts (run-06
+                                    # had 0 tool calls / 328 SessionComplete
+                                    # events in a tight loop). Independent of
+                                    # the workspace-dirty heuristic below,
+                                    # which silently never fires when the
+                                    # workspace has untracked files.
+                                    if (
+                                        not turn_has_tool_calls
+                                        and not turn_output.strip()
+                                    ):
+                                        no_work_streak += 1
+                                    else:
+                                        no_work_streak = 0
+
+                                    if no_work_streak >= max_no_op_turns:
+                                        session.session_end_reason = "stagnation"
+                                        session.session_end_summary = (
+                                            f"{no_work_streak} consecutive "
+                                            "turns with no tool calls and "
+                                            "empty output"
+                                        )
+                                        logger.warning(
+                                            "Stagnation detected issue_id=%s — "
+                                            "%d consecutive no-op turns, "
+                                            "breaking outer loop",
+                                            issue.id,
+                                            no_work_streak,
+                                        )
+                                        append_debug_event(
+                                            session.debug_log_path,
+                                            "agent_runner.stagnation_detected",
+                                            issue_id=issue.id,
+                                            run_id=session.run_id,
+                                            turn=turn_number,
+                                            no_work_streak=no_work_streak,
+                                        )
+                                        session.status = "stagnation"
+                                        self._dispatch_sink(
+                                            sink,
+                                            "on_session_complete",
+                                            SessionComplete(
+                                                reason="stagnation"
+                                            ),
+                                            session,
+                                        )
+                                        return
+
+                                    # F-?? root-cause fix: loop guard.
+                                    # Records this turn's tool-call
+                                    # signature and breaks if the same
+                                    # signature repeats >= threshold
+                                    # times within the recent window.
+                                    if turn_tool_names:
+                                        signature = "|".join(
+                                            sorted(turn_tool_names)
+                                        )
+                                    else:
+                                        signature = "<empty>"
+                                    tool_signature_history.append(signature)
+                                    if len(tool_signature_history) > loop_window:
+                                        tool_signature_history = (
+                                            tool_signature_history[-loop_window:]
+                                        )
+                                    if (
+                                        tool_signature_history.count(signature)
+                                        >= loop_threshold
+                                    ):
+                                        session.session_end_reason = (
+                                            "loop_detected"
+                                        )
+                                        session.session_end_summary = (
+                                            f"signature {signature!r} "
+                                            f"repeated "
+                                            f"{tool_signature_history.count(signature)} "
+                                            f"times in last {loop_window} turns"
+                                        )
+                                        logger.warning(
+                                            "Loop detected issue_id=%s — "
+                                            "signature %r repeated %d times, "
+                                            "breaking outer loop",
+                                            issue.id,
+                                            signature,
+                                            tool_signature_history.count(
+                                                signature
+                                            ),
+                                        )
+                                        append_debug_event(
+                                            session.debug_log_path,
+                                            "agent_runner.loop_detected",
+                                            issue_id=issue.id,
+                                            run_id=session.run_id,
+                                            turn=turn_number,
+                                            signature=signature,
+                                            repeat_count=(
+                                                tool_signature_history.count(
+                                                    signature
+                                                )
+                                            ),
+                                        )
+                                        session.status = "loop_detected"
+                                        self._dispatch_sink(
+                                            sink,
+                                            "on_session_complete",
+                                            SessionComplete(
+                                                reason="loop_detected"
+                                            ),
+                                            session,
+                                        )
+                                        return
+
                                     # No-op detection: if the agent has run multiple
                                     # consecutive turns without making any file changes,
                                     # it is likely stuck (e.g. the issue deliverables
@@ -735,18 +912,77 @@ class AgentRunner:
                                                 consecutive_clean_turns,
                                             )
                                             session.status = "completed"
+                                            session.session_end_reason = (
+                                                "noop_completed"
+                                            )
+                                            session.session_end_summary = (
+                                                f"{consecutive_clean_turns} "
+                                                "consecutive clean turns"
+                                            )
+                                            # F-40: surface the
+                                            # no-op completion to the
+                                            # sink as a synthetic
+                                            # SessionComplete so
+                                            # downstream consumers
+                                            # always see a terminal
+                                            # event.
+                                            self._dispatch_sink(
+                                                sink,
+                                                "on_session_complete",
+                                                SessionComplete(
+                                                    reason="noop_completed"
+                                                ),
+                                                session,
+                                            )
                                             return
                                     continue  # Go to next turn
                                 session.issue = refreshed_issue or session.issue
 
-                            session.status = "completed"
-                            logger.info(
-                                "Agent run completed issue_id=%s turns=%s/%s tools=%s",
-                                issue.id,
-                                turn_number,
-                                self.max_turns,
-                                tool_count,
-                            )
+                            # F-?? root-cause fix: pre-existing bug
+                            # that conflated "issue is no longer
+                            # active" with "we ran out of turns".  When
+                            # the issue is still active but
+                            # ``turn_number`` has reached
+                            # ``max_turns``, the right status is
+                            # ``max_turns_exceeded`` and
+                            # ``session_end_reason`` is
+                            # ``budget_exhausted`` — the F-09 budget
+                            # test depends on this distinction.
+                            if turn_number >= self.max_turns:
+                                session.status = "max_turns_exceeded"
+                                session.session_end_reason = (
+                                    "budget_exhausted"
+                                )
+                                session.session_end_summary = (
+                                    f"reached max_turns="
+                                    f"{self.max_turns} after "
+                                    f"{turn_number} turns"
+                                )
+                                logger.info(
+                                    "Agent run reached max_turns "
+                                    "issue_id=%s turns=%s/%s tools=%s",
+                                    issue.id,
+                                    turn_number,
+                                    self.max_turns,
+                                    tool_count,
+                                )
+                            else:
+                                session.status = "completed"
+                                if session.session_end_reason is None:
+                                    session.session_end_reason = (
+                                        "task_complete"
+                                    )
+                                    session.session_end_summary = (
+                                        "issue no longer active"
+                                    )
+                                logger.info(
+                                    "Agent run completed issue_id=%s "
+                                    "turns=%s/%s tools=%s",
+                                    issue.id,
+                                    turn_number,
+                                    self.max_turns,
+                                    tool_count,
+                                )
                         else:
                             session.status = "failed"
                             logger.warning(
@@ -789,6 +1025,10 @@ class AgentRunner:
 
         # Reached max_turns
         session.status = "max_turns_exceeded"
+        session.session_end_reason = "budget_exhausted"
+        session.session_end_summary = (
+            f"reached max_turns={self.max_turns} after {turn_number} turns"
+        )
         logger.info(
             "Agent run reached max_turns issue_id=%s turns=%s/%s tools=%s",
             issue.id,

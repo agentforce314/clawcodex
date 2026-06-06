@@ -1275,6 +1275,17 @@ class Orchestrator:
                                 verification_status=getattr(session, "verification_status", None),
                                 verification_output=getattr(session, "verification_output", None),
                                 summary_comment_id=getattr(session, "summary_comment_id", None),
+                                # F-?? root-cause fix: persist
+                                # explicit session-end reason so the
+                                # dashboard / verification can
+                                # distinguish stagnation / loop from
+                                # a clean success path.
+                                session_end_reason=getattr(
+                                    session, "session_end_reason", None
+                                ),
+                                session_end_summary=getattr(
+                                    session, "session_end_summary", ""
+                                ),
                             )
                             if session.run_kind == "review_followup":
                                 self._registry.mark_feedback_processed(
@@ -1347,6 +1358,12 @@ class Orchestrator:
                     verification_status=getattr(session, "verification_status", None),
                     verification_output=getattr(session, "verification_output", None),
                     summary_comment_id=getattr(session, "summary_comment_id", None),
+                    session_end_reason=getattr(
+                        session, "session_end_reason", None
+                    ),
+                    session_end_summary=getattr(
+                        session, "session_end_summary", ""
+                    ),
                 )
                 if session.run_kind == "agent_followup":
                     record = self._registry.get(session.issue.id or "")
@@ -1525,6 +1542,33 @@ class Orchestrator:
                         session,
                         delay_base_ms=backoff_s,
                     )
+                elif session.status in (
+                    "stagnation",
+                    "loop_detected",
+                ):
+                    # F-?? root-cause fix: the agent loop detected it
+                    # was no longer making progress (stagnation =
+                    # consecutive no-op turns; loop_detected = same
+                    # tool-call signature repeated within window).
+                    # Mark the issue failed with the explicit
+                    # session_end_reason so the dashboard / cron tick
+                    # can distinguish these from ordinary crashes.
+                    logger.warning(
+                        "Agent %s issue_id=%s — %s: %s",
+                        session.status,
+                        session.issue.id or "",
+                        getattr(session, "session_end_summary", ""),
+                    )
+                    self.status_dashboard.on_session_failed(
+                        session.issue.id or "",
+                        str(session.status),
+                    )
+                    self._registry.mark_failed(session.issue.id or "")
+                    # No retry — same agent will likely repeat the
+                    # same loop on retry without human intervention.
+                    # The cron tick will mark the issue abandoned on
+                    # the next pass and the operator can either
+                    # adjust the issue / workflow or skip it.
                 else:
                     self.status_dashboard.on_session_failed(
                         session.issue.id or "",
@@ -1558,10 +1602,10 @@ class Orchestrator:
         body_lines = [
             "## ClawCodex Run Summary",
             "",
-            f"- Run: `{getattr(session, "run_id", "unknown")}`",
-            f"- Status: `{getattr(session, "status", "unknown")}`",
-            f"- Turns: {getattr(session, "turn_count", 0)}",
-            f"- Tool calls: {getattr(session, "tool_count", 0)}",
+            f'- Run: `{getattr(session, "run_id", "unknown")}`',
+            f'- Status: `{getattr(session, "status", "unknown")}`',
+            f'- Turns: {getattr(session, "turn_count", 0)}',
+            f'- Tool calls: {getattr(session, "tool_count", 0)}',
         ]
         if getattr(session, "last_hook_error", None):
             body_lines.append(f"- Error: `{session.last_hook_error}`")
