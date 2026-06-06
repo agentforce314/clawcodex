@@ -349,7 +349,7 @@ class AgentRunner:
                 status_dashboard.on_event(text_event, session)
             except Exception:
                 pass
-        self._write_event_log(session.workspace.path, issue.id, text_event)
+        self._write_event_log(session.workspace.path, issue.id, text_event, turn=turn_number)
 
         logger.warning(
             "Rate limit backoff issue_id=%s attempt=%d delay=%.1fs",
@@ -574,7 +574,7 @@ class AgentRunner:
                                 pass
 
                         # Also write to event log file for cross-process tail
-                        self._write_event_log(session.workspace.path, issue.id, event)
+                        self._write_event_log(session.workspace.path, issue.id, event, turn=turn_number)
 
                     elif isinstance(event, ToolCallEvent):
                         turn_has_tool_calls = True
@@ -618,7 +618,7 @@ class AgentRunner:
                                 pass
 
                         # Also write to event log file for cross-process tail
-                        self._write_event_log(session.workspace.path, issue.id, event)
+                        self._write_event_log(session.workspace.path, issue.id, event, turn=turn_number)
 
                     elif isinstance(event, ToolResultEvent):
                         logger.debug(
@@ -641,7 +641,7 @@ class AgentRunner:
                                 pass
 
                         # Also write to event log file for cross-process tail
-                        self._write_event_log(session.workspace.path, issue.id, event)
+                        self._write_event_log(session.workspace.path, issue.id, event, turn=turn_number)
                         update_diagnostics()
                         if status_dashboard is not None:
                             try:
@@ -691,7 +691,7 @@ class AgentRunner:
                             phase=turn_number,
                             turn_count=turn_number,
                         )
-                        self._write_event_log(session.workspace.path, issue.id, phase_event)
+                        self._write_event_log(session.workspace.path, issue.id, phase_event, turn=turn_number)
                         if progress_reporter is not None:
                             progress_reporter.on_event(phase_event, session)
 
@@ -802,7 +802,7 @@ class AgentRunner:
             phase=turn_number,
             turn_count=turn_number,
         )
-        self._write_event_log(session.workspace.path, issue.id, phase_event)
+        self._write_event_log(session.workspace.path, issue.id, phase_event, turn=turn_number)
         if progress_reporter is not None:
             progress_reporter.on_event(phase_event, session)
 
@@ -899,6 +899,7 @@ class AgentRunner:
         workspace_path: Any,
         issue_id: str | None,
         event: Any,
+        turn: int | None = None,
     ) -> None:
         """Write structured event to event log file for CLI tail."""
         import json
@@ -918,6 +919,7 @@ class AgentRunner:
                     "type": "tool_call",
                     "tool_name": event.tool_name,
                     "params": event.params,
+                    "turn": turn,
                 }
             elif hasattr(event, "result"):
                 entry = {
@@ -925,12 +927,14 @@ class AgentRunner:
                     "type": "tool_result",
                     "tool_name": event.tool_name,
                     "is_error": event.result.get("is_error", False),
+                    "turn": turn,
                 }
             elif hasattr(event, "content"):
                 entry = {
                     "timestamp": time.strftime("%H:%M:%S"),
                     "type": "text_delta",
                     "content": event.content,
+                    "turn": turn,
                 }
             elif isinstance(event, PhaseComplete):
                 entry = {
@@ -938,11 +942,13 @@ class AgentRunner:
                     "type": "phase_complete",
                     "phase": event.phase,
                     "turn_count": event.turn_count,
+                    "turn": turn,
                 }
             else:
                 entry = {
                     "timestamp": time.strftime("%H:%M:%S"),
                     "type": str(type(event).__name__),
+                    "turn": turn,
                 }
 
             with open(log_file, "a", encoding="utf-8") as f:

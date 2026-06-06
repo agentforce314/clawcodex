@@ -1534,6 +1534,10 @@ class Orchestrator:
                     # Schedule retry
                     await self._schedule_retry(session)
 
+                # Update summary comment for non-completed paths
+                if session.issue.id not in self._state.pending_review:
+                    await self._update_issue_summary(session)
+
                 # Cleanup workspace
                 try:
                     await self.workspace.cleanup(session.issue)
@@ -1545,6 +1549,27 @@ class Orchestrator:
                     )
 
                 self._state.claimed.discard(session.issue.id or "")
+
+    async def _update_issue_summary(self, session: AgentSession) -> None:
+        """Update the issue summary comment with final status for failure paths."""
+        comment_id = getattr(session, "summary_comment_id", None)
+        if comment_id is None:
+            return
+        body_lines = [
+            "## ClawCodex Run Summary",
+            "",
+            f"- Run: `{getattr(session, "run_id", "unknown")}`",
+            f"- Status: `{getattr(session, "status", "unknown")}`",
+            f"- Turns: {getattr(session, "turn_count", 0)}",
+            f"- Tool calls: {getattr(session, "tool_count", 0)}",
+        ]
+        if getattr(session, "last_hook_error", None):
+            body_lines.append(f"- Error: `{session.last_hook_error}`")
+        body = "\n".join(body_lines)
+        try:
+            await self.tracker.update_comment(session.issue.id, comment_id, body)
+        except Exception as exc:
+            logger.warning("Failed to update summary comment issue_id=%s: %s", session.issue.id, exc)
 
     async def _reply_to_processed_feedback(self, session: AgentSession) -> None:
         if not self.workflow.review_feedback.reply_to_comments:

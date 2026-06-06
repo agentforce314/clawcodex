@@ -131,6 +131,13 @@ def add_issue_parser(subparsers: argparse._SubParsersAction) -> None:
         metavar="PATH",
         help="Explicit workspace root path",
     )
+    tail_parser.add_argument(
+        "--turn",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Filter to show only events from turn number N",
+    )
 
     # --- issue stop ---
     stop_parser = issue_sub.add_parser(
@@ -765,6 +772,9 @@ def _run_tail(registry_path: Path | None, args: argparse.Namespace) -> int:
         print(f"No event log found for issue {issue_id}.", file=sys.stderr)
         return 1
 
+    turn_filter = getattr(args, "turn", None)
+    if turn_filter is not None:
+        print(f"Filtering to turn {turn_filter} only.")
     print(f"Tailing events for issue {issue_id} (Ctrl+C to stop)...")
     try:
         last_size = log_file.stat().st_size
@@ -791,21 +801,26 @@ def _run_tail(registry_path: Path | None, args: argparse.Namespace) -> int:
                     continue
                 try:
                     event = json.loads(line)
+                    # Turn filter
+                    event_turn = event.get("turn")
+                    if turn_filter is not None and event_turn != turn_filter:
+                        continue
+                    turn_prefix = f"[T{event_turn}] " if event_turn is not None else ""
                     ts = event.get("timestamp", "")[-8:] if event.get("timestamp") else ""
                     etype = event.get("type", "?")
                     if etype == "tool_call":
                         tool_name = event.get("tool_name", "?")
-                        print(f"  [{ts}] CALL  {tool_name}")
+                        print(f"  [{ts}] {turn_prefix}CALL  {tool_name}")
                     elif etype == "tool_result":
                         err = " [ERR]" if event.get("is_error") else ""
-                        print(f"  [{ts}] RESULT{err} {event.get('tool_name', '?')}")
+                        print(f"  [{ts}] {turn_prefix}RESULT{err} {event.get('tool_name', '?')}")
                     elif etype == "text_delta":
                         content = event.get("content", "")
                         if content:
                             text = content[:80].replace("\n", " ")
-                            print(f"  [{ts}] TEXT  {text}")
+                            print(f"  [{ts}] {turn_prefix}TEXT  {text}")
                     else:
-                        print(f"  [{ts}] {etype}")
+                        print(f"  [{ts}] {turn_prefix}{etype}")
                 except json.JSONDecodeError as exc:
                     print(f"[tail] warning: malformed event in {log_file}: {exc}", file=sys.stderr)
             last_size = current_size
