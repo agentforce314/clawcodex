@@ -214,15 +214,26 @@ class GitSyncService:
             commit_sha = self._run_git_output(["rev-parse", "HEAD"], repo_root)
             start_commit_sha = getattr(session, "start_commit_sha", None)
             has_run_commit = bool(start_commit_sha and commit_sha != start_commit_sha)
+            # Fix 5 (commit attribution de-duplication): when the agent
+            # did not actually create a new commit in this run, HEAD is
+            # the previous issue's commit in sequential workspace mode.
+            # Leaving it as ``commit_sha`` would mis-attribute the prior
+            # issue's work to the current issue (e.g. the 1b96d58 fix
+            # being registered as F-68's commit).  Clear it so the
+            # orchestrator sees this session as having produced no
+            # reviewable commit; the verification-failure path below
+            # already discards commit_sha in that case via
+            # ``_post_commit_error``'s "no commit" branch, so dropping it
+            # here is consistent.
+            if not has_run_commit:
+                commit_sha = None
             try:
                 await self._run_pre_push_verification(repo_root, session)
             except (VerificationFailed, HookFailedError) as exc:
-                # No new commit was created in this run, but HEAD may
-                # already carry the issue's implementation from a prior
-                # run on the same branch. Surface the existing HEAD as
-                # the registerable commit so the orchestrator's
-                # GitSyncPostCommitError handler can call mark_synced()
-                # with it, instead of dropping the commit_sha entirely.
+                # No new commit was created in this run.  Surface a
+                # stable, non-attributable commit_sha (None) to the
+                # orchestrator's GitSyncPostCommitError handler so the
+                # issue is not credited with the previous run's commit.
                 raise self._post_commit_error(
                     exc,
                     branch_name=branch_name,

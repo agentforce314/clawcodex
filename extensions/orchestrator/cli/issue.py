@@ -1288,8 +1288,29 @@ def _run_review(registry_path: Path | None, args: argparse.Namespace) -> int:
     if approve:
         comment = getattr(args, "comment", None)
 
-        # Mark issue as completed
+        # F-?? Fix 3: mark the issue as completed and make the CLI's
+        # write authoritative against the daemon's stale in-memory
+        # state.  ``mark_completed`` writes the file but if the daemon
+        # re-saves with its in-memory copy before we exit, the change
+        # is clobbered.  We re-read the file after the save and, if
+        # the status is back to pending_review, force a second write
+        # so the operator's approval decision is the last word.
         registry.mark_completed(issue_id)
+        try:
+            _verify_registry = IssueRegistry(registry_path)
+            _verify_record = _verify_registry._records.get(issue_id)
+            if (
+                _verify_record is not None
+                and _verify_record.status != IssueStatus.COMPLETED
+            ):
+                # Daemon (or another writer) overwrote between our
+                # save and re-read; force the completion back.
+                _verify_registry.mark_completed(issue_id)
+        except Exception as _exc:  # noqa: BLE001
+            print(
+                f"warning: post-approval verification failed: {_exc}",
+                file=sys.stderr,
+            )
 
         tracker = _tracker_from_workflow_arg(args)
         if tracker is not None:

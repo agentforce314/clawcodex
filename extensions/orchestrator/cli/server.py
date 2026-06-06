@@ -410,6 +410,39 @@ def _run_orchestrator(
 
     subsystem = OrchestrationSubsystem(config)
 
+    # F-?? Fix 2: write the real daemon PID to <workspace>/daemon.pid
+    # so external tools (cron monitor, stop scripts) can locate the
+    # running daemon.  The previous shell-wrapper pattern
+    # ``nohup ... & disown; echo $! > pidfile`` captured the nohup
+    # wrapper PID which sometimes did not match the python process
+    # that ultimately ran the orchestrator (chain-exec races, signal
+    # forwarding).  Writing the pidfile in-process via ``os.getpid()``
+    # makes the value authoritative and removes the dependency on
+    # the shell launcher's PID semantics.
+    try:
+        import atexit
+
+        _ws_root = Path(getattr(config.workspace, "root", "") or "")
+        if str(_ws_root):
+            _pidfile = _ws_root / "daemon.pid"
+            _pidfile.parent.mkdir(parents=True, exist_ok=True)
+            _pidfile.write_text(f"{os.getpid()}\n", encoding="utf-8")
+
+            def _cleanup_pidfile() -> None:
+                try:
+                    _pidfile.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+            atexit.register(_cleanup_pidfile)
+    except Exception as exc:  # noqa: BLE001
+        # Never block daemon start on pidfile failures (read-only
+        # workspace, missing dir, etc.) — just warn and continue.
+        print(
+            f"warning: failed to write pidfile: {exc}",
+            file=sys.stderr,
+        )
+
     async def _run() -> None:
         try:
             await subsystem.run()

@@ -772,11 +772,21 @@ class AgentRunner:
                                     issue, tracker
                                 )
                                 if is_active and turn_number < self.max_turns:
+                                    # F-?? Fix 4: include the running noop
+                                    # streak in the continuation log so
+                                    # operators can spot stuck-on-finished
+                                    # runs from the daemon log alone
+                                    # (the previous message had no
+                                    # indicator that the agent was no
+                                    # longer making progress).
                                     logger.info(
-                                        "Issue %s still active, continuing turn %d/%d",
+                                        "Issue %s still active, continuing turn %d/%d "
+                                        "(noop_streak=%d/%d)",
                                         issue.id,
                                         turn_number,
                                         self.max_turns,
+                                        no_work_streak,
+                                        max_no_op_turns,
                                     )
                                     # F-?? root-cause fix: stagnation guard.
                                     # Counts consecutive turns where the LLM
