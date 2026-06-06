@@ -1,6 +1,6 @@
-"""ConvertPOSToAgent skill — converts a POS SDK into a reusable Agent.
+"""ConvertPOSToAgent skill — converts an SOP into a reusable Agent.
 
-This is the execution layer (Skill) for the POS → Agent conversion pattern.
+This is the execution layer (Skill) for the SOP conversion pattern.
 It takes SDK specifications and business requirements, then produces:
   1. An AgentDefinition with grouped Skills
   2. SKILL.md files for each Skill
@@ -59,7 +59,7 @@ def convert_pos_to_agent(
     model: str | None = None,
     mapping_rules: list[MappingRule] | None = None,
 ) -> dict[str, Any]:
-    """Convert a POS SDK spec into a reusable Agent.
+    """Convert an SOP spec into a reusable Agent.
 
     Args:
         sdk_spec: SDK specification (OpenAPI dict, URL, or method list string).
@@ -184,7 +184,7 @@ def _format_result(result: dict[str, Any]) -> str:
         return f"Conversion failed: {result.get('error', 'unknown error')}"
 
     lines = [
-        f"✅ Converted POS to Agent: **{result['agent_type']}**",
+        f"✅ Converted SOP: **{result['agent_type']}**",
         f"\nDescription: {result['agent_description']}",
         f"\nModel: {result.get('model', 'default')}",
         f"\n## Skills ({len(result['skills'])})",
@@ -208,9 +208,9 @@ def _format_result(result: dict[str, Any]) -> str:
 
 
 _SKILL_PROMPT = """\
-# ConvertPOStoAgent Skill
+# ConvertSOP Skill
 
-Convert a professional workflow system (POS) into a reusable Agent.
+Convert a Standard Operating Procedure (SOP) into a reusable Agent.
 
 ## Input Format
 ```
@@ -222,7 +222,7 @@ Convert a professional workflow system (POS) into a reusable Agent.
 - `requirements`: Business context (e.g., "CI/CD pipeline", "data processing")
 
 ## Three-Layer Mapping
-1. **POS** (professional system) → **Agent**
+1. **SOP** (Standard Operating Procedure) → **Agent**
 2. **workflow steps** → **Skill**
 3. **SDK interfaces** → **atomic tools**
 

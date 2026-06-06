@@ -15,7 +15,7 @@ Extension components:
     - paths.py: clawcodex-specific path resolution
     - hooks.py: Skill lifecycle callbacks
     - cache.py: Extension layer caching
-    - bundled/: clawcodex-native bundled skills (POS converter, etc.)
+    - bundled/: clawcodex-native bundled skills (SOP converter, etc.)
 """
 
 from .registry_ext import SkillRegistryExt, SkillRegistrationCallback

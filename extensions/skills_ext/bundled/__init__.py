@@ -1,8 +1,8 @@
 """
-Bundled Skill Extension - POS to Agent Converter
+Bundled Skill Extension - SOP Converter
 
 Mirrors the src/skills/bundled/ pattern for clawcodex-specific bundled skills.
-POS to Agent conversion skill registered here for skills_ext integration.
+SOP conversion skill registered here for skills_ext integration.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ def register_convert_pos_skill() -> None:
         BundledSkillDefinition(
             name="convert-pos-to-agent",
             description=(
-                "Convert a professional workflow system (POS) into a reusable Agent. "
+                "Convert a Standard Operating Procedure (SOP) into a reusable Agent. "
                 "Takes SDK specifications and business requirements, then produces "
                 "an AgentDefinition with grouped Skills, SKILL.md files, and optional "
                 "agent persistence file for long-term use."
@@ -27,7 +27,7 @@ def register_convert_pos_skill() -> None:
             get_prompt_for_command=get_prompt_for_command,
             aliases=["pos-to-agent"],
             when_to_use=(
-                "When you need to convert a POS workflow into an agent. "
+                "When you need to convert a SOP workflow into an agent. "
                 "Input: SDK spec (OpenAPI URL/JSON or method list) + requirements."
             ),
             argument_hint="<sdk_spec> [--requirements '<requirements>']",

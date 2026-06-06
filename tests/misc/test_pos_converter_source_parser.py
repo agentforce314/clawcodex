@@ -1,4 +1,4 @@
-"""Tests for POS Converter F-50: SourceCodeParser + enhanced SkillGrouper + AgentMarkdownWriter."""
+"""Tests for SOP Converter F-50: SourceCodeParser + enhanced SkillGrouper + AgentMarkdownWriter."""
 
 from __future__ import annotations
 

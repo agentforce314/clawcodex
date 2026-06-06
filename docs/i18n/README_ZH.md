@@ -2,7 +2,7 @@
 
 # ClawCodex DevMind
 
-**`clawcodex` 的下游二开版本，把单个 agent 升级为一支可自主值守的工程团队 —— 编排器 + POS 转 Agent 编译器 + 定时任务 + 桥接守护进程 + LiteLLM。**
+**`clawcodex` 的下游二开版本，把单个 agent 升级为一支可自主值守的工程团队 —— 编排器 + SOP 编译器 + 定时任务 + 桥接守护进程 + LiteLLM。**
 
 *构建于上游 Claude Code 的 Python 重构版本之上。本仓库新增了多 agent 编排、调度、LLM 路由等上游尚未提供的能力层。*
 
@@ -21,7 +21,7 @@
 具体来说，本仓库新增：
 
 - 🤖 **编排器（Orchestrator）** —— 一个守护进程，自动轮询工单系统、拉分支、跑 agent、开 PR，全程无需人工
-- 🧩 **POS 转 Agent 编译器** —— 把任何 `workflow.md` 流程化规范编译成多 agent 协同系统
+- 🧩 **SOP 编译器** —— 把任何 `workflow.md` 流程化规范编译成多 agent 协同系统
 - ⏰ **定时任务系统（Cron System）** —— 分布式锁调度，带 jitter 和 NDJSON 运行历史
 - 🌉 **桥接守护进程扩展** —— 多 session 桥接、远程运行时、REPL/headless 适配器
 - 🔌 **LiteLLM Provider** —— 一个 `--provider litellm` 接口，路由到 100+ 个 LLM 后端
@@ -83,7 +83,7 @@ clawcodex-dev login
 clawcodex-dev                      # REPL（与上游一致，外加 orchestrator 子命令）
 clawcodex-dev orchestrator --help  # 查看所有编排器命令
 clawcodex-dev cron --help          # 查看定时任务子命令
-clawcodex-dev pos --help           # 查看 POS 编译器子命令
+clawcodex-dev pos --help           # 查看 SOP 编译器子命令
 ```
 
 需要 **Python 3.10+**（推荐 3.11）。Linux / macOS / WSL2。
@@ -173,9 +173,9 @@ clawcodex-dev orchestrator dashboard [--port 8080] [--host 127.0.0.1]
 
 ---
 
-### 🧩 POS 转 Agent 编译器
+### 🧩 SOP 编译器
 
-很多工程流程仍然以 `workflow.md` 形式记录 —— "X 发生则做 Y，然后通知 Z"。POS 编译器（`extensions/pos_converter/`）把这类规范转成多 agent 协同运行时。
+很多工程流程仍然以 `workflow.md` 形式记录 —— "X 发生则做 Y，然后通知 Z"。SOP 编译器（`extensions/pos_converter/`）把这类规范转成多 agent 协同运行时。
 
 ```bash
 clawcodex-dev pos convert examples/pos/order_processing.md \
@@ -276,7 +276,7 @@ clawcodex-dev coordinator team delete --name build-team
 - 在 agent 循环里暴露 `TeamCreate` / `TeamDelete` 工具
 - 工人之间可以互发 `SendMessage`（同行私信）以及和管理员通信
 - Task-notification XML 路由把工人的事件汇报回管理员
-- POS 编译器和编排器都用它做并行 issue 处理
+- SOP 编译器和编排器都用它做并行 issue 处理
 
 ---
 
@@ -335,7 +335,7 @@ clawcodex-dev coordinator team delete --name build-team
 ```bash
 clawcodex-dev orchestrator ...    # 自主 issue 处理（本 fork）
 clawcodex-dev cron           ...   # 分布式定时任务（本 fork）
-clawcodex-dev pos            ...   # POS 转 Agent 编译器（本 fork）
+clawcodex-dev pos            ...   # SOP 编译器（本 fork）
 clawcodex-dev coordinator    ...   # 团队 / 工人原语（本 fork）
 ```
 
@@ -352,7 +352,7 @@ clawcodex-dev coordinator    ...   # 团队 / 工人原语（本 fork）
               └──────────┬──────────────┬─────────────┬──────┘
                          │              │             │
               ┌──────────▼────┐  ┌──────▼─────┐  ┌────▼────────────┐
-              │   编排器      │  │ 定时任务    │  │ POS 编译器      │
+              │   编排器      │  │ 定时任务    │  │ SOP 编译器      │
               │  + Dashboard  │  │ + Lock+    │  │ + SDK parser    │
               │  + LiveView   │  │   Jitter   │  │ + Agent builder │
               │  + Takeover   │  │ + Status   │  │ + Skill grouper │
@@ -402,7 +402,7 @@ extensions/                          # 本 fork 全部新增都在这里
 │   ├── workflow.py + workflow_store.py
 │   ├── templates/workflow.template.md
 │   └── cli/                         #   - server、issue、dashboard 子命令
-├── pos_converter/                   #   - POS 转 Agent 编译器
+├── pos_converter/                   #   - SOP 编译器
 │   ├── sdk_parser.py
 │   ├── skill_grouper.py
 │   ├── agent_builder.py
@@ -437,7 +437,7 @@ clawcodex_ext/                       # 下游 CLI + 服务
 | F-38 | pre-commit / pre-push / post-sync 验证门 + 报告 | ✅ |
 | F-39 | Issue 重跑标签（`agent:retry` / `agent:follow-up` / `agent:blocked`） | ✅ |
 | — | 编排器守护进程 + 4 个 tracker + LiveView 仪表盘 | ✅ |
-| — | POS 转 Agent 编译器 | ✅ |
+| — | SOP 编译器 | ✅ |
 | — | 定时任务系统（分布式锁 + jitter） | ✅ |
 | — | LiteLLM provider | ✅ |
 | — | 协调器 / TeamCreate / TeamDelete | ✅ |

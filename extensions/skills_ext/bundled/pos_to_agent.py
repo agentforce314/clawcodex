@@ -1,4 +1,4 @@
-"""POS to Agent converter bundled skill registration."""
+"""SOP converter bundled skill registration."""
 
 from . import register_convert_pos_skill
 

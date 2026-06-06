@@ -21,7 +21,7 @@ from .templates import AGENT_TEMPLATE, SKILL_TEMPLATE
 
 @dataclass
 class AgentBuildResult:
-    """Result of building an Agent from POS conversion."""
+    """Result of building an Agent from SOP conversion."""
     agent: AgentDefinition
     skill_files: list[Path] = field(default_factory=list)
     markdown_files: list[Path] = field(default_factory=list)

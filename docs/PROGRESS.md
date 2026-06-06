@@ -6,7 +6,7 @@
 > 更新日期: 2026-06-04
 > 上游同步: 58ea488 (dev-decoupling-refactor)
 >
-> **v2.16 变更**：完成 CCB（claude-code-best）全面对标分析，识别 clawcodex 的 8 个重大特性缺口纳入规划管线。新增 F-60 Pipe IPC + LAN 群控（P0）、F-61 Computer Use 屏幕操控（P0）、F-62 Chrome 浏览器控制（P1）、F-63 Channels 频道通知（P1）、F-64 Voice Mode 语音输入（P2）、F-65 Langfuse Agent 可观测性（P1）、F-66 ACP 协议支持（P2）、F-67 Buddy / Proactive 模式（P2）。同时更新 §四 CCB 对标优势特性总表，明确 clawcodex 对比 CCB 的 5 项领先特性（Orchestrator 自动流水线、Verification Gate、POS-to-Agent 编译器、LiteLLM Provider、Manager/Worker 增强通信）。所有 F-60~F-67 设置为 ⏳ 待开始状态，详见 §四。
+> **v2.16 变更**：完成 CCB（claude-code-best）全面对标分析，识别 clawcodex 的 8 个重大特性缺口纳入规划管线。新增 F-60 Pipe IPC + LAN 群控（P0）、F-61 Computer Use 屏幕操控（P0）、F-62 Chrome 浏览器控制（P1）、F-63 Channels 频道通知（P1）、F-64 Voice Mode 语音输入（P2）、F-65 Langfuse Agent 可观测性（P1）、F-66 ACP 协议支持（P2）、F-67 Buddy / Proactive 模式（P2）。同时更新 §四 CCB 对标优势特性总表，明确 clawcodex 对比 CCB 的 5 项领先特性（Orchestrator 自动流水线、Verification Gate、SOP 编译器、LiteLLM Provider、Manager/Worker 增强通信）。所有 F-60~F-67 设置为 ⏳ 待开始状态，详见 §四。
 >
 > **v2.14 变更**：新增 F-48 src/ 核心路径二开修改解耦方案（📋 设计完成）。通过对比 `src/` 与 `src/upstream/58ea488/`，识别出 10 个含真正功能修改的 src/ 文件（其余 600+ 为行尾/格式差异），分 Phase 0~3 四阶段制定解耦方案：Phase 0（纯新增文件移入 ext）、Phase 1（注册表/Protocol 扩展消除字段注入）、Phase 2（子类覆盖恢复上游构造器签名）、Phase 3（入口点恢复上游逻辑）。复用已有 Facade/子类覆盖/前端注册表三种解耦模式。目标：src/ 有功能修改的文件数从 10+ 降为 0。
 >
@@ -70,7 +70,7 @@
 | F-16 | Auto 模式 (TRANSCRIPT_CLASSIFIER) | P2 | ⏳ 待开始 | 基于 LLM 的自动权限模式切换，减少交互疲劳 |
 | F-17 | 工具系统按需加载（Tool System Extension） | P1 | ✅ 完成 | 四种工具模式（bare/default/clawcodex/all），4 bundle 简化设计，bundle 引用前缀 ":"，与上游解耦 |
 | F-18 | CreateAgentTool 动态工具创建 | P2 | 🔄 规划中 | Agent 可根据 CLI/API 规范动态创建工具，Meta Tool 能力，bash/http/python 三种 call_impl 安全限制 |
-| F-19 | POS to Agent 转化模式 | P2 | 🔄 进行中 | 三层映射（POS→Agent、workflow→Skill、SDK→工具），SDK 解析 + Skill 分组 + Agent 构建 + 持久化已完成；**`clawcodex-dev pos convert` CLI 子命令待注册**（dispatch.py/subcommand_registry.py 中未实现），当前仅支持斜杠命令和 Python API 调用 |
+| F-19 | SOP 转化模式 | P2 | 🔄 进行中 | 三层映射（SOP、workflow→Skill、SDK→工具），SDK 解析 + Skill 分组 + Agent 构建 + 持久化已完成；**`clawcodex-dev pos convert` CLI 子命令待注册**（dispatch.py/subcommand_registry.py 中未实现），当前仅支持斜杠命令和 Python API 调用 |
 | F-20 | Agent 阶段性进度汇报 | P2 | ✅ 完成 | 三组合方案：检查点触发 + ProgressReportTool + ToolContext.tasks 持久化；PhaseComplete 时双重调用 ProgressReportTool + TaskUpdateTool 更新 metadata |
 | F-21 | 后台运行 + 恢复同步 | P1 | ✅ 完成 | Ctrl+B 后台化 + TailFollower 实时同步 + SessionWatcher 多终端感知，补丁 0067-0074 |
 | F-22 | Cron 系统执行引擎 | P0 | 🔄 进行中（Phase A ✅ 已完成） | `clawcodex_ext/cron_system/` 已补齐 parser/storage/scheduler/jitter/lock/permanent/inFlight/基础 runs/status；历史 G1~G8 已落地；Phase A runtime-first 接线完成——REPL/TUI/headless 均通过 `RuntimeContext.build()` 获得后台 cron 调度器，REPL 新增 `_drain_cron_outbox()` 将 `tool_context.outbox` 中的 `cron_prompt`/`cron_missed` 事件经 `_enqueue_prompt` 注入为自动用户输入。剩余缺口保持 F22-R2~R8：scheduled fire 执行队列、run lifecycle finalize、用户管理/status 入口、busy gate/filter、durable reload、teammate ownership 与 CCB env gate 兼容。 |
@@ -99,7 +99,7 @@
 | F-48 | src/ 核心路径二开修改解耦 | P0 | 📋 设计完成 | 将 `src/` 中 10 个含真正功能修改的文件解耦到 `clawcodex_ext/` 和 `extensions/`，使 `src/` 与上游源码（`src/upstream/58ea488/`）功能层面一致。分 Phase 0~3：Phase 0（纯新增文件移入 ext）、Phase 1（注册表/Protocol 扩展消除字段注入）、Phase 2（子类覆盖恢复上游构造器签名）、Phase 3（入口点恢复上游逻辑）。复用 Facade/子类覆盖/前端注册表三种解耦模式。目标：src/ 有功能修改的文件数从 10+ 降为 0 |
 | F-49 | Issue 会话统一存储与实时介入协议 | P1 | 📋 设计完成 | 将 headless agent 的 `.event_logs/` 扁平 NDJSON 统一为 `SessionStorage` 的 `transcript.jsonl` 格式；在其上建立 Unix socket 双向控制协议，实现 `attach` CLI 观察/中断/接管/恢复；附带 session 恢复能力。Phase 0 存储统一 → Phase 1 socket 控制 → Phase 2 attach TUI → Phase 3 session 恢复 |
 | F-51 | AgentRunner 空转检测机制（no-op detection） | P0 | ✅ 完成 | 在 `extensions/orchestrator/agent_runner.py` 中添加连续 5 轮工作区文件无变更检测，防止 agent 在 issue deliverables 已存在的场景下陷入无限 busy-work 循环。对应 PR 检视意见自动修复闭环（F-37）中的已修复前置问题。|
-| F-52 | Python SDK 方法注册为 Tool | P2 | 📋 规划中 | 将 POS→Agent 生成的 ADF 方法（`detect_modality`、`load_dataset` 等）注册为真实的 `Tool` 对象，使 sub-agent 可直接调用而非通过 Bash 回退。`extensions/pos_converter/tool_registry.py` — `ToolWrapper` + `register_source_operations()`。依赖 F-50。 |
+| F-52 | Python SDK 方法注册为 Tool | P2 | 📋 规划中 | 将 SOP 生成的 ADF 方法（`detect_modality`、`load_dataset` 等）注册为真实的 `Tool` 对象，使 sub-agent 可直接调用而非通过 Bash 回退。`extensions/pos_converter/tool_registry.py` — `ToolWrapper` + `register_source_operations()`。依赖 F-50。 |
 | F-53 | Tool 自动暴露为 CLI 斜杠命令 | P3 | 📋 规划中 | 已注册的 Tool 自动映射为 REPL/TUI 中的 `/tool-name` 命令（如 `/detect_modality --path /data/raw`），参数从 Tool schema 自动推导。`clawcodex_ext/cli/tool_cmd/`。依赖 F-52。 |
 | F-54 | AgentRunner / QueryRunner 运行期可观测性 | P0 | 📋 设计完成 | 补齐 headless issue agent 从 provider request 到 `SessionComplete` 之间的 debug 观测点：`QueryRunner.stream()` heartbeat、`AgentRunner` turn/event counters、watchdog timeout snapshot、持久化 `debug.ndjson` 与 registry/CLI 诊断字段，用于定位 agent run 有请求但无文件改动/报告/commit 的 stuck-run。 |
 | F-55 | 会话恢复（Session Resume）增强 | P1 | 📋 设计完成 | 补齐 CCB 对标发现的 4 个 Resume UX 缺口：退出时打印 Resume Hint（S-R1）、Resume 后历史消息渲染完整（S-R2）、`--continue` CLI 快捷命令（S-R3）、元数据与状态恢复增强（S-R4）。Phase 0-3 分阶段实施，详见 [FEATURE_PLAN.md §5](./FEATURE_PLAN.md#五会话恢复session-resume增强f-55)。 |
@@ -767,12 +767,12 @@ session = Session.resume(issue_session_id)
 ---
 
 
-## F-50: POS 转换器源码固化（SourceCodeParser + 增强 SkillGrouper + AgentMarkdownWriter）
+## F-50: SOP 转换器源码固化（SourceCodeParser + 增强 SkillGrouper + AgentMarkdownWriter）
 
 **状态**: ✅ 完成
 **优先级**: P1
 
-> 详细进度已归档至 [ARCHIVED_PROGRESS.md §五.14 F-50 POS 转换器源码固化](./ARCHIVED_PROGRESS.md#五14-f-50-pos-转换器源码固化sourcecodeparser--增强-skillgrouper--agentmarkdownwriter)。
+> 详细进度已归档至 [ARCHIVED_PROGRESS.md §五.14 F-50 SOP 转换器源码固化](./ARCHIVED_PROGRESS.md#五14-f-50-pos-转换器源码固化sourcecodeparser--增强-skillgrouper--agentmarkdownwriter)。
 
 ---
 
@@ -796,7 +796,7 @@ session = Session.resume(issue_session_id)
 
 ### 目标
 
-将 POS→Agent 转换解析出的 `SourceOperation`（如 `detect_modality`、`load_dataset`）注册为 clawcodex 可调用的 `Tool` 对象。使 sub-agent 的 `tools` 列表中的方法名从字符串占位符变为可执行的 Tool，不再需要通过 `Bash` subprocess 回退。
+将 SOP 转换解析出的 `SourceOperation`（如 `detect_modality`、`load_dataset`）注册为 clawcodex 可调用的 `Tool` 对象。使 sub-agent 的 `tools` 列表中的方法名从字符串占位符变为可执行的 Tool，不再需要通过 `Bash` subprocess 回退。
 
 ### 实现计划
 

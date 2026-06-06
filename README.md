@@ -2,7 +2,7 @@
 
 # ClawCodex DevMind
 
-**A downstream fork of [clawcodex](https://gitcode.com/chadwweng/clawcodex) that turns the agent into an autonomous engineering team — Orchestrator + POS Compiler + Cron + Bridge + LiteLLM.**
+**A downstream fork of [clawcodex](https://gitcode.com/chadwweng/clawcodex) that turns the agent into an autonomous engineering team — Orchestrator + SOP Compiler + Cron + Bridge + LiteLLM.**
 
 *Built on top of the upstream Python reimplementation of Claude Code. This repo adds the multi-agent orchestration, scheduling, and LLM-routing layers that the upstream does not ship.*
 
@@ -36,7 +36,7 @@
     - Clarification queue: 13-state, 3-channel resolver (interactive / file / @mention)
     - Tool-call audit trail (F-45): NDJSON per-tool decision log + report registration
 
-  POS-to-Agent Compiler:
+  SOP Compiler:
     - Convert workflow.md procedural specs → multi-agent system
     - SDK parser + skill grouper + agent builder + Jinja templates
     - Output: agent definitions, entry-point skill, orchestration graph
@@ -100,7 +100,7 @@ The upstream `clawcodex` already gives you a faithful Python port of Claude Code
 Concretely, this repo ships:
 
 - 🤖 **Orchestrator** — a daemon that polls issue trackers, branches a workspace, runs the agent, and opens PRs unattended
-- 🧩 **POS-to-Agent Compiler** — convert any `workflow.md` procedural spec into a coordinated multi-agent system
+- 🧩 **SOP Compiler** — convert any `workflow.md` procedural spec into a coordinated multi-agent system
 - ⏰ **Cron System** — distributed-lock scheduling with jitter and NDJSON run history
 - 🌉 **Bridge Daemon extensions** — multi-session bridge, remote runtime, REPL/headless adapters
 - 🔌 **LiteLLM Provider** — one interface to 100+ LLM backends (catch-all behind `--provider litellm`)
@@ -162,7 +162,7 @@ clawcodex-dev login
 clawcodex-dev                      # REPL (same as upstream, plus orchestrator subcommands)
 clawcodex-dev orchestrator --help  # see all orchestrator commands
 clawcodex-dev cron --help          # see cron subcommands
-clawcodex-dev pos --help           # see POS compiler subcommands
+clawcodex-dev pos --help           # see SOP compiler subcommands
 ```
 
 Requires **Python 3.10+** (3.11 recommended). Linux / macOS / WSL2.
@@ -252,9 +252,9 @@ clawcodex-dev orchestrator dashboard [--port 8080] [--host 127.0.0.1]
 
 ---
 
-### 🧩 POS-to-Agent Compiler
+### 🧩 SOP Compiler
 
-Many engineering processes are still documented as procedural `workflow.md` scripts — "if X happens, do Y, then notify Z". The POS compiler (`extensions/pos_converter/`) turns those specs into a coordinated multi-agent runtime.
+Many engineering processes are still documented as procedural `workflow.md` scripts — "if X happens, do Y, then notify Z". The SOP compiler (`extensions/pos_converter/`) turns those specs into a coordinated multi-agent runtime.
 
 ```bash
 clawcodex-dev pos convert examples/pos/order_processing.md \
@@ -355,7 +355,7 @@ clawcodex-dev coordinator team delete --name build-team
 - `TeamCreate` / `TeamDelete` tools exposed in the agent loop
 - Workers can `SendMessage` each other (peer DMs) and the manager
 - Task-notification XML routing surfaces worker events back to the manager
-- Used by the POS compiler and the orchestrator for parallel issue handling
+- Used by the SOP compiler and the orchestrator for parallel issue handling
 
 ---
 
@@ -414,7 +414,7 @@ You can see these choices declared in `pyproject.toml` under `[project.dependenc
 ```bash
 clawcodex-dev orchestrator ...    # autonomous issue handling (this fork)
 clawcodex-dev cron           ...   # distributed cron (this fork)
-clawcodex-dev pos            ...   # POS-to-Agent compiler (this fork)
+clawcodex-dev pos            ...   # SOP compiler (this fork)
 clawcodex-dev coordinator    ...   # team / worker primitives (this fork)
 ```
 
@@ -431,7 +431,7 @@ All the upstream flags (`-p`, `--tui`, `--provider`, `--model`, `--permission-mo
               └──────────┬──────────────┬─────────────┬──────┘
                          │              │             │
               ┌──────────▼────┐  ┌──────▼─────┐  ┌────▼────────────┐
-              │ Orchestrator  │  │ Cron System │  │ POS Compiler    │
+              │ Orchestrator  │  │ Cron System │  │ SOP Compiler    │
               │  + Dashboard  │  │ + Lock+     │  │ + SDK parser    │
               │  + LiveView   │  │   Jitter    │  │ + Agent builder │
               │  + Takeover   │  │ + Status    │  │ + Skill grouper │
@@ -481,7 +481,7 @@ extensions/                          # all downstream additions live here
 │   ├── workflow.py + workflow_store.py
 │   ├── templates/workflow.template.md
 │   └── cli/                         #   - server, issue, dashboard subcommands
-├── pos_converter/                   #   - POS-to-Agent compiler
+├── pos_converter/                   #   - SOP compiler
 │   ├── sdk_parser.py
 │   ├── skill_grouper.py
 │   ├── agent_builder.py
@@ -516,7 +516,7 @@ Everything in `src/` belongs to the upstream — see [`README.md.raw`](README.md
 | F-38 | Pre-commit / pre-push / post-sync verification gate + report | ✅ |
 | F-39 | Issue re-run labels (`agent:retry` / `agent:follow-up` / `agent:blocked`) | ✅ |
 | — | Orchestrator daemon + 4 trackers + LiveView dashboard | ✅ |
-| — | POS-to-Agent compiler | ✅ |
+| — | SOP compiler | ✅ |
 | — | Cron System with distributed lock + jitter | ✅ |
 | — | LiteLLM provider | ✅ |
 | — | Coordinator / TeamCreate / TeamDelete | ✅ |

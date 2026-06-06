@@ -165,13 +165,13 @@
 | 状态 | ✅ 已归档 |
 | 功能 | 四种工具模式（bare/default/clawcodex/all），4 bundle 简化设计，bundle 引用前缀 ":"，与上游解耦 |
 
-### F-19: POS to Agent 转化模式
+### F-19: SOP 转化模式
 
 | 属性 | 值 |
 |------|-----|
 | 优先级 | P2 |
 | 状态 | ✅ 已归档 |
-| 功能 | 三层映射（POS→Agent、workflow→Skill、SDK→工具），SDK 解析 + Skill 分组 + Agent 构建 + 持久化 |
+| 功能 | 三层映射（SOP、workflow→Skill、SDK→工具），SDK 解析 + Skill 分组 + Agent 构建 + 持久化 |
 
 ### F-20: Agent 阶段性进度汇报
 
@@ -1577,7 +1577,7 @@ agent:
 
 ---
 
-*版本 v2.7 更新: 新增 F-51 AgentRunner 空转检测、F-44 Orchestrator 人工检视闸门、F-50 POS 转换器源码固化等 3 项已实现任务进度归档。*
+*版本 v2.7 更新: 新增 F-51 AgentRunner 空转检测、F-44 Orchestrator 人工检视闸门、F-50 SOP 转换器源码固化等 3 项已实现任务进度归档。*
 
 ---
 
@@ -1675,7 +1675,7 @@ agent:
 
 ---
 
-## 五.14 F-50 POS 转换器源码固化（SourceCodeParser + 增强 SkillGrouper + AgentMarkdownWriter）
+## 五.14 F-50 SOP 转换器源码固化（SourceCodeParser + 增强 SkillGrouper + AgentMarkdownWriter）
 
 **状态**: ✅ 完成
 **优先级**: P1

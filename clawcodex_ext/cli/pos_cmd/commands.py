@@ -89,7 +89,7 @@ def _parse_convert_args(args: list[str]) -> tuple[str, str, str, str, str, str]:
 
 
 def _handle_convert(args: list[str]) -> int:
-    """Handle ``pos convert`` — convert a POS spec into an Agent."""
+    """Handle ``pos convert`` — convert an SOP spec into an Agent."""
     try:
         sdk_spec, output_dir, requirements, agent_name, strategy, skills_dir = _parse_convert_args(args)
     except SystemExit:
@@ -115,7 +115,7 @@ def _handle_convert(args: list[str]) -> int:
         return 2
 
     # Print summary to stdout
-    print(f"✅ Converted POS to Agent: {result['agent_type']}")
+    print(f"✅ Converted SOP: {result['agent_type']}")
     print(f"   Description: {result['agent_description']}")
     print(f"   Model: {result.get('model', 'default')}")
     print(f"   Skills: {len(result['skills'])}")

@@ -1,7 +1,7 @@
-"""POS to Agent converter — transforms professional workflows into reusable Agents.
+"""SOP converter — transforms professional workflows into reusable Agents.
 
 Three-layer mapping:
-    POS (professional system)     → Agent
+    SOP (Standard Operating Procedure)     → Agent
     workflow steps                → Skill
     SDK interfaces               → atomic tools
 

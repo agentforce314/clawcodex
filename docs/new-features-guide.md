@@ -179,10 +179,10 @@ Manager Agent 可以查询和指令 Worker Agent。
 
 ---
 
-## 5. POS to Agent 转化模式
+## 5. SOP 转化模式
 
 ### 功能说明
-将专业系统 (POS) 的 SDK 接口转换为可复用的 Agent。
+将标准作业流程 (SOP) 的 SDK 接口转换为可复用的 Agent。
 
 ### 使用方式
 ```bash
@@ -195,7 +195,7 @@ Manager Agent 可以查询和指令 Worker Agent。
 
 ### 三层映射架构
 ```
-POS (专业系统)  →  AgentDefinition
+SOP (标准作业流程)  →  AgentDefinition
 workflow 步骤    →  SkillSpec (SKILL.md)
 SDK 接口         →  SdkMethod (原子工具)
 ```
@@ -281,13 +281,13 @@ is_backgrounded = True
 ### 注册的 Skills
 | Skill | 说明 | 别名 |
 |-------|------|------|
-| `/convert-pos-to-agent` | POS to Agent 转化 | `/pos-to-agent` |
+| `/convert-pos-to-agent` | SOP 转化 | `/pos-to-agent` |
 
 ### 扩展模块结构
 ```
 src/skills_ext/
 ├── bundled/
-│   └── pos_to_agent.py    # POS 转化 skill
+│   └── pos_to_agent.py    # SOP 转化 skill
 ├── bundles.py              # 工具束定义
 ├── registry_ext.py         # 扩展注册表
 └── ...
@@ -456,7 +456,7 @@ TaskDirectives to=[<taskId>] priority=high message=<消息内容>
 TaskDirectives to=["*"] priority=critical message=<广播>
 ```
 
-### POS 转化
+### SOP 转化
 ```
 /convert-pos-to-agent <SDK方法列表> --requirements "<业务需求>"
 /pos-to-agent docker,kubectl --requirements "CI/CD"
@@ -470,7 +470,7 @@ TaskDirectives to=["*"] priority=critical message=<广播>
 2. 动态模式 `/loop` 的间隔在 **1 分钟到 1 小时**之间自适应
 3. TaskInspect 和 TaskDirectives 仅限 **Manager Agent** 使用
 4. Ctrl+B 后台化需要终端支持 **SIGTSTP** 信号
-5. POS 转化功能支持 **OpenAPI URL**、**JSON spec** 或**逗号分隔方法列表**
+5. SOP 转化功能支持 **OpenAPI URL**、**JSON spec** 或**逗号分隔方法列表**
 
 ---
 

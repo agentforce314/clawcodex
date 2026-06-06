@@ -1,1 +1,1 @@
-"""POS converter CLI command package."""
+"""SOP converter CLI command package."""
