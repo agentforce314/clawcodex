@@ -261,6 +261,7 @@ class AgentConfig:
     # before the issue transitions to COMPLETED.
     # Works with all tracker kinds (local, GitHub, Gitee, GitCode, Linear).
     review_required: bool = False
+    auto_approve: bool = False
 
 
 @dataclass
@@ -494,6 +495,7 @@ class WorkflowConfig:
             # F-44: review gate — when True, sync ends at PENDING_REVIEW
             # instead of COMPLETED, requiring human approve CLI command.
             review_required=bool(agent_raw.get("review_required", False)),
+            auto_approve=bool(agent_raw.get("auto_approve", False)),
         )
         if workspace.strategy == "sequential":
             if agent.max_concurrent_agents != 1:

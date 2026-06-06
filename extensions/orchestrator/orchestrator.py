@@ -1318,15 +1318,22 @@ class Orchestrator:
                             # Triggered when GitSyncResult.pending_review is True (LocalTracker
                             # by default, or any tracker when agent.review_required=True in workflow).
                             if sync_result.pending_review:
-                                self._registry.mark_pending_review(session.issue.id or "")
-                                await self._sync_tracker_issue_state(
-                                    session.issue.id or "", "pending_review"
-                                )
-                                self.status_dashboard.on_session_complete(session.issue.id or "")
-                                self._state.completed.add(session.issue.id or "")
-                                self._state.pending_review.add(session.issue.id or "")
-                                # Do NOT cleanup workspace — human needs to review it
-                                return
+                                if self.workflow.agent.auto_approve:
+                                    logger.info(
+                                        "Issue %s auto-approved (auto_approve=True) — "
+                                        "skipping pending_review gate",
+                                        session.issue.id,
+                                    )
+                                else:
+                                    self._registry.mark_pending_review(session.issue.id or "")
+                                    await self._sync_tracker_issue_state(
+                                        session.issue.id or "", "pending_review"
+                                    )
+                                    self.status_dashboard.on_session_complete(session.issue.id or "")
+                                    self._state.completed.add(session.issue.id or "")
+                                    self._state.pending_review.add(session.issue.id or "")
+                                    # Do NOT cleanup workspace — human needs to review it
+                                    return
                 finally:
                     await self.workspace.run_after_run_hook(
                         session.workspace,

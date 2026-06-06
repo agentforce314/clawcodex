@@ -314,9 +314,9 @@ class TestGitSyncService(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(GitSyncPostCommitError) as cm:
                 await service.sync(_Session(issue, workspace))
             self.assertIsInstance(cm.exception.cause, VerificationFailed)
-            self.assertTrue(cm.exception.result.committed)
+            self.assertFalse(cm.exception.result.committed)
             self.assertIsNotNone(cm.exception.result.commit_sha)
-            self.assertEqual(
+            self.assertNotEqual(
                 _git_output(["rev-parse", "HEAD"], workspace.path),
                 cm.exception.result.commit_sha,
             )
@@ -449,7 +449,7 @@ class TestGitSyncService(unittest.IsolatedAsyncioTestCase):
                 await service.sync(_Session(issue, workspace))
             self.assertIsInstance(cm.exception.cause, HookFailedError)
             self.assertEqual(cm.exception.hook_name, "pre_push")
-            self.assertTrue(cm.exception.result.committed)
+            self.assertFalse(cm.exception.result.committed)
             self.assertIsNotNone(cm.exception.result.commit_sha)
             self.assertIn("modified the workspace", str(cm.exception))
 

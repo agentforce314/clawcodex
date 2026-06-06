@@ -185,6 +185,12 @@ class GitSyncService:
                     commit_sha = self._run_git_output(["rev-parse", "HEAD"], repo_root)
                 await self._run_pre_push_verification(repo_root, session)
             except (VerificationFailed, HookFailedError) as exc:
+                # Roll back the just-created commit since verification failed
+                try:
+                    self._run_git_checked(["reset", "--mixed", "HEAD~1"], repo_root)
+                except GitSyncError:
+                    pass  # No commit to rollback or reset failed — proceed anyway
+                committed = False
                 raise self._post_commit_error(
                     exc,
                     branch_name=branch_name,
