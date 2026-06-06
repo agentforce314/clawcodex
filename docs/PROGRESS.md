@@ -111,6 +111,10 @@
 | F-65 | Langfuse Agent 可观测性 | P1 | ⏳ 待开始 | 对标 CCB Langfuse。OpenTelemetry + Langfuse SDK 集成，Agent Loop 级追踪，一键转化为训练数据集。预计 1 周。 |
 | F-66 | ACP 协议支持 | P2 | ⏳ 待开始 | 对标 CCB ACP（Agent Client Protocol）。Zed/Cursor 等 IDE 集成协议支持，会话恢复与 Skills 桥接。预计 1-2 周。 |
 | F-67 | Buddy 伴侣 / Proactive 自主模式 | P2 | ⏳ 待开始 | 对标 CCB Buddy 伴侣系统 + Proactive 自主模式。后台 AI 伴侣异步观察会话、主动提供调试建议、检测文件变更自动提出优化。预计 2 周。 |
+| F-68 | Orchestrator CLI 运维操作界面 | P2 | ⏳ 待开始 | issue/wf 管理、状态查看、dashboard 渲染；见 FEATURE_PLAN §3.2（F-68） |
+| F-75 | 工具/Skill 调用统计（跨会话） | P2 | ⏳ 待开始 | 跨会话工具使用统计与策略优化；见 FEATURE_PLAN §4.8（F-75） |
+| F-78 | Issue 语义澄清流程（自主模式扩展） | P1 | ⏳ 待开始 | 三通道语义澄清（LLM/CLI/TUI），冲突裁决，离线澄清；见 FEATURE_PLAN §4.12（F-78） |
+| F-80 | Agent 间自主观察与消息交互 | P2 | ⏳ 待开始 | Agent 间自主观察汇报、SendMessage 消息交互、Manager-Worker 协作增强；见 FEATURE_PLAN §4.14（F-80） |
 
 ---
 
