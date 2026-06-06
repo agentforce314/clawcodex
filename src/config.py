@@ -327,3 +327,15 @@ def set_default_provider(provider: str) -> None:
 def get_default_provider() -> str:
     """Get the default provider."""
     return load_config().get("default_provider", "anthropic")
+
+
+def set_theme(name: str) -> None:
+    """Persist the selected theme to the global config.
+
+    Mirrors TS ``setThemeSetting`` (``components/design-system/ThemeProvider.tsx``:
+    ``saveGlobalConfig(c => ({...c, theme: setting}))``). Uses ``set_global``
+    (global-only) — **not** ``load_config()`` + ``save_config()``, which would
+    serialize the *merged* (global+project+local) config back into the global file.
+    Matches the ``set_api_key`` / ``set_default_provider`` convention above.
+    """
+    _get_default_manager().set_global("theme", name)
