@@ -49,6 +49,17 @@ _NOOP_DETECTION_MAX_TURNS = 5
 # generation, overwrite). v2.14 will hook a cron for 7-day cleanup.
 _TOOL_EVENT_LOG_ROTATE_BYTES = 50 * 1024 * 1024
 
+# F-40 root-cause fix: after this many consecutive turns where the
+# agent makes ONLY read-only tool calls (Bash, Read, Grep, …) without
+# a single modifying tool call (Write / Edit / …) AND without changing
+# the workspace (no new untracked or modified files), the session is
+# considered stuck in an investigation spiral and terminated with
+# ``session_end_reason="read_only_loop"``.  The threshold is generous
+# because genuine development also involves exploration; the guard is
+# meant to catch degenerate cases (F-40's 100+ Python-debug Bash calls
+# that spanned multiple outer-loop turns without any code change).
+_MAX_READ_ONLY_TURNS = 4
+
 # F-40 root-cause fix: tool names that modify workspace files.
 # Only Write / Edit tools count toward ``has_made_progress`` so the
 # stagnation guard can distinguish "exploring the codebase" turns
@@ -60,6 +71,19 @@ _MODIFYING_TOOL_NAMES = frozenset({
     "Write", "Edit",
     "FileWrite", "FileWriteTool", "FileEdit", "FileEditTool",
     "WriteTool", "EditTool",
+})
+
+# F-40 root-cause fix: tool names that are read-only (exploration /
+# diagnostics).  When an agent spends multiple consecutive turns
+# making ONLY read-only tool calls without any modifying tool call
+# and without changing the workspace, it is likely stuck in an
+# investigation spiral (F-40's Python env debugging loop).  The
+# stagnation guard below tracks a separate ``read_only_streak`` and
+# breaks after ``max_read_only_turns`` such turns.
+_READ_ONLY_TOOL_NAMES = frozenset({
+    "Read", "Bash", "Grep", "Glob",
+    "WebFetch", "WebSearch",
+    "TodoWrite", "TaskStop",
 })
 
 
@@ -528,6 +552,13 @@ class AgentRunner:
         # would raise ``NameError``.  Default to ``progress_reporter``
         # (None in test stubs, which ``_dispatch_sink`` treats as no-op).
         sink = progress_reporter
+        # F-40 root-cause fix: read-only tool spiral detection.
+        # Counts consecutive turns where the agent only made read-only
+        # tool calls (Bash / Read / Grep / …) without any modifying
+        # tool call (Write / Edit / …) AND without producing text
+        # output.  When this counter reaches ``_MAX_READ_ONLY_TURNS``
+        # the session is terminated with reason "read_only_loop".
+        read_only_streak = 0
         tool_signature_history: list[str] = []
         max_no_op_turns = max(
             1, int(getattr(self.agent_config, "max_no_op_turns", 3) or 3)
@@ -625,6 +656,7 @@ class AgentRunner:
 
             turn_has_tool_calls = False
             turn_output = ""
+            turn_has_modifying_tool = False
             # F-?? root-cause fix: per-turn tool-name accumulator feeding
             # the loop-detection signature history.
             turn_tool_names: list[str] = []
@@ -688,6 +720,7 @@ class AgentRunner:
                         # (2×) threshold for subsequent empty turns.
                         if event.tool_name in _MODIFYING_TOOL_NAMES:
                             has_made_progress = True
+                            turn_has_modifying_tool = True
 
                         # Pause support: wait for resume if session is paused
                         if session.paused and session.pause_resume_event is not None:
@@ -908,6 +941,60 @@ class AgentRunner:
                                             "on_session_complete",
                                             SessionComplete(
                                                 reason="stagnation"
+                                            ),
+                                            session,
+                                        )
+                                        return
+
+                                    # F-40 root-cause fix: read-only
+                                    # tool spiral guard.  When the agent
+                                    # spends multiple consecutive turns
+                                    # making ONLY read-only tool calls
+                                    # (Bash / Read / Grep / …) without a
+                                    # single Write / Edit and without
+                                    # any text output, it is stuck in an
+                                    # investigation spiral (F-40's 100+
+                                    # Python-env-debug Bash calls pattern).
+                                    # This guard catches that pattern
+                                    # and terminates the session.
+                                    if (
+                                        turn_number > 0
+                                        and turn_has_tool_calls
+                                        and not turn_has_modifying_tool
+                                        and not turn_output.strip()
+                                    ):
+                                        read_only_streak += 1
+                                    else:
+                                        read_only_streak = 0
+
+                                    if read_only_streak >= _MAX_READ_ONLY_TURNS:
+                                        session.session_end_reason = "read_only_loop"
+                                        session.session_end_summary = (
+                                            f"{read_only_streak} consecutive "
+                                            "turns with only read-only tool calls "
+                                            "and no code changes"
+                                        )
+                                        logger.warning(
+                                            "Read-only tool loop detected issue_id=%s — "
+                                            "%d consecutive read-only turns, "
+                                            "breaking outer loop",
+                                            issue.id,
+                                            read_only_streak,
+                                        )
+                                        append_debug_event(
+                                            session.debug_log_path,
+                                            "agent_runner.read_only_loop_detected",
+                                            issue_id=issue.id,
+                                            run_id=session.run_id,
+                                            turn=turn_number,
+                                            read_only_streak=read_only_streak,
+                                        )
+                                        session.status = "read_only_loop"
+                                        self._dispatch_sink(
+                                            sink,
+                                            "on_session_complete",
+                                            SessionComplete(
+                                                reason="read_only_loop"
                                             ),
                                             session,
                                         )

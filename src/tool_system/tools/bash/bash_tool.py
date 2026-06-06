@@ -88,6 +88,17 @@ def _run_bash_with_abort(
         "stderr": subprocess.PIPE,
         "text": True,
     }
+    # F-40 root-cause fix: ensure /root/Conda/bin is in PATH for every
+    # bash subprocess.  The daemon's own PATH includes it, but
+    # ``bash -lc`` (login shell) may reset PATH from profile files
+    # that don't have the conda entry, causing ``python3`` bare to
+    # hang or not be found.  Merging it here guarantees the agent's
+    # most-used command interpreter always sees the correct Python.
+    _base_env = _os.environ.copy()
+    _conda_bin = "/root/Conda/bin"
+    if _conda_bin not in _base_env.get("PATH", ""):
+        _base_env["PATH"] = f"{_conda_bin}:{_base_env.get('PATH', '')}"
+    popen_kwargs["env"] = _base_env
     if _sys_mod.platform == "win32":
         popen_kwargs["creationflags"] = getattr(
             subprocess, "CREATE_NEW_PROCESS_GROUP", 0
