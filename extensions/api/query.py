@@ -63,6 +63,10 @@ class ToolResultEvent:
 
     tool_name: str
     result: dict[str, Any]
+    # F-49 Phase 0.1: pair this result with the originating ToolCallEvent.
+    # Populated by convert_tool_event from the bridge dict; defaults to
+    # None for events that lack an id.
+    tool_use_id: str | None = None
 
 
 @dataclass
@@ -198,7 +202,11 @@ class QueryRunner:
                 }
                 if error is not None:
                     result["error"] = error
-                return ToolResultEvent(tool_name=tool_name, result=result)
+                return ToolResultEvent(
+                    tool_name=tool_name,
+                    result=result,
+                    tool_use_id=tool_use_id,
+                )
             return None
 
         # Drain the event queue while the headless session runs in the background.
