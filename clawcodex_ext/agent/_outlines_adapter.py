@@ -19,25 +19,23 @@ Switch:
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any, Type, TypeVar
+
+from pydantic import BaseModel
+from clawcodex_ext.capabilities import AdapterRegistry, env_switch, dependency_available
 
 logger = logging.getLogger(__name__)
 
-# Switching mechanism: control via environment variable
-_USE_OUTLINES = os.getenv("CLAW_USE_OUTLINES", "false").lower() in ("true", "1")
-
 # Outlines availability
-try:
+_OUTLINES_AVAILABLE = dependency_available("outlines")
+if _OUTLINES_AVAILABLE:
     import outlines
-    from pydantic import BaseModel
-    _OUTLINES_AVAILABLE = True
-except ImportError:
-    _OUTLINES_AVAILABLE = False
+else:
     outlines = None
-    BaseModel = None
 
-T = TypeVar("T", bound="BaseModel")
+_USE_OUTLINES = env_switch("CLAW_USE_OUTLINES", default="false")
+
+T = TypeVar("T", bound=BaseModel)
 
 
 def is_outlines_available() -> bool:
@@ -45,6 +43,7 @@ def is_outlines_available() -> bool:
     return _OUTLINES_AVAILABLE
 
 
+@AdapterRegistry.register("outlines", env_var="CLAW_USE_OUTLINES", dependency="outlines")
 class OutlinesStructuredOutput:
     """
     Structured output handler using Outlines.

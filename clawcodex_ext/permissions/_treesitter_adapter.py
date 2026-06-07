@@ -20,6 +20,7 @@ Switch:
 
 from __future__ import annotations
 
+from clawcodex_ext.capabilities import AdapterRegistry, env_switch, dependency_available
 import logging
 import os
 from typing import Any
@@ -31,14 +32,13 @@ from src.permissions.bash_parser.commands import CommandSafety, classify_command
 logger = logging.getLogger(__name__)
 
 # Switching mechanism: control via environment variable
-_USE_TREESITTER = os.getenv("CLAW_USE_TREESITTER", "true").lower() in ("true", "1")
+_USE_TREESITTER = env_switch("CLAW_USE_TREESITTER")
 
 # tree-sitter-bash availability
-try:
+_TREESITTER_AVAILABLE = dependency_available("tree_sitter_bash")
+if _TREESITTER_AVAILABLE:
     import tree_sitter_bash
-    _TREESITTER_AVAILABLE = True
-except ImportError:
-    _TREESITTER_AVAILABLE = False
+else:
     tree_sitter_bash = None
 
 # Initialize parser lazily
@@ -60,6 +60,7 @@ def is_bashlex_available() -> bool:
     return _TREESITTER_AVAILABLE
 
 
+@AdapterRegistry.register("treesitter", env_var="CLAW_USE_TREESITTER", dependency="tree_sitter")
 class BashlexParseResult:
     """Result from tree-sitter-bash based parsing."""
     def __init__(self, kind: str, commands: list[dict[str, Any]], reason: str = ""):

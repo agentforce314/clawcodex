@@ -1283,13 +1283,38 @@ class AgentRunner:
                                     tool_count,
                                 )
                             else:
-                                session.status = "completed"
-                                if session.session_end_reason is None:
-                                    session.session_end_reason = (
-                                        "task_complete"
-                                    )
+                                # F-54 root-cause fix: distinguish real
+                                # completions from "LLM gave up without
+                                # doing work".  When the session ends
+                                # but the agent never emitted a single
+                                # modifying tool call (Write/Edit), mark
+                                # as failed with reason "llm_gave_up"
+                                # so the orchestrator can retry rather
+                                # than treating it as a clean completion.
+                                if getattr(session, "has_made_progress", False):
+                                    session.status = "completed"
+                                    if session.session_end_reason is None:
+                                        session.session_end_reason = (
+                                            "task_complete"
+                                        )
+                                        session.session_end_summary = (
+                                            "issue no longer active"
+                                        )
+                                else:
+                                    session.status = "failed"
+                                    session.session_end_reason = "llm_gave_up"
                                     session.session_end_summary = (
-                                        "issue no longer active"
+                                        f"LLM returned SessionComplete(success) "
+                                        f"after {tool_count} read-only tool calls "
+                                        f"with no code changes"
+                                    )
+                                    logger.warning(
+                                        "LLM gave up without writing code "
+                                        "issue_id=%s turns=%s tools=%s "
+                                        "has_made_progress=False",
+                                        issue.id,
+                                        turn_number,
+                                        tool_count,
                                     )
                                 logger.info(
                                     "Agent run completed issue_id=%s "

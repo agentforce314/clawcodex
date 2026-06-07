@@ -18,6 +18,7 @@ Switch:
 
 from __future__ import annotations
 
+from clawcodex_ext.capabilities import AdapterRegistry, env_switch, dependency_available
 import logging
 import os
 from dataclasses import dataclass
@@ -28,15 +29,14 @@ from src.skills.frontmatter import FrontmatterParseResult
 logger = logging.getLogger(__name__)
 
 # Switching mechanism: control via environment variable
-_USE_FRONTMATTER_LIB = os.getenv("CLAW_USE_FRONTMATTER_LIB", "true").lower() in ("true", "1")
+_USE_FRONTMATTER_LIB = env_switch("CLAW_USE_FRONTMATTER_LIB")
 
 # python-frontmatter availability
-try:
+_FRONTMATTER_AVAILABLE = dependency_available("frontmatter")
+if _FRONTMATTER_AVAILABLE:
     import frontmatter
-    _FRONTMATTER_AVAILABLE = True
-except ImportError:
-    _FRONTMATTER_AVAILABLE = False
-    frontmatter = None  # type: ignore
+else:
+    frontmatter = None
 
 
 def is_frontmatter_available() -> bool:
@@ -104,3 +104,9 @@ def _fallback_parse(markdown: str) -> FrontmatterParseResult:
         return FrontmatterParseResult(frontmatter={}, body=body)
 
     return FrontmatterParseResult(frontmatter=parsed, body=body)
+
+
+# Module-level registration (no class in this adapter)
+AdapterRegistry.register("frontmatter", env_var="CLAW_USE_FRONTMATTER_LIB", dependency="frontmatter")(
+    type("FrontmatterAdapter", (), {"is_available": staticmethod(is_frontmatter_available)})
+)

@@ -18,6 +18,7 @@ Switch:
 
 from __future__ import annotations
 
+from clawcodex_ext.capabilities import AdapterRegistry, env_switch, dependency_available
 import logging
 import os
 from functools import lru_cache
@@ -27,18 +28,15 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 # Switching mechanism: control via environment variable
-_USE_GITPYTHON = os.getenv("CLAW_USE_GITPYTHON", "true").lower() in ("true", "1")
+_USE_GITPYTHON = env_switch("CLAW_USE_GITPYTHON")
 
 # GitPython availability
-try:
+_GITPYTHON_AVAILABLE = dependency_available("git")
+if _GITPYTHON_AVAILABLE:
     from git import Repo
     from git.exc import InvalidGitRepositoryError, GitCommandError
-    _GITPYTHON_AVAILABLE = True
-except ImportError:
-    _GITPYTHON_AVAILABLE = False
-    Repo = None
-    InvalidGitRepositoryError = None
-    GitCommandError = None
+else:
+    Repo = InvalidGitRepositoryError = GitCommandError = None
 
 
 def is_gitpython_available() -> bool:
@@ -46,6 +44,7 @@ def is_gitpython_available() -> bool:
     return _GITPYTHON_AVAILABLE
 
 
+@AdapterRegistry.register("gitpython", env_var="CLAW_USE_GITPYTHON", dependency="git")
 class GitContextSnapshot:
     """Structured git context for prompt injection."""
     def __init__(

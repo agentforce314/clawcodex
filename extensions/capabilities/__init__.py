@@ -22,15 +22,29 @@ from .provider_protocol import LLMProviderProtocol
 from .event_protocol import ToolEventProtocol
 from .headless_protocol import HeadlessOptionsProtocol, HeadlessRunnerProtocol
 from .headless_runner import HeadlessSessionOptions, run_headless_session
+from .adapter_protocol import (  # noqa: F401
+    AdapterInfo,
+    AdapterProtocol,
+    AdapterRegistry,
+    dependency_available,
+    env_switch,
+    is_provider_adapter,
+)
 
 __all__ = [
+    "AdapterInfo",
+    "AdapterProtocol",
+    "AdapterRegistry",
     "AgentLoopProtocol",
-    "ToolSystemProtocol",
     "ContextBuilderProtocol",
-    "LLMProviderProtocol",
-    "ToolEventProtocol",
     "HeadlessOptionsProtocol",
     "HeadlessRunnerProtocol",
     "HeadlessSessionOptions",
+    "LLMProviderProtocol",
+    "ToolEventProtocol",
+    "ToolSystemProtocol",
+    "dependency_available",
+    "env_switch",
+    "is_provider_adapter",
     "run_headless_session",
 ]

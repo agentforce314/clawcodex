@@ -18,6 +18,7 @@ Switch:
 
 from __future__ import annotations
 
+from clawcodex_ext.capabilities import AdapterRegistry, env_switch
 import logging
 import os
 from typing import Any
@@ -35,7 +36,7 @@ from src.hooks.hook_types import (
 logger = logging.getLogger(__name__)
 
 # Switching mechanism: control via environment variable
-_USE_PLUGGY = os.getenv("CLAW_USE_PLUGGY", "false").lower() in ("true", "1")
+_USE_PLUGGY = env_switch("CLAW_USE_PLUGGY", default="false")
 
 
 def is_pluggy_available() -> bool:
@@ -48,6 +49,7 @@ _hookspec = pluggy.HookspecMarker("clawcodex")
 _hookimpl = pluggy.HookimplMarker("clawcodex")
 
 
+@AdapterRegistry.register("pluggy", env_var="CLAW_USE_PLUGGY")
 class ClawCodexHooks:
     """Hook specification for ClawCodex."""
 

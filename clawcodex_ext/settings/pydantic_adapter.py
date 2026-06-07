@@ -19,6 +19,7 @@ Switch:
 
 from __future__ import annotations
 
+from clawcodex_ext.capabilities import AdapterRegistry, env_switch, dependency_available
 import logging
 import os
 from functools import lru_cache
@@ -40,13 +41,14 @@ from src.config import (
 logger = logging.getLogger(__name__)
 
 # Switching mechanism: control via environment variable
-_USE_PYDANTIC_SETTINGS = os.getenv("CLAW_USE_PYDANTIC_SETTINGS", "true").lower() in ("true", "1")
+_USE_PYDANTIC_SETTINGS = env_switch("CLAW_USE_PYDANTIC_SETTINGS")
 
 
 # ---------------------------------------------------------------------------
 # Pydantic Models for type-safe config
 # ---------------------------------------------------------------------------
 
+@AdapterRegistry.register("pydantic_settings", env_var="CLAW_USE_PYDANTIC_SETTINGS", dependency="pydantic_settings")
 class ProviderConfig(BaseModel):
     """Provider-specific configuration."""
     api_key: str = ""
