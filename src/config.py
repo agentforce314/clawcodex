@@ -339,3 +339,31 @@ def set_theme(name: str) -> None:
     Matches the ``set_api_key`` / ``set_default_provider`` convention above.
     """
     _get_default_manager().set_global("theme", name)
+
+
+def set_effort(value: Optional[str]) -> None:
+    """Persist the reasoning-effort choice to user settings (``settings.effort``)
+    and invalidate the settings read-cache.
+
+    Mirrors TS ``updateSettingsForSource('userSettings', {effortLevel})``
+    (``commands/effort/effort.tsx``). A ``value`` of ``None``/``""`` clears the
+    setting (auto). Unlike :func:`set_theme` (a top-level config key), effort is a
+    *settings* field (``src/settings/types.py``), read via ``get_settings()``, so it
+    lives in the nested ``"settings"`` section of the global config. Pattern copied
+    from ``state/app_state._on_advisor_model_change``; the local import avoids a
+    config→settings import cycle. After writing, the settings cache is invalidated so
+    the next ``get_settings()`` reflects the new value immediately (mid-session).
+    """
+    from src.settings.settings import invalidate_settings_cache
+
+    mgr = _get_default_manager()
+    cfg = mgr.load_global()
+    section = cfg.get("settings")
+    if not isinstance(section, dict):
+        section = {}
+    # None / "" both map to "auto" — write empty string for round-trip fidelity
+    # with the SettingsSchema default (settings/types.py: effort: str = "").
+    section["effort"] = value or ""
+    cfg["settings"] = section
+    mgr.save_global(cfg)
+    invalidate_settings_cache()
