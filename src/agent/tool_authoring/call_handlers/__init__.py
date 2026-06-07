@@ -1,8 +1,19 @@
-"""Call handlers for agent-created tools."""
+"""Facade — agent/tool_authoring/call_handlers/__init__.py has been moved to clawcodex_ext.
 
-from .bash import BashCallError, execute_bash
-from .http import HttpCallError, execute_http
-from .python import PythonCallError, execute_python
+This module re-exports the public API so that existing ``from
+src.agent.tool_authoring.call_handlers.__init__ import …`` call sites continue to work
+during the migration.  New code should import from
+``clawcodex_ext.agent.tool_authoring.call_handlers.__init__`` directly.
+"""
+
+from clawcodex_ext.agent.tool_authoring.call_handlers.__init__ import (  # noqa: F401
+    BashCallError,
+    execute_bash,
+    HttpCallError,
+    execute_http,
+    PythonCallError,
+    execute_python,
+)
 
 __all__ = [
     "BashCallError",

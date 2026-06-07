@@ -1,151 +1,23 @@
-"""
-Outlines adapter for ClawCodex structured output.
+"""Facade — agent/_outlines_adapter.py has been moved to clawcodex_ext.
 
-This module provides an Outlines-based structured output system that can replace
-the manual json.loads + validation code scattered throughout the codebase.
-
-Architecture:
-    src/agent/ (using structured output)
-        ↓
-    src/agent/_outlines_adapter.py (This module - Outlines backend)
-        ↓
-    Outlines (Open source dependency)
-
-Switch:
-    CLAW_USE_OUTLINES=false (default) - use manual JSON parsing
-    CLAW_USE_OUTLINES=true - use Outlines structured output
+This module re-exports the public API so that existing from
+src.agent._outlines_adapter import … call sites continue to work
+during the migration.  New code should import from
+clawcodex_ext.agent._outlines_adapter directly.
 """
 
-from __future__ import annotations
+from clawcodex_ext.agent._outlines_adapter import (  # noqa: F401
+    is_outlines_available,
+    OutlinesStructuredOutput,
+    TokenBudgetAnalysis,
+    ToolCallDecision,
+    create_structured_output_handler,
+)
 
-import logging
-import os
-from typing import Any, Type, TypeVar
-
-logger = logging.getLogger(__name__)
-
-# Switching mechanism: control via environment variable
-_USE_OUTLINES = os.getenv("CLAW_USE_OUTLINES", "false").lower() in ("true", "1")
-
-# Outlines availability
-try:
-    import outlines
-    from pydantic import BaseModel
-    _OUTLINES_AVAILABLE = True
-except ImportError:
-    _OUTLINES_AVAILABLE = False
-    outlines = None
-    BaseModel = None
-
-T = TypeVar("T", bound="BaseModel")
-
-
-def is_outlines_available() -> bool:
-    """Check if Outlines is available."""
-    return _OUTLINES_AVAILABLE
-
-
-class OutlinesStructuredOutput:
-    """
-    Structured output handler using Outlines.
-
-    This class provides type-safe structured output generation
-    using Outlines' constrained decoding.
-    """
-
-    def __init__(self, model_name: str = "gpt-4o"):
-        """
-        Initialize Outlines structured output handler.
-
-        Args:
-            model_name: The model to use for structured output
-        """
-        self.model_name = model_name
-        self._client = None
-
-    def generate_structured(
-        self,
-        prompt: str,
-        output_type: Type[T],
-        client: Any = None,
-    ) -> T:
-        """
-        Generate structured output using Outlines.
-
-        Args:
-            prompt: The prompt to generate from
-            output_type: The Pydantic model type to generate
-            client: Optional OpenAI client (uses default if not provided)
-
-        Returns:
-            An instance of the output_type
-        """
-        if not _OUTLINES_AVAILABLE:
-            raise RuntimeError("Outlines is not installed")
-
-        try:
-            import openai
-
-            if client is None:
-                client = openai.OpenAI()
-
-            model = outlines.from_openai(client, self.model_name)
-            result = model(prompt, output_type=output_type)
-            return result
-        except Exception as e:
-            logger.error("Outlines generation failed: %s", e)
-            raise
-
-    def generate_with_fallback(
-        self,
-        prompt: str,
-        output_type: Type[T],
-        client: Any = None,
-    ) -> T | None:
-        """
-        Generate structured output with fallback to raw parsing.
-
-        Args:
-            prompt: The prompt to generate from
-            output_type: The Pydantic model type to generate
-            client: Optional OpenAI client
-
-        Returns:
-            An instance of output_type or None on failure
-        """
-        try:
-            return self.generate_structured(prompt, output_type, client)
-        except Exception as e:
-            logger.warning("Structured output generation failed: %s", e)
-            return None
-
-
-class TokenBudgetAnalysis(BaseModel):
-    """Token budget analysis structured output."""
-    current_usage: int
-    threshold: int
-    should_compact: bool
-    recommended_strategy: str
-    priority_indices: list[int]
-    confidence: float
-
-
-class ToolCallDecision(BaseModel):
-    """Agent tool call decision structured output."""
-    should_call_tool: bool
-    tool_name: str | None = None
-    reasoning: str
-    safety_level: str
-
-
-def create_structured_output_handler(model_name: str = "gpt-4o") -> OutlinesStructuredOutput:
-    """
-    Factory function to create a structured output handler.
-
-    Args:
-        model_name: The model to use
-
-    Returns:
-        An OutlinesStructuredOutput instance
-    """
-    return OutlinesStructuredOutput(model_name=model_name)
+__all__ = [
+    "is_outlines_available",
+    "OutlinesStructuredOutput",
+    "TokenBudgetAnalysis",
+    "ToolCallDecision",
+    "create_structured_output_handler",
+]

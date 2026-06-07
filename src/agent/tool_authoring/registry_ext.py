@@ -1,37 +1,23 @@
-"""Registry extension — tracks agent-created tools at runtime."""
+"""Facade — agent/tool_authoring/registry_ext.py has been moved to clawcodex_ext.
 
-from __future__ import annotations
+This module re-exports the public API so that existing ``from
+src.agent.tool_authoring.registry_ext import …`` call sites continue to work
+during the migration.  New code should import from
+``clawcodex_ext.agent.tool_authoring.registry_ext`` directly.
+"""
 
-from typing import TYPE_CHECKING
+from clawcodex_ext.agent.tool_authoring.registry_ext import (  # noqa: F401
+    add_tool,
+    get_tool,
+    list_tools,
+    remove_tool,
+    clear,
+)
 
-if TYPE_CHECKING:
-    from tool_system.build_tool import Tool
-
-# In-memory store of agent-created tools, keyed by name.
-# Persisted to disk via ``persistence.py`` and restored on startup.
-_AGENT_CREATED_TOOLS: dict[str, Tool] = {}
-
-
-def add_tool(tool: Tool) -> None:
-    """Register an agent-created tool in the runtime registry."""
-    _AGENT_CREATED_TOOLS[tool.name] = tool
-
-
-def get_tool(name: str) -> Tool | None:
-    """Look up an agent-created tool by name."""
-    return _AGENT_CREATED_TOOLS.get(name)
-
-
-def list_tools() -> list[Tool]:
-    """Return all agent-created tools."""
-    return list(_AGENT_CREATED_TOOLS.values())
-
-
-def remove_tool(name: str) -> bool:
-    """Remove an agent-created tool. Returns True if it existed."""
-    return _AGENT_CREATED_TOOLS.pop(name, None) is not None
-
-
-def clear() -> None:
-    """Remove all agent-created tools (used in tests / resets)."""
-    _AGENT_CREATED_TOOLS.clear()
+__all__ = [
+    "add_tool",
+    "get_tool",
+    "list_tools",
+    "remove_tool",
+    "clear",
+]

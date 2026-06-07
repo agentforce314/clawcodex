@@ -21,10 +21,13 @@ layers:
 
   - name: "capabilities"
     paths:
-      - "src/capabilities"
+      - "extensions/capabilities"
     allowed_imports_from: []
     forbidden_imports_from:
       - "src.upstream"
+    # F-48 D-1: capabilities 路径从 src/capabilities 改为 extensions/capabilities。
+    # 实际代码全在 extensions/capabilities/，src/capabilities 物理不存在。
+    # 详见 docs/decisions/F48-decisions.md D-1 裁决。
 
   - name: "features"
     paths:

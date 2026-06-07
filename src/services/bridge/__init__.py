@@ -1,28 +1,20 @@
-"""Bridge SDK stub (NOT the CCR bridge; see ``src/bridge/`` for that work).
+"""Facade — services/bridge/__init__.py has been moved to clawcodex_ext.
 
-DEPRECATED. The naming collides with ``src/bridge/``, which is the CCR
-bridge implementation tracked in
-``my-docs/ch16-remote-refactoring-plan.md``. New code should NOT import
-from here; existing tests in ``tests/test_bridge.py`` keep working.
-
-The deprecation warning below fires on import. ``pyproject.toml``'s
-``[tool.pytest.ini_options].filterwarnings`` suppresses it during the
-existing test suite so ``pytest -W error::DeprecationWarning`` does not
-break unrelated runs.
+This module re-exports the public API so that existing ``from
+src.services.bridge.__init__ import …`` call sites continue to work
+during the migration.  New code should import from
+``clawcodex_ext.services.bridge.__init__`` directly.
 """
-from __future__ import annotations
 
-import warnings
-
-warnings.warn(
-    'src.services.bridge is deprecated; use src.bridge for CCR remote-execution.',
-    DeprecationWarning,
-    stacklevel=2,
+from clawcodex_ext.services.bridge.__init__ import (  # noqa: F401
+    BridgeAuth,
+    BridgeSession,
+    BridgeSessionConfig,
+    BridgeSessionState,
+    BridgeToken,
+    BridgeTransport,
+    WebSocketTransport,
 )
-
-from .session import BridgeSession, BridgeSessionConfig, BridgeSessionState
-from .transport import BridgeTransport, WebSocketTransport
-from .auth import BridgeAuth, BridgeToken
 
 __all__ = [
     "BridgeAuth",

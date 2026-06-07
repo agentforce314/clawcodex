@@ -1,39 +1,29 @@
-"""Tool authoring — enables agents to dynamically create tools.
+"""Facade — agent/tool_authoring/__init__.py has been moved to clawcodex_ext.
 
-This module provides the infrastructure for the ``CreateAgentTool`` meta-tool:
-agent-authored tools are defined by an ``AgentToolSpec``, validated for security,
-built into ``Tool`` objects, and registered at runtime and on disk.
-
-Architecture::
-
-    AgentToolSpec        # dataclass describing the tool
-         │
-         ▼
-    validate_spec()      # security checks (validators.py)
-         │
-         ▼
-    build_tool_from_spec()  # factory.py → Tool
-         │
-         ▼
-    registry_ext.add_tool()  # runtime registry
-    persistence.save_spec()  # disk persistence
-
-Call handlers (call_handlers/) dispatch to the actual implementation:
-    - ``execute_bash`` — subprocess with timeout, command whitelist
-    - ``execute_http`` — urllib with method/url whitelist
-    - ``execute_python`` — registered function dispatch
+This module re-exports the public API so that existing ``from
+src.agent.tool_authoring.__init__ import …`` call sites continue to work
+during the migration.  New code should import from
+``clawcodex_ext.agent.tool_authoring.__init__`` directly.
 """
 
-from .spec import AgentToolSpec
-from .validators import ValidationError, validate_spec, register_python_function, list_python_functions
-from .factory import build_tool_from_spec, create_and_validate
-from .registry_ext import add_tool, get_tool, list_tools, remove_tool, clear
-from .persistence import (
+from clawcodex_ext.agent.tool_authoring.__init__ import (  # noqa: F401
+    AgentToolSpec,
+    ValidationError,
+    validate_spec,
+    build_tool_from_spec,
+    create_and_validate,
+    add_tool,
+    get_tool,
+    list_tools,
+    remove_tool,
+    clear,
     save_spec,
     load_spec,
     delete_spec,
     list_persisted_specs,
     clear_persisted,
+    register_python_function,
+    list_python_functions,
     TOOL_DIR,
 )
 

@@ -1,38 +1,17 @@
-"""Python call handler — invokes registered whitelisted functions."""
+"""Facade — agent/tool_authoring/call_handlers/python.py has been moved to clawcodex_ext.
 
-from __future__ import annotations
+This module re-exports the public API so that existing ``from
+src.agent.tool_authoring.call_handlersthon import …`` call sites continue to work
+during the migration.  New code should import from
+``clawcodex_ext.agent.tool_authoring.call_handlersthon`` directly.
+"""
 
-from typing import Any
+from clawcodex_ext.agent.tool_authoring.call_handlersthon import (  # noqa: F401
+    PythonCallError,
+    execute_python,
+)
 
-from agent.tool_authoring.validators import _PYTHON_FUNCTION_REGISTRY
-
-
-class PythonCallError(Exception):
-    """Raised when a python function call fails."""
-
-    pass
-
-
-def execute_python(function_name: str, params: dict[str, Any]) -> Any:
-    """Call a registered python function with the given parameters.
-
-    Args:
-        function_name: Name of the registered function to call.
-        params: Keyword arguments passed to the function.
-
-    Returns:
-        The function's return value (serialized to string by the caller).
-
-    Raises:
-        PythonCallError: If the function is not found or raises an exception.
-    """
-    fn = _PYTHON_FUNCTION_REGISTRY.get(function_name)
-    if fn is None:
-        raise PythonCallError(f"Function '{function_name}' is not registered")
-
-    try:
-        return fn(**params)
-    except TypeError as exc:
-        raise PythonCallError(f"Argument mismatch for {function_name}: {exc}") from exc
-    except Exception as exc:
-        raise PythonCallError(f"{function_name} raised: {exc}") from exc
+__all__ = [
+    "PythonCallError",
+    "execute_python",
+]

@@ -2516,22 +2516,28 @@ class WorkflowConfig:
 ### 6.1 F-48: src/ 核心路径二开修改解耦方案
 > **状态**: 📋 设计完成
 > **优先级**: P0
-> **目标**: 将 `src/` 中所有二开新增功能文件 + 功能修改点全部迁移到 `clawcodex_ext/` 和 `extensions/` 扩展路径，使 `src/` 与上游源码（`src/upstream/58ea488/`）仅剩格式/import 层面差异，消除所有功能性差异。目标量化：src/ 二开新增文件数从 29 → 0，功能修改文件数从 10 → 0。
+> **目标**: 将 `src/` 中所有二开新增功能文件 + 功能修改点全部迁移到 `clawcodex_ext/` 和 `extensions/` 扩展路径，使 `src/` 与上游源码（`src/upstream/58ea488/`）仅剩格式/import 层面差异，消除所有功能性差异。目标量化：src/ 二开新增文件数从 **30 → 0**（含 `src/orchestrator/` 顶层包），功能修改文件数从 10 → 0。
 
 #### 6.1.1 问题现状
 
-通过 `diff -rq src/upstream/58ea488/ src/` 逐文件对比，发现三类差异：
+通过 `diff -rq src/upstream/58ea488/ src/` 逐文件对比，发现四类差异：
 
 | 差异类别 | 数量 | 说明 |
 |---------|------|------|
-| **A: 仅当前 src/ 有的文件（纯新增）** | **29 项** | 上游不存在的文件/目录，纯二开新增 |
-| **B: 两者都有但 `diff -w` 有输出的文件（功能修改）** | **67 个** | 有语义逻辑变化的文件 |
-| **C: 两者都有但 `diff -w` 全空的文件（纯格式差异）** | **4 个** | 仅行尾/空白差异 |
+| **A: 仅当前 src/ 有的文件（纯新增）** | **30 项** | 上游不存在的文件/目录，纯二开新增（其中 `src/orchestrator/` 顶层包含 19+ Python 文件） |
+| **B: 两者都有但 `diff -w` 有输出的文件（功能修改）** | **67 个** | 有语义逻辑变化的文件（71 个 `diff` 差异 − 4 个格式差异） |
+| **C: 两者都有但 `diff -w` 全空的文件（纯格式差异）** | **4 个** | `buddy/notification.py`, `buddy/sprites.py`, `buddy/types.py`, `replLauncher.py` — 仅行尾/空白差异 |
+| **D: 仅上游有但 src/ 缺失的文件** | **1 个** | `settings/permission_validation.py`（被 `settings/pydantic_adapter.py` 替代，需在 `f48-modification-tracking.md` 记录决策理由） |
 
 > ⚠️ **勘误**：早前版本误以为"~61 个格式差异"，实际 `diff -w` 验证发现仅 **4 个**文件是纯格式差异，其余 67 个均有语义变更。
 
-##### 类别 A：29 个纯二开新增文件
-*[不变，保留现有表格]*
+##### 类别 A：30 个纯二开新增文件
+*[保留现有 29 项表格，下方追加 #30 项]*
+
+| # | 路径 | 性质 | 落点建议 |
+|---|------|------|---------|
+| 1-29 | *（原 29 项，详见保留表格）* | 既有项 | 既有落点 |
+| **30** | **`src/orchestrator/`**（顶层包，19+ Python 文件） | 全新二开子项目（多 Linear 集成、Repo 跟踪、Local Tracker、Status Dashboard、Workspace 协调等） | **`extensions/orchestrator/`**（独立子扩展，不入侵 `src/`）。`ControlSocket` 落地在 `extensions/orchestrator/`（参 §3.x F-XXX 既定约束） |
 
 ##### 类别 B：67 个功能修改文件（10 个已设计解耦 + 57 个新发现）
 
@@ -2545,8 +2551,8 @@ class WorkflowConfig:
 | 权限系统 | 1 | `permissions/cycle.py` | ✅ Phase 1 |
 | 命令系统 | 2 | `command_system/types.py`, `command_system/engine.py` | ✅ Phase 1 |
 | **新发现：未覆盖的功能修改文件（57 个）** | | | |
-| bridge/ | 5 | `__init__.py`, `bridge_main.py`, `bridge_pointer.py`, `repl_bridge.py`, `repl_bridge_transport.py`, `worktree.py` | ❌ 见 Phase 4 |
-| buddy/ | 8 | `__init__.py`, `companion.py`, `feature.py`, `observer.py`, `prompt.py`, `soul.py`, `sprites.py`, `types.py` | ❌ 见 Phase 5 |
+| bridge/ | **6** | `__init__.py`, `bridge_main.py`, `bridge_pointer.py`, `repl_bridge.py`, **`repl_bridge_transport.py`**, `worktree.py` | ❌ 见 Phase 4 |
+| buddy/ | 8 | `__init__.py`, `companion.py`, `feature.py`, `observer.py`, `prompt.py`, `soul.py`, `sprites.py`, `types.py`（注：`buddy/notification.py` 在 diff 中但属类别 C 格式差异，已排除） | ❌ 见 Phase 5 |
 | settings/ | 4 | `__init__.py`, `constants.py`, `types.py`, `validation.py` | ❌ 见 Phase 6 |
 | providers/ | 4 | `__init__.py`, `base.py`, `anthropic_provider.py`, `openai_compatible.py` | ❌ 见 Phase 7 |
 | transports/ | 3 | `hybrid_transport.py`, `serial_batch_event_uploader.py`, `websocket_transport.py` | ❌ 见 Phase 8 |
@@ -2556,7 +2562,7 @@ class WorkflowConfig:
 | command_system/ | 3 | `__init__.py`, `buddy_command.py`, `builtins.py` | ❌ 见 Phase 9 |
 | repl/ | 2 | `__init__.py`, `live_status.py` | ❌ 见 Phase 9 |
 | tui/（除已覆盖）| 12 | `state.py`, `keybindings.py`, `agent_bridge.py`, `messages.py`, `screens/__init__.py`, `screens/repl.py`, `screens/resume_conversation.py`, `widgets/header.py`, `widgets/messages/assistant_thinking.py`, `widgets/prompt_input.py`, `widgets/status_line.py`, `widgets/transcript_view.py` | ❌ 见 Phase 9 |
-| 散在文件 | 7 | `agent/session.py`, `config.py`, `constants/xml.py`, `permissions/modes.py`, `memdir/memdir.py`, `reference_data/subsystems/buddy.json`, `skills/bundled/loop.py`, `utils/stream_watchdog.py` | ❌ 见 Phase 9 |
+| 散在文件 | **8** | `agent/session.py`, `config.py`, `constants/xml.py`, `permissions/modes.py`, `memdir/memdir.py`, `reference_data/subsystems/buddy.json`, `skills/bundled/loop.py`, `utils/stream_watchdog.py` | ❌ 见 Phase 9 |
 
 #### 6.1.2 已完成的解耦模式（可复用）
 
@@ -2568,9 +2574,9 @@ class WorkflowConfig:
 
 #### 6.1.3 解耦方案：按模块+优先级分 Phase
 
-##### Phase 0: 纯新增文件移入 ext（29 项，无风险，立即执行）
+##### Phase 0: 纯新增文件移入 ext（**30 项**，无风险，立即执行）
 
-*[不变，保留现有表格]*
+*[保留现有 29 项表格 + §6.1.1 类别 A #30 项 `src/orchestrator/` 顶层包，下方不再重复列出]*
 
 ##### F-48.1: Adapter 文件统一解耦子特性
 *[不变，保留现有内容]*
@@ -2589,8 +2595,9 @@ class WorkflowConfig:
 | 文件 | 差异性质 | 解耦方案 | 工作量 |
 |------|---------|---------|--------|
 | `bridge/__init__.py` | 新增 `BridgeState` 导出 | 评估是否可直接还原导出列表 | 0.5天 |
-| `bridge/bridge_main.py` | 移除 JWT refresh、`build_sdk_url`、`get_access_token` 参数 | 这些是二开新增？还是上游同步遗漏？需确认后选择还原或保留 | 1天 |
+| `bridge/bridge_main.py` | 移除 JWT refresh、`build_sdk_url`、`get_access_token` 参数 | 这些是二开新增？还是上游同步遗漏？需确认后选择还原或保留。**方法学**：JWT refresh → Facade（`clawcodex_ext/bridge/auth.py` 提供 `refresh_jwt_if_needed()`）；`build_sdk_url` / `get_access_token` 参数 → Protocol 扩展（`BridgeConfigProvider` Protocol）注入，避免破坏上游构造器签名 | 1天 |
 | `bridge/repl_bridge.py` | 大幅 docstring 重写 + 行为修改 | 还原 docstring，功能差异需逐行评审 | 1天 |
+| `bridge/repl_bridge_transport.py` | 新发现（小范围行为修改） | 还原上游签名，行为差异逐行评审 | 0.5天 |
 | `bridge/bridge_pointer.py`, `worktree.py` | `__all__` 导出、小范围行为修改 | 还原导出列表，功能差异逐行评审 | 0.5天 |
 
 > **注意**：Bridge 文件的差异可能是上游 58ea488→后续版本之间的官方更新被二开意外覆盖。需 `git log src/bridge/` 确认每个变化的来源。
@@ -2599,7 +2606,7 @@ class WorkflowConfig:
 
 | 文件 | 差异性质 | 解耦方案 | 工作量 |
 |------|---------|---------|--------|
-| `buddy/` 8 个文件 | 主要为 docstring 差异 + 缓存行为变更 | **优先还原**：差异集中在 docstring 说明性文字，不影响行为。`companion.py` 的注释差异可还原 | 0.5天 |
+| `buddy/` 8 个文件（注：`buddy/notification.py` 在 diff 中但属 §6.1.1 类别 C 格式差异，已排除） | 主要为 docstring 差异 + 缓存行为变更 | **优先还原**：差异集中在 docstring 说明性文字，不影响行为。`companion.py` 的注释差异可还原 | 0.5天 |
 
 ##### Phase 6: Settings 文件回归（新增，低风险）
 
@@ -2638,27 +2645,27 @@ class WorkflowConfig:
 | `command_system/*` | 3 | Buddy 命令注册、builtins 修改 | 0.5天 |
 | `agent/session.py` | 1 | SessionStorage 集成 | 0.5天 |
 | `config.py` | 1 | 配置项添加/修改 | 0.5天 |
-| 其余散在 | 7 | `constants/xml.py`, `permissions/modes.py`, `memdir/memdir.py` 等 | 1天 |
+| 其余散在 | **8** | `constants/xml.py`, `permissions/modes.py`, `memdir/memdir.py`, `agent/session.py`, `config.py`, `reference_data/subsystems/buddy.json`, `skills/bundled/loop.py`, `utils/stream_watchdog.py` | 1天 |
 
 #### 6.1.4 解耦前后效果对比
 
 | 指标 | 解耦前 | 解耦后（乐观） | 解耦后（现实） |
 |------|--------|---------------|---------------|
-| src/ 二开新增文件 | 29 项 | **0** ✅ | **0** ✅ |
+| src/ 二开新增文件 | 30 项 | **0** ✅ | **0** ✅ |
 | src/ 功能修改文件 | 67 个 | **0** ❌（不可达） | **~10-20**（bridge/buddy/transport 等核心难以完全消除） |
-| diff -rq 差异 | 71 新增/修改 + 29 Only in | **~4 纯格式** | **~10-20 核心修改** |
+| diff -rq 差异 | 71 新增/修改 + 30 Only in | **~4 纯格式** | **~10-20 核心修改** |
 | 上游同步冲突 | 高（每次 820+ 行差异） | **极低** | **低**（核心模块仍可能有冲突） |
 | 二开代码位置 | 散布在 src/ + ext | **100% ext** | **~90% ext** |
 
 #### 6.1.5 验收标准
 
-1. `diff -rq src/ src/upstream/58ea488/` 不再有"Only in src/"输出（29→0 ✅）
-2. Phase 0 的 29 个新增文件全部移入 ext，src/ 原位置仅保留 thin re-export
+1. `diff -rq src/ src/upstream/58ea488/` 不再有"Only in src/"输出（**30→0** ✅，含 `src/orchestrator/` 顶层包移入 `extensions/orchestrator/`）
+2. Phase 0 的 30 个新增文件全部移入 ext/extensions，src/ 原位置仅保留 thin re-export
 3. Phase 1-3 的 10 个功能修改文件 `diff -w` 返回空（功能层面一致）
 4. Phase 4-9 覆盖的 57 个文件完成评审：确认保留或还原，记录每文件决策理由
 5. 所有现有功能测试通过：`python3 -m pytest tests/ -q`
 6. REPL/TUI/Headless 三前端完整可用
-7. `docs/decisions/f48-modification-tracking.md` 记录每文件决策（保留/还原/seam）
+7. `docs/decisions/f48-modification-tracking.md` 记录每文件决策（保留/还原/seam），含 4 个格式差异 no-op 项（决策 #9）+ `settings/permission_validation.py` 替代项（决策 #11）
 
 #### 6.1.6 风险与约束
 
@@ -2682,6 +2689,9 @@ class WorkflowConfig:
 | 6 | 格式差异（4 个文件）不处理 | `diff -w` 已确认无语义差异 |
 | 7 | **新增文件迁移（Phase 0）优先执行** | 消除"Only in src/"后 diff 噪声骤降，便于聚焦评审功能修改 |
 | 8 | **Adapter 文件统一处理成 F-48.1 子特性** | 7 个 adapter 结构完全一致 |
+| 9 | **4 个格式差异文件归档到 `f48-modification-tracking.md` 的 no-op 列表** | `buddy/notification.py`, `buddy/sprites.py`, `buddy/types.py`, `replLauncher.py` 经 `diff -w` 验证无语义差异；无需还原也无需评审，仅在追踪文档中登记以保持审计完整性 |
+| 10 | **`src/orchestrator/` 顶层包作为独立子扩展落地** | 19+ 文件自成体系（Linear / Repo Tracker / Local Tracker / Status Dashboard / Workspace），不应混入 `clawcodex_ext/` 通用扩展；按既定约束（参 §3.x F-XXX）落地在 `extensions/orchestrator/`，`src/` 中仅保留 thin re-export 或完全无入口 |
+| 11 | **`settings/permission_validation.py` 缺失需在追踪文档中显式记录** | 上游文件在 src/ 中不存在，被 `pydantic_adapter.py` 替代；需在 `f48-modification-tracking.md` 中以 "上游文件 → 替代方案" 形式记录，避免后续误以为是遗漏同步 |
 
 #### 6.1.8 依赖与协同
 
@@ -2697,9 +2707,13 @@ class WorkflowConfig:
   - 与 F-41（Coordinator 工具集）协同：`coordinator/mode.py` 和 `prompt.py` 的差异
 - **先于**：
   - F-35 的 584 文件还原需要 F-48 先完成核心解耦
+- **F-35 启动 Gate Criterion**：
+  - F-48 Phase 0 完成（`diff -rq` 不再出现 "Only in src/" 输出，30→0 全部归档到 ext/extensions）后，F-35 可启动第一批上游纯净模式（仅影响 `clawcodex_ext/` 与 `extensions/` 的还原测试）
+  - F-48 Phase 1-3 完成（10 个核心入口点 `diff -w` 返回空）后，F-35 可启动第二批（涉及 `cli.py` / `tui/app.py` 等 10 个二开热点的纯净模式切换）
+  - F-48 Phase 4-9 完成审计（67 个修改文件全部在 `f48-modification-tracking.md` 登记决策）后，F-35 才可启动第三批（涉及 bridge/buddy/transport 等核心模块的纯净模式）；审计未完成前 F-35 不得触碰这些模块
 - **遗留问题**：
   - 57 个新增发现文件需逐行追溯来源方可知能否还原
-  - 需要新增 `docs/decisions/f48-modification-tracking.md` 记录每文件决策
+  - 需要新增 `docs/decisions/f48-modification-tracking.md` 记录每文件决策（含 4 个格式差异 no-op 项 + `settings/permission_validation.py` 替代项）
 
 ---
 

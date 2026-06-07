@@ -1,0 +1,141 @@
+"""AskIssueAuthor — request clarification when issue semantics are ambiguous.
+
+This tool is used by the agent when an issue's intent is unclear and needs
+human input to proceed. It triggers the three-channel clarification flow:
+
+  Channel 1: StatusDashboard interactive prompt
+  Channel 2: ClarificationQueue file (operator CLI answer)
+  Channel 3: @mention issue comments (author answer)
+
+The agent receives the answer (or timeout status) and continues processing.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from src.tool_system.build_tool import Tool, build_tool
+from src.tool_system.context import ToolContext
+from src.tool_system.errors import ToolInputError
+from src.tool_system.protocol import ToolResult
+
+
+def _ask_issue_author_input_validator(input_data: dict) -> None:
+    """Validate AskIssueAuthor input."""
+    question = input_data.get("question")
+    if not isinstance(question, str) or not question.strip():
+        raise ToolInputError("question must be a non-empty string")
+
+    options = input_data.get("options")
+    if options is not None and not isinstance(options, list):
+        raise ToolInputError("options must be a list if provided")
+
+
+def _ask_issue_author_call(
+    tool_input: dict[str, Any],
+    context: ToolContext,
+) -> ToolResult:
+    """Handle AskIssueAuthor tool call.
+
+    In headless/orchestrator mode, this queues a clarification request and
+    returns immediately. The Orchestrator's poll loop picks up pending requests
+    and processes them through the three-channel flow.
+
+    When an answer is available (operator or author responded), the next
+    agent turn receives it as part of the continuation prompt.
+    """
+    question = tool_input.get("question", "").strip()
+    if not question:
+        raise ToolInputError("question must be a non-empty string")
+
+    options = tool_input.get("options")
+    if options is not None:
+        if not isinstance(options, list):
+            raise ToolInputError("options must be a list if provided")
+        options = [str(opt) for opt in options]
+
+    context_summary = tool_input.get("context_summary", "")
+    issue_id = tool_input.get("issue_id", context.session_id or "unknown")
+
+    # The ClarificationResolver is accessed via the orchestrator context.
+    # In orchestrator mode, context.ask_user holds the ClarificationResolver.
+    # Fall back to adding to outbox if not available.
+    resolver = getattr(context, "ask_user", None)
+
+    if resolver is not None:
+        import inspect
+        if callable(resolver):
+            # It's the ClarificationResolver
+            result = resolver.request_clarification(
+                issue_id=issue_id,
+                issue_identifier=issue_id,
+                question=question,
+                context=context_summary,
+                options=options,
+            )
+            return ToolResult(
+                name="AskIssueAuthor",
+                output={
+                    "status": result.status.value if result.status else "pending",
+                    "question": question,
+                    "options": options or [],
+                    "issue_id": issue_id,
+                },
+            )
+
+    # Fallback: append to outbox for orchestrator to pick up
+    context.outbox.append({
+        "tool": "AskIssueAuthor",
+        "question": question,
+        "options": options,
+        "context_summary": context_summary,
+        "issue_id": issue_id,
+    })
+
+    return ToolResult(
+        name="AskIssueAuthor",
+        output={
+            "status": "pending",
+            "question": question,
+            "options": options or [],
+            "issue_id": issue_id,
+            "message": "Clarification request queued. Will poll for answer.",
+        },
+    )
+
+
+AskIssueAuthorTool: Tool = build_tool(
+    name="AskIssueAuthor",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "question": {
+                "type": "string",
+                "description": "The clarification question to ask",
+            },
+            "options": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional multiple-choice options",
+            },
+            "context_summary": {
+                "type": "string",
+                "description": "Summary of issue context for the responder",
+            },
+            "issue_id": {
+                "type": "string",
+                "description": "Issue identifier for routing",
+            },
+        },
+        "required": ["question"],
+    },
+    call=_ask_issue_author_call,
+    validate_input=_ask_issue_author_input_validator,
+    prompt="Request clarification when issue semantics are ambiguous.",
+    description="Ask the issue author or local operator for clarification on ambiguous issue semantics. Use this when the issue description is unclear or missing critical information.",
+    max_result_size_chars=10_000,
+    is_read_only=lambda _input: True,
+    is_concurrency_safe=lambda _input: True,
+    search_hint="ask issue author clarification",
+    to_auto_classifier_input=lambda input_data: input_data.get("question", ""),
+)

@@ -1,84 +1,25 @@
-"""Persistence for agent-created tools — saves/loads specs to disk."""
+"""Facade — agent/tool_authoring/persistence.py has been moved to clawcodex_ext.
 
-from __future__ import annotations
+This module re-exports the public API so that existing ``from
+src.agent.tool_authoring.persistence import …`` call sites continue to work
+during the migration.  New code should import from
+``clawcodex_ext.agent.tool_authoring.persistence`` directly.
+"""
 
-import json
-import os
-from pathlib import Path
-from typing import Any
+from clawcodex_ext.agent.tool_authoring.persistence import (  # noqa: F401
+    TOOL_DIR,
+    save_spec,
+    load_spec,
+    delete_spec,
+    list_persisted_specs,
+    clear_persisted,
+)
 
-from agent.tool_authoring.spec import AgentToolSpec
-
-TOOL_DIR = Path.home() / ".clawcodex" / "agent-tools"
-TOOL_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def _spec_to_dict(spec: AgentToolSpec) -> dict[str, Any]:
-    return {
-        "name": spec.name,
-        "description": spec.description,
-        "input_schema": spec.input_schema,
-        "call_type": spec.call_type,
-        "call_impl": spec.call_impl,
-        "tags": list(spec.tags),
-        "aliases": list(spec.aliases),
-        "source": spec.source,
-    }
-
-
-def _dict_to_spec(d: dict[str, Any]) -> AgentToolSpec:
-    return AgentToolSpec(
-        name=d["name"],
-        description=d["description"],
-        input_schema=d["input_schema"],
-        call_type=d["call_type"],
-        call_impl=d["call_impl"],
-        tags=tuple(d.get("tags", ())),
-        aliases=tuple(d.get("aliases", ())),
-        source=d.get("source", "agent-created"),
-    )
-
-
-def save_spec(spec: AgentToolSpec) -> None:
-    """Persist a tool spec to disk."""
-    path = TOOL_DIR / f"{spec.name}.json"
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(_spec_to_dict(spec), f, indent=2, ensure_ascii=False)
-
-
-def load_spec(name: str) -> AgentToolSpec | None:
-    """Load a tool spec from disk, returning None if not found."""
-    path = TOOL_DIR / f"{name}.json"
-    if not path.exists():
-        return None
-    with open(path, encoding="utf-8") as f:
-        return _dict_to_spec(json.load(f))
-
-
-def delete_spec(name: str) -> bool:
-    """Remove a persisted spec. Returns True if it existed."""
-    path = TOOL_DIR / f"{name}.json"
-    if path.exists():
-        path.unlink()
-        return True
-    return False
-
-
-def list_persisted_specs() -> list[AgentToolSpec]:
-    """Load all persisted tool specs from disk."""
-    specs: list[AgentToolSpec] = []
-    if not TOOL_DIR.is_dir():
-        return specs
-    for path in TOOL_DIR.glob("*.json"):
-        try:
-            with open(path, encoding="utf-8") as f:
-                specs.append(_dict_to_spec(json.load(f)))
-        except Exception:
-            continue
-    return specs
-
-
-def clear_persisted() -> None:
-    """Remove all persisted tool specs."""
-    for path in TOOL_DIR.glob("*.json"):
-        path.unlink()
+__all__ = [
+    "TOOL_DIR",
+    "save_spec",
+    "load_spec",
+    "delete_spec",
+    "list_persisted_specs",
+    "clear_persisted",
+]

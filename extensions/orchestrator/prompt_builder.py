@@ -225,6 +225,7 @@ class PromptBuilder:
         return (
             f"Continuation guidance:\n\n"
             f"⛔ **约束提醒**：始终用 `/root/Conda/bin/python3` 绝对路径，不要调试环境差异。\n"
+            f"⛔ `pytest` 禁止使用管道 `| tail -40`/`| head -50`，用 `--tb=short -q` 替代。\n"
             f"- This is continuation turn #{turn_number} of {max_turns}.{context_block}{urgency}\n"
             f"- Resume from the current workspace state and continue implementing.\n"
             f"- Use available tools (Bash, Write, Edit, Grep, Glob, etc.) to make changes.\n"

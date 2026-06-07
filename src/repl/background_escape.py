@@ -1,25 +1,15 @@
-"""Signal object for Ctrl+B background escape in REPL mode.
+"""Facade — repl/background_escape.py has been moved to clawcodex_ext.
 
-When the user presses Ctrl+B during an active agent run in the REPL,
-the LiveStatus keybinding handler invokes the ``on_background`` callback,
-which sets a flag that causes ``chat()`` to raise this exception.
-``chat()`` then catches it and triggers the background runner fork.
-
-Using an exception (rather than a callback that directly calls ``os.fork``)
-keeps the LiveStatus keybinding handler free of process-management logic —
-it only signals intent, ``chat()`` decides what to do about it.
+This module re-exports the public API so that existing ``from
+src.repl.background_escape import …`` call sites continue to work
+during the migration.  New code should import from
+``clawcodex_ext.repl.background_escape`` directly.
 """
 
+from clawcodex_ext.repl.background_escape import (  # noqa: F401
+    BackgroundEscape,
+)
 
-class BackgroundEscape(Exception):
-    """Raised when the user presses Ctrl+B during an active agent run.
-
-    The REPL's ``chat()`` method catches this exception to trigger
-    the background runner fork.  Using an exception (rather than a
-    callback that directly calls ``os.fork``) keeps the LiveStatus
-    keybinding handler free of process-management logic — it only
-    signals intent, ``chat()`` decides what to do about it.
-    """
-
-    def __init__(self, message: str = "Background escape requested") -> None:
-        super().__init__(message)
+__all__ = [
+    "BackgroundEscape",
+]
