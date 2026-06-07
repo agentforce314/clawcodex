@@ -237,116 +237,6 @@ def _gather_issue_metadata(workspace: Path) -> dict[str, Any]:
     }
 
 
-def _event_log_dirs(workspace: Path) -> list[Path]:
-    """Return list of ``.event_logs`` directories to scan.
-
-    Includes the top-level ``{workspace}/.event_logs/`` (legacy layout),
-    per-issue subdirectories referenced by the issue registry (sequential /
-    isolated workspace layout), and a scan of first-level subdirectories
-    for per-issue ``.event_logs/`` that may not be directly referenced in
-    the registry (e.g. sequential per-issue workspaces).
-    """
-    dirs: list[Path] = []
-    seen: set[str] = set()
-
-    # 1. Top-level event logs
-    top = workspace / ".event_logs"
-    if top.exists():
-        dirs.append(top)
-        seen.add(str(top))
-
-    # 2. Registry-referenced per-issue workspaces
-    registry = _safe_read_json(workspace / ".clawcodex_issue_registry.json") or {}
-    for record in registry.values():
-        if not isinstance(record, dict):
-            continue
-        ws = record.get("workspace_path")
-        if ws:
-            p = Path(ws) / ".event_logs"
-            sp = str(p)
-            if sp not in seen and p.exists():
-                dirs.append(p)
-                seen.add(sp)
-
-    # 3. First-level subdirectories that may contain per-issue event logs
-    #    (sequential workspace layout: each issue has its own subdirectory)
-    if workspace.is_dir():
-        for child in workspace.iterdir():
-            if not child.is_dir():
-                continue
-            p = child / ".event_logs"
-            sp = str(p)
-            if sp not in seen and p.exists():
-                dirs.append(p)
-                seen.add(sp)
-
-    return dirs
-
-
-def _gather_event_stats(workspace: Path) -> dict[str, Any]:
-    """Aggregate event counts and recent tail per issue from .event_logs/."""
-    stats: dict[str, Any] = {
-        "event_count": 0,
-        "by_issue": {},
-        "recent": [],   # list of {issue_id, identifier, timestamp, event}
-        "by_type": {t: 0 for t in ("tool_call", "tool_result", "text_delta", "phase_complete")},
-    }
-    event_dirs = _event_log_dirs(workspace)
-    if not event_dirs:
-        return stats
-
-    # Read tail of each ndjson log to build per-issue stats + recent list.
-    for event_dir in event_dirs:
-        for log_file in event_dir.glob("*.ndjson"):
-            issue_id = log_file.stem
-            try:
-                size = log_file.stat().st_size
-                if size == 0:
-                    continue
-                # Read up to last ~64 KiB to stay cheap.
-                with open(log_file, "rb") as fh:
-                    if size > 64 * 1024:
-                        fh.seek(size - 64 * 1024)
-                    raw = fh.read().decode("utf-8", errors="replace")
-            except Exception:
-                continue
-            lines = [ln for ln in raw.splitlines() if ln.strip()]
-            per_issue_count = len(lines)
-            stats["event_count"] += per_issue_count
-            last_event_at = None
-            for line in lines:
-                try:
-                    obj = json.loads(line)
-                except Exception:
-                    continue
-                et = obj.get("type")
-                if et in stats["by_type"]:
-                    stats["by_type"][et] += 1
-                ts = obj.get("timestamp") or ""
-                if ts and (last_event_at is None or ts > last_event_at):
-                    last_event_at = ts
-            stats["by_issue"][issue_id] = {
-                "count": per_issue_count,
-                "last_event_at": last_event_at,
-            }
-            # Capture last event for "recent" tail.
-            if lines:
-                try:
-                    last = json.loads(lines[-1])
-                    stats["recent"].append({
-                        "issue_id": issue_id,
-                        "timestamp": last.get("timestamp") or "",
-                        "event": last,
-                    })
-                except Exception:
-                    pass
-
-    # Keep the most recent N events sorted by timestamp string desc.
-    stats["recent"].sort(key=lambda e: e.get("timestamp") or "", reverse=True)
-    stats["recent"] = stats["recent"][:50]
-    return stats
-
-
 def _gather_metadata(workspace: Path) -> dict[str, Any]:
     """Read the orchestrator daemon metadata.json (PID, started_at, project)."""
     metadata_dir = Path.home() / ".clawcodex" / "orchestrator"
@@ -396,7 +286,6 @@ def _gather_metadata(workspace: Path) -> dict[str, Any]:
 def build_state_snapshot(workspace: Path) -> dict[str, Any]:
     """Assemble a complete snapshot for the dashboard."""
     issues = _gather_issue_metadata(workspace)
-    events = _gather_event_stats(workspace)
     meta = _gather_metadata(workspace)
     return {
         "type": "snapshot",
@@ -405,99 +294,7 @@ def build_state_snapshot(workspace: Path) -> dict[str, Any]:
         "workspace_exists": workspace.exists(),
         "metadata": meta,
         "issues": issues,
-        "events": {
-            "total": events["event_count"],
-            "by_type": events["by_type"],
-            "by_issue_count": len(events["by_issue"]),
-            "recent": events["recent"],
-        },
     }
-
-
-# ---------------------------------------------------------------------------
-# SSE streaming — incremental file tail
-# ---------------------------------------------------------------------------
-
-class EventTailer:
-    """Tracks byte offsets of each ndjson event log so SSE only pushes new lines."""
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._offsets: dict[str, int] = {}
-
-    def snapshot(self) -> dict[str, int]:
-        with self._lock:
-            return dict(self._offsets)
-
-    def prime(self, workspace: Path) -> None:
-        """Set internal offsets to current end-of-file for every log file.
-
-        Used by SSE handlers to skip historical events on initial connect —
-        the snapshot payload already carries the last ~50 events for backfill,
-        so the live stream only needs to forward events appended from this
-        point onward.
-        """
-        event_dirs = _event_log_dirs(workspace)
-        if not event_dirs:
-            return
-        with self._lock:
-            for event_dir in event_dirs:
-                for log_file in event_dir.glob("*.ndjson"):
-                    try:
-                        self._offsets[str(log_file)] = log_file.stat().st_size
-                    except Exception:
-                        continue
-
-    def read_new(self, workspace: Path, since: dict[str, int] | None = None) -> list[dict[str, Any]]:
-        """Return new events emitted since `since` (or last call from this tailer)."""
-        event_dirs = _event_log_dirs(workspace)
-        out: list[dict[str, Any]] = []
-        if not event_dirs:
-            return out
-
-        with self._lock:
-            offsets = self._offsets
-
-        for event_dir in event_dirs:
-            for log_file in event_dir.glob("*.ndjson"):
-                issue_id = log_file.stem
-                try:
-                    size = log_file.stat().st_size
-                except Exception:
-                    continue
-
-                if since is not None:
-                    start = since.get(str(log_file), 0)
-                else:
-                    start = offsets.get(str(log_file), 0)
-
-                if size <= start:
-                    continue
-
-                try:
-                    with open(log_file, "rb") as fh:
-                        fh.seek(start)
-                        chunk = fh.read(size - start)
-                except Exception:
-                    continue
-
-                text = chunk.decode("utf-8", errors="replace")
-                for line in text.splitlines():
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        obj = json.loads(line)
-                    except Exception:
-                        continue
-                    out.append({
-                        "issue_id": issue_id,
-                        "timestamp": obj.get("timestamp") or time.strftime("%H:%M:%S"),
-                        "event": obj,
-                    })
-
-                offsets[str(log_file)] = size
-        return out
 
 
 # ---------------------------------------------------------------------------
@@ -509,7 +306,6 @@ class DashboardState:
 
     def __init__(self, workspace: Path) -> None:
         self.workspace = workspace
-        self.tailer = EventTailer()
         self.snapshot: dict[str, Any] = build_state_snapshot(workspace)
         self.last_snapshot_at: float = time.time()
         self.snapshot_interval: float = 1.0
@@ -1419,19 +1215,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
 
         snapshot_interval = self.state.snapshot_interval
-        event_poll_interval = 0.4
         last_snapshot_at = 0.0
 
         try:
-            # Initial snapshot — the snapshot already carries the last ~50
-            # events for backfill, so the SSE stream can start "now" and only
-            # forward fresh events. This avoids flooding a freshly-loaded
-            # browser tab with the entire event history.
+            # F-49 unified storage: live event stream is sourced from
+            # the session transcript JSONL.  We only push periodic
+            # snapshot updates here — per-event streaming is handled
+            # out-of-band by callers (e.g. ``issue attach``) since the
+            # transcript is a regular append-only file readable by
+            # ``tail -f`` / TailFollower.
             snap = self.state.refresh_snapshot(force=True)
             last_snapshot_at = time.time()
             self._write_sse({"type": "snapshot", **snap})
-            # Skip past any historical events already covered by the snapshot.
-            self.state.tailer.prime(self.state.workspace)
 
             while True:
                 # Throttle snapshot refreshes to once per snapshot_interval.
@@ -1441,20 +1236,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     last_snapshot_at = now
                     self._write_sse({"type": "snapshot", **snap})
 
-                # Push only events appended after the client connected.
-                new_events = self.state.tailer.read_new(self.state.workspace, since=None)
-                for evt in new_events:
-                    self._write_sse({"type": "event", **evt})
-
                 # Heartbeat / keep-alive.
-                if new_events:
-                    self.wfile.write(b": keep-alive\n\n")
-                    self.wfile.flush()
-                else:
-                    self.wfile.write(b": ping\n\n")
-                    self.wfile.flush()
+                self.wfile.write(b": ping\n\n")
+                self.wfile.flush()
 
-                time.sleep(event_poll_interval)
+                time.sleep(snapshot_interval)
         except Exception:
             # Client disconnected or stream error — exit cleanly.
             return
