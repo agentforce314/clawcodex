@@ -454,7 +454,10 @@ class ClawCodexTUI(App):
             self._restore_prompt_focus()
             if not persisted:
                 return
-            setattr(self.app_state, "effort", effort)
+            # Persistence is handled by on_persist=set_effort below (the screen fires
+            # it on selection only, not on cancel). The previous
+            # ``setattr(self.app_state, "effort", effort)`` raised on the frozen
+            # AppState (and set a field nothing reads), so it is removed.
             transcript.append_system(
                 f"Reasoning effort set to {effort or 'auto'}.", style="muted"
             )
@@ -463,7 +466,15 @@ class ClawCodexTUI(App):
             )
 
         self.announcer.announce("Opened effort picker.", notify=False)
-        self.push_screen(EffortPickerScreen(current=current), callback=_on_selected)
+        # D2: persist the pick like TS (effort.tsx always writes settings.effort). The
+        # screen fires on_persist only on selection, not on cancel
+        # (effort_picker.py:78-91), so Esc leaves the saved value untouched — matching TS.
+        from src.config import set_effort
+
+        self.push_screen(
+            EffortPickerScreen(current=current, on_persist=set_effort),
+            callback=_on_selected,
+        )
 
     def _open_history_search(self, transcript: Transcript) -> None:
         records = self.history_store.recent(limit=500)
