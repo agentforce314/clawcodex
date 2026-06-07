@@ -86,7 +86,6 @@ class GitSyncService:
         self._agent_config = agent_config or AgentConfig()
         self._hooks_config = hooks_config or HooksConfig()
         self._gitignore_patterns = gitignore_patterns or [
-            ".event_logs",
             ".event_streams",
             ".orchestrator_control",
             ".operator_hints.md",

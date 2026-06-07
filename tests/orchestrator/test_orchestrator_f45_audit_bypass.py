@@ -656,10 +656,13 @@ class TestFourPermissionModes(unittest.TestCase):
 class TestWorkspaceConfigDefaults(unittest.TestCase):
     def test_runtime_artifacts_added_to_gitignore_patterns(self) -> None:
         wf = WorkflowConfig.from_dict({})
-        self.assertIn(".event_logs", wf.workspace.gitignore_patterns)
         self.assertIn(".operator_hints.md", wf.workspace.gitignore_patterns)
         self.assertIn(".reports", wf.workspace.gitignore_patterns)
-        self.assertNotIn("event_logs", wf.workspace.gitignore_patterns)
+        # F-49 unified storage: headless agent and REPL sessions both
+        # write to ~/.clawcodex/sessions/{run_id}/transcript.jsonl
+        # (outside the workspace), so the legacy .event_logs/
+        # gitignore entry is no longer needed.
+        self.assertNotIn(".event_logs", wf.workspace.gitignore_patterns)
 
     def test_orchestrator_permission_mode_preserves_canonical_spelling(self) -> None:
         wf = WorkflowConfig.from_dict(

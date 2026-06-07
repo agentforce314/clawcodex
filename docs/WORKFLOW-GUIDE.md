@@ -202,7 +202,6 @@ workspace:
   git_username: myorg
   git_token: $GIT_PUSH_TOKEN                 # used for `git push`
   gitignore_patterns:                        # paths excluded from agent
-    - .event_logs
     - "*.pyc"
     - __pycache__
     - "*.egg-info"
@@ -231,7 +230,7 @@ workspace:
 
 Patterns are matched against files in the workspace before
 `get_file_status()` runs. The default set already covers
-`.event_logs`, `.reports`, `*.pyc`, `__pycache__`, `*.egg-info`,
+`.reports`, `*.pyc`, `__pycache__`, `*.egg-info`,
 `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `*.log`. Add more
 patterns here if your repository generates build artifacts the
 orchestrator should treat as inert.

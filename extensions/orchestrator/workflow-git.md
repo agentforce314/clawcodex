@@ -37,7 +37,6 @@ workspace:
   git_username: chadwweng
   git_token: $GITCODE_TOKEN
   gitignore_patterns:
-    - .event_logs
     - "*.pyc"
     - __pycache__
     - "*.egg-info"

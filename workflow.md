@@ -81,7 +81,6 @@ workspace:
   git_username: chadwweng
   git_token: ""
   gitignore_patterns:
-    - .event_logs
     - .event_streams
     - .orchestrator_control
     - .clawcodex_clarification_queue.json

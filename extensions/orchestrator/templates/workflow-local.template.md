@@ -56,7 +56,6 @@ workspace:
   git_username: <OWNER>
   git_token: $GITCODE_TOKEN             # 走环境变量，避免明文
   gitignore_patterns:
-    - .event_logs
     - .reports
     - "*.pyc"
     - __pycache__

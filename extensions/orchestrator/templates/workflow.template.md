@@ -69,7 +69,6 @@ workspace:
   git_username: {{GIT_PUSH_USER}}                         # used for `git push`
   git_token: ${{GIT_PUSH_TOKEN_ENV}}                       # $VAR form reads from env at load time
   gitignore_patterns:                                      # paths excluded from agent workspace
-    - .event_logs
     - "*.pyc"
     - __pycache__
     - "*.egg-info"
