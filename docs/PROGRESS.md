@@ -8,7 +8,7 @@
 >
 > **v2.16 变更**：完成 CCB（claude-code-best）全面对标分析，识别 clawcodex 的 8 个重大特性缺口纳入规划管线。新增 F-60 Pipe IPC + LAN 群控（P0）、F-61 Computer Use 屏幕操控（P0）、F-62 Chrome 浏览器控制（P1）、F-63 Channels 频道通知（P1）、F-64 Voice Mode 语音输入（P2）、F-65 Langfuse Agent 可观测性（P1）、F-66 ACP 协议支持（P2）、F-67 Buddy / Proactive 模式（P2）。同时更新 §四 CCB 对标优势特性总表，明确 clawcodex 对比 CCB 的 5 项领先特性（Orchestrator 自动流水线、Verification Gate、SOP 编译器、LiteLLM Provider、Manager/Worker 增强通信）。所有 F-60~F-67 设置为 ⏳ 待开始状态，详见 §四。
 >
-> **v2.17 变更**：全面更新 F-48 src/ 核心路径二开修改解耦方案。通过完整对比 `src/` 与 `src/upstream/58ea488/` 的 diff，将解耦范围从"10 个功能性修改文件"扩展到全部 **29 个纯新增文件 + 7 个外部库适配器 + 71 个功能修改文件**。新增按模块类别的七组解耦子方案（Adapter、Orchestrator Tools、Provider Extensions、Auth、TUI Screens、Services、Utilities），并单独设立 F-48.1 Adapter 文件统一解耦子特性。新增类别 B 修改文件解耦表格覆盖 10 个已识别功能修改点。目标：src/ 二开新增文件数从 29 降为 0，src/ 功能修改文件数从 10 降为 0，decoupled/src 比例从约 30% 提升至 100%。详见 §六 FEATURE_PLAN.md。
+> **v2.17 变更**：全面更新 F-48 src/ 核心路径二开修改解耦方案。通过 `diff -w` 逐文件验证，纠正了早前版本"~61 个格式差异"的重大误判——实际仅 4 个文件是纯格式差异，67 个文件均有语义变更。新增 Phase 4-9 覆盖新发现的 57 个未解耦功能修改文件。目标调整：src/ 功能修改文件数从 67 → ~10-20，增加"每文件决策记录"机制。详见 §六 FEATURE_PLAN.md。
 >
 > **v2.13 变更**：新增 F-43 实现 + F-45 / F-46 / F-47。F-43 P1 落地 `clawcodex provider` / `clawcodex model` 子命令族（list/show/current/use/unset）+ REPL/TUI 内 `/provider` / `/model` 斜杠命令；新增 fast-path `subcommand_registry` + `ModelRegistry` / `ModelStore` / `Resolver` + `RuntimeContext.swap_provider` 热切换；所有新代码落在 `clawcodex_ext/cli/`，`src/*` 仅追加 `CommandContext.runtime_context` seam 与 `TUIOptions.runtime_context` 透传。F-45 P1 在 `agent_runner._handle_tool_call` 后加 NDJSON 旁路落 `~/.clawcodex/tool-events/{run_id}/events.ndjson`，与 permission_mode 解耦；扩展 `report_writer.RunReport.tool_events_path` 字段 + markdown 模板登记路径；终结 "bypass ≠ 无审计" 误读。F-46 P2 把 `permission_mode` enum 拆为 `interactive` / `default_decision` / `audit_log` 三个正交字段，F-46.0（v2.13）只拆 `audit_log`，依赖 F-45 落地后端到端验证；`permission_mode` 保留为 backward-compat shim 标 deprecated；F-46.1+ 拆其余两字段推到 v2.15+。F-47 P1 修 `SettingsSchema.permissions` schema 形状（`list[PermissionRule]`）与磁盘 dict 形态不一致 / `has_allow_bypass_permissions_mode` 永远读不到 / `resolve_permission_state` 没传 `settings_default_mode` / 顶层 `settings.permission_mode` 字段未读 四个串联 bug；引入 `PermissionsConfig` dataclass 对齐磁盘 + TS 上游契约，让 `permissions.defaultMode` 与 `permissions.allowBypassPermissionsMode` 真正生效；删除 settings 层"假" `PermissionRule` 死代码。**F-47.1 (2026-06-02) v2.13 hotfix：在项目尚未发布的前提下直接删除 F-47 原本保留的顶层 `settings.permission_mode` back-compat 读取通道**——`SettingsSchema.permission_mode` 字段保留为兼容形态但启动时不再被读，F-46.2 的 deprecation 步骤因此 N/A。
 >
@@ -97,7 +97,7 @@
 | F-46 | permission_mode enum 正交拆分 | P2 | ⏳ 规划中 | 把 `permission_mode` 混合 enum（`default` / `plan` / `bypassPermissions` / `acceptEdits` / `dontAsk` / `auto` / `bubble`）拆为三个正交字段：`interactive: bool`（是否要 TTY 弹 prompt）、`default_decision: Literal["allow", "deny", "ask"]`（无人值守默认）、`audit_log: Literal["none", "minimal", "full"]`（per-tool 决策是否落盘）。F-46.0（v2.13）只拆 `audit_log`，**F-45 已落地**可消费 NDJSON 旁路做端到端验证；`permission_mode` 保留为 backward-compat shim 标 deprecated；F-46.1+ 拆其余两字段推到 v2.15+。 |
 | F-47 | Permission Settings Schema 重构（`permissions` 改 dict 形态 + plumb 启动模式） | P1 | ✅ 完成（含 F-47.1 hotfix） | 修四层串联 bug：`SettingsSchema.permissions: list[PermissionRule]` 与磁盘实际 dict 形态不一致 → dict 落进 known 字段，`allowBypassPermissionsMode` 进不到 `extra` → `has_allow_bypass_permissions_mode` 永远 False → Shift+Tab cycle 看不到 Bypass；同时 `resolve_permission_state` 没把 `permissions.defaultMode` 喂给 `initial_permission_mode_from_cli`、顶层 `settings.permission_mode` 字段未读。引入 `PermissionsConfig` dataclass 对齐磁盘 + TS 上游契约；`has_allow_bypass_permissions_mode` 加 `extra["permissions"]` fallback；`resolve_permission_state` 真正 plumb `settings_default_mode`；删除 settings 层"假" `PermissionRule` 死代码。**F-47.1 (2026-06-02) hotfix**：项目尚未发布、磁盘上没有需要迁移的旧配置，直接删除原本保留的顶层 `settings.permission_mode` back-compat 读取通道——`SettingsSchema.permission_mode` 字段保留为兼容形态但启动时不再被读；详见 风险 #3 / 设计决定 #3 / F-47.1 备注。 |
 | F-48 | src/ 核心路径二开修改解耦 | P0 | 📋 设计完成 | 将 `src/` 中 **29 个纯新增文件 + 10 个功能修改文件**全部解耦到 `clawcodex_ext/` 和 `extensions/`。新增 7 个外部库适配器统一迁移（F-48.1 子特性）、Orchestrator 配套工具 5 个、Provider 扩展 3 个、Auth 子系统 2 个、TUI 屏幕 2 个、服务/工具 5 个、工具编写系统 1 个。修改文件解耦沿用 Phase 1~3（注册表/Protocol 扩展 → 子类覆盖 → 入口点恢复）。目标：src/ 二开新增文件数从 29 → 0，功能修改文件数从 10 → 0 |
-| F-49 | Issue 会话统一存储与实时介入协议 | P1 | 📋 设计完成 | 将 headless agent 的 `.event_logs/` 扁平 NDJSON 统一为 `SessionStorage` 的 `transcript.jsonl` 格式；在其上建立 Unix socket 双向控制协议，实现 `attach` CLI 观察/中断/接管/恢复；附带 session 恢复能力。Phase 0 存储统一 → Phase 1 socket 控制 → Phase 2 attach TUI → Phase 3 session 恢复 |
+| F-49 | Issue 会话统一存储与实时介入协议 | P1 | 📋 设计完成 | 将 headless agent 的 `.event_logs/` 扁平 NDJSON 统一为 `SessionStorage` 的 `transcript.jsonl` 格式。核心收益：**`clawcodex --resume <run_id>` 可直接恢复 orchestrator run 的完整对话进入交互式 REPL**（operator 可继续对话、接管 agent、崩溃恢复），而非仅只读围观。设计扩展：**Phase 0.1 Message 转录映射规则**（TextDelta/ToolCallEvent/ToolResultEvent → AssistantMessage/UserMessage 精确分组+轮次对齐）、**Phase 0.2 --resume 会话恢复 + TailFollower 实时观察 + 问题追溯**、**Phase 0.3 大内容文件引用**（复用 SessionStorage._replace_large_content）。Phase 1 socket 控制 → Phase 2 attach TUI → Phase 3 session 恢复。详见 FEATURE_PLAN §3.1.11 Phase 0.1-0.3。 |
 | F-51 | AgentRunner 空转检测机制（no-op detection） | P0 | ✅ 完成 | 在 `extensions/orchestrator/agent_runner.py` 中添加连续 5 轮工作区文件无变更检测，防止 agent 在 issue deliverables 已存在的场景下陷入无限 busy-work 循环。对应 PR 检视意见自动修复闭环（F-37）中的已修复前置问题。|
 | F-52 | Python SDK 方法注册为 Tool | P2 | 📋 规划中 | 将 SOP 生成的 ADF 方法（`detect_modality`、`load_dataset` 等）注册为真实的 `Tool` 对象，使 sub-agent 可直接调用而非通过 Bash 回退。`extensions/pos_converter/tool_registry.py` — `ToolWrapper` + `register_source_operations()`。依赖 F-50。 |
 | F-53 | Tool 自动暴露为 CLI 斜杠命令 | P3 | 📋 规划中 | 已注册的 Tool 自动映射为 REPL/TUI 中的 `/tool-name` 命令（如 `/detect_modality --path /data/raw`），参数从 Tool schema 自动推导。`clawcodex_ext/cli/tool_cmd/`。依赖 F-52。 |
@@ -524,8 +524,10 @@ CronTask due
 | 差异类别 | 数量 | 说明 |
 |---------|------|------|
 | **A: 仅当前 src/ 有的文件（纯新增）** | **29 项** | 上游完全不存在的文件/目录 |
-| **B: 两者都有但功能不同的文件（功能修改）** | **10 个** | `diff -w` 有实质性逻辑输出 |
-| **C: 两者都有但格式差异的文件** | ~61 个 | 仅行尾/空白差异，无需处理 |
+| **B: 两者都有但 `diff -w` 有输出的文件（功能修改）** | **67 个** | 有语义逻辑变化 |
+| **C: 两者都有但 `diff -w` 全空的文件（纯格式差异）** | **4 个** | 仅行尾/空白差异，无需处理 |
+
+> ⚠️ **勘误**：早前版本误以为"~61 个格式差异"，实际 `diff -w` 验证发现仅 **4 个**文件是纯格式差异，其余 67 个均有语义变更。
 
 #### 类别 A：29 个二开新增文件
 
@@ -539,7 +541,9 @@ CronTask due
 | **A6: 服务/工具** | 5 | `services/bridge/`, `tail_follower.py`, `background_escape.py`, `cache_warning.py`, `session_watcher.py` | `clawcodex_ext/services/`, `clawcodex_ext/repl/`, `clawcodex_ext/runtime/` |
 | **A7: 已部分解耦** | 5 | `background_runner/state.py`（已有 ext re-export）, `tool_authoring/`, `orchestrator/`（已完成）, `entrypoints/orchestrator.py`（已完成） | `clawcodex_ext/agent/`, `extensions/tool_system_ext/` ✅ |
 
-#### 类别 B：10 个功能修改文件
+#### 类别 B：67 个功能修改文件
+
+**Phase 1-3 已设计解耦（10 个）：**
 
 | # | 文件 | 修改点 | diff 规模 | 解耦模式 |
 |---|------|--------|----------|---------|
@@ -553,6 +557,23 @@ CronTask due
 | 8 | `permissions/cycle.py` | 新增 `dontAsk` 环节 | ~10 行 | 循环表注册表 |
 | 9 | `command_system/types.py` | `CommandContext` 新增 3 字段 | ~15 行 | Protocol 扩展 |
 | 10 | `command_system/engine.py` | `create_command_context` 3 参数透传 | ~10 行 | Protocol 扩展 |
+
+**Phase 4-9 新发现未覆盖（57 个）：**
+
+| 模块 | 数量 | 文件 | 处理阶段 |
+|------|------|------|---------|
+| bridge/ | 5 | `__init__.py`, `bridge_main.py`, `bridge_pointer.py`, `repl_bridge.py`, `worktree.py` | Phase 4 |
+| buddy/ | 8 | `__init__.py`, `companion.py`, `feature.py`, `observer.py`, `prompt.py`, `soul.py`, `sprites.py`, `types.py` | Phase 5 |
+| settings/ | 4 | `__init__.py`, `constants.py`, `types.py`, `validation.py` | Phase 6 |
+| providers/ | 4 | `__init__.py`, `base.py`, `anthropic_provider.py`, `openai_compatible.py` | Phase 7 |
+| transports/ | 3 | `hybrid_transport.py`, `serial_batch_event_uploader.py`, `websocket_transport.py` | Phase 8 |
+| tui/（除已覆盖）| 12 | `state.py`, `keybindings.py`, `agent_bridge.py`, `messages.py`, `screens/*`, `widgets/*` | Phase 9 |
+| query/ | 3 | `engine.py`, `query.py`, `agent_loop_compat.py` | Phase 9 |
+| coordinator/ | 2 | `mode.py`, `prompt.py` | Phase 9 |
+| tool_system/ | 4 | `tools/__init__.py`, `tools/agent.py`, `context.py`, `bash/bash_tool.py` | Phase 9 |
+| command_system/ | 3 | `__init__.py`, `buddy_command.py`, `builtins.py` | Phase 9 |
+| repl/（除已覆盖）| 2 | `__init__.py`, `live_status.py` | Phase 9 |
+| 散在文件 | 7 | `agent/session.py`, `config.py`, `constants/xml.py`, `permissions/modes.py`, `memdir/memdir.py`, `skills/bundled/loop.py`, `utils/stream_watchdog.py` | Phase 9 |
 
 ### 已完成的解耦模式（可复用）
 
@@ -595,21 +616,59 @@ CronTask due
 - `src/entrypoints/headless.py` → `run_headless()` 恢复上游逻辑
 - `src/entrypoints/repl.py` → ext 的 `REPLFrontend.run()` 负责组装
 
+#### Phase 4: Bridge 文件回归（新增，中等风险）
+
+| 文件 | 解耦方案 | 工作量 |
+|------|---------|--------|
+| `bridge/__init__.py` | 评审并还原导出列表 | 0.5天 |
+| `bridge/bridge_main.py` | 确认 JWT refresh 删除等差异来源后还原 | 1天 |
+| `bridge/repl_bridge.py` | 还原 docstring，功能差异逐行评审 | 1天 |
+| `bridge/bridge_pointer.py`, `worktree.py` | 还原导出列表 | 0.5天 |
+
+#### Phase 5: Buddy 文件回归（新增，低风险）
+8 个 `buddy/` 文件主要为 docstring 差异 + 缓存行为变更，优先还原。0.5天。
+
+#### Phase 6: Settings 文件回归（新增，低风险）
+`settings/` 4 个文件差异来自 F-47 重构，保持现状。评审 `constants.py` 差异。0.5天。
+
+#### Phase 7: Provider 文件回归（新增，中等风险）
+
+| 文件 | 解耦方案 | 工作量 |
+|------|---------|--------|
+| `providers/base.py` | `ThinkingChunkCallback` 评估是否可通过 Protocol 扩展到 ext | 1天 |
+| `providers/__init__.py` | 保持现状（二开 provider 注册点） | 0天 |
+| `providers/anthropic_provider.py` | 逐行评审差异 | 1天 |
+| `providers/openai_compatible.py` | 逐行评审差异 | 1天 |
+
+#### Phase 8: Transport 文件回归（新增，中等风险）
+3 个 `transports/` 文件差异可能是 bridge 集成的必要修改，逐行评审。1.5天。
+
+#### Phase 9: 其余散在文件回归（新增，高风险）
+
+| 模块 | 文件数 | 工作量 | 备注 |
+|------|--------|--------|------|
+| tui/* | 12 | 2-3天 | PendingAskUser、Ctrl+B、thinking toggle、permission mode 等 |
+| query/* | 3 | 1天 | 查询引擎修改 |
+| coordinator/* | 2 | 0.5天 | 轻量工具集注册 |
+| tool_system/* | 4 | 1天 | 新工具注册、context 修改 |
+| command_system/* | 3 | 0.5天 | Buddy 命令注册 |
+| 散在 7 个 | 7 | 1天 | session/config/modes 等 |
+
 ### 解耦前后效果对比
 
-| 指标 | 解耦前 | 解耦后 |
-|------|--------|--------|
-| src/ 二开新增文件 | 29 项 | **0** |
-| src/ 有功能修改的文件 | 10 个 | **0** |
-| src/ 与上游 diff -rq 噪声 | ~29 新增 + 10 修改 | **仅行尾/格式差异** |
-| 上游同步冲突 | 高（每次 820+ 行差异） | **极低** |
-| decoupled/src 比例 | ~30% | **100%** |
+| 指标 | 解耦前 | 解耦后（乐观） | 解耦后（现实） |
+|------|--------|---------------|---------------|
+| src/ 二开新增文件 | 29 项 | **0** ✅ | **0** ✅ |
+| src/ 功能修改文件 | 67 个 | **0** ❌（不可达） | **~10-20** |
+| src/ 与上游 diff -rq 差异 | 71 修改 + 29 Only in | **~4 纯格式** | **~10-20 核心修改** |
+| 上游同步冲突 | 高（每次 820+ 行差异） | **极低** | **低** |
+| decoupled/src 比例 | ~30% | **100%** | **~90%** |
 
 ### 验收标准
 
-1. `diff -rq src/ src/upstream/58ea488/` 不再有"Only in src/"输出
-2. `diff -w src/<10修改文件> src/upstream/58ea488/<file>` 返回空输出
-3. 所有 7 个 adapter 文件在 `src/` 原位置只剩 2-3 行 re-export
+1. `diff -rq src/ src/upstream/58ea488/` 不再有"Only in src/"输出（29→0 ✅）
+2. Phase 1-3 的 10 个功能修改文件 `diff -w` 返回空
+3. Phase 4-9 覆盖的 57 个文件完成评审，输出 `docs/decisions/f48-modification-tracking.md`
 4. 所有现有功能测试通过
 5. REPL/TUI/Headless 三前端完整可用
 
@@ -617,24 +676,24 @@ CronTask due
 
 | 风险 | 缓解措施 |
 |------|---------|
-| `**kwargs` 透传隐藏签名变更 | 对 kwargs 做 `TypedDict` 约束 |
-| Protocol 扩展新增 import 链 | 注册表模块放 `src/capabilities/` 层 |
-| 子类覆盖与上游重构冲突 | 每次上游同步运行方法存在性测试 |
-| Adapter 分离后 import 路径变化 | 确保 ext 目录在 sys.path 中 |
+| 57 个文件修改来源不明，误还原上游修复 | `git log` 逐行追溯，标注来源 |
+| Provider 基类差异影响全局 LLM 调用 | Phase 7 优先；差异需团队审阅 |
+| tui/ 子类覆盖方案未完全消除本体注入 | Phase 9 逐文件审计 |
+| 57 文件全量追溯需 2-3 周 | Phase 4-9 分步执行，非全量冻结 |
 
 ### 设计决定
 
 | # | 决定 | 理由 |
 |---|------|------|
-| 1 | 注册表/Protocol 扩展点放 `src/capabilities/` | 已允许下游扩展导入 |
-| 2 | `**kwargs` 透传 | 避免每次上游更新改签名 |
-| 3 | **新增文件迁移优先于修改文件解耦** | 消除 29 个"Only in src/"后 diff 噪声骤降 |
-| 4 | **Adapter 统一处理为 F-48.1** | 7 个 adapter 结构完全一致，可批量操作 |
+| 1 | **Phase 4-9 不追求 100% 还原** | bridge/buddy/transport 的差异可能是必要的二开功能 |
+| 2 | **每文件记录决策理由** | 输出 `docs/decisions/f48-modification-tracking.md` |
+| 3 | **新增文件迁移（Phase 0）优先执行** | 消除"Only in src/"后 diff 噪声骤降 |
+| 4 | 格式差异（4 个文件）不处理 | `diff -w` 已确认无语义差异 |
 
 ### 依赖与协同
 
-- **依赖**: F-34（前端注册表解耦）✅, F-35（二开特性切换）
-- **协同**: F-15（循环表注册表）, F-43（runtime_context Protocol）, F-28（background_runner 移 ext）
+- **依赖**: F-34（前端注册表解耦）✅, F-35（二开特性切换）, F-47（settings/ 文件差异源头）
+- **协同**: F-15（循环表注册表）, F-43（runtime_context Protocol）, F-28（background_runner 移 ext）, F-49（session.py SessionStorage 差异）, F-41（coordinator/ 差异）
 - **先于**: F-35 的 584 文件还原
 
 ---
@@ -676,15 +735,75 @@ CronTask due
 
 ### 实施阶段
 
-#### Phase 0 — 统一事件存储（1-2天）
+#### Phase 0 — 统一事件存储：Message 转录接入（1-2天）
+
+统一 headless agent 和 REPL 会话的存储格式，使 headless agent 的每个 tool_use / tool_result / text_delta 以 **Message dict 格式**写入 `~/.clawcodex/sessions/{run_id}/transcript.jsonl`，替换现有的 `.event_logs/{issue_id}.ndjson` 扁平格式。
 
 | 文件 | 改动 |
 |------|------|
 | `extensions/orchestrator/agent_runner.py` | `AgentSession` 增加 `session_storage: SessionStorage`；`run()` 中 `init_metadata(model, cwd, title)`；替换 `_write_event_log()` → `session_storage.write_raw(msg_dict)` + `flush()` |
 | `extensions/orchestrator/agent_runner.py` | 删除 `_write_event_log()` 方法；删除 `.event_logs/` 目录创建逻辑 |
-| `extensions/orchestrator/cli/issue.py` | `_run_tail` 改为读 `transcript.jsonl`（或兼容双读） |
+| `extensions/orchestrator/cli/issue.py` | `_run_tail` 改为读 `transcript.jsonl`（或保留兼容双读） |
 
-验收：headless agent 的每个 tool_use / tool_result / text_delta 以 Message dict 格式写入 session JSONL，`TailFollower` 可直接 follow，`session_resume` 可直接重建 LLM context。
+**Phase 0.1 — Message 转录映射规则**（核心契约）
+
+`QueryRunner.stream()` 产出的扁平事件必须按 LLM 响应轮次分组为 `assistant` / `user` Message：
+
+```
+一轮 LLM 响应（TurnComplete 为止）：
+  TextDelta × N                          ─┐
+  ToolCallEvent(tool_use_id=T1) × M      ─┤→ AssistantMessage
+                                           │   content = [TextBlock, ToolUseBlock, …]
+                                           │   按事件流顺序交替排列
+                                           └→ SessionStorage.write_raw(assistant_msg_dict)
+
+  ToolResultEvent(tool_use_id=T1) × M     ──→ UserMessage
+                                                content = [ToolResultBlock, …]
+                                                ↓ SessionStorage.write_raw(user_msg_dict)
+
+  下一轮 prompt 写入                      ──→ UserMessage
+                                                content = [TextBlock(text=continuation)]
+                                                ↓ SessionStorage.write_raw(continuation_msg_dict)
+```
+
+| 事件序列 | Message 类型 | `content` 结构 |
+|----------|-------------|----------------|
+| 首个 turn 的 user prompt | `UserMessage` | `[TextBlock(text=prompt)]` |
+| `TextDelta` × N + `ToolCallEvent` × 0 | `AssistantMessage` | `[TextBlock(text=concat(deltas))]` |
+| `TextDelta` × N + `ToolCallEvent` × M | `AssistantMessage` | `[TextBlock, ToolUseBlock, ...]` 交替排列 |
+| `ToolResultEvent` × M | `UserMessage` | `[ToolResultBlock(tool_use_id, content), ...]` |
+| 后续 turn 的 continuation prompt | `UserMessage` | `[TextBlock(text=continuation_prompt)]` |
+| `SessionComplete` | 不写 Message | 调用 `flush()` 确保缓冲落盘 |
+
+关键约束：ToolResultEvent 可能乱序，需用 `dict[tool_use_id]` 累积；被 approval policy 拒绝的 tool call 也要写入 result（`is_error=True`）；TurnComplete 时才知道本轮 LLM 输出结束，此时一次性组装 assistant message。
+
+**Phase 0.2 — CLI 介入：会话恢复（--resume）+ 实时观察 + 问题追溯**
+
+统一格式后的核心收益：**`clawcodex --resume <run_id>` 可直接恢复 orchestrator headless agent run 的完整对话，进入交互式 REPL**，operator 可继续对话，新内容追加到同一 transcript。
+
+| 场景 | 机制 | 代码来源 |
+|------|------|---------|
+| **完整会话恢复（核心）** | `clawcodex --resume <run_id>` → `Session.resume(run_id)` 读取 transcript + metadata，重建 Conversation，进入交互式 REPL | `src.agent.session.Session.resume()` — 完全复用，0 改动 |
+| **TUI 实时增量观察** | `clawcodex --tui --resume <run_id>` → TailFollower 从 transcript 末尾输出增量 | `src.services.tail_follower.TailFollower` — 完全复用 |
+| **接管 agent run** | operator 在 REPL 中直接输入指令替代 headless agent 的下一 turn；退出可选 detach / finish / re-orchestrate | `Session.resume()` + 前台 REPL |
+| **崩溃恢复** | orchestrator 检测到 agent 进程退出后，用 `Session.resume()` 重建 context，在新的 `AgentRunner` 中继续 | `Session.resume()` → `session_resume.resume_session()` |
+| **只读追溯** | `issue transcript --run <run_id>` 文本输出对话历史，适合管道处理 | 新增 `_run_transcript` 子命令 |
+
+`--resume` 三种模式：
+
+```
+clawcodex --resume <run_id>               → 完整会话恢复，进入交互式 REPL
+clawcodex --tui --resume <run_id>         → TUI 模式，TailFollower 增量显示 + 可输入
+clawcodex --resume <run_id> --readonly    → 只读查看历史，不进入交互模式
+```
+
+并发安全：agent 已结束时正常恢复可写；agent 正在运行时 `--resume` 获得只读历史快照不干扰运行中 agent；需写入需通过 socket 先 pause。
+
+**Phase 0.3 — 大内容文件引用**
+
+复用 `SessionStorage._replace_large_content()` 内置行为，自动将大 tool result 替换为文件引用（存储于 `~/.clawcodex/sessions/<run_id>/content/`），AgentRunner 无需感知。
+
+验收标准：headless agent 的每轮 tool_use / tool_result / text_delta 以 Message dict 格式写入 session JSONL，`TailFollower` 可直接 follow，`session_resume` 可直接重建 LLM context。整个 Phase 0 不修改 `src/services/session_storage.py` 一行代码。
 
 #### Phase 1 — Unix Socket 控制通道（2-3天）
 
