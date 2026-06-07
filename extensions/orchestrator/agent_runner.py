@@ -104,6 +104,17 @@ class AgentSession:
     # Event stream for CLI tail command
     event_queue: "asyncio.Queue | None" = None
     prompt_override: str | None = None
+    # F-49 Phase 1: Unix domain socket for live operator control. None if
+    # the socket failed to start (or was disabled by configuration). When
+    # set, the runner broadcasts every dispatched event and polls for
+    # control commands at turn boundaries. Defensive: all socket ops
+    # are wrapped in try/except so a broken socket never kills the
+    # agent run.
+    control_socket: Any | None = None
+    # Public path of the listening socket. Stored on the session so the
+    # Phase 2 ``attach`` CLI can discover it via the registry without
+    # scanning the workspace tree.
+    control_socket_path: str | None = None
     run_kind: str = "issue"
     run_id: str | None = None
     summary_comment_id: str | None = None
@@ -115,12 +126,28 @@ class AgentSession:
     # Set in AgentRunner.run() at session start; consumed by
     # report_writer.write() to dual-write the NDJSON to the persistent layer.
     tool_events_path: str | None = None
-    # F-49 Phase 0: session-transcript storage for conversation recording.
-    # Lazy-initialized in run() via SessionStorage; holds the SS instance,
-    # accumulated assistant text, and pending tool_use_id for the current turn.
+    # F-49 Phase 0.1: session-transcript storage for conversation recording.
+    # Lazy-initialized in run() via SessionStorage. The agent_runner buffers
+    # per-turn blocks here and emits exactly one AssistantMessage and (if
+    # tool calls happened) one UserMessage per LLM turn at end-of-turn.
     _transcript_storage: Any | None = None
+    # Accumulated assistant text in the current turn (concatenation of all
+    # TextDelta events up to the first tool call OR up to SessionComplete
+    # if no tool calls were emitted). Reset by _flush_turn_transcript().
     _transcript_asst_text: str = ""
-    _transcript_tool_use_id: str | None = None
+    # Ordered list of ToolUseBlocks for the current turn, preserved in
+    # event arrival order so the final AssistantMessage interleaves text
+    # and tool_use blocks exactly as the LLM emitted them. Reset by
+    # _flush_turn_transcript().
+    _transcript_tool_uses: list[Any] = field(default_factory=list)
+    # Pending ToolResultBlocks waiting to be paired with their ToolUseBlock
+    # when the LLM turn ends. Keyed by tool_use_id so out-of-order arrivals
+    # are handled correctly. Reset by _flush_turn_transcript().
+    _transcript_pending_results: dict[str, Any] = field(default_factory=dict)
+    # Ordered list of tool_use_ids for which results have been received
+    # this turn. Used to emit the final UserMessage's ToolResultBlocks in
+    # tool_use order, not arrival order. Reset by _flush_turn_transcript().
+    _transcript_result_order: list[str] = field(default_factory=list)
     attempt: int = 1
     issue_attempt: int = 1
     followup_attempt: int = 1
@@ -208,6 +235,36 @@ class AgentRunner:
         event._deny_reason = policy_event._deny_reason
         return event
 
+    @staticmethod
+    def _event_to_broadcast_dict(event: Any) -> dict:
+        """F-49 Phase 1: JSON-safe dict representation of a query event.
+
+        Used by ``ControlSocket.send_event`` to broadcast to attached
+        clients. Defensive: never raises; missing fields are omitted
+        so a partial event still serializes cleanly.
+        """
+        from extensions.api.query import (
+            TextDelta,
+            ToolCallEvent,
+            ToolResultEvent,
+        )
+        if isinstance(event, TextDelta):
+            return {"content": str(getattr(event, "content", ""))}
+        if isinstance(event, ToolCallEvent):
+            return {
+                "tool_name": str(getattr(event, "tool_name", "")),
+                "tool_use_id": getattr(event, "tool_use_id", None),
+                "params": dict(getattr(event, "params", {}) or {}),
+                "approved": getattr(event, "_approved", None),
+            }
+        if isinstance(event, ToolResultEvent):
+            return {
+                "tool_name": str(getattr(event, "tool_name", "")),
+                "tool_use_id": getattr(event, "tool_use_id", None),
+                "result": dict(getattr(event, "result", {}) or {}),
+            }
+        return {}
+
     def _append_tool_event_log(
         self,
         event: ToolCallEvent,
@@ -283,6 +340,75 @@ class AgentRunner:
             # agent run. The audit log is observable infrastructure, not
             # a correctness gate.
             logger.exception("tool-event log unexpected failure")
+
+    def _flush_turn_transcript(self, session: AgentSession) -> None:
+        """F-49 Phase 0.1: emit one AssistantMessage + (optionally) one UserMessage per turn.
+
+        Called at end-of-turn: every ToolResultEvent (conditional on "all
+        results in"), every SessionComplete, the max_turns fallthrough,
+        and the 429 backoff reset. Idempotent — no-op if storage is not
+        wired or buffers are empty. Defensive: never raises; callers
+        wrap in try/except for logging.
+        """
+        if session._transcript_storage is None:
+            return
+
+        storage = session._transcript_storage
+        from src.types.messages import (
+            create_assistant_message,
+            create_user_message,
+        )
+        from src.types.content_blocks import (
+            TextBlock,
+            ToolResultBlock,
+        )
+
+        # --- AssistantMessage: optional leading TextBlock then all ToolUseBlocks.
+        blocks: list[Any] = []
+        if session._transcript_asst_text:
+            blocks.append(TextBlock(text=session._transcript_asst_text))
+        blocks.extend(session._transcript_tool_uses)
+        if blocks:
+            storage.write_message(
+                create_assistant_message(
+                    content=blocks,
+                    model=self.agent_config.model,
+                ),
+            )
+
+        # --- UserMessage: ToolResultBlocks in tool_use order (NOT arrival order).
+        # Iterate _transcript_tool_uses (preserves tool_use emission order)
+        # and look up the corresponding result; this guarantees OOO arrivals
+        # are still emitted in the canonical tool_use / tool_result pairing
+        # order that the LLM API requires.
+        if session._transcript_tool_uses:
+            result_blocks: list[Any] = []
+            for tool_use in session._transcript_tool_uses:
+                use_id = tool_use.id
+                pending = session._transcript_pending_results.get(use_id)
+                if pending is None:
+                    # Defensive: missing result for a tool_use. Emit a
+                    # synthetic error block so the LLM transcript stays
+                    # consistent on the next turn's prompt render.
+                    result_blocks.append(ToolResultBlock(
+                        tool_use_id=use_id,
+                        content="[Tool result missing — internal error]",
+                        is_error=True,
+                    ))
+                    continue
+                result_blocks.append(pending)
+            storage.write_message(
+                create_user_message(
+                    content=result_blocks,
+                    origin="tool_result",
+                ),
+            )
+
+        # --- Reset per-turn buffers.
+        session._transcript_asst_text = ""
+        session._transcript_tool_uses = []
+        session._transcript_pending_results = {}
+        session._transcript_result_order = []
 
     def _is_429_response(self, turn_output: str) -> bool:
         """Detect an upstream 429 rate limit in the accumulated turn output.
@@ -421,15 +547,16 @@ class AgentRunner:
         )
         session.output_text += notice
 
-        # Surface to dashboard / event log so the operator sees
-        # liveness during the backoff.
+        # Surface to dashboard so the operator sees liveness during
+        # the backoff.  Session transcript is not written here: the
+        # 429 notice is transient operator-facing text, not LLM
+        # conversation content.
         text_event = TextDelta(content=notice)
         if status_dashboard is not None:
             try:
                 status_dashboard.on_event(text_event, session)
             except Exception:
                 pass
-        self._write_event_log(session.workspace.path, issue.id, text_event, turn=turn_number)
 
         logger.warning(
             "Rate limit backoff issue_id=%s attempt=%d delay=%.1fs",
@@ -665,6 +792,30 @@ class AgentRunner:
                             "Failed to init transcript storage run_id=%s",
                             session.run_id,
                         )
+                # F-49 Phase 1: start the Unix control socket. Defensive:
+                # a socket failure must NOT abort the agent run — log
+                # and leave ``control_socket = None`` so the broadcast
+                # + poll sites become no-ops.
+                if session.control_socket is None:
+                    try:
+                        from extensions.orchestrator.control_socket import (
+                            ControlSocket,
+                        )
+                        from pathlib import Path as _CsPath
+                        sock_dir = _CsPath(
+                            session.workspace.path,
+                        ) / ".run_control"
+                        sock_path = sock_dir / f"{session.run_id}.sock"
+                        cs = ControlSocket(sock_path)
+                        await cs.start()
+                        session.control_socket = cs
+                        session.control_socket_path = str(sock_path)
+                    except Exception:
+                        logger.exception(
+                            "Failed to start control_socket run_id=%s",
+                            session.run_id,
+                        )
+                        session.control_socket = None
                 if session._transcript_storage is not None:
                     try:
                         from src.types.messages import create_user_message
@@ -750,8 +901,21 @@ class AgentRunner:
                             except Exception:
                                 pass
 
-                        # Also write to event log file for cross-process tail
-                        self._write_event_log(session.workspace.path, issue.id, event, turn=turn_number)
+                        # F-49 Phase 1: broadcast to attached socket clients.
+                        # Defensive: a broken socket must never abort the
+                        # agent run, so the whole block is wrapped in
+                        # try/except and guarded by ``is not None``.
+                        if session.control_socket is not None:
+                            try:
+                                await session.control_socket.send_event({
+                                    "type": event.__class__.__name__,
+                                    "data": self._event_to_broadcast_dict(
+                                        event,
+                                    ),
+                                })
+                            except Exception:
+                                pass
+
                         # F-49 Phase 0: accumulate assistant text for transcript
                         session._transcript_asst_text += event.content
 
@@ -808,40 +972,40 @@ class AgentRunner:
                             except Exception:
                                 pass
 
-                        # Also write to event log file for cross-process tail
-                        self._write_event_log(session.workspace.path, issue.id, event, turn=turn_number)
-                        # F-49 Phase 0: write assistant message with tool_use to transcript
+                        # F-49 Phase 1: broadcast to attached socket clients.
+                        # Defensive: a broken socket must never abort the
+                        # agent run, so the whole block is wrapped in
+                        # try/except and guarded by ``is not None``.
+                        if session.control_socket is not None:
+                            try:
+                                await session.control_socket.send_event({
+                                    "type": event.__class__.__name__,
+                                    "data": self._event_to_broadcast_dict(
+                                        event,
+                                    ),
+                                })
+                            except Exception:
+                                pass
+
+                        # F-49 Phase 0.1: buffer tool_use block for end-of-turn flush.
+                        # The spec requires ONE AssistantMessage per turn with N
+                        # ToolUseBlocks in event arrival order; the flush is called
+                        # from (a) the next ToolResultEvent, (b) SessionComplete,
+                        # (c) max_turns fallthrough, (d) 429 backoff reset.
                         if session._transcript_storage is not None:
                             try:
-                                from src.types.messages import create_assistant_message
-                                from src.types.content_blocks import (
-                                    TextBlock,
-                                    ToolUseBlock,
-                                )
-                                blocks = []
-                                if session._transcript_asst_text:
-                                    blocks.append(TextBlock(
-                                        text=session._transcript_asst_text,
-                                    ))
+                                from src.types.content_blocks import ToolUseBlock
                                 if event.tool_use_id:
-                                    blocks.append(ToolUseBlock(
-                                        id=event.tool_use_id,
-                                        name=event.tool_name,
-                                        input=event.params,
-                                    ))
-                                if blocks:
-                                    session._transcript_storage.write_message(
-                                        create_assistant_message(
-                                            content=blocks,
-                                            model=self.agent_config.model,
-                                        ),
+                                    session._transcript_tool_uses.append(
+                                        ToolUseBlock(
+                                            id=event.tool_use_id,
+                                            name=event.tool_name,
+                                            input=event.params,
+                                        )
                                     )
-                                session._transcript_asst_text = ""
-                                session._transcript_tool_use_id = \
-                                    event.tool_use_id
                             except Exception:
                                 logger.exception(
-                                    "Failed to write transcript tool_use "
+                                    "Failed to buffer transcript tool_use "
                                     "run_id=%s", session.run_id,
                                 )
 
@@ -865,37 +1029,58 @@ class AgentRunner:
                             except Exception:
                                 pass
 
-                        # Also write to event log file for cross-process tail
-                        self._write_event_log(session.workspace.path, issue.id, event, turn=turn_number)
-                        # F-49 Phase 0: write tool_result as UserMessage to transcript
-                        if session._transcript_storage is not None and session._transcript_tool_use_id:
+                        # F-49 Phase 1: broadcast to attached socket clients.
+                        # Defensive: a broken socket must never abort the
+                        # agent run, so the whole block is wrapped in
+                        # try/except and guarded by ``is not None``.
+                        if session.control_socket is not None:
                             try:
-                                from src.types.messages import create_user_message
-                                from src.types.content_blocks import (
-                                    ToolResultBlock,
-                                )
+                                await session.control_socket.send_event({
+                                    "type": event.__class__.__name__,
+                                    "data": self._event_to_broadcast_dict(
+                                        event,
+                                    ),
+                                })
+                            except Exception:
+                                pass
+
+                        # F-49 Phase 0.1: buffer tool_result for end-of-turn flush.
+                        # Keyed by tool_use_id (populated by convert_tool_event
+                        # in extensions/api/query.py) so out-of-order arrivals
+                        # are paired correctly. Flush at the natural end-of-
+                        # tool-result point; the SessionComplete path also
+                        # flushes unconditionally, so missing results get a
+                        # synthetic error block.
+                        if (session._transcript_storage is not None
+                                and event.tool_use_id):
+                            try:
+                                from src.types.content_blocks import ToolResultBlock
                                 result_output = event.result.get("output", "")
                                 is_error = event.result.get("is_error", False)
-                                session._transcript_storage.write_message(
-                                    create_user_message(
-                                        content=[ToolResultBlock(
-                                            tool_use_id=(
-                                                session._transcript_tool_use_id
-                                            ),
-                                            content=(
-                                                result_output
-                                                if isinstance(result_output, str)
-                                                else str(result_output)
-                                            ),
-                                            is_error=is_error,
-                                        )],
-                                        origin="tool_result",
+                                session._transcript_pending_results[
+                                    event.tool_use_id
+                                ] = ToolResultBlock(
+                                    tool_use_id=event.tool_use_id,
+                                    content=(
+                                        result_output
+                                        if isinstance(result_output, str)
+                                        else str(result_output)
                                     ),
+                                    is_error=is_error,
                                 )
-                                session._transcript_tool_use_id = None
+                                if event.tool_use_id not in (
+                                    session._transcript_result_order
+                                ):
+                                    session._transcript_result_order.append(
+                                        event.tool_use_id,
+                                    )
+                                if len(session._transcript_result_order) >= len(
+                                    session._transcript_tool_uses
+                                ):
+                                    self._flush_turn_transcript(session)
                             except Exception:
                                 logger.exception(
-                                    "Failed to write transcript tool_result "
+                                    "Failed to buffer transcript tool_result "
                                     "run_id=%s", session.run_id,
                                 )
                         update_diagnostics()
@@ -918,6 +1103,12 @@ class AgentRunner:
                             )
                             if new_status == "rate_limit_circuit_open":
                                 return
+                            # F-49 Phase 0.1: reset per-turn transcript
+                            # buffers so the re-issued turn starts clean.
+                            # The previous code leaked _transcript_asst_text
+                            # and a stale _transcript_tool_use_id across
+                            # the backoff boundary.
+                            self._flush_turn_transcript(session)
                             # Reset the per-turn accumulators so the
                             # re-issued turn starts with a clean slate.
                             turn_output = ""
@@ -929,27 +1120,48 @@ class AgentRunner:
 
                         # Normal completion path — increment the turn
                         # counter and emit PhaseComplete.
+                        # F-49 Phase 1: drain control commands at the
+                        # turn boundary. Defensive: each branch wrapped
+                        # so a malformed command never aborts the run.
+                        if session.control_socket is not None:
+                            try:
+                                async for cmd in session.control_socket.poll_commands():
+                                    if cmd.cmd == "pause":
+                                        session.paused = True
+                                        session.pause_reason = "operator_interrupt"
+                                        if session.pause_resume_event is not None:
+                                            session.pause_resume_event.clear()
+                                    elif cmd.cmd == "resume":
+                                        if cmd.payload:
+                                            session.prompt_override = cmd.payload
+                                        session.paused = False
+                                        if session.pause_resume_event is not None:
+                                            session.pause_resume_event.set()
+                                    elif cmd.cmd == "stop":
+                                        session.session_end_reason = "operator_stop"
+                                        session.session_end_summary = (
+                                            "operator sent stop via control socket"
+                                        )
+                                    elif cmd.cmd == "takeover":
+                                        session.session_end_reason = "operator_takeover"
+                                        session.session_end_summary = (
+                                            "operator requested takeover via control socket"
+                                        )
+                                    # inject / detach: parsed, no agent
+                                    # action yet (TODO Phase 2/3).
+                            except Exception:
+                                logger.exception(
+                                    "control_socket.poll_commands failed",
+                                )
                         turn_number += 1
                         session.turn_count = turn_number
-                        # F-49 Phase 0: flush remaining assistant text + storage
+                        # F-49 Phase 0.1: emit any buffered turn content
+                        # (AssistantMessage + optional UserMessage) and
+                        # flush the storage buffer. The helper handles
+                        # empty buffers idempotently.
                         if session._transcript_storage is not None:
                             try:
-                                if session._transcript_asst_text:
-                                    from src.types.messages import (
-                                        create_assistant_message,
-                                    )
-                                    from src.types.content_blocks import (
-                                        TextBlock,
-                                    )
-                                    session._transcript_storage.write_message(
-                                        create_assistant_message(
-                                            content=[TextBlock(
-                                                text=session._transcript_asst_text,
-                                            )],
-                                            model=self.agent_config.model,
-                                        ),
-                                    )
-                                    session._transcript_asst_text = ""
+                                self._flush_turn_transcript(session)
                                 session._transcript_storage.flush()
                             except Exception:
                                 logger.exception(
@@ -972,7 +1184,6 @@ class AgentRunner:
                             phase=turn_number,
                             turn_count=turn_number,
                         )
-                        self._write_event_log(session.workspace.path, issue.id, phase_event, turn=turn_number)
                         if sink is not None:
                             # F-40: dispatch PhaseComplete + TurnComplete
                             # through the new protocol methods. The old
@@ -1428,24 +1639,11 @@ class AgentRunner:
                                 ),
                                 session,
                             )
-                        # F-49 Phase 0: final flush before returning
+                        # F-49 Phase 0.1: final flush before returning.
+                        # Helper handles empty buffers idempotently.
                         if session._transcript_storage is not None:
                             try:
-                                if session._transcript_asst_text:
-                                    from src.types.messages import (
-                                        create_assistant_message,
-                                    )
-                                    from src.types.content_blocks import (
-                                        TextBlock,
-                                    )
-                                    session._transcript_storage.write_message(
-                                        create_assistant_message(
-                                            content=[TextBlock(
-                                                text=session._transcript_asst_text,
-                                            )],
-                                            model=self.agent_config.model,
-                                        ),
-                                    )
+                                self._flush_turn_transcript(session)
                                 session._transcript_storage.flush()
                             except Exception:
                                 logger.exception(
@@ -1472,6 +1670,8 @@ class AgentRunner:
                     )
                     if new_status == "rate_limit_circuit_open":
                         return
+                    # F-49 Phase 0.1: reset per-turn transcript buffers.
+                    self._flush_turn_transcript(session)
                     turn_output = ""
                     turn_has_tool_calls = False
                     continue
@@ -1504,7 +1704,6 @@ class AgentRunner:
             phase=turn_number,
             turn_count=turn_number,
         )
-        self._write_event_log(session.workspace.path, issue.id, phase_event, turn=turn_number)
         if sink is not None:
             # F-40: max_turns path now dispatches BOTH PhaseComplete
             # (so the trailing phase is recorded with its progress)
@@ -1531,20 +1730,12 @@ class AgentRunner:
             )
 
         session.tool_count = tool_count
-        # F-49 Phase 0: final flush before max_turns exit
+        # F-49 Phase 0.1: final flush before max_turns exit.
+        # Helper handles empty buffers idempotently; covers the
+        # "Late TextDelta flow interruption" case from the spec.
         if session._transcript_storage is not None:
             try:
-                if session._transcript_asst_text:
-                    from src.types.messages import create_assistant_message
-                    from src.types.content_blocks import TextBlock
-                    session._transcript_storage.write_message(
-                        create_assistant_message(
-                            content=[TextBlock(
-                                text=session._transcript_asst_text,
-                            )],
-                            model=self.agent_config.model,
-                        ),
-                    )
+                self._flush_turn_transcript(session)
                 session._transcript_storage.flush()
             except Exception:
                 logger.exception(
@@ -1801,65 +1992,3 @@ class AgentRunner:
                 exc,
             )
             return False
-
-    def _write_event_log(
-        self,
-        workspace_path: Any,
-        issue_id: str | None,
-        event: Any,
-        turn: int | None = None,
-    ) -> None:
-        """Write structured event to event log file for CLI tail."""
-        import json
-        import time
-
-        if issue_id is None:
-            return
-
-        log_dir = workspace_path / ".event_logs"
-        log_dir.mkdir(exist_ok=True)
-        log_file = log_dir / f"{issue_id}.ndjson"
-
-        try:
-            if hasattr(event, "tool_name"):
-                entry = {
-                    "timestamp": time.strftime("%H:%M:%S"),
-                    "type": "tool_call",
-                    "tool_name": event.tool_name,
-                    "params": event.params,
-                    "turn": turn,
-                }
-            elif hasattr(event, "result"):
-                entry = {
-                    "timestamp": time.strftime("%H:%M:%S"),
-                    "type": "tool_result",
-                    "tool_name": event.tool_name,
-                    "is_error": event.result.get("is_error", False),
-                    "turn": turn,
-                }
-            elif hasattr(event, "content"):
-                entry = {
-                    "timestamp": time.strftime("%H:%M:%S"),
-                    "type": "text_delta",
-                    "content": event.content,
-                    "turn": turn,
-                }
-            elif isinstance(event, PhaseComplete):
-                entry = {
-                    "timestamp": time.strftime("%H:%M:%S"),
-                    "type": "phase_complete",
-                    "phase": event.phase,
-                    "turn_count": event.turn_count,
-                    "turn": turn,
-                }
-            else:
-                entry = {
-                    "timestamp": time.strftime("%H:%M:%S"),
-                    "type": str(type(event).__name__),
-                    "turn": turn,
-                }
-
-            with open(log_file, "a", encoding="utf-8") as f:
-                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        except Exception:
-            pass

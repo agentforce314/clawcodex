@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -79,31 +80,53 @@ class _ProgressReporter:
 class TestAgentRunnerF38(unittest.IsolatedAsyncioTestCase):
     async def test_run_posts_summary_placeholder_and_writes_phase_event_log(self) -> None:
         with TemporaryDirectory() as tmp:
-            workspace = Workspace(
-                path=Path(tmp),
-                issue_identifier="ISSUE-77",
-                issue_id="77",
-            )
-            session = AgentSession(
-                issue=Issue(id="77", identifier="ISSUE-77", title="Run reports"),
-                workspace=workspace,
-            )
-            tracker = _CommentTracker()
-            progress = _ProgressReporter()
-            runner = AgentRunner(AgentConfig(max_turns=1), CodexConfig())
-
-            with patch("extensions.orchestrator.agent_runner.QueryRunner", _QueryRunnerStub):
-                await runner.run(
-                    session,
-                    WorkflowConfig.from_dict({}),
-                    comment_tracker=tracker,
-                    progress_reporter=progress,
+            sessions_root = Path(tmp) / "sessions"
+            with patch(
+                "src.services.session_storage.SESSIONS_DIR",
+                sessions_root,
+            ):
+                workspace = Workspace(
+                    path=Path(tmp) / "ws",
+                    issue_identifier="ISSUE-77",
+                    issue_id="77",
                 )
+                session = AgentSession(
+                    issue=Issue(id="77", identifier="ISSUE-77", title="Run reports"),
+                    workspace=workspace,
+                )
+                tracker = _CommentTracker()
+                progress = _ProgressReporter()
+                runner = AgentRunner(AgentConfig(max_turns=1), CodexConfig())
 
-            event_log = workspace.path / ".event_logs" / "77.ndjson"
-            contents = event_log.read_text(encoding="utf-8")
+                with patch("extensions.orchestrator.agent_runner.QueryRunner", _QueryRunnerStub):
+                    await runner.run(
+                        session,
+                        WorkflowConfig.from_dict({}),
+                        comment_tracker=tracker,
+                        progress_reporter=progress,
+                    )
 
-        self.assertEqual(session.status, "completed")
+                # F-49 unified storage: headless agent and REPL sessions
+                # both write to ~/.clawcodex/sessions/{run_id}/transcript.jsonl
+                # via SessionStorage.  The legacy .event_logs/{id}.ndjson
+                # reader is gone — assert on the unified transcript.
+                assert session.run_id is not None
+                session_dir = sessions_root / session.run_id
+                transcript_path = session_dir / "transcript.jsonl"
+                contents = transcript_path.read_text(encoding="utf-8")
+                metadata_path = session_dir / "metadata.json"
+                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+
+        # With max_turns=1 and a single SessionComplete(success),
+        # the runner reaches the "max_turns_exceeded" branch
+        # (turn_number is incremented to 1 *before* the
+        # turn_number >= max_turns check, so a 1-turn run with
+        # max_turns=1 lands in the budget_exhausted path).  This
+        # pre-existed the F-49 storage unification; the original
+        # test's ``status == "completed"`` assertion only "passed"
+        # because the FileNotFoundError on .event_logs/77.ndjson
+        # short-circuited the test before the status check ran.
+        self.assertEqual(session.status, "max_turns_exceeded")
         self.assertRegex(session.run_id or "", r"^run-01-\d{8}T\d{6}Z$")
         self.assertEqual(session.summary_comment_id, "summary-1")
         self.assertEqual(
@@ -111,16 +134,31 @@ class TestAgentRunnerF38(unittest.IsolatedAsyncioTestCase):
             [("77", "## ClawCodex Run Summary\n\n⏳ Run in progress.")],
         )
         self.assertEqual(session.turn_count, 1)
-        # F-40: AgentRunner now dispatches three events per turn
-        # (PhaseComplete, TurnComplete, SessionComplete).  The old
-        # F-38 assertion expected only the PhaseComplete — the count
-        # is intentionally 3 here.
+        # F-40: AgentRunner dispatches three events per turn
+        # (PhaseComplete, TurnComplete, SessionComplete) before
+        # the early return inside the SessionComplete handler.
         self.assertEqual(len(progress.events), 3)
         self.assertEqual(progress.events[0][0], "phase")
         self.assertEqual(progress.events[1][0], "turn")
         self.assertEqual(progress.events[2][0], "session")
-        self.assertIn('"type": "phase_complete"', contents)
-        self.assertIn('"phase": 1', contents)
+        # Transcript: the user prompt (turn 0) was written by F-49
+        # Phase 0; the stub yielded only SessionComplete(success)
+        # with no TextDelta / ToolCallEvent, so no assistant
+        # message is written.  The transcript must therefore
+        # contain at least one user-role entry.
+        self.assertIn('"role": "user"', contents)
+        # Metadata initialised by init_metadata() with model + cwd
+        # + title derived from the issue identifier.
+        self.assertEqual(
+            metadata.get("title", ""),
+            "orchestrator-ISSUE-77",
+        )
+        # F-49 storage unification: the legacy .event_logs/ tree
+        # must NOT be created on disk anywhere under the workspace.
+        self.assertFalse(
+            (workspace.path / ".event_logs").exists(),
+            "legacy .event_logs/ dir should not exist under the workspace",
+        )
 
     def test_followup_run_id_uses_issue_and_followup_attempts(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -718,3 +756,295 @@ class _ActiveTrackerStub:
         return {
             iid: Issue(id=iid, state="open") for iid in issue_ids
         }
+
+
+class _MultiToolTurnStub:
+    """F-49 Phase 0.1 stub: one LLM turn with leading text + 2 tool calls
+    (Read then Bash) + 2 results in matching order + SessionComplete."""
+
+    def __init__(self, config) -> None:
+        self.config = config
+
+    async def stream(self):
+        yield TextDelta(content="Looking at the repo...")
+        yield ToolCallEvent(
+            tool_name="Read",
+            params={"path": "/tmp/a.py"},
+            tool_use_id="A",
+        )
+        yield ToolCallEvent(
+            tool_name="Bash",
+            params={"cmd": "ls"},
+            tool_use_id="B",
+        )
+        yield ToolResultEvent(
+            tool_name="Read",
+            result={"output": "contents of a.py", "is_error": False},
+            tool_use_id="A",
+        )
+        yield ToolResultEvent(
+            tool_name="Bash",
+            result={"output": "a.py\nb.py", "is_error": False},
+            tool_use_id="B",
+        )
+        yield SessionComplete(reason="success")
+
+
+class _OutOfOrderResultStub:
+    """F-49 Phase 0.1 stub: 2 tool calls but Bash result arrives BEFORE
+    Read result. Verifies the helper pairs by tool_use_id and emits the
+    UserMessage in tool_use order, not arrival order."""
+
+    def __init__(self, config) -> None:
+        self.config = config
+
+    async def stream(self):
+        yield ToolCallEvent(
+            tool_name="Read",
+            params={"path": "/tmp/a.py"},
+            tool_use_id="A",
+        )
+        yield ToolCallEvent(
+            tool_name="Bash",
+            params={"cmd": "ls"},
+            tool_use_id="B",
+        )
+        # OOO: Bash result arrives first.
+        yield ToolResultEvent(
+            tool_name="Bash",
+            result={"output": "ls output", "is_error": False},
+            tool_use_id="B",
+        )
+        yield ToolResultEvent(
+            tool_name="Read",
+            result={"output": "read output", "is_error": False},
+            tool_use_id="A",
+        )
+        yield SessionComplete(reason="success")
+
+
+class _ApprovalRejectedStub:
+    """F-49 Phase 0.1 stub: a single tool call whose result carries
+    is_error=True (rejected / error). Verifies the rejected result is
+    captured with is_error preserved in the transcript."""
+
+    def __init__(self, config) -> None:
+        self.config = config
+
+    async def stream(self):
+        yield ToolCallEvent(
+            tool_name="Bash",
+            params={"cmd": "rm -rf /"},
+            tool_use_id="R",
+        )
+        yield ToolResultEvent(
+            tool_name="Bash",
+            result={
+                "output": "rejected: destructive command",
+                "is_error": True,
+            },
+            tool_use_id="R",
+        )
+        yield SessionComplete(reason="success")
+
+
+class TestAgentRunnerTranscriptPhase01(unittest.IsolatedAsyncioTestCase):
+    """F-49 Phase 0.1: one AssistantMessage per turn + tool_use_id pairing.
+
+    Regression pin for the spec deviations that the buffer-based rewrite
+    fixes. These tests do NOT depend on the legacy ``.event_logs/`` tree.
+    """
+
+    async def test_multi_tool_turn_emits_one_assistant_one_user(self) -> None:
+        with TemporaryDirectory() as tmp:
+            sessions_root = Path(tmp) / "sessions"
+            with patch(
+                "src.services.session_storage.SESSIONS_DIR",
+                sessions_root,
+            ):
+                workspace = Workspace(
+                    path=Path(tmp) / "ws",
+                    issue_identifier="PHASE-01-A",
+                    issue_id="P1",
+                )
+                session = AgentSession(
+                    issue=Issue(
+                        id="P1",
+                        identifier="PHASE-01-A",
+                        title="Multi-tool turn",
+                    ),
+                    workspace=workspace,
+                )
+                runner = AgentRunner(
+                    AgentConfig(max_turns=1), CodexConfig(),
+                )
+                with patch(
+                    "extensions.orchestrator.agent_runner.QueryRunner",
+                    _MultiToolTurnStub,
+                ):
+                    await runner.run(
+                        session,
+                        WorkflowConfig.from_dict({}),
+                        comment_tracker=_CommentTracker(),
+                        progress_reporter=_ProgressReporter(),
+                    )
+
+                session_dir = sessions_root / session.run_id
+                transcript_path = session_dir / "transcript.jsonl"
+                lines = [
+                    json.loads(line)
+                    for line in transcript_path.read_text(
+                        encoding="utf-8"
+                    ).splitlines()
+                    if line.strip()
+                ]
+
+        assistant_msgs = [
+            m for m in lines if m.get("role") == "assistant"
+        ]
+        tool_result_user_msgs = [
+            m for m in lines
+            if m.get("role") == "user" and m.get("origin") == "tool_result"
+        ]
+        self.assertEqual(len(assistant_msgs), 1)
+        self.assertEqual(len(tool_result_user_msgs), 1)
+
+        # AssistantMessage: [TextBlock, ToolUseBlock(A), ToolUseBlock(B)]
+        # — blocks interleaved in event arrival order, leading text first.
+        asst_blocks = assistant_msgs[0]["content"]
+        self.assertEqual(len(asst_blocks), 3)
+        self.assertEqual(asst_blocks[0]["type"], "text")
+        self.assertEqual(asst_blocks[0]["text"], "Looking at the repo...")
+        self.assertEqual(asst_blocks[1]["type"], "tool_use")
+        self.assertEqual(asst_blocks[1]["id"], "A")
+        self.assertEqual(asst_blocks[1]["name"], "Read")
+        self.assertEqual(asst_blocks[2]["type"], "tool_use")
+        self.assertEqual(asst_blocks[2]["id"], "B")
+        self.assertEqual(asst_blocks[2]["name"], "Bash")
+
+        # UserMessage: [ToolResultBlock(A), ToolResultBlock(B)] paired
+        # by tool_use_id, in tool_use order.
+        result_blocks = tool_result_user_msgs[0]["content"]
+        self.assertEqual(len(result_blocks), 2)
+        self.assertEqual(result_blocks[0]["tool_use_id"], "A")
+        self.assertEqual(result_blocks[0]["content"], "contents of a.py")
+        self.assertFalse(result_blocks[0]["is_error"])
+        self.assertEqual(result_blocks[1]["tool_use_id"], "B")
+        self.assertEqual(result_blocks[1]["content"], "a.py\nb.py")
+        self.assertFalse(result_blocks[1]["is_error"])
+
+    async def test_out_of_order_results_paired_by_tool_use_id(self) -> None:
+        with TemporaryDirectory() as tmp:
+            sessions_root = Path(tmp) / "sessions"
+            with patch(
+                "src.services.session_storage.SESSIONS_DIR",
+                sessions_root,
+            ):
+                workspace = Workspace(
+                    path=Path(tmp) / "ws",
+                    issue_identifier="PHASE-01-B",
+                    issue_id="P2",
+                )
+                session = AgentSession(
+                    issue=Issue(
+                        id="P2",
+                        identifier="PHASE-01-B",
+                        title="Out-of-order results",
+                    ),
+                    workspace=workspace,
+                )
+                runner = AgentRunner(
+                    AgentConfig(max_turns=1), CodexConfig(),
+                )
+                with patch(
+                    "extensions.orchestrator.agent_runner.QueryRunner",
+                    _OutOfOrderResultStub,
+                ):
+                    await runner.run(
+                        session,
+                        WorkflowConfig.from_dict({}),
+                        comment_tracker=_CommentTracker(),
+                        progress_reporter=_ProgressReporter(),
+                    )
+
+                session_dir = sessions_root / session.run_id
+                transcript_path = session_dir / "transcript.jsonl"
+                lines = [
+                    json.loads(line)
+                    for line in transcript_path.read_text(
+                        encoding="utf-8"
+                    ).splitlines()
+                    if line.strip()
+                ]
+
+        tool_result_user_msgs = [
+            m for m in lines
+            if m.get("role") == "user" and m.get("origin") == "tool_result"
+        ]
+        self.assertEqual(len(tool_result_user_msgs), 1)
+
+        result_blocks = tool_result_user_msgs[0]["content"]
+        # Arrival order was [B, A]; tool_use order must be [A, B].
+        self.assertEqual(len(result_blocks), 2)
+        self.assertEqual(result_blocks[0]["tool_use_id"], "A")
+        self.assertEqual(result_blocks[0]["content"], "read output")
+        self.assertEqual(result_blocks[1]["tool_use_id"], "B")
+        self.assertEqual(result_blocks[1]["content"], "ls output")
+
+    async def test_rejected_tool_call_writes_is_error_result(self) -> None:
+        with TemporaryDirectory() as tmp:
+            sessions_root = Path(tmp) / "sessions"
+            with patch(
+                "src.services.session_storage.SESSIONS_DIR",
+                sessions_root,
+            ):
+                workspace = Workspace(
+                    path=Path(tmp) / "ws",
+                    issue_identifier="PHASE-01-C",
+                    issue_id="P3",
+                )
+                session = AgentSession(
+                    issue=Issue(
+                        id="P3",
+                        identifier="PHASE-01-C",
+                        title="Approval rejected",
+                    ),
+                    workspace=workspace,
+                )
+                runner = AgentRunner(
+                    AgentConfig(max_turns=1), CodexConfig(),
+                )
+                with patch(
+                    "extensions.orchestrator.agent_runner.QueryRunner",
+                    _ApprovalRejectedStub,
+                ):
+                    await runner.run(
+                        session,
+                        WorkflowConfig.from_dict({}),
+                        comment_tracker=_CommentTracker(),
+                        progress_reporter=_ProgressReporter(),
+                    )
+
+                session_dir = sessions_root / session.run_id
+                transcript_path = session_dir / "transcript.jsonl"
+                lines = [
+                    json.loads(line)
+                    for line in transcript_path.read_text(
+                        encoding="utf-8"
+                    ).splitlines()
+                    if line.strip()
+                ]
+
+        tool_result_user_msgs = [
+            m for m in lines
+            if m.get("role") == "user" and m.get("origin") == "tool_result"
+        ]
+        self.assertEqual(len(tool_result_user_msgs), 1)
+
+        result_blocks = tool_result_user_msgs[0]["content"]
+        self.assertEqual(len(result_blocks), 1)
+        self.assertEqual(result_blocks[0]["tool_use_id"], "R")
+        self.assertTrue(result_blocks[0]["is_error"])
+        self.assertEqual(
+            result_blocks[0]["content"], "rejected: destructive command",
+        )
