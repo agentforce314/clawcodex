@@ -398,7 +398,7 @@ def _try_build_image_attachment(
 
     # Lazy import keeps this module's import cheap when the user never
     # uses image @-mentions (Pillow takes ~25 ms to import).
-    from ..utils.image_processor import (
+    from src.utils.image_processor import (
         API_IMAGE_MAX_BASE64_SIZE,
         IMAGE_READ_SAFETY_CAP,
         ImageProcessingError,
@@ -679,7 +679,7 @@ def build_image_content_blocks(
     the API receives a mixed text+image content list, matching the TS
     @-mention flow which auto-Reads the image and inlines it.
     """
-    from ..types.content_blocks import ImageBlock
+    from src.types.content_blocks import ImageBlock
 
     blocks: list[ImageBlock] = []
     for att in attachments:

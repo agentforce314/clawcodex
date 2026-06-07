@@ -1621,6 +1621,51 @@ class AgentRunner:
                     except Exception:
                         pass  # Fail-open: allow continue if git check fails
 
+        # F-54 root-cause fix: detect "fake progress" — the agent made
+        # read-only tool calls and empty commits but never wrote a
+        # single line of code.  When ``has_made_progress`` is False
+        # AND the session has consumed multiple turns with only
+        # read-only tools, stop the continuation loop so the session
+        # terminates and the ``llm_gave_up`` check fires.
+        tool_count = getattr(session, "tool_count", 0)
+        if (
+            not getattr(session, "has_made_progress", False)
+            and getattr(session, "turn_count", 0) >= 2
+            and tool_count > 0
+        ):
+            ws = getattr(session, "workspace", None)
+            if ws is not None:
+                ws_path = getattr(ws, "path", None)
+                if ws_path is not None:
+                    try:
+                        import subprocess
+                        # Check if recent commits have actual file
+                        # changes.  If the agent made 3+ commits but
+                        # ``git diff --stat`` shows nothing changed,
+                        # all commits were ``--allow-empty`` — the
+                        # agent is faking progress.
+                        proc = subprocess.run(
+                            ["git", "diff", "--stat", "HEAD~3..HEAD"],
+                            cwd=str(ws_path),
+                            capture_output=True,
+                            text=True,
+                            timeout=10,
+                        )
+                        diff_empty = not proc.stdout.strip()
+                        if diff_empty:
+                            logger.info(
+                                "Issue %s: all recent commits are empty "
+                                "(%d turns, %d tools, has_made_progress=%s) — "
+                                "stopping fake-progress loop",
+                                issue.id,
+                                getattr(session, "turn_count", 0),
+                                tool_count,
+                                getattr(session, "has_made_progress", False),
+                            )
+                            return False, refreshed_issue
+                    except Exception:
+                        pass  # Fail-open
+
         return is_active, refreshed_issue
 
     def _inject_operator_hints(self, workspace: Any) -> None:

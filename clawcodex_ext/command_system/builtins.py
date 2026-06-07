@@ -197,7 +197,7 @@ def skills_command_call(args: str, context: CommandContext) -> LocalCommandResul
         LocalCommandResult
     """
     try:
-        from ..skills.loader import get_all_skills
+        from src.skills.loader import get_all_skills
         # Pass project_root to find skills in project directories
         skills = get_all_skills(project_root=context.cwd or context.workspace_root)
     except Exception:
@@ -378,7 +378,7 @@ def context_command_call(args: str, context: CommandContext) -> LocalCommandResu
         claude_md_content = ""
         try:
             import asyncio
-            from ..context_system.claude_md import get_claude_mds, get_memory_files
+            from src.context_system.claude_md import get_claude_mds, get_memory_files
 
             async def _load():
                 files = await get_memory_files(cwd=str(context.cwd or context.workspace_root))
@@ -466,7 +466,7 @@ async def _compact_async(args: str, context: CommandContext) -> LocalCommandResu
 
     try:
         # Import here to avoid circular imports
-        from ..compact_service.service import compact_conversation
+        from src.compact_service.service import compact_conversation
 
         result = await compact_conversation(
             conversation=context.conversation,
@@ -515,7 +515,7 @@ def _read_current_advisor_model(context: CommandContext) -> str | None:
         except Exception:
             pass
     try:
-        from ..settings.settings import get_settings
+        from src.settings.settings import get_settings
         configured = (get_settings().advisor_model or "").strip()
         return configured or None
     except Exception:
@@ -534,7 +534,7 @@ def _write_advisor_model(context: CommandContext, value: str | None) -> None:
     """
     store = getattr(context, "app_state_store", None)
     if store is not None:
-        from ..state.app_state import replace_state
+        from src.state.app_state import replace_state
         store.set_state(lambda s: replace_state(s, advisor_model=value or None))
         return
     # No reactive store — write straight to settings + invalidate cache
@@ -542,8 +542,8 @@ def _write_advisor_model(context: CommandContext, value: str | None) -> None:
     # ConfigManager (instead of a fresh one) so the in-process
     # ``_global_cache`` field stays consistent for callers that read
     # via ``load_config()`` / ``_get_default_manager().get_merged()``.
-    from .. import config as cfg_mod
-    from ..settings.settings import invalidate_settings_cache
+    from src import config as cfg_mod
+    from src.settings.settings import invalidate_settings_cache
     mgr = cfg_mod._get_default_manager()
     cfg = mgr.load_global()
     settings_section = cfg.get("settings")
@@ -567,7 +567,7 @@ def _read_current_advisor_provider(context: CommandContext) -> str:
         except Exception:
             pass
     try:
-        from ..settings.settings import get_settings
+        from src.settings.settings import get_settings
         return (getattr(get_settings(), "advisor_provider", "") or "").strip()
     except Exception:
         return ""
@@ -580,13 +580,13 @@ def _write_advisor_provider(context: CommandContext, value: str | None) -> None:
     normalized = (value or "").strip()
     store = getattr(context, "app_state_store", None)
     if store is not None:
-        from ..state.app_state import replace_state
+        from src.state.app_state import replace_state
         store.set_state(
             lambda s: replace_state(s, advisor_provider=(normalized or None))
         )
         return
-    from .. import config as cfg_mod
-    from ..settings.settings import invalidate_settings_cache
+    from src import config as cfg_mod
+    from src.settings.settings import invalidate_settings_cache
     mgr = cfg_mod._get_default_manager()
     cfg = mgr.load_global()
     settings_section = cfg.get("settings")
@@ -603,7 +603,7 @@ def _list_configured_providers() -> list[str]:
     ``~/.clawcodex/config.json``. Used by /advisor to validate that the
     user-supplied provider prefix refers to a real entry."""
     try:
-        from .. import config as cfg_mod
+        from src import config as cfg_mod
         mgr = cfg_mod._get_default_manager()
         cfg = mgr.load_global()
         providers = cfg.get("providers")
@@ -625,7 +625,7 @@ def _read_current_advisor_client_mode(context: CommandContext) -> bool:
         except Exception:
             pass
     try:
-        from ..settings.settings import get_settings
+        from src.settings.settings import get_settings
         return bool(getattr(get_settings(), "advisor_client_mode", False))
     except Exception:
         return False
@@ -636,11 +636,11 @@ def _write_advisor_client_mode(context: CommandContext, value: bool) -> None:
     Mirrors ``_write_advisor_model`` — same dual-path persistence."""
     store = getattr(context, "app_state_store", None)
     if store is not None:
-        from ..state.app_state import replace_state
+        from src.state.app_state import replace_state
         store.set_state(lambda s: replace_state(s, advisor_client_mode=bool(value)))
         return
-    from .. import config as cfg_mod
-    from ..settings.settings import invalidate_settings_cache
+    from src import config as cfg_mod
+    from src.settings.settings import invalidate_settings_cache
     mgr = cfg_mod._get_default_manager()
     cfg = mgr.load_global()
     settings_section = cfg.get("settings")
@@ -680,9 +680,9 @@ def advisor_command_call(args: str, context: CommandContext) -> LocalCommandResu
       * ``/advisor openrouter:anthropic/claude-opus-4.1``
       * ``/advisor gemini:gemini-2.5-pro``
     """
-    from ..models.model import canonical_model_name, resolve_model
-    from ..models.validation import validate_model_name
-    from ..utils.advisor import (
+    from src.models.model import canonical_model_name, resolve_model
+    from src.models.validation import validate_model_name
+    from src.utils.advisor import (
         ADVISOR_MODE_CLIENT_SIDE,
         ADVISOR_MODE_INACTIVE,
         ADVISOR_MODE_SERVER_SIDE,
@@ -996,13 +996,13 @@ def _sync_compact_fallback(context: CommandContext) -> LocalCommandResult:
 
     # Get messages after last boundary
     try:
-        from ..compact_service.messages import (
+        from src.compact_service.messages import (
             create_compact_boundary_message,
             create_compact_summary_message,
             get_messages_after_boundary,
             is_compact_boundary_message,
         )
-        from ..token_estimation import count_messages_tokens
+        from src.token_estimation import count_messages_tokens
 
         after_boundary = get_messages_after_boundary(messages)
         if len(after_boundary) < 2:
