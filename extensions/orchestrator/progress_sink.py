@@ -325,7 +325,7 @@ class ToolContextProgressSink:
         metadata: dict[str, Any],
     ) -> None:
         try:
-            from src.tool_system.tools.progress_report import _progress_report_call
+            from clawcodex_ext.tool_system.tools.progress_report import _progress_report_call
 
             _progress_report_call(
                 {

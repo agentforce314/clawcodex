@@ -1058,12 +1058,39 @@ class AgentRunner:
                                         else max_no_op_turns
                                     )
                                     if no_work_streak >= _stagnation_threshold:
-                                        session.session_end_reason = "stagnation"
-                                        session.session_end_summary = (
-                                            f"{no_work_streak} consecutive "
-                                            "turns with no tool calls and "
-                                            "empty output"
-                                        )
+                                        # F-54 root-cause fix: when the
+                                        # agent never emitted a single
+                                        # modifying tool call (Write/Edit)
+                                        # AND tool_count is 0 (SessionComplete
+                                        # returned immediately without any
+                                        # tool), the real reason is "LLM gave
+                                        # up without doing work", not
+                                        # stagnation.  Mark it as such so
+                                        # the orchestrator can retry.
+                                        if (
+                                            not getattr(session, "has_made_progress", False)
+                                            and tool_count == 0
+                                        ):
+                                            session.session_end_reason = "llm_gave_up"
+                                            session.session_end_summary = (
+                                                f"LLM returned SessionComplete(success) "
+                                                f"after 0 tool calls with no code changes"
+                                            )
+                                            logger.warning(
+                                                "LLM gave up immediately issue_id=%s "
+                                                "turns=%s tools=%s — "
+                                                "SessionComplete with 0 tools",
+                                                issue.id,
+                                                turn_number,
+                                                tool_count,
+                                            )
+                                        else:
+                                            session.session_end_reason = "stagnation"
+                                            session.session_end_summary = (
+                                                f"{no_work_streak} consecutive "
+                                                "turns with no tool calls and "
+                                                "empty output"
+                                            )
                                         logger.warning(
                                             "Stagnation detected issue_id=%s — "
                                             "%d consecutive no-op turns, "
