@@ -1121,11 +1121,21 @@ class AgentRunner:
                         # Normal completion path — increment the turn
                         # counter and emit PhaseComplete.
                         # F-49 Phase 1: drain control commands at the
-                        # turn boundary. Defensive: each branch wrapped
-                        # so a malformed command never aborts the run.
+                        # turn boundary. We use ``get_nowait()`` rather
+                        # than the ``poll_commands()`` async generator
+                        # so the runner does not block waiting for a
+                        # command that may never arrive — the common case
+                        # in headless / CI tests is no clients connected.
+                        # Defensive: each branch wrapped so a malformed
+                        # command never aborts the run.
                         if session.control_socket is not None:
                             try:
-                                async for cmd in session.control_socket.poll_commands():
+                                _q = session.control_socket._command_queue
+                                while True:
+                                    try:
+                                        cmd = _q.get_nowait()
+                                    except asyncio.QueueEmpty:
+                                        break
                                     if cmd.cmd == "pause":
                                         session.paused = True
                                         session.pause_reason = "operator_interrupt"
@@ -1168,6 +1178,19 @@ class AgentRunner:
                                     "Failed to flush transcript "
                                     "run_id=%s", session.run_id,
                                 )
+                        # F-49 Phase 1: stop the control socket so the
+                        # .sock file is cleaned up and any attached
+                        # clients see EOF. Defensive: a stop failure
+                        # must not propagate out of the turn.
+                        if session.control_socket is not None:
+                            try:
+                                await session.control_socket.stop()
+                            except Exception:
+                                logger.exception(
+                                    "Failed to stop control_socket "
+                                    "run_id=%s", session.run_id,
+                                )
+                            session.control_socket = None
                         append_debug_event(
                             session.debug_log_path,
                             "agent_runner.turn_complete",
@@ -1650,6 +1673,17 @@ class AgentRunner:
                                     "Failed to final-flush transcript "
                                     "run_id=%s", session.run_id,
                                 )
+                        # F-49 Phase 1: stop the control socket on the
+                        # terminal SessionComplete path.
+                        if session.control_socket is not None:
+                            try:
+                                await session.control_socket.stop()
+                            except Exception:
+                                logger.exception(
+                                    "Failed to stop control_socket "
+                                    "run_id=%s", session.run_id,
+                                )
+                            session.control_socket = None
                         return
             except RateLimitError as exc:
                 # Typed fallback: if the headless runner ever propagates
@@ -1742,6 +1776,16 @@ class AgentRunner:
                     "Failed to final-flush transcript run_id=%s",
                     session.run_id,
                 )
+        # F-49 Phase 1: stop the control socket on max_turns exit.
+        if session.control_socket is not None:
+            try:
+                await session.control_socket.stop()
+            except Exception:
+                logger.exception(
+                    "Failed to stop control_socket run_id=%s",
+                    session.run_id,
+                )
+            session.control_socket = None
         append_debug_event(
             session.debug_log_path,
             "agent_runner.max_turns_exceeded",
