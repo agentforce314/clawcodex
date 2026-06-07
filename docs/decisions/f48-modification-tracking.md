@@ -59,7 +59,29 @@
 
 ## Phase 1-3: 已设计解耦（10 个文件）
 
-参见 FEATURE_PLAN.md Phase 1-3 表格 — 已通过 Facade/子类覆盖/注册表模式完成解耦。
+**实际评估**：由于包级循环导入问题（`src/permissions/__init__.py` 等文件在模块加载时
+就导入子模块，创建了 facade → ext → src 的循环链），这 10 个文件目前无法安全地
+逐个迁移到 ext facade 模式。
+
+| 文件 | 行数 | 阻塞原因 |
+|------|------|---------|
+| `entrypoints/tui.py` | 243 | 直接导入可工作，但通过 `src.entrypoints` 包导入时触发循环链 |
+| `entrypoints/headless.py` | 693 | 同上 |
+| `cli.py` | 105 | ✅ 已是 facade 模式 |
+| `repl/core.py` | 3738 | 有 2 处 ext 引用但主体未解耦 |
+| `tui/app.py` | 1175 | 循环导入 + 大量内联实现 |
+| `tui/commands.py` | 353 | 依赖 tui/app.py |
+| `context_system/prompt_assembly.py` | 1282 | 7 个相对导入，耦合度高 |
+| `permissions/cycle.py` | 108 | `src/permissions/__init__.py` 在包级别导入 `.cycle` |
+| `command_system/types.py` | — | `src/command_system/__init__.py` 在包级别导入所有子模块 |
+| `command_system/engine.py` | — | 同上 |
+
+**建议方案**：
+1. 使用 PYTHONPATH 或命名空间包方案（而非 facade 模式）来解耦
+2. 或者一次迁移整个包（而非逐文件），修复所有跨包 import
+3. 或者放弃 facade 模式，改为在 `src/` 中直接内联所有功能修改（即接受 diff 存在）
+
+参见 FEATURE_PLAN.md Phase 1-3 表格 — 设计已完成，代码迁移因循环导入阻塞。
 
 ## Phase 4-9: 功能修改文件 — 逐行评审
 
