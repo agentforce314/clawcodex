@@ -139,6 +139,65 @@ def add_issue_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Filter to show only events from turn number N",
     )
 
+    # --- issue transcript ---
+    transcript_parser = issue_sub.add_parser(
+        "transcript",
+        help="Print a session transcript for an issue or run",
+        description="Read the full session transcript from "
+                    "~/.clawcodex/sessions/{run_id}/transcript.jsonl and "
+                    "print it as text. Idempotent (pure read, suitable for "
+                    "piping).",
+    )
+    transcript_parser.add_argument(
+        "--id",
+        type=str,
+        default=None,
+        metavar="ISSUE_ID",
+        help="Issue identifier (resolves to run_id via the registry)",
+    )
+    transcript_parser.add_argument(
+        "--run",
+        type=str,
+        default=None,
+        metavar="RUN_ID",
+        help="Run identifier (skips registry resolution)",
+    )
+    transcript_parser.add_argument(
+        "--workspace",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="Explicit workspace root path",
+    )
+    transcript_parser.add_argument(
+        "--workflow",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="Path to WORKFLOW.md (resolution hint when metadata is missing)",
+    )
+    transcript_parser.add_argument(
+        "--role",
+        choices=["user", "assistant"],
+        default=None,
+        help="Filter to show only messages with this role",
+    )
+    transcript_parser.add_argument(
+        "--tool-use-id",
+        dest="tool_use_id",
+        type=str,
+        default=None,
+        metavar="TOOL_USE_ID",
+        help="Filter to show only tool_use / tool_result blocks with this id",
+    )
+    transcript_parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Limit to the first N messages",
+    )
+
     # --- issue stop ---
     stop_parser = issue_sub.add_parser(
         "stop",
@@ -482,6 +541,8 @@ def run(args: argparse.Namespace) -> int:
         return _run_show(registry_path, args)
     elif cmd == "tail":
         return _run_tail(registry_path, args)
+    elif cmd == "transcript":
+        return _run_transcript(registry_path, args)
     elif cmd == "stop":
         return _run_stop(args)
     elif cmd == "pause":
@@ -724,68 +785,85 @@ def _resolve_issue_workspace_path(issue_id: str) -> Path | None:
 # issue tail
 # ---------------------------------------------------------------------------
 
+
+def _resolve_tail_run_id(
+    registry_path: Path | None,
+    issue_id: str | None,
+    run_id: str | None,
+) -> str | None:
+    """Resolve which session run to tail.
+
+    Priority: explicit ``--run <run_id>`` wins; otherwise look up
+    the most recent ``run_id`` for ``--id <issue_id>`` via the
+    issue registry.  Returns ``None`` if no run can be determined.
+    """
+    if run_id:
+        return run_id
+    if not issue_id or not registry_path or not registry_path.exists():
+        return None
+    try:
+        from extensions.orchestrator.issue_registry import IssueRegistry
+        registry = IssueRegistry(registry_path)
+        record = registry.get(issue_id)
+        if record is None:
+            record = registry.get_by_identifier(issue_id)
+        if record is None:
+            return None
+        return record.run_id
+    except Exception:
+        return None
+
+
 def _run_tail(registry_path: Path | None, args: argparse.Namespace) -> int:
-    """Tail tool call logs for a running issue. Idempotent — pure read."""
+    """Tail a session transcript for an issue or run. Idempotent — pure read.
+
+    F-49 unified storage: headless agent and REPL sessions both
+    write to ``~/.clawcodex/sessions/{run_id}/transcript.jsonl``
+    via :class:`SessionStorage`.  This command tails that file and
+    renders tool calls / tool results / assistant text the same
+    way the legacy ``.event_logs/{issue_id}.ndjson`` reader did.
+    """
     issue_id = getattr(args, "id", None) or getattr(args, "issue_id", None)
-    if not issue_id:
-        print("error: --id is required", file=sys.stderr)
+    run_id = getattr(args, "run", None) or getattr(args, "run_id", None)
+    if not issue_id and not run_id:
+        print("error: --id <issue_id> or --run <run_id> is required", file=sys.stderr)
         return 2
 
     import time
     import json
     from pathlib import Path
 
-    from extensions.orchestrator.workspace_locator import get_workspace_root
-
-    workspace_arg = getattr(args, "workspace", None)
-    previous_workspace = os.environ.get("CLAWCODEX_WORKSPACE_ROOT")
-    if workspace_arg:
-        os.environ["CLAWCODEX_WORKSPACE_ROOT"] = str(workspace_arg)
-    try:
-        ws = _resolve_issue_workspace_path(issue_id)
-    finally:
-        if workspace_arg:
-            if previous_workspace is None:
-                os.environ.pop("CLAWCODEX_WORKSPACE_ROOT", None)
-            else:
-                os.environ["CLAWCODEX_WORKSPACE_ROOT"] = previous_workspace
-
-    workspace_root = get_workspace_root(
-        workspace_arg=workspace_arg,
-        workflow_path=None,
-    )
-    if ws is None:
-        ws = workspace_root
-    if ws is None:
-        print("Cannot resolve workspace root.", file=sys.stderr)
+    run_id = _resolve_tail_run_id(registry_path, issue_id, run_id)
+    if not run_id:
+        print(
+            f"No session run found for issue {issue_id or '?'} "
+            f"(registry has no run_id recorded).",
+            file=sys.stderr,
+        )
         return 1
 
-    candidates = [ws / ".event_logs" / f"{issue_id}.ndjson"]
-    if workspace_root is not None and workspace_root != ws:
-        candidates.append(workspace_root / ".event_logs" / f"{issue_id}.ndjson")
-        candidates.append(workspace_root / f"_{issue_id}" / ".event_logs" / f"{issue_id}.ndjson")
-    else:
-        candidates.append(ws / f"_{issue_id}" / ".event_logs" / f"{issue_id}.ndjson")
-
-    log_file = next((candidate for candidate in candidates if candidate.exists()), None)
-    if log_file is None:
-        print(f"No event log found for issue {issue_id}.", file=sys.stderr)
+    from src.services.session_storage import SESSIONS_DIR
+    transcript_path = SESSIONS_DIR / run_id / "transcript.jsonl"
+    if not transcript_path.exists():
+        print(
+            f"No transcript found at {transcript_path} for run_id {run_id}.",
+            file=sys.stderr,
+        )
         return 1
 
-    turn_filter = getattr(args, "turn", None)
-    if turn_filter is not None:
-        print(f"Filtering to turn {turn_filter} only.")
-    print(f"Tailing events for issue {issue_id} (Ctrl+C to stop)...")
+    label = f"run {run_id}" if not issue_id else f"issue {issue_id} (run {run_id})"
+    print(f"Tailing transcript for {label} (Ctrl+C to stop)...")
     try:
-        last_size = log_file.stat().st_size
+        last_size = transcript_path.stat().st_size
         pending = ""
+        turn_counter = 0
         while True:
-            current_size = log_file.stat().st_size
+            current_size = transcript_path.stat().st_size
             if current_size <= last_size:
                 time.sleep(0.5)
                 continue
 
-            with open(log_file, "r", encoding="utf-8") as f:
+            with open(transcript_path, "r", encoding="utf-8") as f:
                 f.seek(last_size)
                 chunk = f.read()
 
@@ -800,35 +878,231 @@ def _run_tail(registry_path: Path | None, args: argparse.Namespace) -> int:
                 if not line:
                     continue
                 try:
-                    event = json.loads(line)
-                    # Turn filter
-                    event_turn = event.get("turn")
-                    if turn_filter is not None and event_turn != turn_filter:
-                        continue
-                    turn_prefix = f"[T{event_turn}] " if event_turn is not None else ""
-                    ts = event.get("timestamp", "")[-8:] if event.get("timestamp") else ""
-                    etype = event.get("type", "?")
-                    if etype == "tool_call":
-                        tool_name = event.get("tool_name", "?")
-                        print(f"  [{ts}] {turn_prefix}CALL  {tool_name}")
-                    elif etype == "tool_result":
-                        err = " [ERR]" if event.get("is_error") else ""
-                        print(f"  [{ts}] {turn_prefix}RESULT{err} {event.get('tool_name', '?')}")
-                    elif etype == "text_delta":
-                        content = event.get("content", "")
-                        if content:
-                            text = content[:80].replace("\n", " ")
-                            print(f"  [{ts}] {turn_prefix}TEXT  {text}")
-                    else:
-                        print(f"  [{ts}] {turn_prefix}{etype}")
+                    msg = json.loads(line)
                 except json.JSONDecodeError as exc:
-                    print(f"[tail] warning: malformed event in {log_file}: {exc}", file=sys.stderr)
+                    print(
+                        f"[tail] warning: malformed entry in {transcript_path}: {exc}",
+                        file=sys.stderr,
+                    )
+                    continue
+                _render_message(msg, turn_counter)
             last_size = current_size
     except KeyboardInterrupt:
         print("\n[tail] stopped")
     except Exception as exc:
         print(f"[tail] error: {exc}", file=sys.stderr)
         return 1
+    return 0
+
+
+def _render_message(msg: dict, turn_counter: int) -> None:
+    """Render one Message dict from transcript.jsonl as a tail line.
+
+    Maps Message roles/content blocks back to the same CALL / RESULT /
+    TEXT format the legacy ``.event_logs`` reader produced, so operator
+    muscle memory carries over after the F-49 storage unification.
+    """
+    role = msg.get("role", "?")
+    content = msg.get("content")
+    if not isinstance(content, list):
+        return
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        btype = block.get("type")
+        if btype == "text" and role == "assistant":
+            text = (block.get("text") or "").strip()
+            if text:
+                preview = text[:80].replace("\n", " ")
+                print(f"  TEXT  {preview}")
+        elif btype == "tool_use" and role == "assistant":
+            name = block.get("name", "?")
+            print(f"  CALL  {name}")
+        elif btype == "tool_result" and role == "user":
+            err = " [ERR]" if block.get("is_error") else ""
+            tuid = block.get("tool_use_id", "?")
+            print(f"  RESULT{err} {tuid}")
+
+
+def _msg_references_tool(msg: dict, tool_use_id: str) -> bool:
+    """Whether a Message dict contains any block referring to tool_use_id.
+
+    Matches both ``tool_use.id`` and ``tool_result.tool_use_id`` so the
+    filter surfaces the full tool_use + tool_result pair, not just one
+    half of it.
+    """
+    content = msg.get("content")
+    if not isinstance(content, list):
+        return False
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        btype = block.get("type")
+        if btype == "tool_use" and block.get("id") == tool_use_id:
+            return True
+        if btype == "tool_result" and block.get("tool_use_id") == tool_use_id:
+            return True
+    return False
+
+
+def _print_message(
+    msg: dict, tool_use_id_filter: str | None = None,
+) -> None:
+    """Print one Message dict from transcript.jsonl in human-readable form.
+
+    Designed for `issue transcript` (snapshot mode) — full content
+    instead of the one-line preview used by `issue tail`.
+
+    When ``tool_use_id_filter`` is set, only blocks that reference that
+    tool_use id are printed: ``tool_use.id == filter`` or
+    ``tool_result.tool_use_id == filter``. Text blocks in the same
+    message are suppressed under filter, so a single multi-tool
+    assistant message prints only the relevant tool_use (not the
+    unrelated ones that share the same message).
+    """
+    role = msg.get("role", "?")
+    origin = msg.get("origin", "")
+    origin_suffix = f" (origin={origin})" if origin else ""
+    print(f"## {role}{origin_suffix}")
+    content = msg.get("content")
+    if isinstance(content, str):
+        if tool_use_id_filter is None:
+            for line in content.splitlines():
+                print(f"  Text: {line}")
+        print()
+        return
+    if not isinstance(content, list):
+        return
+    printed_any_block = False
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        btype = block.get("type")
+        if tool_use_id_filter is not None:
+            if btype == "tool_use" and block.get("id") != tool_use_id_filter:
+                continue
+            if btype == "tool_result" and block.get("tool_use_id") != tool_use_id_filter:
+                continue
+            if btype == "text":
+                continue
+        if btype == "text":
+            text = (block.get("text") or "").rstrip()
+            if text:
+                for line in text.splitlines():
+                    print(f"  Text: {line}")
+                printed_any_block = True
+        elif btype == "tool_use":
+            tid = block.get("id", "?")
+            name = block.get("name", "?")
+            print(f"  Tool Use: {name} (id={tid})")
+            inp = block.get("input", {})
+            if isinstance(inp, dict):
+                for k, v in inp.items():
+                    preview = str(v).replace("\n", " ")
+                    if len(preview) > 200:
+                        preview = preview[:200] + "..."
+                    print(f"    {k}: {preview}")
+            printed_any_block = True
+        elif btype == "tool_result":
+            tid = block.get("tool_use_id", "?")
+            err = " [ERROR]" if block.get("is_error") else ""
+            print(f"  Tool Result: {tid}{err}")
+            result_content = block.get("content", "")
+            if isinstance(result_content, str):
+                lines = result_content.splitlines()
+                for line in lines[:50]:
+                    print(f"    {line}")
+                if len(lines) > 50:
+                    print(
+                        f"    ... ({len(lines) - 50} more lines)",
+                    )
+            else:
+                print(f"    {result_content!r}")
+            printed_any_block = True
+    if tool_use_id_filter is not None and not printed_any_block:
+        # Header was already printed; emit a blank line for visual
+        # separation but otherwise stay quiet (the matching blocks
+        # live in another message that will be printed separately).
+        pass
+    print()
+
+
+def _run_transcript(registry_path: Path | None, args: argparse.Namespace) -> int:
+    """Print the full session transcript for an issue or run. Idempotent.
+
+    F-49 Phase 0.2: read-only access to the unified
+    ``~/.clawcodex/sessions/{run_id}/transcript.jsonl`` so operators
+    can review a completed (or in-progress) orchestrator run without
+    entering an interactive REPL.  Suitable for piping.
+    """
+    issue_id = getattr(args, "id", None)
+    run_id = getattr(args, "run", None) or getattr(args, "run_id", None)
+    if not issue_id and not run_id:
+        print(
+            "error: --id <issue_id> or --run <run_id> is required",
+            file=sys.stderr,
+        )
+        return 2
+
+    import json
+    from src.services.session_storage import SESSIONS_DIR
+
+    run_id = _resolve_tail_run_id(registry_path, issue_id, run_id)
+    if not run_id:
+        print(
+            f"No session run found for issue {issue_id or '?'} "
+            f"(registry has no run_id recorded).",
+            file=sys.stderr,
+        )
+        return 1
+
+    transcript_path = SESSIONS_DIR / run_id / "transcript.jsonl"
+    if not transcript_path.exists():
+        print(
+            f"No transcript found at {transcript_path} for run_id {run_id}.",
+            file=sys.stderr,
+        )
+        return 1
+
+    role_filter = getattr(args, "role", None)
+    tool_use_id_filter = getattr(args, "tool_use_id", None)
+    limit = getattr(args, "limit", None)
+
+    print(f"# Transcript for run {run_id}")
+    if issue_id:
+        print(f"# (issue {issue_id})")
+    print(f"# Source: {transcript_path}")
+    print()
+
+    count = 0
+    with open(transcript_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                msg = json.loads(line)
+            except json.JSONDecodeError as exc:
+                print(
+                    f"[transcript] warning: malformed entry: {exc}",
+                    file=sys.stderr,
+                )
+                continue
+
+            if role_filter and msg.get("role") != role_filter:
+                continue
+
+            if tool_use_id_filter and not _msg_references_tool(
+                msg, tool_use_id_filter,
+            ):
+                continue
+
+            _print_message(msg, tool_use_id_filter=tool_use_id_filter)
+            count += 1
+            if limit is not None and count >= limit:
+                break
+
+    print(f"# {count} message(s) shown")
     return 0
 
 
@@ -1564,7 +1838,7 @@ def _show_diff_non_git(ws_path: Path, issue_id: str, args: argparse.Namespace) -
     print(f"  Workspace: {ws_path}")
     print()
 
-    exclude = {".metadata", ".orchestrator_control", ".operator_hints.md", ".event_logs"}
+    exclude = {".metadata", ".orchestrator_control", ".operator_hints.md"}
 
     files: list[tuple[str, str, int]] = []
     dirs: list[str] = []
