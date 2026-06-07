@@ -7,13 +7,12 @@ from pathlib import Path
 
 class TestLegacyReplModule(unittest.TestCase):
     def test_legacy_cli_repl_py_is_valid_python(self) -> None:
-        # ch01 round-2 P3: src/repl.py was relocated to
-        # scripts/audit/legacy_cli_repl.py.
+        # Validate the lazy facade src/repl/core.py is valid Python.
         repl_path = (
-            Path(__file__).resolve().parents[1]
-            / "scripts"
-            / "audit"
-            / "legacy_cli_repl.py"
+            Path(__file__).resolve().parents[2]
+            / "src"
+            / "repl"
+            / "core.py"
         )
         py_compile.compile(str(repl_path), doraise=True)
 

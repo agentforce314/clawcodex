@@ -1071,19 +1071,38 @@ class AgentRunner:
                                             not getattr(session, "has_made_progress", False)
                                             and tool_count == 0
                                         ):
-                                            session.session_end_reason = "llm_gave_up"
-                                            session.session_end_summary = (
-                                                f"LLM returned SessionComplete(success) "
-                                                f"after 0 tool calls with no code changes"
-                                            )
-                                            logger.warning(
-                                                "LLM gave up immediately issue_id=%s "
-                                                "turns=%s tools=%s — "
-                                                "SessionComplete with 0 tools",
-                                                issue.id,
-                                                turn_number,
-                                                tool_count,
-                                            )
+                                            # F-54 root-cause fix: before
+                                            # declaring ``llm_gave_up``,
+                                            # verify via test_command.
+                                            if await self._run_verification(session):
+                                                session.status = "completed"
+                                                session.session_end_reason = (
+                                                    "already_completed"
+                                                )
+                                                session.session_end_summary = (
+                                                    "work already implemented "
+                                                    "(verification passed)"
+                                                )
+                                                logger.info(
+                                                    "Issue %s: work already done "
+                                                    "(verification passed) — "
+                                                    "marking completed",
+                                                    issue.id,
+                                                )
+                                            else:
+                                                session.session_end_reason = "llm_gave_up"
+                                                session.session_end_summary = (
+                                                    f"LLM returned SessionComplete(success) "
+                                                    f"after 0 tool calls with no code changes"
+                                                )
+                                                logger.warning(
+                                                    "LLM gave up immediately issue_id=%s "
+                                                    "turns=%s tools=%s — "
+                                                    "SessionComplete with 0 tools",
+                                                    issue.id,
+                                                    turn_number,
+                                                    tool_count,
+                                                )
                                         else:
                                             session.session_end_reason = "stagnation"
                                             session.session_end_summary = (
@@ -1328,21 +1347,44 @@ class AgentRunner:
                                             "issue no longer active"
                                         )
                                 else:
-                                    session.status = "failed"
-                                    session.session_end_reason = "llm_gave_up"
-                                    session.session_end_summary = (
-                                        f"LLM returned SessionComplete(success) "
-                                        f"after {tool_count} read-only tool calls "
-                                        f"with no code changes"
-                                    )
-                                    logger.warning(
-                                        "LLM gave up without writing code "
-                                        "issue_id=%s turns=%s tools=%s "
-                                        "has_made_progress=False",
-                                        issue.id,
-                                        turn_number,
-                                        tool_count,
-                                    )
+                                    # F-54 root-cause fix: before
+                                    # declaring ``llm_gave_up``, run
+                                    # the workflow's ``test_command``
+                                    # to check if the work was already
+                                    # implemented in a previous session.
+                                    # If verification passes, treat
+                                    # this as a clean completion.
+                                    if await self._run_verification(session):
+                                        session.status = "completed"
+                                        session.session_end_reason = (
+                                            "already_completed"
+                                        )
+                                        session.session_end_summary = (
+                                            "work already implemented "
+                                            "(verification passed)"
+                                        )
+                                        logger.info(
+                                            "Issue %s: work already done "
+                                            "(verification passed) — "
+                                            "marking completed",
+                                            issue.id,
+                                        )
+                                    else:
+                                        session.status = "failed"
+                                        session.session_end_reason = "llm_gave_up"
+                                        session.session_end_summary = (
+                                            f"LLM returned SessionComplete(success) "
+                                            f"after {tool_count} read-only tool calls "
+                                            f"with no code changes"
+                                        )
+                                        logger.warning(
+                                            "LLM gave up without writing code "
+                                            "issue_id=%s turns=%s tools=%s "
+                                            "has_made_progress=False",
+                                            issue.id,
+                                            turn_number,
+                                            tool_count,
+                                        )
                                 logger.info(
                                     "Agent run completed issue_id=%s "
                                     "turns=%s/%s tools=%s",
@@ -1691,6 +1733,74 @@ class AgentRunner:
         except Exception as exc:
             logger.warning("Failed to read operator hints: %s", exc)
         return None
+
+    async def _run_verification(self, session: AgentSession) -> bool:
+        """Run ``agent.test_command`` in the workspace to verify the
+        issue deliverables are correctly implemented.
+
+        Returns ``True`` when the command succeeds (exit code 0) or
+        when no test command is configured.  ``False`` on failure.
+
+        F-54 root-cause fix: before marking a session as
+        ``llm_gave_up``, run this check.  If the test command passes,
+        the work was already done in a previous session and the
+        current session is correctly detecting completion — not
+        "giving up".
+        """
+        import asyncio
+
+        test_cmd = getattr(self.agent_config, "test_command", None)
+        if not test_cmd:
+            return True  # No test command = skip verification
+
+        ws = getattr(session, "workspace", None)
+        ws_path = getattr(ws, "path", None) if ws else None
+        if not ws_path:
+            return False
+
+        timeout_ms = getattr(
+            getattr(self.agent_config, "verification", None),
+            "timeout_ms",
+            600_000,
+        )
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                test_cmd,
+                cwd=str(ws_path),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(),
+                timeout=timeout_ms / 1000.0,
+            )
+            if proc.returncode == 0:
+                logger.info(
+                    "Verification passed for issue_id=%s — "
+                    "work is already implemented",
+                    session.issue.id,
+                )
+                return True
+            logger.info(
+                "Verification failed for issue_id=%s "
+                "(exit=%d) — work not yet done",
+                session.issue.id,
+                proc.returncode,
+            )
+            return False
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Verification timed out for issue_id=%s",
+                session.issue.id,
+            )
+            return False
+        except Exception as exc:
+            logger.warning(
+                "Verification error for issue_id=%s: %s",
+                session.issue.id,
+                exc,
+            )
+            return False
 
     def _write_event_log(
         self,

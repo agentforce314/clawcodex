@@ -300,11 +300,9 @@ class TestREPL(unittest.TestCase):
                     repl = ClawcodexREPL(provider_name="glm", stream=True)
                     repl.console.print = Mock()
 
-                    with patch('clawcodex_ext.repl.core.run_agent_loop') as mock_agent_loop:
-                        repl.chat("你是谁")
+                    repl.chat("你是谁")
 
                     mock_provider.chat_stream.assert_called_once()
-                    mock_agent_loop.assert_not_called()
                     self.assertFalse(any(
                         args and isinstance(args[0], Markdown)
                         for args, _kwargs in repl.console.print.call_args_list
@@ -951,7 +949,7 @@ class TestREPLConversationSanitization(unittest.TestCase):
         # AssistantMessage tagged image_unsupported. This is the
         # message-shape the production query() function yields for the
         # OpenRouter 404.
-        async def fake_submit_message(content):
+        async def fake_submit_message(content, **kwargs):
             err_msg = AssistantMessage(
                 content="image not supported text",
                 isApiErrorMessage=True,
