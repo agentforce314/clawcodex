@@ -115,6 +115,12 @@ class AgentSession:
     # Set in AgentRunner.run() at session start; consumed by
     # report_writer.write() to dual-write the NDJSON to the persistent layer.
     tool_events_path: str | None = None
+    # F-49 Phase 0: session-transcript storage for conversation recording.
+    # Lazy-initialized in run() via SessionStorage; holds the SS instance,
+    # accumulated assistant text, and pending tool_use_id for the current turn.
+    _transcript_storage: Any | None = None
+    _transcript_asst_text: str = ""
+    _transcript_tool_use_id: str | None = None
     attempt: int = 1
     issue_attempt: int = 1
     followup_attempt: int = 1
@@ -545,7 +551,8 @@ class AgentRunner:
         # already demonstrated it *can* produce useful work and the
         # empty-turn pattern is more likely a recoverable LLM tail
         # than a fundamental deadlock (as seen in F-40's run-06).
-        has_made_progress = False
+        # Stored on the session so ``_should_continue`` can read it.
+        session.has_made_progress = False
         # Pre-existing bug (commit 8fb1b78): ``_dispatch_sink`` was added
         # but the ``sink`` variable was never assigned in ``run()``,
         # so stagnation/loop guard calls to ``_dispatch_sink(sink, ...)``
@@ -555,9 +562,12 @@ class AgentRunner:
         # F-40 root-cause fix: read-only tool spiral detection.
         # Counts consecutive turns where the agent only made read-only
         # tool calls (Bash / Read / Grep / …) without any modifying
-        # tool call (Write / Edit / …) AND without producing text
-        # output.  When this counter reaches ``_MAX_READ_ONLY_TURNS``
-        # the session is terminated with reason "read_only_loop".
+        # tool call (Write / Edit / …).  BashTool always produces
+        # output (stdout/stderr), so ``turn_output`` is never empty
+        # and cannot be used to distinguish exploration from empty
+        # turns — we rely solely on the absence of modifying tools.
+        # When this counter reaches ``_MAX_READ_ONLY_TURNS`` the
+        # session is terminated with reason "read_only_loop".
         read_only_streak = 0
         tool_signature_history: list[str] = []
         max_no_op_turns = max(
@@ -625,6 +635,7 @@ class AgentRunner:
                     turn_number=turn_number,
                     max_turns=self.max_turns,
                     issue_context=getattr(session, "_issue_context", None),
+                    session=session,
                 )
                 logger.info(
                     "Continuation turn %d/%s for issue_id=%s",
@@ -632,6 +643,43 @@ class AgentRunner:
                     self.max_turns,
                     issue.id,
                 )
+
+            # F-49 Phase 0: lazy-init SessionStorage and write user prompt
+            if session.run_id:
+                if session._transcript_storage is None:
+                    try:
+                        from src.services.session_storage import SessionStorage
+                        session._transcript_storage = SessionStorage(
+                            session_id=session.run_id,
+                        )
+                        session._transcript_storage.init_metadata(
+                            model=self.agent_config.model or "",
+                            cwd=str(session.workspace.path),
+                            title=(
+                                f"orchestrator-"
+                                f"{session.issue.identifier or session.issue.id}"
+                            ),
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Failed to init transcript storage run_id=%s",
+                            session.run_id,
+                        )
+                if session._transcript_storage is not None:
+                    try:
+                        from src.types.messages import create_user_message
+                        from src.types.content_blocks import TextBlock
+                        session._transcript_storage.write_message(
+                            create_user_message(
+                                content=[TextBlock(text=prompt)],
+                                origin="human",
+                            )
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Failed to write transcript prompt run_id=%s",
+                            session.run_id,
+                        )
 
             append_debug_event(
                 session.debug_log_path,
@@ -704,6 +752,8 @@ class AgentRunner:
 
                         # Also write to event log file for cross-process tail
                         self._write_event_log(session.workspace.path, issue.id, event, turn=turn_number)
+                        # F-49 Phase 0: accumulate assistant text for transcript
+                        session._transcript_asst_text += event.content
 
                     elif isinstance(event, ToolCallEvent):
                         turn_has_tool_calls = True
@@ -719,7 +769,7 @@ class AgentRunner:
                         # flag so the stagnation guard uses the relaxed
                         # (2×) threshold for subsequent empty turns.
                         if event.tool_name in _MODIFYING_TOOL_NAMES:
-                            has_made_progress = True
+                            session.has_made_progress = True
                             turn_has_modifying_tool = True
 
                         # Pause support: wait for resume if session is paused
@@ -760,6 +810,40 @@ class AgentRunner:
 
                         # Also write to event log file for cross-process tail
                         self._write_event_log(session.workspace.path, issue.id, event, turn=turn_number)
+                        # F-49 Phase 0: write assistant message with tool_use to transcript
+                        if session._transcript_storage is not None:
+                            try:
+                                from src.types.messages import create_assistant_message
+                                from src.types.content_blocks import (
+                                    TextBlock,
+                                    ToolUseBlock,
+                                )
+                                blocks = []
+                                if session._transcript_asst_text:
+                                    blocks.append(TextBlock(
+                                        text=session._transcript_asst_text,
+                                    ))
+                                if event.tool_use_id:
+                                    blocks.append(ToolUseBlock(
+                                        id=event.tool_use_id,
+                                        name=event.tool_name,
+                                        input=event.params,
+                                    ))
+                                if blocks:
+                                    session._transcript_storage.write_message(
+                                        create_assistant_message(
+                                            content=blocks,
+                                            model=self.agent_config.model,
+                                        ),
+                                    )
+                                session._transcript_asst_text = ""
+                                session._transcript_tool_use_id = \
+                                    event.tool_use_id
+                            except Exception:
+                                logger.exception(
+                                    "Failed to write transcript tool_use "
+                                    "run_id=%s", session.run_id,
+                                )
 
                     elif isinstance(event, ToolResultEvent):
                         logger.debug(
@@ -783,6 +867,37 @@ class AgentRunner:
 
                         # Also write to event log file for cross-process tail
                         self._write_event_log(session.workspace.path, issue.id, event, turn=turn_number)
+                        # F-49 Phase 0: write tool_result as UserMessage to transcript
+                        if session._transcript_storage is not None and session._transcript_tool_use_id:
+                            try:
+                                from src.types.messages import create_user_message
+                                from src.types.content_blocks import (
+                                    ToolResultBlock,
+                                )
+                                result_output = event.result.get("output", "")
+                                is_error = event.result.get("is_error", False)
+                                session._transcript_storage.write_message(
+                                    create_user_message(
+                                        content=[ToolResultBlock(
+                                            tool_use_id=(
+                                                session._transcript_tool_use_id
+                                            ),
+                                            content=(
+                                                result_output
+                                                if isinstance(result_output, str)
+                                                else str(result_output)
+                                            ),
+                                            is_error=is_error,
+                                        )],
+                                        origin="tool_result",
+                                    ),
+                                )
+                                session._transcript_tool_use_id = None
+                            except Exception:
+                                logger.exception(
+                                    "Failed to write transcript tool_result "
+                                    "run_id=%s", session.run_id,
+                                )
                         update_diagnostics()
                         if status_dashboard is not None:
                             try:
@@ -816,6 +931,31 @@ class AgentRunner:
                         # counter and emit PhaseComplete.
                         turn_number += 1
                         session.turn_count = turn_number
+                        # F-49 Phase 0: flush remaining assistant text + storage
+                        if session._transcript_storage is not None:
+                            try:
+                                if session._transcript_asst_text:
+                                    from src.types.messages import (
+                                        create_assistant_message,
+                                    )
+                                    from src.types.content_blocks import (
+                                        TextBlock,
+                                    )
+                                    session._transcript_storage.write_message(
+                                        create_assistant_message(
+                                            content=[TextBlock(
+                                                text=session._transcript_asst_text,
+                                            )],
+                                            model=self.agent_config.model,
+                                        ),
+                                    )
+                                    session._transcript_asst_text = ""
+                                session._transcript_storage.flush()
+                            except Exception:
+                                logger.exception(
+                                    "Failed to flush transcript "
+                                    "run_id=%s", session.run_id,
+                                )
                         append_debug_event(
                             session.debug_log_path,
                             "agent_runner.turn_complete",
@@ -859,9 +999,13 @@ class AgentRunner:
                             session.rate_limit_pending_turn = None
 
                             # Check if issue is still active before declaring completion
+                            # F-54 root-cause fix: pass the session so
+                            # ``_should_continue`` can also check the
+                            # workspace's git state and stop the
+                            # continuation loop when work is done.
                             if tracker is not None and issue.id:
                                 is_active, refreshed_issue = await self._should_continue(
-                                    issue, tracker
+                                    issue, tracker, session
                                 )
                                 if is_active and turn_number < self.max_turns:
                                     # F-?? Fix 4: include the running noop
@@ -910,7 +1054,7 @@ class AgentRunner:
                                     # deadlocks from a broken provider.
                                     _stagnation_threshold = (
                                         max_no_op_turns * 2
-                                        if has_made_progress
+                                        if session.has_made_progress
                                         else max_no_op_turns
                                     )
                                     if no_work_streak >= _stagnation_threshold:
@@ -951,17 +1095,18 @@ class AgentRunner:
                                     # spends multiple consecutive turns
                                     # making ONLY read-only tool calls
                                     # (Bash / Read / Grep / …) without a
-                                    # single Write / Edit and without
-                                    # any text output, it is stuck in an
-                                    # investigation spiral (F-40's 100+
-                                    # Python-env-debug Bash calls pattern).
-                                    # This guard catches that pattern
-                                    # and terminates the session.
+                                    # single Write / Edit, it is stuck
+                                    # in an investigation spiral (F-54's
+                                    # turn 1-6 pattern: 230+ Bash calls,
+                                    # 0 code changes).  Bash output is
+                                    # always non-empty, so we do NOT
+                                    # check ``turn_output`` here —
+                                    # the absence of modifying tools
+                                    # is the reliable indicator.
                                     if (
                                         turn_number > 0
                                         and turn_has_tool_calls
                                         and not turn_has_modifying_tool
-                                        and not turn_output.strip()
                                     ):
                                         read_only_streak += 1
                                     else:
@@ -1189,6 +1334,30 @@ class AgentRunner:
                                 ),
                                 session,
                             )
+                        # F-49 Phase 0: final flush before returning
+                        if session._transcript_storage is not None:
+                            try:
+                                if session._transcript_asst_text:
+                                    from src.types.messages import (
+                                        create_assistant_message,
+                                    )
+                                    from src.types.content_blocks import (
+                                        TextBlock,
+                                    )
+                                    session._transcript_storage.write_message(
+                                        create_assistant_message(
+                                            content=[TextBlock(
+                                                text=session._transcript_asst_text,
+                                            )],
+                                            model=self.agent_config.model,
+                                        ),
+                                    )
+                                session._transcript_storage.flush()
+                            except Exception:
+                                logger.exception(
+                                    "Failed to final-flush transcript "
+                                    "run_id=%s", session.run_id,
+                                )
                         return
             except RateLimitError as exc:
                 # Typed fallback: if the headless runner ever propagates
@@ -1268,6 +1437,26 @@ class AgentRunner:
             )
 
         session.tool_count = tool_count
+        # F-49 Phase 0: final flush before max_turns exit
+        if session._transcript_storage is not None:
+            try:
+                if session._transcript_asst_text:
+                    from src.types.messages import create_assistant_message
+                    from src.types.content_blocks import TextBlock
+                    session._transcript_storage.write_message(
+                        create_assistant_message(
+                            content=[TextBlock(
+                                text=session._transcript_asst_text,
+                            )],
+                            model=self.agent_config.model,
+                        ),
+                    )
+                session._transcript_storage.flush()
+            except Exception:
+                logger.exception(
+                    "Failed to final-flush transcript run_id=%s",
+                    session.run_id,
+                )
         append_debug_event(
             session.debug_log_path,
             "agent_runner.max_turns_exceeded",
@@ -1311,8 +1500,16 @@ class AgentRunner:
         self,
         issue: Issue,
         tracker: Any,
+        session: AgentSession | None = None,
     ) -> tuple[bool, Issue]:
-        """Check if the issue is still in an active state."""
+        """Check if the issue is still in an active state.
+
+        F-54 root-cause fix: even when the tracker reports the issue
+        as active, return False (stop) if the workspace already has
+        uncommitted or committed changes that satisfy the issue, so
+        the agent does not keep spinning in continuation loops after
+        completing its work.
+        """
         if not issue.id:
             return False, issue
 
@@ -1329,6 +1526,49 @@ class AgentRunner:
             refreshed_issue.state is not None
             and refreshed_issue.state.strip().lower() in active_states
         )
+        if not is_active:
+            return False, refreshed_issue
+
+        # F-54 root-cause fix: if the tracker still says active but
+        # the workspace already has uncommitted changes AND the
+        # session already completed production work (turn > 0 with
+        # modifying tools used), consider the work done and stop.
+        if (
+            session is not None
+            and getattr(session, "turn_count", 0) > 0
+            and getattr(session, "has_made_progress", False)
+        ):
+            ws = getattr(session, "workspace", None)
+            if ws is not None:
+                ws_path = getattr(ws, "path", None)
+                if ws_path is not None:
+                    try:
+                        import subprocess
+                        proc = subprocess.run(
+                            ["git", "status", "--porcelain"],
+                            cwd=str(ws_path),
+                            capture_output=True,
+                            text=True,
+                            timeout=10,
+                        )
+                        has_uncommitted = bool(proc.stdout.strip())
+                        # If there are uncommitted changes or the agent
+                        # already finished its work, stop the loop.
+                        if has_uncommitted or session.status in (
+                            "completed", "task_complete"
+                        ):
+                            logger.info(
+                                "Issue %s work appears done in workspace "
+                                "(turn_count=%d, has_uncommitted=%s) — "
+                                "stopping continuation loop",
+                                issue.id,
+                                session.turn_count,
+                                has_uncommitted,
+                            )
+                            return False, refreshed_issue
+                    except Exception:
+                        pass  # Fail-open: allow continue if git check fails
+
         return is_active, refreshed_issue
 
     def _inject_operator_hints(self, workspace: Any) -> None:

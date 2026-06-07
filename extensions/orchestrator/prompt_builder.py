@@ -201,8 +201,14 @@ class PromptBuilder:
         turn_number: int,
         max_turns: int,
         issue_context: str | None = None,
+        session: Any | None = None,
     ) -> str:
-        """Build continuation prompt for subsequent turns."""
+        """Build continuation prompt for subsequent turns.
+
+        F-54 root-cause fix: inject a summary of recent git commits
+        so the LLM can see what has already been done in previous
+        turns and avoid re-exploring from scratch.
+        """
         context_block = f"\n\nCurrent issue context:\n{issue_context}\n" if issue_context else ""
         urgency = (
             f"\n- ⚠️  You have only {max_turns - turn_number + 1} turn(s) remaining. "
@@ -211,6 +217,11 @@ class PromptBuilder:
             if turn_number >= max_turns // 2
             else ""
         )
+
+        # F-54 root-cause fix: inject recent git log so the LLM knows
+        # what was already done in previous turns.
+        git_log_summary = _get_git_log_summary(session)
+
         return (
             f"Continuation guidance:\n\n"
             f"⛔ **约束提醒**：始终用 `/root/Conda/bin/python3` 绝对路径，不要调试环境差异。\n"
@@ -219,6 +230,7 @@ class PromptBuilder:
             f"- Use available tools (Bash, Write, Edit, Grep, Glob, etc.) to make changes.\n"
             f"- Focus on completing the issue requirements. Do NOT re-read files you have already explored.\n"
             f"- Your FIRST action should be a Write or Edit to implement the feature.\n"
+            f"{git_log_summary}"
         )
 
     @staticmethod
@@ -333,7 +345,6 @@ def _get_workspace_diff(ws_path: Path) -> str | None:
         )
         status_short = proc2.stdout.strip()
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        logger.warning("Failed to read workspace diff for prompt_builder", exc_info=True)
         return None
 
     if not diff_stat and not status_short:
@@ -344,3 +355,36 @@ def _get_workspace_diff(ws_path: Path) -> str | None:
     if status_short:
         parts.append(f"Uncommitted files:\n```\n{status_short}\n```")
     return "\n".join(parts)
+
+
+def _get_git_log_summary(session: Any) -> str:
+    """Run ``git log --oneline -3`` in the workspace and return a
+    compact summary of recent commits, or an empty string when there
+    is no session / workspace / git history.
+
+    F-54 root-cause fix: injected into continuation prompts so the
+    LLM can see what has already been committed in previous turns
+    and avoid re-exploring from scratch.
+    """
+    if session is None:
+        return ""
+    ws = getattr(session, "workspace", None)
+    if ws is None:
+        return ""
+    ws_path = getattr(ws, "path", None)
+    if ws_path is None:
+        return ""
+    try:
+        proc = subprocess.run(
+            ["git", "log", "--oneline", "-3"],
+            cwd=str(ws_path),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        log_out = proc.stdout.strip()
+        if not log_out:
+            return ""
+        return f"\nRecent commits in workspace:\n```\n{log_out}\n```\n"
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return ""
