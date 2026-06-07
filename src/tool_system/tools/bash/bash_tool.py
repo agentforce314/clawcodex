@@ -94,7 +94,7 @@ def _run_bash_with_abort(
     # that don't have the conda entry, causing ``python3`` bare to
     # hang or not be found.  Merging it here guarantees the agent's
     # most-used command interpreter always sees the correct Python.
-    _base_env = _os.environ.copy()
+    _base_env = _os_mod.environ.copy()
     _conda_bin = "/root/Conda/bin"
     if _conda_bin not in _base_env.get("PATH", ""):
         _base_env["PATH"] = f"{_conda_bin}:{_base_env.get('PATH', '')}"
