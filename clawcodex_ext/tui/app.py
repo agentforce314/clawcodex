@@ -1079,9 +1079,9 @@ class ClawCodexTUI(App):
             # User cancelled — start a fresh session.
             return
         try:
-            from src.agent import Session as AgentSession
+            from clawcodex_ext.agent.session_ext import resume_session_with_tail
 
-            resumed, tail = AgentSession.resume_with_tail(session_id)
+            resumed, tail = resume_session_with_tail(session_id)
             # Swap session + bridge.
             self.session = resumed
             self._agent_bridge._session = resumed

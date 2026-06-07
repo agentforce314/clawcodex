@@ -9,9 +9,15 @@ during the migration.  New code should import from
 from clawcodex_ext.providers.runtime import (  # noqa: F401
     OAUTH_PROVIDERS,
     build_provider_from_config,
+    get_provider_config,
+    resolve_codex_runtime_credentials,
+    create_provider,
 )
 
 __all__ = [
     "OAUTH_PROVIDERS",
     "build_provider_from_config",
+    "get_provider_config",
+    "resolve_codex_runtime_credentials",
+    "create_provider",
 ]

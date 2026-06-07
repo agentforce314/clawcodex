@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import pytest
 
+# Import clawcodex_ext.providers to trigger the openai-codex provider-info
+# registration.  The registration no longer lives in src/providers/__init__.py.
+import clawcodex_ext.providers  # noqa: F401 — registers openai-codex info
+
 from src.auth.codex_oauth import CODEX_BASE_URL, CodexAuthError
 from src.providers import AVAILABLE_PROVIDERS, PROVIDER_INFO, get_provider_class
 from src.providers.openai_codex_provider import OpenAICodexProvider

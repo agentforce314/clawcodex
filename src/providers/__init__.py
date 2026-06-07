@@ -69,18 +69,6 @@ PROVIDER_INFO: dict[str, ProviderInfo] = {
             "gpt-3.5-turbo",
         ],
     },
-    "openai-codex": {
-        "label": "OpenAI Codex (ChatGPT OAuth)",
-        "default_base_url": "https://chatgpt.com/backend-api/codex",
-        "default_model": "gpt-5.3-codex",
-        "available_models": [
-            # Static baseline — the actual model list can be extended at
-            # runtime via ModelRegistry.register_discovery_hook() from
-            # extensions/ or clawcodex_ext/.
-            "gpt-5.3-codex",
-            "gpt-5.3-codex-spark",
-        ],
-    },
     "glm": {
         "label": "Zhipu GLM (z.ai)",
         "default_base_url": "https://open.bigmodel.cn/api/paas/v4",
@@ -251,7 +239,49 @@ def get_provider_class(provider_name: str):
         from .gemini_provider import GeminiProvider
 
         return GeminiProvider
+    if provider_name in _EXTRA_PROVIDER_CLASSES:
+        return _EXTRA_PROVIDER_CLASSES[provider_name]
     raise ValueError(f"Unknown provider: {provider_name}")
+
+
+# ---------------------------------------------------------------------------
+# Extension registration API
+# ---------------------------------------------------------------------------
+
+# Lazy registry for providers added by clawcodex_ext / extensions.
+_EXTRA_PROVIDER_CLASSES: dict[str, type] = {}
+
+
+def register_provider(name: str, info: ProviderInfo, cls: type) -> None:
+    """Register a new provider at runtime.
+
+    Adds *info* to ``PROVIDER_INFO`` and registers *cls* so that
+    ``get_provider_class(name)`` returns it.
+
+    Idempotent: calling twice with the same *name* is a no-op
+    (first registration wins).
+    """
+    register_provider_info(name, info)
+    if name not in _EXTRA_PROVIDER_CLASSES:
+        _EXTRA_PROVIDER_CLASSES[name] = cls
+        # Rebuild the display dict so it reflects the new provider.
+        global AVAILABLE_PROVIDERS  # noqa: PLW0603
+        AVAILABLE_PROVIDERS = {k: v["label"] for k, v in PROVIDER_INFO.items()}
+
+
+def register_provider_info(name: str, info: ProviderInfo) -> None:
+    """Add or update *info* in ``PROVIDER_INFO`` without a class mapping.
+
+    Useful when the provider is served by LiteLLM or another generic
+    backend that doesn't have a dedicated ``BaseProvider`` subclass.
+
+    Also refreshes ``AVAILABLE_PROVIDERS`` so the new provider shows up
+    in UI/CLI listings.
+    """
+    if name not in PROVIDER_INFO:
+        PROVIDER_INFO[name] = info
+        global AVAILABLE_PROVIDERS  # noqa: PLW0603
+        AVAILABLE_PROVIDERS = {k: v["label"] for k, v in PROVIDER_INFO.items()}
 
 
 # Legacy registry for display purposes
@@ -268,4 +298,6 @@ __all__ = [
     "PROVIDER_INFO",
     "AVAILABLE_PROVIDERS",
     "should_use_litellm",
+    "register_provider",
+    "register_provider_info",
 ]

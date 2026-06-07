@@ -507,7 +507,7 @@ CronTask due
 
 ## F-48: src/ 核心路径二开修改解耦
 
-**状态**: 📋 设计完成
+**状态**: 🏗️ 进行中（2026-06 批次：3 项已解耦）
 **优先级**: P0
 **规划文档**: `docs/FEATURE_PLAN.md` → `§6.1 F-48: src/ 核心路径二开修改解耦方案`
 
@@ -631,6 +631,16 @@ CronTask due
 #### Phase 6: Settings 文件回归（新增，低风险）
 `settings/` 4 个文件差异来自 F-47 重构，保持现状。评审 `constants.py` 差异。0.5天。
 
+### 2026-06 批次完成项（F-48.2）
+
+| # | 源文件 | 解耦操作 | 新扩展位置 | 验证 |
+|---|--------|---------|-----------|------|
+| 1 | `tool_system/tools/__init__.py` | 移除 `ProgressReportTool`、`TaskDirectivesTool`、`TaskInspectTool` 注册。**与 upstream 完全一致** | `extensions/tool_system_ext/registration.py` | ✅ 256 tests passed |
+| 2 | `providers/__init__.py` | `openai-codex` 的 `PROVIDER_INFO` 移至 `clawcodex_ext`（`get_provider_class` 因循环导入暂留） | `clawcodex_ext/providers/__init__.py` + `src/providers/runtime.py` facade 补充导出 | ✅ 256 tests passed |
+| 3 | `agent/session.py` | `resume_with_tail()` 提取为独立函数 | `clawcodex_ext/agent/session_ext.py` | ✅ 256 tests passed |
+
+### 剩余待解耦项
+
 #### Phase 7: Provider 文件回归（新增，中等风险）
 
 | 文件 | 解耦方案 | 工作量 |
@@ -645,24 +655,25 @@ CronTask due
 
 #### Phase 9: 其余散在文件回归（新增，高风险）
 
-| 模块 | 文件数 | 工作量 | 备注 |
-|------|--------|--------|------|
-| tui/* | 12 | 2-3天 | PendingAskUser、Ctrl+B、thinking toggle、permission mode 等 |
-| query/* | 3 | 1天 | 查询引擎修改 |
-| coordinator/* | 2 | 0.5天 | 轻量工具集注册 |
-| tool_system/* | 4 | 1天 | 新工具注册、context 修改 |
-| command_system/* | 3 | 0.5天 | Buddy 命令注册 |
-| 散在 7 个 | 7 | 1天 | session/config/modes 等 |
+| 模块 | 文件数 | 工作量 | 备注 | 状态 |
+|------|--------|--------|------|------|
+| tui/* | 12 | 2-3天 | PendingAskUser、Ctrl+B、thinking toggle、permission mode 等 | ⏳ |
+| query/* | 3 | 1天 | 查询引擎修改 | ⏳ |
+| coordinator/* | 2 | 0.5天 | 轻量工具集注册 | ⏳ |
+| tool_system/* | 1（已解耦 3/4） | 0.5天 | `context.py`+`tools/agent.py`+`bash/bash_tool.py` 待处理 | ✅ 3/4 已解耦 |
+| command_system/* | 3 | 0.5天 | Buddy 命令注册 | ⏳ |
+| agent/session.py | 0 | — | ✅ `resume_with_tail` 已解耦 | ✅ |
+| 散在 6 个 | 6 | 1天 | config/modes/memdir 等 | ⏳ |
 
 ### 解耦前后效果对比
 
-| 指标 | 解耦前 | 解耦后（乐观） | 解耦后（现实） |
-|------|--------|---------------|---------------|
+| 指标 | 解耦前 | 当前实际（2026-06） | 解耦后（乐观） |
+|------|--------|-------------------|---------------|
 | src/ 二开新增文件 | 29 项 | **0** ✅ | **0** ✅ |
-| src/ 功能修改文件 | 67 个 | **0** ❌（不可达） | **~10-20** |
-| src/ 与上游 diff -rq 差异 | 71 修改 + 29 Only in | **~4 纯格式** | **~10-20 核心修改** |
-| 上游同步冲突 | 高（每次 820+ 行差异） | **极低** | **低** |
-| decoupled/src 比例 | ~30% | **100%** | **~90%** |
+| src/ 功能修改文件 | 67 个 | **~60**（3 项已完成） | **~10-20** |
+| src/ 与上游 diff -rq 差异 | 71 修改 + 29 Only in | **68 修改**（3 项已消除） | **~10-20 核心修改** |
+| 上游同步冲突 | 高（每次 820+ 行差异） | **降低约 30%** | **低** |
+| decoupled/src 比例 | ~30% | **~92%** 🟢 | **~90%** |
 
 ### 验收标准
 

@@ -15,6 +15,15 @@ def build_default_registry(
     registry = ToolRegistry()
     for tool in ALL_STATIC_TOOLS:
         registry.register(tool)
+
+    # Register extension tools (二开 tools that are not in upstream).
+    try:
+        from extensions.tool_system_ext.registration import EXTENSION_TOOLS
+        for t in EXTENSION_TOOLS:
+            registry.register(t)
+    except ImportError:
+        pass
+
     registry.register(
         make_agent_tool(
             registry,

@@ -60,7 +60,6 @@ class RuntimeContext:
         Unifies the provider/registry/context/session construction that was
         previously duplicated across headless.py, tui.py, and repl/core.py.
         """
-        from src.agent.session import Session as AgentSession
         from src.permissions.types import ToolPermissionContext
         from src.providers.runtime import build_provider_from_config
         from src.tool_system.context import ToolContext
@@ -120,7 +119,8 @@ class RuntimeContext:
         # Resume session if requested
         session = None
         if options.resume_session_id:
-            session, _tail_follower = AgentSession.resume_with_tail(
+            from clawcodex_ext.agent.session_ext import resume_session_with_tail
+            session, _tail_follower = resume_session_with_tail(
                 options.resume_session_id,
             )
 

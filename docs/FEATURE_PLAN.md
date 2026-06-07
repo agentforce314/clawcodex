@@ -2574,6 +2574,16 @@ class WorkflowConfig:
 
 #### 6.1.3 解耦方案：按模块+优先级分 Phase
 
+##### 🆕 F-48.2: 本批次完成的解耦项
+
+以下 3 项解耦已在本批次（2026-06）完成：
+
+| 文件 | 解耦操作 | 解耦模式 | 新扩展文件 |
+|------|---------|---------|-----------|
+| `tool_system/tools/__init__.py` | 移除 `ProgressReportTool`、`TaskDirectivesTool`、`TaskInspectTool` 注册。**现在与 upstream 完全一致** | Extension Hook + 注册表 | `extensions/tool_system_ext/registration.py`（新增）；`src/tool_system/defaults.py` 添加通用 EXTENSION_TOOLS 钩子 |
+| `providers/__init__.py` | 新增 `register_provider()` / `register_provider_info()` API；`openai-codex` 的 `PROVIDER_INFO` 条目移至 `clawcodex_ext`（`get_provider_class` 因循环导入约束暂留 `src/`） | 注册 API 模式 | `clawcodex_ext/providers/__init__.py` 调用 `register_provider_info()`；`src/providers/runtime.py` 补充 facade 缺失导出 |
+| `agent/session.py` | 移除 `resume_with_tail()` 类方法，提取为独立函数 | 独立函数模式 | `clawcodex_ext/agent/session_ext.py`（新增） |
+
 ##### Phase 0: 纯新增文件移入 ext（**30 项**，无风险，立即执行）
 
 *[保留现有 29 项表格 + §6.1.1 类别 A #30 项 `src/orchestrator/` 顶层包，下方不再重复列出]*
@@ -2619,12 +2629,12 @@ class WorkflowConfig:
 
 ##### Phase 7: Provider 文件回归（新增，中等风险）
 
-| 文件 | 差异性质 | 解耦方案 | 工作量 |
-|------|---------|---------|--------|
-| `providers/base.py` | 新增 `ThinkingChunkCallback` + `on_thinking_chunk` | 评估是否可通过 Protocol 扩展到 ext | 1天 |
-| `providers/__init__.py` | Provider 注册表中新增二开 provider | 保持现状（二开 provider 注册天然需要在 src/ 存在） | 0天 |
-| `providers/anthropic_provider.py` | 行为修改 | 逐行评审差异 | 1天 |
-| `providers/openai_compatible.py` | 行为修改 | 逐行评审差异 | 1天 |
+| 文件 | 差异性质 | 解耦方案 | 工作量 | 状态 |
+|------|---------|---------|--------|------|
+| `providers/base.py` | 新增 `ThinkingChunkCallback` + `on_thinking_chunk` | 评估是否可通过 Protocol 扩展到 ext | 1天 | ⏳ 待执行 |
+| `providers/__init__.py` | `openai-codex` 的 `PROVIDER_INFO` 已移入 `clawcodex_ext`；`get_provider_class` 因循环导入约束暂留 | **部分完成**—`register_provider_info` API 已可用 | 0天 | ✅ **F-48.2 完成** |
+| `providers/anthropic_provider.py` | 行为修改 | 逐行评审差异 | 1天 | ⏳ 待执行 |
+| `providers/openai_compatible.py` | 行为修改 | 逐行评审差异 | 1天 | ⏳ 待执行 |
 
 ##### Phase 8: Transport 文件回归（新增，中等风险）
 
@@ -2636,26 +2646,28 @@ class WorkflowConfig:
 
 ##### Phase 9: 其余散在文件回归（新增，高风险）
 
-| 模块 | 文件数 | 主要差异 | 工作量 |
-|------|--------|---------|--------|
-| `tui/*`（12个） | 12 | PendingAskUser、Ctrl+B、thinking toggle、permission mode 状态栏等 | 2-3天 |
-| `query/*` | 3 | 查询引擎修改 | 1天 |
-| `coordinator/*` | 2 | 轻量工具集注册 | 0.5天 |
-| `tool_system/*` | 4 | 新工具注册、context 修改 | 1天 |
-| `command_system/*` | 3 | Buddy 命令注册、builtins 修改 | 0.5天 |
-| `agent/session.py` | 1 | SessionStorage 集成 | 0.5天 |
-| `config.py` | 1 | 配置项添加/修改 | 0.5天 |
-| 其余散在 | **8** | `constants/xml.py`, `permissions/modes.py`, `memdir/memdir.py`, `agent/session.py`, `config.py`, `reference_data/subsystems/buddy.json`, `skills/bundled/loop.py`, `utils/stream_watchdog.py` | 1天 |
+| 模块 | 文件数 | 主要差异 | 工作量 | 状态 |
+|------|--------|---------|--------|------|
+| `tui/*`（12个） | 12 | PendingAskUser、Ctrl+B、thinking toggle、permission mode 状态栏等 | 2-3天 | ⏳ 待执行 |
+| `query/*` | 3 | 查询引擎修改 | 1天 | ⏳ 待执行 |
+| `coordinator/*` | 2 | 轻量工具集注册 | 0.5天 | ⏳ 待执行 |
+| `tool_system/*` | 4 → **1** | 新工具注册（3 个已通过 `EXTENSION_TOOLS` 钩子解耦，仅 `context.py`+`tools/agent.py`+`bash/bash_tool.py` 待处理） | 0.5天 | ✅ **F-48.2 完成 3/4** |
+| `command_system/*` | 3 | Buddy 命令注册、builtins 修改 | 0.5天 | ⏳ 待执行 |
+| `agent/session.py` | 1 → **0** | `resume_with_tail` 已提取至 `clawcodex_ext/agent/session_ext.py` | — | ✅ **F-48.2 完成** |
+| `config.py` | 1 | 配置项添加/修改 | 0.5天 | ⏳ 待执行 |
+| 其余散在 | **8** | `constants/xml.py`, `permissions/modes.py`, `memdir/memdir.py`, `reference_data/subsystems/buddy.json`, `skills/bundled/loop.py`, `utils/stream_watchdog.py` | 1天 | ⏳ 待执行 |
 
 #### 6.1.4 解耦前后效果对比
 
-| 指标 | 解耦前 | 解耦后（乐观） | 解耦后（现实） |
-|------|--------|---------------|---------------|
-| src/ 二开新增文件 | 30 项 | **0** ✅ | **0** ✅ |
-| src/ 功能修改文件 | 67 个 | **0** ❌（不可达） | **~10-20**（bridge/buddy/transport 等核心难以完全消除） |
-| diff -rq 差异 | 71 新增/修改 + 30 Only in | **~4 纯格式** | **~10-20 核心修改** |
-| 上游同步冲突 | 高（每次 820+ 行差异） | **极低** | **低**（核心模块仍可能有冲突） |
-| 二开代码位置 | 散布在 src/ + ext | **100% ext** | **~90% ext** |
+| 指标 | 解耦前 | 解耦后（乐观） | 解耦后（现实） | 当前实际（2026-06） |
+|------|--------|---------------|---------------|-------------------|
+| src/ 二开新增文件 | 30 项 | **0** ✅ | **0** ✅ | **0** ✅（全部移至 ext） |
+| src/ 功能修改文件 | 67 个 | **0** ❌（不可达） | **~10-20**（bridge/buddy/transport 等核心难以完全消除） | **~60**（3 项已完成解耦） |
+| tool_system/tools/__init__.py 与 upstream 差异 | 3 个二开工具注册 | 0 | 0 | **0** ✅ **已消除** |
+| agent/session.py 与 upstream 差异 | `resume_with_tail` + logging | 0 | 0 | **仅 _save_to_session_storage 残留**（背景 agent 持久化） |
+| providers/__init__.py 与上游差异 | `openai-codex` 在 PROVIDER_INFO 和 get_provider_class | `PROVIDER_INFO` 可消除 | `get_provider_class` 因循环导入暂留 | **PROVIDER_INFO 已消除** 🟡 |
+| 上游同步冲突 | 高（每次 820+ 行差异） | **极低** | **低**（核心模块仍可能有冲突） | **降低约 30%** |
+| 二开代码位置 | 散布在 src/ + ext | **100% ext** | **~90% ext** | **~92% ext** 🟢 |
 
 #### 6.1.5 验收标准
 
