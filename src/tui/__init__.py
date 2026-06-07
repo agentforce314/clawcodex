@@ -1,25 +1,6 @@
-"""Textual-based interactive TUI for Claw Codex.
-
-Phase 11 of the CLI/REPL/terminal-UI refactor. This package mirrors the
-architectural shape of ``typescript/src/screens/REPL.tsx`` — a retained-mode
-component tree with a header, scrollable transcript, status bar and prompt
-input — using `Textual <https://textual.textualize.io>`_, the only mainstream
-Python TUI framework with the same layout/state model as Ink/React.
-
-Public entry point: :func:`src.entrypoints.tui.run_tui`. This package deliberately
-contains *no* import of ``src.repl.core`` (the legacy Rich REPL) so the two
-interactive stacks can evolve independently.
+"""Facade — tui/__init__.py has been moved to clawcodex_ext (lazy proxy).
 """
-
-from .app import ClawCodexTUI
-from .messages import (
-    AdvisorEventMessage,
-    AgentRunFinished,
-    AgentRunStarted,
-    AssistantChunk,
-    AssistantMessage,
-    ToolEventMessage,
-)
+from __future__ import annotations
 
 __all__ = [
     "ClawCodexTUI",
@@ -30,3 +11,10 @@ __all__ = [
     "AssistantMessage",
     "ToolEventMessage",
 ]
+
+
+def __getattr__(name: str):
+    import clawcodex_ext.tui as _mod
+    val = getattr(_mod, name)
+    globals()[name] = val
+    return val

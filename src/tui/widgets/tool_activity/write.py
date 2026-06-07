@@ -1,25 +1,16 @@
-"""Write tool activity — shows target file and operation kind."""
-
+"""Facade — tui/widgets/tool_activity/write.py has been moved to clawcodex_ext (lazy proxy).
+"""
 from __future__ import annotations
 
-from typing import Any
-
-from rich.text import Text
-
-from .base import ToolActivity
+__all__ = [
+    "WriteActivity",
+]
 
 
-class WriteActivity(ToolActivity):
-    def inflight_text(self) -> Text:
-        path = self.tool_input.get("file_path") or self.tool_input.get("filePath") or ""
-        return Text(f"write {path}" if path else "write …", style="dim")
-
-    def result_body(self, output: Any, *, is_error: bool) -> Any | None:
-        if not isinstance(output, dict):
-            return None
-        path = output.get("filePath") or output.get("file_path") or ""
-        op = output.get("type") or ""
-        summary = f"{op} · {path}".strip(" ·")
-        if not summary:
-            return None
-        return Text(summary, style="red" if is_error else "green")
+def __getattr__(name: str):
+    import clawcodex_ext.tui.widgets.tool_activity.write as _mod
+    if name in _mod.__dict__:
+        val = _mod.__dict__[name]
+        globals()[name] = val
+        return val
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

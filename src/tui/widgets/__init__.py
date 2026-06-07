@@ -1,37 +1,16 @@
-"""Widgets used by the Claw Codex Textual TUI.
-
-Public API (Phase 1):
-
-* :class:`StartupHeader`   — one-shot banner at the top of the scroll region.
-* :class:`TranscriptView`  — scrollable message list (replaces
-  ``RichLog``-based Phase 0 ``Transcript``).
-* :class:`StatusLine`      — spinner + verb + metrics bar.
-* :class:`PromptInput`     — multi-line input + slash palette.
-* :class:`FullscreenLayout` — four-region parity shell.
-
-Backward-compat aliases kept so Phase 0 callers (tests, handoff) work
-unchanged: :class:`Transcript` (now :class:`TranscriptView`) and
-:class:`StatusBar` (now :class:`StatusLine`).
+"""Facade — tui/widgets/__init__.py has been moved to clawcodex_ext (lazy proxy).
 """
-
-from .fullscreen_layout import FullscreenLayout
-from .header import StartupHeader
-from .prompt_input import PromptInput, PromptSubmitted
-from .status_line import StatusLine
-from .transcript_view import Transcript, TranscriptView
-
-
-# Phase 0 backward-compat alias.
-StatusBar = StatusLine
-
+from __future__ import annotations
 
 __all__ = [
-    "FullscreenLayout",
-    "StartupHeader",
-    "PromptInput",
-    "PromptSubmitted",
-    "StatusLine",
-    "StatusBar",
-    "Transcript",
-    "TranscriptView",
+    
 ]
+
+
+def __getattr__(name: str):
+    import clawcodex_ext.tui.widgets.__init__ as _mod
+    if name in _mod.__dict__:
+        val = _mod.__dict__[name]
+        globals()[name] = val
+        return val
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

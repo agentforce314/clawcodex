@@ -1,15 +1,16 @@
-"""Facade — tui/screens/ask_user_question.py has been moved to clawcodex_ext.
-
-This module re-exports the public API so that existing ``from
-src.tui.screens.ask_user_question import …`` call sites continue to work
-during the migration.  New code should import from
-``clawcodex_ext.tui.screens.ask_user_question`` directly.
+"""Facade — tui/screens/ask_user_question.py has been moved to clawcodex_ext (lazy proxy).
 """
-
-from clawcodex_ext.tui.screens.ask_user_question import (  # noqa: F401
-    AskUserQuestionModal,
-)
+from __future__ import annotations
 
 __all__ = [
-    "AskUserQuestionModal",
+    
 ]
+
+
+def __getattr__(name: str):
+    import clawcodex_ext.tui.screens.ask_user_question as _mod
+    if name in _mod.__dict__:
+        val = _mod.__dict__[name]
+        globals()[name] = val
+        return val
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
