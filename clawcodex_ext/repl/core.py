@@ -312,6 +312,7 @@ from src.providers.runtime import build_provider_from_config
 from src.providers.anthropic_provider import AnthropicProvider
 from src.providers.base import ChatMessage
 from src.providers.minimax_provider import MinimaxProvider
+from src.providers import get_provider_class
 from src.services.api.claude import tool_to_api_schema
 from src.tool_system.context import ToolContext
 from src.tool_system.defaults import build_default_registry
