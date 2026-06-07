@@ -2,13 +2,13 @@
 
 > 文档路径: `docs/PROGRESS.md`
 > 基于: `docs/open-source-replacement-progress.md`, `docs/FEATURE_PLAN.md`
-> 版本: v2.16
-> 更新日期: 2026-06-04
+> 版本: v2.17
+> 更新日期: 2026-06-05
 > 上游同步: 58ea488 (dev-decoupling-refactor)
 >
 > **v2.16 变更**：完成 CCB（claude-code-best）全面对标分析，识别 clawcodex 的 8 个重大特性缺口纳入规划管线。新增 F-60 Pipe IPC + LAN 群控（P0）、F-61 Computer Use 屏幕操控（P0）、F-62 Chrome 浏览器控制（P1）、F-63 Channels 频道通知（P1）、F-64 Voice Mode 语音输入（P2）、F-65 Langfuse Agent 可观测性（P1）、F-66 ACP 协议支持（P2）、F-67 Buddy / Proactive 模式（P2）。同时更新 §四 CCB 对标优势特性总表，明确 clawcodex 对比 CCB 的 5 项领先特性（Orchestrator 自动流水线、Verification Gate、SOP 编译器、LiteLLM Provider、Manager/Worker 增强通信）。所有 F-60~F-67 设置为 ⏳ 待开始状态，详见 §四。
 >
-> **v2.14 变更**：新增 F-48 src/ 核心路径二开修改解耦方案（📋 设计完成）。通过对比 `src/` 与 `src/upstream/58ea488/`，识别出 10 个含真正功能修改的 src/ 文件（其余 600+ 为行尾/格式差异），分 Phase 0~3 四阶段制定解耦方案：Phase 0（纯新增文件移入 ext）、Phase 1（注册表/Protocol 扩展消除字段注入）、Phase 2（子类覆盖恢复上游构造器签名）、Phase 3（入口点恢复上游逻辑）。复用已有 Facade/子类覆盖/前端注册表三种解耦模式。目标：src/ 有功能修改的文件数从 10+ 降为 0。
+> **v2.17 变更**：全面更新 F-48 src/ 核心路径二开修改解耦方案。通过完整对比 `src/` 与 `src/upstream/58ea488/` 的 diff，将解耦范围从"10 个功能性修改文件"扩展到全部 **29 个纯新增文件 + 7 个外部库适配器 + 71 个功能修改文件**。新增按模块类别的七组解耦子方案（Adapter、Orchestrator Tools、Provider Extensions、Auth、TUI Screens、Services、Utilities），并单独设立 F-48.1 Adapter 文件统一解耦子特性。新增类别 B 修改文件解耦表格覆盖 10 个已识别功能修改点。目标：src/ 二开新增文件数从 29 降为 0，src/ 功能修改文件数从 10 降为 0，decoupled/src 比例从约 30% 提升至 100%。详见 §六 FEATURE_PLAN.md。
 >
 > **v2.13 变更**：新增 F-43 实现 + F-45 / F-46 / F-47。F-43 P1 落地 `clawcodex provider` / `clawcodex model` 子命令族（list/show/current/use/unset）+ REPL/TUI 内 `/provider` / `/model` 斜杠命令；新增 fast-path `subcommand_registry` + `ModelRegistry` / `ModelStore` / `Resolver` + `RuntimeContext.swap_provider` 热切换；所有新代码落在 `clawcodex_ext/cli/`，`src/*` 仅追加 `CommandContext.runtime_context` seam 与 `TUIOptions.runtime_context` 透传。F-45 P1 在 `agent_runner._handle_tool_call` 后加 NDJSON 旁路落 `~/.clawcodex/tool-events/{run_id}/events.ndjson`，与 permission_mode 解耦；扩展 `report_writer.RunReport.tool_events_path` 字段 + markdown 模板登记路径；终结 "bypass ≠ 无审计" 误读。F-46 P2 把 `permission_mode` enum 拆为 `interactive` / `default_decision` / `audit_log` 三个正交字段，F-46.0（v2.13）只拆 `audit_log`，依赖 F-45 落地后端到端验证；`permission_mode` 保留为 backward-compat shim 标 deprecated；F-46.1+ 拆其余两字段推到 v2.15+。F-47 P1 修 `SettingsSchema.permissions` schema 形状（`list[PermissionRule]`）与磁盘 dict 形态不一致 / `has_allow_bypass_permissions_mode` 永远读不到 / `resolve_permission_state` 没传 `settings_default_mode` / 顶层 `settings.permission_mode` 字段未读 四个串联 bug；引入 `PermissionsConfig` dataclass 对齐磁盘 + TS 上游契约，让 `permissions.defaultMode` 与 `permissions.allowBypassPermissionsMode` 真正生效；删除 settings 层"假" `PermissionRule` 死代码。**F-47.1 (2026-06-02) v2.13 hotfix：在项目尚未发布的前提下直接删除 F-47 原本保留的顶层 `settings.permission_mode` back-compat 读取通道**——`SettingsSchema.permission_mode` 字段保留为兼容形态但启动时不再被读，F-46.2 的 deprecation 步骤因此 N/A。
 >
@@ -96,7 +96,7 @@
 | F-45 | Orchestrator tool-call 审计旁路（tool-events.ndjson + 报告登记） | P1 | ✅ 已完成 (2026-06-02) | 在 `extensions/orchestrator/agent_runner.py:_handle_tool_call` 之后追加 NDJSON 旁路落盘到 `~/.clawcodex/tool-events/{run_id}/events.ndjson`，与 `permission_mode` 解耦（`bypassPermissions` / `dontAsk` / `acceptEdits` / `default` 一视同仁全写）；扩展 `report_writer.RunReport` 加 `tool_events_path` 字段并在 markdown 模板登记路径，让审计员从 run 报告直接定位完整 per-tool 决策流水。修复 TS 注释 "bypass = no logging" 在 Python 端的事实偏差 —— `ApprovalPolicy` 一直在跑，只是决策没落盘。落地时同步修复了 `_handle_tool_call` 死代码调用链 + 加 50MB rotate + `.reports` 进默认 gitignore。16 个新测试 + 全 271 回归 + F-38 E2E 4/4 全绿。 |
 | F-46 | permission_mode enum 正交拆分 | P2 | ⏳ 规划中 | 把 `permission_mode` 混合 enum（`default` / `plan` / `bypassPermissions` / `acceptEdits` / `dontAsk` / `auto` / `bubble`）拆为三个正交字段：`interactive: bool`（是否要 TTY 弹 prompt）、`default_decision: Literal["allow", "deny", "ask"]`（无人值守默认）、`audit_log: Literal["none", "minimal", "full"]`（per-tool 决策是否落盘）。F-46.0（v2.13）只拆 `audit_log`，**F-45 已落地**可消费 NDJSON 旁路做端到端验证；`permission_mode` 保留为 backward-compat shim 标 deprecated；F-46.1+ 拆其余两字段推到 v2.15+。 |
 | F-47 | Permission Settings Schema 重构（`permissions` 改 dict 形态 + plumb 启动模式） | P1 | ✅ 完成（含 F-47.1 hotfix） | 修四层串联 bug：`SettingsSchema.permissions: list[PermissionRule]` 与磁盘实际 dict 形态不一致 → dict 落进 known 字段，`allowBypassPermissionsMode` 进不到 `extra` → `has_allow_bypass_permissions_mode` 永远 False → Shift+Tab cycle 看不到 Bypass；同时 `resolve_permission_state` 没把 `permissions.defaultMode` 喂给 `initial_permission_mode_from_cli`、顶层 `settings.permission_mode` 字段未读。引入 `PermissionsConfig` dataclass 对齐磁盘 + TS 上游契约；`has_allow_bypass_permissions_mode` 加 `extra["permissions"]` fallback；`resolve_permission_state` 真正 plumb `settings_default_mode`；删除 settings 层"假" `PermissionRule` 死代码。**F-47.1 (2026-06-02) hotfix**：项目尚未发布、磁盘上没有需要迁移的旧配置，直接删除原本保留的顶层 `settings.permission_mode` back-compat 读取通道——`SettingsSchema.permission_mode` 字段保留为兼容形态但启动时不再被读；详见 风险 #3 / 设计决定 #3 / F-47.1 备注。 |
-| F-48 | src/ 核心路径二开修改解耦 | P0 | 📋 设计完成 | 将 `src/` 中 10 个含真正功能修改的文件解耦到 `clawcodex_ext/` 和 `extensions/`，使 `src/` 与上游源码（`src/upstream/58ea488/`）功能层面一致。分 Phase 0~3：Phase 0（纯新增文件移入 ext）、Phase 1（注册表/Protocol 扩展消除字段注入）、Phase 2（子类覆盖恢复上游构造器签名）、Phase 3（入口点恢复上游逻辑）。复用 Facade/子类覆盖/前端注册表三种解耦模式。目标：src/ 有功能修改的文件数从 10+ 降为 0 |
+| F-48 | src/ 核心路径二开修改解耦 | P0 | 📋 设计完成 | 将 `src/` 中 **29 个纯新增文件 + 10 个功能修改文件**全部解耦到 `clawcodex_ext/` 和 `extensions/`。新增 7 个外部库适配器统一迁移（F-48.1 子特性）、Orchestrator 配套工具 5 个、Provider 扩展 3 个、Auth 子系统 2 个、TUI 屏幕 2 个、服务/工具 5 个、工具编写系统 1 个。修改文件解耦沿用 Phase 1~3（注册表/Protocol 扩展 → 子类覆盖 → 入口点恢复）。目标：src/ 二开新增文件数从 29 → 0，功能修改文件数从 10 → 0 |
 | F-49 | Issue 会话统一存储与实时介入协议 | P1 | 📋 设计完成 | 将 headless agent 的 `.event_logs/` 扁平 NDJSON 统一为 `SessionStorage` 的 `transcript.jsonl` 格式；在其上建立 Unix socket 双向控制协议，实现 `attach` CLI 观察/中断/接管/恢复；附带 session 恢复能力。Phase 0 存储统一 → Phase 1 socket 控制 → Phase 2 attach TUI → Phase 3 session 恢复 |
 | F-51 | AgentRunner 空转检测机制（no-op detection） | P0 | ✅ 完成 | 在 `extensions/orchestrator/agent_runner.py` 中添加连续 5 轮工作区文件无变更检测，防止 agent 在 issue deliverables 已存在的场景下陷入无限 busy-work 循环。对应 PR 检视意见自动修复闭环（F-37）中的已修复前置问题。|
 | F-52 | Python SDK 方法注册为 Tool | P2 | 📋 规划中 | 将 SOP 生成的 ADF 方法（`detect_modality`、`load_dataset` 等）注册为真实的 `Tool` 对象，使 sub-agent 可直接调用而非通过 Bash 回退。`extensions/pos_converter/tool_registry.py` — `ToolWrapper` + `register_source_operations()`。依赖 F-50。 |
@@ -509,126 +509,133 @@ CronTask due
 
 **状态**: 📋 设计完成
 **优先级**: P0
-**规划文档**: `docs/FEATURE_PLAN.md` → `6.1 F-48: src/ 核心路径二开修改解耦方案`
+**规划文档**: `docs/FEATURE_PLAN.md` → `§6.1 F-48: src/ 核心路径二开修改解耦方案`
 
 ### 目标
 
-将 `src/` 中所有真正的二开功能修改迁移到 `clawcodex_ext/` 和 `extensions/` 扩展路径，使 `src/` 与上游源码（`src/upstream/58ea488/`）在功能层面完全一致，仅保留最小化的 seam/注册表/Protocol 扩展点。
+将 `src/` 中 **29 个纯二开新增文件 + 10 个功能修改文件**全部迁移到 `clawcodex_ext/` 和 `extensions/` 扩展路径，使 `src/` 与上游源码（`src/upstream/58ea488/`）仅剩格式/import 层面差异，消除所有功能性差异。
+
+**关键量化指标**: src/ 二开新增文件数从 29 → 0，功能修改文件数从 10 → 0。
 
 ### 问题现状
 
-通过逐文件对比 `src/` 与 `src/upstream/58ea488/`（忽略行尾 CRLF/LF 差异），识别出 **10 个 src/ 文件含真正的功能修改**（其余 600+ 文件差异仅为行尾/格式差异，`diff -w` 无实质输出）：
+通过 `diff -rq src/upstream/58ea488/ src/` 完整对比，发现三类差异：
 
-| 文件 | 修改性质 | 解耦状态 |
-|------|---------|---------|
-| `src/repl/core.py` | provider 构建改 `build_provider_from_config`；构造器新增 6 个参数；`_api_key_missing` 软降级；`runtime_context` 存储；`/provider` 命令注册 | ❌ 深度耦合 |
-| `src/tui/app.py` | ~250 行差异 — Ctrl+B/Fork-Continue、`runtime_context`、resume、permission cycling、thinking toggle | ⚠️ 大部分已解耦（子类覆盖），本体仍有注入 |
-| `src/tui/commands.py` | `/model` 改为 `open_dialog`；移除 `/resume` 和 `/permission` 对话框；`/repl` 改为 `__repl__` 信号 | ⚠️ 可解耦 |
-| `src/entrypoints/tui.py` | provider 注入 seam、session/resume/tail_follower/runtime_context 参数 | ⚠️ 已有部分解耦 |
-| `src/entrypoints/headless.py` | provider/session/tool_registry/tool_context 注入 seam、`on_event` 桥接 | ⚠️ 同上 |
-| `src/cli.py` | ✅ **已完全解耦** — 变成纯 facade，全部委托到 `clawcodex_ext/cli/` | ✅ 已完成 |
-| `src/context_system/prompt_assembly.py` | `memory_scopes` 参数 + `clawcodex_ext.memory` try-import 降级 | ⚠️ 可解耦 |
-| `src/permissions/cycle.py` | 新增 `bypassPermissions→dontAsk` 环节 | ⚠️ 可解耦 |
-| `src/command_system/types.py` | `CommandContext` 新增 `tool_registry/tool_context/runtime_context` 字段 | ⚠️ 可解耦 |
-| `src/command_system/engine.py` | `create_command_context` 新增 3 个参数透传 | ⚠️ 同上 |
-| `src/providers/runtime.py` | ✅ **已是二开新增文件**（上游无此文件） | ✅ 应移到 ext |
-| `src/agent/background_runner.py` | ✅ **已是二开新增文件**（上游无此文件） | ✅ 应移到 ext |
+| 差异类别 | 数量 | 说明 |
+|---------|------|------|
+| **A: 仅当前 src/ 有的文件（纯新增）** | **29 项** | 上游完全不存在的文件/目录 |
+| **B: 两者都有但功能不同的文件（功能修改）** | **10 个** | `diff -w` 有实质性逻辑输出 |
+| **C: 两者都有但格式差异的文件** | ~61 个 | 仅行尾/空白差异，无需处理 |
+
+#### 类别 A：29 个二开新增文件
+
+| 子类别 | # | 文件 | 目标位置 |
+|-------|---|------|---------|
+| **A1: 外部库适配器（F-48.1）** | 7 | `agent/_outlines_adapter.py`, `context_system/_gitpython_adapter.py`, `hooks/_pluggy_adapter.py`, `permissions/_treesitter_adapter.py`, `settings/pydantic_adapter.py`, `skills/_frontmatter_adapter.py`, `providers/_litellm_adapter.py`（后 1 已解耦） | `extensions/providers_ext/`, `clawcodex_ext/runtime/`, `extensions/hooks/`, `clawcodex_ext/permissions/`, `clawcodex_ext/settings/`, `extensions/skills_ext/` |
+| **A2: Orchestrator 配套工具** | 5 | `ask_issue_author.py`, `progress_report.py`, `task_directives.py`, `task_inspect.py`, `create_agent_tool.py` | `extensions/orchestrator/tools/`, `extensions/tool_system_ext/` |
+| **A3: Provider 扩展** | 3 | `codex_models.py`, `openai_codex_provider.py`, `runtime.py` | `extensions/providers_ext/`, `clawcodex_ext/runtime/` |
+| **A4: Auth 子系统** | 2 | `codex_oauth.py`, `codex_store.py` | `clawcodex_ext/auth/` |
+| **A5: TUI 屏幕** | 2 | `ask_user_question.py`, `permission_mode_picker.py` | `clawcodex_ext/tui/screens/` |
+| **A6: 服务/工具** | 5 | `services/bridge/`, `tail_follower.py`, `background_escape.py`, `cache_warning.py`, `session_watcher.py` | `clawcodex_ext/services/`, `clawcodex_ext/repl/`, `clawcodex_ext/runtime/` |
+| **A7: 已部分解耦** | 5 | `background_runner/state.py`（已有 ext re-export）, `tool_authoring/`, `orchestrator/`（已完成）, `entrypoints/orchestrator.py`（已完成） | `clawcodex_ext/agent/`, `extensions/tool_system_ext/` ✅ |
+
+#### 类别 B：10 个功能修改文件
+
+| # | 文件 | 修改点 | diff 规模 | 解耦模式 |
+|---|------|--------|----------|---------|
+| 1 | `repl/core.py` | provider 构建改 `build_provider_from_config`；构造器新增 6 个参数 | ~200 行 | 子类覆盖+命令注册表 |
+| 2 | `tui/app.py` | Ctrl+B/Fork-Continue、runtime_context、resume、permission cycling | ~250 行 | 子类覆盖（已大部分完成） |
+| 3 | `tui/commands.py` | `/model` 改 `open_dialog`；移除命令；`/repl` 改信号 | ~30 行 | 命令注册表 |
+| 4 | `entrypoints/tui.py` | provider/session/resume/runtime_context 注入 seam | ~80 行 | 前端注册表 |
+| 5 | `entrypoints/headless.py` | provider/session/tool_registry 注入 | ~60 行 | 前端注册表 |
+| 6 | `cli.py` | **已完全解耦**—纯 facade | ✅ 已完成 | Facade 模式 |
+| 7 | `context_system/prompt_assembly.py` | `memory_scopes` 参数 + try-import 降级 | ~20 行 | 构建器注册表 |
+| 8 | `permissions/cycle.py` | 新增 `dontAsk` 环节 | ~10 行 | 循环表注册表 |
+| 9 | `command_system/types.py` | `CommandContext` 新增 3 字段 | ~15 行 | Protocol 扩展 |
+| 10 | `command_system/engine.py` | `create_command_context` 3 参数透传 | ~10 行 | Protocol 扩展 |
 
 ### 已完成的解耦模式（可复用）
 
 1. **Facade 模式**（`src/cli.py`）— src/ 只剩 `from clawcodex_ext.xxx import yyy; return yyy()`
 2. **子类覆盖模式**（`clawcodex_ext/tui/app.py`）— `ClawCodexExtTUI(ClawCodexTUI)` 覆盖 hook 方法
-3. **前端注册表模式**（`clawcodex_ext/frontend/`）— `@register_frontend` + `get_frontend("repl")` 工厂
+3. **前端注册表模式**（`clawcodex_ext/frontend/`）— `@register_frontend` + `get_frontend()` 工厂
 
-### 解耦方案：按优先级分 Phase
+### 解耦方案
 
-#### Phase 0: 纯新增文件移入 ext（无风险，立即执行）
+#### Phase 0: 纯新增文件移入 ext（29 项，无风险）
 
-| 修改点 | 方案 | 具体操作 |
-|--------|------|---------|
-| `src/agent/background_runner.py` | 整个文件移到 ext | 移到 `clawcodex_ext/agent/background_runner.py`，src/ 保留 thin re-export |
-| `src/agent/background_state.py` | 整个文件移到 ext | 移到 `clawcodex_ext/agent/background_state.py` |
-| `src/providers/runtime.py` | 整个文件移到 ext | 移到 `clawcodex_ext/providers/runtime.py`；src/ 调用点改为 ext 导入 |
+| 子阶段 | 内容 | 工作量 |
+|--------|------|--------|
+| **P0-A (F-48.1)** | 7 个 adapter 统一迁移到 ext（去 `_` 前缀，src/ 留 2-3 行 re-export） | 1-2 天 |
+| **P0-B** | 5 个 orchestrator 工具移到 `extensions/orchestrator/tools/` | 1-2 天 |
+| **P0-C** | 3 个 provider 扩展移到 `extensions/providers_ext/` + `clawcodex_ext/runtime/` | 0.5 天 |
+| **P0-D** | 2 个 auth 文件移到 `clawcodex_ext/auth/` | 0.5 天 |
+| **P0-E** | 2 个 TUI 屏幕移到 `clawcodex_ext/tui/screens/` | 0.5 天 |
+| **P0-F** | 5 个服务/工具移到 `clawcodex_ext/services/`/`repl/`/`runtime/` | 1 天 |
+| **P0-G** | `tool_authoring/` 移到 `extensions/tool_system_ext/` | 0.5 天 |
+
+**优先原则**：新增文件迁移优先于修改文件解耦——消除 29 个"Only in src/"比消除 10 个功能修改更容易且立即减少 diff -rq 噪声。
 
 #### Phase 1: 注册表/Protocol 扩展消除字段注入（低风险）
 
-| 修改点 | 方案 |
-|--------|------|
-| `src/permissions/cycle.py` 的 `dontAsk` 环节 | **循环表注册表**：`_CYCLE_TABLE` 默认上游循环，ext 通过 `register_cycle_step()` 注册 `bypassPermissions→dontAsk` |
-| `src/command_system/types.py` 的 3 个新增字段 | **Protocol 扩展**：定义 `DownstreamCommandContext(Protocol)`，ext 通过 `attach_downstream_context(ctx, runtime_context)` 注入 |
-| `src/command_system/engine.py` 的 3 个参数 | **同上 Protocol**：`create_command_context` 保持上游签名，ext 后置注入 |
-| `src/context_system/prompt_assembly.py` 的 `memory_scopes` | **构建器注册表**：ext 注册 `memory_section_builder` 回调 |
+- `src/permissions/cycle.py` → 循环表注册表：`_CYCLE_TABLE` 默认上游循环，ext 注册 `dontAsk`
+- `src/command_system/types.py` → `DownstreamCommandContext(Protocol)` 扩展注入
+- `src/command_system/engine.py` → 同上 Protocol，`create_command_context` 保持上游签名
+- `src/context_system/prompt_assembly.py` → `memory_section_builder` 回调注册表
 
 #### Phase 2: 子类覆盖模式恢复上游构造器签名（中等风险）
 
-| 修改点 | 方案 |
-|--------|------|
-| `src/repl/core.py` 构造器 6 个注入参数 | **子类覆盖模式**：创建 `ClawCodexExtREPL(ClawcodexREPL)`；src/ 恢复上游 3 参数签名 + `**kwargs` 透传 |
-| `src/repl/core.py` 的 `/provider` 命令 | **命令注册表**：ext 通过 `repl.add_command("/provider")` 注入 |
-| `src/repl/core.py` 的 `build_provider_from_config` | **Provider 工厂注册表**：ext 注册替代工厂函数 |
-| `src/tui/commands.py` 的命令增删 | **命令注册表**：ext 通过 `register_tui_command()` 注入 |
-| `src/tui/app.py` 剩余注入 | **子类覆盖**：审计 `ClawCodexExtTUI` 是否完全覆盖 |
+- `src/repl/core.py` → `ClawCodexExtREPL(ClawcodexREPL)` 子类 + 命令注册表 + Provider 工厂注册表
+- `src/tui/commands.py` → `register_tui_command()` 注入
+- `src/tui/app.py` → 审计 `ClawCodexExtTUI` 是否完全覆盖
 
-#### Phase 3: 入口点恢复上游逻辑（需谨慎，高集成度）
+#### Phase 3: 入口点恢复上游逻辑（需谨慎）
 
-| 修改点 | 方案 |
-|--------|------|
-| `src/entrypoints/tui.py` | `run_tui()` 恢复为上游逻辑，ext 的 `TUIFrontend.run()` 构建扩展 TUI |
-| `src/entrypoints/headless.py` | `run_headless()` 恢复为上游逻辑，ext 做注入包装 |
-| `src/entrypoints/repl.py` | 同理，ext 的 `REPLFrontend.run()` 负责构建扩展 REPL |
+- `src/entrypoints/tui.py` → `run_tui()` 恢复上游逻辑
+- `src/entrypoints/headless.py` → `run_headless()` 恢复上游逻辑
+- `src/entrypoints/repl.py` → ext 的 `REPLFrontend.run()` 负责组装
 
 ### 解耦前后效果对比
 
 | 指标 | 解耦前 | 解耦后 |
 |------|--------|--------|
-| src/ 有功能修改的文件 | 10+ | **0** |
-| 上游同步冲突 | 高（每次 rebase 合并 820 行差异） | **极低**（src/ 与上游一致） |
-| 二开代码位置 | 散布在 src/ + clawcodex_ext/ | **100% 在 clawcodex_ext/ + extensions/** |
-| 上游 rebase 耗时 | 手动逐文件合并 | **自动快进** |
+| src/ 二开新增文件 | 29 项 | **0** |
+| src/ 有功能修改的文件 | 10 个 | **0** |
+| src/ 与上游 diff -rq 噪声 | ~29 新增 + 10 修改 | **仅行尾/格式差异** |
+| 上游同步冲突 | 高（每次 820+ 行差异） | **极低** |
+| decoupled/src 比例 | ~30% | **100%** |
 
 ### 验收标准
 
-1. `diff -w src/<file> src/upstream/58ea488/<file>` 对所有 10 个文件返回空输出
-2. 所有现有功能测试通过：`python3 -m pytest tests/test_orchestrator_*.py -q`
-3. REPL/TUI/Headless 三前端完整可用
-4. `src/cli.py` 保持已解耦状态（纯 facade）
-5. `src/providers/runtime.py`、`src/agent/background_runner.py`、`src/agent/background_state.py` 不再存在于 `src/`
-6. `src/permissions/cycle.py` 的 `dontAsk` 环节由 ext 注册
-7. `src/command_system/types.py` 的 `CommandContext` 无二开新增字段
-8. `src/repl/core.py` 的 `ClawcodexREPL.__init__` 恢复为上游签名
-9. `src/entrypoints/*.py` 恢复为上游逻辑
+1. `diff -rq src/ src/upstream/58ea488/` 不再有"Only in src/"输出
+2. `diff -w src/<10修改文件> src/upstream/58ea488/<file>` 返回空输出
+3. 所有 7 个 adapter 文件在 `src/` 原位置只剩 2-3 行 re-export
+4. 所有现有功能测试通过
+5. REPL/TUI/Headless 三前端完整可用
 
 ### 风险与约束
 
-| 风险 | 影响 | 缓解措施 |
-|------|------|---------|
-| `**kwargs` 透传隐藏签名变更 | 上游改了构造器签名，二开未感知 | 对 kwargs 做 `TypedDict` 约束 |
-| Protocol 扩展新增 import 链 | src/ 仍需 import 注册表模块 | 注册表模块放在 `src/capabilities/` 层 |
-| 子类覆盖与上游内部重构冲突 | 上游重命名了被覆盖的方法 | 每次上游同步运行子类方法存在性测试 |
-| `background_runner` 移到 ext 后 src/ 模块找不到 | `from src.agent.background_runner import ...` 断裂 | `src/agent/__init__.py` 加 re-export（Phase 0 临时） |
+| 风险 | 缓解措施 |
+|------|---------|
+| `**kwargs` 透传隐藏签名变更 | 对 kwargs 做 `TypedDict` 约束 |
+| Protocol 扩展新增 import 链 | 注册表模块放 `src/capabilities/` 层 |
+| 子类覆盖与上游重构冲突 | 每次上游同步运行方法存在性测试 |
+| Adapter 分离后 import 路径变化 | 确保 ext 目录在 sys.path 中 |
 
-### 已拟定的设计决定
+### 设计决定
 
 | # | 决定 | 理由 |
 |---|------|------|
-| 1 | 注册表/Protocol 扩展点放在 `src/capabilities/` 而非 `src/` 本体 | capabilities 层已允许下游扩展导入 |
-| 2 | `**kwargs` 透传而非上游签名完全一致 | 避免每次上游更新都需同步改子类签名 |
-| 3 | Phase 0 re-export 临时方案，Phase 2 后移除 | 避免一次性 breaking change |
-| 4 | `DownstreamCommandContext` 用 Protocol 而非 dataclass 继承 | Protocol 不要求共同基类 |
-| 5 | 循环表注册表用 `list[tuple[str,str]]` | 保留顺序语义，支持扩展点 |
-| 6 | 前端插件负责全部组装 | 入口点不应包含二开逻辑 |
+| 1 | 注册表/Protocol 扩展点放 `src/capabilities/` | 已允许下游扩展导入 |
+| 2 | `**kwargs` 透传 | 避免每次上游更新改签名 |
+| 3 | **新增文件迁移优先于修改文件解耦** | 消除 29 个"Only in src/"后 diff 噪声骤降 |
+| 4 | **Adapter 统一处理为 F-48.1** | 7 个 adapter 结构完全一致，可批量操作 |
 
 ### 依赖与协同
 
-- **依赖**：
-  - F-34（前端注册表解耦）✅ 已完成 — 提供了 `@register_frontend` + `get_frontend()` 工厂
-  - F-35（二开特性统一切换）— 提供了上游纯净模式框架，F-48 是 F-35 的具体落地路径
-- **协同**：
-  - 与 F-15（Shift+Tab cycle）强协同：F-48 Phase 1 的循环表注册表是 F-15 `dontAsk` 环节的解耦载体
-  - 与 F-43（CLI 模型供应商切换）协同：F-43 新增的 `runtime_context` 字段由 F-48 Phase 1 改为 Protocol 扩展注入
-  - 与 F-28（Ctrl+B 后台运行）强协同：`background_runner.py` 移入 ext 是 F-28 解耦的前提
-- **先于**：
-  - F-35 的 584 文件还原需要 F-48 先完成核心 10 文件的解耦
+- **依赖**: F-34（前端注册表解耦）✅, F-35（二开特性切换）
+- **协同**: F-15（循环表注册表）, F-43（runtime_context Protocol）, F-28（background_runner 移 ext）
+- **先于**: F-35 的 584 文件还原
 
 ---
 
@@ -750,6 +757,8 @@ session = Session.resume(issue_session_id)
 ---
 
 *文档更新时间: 2026-06-03*
+
+*版本 v2.17 更新：全面更新 F-48 src/ 核心路径二开修改解耦方案。通过完整对比 `src/` 与 `src/upstream/58ea488/` 的 diff，将解耦范围从"10 个功能性修改文件"扩展到全部 **29 个纯新增文件 + 7 个外部库适配器 + 71 个功能修改文件**。新增按模块类别的七组解耦子方案（Adapter、Orchestrator Tools、Provider Extensions、Auth、TUI Screens、Services、Utilities），并单独设立 F-48.1 Adapter 文件统一解耦子特性。新增类别 B 修改文件解耦表格覆盖 10 个已识别功能修改点。目标：src/ 二开新增文件数从 29 降为 0，src/ 功能修改文件数从 10 降为 0，decoupled/src 比例从约 30% 提升至 100%。详见 §六 FEATURE_PLAN.md。*
 
 *版本 v2.14 更新：新增 F-48 src/ 核心路径二开修改解耦方案（📋 设计完成）。通过对比 `src/` 与 `src/upstream/58ea488/`，识别出 10 个含真正功能修改的 src/ 文件，分 Phase 0~3 四阶段制定解耦方案。*
 
