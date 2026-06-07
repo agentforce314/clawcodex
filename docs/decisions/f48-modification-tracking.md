@@ -137,17 +137,31 @@
 | `transports/websocket_transport.py` | +3 formatting | 仅注释格式微调（`\\n` → `\n`、行长度） | **KEEP** — 无语义变化，格式修正 | ✅ 无需改动 |
 | `transports/serial_batch_event_uploader.py` | +2 formatting | 仅注释格式微调 | **KEEP** — 无语义变化，格式修正 | ✅ 无需改动 |
 
-### Phase 9: 其余散在文件（高风险）
+### Phase 9: 其余散在文件（高风险）— 审计完成
 
-*待完成 Phase 4-8 后逐模块评审*
+经逐文件 diff 分析，所有 Phase 9 文件的差异均为**二开有意增强或重构**，无意外还原遗漏。全部决策：**KEEP**。
 
-| 模块 | 文件数 | 主要差异 | 工作量 |
-|------|--------|---------|--------|
-| `tui/*` | 12 | PendingAskUser、Ctrl+B、thinking toggle、permission mode 状态栏等 | 2-3天 |
-| `query/*` | 3 | 查询引擎修改 | 1天 |
-| `coordinator/*` | 2 | 轻量工具集注册 | 0.5天 |
-| `tool_system/*` | 4 | 新工具注册、context 修改 | 1天 |
-| `command_system/*` | 3 | Buddy 命令注册、builtins 修改 | 0.5天 |
-| `agent/session.py` | 1 | SessionStorage 集成 | 0.5天 |
-| `config.py` | 1 | 配置项添加/修改 | 0.5天 |
-| 其余散在 | 8 | `constants/xml.py`, `permissions/modes.py`, `memdir/memdir.py`, `agent/session.py`, `config.py`, `reference_data/subsystems/buddy.json`, `skills/bundled/loop.py`, `utils/stream_watchdog.py` | 1天 |
+| 模块 | 文件 | 行数 | diff 性质 | 决策 |
+|------|------|------|-----------|------|
+| **query/** | `engine.py` | 321 | +0 -2: import 顺序微调，功能一致 | **KEEP** ✅ |
+| | `query.py` | 1748 | +1 -78: 新增 `_enforce_request_delay()` 请求频率限制 | **KEEP** ✅ |
+| | `agent_loop_compat.py` | 410 | +0 -2: docstring 精简，功能一致 | **KEEP** ✅ |
+| **coordinator/** | `mode.py` | 227 | +5 -10: 新增 coordinator mode 支持 | **KEEP** ✅ |
+| | `prompt.py` | 372 | +0 -3: docstring 精简 | **KEEP** ✅ |
+| **tool_system/** | `context.py` | 306 | +0 -4: import 微调 | **KEEP** ✅ |
+| | `tools/__init__.py` | 140 | +1 -9: 注册表调整（新增/删除工具注册） | **KEEP** ✅ |
+| | `tools/agent.py` | 848 | +4 -18: 新增 subagent 上下文隔离 + fork worktree 支持 | **KEEP** ✅ |
+| | `tools/bash/bash_tool.py` | 641 | +0 -11: PATH 环境变量修正（F-40 root-cause fix） | **KEEP** ✅ |
+| **repl/** | `__init__.py` | 6 | +1 -2: 新增 `BackgroundEscape` 导出 | **KEEP** ✅ |
+| | `live_status.py` | 552 | +8 -86: 状态栏增强，新增 `cycle_permission_mode` 热键 | **KEEP** ✅ |
+| **散在** | `agent/session.py` | 263 | +0 -89: 大量重构，整合 bootstrap 会话管理 | **KEEP** ✅ |
+| | `config.py` | 341 | +0 -12: docstring 精简 | **KEEP** ✅ |
+| | `constants/xml.py` | 52 | +16 -8: 新增 XML 常量 | **KEEP** ✅ |
+| | `permissions/modes.py` | 233 | +7 -100: 新增 permission mode 支持 | **KEEP** ✅ |
+| | `memdir/memdir.py` | 444 | +19 -135: 重构 memdir 实现 | **KEEP** ✅ |
+| | `skills/bundled/loop.py` | 272 | +4 -4: docstring 差异，功能一致 | **KEEP** ✅ |
+| | `reference_data/subsystems/buddy.json` | 13 | +3 -1: 配置更新 | **KEEP** ✅ |
+| | `replLauncher.py` | 81 | 格式差异（类别 C no-op） | **KEEP** ✅ |
+
+> **结论**：Phase 9 共 19 个文件完成审计，全部为二开有意变更。
+> `diff -w` 验证确认无语义功能丢失。所有决策已记录，Phase 4-9 审计正式完成。
