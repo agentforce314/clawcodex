@@ -77,6 +77,7 @@ from .output_style_command import OUTPUT_STYLE_COMMAND, OutputStyleCommand
 from .export_command import EXPORT_COMMAND, ExportCommand
 from .theme_command import THEME_COMMAND, ThemeCommand
 from .effort_command import EFFORT_COMMAND, EffortCommand
+from .model_command import MODEL_COMMAND, ModelCommand
 from .types import (
     Command,
     CommandAvailability,
@@ -156,6 +157,8 @@ __all__ = [
     "ThemeCommand",
     "EFFORT_COMMAND",
     "EffortCommand",
+    "MODEL_COMMAND",
+    "ModelCommand",
     "get_builtin_commands",
     "register_builtin_commands",
     # Moved-to-plugin factory + shell-at-prompt-build
