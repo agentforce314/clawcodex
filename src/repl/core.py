@@ -1051,6 +1051,10 @@ class ClawcodexREPL:
             cost_tracker=self.cost_tracker,
             history=self.history_log,
             app_state_store=self.app_state_store,
+            # Phase 7 (/model): the active provider, so registry commands can read/set
+            # the live model (provider.model) on the REPL. /advisor also benefits
+            # (decide_advisor_mode gets a real provider instead of None).
+            provider=self.provider,
             ui=ReplUIHost(self._safe_input, self.console),
             # P0-6 Option B: lets a SkillPromptCommand render via the same
             # _run_markdown_skill path the Skill tool uses (session id +
