@@ -5,52 +5,10 @@ import json
 import logging
 import os
 import sys
-import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator, Callable
 from uuid import uuid4
-
-_log_lock = threading.Lock()
-
-# Tracks the last provider API call timestamp (monotonic clock) for the
-# delay_between_requests_ms mechanism. Module-level so the cooldown is
-# enforced across all call sites in the same process. Initialised to 0
-# so the first request is never delayed.
-_last_provider_request_time: float = 0.0
-_request_delay_lock = threading.Lock()
-
-
-def _enforce_request_delay() -> None:
-    """Sleep if necessary to maintain the per-request minimum interval.
-
-    Reads ``CLAWCODEX_PROVIDER_REQUEST_DELAY_MS`` from the environment
-    (set by the orchestrator's ``AgentConfig.delay_between_requests_ms``).
-    Under the hood uses a module-level monotonic-clock timestamp so the
-    delay is measured wall-clock to wall-clock across all concurrent callers.
-    """
-    delay_ms_str = os.environ.get("CLAWCODEX_PROVIDER_REQUEST_DELAY_MS", "0")
-    try:
-        delay_ms = int(delay_ms_str)
-    except (ValueError, TypeError):
-        delay_ms = 0
-    if delay_ms <= 0:
-        return
-
-    global _last_provider_request_time  # noqa: PLW0603
-    now = time.monotonic()
-    with _request_delay_lock:
-        elapsed = now - _last_provider_request_time
-        remaining = (delay_ms / 1000.0) - elapsed
-        if remaining > 0 and _last_provider_request_time > 0:
-            time.sleep(remaining)
-        _last_provider_request_time = time.monotonic()
-
-
-def _log(msg: str) -> None:
-    with _log_lock:
-        with open('/tmp/tui_flow.log', 'a') as f:
-            f.write(msg + '\n')
 
 from ..types.messages import (
     AssistantMessage,
@@ -593,7 +551,13 @@ async def _call_model_sync(
     # Enforce minimum interval between successive provider requests.
     # The interval is configured via AgentConfig.delay_between_requests_ms
     # and propagated through the CLAWCODEX_PROVIDER_REQUEST_DELAY_MS env var.
-    _enforce_request_delay()
+    # Implementation lives in extensions/api/query_middleware.py so the
+    # upstream query loop stays free of orchestrator-specific throttling.
+    try:
+        from extensions.api.query_middleware import enforce_request_delay
+        enforce_request_delay()
+    except ImportError:
+        pass
 
     try:
         try:
@@ -609,7 +573,6 @@ async def _call_model_sync(
             # the provider's signature doesn't accept on_text_chunk.
             if on_text_chunk is not None:
                 try:
-                    ## _log(f'[query.py] attempting chat_stream_response with on_thinking_chunk')
                     response = provider.chat_stream_response(
                         api_messages,
                         on_text_chunk=on_text_chunk,
@@ -617,21 +580,11 @@ async def _call_model_sync(
                         abort_signal=abort_signal,
                         **call_kwargs,
                     )
-                except TypeError as e:
-                    ## _log(f'[query.py] TypeError with on_thinking_chunk: {e}')
-                    # Provider doesn't accept on_thinking_chunk
-                    try:
-                        response = provider.chat_stream_response(
-                            api_messages,
-                            on_text_chunk=on_text_chunk,
-                            abort_signal=abort_signal,
-                            **call_kwargs,
-                        )
-                    except TypeError as e2:
-                        ## _log(f'[query.py] TypeError without on_thinking_chunk: {e2}')
-                        response = provider.chat_stream_response(
-                            api_messages, abort_signal=abort_signal, **call_kwargs,
-                        )
+                except TypeError:
+                    # Provider doesn't accept on_thinking_chunk (or on_text_chunk)
+                    response = provider.chat_stream_response(
+                        api_messages, abort_signal=abort_signal, **call_kwargs,
+                    )
             else:
                 response = provider.chat_stream_response(
                     api_messages, abort_signal=abort_signal, **call_kwargs,
@@ -672,7 +625,6 @@ async def _call_model_sync(
         err_msg._api_error = "media_size"  # type: ignore[attr-defined]
         return [err_msg], []
     except Exception as e:
-        ## _log(f'[query.py] Exception in _call_model_sync: {type(e).__name__}: {e}')
         if _diag:
             logger.warning("[DIAG] _call_model_sync: EXCEPTION after %.1fs: %s", time.monotonic() - _t0, e)
         error_str = str(e)
@@ -684,13 +636,22 @@ async def _call_model_sync(
             err_msg._api_error = "prompt_too_long"  # type: ignore[attr-defined]
             return [err_msg], []
 
-        if "429" in error_str or "rate_limit" in error_str.lower():
-            err_msg = _create_assistant_api_error_message(
-                "Rate limit exceeded. Please wait and retry.",
-                error="rate_limit",
-            )
-            err_msg._api_error = "rate_limit"  # type: ignore[attr-defined]
-            return [err_msg], []
+        # Rate-limit handling — delegated to extensions so the upstream
+        # query loop stays free of orchestrator-specific error policies.
+        try:
+            from extensions.api.query_middleware import handle_rate_limit_error
+            rate_limit_msg = handle_rate_limit_error(error_str)
+            if rate_limit_msg is not None:
+                return [rate_limit_msg], []
+        except ImportError:
+            # Fallback: inline the check if the extension is not available.
+            if "429" in error_str or "rate_limit" in error_str.lower():
+                err_msg = _create_assistant_api_error_message(
+                    "Rate limit exceeded. Please wait and retry.",
+                    error="rate_limit",
+                )
+                err_msg._api_error = "rate_limit"  # type: ignore[attr-defined]
+                return [err_msg], []
 
         if "max_tokens" in error_str.lower() or "max_output_tokens" in error_str.lower():
             err_msg = _create_assistant_api_error_message(
@@ -1194,7 +1155,7 @@ async def query(
     recovery integration, stop hooks, token budget, model fallback,
     and continuation nudge land in subsequent PRs.
     """
-    ## _log(f'[query.py] query START, on_thinking_chunk={params.on_thinking_chunk}')
+
     _diag = os.environ.get("CLAWCODEX_DEBUG", "").lower() in ("1", "true", "yes")
     holder = terminal_holder or TerminalHolder()
     # Inner-only flag for the future outer two-layer wrapper (Phase G).
