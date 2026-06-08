@@ -634,6 +634,139 @@ class TestRunTakeoverFullFlow(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second.cmd, "takeover")
 
 
+# ------------------------------------------------------------------
+# End-to-end: socket + transcript persistence + REPL spawn
+# ------------------------------------------------------------------
+
+
+class TestTakeoverEndToEnd(unittest.IsolatedAsyncioTestCase):
+    """Full integration: orchestrator writes a transcript →
+    takeover sends pause+takeover over the live socket →
+    spawns the ``--resume`` REPL against the on-disk
+    ``transcript.jsonl``.
+
+    Mirrors the round-trip exercised by
+    ``test_orchestrator_f49_resume.py::TestResumeSessionEndToEnd``
+    (orchestrator writes a transcript; resume-session CLI
+    reads it) but for the takeover flow specifically: the
+    REPL is spawned with ``--resume <run_id>`` so its
+    inputs would land in the same transcript.
+    """
+
+    async def test_socket_pause_then_resume_repl_round_trip(self) -> None:
+        with TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            workspace = tmp_path / "ws"
+            workspace.mkdir()
+            sessions_dir = tmp_path / "sessions"
+            run_id = "run-f49-takeover-e2e"
+            sock_path = workspace / ".run_control" / f"{run_id}.sock"
+
+            # 1. Orchestrator side: write a transcript the way
+            #    the headless agent would. Patches
+            #    ``src.services.session_storage.SESSIONS_DIR``
+            #    so the storage writes into our tmp dir.
+            from src.services.session_storage import SessionStorage
+            from src.types.messages import (
+                AssistantMessage,
+                UserMessage,
+                message_to_dict,
+            )
+
+            with patch(
+                "src.services.session_storage.SESSIONS_DIR",
+                sessions_dir,
+            ):
+                storage = SessionStorage(
+                    session_id=run_id, sessions_dir=sessions_dir,
+                )
+                storage.init_metadata(
+                    model="claude-sonnet-4-20250514",
+                    cwd=str(workspace),
+                    title="orchestrator-takeover-e2e",
+                )
+                storage.write_raw(
+                    message_to_dict(
+                        UserMessage(
+                            content=[{
+                                "type": "text",
+                                "text": "fix the bug in takeover",
+                            }],
+                        ),
+                    ),
+                )
+                storage.write_raw(
+                    message_to_dict(
+                        AssistantMessage(
+                            content=[{
+                                "type": "text",
+                                "text": "Reading the relevant file.",
+                            }],
+                            model="claude-sonnet-4-20250514",
+                        ),
+                    ),
+                )
+                storage.flush()
+                self.assertTrue(
+                    (sessions_dir / run_id / "transcript.jsonl").exists(),
+                )
+                self.assertTrue(
+                    (sessions_dir / run_id / "metadata.json").exists(),
+                )
+
+            # 2. Control socket: start a real ``ControlSocket``
+            #    in the workspace's ``.run_control`` directory.
+            sock_path.parent.mkdir(parents=True, exist_ok=True)
+            cs = ControlSocket(sock_path)
+            await cs.start()
+
+            # 3. Run the takeover. Patch ``subprocess.call`` so
+            #    the REPL does not actually launch, and assert
+            #    the right argv was constructed.
+            try:
+                with patch(
+                    "extensions.orchestrator.cli.takeover.subprocess.call",
+                    return_value=0,
+                ) as mock_call:
+                    with patch(
+                        "extensions.orchestrator.cli.takeover.time.sleep",
+                    ):
+                        args = argparse.Namespace(
+                            id=None,
+                            run=run_id,
+                            workspace=str(workspace),
+                        )
+                        rc = await _run_takeover_async(
+                            None, tmp_path, args,
+                        )
+                        # Drain the two control commands the
+                        # sender wrote to the queue.
+                        first = await _drain_one(cs)
+                        second = await _drain_one(cs)
+            finally:
+                await cs.stop()
+
+            # 4. Verify: takeover returned 0, the socket saw
+            #    ``pause`` then ``takeover`` in that order, and
+            #    the patched ``subprocess.call`` was invoked
+            #    with the ``--resume <run_id> --workspace <ws>``
+            #    argv the REPL would use.
+            self.assertEqual(rc, 0)
+            self.assertIsNotNone(first)
+            self.assertIsNotNone(second)
+            assert first is not None and second is not None
+            self.assertEqual(first.cmd, "pause")
+            self.assertEqual(second.cmd, "takeover")
+            self.assertEqual(mock_call.call_count, 1)
+            argv = mock_call.call_args[0][0]
+            self.assertEqual(argv[0], "python3")
+            self.assertIn("--resume", argv)
+            self.assertIn(run_id, argv)
+            self.assertIn("--workspace", argv)
+            self.assertIn(str(workspace), argv)
+            self.assertEqual(mock_call.call_args[1]["cwd"], str(workspace))
+
+
 if __name__ == "__main__":
     unittest.main()
 
