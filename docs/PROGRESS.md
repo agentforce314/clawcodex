@@ -2,11 +2,13 @@
 
 > 文档路径: `docs/PROGRESS.md`
 > 基于: `docs/open-source-replacement-progress.md`, `docs/FEATURE_PLAN.md`
-> 版本: v2.17
-> 更新日期: 2026-06-05
+> 版本: v3.0
+> 更新日期: 2026-06-08
 > 上游同步: 58ea488 (dev-decoupling-refactor)
 >
 > **v2.16 变更**：完成 CCB（claude-code-best）全面对标分析，识别 clawcodex 的 8 个重大特性缺口纳入规划管线。新增 F-60 Pipe IPC + LAN 群控（P0）、F-61 Computer Use 屏幕操控（P0）、F-62 Chrome 浏览器控制（P1）、F-63 Channels 频道通知（P1）、F-64 Voice Mode 语音输入（P2）、F-65 Langfuse Agent 可观测性（P1）、F-66 ACP 协议支持（P2）、F-67 Buddy / Proactive 模式（P2）。同时更新 §四 CCB 对标优势特性总表，明确 clawcodex 对比 CCB 的 5 项领先特性（Orchestrator 自动流水线、Verification Gate、SOP 编译器、LiteLLM Provider、Manager/Worker 增强通信）。所有 F-60~F-67 设置为 ⏳ 待开始状态，详见 §四。
+>
+> **v3.0 变更**：基于 FEATURE_PLAN.md v3.0 重构，对齐特性编号与章节体系。新增 F-50、F-69~F-74、F-83~F-88 共 14 个 F-Number 至功能模块表格；F-5/F-6/F-7/F-8 标记为已重定向（→F-64/F-61/F-82/F-66）；章节编号对齐 FEATURE_PLAN（二~七为各系统进度，八=CCB 对标，九=Python 生态，十=死代码）。
 >
 > **v2.17 变更**：全面更新 F-48 src/ 核心路径二开修改解耦方案。通过 `diff -w` 逐文件验证，纠正了早前版本"~61 个格式差异"的重大误判——实际仅 4 个文件是纯格式差异，67 个文件均有语义变更。新增 Phase 4-9 覆盖新发现的 57 个未解耦功能修改文件。目标调整：src/ 功能修改文件数从 67 → ~10-20，增加"每文件决策记录"机制。详见 §六 FEATURE_PLAN.md。
 >
@@ -56,10 +58,10 @@
 | F-2 | Team 成员管理 (Phase-7) | P1 | ⏳ 规划中 | members 数组 |
 | F-3 | MCP 协议扩展 | P1 | ✅ 基础完成 | Stdio/HTTP/SSE/WS |
 | F-4 | 结构化输出集成 | P2 | 🔄 进行中 | Outlines 适配器已就绪 |
-| F-5 | Voice Mode | P2 (→F-64) | ⏳ 待开始 | 对标 CCB（升级为 F-64 P2 级） |
-| F-6 | Computer Use | P0 (→F-61) | ⏳ 待开始 | 对标 CCB（升级为 F-61 P0 级） |
-| F-7 | Remote Control | P2 | ⏳ 待开始 | Docker + WebUI |
-| F-8 | ACP/Zed/Cursor 集成 | P2 (→F-66) | ⏳ 待开始 | IDE 集成（升级为 F-66 P2 级） |
+| F-5 | Voice Mode | P2 | ⏳ →F-64 | 已合并至 F-64（Voice Mode 语音输入） |
+| F-6 | Computer Use | P0 | ⏳ →F-61 | 已合并至 F-61（Computer Use 屏幕操控） |
+| F-7 | Remote Control | P2 | ⏳ →F-82 | 已合并至 F-82（Remote Control Server） |
+| F-8 | ACP/Zed/Cursor 集成 | P2 | ⏳ →F-66 | 已合并至 F-66（ACP 协议支持） |
 | F-9 | /goal 命令 | P2 | ⏳ 待开始 | 长时间任务目标管理 |
 | F-10 | ExecuteExtraTool 延迟工具系统 | P2 | ⏳ 待开始 | TF-IDF 工具搜索 + 子代理执行 |
 | F-11 | sessionStorage 容量限制 | P2 | ⏳ 待开始 | 防止 daemon 会话内存泄漏 |
@@ -98,11 +100,12 @@
 | F-47 | Permission Settings Schema 重构（`permissions` 改 dict 形态 + plumb 启动模式） | P1 | ✅ 完成（含 F-47.1 hotfix） | 修四层串联 bug：`SettingsSchema.permissions: list[PermissionRule]` 与磁盘实际 dict 形态不一致 → dict 落进 known 字段，`allowBypassPermissionsMode` 进不到 `extra` → `has_allow_bypass_permissions_mode` 永远 False → Shift+Tab cycle 看不到 Bypass；同时 `resolve_permission_state` 没把 `permissions.defaultMode` 喂给 `initial_permission_mode_from_cli`、顶层 `settings.permission_mode` 字段未读。引入 `PermissionsConfig` dataclass 对齐磁盘 + TS 上游契约；`has_allow_bypass_permissions_mode` 加 `extra["permissions"]` fallback；`resolve_permission_state` 真正 plumb `settings_default_mode`；删除 settings 层"假" `PermissionRule` 死代码。**F-47.1 (2026-06-02) hotfix**：项目尚未发布、磁盘上没有需要迁移的旧配置，直接删除原本保留的顶层 `settings.permission_mode` back-compat 读取通道——`SettingsSchema.permission_mode` 字段保留为兼容形态但启动时不再被读；详见 风险 #3 / 设计决定 #3 / F-47.1 备注。 |
 | F-48 | src/ 核心路径二开修改解耦 | P0 | 📋 设计完成 | 将 `src/` 中 **29 个纯新增文件 + 10 个功能修改文件**全部解耦到 `clawcodex_ext/` 和 `extensions/`。新增 7 个外部库适配器统一迁移（F-48.1 子特性）、Orchestrator 配套工具 5 个、Provider 扩展 3 个、Auth 子系统 2 个、TUI 屏幕 2 个、服务/工具 5 个、工具编写系统 1 个。修改文件解耦沿用 Phase 1~3（注册表/Protocol 扩展 → 子类覆盖 → 入口点恢复）。目标：src/ 二开新增文件数从 29 → 0，功能修改文件数从 10 → 0 |
 | F-49 | Issue 会话统一存储与实时介入协议 | P1 | 📋 设计完成 | 将 headless agent 的 `.event_logs/` 扁平 NDJSON 统一为 `SessionStorage` 的 `transcript.jsonl` 格式。核心收益：**`clawcodex --resume <run_id>` 可直接恢复 orchestrator run 的完整对话进入交互式 REPL**（operator 可继续对话、接管 agent、崩溃恢复），而非仅只读围观。设计扩展：**Phase 0.1 Message 转录映射规则**（TextDelta/ToolCallEvent/ToolResultEvent → AssistantMessage/UserMessage 精确分组+轮次对齐）、**Phase 0.2 --resume 会话恢复 + TailFollower 实时观察 + 问题追溯**、**Phase 0.3 大内容文件引用**（复用 SessionStorage._replace_large_content）。Phase 1 socket 控制 → Phase 2 attach TUI → Phase 3 session 恢复。详见 FEATURE_PLAN §3.1.11 Phase 0.1-0.3。 |
+| F-50 | SOP 转换器固化 | P2 | 📋 设计完成 | 见 FEATURE_PLAN §4.2 |
 | F-51 | AgentRunner 空转检测机制（no-op detection） | P0 | ✅ 完成 | 在 `extensions/orchestrator/agent_runner.py` 中添加连续 5 轮工作区文件无变更检测，防止 agent 在 issue deliverables 已存在的场景下陷入无限 busy-work 循环。对应 PR 检视意见自动修复闭环（F-37）中的已修复前置问题。|
 | F-52 | Python SDK 方法注册为 Tool | P2 | 📋 规划中 | 将 SOP 生成的 ADF 方法（`detect_modality`、`load_dataset` 等）注册为真实的 `Tool` 对象，使 sub-agent 可直接调用而非通过 Bash 回退。`extensions/pos_converter/tool_registry.py` — `ToolWrapper` + `register_source_operations()`。依赖 F-50。 |
 | F-53 | Tool 自动暴露为 CLI 斜杠命令 | P3 | 📋 规划中 | 已注册的 Tool 自动映射为 REPL/TUI 中的 `/tool-name` 命令（如 `/detect_modality --path /data/raw`），参数从 Tool schema 自动推导。`clawcodex_ext/cli/tool_cmd/`。依赖 F-52。 |
 | F-54 | AgentRunner / QueryRunner 运行期可观测性 | P0 | 📋 设计完成 | 补齐 headless issue agent 从 provider request 到 `SessionComplete` 之间的 debug 观测点：`QueryRunner.stream()` heartbeat、`AgentRunner` turn/event counters、watchdog timeout snapshot、持久化 `debug.ndjson` 与 registry/CLI 诊断字段，用于定位 agent run 有请求但无文件改动/报告/commit 的 stuck-run。 |
-| F-55 | 会话恢复（Session Resume）增强 | P1 | 📋 设计完成 | 补齐 CCB 对标发现的 4 个 Resume UX 缺口：退出时打印 Resume Hint（S-R1）、Resume 后历史消息渲染完整（S-R2）、`--continue` CLI 快捷命令（S-R3）、元数据与状态恢复增强（S-R4）。Phase 0-3 分阶段实施，详见 [FEATURE_PLAN.md §5](./FEATURE_PLAN.md#五会话恢复session-resume增强f-55)。 |
+| F-55 | SOP 分组策略增强 | P1 | ✅ 完成 | F-50 增强子特性，解决"模块多时 Agent 过多"问题，详见 FEATURE_PLAN §4.2.1 |
 | F-60 | Pipe IPC + LAN 群控系统 | P0 | ⏳ 待开始 | 对标 CCB Pipe IPC 多实例协作 + LAN UDP Multicast 自动发现。支持同机 Unix Domain Socket 命名管道通信、跨机器零配置发现、消息广播路由、权限转发。预计 3-4 周。 |
 | F-61 | Computer Use 屏幕操控 | P0 | ⏳ 待开始 | 对标 CCB Computer Use。支持跨平台截图（macOS screencapture / Windows PowerShell / Linux scrot）、跨平台键鼠模拟、应用/窗口管理、剪贴板读写。预计 2-3 周。 |
 | F-62 | Chrome 浏览器自动化控制 | P1 | ⏳ 待开始 | 对标 CCB Chrome Use。Chrome MCP 扩展桥接，支持页面导航、点击、填表、截图、执行 JS。预计 1-2 周。 |
@@ -112,146 +115,28 @@
 | F-66 | ACP 协议支持 | P2 | ⏳ 待开始 | 对标 CCB ACP（Agent Client Protocol）。Zed/Cursor 等 IDE 集成协议支持，会话恢复与 Skills 桥接。预计 1-2 周。 |
 | F-67 | Buddy 伴侣 / Proactive 自主模式 | P2 | ⏳ 待开始 | 对标 CCB Buddy 伴侣系统 + Proactive 自主模式。后台 AI 伴侣异步观察会话、主动提供调试建议、检测文件变更自动提出优化。预计 2 周。 |
 | F-68 | Orchestrator CLI 运维操作界面 | P2 | ⏳ 待开始 | issue/wf 管理、状态查看、dashboard 渲染；见 FEATURE_PLAN §3.2（F-68） |
+| F-69 | Budget/Poor Mode | P2 | ⏳ 待开始 | 见 FEATURE_PLAN §7.5 |
+| F-70 | Plugin 系统 | P1 | ⏳ 待开始 | 见 FEATURE_PLAN §4.3 |
+| F-71 | 内置工具补齐 | P1 | ⏳ 待开始 | 见 FEATURE_PLAN §7.6 |
+| F-72 | Multi-API 适配器 | P1 | ⏳ 待开始 | 见 FEATURE_PLAN §7.2 |
+| F-73 | CI/CD 流水线 | P0 | ⏳ 待开始 | 见 FEATURE_PLAN §7.6 |
+| F-74 | Sandbox 沙箱 | P2 | ⏳ 待开始 | 见 FEATURE_PLAN §7.2 |
 | F-75 | 工具/Skill 调用统计（跨会话） | P2 | ⏳ 待开始 | 跨会话工具使用统计与策略优化；见 FEATURE_PLAN §4.8（F-75） |
-| F-81 | Native 原生模块系统（Python） | P1 | ⏳ 待开始 | 对标 CCB Rust/NAPI 原生模块，用纯 Python 等价实现音频捕获(sounddevice)、图像差异对比(Pillow+NumPy)、URL Scheme注册(webbrowser+xdg)、修饰键检测。F-61/F-64 前置依赖。预计 1 周。 |
-| F-82 | Remote Control Server 远程控制 | P1 | ⏳ 待开始 | 对标 CCB remote-control-server。FastAPI 实现：会话管理、Worker 调度/心跳/长轮询、SSE/WebSocket 事件流、ACP 中继、环境管理、Web 管理面板。预计 3-4 周。 |
 | F-78 | Issue 语义澄清流程（自主模式扩展） | P1 | ⏳ 待开始 | 三通道语义澄清（LLM/CLI/TUI），冲突裁决，离线澄清；见 FEATURE_PLAN §4.12（F-78） |
 | F-80 | Agent 间自主观察与消息交互 | P2 | ⏳ 待开始 | Agent 间自主观察汇报、SendMessage 消息交互、Manager-Worker 协作增强；见 FEATURE_PLAN §4.14（F-80） |
+| F-81 | Native 原生模块系统（Python） | P1 | ⏳ 待开始 | 对标 CCB Rust/NAPI 原生模块，用纯 Python 等价实现音频捕获(sounddevice)、图像差异对比(Pillow+NumPy)、URL Scheme注册(webbrowser+xdg)、修饰键检测。F-61/F-64 前置依赖。预计 1 周。 |
+| F-82 | Remote Control Server 远程控制 | P1 | ⏳ 待开始 | 对标 CCB remote-control-server。FastAPI 实现：会话管理、Worker 调度/心跳/长轮询、SSE/WebSocket 事件流、ACP 中继、环境管理、Web 管理面板。预计 3-4 周。 |
+| F-83 | Ultraplan 规划 | P2 | ⏳ 待开始 | 见 FEATURE_PLAN §7.5 |
+| F-84 | Context Collapse | P2 | ⏳ 待开始 | 见 FEATURE_PLAN §7.5 |
+| F-85 | Templates 模板 | P1 | ⏳ 待开始 | 见 FEATURE_PLAN §7.6 |
+| F-86 | Kairos/Brief 调度 | P2 | ⏳ 待开始 | 见 FEATURE_PLAN §7.5 |
+| F-87 | Workflow Scripts | P2 | ⏳ 待开始 | 见 FEATURE_PLAN §7.5 |
+| F-88 | Explore/Plan Agent | P2 | ⏳ 待开始 | 见 FEATURE_PLAN §7.5 |
 
 ---
 
 
-## F-22: Cron 系统执行引擎
-
-**状态**: 🔄 进行中（Phase A runtime-first 接线 ✅ 已完成：REPL/TUI/headless 运行路径打通，调度器后台运行，REPL 主循环通过 `_drain_cron_outbox()` 消费 `cron_prompt`/`cron_missed` 事件；Phase B~F 分阶段推进）
-**优先级**: P0
-**参考实现**: claude-code-best `src/utils/cron*.ts`, `src/hooks/useScheduledTasks.ts`, `src/utils/autonomyRuns.ts`, `src/utils/autonomyStatus.ts`, `src/commands/autonomy*.ts`, `src/cli/print.ts`
-
-### 目标
-
-将 claude-code-best 的生产级别 cron 执行引擎移植到 ClawCodex，实现：
-1. 完整 cron 表达式解析（5字段标准语法）
-2. 下次执行时间计算（本地时区）
-3. 调度器执行引擎（1秒轮询）
-4. 任务持久化（`.claude/scheduled_tasks.json`）
-5. 分布式锁（防止多进程重复执行）
-6. Jitter 抖动算法（避免雷鸣般群体效应）
-7. 任务过期机制（周期性任务7天自动删除）
-8. scheduled fire 进入真实 REPL/TUI/headless 队列，而不是只写 outbox
-9. 每次定时触发生成可查询 run 记录，状态覆盖 `queued`、`running`、`completed`、`failed`、`cancelled`
-10. 提供 `/autonomy status`、`/autonomy runs`、`/autonomy status --deep` 或 ClawCodex 等价命令查看执行状态
-11. 同一 cron task 存在 active run 时去重，避免高频任务在上一轮未完成时堆积
-
-### 执行结果/状态查看链路
-
-`claude-code-best` 不把定时任务的完整回答写回 cron job 定义表。它在 cron task 到期时创建 scheduled-task queued prompt，同时在 `.claude/autonomy/runs.json` 中创建 run 账本记录；队列消费前将 run 从 `queued` 原子切到 `running`，普通 query pipeline 执行完后再落到 `completed` / `failed` / `cancelled`。此外，`/schedule get <id>` 的 detail 视图展示 trigger 的 status、schedule、agent、next run、last run、created 和 prompt，`/schedule run <id>` 手动触发后直接回显 run id。因此 ClawCodex 需要同时实现“cron job 管理视图”、“trigger detail/manual-fire 视图”和“scheduled-task run 生命周期视图”，用户才能回答“任务是否已配置、上次/下次何时执行、是否正在执行还是失败”。
-
-当前 ClawCodex 已有基础 `clawcodex_ext/cron_system/runs.py` 与 `status.py`，可读取 `.claude/scheduled_task_runs.json` 并输出 status/runs 文本表格；缺口在于它们尚未接入真实 REPL/TUI/headless 执行队列，run schema 也比 `claude-code-best` 的 autonomy run 记录更窄，缺少来源、路径、预览和 ownership/session 等操作追溯字段。
-
-```text
-CronTask due
-  → create scheduled-task queued prompt
-  → create run record(status=queued, source_id=cron task id)
-  → enqueue prompt into REPL/TUI/headless queue
-  → queue consumer claims run: queued → running
-  → normal query pipeline executes prompt
-  → finalize run: completed / failed / cancelled
-  → /autonomy status|runs|status --deep or equivalent command reads run store
-```
-
-关键要求：
-
-- `CronList` / `/cron-list` 只展示 cron job 定义、schedule、durable/session、next fire，不承担执行结果历史。
-- trigger detail 或等价命令展示单个任务的 status、schedule、agent、next run、last run、created 和 prompt；manual fire 或等价命令创建 queued run 并回显 run id。
-- `/autonomy runs` 或等价命令展示最近 run 历史，包括 run id、source id、prompt preview、创建/开始/结束时间、状态和错误摘要。
-- `/autonomy status` 汇总当前 queued/running/failed/completed 数量；`/autonomy status --deep` 额外显示 cron job section 与最近 run section。
-- run store 至少持久化 `run_id`、`runtime`、`trigger`、`status`、`source_id`、`source_label`、`prompt_preview`、`created_at`、`started_at`、`ended_at`、`error`、`root_dir`、`current_dir`，并在支持 teammate/agent 后补齐 ownership/session 元数据。
-- 创建 queued run 时按 `source_id=cron task id` 做 active-run 去重：上一轮仍处于 `queued` 或 `running` 时跳过本轮触发，防止每分钟任务堆积。
-- headless 模式无法路由 teammate/agent-owned cron task 时必须把对应 run 标记为 `failed`，不能静默丢弃。
-
-### 当前实现状态
-
-| 组件 | 文件 | 状态 | 说明 |
-|------|------|------|------|
-| fallback Cron 工具定义 | `src/tool_system/tools/cron.py` | ✅ 保留 fallback | 仅提供内存型 CronCreate/CronList/CronDelete；真实 cron 产品化路径应由 extension runtime 替换为 `clawcodex_ext/cron_system/tools.py`。 |
-| /loop Skill | `src/skills/bundled/loop.py` | ✅ 完成 | 4种模式（fixed-prompt/fixed-maintenance/dynamic-prompt/dynamic-maintenance）。 |
-| cron parser / next-run | `clawcodex_ext/cron_system/parser.py` | ✅ 基础完成 | 已覆盖 5 字段 cron 解析、范围/步进/list、DOW Sunday alias、DOM/DOW OR 语义与 next fire 计算。 |
-| cron tasks storage | `clawcodex_ext/cron_system/tasks.py` | ✅ 基础完成 | `.claude/scheduled_tasks.json` durable 存储、session store、CRUD、due/missed 查找、permanent 幂等安装与 fired 标记。 |
-| cron task lock | `clawcodex_ext/cron_system/lock.py` | ✅ 基础完成 | `.claude/scheduled_tasks.lock` 调度锁、PID/session 检查、stale/corrupt recovery 与注册式清理。 |
-| cron scheduler | `clawcodex_ext/cron_system/scheduler.py` | ✅ 基础完成，待接线 | 1 秒轮询、lock ownership、due/missed/expired、jitter、kill switch、inFlight 和事件 hook 已有；仍需接入真实 frontend queue 与 busy/filter 语义。 |
-| cron jitter config | `clawcodex_ext/cron_system/{models,jitter}.py` | ✅ 基础完成 | 6 参数 jitter 配置、文件/env 热加载、recurring forward jitter、one-shot backward jitter 与过期 max-age。 |
-| extension Cron tools | `clawcodex_ext/cron_system/tools.py` | ✅ 基础完成，待入口验证 | 替换版 CronCreate/List/Delete 已支持持久化、disabled 软返回、prompt 指引和 permanent 写保护；仍需端到端证明 REPL/TUI/headless 都命中该实现。 |
-| runtime glue | `clawcodex_ext/cron_system/runtime.py` | ✅ 完成，已接线 | 可替换 fallback 工具、挂载 scheduler、写入 outbox；REPL 主循环通过 `_drain_cron_outbox()` 消费 outbox 并进入真实 query pipeline。 |
-| runs.py | `clawcodex_ext/cron_system/runs.py` | ⚠️ 基础完成，待扩展 | 已有 `.claude/scheduled_task_runs.json` 账本和 queued/running/completed/failed/cancelled 生命周期；缺少 autonomy-compatible 字段、真实执行队列 claim/finalize 接线、`.claude/autonomy/runs.json` 等价布局决策。 |
-| status.py | `clawcodex_ext/cron_system/status.py` | ⚠️ 基础完成，待扩展 | 已有 status/runs 文本表格；缺少 deep status 的 richer section、trigger detail、manual-fire run id outcome、错误摘要/路径/来源字段展示。 |
-| queue lifecycle | REPL/TUI/headless adapter | ⚠️ 基础完成（REPL 已接线，TUI 待续） | REPL 通过 `_drain_cron_outbox()` 已接通 scheduled fire 入队路径；claim running、最终 finalize 与 active-source 去重依赖 F22-R2。 |
-| trigger detail / manual fire | command/skill adapter | ❌ 待实现 | 暴露等价 `/schedule get <id>` 与 `/schedule run <id>` 的用户路径，展示 last/next run、created、prompt，并在手动触发后返回 run id。 |
-| autonomy commands | command/skill adapter | ⚠️ fast-path 存在，待接线 | `clawcodex_ext/cli/dispatch.py` 已有 `autonomy status/runs` 分发；仍需接入真实运行账本和 richer output，区分 cron job 定义、trigger detail 与 run 生命周期。 |
-| missed notification | extension notification adapter | ⚠️ 基础完成，待产品化 | scheduler/runtime 已能产生 missed notification outbox 事件；仍需前端展示与端到端验收。 |
-
-**CCB 对比分析发现的补充子任务（2026-06）**:
-
-| 子任务 | 文件 | 状态 | 说明 |
-|--------|------|------|------|
-| G1: isKilled 运行时 kill 开关 | `clawcodex_ext/cron_system/{models,scheduler,tools,runtime}.py` | ✅ 完成 | `is_cron_disabled()` + `CLAWCODEX_DISABLE_CRON` env；`CronScheduler.is_killed` 每 tick 轮询；工具层返回 `{disabled: true, message: "Cron is disabled"}`；runtime 接线 `is_killed=is_cron_disabled` |
-| G2: 远程 Jitter 实时配置 | `clawcodex_ext/cron_system/{models,jitter,scheduler,tasks,runtime}.py` | ✅ 完成 | 6 参数 `CronJitterConfig`（recurring_frac/recurring_cap_ms/one_shot_max_ms/one_shot_floor_ms/one_shot_minute_mod/recurring_max_age_ms）；`load_jitter_config()` 支持 `.claude/cron_jitter_config.json` + `CLAWCODEX_CRON_*` env，热加载（env > 文件 > 默认）；`validate_jitter_config` 防御性夹紧；`CronScheduler.check_once` 每个 tick 调用 loader 并把 `recurring_max_age_ms` 传入 `prune_expired_recurring_tasks(max_age_ms=...)`；`max_age_ms=0` 关闭过期（对齐 CCB `recurringMaxAgeMs=0`） |
-| G3: One-shot 反向 Jitter | `clawcodex_ext/cron_system/jitter.py` | ✅ 完成 | `one_shot_jittered_next_cron_run_ms` 走 `minute % one_shot_minute_mod == 0` 门槛（默认 30 → :00/:30）；落入门槛时 `lead = floor + frac * (max - floor)`（默认 floor=0, max=90s），由 `taskId` sha256 决定；非整点分钟直接返回精确时间；不会早于 `created_at`（`max(t1 - lead, fromMs)`） |
-| G4: Permanent 免过期机制 | `clawcodex_ext/cron_system/{models,tasks,tools,runtime}.py` | ✅ 完成 | `CronTask.permanent` 字段；`write_permanent_task_if_missing(cron, prompt)` 幂等安装（同 spec 返回 existing，已存在异 spec 抛 `PermissionError`）；`prune_expired_recurring_tasks` 跳过 `permanent=True`；`CronCreate` 拒绝 `permanent=true` 并报 `ToolInputError`；runtime 暴露 `install_permanent_cron_tasks(workspace_root, [specs])` 供 assistant installer 接入 |
-| G5: 锁注册式清理与 PID 增强 | `clawcodex_ext/cron_system/lock.py` | ✅ 完成 | `register_lock_cleanup(callback)` + `release_all_locks()` + atexit/SIGTERM/SIGINT 钩子；`_default_pid_validator` 读 `/proc/<pid>/comm` 识别 clawcodex/claude/python 进程，`set_pid_validator()` 测试覆盖；PID 存活但非 ClawCodex 进程时识别为 PID 回收并强制 unlink；`CronTaskLock.acquire` 支持同 `sessionId` 接管（refresh in place），不同 sessionId 被活锁挡回 |
-| G6: 工具 Prompt 指引增强 | `clawcodex_ext/cron_system/tools.py` | ✅ 完成 | `CRON_CREATE_PROMPT` 覆盖 5 字段 cron 语法、jitter 原理（recurring forward / one-shot backward lead）、recurring/one-shot 区别、durable vs session、`permanent` 系统字段说明、50 job 上限、disabled 软返回；`CRON_LIST_PROMPT` 说明字段+permanent 提示；`CRON_DELETE_PROMPT` 提示先 `CronList` 取 id 并强调不可逆 |
-| G7: Analytics 遥测事件预留 | `clawcodex_ext/cron_system/scheduler.py` + `runtime.py` | ✅ 完成 | `CronScheduler` 暴露 `on_fire_event` / `on_missed_event` / `on_expired_event` 三个 `Callable[[dict], None]` 钩子，默认 `_noop_event`；`check_once`/`notify_missed_once` 在 fire / missed 路径注入；runtime 默认接 `_log_event` 走 `logging.debug`；不引入新依赖 |
-| G8: inFlight 防重复触发 | `clawcodex_ext/cron_system/scheduler.py` | ✅ 完成 | `_in_flight: set[str]` + `_in_flight_lock: threading.Lock`；`check_once` 在 fire 路径上 `add → create_queued_run → fire → remove`（finally 块保证异常路径也释放）；`process` 开头 `if self._in_flight_contains(task.id): continue` 防止 tick 重入时二次触发；并发 100 线程 x 50 taskID 验证无丢无重 |
-| A1~A5: 已有优势特性保持 | 全模块 | ✅ 已存在 | CronRun 追踪/手动触发/状态展示/英文名支持/详情输出——9.11 实施未破坏既有行为 |
-
-**最新 CCB 对比后仍需补齐的端到端缺口（2026-06）**：
-
-| ID | 缺口 | 当前状态 | 进度口径 |
-|----|------|----------|----------|
-| F22-R1 | 真实 REPL/TUI/headless 运行路径接线 | ✅ 完成 | `attach_cron_runtime()` 所有前端路径已接线。REPL (`src/repl/core.py`)：`__init__` 注册 `replace_cron_tools()` + `attach_cron_runtime(autostart=True)`；`run()` 循环新增 `_drain_cron_outbox()` 消费 `tool_context.outbox` 中的 `cron_prompt`/`cron_missed` 事件，经 `_enqueue_prompt` 注入为自动用户输入。Headless/TUI：通过 `RuntimeContext.build()` 自动获得后台 cron 调度器。TUI 循环的 outbox drain 尚未接线，属后续阶段。 |
-| F22-R2 | scheduled fire 执行队列 | ⏳ 待开始 | 到期任务需要创建 queued prompt/run，并由普通 query pipeline claim、执行、取消和失败收敛；不能只停留在 scheduler callback。 |
-| F22-R3 | run lifecycle finalize 与更完整账本 | ⏳ 待扩展 | `runs.py` 已有基础状态，但还要补齐 started/ended/error/root/current/source/prompt preview/ownership 等字段，并把执行结果 finalize 到 completed/failed/cancelled。 |
-| F22-R4 | 用户管理与状态入口 | ⏳ 待扩展 | 需要 `/cron-list`、`/cron-delete`、trigger detail、manual fire、`/autonomy status|runs|status --deep` 或等价命令接到真实账本，而不是只保留工具层或 fast-path。 |
-| F22-R5 | busy gate / assistant/headless/filter 语义 | ⏳ 待开始 | 需要对齐 `claude-code-best` 的 `isLoading`、assistantMode、filter 语义，避免繁忙时重入、headless 无法路由时静默丢任务。 |
-| F22-R6 | durable 文件 reload 行为 | ⏳ 待确认 | 已有文件存储和锁，但还需端到端验证多会话/外部编辑 `.claude/scheduled_tasks.json` 后 scheduler 热加载与稳定性。 |
-| F22-R7 | teammate/agent ownership | ⏳ 待设计 | CCB task schema 有 `agentId`；ClawCodex 需要决定 coordinator/team cron ownership、可见性、路由和失败策略。 |
-| | F22-R8 | CCB-compatible gate 命名与用户心智 | ⏳ 待确认 | 当前主要使用 `CLAWCODEX_DISABLE_CRON`；若用户从 CCB 迁移，建议兼容 `CLAUDE_CODE_DISABLE_CRON` 或在文档/CLI 中明确差异。 |
-| | **G9** | **SDK daemon 模式（`dir`/`lockIdentity`）** | ⏳ 待设计 | scheduler 当前依赖 bootstrap session state；daemon/headless 独立运行需支持可选 `dir` 和 `lock_identity` 参数，无 session 时自动降级。详见 FEATURE_PLAN §4.11.11。 |
-| | **G10** | **`cronToHuman(utc)` UTC 模式显示** | ⏳ 待设计 | `cron_to_human()` 无 UTC 参数；需增加 `utc=True` 时按本地时区偏移显示，远程 agent 场景使用。详见 FEATURE_PLAN §4.11.11。 |
-
-### 里程碑
-
-| 阶段 | 任务 | 状态 |
-|------|------|------|
-| 1 | cron parser / next-run - 表达式解析与时间计算（extension 路径） | ✅ 基础完成 |
-| 2 | cron tasks - durable/session 任务存储 CRUD（extension 路径） | ✅ 基础完成 |
-| 3 | cron task lock - 多进程调度锁与清理（extension 路径） | ✅ 基础完成 |
-| 4 | cron scheduler - 轮询、due/missed/expired、inFlight、jitter（extension 路径） | ✅ 基础完成 |
-| 5 | cron jitter config - 文件/env 动态配置与每 tick reload（extension 路径） | ✅ 基础完成 |
-| 6 | tools / command adapter - CronCreate/List/Delete 替换 fallback 工具，补齐 `/cron-list`、`/cron-delete` 用户入口 | ✅ 完成（工具替换已接线，用户入口待细节验证） |
-| 7 | runs.py - scheduled-task run 账本扩展到 autonomy-compatible schema 与 active source 去重 | ⏳ 待扩展 |
-| 8 | queue lifecycle - scheduled fire 入队、claim running、finalize completed/failed/cancelled | ⏳ 待开始 |
-| 9 | trigger detail/manual fire - 单任务详情与手动触发 run id 回显 | ⏳ 待开始 |
-| 10 | status.py / autonomy commands - `/autonomy status`, `/autonomy runs`, `/autonomy status --deep` 或等价命令的 richer output | ⏳ 待扩展 |
-| 11 | busy gate/filter/headless routing - 繁忙门控、assistant/headless/filter 与无法路由失败记录 | ⏳ 待开始 |
-| 12 | durable reload / ownership / env compatibility - 文件热加载验证、teammate/agent ownership、`CLAUDE_CODE_DISABLE_CRON` 兼容 | ⏳ 待设计 |
-| 13 | 测试覆盖 - cron job 管理、trigger detail/manual fire、run 生命周期、状态查看、headless 失败记录、多会话 reload | ⏳ 待开始 |
-| **G1** | **isKilled 运行时 kill 开关** - scheduler 每 tick 轮询 `is_killed()`，工具 prompt 门控 | ✅ 完成 |
-| **G2** | **远程 Jitter 实时配置** - 6 个参数可配置文件/env 热加载，每 tick 重新读取 | ✅ 完成 |
-| **G3** | **One-shot 反向 Jitter** - 整点 (:00/:30) 提前触发，确定性 hash 偏移，min/max 保护 | ✅ 完成 |
-| **G4** | **Permanent 免过期机制** - 字段/写保护/过期豁免/assistant 安装入口 | ✅ 完成 |
-| **G5** | **锁注册式清理与 PID 增强** - atexit 清理、PID 分身检测、同 session 锁接管 | ✅ 完成 |
-| **G6** | **工具 Prompt 指引增强** - CronCreate/List/Delete 的 prompt 字段补充最佳实践说明 | ✅ 完成 |
-| **G7** | **Analytics 遥测事件预留** - fire/missed/expired 事件点预留 Optional[Callable] | ✅ 完成 |
-| | **G8** | **inFlight 防重复触发** — 异步 IO 期间用 in_flight Set 防止同一任务二次触发 | ✅ 完成 |
-| | **G9** | **SDK daemon 模式（`dir`/`lockIdentity`）** — 可选脱离 session state 独立运行 | ⏳ 待设计 |
-| | **G10** | **`cronToHuman(utc)` UTC 模式** — `cron_to_human()` 增加 `utc` 参数 | ⏳ 待设计 |
-
----
-
-**规划任务详情已归档至 [ARCHIVED_PROGRESS.md](./ARCHIVED_PROGRESS.md)**
-
----
-
+## 二、Orchestrator 系统进度
 
 ## F-34: CLI/TUI Frontend 解耦架构
 
@@ -360,6 +245,15 @@ CronTask due
 
 ---
 
+
+## 三、Agent 核心能力进度
+
+> F-2、F-4、F-9~F-13、F-16、F-18~F-20、F-75、F-78、F-80 的详细设计见 FEATURE_PLAN 第二章各节。
+> 已归档完成项：F-13（记忆作用域隔离）、F-20（进度汇报）、F-29/F-30（工具注册）。
+
+## 四、CLI 与配置系统进度
+
+> 注：F-44（检视闸门）、F-45（审计旁路）设计上属于 Orchestrator 系统（FEATURE_PLAN §1.3~1.4），其详细进度暂存本章。
 
 ## F-43: CLI 模型供应商与模型切换
 
@@ -506,6 +400,10 @@ CronTask due
 
 > 详细进度已归档至 [ARCHIVED_PROGRESS.md §五.9 F-47 Permission Settings Schema 重构](./ARCHIVED_PROGRESS.md#五9-f-47-permission-settings-schema-重构)。
 
+
+## 五、Architecture & SDK 下沉进度
+
+> 注：F-49（会话统一存储）、F-51（空转检测）、F-54（可观测性）设计上属于 Orchestrator 系统（FEATURE_PLAN §1.3~1.4），会话恢复增强（FEATURE_PLAN §6）已移至第七章。
 
 ## F-48: src/ 核心路径二开修改解耦
 
@@ -1083,11 +981,11 @@ session = Session.resume(issue_session_id)
 
 ---
 
-## F-55: 会话恢复（Session Resume）增强
+## 会话恢复（Session Resume）增强（§6）
 
 **状态**: 📋 设计完成
 **优先级**: P0
-**规划文档**: `docs/FEATURE_PLAN.md` → `§八 会话恢复（Session Resume）增强（F-55）`
+**规划文档**: `docs/FEATURE_PLAN.md` → `§六 会话恢复增强`
 **依赖**: 无
 
 ### 目标
@@ -1198,11 +1096,149 @@ CCB 还具备但 ClawCodex 缺失的：
 - **alt-screen 生命周期**：Textual `inline=True` 已经规避了 alt-screen 擦除的问题，但 hint 必须在 `app.run()` 返回后（而非在 app 内部）打印，否则会被文本渲染覆盖。
 - **`--continue` vs `--resume` 互斥**：同时在 CLI 层做校验，避免二义性。
 - **Session ID 格式**：ClawCodex 的 session ID 格式与 CCB 可能不同，确认 transcript 路径解析兼容。
-- **与 F-49 的边界**：F-49（Issue 会话统一存储）定义了 `SessionStorage` 协议和 `attach/resume` 流程。F-55 专注 TUI 层 resume UX 细节（S-R1~S-R3），二者不冲突。
+- **与 F-49 的边界**：F-49（Issue 会话统一存储）定义了 `SessionStorage` 协议和 `attach/resume` 流程。会话恢复增强（§6）专注 TUI 层 resume UX 细节（S-R1~S-R3），二者不冲突。
 
 ---
 
-## 四、CCB 对标特性补缺跟踪
+## 六、Cron 系统执行引擎进度
+
+## F-22: Cron 系统执行引擎
+
+**状态**: 🔄 进行中（Phase A runtime-first 接线 ✅ 已完成：REPL/TUI/headless 运行路径打通，调度器后台运行，REPL 主循环通过 `_drain_cron_outbox()` 消费 `cron_prompt`/`cron_missed` 事件；Phase B~F 分阶段推进）
+**优先级**: P0
+**参考实现**: claude-code-best `src/utils/cron*.ts`, `src/hooks/useScheduledTasks.ts`, `src/utils/autonomyRuns.ts`, `src/utils/autonomyStatus.ts`, `src/commands/autonomy*.ts`, `src/cli/print.ts`
+
+### 目标
+
+将 claude-code-best 的生产级别 cron 执行引擎移植到 ClawCodex，实现：
+1. 完整 cron 表达式解析（5字段标准语法）
+2. 下次执行时间计算（本地时区）
+3. 调度器执行引擎（1秒轮询）
+4. 任务持久化（`.claude/scheduled_tasks.json`）
+5. 分布式锁（防止多进程重复执行）
+6. Jitter 抖动算法（避免雷鸣般群体效应）
+7. 任务过期机制（周期性任务7天自动删除）
+8. scheduled fire 进入真实 REPL/TUI/headless 队列，而不是只写 outbox
+9. 每次定时触发生成可查询 run 记录，状态覆盖 `queued`、`running`、`completed`、`failed`、`cancelled`
+10. 提供 `/autonomy status`、`/autonomy runs`、`/autonomy status --deep` 或 ClawCodex 等价命令查看执行状态
+11. 同一 cron task 存在 active run 时去重，避免高频任务在上一轮未完成时堆积
+
+### 执行结果/状态查看链路
+
+`claude-code-best` 不把定时任务的完整回答写回 cron job 定义表。它在 cron task 到期时创建 scheduled-task queued prompt，同时在 `.claude/autonomy/runs.json` 中创建 run 账本记录；队列消费前将 run 从 `queued` 原子切到 `running`，普通 query pipeline 执行完后再落到 `completed` / `failed` / `cancelled`。此外，`/schedule get <id>` 的 detail 视图展示 trigger 的 status、schedule、agent、next run、last run、created 和 prompt，`/schedule run <id>` 手动触发后直接回显 run id。因此 ClawCodex 需要同时实现“cron job 管理视图”、“trigger detail/manual-fire 视图”和“scheduled-task run 生命周期视图”，用户才能回答“任务是否已配置、上次/下次何时执行、是否正在执行还是失败”。
+
+当前 ClawCodex 已有基础 `clawcodex_ext/cron_system/runs.py` 与 `status.py`，可读取 `.claude/scheduled_task_runs.json` 并输出 status/runs 文本表格；缺口在于它们尚未接入真实 REPL/TUI/headless 执行队列，run schema 也比 `claude-code-best` 的 autonomy run 记录更窄，缺少来源、路径、预览和 ownership/session 等操作追溯字段。
+
+```text
+CronTask due
+  → create scheduled-task queued prompt
+  → create run record(status=queued, source_id=cron task id)
+  → enqueue prompt into REPL/TUI/headless queue
+  → queue consumer claims run: queued → running
+  → normal query pipeline executes prompt
+  → finalize run: completed / failed / cancelled
+  → /autonomy status|runs|status --deep or equivalent command reads run store
+```
+
+关键要求：
+
+- `CronList` / `/cron-list` 只展示 cron job 定义、schedule、durable/session、next fire，不承担执行结果历史。
+- trigger detail 或等价命令展示单个任务的 status、schedule、agent、next run、last run、created 和 prompt；manual fire 或等价命令创建 queued run 并回显 run id。
+- `/autonomy runs` 或等价命令展示最近 run 历史，包括 run id、source id、prompt preview、创建/开始/结束时间、状态和错误摘要。
+- `/autonomy status` 汇总当前 queued/running/failed/completed 数量；`/autonomy status --deep` 额外显示 cron job section 与最近 run section。
+- run store 至少持久化 `run_id`、`runtime`、`trigger`、`status`、`source_id`、`source_label`、`prompt_preview`、`created_at`、`started_at`、`ended_at`、`error`、`root_dir`、`current_dir`，并在支持 teammate/agent 后补齐 ownership/session 元数据。
+- 创建 queued run 时按 `source_id=cron task id` 做 active-run 去重：上一轮仍处于 `queued` 或 `running` 时跳过本轮触发，防止每分钟任务堆积。
+- headless 模式无法路由 teammate/agent-owned cron task 时必须把对应 run 标记为 `failed`，不能静默丢弃。
+
+### 当前实现状态
+
+| 组件 | 文件 | 状态 | 说明 |
+|------|------|------|------|
+| fallback Cron 工具定义 | `src/tool_system/tools/cron.py` | ✅ 保留 fallback | 仅提供内存型 CronCreate/CronList/CronDelete；真实 cron 产品化路径应由 extension runtime 替换为 `clawcodex_ext/cron_system/tools.py`。 |
+| /loop Skill | `src/skills/bundled/loop.py` | ✅ 完成 | 4种模式（fixed-prompt/fixed-maintenance/dynamic-prompt/dynamic-maintenance）。 |
+| cron parser / next-run | `clawcodex_ext/cron_system/parser.py` | ✅ 基础完成 | 已覆盖 5 字段 cron 解析、范围/步进/list、DOW Sunday alias、DOM/DOW OR 语义与 next fire 计算。 |
+| cron tasks storage | `clawcodex_ext/cron_system/tasks.py` | ✅ 基础完成 | `.claude/scheduled_tasks.json` durable 存储、session store、CRUD、due/missed 查找、permanent 幂等安装与 fired 标记。 |
+| cron task lock | `clawcodex_ext/cron_system/lock.py` | ✅ 基础完成 | `.claude/scheduled_tasks.lock` 调度锁、PID/session 检查、stale/corrupt recovery 与注册式清理。 |
+| cron scheduler | `clawcodex_ext/cron_system/scheduler.py` | ✅ 基础完成，待接线 | 1 秒轮询、lock ownership、due/missed/expired、jitter、kill switch、inFlight 和事件 hook 已有；仍需接入真实 frontend queue 与 busy/filter 语义。 |
+| cron jitter config | `clawcodex_ext/cron_system/{models,jitter}.py` | ✅ 基础完成 | 6 参数 jitter 配置、文件/env 热加载、recurring forward jitter、one-shot backward jitter 与过期 max-age。 |
+| extension Cron tools | `clawcodex_ext/cron_system/tools.py` | ✅ 基础完成，待入口验证 | 替换版 CronCreate/List/Delete 已支持持久化、disabled 软返回、prompt 指引和 permanent 写保护；仍需端到端证明 REPL/TUI/headless 都命中该实现。 |
+| runtime glue | `clawcodex_ext/cron_system/runtime.py` | ✅ 完成，已接线 | 可替换 fallback 工具、挂载 scheduler、写入 outbox；REPL 主循环通过 `_drain_cron_outbox()` 消费 outbox 并进入真实 query pipeline。 |
+| runs.py | `clawcodex_ext/cron_system/runs.py` | ⚠️ 基础完成，待扩展 | 已有 `.claude/scheduled_task_runs.json` 账本和 queued/running/completed/failed/cancelled 生命周期；缺少 autonomy-compatible 字段、真实执行队列 claim/finalize 接线、`.claude/autonomy/runs.json` 等价布局决策。 |
+| status.py | `clawcodex_ext/cron_system/status.py` | ⚠️ 基础完成，待扩展 | 已有 status/runs 文本表格；缺少 deep status 的 richer section、trigger detail、manual-fire run id outcome、错误摘要/路径/来源字段展示。 |
+| queue lifecycle | REPL/TUI/headless adapter | ⚠️ 基础完成（REPL 已接线，TUI 待续） | REPL 通过 `_drain_cron_outbox()` 已接通 scheduled fire 入队路径；claim running、最终 finalize 与 active-source 去重依赖 F22-R2。 |
+| trigger detail / manual fire | command/skill adapter | ❌ 待实现 | 暴露等价 `/schedule get <id>` 与 `/schedule run <id>` 的用户路径，展示 last/next run、created、prompt，并在手动触发后返回 run id。 |
+| autonomy commands | command/skill adapter | ⚠️ fast-path 存在，待接线 | `clawcodex_ext/cli/dispatch.py` 已有 `autonomy status/runs` 分发；仍需接入真实运行账本和 richer output，区分 cron job 定义、trigger detail 与 run 生命周期。 |
+| missed notification | extension notification adapter | ⚠️ 基础完成，待产品化 | scheduler/runtime 已能产生 missed notification outbox 事件；仍需前端展示与端到端验收。 |
+
+**CCB 对比分析发现的补充子任务（2026-06）**:
+
+| 子任务 | 文件 | 状态 | 说明 |
+|--------|------|------|------|
+| G1: isKilled 运行时 kill 开关 | `clawcodex_ext/cron_system/{models,scheduler,tools,runtime}.py` | ✅ 完成 | `is_cron_disabled()` + `CLAWCODEX_DISABLE_CRON` env；`CronScheduler.is_killed` 每 tick 轮询；工具层返回 `{disabled: true, message: "Cron is disabled"}`；runtime 接线 `is_killed=is_cron_disabled` |
+| G2: 远程 Jitter 实时配置 | `clawcodex_ext/cron_system/{models,jitter,scheduler,tasks,runtime}.py` | ✅ 完成 | 6 参数 `CronJitterConfig`（recurring_frac/recurring_cap_ms/one_shot_max_ms/one_shot_floor_ms/one_shot_minute_mod/recurring_max_age_ms）；`load_jitter_config()` 支持 `.claude/cron_jitter_config.json` + `CLAWCODEX_CRON_*` env，热加载（env > 文件 > 默认）；`validate_jitter_config` 防御性夹紧；`CronScheduler.check_once` 每个 tick 调用 loader 并把 `recurring_max_age_ms` 传入 `prune_expired_recurring_tasks(max_age_ms=...)`；`max_age_ms=0` 关闭过期（对齐 CCB `recurringMaxAgeMs=0`） |
+| G3: One-shot 反向 Jitter | `clawcodex_ext/cron_system/jitter.py` | ✅ 完成 | `one_shot_jittered_next_cron_run_ms` 走 `minute % one_shot_minute_mod == 0` 门槛（默认 30 → :00/:30）；落入门槛时 `lead = floor + frac * (max - floor)`（默认 floor=0, max=90s），由 `taskId` sha256 决定；非整点分钟直接返回精确时间；不会早于 `created_at`（`max(t1 - lead, fromMs)`） |
+| G4: Permanent 免过期机制 | `clawcodex_ext/cron_system/{models,tasks,tools,runtime}.py` | ✅ 完成 | `CronTask.permanent` 字段；`write_permanent_task_if_missing(cron, prompt)` 幂等安装（同 spec 返回 existing，已存在异 spec 抛 `PermissionError`）；`prune_expired_recurring_tasks` 跳过 `permanent=True`；`CronCreate` 拒绝 `permanent=true` 并报 `ToolInputError`；runtime 暴露 `install_permanent_cron_tasks(workspace_root, [specs])` 供 assistant installer 接入 |
+| G5: 锁注册式清理与 PID 增强 | `clawcodex_ext/cron_system/lock.py` | ✅ 完成 | `register_lock_cleanup(callback)` + `release_all_locks()` + atexit/SIGTERM/SIGINT 钩子；`_default_pid_validator` 读 `/proc/<pid>/comm` 识别 clawcodex/claude/python 进程，`set_pid_validator()` 测试覆盖；PID 存活但非 ClawCodex 进程时识别为 PID 回收并强制 unlink；`CronTaskLock.acquire` 支持同 `sessionId` 接管（refresh in place），不同 sessionId 被活锁挡回 |
+| G6: 工具 Prompt 指引增强 | `clawcodex_ext/cron_system/tools.py` | ✅ 完成 | `CRON_CREATE_PROMPT` 覆盖 5 字段 cron 语法、jitter 原理（recurring forward / one-shot backward lead）、recurring/one-shot 区别、durable vs session、`permanent` 系统字段说明、50 job 上限、disabled 软返回；`CRON_LIST_PROMPT` 说明字段+permanent 提示；`CRON_DELETE_PROMPT` 提示先 `CronList` 取 id 并强调不可逆 |
+| G7: Analytics 遥测事件预留 | `clawcodex_ext/cron_system/scheduler.py` + `runtime.py` | ✅ 完成 | `CronScheduler` 暴露 `on_fire_event` / `on_missed_event` / `on_expired_event` 三个 `Callable[[dict], None]` 钩子，默认 `_noop_event`；`check_once`/`notify_missed_once` 在 fire / missed 路径注入；runtime 默认接 `_log_event` 走 `logging.debug`；不引入新依赖 |
+| G8: inFlight 防重复触发 | `clawcodex_ext/cron_system/scheduler.py` | ✅ 完成 | `_in_flight: set[str]` + `_in_flight_lock: threading.Lock`；`check_once` 在 fire 路径上 `add → create_queued_run → fire → remove`（finally 块保证异常路径也释放）；`process` 开头 `if self._in_flight_contains(task.id): continue` 防止 tick 重入时二次触发；并发 100 线程 x 50 taskID 验证无丢无重 |
+| A1~A5: 已有优势特性保持 | 全模块 | ✅ 已存在 | CronRun 追踪/手动触发/状态展示/英文名支持/详情输出——9.11 实施未破坏既有行为 |
+
+**最新 CCB 对比后仍需补齐的端到端缺口（2026-06）**：
+
+| ID | 缺口 | 当前状态 | 进度口径 |
+|----|------|----------|----------|
+| F22-R1 | 真实 REPL/TUI/headless 运行路径接线 | ✅ 完成 | `attach_cron_runtime()` 所有前端路径已接线。REPL (`src/repl/core.py`)：`__init__` 注册 `replace_cron_tools()` + `attach_cron_runtime(autostart=True)`；`run()` 循环新增 `_drain_cron_outbox()` 消费 `tool_context.outbox` 中的 `cron_prompt`/`cron_missed` 事件，经 `_enqueue_prompt` 注入为自动用户输入。Headless/TUI：通过 `RuntimeContext.build()` 自动获得后台 cron 调度器。TUI 循环的 outbox drain 尚未接线，属后续阶段。 |
+| F22-R2 | scheduled fire 执行队列 | ⏳ 待开始 | 到期任务需要创建 queued prompt/run，并由普通 query pipeline claim、执行、取消和失败收敛；不能只停留在 scheduler callback。 |
+| F22-R3 | run lifecycle finalize 与更完整账本 | ⏳ 待扩展 | `runs.py` 已有基础状态，但还要补齐 started/ended/error/root/current/source/prompt preview/ownership 等字段，并把执行结果 finalize 到 completed/failed/cancelled。 |
+| F22-R4 | 用户管理与状态入口 | ⏳ 待扩展 | 需要 `/cron-list`、`/cron-delete`、trigger detail、manual fire、`/autonomy status|runs|status --deep` 或等价命令接到真实账本，而不是只保留工具层或 fast-path。 |
+| F22-R5 | busy gate / assistant/headless/filter 语义 | ⏳ 待开始 | 需要对齐 `claude-code-best` 的 `isLoading`、assistantMode、filter 语义，避免繁忙时重入、headless 无法路由时静默丢任务。 |
+| F22-R6 | durable 文件 reload 行为 | ⏳ 待确认 | 已有文件存储和锁，但还需端到端验证多会话/外部编辑 `.claude/scheduled_tasks.json` 后 scheduler 热加载与稳定性。 |
+| F22-R7 | teammate/agent ownership | ⏳ 待设计 | CCB task schema 有 `agentId`；ClawCodex 需要决定 coordinator/team cron ownership、可见性、路由和失败策略。 |
+| | F22-R8 | CCB-compatible gate 命名与用户心智 | ⏳ 待确认 | 当前主要使用 `CLAWCODEX_DISABLE_CRON`；若用户从 CCB 迁移，建议兼容 `CLAUDE_CODE_DISABLE_CRON` 或在文档/CLI 中明确差异。 |
+| | **G9** | **SDK daemon 模式（`dir`/`lockIdentity`）** | ⏳ 待设计 | scheduler 当前依赖 bootstrap session state；daemon/headless 独立运行需支持可选 `dir` 和 `lock_identity` 参数，无 session 时自动降级。详见 FEATURE_PLAN §4.11.11。 |
+| | **G10** | **`cronToHuman(utc)` UTC 模式显示** | ⏳ 待设计 | `cron_to_human()` 无 UTC 参数；需增加 `utc=True` 时按本地时区偏移显示，远程 agent 场景使用。详见 FEATURE_PLAN §4.11.11。 |
+
+### 里程碑
+
+| 阶段 | 任务 | 状态 |
+|------|------|------|
+| 1 | cron parser / next-run - 表达式解析与时间计算（extension 路径） | ✅ 基础完成 |
+| 2 | cron tasks - durable/session 任务存储 CRUD（extension 路径） | ✅ 基础完成 |
+| 3 | cron task lock - 多进程调度锁与清理（extension 路径） | ✅ 基础完成 |
+| 4 | cron scheduler - 轮询、due/missed/expired、inFlight、jitter（extension 路径） | ✅ 基础完成 |
+| 5 | cron jitter config - 文件/env 动态配置与每 tick reload（extension 路径） | ✅ 基础完成 |
+| 6 | tools / command adapter - CronCreate/List/Delete 替换 fallback 工具，补齐 `/cron-list`、`/cron-delete` 用户入口 | ✅ 完成（工具替换已接线，用户入口待细节验证） |
+| 7 | runs.py - scheduled-task run 账本扩展到 autonomy-compatible schema 与 active source 去重 | ⏳ 待扩展 |
+| 8 | queue lifecycle - scheduled fire 入队、claim running、finalize completed/failed/cancelled | ⏳ 待开始 |
+| 9 | trigger detail/manual fire - 单任务详情与手动触发 run id 回显 | ⏳ 待开始 |
+| 10 | status.py / autonomy commands - `/autonomy status`, `/autonomy runs`, `/autonomy status --deep` 或等价命令的 richer output | ⏳ 待扩展 |
+| 11 | busy gate/filter/headless routing - 繁忙门控、assistant/headless/filter 与无法路由失败记录 | ⏳ 待开始 |
+| 12 | durable reload / ownership / env compatibility - 文件热加载验证、teammate/agent ownership、`CLAUDE_CODE_DISABLE_CRON` 兼容 | ⏳ 待设计 |
+| 13 | 测试覆盖 - cron job 管理、trigger detail/manual fire、run 生命周期、状态查看、headless 失败记录、多会话 reload | ⏳ 待开始 |
+| **G1** | **isKilled 运行时 kill 开关** - scheduler 每 tick 轮询 `is_killed()`，工具 prompt 门控 | ✅ 完成 |
+| **G2** | **远程 Jitter 实时配置** - 6 个参数可配置文件/env 热加载，每 tick 重新读取 | ✅ 完成 |
+| **G3** | **One-shot 反向 Jitter** - 整点 (:00/:30) 提前触发，确定性 hash 偏移，min/max 保护 | ✅ 完成 |
+| **G4** | **Permanent 免过期机制** - 字段/写保护/过期豁免/assistant 安装入口 | ✅ 完成 |
+| **G5** | **锁注册式清理与 PID 增强** - atexit 清理、PID 分身检测、同 session 锁接管 | ✅ 完成 |
+| **G6** | **工具 Prompt 指引增强** - CronCreate/List/Delete 的 prompt 字段补充最佳实践说明 | ✅ 完成 |
+| **G7** | **Analytics 遥测事件预留** - fire/missed/expired 事件点预留 Optional[Callable] | ✅ 完成 |
+| | **G8** | **inFlight 防重复触发** — 异步 IO 期间用 in_flight Set 防止同一任务二次触发 | ✅ 完成 |
+| | **G9** | **SDK daemon 模式（`dir`/`lockIdentity`）** — 可选脱离 session state 独立运行 | ⏳ 待设计 |
+| | **G10** | **`cronToHuman(utc)` UTC 模式** — `cron_to_human()` 增加 `utc` 参数 | ⏳ 待设计 |
+
+---
+
+**规划任务详情已归档至 [ARCHIVED_PROGRESS.md](./ARCHIVED_PROGRESS.md)**
+
+---
+
+
+## 七、会话恢复增强进度
+
+> F-21、F-23、F-28、F-32 的详细设计见 FEATURE_PLAN 相应章节；会话恢复增强详见本文 §6 详细章节。
+
+## 八、CCB 对标缺口补缺进度
 
 > 本节跟踪 CCB（claude-code-best）对标发现的 clawcodex 特性缺口实施进度。
 > F-60~F-67 均参照 CCB 对应功能设计，以确保功能完整对标为目标。
@@ -1471,7 +1507,7 @@ F-62 (Chrome) ──→ F-65 (Langfuse) ──→ F-81 (Native) ──→ F-82 (
 
 ---
 
-## 五、Python 生态特性补缺跟踪
+## 九、Python 生态特性补缺进度
 
 > 本节跟踪 Python 生态适配角度发现的 clawcodex 特性缺口实施进度。
 > F-68~F-74 均为 Python 标准库或成熟第三方库可实现的特性。
@@ -1627,7 +1663,7 @@ F-74 (Sandbox) ──→ 长期迭代（P2）
 
 ---
 
-## 六、死代码排查记录
+## 十、死代码排查记录
 
 > 扫描时间: 2026-06-XX | 工具: vulture 2.16 | 对照基线: `src/upstream/58ea488/`
 

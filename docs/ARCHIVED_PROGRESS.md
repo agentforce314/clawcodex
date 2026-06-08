@@ -2,10 +2,10 @@
 
 > 文档路径: `docs/ARCHIVED_PROGRESS.md`
 > 源文档: `docs/PROGRESS.md` 第二节 (已完成任务详情)
-> 版本: v1.2
+> 版本: v2.0
 > 创建日期: 2026-05-30
-> 最后更新: 2026-06-02
-> 新增归档: F-13、F-34、F-36、F-38、F-39、F-41、F-42、F-43、F-45、F-47 已实现任务进度归档
+> 最后更新: 2026-06-08
+> 新增归档: F-34~F-55 已实现任务进度归档（对齐 FEATURE_PLAN v3.0）
 
 ---
 
@@ -433,31 +433,16 @@
 
 <!-- archived-2026-06-02-progress -->
 
-## 五2026-06-02 已实现任务进度归档
+## 四、2026-06-02 已实现任务进度归档
 
 > 归档日期: 2026-06-02
 > 来源: 本轮从活动规划/进度文档迁移的已实现条目。
 
-### F-13: Agent 记忆作用域隔离
-
-**状态**: ✅ 完成（2026-06-06）
-**优先级**: P1
-**规划日期**: 2026-05-19
-
-> 通过 `clawcodex_ext/memory/` 扩展包 + `prompt_assembly.py` forwarding seam 实现。采用 try-import + 静默降级模式，零侵入原有 `memdir/` 模块。
->
-> 核心文件：
-> - `clawcodex_ext/memory/__init__.py` — 包声明
-> - `clawcodex_ext/memory/scope_aware_prompt.py` — 核心 scope 感知 prompt 逻辑
-> - `src/context_system/prompt_assembly.py` — 4 处 forwarding seam（`build_full_system_prompt`、`build_full_system_prompt_blocks`、`_build_memory_section` 参数透传 + `build_scope_aware_memory_prompt` 调用）
->
-> 验证：✅ 231/231 orchestrator 测试通过（F-39 Sub-A~F 全部落地，含 153 个 F-39 专项用例）| ✅ 371/378 parity 测试通过 | ✅ F-38 E2E 全部通过
-
 ---
 
 ---
 
-## 五8 F-43 CLI 模型供应商与模型切换
+### F-43 CLI 模型供应商与模型切换
 
 **状态**: ✅ 已完成 (2026-06-02)
 **优先级**: P1
@@ -562,7 +547,7 @@
 
 ---
 
-## 五3 F-34 CLI/TUI Frontend 解耦架构（已完成 Phase 1-3）
+### F-34 CLI/TUI Frontend 解耦架构
 
 **状态**: ✅ 完成（Phase 1: CLI 所有权迁移；Phase 2: RuntimeContext + Frontend 协议；Phase 3: ClawCodexExtTUI 扩展钩子）
 
@@ -753,7 +738,7 @@ clawcodex  # 自动使用 claude-repl
 
 ---
 
-## 五4 F-36 LocalTracker 本地 Issue 文档源
+### F-36 LocalTracker 本地 Issue 文档源
 
 **状态**: 📋 设计完成
 **优先级**: P1
@@ -947,7 +932,7 @@ labels:
 
 ---
 
-## 五5 F-38 Orchestrator 验证与报告闭环
+### F-38 Orchestrator 验证与报告闭环
 
 **状态**: ✅ 完成（2026-06-01，含一轮 E2E + 1 bug 修复）
 **优先级**: P0
@@ -1066,7 +1051,7 @@ labels:
 
 ---
 
-## 五6 F-39 Orchestrator Issue 重跑入口（label + comment 命令双通道）
+### F-39 Orchestrator Issue 重跑入口
 
 **状态**: ✅ 完成（Sub-A~F 全部落地；E2E 阶段 10-11 待真实环境验证）
 **优先级**: P0
@@ -1209,7 +1194,7 @@ agent:
 
 ---
 
-## 五10 F-41 Coordinator 轻量工具集
+### F-41 Coordinator 轻量工具集
 
 **状态**: ✅ 已完成
 **优先级**: P1
@@ -1257,7 +1242,7 @@ agent:
 
 ---
 
-## 五11 F-42 Orchestrator Shared / Sequential Workspace 策略
+### F-42 Orchestrator Shared / Sequential Workspace 策略
 
 **状态**: ✅ 完成
 **优先级**: P0
@@ -1321,7 +1306,7 @@ agent:
 
 ---
 
-## 五7 F-45 Orchestrator tool-call 审计旁路
+### F-45 Orchestrator tool-call 审计旁路
 
 **状态**: ✅ 已完成 (2026-06-02)
 **优先级**: P1
@@ -1441,7 +1426,7 @@ agent:
 
 ---
 
-## 五9 F-47 Permission Settings Schema 重构
+### F-47 Permission Settings Schema 重构
 
 **状态**: 📋 设计完成
 **优先级**: P1
@@ -1581,7 +1566,7 @@ agent:
 
 ---
 
-## 五.12 F-51 AgentRunner 空转检测机制（no-op detection）
+### F-51 AgentRunner 空转检测机制
 
 **状态**: ✅ 完成
 **优先级**: P0
@@ -1630,7 +1615,7 @@ agent:
 
 ---
 
-## 五.13 F-44 Orchestrator 人工检视闸门（Review Gate）
+### F-44 Orchestrator 人工检视闸门
 
 **状态**: ✅ 完成
 **优先级**: P1
@@ -1675,7 +1660,7 @@ agent:
 
 ---
 
-## 五.14 F-50 SOP 转换器源码固化（SourceCodeParser + 增强 SkillGrouper + AgentMarkdownWriter）
+### F-50 SOP 转换器源码固化
 
 **状态**: ✅ 完成
 **优先级**: P1
@@ -1751,3 +1736,74 @@ agent:
 8. 现有 `extensions/pos_converter` 测试继续通过
 
 ---
+
+---
+
+## 五、补录已归档进度（对齐 FEATURE_PLAN v3.0）
+
+> 以下功能进度在早期版本中已完成/设计完成但未归档至本文档，现补录条目。详细进度见 PROGRESS.md 及 FEATURE_PLAN.md 对应章节。
+
+### F-4: 结构化输出增强
+
+| 属性 | 值 |
+|------|-----|
+| F-Number | F-4 |
+| 状态 | ✅ 基础完成 |
+| 章节 | §2.3 |
+| 备注 | Outlines 适配器已就绪，见 FEATURE_PLAN §2.3 |
+
+### F-48: src/ 解耦方案
+
+| 属性 | 值 |
+|------|-----|
+| F-Number | F-48 |
+| 状态 | 📋 设计完成 |
+| 章节 | §4.1 |
+| 备注 | Phase 1-9 设计完成，见 FEATURE_PLAN §4.1 |
+
+### F-49: 会话统一存储
+
+| 属性 | 值 |
+|------|-----|
+| F-Number | F-49 |
+| 状态 | 📋 设计完成 |
+| 章节 | §1.4.2 |
+| 备注 | 设计完成，见 FEATURE_PLAN §1.4.2 |
+
+### F-52: SDK→Tool 注册
+
+| 属性 | 值 |
+|------|-----|
+| F-Number | F-52 |
+| 状态 | 📋 设计完成 |
+| 章节 | §4.3 |
+| 备注 | 设计完成，见 FEATURE_PLAN §4.3 |
+
+### F-53: Tool→CLI 命令映射
+
+| 属性 | 值 |
+|------|-----|
+| F-Number | F-53 |
+| 状态 | 📋 设计完成 |
+| 章节 | §4.4 |
+| 备注 | 设计完成，见 FEATURE_PLAN §4.4 |
+
+### F-54: 运行期可观测性
+
+| 属性 | 值 |
+|------|-----|
+| F-Number | F-54 |
+| 状态 | 📋 设计完成 |
+| 章节 | §1.3.2 |
+| 备注 | 设计完成，见 FEATURE_PLAN §1.3.2 |
+
+### F-75: 工具调用统计
+
+| 属性 | 值 |
+|------|-----|
+| F-Number | F-75 |
+| 状态 | 📋 设计完成 |
+| 章节 | §2.8 |
+| 备注 | 设计完成，见 FEATURE_PLAN §2.8 |
+
+
