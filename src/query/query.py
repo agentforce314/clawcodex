@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 import time
 from dataclasses import dataclass, field
@@ -80,6 +81,19 @@ class QueryParams:
     # raise AbortError from inside the SDK's stream context to tear
     # down the HTTP socket on ESC.
     on_text_chunk: Callable[[str], None] | None = None
+
+    # Extended thinking ("adaptive" mode) — opt the model into a private
+    # reasoning scratchpad before producing its visible answer. Defaults
+    # to ``None`` which auto-enables on Anthropic Claude 4.x models
+    # (the only family the API supports it on) and stays off elsewhere.
+    # Pass ``False`` to force-disable (e.g. for determinism in tests).
+    # Mirrors the TS reference which always passes
+    # ``thinking: {type: "adaptive"}`` on these models.
+    extended_thinking: bool | None = None
+    # Output-effort hint forwarded as ``output_config.effort``. Anthropic
+    # accepts ``"low" | "medium" | "high"``. Only sent when extended
+    # thinking is active.
+    thinking_effort: str = "medium"
 
 
 @dataclass
@@ -285,6 +299,25 @@ def _is_hook_stopped_continuation(msg: Message | None) -> bool:
     return False
 
 
+_THINKING_ELIGIBLE_MODEL_PATTERN = re.compile(
+    r"claude-(?:sonnet|opus|haiku)-(?:4-\d+|[5-9]\b|\d{2,})",
+    re.IGNORECASE,
+)
+
+
+def _model_supports_extended_thinking(model: str | None) -> bool:
+    """True iff the model is on the Anthropic Claude 4.x or newer family.
+
+    Extended thinking (``thinking={"type": "adaptive"}``) was introduced
+    with the Claude 4 series — the Anthropic API rejects the parameter
+    on 3.x and earlier. Detection is by name pattern so unreleased model
+    snapshots (e.g. ``claude-opus-4-7-20260201``) opt in automatically.
+    """
+    if not model:
+        return False
+    return bool(_THINKING_ELIGIBLE_MODEL_PATTERN.search(model))
+
+
 async def _call_model_sync(
     *,
     provider: BaseProvider,
@@ -294,6 +327,8 @@ async def _call_model_sync(
     max_output_tokens_override: int | None = None,
     abort_signal: Any = None,
     on_text_chunk: Callable[[str], None] | None = None,
+    extended_thinking: bool | None = None,
+    thinking_effort: str = "medium",
 ) -> tuple[list[AssistantMessage], list[ToolUseBlock]]:
     from ..types.messages import normalize_messages_for_api
     from ..utils.advisor import (
@@ -535,6 +570,19 @@ async def _call_model_sync(
 
     if max_output_tokens_override is not None:
         call_kwargs["max_tokens"] = max_output_tokens_override
+
+    # Extended thinking (Claude 4.x family). Forwarded straight through
+    # the provider's kwargs pass-through to client.messages.stream(
+    # thinking=..., output_config=...). Off-API on older Claude versions
+    # and on non-Anthropic providers, so guarded by both. ``None`` =
+    # auto-enable; ``True`` / ``False`` = caller override. Mirrors the
+    # TS reference which sends ``thinking: {type: "adaptive"}`` and
+    # ``output_config: {effort: ...}`` on every Claude 4.x request.
+    if extended_thinking is not False and is_anthropic:
+        provider_model = getattr(provider, "model", None) or call_kwargs.get("model")
+        if extended_thinking is True or _model_supports_extended_thinking(provider_model):
+            call_kwargs["thinking"] = {"type": "adaptive"}
+            call_kwargs["output_config"] = {"effort": thinking_effort}
 
     # TS callModel() uses SSE streaming for faster first-byte latency and
     # progressive text display.  Use chat_stream_response() which streams
@@ -1289,6 +1337,8 @@ async def query(
                 max_output_tokens_override=max_output_tokens_override,
                 abort_signal=params.abort_controller.signal,
                 on_text_chunk=params.on_text_chunk,
+                extended_thinking=params.extended_thinking,
+                thinking_effort=params.thinking_effort,
             )
             assistant_messages = returned_assistants
             tool_use_blocks = returned_tool_blocks
