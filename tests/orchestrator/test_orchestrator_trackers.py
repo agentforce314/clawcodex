@@ -17,13 +17,13 @@ from extensions.orchestrator.cli.issue import _run_review
 from extensions.orchestrator.issue_registry import IssueRegistry
 from extensions.orchestrator.prompt_builder import PromptBuilder
 from extensions.orchestrator.review_feedback import ReviewFeedbackService
-from src.orchestrator.agent_runner import AgentSession
-from src.orchestrator.config.schema import WorkflowConfig
-from src.orchestrator.issue import Issue
-from src.orchestrator.local_tracker.adapter import LocalTrackerAdapter
-from src.orchestrator.orchestrator import Orchestrator
-from src.orchestrator.repo_tracker.adapter import RepositoryTrackerAdapter
-from src.orchestrator.tracker import (
+from extensions.orchestrator.agent_runner import AgentSession
+from extensions.orchestrator.config.schema import WorkflowConfig
+from extensions.orchestrator.issue import Issue
+from extensions.orchestrator.local_tracker.adapter import LocalTrackerAdapter
+from extensions.orchestrator.orchestrator import Orchestrator
+from extensions.orchestrator.repo_tracker.adapter import RepositoryTrackerAdapter
+from extensions.orchestrator.tracker import (
     PullRequestFeedback,
     PullRequestRef,
     TrackerAdapter,
@@ -32,7 +32,7 @@ from src.orchestrator.tracker import (
     repository_clone_url_for_tracker,
     validate_tracker_config,
 )
-from src.orchestrator.workspace import Workspace, WorkspaceManager
+from extensions.orchestrator.workspace import Workspace, WorkspaceManager
 
 
 @contextmanager

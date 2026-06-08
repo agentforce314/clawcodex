@@ -19,17 +19,17 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.orchestrator.config.schema import AgentConfig, HooksConfig
-from src.orchestrator.git_sync import (
+from extensions.orchestrator.config.schema import AgentConfig, HooksConfig
+from extensions.orchestrator.git_sync import (
     GitSyncPostCommitError,
     GitSyncService,
     HookFailedError,
     VerificationFailed,
 )
-from src.orchestrator.issue import Issue
-from src.orchestrator.local_tracker.adapter import LocalTrackerAdapter
-from src.orchestrator.tracker import PullRequestRef
-from src.orchestrator.workspace import Workspace, WorkspaceConfig, WorkspaceManager
+from extensions.orchestrator.issue import Issue
+from extensions.orchestrator.local_tracker.adapter import LocalTrackerAdapter
+from extensions.orchestrator.tracker import PullRequestRef
+from extensions.orchestrator.workspace import Workspace, WorkspaceConfig, WorkspaceManager
 
 
 # ---------------------------------------------------------------------------

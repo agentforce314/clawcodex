@@ -6,17 +6,17 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.orchestrator.config.schema import AgentConfig, HooksConfig
-from src.orchestrator.git_sync import (
+from extensions.orchestrator.config.schema import AgentConfig, HooksConfig
+from extensions.orchestrator.git_sync import (
     GitSyncPostCommitError,
     GitSyncService,
     GitSyncError,
     HookFailedError,
     VerificationFailed,
 )
-from src.orchestrator.issue import Issue
-from src.orchestrator.tracker import PullRequestRef, TrackerAdapter
-from src.orchestrator.workspace import Workspace, WorkspaceConfig, WorkspaceManager
+from extensions.orchestrator.issue import Issue
+from extensions.orchestrator.tracker import PullRequestRef, TrackerAdapter
+from extensions.orchestrator.workspace import Workspace, WorkspaceConfig, WorkspaceManager
 
 
 def _git(args: list[str], cwd: Path) -> None:

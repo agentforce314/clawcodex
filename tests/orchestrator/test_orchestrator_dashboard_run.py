@@ -5,8 +5,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from src.orchestrator.linear.issue import Issue
-from src.orchestrator.status_dashboard import SessionStatus, StatusDashboard
+from extensions.orchestrator.linear.issue import Issue
+from extensions.orchestrator.status_dashboard import SessionStatus, StatusDashboard
 
 
 def make_mock_issues():

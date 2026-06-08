@@ -4,8 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.orchestrator.agent_runner import AgentSession
-from src.orchestrator.config.schema import (
+from extensions.orchestrator.agent_runner import AgentSession
+from extensions.orchestrator.config.schema import (
     AgentConfig,
     CodexConfig,
     PollingConfig,
@@ -13,16 +13,16 @@ from src.orchestrator.config.schema import (
     WorkflowConfig,
     WorkspaceConfig,
 )
-from src.orchestrator.git_sync import (
+from extensions.orchestrator.git_sync import (
     GitSyncPostCommitError,
     GitSyncResult,
     VerificationFailed,
 )
-from src.orchestrator.issue import Issue
+from extensions.orchestrator.issue import Issue
 from extensions.orchestrator.issue_registry import IssueStatus
-from src.orchestrator.orchestrator import Orchestrator
-from src.orchestrator.tracker import TrackerAdapter
-from src.orchestrator.workspace import Workspace, WorkspaceHookError, WorkspaceManager
+from extensions.orchestrator.orchestrator import Orchestrator
+from extensions.orchestrator.tracker import TrackerAdapter
+from extensions.orchestrator.workspace import Workspace, WorkspaceHookError, WorkspaceManager
 
 
 class _Tracker(TrackerAdapter):

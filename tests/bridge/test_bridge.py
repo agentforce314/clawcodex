@@ -5,13 +5,13 @@ import asyncio
 import time
 import unittest
 
-from src.services.bridge.auth import BridgeAuth, BridgeToken
-from src.services.bridge.session import (
+from clawcodex_ext.services.bridge.auth import BridgeAuth, BridgeToken
+from clawcodex_ext.services.bridge.session import (
     BridgeSession,
     BridgeSessionConfig,
     BridgeSessionState,
 )
-from src.services.bridge.transport import BridgeMessage, WebSocketTransport
+from clawcodex_ext.services.bridge.transport import BridgeMessage, WebSocketTransport
 
 
 class TestBridgeSession(unittest.TestCase):

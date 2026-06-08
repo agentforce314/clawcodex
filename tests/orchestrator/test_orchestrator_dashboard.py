@@ -13,8 +13,8 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
-from src.orchestrator.agent_runner import AgentRunner, AgentSession
-from src.orchestrator.config.schema import (
+from extensions.orchestrator.agent_runner import AgentRunner, AgentSession
+from extensions.orchestrator.config.schema import (
     AgentConfig,
     CodexConfig,
     PollingConfig,
@@ -22,11 +22,11 @@ from src.orchestrator.config.schema import (
     WorkflowConfig,
     WorkspaceConfig,
 )
-from src.orchestrator.linear.issue import Issue
-from src.orchestrator.orchestrator import Orchestrator
-from src.orchestrator.status_dashboard import SessionStatus, StatusDashboard
-from src.orchestrator.tracker import TrackerAdapter
-from src.orchestrator.workspace import Workspace, WorkspaceManager
+from extensions.orchestrator.linear.issue import Issue
+from extensions.orchestrator.orchestrator import Orchestrator
+from extensions.orchestrator.status_dashboard import SessionStatus, StatusDashboard
+from extensions.orchestrator.tracker import TrackerAdapter
+from extensions.orchestrator.workspace import Workspace, WorkspaceManager
 
 
 @dataclass

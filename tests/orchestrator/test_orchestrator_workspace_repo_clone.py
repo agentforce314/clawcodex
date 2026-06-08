@@ -6,7 +6,7 @@ import unittest
 from dataclasses import dataclass
 from pathlib import Path
 
-from src.orchestrator.workspace import WorkspaceManager, WorkspaceConfig
+from extensions.orchestrator.workspace import WorkspaceManager, WorkspaceConfig
 
 
 def _git(args: list[str], cwd: Path) -> None:

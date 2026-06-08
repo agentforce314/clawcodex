@@ -20,13 +20,13 @@ from .messages import (
     get_messages_after_boundary,
     is_compact_boundary_message,
 )
-from .service import CompactResult, compact_conversation
+
+# NOTE: service.py is intentionally NOT imported here to avoid a circular
+# import chain: compact_service.__init__ → service → services.compact.compact
+# → compact_service.messages. Import it directly when needed:
+#   from src.compact_service.service import compact_conversation
 
 __all__ = [
-    # — service —
-    "CompactResult",
-    "compact_conversation",
-    # — messages —
     "CompactBoundaryMetadata",
     "PreservedSegment",
     "annotate_boundary_with_preserved_segment",

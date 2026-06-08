@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.orchestrator.config.schema import WorkflowConfig
+from extensions.orchestrator.config.schema import WorkflowConfig
 from extensions.api.orchestration import OrchestrationSubsystem
 from extensions.orchestrator.cli.issue import _run_diff
 from extensions.orchestrator.issue_registry import IssueRegistry

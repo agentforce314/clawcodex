@@ -23,7 +23,7 @@ from src.tool_system.context import ToolContext
 from src.tool_system.errors import ToolInputError
 from src.tool_system.protocol import ToolResult
 
-from src.agent.tool_authoring import (
+from clawcodex_ext.agent.tool_authoring import (
     AgentToolSpec,
     ValidationError,
     create_and_validate,
