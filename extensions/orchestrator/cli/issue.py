@@ -41,6 +41,9 @@ from typing import Any
 # The attach module keeps the Textual import deferred so importing
 # this stays cheap.
 from extensions.orchestrator.cli.attach import _run_attach  # noqa: E402
+from extensions.orchestrator.cli.resume_session import (  # noqa: E402
+    _run_resume_session,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -299,6 +302,39 @@ def add_issue_parser(subparsers: argparse._SubParsersAction) -> None:
         required=True,
         metavar="ISSUE_ID",
         help="Issue identifier to resume",
+    )
+
+    # --- issue resume-session ---
+    # F-49 Phase 3: load the JSONL transcript written by the
+    # headless agent and rehydrate the LLM context (the
+    # orchestrator-side counterpart of `clawcodex --resume <run_id>`).
+    # This does NOT touch the control socket; the agent is unaffected.
+    resume_session_parser = issue_sub.add_parser(
+        "resume-session",
+        help="Rehydrate an orchestrator session's LLM context from disk",
+        description=(
+            "Look up the run_id for an issue in the IssueRegistry, "
+            "call Session.resume(run_id) to update bootstrap state, "
+            "and read the JSONL transcript written by the headless "
+            "agent. Prints a short summary of the rehydrated "
+            "Conversation. Use `issue attach --id X` to take over a "
+            "live run, or start a fresh REPL against the same "
+            "workspace to continue the conversation."
+        ),
+    )
+    resume_session_parser.add_argument(
+        "--id",
+        type=str,
+        default=None,
+        metavar="ISSUE_ID",
+        help="Issue identifier or ID (preferred)",
+    )
+    resume_session_parser.add_argument(
+        "--run",
+        type=str,
+        default=None,
+        metavar="RUN_ID",
+        help="Specific run_id (overrides the registry)",
     )
 
     # --- issue takeover ---
@@ -601,6 +637,8 @@ def run(args: argparse.Namespace) -> int:
         return _run_pause(args)
     elif cmd == "resume":
         return _run_resume(args)
+    elif cmd == "resume-session":
+        return _run_resume_session(registry_path, args)
     elif cmd == "takeover":
         return _run_takeover(args)
     elif cmd == "clarify":
