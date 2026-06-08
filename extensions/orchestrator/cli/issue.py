@@ -44,6 +44,9 @@ from extensions.orchestrator.cli.attach import _run_attach  # noqa: E402
 from extensions.orchestrator.cli.resume_session import (  # noqa: E402
     _run_resume_session,
 )
+from extensions.orchestrator.cli.takeover import (  # noqa: E402,F401
+    _run_takeover,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -338,19 +341,50 @@ def add_issue_parser(subparsers: argparse._SubParsersAction) -> None:
     )
 
     # --- issue takeover ---
+    # F-49: aligned to the Phase 1 control-socket protocol. Sends
+    # pause + takeover over the socket, then spawns a --resume REPL
+    # against the same transcript.jsonl. ``--id`` is preferred;
+    # ``--run`` + ``--workspace`` is a fallback when the registry
+    # is unavailable.
     takeover_parser = issue_sub.add_parser(
         "takeover",
-        help="Take over an issue manually (terminate agent + start REPL)",
-        description="Stop the running agent and start an interactive clawcodex REPL "
-                    "in the issue's workspace directory for manual intervention. "
-                    "Idempotent: if the issue has no running agent, shows a warning.",
+        help="Take over an issue manually (pause agent + start REPL)",
+        description=(
+            "Pause the running agent via the control socket and "
+            "start an interactive clawcodex REPL with "
+            "--resume <run_id> in the issue's workspace. The REPL "
+            "writes to the same transcript.jsonl the headless "
+            "agent used, so the operator's takeover continues the "
+            "LLM context. Idempotent: if the agent has already "
+            "ended, the REPL loads the on-disk transcript "
+            "directly. The headless task is paused, not killed — "
+            "use `clawcodex orchestrator issue attach --id "
+            "<issue>` to send 'resume' after the REPL exits."
+        ),
     )
     takeover_parser.add_argument(
         "--id",
         type=str,
-        required=True,
+        default=None,
         metavar="ISSUE_ID",
-        help="Issue identifier to take over",
+        help="Issue identifier or ID (preferred)",
+    )
+    takeover_parser.add_argument(
+        "--run",
+        type=str,
+        default=None,
+        metavar="RUN_ID",
+        help="Specific run_id (overrides the registry)",
+    )
+    takeover_parser.add_argument(
+        "--workspace",
+        type=str,
+        default=None,
+        metavar="WORKSPACE",
+        help=(
+            "Workspace path (overrides the registry; "
+            "required for --run)"
+        ),
     )
 
     # --- issue clarify ---
@@ -640,7 +674,7 @@ def run(args: argparse.Namespace) -> int:
     elif cmd == "resume-session":
         return _run_resume_session(registry_path, args)
     elif cmd == "takeover":
-        return _run_takeover(args)
+        return _run_takeover(registry_path, ws, args)
     elif cmd == "clarify":
         return _run_clarify(args)
     elif cmd == "inject":
@@ -1237,75 +1271,6 @@ def _run_resume(args: argparse.Namespace) -> int:
         return 2
     print(f"Issue resume: sending resume command for {issue_id}")
     return _write_control("resume", issue_id)
-
-
-# ---------------------------------------------------------------------------
-# issue takeover
-# ---------------------------------------------------------------------------
-
-def _run_takeover(args: argparse.Namespace) -> int:
-    """Take over an issue (terminate + start REPL)."""
-    issue_id = getattr(args, "id", None)
-    if not issue_id:
-        print("error: --id is required", file=sys.stderr)
-        return 2
-
-    import os
-    import subprocess
-    from pathlib import Path
-
-    # Resolve workspace path
-    workspace_root = os.environ.get("CLAWCODEX_WORKSPACE_ROOT")
-    if workspace_root:
-        base = Path(workspace_root)
-    else:
-        base = Path.home() / ".clawcodex" / "workspace"
-
-    workspace_path = None
-    if base.exists():
-        for wd in base.iterdir():
-            if wd.is_dir():
-                metadata = wd / ".metadata"
-                if metadata.exists():
-                    import json
-                    try:
-                        m = json.loads(metadata.read_text())
-                        if m.get("issue_id") == issue_id:
-                            workspace_path = wd
-                            break
-                    except Exception:
-                        pass
-
-    if workspace_path is None:
-        print(
-            f"Could not find workspace for issue {issue_id}.\n"
-            "Cannot takeover — issue may not be active.",
-            file=sys.stderr,
-        )
-        return 1
-
-    # Send stop control
-    _write_control("stop", issue_id)
-
-    print(
-        f"[takeover] Stopping agent for issue {issue_id}...\n"
-        f"Starting REPL in workspace: {workspace_path}\n"
-        f"Type /done when finished to commit and push.",
-        file=sys.stderr,
-    )
-
-    env = os.environ.copy()
-    env["CLAWCODEX_WORKSPACE"] = str(workspace_path)
-    try:
-        subprocess.run(
-            ["python3", "-m", "src.cli", "--workspace", str(workspace_path)],
-            cwd=str(workspace_path),
-            env=env,
-        )
-    except Exception as exc:
-        print(f"[takeover] Failed to start REPL: {exc}", file=sys.stderr)
-        return 1
-    return 0
 
 
 # ---------------------------------------------------------------------------
