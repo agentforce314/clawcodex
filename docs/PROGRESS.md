@@ -113,6 +113,8 @@
 | F-67 | Buddy 伴侣 / Proactive 自主模式 | P2 | ⏳ 待开始 | 对标 CCB Buddy 伴侣系统 + Proactive 自主模式。后台 AI 伴侣异步观察会话、主动提供调试建议、检测文件变更自动提出优化。预计 2 周。 |
 | F-68 | Orchestrator CLI 运维操作界面 | P2 | ⏳ 待开始 | issue/wf 管理、状态查看、dashboard 渲染；见 FEATURE_PLAN §3.2（F-68） |
 | F-75 | 工具/Skill 调用统计（跨会话） | P2 | ⏳ 待开始 | 跨会话工具使用统计与策略优化；见 FEATURE_PLAN §4.8（F-75） |
+| F-81 | Native 原生模块系统（Python） | P1 | ⏳ 待开始 | 对标 CCB Rust/NAPI 原生模块，用纯 Python 等价实现音频捕获(sounddevice)、图像差异对比(Pillow+NumPy)、URL Scheme注册(webbrowser+xdg)、修饰键检测。F-61/F-64 前置依赖。预计 1 周。 |
+| F-82 | Remote Control Server 远程控制 | P1 | ⏳ 待开始 | 对标 CCB remote-control-server。FastAPI 实现：会话管理、Worker 调度/心跳/长轮询、SSE/WebSocket 事件流、ACP 中继、环境管理、Web 管理面板。预计 3-4 周。 |
 | F-78 | Issue 语义澄清流程（自主模式扩展） | P1 | ⏳ 待开始 | 三通道语义澄清（LLM/CLI/TUI），冲突裁决，离线澄清；见 FEATURE_PLAN §4.12（F-78） |
 | F-80 | Agent 间自主观察与消息交互 | P2 | ⏳ 待开始 | Agent 间自主观察汇报、SendMessage 消息交互、Manager-Worker 协作增强；见 FEATURE_PLAN §4.14（F-80） |
 
@@ -1310,6 +1312,39 @@ CCB 还具备但 ClawCodex 缺失的：
 
 **估算总工时**: 2 周
 
+### F-81: Native 原生模块系统（Python 可实现部分）
+
+**状态**: ⏳ 待开始 | **优先级**: P1 | **对标**: CCB audio-capture-napi / color-diff-napi / image-processor-napi / url-handler-napi
+
+| 编号 | 子特性 | 状态 | 预计工作量 |
+|:----:|--------|:----:|:----------:|
+| P81-A | Native 模块注册表与懒加载基础设施 | ⏳ 待开始 | 2-3天 |
+| P81-B | 麦克风音频捕获（pyaudio, F-64 前置） | ⏳ 待开始 | 3-5天 |
+| P81-C | 截图差异对比 + 图像处理（Pillow+NumPy, F-61 前置） | ⏳ 待开始 | 2-3天 |
+| P81-D | OS URL Scheme 注册（webbrowser + xdg-utils） | ⏳ 待开始 | 2-3天 |
+| P81-E | 键盘修饰键检测（pynput, 辅助 F-61） | ⏳ 待开始 | 2-3天 |
+
+**依赖**: `pyaudio`, `Pillow`, `numpy`, `pynput`（均为可选依赖，缺失时降级）
+**估算总工时**: 1 周
+
+### F-82: Remote Control Server 远程控制服务
+
+**状态**: ⏳ 待开始 | **优先级**: P1 | **对标**: CCB remote-control-server
+
+| 编号 | 子特性 | 状态 | 预计工作量 |
+|:----:|--------|:----:|:----------:|
+| P82-A | FastAPI 核心基础设施 + 配置 + 生命周期 | ⏳ 待开始 | 3-5天 |
+| P82-B | 认证系统（API Key / JWT / CORS 中间件） | ⏳ 待开始 | 2-3天 |
+| P82-C | 会话管理 API（CRUD / List 路由） | ⏳ 待开始 | 3-5天 |
+| P82-D | Worker 注册/心跳/长轮询工作分发 | ⏳ 待开始 | 5-7天 |
+| P82-E | SSE/WebSocket 事件流推送 | ⏳ 待开始 | 3-5天 |
+| P82-F | 环境管理与多机器部署 | ⏳ 待开始 | 3-5天 |
+| P82-G | ACP 协议中继桥接 | ⏳ 待开始 | 3-5天 |
+| P82-H | Web 管理面板（Jinja2 或 React） | ⏳ 待开始 | 5-7天 |
+
+**依赖**: `fastapi` + `uvicorn`, `PyJWT`/`python-jose`, `sqlalchemy`/`aiosqlite`, `websockets`, `httpx`
+**估算总工时**: 3-4 周
+
 ### CCB 对标实施总览
 
 | 编号 | 特性 | 优先级 | 对标级别 | 状态 | 工时估算 |
@@ -1322,16 +1357,18 @@ CCB 还具备但 ClawCodex 缺失的：
 | F-65 | Langfuse 可观测性 | P1 | 🟡 重要缺口 | ⏳ 待开始 | 1周 |
 | F-66 | ACP 协议支持 | P2 | 🟢 增强体验 | ⏳ 待开始 | 1-2周 |
 | F-67 | Buddy / Proactive | P2 | 🟢 增强体验 | ⏳ 待开始 | 2周 |
+| F-81 | Native 原生模块（Python） | P1 | 🟡 重要缺口 | ⏳ 待开始 | 1周 |
+| F-82 | Remote Control Server | P1 | 🟡 重要缺口 | ⏳ 待开始 | 3-4周 |
 
 ### 实施建议顺序
 
 ```
-F-60 (Pipe IPC) ──→ F-61 (Computer Use) ──→ F-63 (Channels) ──→ F-62 (Chrome) ──→ F-65 (Langfuse) ──→ F-64 (Voice) + F-66 (ACP) + F-67 (Buddy)
-   ↑ 架构基础          ↑ 高频交互              ↑ 团队协作               ↑ 自动化             ↑ 可观测性           ↑ 体验增强
-   P0                  P0                      P1                       P1                  P1                   P2
+F-60 (Pipe IPC) ──→ F-61 (Computer Use) ──→ F-63 (Channels) ──→ F-62 (Chrome) ──→ F-65 (Langfuse) ──→ F-81 (Native) ──→ F-82 (RCS) ──→ F-64 (Voice) + F-66 (ACP) + F-67 (Buddy)
+   ↑ 架构基础          ↑ 高频交互              ↑ 团队协作               ↑ 自动化             ↑ 可观测性           ↑ F-61/F-64 前置      ↑ 远程管理              ↑ 体验增强
+   P0                  P0                      P1                       P1                  P1                   P1                   P1                      P2
 ```
 
-> **建议**: F-60（Pipe IPC）和 F-61（Computer Use）为 P0 级特性，建议优先实施。F-63（Channels）和 F-65（Langfuse）可在中期并行开发。F-64/F-66/F-67 为长期迭代方向。
+> **建议**: F-60（Pipe IPC）和 F-61（Computer Use）为 P0 级特性，建议优先实施。F-81（Native 模块）是 F-61 和 F-64 的前置依赖，建议与 F-61 并行开发。F-82（RCS）和 F-63（Channels）配合可提供完整的远程团队协作体验。F-64/F-66/F-67 为长期迭代方向。
 
 ---
 

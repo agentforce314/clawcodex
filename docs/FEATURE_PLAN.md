@@ -5875,6 +5875,505 @@ def build_buddy_tools(buddy: ClawCodexBuddy) -> list[Tool]:
 - `watchdog`（文件系统变更监听）
 - 可选：`safety` / `bandit`（安全扫描，Proactive 模式用）
 
+### F-81: Native 原生模块系统（Python 可实现部分）
+
+#### 背景
+
+CCB 使用 5 个 Rust/NAPI 原生模块处理性能敏感操作。clawcodex 作为 Python 项目，应在不引入 Rust 编译链的前提下，用纯 Python / C扩展 等价实现这些模块的核心功能。
+
+| CCB 模块 | 原始语言 | Python 替代方案 | 可行性 |
+|----------|:--------:|-----------------|:------:|
+| `audio-capture-napi` | Rust/NAPI | `pyaudio` / `sounddevice` + `webrtcvad` VAD 检测 | ✅ 完全可行 |
+| `color-diff-napi` | Rust/NAPI | `PIL.ImageChops.difference` + NumPy `mean_squared_error` | ✅ 完全可行 |
+| `image-processor-napi` | Rust/NAPI | `Pillow` (crop/resize/encode/decode) | ✅ 完全可行 |
+| `modifiers-napi` | Rust/NAPI | `pynput` / `evdev`（键盘修饰键状态检测） | ⚠️ 部分可行（Linux evdev 需 root） |
+| `url-handler-napi` | Rust/NAPI | `webbrowser` + `xdg-open` / `desktop-entry` | ✅ 完全可行 |
+
+#### 子特性分解
+
+| 子特性 | 说明 | 优先级 |
+|--------|------|:------:|
+| F-81.1 | `clawcodex_ext/native/__init__.py` — 统一的原生模块注册表与懒加载基础设施 | P0 |
+| F-81.2 | `clawcodex_ext/native/audio.py` — 麦克风音频捕获（前置 F-64 Voice Mode） | P0 |
+| F-81.3 | `clawcodex_ext/native/image.py` — 截图差异对比与图像处理（前置 F-61 Computer Use） | P0 |
+| F-81.4 | `clawcodex_ext/native/url_handler.py` — OS URL Scheme 注册（`clawcodex://`） | P1 |
+| F-81.5 | `clawcodex_ext/native/modifiers.py` — 键盘修饰键检测（辅助 F-61） | P1 |
+| F-81.6 | fallback 策略：当可选依赖缺失时降级为纯 Python 兜底 | P2 |
+
+#### 架构设计
+
+```
+clawcodex_ext/native/
+├── __init__.py          # NativeModuleRegistry + lazy loader
+├── audio.py             # 音频捕获（pyaudio/sounddevice）
+├── image.py             # 图像差异对比 + 处理（Pillow + NumPy）
+├── url_handler.py       # URL Scheme 注册（webbrowser + xdg-utils）
+└── modifiers.py         # 键盘修饰键检测（pynput/evdev）
+```
+
+```python
+# clawcodex_ext/native/__init__.py
+import importlib
+from typing import Any, Protocol
+
+class NativeModule(Protocol):
+    name: str
+    def is_available(self) -> bool: ...
+    def get_version(self) -> str: ...
+
+class NativeModuleRegistry:
+    """统一的原生模块注册表，懒加载 + 降级检查。"""
+    _modules: dict[str, type[NativeModule]] = {}
+
+    @classmethod
+    def register(cls, name: str, mod_cls: type[NativeModule]) -> None:
+        cls._modules[name] = mod_cls
+
+    @classmethod
+    def load(cls, name: str) -> NativeModule | None:
+        """加载目标模块，缺失依赖时返回 None（调用方降级）。"""
+        mod_cls = cls._modules.get(name)
+        if mod_cls is None:
+            return None
+        try:
+            instance = mod_cls()
+            if instance.is_available():
+                return instance
+        except ImportError:
+            pass
+        return None
+```
+
+#### 音频捕获模块
+
+```python
+# clawcodex_ext/native/audio.py
+import io
+import wave
+from typing import AsyncIterator
+
+class AudioCaptureModule:
+    name = "audio_capture"
+
+    def is_available(self) -> bool:
+        try:
+            import pyaudio  # noqa: F401
+            return True
+        except ImportError:
+            return False
+
+    def get_version(self) -> str:
+        return "1.0 (pyaudio)"
+
+    async def record(
+        self,
+        duration_sec: float = 5.0,
+        sample_rate: int = 16000,
+        channels: int = 1,
+    ) -> bytes:
+        """录制麦克风音频，返回 WAV 字节。"""
+        import pyaudio
+        p = pyaudio.PyAudio()
+        stream = p.open(
+            format=pyaudio.paInt16,
+            channels=channels,
+            rate=sample_rate,
+            input=True,
+            frames_per_buffer=1024,
+        )
+        frames = []
+        for _ in range(int(sample_rate / 1024 * duration_sec)):
+            data = stream.read(1024)
+            frames.append(data)
+        stream.stop_stream()
+        stream.close()
+        p.terminate()
+
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf:
+            wf.setnchannels(channels)
+            wf.setsampwidth(2)
+            wf.setframerate(sample_rate)
+            wf.writeframes(b"".join(frames))
+        return buf.getvalue()
+
+    async def stream(self) -> AsyncIterator[bytes]:
+        """实时音频流（VAD 检测后输出片段）。"""
+        import pyaudio
+        p = pyaudio.PyAudio()
+        stream = p.open(
+            format=pyaudio.paInt16,
+            channels=1,
+            rate=16000,
+            input=True,
+            frames_per_buffer=1024,
+        )
+        try:
+            while True:
+                data = stream.read(1024)
+                yield data
+        finally:
+            stream.stop_stream()
+            stream.close()
+            p.terminate()
+```
+
+#### 图像差异对比模块
+
+```python
+# clawcodex_ext/native/image.py
+import numpy as np
+from PIL import Image
+
+class ImageProcessorModule:
+    name = "image_processor"
+
+    def is_available(self) -> bool:
+        try:
+            import PIL  # noqa: F401
+            import numpy  # noqa: F401
+            return True
+        except ImportError:
+            return False
+
+    def get_version(self) -> str:
+        return "1.0 (Pillow + NumPy)"
+
+    def compute_diff(self, img1_path: str, img2_path: str) -> float:
+        """计算两张截图的像素差异比率 (0.0 ~ 1.0)。"""
+        im1 = Image.open(img1_path).convert("RGB")
+        im2 = Image.open(img2_path).convert("RGB")
+        arr1 = np.array(im1, dtype=np.float32)
+        arr2 = np.array(im2, dtype=np.float32)
+        diff = np.mean((arr1 - arr2) ** 2)
+        return float(diff / (255.0 ** 2))
+
+    def crop_and_resize(
+        self, image_path: str, box: tuple[int, int, int, int],
+        size: tuple[int, int] | None = None,
+        output_path: str | None = None,
+    ) -> bytes:
+        """裁剪并缩放截图。"""
+        im = Image.open(image_path)
+        cropped = im.crop(box)
+        if size:
+            cropped = cropped.resize(size, Image.LANCZOS)
+        if output_path:
+            cropped.save(output_path, "JPEG", quality=85)
+        buf = io.BytesIO()
+        cropped.save(buf, "JPEG", quality=85)
+        return buf.getvalue()
+```
+
+#### URL Handler 模块
+
+```python
+# clawcodex_ext/native/url_handler.py
+import os
+import shutil
+import webbrowser
+from pathlib import Path
+
+class UrlHandlerModule:
+    name = "url_handler"
+
+    def is_available(self) -> bool:
+        return True  # webbrowser 是标准库
+
+    def get_version(self) -> str:
+        return "1.0 (stdlib)"
+
+    def register_protocol(self, protocol: str = "clawcodex") -> bool:
+        """注册 clawcodex:// URL Scheme（按 OS 平台）。"""
+        import sys
+        if sys.platform == "linux":
+            desktop_file = Path.home() / ".local/share/applications"
+            desktop_file.mkdir(parents=True, exist_ok=True)
+            desktop_entry = desktop_file / f"{protocol}-handler.desktop"
+            desktop_entry.write_text(
+                f"[Desktop Entry]\n"
+                f"Type=Application\n"
+                f"Name=ClawCodex\n"
+                f"Exec=clawcodex %u\n"
+                f"MimeType=x-scheme-handler/{protocol};\n"
+            )
+            os.system(f"xdg-mime default {protocol}-handler.desktop x-scheme-handler/{protocol}")
+            return True
+        elif sys.platform == "darwin":
+            # macOS: use open -b or URL event registration
+            return False  # 需要原生代码
+        elif sys.platform == "win32":
+            # Windows: reg add HKEY_CLASSES_ROOT\clawcodex
+            return False  # 需要原生代码
+        return False
+
+    def open_url(self, url: str) -> bool:
+        """打开 clawcodex:// URL（启动本地实例）。"""
+        return webbrowser.open(url)
+```
+
+#### 依赖
+
+- `pyaudio`（音频捕获，可选）
+- `Pillow` + `numpy`（图像处理，可选）
+- `pynput`（修饰键检测，可选，Linux 需 `evdev`）
+- 均为 optional-dependencies，缺失时模块 `is_available()` 返回 False
+
+---
+
+### F-82: Remote Control Server 远程控制服务
+
+#### 背景
+
+CCB 的 `remote-control-server` 是一个全功能 Web 服务 + Web 管理面板，提供远程会话管理、Worker 调度、环境管理、事件流推送和 ACP 协议中继。clawcodex 当前 `src/server/` 和 `src/remote/` 仅为空占位符。
+
+#### 子特性分解
+
+| 子特性 | 说明 | 优先级 |
+|--------|------|:------:|
+| F-82.1 | RCS 核心基础设施：FastAPI 应用 + asyncio 事件循环 + 配置加载 + 日志 | P0 |
+| F-82.2 | 认证系统：API Key / JWT / CORS 中间件 | P0 |
+| F-82.3 | 会话管理 API：会话 CRUD、List、详情 | P0 |
+| F-82.4 | Worker 注册与调度：心跳检测、长轮询工作分发、断线检测 | P0 |
+| F-82.5 | 事件流推送：SSE 流 + WebSocket 双通道 | P1 |
+| F-82.6 | 环境管理：多机器部署、测试环境管理 | P1 |
+| F-82.7 | ACP 协议中继：WebSocket/SSE 双向 ACP 桥接 | P1 |
+| F-82.8 | 会话入口：从 RCS 远程发起新会话 | P1 |
+| F-82.9 | Web 管理面板：React 前端或 Jinja2 简单面板 | P2 |
+
+#### 架构设计
+
+```
+src/remote_control/
+├── __init__.py            # 包初始化 + 版本
+├── config.py              # 配置加载（端口、auth、数据库）
+├── app.py                 # FastAPI 应用工厂 + 生命周期
+├── auth/
+│   ├── __init__.py
+│   ├── api_key.py         # API Key 验证中间件
+│   ├── jwt.py             # JWT 签发与验证
+│   ├── cors.py            # CORS 配置
+│   └── middleware.py      # 认证中间件（统一入口）
+├── routes/
+│   ├── __init__.py
+│   ├── sessions.py        # 会话 CRUD (v1)
+│   ├── workers.py         # Worker 注册/心跳/分发
+│   ├── events.py          # SSE 事件流
+│   ├── environments.py    # 环境管理
+│   ├── session_ingress.py # 远程会话启动
+│   └── web/               # Web 面板后端 API
+│       ├── __init__.py
+│       ├── control.py     # 控制台 API
+│       ├── sessions.py    # 会话列表 API
+│       └── auth.py        # 登录/登出
+├── services/
+│   ├── __init__.py
+│   ├── work_dispatch.py   # Worker 工作分发逻辑
+│   ├── store.py           # 内存/数据库存储抽象
+│   └── automation_state.py# Worker 自动化状态跟踪
+├── transport/
+│   ├── __init__.py
+│   ├── ws_handler.py      # WebSocket 处理器
+│   ├── sse_writer.py      # SSE 写入器
+│   ├── event_bus.py       # 内存事件总线（pub/sub）
+│   └── acp_relay.py       # ACP 协议中继桥接
+├── storage/
+│   ├── __init__.py
+│   ├── memory.py          # 内存存储（默认）
+│   └── sqlite.py          # SQLite 持久化（可选）
+└── web_frontend/          # Web 管理面板静态资源
+    ├── index.html         # 简单 Jinja2 模板（P2 可替换为 React）
+    └── static/
+        ├── app.js
+        └── style.css
+```
+
+#### 核心数据模型
+
+```python
+# src/remote_control/models.py
+from dataclasses import dataclass, field
+from datetime import datetime
+from enum import Enum
+from typing import Any, Optional
+
+class WorkerStatus(Enum):
+    ONLINE = "online"
+    OFFLINE = "offline"
+    BUSY = "busy"
+    ERROR = "error"
+
+@dataclass
+class RemoteSession:
+    id: str
+    status: str  # "running" | "paused" | "completed" | "error"
+    created_at: datetime = field(default_factory=datetime.utcnow)
+    updated_at: datetime = field(default_factory=datetime.utcnow)
+    worker_id: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+@dataclass
+class Worker:
+    id: str
+    name: str
+    status: WorkerStatus = WorkerStatus.OFFLINE
+    last_heartbeat: datetime | None = None
+    labels: dict[str, str] = field(default_factory=dict)
+    current_session_id: str | None = None
+
+@dataclass
+class Environment:
+    id: str
+    name: str
+    host: str
+    port: int
+    api_key: str
+    labels: dict[str, str] = field(default_factory=dict)
+    created_at: datetime = field(default_factory=datetime.utcnow)
+```
+
+#### 认证中间件
+
+```python
+# src/remote_control/auth/middleware.py
+import hmac
+from fastapi import Request, HTTPException
+from starlette.status import HTTP_401_UNAUTHORIZED
+
+async def verify_api_key(request: Request, api_key: str) -> bool:
+    """验证 API Key（恒定时间比较防时序攻击）。"""
+    config = request.app.state.config
+    stored = config.api_keys.get(api_key[:8])  # key_id 前缀
+    if stored is None:
+        return False
+    return hmac.compare_digest(api_key, stored)
+
+async def auth_middleware(request: Request, call_next):
+    """统一认证中间件（API Key + JWT 双通道）。"""
+    if request.url.path.startswith("/web/"):
+        # Web 面板走 JWT Cookie
+        token = request.cookies.get("access_token")
+        if not token:
+            raise HTTPException(status_code=HTTP_401_UNAUTHORIZED)
+        payload = verify_jwt(token, request.app.state.config.jwt_secret)
+        request.state.user = payload
+    elif request.url.path.startswith("/api/"):
+        # API 走 X-API-Key Header
+        api_key = request.headers.get("X-API-Key")
+        if not api_key or not await verify_api_key(request, api_key):
+            raise HTTPException(status_code=HTTP_401_UNAUTHORIZED)
+    return await call_next(request)
+```
+
+#### Worker 调度与长轮询
+
+```python
+# src/remote_control/services/work_dispatch.py
+import asyncio
+from datetime import datetime, timedelta
+
+class WorkDispatcher:
+    """Worker 工作分发引擎，支持长轮询。"""
+
+    def __init__(self, store):
+        self._store = store
+        self._pending: dict[str, asyncio.Event] = {}  # worker_id → wait event
+
+    async def register_worker(self, worker: Worker) -> None:
+        """注册 Worker 并记录心跳。"""
+        worker.status = WorkerStatus.ONLINE
+        worker.last_heartbeat = datetime.utcnow()
+        await self._store.save_worker(worker)
+
+    async def wait_for_work(self, worker_id: str, timeout: int = 30):
+        """长轮询等待分配工作（SSE 或轮询）。"""
+        event = asyncio.Event()
+        self._pending[worker_id] = event
+        try:
+            await asyncio.wait_for(event.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            return None  # 超时返回空
+        finally:
+            self._pending.pop(worker_id, None)
+        return await self._store.pop_pending_job(worker_id)
+
+    async def dispatch_work(self, job: Job) -> str | None:
+        """将工作分发给空闲 Worker。"""
+        workers = await self._store.get_idle_workers(job.labels)
+        if not workers:
+            return None
+        target = workers[0]
+        await self._store.assign_job(job.id, target.id)
+        # 唤醒长轮询
+        event = self._pending.get(target.id)
+        if event:
+            event.set()
+        return target.id
+
+    async def check_heartbeats(self, timeout_sec: int = 60):
+        """定期检查心跳，标记失联 Worker。"""
+        threshold = datetime.utcnow() - timedelta(seconds=timeout_sec)
+        for worker in await self._store.get_all_workers():
+            if worker.last_heartbeat and worker.last_heartbeat < threshold:
+                worker.status = WorkerStatus.OFFLINE
+                await self._store.save_worker(worker)
+```
+
+#### FastAPI 应用工厂
+
+```python
+# src/remote_control/app.py
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """应用生命周期：启动/关闭。"""
+    # 启动后台心跳检查任务
+    task = asyncio.create_task(
+        app.state.dispatcher.check_heartbeats()
+    )
+    yield
+    task.cancel()
+
+def create_app(config: RCSConfig) -> FastAPI:
+    app = FastAPI(title="ClawCodex RCS", lifespan=lifespan)
+    app.state.config = config
+    app.state.store = create_store(config)
+    app.state.dispatcher = WorkDispatcher(app.state.store)
+    app.state.event_bus = EventBus()
+
+    # CORS
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=config.allowed_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    # 认证中间件
+    app.middleware("http")(auth_middleware)
+
+    # 注册路由
+    from .routes import sessions, workers, events, environments
+    app.include_router(sessions.router, prefix="/api/v1")
+    app.include_router(workers.router, prefix="/api/v1")
+    app.include_router(events.router, prefix="/api/v1")
+    app.include_router(environments.router, prefix="/api/v1")
+
+    return app
+```
+
+#### 依赖
+
+- `fastapi` + `uvicorn`（Web 框架）
+- `PyJWT` / `python-jose`（JWT 认证）
+- `sqlalchemy` / `aiosqlite`（持久化，可选）
+- `websockets`（WebSocket 传输，可选）
+- `httpx`（HTTP 客户端与 ACP 中继）
+
 ---
 
 ### CCB 对标实施总览
@@ -5889,16 +6388,18 @@ def build_buddy_tools(buddy: ClawCodexBuddy) -> list[Tool]:
 | F-65 | Langfuse 可观测性 | P1 | 🟡 重要缺口 | ⏳ 待开始 | 1周 |
 | F-66 | ACP 协议支持 | P2 | 🟢 增强体验 | ⏳ 待开始 | 1-2周 |
 | F-67 | Buddy / Proactive | P2 | 🟢 增强体验 | ⏳ 待开始 | 2周 |
+| F-81 | Native 原生模块（Python） | P1 | 🟡 重要缺口 | ⏳ 待开始 | 1周 |
+| F-82 | Remote Control Server | P1 | 🟡 重要缺口 | ⏳ 待开始 | 3-4周 |
 
 ### 实施建议顺序
 
 ```
-F-60 (Pipe IPC) ──→ F-61 (Computer Use) ──→ F-63 (Channels) ──→ F-62 (Chrome) ──→ F-65 (Langfuse) ──→ F-64 (Voice) + F-66 (ACP) + F-67 (Buddy)
-   ↑ 架构基础          ↑ 高频交互              ↑ 团队协作               ↑ 自动化             ↑ 可观测性           ↑ 体验增强
-   P0                  P0                      P1                       P1                  P1                   P2
+F-60 (Pipe IPC) ──→ F-61 (Computer Use) ──→ F-63 (Channels) ──→ F-62 (Chrome) ──→ F-65 (Langfuse) ──→ F-81 (Native) ──→ F-82 (RCS) ──→ F-64 (Voice) + F-66 (ACP) + F-67 (Buddy)
+   ↑ 架构基础          ↑ 高频交互              ↑ 团队协作               ↑ 自动化             ↑ 可观测性           ↑ F-61/F-64 前置      ↑ 远程管理              ↑ 体验增强
+   P0                  P0                      P1                       P1                  P1                   P1                   P1                      P2
 ```
 
-> **建议**: F-60（Pipe IPC）和 F-61（Computer Use）为 P0 级特性，建议优先实施。F-63（Channels）和 F-65（Langfuse）可在中期并行开发。F-64/F-66/F-67 为长期迭代方向。
+> **建议**: F-60（Pipe IPC）和 F-61（Computer Use）为 P0 级特性，建议优先实施。F-81（Native 模块）是 F-61 和 F-64 的前置依赖，建议与 F-61 并行开发。F-82（RCS）和 F-63（Channels）配合可提供完整的远程团队协作体验。F-64/F-66/F-67 为长期迭代方向。
 
 ---
 
