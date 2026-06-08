@@ -1,7 +1,7 @@
 diff --git a/tui/__init__.py b/tui/__init__.py
---- a/tui/__init__.py	2026-06-08 06:13:57.000000 +0000
-+++ b/tui/__init__.py	2026-06-08 09:36:04.035956 +0000
-@@ -1,32 +1,20 @@
+--- a/tui/__init__.py	2026-06-08 10:57:28.253749 +0000
++++ b/tui/__init__.py	2026-06-08 10:56:48.752851 +0000
+@@ -1,25 +1,6 @@
 -"""Textual-based interactive TUI for Claw Codex.
 -
 -Phase 11 of the CLI/REPL/terminal-UI refactor. This package mirrors the
@@ -13,7 +13,8 @@ diff --git a/tui/__init__.py b/tui/__init__.py
 -Public entry point: :func:`src.entrypoints.tui.run_tui`. This package deliberately
 -contains *no* import of ``src.repl.core`` (the legacy Rich REPL) so the two
 -interactive stacks can evolve independently.
--"""
++"""Facade — tui/__init__.py has been moved to clawcodex_ext (lazy proxy).
+ """
 -
 -from .app import ClawCodexTUI
 -from .messages import (
@@ -24,29 +25,14 @@ diff --git a/tui/__init__.py b/tui/__init__.py
 -    AssistantMessage,
 -    ToolEventMessage,
 -)
--
--__all__ = [
--    "ClawCodexTUI",
--    "AdvisorEventMessage",
--    "AgentRunFinished",
--    "AgentRunStarted",
--    "AssistantChunk",
--    "AssistantMessage",
--    "ToolEventMessage",
--]
-+"""Facade — tui/__init__.py has been moved to clawcodex_ext (lazy proxy).
-+"""
 +from __future__ import annotations
-+
-+__all__ = [
-+    "ClawCodexTUI",
-+    "AdvisorEventMessage",
-+    "AgentRunFinished",
-+    "AgentRunStarted",
-+    "AssistantChunk",
-+    "AssistantMessage",
-+    "ToolEventMessage",
-+]
+ 
+ __all__ = [
+     "ClawCodexTUI",
+@@ -30,3 +11,10 @@
+     "AssistantMessage",
+     "ToolEventMessage",
+ ]
 +
 +
 +def __getattr__(name: str):

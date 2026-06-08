@@ -1,6 +1,6 @@
 diff --git a/command_system/buddy_command.py b/command_system/buddy_command.py
---- a/command_system/buddy_command.py	2026-06-08 06:13:57.000000 +0000
-+++ b/command_system/buddy_command.py	2026-06-08 09:35:57.313675 +0000
+--- a/command_system/buddy_command.py	2026-06-08 10:57:22.152220 +0000
++++ b/command_system/buddy_command.py	2026-06-08 10:56:43.191188 +0000
 @@ -1,194 +1,17 @@
 -"""``/buddy`` command — hatch / pet / status / mute / unmute / help.
 -
@@ -27,9 +27,10 @@ diff --git a/command_system/buddy_command.py b/command_system/buddy_command.py
 -snake_case mirror of TS's transient AppState field ``companionPetAt``).
 -A future Textual sprite reads this for the heart-burst animation. See
 -plan §1.3.
--"""
--from __future__ import annotations
--
++"""Facade — command_system/buddy_command.py has been moved to clawcodex_ext (lazy proxy).
+ """
+ from __future__ import annotations
+ 
 -import time
 -from typing import Sequence
 -
@@ -190,20 +191,14 @@ diff --git a/command_system/buddy_command.py b/command_system/buddy_command.py
 -    return is_buddy_enabled()
 -
 -
--__all__ = [
+ __all__ = [
 -    'BUDDY_COMMAND',
 -    'PET_REACTIONS',
 -    'buddy_command_call',
 -    'is_buddy_command_enabled',
--]
-+"""Facade — command_system/buddy_command.py has been moved to clawcodex_ext (lazy proxy).
-+"""
-+from __future__ import annotations
-+
-+__all__ = [
 +    "buddy_command_call",
 +    "is_buddy_command_enabled",
-+]
+ ]
 +
 +
 +def __getattr__(name: str):

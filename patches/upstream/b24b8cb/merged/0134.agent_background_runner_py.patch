@@ -1,7 +1,7 @@
 diff --git a/agent/background_runner.py b/agent/background_runner.py
 new file mode 100644
 --- /dev/null
-+++ b/agent/background_runner.py	2026-06-08 00:47:43.164268 +0000
++++ b/agent/background_runner.py	2026-06-08 11:45:19.036664 +0000
 @@ -0,0 +1,14 @@
 +"""Facade — background_runner has been moved to clawcodex_ext.
 +

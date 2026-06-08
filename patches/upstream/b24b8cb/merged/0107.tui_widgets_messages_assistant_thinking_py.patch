@@ -1,6 +1,6 @@
 diff --git a/tui/widgets/messages/assistant_thinking.py b/tui/widgets/messages/assistant_thinking.py
---- a/tui/widgets/messages/assistant_thinking.py	2026-06-08 06:13:57.000000 +0000
-+++ b/tui/widgets/messages/assistant_thinking.py	2026-06-08 09:36:04.889451 +0000
+--- a/tui/widgets/messages/assistant_thinking.py	2026-06-08 10:57:27.916455 +0000
++++ b/tui/widgets/messages/assistant_thinking.py	2026-06-08 10:56:48.526810 +0000
 @@ -1,116 +1,17 @@
 -"""Assistant thinking row — distinct from the regular assistant text turn.
 -
@@ -15,10 +15,11 @@ diff --git a/tui/widgets/messages/assistant_thinking.py b/tui/widgets/messages/a
 -``AssistantTextMessage`` (or dropped them entirely). This widget is the
 -matching component the dispatcher should route ``ThinkingBlock`` /
 -``RedactedThinkingBlock`` events to.
--"""
++"""Facade — tui/widgets/messages/assistant_thinking.py has been moved to clawcodex_ext (lazy proxy).
+ """
 -
--from __future__ import annotations
--
+ from __future__ import annotations
+ 
 -from rich.console import Group
 -from rich.text import Text
 -from textual.app import ComposeResult
@@ -115,19 +116,13 @@ diff --git a/tui/widgets/messages/assistant_thinking.py b/tui/widgets/messages/a
 -        if self._redacted:
 -            return Text(text or "(redacted)", style="italic dim")
 -        return Text(text, style="italic")
--
--
--__all__ = ["AssistantThinkingMessage"]
-+"""Facade — tui/widgets/messages/assistant_thinking.py has been moved to clawcodex_ext (lazy proxy).
-+"""
-+from __future__ import annotations
-+
 +__all__ = [
 +    "ThinkingToggled",
 +    "AssistantThinkingMessage",
 +]
-+
-+
+ 
+ 
+-__all__ = ["AssistantThinkingMessage"]
 +def __getattr__(name: str):
 +    import clawcodex_ext.tui.widgets.messages.assistant_thinking as _mod
 +    if name in _mod.__dict__:

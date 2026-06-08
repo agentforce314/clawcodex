@@ -1,16 +1,17 @@
 diff --git a/tui/widgets/tool_activity/edit.py b/tui/widgets/tool_activity/edit.py
---- a/tui/widgets/tool_activity/edit.py	2026-06-08 06:13:57.000000 +0000
-+++ b/tui/widgets/tool_activity/edit.py	2026-06-08 09:36:05.181114 +0000
+--- a/tui/widgets/tool_activity/edit.py	2026-06-08 10:57:28.136986 +0000
++++ b/tui/widgets/tool_activity/edit.py	2026-06-08 10:56:48.670198 +0000
 @@ -1,65 +1,16 @@
 -"""Edit tool activity — renders an inline diff of the applied change.
 -
 -Mirrors the body of Claude Code's ``Update`` tool result row: a one-line
 -``Added X lines, removed Y lines`` summary above the line-numbered
 -unified diff.
--"""
++"""Facade — tui/widgets/tool_activity/edit.py has been moved to clawcodex_ext (lazy proxy).
+ """
 -
--from __future__ import annotations
--
+ from __future__ import annotations
+ 
 -from typing import Any
 -
 -from rich.console import Group
@@ -51,13 +52,16 @@ diff --git a/tui/widgets/tool_activity/edit.py b/tui/widgets/tool_activity/edit.
 -
 -def _format_edit_summary(adds: int, removes: int) -> str:
 -    """Format an "Added X lines, removed Y lines" summary.
--
++__all__ = [
++    "EditActivity",
++]
+ 
 -    Mirrors the pluralization in the TS reference component
 -    (``FileEditToolUpdatedMessage.tsx``): when both counts are non-zero
 -    the second clause uses lowercase ``removed`` because it follows a
 -    comma; standalone clauses are sentence-cased.
 -    """
--
+ 
 -    if adds <= 0 and removes <= 0:
 -        return ""
 -    parts: list[str] = []
@@ -67,15 +71,6 @@ diff --git a/tui/widgets/tool_activity/edit.py b/tui/widgets/tool_activity/edit.
 -        verb = "Removed" if adds == 0 else "removed"
 -        parts.append(f"{verb} {removes} {'line' if removes == 1 else 'lines'}")
 -    return ", ".join(parts)
-+"""Facade — tui/widgets/tool_activity/edit.py has been moved to clawcodex_ext (lazy proxy).
-+"""
-+from __future__ import annotations
-+
-+__all__ = [
-+    "EditActivity",
-+]
-+
-+
 +def __getattr__(name: str):
 +    import clawcodex_ext.tui.widgets.tool_activity.edit as _mod
 +    if name in _mod.__dict__:

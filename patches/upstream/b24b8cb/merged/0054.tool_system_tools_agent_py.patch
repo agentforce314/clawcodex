@@ -1,6 +1,6 @@
 diff --git a/tool_system/tools/agent.py b/tool_system/tools/agent.py
---- a/tool_system/tools/agent.py	2026-06-08 06:13:57.000000 +0000
-+++ b/tool_system/tools/agent.py	2026-06-08 00:47:43.243981 +0000
+--- a/tool_system/tools/agent.py	2026-06-08 10:57:26.522057 +0000
++++ b/tool_system/tools/agent.py	2026-06-08 11:45:19.073825 +0000
 @@ -1,834 +1,848 @@
 -"""Agent tool — launches subagents with context isolation.
 -

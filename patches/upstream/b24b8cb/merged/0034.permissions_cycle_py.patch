@@ -1,18 +1,23 @@
 diff --git a/permissions/cycle.py b/permissions/cycle.py
---- a/permissions/cycle.py	2026-06-08 06:13:57.000000 +0000
-+++ b/permissions/cycle.py	2026-06-08 09:35:58.753930 +0000
+--- a/permissions/cycle.py	2026-06-08 10:57:23.341472 +0000
++++ b/permissions/cycle.py	2026-06-08 10:56:44.261331 +0000
 @@ -1,68 +1,25 @@
 -"""Permission-mode cycling for the Shift+Tab keybinding.
--
++"""Facade — permissions/cycle.py has been moved to clawcodex_ext (lazy proxy).
+ 
 -Mirrors ``typescript/src/utils/permissions/getNextPermissionMode.ts``. The TS
 -reference has an Anthropic-internal ``USER_TYPE === 'ant'`` branch and a
 -``TRANSCRIPT_CLASSIFIER``-gated ``auto`` cycle target; we omit both — Python
 -exposes the public cycle only. Once the LLM auto-mode classifier lands in
 -Python, ``canCycleToAuto`` will get its own implementation here.
--"""
++Uses module-level __getattr__ to defer the ext import until
++the symbol is actually accessed at runtime, avoiding circular
++import chains when parent __init__.py files eagerly import
++submodules during package initialization.
+ """
 -
--from __future__ import annotations
--
+ from __future__ import annotations
+ 
 -from .types import PermissionMode, ToolPermissionContext
 -from .updates import apply_permission_update
 -from .types import PermissionUpdateSetMode
@@ -47,13 +52,26 @@ diff --git a/permissions/cycle.py b/permissions/cycle.py
 -        return "default"
 -    # dontAsk, auto, bubble all fall through to default.
 -    return "default"
--
--
++__all__ = [
++    "register_cycle_step",
++    "get_next_permission_mode",
++    "cycle_permission_mode",
++]
+ 
+ 
 -def cycle_permission_mode(
 -    context: ToolPermissionContext,
 -) -> tuple[PermissionMode, ToolPermissionContext]:
 -    """Compute the next mode and return the (mode, updated_context) pair.
--
++def __getattr__(name: str):
++    """Lazy proxy — import from clawcodex_ext.permissions.cycle on first access."""
++    import clawcodex_ext.permissions.cycle as _mod
++    if name in _mod.__dict__:
++        val = _mod.__dict__[name]
++        globals()[name] = val  # cache for subsequent access
++        return val
++    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+ 
 -    Mirrors ``cyclePermissionMode`` in
 -    ``typescript/src/utils/permissions/getNextPermissionMode.ts:88-101``.
 -    The updated context is produced via :func:`apply_permission_update` with
@@ -70,28 +88,3 @@ diff --git a/permissions/cycle.py b/permissions/cycle.py
 -        ),
 -    )
 -    return next_mode, next_context
-+"""Facade — permissions/cycle.py has been moved to clawcodex_ext (lazy proxy).
-+
-+Uses module-level __getattr__ to defer the ext import until
-+the symbol is actually accessed at runtime, avoiding circular
-+import chains when parent __init__.py files eagerly import
-+submodules during package initialization.
-+"""
-+from __future__ import annotations
-+
-+__all__ = [
-+    "register_cycle_step",
-+    "get_next_permission_mode",
-+    "cycle_permission_mode",
-+]
-+
-+
-+def __getattr__(name: str):
-+    """Lazy proxy — import from clawcodex_ext.permissions.cycle on first access."""
-+    import clawcodex_ext.permissions.cycle as _mod
-+    if name in _mod.__dict__:
-+        val = _mod.__dict__[name]
-+        globals()[name] = val  # cache for subsequent access
-+        return val
-+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-+

@@ -1,0 +1,24 @@
+diff --git a/utils/cache_warning.py b/utils/cache_warning.py
+new file mode 100644
+--- /dev/null
++++ b/utils/cache_warning.py	2026-06-08 10:57:29.040742 +0000
+@@ -0,0 +1,19 @@
++"""Facade — utils/cache_warning.py has been moved to clawcodex_ext.
++
++This module re-exports the public API so that existing from
++src.utils.cache_warning import … call sites continue to work
++during the migration.  New code should import from
++clawcodex_ext.utils.cache_warning directly.
++"""
++
++from clawcodex_ext.utils.cache_warning import (  # noqa: F401
++    MAX_SOURCE_ENTRIES,
++    CacheWarningState,
++    CacheWarning,
++)
++
++__all__ = [
++    "MAX_SOURCE_ENTRIES",
++    "CacheWarningState",
++    "CacheWarning",
++]

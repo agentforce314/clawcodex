@@ -1,6 +1,6 @@
 diff --git a/tui/widgets/header.py b/tui/widgets/header.py
---- a/tui/widgets/header.py	2026-06-08 06:13:57.000000 +0000
-+++ b/tui/widgets/header.py	2026-06-08 09:36:04.816770 +0000
+--- a/tui/widgets/header.py	2026-06-08 10:57:27.877177 +0000
++++ b/tui/widgets/header.py	2026-06-08 10:56:48.498456 +0000
 @@ -1,130 +1,16 @@
 -"""Startup header widget — the Claw Codex banner.
 -
@@ -9,10 +9,11 @@ diff --git a/tui/widgets/header.py b/tui/widgets/header.py
 -component of the TUI (matching the Ink ``<Header>`` in
 -``typescript/src/screens/REPL.tsx``) instead of a one-shot ``print`` at
 -startup.
--"""
++"""Facade — tui/widgets/header.py has been moved to clawcodex_ext (lazy proxy).
+ """
 -
--from __future__ import annotations
--
+ from __future__ import annotations
+ 
 -from pathlib import Path
 -
 -from rich.align import Align
@@ -92,7 +93,10 @@ diff --git a/tui/widgets/header.py b/tui/widgets/header.py
 -        if provider is not None:
 -            self._provider = provider
 -        self.update(self._render_banner())
--
++__all__ = [
++    "StartupHeader",
++]
+ 
 -    def _render_banner(self) -> Panel:
 -        display_path = _display_cwd(self._workspace_root)
 -        width = self._width_hint or 80
@@ -117,7 +121,7 @@ diff --git a/tui/widgets/header.py b/tui/widgets/header.py
 -            "Workspace",
 -            Text(_truncate_middle(display_path, content_width - 12), style="bold blue"),
 -        )
--
+ 
 -        footer = Text(self._slash_hints, style="dim")
 -        mascot_block = Text(_MASCOT, style="bold orange3", no_wrap=True)
 -        body = Group(
@@ -132,15 +136,6 @@ diff --git a/tui/widgets/header.py b/tui/widgets/header.py
 -            subtitle="[dim]interactive terminal[/dim]",
 -            padding=(0, 2),
 -        )
-+"""Facade — tui/widgets/header.py has been moved to clawcodex_ext (lazy proxy).
-+"""
-+from __future__ import annotations
-+
-+__all__ = [
-+    "StartupHeader",
-+]
-+
-+
 +def __getattr__(name: str):
 +    import clawcodex_ext.tui.widgets.header as _mod
 +    if name in _mod.__dict__:

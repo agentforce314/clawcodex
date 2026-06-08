@@ -1,7 +1,7 @@
 diff --git a/agent/_outlines_adapter.py b/agent/_outlines_adapter.py
 new file mode 100644
 --- /dev/null
-+++ b/agent/_outlines_adapter.py	2026-06-08 09:35:55.891145 +0000
++++ b/agent/_outlines_adapter.py	2026-06-08 10:56:42.342767 +0000
 @@ -0,0 +1,23 @@
 +"""Facade — agent/_outlines_adapter.py has been moved to clawcodex_ext.
 +

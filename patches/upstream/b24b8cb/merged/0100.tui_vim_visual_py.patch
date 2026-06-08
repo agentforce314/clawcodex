@@ -1,6 +1,6 @@
 diff --git a/tui/vim_visual.py b/tui/vim_visual.py
---- a/tui/vim_visual.py	2026-06-08 06:13:57.000000 +0000
-+++ b/tui/vim_visual.py	2026-06-08 09:36:04.767412 +0000
+--- a/tui/vim_visual.py	2026-06-08 10:57:27.856159 +0000
++++ b/tui/vim_visual.py	2026-06-08 10:56:48.481587 +0000
 @@ -1,157 +1,18 @@
 -"""Visual / Visual-Line / Visual-Block selection model.
 -
@@ -21,10 +21,11 @@ diff --git a/tui/vim_visual.py b/tui/vim_visual.py
 -
 -Wiring into a multi-line widget is wave-2 follow-up; this module is
 -the substrate so that the integration is mechanical when the time comes.
--"""
++"""Facade — tui/vim_visual.py has been moved to clawcodex_ext (lazy proxy).
+ """
 -
--from __future__ import annotations
--
+ from __future__ import annotations
+ 
 -from dataclasses import dataclass, field
 -from enum import Enum
 -
@@ -156,20 +157,14 @@ diff --git a/tui/vim_visual.py b/tui/vim_visual.py
 -
 -    def is_active(self) -> bool:
 -        return self.selection is not None
--
--
--__all__ = ["VisualMode", "VisualSelection", "VisualState"]
-+"""Facade — tui/vim_visual.py has been moved to clawcodex_ext (lazy proxy).
-+"""
-+from __future__ import annotations
-+
 +__all__ = [
 +    "VisualMode",
 +    "VisualSelection",
 +    "VisualState",
 +]
-+
-+
+ 
+ 
+-__all__ = ["VisualMode", "VisualSelection", "VisualState"]
 +def __getattr__(name: str):
 +    import clawcodex_ext.tui.vim_visual as _mod
 +    if name in _mod.__dict__:

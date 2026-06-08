@@ -1,6 +1,6 @@
 diff --git a/tui/screens/model_picker.py b/tui/screens/model_picker.py
---- a/tui/screens/model_picker.py	2026-06-08 06:13:57.000000 +0000
-+++ b/tui/screens/model_picker.py	2026-06-08 09:36:04.507970 +0000
+--- a/tui/screens/model_picker.py	2026-06-08 10:57:27.609313 +0000
++++ b/tui/screens/model_picker.py	2026-06-08 10:56:48.346379 +0000
 @@ -1,76 +1,16 @@
 -"""Model picker dialog.
 -
@@ -9,10 +9,11 @@ diff --git a/tui/screens/model_picker.py b/tui/screens/model_picker.py
 -resolves with the chosen model id on Enter. Phase 2 skips the inline
 -"effort" left/right cycle — that lives in :class:`EffortPickerScreen`
 -and is reachable as a standalone step via the ``/effort`` command.
--"""
++"""Facade — tui/screens/model_picker.py has been moved to clawcodex_ext (lazy proxy).
+ """
 -
--from __future__ import annotations
--
+ from __future__ import annotations
+ 
 -from typing import Callable, Iterator, Sequence
 -
 -from textual.widget import Widget
@@ -63,7 +64,10 @@ diff --git a/tui/screens/model_picker.py b/tui/screens/model_picker.py
 -    def _post_mount(self) -> None:
 -        if self._select is not None:
 -            self._select.focus()
--
++__all__ = [
++    "ModelPickerScreen",
++]
+ 
 -    # ---- select events ----
 -    def on_select_list_option_selected(self, event: SelectList.OptionSelected) -> None:
 -        model = str(event.option.value)
@@ -73,20 +77,11 @@ diff --git a/tui/screens/model_picker.py b/tui/screens/model_picker.py
 -            except Exception:
 -                pass
 -        self.dismiss(model)
--
+ 
 -    def on_select_list_selection_cancelled(
 -        self, _: SelectList.SelectionCancelled
 -    ) -> None:
 -        self.dismiss(None)
-+"""Facade — tui/screens/model_picker.py has been moved to clawcodex_ext (lazy proxy).
-+"""
-+from __future__ import annotations
-+
-+__all__ = [
-+    "ModelPickerScreen",
-+]
-+
-+
 +def __getattr__(name: str):
 +    import clawcodex_ext.tui.screens.model_picker as _mod
 +    if name in _mod.__dict__:

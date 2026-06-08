@@ -1,6 +1,6 @@
 diff --git a/command_system/input_processing.py b/command_system/input_processing.py
---- a/command_system/input_processing.py	2026-06-08 06:13:57.000000 +0000
-+++ b/command_system/input_processing.py	2026-06-08 09:35:57.372920 +0000
+--- a/command_system/input_processing.py	2026-06-08 10:57:22.258192 +0000
++++ b/command_system/input_processing.py	2026-06-08 10:56:43.212543 +0000
 @@ -1,918 +1,26 @@
 -"""User input processing matching TypeScript utils/input.ts and commands/parseInput.ts.
 -
@@ -11,10 +11,11 @@ diff --git a/command_system/input_processing.py b/command_system/input_processin
 -- Multi-line input handling
 -- Input history management
 -- Special escape sequences
--"""
++"""Facade — command_system/input_processing.py has been moved to clawcodex_ext (lazy proxy).
+ """
 -
--from __future__ import annotations
--
+ from __future__ import annotations
+ 
 -import base64 as _base64
 -import os
 -import re
@@ -920,10 +921,6 @@ diff --git a/command_system/input_processing.py b/command_system/input_processin
 -
 -    matches = registry.find_commands(query, limit=limit)
 -    return [f"/{cmd.name}" for cmd in matches]
-+"""Facade — command_system/input_processing.py has been moved to clawcodex_ext (lazy proxy).
-+"""
-+from __future__ import annotations
-+
 +__all__ = [
 +    "ParsedInput",
 +    "parse_user_input",

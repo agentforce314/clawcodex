@@ -1,6 +1,6 @@
 diff --git a/bridge/bridge_main.py b/bridge/bridge_main.py
---- a/bridge/bridge_main.py	2026-06-08 06:13:57.000000 +0000
-+++ b/bridge/bridge_main.py	2026-06-08 00:47:43.175952 +0000
+--- a/bridge/bridge_main.py	2026-06-08 10:57:21.348649 +0000
++++ b/bridge/bridge_main.py	2026-06-08 11:45:19.038182 +0000
 @@ -1,1243 +1,993 @@
 -"""Multi-session bridge daemon — Phase 8 MVP slice.
 -

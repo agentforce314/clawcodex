@@ -1,6 +1,6 @@
 diff --git a/buddy/notification.py b/buddy/notification.py
---- a/buddy/notification.py	2026-06-08 06:13:57.000000 +0000
-+++ b/buddy/notification.py	2026-06-08 00:47:43.181918 +0000
+--- a/buddy/notification.py	2026-06-08 10:57:21.984161 +0000
++++ b/buddy/notification.py	2026-06-08 11:45:19.042730 +0000
 @@ -1,62 +1,62 @@
 -"""Buddy notification helpers + date gates + trigger highlights.
 -

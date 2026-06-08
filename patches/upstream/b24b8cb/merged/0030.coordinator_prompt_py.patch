@@ -1,6 +1,6 @@
 diff --git a/coordinator/prompt.py b/coordinator/prompt.py
---- a/coordinator/prompt.py	2026-06-08 06:13:57.000000 +0000
-+++ b/coordinator/prompt.py	2026-06-08 00:47:43.198364 +0000
+--- a/coordinator/prompt.py	2026-06-08 10:57:22.680481 +0000
++++ b/coordinator/prompt.py	2026-06-08 11:45:19.051425 +0000
 @@ -1,369 +1,372 @@
 -"""Coordinator system prompt — Chunk G / WI-8.4.
 -

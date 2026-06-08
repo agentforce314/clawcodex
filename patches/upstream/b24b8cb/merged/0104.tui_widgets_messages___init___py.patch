@@ -1,6 +1,6 @@
 diff --git a/tui/widgets/messages/__init__.py b/tui/widgets/messages/__init__.py
---- a/tui/widgets/messages/__init__.py	2026-06-08 06:13:57.000000 +0000
-+++ b/tui/widgets/messages/__init__.py	2026-06-08 09:36:04.836628 +0000
+--- a/tui/widgets/messages/__init__.py	2026-06-08 10:57:27.975011 +0000
++++ b/tui/widgets/messages/__init__.py	2026-06-08 10:56:48.569963 +0000
 @@ -1,36 +1,16 @@
 -"""Transcript row widgets.
 -
@@ -20,7 +20,8 @@ diff --git a/tui/widgets/messages/__init__.py b/tui/widgets/messages/__init__.py
 -* :class:`ToolResultRow`            — terminal summary row shown when a
 -  tool result comes back (used for non-grouped paths).
 -* :class:`SystemMessage`            — muted system/error notifications.
--"""
++"""Facade — tui/widgets/messages/__init__.py has been moved to clawcodex_ext (lazy proxy).
+ """
 -
 -from .base import BaseRow, SystemMessage
 -from .user_text import UserTextMessage
@@ -28,8 +29,9 @@ diff --git a/tui/widgets/messages/__init__.py b/tui/widgets/messages/__init__.py
 -from .assistant_tool_use import AssistantToolUseMessage
 -from .assistant_advisor import AssistantAdvisorMessage
 -from .tool_result import ToolResultRow
--
--__all__ = [
++from __future__ import annotations
+ 
+ __all__ = [
 -    "BaseRow",
 -    "SystemMessage",
 -    "UserTextMessage",
@@ -37,14 +39,8 @@ diff --git a/tui/widgets/messages/__init__.py b/tui/widgets/messages/__init__.py
 -    "AssistantToolUseMessage",
 -    "AssistantAdvisorMessage",
 -    "ToolResultRow",
--]
-+"""Facade — tui/widgets/messages/__init__.py has been moved to clawcodex_ext (lazy proxy).
-+"""
-+from __future__ import annotations
-+
-+__all__ = [
 +    
-+]
+ ]
 +
 +
 +def __getattr__(name: str):

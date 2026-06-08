@@ -1,6 +1,6 @@
 diff --git a/tui/screens/theme_picker.py b/tui/screens/theme_picker.py
---- a/tui/screens/theme_picker.py	2026-06-08 06:13:57.000000 +0000
-+++ b/tui/screens/theme_picker.py	2026-06-08 09:36:04.586461 +0000
+--- a/tui/screens/theme_picker.py	2026-06-08 10:57:27.666671 +0000
++++ b/tui/screens/theme_picker.py	2026-06-08 10:56:48.386647 +0000
 @@ -1,93 +1,16 @@
 -"""Theme picker dialog.
 -
@@ -8,10 +8,11 @@ diff --git a/tui/screens/theme_picker.py b/tui/screens/theme_picker.py
 -(``auto``, ``dark``, ``light``, ``claude``) and resolves with the
 -selected theme id. ``auto`` resolves to the OS-derived palette at
 -boot time via :func:`src.tui.theme.resolve_auto_theme`.
--"""
++"""Facade — tui/screens/theme_picker.py has been moved to clawcodex_ext (lazy proxy).
+ """
 -
--from __future__ import annotations
--
+ from __future__ import annotations
+ 
 -from typing import Callable, Iterator, Sequence
 -
 -from textual.widget import Widget
@@ -76,7 +77,10 @@ diff --git a/tui/screens/theme_picker.py b/tui/screens/theme_picker.py
 -            self._on_preview(str(event.option.value))
 -        except Exception:
 -            pass
--
++__all__ = [
++    "ThemePickerScreen",
++]
+ 
 -    def on_select_list_option_selected(self, event: SelectList.OptionSelected) -> None:
 -        value = str(event.option.value)
 -        if self._on_persist is not None:
@@ -85,7 +89,7 @@ diff --git a/tui/screens/theme_picker.py b/tui/screens/theme_picker.py
 -            except Exception:
 -                pass
 -        self.dismiss(value)
--
+ 
 -    def on_select_list_selection_cancelled(
 -        self, _: SelectList.SelectionCancelled
 -    ) -> None:
@@ -95,15 +99,6 @@ diff --git a/tui/screens/theme_picker.py b/tui/screens/theme_picker.py
 -            except Exception:
 -                pass
 -        self.dismiss(None)
-+"""Facade — tui/screens/theme_picker.py has been moved to clawcodex_ext (lazy proxy).
-+"""
-+from __future__ import annotations
-+
-+__all__ = [
-+    "ThemePickerScreen",
-+]
-+
-+
 +def __getattr__(name: str):
 +    import clawcodex_ext.tui.screens.theme_picker as _mod
 +    if name in _mod.__dict__:

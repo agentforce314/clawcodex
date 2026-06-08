@@ -1,6 +1,6 @@
 diff --git a/transports/websocket_transport.py b/transports/websocket_transport.py
---- a/transports/websocket_transport.py	2026-06-08 06:13:57.000000 +0000
-+++ b/transports/websocket_transport.py	2026-06-08 00:47:43.251885 +0000
+--- a/transports/websocket_transport.py	2026-06-08 10:57:27.268636 +0000
++++ b/transports/websocket_transport.py	2026-06-08 11:45:19.076933 +0000
 @@ -1,961 +1,961 @@
 -"""Reconnecting WebSocket transport for the v1 (Session-Ingress) bridge path.
 -

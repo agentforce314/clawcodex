@@ -1,6 +1,6 @@
 diff --git a/tui/screens/cost_threshold.py b/tui/screens/cost_threshold.py
---- a/tui/screens/cost_threshold.py	2026-06-08 06:13:57.000000 +0000
-+++ b/tui/screens/cost_threshold.py	2026-06-08 09:36:04.333097 +0000
+--- a/tui/screens/cost_threshold.py	2026-06-08 10:57:27.476187 +0000
++++ b/tui/screens/cost_threshold.py	2026-06-08 10:56:48.264516 +0000
 @@ -1,63 +1,16 @@
 -"""Cost-threshold acknowledgement dialog.
 -
@@ -8,10 +8,11 @@ diff --git a/tui/screens/cost_threshold.py b/tui/screens/cost_threshold.py
 -process after session spend crosses the configured threshold so the
 -user is aware of API billing. Resolves with ``True`` when the user
 -acknowledges (Enter / Got it), ``False`` on Esc.
--"""
++"""Facade — tui/screens/cost_threshold.py has been moved to clawcodex_ext (lazy proxy).
+ """
 -
--from __future__ import annotations
--
+ from __future__ import annotations
+ 
 -from typing import Callable, Iterator
 -
 -from textual.widget import Widget
@@ -52,7 +53,10 @@ diff --git a/tui/screens/cost_threshold.py b/tui/screens/cost_threshold.py
 -
 -    def _post_mount(self) -> None:
 -        self._select.focus()
--
++__all__ = [
++    "CostThresholdScreen",
++]
+ 
 -    def on_select_list_option_selected(self, _: SelectList.OptionSelected) -> None:
 -        if self._on_acknowledge is not None:
 -            try:
@@ -60,20 +64,11 @@ diff --git a/tui/screens/cost_threshold.py b/tui/screens/cost_threshold.py
 -            except Exception:
 -                pass
 -        self.dismiss(True)
--
+ 
 -    def on_select_list_selection_cancelled(
 -        self, _: SelectList.SelectionCancelled
 -    ) -> None:
 -        self.dismiss(False)
-+"""Facade — tui/screens/cost_threshold.py has been moved to clawcodex_ext (lazy proxy).
-+"""
-+from __future__ import annotations
-+
-+__all__ = [
-+    "CostThresholdScreen",
-+]
-+
-+
 +def __getattr__(name: str):
 +    import clawcodex_ext.tui.screens.cost_threshold as _mod
 +    if name in _mod.__dict__:

@@ -1,6 +1,6 @@
 diff --git a/buddy/__init__.py b/buddy/__init__.py
---- a/buddy/__init__.py	2026-06-08 06:13:57.000000 +0000
-+++ b/buddy/__init__.py	2026-06-08 00:47:43.179739 +0000
+--- a/buddy/__init__.py	2026-06-08 10:57:22.054413 +0000
++++ b/buddy/__init__.py	2026-06-08 11:45:19.041217 +0000
 @@ -1,114 +1,17 @@
 -"""Python port of ``typescript/src/buddy/``.
 -

@@ -57,12 +57,8 @@ _ALLOWED_ROOT_DIRS = frozenset(
     }
 )
 
-# 已知的、合法的根级 ``*.py`` 真实入口 (非门面)
-_KNOWN_LEGIT_ROOT_PY = frozenset(
-    {
-        "launch_orchestrator.py",
-    }
-)
+# 已知的、合法的根级 ``*.py`` 真实入口 (非门面, 软断言 — 若存在则校验不被误删)
+_KNOWN_LEGIT_ROOT_PY: frozenset[str] = frozenset()
 
 # 模块级 eager import 模式: ``from clawcodex_ext.<pkg>.<mod> import ...``
 _EAGER_IMPORT_RE = re.compile(

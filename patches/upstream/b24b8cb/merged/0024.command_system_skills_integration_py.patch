@@ -1,15 +1,16 @@
 diff --git a/command_system/skills_integration.py b/command_system/skills_integration.py
---- a/command_system/skills_integration.py	2026-06-08 06:13:57.000000 +0000
-+++ b/command_system/skills_integration.py	2026-06-08 09:35:57.412053 +0000
+--- a/command_system/skills_integration.py	2026-06-08 10:57:22.362767 +0000
++++ b/command_system/skills_integration.py	2026-06-08 10:56:43.225883 +0000
 @@ -1,210 +1,21 @@
--"""
++"""Facade — command_system/skills_integration.py has been moved to clawcodex_ext (lazy proxy).
+ """
 -Skills system integration with command system.
 -
 -Bridges the existing skills system to the command system.
 -"""
 -
--from __future__ import annotations
--
+ from __future__ import annotations
+ 
 -from pathlib import Path
 -from typing import Any, Optional, Sequence
 -
@@ -212,10 +213,6 @@ diff --git a/command_system/skills_integration.py b/command_system/skills_integr
 -        command.arg_names,
 -    )
 -    return [{"type": "text", "text": content}]
-+"""Facade — command_system/skills_integration.py has been moved to clawcodex_ext (lazy proxy).
-+"""
-+from __future__ import annotations
-+
 +__all__ = [
 +    "skill_to_prompt_command",
 +    "register_skill_as_command",

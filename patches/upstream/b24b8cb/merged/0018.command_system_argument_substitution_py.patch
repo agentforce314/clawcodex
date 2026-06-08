@@ -1,15 +1,16 @@
 diff --git a/command_system/argument_substitution.py b/command_system/argument_substitution.py
---- a/command_system/argument_substitution.py	2026-06-08 06:13:57.000000 +0000
-+++ b/command_system/argument_substitution.py	2026-06-08 09:35:57.298597 +0000
+--- a/command_system/argument_substitution.py	2026-06-08 10:57:22.140182 +0000
++++ b/command_system/argument_substitution.py	2026-06-08 10:56:43.185289 +0000
 @@ -1,120 +1,17 @@
--"""
++"""Facade — command_system/argument_substitution.py has been moved to clawcodex_ext (lazy proxy).
+ """
 -Argument substitution for commands and skills.
 -
 -Handles replacing $arg, $1, $ARGUMENTS placeholders in command/skill content.
 -"""
 -
--from __future__ import annotations
--
+ from __future__ import annotations
+ 
 -import re
 -import shlex
 -from typing import Sequence
@@ -117,21 +118,15 @@ diff --git a/command_system/argument_substitution.py b/command_system/argument_s
 -
 -        if not spec:
 -            return []
--
--        # Split by commas
--        return [name.strip() for name in spec.split(',') if name.strip()]
--
--    return []
-+"""Facade — command_system/argument_substitution.py has been moved to clawcodex_ext (lazy proxy).
-+"""
-+from __future__ import annotations
-+
 +__all__ = [
 +    "substitute_arguments",
 +    "parse_argument_names",
 +]
-+
-+
+ 
+-        # Split by commas
+-        return [name.strip() for name in spec.split(',') if name.strip()]
+ 
+-    return []
 +def __getattr__(name: str):
 +    import clawcodex_ext.command_system.argument_substitution as _mod
 +    if name in _mod.__dict__:

@@ -1,0 +1,20 @@
+diff --git a/repl/background_escape.py b/repl/background_escape.py
+new file mode 100644
+--- /dev/null
++++ b/repl/background_escape.py	2026-06-08 10:56:45.604424 +0000
+@@ -0,0 +1,15 @@
++"""Facade — repl/background_escape.py has been moved to clawcodex_ext.
++
++This module re-exports the public API so that existing ``from
++src.repl.background_escape import …`` call sites continue to work
++during the migration.  New code should import from
++``clawcodex_ext.repl.background_escape`` directly.
++"""
++
++from clawcodex_ext.repl.background_escape import (  # noqa: F401
++    BackgroundEscape,
++)
++
++__all__ = [
++    "BackgroundEscape",
++]

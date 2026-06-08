@@ -1,8 +1,9 @@
 diff --git a/command_system/__init__.py b/command_system/__init__.py
---- a/command_system/__init__.py	2026-06-08 06:13:57.000000 +0000
-+++ b/command_system/__init__.py	2026-06-08 09:35:57.284636 +0000
+--- a/command_system/__init__.py	2026-06-08 10:57:22.419560 +0000
++++ b/command_system/__init__.py	2026-06-08 10:56:43.239781 +0000
 @@ -1,185 +1,16 @@
--"""
++"""Facade — command_system/__init__.py has been moved to clawcodex_ext (lazy proxy).
+ """
 -Command system for Claw Codex.
 -
 -A complete reimplementation of Claude Code's command system.
@@ -101,8 +102,9 @@ diff --git a/command_system/__init__.py b/command_system/__init__.py
 -    is_command_enabled,
 -    meets_availability_requirement,
 -)
--
--__all__ = [
++from __future__ import annotations
+ 
+ __all__ = [
 -    # Types
 -    "Command",
 -    "CommandType",
@@ -186,14 +188,8 @@ diff --git a/command_system/__init__.py b/command_system/__init__.py
 -    "load_and_register_skills",
 -    "get_skill_command",
 -    "load_skill_from_directory",
--]
-+"""Facade — command_system/__init__.py has been moved to clawcodex_ext (lazy proxy).
-+"""
-+from __future__ import annotations
-+
-+__all__ = [
 +    
-+]
+ ]
 +
 +
 +def __getattr__(name: str):

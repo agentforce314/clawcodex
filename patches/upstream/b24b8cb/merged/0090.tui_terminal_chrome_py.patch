@@ -1,6 +1,6 @@
 diff --git a/tui/terminal_chrome.py b/tui/terminal_chrome.py
---- a/tui/terminal_chrome.py	2026-06-08 06:13:57.000000 +0000
-+++ b/tui/terminal_chrome.py	2026-06-08 09:36:04.616035 +0000
+--- a/tui/terminal_chrome.py	2026-06-08 10:57:27.700520 +0000
++++ b/tui/terminal_chrome.py	2026-06-08 10:56:48.411118 +0000
 @@ -1,219 +1,25 @@
 -"""Terminal chrome helpers (title / tab status / bell / focus).
 -
@@ -29,10 +29,11 @@ diff --git a/tui/terminal_chrome.py b/tui/terminal_chrome.py
 -Every helper swallows ``OSError`` from stdout because agents run in
 -many non-interactive contexts (CI, piped output, test harness) and
 -losing the chrome should never break the session.
--"""
++"""Facade — tui/terminal_chrome.py has been moved to clawcodex_ext (lazy proxy).
+ """
 -
--from __future__ import annotations
--
+ from __future__ import annotations
+ 
 -import os
 -import re
 -import sys
@@ -209,34 +210,24 @@ diff --git a/tui/terminal_chrome.py b/tui/terminal_chrome.py
 -    _write(f"{_ESC}[?1004l")
 -
 -
--__all__ = [
--    "clear_terminal_title",
+ __all__ = [
++    "set_terminal_title",
+     "clear_terminal_title",
 -    "disable_focus_events",
 -    "enable_focus_events",
 -    "notify_ghostty",
--    "notify_iterm2",
--    "notify_kitty",
--    "ring_bell",
--    "set_progress",
--    "set_tab_status",
--    "set_terminal_title",
--]
-+"""Facade — tui/terminal_chrome.py has been moved to clawcodex_ext (lazy proxy).
-+"""
-+from __future__ import annotations
-+
-+__all__ = [
-+    "set_terminal_title",
-+    "clear_terminal_title",
 +    "set_tab_status",
 +    "ring_bell",
-+    "notify_iterm2",
-+    "notify_kitty",
+     "notify_iterm2",
+     "notify_kitty",
+-    "ring_bell",
 +    "notify_ghostty",
-+    "set_progress",
+     "set_progress",
+-    "set_tab_status",
+-    "set_terminal_title",
 +    "enable_focus_events",
 +    "disable_focus_events",
-+]
+ ]
 +
 +
 +def __getattr__(name: str):

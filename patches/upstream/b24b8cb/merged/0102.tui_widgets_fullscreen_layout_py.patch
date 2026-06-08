@@ -1,6 +1,6 @@
 diff --git a/tui/widgets/fullscreen_layout.py b/tui/widgets/fullscreen_layout.py
---- a/tui/widgets/fullscreen_layout.py	2026-06-08 06:13:57.000000 +0000
-+++ b/tui/widgets/fullscreen_layout.py	2026-06-08 09:36:04.799134 +0000
+--- a/tui/widgets/fullscreen_layout.py	2026-06-08 10:57:27.865061 +0000
++++ b/tui/widgets/fullscreen_layout.py	2026-06-08 10:56:48.489820 +0000
 @@ -1,89 +1,16 @@
 -"""Four-region layout container matching ``FullscreenLayout.tsx``.
 -
@@ -19,10 +19,11 @@ diff --git a/tui/widgets/fullscreen_layout.py b/tui/widgets/fullscreen_layout.py
 -Exposing the regions as named mount points (instead of CSS grid
 -positions) keeps the REPL screen declarative; widgets mounted into a
 -region inherit its sizing automatically.
--"""
++"""Facade — tui/widgets/fullscreen_layout.py has been moved to clawcodex_ext (lazy proxy).
+ """
 -
--from __future__ import annotations
--
+ from __future__ import annotations
+ 
 -from textual.app import ComposeResult
 -from textual.containers import Container, Vertical
 -
@@ -82,24 +83,18 @@ diff --git a/tui/widgets/fullscreen_layout.py b/tui/widgets/fullscreen_layout.py
 -
 -    def bottom_region(self) -> Vertical:
 -        return self.query_one("#bottom", Vertical)
--
++__all__ = [
++    "FullscreenLayout",
++]
+ 
 -    # ---- visibility toggles ----
 -    def set_overlay_active(self, active: bool) -> None:
 -        region = self.overlay_region()
 -        region.set_class(active, "-active")
--
+ 
 -    def set_modal_active(self, active: bool) -> None:
 -        region = self.modal_region()
 -        region.set_class(active, "-active")
-+"""Facade — tui/widgets/fullscreen_layout.py has been moved to clawcodex_ext (lazy proxy).
-+"""
-+from __future__ import annotations
-+
-+__all__ = [
-+    "FullscreenLayout",
-+]
-+
-+
 +def __getattr__(name: str):
 +    import clawcodex_ext.tui.widgets.fullscreen_layout as _mod
 +    if name in _mod.__dict__:

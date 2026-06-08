@@ -1,6 +1,6 @@
 diff --git a/bridge/worktree.py b/bridge/worktree.py
---- a/bridge/worktree.py	2026-06-08 06:13:57.000000 +0000
-+++ b/bridge/worktree.py	2026-06-08 00:47:43.179220 +0000
+--- a/bridge/worktree.py	2026-06-08 10:57:21.761972 +0000
++++ b/bridge/worktree.py	2026-06-08 11:45:19.041217 +0000
 @@ -1,220 +1,227 @@
 -"""Per-session git worktree helper for ``--spawn worktree`` mode.
 -

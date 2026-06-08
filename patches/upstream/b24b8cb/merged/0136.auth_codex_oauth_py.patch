@@ -1,0 +1,56 @@
+diff --git a/auth/codex_oauth.py b/auth/codex_oauth.py
+new file mode 100644
+--- /dev/null
++++ b/auth/codex_oauth.py	2026-06-08 10:56:42.416464 +0000
+@@ -0,0 +1,51 @@
++"""Facade — auth/codex_oauth.py has been moved to clawcodex_ext.
++
++This module re-exports the public API so that existing ``from
++src.auth.codex_oauth import …`` call sites continue to work
++during the migration.  New code should import from
++``clawcodex_ext.auth.codex_oauth`` directly.
++"""
++
++from clawcodex_ext.auth.codex_oauth import (  # noqa: F401
++    CODEX_BASE_URL,
++    CODEX_OAUTH_CLIENT_ID,
++    CODEX_OAUTH_TOKEN_URL,
++    CODEX_DEVICE_USER_CODE_URL,
++    CODEX_DEVICE_TOKEN_URL,
++    CODEX_DEVICE_VERIFICATION_URL,
++    CODEX_DEVICE_REDIRECT_URI,
++    CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
++    CodexAuthError,
++    CodexDeviceFlow,
++    CodexRuntimeCredentials,
++    CodexAuthStatus,
++    start_codex_device_flow,
++    poll_codex_device_flow,
++    exchange_codex_authorization,
++    refresh_codex_tokens,
++    login_codex_device_flow,
++    resolve_codex_runtime_credentials,
++    get_codex_auth_status,
++)
++
++__all__ = [
++    "CODEX_BASE_URL",
++    "CODEX_OAUTH_CLIENT_ID",
++    "CODEX_OAUTH_TOKEN_URL",
++    "CODEX_DEVICE_USER_CODE_URL",
++    "CODEX_DEVICE_TOKEN_URL",
++    "CODEX_DEVICE_VERIFICATION_URL",
++    "CODEX_DEVICE_REDIRECT_URI",
++    "CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS",
++    "CodexAuthError",
++    "CodexDeviceFlow",
++    "CodexRuntimeCredentials",
++    "CodexAuthStatus",
++    "start_codex_device_flow",
++    "poll_codex_device_flow",
++    "exchange_codex_authorization",
++    "refresh_codex_tokens",
++    "login_codex_device_flow",
++    "resolve_codex_runtime_credentials",
++    "get_codex_auth_status",
++]

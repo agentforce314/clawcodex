@@ -1,6 +1,6 @@
 diff --git a/tui/agent_bridge.py b/tui/agent_bridge.py
---- a/tui/agent_bridge.py	2026-06-08 06:13:57.000000 +0000
-+++ b/tui/agent_bridge.py	2026-06-08 09:36:04.067360 +0000
+--- a/tui/agent_bridge.py	2026-06-08 10:57:27.327117 +0000
++++ b/tui/agent_bridge.py	2026-06-08 10:56:48.172688 +0000
 @@ -1,619 +1,16 @@
 -"""Bridge between the agent loop and the Textual UI.
 -
@@ -23,10 +23,11 @@ diff --git a/tui/agent_bridge.py b/tui/agent_bridge.py
 -Keeping this logic out of :class:`src.tui.app.ClawCodexTUI` lets unit
 -tests drive :class:`AgentBridge` with a fake agent loop (see
 -``tests/tui/test_agent_bridge.py``).
--"""
++"""Facade — tui/agent_bridge.py has been moved to clawcodex_ext (lazy proxy).
+ """
 -
--from __future__ import annotations
--
+ from __future__ import annotations
+ 
 -import threading
 -import uuid
 -from pathlib import Path
@@ -618,18 +619,12 @@ diff --git a/tui/agent_bridge.py b/tui/agent_bridge.py
 -    if isinstance(value, list):
 -        return [_safe_copy(v) for v in value]
 -    return value
--
--
--__all__ = ["AgentBridge"]
-+"""Facade — tui/agent_bridge.py has been moved to clawcodex_ext (lazy proxy).
-+"""
-+from __future__ import annotations
-+
 +__all__ = [
 +    "AgentBridge",
 +]
-+
-+
+ 
+ 
+-__all__ = ["AgentBridge"]
 +def __getattr__(name: str):
 +    import clawcodex_ext.tui.agent_bridge as _mod
 +    if name in _mod.__dict__:

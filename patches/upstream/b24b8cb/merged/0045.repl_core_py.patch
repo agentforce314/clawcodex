@@ -1,6 +1,6 @@
 diff --git a/repl/core.py b/repl/core.py
---- a/repl/core.py	2026-06-08 06:13:57.000000 +0000
-+++ b/repl/core.py	2026-06-08 09:36:00.214699 +0000
+--- a/repl/core.py	2026-06-08 10:57:24.533310 +0000
++++ b/repl/core.py	2026-06-08 10:56:45.613132 +0000
 @@ -1,3292 +1,17 @@
 -"""Interactive REPL for Claw Codex."""
 -
@@ -2482,7 +2482,8 @@ diff --git a/repl/core.py b/repl/core.py
 -- Press Ctrl+C to interrupt current operation
 -- Press Ctrl+D to exit
 -- Multi-line input: Shift+Enter, Meta/Alt+Enter, or `\` + Enter inserts a newline; plain Enter submits
--"""
++"""Facade — repl/core.py has been moved to clawcodex_ext (lazy proxy).
+ """
 -        self.console.print(Markdown(help_text))
 -
 -    def _handle_skill_command(self) -> None:
@@ -3272,12 +3273,16 @@ diff --git a/repl/core.py b/repl/core.py
 -        """
 -        from src.agent import Session
 -        from src.bootstrap.state import get_total_cost_usd
--
++from __future__ import annotations
+ 
 -        loaded_session = Session.resume(session_id)
 -        if loaded_session is None:
 -            self.console.print(f"[red]Session not found: {session_id}[/red]")
 -            return
--
++__all__ = [
++    "ClawcodexREPL",
++]
+ 
 -        # Replace current session (bootstrap id + cost already restored
 -        # by Session.resume).
 -        self.session = loaded_session
@@ -3287,22 +3292,13 @@ diff --git a/repl/core.py b/repl/core.py
 -        restored_cost = get_total_cost_usd()
 -        if restored_cost > 0:
 -            self.console.print(f"[dim]Restored cost: ${restored_cost:.4f}[/dim]")
--
+ 
 -        # Show conversation history
 -        if loaded_session.conversation.messages:
 -            self.console.print("\n[bold]Conversation History:[/bold]")
 -            for msg in loaded_session.conversation.messages[-5:]:  # Show last 5 messages
 -                role_color = "blue" if msg.role == "user" else "green"
 -                self.console.print(f"[{role_color}]{msg.role}[/{role_color}]: {msg.content[:100]}...")
-+"""Facade — repl/core.py has been moved to clawcodex_ext (lazy proxy).
-+"""
-+from __future__ import annotations
-+
-+__all__ = [
-+    "ClawcodexREPL",
-+]
-+
-+
 +def __getattr__(name: str):
 +    """Lazy import from clawcodex_ext.repl.core on first access."""
 +    import clawcodex_ext.repl.core as _mod

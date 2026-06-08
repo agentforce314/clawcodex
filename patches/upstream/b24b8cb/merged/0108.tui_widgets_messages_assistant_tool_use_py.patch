@@ -1,6 +1,6 @@
 diff --git a/tui/widgets/messages/assistant_tool_use.py b/tui/widgets/messages/assistant_tool_use.py
---- a/tui/widgets/messages/assistant_tool_use.py	2026-06-08 06:13:57.000000 +0000
-+++ b/tui/widgets/messages/assistant_tool_use.py	2026-06-08 09:36:04.906016 +0000
+--- a/tui/widgets/messages/assistant_tool_use.py	2026-06-08 10:57:27.929890 +0000
++++ b/tui/widgets/messages/assistant_tool_use.py	2026-06-08 10:56:48.535225 +0000
 @@ -1,132 +1,16 @@
 -"""Assistant tool-use row.
 -
@@ -17,10 +17,11 @@ diff --git a/tui/widgets/messages/assistant_tool_use.py b/tui/widgets/messages/a
 -  the existing body instead of appending a new row.
 -* The header swaps color / glyph based on the current status so the
 -  user can scan the transcript and spot in-flight / failed steps.
--"""
++"""Facade — tui/widgets/messages/assistant_tool_use.py has been moved to clawcodex_ext (lazy proxy).
+ """
 -
--from __future__ import annotations
--
+ from __future__ import annotations
+ 
 -from rich.text import Text
 -from textual.app import ComposeResult
 -from textual.reactive import reactive
@@ -127,22 +128,16 @@ diff --git a/tui/widgets/messages/assistant_tool_use.py b/tui/widgets/messages/a
 -    available so the TUI, the legacy REPL, and the headless NDJSON path
 -    all agree on wording.
 -    """
--
--    try:
--        from src.tool_system.renderers import summarize_tool_use
--
--        return summarize_tool_use(tool_name, tool_input or {}) or ""
--    except Exception:
--        return ""
-+"""Facade — tui/widgets/messages/assistant_tool_use.py has been moved to clawcodex_ext (lazy proxy).
-+"""
-+from __future__ import annotations
-+
 +__all__ = [
 +    "AssistantToolUseMessage",
 +]
-+
-+
+ 
+-    try:
+-        from src.tool_system.renderers import summarize_tool_use
+ 
+-        return summarize_tool_use(tool_name, tool_input or {}) or ""
+-    except Exception:
+-        return ""
 +def __getattr__(name: str):
 +    import clawcodex_ext.tui.widgets.messages.assistant_tool_use as _mod
 +    if name in _mod.__dict__:

@@ -1,6 +1,6 @@
 diff --git a/repl/__init__.py b/repl/__init__.py
---- a/repl/__init__.py	2026-06-08 06:13:57.000000 +0000
-+++ b/repl/__init__.py	2026-06-08 00:47:43.226644 +0000
+--- a/repl/__init__.py	2026-06-08 10:57:24.570633 +0000
++++ b/repl/__init__.py	2026-06-08 11:45:19.069266 +0000
 @@ -1,5 +1,6 @@
 -"""REPL module for Claw Codex."""
 -

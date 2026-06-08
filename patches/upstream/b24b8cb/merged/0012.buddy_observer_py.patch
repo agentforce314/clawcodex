@@ -1,6 +1,6 @@
 diff --git a/buddy/observer.py b/buddy/observer.py
---- a/buddy/observer.py	2026-06-08 06:13:57.000000 +0000
-+++ b/buddy/observer.py	2026-06-08 00:47:43.182468 +0000
+--- a/buddy/observer.py	2026-06-08 10:57:21.994271 +0000
++++ b/buddy/observer.py	2026-06-08 11:45:19.044243 +0000
 @@ -1,138 +1,120 @@
 -"""Per-turn companion observer.
 -

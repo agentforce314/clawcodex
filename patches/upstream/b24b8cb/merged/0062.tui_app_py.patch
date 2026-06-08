@@ -1,6 +1,6 @@
 diff --git a/tui/app.py b/tui/app.py
---- a/tui/app.py	2026-06-08 06:13:57.000000 +0000
-+++ b/tui/app.py	2026-06-08 09:36:04.083768 +0000
+--- a/tui/app.py	2026-06-08 10:57:27.353466 +0000
++++ b/tui/app.py	2026-06-08 10:56:48.178325 +0000
 @@ -1,909 +1,16 @@
 -"""Textual ``App`` subclass that hosts the Claw Codex TUI.
 -
@@ -14,10 +14,11 @@ diff --git a/tui/app.py b/tui/app.py
 -submissions to :class:`AgentBridge.submit`. Permission requests from
 -tools land here as :class:`PermissionRequested` messages, which the
 -screen then materialises as a modal.
--"""
++"""Facade — tui/app.py has been moved to clawcodex_ext (lazy proxy).
+ """
 -
--from __future__ import annotations
--
+ from __future__ import annotations
+ 
 -from pathlib import Path
 -from typing import Any
 -
@@ -901,25 +902,19 @@ diff --git a/tui/app.py b/tui/app.py
 -
 -    def _slash_command_words(self) -> list[str]:
 -        return build_command_words(self.workspace_root, self.tool_context)
--
++__all__ = [
++    "ClawCodexTUI",
++]
+ 
 -    def _slash_command_suggestions(self) -> list[CommandSuggestion]:
 -        return build_command_suggestions(self.workspace_root, self.tool_context)
--
+ 
 -    def _post_to_screen(self, message: Any) -> None:
 -        target = self._repl_screen or self
 -        try:
 -            target.post_message(message)
 -        except Exception:
 -            pass
-+"""Facade — tui/app.py has been moved to clawcodex_ext (lazy proxy).
-+"""
-+from __future__ import annotations
-+
-+__all__ = [
-+    "ClawCodexTUI",
-+]
-+
-+
 +def __getattr__(name: str):
 +    import clawcodex_ext.tui.app as _mod
 +    if name in _mod.__dict__:

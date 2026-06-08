@@ -1,6 +1,6 @@
 diff --git a/tui/widgets/session_preview.py b/tui/widgets/session_preview.py
---- a/tui/widgets/session_preview.py	2026-06-08 06:13:57.000000 +0000
-+++ b/tui/widgets/session_preview.py	2026-06-08 09:36:05.039637 +0000
+--- a/tui/widgets/session_preview.py	2026-06-08 10:57:28.046117 +0000
++++ b/tui/widgets/session_preview.py	2026-06-08 10:56:48.611175 +0000
 @@ -1,180 +1,17 @@
 -"""Read-only session transcript preview.
 -
@@ -18,10 +18,11 @@ diff --git a/tui/widgets/session_preview.py b/tui/widgets/session_preview.py
 -Both widgets are :class:`textual.widgets.Static` subclasses so they
 -embed cleanly inside modals, background-task panels, or the
 -transcript itself without extra containers.
--"""
++"""Facade — tui/widgets/session_preview.py has been moved to clawcodex_ext (lazy proxy).
+ """
 -
--from __future__ import annotations
--
+ from __future__ import annotations
+ 
 -import itertools
 -import time
 -from typing import Any, Sequence
@@ -178,18 +179,11 @@ diff --git a/tui/widgets/session_preview.py b/tui/widgets/session_preview.py
 -    return f"{seconds}s"
 -
 -
--__all__ = [
+ __all__ = [
 -    "RemoteSessionProgressLine",
--    "SessionPreview",
--]
-+"""Facade — tui/widgets/session_preview.py has been moved to clawcodex_ext (lazy proxy).
-+"""
-+from __future__ import annotations
-+
-+__all__ = [
-+    "SessionPreview",
+     "SessionPreview",
 +    "RemoteSessionProgressLine",
-+]
+ ]
 +
 +
 +def __getattr__(name: str):

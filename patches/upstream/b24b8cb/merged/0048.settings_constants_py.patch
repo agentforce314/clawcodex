@@ -1,6 +1,6 @@
 diff --git a/settings/constants.py b/settings/constants.py
---- a/settings/constants.py	2026-06-08 06:13:57.000000 +0000
-+++ b/settings/constants.py	2026-06-08 00:47:43.234010 +0000
+--- a/settings/constants.py	2026-06-08 10:57:25.918071 +0000
++++ b/settings/constants.py	2026-06-08 11:45:19.072305 +0000
 @@ -1,55 +1,62 @@
 -"""Default settings values matching TypeScript settings/constants.ts."""
 -

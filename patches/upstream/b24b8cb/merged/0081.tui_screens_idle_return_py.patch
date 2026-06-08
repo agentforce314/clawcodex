@@ -1,6 +1,6 @@
 diff --git a/tui/screens/idle_return.py b/tui/screens/idle_return.py
---- a/tui/screens/idle_return.py	2026-06-08 06:13:57.000000 +0000
-+++ b/tui/screens/idle_return.py	2026-06-08 09:36:04.459285 +0000
+--- a/tui/screens/idle_return.py	2026-06-08 10:57:27.576573 +0000
++++ b/tui/screens/idle_return.py	2026-06-08 10:56:48.318956 +0000
 @@ -1,99 +1,16 @@
 -"""Idle-return confirmation dialog.
 -
@@ -9,10 +9,11 @@ diff --git a/tui/screens/idle_return.py b/tui/screens/idle_return.py
 -decide whether to continue the existing conversation, clear it, or
 -suppress future prompts. Resolves with the chosen action string;
 -``None`` on Esc means "dismiss" (restore pending input only).
--"""
++"""Facade — tui/screens/idle_return.py has been moved to clawcodex_ext (lazy proxy).
+ """
 -
--from __future__ import annotations
--
+ from __future__ import annotations
+ 
 -from typing import Callable, Iterator, Literal
 -
 -from textual.widget import Widget
@@ -93,23 +94,17 @@ diff --git a/tui/screens/idle_return.py b/tui/screens/idle_return.py
 -            except Exception:
 -                pass
 -        self.dismiss("dismiss")
--
--
++__all__ = [
++    "IdleReturnScreen",
++]
+ 
+ 
 -def _fmt_tokens(n: int) -> str:
 -    if n >= 1_000_000:
 -        return f"{n / 1_000_000:.1f}M"
 -    if n >= 1_000:
 -        return f"{n / 1_000:.1f}k"
 -    return str(n)
-+"""Facade — tui/screens/idle_return.py has been moved to clawcodex_ext (lazy proxy).
-+"""
-+from __future__ import annotations
-+
-+__all__ = [
-+    "IdleReturnScreen",
-+]
-+
-+
 +def __getattr__(name: str):
 +    import clawcodex_ext.tui.screens.idle_return as _mod
 +    if name in _mod.__dict__:

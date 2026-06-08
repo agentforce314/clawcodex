@@ -1,6 +1,6 @@
 diff --git a/tui/screens/mcp_dialogs.py b/tui/screens/mcp_dialogs.py
---- a/tui/screens/mcp_dialogs.py	2026-06-08 06:13:57.000000 +0000
-+++ b/tui/screens/mcp_dialogs.py	2026-06-08 09:36:04.476185 +0000
+--- a/tui/screens/mcp_dialogs.py	2026-06-08 10:57:27.587911 +0000
++++ b/tui/screens/mcp_dialogs.py	2026-06-08 10:56:48.329105 +0000
 @@ -1,207 +1,19 @@
 -"""MCP connection and elicitation dialogs.
 -
@@ -17,10 +17,11 @@ diff --git a/tui/screens/mcp_dialogs.py b/tui/screens/mcp_dialogs.py
 -  "text" (single-line) and "select" variants are supported in Phase
 -  3; URL / form variants stay in the ink reference for a later
 -  session.
--"""
++"""Facade — tui/screens/mcp_dialogs.py has been moved to clawcodex_ext (lazy proxy).
+ """
 -
--from __future__ import annotations
--
+ from __future__ import annotations
+ 
 -from dataclasses import dataclass, field
 -from typing import Callable, Iterator, Literal, Sequence
 -
@@ -203,22 +204,14 @@ diff --git a/tui/screens/mcp_dialogs.py b/tui/screens/mcp_dialogs.py
 -        self.dismiss(None)
 -
 -
--__all__ = [
+ __all__ = [
 -    "McpElicitationScreen",
 -    "McpListScreen",
--    "McpServer",
--    "McpToolListScreen",
--]
-+"""Facade — tui/screens/mcp_dialogs.py has been moved to clawcodex_ext (lazy proxy).
-+"""
-+from __future__ import annotations
-+
-+__all__ = [
-+    "McpServer",
+     "McpServer",
 +    "McpListScreen",
-+    "McpToolListScreen",
+     "McpToolListScreen",
 +    "McpElicitationScreen",
-+]
+ ]
 +
 +
 +def __getattr__(name: str):

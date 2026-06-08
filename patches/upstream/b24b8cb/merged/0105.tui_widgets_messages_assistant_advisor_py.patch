@@ -1,6 +1,6 @@
 diff --git a/tui/widgets/messages/assistant_advisor.py b/tui/widgets/messages/assistant_advisor.py
---- a/tui/widgets/messages/assistant_advisor.py	2026-06-08 06:13:57.000000 +0000
-+++ b/tui/widgets/messages/assistant_advisor.py	2026-06-08 09:36:04.854007 +0000
+--- a/tui/widgets/messages/assistant_advisor.py	2026-06-08 10:57:27.890774 +0000
++++ b/tui/widgets/messages/assistant_advisor.py	2026-06-08 10:56:48.507451 +0000
 @@ -1,190 +1,16 @@
 -"""Advisor transcript row.
 -
@@ -19,10 +19,11 @@ diff --git a/tui/widgets/messages/assistant_advisor.py b/tui/widgets/messages/as
 -left to the row's status header; we don't run a per-frame timer here
 -to avoid a Textual ``set_interval`` for every advisor call — the row
 -re-renders when ``mark_done`` / ``mark_error`` fires.
--"""
++"""Facade — tui/widgets/messages/assistant_advisor.py has been moved to clawcodex_ext (lazy proxy).
+ """
 -
--from __future__ import annotations
--
+ from __future__ import annotations
+ 
 -from typing import Any
 -
 -from rich.text import Text
@@ -187,18 +188,11 @@ diff --git a/tui/widgets/messages/assistant_advisor.py b/tui/widgets/messages/as
 -)
 -
 -
--__all__ = [
--    "AssistantAdvisorMessage",
+ __all__ = [
+     "AssistantAdvisorMessage",
 -    "extract_advisor_error_code",
 -    "extract_advisor_result_text",
--]
-+"""Facade — tui/widgets/messages/assistant_advisor.py has been moved to clawcodex_ext (lazy proxy).
-+"""
-+from __future__ import annotations
-+
-+__all__ = [
-+    "AssistantAdvisorMessage",
-+]
+ ]
 +
 +
 +def __getattr__(name: str):

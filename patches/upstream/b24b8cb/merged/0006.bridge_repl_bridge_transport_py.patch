@@ -1,6 +1,6 @@
 diff --git a/bridge/repl_bridge_transport.py b/bridge/repl_bridge_transport.py
---- a/bridge/repl_bridge_transport.py	2026-06-08 06:13:57.000000 +0000
-+++ b/bridge/repl_bridge_transport.py	2026-06-08 00:47:43.178147 +0000
+--- a/bridge/repl_bridge_transport.py	2026-06-08 10:57:21.681041 +0000
++++ b/bridge/repl_bridge_transport.py	2026-06-08 11:45:19.041217 +0000
 @@ -1,417 +1,390 @@
 -"""``ReplBridgeTransport`` — unified v1/v2 transport interface.
 -

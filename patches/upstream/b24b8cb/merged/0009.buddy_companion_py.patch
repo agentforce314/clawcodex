@@ -1,6 +1,6 @@
 diff --git a/buddy/companion.py b/buddy/companion.py
---- a/buddy/companion.py	2026-06-08 06:13:57.000000 +0000
-+++ b/buddy/companion.py	2026-06-08 00:47:43.180322 +0000
+--- a/buddy/companion.py	2026-06-08 10:57:21.965163 +0000
++++ b/buddy/companion.py	2026-06-08 11:45:19.042730 +0000
 @@ -1,261 +1,201 @@
 -"""Companion rolls + identity. Port of ``typescript/src/buddy/companion.ts``.
 -

@@ -1,0 +1,20 @@
+diff --git a/tool_system/tools/task_directives.py b/tool_system/tools/task_directives.py
+new file mode 100644
+--- /dev/null
++++ b/tool_system/tools/task_directives.py	2026-06-08 10:56:47.900569 +0000
+@@ -0,0 +1,15 @@
++"""Facade — tool_system/tools/task_directives.py has been moved to clawcodex_ext.
++
++This module re-exports the public API so that existing ``from
++src.tool_system.tools.task_directives import …`` call sites continue to work
++during the migration.  New code should import from
++``clawcodex_ext.tool_system.tools.task_directives`` directly.
++"""
++
++from clawcodex_ext.tool_system.tools.task_directives import (  # noqa: F401
++    TaskDirectivesTool,
++)
++
++__all__ = [
++    "TaskDirectivesTool",
++]

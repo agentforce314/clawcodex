@@ -1,6 +1,6 @@
 diff --git a/tui/widgets/status_line.py b/tui/widgets/status_line.py
---- a/tui/widgets/status_line.py	2026-06-08 06:13:57.000000 +0000
-+++ b/tui/widgets/status_line.py	2026-06-08 09:36:05.055122 +0000
+--- a/tui/widgets/status_line.py	2026-06-08 10:57:28.061845 +0000
++++ b/tui/widgets/status_line.py	2026-06-08 10:56:48.619007 +0000
 @@ -1,220 +1,16 @@
 -"""Status line widget — parity with ``StatusLine.tsx`` + ``SpinnerWithVerb``.
 -
@@ -17,10 +17,11 @@ diff --git a/tui/widgets/status_line.py b/tui/widgets/status_line.py
 -Phase 1 renders this as a static-looking Rich ``Text`` updated by an
 -interval timer. The animation is strictly cosmetic — the authoritative
 -"am I busy?" signal comes from :class:`AppState.is_thinking`.
--"""
++"""Facade — tui/widgets/status_line.py has been moved to clawcodex_ext (lazy proxy).
+ """
 -
--from __future__ import annotations
--
+ from __future__ import annotations
+ 
 -import time
 -from pathlib import Path
 -
@@ -141,7 +142,10 @@ diff --git a/tui/widgets/status_line.py b/tui/widgets/status_line.py
 -            secs = int(time.time() - state.verb_started_at)
 -            if secs > 0:
 -                elapsed = f" {secs}s"
--
++__all__ = [
++    "StatusLine",
++]
+ 
 -        left_parts = [f"{self._provider} · {self._model}"]
 -        # Optional advisor segment — appears next to provider/model
 -        # when ``/advisor`` is configured. Mode label reflects what
@@ -214,7 +218,7 @@ diff --git a/tui/widgets/status_line.py b/tui/widgets/status_line.py
 -                pass
 -        right = " · ".join(right_bits)
 -        return Text(f"{left}    {middle}    {cwd}    {right}")
--
+ 
 -    def _display_cwd(self) -> str:
 -        try:
 -            home = Path.home()
@@ -222,15 +226,6 @@ diff --git a/tui/widgets/status_line.py b/tui/widgets/status_line.py
 -            return f"~/{rel}" if str(rel) != "." else "~"
 -        except Exception:
 -            return str(self._workspace_root)
-+"""Facade — tui/widgets/status_line.py has been moved to clawcodex_ext (lazy proxy).
-+"""
-+from __future__ import annotations
-+
-+__all__ = [
-+    "StatusLine",
-+]
-+
-+
 +def __getattr__(name: str):
 +    import clawcodex_ext.tui.widgets.status_line as _mod
 +    if name in _mod.__dict__:

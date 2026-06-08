@@ -1,9 +1,10 @@
 diff --git a/entrypoints/headless.py b/entrypoints/headless.py
---- a/entrypoints/headless.py	2026-06-08 06:13:57.000000 +0000
-+++ b/entrypoints/headless.py	2026-06-08 09:35:57.833444 +0000
+--- a/entrypoints/headless.py	2026-06-08 10:57:22.761571 +0000
++++ b/entrypoints/headless.py	2026-06-08 10:56:43.539678 +0000
 @@ -1,667 +1,24 @@
 -"""Headless (non-interactive) entrypoint.
--
++"""Facade — entrypoints/headless.py has been moved to clawcodex_ext (lazy proxy).
+ 
 -Port of ``typescript/src/cli/print.ts``, scoped to the slice that matters for
 -Phase 1: run a single prompt (or a stream of prompts via stream-json stdin)
 -through the agent loop and emit the response in the requested output format.
@@ -25,10 +26,14 @@ diff --git a/entrypoints/headless.py b/entrypoints/headless.py
 -  prompts auto-deny — we never ``input()`` in headless mode.
 -* The agent loop is synchronous; we call it inside ``run_headless`` and
 -  translate events to NDJSON on the fly.
--"""
++Uses module-level __getattr__ to defer the ext import until
++the symbol is actually accessed at runtime, avoiding circular
++import chains when parent __init__.py files eagerly import
++submodules during package initialization.
+ """
 -
--from __future__ import annotations
--
+ from __future__ import annotations
+ 
 -import io
 -import os
 -import signal as _signal
@@ -654,11 +659,23 @@ diff --git a/entrypoints/headless.py b/entrypoints/headless.py
 -                )
 -
 -    return on_event
--
--
++__all__ = [
++    "HeadlessOptions",
++    "run_headless",
++]
+ 
+ 
 -def _jsonable(value):
 -    """Coerce arbitrary tool output into a JSON-safe shape."""
--
++def __getattr__(name: str):
++    """Lazy proxy — import from clawcodex_ext.entrypoints.headless on first access."""
++    import clawcodex_ext.entrypoints.headless as _mod
++    if name in _mod.__dict__:
++        val = _mod.__dict__[name]
++        globals()[name] = val  # cache for subsequent access
++        return val
++    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+ 
 -    if value is None or isinstance(value, (bool, int, float, str)):
 -        return value
 -    if isinstance(value, (list, tuple)):
@@ -669,27 +686,3 @@ diff --git a/entrypoints/headless.py b/entrypoints/headless.py
 -        return str(value)
 -    except Exception:
 -        return repr(value)
-+"""Facade — entrypoints/headless.py has been moved to clawcodex_ext (lazy proxy).
-+
-+Uses module-level __getattr__ to defer the ext import until
-+the symbol is actually accessed at runtime, avoiding circular
-+import chains when parent __init__.py files eagerly import
-+submodules during package initialization.
-+"""
-+from __future__ import annotations
-+
-+__all__ = [
-+    "HeadlessOptions",
-+    "run_headless",
-+]
-+
-+
-+def __getattr__(name: str):
-+    """Lazy proxy — import from clawcodex_ext.entrypoints.headless on first access."""
-+    import clawcodex_ext.entrypoints.headless as _mod
-+    if name in _mod.__dict__:
-+        val = _mod.__dict__[name]
-+        globals()[name] = val  # cache for subsequent access
-+        return val
-+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-+

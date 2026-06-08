@@ -1,6 +1,6 @@
 diff --git a/tui/screens/history_search.py b/tui/screens/history_search.py
---- a/tui/screens/history_search.py	2026-06-08 06:13:57.000000 +0000
-+++ b/tui/screens/history_search.py	2026-06-08 09:36:04.443438 +0000
+--- a/tui/screens/history_search.py	2026-06-08 10:57:27.567183 +0000
++++ b/tui/screens/history_search.py	2026-06-08 10:56:48.310808 +0000
 @@ -1,202 +1,18 @@
 -"""Prompt history fuzzy search dialog.
 -
@@ -12,10 +12,11 @@ diff --git a/tui/screens/history_search.py b/tui/screens/history_search.py
 -case-insensitive substring first, then subsequence match with a
 -penalty proportional to the gap between matched characters. That way
 -typing ``gst`` surfaces ``git status`` before ``greatest``.
--"""
++"""Facade — tui/screens/history_search.py has been moved to clawcodex_ext (lazy proxy).
+ """
 -
--from __future__ import annotations
--
+ from __future__ import annotations
+ 
 -from dataclasses import dataclass, field
 -from typing import Callable, Iterator, Sequence
 -
@@ -190,8 +191,13 @@ diff --git a/tui/screens/history_search.py b/tui/screens/history_search.py
 -        last_match = ti
 -        ti += 1
 -    return True, max(0, 500 - gap)
--
--
++__all__ = [
++    "HistoryEntry",
++    "HistorySearchScreen",
++    "fuzzy_score",
++]
+ 
+ 
 -def _rank_entries(
 -    entries: Sequence[HistoryEntry], query: str
 -) -> list[tuple[HistoryEntry, int]]:
@@ -204,17 +210,6 @@ diff --git a/tui/screens/history_search.py b/tui/screens/history_search.py
 -    # (so most recent entries win when scores are equal).
 -    scored.sort(key=lambda pair: pair[1], reverse=True)
 -    return scored
-+"""Facade — tui/screens/history_search.py has been moved to clawcodex_ext (lazy proxy).
-+"""
-+from __future__ import annotations
-+
-+__all__ = [
-+    "HistoryEntry",
-+    "HistorySearchScreen",
-+    "fuzzy_score",
-+]
-+
-+
 +def __getattr__(name: str):
 +    import clawcodex_ext.tui.screens.history_search as _mod
 +    if name in _mod.__dict__:

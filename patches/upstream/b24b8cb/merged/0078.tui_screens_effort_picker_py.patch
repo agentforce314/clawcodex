@@ -1,6 +1,6 @@
 diff --git a/tui/screens/effort_picker.py b/tui/screens/effort_picker.py
---- a/tui/screens/effort_picker.py	2026-06-08 06:13:57.000000 +0000
-+++ b/tui/screens/effort_picker.py	2026-06-08 09:36:04.407888 +0000
+--- a/tui/screens/effort_picker.py	2026-06-08 10:57:27.520736 +0000
++++ b/tui/screens/effort_picker.py	2026-06-08 10:56:48.295431 +0000
 @@ -1,91 +1,16 @@
 -"""Reasoning-effort picker dialog.
 -
@@ -9,10 +9,11 @@ diff --git a/tui/screens/effort_picker.py b/tui/screens/effort_picker.py
 -resolves with the selected value (``None`` means "auto"; Esc cancels
 -and also resolves with ``None`` but with ``persist=False`` — the caller
 -distinguishes via the second tuple element).
--"""
++"""Facade — tui/screens/effort_picker.py has been moved to clawcodex_ext (lazy proxy).
+ """
 -
--from __future__ import annotations
--
+ from __future__ import annotations
+ 
 -from typing import Callable, Iterator
 -
 -from textual.widget import Widget
@@ -77,7 +78,10 @@ diff --git a/tui/screens/effort_picker.py b/tui/screens/effort_picker.py
 -    def _post_mount(self) -> None:
 -        if self._select is not None:
 -            self._select.focus()
--
++__all__ = [
++    "EffortPickerScreen",
++]
+ 
 -    # ---- events ----
 -    def on_select_list_option_selected(self, event: SelectList.OptionSelected) -> None:
 -        value = str(event.option.value)
@@ -88,20 +92,11 @@ diff --git a/tui/screens/effort_picker.py b/tui/screens/effort_picker.py
 -            except Exception:
 -                pass
 -        self.dismiss((effort, True))
--
+ 
 -    def on_select_list_selection_cancelled(
 -        self, _: SelectList.SelectionCancelled
 -    ) -> None:
 -        self.dismiss((None, False))
-+"""Facade — tui/screens/effort_picker.py has been moved to clawcodex_ext (lazy proxy).
-+"""
-+from __future__ import annotations
-+
-+__all__ = [
-+    "EffortPickerScreen",
-+]
-+
-+
 +def __getattr__(name: str):
 +    import clawcodex_ext.tui.screens.effort_picker as _mod
 +    if name in _mod.__dict__:

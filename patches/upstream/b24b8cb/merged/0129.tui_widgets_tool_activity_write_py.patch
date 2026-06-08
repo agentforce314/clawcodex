@@ -1,23 +1,28 @@
 diff --git a/tui/widgets/tool_activity/write.py b/tui/widgets/tool_activity/write.py
---- a/tui/widgets/tool_activity/write.py	2026-06-08 06:13:57.000000 +0000
-+++ b/tui/widgets/tool_activity/write.py	2026-06-08 09:36:05.273118 +0000
+--- a/tui/widgets/tool_activity/write.py	2026-06-08 10:57:28.188703 +0000
++++ b/tui/widgets/tool_activity/write.py	2026-06-08 10:56:48.713277 +0000
 @@ -1,25 +1,16 @@
 -"""Write tool activity — shows target file and operation kind."""
 -
--from __future__ import annotations
--
++"""Facade — tui/widgets/tool_activity/write.py has been moved to clawcodex_ext (lazy proxy).
++"""
+ from __future__ import annotations
+ 
 -from typing import Any
 -
 -from rich.text import Text
 -
 -from .base import ToolActivity
 -
--
++__all__ = [
++    "WriteActivity",
++]
+ 
 -class WriteActivity(ToolActivity):
 -    def inflight_text(self) -> Text:
 -        path = self.tool_input.get("file_path") or self.tool_input.get("filePath") or ""
 -        return Text(f"write {path}" if path else "write …", style="dim")
--
+ 
 -    def result_body(self, output: Any, *, is_error: bool) -> Any | None:
 -        if not isinstance(output, dict):
 -            return None
@@ -27,15 +32,6 @@ diff --git a/tui/widgets/tool_activity/write.py b/tui/widgets/tool_activity/writ
 -        if not summary:
 -            return None
 -        return Text(summary, style="red" if is_error else "green")
-+"""Facade — tui/widgets/tool_activity/write.py has been moved to clawcodex_ext (lazy proxy).
-+"""
-+from __future__ import annotations
-+
-+__all__ = [
-+    "WriteActivity",
-+]
-+
-+
 +def __getattr__(name: str):
 +    import clawcodex_ext.tui.widgets.tool_activity.write as _mod
 +    if name in _mod.__dict__:

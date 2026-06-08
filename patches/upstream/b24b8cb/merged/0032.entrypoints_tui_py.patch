@@ -1,9 +1,10 @@
 diff --git a/entrypoints/tui.py b/entrypoints/tui.py
---- a/entrypoints/tui.py	2026-06-08 06:13:57.000000 +0000
-+++ b/entrypoints/tui.py	2026-06-08 09:35:57.879244 +0000
+--- a/entrypoints/tui.py	2026-06-08 10:57:22.785487 +0000
++++ b/entrypoints/tui.py	2026-06-08 10:56:43.566027 +0000
 @@ -1,240 +1,25 @@
 -"""TUI (Textual) entrypoint.
--
++"""Facade — entrypoints/tui.py has been moved to clawcodex_ext (lazy proxy).
+ 
 -Phase 11 counterpart to :mod:`src.entrypoints.headless`. Where ``headless``
 -emits NDJSON for pipes, ``tui`` owns the interactive experience: a
 -retained-mode Textual UI matching the layout of
@@ -13,10 +14,14 @@ diff --git a/entrypoints/tui.py b/entrypoints/tui.py
 -*outside* the Textual app so unit tests can construct a :class:`TUIOptions`,
 -build the app manually, and drive it with :meth:`textual.app.App.run_test`
 -without touching real network I/O.
--"""
++Uses module-level __getattr__ to defer the ext import until
++the symbol is actually accessed at runtime, avoiding circular
++import chains when parent __init__.py files eagerly import
++submodules during package initialization.
+ """
 -
--from __future__ import annotations
--
+ from __future__ import annotations
+ 
 -import os
 -import sys
 -from dataclasses import dataclass
@@ -222,15 +227,28 @@ diff --git a/entrypoints/tui.py b/entrypoints/tui.py
 -        return False
 -    return True
 -
--
++__all__ = [
++    "TUIOptions",
++    "run_tui",
++    "should_use_tui",
++]
+ 
 -def _textual_available() -> bool:
 -    try:
 -        import textual  # noqa: F401
 -        return True
 -    except Exception:
 -        return False
--
--
+ 
++def __getattr__(name: str):
++    """Lazy proxy — import from clawcodex_ext.entrypoints.tui on first access."""
++    import clawcodex_ext.entrypoints.tui as _mod
++    if name in _mod.__dict__:
++        val = _mod.__dict__[name]
++        globals()[name] = val  # cache for subsequent access
++        return val
++    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+ 
 -def _filter_registry(registry, *, keep: Callable[[str], bool]) -> None:
 -    names = [t.name for t in registry.list_tools()]
 -    for name in names:
@@ -242,28 +260,3 @@ diff --git a/entrypoints/tui.py b/entrypoints/tui.py
 -                    del registry._tools[name]  # type: ignore[attr-defined]
 -                except Exception:
 -                    pass
-+"""Facade — entrypoints/tui.py has been moved to clawcodex_ext (lazy proxy).
-+
-+Uses module-level __getattr__ to defer the ext import until
-+the symbol is actually accessed at runtime, avoiding circular
-+import chains when parent __init__.py files eagerly import
-+submodules during package initialization.
-+"""
-+from __future__ import annotations
-+
-+__all__ = [
-+    "TUIOptions",
-+    "run_tui",
-+    "should_use_tui",
-+]
-+
-+
-+def __getattr__(name: str):
-+    """Lazy proxy — import from clawcodex_ext.entrypoints.tui on first access."""
-+    import clawcodex_ext.entrypoints.tui as _mod
-+    if name in _mod.__dict__:
-+        val = _mod.__dict__[name]
-+        globals()[name] = val  # cache for subsequent access
-+        return val
-+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-+

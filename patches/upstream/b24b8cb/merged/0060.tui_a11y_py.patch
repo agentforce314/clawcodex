@@ -1,6 +1,6 @@
 diff --git a/tui/a11y.py b/tui/a11y.py
---- a/tui/a11y.py	2026-06-08 06:13:57.000000 +0000
-+++ b/tui/a11y.py	2026-06-08 09:36:04.051675 +0000
+--- a/tui/a11y.py	2026-06-08 10:57:27.302723 +0000
++++ b/tui/a11y.py	2026-06-08 10:56:48.166534 +0000
 @@ -1,251 +1,21 @@
 -"""Accessibility helpers for the Claw Codex TUI.
 -
@@ -33,10 +33,11 @@ diff --git a/tui/a11y.py b/tui/a11y.py
 -feature (an env flag) or upgrade the channel (e.g. write to a named
 -pipe for external screen readers) later without touching the call
 -sites.
--"""
++"""Facade — tui/a11y.py has been moved to clawcodex_ext (lazy proxy).
+ """
 -
--from __future__ import annotations
--
+ from __future__ import annotations
+ 
 -import collections
 -from dataclasses import dataclass
 -from typing import Literal
@@ -244,27 +245,17 @@ diff --git a/tui/a11y.py b/tui/a11y.py
 -        pass
 -
 -
--__all__ = [
--    "Announcement",
+ __all__ = [
+     "Announcement",
 -    "AnnouncementLevel",
 -    "Announcer",
--    "LiveRegion",
+     "LiveRegion",
 -    "aria_label",
--    "describe_option",
--    "describe_status",
--]
-+"""Facade — tui/a11y.py has been moved to clawcodex_ext (lazy proxy).
-+"""
-+from __future__ import annotations
-+
-+__all__ = [
-+    "Announcement",
-+    "LiveRegion",
 +    "Announcer",
-+    "describe_option",
-+    "describe_status",
+     "describe_option",
+     "describe_status",
 +    "aria_label",
-+]
+ ]
 +
 +
 +def __getattr__(name: str):

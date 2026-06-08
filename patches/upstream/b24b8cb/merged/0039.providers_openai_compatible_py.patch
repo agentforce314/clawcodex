@@ -1,6 +1,6 @@
 diff --git a/providers/openai_compatible.py b/providers/openai_compatible.py
---- a/providers/openai_compatible.py	2026-06-08 06:13:57.000000 +0000
-+++ b/providers/openai_compatible.py	2026-06-08 00:47:43.223486 +0000
+--- a/providers/openai_compatible.py	2026-06-08 10:57:23.750077 +0000
++++ b/providers/openai_compatible.py	2026-06-08 11:45:19.065207 +0000
 @@ -1,750 +1,755 @@
 -"""OpenAI-compatible provider base class.
 -

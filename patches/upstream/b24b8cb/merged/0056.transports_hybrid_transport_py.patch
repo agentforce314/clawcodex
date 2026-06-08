@@ -1,6 +1,6 @@
 diff --git a/transports/hybrid_transport.py b/transports/hybrid_transport.py
---- a/transports/hybrid_transport.py	2026-06-08 06:13:57.000000 +0000
-+++ b/transports/hybrid_transport.py	2026-06-08 00:47:43.250299 +0000
+--- a/transports/hybrid_transport.py	2026-06-08 10:57:27.174330 +0000
++++ b/transports/hybrid_transport.py	2026-06-08 11:45:19.075347 +0000
 @@ -1,388 +1,301 @@
 -"""Hybrid transport — WebSocket reads + HTTP POST writes.
 -

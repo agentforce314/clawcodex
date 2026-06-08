@@ -1,6 +1,6 @@
 diff --git a/bridge/repl_bridge.py b/bridge/repl_bridge.py
---- a/bridge/repl_bridge.py	2026-06-08 06:13:57.000000 +0000
-+++ b/bridge/repl_bridge.py	2026-06-08 00:47:43.177598 +0000
+--- a/bridge/repl_bridge.py	2026-06-08 10:57:21.657602 +0000
++++ b/bridge/repl_bridge.py	2026-06-08 11:45:19.039700 +0000
 @@ -1,1394 +1,1085 @@
 -"""Env-based bridge orchestrator — Phase 6 MVP slice.
 -

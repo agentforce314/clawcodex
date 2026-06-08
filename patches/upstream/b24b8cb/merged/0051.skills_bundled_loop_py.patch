@@ -1,6 +1,6 @@
 diff --git a/skills/bundled/loop.py b/skills/bundled/loop.py
---- a/skills/bundled/loop.py	2026-06-08 06:13:57.000000 +0000
-+++ b/skills/bundled/loop.py	2026-06-08 00:47:43.239558 +0000
+--- a/skills/bundled/loop.py	2026-06-08 10:57:26.013524 +0000
++++ b/skills/bundled/loop.py	2026-06-08 11:45:19.073825 +0000
 @@ -1,272 +1,272 @@
 -"""Bundled ``/loop`` skill — port of ``bundled/loop.ts``.
 -

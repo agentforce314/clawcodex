@@ -1,6 +1,6 @@
 diff --git a/tui/vim_buffer.py b/tui/vim_buffer.py
---- a/tui/vim_buffer.py	2026-06-08 06:13:57.000000 +0000
-+++ b/tui/vim_buffer.py	2026-06-08 09:36:04.661181 +0000
+--- a/tui/vim_buffer.py	2026-06-08 10:57:27.750308 +0000
++++ b/tui/vim_buffer.py	2026-06-08 10:56:48.430651 +0000
 @@ -1,227 +1,18 @@
 -"""Multi-line buffer model + cursor coordinate type for vim mode.
 -
@@ -21,10 +21,11 @@ diff --git a/tui/vim_buffer.py b/tui/vim_buffer.py
 -* :class:`Cursor` — frozen ``(row, col)`` coordinate.
 -* :class:`Range` — frozen ``[start, end)`` half-open span.
 -* :class:`VimBuffer` — multi-line buffer with cursor + helpers.
--"""
++"""Facade — tui/vim_buffer.py has been moved to clawcodex_ext (lazy proxy).
+ """
 -
--from __future__ import annotations
--
+ from __future__ import annotations
+ 
 -from dataclasses import dataclass
 -
 -
@@ -226,20 +227,14 @@ diff --git a/tui/vim_buffer.py b/tui/vim_buffer.py
 -    def move_to_buffer_end(self) -> None:
 -        last_row = len(self._lines) - 1
 -        self.set_cursor(last_row, len(self._lines[last_row]))
--
--
--__all__ = ["Cursor", "Range", "VimBuffer"]
-+"""Facade — tui/vim_buffer.py has been moved to clawcodex_ext (lazy proxy).
-+"""
-+from __future__ import annotations
-+
 +__all__ = [
 +    "Cursor",
 +    "Range",
 +    "VimBuffer",
 +]
-+
-+
+ 
+ 
+-__all__ = ["Cursor", "Range", "VimBuffer"]
 +def __getattr__(name: str):
 +    import clawcodex_ext.tui.vim_buffer as _mod
 +    if name in _mod.__dict__:

@@ -1,6 +1,6 @@
 diff --git a/coordinator/mode.py b/coordinator/mode.py
---- a/coordinator/mode.py	2026-06-08 06:13:57.000000 +0000
-+++ b/coordinator/mode.py	2026-06-08 00:47:43.197813 +0000
+--- a/coordinator/mode.py	2026-06-08 10:57:22.662911 +0000
++++ b/coordinator/mode.py	2026-06-08 11:45:19.049905 +0000
 @@ -1,222 +1,227 @@
 -"""Coordinator-mode gates and tool-set filters — Chunk G / WI-8.1-8.3.
 -

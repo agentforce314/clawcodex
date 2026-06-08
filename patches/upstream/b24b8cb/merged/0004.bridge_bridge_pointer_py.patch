@@ -1,6 +1,6 @@
 diff --git a/bridge/bridge_pointer.py b/bridge/bridge_pointer.py
---- a/bridge/bridge_pointer.py	2026-06-08 06:13:57.000000 +0000
-+++ b/bridge/bridge_pointer.py	2026-06-08 00:47:43.176469 +0000
+--- a/bridge/bridge_pointer.py	2026-06-08 10:57:21.372519 +0000
++++ b/bridge/bridge_pointer.py	2026-06-08 11:45:19.039700 +0000
 @@ -1,259 +1,267 @@
 -"""Crash-recovery pointer for perpetual-mode bridges.
 -

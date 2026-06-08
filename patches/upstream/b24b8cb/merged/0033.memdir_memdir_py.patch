@@ -1,6 +1,6 @@
 diff --git a/memdir/memdir.py b/memdir/memdir.py
---- a/memdir/memdir.py	2026-06-08 06:13:57.000000 +0000
-+++ b/memdir/memdir.py	2026-06-08 00:47:43.202605 +0000
+--- a/memdir/memdir.py	2026-06-08 10:57:23.014529 +0000
++++ b/memdir/memdir.py	2026-06-08 11:45:19.051425 +0000
 @@ -1,328 +1,444 @@
 -"""Auto-memory prompt builders and ``MEMORY.md`` index handling.
 -

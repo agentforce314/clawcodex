@@ -1,6 +1,6 @@
 diff --git a/providers/base.py b/providers/base.py
---- a/providers/base.py	2026-06-08 06:13:57.000000 +0000
-+++ b/providers/base.py	2026-06-08 00:47:43.221287 +0000
+--- a/providers/base.py	2026-06-08 10:57:23.630070 +0000
++++ b/providers/base.py	2026-06-08 11:45:19.064199 +0000
 @@ -1,175 +1,177 @@
 -"""Base provider abstract class for LLM providers."""
 -

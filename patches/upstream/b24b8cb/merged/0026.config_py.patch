@@ -1,6 +1,6 @@
 diff --git a/config.py b/config.py
---- a/config.py	2026-06-08 06:13:57.000000 +0000
-+++ b/config.py	2026-06-08 00:47:43.194141 +0000
+--- a/config.py	2026-06-08 10:57:22.464998 +0000
++++ b/config.py	2026-06-08 11:45:19.048383 +0000
 @@ -1,369 +1,341 @@
 -"""Configuration management for Claw Codex.
 -

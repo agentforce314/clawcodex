@@ -1,6 +1,6 @@
 diff --git a/tui/markdown_cache.py b/tui/markdown_cache.py
---- a/tui/markdown_cache.py	2026-06-08 06:13:57.000000 +0000
-+++ b/tui/markdown_cache.py	2026-06-08 09:36:04.228251 +0000
+--- a/tui/markdown_cache.py	2026-06-08 10:57:27.444935 +0000
++++ b/tui/markdown_cache.py	2026-06-08 10:56:48.233768 +0000
 @@ -1,262 +1,19 @@
 -"""LRU cache for ``rich.markdown.Markdown`` renders + fast-path detection.
 -
@@ -25,10 +25,11 @@ diff --git a/tui/markdown_cache.py b/tui/markdown_cache.py
 -regex (in :mod:`src.tui.widgets.messages.assistant_text`) is the real
 -cost-saver; the LRU primarily covers re-render scenarios. The benchmark in
 -``tests/tui/test_streaming_markdown.py`` exercises both paths.
--"""
++"""Facade — tui/markdown_cache.py has been moved to clawcodex_ext (lazy proxy).
+ """
 -
--from __future__ import annotations
--
+ from __future__ import annotations
+ 
 -import hashlib
 -import logging
 -import re
@@ -258,22 +259,13 @@ diff --git a/tui/markdown_cache.py b/tui/markdown_cache.py
 -        _DEFAULT_CACHE = None
 -
 -
--__all__ = [
--    "MarkdownCache",
--    "get_markdown_cache",
--    "has_markdown_syntax",
--    "reset_markdown_cache_for_tests",
--]
-+"""Facade — tui/markdown_cache.py has been moved to clawcodex_ext (lazy proxy).
-+"""
-+from __future__ import annotations
-+
-+__all__ = [
+ __all__ = [
 +    "has_markdown_syntax",
-+    "MarkdownCache",
-+    "get_markdown_cache",
-+    "reset_markdown_cache_for_tests",
-+]
+     "MarkdownCache",
+     "get_markdown_cache",
+-    "has_markdown_syntax",
+     "reset_markdown_cache_for_tests",
+ ]
 +
 +
 +def __getattr__(name: str):

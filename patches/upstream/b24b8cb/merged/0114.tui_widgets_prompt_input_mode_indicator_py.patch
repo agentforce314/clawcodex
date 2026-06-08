@@ -1,6 +1,6 @@
 diff --git a/tui/widgets/prompt_input_mode_indicator.py b/tui/widgets/prompt_input_mode_indicator.py
---- a/tui/widgets/prompt_input_mode_indicator.py	2026-06-08 06:13:57.000000 +0000
-+++ b/tui/widgets/prompt_input_mode_indicator.py	2026-06-08 09:36:05.004728 +0000
+--- a/tui/widgets/prompt_input_mode_indicator.py	2026-06-08 10:57:28.020108 +0000
++++ b/tui/widgets/prompt_input_mode_indicator.py	2026-06-08 10:56:48.596087 +0000
 @@ -1,135 +1,16 @@
 -"""Vim-mode indicator for the prompt input.
 -
@@ -13,10 +13,11 @@ diff --git a/tui/widgets/prompt_input_mode_indicator.py b/tui/widgets/prompt_inp
 -Round 2 / WI-R2.2 of the ch13 terminal-UI refactor. The widget subscribes
 -to :meth:`VimState.add_mode_listener` on mount so it re-renders synchronously
 -on every mode transition without polling.
--"""
++"""Facade — tui/widgets/prompt_input_mode_indicator.py has been moved to clawcodex_ext (lazy proxy).
+ """
 -
--from __future__ import annotations
--
+ from __future__ import annotations
+ 
 -from typing import Callable
 -
 -from rich.text import Text
@@ -134,18 +135,12 @@ diff --git a/tui/widgets/prompt_input_mode_indicator.py b/tui/widgets/prompt_inp
 -        return "[NORMAL]", "-normal"
 -    # Fallback for forward compatibility with multi-line vim modes.
 -    return "[VISUAL]", "-visual"
--
--
--__all__ = ["PromptInputModeIndicator"]
-+"""Facade — tui/widgets/prompt_input_mode_indicator.py has been moved to clawcodex_ext (lazy proxy).
-+"""
-+from __future__ import annotations
-+
 +__all__ = [
 +    "PromptInputModeIndicator",
 +]
-+
-+
+ 
+ 
+-__all__ = ["PromptInputModeIndicator"]
 +def __getattr__(name: str):
 +    import clawcodex_ext.tui.widgets.prompt_input_mode_indicator as _mod
 +    if name in _mod.__dict__:

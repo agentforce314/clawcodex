@@ -1,6 +1,6 @@
 diff --git a/tui/paste.py b/tui/paste.py
---- a/tui/paste.py	2026-06-08 06:13:57.000000 +0000
-+++ b/tui/paste.py	2026-06-08 09:36:04.266131 +0000
+--- a/tui/paste.py	2026-06-08 10:57:27.468141 +0000
++++ b/tui/paste.py	2026-06-08 10:56:48.248438 +0000
 @@ -1,177 +1,18 @@
 -"""Bracketed-paste classification helpers.
 -
@@ -28,10 +28,11 @@ diff --git a/tui/paste.py b/tui/paste.py
 -No Textual import here — the helpers are unit-testable in isolation and
 -shared by both the prompt widget and any future paste-aware surface
 -(transcript search, message-selector inline editor).
--"""
++"""Facade — tui/paste.py has been moved to clawcodex_ext (lazy proxy).
+ """
 -
--from __future__ import annotations
--
+ from __future__ import annotations
+ 
 -import re
 -from dataclasses import dataclass
 -
@@ -172,22 +173,14 @@ diff --git a/tui/paste.py b/tui/paste.py
 -    )
 -
 -
--__all__ = [
+ __all__ = [
 -    "IMAGE_EXTENSIONS",
 -    "PASTE_THRESHOLD",
--    "PasteInfo",
+     "PasteInfo",
 -    "classify_paste",
--    "detect_image_drag",
--]
-+"""Facade — tui/paste.py has been moved to clawcodex_ext (lazy proxy).
-+"""
-+from __future__ import annotations
-+
-+__all__ = [
-+    "PasteInfo",
-+    "detect_image_drag",
+     "detect_image_drag",
 +    "classify_paste",
-+]
+ ]
 +
 +
 +def __getattr__(name: str):

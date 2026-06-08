@@ -1,6 +1,6 @@
 diff --git a/buddy/feature.py b/buddy/feature.py
---- a/buddy/feature.py	2026-06-08 06:13:57.000000 +0000
-+++ b/buddy/feature.py	2026-06-08 00:47:43.181396 +0000
+--- a/buddy/feature.py	2026-06-08 10:57:21.973537 +0000
++++ b/buddy/feature.py	2026-06-08 11:45:19.042730 +0000
 @@ -1,18 +1,12 @@
 -"""Buddy feature gate. Port of ``typescript/src/buddy/feature.ts``.
 -

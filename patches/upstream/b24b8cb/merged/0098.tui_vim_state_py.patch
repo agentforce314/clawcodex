@@ -1,6 +1,6 @@
 diff --git a/tui/vim_state.py b/tui/vim_state.py
---- a/tui/vim_state.py	2026-06-08 06:13:57.000000 +0000
-+++ b/tui/vim_state.py	2026-06-08 09:36:04.736684 +0000
+--- a/tui/vim_state.py	2026-06-08 10:57:27.830394 +0000
++++ b/tui/vim_state.py	2026-06-08 10:56:48.466835 +0000
 @@ -1,965 +1,29 @@
 -"""Discriminated `CommandState` union + pure `transition()` for vim Normal mode.
 -
@@ -29,10 +29,11 @@ diff --git a/tui/vim_state.py b/tui/vim_state.py
 -The exhaustive ``match`` in :func:`transition` covers all 11 variants;
 -a 12th variant added later will trip the ``assert_never`` guard in debug
 -builds.
--"""
++"""Facade — tui/vim_state.py has been moved to clawcodex_ext (lazy proxy).
+ """
 -
--from __future__ import annotations
--
+ from __future__ import annotations
+ 
 -from dataclasses import dataclass
 -from typing import TYPE_CHECKING, Callable, Literal, Union
 -
@@ -946,47 +947,34 @@ diff --git a/tui/vim_state.py b/tui/vim_state.py
 -    return go
 -
 -
--__all__ = [
+ __all__ = [
 -    "CountState",
 -    "CommandState",
 -    "FindState",
 -    "FindType",
 -    "GState",
--    "IdleState",
+     "IdleState",
 -    "IndentState",
 -    "MAX_VIM_COUNT",
 -    "Operator",
--    "OperatorCountState",
--    "OperatorFindState",
--    "OperatorGState",
--    "OperatorState",
--    "OperatorTextObjState",
--    "ReplaceState",
--    "TextObjScope",
--    "TransitionContext",
--    "TransitionResult",
--    "transition",
--]
-+"""Facade — tui/vim_state.py has been moved to clawcodex_ext (lazy proxy).
-+"""
-+from __future__ import annotations
-+
-+__all__ = [
-+    "IdleState",
 +    "CountState",
 +    "OperatorState",
-+    "OperatorCountState",
-+    "OperatorFindState",
-+    "OperatorTextObjState",
+     "OperatorCountState",
+     "OperatorFindState",
+-    "OperatorGState",
+-    "OperatorState",
+     "OperatorTextObjState",
 +    "FindState",
 +    "GState",
 +    "OperatorGState",
-+    "ReplaceState",
+     "ReplaceState",
+-    "TextObjScope",
+-    "TransitionContext",
 +    "IndentState",
-+    "TransitionResult",
+     "TransitionResult",
 +    "TransitionContext",
-+    "transition",
-+]
+     "transition",
+ ]
 +
 +
 +def __getattr__(name: str):

@@ -1,6 +1,6 @@
 diff --git a/tui/keybindings.py b/tui/keybindings.py
---- a/tui/keybindings.py	2026-06-08 06:13:57.000000 +0000
-+++ b/tui/keybindings.py	2026-06-08 09:36:04.208709 +0000
+--- a/tui/keybindings.py	2026-06-08 10:57:27.432124 +0000
++++ b/tui/keybindings.py	2026-06-08 10:56:48.227879 +0000
 @@ -1,119 +1,19 @@
 -"""App-level keybinding chord tracker.
 -
@@ -16,10 +16,11 @@ diff --git a/tui/keybindings.py b/tui/keybindings.py
 -``"message.prev"``, …) which the app dispatches. Unknown chords time
 -out after ``timeout_seconds`` and are forgotten silently so the user
 -does not accumulate broken state.
--"""
++"""Facade — tui/keybindings.py has been moved to clawcodex_ext (lazy proxy).
+ """
 -
--from __future__ import annotations
--
+ from __future__ import annotations
+ 
 -import time
 -from dataclasses import dataclass, field
 -from typing import Callable
@@ -115,22 +116,12 @@ diff --git a/tui/keybindings.py b/tui/keybindings.py
 -    return tracker
 -
 -
--__all__ = [
--    "ChordBinding",
--    "ChordTracker",
--    "default_bindings",
--    "make_default_tracker",
--]
-+"""Facade — tui/keybindings.py has been moved to clawcodex_ext (lazy proxy).
-+"""
-+from __future__ import annotations
-+
-+__all__ = [
-+    "ChordBinding",
-+    "ChordTracker",
-+    "default_bindings",
-+    "make_default_tracker",
-+]
+ __all__ = [
+     "ChordBinding",
+     "ChordTracker",
+     "default_bindings",
+     "make_default_tracker",
+ ]
 +
 +
 +def __getattr__(name: str):

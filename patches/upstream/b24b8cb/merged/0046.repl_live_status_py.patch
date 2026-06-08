@@ -1,6 +1,6 @@
 diff --git a/repl/live_status.py b/repl/live_status.py
---- a/repl/live_status.py	2026-06-08 06:13:57.000000 +0000
-+++ b/repl/live_status.py	2026-06-08 00:47:43.228724 +0000
+--- a/repl/live_status.py	2026-06-08 10:57:24.552662 +0000
++++ b/repl/live_status.py	2026-06-08 11:45:19.069266 +0000
 @@ -1,474 +1,552 @@
 -"""Live spinner + active input field for the REPL's ``chat()`` body.
 -

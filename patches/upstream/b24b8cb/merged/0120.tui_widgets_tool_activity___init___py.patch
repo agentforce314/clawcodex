@@ -1,6 +1,6 @@
 diff --git a/tui/widgets/tool_activity/__init__.py b/tui/widgets/tool_activity/__init__.py
---- a/tui/widgets/tool_activity/__init__.py	2026-06-08 06:13:57.000000 +0000
-+++ b/tui/widgets/tool_activity/__init__.py	2026-06-08 09:36:05.109998 +0000
+--- a/tui/widgets/tool_activity/__init__.py	2026-06-08 10:57:28.200381 +0000
++++ b/tui/widgets/tool_activity/__init__.py	2026-06-08 10:56:48.722581 +0000
 @@ -1,65 +1,16 @@
 -"""Per-tool activity widgets.
 -
@@ -16,10 +16,11 @@ diff --git a/tui/widgets/tool_activity/__init__.py b/tui/widgets/tool_activity/_
 -  :class:`AssistantToolUseMessage` when the agent loop finishes the
 -  tool, switching the body from its in-flight preview to the final
 -  summary.
--"""
++"""Facade — tui/widgets/tool_activity/__init__.py has been moved to clawcodex_ext (lazy proxy).
+ """
 -
--from __future__ import annotations
--
+ from __future__ import annotations
+ 
 -from .base import ToolActivity
 -from .default import DefaultToolActivity
 -from .bash import BashActivity
@@ -55,7 +56,7 @@ diff --git a/tui/widgets/tool_activity/__init__.py b/tui/widgets/tool_activity/_
 -    return cls(tool_name=tool_name, tool_input=tool_input or {})
 -
 -
--__all__ = [
+ __all__ = [
 -    "ToolActivity",
 -    "DefaultToolActivity",
 -    "BashActivity",
@@ -65,15 +66,8 @@ diff --git a/tui/widgets/tool_activity/__init__.py b/tui/widgets/tool_activity/_
 -    "GrepActivity",
 -    "GlobActivity",
 -    "TaskActivity",
--    "build_tool_activity",
--]
-+"""Facade — tui/widgets/tool_activity/__init__.py has been moved to clawcodex_ext (lazy proxy).
-+"""
-+from __future__ import annotations
-+
-+__all__ = [
-+    "build_tool_activity",
-+]
+     "build_tool_activity",
+ ]
 +
 +
 +def __getattr__(name: str):

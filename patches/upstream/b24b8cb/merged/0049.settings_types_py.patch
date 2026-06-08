@@ -1,6 +1,6 @@
 diff --git a/settings/types.py b/settings/types.py
---- a/settings/types.py	2026-06-08 06:13:57.000000 +0000
-+++ b/settings/types.py	2026-06-08 00:47:43.235722 +0000
+--- a/settings/types.py	2026-06-08 10:57:25.956455 +0000
++++ b/settings/types.py	2026-06-08 11:45:19.072305 +0000
 @@ -1,198 +1,294 @@
 -"""Settings schema types matching TypeScript settings/types.ts."""
 -

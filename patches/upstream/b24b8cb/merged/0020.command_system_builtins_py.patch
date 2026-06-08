@@ -1,15 +1,16 @@
 diff --git a/command_system/builtins.py b/command_system/builtins.py
---- a/command_system/builtins.py	2026-06-08 06:13:57.000000 +0000
-+++ b/command_system/builtins.py	2026-06-08 09:35:57.332700 +0000
+--- a/command_system/builtins.py	2026-06-08 10:57:22.187860 +0000
++++ b/command_system/builtins.py	2026-06-08 10:56:43.198964 +0000
 @@ -1,1302 +1,29 @@
--"""
++"""Facade — command_system/builtins.py has been moved to clawcodex_ext (lazy proxy).
+ """
 -Built-in commands for Claw Codex.
 -
 -Implements core commands like /help, /clear, /exit, /skills, etc.
 -"""
 -
--from __future__ import annotations
--
+ from __future__ import annotations
+ 
 -import asyncio
 -import sys
 -from pathlib import Path
@@ -1304,10 +1305,6 @@ diff --git a/command_system/builtins.py b/command_system/builtins.py
 -        command_input += f" {args}"
 -
 -    return await engine.execute(command_input)
-+"""Facade — command_system/builtins.py has been moved to clawcodex_ext (lazy proxy).
-+"""
-+from __future__ import annotations
-+
 +__all__ = [
 +    "clear_command_call",
 +    "help_command_call",

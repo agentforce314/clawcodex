@@ -1,6 +1,6 @@
 diff --git a/providers/anthropic_provider.py b/providers/anthropic_provider.py
---- a/providers/anthropic_provider.py	2026-06-08 06:13:57.000000 +0000
-+++ b/providers/anthropic_provider.py	2026-06-08 00:47:43.220188 +0000
+--- a/providers/anthropic_provider.py	2026-06-08 10:57:23.618137 +0000
++++ b/providers/anthropic_provider.py	2026-06-08 11:45:19.064199 +0000
 @@ -1,465 +1,465 @@
 -"""Anthropic provider implementation."""
 -

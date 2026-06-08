@@ -1,6 +1,6 @@
 diff --git a/buddy/sprites.py b/buddy/sprites.py
---- a/buddy/sprites.py	2026-06-08 06:13:57.000000 +0000
-+++ b/buddy/sprites.py	2026-06-08 00:47:43.184599 +0000
+--- a/buddy/sprites.py	2026-06-08 10:57:22.032227 +0000
++++ b/buddy/sprites.py	2026-06-08 11:45:19.045341 +0000
 @@ -1,530 +1,530 @@
 -"""ASCII sprite library. Port of ``typescript/src/buddy/sprites.ts``.
 -

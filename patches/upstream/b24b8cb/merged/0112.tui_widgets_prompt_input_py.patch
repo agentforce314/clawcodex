@@ -1,6 +1,6 @@
 diff --git a/tui/widgets/prompt_input.py b/tui/widgets/prompt_input.py
---- a/tui/widgets/prompt_input.py	2026-06-08 06:13:57.000000 +0000
-+++ b/tui/widgets/prompt_input.py	2026-06-08 09:36:04.973329 +0000
+--- a/tui/widgets/prompt_input.py	2026-06-08 10:57:27.996791 +0000
++++ b/tui/widgets/prompt_input.py	2026-06-08 10:56:48.581490 +0000
 @@ -1,637 +1,17 @@
 -"""Prompt input widget — bottom ``❯`` line with slash palette + history.
 -
@@ -19,10 +19,11 @@ diff --git a/tui/widgets/prompt_input.py b/tui/widgets/prompt_input.py
 -Phase 1 deliberately keeps the implementation single-line-in-practice
 -(using Textual's ``Input``) but exposes :meth:`set_multiline` for
 -Phase 2 to swap in a ``TextArea`` without changing the public surface.
--"""
++"""Facade — tui/widgets/prompt_input.py has been moved to clawcodex_ext (lazy proxy).
+ """
 -
--from __future__ import annotations
--
+ from __future__ import annotations
+ 
 -from dataclasses import dataclass
 -from typing import Any, Callable
 -
@@ -613,13 +614,17 @@ diff --git a/tui/widgets/prompt_input.py b/tui/widgets/prompt_input.py
 -
 -def _current_slash_token(text_before_cursor: str) -> tuple[str | None, int]:
 -    """Return ``(token, start_idx)`` for the slash command under the cursor.
--
++__all__ = [
++    "PromptSubmitted",
++    "PromptInput",
++]
+ 
 -    Semantics locked in by :mod:`tests.tui.test_slash_token_parser`: a
 -    slash token is a ``/word`` that either starts at the beginning of
 -    the buffer or is preceded by whitespace. A slash followed by a
 -    space has already been "committed" and does not re-open the popup.
 -    """
--
+ 
 -    text = text_before_cursor
 -    if not text:
 -        return None, 0
@@ -639,16 +644,6 @@ diff --git a/tui/widgets/prompt_input.py b/tui/widgets/prompt_input.py
 -        if ch.isspace():
 -            return None, 0
 -    return None, 0
-+"""Facade — tui/widgets/prompt_input.py has been moved to clawcodex_ext (lazy proxy).
-+"""
-+from __future__ import annotations
-+
-+__all__ = [
-+    "PromptSubmitted",
-+    "PromptInput",
-+]
-+
-+
 +def __getattr__(name: str):
 +    import clawcodex_ext.tui.widgets.prompt_input as _mod
 +    if name in _mod.__dict__:

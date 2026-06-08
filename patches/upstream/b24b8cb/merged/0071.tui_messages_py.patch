@@ -1,6 +1,6 @@
 diff --git a/tui/messages.py b/tui/messages.py
---- a/tui/messages.py	2026-06-08 06:13:57.000000 +0000
-+++ b/tui/messages.py	2026-06-08 09:36:04.246613 +0000
+--- a/tui/messages.py	2026-06-08 10:57:27.457345 +0000
++++ b/tui/messages.py	2026-06-08 10:56:48.241371 +0000
 @@ -1,194 +1,30 @@
 -"""Textual ``Message`` subclasses used to push events from the agent-loop
 -worker thread (and other background tasks) into the UI.
@@ -26,10 +26,11 @@ diff --git a/tui/messages.py b/tui/messages.py
 -* ``StateChanged`` — a coarse "something in :class:`AppState` changed"
 -  signal used by status / transcript widgets that bind to many fields
 -  at once (we coalesce instead of emitting one message per field).
--"""
++"""Facade — tui/messages.py has been moved to clawcodex_ext (lazy proxy).
+ """
 -
--from __future__ import annotations
--
+ from __future__ import annotations
+ 
 -from dataclasses import dataclass, field
 -from typing import Any
 -
@@ -196,10 +197,6 @@ diff --git a/tui/messages.py b/tui/messages.py
 -    """
 -
 -    info: PasteInfo
-+"""Facade — tui/messages.py has been moved to clawcodex_ext (lazy proxy).
-+"""
-+from __future__ import annotations
-+
 +__all__ = [
 +    "AgentRunStarted",
 +    "AssistantChunk",

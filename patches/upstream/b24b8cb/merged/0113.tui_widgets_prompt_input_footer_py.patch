@@ -1,6 +1,6 @@
 diff --git a/tui/widgets/prompt_input_footer.py b/tui/widgets/prompt_input_footer.py
---- a/tui/widgets/prompt_input_footer.py	2026-06-08 06:13:57.000000 +0000
-+++ b/tui/widgets/prompt_input_footer.py	2026-06-08 09:36:04.988604 +0000
+--- a/tui/widgets/prompt_input_footer.py	2026-06-08 10:57:28.009113 +0000
++++ b/tui/widgets/prompt_input_footer.py	2026-06-08 10:56:48.588866 +0000
 @@ -1,154 +1,17 @@
 -"""Footer hint row under the prompt input.
 -
@@ -19,10 +19,11 @@ diff --git a/tui/widgets/prompt_input_footer.py b/tui/widgets/prompt_input_foote
 -(vim mode toggle, transcript-emptiness change, etc.). Keeping the
 -refresh model explicit avoids the per-keystroke re-render cost the
 -chapter calls out under "Separate the hot path from React".
--"""
++"""Facade — tui/widgets/prompt_input_footer.py has been moved to clawcodex_ext (lazy proxy).
+ """
 -
--from __future__ import annotations
--
+ from __future__ import annotations
+ 
 -from dataclasses import dataclass
 -from typing import Callable
 -
@@ -153,19 +154,13 @@ diff --git a/tui/widgets/prompt_input_footer.py b/tui/widgets/prompt_input_foote
 -        line = _SEPARATOR.join(f"{h.keys} {h.label}" for h in visible)
 -        self._last_line = line
 -        self.update(Text(line))
--
--
--__all__ = ["FooterHint", "PromptInputFooter"]
-+"""Facade — tui/widgets/prompt_input_footer.py has been moved to clawcodex_ext (lazy proxy).
-+"""
-+from __future__ import annotations
-+
 +__all__ = [
 +    "FooterHint",
 +    "PromptInputFooter",
 +]
-+
-+
+ 
+ 
+-__all__ = ["FooterHint", "PromptInputFooter"]
 +def __getattr__(name: str):
 +    import clawcodex_ext.tui.widgets.prompt_input_footer as _mod
 +    if name in _mod.__dict__:

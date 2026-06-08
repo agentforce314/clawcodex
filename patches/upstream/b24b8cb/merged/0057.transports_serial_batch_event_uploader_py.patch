@@ -1,6 +1,6 @@
 diff --git a/transports/serial_batch_event_uploader.py b/transports/serial_batch_event_uploader.py
---- a/transports/serial_batch_event_uploader.py	2026-06-08 06:13:57.000000 +0000
-+++ b/transports/serial_batch_event_uploader.py	2026-06-08 00:47:43.250835 +0000
+--- a/transports/serial_batch_event_uploader.py	2026-06-08 10:57:27.211663 +0000
++++ b/transports/serial_batch_event_uploader.py	2026-06-08 11:45:19.075347 +0000
 @@ -1,503 +1,503 @@
 -"""Serial batched POST queue with retry/backoff and backpressure.
 -

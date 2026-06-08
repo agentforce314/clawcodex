@@ -1,6 +1,6 @@
 diff --git a/tui/widgets/tool_activity/base.py b/tui/widgets/tool_activity/base.py
---- a/tui/widgets/tool_activity/base.py	2026-06-08 06:13:57.000000 +0000
-+++ b/tui/widgets/tool_activity/base.py	2026-06-08 09:36:05.126420 +0000
+--- a/tui/widgets/tool_activity/base.py	2026-06-08 10:57:28.104090 +0000
++++ b/tui/widgets/tool_activity/base.py	2026-06-08 10:56:48.644325 +0000
 @@ -1,112 +1,17 @@
 -"""Base class for tool-activity widgets.
 -
@@ -10,10 +10,11 @@ diff --git a/tui/widgets/tool_activity/base.py b/tui/widgets/tool_activity/base.
 -(``GroupedToolUseContent`` summary). We keep the same structure — the
 -base widget exposes :meth:`on_result` so the owning row can swap body
 -contents without re-mounting the widget tree.
--"""
++"""Facade — tui/widgets/tool_activity/base.py has been moved to clawcodex_ext (lazy proxy).
+ """
 -
--from __future__ import annotations
--
+ from __future__ import annotations
+ 
 -from typing import Any
 -
 -from rich.panel import Panel
@@ -96,11 +97,15 @@ diff --git a/tui/widgets/tool_activity/base.py b/tui/widgets/tool_activity/base.
 -
 -def truncated_panel(text: str, *, style: str = "green") -> Panel:
 -    """Render ``text`` in a bordered panel with stable truncation limits.
--
++__all__ = [
++    "ToolActivity",
++    "truncated_panel",
++]
+ 
 -    Extracted from ``src.tui.widgets.transcript._truncated_panel`` so
 -    individual tool-activity widgets render output consistently.
 -    """
--
+ 
 -    s = (text or "").rstrip("\n")
 -    lines = s.split("\n")
 -    truncated = False
@@ -114,16 +119,6 @@ diff --git a/tui/widgets/tool_activity/base.py b/tui/widgets/tool_activity/base.
 -    if truncated:
 -        s = f"{s}\n… (truncated)"
 -    return Panel(Text(s), border_style=style, padding=(0, 1))
-+"""Facade — tui/widgets/tool_activity/base.py has been moved to clawcodex_ext (lazy proxy).
-+"""
-+from __future__ import annotations
-+
-+__all__ = [
-+    "ToolActivity",
-+    "truncated_panel",
-+]
-+
-+
 +def __getattr__(name: str):
 +    import clawcodex_ext.tui.widgets.tool_activity.base as _mod
 +    if name in _mod.__dict__:

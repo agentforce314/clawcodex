@@ -1,6 +1,6 @@
 diff --git a/buddy/prompt.py b/buddy/prompt.py
---- a/buddy/prompt.py	2026-06-08 06:13:57.000000 +0000
-+++ b/buddy/prompt.py	2026-06-08 00:47:43.182993 +0000
+--- a/buddy/prompt.py	2026-06-08 10:57:22.005181 +0000
++++ b/buddy/prompt.py	2026-06-08 11:45:19.044822 +0000
 @@ -1,137 +1,102 @@
 -"""Companion-intro attachment + system-prompt text.
 -

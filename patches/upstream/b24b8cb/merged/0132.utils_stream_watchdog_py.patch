@@ -1,6 +1,6 @@
 diff --git a/utils/stream_watchdog.py b/utils/stream_watchdog.py
---- a/utils/stream_watchdog.py	2026-06-08 06:13:57.000000 +0000
-+++ b/utils/stream_watchdog.py	2026-06-08 00:47:43.311654 +0000
+--- a/utils/stream_watchdog.py	2026-06-08 10:57:28.803877 +0000
++++ b/utils/stream_watchdog.py	2026-06-08 11:45:19.078455 +0000
 @@ -1,184 +1,195 @@
 -"""WI-5.2: streaming watchdog for the Anthropic SDK ``messages.stream``.
 -

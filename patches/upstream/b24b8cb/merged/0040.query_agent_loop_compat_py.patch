@@ -1,6 +1,6 @@
 diff --git a/query/agent_loop_compat.py b/query/agent_loop_compat.py
---- a/query/agent_loop_compat.py	2026-06-08 06:13:57.000000 +0000
-+++ b/query/agent_loop_compat.py	2026-06-08 00:47:43.225613 +0000
+--- a/query/agent_loop_compat.py	2026-06-08 10:57:23.818132 +0000
++++ b/query/agent_loop_compat.py	2026-06-08 11:45:19.066227 +0000
 @@ -1,408 +1,410 @@
 -"""Adapter from ``query.query`` → ``AgentLoopResult`` shape.
 -

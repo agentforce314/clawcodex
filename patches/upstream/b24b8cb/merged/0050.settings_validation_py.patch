@@ -1,6 +1,6 @@
 diff --git a/settings/validation.py b/settings/validation.py
---- a/settings/validation.py	2026-06-08 06:13:57.000000 +0000
-+++ b/settings/validation.py	2026-06-08 00:47:43.236244 +0000
+--- a/settings/validation.py	2026-06-08 10:57:25.965713 +0000
++++ b/settings/validation.py	2026-06-08 11:45:19.072305 +0000
 @@ -1,104 +1,140 @@
 -"""Settings validation matching TypeScript settings/validation.ts."""
 -

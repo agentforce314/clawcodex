@@ -1,6 +1,6 @@
 diff --git a/buddy/soul.py b/buddy/soul.py
---- a/buddy/soul.py	2026-06-08 06:13:57.000000 +0000
-+++ b/buddy/soul.py	2026-06-08 00:47:43.184062 +0000
+--- a/buddy/soul.py	2026-06-08 10:57:22.017231 +0000
++++ b/buddy/soul.py	2026-06-08 11:45:19.045341 +0000
 @@ -1,75 +1,63 @@
 -"""Deterministic soul generator.
 -

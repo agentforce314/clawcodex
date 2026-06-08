@@ -1,6 +1,6 @@
 diff --git a/constants/xml.py b/constants/xml.py
---- a/constants/xml.py	2026-06-08 06:13:57.000000 +0000
-+++ b/constants/xml.py	2026-06-08 00:47:43.195193 +0000
+--- a/constants/xml.py	2026-06-08 10:57:22.472298 +0000
++++ b/constants/xml.py	2026-06-08 11:45:19.049905 +0000
 @@ -1,60 +1,52 @@
 -"""XML tag constants for chapter-10 task notifications.
 -

@@ -1,6 +1,6 @@
 diff --git a/tool_system/context.py b/tool_system/context.py
---- a/tool_system/context.py	2026-06-08 06:13:57.000000 +0000
-+++ b/tool_system/context.py	2026-06-08 00:47:43.240613 +0000
+--- a/tool_system/context.py	2026-06-08 10:57:26.392549 +0000
++++ b/tool_system/context.py	2026-06-08 11:45:19.073825 +0000
 @@ -1,302 +1,306 @@
 -from __future__ import annotations
 -

@@ -1,6 +1,6 @@
 diff --git a/tui/hyperlinks.py b/tui/hyperlinks.py
---- a/tui/hyperlinks.py	2026-06-08 06:13:57.000000 +0000
-+++ b/tui/hyperlinks.py	2026-06-08 09:36:04.190680 +0000
+--- a/tui/hyperlinks.py	2026-06-08 10:57:27.421342 +0000
++++ b/tui/hyperlinks.py	2026-06-08 10:56:48.220231 +0000
 @@ -1,171 +1,19 @@
 -"""Terminal-capability detection + helpers for OSC 8 hyperlinks.
 -
@@ -24,10 +24,11 @@ diff --git a/tui/hyperlinks.py b/tui/hyperlinks.py
 -turns into OSC 8 sequences when emission is enabled. Outside Rich-rendered
 -content (e.g. raw stdout writes), call :func:`raw_osc8` to get the bare
 -escape sequence.
--"""
++"""Facade — tui/hyperlinks.py has been moved to clawcodex_ext (lazy proxy).
+ """
 -
--from __future__ import annotations
--
+ from __future__ import annotations
+ 
 -import os
 -from typing import Final
 -
@@ -167,22 +168,14 @@ diff --git a/tui/hyperlinks.py b/tui/hyperlinks.py
 -    return format_link(path, f"file://{abs_path}", console=console)
 -
 -
--__all__ = [
+ __all__ = [
 -    "format_file_path",
 -    "format_link",
--    "is_hyperlink_supported",
--    "raw_osc8",
--]
-+"""Facade — tui/hyperlinks.py has been moved to clawcodex_ext (lazy proxy).
-+"""
-+from __future__ import annotations
-+
-+__all__ = [
-+    "is_hyperlink_supported",
+     "is_hyperlink_supported",
 +    "format_link",
-+    "raw_osc8",
+     "raw_osc8",
 +    "format_file_path",
-+]
+ ]
 +
 +
 +def __getattr__(name: str):

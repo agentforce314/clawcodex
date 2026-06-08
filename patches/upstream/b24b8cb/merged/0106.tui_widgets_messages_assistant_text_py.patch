@@ -1,6 +1,6 @@
 diff --git a/tui/widgets/messages/assistant_text.py b/tui/widgets/messages/assistant_text.py
---- a/tui/widgets/messages/assistant_text.py	2026-06-08 06:13:57.000000 +0000
-+++ b/tui/widgets/messages/assistant_text.py	2026-06-08 09:36:04.871259 +0000
+--- a/tui/widgets/messages/assistant_text.py	2026-06-08 10:57:27.904899 +0000
++++ b/tui/widgets/messages/assistant_text.py	2026-06-08 10:56:48.517363 +0000
 @@ -1,234 +1,16 @@
 -"""Assistant turn row with live streaming + progressive Markdown rendering.
 -
@@ -24,10 +24,11 @@ diff --git a/tui/widgets/messages/assistant_text.py b/tui/widgets/messages/assis
 -See ``my-docs/ch13-terminal-ui-refactoring-plan.md`` Phase 1 for the design
 -and ``my-docs/ch13-terminal-ui-gap-analysis.md`` gap #1 for the user-impact
 -rationale.
--"""
++"""Facade — tui/widgets/messages/assistant_text.py has been moved to clawcodex_ext (lazy proxy).
+ """
 -
--from __future__ import annotations
--
+ from __future__ import annotations
+ 
 -import re
 -
 -from rich.text import Text
@@ -220,12 +221,15 @@ diff --git a/tui/widgets/messages/assistant_text.py b/tui/widgets/messages/assis
 -
 -    def snapshot(self):
 -        """Return a Rich renderable for post-exit scrollback dump.
--
++__all__ = [
++    "AssistantTextMessage",
++]
+ 
 -        Prefers the final text (rendered as Markdown to match what the user
 -        saw) and falls back to the streamed plain text when the turn didn't
 -        finalise (e.g. aborted mid-stream).
 -        """
--
+ 
 -        text = self._final_text if self._finalised else self.streaming_text
 -        header = Text("assistant\n", style="bold #c58af9")
 -        if not (text or "").strip():
@@ -236,15 +240,6 @@ diff --git a/tui/widgets/messages/assistant_text.py b/tui/widgets/messages/assis
 -            return (header, rendered)
 -        except Exception:
 -            return header + Text(text)
-+"""Facade — tui/widgets/messages/assistant_text.py has been moved to clawcodex_ext (lazy proxy).
-+"""
-+from __future__ import annotations
-+
-+__all__ = [
-+    "AssistantTextMessage",
-+]
-+
-+
 +def __getattr__(name: str):
 +    import clawcodex_ext.tui.widgets.messages.assistant_text as _mod
 +    if name in _mod.__dict__:
