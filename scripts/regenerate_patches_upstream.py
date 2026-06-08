@@ -25,7 +25,7 @@ DEFAULT_UPSTREAM_ROOT = PROJECT / "src" / "upstream"
 DEFAULT_PATCH_ROOT = PROJECT / "patches" / "upstream"
 SKIP_DIRS = {"__pycache__"}
 SKIP_SUFFIXES = (".pyc", ".pyo")
-SKIP_PREFIXES = ("upstream/",)
+SKIP_PREFIXES = ("upstream/", "orchestrator/")
 
 
 def read_normalised(path: Path) -> bytes:
@@ -281,7 +281,8 @@ def main() -> int:
         for relative_path in src_files & upstream_files
         if files_differ_norm(upstream / relative_path, src / relative_path)
     )
-    new_files = sorted(src_files - upstream_files)
+    _new_files_initial = sorted(src_files - upstream_files)
+    new_files: list[str] = []  # Only modifications to existing upstream files need patches
     deleted_files = sorted(upstream_files - src_files)
 
     if deleted_files and not args.allow_deletes:
