@@ -180,29 +180,9 @@ def get_provider_info(provider_name: str) -> ProviderInfo:
     return PROVIDER_INFO[provider_name]
 
 
-def should_use_litellm() -> bool:
-    """Return whether runtime provider creation should use LiteLLM."""
-    from os import getenv
-
-    return getenv("CLAW_USE_LITELLM", "").lower() in {"1", "true", "yes", "on"}
-
-
-def create_provider(provider_name: str, *args, **kwargs) -> BaseProvider:
-    """Create a provider instance for runtime use."""
-    if should_use_litellm():
-        from extensions.providers_ext import create_litellm_provider
-
-        return create_litellm_provider(provider_name, *args, **kwargs)
-
-    try:
-        provider_cls = get_provider_class(provider_name)
-    except ValueError:
-        # Unknown provider — fallback to LiteLLM
-        from extensions.providers_ext import create_litellm_provider
-
-        return create_litellm_provider(provider_name, *args, **kwargs)
-
-    return provider_cls(*args, **kwargs)
+# Lazy registry for providers added by clawcodex_ext / extensions.
+# Populated by ``clawcodex_ext.providers.factory.register_provider()``.
+_EXTRA_PROVIDER_CLASSES: dict[str, type] = {}
 
 
 def get_provider_class(provider_name: str):
@@ -215,10 +195,6 @@ def get_provider_class(provider_name: str):
         from .openai_provider import OpenAIProvider
 
         return OpenAIProvider
-    if provider_name == "openai-codex":
-        from .openai_codex_provider import OpenAICodexProvider
-
-        return OpenAICodexProvider
     if provider_name == "glm":
         from .glm_provider import GLMProvider
 
@@ -239,53 +215,60 @@ def get_provider_class(provider_name: str):
         from .gemini_provider import GeminiProvider
 
         return GeminiProvider
+    # Extension providers registered at runtime.
+    # Values may be a class or a zero-arg callable that returns one (lazy import).
     if provider_name in _EXTRA_PROVIDER_CLASSES:
-        return _EXTRA_PROVIDER_CLASSES[provider_name]
+        entry = _EXTRA_PROVIDER_CLASSES[provider_name]
+        if callable(entry) and not isinstance(entry, type):
+            entry = entry()
+            _EXTRA_PROVIDER_CLASSES[provider_name] = entry
+        return entry
     raise ValueError(f"Unknown provider: {provider_name}")
-
-
-# ---------------------------------------------------------------------------
-# Extension registration API
-# ---------------------------------------------------------------------------
-
-# Lazy registry for providers added by clawcodex_ext / extensions.
-_EXTRA_PROVIDER_CLASSES: dict[str, type] = {}
-
-
-def register_provider(name: str, info: ProviderInfo, cls: type) -> None:
-    """Register a new provider at runtime.
-
-    Adds *info* to ``PROVIDER_INFO`` and registers *cls* so that
-    ``get_provider_class(name)`` returns it.
-
-    Idempotent: calling twice with the same *name* is a no-op
-    (first registration wins).
-    """
-    register_provider_info(name, info)
-    if name not in _EXTRA_PROVIDER_CLASSES:
-        _EXTRA_PROVIDER_CLASSES[name] = cls
-        # Rebuild the display dict so it reflects the new provider.
-        global AVAILABLE_PROVIDERS  # noqa: PLW0603
-        AVAILABLE_PROVIDERS = {k: v["label"] for k, v in PROVIDER_INFO.items()}
-
-
-def register_provider_info(name: str, info: ProviderInfo) -> None:
-    """Add or update *info* in ``PROVIDER_INFO`` without a class mapping.
-
-    Useful when the provider is served by LiteLLM or another generic
-    backend that doesn't have a dedicated ``BaseProvider`` subclass.
-
-    Also refreshes ``AVAILABLE_PROVIDERS`` so the new provider shows up
-    in UI/CLI listings.
-    """
-    if name not in PROVIDER_INFO:
-        PROVIDER_INFO[name] = info
-        global AVAILABLE_PROVIDERS  # noqa: PLW0603
-        AVAILABLE_PROVIDERS = {k: v["label"] for k, v in PROVIDER_INFO.items()}
 
 
 # Legacy registry for display purposes
 AVAILABLE_PROVIDERS: dict[str, str] = {k: v["label"] for k, v in PROVIDER_INFO.items()}
+
+
+# ---------------------------------------------------------------------------
+# Facade re-exports — 二开 provider factory + registration API
+#
+# The real implementations live in ``clawcodex_ext/providers/factory.py``.
+# They are imported lazily so that the upstream core remains usable even
+# when the extension package is not installed.
+# ---------------------------------------------------------------------------
+
+def __getattr__(name: str):
+    """Lazy re-export for 二开 provider API symbols."""
+    _FACADE_NAMES = frozenset({
+        "create_provider",
+        "should_use_litellm",
+        "register_provider",
+        "register_provider_info",
+    })
+    if name in _FACADE_NAMES:
+        from clawcodex_ext.providers.factory import (  # noqa: F401
+            create_provider as _create_provider,
+            should_use_litellm as _should_use_litellm,
+            register_provider as _register_provider,
+            register_provider_info as _register_provider_info,
+        )
+        # Cache on the module so subsequent lookups skip __getattr__
+        import sys
+        mod = sys.modules[__name__]
+        mod.create_provider = _create_provider
+        mod.should_use_litellm = _should_use_litellm
+        mod.register_provider = _register_provider
+        mod.register_provider_info = _register_provider_info
+        return locals()[
+            {
+                "create_provider": "_create_provider",
+                "should_use_litellm": "_should_use_litellm",
+                "register_provider": "_register_provider",
+                "register_provider_info": "_register_provider_info",
+            }[name]
+        ]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 __all__ = [

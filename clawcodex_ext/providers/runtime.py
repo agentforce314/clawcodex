@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from src.auth.codex_oauth import CodexAuthError, resolve_codex_runtime_credentials
 from src.config import get_provider_config
-from src.providers import create_provider
+from clawcodex_ext.providers.factory import create_provider
 
 from src.providers.base import BaseProvider
 
