@@ -34,6 +34,14 @@ import sys
 from pathlib import Path
 from typing import Any
 
+# F-49 Phase 2: live TUI client for the Unix control socket. The
+# handler is imported here (rather than via a local import inside
+# ``run()``) so it is patchable as a module attribute in tests
+# (see ``test_orchestrator_f49_attach.py::test_dispatch_to_run_attach``).
+# The attach module keeps the Textual import deferred so importing
+# this stays cheap.
+from extensions.orchestrator.cli.attach import _run_attach  # noqa: E402
+
 
 # ---------------------------------------------------------------------------
 # Parser registration
@@ -196,6 +204,48 @@ def add_issue_parser(subparsers: argparse._SubParsersAction) -> None:
         default=None,
         metavar="N",
         help="Limit to the first N messages",
+    )
+
+    # --- issue attach (F-49 Phase 2) ---
+    attach_parser = issue_sub.add_parser(
+        "attach",
+        help="Open a live TUI to a running issue's agent session",
+        description=(
+            "Connect to the Unix control socket of a running "
+            "orchestrator session and render a live event stream. "
+            "Keyboard: p=pause, r=resume, s=stop, t=takeover, "
+            "i=inject, q=detach+quit. In non-TTY environments "
+            "(piped, CI), falls back to a JSON-line printer that "
+            "accepts the same verbs on stdin."
+        ),
+    )
+    attach_parser.add_argument(
+        "--id",
+        type=str,
+        default=None,
+        metavar="ISSUE_ID",
+        help="Issue identifier or ID (resolves to run_id + workspace via the registry)",
+    )
+    attach_parser.add_argument(
+        "--run",
+        type=str,
+        default=None,
+        metavar="RUN_ID",
+        help="Run identifier (requires --workspace so the socket path is known)",
+    )
+    attach_parser.add_argument(
+        "--workspace",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="Explicit workspace root path (overrides registry; required with --run)",
+    )
+    attach_parser.add_argument(
+        "--workflow",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="Path to WORKFLOW.md (resolution hint when metadata is missing)",
     )
 
     # --- issue stop ---
@@ -543,6 +593,8 @@ def run(args: argparse.Namespace) -> int:
         return _run_tail(registry_path, args)
     elif cmd == "transcript":
         return _run_transcript(registry_path, args)
+    elif cmd == "attach":
+        return _run_attach(registry_path, ws, args)
     elif cmd == "stop":
         return _run_stop(args)
     elif cmd == "pause":

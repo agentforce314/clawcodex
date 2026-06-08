@@ -151,7 +151,7 @@ class TestAttachCLIDispatch(unittest.TestCase):
         parser = argparse.ArgumentParser()
         sub = parser.add_subparsers(dest="root")
         add_issue_parser(sub)
-        args = parser.parse_args(["attach", "--id", "ISSUE-1"])
+        args = parser.parse_args(["issue", "attach", "--id", "ISSUE-1"])
         self.assertEqual(args.issue_subcommand, "attach")
         self.assertEqual(args.id, "ISSUE-1")
         self.assertIsNone(args.run)
@@ -163,7 +163,7 @@ class TestAttachCLIDispatch(unittest.TestCase):
         sub = parser.add_subparsers(dest="root")
         add_issue_parser(sub)
         args = parser.parse_args([
-            "attach", "--run", "run-1", "--workspace", "/tmp/ws",
+            "issue", "attach", "--run", "run-1", "--workspace", "/tmp/ws",
         ])
         self.assertEqual(args.run, "run-1")
         self.assertEqual(args.workspace, "/tmp/ws")
@@ -292,7 +292,12 @@ class TestAttachErrorPaths(unittest.TestCase):
             self.assertIn("transcript", err)
 
     def test_non_tty_falls_back_to_tail(self) -> None:
-        """When stdout isn't a TTY we hit the fallback path, not Textual."""
+        """When stdout isn't a TTY we hit the fallback path, not Textual.
+
+        Mocks ``_run_tail_fallback`` so the test does not block on
+        real stdin (the fallback uses ``loop.run_in_executor(None,
+        sys.stdin.readline)`` and would hang in CI).
+        """
         with TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             ws_root = tmp_path / "ws"
@@ -300,16 +305,22 @@ class TestAttachErrorPaths(unittest.TestCase):
             run_control.mkdir(parents=True)
             sock_path = run_control / "run-1.sock"
             cs = ControlSocket(sock_path)
-            await_cs = asyncio.run(cs.start())
+            asyncio.run(cs.start())
             self.assertTrue(sock_path.exists())
 
+            async def _fake_fallback(reader, writer, label):
+                # We must close the writer so the _run_attach
+                # finally-block doesn't try to write to a dead
+                # socket. Returning 0 simulates a clean disconnect.
+                return 0
+
             try:
-                # Patch sys.stdout.isatty to False so the fallback is
-                # selected. Stdin is also faked to EOF so the fallback
-                # exits immediately.
                 with patch.object(sys.stdout, "isatty", return_value=False), \
                      patch.object(sys.stdin, "isatty", return_value=False), \
-                     patch.object(sys.stdin, "readline", return_value=""):
+                     patch(
+                         "extensions.orchestrator.cli.attach._run_tail_fallback",
+                         new=_fake_fallback,
+                     ):
                     rc = _run_attach(
                         None, ws_root,
                         _build_args(
@@ -318,16 +329,8 @@ class TestAttachErrorPaths(unittest.TestCase):
                             workspace=str(ws_root),
                         ),
                     )
-                # Fallback returns 0 on EOF (server closed the socket
-                # OR no socket). We connected so we expect to read
-                # from the server. Since no events were sent, the
-                # fallback blocks on readline; the fake stdin EOF
-                # doesn't terminate that. The fallback should return
-                # 0 if the server disconnects, or 1 if the connection
-                # fails. Either is acceptable for "fell back to tail"
-                # — what matters is that Textual.run_async was NOT
-                # called.
-                self.assertIn(rc, (0, 1))
+                # The fallback returned 0; that bubbles up.
+                self.assertEqual(rc, 0)
             finally:
                 asyncio.run(cs.stop())
 
@@ -470,7 +473,13 @@ class TestAttachSocketIO(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(msg.frame, frame)
 
     async def test_tail_fallback_prints_events_to_stdout(self) -> None:
-        """Non-TTY path: server events are echoed as JSON lines on stdout."""
+        """Non-TTY path: server events are echoed as JSON lines on stdout.
+
+        Mocks ``loop.run_in_executor`` so the stdin sub-task returns
+        EOF immediately (no real blocking read). Closes the server
+        after the two events are sent so the main reader loop
+        receives EOF and the coroutine returns 0 cleanly.
+        """
         with TemporaryDirectory() as tmp:
             sock_path = _sock_path(Path(tmp))
             cs = ControlSocket(sock_path)
@@ -491,6 +500,15 @@ class TestAttachSocketIO(unittest.IsolatedAsyncioTestCase):
                         "params": {"path": "/x"},
                     },
                 })
+                # Close the server-side so reader.readline() returns
+                # b"" (EOF) after the two events are drained.
+                await cs.stop()
+
+                loop = asyncio.get_event_loop()
+
+                async def _fake_executor(_executor, func, *args):  # type: ignore
+                    return ""
+
                 try:
                     buf = io.StringIO()
                     with redirect_stdout(buf), \
@@ -498,7 +516,8 @@ class TestAttachSocketIO(unittest.IsolatedAsyncioTestCase):
                              sys.stdin, "isatty", return_value=True,
                          ), \
                          patch.object(
-                             sys.stdin, "readline", return_value="",
+                             loop, "run_in_executor",
+                             side_effect=_fake_executor,
                          ):
                         rc = await _run_tail_fallback(
                             reader, writer, "ISSUE-1 (run run-1)",
@@ -515,10 +534,20 @@ class TestAttachSocketIO(unittest.IsolatedAsyncioTestCase):
                     except Exception:
                         pass
             finally:
-                await cs.stop()
+                # cs may already be stopped; ignore errors.
+                try:
+                    await cs.stop()
+                except Exception:
+                    pass
 
     async def test_tail_fallback_sends_cmd_from_stdin(self) -> None:
-        """Non-TTY: stdin verb 'pause' is sent and received by the server."""
+        """Non-TTY: stdin verb 'pause' is sent and received by the server.
+
+        Strategy: spawn ``_run_tail_fallback`` as a background task,
+        drain the queued command from the server while it runs, then
+        close the server so the reader loop unblocks with EOF. The
+        background task then completes with rc=0.
+        """
         with TemporaryDirectory() as tmp:
             sock_path = _sock_path(Path(tmp))
             cs = ControlSocket(sock_path)
@@ -527,54 +556,57 @@ class TestAttachSocketIO(unittest.IsolatedAsyncioTestCase):
                 reader, writer = await _open_client(sock_path)
                 await _wait_for_clients(cs, expected=1)
 
-                # Use a side-channel to feed stdin. readline() returns
-                # "pause\n" once, then "" (EOF) to terminate.
+                # Mock the loop's run_in_executor so it returns the
+                # canned responses directly without blocking on real
+                # stdin. Order: "pause\n" once, then "" (EOF).
                 responses = iter(["pause\n", ""])
-                async def _readline() -> str:
-                    return next(responses, "")
-
-                async def _read_event() -> str:
-                    line = await asyncio.wait_for(
-                        reader.readline(), timeout=1.0,
-                    )
-                    return line.decode("utf-8").rstrip("\n")
-
-                # The fallback runs the stdin reader in an executor
-                # (loop.run_in_executor(None, sys.stdin.readline)).
-                # We mock the loop's run_in_executor so it returns
-                # the canned responses directly without blocking.
                 loop = asyncio.get_event_loop()
-                real_executor = loop.run_in_executor
 
                 async def _fake_executor(_executor, func, *args):  # type: ignore
-                    return func(*args)
+                    return next(responses, "")
 
-                try:
-                    with patch.object(
-                        sys.stdout, "isatty", return_value=False,
-                    ), patch.object(
-                        sys.stdin, "isatty", return_value=False,
-                    ), patch.object(
-                        loop, "run_in_executor", side_effect=_fake_executor,
-                    ):
-                        buf = io.StringIO()
-                        with redirect_stdout(buf):
-                            rc = await _run_tail_fallback(
+                with patch.object(
+                    sys.stdout, "isatty", return_value=False,
+                ), patch.object(
+                    sys.stdin, "isatty", return_value=False,
+                ), patch.object(
+                    loop, "run_in_executor",
+                    side_effect=_fake_executor,
+                ):
+                    buf = io.StringIO()
+                    with redirect_stdout(buf):
+                        task = asyncio.create_task(
+                            _run_tail_fallback(
                                 reader, writer, "ISSUE-1",
-                            )
+                            ),
+                        )
+                        # Drain the queued "pause" command from the
+                        # server side. _drain_one will retry until the
+                        # timeout, which gives the stdin sub-task time
+                        # to deliver the command.
+                        cmd = await _drain_one(cs, timeout=2.0)
+                        self.assertIsNotNone(cmd)
+                        assert cmd is not None
+                        self.assertEqual(cmd.cmd, "pause")
+                        # Close the server so reader.readline() returns
+                        # EOF and the background task finishes.
+                        try:
+                            await cs.stop()
+                        except Exception:
+                            pass
+                        rc = await asyncio.wait_for(task, timeout=2.0)
                     self.assertEqual(rc, 0)
-                    cmd = await _drain_one(cs, timeout=1.0)
-                    self.assertIsNotNone(cmd)
-                    assert cmd is not None
-                    self.assertEqual(cmd.cmd, "pause")
-                finally:
-                    writer.close()
-                    try:
-                        await writer.wait_closed()
-                    except Exception:
-                        pass
+
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except Exception:
+                    pass
             finally:
-                await cs.stop()
+                try:
+                    await cs.stop()
+                except Exception:
+                    pass
 
 
 if __name__ == "__main__":
