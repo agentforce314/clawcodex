@@ -240,6 +240,14 @@
   - [F-67: Buddy 伴侣 / Proactive 自主模式](#f-67-buddy-伴侣-proactive-自主模式)
     - [背景](#背景)
     - [子特性分解](#子特性分解)
+  - [F-81: Native 原生模块系统](#f-81-native-原生模块系统)
+  - [F-82: Remote Control Server 远程控制服务](#f-82-remote-control-server-远程控制服务)
+  - [F-83: Ultraplan 高级规划模式](#f-83-ultraplan-高级规划模式)
+  - [F-84: Context Collapse 上下文折叠](#f-84-context-collapse-上下文折叠)
+  - [F-85: Templates 模板系统](#f-85-templates-模板系统)
+  - [F-86: Kairos / Brief 调度模式](#f-86-kairos-brief-调度模式)
+  - [F-87: Workflow Scripts 工作流脚本](#f-87-workflow-scripts-工作流脚本)
+  - [F-88: Explore / Plan 内置 Agent](#f-88-explore-plan-内置-agent)
   - [CCB 对标实施总览](#ccb-对标实施总览)
   - [实施建议顺序](#实施建议顺序)
   - [clawcodex 对比 CCB 的领先优势](#clawcodex-对比-ccb-的领先优势)
@@ -3763,6 +3771,42 @@ Resume this session with: claude --resume <sessionId>
 
 > 本节规划 CCB（claude-code-best）对标发现的 clawcodex 特性缺口。
 > F-60~F-67 均参照 CCB 对应功能设计，以确保功能完整对标为目标。
+>
+> 注意：以下为 `CCB_MIGRATION_DESIGN.md`（CCB CLI/TUI → ClawCodex 迁移设计文档）各子系统在
+> FEATURE_PLAN.md 中的覆盖状态评估，以及当前代码库的落地情况。
+
+### CCB 子系统覆盖状态总览
+
+根据对 `CCB_MIGRATION_DESIGN.md` 各子系统的逐一比对，以及代码库 `src/` 目录的实际实现检查，
+以下表格反映当前覆盖状况（2026-06）：
+
+| 子系统 | 迁移文档章节 | FEATURE_PLAN 条目 | 代码库状态 | 备注 |
+|--------|-----------|-------------------|:----------:|------|
+| **Bootstrap STATE 全局状态** | §3.1.1~3.1.5 | 无对应 F-number | ✅ 部分实现 | `src/state/app_state.py`, `cache_state.py`, `session_start.py`；mig 设计 8 子模块当前实装 3 个 |
+| **Signal 事件通知** | §3.1.4 | 无对应 F-number | ✅ 已实现 | `src/utils/signal.py`（96 行，含 Signal dataclass + create_signal factory） |
+| **两级状态架构** | §3.1.5 | 无对应 F-number | ✅ 已实现 | Bootstrap State (`src/state/`) + AppState Store (`src/state/app_state.py`) 已分离 |
+| **AppState Store** | §3.1.6 | 无对应 F-number | ✅ 已实现 | `src/state/app_state.py` — `Store[AppState]` pub/sub + side-effect router |
+| **Overlay/Escape 协调** | §3.1.7 | 无对应 F-number | ✅ 已实现 | Textual Screen 原生管理；`src/tui/app.py`（ext 中）处理 overlay 堆栈 |
+| **命令系统框架** | §3.2.1~3.2.4 | 无对应 F-number | ⏳ 无独立 `src/commands/` | 斜杠命令通过 `src/command_system/` 路由，非迁移设计中的 Command dataclass 体系 |
+| **Coordinator 系统** | §3.3.1~3.3.4 | **F-41 ✅ 已完成** | ✅ 已实现 | `src/coordinator/mode.py`, `prompt.py`, `worker_agent.py`；含 is_coordinator_mode、filter tools、worker agent 定义、system prompt |
+| **TUI 屏幕层次** | §3.4.1 | 无对应 F-number | ✅ 已实现 | `src/tui/screens/` 含 14+ 个 Screen（repl, model_picker, theme_picker, permission_modal, diff_dialog, cost_threshold, history_search, resume_conversation 等）；`src/tui/state.py` 和 `app.py` 为 ext facade |
+| **vim mode** | §3.4.3 | 无对应 F-number | ✅ 已实现 | `src/tui/vim.py` + 7 个 vim 辅助模块（buffer, find, operators, visual, state, persistent, text_objects） |
+| **Provider Registry** | §3.5.1 | F-72（部分重叠） | ✅ 已实现 | Provider 系统在 `src/providers/` 中已有实现 |
+| **MCP Client** | §3.5.2 | 无对应 F-number | ✅ 已实现 | `src/services/mcp/` 含 31 个文件，client, server, manager, transport, auth, telemetry 等 |
+| **Auth 服务** | §3.5 | 无对应 F-number | ✅ 已实现 | `src/services/auth/` 含 auth.py, oauth 相关模块 |
+| **Bridge 桥接** | §3.4.2 | 无对应 F-number | ✅ 已实现 | `src/services/bridge/` 含 auth, session, transport 模块 |
+| **Swarm/Team 系统** | §3.3（协作） | 无对应 F-number | ✅ 已实现 | `src/services/swarm/` 含 mailbox, permissions, agent_name_registry, team_fi 等 |
+| **Pipes IPC + LAN 群控** | §3.5.3 / §8.1 | **F-60 ⏳ 待开始** | ❌ 未实现 | 需要在 `src/services/pipes/` 或等效位置实现 |
+| **Plugin 系统** | §3.5 | **F-70 ⏳ 待开始** | ❌ 未实现 | 规划在 §十 |
+| **Computer Use** | §8.2 | **F-61 ⏳ 待开始** | ❌ 未实现 | 截屏/键鼠/窗口/剪贴板 |
+| **Chrome 自动化** | §8.2 | **F-62 ⏳ 待开始** | ❌ 未实现 | 浏览器控制 |
+| **Channels 通知** | — | **F-63 ⏳ 待开始** | ❌ 未实现 | 邮件/Slack/Discord/飞书通知 |
+| **Voice Mode** | — | **F-64 ⏳ 待开始** | ❌ 未实现 | `src/services/voice/` 骨架存在，功能待实装 |
+| **Langfuse** | — | **F-65 ⏳ 待开始** | ❌ 未实现 | `src/services/analytics/` 骨架存在 |
+| **ACP 协议** | §8.3 | **F-66 ⏳ 待开始** | ❌ 未实现 | Agent Communication Protocol |
+| **Buddy/Proactive** | — | **F-67 ⏳ 待开始** | ❌ 未实现 | 伴侣模式 |
+| **Notifier + PreventSleep** | §8.3 | 无对应 F-number | ❌ 未实现 | 通知与防休眠服务 |
+| **150+ CCB 特有工具** | §8.2 | **F-71 ⏳ 待开始**（需展开工具清单） | ⏳ 部分 | 见下方 F-71 子特性表 |
 
 ### F-60: Pipe IPC + LAN 群控系统
 
@@ -6376,7 +6420,126 @@ def create_app(config: RCSConfig) -> FastAPI:
 
 ---
 
+### F-83: Ultraplan 高级规划模式
+
+**状态**: ⏳ 待开始 | **优先级**: P1 | **对标**: CCB FEATURE_ULTRAPLAN — `/ultraplan` 多步高级规划命令
+
+CCB 提供 `/ultraplan` 命令，让 AI 对复杂多步骤任务生成结构化的分层规划（目标 → 子任务 → 步骤 → 验收标准），并可在规划执行过程中动态调整。ClawCodex 当前无此功能。
+
+| 编号 | 子特性 | 状态 | 预计工作量 |
+|:----:|--------|:----:|:----------:|
+| P83-A | Ultraplan 核心 prompt 与规划输出模板 | ⏳ 待开始 | 2-3天 |
+| P83-B | `/ultraplan` CLI 斜杠命令注册与用户交互 | ⏳ 待开始 | 2-3天 |
+| P83-C | 多步计划的分层执行与进度追踪 | ⏳ 待开始 | 3-5天 |
+| P83-D | 执行中途动态调整计划（替换/添加/删除步骤） | ⏳ 待开始 | 2-3天 |
+| P83-E | 计划完成后自动验证各步骤验收标准 | ⏳ 待开始 | 3-5天 |
+| P83-F | 计划持久化到磁盘（`~/.clawcodex/plans/`）与 resume | ⏳ 待开始 | 2-3天 |
+
+**估算总工时**: 2-3 周
+
+---
+
+### F-84: Context Collapse 上下文折叠
+
+**状态**: ⏳ 待开始 | **优先级**: P1 | **对标**: CCB FEATURE_CONTEXT_COLLAPSE — 上下文智能压缩引擎
+
+CCB 实现 5 层上下文清理流水线（toolResultBudget → snip → microcompact → contextCollapse → autocompact），在接近 token 限制时自动将旧消息折叠为压缩摘要。ClawCodex 已有 `src/services/context/collapse/` 基础骨架与 `ContextCollapseStore` 数据模型，但完整的折叠触发、LLM 摘要生成、持久化与恢复链路尚未实现为独立特性。
+
+| 编号 | 子特性 | 状态 | 预计工作量 |
+|:----:|--------|:----:|:----------:|
+| P84-A | Token 阈值检测与溢出预警（基于 tiktoken） | ⏳ 待开始 | 2-3天 |
+| P84-B | LLM 驱动的旧消息摘要生成（折叠核心） | ⏳ 待开始 | 3-5天 |
+| P84-C | 折叠后历史占位符注入（ContextCollapseBoundary） | ⏳ 待开始 | 2-3天 |
+| P84-D | 折叠元数据持久化与会话恢复时重建 | ⏳ 待开始 | 2-3天 |
+| P84-E | 413 紧急折叠恢复（API 413 时自动触发） | ⏳ 待开始 | 2-3天 |
+| P84-F | QueryEngine 集成与全链路 5 层协作（复用已有 Snip/compact） | ⏳ 待开始 | 3-5天 |
+
+**估算总工时**: 2-3 周
+
+**依赖**: F-68 Feature Gate（context_collapse feature flag 管理）、现有 `src/services/context/collapse/` 骨架
+
+---
+
+### F-85: Templates 模板系统
+
+**状态**: ⏳ 待开始 | **优先级**: P1 | **对标**: CCB FEATURE_TEMPLATES — Agent 配置模板系统
+
+CCB 的 Template 系统允许用户定义可复用的 Agent 配置模板（包含 tools、model、prompt、max_turns 等），在创建 Agent 时引用模板名快速构建。ClawCodex 当前使用 Agent 定义文件，但缺少模板化复用机制。
+
+| 编号 | 子特性 | 状态 | 预计工作量 |
+|:----:|--------|:----:|:----------:|
+| P85-A | 模板定义格式（YAML/JSON schema + agent: template_name 引用） | ⏳ 待开始 | 2-3天 |
+| P85-B | 模板注册表（`~/.clawcodex/templates/` + 项目级 `.clawcodex/templates/`） | ⏳ 待开始 | 2-3天 |
+| P85-C | Agent 创建时模板解析与字段合并（template base + inline override） | ⏳ 待开始 | 3-5天 |
+| P85-D | CLI 管理命令（`/template list`、`/template show`、`/template create`） | ⏳ 待开始 | 2-3天 |
+| P85-E | 内置默认模板（general-purpose、explore、plan、fix、review 等） | ⏳ 待开始 | 2-3天 |
+
+**估算总工时**: 1-2 周
+
+---
+
+### F-86: Kairos / Brief 调度模式
+
+**状态**: ⏳ 待开始 | **优先级**: P2 | **对标**: CCB FEATURE_KAIROS / FEATURE_KAIROS_BRIEF — Tick 驱动调度引擎 + 简报模式
+
+CCB 的 Kairos 子系统提供定时唤醒 Agent 执行任务的调度能力（Tick 驱动），配合 Brief 模式提供轻量级状态简报。ClawCodex 代码中已有 KAIROS 注释（`bridge_main.py`、`memdir/paths.py`）但明确标注 deferred。此特性与 F-67 Proactive 模式有重叠，但 KAIROS 侧重于定时调度（周期性 Tick），Proactive 侧重于用户空闲时自主工作。
+
+| 编号 | 子特性 | 状态 | 预计工作量 |
+|:----:|--------|:----:|:----------:|
+| P86-A | Tick 调度核心（时基触发 + 周期性唤醒） | ⏳ 待开始 | 3-5天 |
+| P86-B | SleepTool 工具（Agent 控制休眠时长） | ⏳ 待开始 | 2-3天 |
+| P86-C | Brief 简报模式（轻量级状态摘要输出） | ⏳ 待开始 | 2-3天 |
+| P86-D | Tick 消息注入对话流（含本地时间戳） | ⏳ 待开始 | 1-2天 |
+| P86-E | 每日日志自动生成（`logs/YYYY/MM/YYYY-MM-DD.md`） | ⏳ 待开始 | 2-3天 |
+| P86-F | CLI 控制命令（`/tick on/off/status`、`/brief`） | ⏳ 待开始 | 2-3天 |
+
+**估算总工时**: 2 周
+
+---
+
+### F-87: Workflow Scripts 工作流脚本
+
+**状态**: ⏳ 待开始 | **优先级**: P2 | **对标**: CCB FEATURE_WORKFLOW_SCRIPTS — YAML/JSON 定义的多步自动化工作流
+
+CCB 的 WorkflowScripts 允许用户创建 `.claude/workflows/*.yml` 工作流定义文件，声明多 step 执行序列（每个 step 可指定 tool、agent、prompt），通过 `/workflows` 命令管理和触发。ClawCodex 的 Orchestrator 已有类似功能（issue → agent run 流水线），但面向最终用户的声明式工作流文件系统尚未规划。
+
+| 编号 | 子特性 | 状态 | 预计工作量 |
+|:----:|--------|:----:|:----------:|
+| P87-A | 工作流 YAML schema 定义与解析器 | ⏳ 待开始 | 2-3天 |
+| P87-B | 工作流文件发现（`~/.clawcodex/workflows/` + `.clawcodex/workflows/`） | ⏳ 待开始 | 1-2天 |
+| P87-C | 多步执行引擎（串联 agent + tool 调用序列） | ⏳ 待开始 | 3-5天 |
+| P87-D | 内置捆绑工作流（代码审查、依赖更新、发布流程等） | ⏳ 待开始 | 2-3天 |
+| P87-E | CLI 命令（`/workflows list/run/show`）与自动补全 | ⏳ 待开始 | 2-3天 |
+| P87-F | 执行进度实时显示与错误恢复 | ⏳ 待开始 | 2-3天 |
+
+**估算总工时**: 2 周
+
+---
+
+### F-88: Explore / Plan 内置 Agent
+
+**状态**: ⏳ 待开始 | **优先级**: P2 | **对标**: CCB BUILTIN_EXPLORE_PLAN_AGENTS — 内置探索与规划 Agent
+
+CCB 内置 `explore`（代码库探索）和 `plan`（实施规划）两种专用 Agent 类型，分别用于理解代码结构和制定实施计划。ClawCodex 的 agent_definitions 中已定义多种 agent type，但缺少这两个 CCB 标配的专用 Agent。
+
+| 编号 | 子特性 | 状态 | 预计工作量 |
+|:----:|--------|:----:|:----------:|
+| P88-A | Explore Agent 定义（工具集：Read/Grep/Glob/WebSearch/WebFetch） | ⏳ 待开始 | 1-2天 |
+| P88-B | Plan Agent 定义（工具集：Read/Grep/Glob + 结构化 plan 输出 prompt） | ⏳ 待开始 | 1-2天 |
+| P88-C | 自动路由逻辑：根据 user query 自动选择 explore/plan agent | ⏳ 待开始 | 2-3天 |
+| P88-D | 探索报告与计划文档的自动保存 | ⏳ 待开始 | 1-2天 |
+
+**估算总工时**: 1 周
+
+---
+
 ### CCB 对标实施总览
+
+> ⚠️ **重要**: 经过对 `CCB_MIGRATION_DESIGN.md` 子系统逐一比对和代码库 `src/` 的实地检查，
+> 以下基础设施已在代码中实现，**不需额外 F-number**：Signal 事件通知、Bootstrap STATE 框架（含 AppState Store 两级架构）、
+> Coordinator 系统（F-41 ✅ 已完成）、TUI 全屏层次（14+ Screen）、vim mode、Provider Registry、MCP Client、Auth 服务、
+> Bridge 桥接、Swarm/Team 系统。真正的增量缺口集中于 **F-60~F-67 的 8 个用户可见特性** + F-71 的 4 个待实现工具，
+> 以及 Notifier/Pipes 插件。v2.18 新增 **F-83~F-88 共 6 个新识别特性**。
 
 | 编号 | 特性 | 优先级 | 对标级别 | 状态 | 工时估算 |
 |:----:|------|:------:|:--------:|:----:|:--------:|
@@ -6388,18 +6551,31 @@ def create_app(config: RCSConfig) -> FastAPI:
 | F-65 | Langfuse 可观测性 | P1 | 🟡 重要缺口 | ⏳ 待开始 | 1周 |
 | F-66 | ACP 协议支持 | P2 | 🟢 增强体验 | ⏳ 待开始 | 1-2周 |
 | F-67 | Buddy / Proactive | P2 | 🟢 增强体验 | ⏳ 待开始 | 2周 |
-| F-81 | Native 原生模块（Python） | P1 | 🟡 重要缺口 | ⏳ 待开始 | 1周 |
-| F-82 | Remote Control Server | P1 | 🟡 重要缺口 | ⏳ 待开始 | 3-4周 |
+| F-71 | 4 个未实现工具（Execute/RemoteTrigger/WebBrowser/Snip） | P1 | 🟡 重要缺口 | ⏳ 待开始 | 2周 |
+| — | Notifier + PreventSleep 通知与防休眠服务 | P2 | 🟢 增强体验 | ⏳ 待开始 | 1周 |
+| **F-83** | **Ultraplan 高级规划模式** | **P1** | 🟡 重要缺口 | ⏳ 待开始 | 2-3周 |
+| **F-84** | **Context Collapse 上下文折叠** | **P1** | 🟡 重要缺口 | ⏳ 待开始 | 2-3周 |
+| **F-85** | **Templates 模板系统** | **P1** | 🟡 重要缺口 | ⏳ 待开始 | 1-2周 |
+| **F-86** | **Kairos / Brief 调度模式** | **P2** | 🟢 增强体验 | ⏳ 待开始 | 2周 |
+| **F-87** | **Workflow Scripts 工作流脚本** | **P2** | 🟢 增强体验 | ⏳ 待开始 | 2周 |
+| **F-88** | **Explore / Plan 内置 Agent** | **P2** | 🟢 增强体验 | ⏳ 待开始 | 1周 |
 
 ### 实施建议顺序
 
 ```
-F-60 (Pipe IPC) ──→ F-61 (Computer Use) ──→ F-63 (Channels) ──→ F-62 (Chrome) ──→ F-65 (Langfuse) ──→ F-81 (Native) ──→ F-82 (RCS) ──→ F-64 (Voice) + F-66 (ACP) + F-67 (Buddy)
-   ↑ 架构基础          ↑ 高频交互              ↑ 团队协作               ↑ 自动化             ↑ 可观测性           ↑ F-61/F-64 前置      ↑ 远程管理              ↑ 体验增强
-   P0                  P0                      P1                       P1                  P1                   P1                   P1                      P2
+F-60 (Pipe IPC) ──→ F-61 (Computer Use) ──→ F-63 (Channels) ──→ F-83 (Ultraplan) ──→ F-84 (ContextCollapse) ──→ F-85 (Templates)
+   ↑ 架构基础          ↑ 高频交互              ↑ 团队协作               ↑ 高级规划             ↑ 上下文管理              ↑ Agent 模板
+   P0                  P0                      P1                       P1                    P1                        P1
+
+F-62 (Chrome) ──→ F-65 (Langfuse) ──→ F-71 工具补齐 ──→ Notifier ──→ F-86 (Kairos/Brief) ──→ F-87 (Workflow) ──→ F-88 (Explore/Plan) ──→ F-64+F-66+F-67
+   ↑ 自动化             ↑ 可观测性              ↑ 4 个缺失工具           ↑ 通知服务             ↑ 定时调度               ↑ 工作流脚本             ↑ 内置 Agent              ↑ 体验增强
+   P1                  P1                      P1                     P2                     P2                       P2                      P2                       P2
 ```
 
-> **建议**: F-60（Pipe IPC）和 F-61（Computer Use）为 P0 级特性，建议优先实施。F-81（Native 模块）是 F-61 和 F-64 的前置依赖，建议与 F-61 并行开发。F-82（RCS）和 F-63（Channels）配合可提供完整的远程团队协作体验。F-64/F-66/F-67 为长期迭代方向。
+> **建议**: F-60（Pipe IPC）和 F-61（Computer Use）为 P0 级特性，建议优先实施。F-83（Ultraplan）和 F-84（Context Collapse）为 P1 级架构特性，建议紧随之后。
+> F-85（Templates）依赖 F-68 Feature Gate 作为基础设施。F-71 的 4 个待实现工具可与 F-61 并行开发。
+> F-86~F-88 为 P2 增强体验，可与 F-64/F-66/F-67 合并为长期迭代批次。
+> 已在代码中实现的基础设施（Signal、STATE、Coordinator、MCP、Auth、Bridge 等）无需重新规划 F-number。
 
 ---
 
@@ -6951,22 +7127,34 @@ plugins = entry_points(group="clawcodex.plugins")
 
 #### 子特性分解
 
-| 编号 | 子特性 | 说明 | Python 依赖 | 预计工作量 |
-|:----:|--------|------|:-----------:|:----------:|
-| P71-A | AgentTool | 子 Agent 生成工具，在上下文中 spawn 一个子 agent 执行任务 | 无（复用现有 Agent 系统） | 5-7天 |
-| P71-B | WebBrowserTool | 浏览器控制工具（打开 URL、点击、填表、截图） | `playwright` | 5-7天 |
-| P71-C | CtxInspectTool | 上下文检查工具，查看当前 session 的消息大小、token 估算 | 无（标准库） | 2-3天 |
-| P71-D | DiscoverSkillsTool | 技能发现工具，搜索可用的 agent skill | 无（复用 Skill 系统） | 2-3天 |
-| P71-E | VerifyPlanExecutionTool | 验证计划执行工具，检查 task plan 中各步骤完成状态 | 无 | 3-5天 |
-| P71-F | WorkflowTool | 工作流定义与执行工具 | 无（标准库） | 3-5天 |
-| P71-G | PushNotificationTool | 推送通知工具，发送桌面通知 | `plyer` / `notify-py` | 2-3天 |
-| P71-H | MonitorTool | session 健康监控工具（token 用量/响应时间/错误率） | 无 | 2-3天 |
-| P71-I | SendUserFileTool | 向用户发送文件（文件传输） | 无 | 2-3天 |
-| P71-J | SubscribePRTool | 订阅 PR 变化事件 | 无（复用 TrackerAdapter） | 2-3天 |
-| P71-K | TerminalCaptureTool | 终端输出捕获工具 | `ptyprocess` | 3-5天 |
-| P71-L | ReviewArtifactTool | Review 产物查看工具 | 无 | 2-3天 |
-| P71-M | ListPeersTool | 列出对等 Agent 工具 | 无（复用 Coordinator） | 1-2天 |
-| P71-N | ExecuteTool | 代理工具调用执行工具 | 无 | 3-5天 |
+下表映射自 `CCB_MIGRATION_DESIGN.md §8.2` 的 15 个 CCB 特有工具，标注了代码库中现有实现状态：
+
+| 编号 | 工具名(CCB) | CCB 来源 | clawcodex 实现 | 代码状态 |
+|:----:|------------|---------|:----------------:|:--------:|
+| P71-A | **AgentTool** | `@claude-code-best/builtin-tools` | ✅ `src/tool_system/tools/agent.py` | 已完成 |
+| P71-B | **SkillTool** | builtin | ✅ `src/tool_system/tools/skill.py` | 已完成 |
+| P71-C | **SendMessageTool** | builtin | ✅ `src/tool_system/tools/send_message.py` | 已完成 |
+| P71-D | **TaskStopTool** | builtin | ✅ `src/tool_system/tools/task_stop.py` | 已完成 |
+| P71-E | **TeamCreateTool** | builtin | ✅ `src/tool_system/tools/team.py` | 已完成 |
+| P71-F | **TeamDeleteTool** | builtin | ✅ `src/tool_system/tools/team.py` | 已完成 |
+| P71-G | **BriefTool** | builtin | ✅ `src/tool_system/tools/brief.py` | 已完成 |
+| P71-H | **ExitPlanModeTool** | builtin | ✅ `src/tool_system/tools/plan_mode.py` | 已完成 |
+| P71-I | **EnterPlanModeTool** | builtin | ✅ `src/tool_system/tools/plan_mode.py` | 已完成 |
+| P71-J | **LSPTool** | builtin | ✅ `src/tool_system/tools/lsp.py` | 已完成 |
+| P71-K | **ExecuteTool** | builtin | ⏳ 待实现 | 缺失 |
+| P71-L | **CronCreate/Delete/ListTool** | builtin | ✅ `src/tool_system/tools/cron.py` | 已完成 |
+| P71-M | **RemoteTriggerTool** | builtin | ❌ 待实现 | 缺失 |
+| P71-N | **WebBrowserTool** | builtin | ⏳ 待实现 | 需 `playwright` |
+| P71-O | **SnipTool** | builtin | ❌ 待实现 | 缺失 |
+
+仅 **P71-K (ExecuteTool)**、**P71-M (RemoteTriggerTool)**、**P71-N (WebBrowserTool)**、**P71-O (SnipTool)** 4 个工具尚未实现。具体计划：
+
+| 待实现工具 | 说明 | 依赖 | 预计工时 |
+|-----------|------|:----:|:--------:|
+| **ExecuteTool** | 代理工具调用执行，将另一个工具的调用委托给子 Agent | 无 | 3-5天 |
+| **RemoteTriggerTool** | 远程触发工具，调用远程 clawcodex 实例上的操作 | `httpx` | 3-5天 |
+| **WebBrowserTool** | 浏览器控制（打开 URL、点击、填表、截图） | `playwright` | 5-7天 |
+| **SnipTool** | History snip — 截取历史消息片段用于上下文 | 无 | 2-3天 |
 
 #### 实现模式（参考 `src/tool_system/build_tool.py`）
 

@@ -76,6 +76,13 @@ def add_server_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Explicit workspace root path (optional auto-detection override)",
     )
     stop_parser.add_argument(
+        "--workflow",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="Path to WORKFLOW.md (helps resolve workspace when metadata is missing)",
+    )
+    stop_parser.add_argument(
         "--force",
         action="store_true",
         help="Use SIGKILL instead of SIGTERM (force immediate termination)",
