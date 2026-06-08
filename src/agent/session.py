@@ -169,16 +169,72 @@ class Session:
         Order matters: ``switch_session`` fires BEFORE
         ``restore_cost_state_for_session`` so any subscriber that reads
         ``get_session_id()`` during the cost restore sees the loaded id.
+
+        F-49 Phase 0.2: also accepts sessions stored in the
+        :class:`SessionStorage` directory format
+        (``~/.clawcodex/sessions/<sid>/transcript.jsonl`` + ``metadata.json``).
+        This is the on-disk shape the orchestrator's
+        :class:`AgentRunner` writes — the headless run is keyed by
+        ``run_id`` and persists there so ``clawcodex --resume <run_id>``
+        works for orchestrator sessions without a second flat-file
+        write. Provider is left as ``""`` because SessionStorage does
+        not record it; the resume target's provider should be
+        supplied by the caller (REPL config, env, etc.).
         """
         from src.bootstrap.state import SessionId, switch_session
         from src.services.cost_restore import restore_cost_state_for_session
 
         loaded = cls.load(session_id)
         if loaded is None:
-            return None
+            # F-49 Phase 0.2: fall back to the SessionStorage
+            # directory format written by AgentRunner + headless
+            # agent runs. The flat-file path above is the original
+            # single-session REPL flow; this branch is the
+            # multi-session / orchestrator flow.
+            loaded = cls._load_from_session_storage(session_id)
+            if loaded is None:
+                return None
         switch_session(SessionId(session_id))
         restore_cost_state_for_session(session_id)
         return loaded
+
+    @classmethod
+    def _load_from_session_storage(
+        cls, session_id: str,
+    ) -> Optional['Session']:
+        """Construct a :class:`Session` from a :class:`SessionStorage`
+        directory if one exists for ``session_id``.
+
+        Mirrors the shape :class:`SessionStorage` writes (a directory
+        with ``metadata.json`` + ``transcript.jsonl``). The
+        :class:`Conversation` is reconstructed via
+        :func:`resume_session` so the LLM context the operator sees
+        in the REPL matches what the headless agent saw at the point
+        of pause / completion.
+
+        Returns ``None`` when no SessionStorage directory exists for
+        ``session_id`` — preserves the contract that
+        :meth:`Session.resume` returns ``None`` for unknown sessions.
+        """
+        try:
+            from src.services.session_resume import resume_session
+            from src.services.session_storage import SESSIONS_DIR
+        except ImportError:
+            return None
+
+        result = resume_session(session_id, sessions_dir=SESSIONS_DIR)
+        if not result.success or result.metadata is None:
+            return None
+        md = result.metadata
+        from .conversation import Conversation
+        return cls(
+            session_id=md.session_id,
+            provider="",
+            model=md.model,
+            conversation=Conversation(),
+            created_at=str(md.start_time),
+            updated_at=str(md.last_updated),
+        )
 
 
 def _snapshot_cost_block() -> dict:
