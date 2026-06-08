@@ -370,6 +370,25 @@ async def run_query_as_agent_loop(
                 or reason
                 or "user_interrupt"
             )
+        # Same pattern for upstream model failures (connection errors, 4xx,
+        # 5xx, prompt_too_long, etc.). ``query.py`` catches the SDK
+        # exception, yields ``_create_assistant_api_error_message`` into
+        # the message stream (so the TUI can render "API error: ..." in
+        # the transcript), and sets ``Terminal(reason="model_error",
+        # error=<original_exception>)``. Without re-raising here the
+        # adapter returns ``response_text=""`` with a happy
+        # ``AgentLoopRunResult`` and headless ships ``is_error: false,
+        # num_turns: 0, result: ""`` — a silent success that downstream
+        # eval scripts (SWE-bench, batch runners) cannot distinguish
+        # from a legitimately empty completion. Re-raising the original
+        # exception routes it into headless's ``except Exception``
+        # branch which sets ``exit_code=1`` and emits subtype:error /
+        # is_error:true with the error string as ``result``.
+        if reason == "model_error":
+            original_error = getattr(terminal, "error", None)
+            if isinstance(original_error, BaseException):
+                raise original_error
+            raise RuntimeError(str(original_error) if original_error else "model_error")
 
     # When the loop exited because of max_turns, surface the legacy
     # ``[Max tool turns reached]`` sentinel as response_text so callers
