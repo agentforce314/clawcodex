@@ -175,3 +175,4 @@ coverage/
 /backup/
 /.atomcode/
 /.audit_temp/
+/tmp/
