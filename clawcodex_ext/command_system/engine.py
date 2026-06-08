@@ -16,8 +16,12 @@ from .types import (
     Command,
     CommandContext,
     CommandType,
+    InteractiveCommand,
+    InteractiveOutcome,
+    InteractiveUnavailableError,
     LocalCommand,
     LocalCommandResult,
+    NullUIHost,
     PromptCommand,
     attach_downstream_context,
 )
@@ -144,6 +148,8 @@ class CommandEngine:
             result = await self._execute_local(command, args)
         elif command.command_type == CommandType.PROMPT:
             result = await self._execute_prompt(command, args)
+        elif command.command_type == CommandType.INTERACTIVE:
+            result = await self._execute_interactive(command, args)
         else:
             result = CommandResult.error(
                 command_name,
@@ -202,6 +208,58 @@ class CommandEngine:
                 str(e),
             )
 
+    async def _execute_interactive(
+        self,
+        command: InteractiveCommand,
+        args: str,
+    ) -> CommandResult:
+        """Execute an interactive command (port of TS ``local-jsx``).
+
+        Runs the command body against ``ctx.ui`` and maps its
+        :class:`InteractiveOutcome` onto a ``CommandResult``, propagating the
+        ``display`` / ``should_query`` / ``meta_messages`` fields that the
+        LOCAL arm hardcodes away (``_execute_local`` forces ``system`` /
+        ``False`` / drops meta). A surface that wired no ``ui`` gets a
+        ``NullUIHost`` so the body can always assume ``ctx.ui`` exists; that
+        host raises :class:`InteractiveUnavailableError` for mutating prompts,
+        which we surface as a clean error result.
+        """
+        # Substitute the null surface when none was wired (SDK /
+        # non-interactive). Done here, once, so command bodies never see a
+        # ``None`` ui. Idempotent: a real surface sets ``ui`` at startup.
+        if self.context.ui is None:
+            self.context.ui = NullUIHost()
+
+        try:
+            outcome = await command.run(args, self.context)
+        except InteractiveUnavailableError as e:
+            # Expected on the null surface — a clean, typed message rather
+            # than a stack trace.
+            return CommandResult.error(command.name, str(e))
+        except Exception as e:
+            return CommandResult.error(command.name, str(e))
+
+        if not isinstance(outcome, InteractiveOutcome):
+            return CommandResult.error(
+                command.name,
+                f"interactive command returned {type(outcome).__name__}, "
+                "expected InteractiveOutcome",
+            )
+
+        # ``display == 'skip'`` (e.g. the cancelled path) → no output.
+        if outcome.display == "skip":
+            return CommandResult.skip(command.name)
+
+        return CommandResult(
+            success=True,
+            command_name=command.name,
+            result_type="text",
+            text=outcome.message or "",
+            should_query=outcome.should_query,
+            display=outcome.display,
+            meta_messages=list(outcome.meta_messages),
+        )
+
     def add_command_hook(
         self,
         hook: Callable[[str, CommandResult], None],
@@ -227,6 +285,7 @@ def create_command_context(
     config: dict[str, Any] | None = None,
     app_state_store: Any = None,
     provider: Any = None,
+    ui: Any = None,
     tool_registry: Any = None,
     tool_context: Any = None,
     runtime_context: Any = None,
@@ -245,6 +304,8 @@ def create_command_context(
             mutate global session state (e.g. /advisor) need this.
         provider: Optional active LLM provider. Commands that gate on
             provider type (e.g. /advisor) need this.
+        ui: Optional ``UIHost`` interaction port. Interactive commands drive
+            it; when None the engine substitutes a ``NullUIHost``.
         tool_registry: Optional active tool registry for downstream commands.
         tool_context: Optional active tool execution context for downstream commands.
         runtime_context: Optional active runtime context for downstream commands.
@@ -264,10 +325,15 @@ def create_command_context(
         config=config or {},
         app_state_store=app_state_store,
         provider=provider,
+        ui=ui,
+        tool_context=tool_context,
     )
     attach_downstream_context(
         context,
         tool_registry=tool_registry,
+        # tool_context was promoted to a real CommandContext field above; we
+        # still call attach_downstream_context so other downstream code paths
+        # that read it via getattr keep working.
         tool_context=tool_context,
         runtime_context=runtime_context,
     )

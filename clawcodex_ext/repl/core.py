@@ -1042,12 +1042,21 @@ class ClawcodexREPL:
         self.cost_tracker = CostTracker()
         self.history_log = HistoryLog()
 
+        # Wire the surface-agnostic UIHost so interactive commands (port of
+        # TS ``local-jsx``) can drive a menu / prompt on the REPL. We import
+        # lazily to avoid pulling the interactive-command subsystem into the
+        # import graph for non-REPL consumers.
+        from clawcodex_ext.repl.ui_host import ReplUIHost
+
         # Create command context
         self.command_context = create_command_context(
             workspace_root=Path.cwd(),
             conversation=self.session.conversation,
             cost_tracker=self.cost_tracker,
             history=self.history_log,
+            provider=self.provider,
+            ui=ReplUIHost(self._safe_input, self.console),
+            tool_context=self.tool_context,
         )
 
         # Merge new commands with built-in list for completion

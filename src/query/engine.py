@@ -154,6 +154,16 @@ class QueryEngine:
             #    session blocks…, ⟨ephemeral⟩,
             #    request blocks…, ⟨ephemeral⟩,
             #    git-status block (uncached)]
+            # P0-4 (Phase 3 — model-tool exposure, port of b24b8cb):
+            # feed the model the "# Available Skills" listing.
+            # ``get_skill_tool_commands`` is the filtered view over the
+            # unified command set (builtins + skills); passing it as
+            # ``skills=`` is what finally emits the section that the
+            # ``Skill`` tool's prompt already promises. Without this the
+            # parameter defaults to None and the section is never built.
+            # Local import keeps the command_system package off the
+            # module-load path of every query.
+            from ..command_system import get_skill_tool_commands
             blocks = build_full_system_prompt_blocks(
                 cwd=cwd,
                 append_system_prompt=self._config.append_system_prompt,
@@ -170,6 +180,7 @@ class QueryEngine:
                 # privacy guarantee at line 91).
                 provider=self._config.provider,
                 mcp_servers=self._config.mcp_servers,
+                skills=get_skill_tool_commands(cwd),
             )
             system_prompt = append_system_context_blocks(
                 blocks, parts.system_context,

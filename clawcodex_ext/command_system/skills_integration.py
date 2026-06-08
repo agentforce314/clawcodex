@@ -22,20 +22,27 @@ from src.skills.loader import (
 from src.skills.model import Skill as BaseSkill
 from .argument_substitution import substitute_arguments
 from .registry import CommandRegistry, register_command
-from .types import Command, CommandType, PromptCommand
+from .types import Command, CommandType, PromptCommand, SkillPromptCommand
 
 
 def skill_to_prompt_command(skill: PromptSkill) -> PromptCommand:
     """
-    Convert a PromptSkill to a PromptCommand.
+    Convert a PromptSkill to a ``SkillPromptCommand``.
+
+    Returns a ``SkillPromptCommand`` (a ``PromptCommand`` subclass) so that when
+    this command is executed via the registry, its prompt is rendered through the
+    same ``_run_markdown_skill`` path the Skill tool uses — preserving the
+    base-dir header, ``${CLAUDE_SKILL_DIR}`` / ``${CLAUDE_SESSION_ID}``
+    substitution, and gated shell-exec. The plain base ``PromptCommand`` renderer
+    would drop all of that (P0-6 Option B / Phase 3.5).
 
     Args:
         skill: The PromptSkill to convert
 
     Returns:
-        PromptCommand instance
+        SkillPromptCommand instance (typed as its ``PromptCommand`` base)
     """
-    return PromptCommand(
+    return SkillPromptCommand(
         name=skill.name,
         description=skill.description,
         progress_message=f"Executing {skill.name}...",
@@ -56,6 +63,7 @@ def skill_to_prompt_command(skill: PromptSkill) -> PromptCommand:
         user_invocable=skill.user_invocable,
         loaded_from=skill.loaded_from,
         is_hidden=skill.is_hidden,
+        has_user_specified_description=skill.has_user_specified_description,
     )
 
 
@@ -121,6 +129,39 @@ def get_skill_command(name: str) -> Optional[PromptCommand]:
     if skill:
         return skill_to_prompt_command(skill)
     return None
+
+
+def get_skill_tool_commands(cwd: str | None = None) -> tuple[PromptCommand, ...]:
+    """ALL prompt-based commands the model may invoke.
+
+    Source for the model-facing "# Available Skills" system-prompt listing,
+    wired into ``build_full_system_prompt_blocks(skills=...)`` at
+    ``src/query/engine.py``. Mirrors b24b8cb's ``getSkillToolCommands(cwd)``
+    behaviour (typescript/src/commands.ts:587-605) without porting the
+    full ``aggregator`` module — the fork has no aggregator yet, so we
+    walk the global command registry and keep every PromptCommand whose
+    ``loaded_from`` is one of the skill-loaded buckets. CWD is accepted
+    for signature parity with b24b8cb but currently unused.
+    """
+    del cwd  # signature parity; no per-cwd filtering yet
+    try:
+        from .registry import get_command_registry, list_commands
+    except ImportError:
+        return ()
+    # ``list_commands`` may not exist in every test config; fall back to
+    # the registry's own iteration if needed.
+    reg = get_command_registry()
+    if hasattr(reg, "list_commands"):
+        all_cmds = list(reg.list_commands())
+    else:
+        all_cmds = list_commands()
+    skill_buckets = {"skills", "bundled", "commands_DEPRECATED"}
+    return tuple(
+        cmd
+        for cmd in all_cmds
+        if isinstance(cmd, PromptCommand)
+        and getattr(cmd, "loaded_from", "builtin") in skill_buckets
+    )
 
 
 def load_skill_from_directory(

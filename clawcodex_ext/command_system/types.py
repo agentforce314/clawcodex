@@ -4,9 +4,13 @@ Command type system for Claw Codex.
 Implements the core command types inspired by Claude Code's command system:
 - PromptCommand: Expands to text/prompt content sent to the model
 - LocalCommand: Executes local code without rendering UI
+- InteractiveCommand: Drives a surface-agnostic UIHost and returns an
+  InteractiveOutcome (port of TS ``local-jsx``)
 """
 
 from __future__ import annotations
+
+import asyncio
 
 from dataclasses import dataclass, field
 from enum import Enum
@@ -18,6 +22,12 @@ class CommandType(Enum):
     """Types of commands."""
     PROMPT = "prompt"
     LOCAL = "local"
+    # Ports TS ``type: 'local-jsx'`` — a command that drives an interactive
+    # UI (via the surface-agnostic ``UIHost`` port) and returns an
+    # ``InteractiveOutcome``. A *distinct* type (not a LocalCommand subtype)
+    # so the engine routes it to ``_execute_interactive`` and the
+    # remote-safety gate blocks it by type (see ``safe_commands``).
+    INTERACTIVE = "interactive"
 
 
 class CommandAvailability(Enum):
@@ -68,6 +78,17 @@ class CommandContext:
     # (only first-party Anthropic supports it).
     app_state_store: Any = None
     provider: Any = None
+    # ``ui`` is the surface-agnostic interaction port (a ``UIHost``) that
+    # interactive commands drive. None on surfaces that didn't wire one;
+    # the engine substitutes a ``NullUIHost`` (which raises for mutating
+    # prompts) so a command body can always assume ``ctx.ui`` is present.
+    ui: Any = None  # UIHost | None
+    # ``tool_context`` is the surface's ToolContext (REPL/TUI), threaded
+    # through so a SkillPromptCommand can render with the *same* session id +
+    # shell executor the model's Skill tool uses (P0-6 Option B / Phase 3.5).
+    # None on listing/aggregation paths, which never call
+    # get_prompt_for_command, so the default is correct there.
+    tool_context: Any = None  # ToolContext | None
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +189,73 @@ class PromptCommand(CommandBase):
 
 
 @dataclass(frozen=True)
+class SkillPromptCommand(PromptCommand):
+    """A PromptCommand backed by a markdown skill (P0-6 Option B / Phase 3.5).
+
+    The base ``PromptCommand.get_prompt_for_command`` does only bare argument
+    substitution, which is lossy for skills (it drops the base-dir header,
+    ``${CLAUDE_SKILL_DIR}`` / ``${CLAUDE_SESSION_ID}`` substitution, and gated
+    shell-exec). This subclass overrides it with a render that is identical *by
+    construction* to the model's Skill-tool path: when the surface threads its
+    ``ToolContext`` onto the ``CommandContext`` (REPL/TUI execution), it
+    delegates to ``_run_markdown_skill`` — the same function the Skill tool runs
+    — re-resolving the skill by ``self.name`` so session id and shell-exec are
+    byte-for-byte the same. Off that path (no ToolContext: SDK / listing
+    callers) it degrades to a headless render with no shell executor.
+    """
+
+    async def get_prompt_for_command(
+        self,
+        args: str,
+        context: CommandContext,
+    ) -> list[dict[str, Any]]:
+        tc = getattr(context, "tool_context", None)
+        if tc is not None:
+            # Function-scope import: command_system must not import tool_system
+            # at module load (would cycle). The edge is one private helper, and
+            # command_system already imports ..skills.
+            from clawcodex_ext.tool_system.tools.skill import _run_markdown_skill
+
+            # ``_run_markdown_skill`` is sync and may block (disk I/O + a gated
+            # BashTool subprocess for embedded shell blocks). Run it off the
+            # event loop so neither the REPL thread-pool loop nor the Textual
+            # loop stalls. Note: it mutates a process-global skill registry
+            # (clear + re-resolve), which is unsynchronized — safe only because
+            # both surfaces serialize command dispatch, so no two renders run
+            # concurrently. A future concurrent-dispatch change would need a lock.
+            res = await asyncio.to_thread(
+                _run_markdown_skill, self.name, args or "", tc
+            )
+            payload = res.output if isinstance(res.output, dict) else {}
+            prompt = payload.get("prompt")
+            if isinstance(prompt, str) and prompt.strip():
+                return [{"type": "text", "text": prompt}]
+            # error / empty (e.g. the skill was removed since registration) →
+            # fall through to a headless render from the cached fields.
+        return self._render_headless(args)
+
+    def _render_headless(self, args: str) -> list[dict[str, Any]]:
+        """Best-effort render with no ToolContext: base-dir header + argument /
+        ``${CLAUDE_SKILL_DIR}`` / ``${CLAUDE_SESSION_ID}`` substitution, with
+        embedded shell blocks left verbatim (no executor). Only reachable off
+        the REPL/TUI execution paths, which always thread a ToolContext."""
+        from clawcodex_ext.bootstrap.state import get_session_id
+        from clawcodex_ext.skills.runtime_substitution import render_skill_prompt
+
+        text = render_skill_prompt(
+            body=self.markdown_content,
+            args=args or "",
+            base_dir=self.skill_root,
+            argument_names=self.arg_names,
+            session_id=get_session_id(),
+            loaded_from=self.loaded_from,
+            slash_command_name=f"/{self.name}",
+            shell_executor=None,
+        )
+        return [{"type": "text", "text": text}]
+
+
+@dataclass(frozen=True)
 class LocalCommand(CommandBase):
     """A command that executes local code."""
     supports_non_interactive: bool = False
@@ -188,8 +276,168 @@ class LocalCommand(CommandBase):
         return LocalCommandResult(type="text", value=f"Command {self.name} not implemented")
 
 
+# ---------------------------------------------------------------------------
+# Interactive command bridge (port of TS ``local-jsx`` commands)
+# ---------------------------------------------------------------------------
+#
+# TS interactive commands (``type: 'local-jsx'``) render an Ink element and
+# resolve via an ``onDone`` callback. The Python port replaces "render an
+# element" with "drive a surface-agnostic ``UIHost`` port", so one command
+# body works headless (REPL), in the Textual TUI, and (raising) under the
+# SDK / non-interactive null surface.
+
+
+@dataclass(frozen=True)
+class UIOption:
+    """One selectable row passed to :meth:`UIHost.select`.
+
+    ``value`` is what the host returns on selection; ``label`` is shown to
+    the user; ``description`` is optional secondary text (rendered dim in
+    the TUI, parenthesized in the REPL menu).
+    """
+
+    value: str
+    label: str
+    description: Optional[str] = None
+
+
+class InteractiveUnavailableError(RuntimeError):
+    """Raised by :class:`NullUIHost` when an interactive command tries to
+    prompt on a surface with no UI (SDK / non-interactive). The engine turns
+    this into a clean error ``CommandResult`` rather than a crash.
+    """
+
+
+class UIHost(Protocol):
+    """Surface-agnostic interaction port injected as ``CommandContext.ui``.
+
+    Adapters: ``ReplUIHost`` (numbered menu), ``TextualUIHost``
+    (``push_screen_wait`` modal), ``NullUIHost`` (raises for the mutating
+    ``select``; ``display`` no-ops). Mirrors the TS pattern of injecting host
+    callbacks into the command context.
+
+    The slice ships the primitives in-scope Class-B commands need:
+    ``select`` (single choice), ``prompt_text`` (free-text line), plus
+    read-only ``display``. ``prompt_text`` lands with its first consumer
+    ``/export``. ``confirm`` stays deferred — TS expresses it as a 2-option
+    ``select`` over Yes/No, so it needs no new method. The port grows by
+    adding a method here and one line per adapter.
+    """
+
+    async def select(
+        self,
+        title: str,
+        options: Sequence[UIOption],
+        *,
+        current: Optional[str] = None,
+    ) -> Optional[str]:
+        """Prompt the user to pick one option. Returns the chosen
+        ``UIOption.value``, or ``None`` if cancelled."""
+        ...
+
+    async def prompt_text(
+        self,
+        title: str,
+        *,
+        default: str = "",
+        placeholder: Optional[str] = None,
+    ) -> Optional[str]:
+        """Prompt for a single free-text line. Returns the submitted string,
+        which MAY be ``''`` — an empty submit is valid input, not a cancel
+        (mirrors TS ``TextInput.onSubmit('')``). Returns ``None`` *only* when
+        cancelled (Esc / EOF / Ctrl-C).
+
+        ``default`` pre-fills the editable value; ``placeholder`` is a hint
+        shown while the field is empty and is never submitted."""
+        ...
+
+    async def display(self, title: str, body: str) -> None:
+        """Show read-only information. No return value."""
+        ...
+
+
+class NullUIHost:
+    """UIHost for surfaces without a UI (SDK / non-interactive).
+
+    The *mutating* primitives :meth:`select` and :meth:`prompt_text` raise
+    :class:`InteractiveUnavailableError` — deliberately NOT returning a
+    default/``current`` value, which would read as a false success. Only the
+    read-only :meth:`display` no-ops. (Resolved contract — see plan §4/§7.)
+    """
+
+    _MSG = "This command needs an interactive surface (TUI or REPL)."
+
+    async def select(
+        self,
+        title: str,
+        options: Sequence[UIOption],
+        *,
+        current: Optional[str] = None,
+    ) -> Optional[str]:
+        raise InteractiveUnavailableError(self._MSG)
+
+    async def prompt_text(
+        self,
+        title: str,
+        *,
+        default: str = "",
+        placeholder: Optional[str] = None,
+    ) -> Optional[str]:
+        raise InteractiveUnavailableError(self._MSG)
+
+    async def display(self, title: str, body: str) -> None:
+        return None
+
+
+@dataclass(frozen=True)
+class InteractiveOutcome:
+    """What an interactive command returns to the engine — the Python
+    analogue of the TS ``onDone`` payload (``command.ts:117-126``).
+
+    The engine maps this onto a :class:`CommandResult`, propagating
+    ``display`` / ``should_query`` / ``meta_messages`` (which the LOCAL arm
+    hardcodes away). ``display == "skip"`` signals "produce no output" (TS
+    ``display: 'skip'``); use :meth:`skip` for the cancelled path.
+    """
+
+    message: Optional[str] = None          # TS onDone.result
+    display: str = "system"                # "skip" | "system" | "user"
+    should_query: bool = False             # TS onDone.shouldQuery
+    meta_messages: list[str] = field(default_factory=list)  # TS onDone.metaMessages
+
+    @classmethod
+    def skip(cls) -> "InteractiveOutcome":
+        """Cancelled / no-op outcome — the engine returns
+        ``CommandResult.skip`` for it."""
+        return cls(display="skip")
+
+
+@dataclass(frozen=True)
+class InteractiveCommand(CommandBase):
+    """Base for commands that drive ``ctx.ui`` and return an
+    :class:`InteractiveOutcome`.
+
+    Reports ``CommandType.INTERACTIVE`` so the engine routes it to
+    ``_execute_interactive`` and the remote-safety gate blocks it *by type*
+    (``safe_commands.is_bridge_safe_command``). Concrete commands subclass
+    this and override :meth:`run` (the ``StatuslineCommand`` pattern — no new
+    dataclass fields required).
+    """
+
+    @property
+    def command_type(self) -> CommandType:
+        return CommandType.INTERACTIVE
+
+    async def run(self, args: str, context: CommandContext) -> InteractiveOutcome:
+        """Drive ``context.ui`` and return the outcome. Override in
+        subclasses."""
+        raise NotImplementedError(
+            "InteractiveCommand subclasses must implement run()"
+        )
+
+
 # Type alias for any command
-Command = PromptCommand | LocalCommand
+Command = PromptCommand | LocalCommand | InteractiveCommand
 
 
 def get_command_name(cmd: CommandBase) -> str:
@@ -217,3 +465,28 @@ def meets_availability_requirement(
         if availability == CommandAvailability.CONSOLE and is_console_user:
             return True
     return False
+
+
+__all__ = [
+    "Command",
+    "CommandAvailability",
+    "CommandBase",
+    "CommandContext",
+    "CommandType",
+    "CompactionResult",
+    "InteractiveCommand",
+    "InteractiveOutcome",
+    "InteractiveUnavailableError",
+    "LocalCommand",
+    "LocalCommandCall",
+    "LocalCommandResult",
+    "NullUIHost",
+    "PromptCommand",
+    "SkillPromptCommand",
+    "UIHost",
+    "UIOption",
+    "attach_downstream_context",
+    "get_command_name",
+    "is_command_enabled",
+    "meets_availability_requirement",
+]
