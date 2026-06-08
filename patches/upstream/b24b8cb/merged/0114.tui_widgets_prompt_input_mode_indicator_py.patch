@@ -1,0 +1,155 @@
+diff --git a/tui/widgets/prompt_input_mode_indicator.py b/tui/widgets/prompt_input_mode_indicator.py
+--- a/tui/widgets/prompt_input_mode_indicator.py	2026-06-08 06:13:57.000000 +0000
++++ b/tui/widgets/prompt_input_mode_indicator.py	2026-06-08 09:36:05.004728 +0000
+@@ -1,135 +1,16 @@
+-"""Vim-mode indicator for the prompt input.
+-
+-Port of ``typescript/src/components/PromptInput/PromptInputModeIndicator.tsx``
+-(~60 lines). The indicator renders a single line above the prompt input
+-showing the active vim mode (``[INSERT]``, ``[NORMAL]``, ``[VISUAL]``).
+-It is hidden when vim mode is off, so non-vim users do not see a stray
+-status row.
+-
+-Round 2 / WI-R2.2 of the ch13 terminal-UI refactor. The widget subscribes
+-to :meth:`VimState.add_mode_listener` on mount so it re-renders synchronously
+-on every mode transition without polling.
+-"""
+-
+-from __future__ import annotations
+-
+-from typing import Callable
+-
+-from rich.text import Text
+-from textual.widgets import Static
+-
+-from ..vim import Mode, VimState
+-
+-
+-class PromptInputModeIndicator(Static):
+-    """One-line status row showing the active vim mode."""
+-
+-    DEFAULT_CSS = """
+-    PromptInputModeIndicator {
+-        height: 1;
+-        width: auto;
+-        padding: 0 1;
+-    }
+-    PromptInputModeIndicator.-hidden {
+-        display: none;
+-    }
+-    PromptInputModeIndicator.-normal {
+-        color: $primary;
+-        text-style: bold;
+-    }
+-    PromptInputModeIndicator.-insert {
+-        color: $text-muted;
+-    }
+-    PromptInputModeIndicator.-visual {
+-        color: $warning;
+-        text-style: bold;
+-    }
+-    """
+-
+-    def __init__(self, *, vim_state: VimState) -> None:
+-        super().__init__(Text(""), markup=False)
+-        self._vim = vim_state
+-        self._unsubscribe: Callable[[], None] | None = None
+-        # Track the most recent rendered label so tests can assert on it
+-        # without depending on Textual's render-cache internals.
+-        self._last_label: str = ""
+-
+-    # ---- lifecycle ----
+-    def on_mount(self) -> None:
+-        # Subscribe before the first render so any later transition
+-        # immediately updates the indicator. Initial render reflects the
+-        # current state.
+-        self._unsubscribe = self._vim.add_mode_listener(self._on_mode_change)
+-        self._redraw()
+-
+-    def on_unmount(self) -> None:
+-        if self._unsubscribe is not None:
+-            self._unsubscribe()
+-            self._unsubscribe = None
+-
+-    # ---- external triggers ----
+-    def refresh_mode(self) -> None:
+-        """Force a re-render. Used after :meth:`VimState.set_enabled`.
+-
+-        The mode-listener fires only on real mode transitions, not on
+-        the enable/disable toggle itself, so callers that flip vim mode
+-        on and off (e.g. ``/vim`` slash command) must invoke this hook
+-        to update the visible state.
+-        """
+-
+-        self._redraw()
+-
+-    # ---- internals ----
+-    def _on_mode_change(self, _: Mode) -> None:
+-        self._redraw()
+-
+-    def _redraw(self) -> None:
+-        if not self._vim.enabled:
+-            self._last_label = ""
+-            self._set_visibility(hidden=True, mode_class=None)
+-            self.update(Text(""))
+-            return
+-        label, mode_class = _label_for(self._vim.mode)
+-        self._last_label = label
+-        self._set_visibility(hidden=False, mode_class=mode_class)
+-        self.update(Text(label))
+-
+-    def _set_visibility(self, *, hidden: bool, mode_class: str | None) -> None:
+-        # Toggle visibility class first so layout settles before the
+-        # mode class is applied.
+-        if hidden:
+-            self.add_class("-hidden")
+-        else:
+-            self.remove_class("-hidden")
+-        # Reset prior mode classes then apply the new one (if any) to
+-        # avoid stale styling across transitions.
+-        for stale in ("-insert", "-normal", "-visual"):
+-            self.remove_class(stale)
+-        if mode_class is not None:
+-            self.add_class(mode_class)
+-
+-    @property
+-    def last_label(self) -> str:
+-        """Most recently rendered label (test seam)."""
+-        return self._last_label
+-
+-
+-def _label_for(mode: Mode) -> tuple[str, str]:
+-    """Return the (text, css-class) pair for ``mode``.
+-
+-    Visual sub-modes from ``vim_state.py`` are not represented in the
+-    single-line :class:`Mode` enum, but the indicator accepts any
+-    string-valued mode and maps unknown values to a generic ``[VISUAL]``
+-    label so a future wave that wires the multi-line vim state does not
+-    regress this widget.
+-    """
+-
+-    if mode is Mode.INSERT:
+-        return "[INSERT]", "-insert"
+-    if mode is Mode.NORMAL:
+-        return "[NORMAL]", "-normal"
+-    # Fallback for forward compatibility with multi-line vim modes.
+-    return "[VISUAL]", "-visual"
+-
+-
+-__all__ = ["PromptInputModeIndicator"]
++"""Facade — tui/widgets/prompt_input_mode_indicator.py has been moved to clawcodex_ext (lazy proxy).
++"""
++from __future__ import annotations
++
++__all__ = [
++    "PromptInputModeIndicator",
++]
++
++
++def __getattr__(name: str):
++    import clawcodex_ext.tui.widgets.prompt_input_mode_indicator as _mod
++    if name in _mod.__dict__:
++        val = _mod.__dict__[name]
++        globals()[name] = val
++        return val
++    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

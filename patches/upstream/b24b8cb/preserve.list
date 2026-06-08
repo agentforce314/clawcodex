@@ -1,0 +1,49 @@
+# Preserve list for the b24b8cb patch queue.
+#
+# Semantics: any upstream file listed here is **kept from the base**
+# (src/upstream/b24b8cb/) and produces **no patch**. The fork-side
+# version under src/ — if any — is dropped in favour of the b24b8cb
+# content. This applies to two distinct cases:
+#
+#   (a) Files NEW in b24b8cb (not in 58ea488 base, not in src/):
+#       the upstream new file is preserved by inheritance. No patch
+#       is needed because the file already exists in the base.
+#
+#   (b) Files MODIFIED in b24b8cb AND present in src/ but WITHOUT
+#       a fork-side delta (src/ content == src/upstream/58ea488/
+#       content): preserving the file keeps the b24b8cb upstream
+#       change intact. Without preserving, the regen script would
+#       emit a modify patch that effectively reverts the upstream
+#       change to the 58ea488 baseline.
+#
+# Generated 2026-06-08. See CONFLICT_REPORT.md §2.1 / §2.3 for the
+# rationale on each file.
+
+# (a) New in b24b8cb, no fork counterpart
+command_system/aggregator.py
+command_system/effort_command.py
+command_system/export_command.py
+command_system/model_command.py
+command_system/moved_to_plugin.py
+command_system/output_style_command.py
+command_system/permissions_command.py
+command_system/safe_commands.py
+command_system/security_review.py
+command_system/shell_prompt.py
+command_system/statusline.py
+command_system/theme_command.py
+repl/ui_host.py
+transports/remote_io.py
+transports/transport_utils.py
+transports/worker_state_uploader.py
+tui/screens/generic_input.py
+tui/screens/generic_select.py
+tui/ui_host.py
+utils/export_formats.py
+utils/export_renderer.py
+
+# (b) Modified in b24b8cb, no fork delta — keep the b24b8cb change
+providers/glm_provider.py
+state/app_state.py
+transports/__init__.py
+utils/markdown_config_loader.py

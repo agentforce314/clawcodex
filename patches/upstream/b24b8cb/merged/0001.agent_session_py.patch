@@ -1,0 +1,404 @@
+diff --git a/agent/session.py b/agent/session.py
+--- a/agent/session.py	2026-06-08 06:13:57.000000 +0000
++++ b/agent/session.py	2026-06-08 09:35:56.128317 +0000
+@@ -1,174 +1,226 @@
+-"""Session management with persistence.
+-
+-The session ID is authoritative-from-bootstrap: ``Session.create`` reads
+-``get_session_id()`` rather than generating its own. This fixes the
+-strftime-collision bug (sessions started in the same second would have
+-overlapped IDs) and unifies session identity across the codebase — the
+-bootstrap singleton is the single source of truth, exactly per Chapter 3.
+-
+-``Session.load(sid)`` continues to read from disk by ID; the resume path
+-should call ``switch_session(SessionId(sid))`` first (or via a wrapping
+-helper) to update the bootstrap singleton, then call ``Session.load(sid)``
+-to reconstruct the per-conversation Persistence record.
+-"""
+-
+-from __future__ import annotations
+-
+-import json
+-import time
+-from pathlib import Path
+-from datetime import datetime
+-from typing import Optional
+-from dataclasses import dataclass, field
+-
+-from src.bootstrap.state import (
+-    get_model_usage,
+-    get_session_id,
+-    get_start_time,
+-    get_total_api_duration,
+-    get_total_api_duration_without_retries,
+-    get_total_cost_usd,
+-    get_total_lines_added,
+-    get_total_lines_removed,
+-    get_total_tool_duration,
+-)
+-
+-from .conversation import Conversation
+-
+-
+-@dataclass
+-class Session:
+-    """Session manager with persistence."""
+-    session_id: str
+-    provider: str
+-    model: str
+-    conversation: Conversation = field(default_factory=Conversation)
+-    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
+-    updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
+-
+-    def save(self):
+-        """Save session to disk including a cost block.
+-
+-        Ch03 round-2 (R2.1): the ``cost`` key matches the schema read by
+-        ``src/services/cost_restore.py:restore_cost_state_for_session``
+-        so a save → load round-trip restores bootstrap counters
+-        (`total_cost_usd`, durations, lines added/removed, per-model
+-        usage). Previously this method emitted no cost block; the
+-        restore reader hit defaults of 0 unconditionally.
+-        """
+-        session_dir = Path.home() / ".clawcodex" / "sessions"
+-        session_dir.mkdir(parents=True, exist_ok=True)
+-
+-        session_file = session_dir / f"{self.session_id}.json"
+-
+-        cost_block = _snapshot_cost_block()
+-
+-        session_data = {
+-            "session_id": self.session_id,
+-            "provider": self.provider,
+-            "model": self.model,
+-            "conversation": self.conversation.to_dict(),
+-            "created_at": self.created_at,
+-            "updated_at": datetime.now().isoformat(),
+-            "cost": cost_block,
+-        }
+-
+-        with open(session_file, 'w') as f:
+-            json.dump(session_data, f, indent=2)
+-
+-        self.updated_at = datetime.now().isoformat()
+-
+-    @classmethod
+-    def load(cls, session_id: str) -> Optional['Session']:
+-        """Load session from disk."""
+-        session_file = Path.home() / ".clawcodex" / "sessions" / f"{session_id}.json"
+-
+-        if not session_file.exists():
+-            return None
+-
+-        with open(session_file, 'r') as f:
+-            data = json.load(f)
+-
+-        return cls(
+-            session_id=data["session_id"],
+-            provider=data["provider"],
+-            model=data["model"],
+-            conversation=Conversation.from_dict(data["conversation"]),
+-            created_at=data["created_at"],
+-            updated_at=data["updated_at"]
+-        )
+-
+-    @classmethod
+-    def create(cls, provider: str, model: str) -> 'Session':
+-        """Create a new session using the bootstrap singleton's session ID.
+-
+-        Previously this generated its own strftime-based ID, producing
+-        collisions when two sessions started in the same second and
+-        diverging from the rest of the codebase. Now reads
+-        ``get_session_id()`` — a UUID-based ID generated at bootstrap
+-        import time — so every consumer that talks about "the current
+-        session" agrees on the identifier.
+-        """
+-        return cls(
+-            session_id=get_session_id(),
+-            provider=provider,
+-            model=model,
+-        )
+-
+-    @classmethod
+-    def resume(cls, session_id: str) -> Optional['Session']:
+-        """Resume a session: update bootstrap identity, restore cost,
+-        reconstruct the per-conversation record from disk.
+-
+-        Ch03 round-2 (R2.2): single entry point that keeps the three
+-        operations in lockstep (CC-34 single-setter discipline at the
+-        resume layer). Callers (REPL ``/resume``, headless / SDK)
+-        should use this rather than calling ``Session.load`` plus
+-        ``switch_session`` plus ``restore_cost_state_for_session``
+-        independently.
+-
+-        Order matters: ``switch_session`` fires BEFORE
+-        ``restore_cost_state_for_session`` so any subscriber that reads
+-        ``get_session_id()`` during the cost restore sees the loaded id.
+-        """
+-        from src.bootstrap.state import SessionId, switch_session
+-        from src.services.cost_restore import restore_cost_state_for_session
+-
+-        loaded = cls.load(session_id)
+-        if loaded is None:
+-            return None
+-        switch_session(SessionId(session_id))
+-        restore_cost_state_for_session(session_id)
+-        return loaded
+-
+-
+-def _snapshot_cost_block() -> dict:
+-    """Build the cost block written by ``Session.save``.
+-
+-    Shape matches the reader at
+-    ``src/services/cost_restore.py:restore_cost_state_for_session``.
+-    Module-private; tests can call via the public ``Session.save``.
+-    """
+-    return {
+-        "total_cost_usd": get_total_cost_usd(),
+-        "total_api_duration": get_total_api_duration(),
+-        "total_api_duration_without_retries":
+-            get_total_api_duration_without_retries(),
+-        "total_tool_duration": get_total_tool_duration(),
+-        "total_lines_added": get_total_lines_added(),
+-        "total_lines_removed": get_total_lines_removed(),
+-        # last_duration = elapsed since start_time. cost_restore uses
+-        # this to back-date the new session's start_time so post-resume
+-        # duration accumulators continue from where they left off.
+-        "last_duration": time.time() - get_start_time(),
+-        "model_usage": {
+-            model: {
+-                "input_tokens": u.input_tokens,
+-                "output_tokens": u.output_tokens,
+-                "cache_creation_input_tokens": u.cache_creation_input_tokens,
+-                "cache_read_input_tokens": u.cache_read_input_tokens,
+-                "cost_usd": u.cost_usd,
+-            }
+-            for model, u in get_model_usage().items()
+-        },
+-    }
++"""Session management with persistence.
++
++The session ID is authoritative-from-bootstrap: ``Session.create`` reads
++``get_session_id()`` rather than generating its own. This fixes the
++strftime-collision bug (sessions started in the same second would have
++overlapped IDs) and unifies session identity across the codebase — the
++bootstrap singleton is the single source of truth, exactly per Chapter 3.
++
++``Session.load(sid)`` continues to read from disk by ID; the resume path
++should call ``switch_session(SessionId(sid))`` first (or via a wrapping
++helper) to update the bootstrap singleton, then call ``Session.load(sid)``
++to reconstruct the per-conversation Persistence record.
++"""
++
++from __future__ import annotations
++
++import json
++import time
++from pathlib import Path
++from datetime import datetime
++from typing import Optional
++from dataclasses import dataclass, field
++
++from src.bootstrap.state import (
++    get_model_usage,
++    get_session_id,
++    get_start_time,
++    get_total_api_duration,
++    get_total_api_duration_without_retries,
++    get_total_cost_usd,
++    get_total_lines_added,
++    get_total_lines_removed,
++    get_total_tool_duration,
++)
++
++from .conversation import Conversation
++
++
++@dataclass
++class Session:
++    """Session manager with persistence."""
++    session_id: str
++    provider: str
++    model: str
++    conversation: Conversation = field(default_factory=Conversation)
++    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
++    updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
++
++    def save(self):
++        """Save session to disk including a cost block.
++
++        Ch03 round-2 (R2.1): the ``cost`` key matches the schema read by
++        ``src/services/cost_restore.py:restore_cost_state_for_session``
++        so a save → load round-trip restores bootstrap counters
++        (`total_cost_usd`, durations, lines added/removed, per-model
++        usage). Previously this method emitted no cost block; the
++        restore reader hit defaults of 0 unconditionally.
++
++        Also persists conversation messages via :class:`SessionStorage`
++        (JSONL transcript) so ``--resume`` can attach a
++        :class:`TailFollower` to watch for lines written by a
++        backgrounded agent.
++        """
++        session_dir = Path.home() / ".clawcodex" / "sessions"
++        session_dir.mkdir(parents=True, exist_ok=True)
++
++        session_file = session_dir / f"{self.session_id}.json"
++
++        cost_block = _snapshot_cost_block()
++
++        session_data = {
++            "session_id": self.session_id,
++            "provider": self.provider,
++            "model": self.model,
++            "conversation": self.conversation.to_dict(),
++            "created_at": self.created_at,
++            "updated_at": datetime.now().isoformat(),
++            "cost": cost_block,
++        }
++
++        with open(session_file, 'w') as f:
++            json.dump(session_data, f, indent=2)
++
++        self.updated_at = datetime.now().isoformat()
++
++        # Also persist via SessionStorage (JSONL transcript) so
++        # TailFollower can observe new lines during --resume.
++        # Implementation lives in extensions/agent/session_persist.py
++        # so the upstream Session stays free of orchestrator-specific
++        # persistence concerns.
++        try:
++            from extensions.agent.session_persist import save_to_session_storage
++            save_to_session_storage(self)
++        except ImportError:
++            pass
++
++    @classmethod
++    def load(cls, session_id: str) -> Optional['Session']:
++        """Load session from disk."""
++        session_file = Path.home() / ".clawcodex" / "sessions" / f"{session_id}.json"
++
++        if not session_file.exists():
++            return None
++
++        with open(session_file, 'r') as f:
++            data = json.load(f)
++
++        return cls(
++            session_id=data["session_id"],
++            provider=data["provider"],
++            model=data["model"],
++            conversation=Conversation.from_dict(data["conversation"]),
++            created_at=data["created_at"],
++            updated_at=data["updated_at"]
++        )
++
++    @classmethod
++    def create(cls, provider: str, model: str) -> 'Session':
++        """Create a new session using the bootstrap singleton's session ID.
++
++        Previously this generated its own strftime-based ID, producing
++        collisions when two sessions started in the same second and
++        diverging from the rest of the codebase. Now reads
++        ``get_session_id()`` — a UUID-based ID generated at bootstrap
++        import time — so every consumer that talks about "the current
++        session" agrees on the identifier.
++        """
++        return cls(
++            session_id=get_session_id(),
++            provider=provider,
++            model=model,
++        )
++
++    @classmethod
++    def resume(cls, session_id: str) -> Optional['Session']:
++        """Resume a session: update bootstrap identity, restore cost,
++        reconstruct the per-conversation record from disk.
++
++        Ch03 round-2 (R2.2): single entry point that keeps the three
++        operations in lockstep (CC-34 single-setter discipline at the
++        resume layer). Callers (REPL ``/resume``, headless / SDK)
++        should use this rather than calling ``Session.load`` plus
++        ``switch_session`` plus ``restore_cost_state_for_session``
++        independently.
++
++        Order matters: ``switch_session`` fires BEFORE
++        ``restore_cost_state_for_session`` so any subscriber that reads
++        ``get_session_id()`` during the cost restore sees the loaded id.
++
++        F-49 Phase 0.2: also accepts sessions stored in the
++        :class:`SessionStorage` directory format
++        (``~/.clawcodex/sessions/<sid>/transcript.jsonl`` + ``metadata.json``).
++        This is the on-disk shape the orchestrator's
++        :class:`AgentRunner` writes — the headless run is keyed by
++        ``run_id`` and persists there so ``clawcodex --resume <run_id>``
++        works for orchestrator sessions without a second flat-file
++        write. Provider is left as ``""`` because SessionStorage does
++        not record it; the resume target's provider should be
++        supplied by the caller (REPL config, env, etc.).
++        """
++        from src.bootstrap.state import SessionId, switch_session
++        from src.services.cost_restore import restore_cost_state_for_session
++
++        loaded = cls.load(session_id)
++        if loaded is None:
++            # F-49 Phase 0.2: fall back to the SessionStorage
++            # directory format written by AgentRunner + headless
++            # agent runs. The flat-file path above is the original
++            # single-session REPL flow; this branch is the
++            # multi-session / orchestrator flow.
++            # Implementation lives in extensions/agent/session_persist.py
++            # so the upstream Session stays free of orchestrator-specific
++            # persistence concerns.
++            try:
++                from extensions.agent.session_persist import load_from_session_storage
++                data = load_from_session_storage(session_id)
++                if data is not None:
++                    loaded = cls(
++                        session_id=data["session_id"],
++                        provider="",
++                        model=data["model"],
++                        conversation=Conversation(),
++                        created_at=data["start_time"],
++                        updated_at=data["last_updated"],
++                    )
++            except ImportError:
++                pass
++            if loaded is None:
++                return None
++        switch_session(SessionId(session_id))
++        restore_cost_state_for_session(session_id)
++        return loaded
++
++
++
++
++def _snapshot_cost_block() -> dict:
++    """Build the cost block written by ``Session.save``.
++
++    Shape matches the reader at
++    ``src/services/cost_restore.py:restore_cost_state_for_session``.
++    Module-private; tests can call via the public ``Session.save``.
++    """
++    return {
++        "total_cost_usd": get_total_cost_usd(),
++        "total_api_duration": get_total_api_duration(),
++        "total_api_duration_without_retries":
++            get_total_api_duration_without_retries(),
++        "total_tool_duration": get_total_tool_duration(),
++        "total_lines_added": get_total_lines_added(),
++        "total_lines_removed": get_total_lines_removed(),
++        # last_duration = elapsed since start_time. cost_restore uses
++        # this to back-date the new session's start_time so post-resume
++        # duration accumulators continue from where they left off.
++        "last_duration": time.time() - get_start_time(),
++        "model_usage": {
++            model: {
++                "input_tokens": u.input_tokens,
++                "output_tokens": u.output_tokens,
++                "cache_creation_input_tokens": u.cache_creation_input_tokens,
++                "cache_read_input_tokens": u.cache_read_input_tokens,
++                "cost_usd": u.cost_usd,
++            }
++            for model, u in get_model_usage().items()
++        },
++    }

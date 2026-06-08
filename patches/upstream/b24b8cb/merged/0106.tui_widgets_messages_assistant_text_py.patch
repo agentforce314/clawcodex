@@ -1,0 +1,254 @@
+diff --git a/tui/widgets/messages/assistant_text.py b/tui/widgets/messages/assistant_text.py
+--- a/tui/widgets/messages/assistant_text.py	2026-06-08 06:13:57.000000 +0000
++++ b/tui/widgets/messages/assistant_text.py	2026-06-08 09:36:04.871259 +0000
+@@ -1,234 +1,16 @@
+-"""Assistant turn row with live streaming + progressive Markdown rendering.
+-
+-Port of ``typescript/src/components/messages/AssistantTextMessage.tsx``.
+-
+-Phase 1 of the ch13 terminal-UI refactor lands progressive Markdown render:
+-when a stream chunk arrives at a *safe checkpoint* (end of paragraph,
+-fenced code block, heading, list item, blockquote, or horizontal rule), the
+-body widget swaps from a plain ``rich.text.Text`` view to a
+-``rich.markdown.Markdown`` view backed by :class:`MarkdownCache`. The cache
+-key is the SHA-256 of the content truncated to the last safe-checkpoint
+-prefix, so chunks arriving *between* checkpoints all share one cache entry
+-and don't re-parse.
+-
+-Why safe-checkpoint detection and not "always re-render"? Rich.Markdown is
+-brittle on partial tokens (``**Cla`` … ``ude**`` would render the unclosed
+-bold marker as a literal ``**`` and produce visual artifacts). Re-rendering
+-only at known-complete-block boundaries avoids that failure mode while
+-still giving the user progressive markdown coloring.
+-
+-See ``my-docs/ch13-terminal-ui-refactoring-plan.md`` Phase 1 for the design
+-and ``my-docs/ch13-terminal-ui-gap-analysis.md`` gap #1 for the user-impact
+-rationale.
+-"""
+-
+-from __future__ import annotations
+-
+-import re
+-
+-from rich.text import Text
+-from textual.app import ComposeResult
+-from textual.reactive import reactive
+-from textual.widgets import Static
+-
+-from src.tui.markdown_cache import (
+-    _hash as _content_hash,
+-    get_markdown_cache,
+-)
+-
+-from .base import BaseRow, RowHeader
+-
+-
+-# Safe-checkpoint regexes (per refactoring plan WI-1.2). These only need to
+-# match the *last* line of streaming text plus its trailing newline; the
+-# orchestrating predicate (`_at_safe_checkpoint`) handles the line-extraction.
+-_HEADING_RE = re.compile(r"^#{1,6}\s.*\n$")
+-_LIST_RE = re.compile(r"^\s*([*+\-]|\d+\.)\s.*\n$")
+-_BLOCKQUOTE_RE = re.compile(r"^>\s.*\n$")
+-_HR_RE = re.compile(r"^([-*_])\1{2,}\s*\n$")
+-
+-
+-def _at_safe_checkpoint(text: str) -> bool:
+-    """Return True iff ``text`` ends at a Rich-Markdown-safe boundary.
+-
+-    Six conditions (refactoring-plan WI-1.2):
+-      1. End of paragraph (``\\n\\n``)
+-      2. End of fenced code block (closing ``````` arrived)
+-      3. End of heading line
+-      4. End of list item line
+-      5. End of blockquote line
+-      6. End of horizontal rule line
+-
+-    Returns False mid-line — open code blocks, partial bold markers, and any
+-    other in-progress markdown will defer until the next chunk completes the
+-    boundary.
+-    """
+-
+-    if not text:
+-        return False
+-    # 1. Paragraph break.
+-    if text.endswith("\n\n"):
+-        return True
+-    # 2. Fenced code block: even count of triple-backtick AND trailing fence+\n.
+-    #    Matching only on the trailing pattern avoids firing on the opening
+-    #    fence.
+-    if text.count("```") % 2 == 0 and text.endswith("```\n"):
+-        return True
+-    # The remaining (line-based) checks need a complete trailing line —
+-    # no fire while we're mid-word.
+-    if not text.endswith("\n"):
+-        return False
+-    last_nl = text.rfind("\n", 0, -1)
+-    last_line = text[last_nl + 1 :] if last_nl >= 0 else text
+-    if _HEADING_RE.fullmatch(last_line):
+-        return True
+-    if _LIST_RE.fullmatch(last_line):
+-        return True
+-    if _BLOCKQUOTE_RE.fullmatch(last_line):
+-        return True
+-    if _HR_RE.fullmatch(last_line):
+-        return True
+-    return False
+-
+-
+-def _last_checkpoint_prefix(text: str) -> str:
+-    """Return the longest prefix of ``text`` ending at a safe checkpoint.
+-
+-    Used as the cache-key basis during streaming so chunks arriving between
+-    checkpoints share the same cache entry. Returns ``text`` itself if it
+-    ends at a safe checkpoint; returns ``""`` if no checkpoint has been
+-    reached yet (cache key falls back to an empty-content key).
+-    """
+-
+-    if _at_safe_checkpoint(text):
+-        return text
+-    # Walk back to the last \n\n (paragraph break) — the cheapest and most
+-    # common checkpoint. If none exists yet, no usable prefix.
+-    last_para = text.rfind("\n\n")
+-    if last_para < 0:
+-        return ""
+-    return text[: last_para + 2]
+-
+-
+-class AssistantTextMessage(BaseRow):
+-    """Live-updating assistant turn with progressive Markdown render."""
+-
+-    DEFAULT_CSS = """
+-    AssistantTextMessage {
+-        height: auto;
+-    }
+-    AssistantTextMessage > Static.-body {
+-        padding: 0 1;
+-    }
+-    AssistantTextMessage.-streaming > Static.-body {
+-        color: $text;
+-    }
+-    """
+-
+-    streaming_text: reactive[str] = reactive("", layout=True)
+-
+-    def __init__(self) -> None:
+-        super().__init__()
+-        self._finalised = False
+-        self._final_text = ""
+-        # Track the last renderable handed to ``body.update(...)`` so tests
+-        # can assert on the rendering decision (Text vs. Markdown) without
+-        # digging into Textual ``Static`` internals across versions. Not used
+-        # by production code — it is a deliberate test seam.
+-        self._last_body_renderable = None
+-        self.add_class("-streaming")
+-
+-    # ---- composition ----
+-    def compose(self) -> ComposeResult:
+-        header = RowHeader(Text("assistant", style="bold"), markup=False)
+-        header.add_class("-assistant")
+-        yield header
+-        yield Static(Text(""), markup=False, classes="-body")
+-
+-    # ---- streaming ----
+-    def append_chunk(self, chunk: str) -> None:
+-        """Append a streamed chunk and re-render at safe checkpoints.
+-
+-        No-op after :meth:`finalise` — chunks that arrive after end-of-turn
+-        are discarded by design (the server already sent the full message).
+-        """
+-        if self._finalised or not chunk:
+-            return
+-        self.streaming_text += chunk
+-        if _at_safe_checkpoint(self.streaming_text):
+-            self._render_markdown_progressive()
+-        else:
+-            self._refresh_body_plain()
+-
+-    def finalise(self, text: str) -> None:
+-        """Replace the streamed view with a Markdown render of the full turn.
+-
+-        Swaps the body ``Static`` contents in place so the scroll position
+-        stays anchored (matching ink's re-render-by-identity semantics).
+-        """
+-
+-        self._final_text = text or self.streaming_text
+-        self._finalised = True
+-        self.remove_class("-streaming")
+-        body = self._body_widget()
+-        if body is None:
+-            return
+-        if not self._final_text.strip():
+-            empty = Text("")
+-            self._last_body_renderable = empty
+-            body.update(empty)
+-            return
+-        cache = get_markdown_cache()
+-        rendered = cache.get_or_render(self._final_text)
+-        self._last_body_renderable = rendered
+-        body.update(rendered)
+-
+-    # ---- internals ----
+-    def _body_widget(self) -> Static | None:
+-        try:
+-            for static in self.query(Static):
+-                if static.has_class("-body"):
+-                    return static
+-        except Exception:
+-            return None
+-        return None
+-
+-    def _refresh_body_plain(self) -> None:
+-        body = self._body_widget()
+-        if body is None:
+-            return
+-        rendered = Text(self.streaming_text)
+-        self._last_body_renderable = rendered
+-        body.update(rendered)
+-
+-    def _render_markdown_progressive(self) -> None:
+-        body = self._body_widget()
+-        if body is None:
+-            return
+-        cache = get_markdown_cache()
+-        # Cache key is the hash of the longest safe-checkpoint prefix, so all
+-        # chunks landing between two checkpoints share the same cache entry.
+-        prefix = _last_checkpoint_prefix(self.streaming_text)
+-        cache_key = _content_hash(prefix) if prefix else None
+-        rendered = cache.get_or_render(self.streaming_text, cache_key=cache_key)
+-        self._last_body_renderable = rendered
+-        body.update(rendered)
+-
+-    def snapshot(self):
+-        """Return a Rich renderable for post-exit scrollback dump.
+-
+-        Prefers the final text (rendered as Markdown to match what the user
+-        saw) and falls back to the streamed plain text when the turn didn't
+-        finalise (e.g. aborted mid-stream).
+-        """
+-
+-        text = self._final_text if self._finalised else self.streaming_text
+-        header = Text("assistant\n", style="bold #c58af9")
+-        if not (text or "").strip():
+-            return header
+-        cache = get_markdown_cache()
+-        rendered = cache.get_or_render(text)
+-        try:
+-            return (header, rendered)
+-        except Exception:
+-            return header + Text(text)
++"""Facade — tui/widgets/messages/assistant_text.py has been moved to clawcodex_ext (lazy proxy).
++"""
++from __future__ import annotations
++
++__all__ = [
++    "AssistantTextMessage",
++]
++
++
++def __getattr__(name: str):
++    import clawcodex_ext.tui.widgets.messages.assistant_text as _mod
++    if name in _mod.__dict__:
++        val = _mod.__dict__[name]
++        globals()[name] = val
++        return val
++    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

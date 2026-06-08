@@ -1,0 +1,137 @@
+diff --git a/tui/widgets/messages/assistant_thinking.py b/tui/widgets/messages/assistant_thinking.py
+--- a/tui/widgets/messages/assistant_thinking.py	2026-06-08 06:13:57.000000 +0000
++++ b/tui/widgets/messages/assistant_thinking.py	2026-06-08 09:36:04.889451 +0000
+@@ -1,116 +1,17 @@
+-"""Assistant thinking row — distinct from the regular assistant text turn.
+-
+-Phase-12 of the ch13 refactor (gap #16 sub-item — assistant_thinking).
+-Renders ``ThinkingBlock`` content (``src/types/content_blocks.py``) in
+-muted italic so the user can distinguish reasoning from the final
+-response. Streaming-friendly: ``append_chunk`` mutates in place;
+-``finalise`` swaps to a stable rendering once the block closes.
+-
+-The chapter's ``Messages.tsx`` route surfaces thinking blocks through a
+-distinct component; the previous Python TUI dispatched them through
+-``AssistantTextMessage`` (or dropped them entirely). This widget is the
+-matching component the dispatcher should route ``ThinkingBlock`` /
+-``RedactedThinkingBlock`` events to.
+-"""
+-
+-from __future__ import annotations
+-
+-from rich.console import Group
+-from rich.text import Text
+-from textual.app import ComposeResult
+-from textual.reactive import reactive
+-from textual.widgets import Static
+-
+-from .base import BaseRow, RowHeader
+-
+-
+-class AssistantThinkingMessage(BaseRow):
+-    """Live-updating thinking block — italic dim text under a 'thinking' header."""
+-
+-    DEFAULT_CSS = """
+-    AssistantThinkingMessage {
+-        height: auto;
+-    }
+-    AssistantThinkingMessage > Static.-body {
+-        padding: 0 1;
+-        color: $text-muted;
+-        text-style: italic;
+-    }
+-    AssistantThinkingMessage.-redacted > Static.-body {
+-        text-style: italic dim;
+-    }
+-    """
+-
+-    streaming_text: reactive[str] = reactive("", layout=True)
+-
+-    def __init__(self, *, redacted: bool = False) -> None:
+-        super().__init__()
+-        self._finalised = False
+-        self._final_text = ""
+-        self._redacted = redacted
+-        self._last_body_renderable = None
+-        if redacted:
+-            self.add_class("-redacted")
+-
+-    def compose(self) -> ComposeResult:
+-        label = "thinking (redacted)" if self._redacted else "thinking"
+-        header = RowHeader(Text(label, style="bold dim"), markup=False)
+-        header.add_class("-thinking")
+-        yield header
+-        yield Static(Text(""), markup=False, classes="-body")
+-
+-    # ---- streaming ----
+-    def append_chunk(self, chunk: str) -> None:
+-        if self._finalised or not chunk:
+-            return
+-        self.streaming_text += chunk
+-        self._refresh_body()
+-
+-    def finalise(self, text: str) -> None:
+-        self._final_text = text or self.streaming_text
+-        self._finalised = True
+-        body = self._body_widget()
+-        if body is None:
+-            return
+-        rendered = self._render_for(self._final_text)
+-        self._last_body_renderable = rendered
+-        body.update(rendered)
+-
+-    def snapshot(self):
+-        text = self._final_text if self._finalised else self.streaming_text
+-        if not (text or "").strip():
+-            return None
+-        header = Text(
+-            "thinking (redacted)\n" if self._redacted else "thinking\n",
+-            style="bold dim",
+-        )
+-        body = Text(text, style="italic dim")
+-        return Group(header, body)
+-
+-    # ---- internals ----
+-    def _body_widget(self) -> Static | None:
+-        try:
+-            for static in self.query(Static):
+-                if static.has_class("-body"):
+-                    return static
+-        except Exception:
+-            return None
+-        return None
+-
+-    def _refresh_body(self) -> None:
+-        body = self._body_widget()
+-        if body is None:
+-            return
+-        rendered = self._render_for(self.streaming_text)
+-        self._last_body_renderable = rendered
+-        body.update(rendered)
+-
+-    def _render_for(self, text: str):
+-        if not text:
+-            return Text("")
+-        if self._redacted:
+-            return Text(text or "(redacted)", style="italic dim")
+-        return Text(text, style="italic")
+-
+-
+-__all__ = ["AssistantThinkingMessage"]
++"""Facade — tui/widgets/messages/assistant_thinking.py has been moved to clawcodex_ext (lazy proxy).
++"""
++from __future__ import annotations
++
++__all__ = [
++    "ThinkingToggled",
++    "AssistantThinkingMessage",
++]
++
++
++def __getattr__(name: str):
++    import clawcodex_ext.tui.widgets.messages.assistant_thinking as _mod
++    if name in _mod.__dict__:
++        val = _mod.__dict__[name]
++        globals()[name] = val
++        return val
++    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

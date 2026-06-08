@@ -1,0 +1,32 @@
+diff --git a/context_system/_gitpython_adapter.py b/context_system/_gitpython_adapter.py
+new file mode 100644
+--- /dev/null
++++ b/context_system/_gitpython_adapter.py	2026-06-08 09:35:57.516547 +0000
+@@ -0,0 +1,27 @@
++"""Facade — context_system/_gitpython_adapter.py has been moved to clawcodex_ext.
++
++This module re-exports the public API so that existing ``from
++src.context_system._gitpython_adapter import …`` call sites continue to work
++during the migration.  New code should import from
++``clawcodex_ext.context_system._gitpython_adapter`` directly.
++"""
++
++from clawcodex_ext.context_system._gitpython_adapter import (  # noqa: F401
++    is_gitpython_available,
++    GitContextSnapshot,
++    GitPythonProvider,
++    get_gitpython_provider,
++    clear_git_caches,
++    collect_git_context_with_gitpython,
++    format_git_status_with_gitpython,
++)
++
++__all__ = [
++    "is_gitpython_available",
++    "GitContextSnapshot",
++    "GitPythonProvider",
++    "get_gitpython_provider",
++    "clear_git_caches",
++    "collect_git_context_with_gitpython",
++    "format_git_status_with_gitpython",
++]

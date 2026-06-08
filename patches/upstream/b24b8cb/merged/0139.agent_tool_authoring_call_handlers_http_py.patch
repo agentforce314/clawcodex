@@ -1,0 +1,22 @@
+diff --git a/agent/tool_authoring/call_handlers/http.py b/agent/tool_authoring/call_handlers/http.py
+new file mode 100644
+--- /dev/null
++++ b/agent/tool_authoring/call_handlers/http.py	2026-06-08 09:35:56.224968 +0000
+@@ -0,0 +1,17 @@
++"""Facade — agent/tool_authoring/call_handlers/http.py has been moved to clawcodex_ext.
++
++This module re-exports the public API so that existing ``from
++src.agent.tool_authoring.call_handlers.http import …`` call sites continue to work
++during the migration.  New code should import from
++``clawcodex_ext.agent.tool_authoring.call_handlers.http`` directly.
++"""
++
++from clawcodex_ext.agent.tool_authoring.call_handlers.http import (  # noqa: F401
++    HttpCallError,
++    execute_http,
++)
++
++__all__ = [
++    "HttpCallError",
++    "execute_http",
++]

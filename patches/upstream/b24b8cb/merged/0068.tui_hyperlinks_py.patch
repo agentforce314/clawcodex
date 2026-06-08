@@ -1,0 +1,194 @@
+diff --git a/tui/hyperlinks.py b/tui/hyperlinks.py
+--- a/tui/hyperlinks.py	2026-06-08 06:13:57.000000 +0000
++++ b/tui/hyperlinks.py	2026-06-08 09:36:04.190680 +0000
+@@ -1,171 +1,19 @@
+-"""Terminal-capability detection + helpers for OSC 8 hyperlinks.
+-
+-Phase-10 of the ch13 refactor (gap #15) closes the gap between the prior
+-"Rich emits OSC 8 by default if it feels like it" implicit handling and
+-chapter ``typescript/src/ink/supports-hyperlinks.ts``:
+-
+-* Multi-signal capability detection — ``TERM_PROGRAM`` allow-list,
+-  ``VTE_VERSION >= 5000``, ``FORCE_HYPERLINK=1`` override, plus Rich's
+-  own ``console.is_terminal`` / ``console.legacy_windows`` heuristics.
+-  ``console.color_system`` ``in {"truecolor", "256"}`` lets modern
+-  xterm-class terminals report capability via their own self-reporting
+-  even when no explicit env var is set.
+-* :func:`format_link` returns a Rich-markup string when the console
+-  supports OSC 8, otherwise plain text. Widget call-sites use this
+-  before emitting ``[link=URL]`` so the fallback is automatic.
+-* Test seam: pass an explicit ``console`` to either function so unit
+-  tests can simulate any combination of capabilities.
+-
+-Works with Rich's ``[link=]`` markup, which Rich's ``Console.print``
+-turns into OSC 8 sequences when emission is enabled. Outside Rich-rendered
+-content (e.g. raw stdout writes), call :func:`raw_osc8` to get the bare
+-escape sequence.
+-"""
+-
+-from __future__ import annotations
+-
+-import os
+-from typing import Final
+-
+-from rich.console import Console
+-
+-
+-# Modern terminals that natively support OSC 8 hyperlinks. Aligned with
+-# ``typescript/src/ink/supports-hyperlinks.ts`` and the canonical
+-# ``OSC8-Adoption`` matrix. Add to this list as new terminals ship
+-# stable hyperlink support.
+-_KNOWN_GOOD_TERM_PROGRAMS: Final[frozenset[str]] = frozenset(
+-    {
+-        "iTerm.app",
+-        "WezTerm",
+-        "vscode",
+-        "Apple_Terminal",
+-        "Hyper",
+-        "ghostty",
+-        "kitty",
+-        "Tabby",
+-        # ``TERM_PROGRAM`` is sometimes lowercased — accept both.
+-        "iterm.app",
+-        "wezterm",
+-        "hyper",
+-    }
+-)
+-
+-
+-def _shared_console() -> Console:
+-    """Return a per-call default ``Console`` for the no-arg path.
+-
+-    Constructed fresh because Rich's defaults read env vars at
+-    instantiation; tests that monkeypatch env between checks need a
+-    fresh instance to see the change.
+-    """
+-
+-    return Console()
+-
+-
+-def is_hyperlink_supported(console: Console | None = None) -> bool:
+-    """Return True iff the host terminal supports OSC 8 hyperlinks.
+-
+-    Capability matrix (any of the following → supported, in order):
+-
+-    1. ``FORCE_HYPERLINK=1`` env var (test / debug override).
+-    2. ``TERM_PROGRAM`` is in :data:`_KNOWN_GOOD_TERM_PROGRAMS`.
+-    3. ``VTE_VERSION >= 5000`` (gnome-terminal, tilix, terminator).
+-    4. The Rich console reports a modern color system (truecolor / 256)
+-       AND is_terminal AND not legacy_windows AND TERM != "dumb".
+-
+-    Returns False otherwise.
+-    """
+-
+-    if os.environ.get("FORCE_HYPERLINK") == "1":
+-        return True
+-
+-    if os.environ.get("TERM_PROGRAM") in _KNOWN_GOOD_TERM_PROGRAMS:
+-        return True
+-
+-    vte_raw = os.environ.get("VTE_VERSION", "")
+-    if vte_raw:
+-        try:
+-            if int(vte_raw) >= 5000:
+-                return True
+-        except ValueError:
+-            pass
+-
+-    c = console or _shared_console()
+-    if getattr(c, "legacy_windows", False):
+-        return False
+-    if not getattr(c, "is_terminal", False):
+-        return False
+-    term = os.environ.get("TERM", "")
+-    if term in {"dumb", ""}:
+-        return False
+-    color_system = getattr(c, "color_system", None)
+-    return color_system in {"truecolor", "256"}
+-
+-
+-def format_link(
+-    text: str,
+-    url: str,
+-    *,
+-    console: Console | None = None,
+-) -> str:
+-    """Wrap ``text`` in Rich ``[link=URL]`` markup if supported, else plain.
+-
+-    Use this in widget code that emits Rich-formatted strings. Returns
+-    a string the caller can pass to ``Static.update`` or
+-    ``Console.print`` and trust to do the right thing on every terminal.
+-    """
+-
+-    if not text:
+-        return text
+-    if not url:
+-        return text
+-    if not is_hyperlink_supported(console):
+-        return text
+-    return f"[link={url}]{text}[/link]"
+-
+-
+-def raw_osc8(text: str, url: str) -> str:
+-    """Return the bare OSC 8 sequence for emitting outside Rich.
+-
+-    Format: ``ESC ] 8 ;; URL ESC \\ TEXT ESC ] 8 ;; ESC \\``. Callers
+-    must check :func:`is_hyperlink_supported` before emitting; this
+-    function does NOT gate.
+-    """
+-
+-    return f"\x1b]8;;{url}\x1b\\{text}\x1b]8;;\x1b\\"
+-
+-
+-def format_file_path(
+-    path: str,
+-    *,
+-    console: Console | None = None,
+-) -> str:
+-    """Render ``path`` as a clickable ``file://`` link when supported.
+-
+-    Convenience wrapper for the most common widget use case (rendering
+-    file paths in tool results). Falls back to plain text on
+-    unsupported terminals.
+-    """
+-
+-    if not path:
+-        return path
+-    # Make absolute so the OSC 8 URL works regardless of cwd. Rich
+-    # prefers the ``file://`` scheme; absolute paths must include the
+-    # leading slash.
+-    abs_path = path
+-    if not path.startswith("/") and not path.startswith("file://"):
+-        # Don't reach for the actual fs here — keep this function pure.
+-        # Callers that want absolute paths should resolve before calling.
+-        return format_link(path, f"file://{path}", console=console)
+-    if path.startswith("file://"):
+-        return format_link(path, path, console=console)
+-    return format_link(path, f"file://{abs_path}", console=console)
+-
+-
+-__all__ = [
+-    "format_file_path",
+-    "format_link",
+-    "is_hyperlink_supported",
+-    "raw_osc8",
+-]
++"""Facade — tui/hyperlinks.py has been moved to clawcodex_ext (lazy proxy).
++"""
++from __future__ import annotations
++
++__all__ = [
++    "is_hyperlink_supported",
++    "format_link",
++    "raw_osc8",
++    "format_file_path",
++]
++
++
++def __getattr__(name: str):
++    import clawcodex_ext.tui.hyperlinks as _mod
++    if name in _mod.__dict__:
++        val = _mod.__dict__[name]
++        globals()[name] = val
++        return val
++    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

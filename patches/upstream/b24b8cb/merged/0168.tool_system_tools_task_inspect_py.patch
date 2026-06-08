@@ -1,0 +1,20 @@
+diff --git a/tool_system/tools/task_inspect.py b/tool_system/tools/task_inspect.py
+new file mode 100644
+--- /dev/null
++++ b/tool_system/tools/task_inspect.py	2026-06-08 09:36:03.763905 +0000
+@@ -0,0 +1,15 @@
++"""Facade — tool_system/tools/task_inspect.py has been moved to clawcodex_ext.
++
++This module re-exports the public API so that existing ``from
++src.tool_system.tools.task_inspect import …`` call sites continue to work
++during the migration.  New code should import from
++``clawcodex_ext.tool_system.tools.task_inspect`` directly.
++"""
++
++from clawcodex_ext.tool_system.tools.task_inspect import (  # noqa: F401
++    TaskInspectTool,
++)
++
++__all__ = [
++    "TaskInspectTool",
++]

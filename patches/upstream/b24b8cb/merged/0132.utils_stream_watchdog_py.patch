@@ -1,0 +1,383 @@
+diff --git a/utils/stream_watchdog.py b/utils/stream_watchdog.py
+--- a/utils/stream_watchdog.py	2026-06-08 06:13:57.000000 +0000
++++ b/utils/stream_watchdog.py	2026-06-08 00:47:43.311654 +0000
+@@ -1,184 +1,195 @@
+-"""WI-5.2: streaming watchdog for the Anthropic SDK ``messages.stream``.
+-
+-Mirrors TS ``services/api/claude.ts:1922`` (``CLAUDE_STREAM_IDLE_TIMEOUT_MS``,
+-default 90 s). When no chunks arrive for ``timeout_s`` seconds the watchdog
+-closes the underlying HTTP response, which interrupts the sync iterator and
+-lets the provider fall back to non-streaming ``messages.create``.
+-
+-**Why threading.Timer, not asyncio.** The Anthropic Python SDK's
+-``messages.stream()`` is a SYNCHRONOUS context manager (``with``, not
+-``async with``); ``stream.text_stream`` is a synchronous iterator.
+-``asyncio.wait_for`` requires the inner code path be awaitable — it
+-can't wrap a synchronous generator. Switching the whole provider chain
+-to ``AsyncAnthropic`` would cascade async into every call site of
+-``chat_stream_response`` (query.py, engine.py, the turn loop). The
+-plan WI-5.2 explicitly rejected that approach.
+-
+-The threading.Timer pattern: schedule a deadline; reset on each chunk;
+-on timeout call ``stream.response.close()`` which causes the next
+-iterator pull to raise. The provider catches the raise and falls back.
+-
+-**Known fragility (per Phase 2 critic R5).** If a future Anthropic SDK
+-version adds retry/reconnect logic between ``stream.response.close()``
+-and the next iterator pull, the close may be invisible — the iterator
+-would silently continue against a fresh connection. Mitigation: test
+-coverage exercises the timeout path against a synthetic stalled stream
+-and verifies the fallback fires. Re-audit the SDK version when bumping.
+-"""
+-
+-from __future__ import annotations
+-
+-import os
+-import threading
+-from typing import Any, Callable
+-
+-__all__ = [
+-    "DEFAULT_STREAM_IDLE_TIMEOUT_S",
+-    "StreamIdleTimeout",
+-    "stream_idle_timeout_seconds",
+-    "StreamWatchdog",
+-]
+-
+-
+-DEFAULT_STREAM_IDLE_TIMEOUT_S = 90.0
+-
+-
+-def stream_idle_timeout_seconds() -> float:
+-    """Resolve the idle-timeout from ``CLAUDE_STREAM_IDLE_TIMEOUT_MS`` env var.
+-
+-    Falls back to ``DEFAULT_STREAM_IDLE_TIMEOUT_S`` (90s) when the env var
+-    is unset or malformed. Mirrors TS ``claude.ts:1922``.
+-    """
+-    raw = os.environ.get("CLAUDE_STREAM_IDLE_TIMEOUT_MS", "").strip()
+-    if not raw:
+-        return DEFAULT_STREAM_IDLE_TIMEOUT_S
+-    try:
+-        ms = int(raw)
+-    except (TypeError, ValueError):
+-        return DEFAULT_STREAM_IDLE_TIMEOUT_S
+-    if ms <= 0:
+-        return DEFAULT_STREAM_IDLE_TIMEOUT_S
+-    return ms / 1000.0
+-
+-
+-class StreamIdleTimeout(Exception):
+-    """Raised on the consumer-thread when the watchdog fires.
+-
+-    The provider catches this and falls back to non-streaming.
+-    """
+-
+-
+-class StreamWatchdog:
+-    """Manage a per-stream idle deadline.
+-
+-    Usage::
+-
+-        watchdog = StreamWatchdog(stream, timeout_s=90.0)
+-        try:
+-            watchdog.arm()
+-            for chunk in stream.text_stream:
+-                watchdog.reset()  # got a chunk, push deadline back
+-                ...
+-        finally:
+-            watchdog.disarm()
+-
+-    On timeout the watchdog's timer thread calls ``stream.response.close()``;
+-    the next ``stream.text_stream`` pull raises. The provider catches
+-    the raise and decides whether to fall back.
+-    """
+-
+-    def __init__(self, stream: Any, *, timeout_s: float | None = None) -> None:
+-        self._stream = stream
+-        self._timeout_s = (
+-            timeout_s if timeout_s is not None else stream_idle_timeout_seconds()
+-        )
+-        self._timer: threading.Timer | None = None
+-        # Event raised when the timer fires — consumer can check
+-        # ``watchdog.fired`` to distinguish a timeout from an SDK-side
+-        # error in the fallback decision.
+-        self._fired = threading.Event()
+-        self._lock = threading.Lock()
+-
+-    @property
+-    def fired(self) -> bool:
+-        """True if the timeout fired (i.e., we triggered the stream close)."""
+-        return self._fired.is_set()
+-
+-    def arm(self) -> None:
+-        """Start the deadline. Idempotent: re-arming cancels the prior timer."""
+-        with self._lock:
+-            self._cancel_locked()
+-            self._timer = self._make_timer_locked()
+-            self._timer.start()
+-
+-    def reset(self) -> None:
+-        """Push the deadline forward — called on every successful chunk."""
+-        if self._fired.is_set():
+-            return  # already timed out; reset is a no-op
+-        with self._lock:
+-            self._cancel_locked()
+-            self._timer = self._make_timer_locked()
+-            self._timer.start()
+-
+-    def disarm(self) -> None:
+-        """Cancel the timer (call after the stream completes normally)."""
+-        with self._lock:
+-            self._cancel_locked()
+-
+-    def _make_timer_locked(self) -> threading.Timer:
+-        """Build a new Timer bound to this exact instance for stale-fire
+-        detection.
+-
+-        Critic M2: ``Timer.cancel()`` is a no-op once the timer's worker
+-        thread has entered the callback. If ``reset()`` lands AFTER
+-        ``_on_timeout`` started but BEFORE it took the lock, the cancel
+-        does nothing and the callback proceeds to fire. To detect that
+-        race we capture the timer object in a closure and have the
+-        callback short-circuit if it isn't ``self._timer`` anymore.
+-        """
+-        timer: threading.Timer | None = None
+-
+-        def _callback() -> None:
+-            self._on_timeout(timer)
+-
+-        timer = threading.Timer(self._timeout_s, _callback)
+-        timer.daemon = True
+-        return timer
+-
+-    def _cancel_locked(self) -> None:
+-        if self._timer is not None:
+-            try:
+-                self._timer.cancel()
+-            except Exception:
+-                pass
+-            self._timer = None
+-
+-    def _on_timeout(self, expected_timer: threading.Timer | None) -> None:
+-        """Timer callback: mark fired, then close the stream's response.
+-
+-        The close causes the next iterator pull in the consumer thread
+-        to raise. We swallow all close-side exceptions — the consumer's
+-        catch is what matters.
+-
+-        Critic M2: short-circuit if the firing timer isn't the active one
+-        (the consumer raced ``reset()`` past our cancel point).
+-        """
+-        with self._lock:
+-            if self._timer is not expected_timer:
+-                return
+-            if self._fired.is_set():
+-                return
+-            self._fired.set()
+-            self._timer = None
+-            stream = self._stream
+-        # Close the response OUTSIDE the lock — close() may block on
+-        # network I/O and we shouldn't hold the lock during that.
+-        try:
+-            response = getattr(stream, "response", None)
+-            if response is not None:
+-                close = getattr(response, "close", None)
+-                if callable(close):
+-                    close()
+-        except Exception:
+-            # Best-effort: never let the close propagate out of the timer.
+-            pass
++"""WI-5.2: streaming watchdog for the Anthropic SDK ``messages.stream``.
++
++Mirrors TS ``services/api/claude.ts:1922`` (``CLAUDE_STREAM_IDLE_TIMEOUT_MS``,
++default 90 s). When no chunks arrive for ``timeout_s`` seconds the watchdog
++closes the underlying HTTP response, which interrupts the sync iterator and
++lets the provider fall back to non-streaming ``messages.create``.
++
++**Why threading.Timer, not asyncio.** The Anthropic Python SDK's
++``messages.stream()`` is a SYNCHRONOUS context manager (``with``, not
++``async with``); ``stream.text_stream`` is a synchronous iterator.
++``asyncio.wait_for`` requires the inner code path be awaitable — it
++can't wrap a synchronous generator. Switching the whole provider chain
++to ``AsyncAnthropic`` would cascade async into every call site of
++``chat_stream_response`` (query.py, engine.py, the turn loop). The
++plan WI-5.2 explicitly rejected that approach.
++
++The threading.Timer pattern: schedule a deadline; reset on each chunk;
++on timeout call ``stream.response.close()`` which causes the next
++iterator pull to raise. The provider catches the raise and falls back.
++
++**Known fragility (per Phase 2 critic R5).** If a future Anthropic SDK
++version adds retry/reconnect logic between ``stream.response.close()``
++and the next iterator pull, the close may be invisible — the iterator
++would silently continue against a fresh connection. Mitigation: test
++coverage exercises the timeout path against a synthetic stalled stream
++and verifies the fallback fires. Re-audit the SDK version when bumping.
++"""
++
++from __future__ import annotations
++
++import os
++import threading
++from typing import TYPE_CHECKING, Any, Callable
++
++if TYPE_CHECKING:
++    from src.utils.abort_controller import AbortSignal
++
++__all__ = [
++    "DEFAULT_STREAM_IDLE_TIMEOUT_S",
++    "StreamIdleTimeout",
++    "stream_idle_timeout_seconds",
++    "StreamWatchdog",
++]
++
++
++DEFAULT_STREAM_IDLE_TIMEOUT_S = 90.0
++
++
++def stream_idle_timeout_seconds() -> float:
++    """Resolve the idle-timeout from ``CLAUDE_STREAM_IDLE_TIMEOUT_MS`` env var.
++
++    Falls back to ``DEFAULT_STREAM_IDLE_TIMEOUT_S`` (90s) when the env var
++    is unset or malformed. Mirrors TS ``claude.ts:1922``.
++    """
++    raw = os.environ.get("CLAUDE_STREAM_IDLE_TIMEOUT_MS", "").strip()
++    if not raw:
++        return DEFAULT_STREAM_IDLE_TIMEOUT_S
++    try:
++        ms = int(raw)
++    except (TypeError, ValueError):
++        return DEFAULT_STREAM_IDLE_TIMEOUT_S
++    if ms <= 0:
++        return DEFAULT_STREAM_IDLE_TIMEOUT_S
++    return ms / 1000.0
++
++
++class StreamIdleTimeout(Exception):
++    """Raised on the consumer-thread when the watchdog fires.
++
++    The provider catches this and falls back to non-streaming.
++    """
++
++
++class StreamWatchdog:
++    """Manage a per-stream idle deadline.
++
++    Usage::
++
++        watchdog = StreamWatchdog(stream, timeout_s=90.0)
++        try:
++            watchdog.arm()
++            for chunk in stream.text_stream:
++                watchdog.reset()  # got a chunk, push deadline back
++                ...
++        finally:
++            watchdog.disarm()
++
++    On timeout the watchdog's timer thread calls ``stream.response.close()``;
++    the next ``stream.text_stream`` pull raises. The provider catches
++    the raise and decides whether to fall back.
++    """
++
++    def __init__(self, stream: Any, *, timeout_s: float | None = None, abort_signal: "AbortSignal | None" = None) -> None:
++        self._stream = stream
++        self._timeout_s = (
++            timeout_s if timeout_s is not None else stream_idle_timeout_seconds()
++        )
++        self._timer: threading.Timer | None = None
++        # Event raised when the timer fires — consumer can check
++        # ``watchdog.fired`` to distinguish a timeout from an SDK-side
++        # error in the fallback decision.
++        self._fired = threading.Event()
++        self._lock = threading.Lock()
++        # Optional abort signal to fire on timeout, so the TUI's
++        # cancel mechanism (ESC, Ctrl+C) is triggered and the UI
++        # becomes responsive again.
++        self._abort_signal: "AbortSignal | None" = abort_signal
++
++    @property
++    def fired(self) -> bool:
++        """True if the timeout fired (i.e., we triggered the stream close)."""
++        return self._fired.is_set()
++
++    def arm(self) -> None:
++        """Start the deadline. Idempotent: re-arming cancels the prior timer."""
++        with self._lock:
++            self._cancel_locked()
++            self._timer = self._make_timer_locked()
++            self._timer.start()
++
++    def reset(self) -> None:
++        """Push the deadline forward — called on every successful chunk."""
++        if self._fired.is_set():
++            return  # already timed out; reset is a no-op
++        with self._lock:
++            self._cancel_locked()
++            self._timer = self._make_timer_locked()
++            self._timer.start()
++
++    def disarm(self) -> None:
++        """Cancel the timer (call after the stream completes normally)."""
++        with self._lock:
++            self._cancel_locked()
++
++    def _make_timer_locked(self) -> threading.Timer:
++        """Build a new Timer bound to this exact instance for stale-fire
++        detection.
++
++        Critic M2: ``Timer.cancel()`` is a no-op once the timer's worker
++        thread has entered the callback. If ``reset()`` lands AFTER
++        ``_on_timeout`` started but BEFORE it took the lock, the cancel
++        does nothing and the callback proceeds to fire. To detect that
++        race we capture the timer object in a closure and have the
++        callback short-circuit if it isn't ``self._timer`` anymore.
++        """
++        timer: threading.Timer | None = None
++
++        def _callback() -> None:
++            self._on_timeout(timer)
++
++        timer = threading.Timer(self._timeout_s, _callback)
++        timer.daemon = True
++        return timer
++
++    def _cancel_locked(self) -> None:
++        if self._timer is not None:
++            try:
++                self._timer.cancel()
++            except Exception:
++                pass
++            self._timer = None
++
++    def _on_timeout(self, expected_timer: threading.Timer | None) -> None:
++        """Timer callback: mark fired, then close the stream's response.
++
++        The close causes the next iterator pull in the consumer thread
++        to raise. We swallow all close-side exceptions — the consumer's
++        catch is what matters.
++
++        Critic M2: short-circuit if the firing timer isn't the active one
++        (the consumer raced ``reset()`` past our cancel point).
++        """
++        with self._lock:
++            if self._timer is not expected_timer:
++                return
++            if self._fired.is_set():
++                return
++            self._fired.set()
++            self._timer = None
++            stream = self._stream
++        # Close the response OUTSIDE the lock — close() may block on
++        # network I/O and we shouldn't hold the lock during that.
++        try:
++            response = getattr(stream, "response", None)
++            if response is not None:
++                close = getattr(response, "close", None)
++                if callable(close):
++                    close()
++        except Exception:
++            # Best-effort: never let the close propagate out of the timer.
++            pass
++        # Fire the abort signal so the TUI becomes responsive again
++        # (ESC, Ctrl+C, /exit will work after this).
++        if self._abort_signal is not None and not self._abort_signal.aborted:
++            self._abort_signal._fire(f"timeout_after_{self._timeout_s}s")

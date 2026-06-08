@@ -1,0 +1,20 @@
+diff --git a/utils/session_watcher.py b/utils/session_watcher.py
+new file mode 100644
+--- /dev/null
++++ b/utils/session_watcher.py	2026-06-08 09:36:05.885838 +0000
+@@ -0,0 +1,15 @@
++"""Facade — utils/session_watcher.py has been moved to clawcodex_ext.
++
++This module re-exports the public API so that existing ``from
++src.utils.session_watcher import …`` call sites continue to work
++during the migration.  New code should import from
++``clawcodex_ext.utils.session_watcher`` directly.
++"""
++
++from clawcodex_ext.utils.session_watcher import (  # noqa: F401
++    SessionWatcher,
++)
++
++__all__ = [
++    "SessionWatcher",
++]

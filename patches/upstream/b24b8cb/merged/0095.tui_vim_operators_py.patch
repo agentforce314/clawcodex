@@ -1,0 +1,321 @@
+diff --git a/tui/vim_operators.py b/tui/vim_operators.py
+--- a/tui/vim_operators.py	2026-06-08 06:13:57.000000 +0000
++++ b/tui/vim_operators.py	2026-06-08 09:36:04.690370 +0000
+@@ -1,298 +1,19 @@
+-"""Vim operators with motion/text-object composition + count prefixes.
+-
+-Phase-4 wave-1 of the ch13 refactor (gap #4 sub-item). Mirrors
+-``typescript/src/vim/operators.ts``: an operator (``d`` delete /
+-``c`` change / ``y`` yank / ``>`` indent / ``<`` dedent) composes with
+-a motion or text object to produce a :class:`Range` the buffer applies.
+-
+-Examples (from chapter):
+-
+-* ``d2w`` — delete 2 words
+-* ``ciw`` — change inner word
+-* ``y$`` — yank to end of line
+-* ``>i{`` — indent inner braces
+-
+-The parser :func:`parse_operator_motion` takes a string like
+-``"d2iw"`` and returns ``(operator, motion_or_object, count)``. Apply
+-the resolved range to the buffer via :func:`apply_operator`. Yanked
+-text lands in ``yank_buffer`` (caller-supplied so multiple operators
+-can share the same register).
+-"""
+-
+-from __future__ import annotations
+-
+-import re
+-from dataclasses import dataclass
+-
+-from .vim_buffer import Cursor, Range, VimBuffer
+-from .vim_text_objects import find_text_object
+-
+-
+-@dataclass(frozen=True)
+-class ParsedOperator:
+-    """Parse result of an operator+motion/object string."""
+-
+-    operator: str
+-    target: str  # motion (``w`` / ``b`` / ``$`` / etc.) or text object (``iw`` / ``a"``)
+-    count: int = 1
+-
+-
+-_VALID_OPERATORS = frozenset({"d", "c", "y", ">", "<"})
+-
+-# Motions and object specifiers we recognize on the target side. Each
+-# motion key is a (single-char) primitive; text objects are 2-char
+-# (``iw``, ``a{``, etc.).
+-_MOTION_KEYS = frozenset({"w", "b", "e", "W", "B", "E", "$", "0", "^", "h", "j", "k", "l"})
+-_TEXT_OBJECT_PREFIX = ("i", "a")
+-
+-
+-_OPERATOR_RE = re.compile(
+-    r"^"
+-    r"(?P<op>[dcy><])"
+-    r"(?P<count>\d*)"
+-    r"(?P<target>"
+-    r"[wbeWBE$0^hjkl]"  # motion
+-    r"|[ia][wsp\"'`(){}\[\]<>]"  # text object — 2 chars; explicit class
+-    r")"
+-    r"$"
+-)
+-
+-
+-def parse_operator_motion(keys: str) -> ParsedOperator | None:
+-    """Parse a vim operator+motion string. Returns ``None`` on bad input.
+-
+-    Examples::
+-
+-        parse_operator_motion("dw")    -> ParsedOperator("d", "w", 1)
+-        parse_operator_motion("d2w")   -> ParsedOperator("d", "w", 2)
+-        parse_operator_motion("ciw")   -> ParsedOperator("c", "iw", 1)
+-        parse_operator_motion("3>i{")  -> None  (count between operator and target only — no leading count yet)
+-        parse_operator_motion("y$")    -> ParsedOperator("y", "$", 1)
+-    """
+-
+-    match = _OPERATOR_RE.match(keys)
+-    if not match:
+-        return None
+-    count_str = match.group("count")
+-    count = int(count_str) if count_str else 1
+-    return ParsedOperator(
+-        operator=match.group("op"),
+-        target=match.group("target"),
+-        count=count,
+-    )
+-
+-
+-def resolve_target_range(
+-    buffer: VimBuffer,
+-    at: Cursor,
+-    target: str,
+-    *,
+-    count: int = 1,
+-) -> Range | None:
+-    """Resolve ``target`` (motion or text object) into a buffer range.
+-
+-    Returns ``None`` if the target is malformed or no range applies.
+-    """
+-
+-    if not target:
+-        return None
+-    if len(target) == 2 and target[0] in _TEXT_OBJECT_PREFIX:
+-        # Text object — count is currently ignored (vim's count semantic
+-        # for text objects is more nuanced; wave-2 work).
+-        return find_text_object(buffer, at, target)
+-    return _resolve_motion_range(buffer, at, target, count=count)
+-
+-
+-def _resolve_motion_range(
+-    buffer: VimBuffer, at: Cursor, motion: str, *, count: int
+-) -> Range | None:
+-    """Resolve a single-char motion under ``count``."""
+-
+-    if motion not in _MOTION_KEYS:
+-        return None
+-    cur = at
+-    if motion == "$":
+-        end_col = len(buffer.line(cur.row)) if cur.row < buffer.line_count else 0
+-        return Range(start=cur, end=Cursor(cur.row, end_col))
+-    if motion == "0":
+-        return Range(start=Cursor(cur.row, 0), end=cur)
+-    if motion == "^":
+-        line = buffer.line(cur.row) if cur.row < buffer.line_count else ""
+-        first_non_ws = 0
+-        while first_non_ws < len(line) and line[first_non_ws].isspace():
+-            first_non_ws += 1
+-        return Range(start=Cursor(cur.row, first_non_ws), end=cur)
+-    if motion in ("h", "l"):
+-        delta = -count if motion == "h" else count
+-        new_col = max(0, cur.col + delta)
+-        if cur.row < buffer.line_count:
+-            new_col = min(new_col, len(buffer.line(cur.row)))
+-        if new_col == cur.col:
+-            return None
+-        a, b = sorted([cur.col, new_col])
+-        return Range(start=Cursor(cur.row, a), end=Cursor(cur.row, b))
+-    if motion in ("j", "k"):
+-        delta = -count if motion == "k" else count
+-        new_row = max(0, min(cur.row + delta, buffer.line_count - 1))
+-        if new_row == cur.row:
+-            return None
+-        # Line-wise range: full lines from the closer row to the further row.
+-        a, b = sorted([cur.row, new_row])
+-        end_col = len(buffer.line(b)) if b < buffer.line_count else 0
+-        return Range(start=Cursor(a, 0), end=Cursor(b, end_col))
+-    if motion in ("w", "W"):
+-        return _word_motion(buffer, cur, count=count, big=(motion == "W"))
+-    if motion in ("b", "B"):
+-        return _word_back(buffer, cur, count=count, big=(motion == "B"))
+-    if motion in ("e", "E"):
+-        return _word_end(buffer, cur, count=count, big=(motion == "E"))
+-    return None
+-
+-
+-def _word_motion(
+-    buffer: VimBuffer, at: Cursor, *, count: int, big: bool
+-) -> Range | None:
+-    """``w`` / ``W`` — start of next word."""
+-
+-    line = buffer.line(at.row) if at.row < buffer.line_count else ""
+-    col = at.col
+-    for _ in range(max(1, count)):
+-        # skip current word
+-        if big:
+-            while col < len(line) and not line[col].isspace():
+-                col += 1
+-        else:
+-            while col < len(line) and (line[col].isalnum() or line[col] == "_"):
+-                col += 1
+-        # skip whitespace
+-        while col < len(line) and line[col].isspace():
+-            col += 1
+-    if col == at.col:
+-        return None
+-    return Range(start=at, end=Cursor(at.row, col))
+-
+-
+-def _word_back(
+-    buffer: VimBuffer, at: Cursor, *, count: int, big: bool
+-) -> Range | None:
+-    """``b`` / ``B`` — start of previous word."""
+-
+-    line = buffer.line(at.row) if at.row < buffer.line_count else ""
+-    col = at.col
+-    for _ in range(max(1, count)):
+-        # step back over whitespace
+-        while col > 0 and line[col - 1].isspace():
+-            col -= 1
+-        if big:
+-            while col > 0 and not line[col - 1].isspace():
+-                col -= 1
+-        else:
+-            while col > 0 and (line[col - 1].isalnum() or line[col - 1] == "_"):
+-                col -= 1
+-    if col == at.col:
+-        return None
+-    return Range(start=Cursor(at.row, col), end=at)
+-
+-
+-def _word_end(
+-    buffer: VimBuffer, at: Cursor, *, count: int, big: bool
+-) -> Range | None:
+-    """``e`` / ``E`` — end of word (end-inclusive)."""
+-
+-    line = buffer.line(at.row) if at.row < buffer.line_count else ""
+-    col = at.col
+-    for _ in range(max(1, count)):
+-        # step forward at least one char so ``e`` repeated lands on the next word
+-        if col < len(line):
+-            col += 1
+-        # skip whitespace
+-        while col < len(line) and line[col].isspace():
+-            col += 1
+-        # walk to end of word
+-        if big:
+-            while col < len(line) and not line[col].isspace():
+-                col += 1
+-        else:
+-            while col < len(line) and (line[col].isalnum() or line[col] == "_"):
+-                col += 1
+-    if col == at.col:
+-        return None
+-    return Range(start=at, end=Cursor(at.row, col))
+-
+-
+-# ---- operator application --------------------------------------------------
+-
+-
+-def apply_operator(
+-    buffer: VimBuffer,
+-    range_: Range,
+-    operator: str,
+-    *,
+-    yank_buffer: list[str] | None = None,
+-) -> str:
+-    """Apply ``operator`` to ``range_`` on ``buffer``. Returns the affected text.
+-
+-    ``yank_buffer`` (when supplied) receives the deleted/yanked text as
+-    the most-recent yank entry. Pass a single ``list`` and operators
+-    overwrite element 0.
+-    """
+-
+-    text = buffer.text_in(range_)
+-    if operator == "d":
+-        if yank_buffer is not None:
+-            _set_yank(yank_buffer, text)
+-        buffer.delete(range_)
+-    elif operator == "c":
+-        if yank_buffer is not None:
+-            _set_yank(yank_buffer, text)
+-        buffer.replace(range_, "")
+-    elif operator == "y":
+-        if yank_buffer is not None:
+-            _set_yank(yank_buffer, text)
+-    elif operator == ">":
+-        _indent_range(buffer, range_, indent_amount=1)
+-    elif operator == "<":
+-        _indent_range(buffer, range_, indent_amount=-1)
+-    return text
+-
+-
+-def _set_yank(yank_buffer: list[str], text: str) -> None:
+-    if not yank_buffer:
+-        yank_buffer.append(text)
+-    else:
+-        yank_buffer[0] = text
+-
+-
+-def _indent_range(
+-    buffer: VimBuffer, range_: Range, *, indent_amount: int
+-) -> None:
+-    """Add or remove leading indent (2 spaces per level) on each line."""
+-
+-    r = range_.normalised()
+-    indent_unit = "  "  # 2 spaces matches the typical TUI editor default
+-    new_lines = list(buffer.lines)
+-    for row in range(r.start.row, r.end.row + 1):
+-        if row >= len(new_lines):
+-            break
+-        line = new_lines[row]
+-        if indent_amount > 0:
+-            new_lines[row] = indent_unit + line
+-        else:
+-            stripped = line.lstrip(" ")
+-            removed = len(line) - len(stripped)
+-            cut = min(removed, len(indent_unit))
+-            new_lines[row] = line[cut:]
+-    # Replace the buffer wholesale via ``replace`` over the whole document.
+-    full_range = Range(
+-        start=Cursor(0, 0),
+-        end=Cursor(len(buffer.lines) - 1, len(buffer.lines[-1])),
+-    )
+-    buffer.replace(full_range, "\n".join(new_lines))
+-
+-
+-__all__ = [
+-    "ParsedOperator",
+-    "apply_operator",
+-    "parse_operator_motion",
+-    "resolve_target_range",
+-]
++"""Facade — tui/vim_operators.py has been moved to clawcodex_ext (lazy proxy).
++"""
++from __future__ import annotations
++
++__all__ = [
++    "ParsedOperator",
++    "parse_operator_motion",
++    "resolve_target_range",
++    "apply_operator",
++]
++
++
++def __getattr__(name: str):
++    import clawcodex_ext.tui.vim_operators as _mod
++    if name in _mod.__dict__:
++        val = _mod.__dict__[name]
++        globals()[name] = val
++        return val
++    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
