@@ -24,6 +24,14 @@ from src.providers.base import BaseProvider
 from .engine import CommandContext, CommandResult, LocalCommandResult
 from .registry import CommandRegistry, get_command_registry, list_commands
 from .types import Command, CommandType, CompactionResult, LocalCommand, PromptCommand
+from src.command_system.model_command import MODEL_COMMAND
+from src.command_system.permissions_command import PERMISSIONS_COMMAND
+from src.command_system.effort_command import EFFORT_COMMAND
+from src.command_system.theme_command import THEME_COMMAND
+from src.command_system.export_command import EXPORT_COMMAND
+from src.command_system.output_style_command import OUTPUT_STYLE_COMMAND
+from src.command_system.statusline import STATUSLINE_COMMAND
+from src.command_system.security_review import SECURITY_REVIEW_COMMAND
 
 
 # Official Claude Code /init prompts (Simplified)
@@ -1232,6 +1240,15 @@ def get_builtin_commands() -> list[Command]:
         CRON_DELETE_COMMAND,
         ADVISOR_COMMAND,
         INIT_COMMAND,
+        # Upstream interactive/prompt commands (b24b8cb)
+        MODEL_COMMAND,
+        PERMISSIONS_COMMAND,
+        EFFORT_COMMAND,
+        THEME_COMMAND,
+        EXPORT_COMMAND,
+        OUTPUT_STYLE_COMMAND,
+        STATUSLINE_COMMAND,
+        SECURITY_REVIEW_COMMAND,
     ]
     from src.command_system.buddy_command import is_buddy_command_enabled, BUDDY_COMMAND
     if is_buddy_command_enabled():
