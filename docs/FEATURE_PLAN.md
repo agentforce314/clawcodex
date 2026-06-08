@@ -16,63 +16,66 @@
     - [项目级二开边界约束](#项目级二开边界约束)
 - [已归档功能模块](#已归档功能模块)
 - [一、Orchestrator 系统](#一、orchestrator-系统)
-    - [1.1 Issue→PR 自动化流水线](#1-1-issue-pr-自动化流水线)
     - [1.1.1 LocalTracker（F-36 ✅）](#1-1-1-localtracker)
     - [1.1.2 PR 检视意见自动修复闭环（F-37 📋）](#1-1-2-pr-检视意见自动修复闭环)
     - [1.1.3 验证与报告闭环（F-38 ✅）](#1-1-3-验证与报告闭环)
     - [1.1.4 Issue 重跑入口（F-39 ✅）](#1-1-4-issue-重跑入口)
-    - [1.2 工作空间与进度管理](#1-2-工作空间与进度管理)
     - [1.2.1 Shared/Sequential Workspace（F-42 ✅）](#1-2-1-shared-sequential-workspace)
     - [1.2.2 ProgressReporter Sink 重构（F-40 📋）](#1-2-2-progressreporter-sink-重构)
-    - [1.3 可观测性与运维](#1-3-可观测性与运维)
     - [1.3.1 AgentRunner 空转检测（F-51 ✅）](#1-3-1-agentrunner-空转检测)
     - [1.3.2 运行期可观测性与 stuck-run debug（F-54 📋）](#1-3-2-运行期可观测性与-stuck-run-debug)
     - [1.3.3 Tool-call 审计旁路（F-45 ✅）](#1-3-3-tool-call-审计旁路)
     - [1.3.4 Coordinator 轻量工具集（F-41 ✅）](#1-3-4-coordinator-轻量工具集)
-    - [1.4 人工介入与安全控制](#1-4-人工介入与安全控制)
     - [1.4.2 Issue 会话统一存储与实时介入（F-49 📋）](#1-4-2-issue-会话统一存储与实时介入)
 - [二、Agent 核心能力](#二、agent-核心能力)
-    - [2.1 角色与目标管理](#2-1-角色与目标管理)
-    - [2.1.1 Team 成员管理（F-2 📋）](#2-1-1-team-成员管理)
-    - [2.1.2 /goal 目标管理（F-9 📋）](#2-1-2-goal-目标管理)
-    - [2.1.3 Agent 间自主观察（F-80）](#2-1-3-agent-间自主观察)
-    - [2.2 工具与执行扩展](#2-2-工具与执行扩展)
-    - [2.2.1 MCP 扩展功能（F-3 ✅）](#2-2-1-mcp-扩展功能)
-    - [2.2.2 结构化输出增强（F-4）](#2-2-2-结构化输出增强)
-    - [2.2.3 ExecuteExtraTool（F-10）](#2-2-3-executeextratool)
-    - [2.2.4 CreateAgentTool（F-18）](#2-2-4-createagenttool)
-    - [2.2.5 内置工具补齐（F-71）](#2-2-5-内置工具补齐)
-    - [2.3 运行模式与资源控制](#2-3-运行模式与资源控制)
-    - [2.3.1 Auto 模式（F-16）](#2-3-1-auto-模式)
-    - [2.3.2 Budget/Poor Mode（F-69）](#2-3-2-budget-poor-mode)
-    - [2.3.3 业务 Agent 长期使用](#2-3-3-业务-agent-长期使用)
-    - [2.4 存储与容量](#2-4-存储与容量)
-    - [2.4.1 记忆作用域隔离（F-13 ✅）](#2-4-1-记忆作用域隔离)
-    - [2.4.2 sessionStorage 容量（F-11）](#2-4-2-sessionstorage-容量)
-    - [2.4.3 cacheWarning 容量（F-12）](#2-4-3-cachewarning-容量)
-    - [2.5 工具统计与智能裁剪（F-75）](#2-5-工具统计与智能裁剪)
+    - [2.1 Agent 阶段性进度汇报（F-20 ✅）](#2-1-agent-阶段性进度汇报)
+    - [2.2 Team 成员管理（F-2 📋）](#2-2-team-成员管理)
+    - [2.3 结构化输出增强（F-4）](#2-3-结构化输出增强)
+    - [2.4 MCP 扩展功能（F-3 ✅）](#2-4-mcp-扩展功能)
+    - [2.5 Agent 记忆作用域隔离（F-13 ✅）](#2-5-agent-记忆作用域隔离)
+    - [2.6 /goal 命令（目标管理）（F-9）](#2-6-goal-命令目标管理)
+    - [2.7 ExecuteExtraTool 延迟工具系统（F-10）](#2-7-executeextratool-延迟工具系统)
+    - [2.8 工具/Skill 调用统计（F-75）](#2-8-工具skill-调用统计)
+    - [2.9 CreateAgentTool 动态工具创建（F-18）](#2-9-createagenttool-动态工具创建)
+    - [2.10 sessionStorage 容量限制（F-11）](#2-10-sessionstorage-容量限制)
+    - [2.11 cacheWarning 容量限制（F-12）](#2-11-cachewarning-容量限制)
+    - [2.12 Issue 语义澄清流程（F-78）](#2-12-issue-语义澄清流程)
+    - [2.13 Auto 模式（F-16）](#2-13-auto-模式)
+    - [2.14 Agent 间自主观察与消息交互（F-80）](#2-14-agent-间自主观察与消息交互)
 - [三、CLI 与配置系统](#三、cli-与配置系统)
-    - [3.1 模型与 Provider](#3-1-模型与-provider)
-    - [3.1.1 CLI 模型切换（F-43 ✅）](#3-1-1-cli-模型切换)
-    - [3.1.2 Multi-API 原生适配器（F-72）](#3-1-2-multi-api-原生适配器)
-    - [3.2 特性开关（F-68）](#3-2-特性开关)
-    - [3.3 Tool→CLI 自动映射（F-53）](#3-3-tool-cli-自动映射)
+    - [3.1 CLI 模型供应商与模型切换（F-43 ✅）](#3-1-cli-模型供应商与模型切换设计)
+    - [3.2 permission_mode 正交拆分（F-46 📋）](#3-2-permission-mode-enum-正交拆分设计)
+    - [3.3 Permission Settings 重构（F-47 ✅）](#3-3-permission-settings-schema-重构设计)
 - [四、Architecture & SDK 下沉](#四、architecture-sdk-下沉)
-    - [4.1 src/ 核心路径解耦（F-48 📋）](#4-1-src-核心路径解耦)
-    - [4.2 SDK 方法→Tool（F-52）](#4-2-sdk-方法-tool)
-    - [4.3 Plugin 插件系统（F-70）](#4-3-plugin-插件系统)
-    - [4.4 Native 模块系统（F-81）](#4-4-native-模块系统)
-    - [4.5 SOP 转换器（F-50）](#4-5-sop-转换器)
+    - [4.1 src/ 核心路径解耦（F-48 📋）](#4-1-f-48-src-核心路径二开修改解耦方案)
+    - [4.2 SOP 转换器固化（F-50）](#4-2-sop-转换器源码固化设计)
+    - [4.2.1 分组策略增强（F-55）](#4-2-1-sop-转换器分组策略增强设计)
+    - [4.3 SDK 方法→Tool（F-52）](#4-3-python-sdk-方法注册为-tool)
+    - [4.4 Tool→CLI 命令映射（F-53）](#4-4-tool-自动暴露为-cli-斜杠命令)
 - [五、Cron 系统执行引擎](#五、cron-系统执行引擎)
+    - [5.1 背景与目标](#5-1-背景与目标)
+    - [5.2 参考实现边界](#5-2-参考实现边界)
+    - [5.3 当前状态诊断](#5-3-当前-clawcodex-状态诊断)
+    - [5.4 完整还原的目标行为](#5-4-完整还原的目标行为)
+    - [5.5 目标架构](#5-5-目标架构)
+    - [5.6 实施阶段](#5-6-实施阶段)
+    - [5.7 文件格式](#5-7-文件格式)
+    - [5.8 测试计划](#5-8-测试计划)
+    - [5.9 手工验收流程](#5-9-手工验收流程)
+    - [5.10 实施顺序与完成标准](#5-10-实施顺序与完成标准)
+    - [5.11 CCB 对比补充缺口](#5-11-ccb-对比发现的补充缺口)
 - [六、会话恢复增强](#六、会话恢复增强)
+    - [6.1 问题现状](#6-1-问题现状)
+    - [6.2 CCB 对比补充缺口](#6-2-ccb-对比发现的补充缺口)
+    - [6.3 补充缺口实施优先级矩阵](#6-3-补充缺口实施优先级矩阵)
 - [七、CCB 对标缺口补缺](#七、ccb-对标缺口补缺)
+    - [7.0 Python 生态特性补缺](#7-0-python-生态特性补缺规划合并来源原-十)
     - [7.1 进程间通信](#7-1-进程间通信)
     - [7.2 浏览器与桌面操控](#7-2-浏览器与桌面操控)
     - [7.3 通知与语音](#7-3-通知与语音)
     - [7.4 可观测性与协议](#7-4-可观测性与协议)
     - [7.5 高级 Agent 模式](#7-5-高级-agent-模式)
     - [7.6 模板系统](#7-6-模板系统)
-    - [7.7 工程化与发布](#7-7-工程化与发布)
 - [附录：F-Number 快速索引](#附录-f-number-快速索引)
 
 ---
@@ -190,9 +193,9 @@ F-34/F-35 中"CLI/TUI 新功能"的描述扩展为全项目范围：所有 front
 > 详细架构、组件清单、配置形态与命令清单见 [ARCHIVED_FEATURES.md §16](./ARCHIVED_FEATURES.md#十六orchestrator-自主模式symphony-集成)。
 >
 > 仍处规划/设计阶段、保留详细设计稿的子节如下：
-> - §3.1.4 PR 检视意见自动修复闭环设计（F-37，📋 规划中）
-> - §3.1.7 ProgressReporter Sink 协议重构设计（F-40，📋 设计完成）
-> - §3.1.13 AgentRunner / QueryRunner 运行期可观测性与 stuck-run debug（F-54，📋 设计完成）
+> - §1.1.2 PR 检视意见自动修复闭环设计（F-37，📋 规划中）
+> - §1.2.2 ProgressReporter Sink 协议重构设计（F-40，📋 设计完成）
+> - §1.3.2 运行期可观测性与 stuck-run debug（F-54，📋 设计完成）
 > - 已完成的 LocalTracker（F-36）、验证与报告闭环（F-38）、Issue 重跑入口（F-39）、Coordinator 轻量工具集（F-41）、Shared / Sequential Workspace（F-42）、Tool-call 审计旁路（F-45）、人工检视闸门（F-44）与 AgentRunner 空转检测（F-51）详见 [ARCHIVED_FEATURES.md §二十一](./ARCHIVED_FEATURES.md#二十一2026-06-02-已实现功能归档)。
 
 #### 1.1.1 LocalTracker 本地 Issue 文档源设计（F-36）
@@ -2206,10 +2209,184 @@ class WorkflowConfig:
 > 详细设计与落地记录已归档至 [ARCHIVED_FEATURES.md §二十一.13 F-50 SOP 转换器源码固化](./ARCHIVED_FEATURES.md#二十一13-f-50-pos-转换器源码固化sourcecodeparser--增强-skillgrouper--agentmarkdownwriter)。
 
 ---
+
+#### 4.2.1 SOP 转换器分组策略增强设计（F-55）
+
+**状态**: ✅ 已实现 | **优先级**: P1
+**实现位置**: `extensions/pos_converter/skill_grouper.py`
+**核心文件**: `skill_grouper.py`, `source_parser.py`, `agent_md_writer.py`, `clawcodex_ext/cli/pos_cmd/commands.py`
+
+F-55 是 F-50 (SOP 转换器源码固化) 的增强子特性，解决 **"模块多时 Agent 过多"** 的核心问题。
+
+##### 背景与问题
+
+SOP 转换器的默认行为是将 `SourceCodeParser` 解析出的每个组件 (`SourceComponent`) 各自生成一个独立 Agent，然后额外生成一个总览 Agent (`clawcodex-overview`)。
+
+假定一个含 N 个模块的视频处理 SDK：
+
+| SDK 模块 | 默认转化行为 | Agent 数量 |
+|----------|------------|:----------:|
+| `audio.py`, `video.py`, `storage.py`, `detect.py`, ... | 每模块 1 个 Agent | N |
+| 总览 Agent | 始终生成 | 1 |
+| **合计** | — | **N + 1** |
+
+N=50 时即生成 **51 个 Agent 文件**。尽管每个 Agent 仅是轻量 `.md` 文件（~几 KB），但过多的 Agent 会带来：
+1. **用户心智负担**："/agent-list 出现几十个名字" 让人困惑该用哪个
+2. **启动加载成本**：运行时注册表需要发现并解析所有 Agent 定义
+3. **路由低效**：总览 Agent 的 `@component-agent` 指令集随 N 线性增长
+
+##### 设计目标
+
+1. **提供灵活的 Agent 聚合策略**，不再刚性按照模块拆分
+2. **默认行为不破坏向后兼容**——`COMPONENT_GROUP` 仍是默认值，已有用户的 `pos convert` 输出不变
+3. **所有策略输出均配合总览 Agent**，确保用户面向单一入口
+4. **策略可在 CLI 一键切换**，无需修改代码
+
+##### 四种分组策略
+
+策略在 `GroupStrategy` 枚举 (`skill_grouper.py:17-21`) 定义：
+
+| 策略 | 枚举值 | 源码方法 | 分组依据 | Agent 数量（50 模块） | 适用场景 |
+|------|--------|---------|---------|:-------------------:|---------|
+| `COMPONENT_GROUP` | `component_group` | `_component_group()` | 每个 `SourceComponent` 自成一个 Skill，每个 Skill 对应一个 Agent | 50 | 模块职责高度正交，每个模块对应一个完整业务领域 |
+| `KEYWORD_MATCH` | `keyword_match` | `_static_group()` | 按预定义 `MappingRule` 的模式匹配（命名前缀/关键字） | 取决于规则数（通常 3-8） | SDK 方法命名约定良好（如 `docker_build`/`docker_push` → `build_image`） |
+| `IO_RELATION` | `io_relation` | `_io_relation_group()` | 按方法参数类型签名聚类，共享参数类型的操作合并 | 通常 5-15 | SDK 模块内聚度低但参数类型体系清晰 |
+| `LLM_SEMANTIC` | `llm_semantic` | `_group_with_llm()` (fallback → `_static_group`) | LLM 根据方法名称、docstring、业务需求语义聚类 | 通常在 3-8，由 LLM 决定 | 无固定命名约定，需要理解业务上下文 |
+
+##### 策略决策流
+
+```
+SourceCodeParser.parse() → list[SourceComponent] (50 个组件)
+                              │
+                              ▼
+         ┌── COMPONENT_GROUP ──→ 50 个 Skill → 50 个 Agent + Overview
+         │
+         ├── KEYWORD_MATCH ────→  5 个 Skill →  5 个 Agent + Overview
+         │
+group ───┼── IO_RELATION ──────→ 10 个 Skill → 10 个 Agent + Overview
+         │
+         └── LLM_SEMANTIC ─────→  4 个 Skill →  4 个 Agent + Overview
+                                        │
+                                        ▼
+                              AgentMarkdownWriter
+                              write_overview_agent()
+                              write_agent() × N
+```
+
+**关键约束**：无论选择哪种策略，总览 Agent 始终生成，始终是用户的唯一入口。
+
+##### CLI 接口设计
+
+```bash
+# 默认（COMPONENT_GROUP — 每个模块一个 Agent）
+clawcodex pos convert ./sdk/ --out ./output
+
+# 按关键字规则合并
+clawcodex pos convert ./sdk/ --out ./output --strategy keyword
+
+# 按 IO 参数类型合并
+clawcodex pos convert ./sdk/ --out ./output --strategy io
+
+# LLM 语义分组（需要 LLM 可用）
+clawcodex pos convert ./sdk/ --out ./output --strategy llm
+
+# 查看策略分组预览（不写文件）
+clawcodex pos convert ./sdk/ --strategy io --preview
+```
+
+`--preview` 输出示例：
+```
+✅ 策略预览: IO_RELATION
+   Source Components: 50
+   Merged Skills: 7
+   Agent file count: 8 (7 + 1 overview)
+   Agent 缩减率: 86% (50 → 8)
+   Skills:
+     - io_group_3 (Operations with types: str, int): extract_frames, convert_format
+     - io_group_5 (Operations with types: Path, dict): load_video, save_metadata
+     - ...
+```
+
+##### 总览 Agent 对分组策略的自适应
+
+总览 Agent (`clawcodex-overview.md`) 会根据实际分组结果自动调整：
+
+```python
+# agent_md_writer.py:write_overview_agent()
+# 通过 component_agents 列表反映实际 Agent 数量
+# 如果 strategy=io 将 50 个组件合并为 7 个 Agent，
+# overview 的委派指令就只包含 7 个 @agent-xxx 引用
+```
+
+总览 Agent 的 `when_to_use` 和 `all_skills` 列表也会反映真实的分组结构，不会出现 "概述 50 个模块但实际只有 7 个 Agent" 的语义错位。
+
+##### 实现架构
+
+```
+CLI (commands.py)
+    │
+    ▼
+group_source_components(components, strategy=GroupStrategy.IO_RELATION)
+    │
+    ├── SkillGrouper._component_group()   ── 每个组件 → 一个 SkillSpec
+    ├── SkillGrouper._static_group()      ── MappingRule 关键字匹配
+    ├── SkillGrouper._io_relation_group() ── 参数类型聚类
+    └── SkillGrouper._group_with_llm()    ── LLM 语义分组 (placeholder → _static_group)
+    │
+    ▼
+AgentMarkdownWriter.write_agent() × N + write_overview_agent() × 1
+```
+
+##### 与其他特性的协同
+
+| 特性 | 关系 |
+|------|------|
+| **F-50** | F-55 是 F-50 的增强子集，同一组文件（`skill_grouper.py` 新增 3 个策略方法，`commands.py` 新增 `--strategy` 参数） |
+| **F-52 (SDK→Tool 注册)** | 如果 F-52 落地，工具注册到 `ToolRegistry` 后 Overview Agent 可直接调用工具，届时策略重要性下降（可从"必须合并"降级为"可选的性能优化"） |
+| **总览 Agent 默认加载** | `default_agent.py` 的 `resolve_default_agent()` 自动加载 `clawcodex-overview.md`，所有策略的输出均兼容此机制 |
+
+##### Agent 数量量化对比（参考值）
+
+| SDK 规模 | 模块数 | COMPONENT | KEYWORD | IO_RELATION | LLM |
+|---------|:-----:|:---------:|:-------:|:-----------:|:---:|
+| 小型 SDK | 5 | 6 (5+1) | 3 (2+1) | 4 (3+1) | 2 (1+1) |
+| 中型 SDK | 20 | 21 (20+1) | 5 (4+1) | 8 (7+1) | 4 (3+1) |
+| 大型 SDK | 50 | 51 (50+1) | 6 (5+1) | 9 (8+1) | 5 (4+1) |
+| 巨型 SDK | 200+ | 201+ | 10 (9+1) | 15 (14+1) | 8 (7+1) |
+
+> 注：KEYWORD 数据假设预置了匹配规则的分类；IO_RELATION 假设 60% 的方法共享参数类；LLM 为预估上限。
+
+##### 风险与约束
+
+| 风险 | 影响 | 缓解措施 |
+|------|------|---------|
+| `IO_RELATION` 分组名称机械（`io_group_1`） | 用户难以理解分组含义 | 使用参数类型签名作为 name 后缀，同时允许用户在 `--requirements` 中补充描述 |
+| `LLM_SEMANTIC` 尚未接入真正 LLM | 行为等同 `_static_group`，产生误判 | `_group_with_llm` 标注 TODO；LLM 集成留到 F-52 Tool 注册阶段统一接入 |
+| 策略切换后已生成的 Agent 定义不自动清理 | 残留旧 Agent 文件 | `pos convert --out` 先清空 `agents/` 目录再写入（当前 CLI 行为已覆盖） |
+| `COMPONENT_GROUP` 的预期行为是每个模块 1 个 Agent，但 `SkillGrouper._component_group()` 不要求一对一 | 源码级的 `SourceComponent` 划分粒度不一定是模块，可能是类 | 文档明确：策略按 `SourceComponent` 操作，不是按文件 |
+
+##### 已拟定的设计决定
+
+| # | 决定 | 理由 |
+|---|------|------|
+| 1 | **COMPONENT_GROUP 为默认策略** | 向后兼容，现有 `pos convert` 用户不受影响 |
+| 2 | **总览 Agent 始终生成** | 用户只需面对一个入口，底层 Agent 数量是内部实现细节 |
+| 3 | **IO_RELATION 分组名加上类型签名** | 至少让人看出"这组操作为什么在一起" |
+| 4 | **LLM_SEMANTIC 标注 TODO 暂不实现** | 真正依赖 LLM 的语义分类需要 F-52 的工具注册能力配合，目前用 `_static_group` fallback |
+| 5 | **`--preview` 预览模式不属于核心能力** | 增加测试维护成本，用户可用 `--dry-run` (未来特性) 替代 |
+
+##### 依赖与协同
+
+- **依赖**：F-50（SourceCodeParser + AgentMarkdownWriter 是前置基础）
+- **协同**：
+  - F-52（Tool 注册 → 策略重要度柔性可调）
+  - 总览 Agent 默认加载机制（`default_agent.py`）
+- **不依赖**：F-37/F-38/F-39（独立功能）
+- **启用条件**：`python3 -m pytest tests/misc/test_pos_converter_source_parser.py -q` 通过（已有测试覆盖）
+
+---
+
 ### 4.3 Python SDK 方法注册为 Tool（F-52）
-**状态**: 📋 规划中
-**优先级**: P2
-**目标**: 提供从 Python 函数/方法自动生成 `Tool` 对象的注册机制，使 SOP 转换生成的子 Agent 定义中的 `tools` 列表（如 `detect_modality`、`load_dataset`）不再是字符串占位符，而是可被 sub-agent 直接调用的真实 `Tool` 实例。
 
 ##### 背景
 
@@ -7291,16 +7468,16 @@ F-74 (Sandbox) ──→ 长期迭代（P2）
 
 | F-Number | 名称 | 章节 | 状态 |
 |----------|------|------|------|
-| F-2 | Team 成员管理 | §2.1.1 | 📋 规划中 |
-| F-3 | MCP 扩展功能 | §2.2.1 | ✅ 基础完成 |
-| F-4 | 结构化输出增强 | §2.2.2 | 📋 适配器完成 |
-| F-9 | /goal 目标管理 | §2.1.2 | ⏳ 待实现 |
-| F-10 | ExecuteExtraTool | §2.2.3 | 🔄 规划中 |
-| F-11 | sessionStorage 容量 | §2.4.2 | 🔄 规划中 |
-| F-12 | cacheWarning 容量 | §2.4.3 | 🔄 规划中 |
-| F-13 | 记忆作用域隔离 | §2.4.1 | ✅ 完成 |
-| F-16 | Auto 模式 | §2.3.1 | 📋 规划中 |
-| F-18 | CreateAgentTool | §2.2.4 | 🔄 规划中 |
+| F-2 | Team 成员管理 | §2.2 | 📋 规划中 |
+| F-3 | MCP 扩展功能 | §2.4 | ✅ 基础完成 |
+| F-4 | 结构化输出增强 | §2.3 | 📋 适配器完成 |
+| F-9 | /goal 目标管理 | §2.6 | ⏳ 待实现 |
+| F-10 | ExecuteExtraTool | §2.7 | 🔄 规划中 |
+| F-11 | sessionStorage 容量 | §2.10 | 🔄 规划中 |
+| F-12 | cacheWarning 容量 | §2.11 | 🔄 规划中 |
+| F-13 | 记忆作用域隔离 | §2.5 | ✅ 完成 |
+| F-16 | Auto 模式 | §2.13 | 📋 规划中 |
+| F-18 | CreateAgentTool | §2.9 | 🔄 规划中 |
 | F-20 | Agent 进度汇报 | §2.1 | ✅ 完成 |
 | F-22 | Cron 系统 | §五 | 🔄 进行中 |
 | F-36 | LocalTracker | §1.1.1 | ✅ 完成 |
@@ -7310,18 +7487,19 @@ F-74 (Sandbox) ──→ 长期迭代（P2）
 | F-40 | ProgressReporter Sink | §1.2.2 | 📋 设计完成 |
 | F-41 | Coordinator 工具集 | §1.3.4 | ✅ 完成 |
 | F-42 | Workspace 策略 | §1.2.1 | ✅ 完成 |
-| F-43 | CLI 模型切换 | §3.1.1 | ✅ 完成 |
-| F-44 | 人工检视闸门 | §1.4 | ✅ 完成 |
+| F-43 | CLI 模型切换 | §3.1 | ✅ 完成 |
+| F-44 | 人工检视闸门 | §1.4.2 | ✅ 完成 |
 | F-45 | Tool-call 审计 | §1.3.3 | ✅ 完成 |
 | F-46 | permission_mode 拆分 | §3.2 | 📋 设计完成 |
 | F-47 | Settings 重构 | §3.3 | ✅ 完成 |
 | F-48 | src/ 解耦方案 | §4.1 | 📋 设计完成 |
 | F-49 | 会话统一存储 | §1.4.2 | 📋 设计完成 |
-| F-50 | SOP 转换器固化 | §4.5 | 📋 设计完成 |
+| F-50 | SOP 转换器固化 | §4.2 | 📋 设计完成 |
 | F-51 | AgentRunner 空转检测 | §1.3.1 | ✅ 完成 |
-| F-52 | SDK→Tool 注册 | §4.2 | 📋 设计完成 |
-| F-53 | Tool→CLI 命令映射 | §3.3 | 📋 设计完成 |
+| F-52 | SDK→Tool 注册 | §4.3 | 📋 设计完成 |
+| F-53 | Tool→CLI 命令映射 | §4.4 | 📋 设计完成 |
 | F-54 | 运行期可观测性 | §1.3.2 | 📋 设计完成 |
+| F-55 | SOP 分组策略增强 | §4.2.1 | ✅ 完成 |
 | F-60 | Pipe IPC 群控 | §7.1 | ⏳ 待开始 |
 | F-61 | Computer Use | §7.2 | ⏳ 待开始 |
 | F-62 | Chrome 自动化 | §7.2 | ⏳ 待开始 |
@@ -7330,16 +7508,16 @@ F-74 (Sandbox) ──→ 长期迭代（P2）
 | F-65 | Langfuse 可观测 | §7.4 | ⏳ 待开始 |
 | F-66 | ACP 协议 | §7.4 | ⏳ 待开始 |
 | F-67 | Buddy/Proactive | §7.5 | ⏳ 待开始 |
-| F-68 | Feature Gate | §3.2 | ⏳ 待开始 |
-| F-69 | Budget/Poor Mode | §2.3.2 | ⏳ 待开始 |
+| F-68 | Feature Gate | §7.6 | ⏳ 待开始 |
+| F-69 | Budget/Poor Mode | §7.5 | ⏳ 待开始 |
 | F-70 | Plugin 系统 | §4.3 | ⏳ 待开始 |
-| F-71 | 内置工具补齐 | §2.2.5 | ⏳ 待开始 |
-| F-72 | Multi-API 适配器 | §3.1.2 | ⏳ 待开始 |
-| F-73 | CI/CD 流水线 | §7.7 | ⏳ 待开始 |
+| F-71 | 内置工具补齐 | §7.6 | ⏳ 待开始 |
+| F-72 | Multi-API 适配器 | §7.2 | ⏳ 待开始 |
+| F-73 | CI/CD 流水线 | §7.6 | ⏳ 待开始 |
 | F-74 | Sandbox 沙箱 | §7.2 | ⏳ 待开始 |
-| F-75 | 工具调用统计 | §2.5 | 📋 设计完成 |
+| F-75 | 工具调用统计 | §2.8 | 📋 设计完成 |
 | F-78 | Issue 语义澄清 | §2.12 | 📋 规划中 |
-| F-80 | Agent 间交互 | §2.1.3 | 📋 规划中 |
+| F-80 | Agent 间交互 | §2.14 | 📋 规划中 |
 | F-81 | Native 模块系统 | §4.4 | ⏳ 待开始 |
 | F-82 | Remote Control | §7.1 | ⏳ 待开始 |
 | F-83 | Ultraplan 规划 | §7.5 | ⏳ 待开始 |
