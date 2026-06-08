@@ -1,0 +1,179 @@
+diff --git a/tui/vim_visual.py b/tui/vim_visual.py
+--- a/tui/vim_visual.py	2026-05-27 20:45:07.000000 +0000
++++ b/tui/vim_visual.py	2026-06-08 00:47:43.282921 +0000
+@@ -1,157 +1,18 @@
+-"""Visual / Visual-Line / Visual-Block selection model.
+-
+-Phase-4 wave-2 of the ch13 refactor (gap #4, blocker — wave-2 part).
+-The single-line ``src/tui/vim.py`` state machine has Insert / Normal
+-modes. Wave-2 adds Visual variants — interactive selection that
+-operators (``d``, ``c``, ``y``) can apply to as if they were a motion.
+-
+-Three Visual variants per chapter:
+-
+-* :data:`VisualMode.CHARACTER` — character-wise; ``v``-toggle in vim
+-* :data:`VisualMode.LINE` — line-wise; ``V``-toggle
+-* :data:`VisualMode.BLOCK` — column-wise rectangle; ``Ctrl+V``-toggle
+-
+-Only :class:`VisualSelection` is mutable; the resolved :class:`Range`
+-output (via :meth:`as_range`) is immutable and feeds straight into
+-:func:`src.tui.vim_operators.apply_operator`.
+-
+-Wiring into a multi-line widget is wave-2 follow-up; this module is
+-the substrate so that the integration is mechanical when the time comes.
+-"""
+-
+-from __future__ import annotations
+-
+-from dataclasses import dataclass, field
+-from enum import Enum
+-
+-from .vim_buffer import Cursor, Range, VimBuffer
+-
+-
+-class VisualMode(str, Enum):
+-    CHARACTER = "v"
+-    LINE = "V"
+-    BLOCK = "block"
+-
+-
+-@dataclass
+-class VisualSelection:
+-    """The active Visual selection — anchor + cursor.
+-
+-    ``anchor`` stays put; ``cursor`` follows the user's motion. Both are
+-    free to be in either order; :meth:`as_range` normalises so callers
+-    don't have to.
+-    """
+-
+-    mode: VisualMode
+-    anchor: Cursor
+-    cursor: Cursor
+-
+-    def with_cursor(self, cursor: Cursor) -> "VisualSelection":
+-        """Return a copy with ``cursor`` updated."""
+-
+-        return VisualSelection(mode=self.mode, anchor=self.anchor, cursor=cursor)
+-
+-    def as_range(self, buffer: VimBuffer) -> Range:
+-        """Resolve the selection to a half-open ``Range`` over ``buffer``.
+-
+-        Mode-specific rules:
+-
+-        * ``CHARACTER`` — start at min(anchor, cursor), end at max+1
+-          (character-inclusive in vim → half-open exclusive in our
+-          half-open Range model).
+-        * ``LINE`` — extend to cover entire lines from min row to max
+-          row (inclusive of trailing newline conceptually).
+-        * ``BLOCK`` — rectangle from (min row, min col) to (max row,
+-          max col). Note that the half-open ``Range`` output cannot
+-          fully express a column-rectangle for non-rectangular line
+-          lengths; callers that need block-mode operations should use
+-          :meth:`block_ranges` instead.
+-        """
+-
+-        if self.mode is VisualMode.LINE:
+-            return self._line_range(buffer)
+-        # Character (and Block — for the linear approximation):
+-        return self._char_range(buffer)
+-
+-    def block_ranges(self, buffer: VimBuffer) -> list[Range]:
+-        """For Visual-Block, return one :class:`Range` per affected line.
+-
+-        Each per-line range covers the column span ``[min_col, max_col)``.
+-        Lines shorter than ``min_col`` get an empty range at their end;
+-        operators that act on these are no-ops on those lines (vim's
+-        actual behavior).
+-        """
+-
+-        if self.mode is not VisualMode.BLOCK:
+-            return [self.as_range(buffer)]
+-        first, second = self.anchor, self.cursor
+-        row_a, row_b = sorted([first.row, second.row])
+-        col_a, col_b = sorted([first.col, second.col])
+-        ranges: list[Range] = []
+-        for row in range(row_a, row_b + 1):
+-            line = buffer.line(row) if row < buffer.line_count else ""
+-            start_col = min(col_a, len(line))
+-            end_col = min(col_b + 1, len(line))
+-            ranges.append(
+-                Range(start=Cursor(row, start_col), end=Cursor(row, end_col))
+-            )
+-        return ranges
+-
+-    # ---- internals ----
+-    def _char_range(self, buffer: VimBuffer) -> Range:
+-        # Vim's selection is character-inclusive; our Range is half-open
+-        # so we extend the end by one column (or one row when crossing
+-        # line boundaries).
+-        a = (self.anchor.row, self.anchor.col)
+-        b = (self.cursor.row, self.cursor.col)
+-        if a <= b:
+-            start = self.anchor
+-            end_row, end_col = self.cursor.row, self.cursor.col + 1
+-        else:
+-            start = self.cursor
+-            end_row, end_col = self.anchor.row, self.anchor.col + 1
+-        line = buffer.line(end_row) if end_row < buffer.line_count else ""
+-        end_col = min(end_col, len(line))
+-        return Range(start=start, end=Cursor(end_row, end_col))
+-
+-    def _line_range(self, buffer: VimBuffer) -> Range:
+-        row_a, row_b = sorted([self.anchor.row, self.cursor.row])
+-        last_line = buffer.line(row_b) if row_b < buffer.line_count else ""
+-        return Range(
+-            start=Cursor(row_a, 0),
+-            end=Cursor(row_b, len(last_line)),
+-        )
+-
+-
+-@dataclass
+-class VisualState:
+-    """Tiny state machine wrapping :class:`VisualSelection`.
+-
+-    Use::
+-
+-        state = VisualState()
+-        state.start(VisualMode.CHARACTER, anchor=Cursor(0, 0))
+-        state.update_cursor(Cursor(0, 5))
+-        rng = state.selection.as_range(buffer)  # type: ignore
+-        state.exit()  # back to None
+-    """
+-
+-    selection: VisualSelection | None = None
+-    last_yanked: list[str] = field(default_factory=list)
+-
+-    def start(self, mode: VisualMode, *, anchor: Cursor) -> None:
+-        self.selection = VisualSelection(mode=mode, anchor=anchor, cursor=anchor)
+-
+-    def update_cursor(self, cursor: Cursor) -> None:
+-        if self.selection is None:
+-            return
+-        self.selection = self.selection.with_cursor(cursor)
+-
+-    def exit(self) -> None:
+-        self.selection = None
+-
+-    def is_active(self) -> bool:
+-        return self.selection is not None
+-
+-
+-__all__ = ["VisualMode", "VisualSelection", "VisualState"]
++"""Facade — tui/vim_visual.py has been moved to clawcodex_ext (lazy proxy).
++"""
++from __future__ import annotations
++
++__all__ = [
++    "VisualMode",
++    "VisualSelection",
++    "VisualState",
++]
++
++
++def __getattr__(name: str):
++    import clawcodex_ext.tui.vim_visual as _mod
++    if name in _mod.__dict__:
++        val = _mod.__dict__[name]
++        globals()[name] = val
++        return val
++    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

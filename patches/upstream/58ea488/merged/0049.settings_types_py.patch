@@ -1,0 +1,496 @@
+diff --git a/settings/types.py b/settings/types.py
+--- a/settings/types.py	2026-05-27 20:45:07.000000 +0000
++++ b/settings/types.py	2026-06-08 00:47:43.235722 +0000
+@@ -1,198 +1,294 @@
+-"""Settings schema types matching TypeScript settings/types.ts."""
+-
+-from __future__ import annotations
+-
+-from dataclasses import dataclass, field
+-from typing import Any, Literal
+-
+-
+-PermissionModeType = Literal["default", "plan", "bypassPermissions"]
+-
+-
+-@dataclass
+-class PermissionRule:
+-    """A single permission rule."""
+-    tool: str = ""
+-    allow: bool = True
+-    glob: str | None = None
+-    regex: str | None = None
+-    description: str = ""
+-    source: str = "user"  # "user" | "project" | "managed" | "cli"
+-
+-
+-@dataclass
+-class ToolSettings:
+-    """Per-tool configuration."""
+-    enabled: bool = True
+-    allowed_commands: list[str] = field(default_factory=list)
+-    denied_commands: list[str] = field(default_factory=list)
+-    timeout_seconds: int = 120
+-
+-
+-@dataclass
+-class OutputStyleSettings:
+-    """Output style configuration."""
+-    style: str = "default"  # "default" | "concise" | "verbose" | "markdown"
+-    max_width: int = 120
+-    show_thinking: bool = False
+-
+-
+-@dataclass
+-class CompactSettings:
+-    """Compaction settings."""
+-    auto_compact: bool = True
+-    threshold_tokens: int = 100_000
+-    max_compact_retries: int = 3
+-
+-
+-@dataclass
+-class HookSettings:
+-    """Hook configuration."""
+-    enabled: bool = True
+-    timeout_ms: int = 30_000
+-    max_concurrent: int = 5
+-
+-
+-@dataclass
+-class McpServerSettings:
+-    """MCP server configuration."""
+-    command: str = ""
+-    args: list[str] = field(default_factory=list)
+-    env: dict[str, str] = field(default_factory=dict)
+-    enabled: bool = True
+-
+-
+-@dataclass
+-class SettingsSchema:
+-    """Full settings schema matching TypeScript SettingsSchema."""
+-
+-    # Model
+-    model: str = ""
+-    small_fast_model: str = ""
+-    # Advisor — reviewer tool. Empty string = unset (no /advisor).
+-    # Persisted analogue of TS appState.advisorModel; the /advisor slash
+-    # command writes here, and _call_model_sync reads from here at request
+-    # time. See src/utils/advisor.py.
+-    advisor_model: str = ""
+-    # Provider key (matches ~/.clawcodex/config.json's providers map) that
+-    # serves the advisor call. REQUIRED when advisor_model is set —
+-    # clawcodex is multi-provider and the same model name (e.g.
+-    # ``claude-opus-4-7``) can live behind anthropic, openai (litellm),
+-    # openrouter, bedrock, ... so name-based inference is ambiguous.
+-    # The /advisor command writes both fields together via the
+-    # ``<provider>:<model>`` syntax. Empty + advisor_model set = misconfig
+-    # that surfaces as a clear error at the first advisor call.
+-    advisor_provider: str = ""
+-    # Force client-side advisor mode (tool dispatch + separate API call)
+-    # even when the main provider is first-party Anthropic. Default False
+-    # lets the server-side beta path engage when applicable. Set via
+-    # ``/advisor <model> --client``. See decide_advisor_mode() in
+-    # src/utils/advisor.py for the full activation table.
+-    advisor_client_mode: bool = False
+-
+-    # Provider
+-    provider: str = "anthropic"
+-
+-    # Permission mode
+-    permission_mode: PermissionModeType = "default"
+-
+-    # Permission rules
+-    permissions: list[PermissionRule] = field(default_factory=list)
+-
+-    # Tool settings
+-    tools: dict[str, ToolSettings] = field(default_factory=dict)
+-
+-    # Output
+-    output_style: OutputStyleSettings = field(default_factory=OutputStyleSettings)
+-
+-    # Compact
+-    compact: CompactSettings = field(default_factory=CompactSettings)
+-
+-    # Hooks
+-    hooks: HookSettings = field(default_factory=HookSettings)
+-
+-    # MCP servers
+-    mcp_servers: dict[str, McpServerSettings] = field(default_factory=dict)
+-
+-    # Max turns
+-    max_turns: int = 0  # 0 = unlimited
+-
+-    # Max cost (USD)
+-    max_cost_usd: float = 0.0  # 0 = unlimited
+-
+-    # Effort
+-    effort: str = ""  # "", "low", "medium", "high", "max"
+-
+-    # Plan mode
+-    plan_mode: bool = False
+-
+-    # Non-interactive / SDK mode
+-    non_interactive: bool = False
+-
+-    # Custom system prompt
+-    custom_system_prompt: str = ""
+-
+-    # Append system prompt
+-    append_system_prompt: str = ""
+-
+-    # Allowed tools list (empty = all)
+-    allowed_tools: list[str] = field(default_factory=list)
+-
+-    # Denied tools list
+-    denied_tools: list[str] = field(default_factory=list)
+-
+-    # Fast mode (use small model)
+-    fast_mode: bool = False
+-
+-    # Session retention days
+-    session_retention_days: int = 30
+-
+-    # Extra raw fields for forward compatibility
+-    extra: dict[str, Any] = field(default_factory=dict)
+-
+-    def to_dict(self) -> dict[str, Any]:
+-        """Serialize to dict."""
+-        import dataclasses
+-        d = dataclasses.asdict(self)
+-        extra = d.pop("extra", {})
+-        d.update(extra)
+-        return d
+-
+-    @classmethod
+-    def from_dict(cls, data: dict[str, Any]) -> SettingsSchema:
+-        """Deserialize from dict."""
+-        import dataclasses
+-        known_fields = {f.name for f in dataclasses.fields(cls)}
+-        known: dict[str, Any] = {}
+-        extra: dict[str, Any] = {}
+-        for k, v in data.items():
+-            if k in known_fields:
+-                known[k] = v
+-            else:
+-                extra[k] = v
+-
+-        # Convert nested objects
+-        if "permissions" in known and isinstance(known["permissions"], list):
+-            known["permissions"] = [
+-                PermissionRule(**r) if isinstance(r, dict) else r
+-                for r in known["permissions"]
+-            ]
+-        if "output_style" in known and isinstance(known["output_style"], dict):
+-            known["output_style"] = OutputStyleSettings(**known["output_style"])
+-        if "compact" in known and isinstance(known["compact"], dict):
+-            known["compact"] = CompactSettings(**known["compact"])
+-        if "hooks" in known and isinstance(known["hooks"], dict):
+-            known["hooks"] = HookSettings(**known["hooks"])
+-        if "tools" in known and isinstance(known["tools"], dict):
+-            known["tools"] = {
+-                name: ToolSettings(**v) if isinstance(v, dict) else v
+-                for name, v in known["tools"].items()
+-            }
+-        if "mcp_servers" in known and isinstance(known["mcp_servers"], dict):
+-            known["mcp_servers"] = {
+-                name: McpServerSettings(**v) if isinstance(v, dict) else v
+-                for name, v in known["mcp_servers"].items()
+-            }
+-
+-        known["extra"] = extra
+-        return cls(**known)
++"""Settings schema types matching TypeScript settings/types.ts."""
++
++from __future__ import annotations
++
++from dataclasses import dataclass, field
++from typing import Any
++
++
++# --- F-47: PermissionsConfig replaces the legacy `list[PermissionRule]` ---
++
++_PERMISSIONS_KNOWN_SUBKEYS: frozenset[str] = frozenset({
++    "allow",
++    "deny",
++    "ask",
++    "defaultMode",
++    "additionalDirectories",
++    "allowBypassPermissionsMode",
++    "rules",
++})
++
++
++@dataclass
++class PermissionsConfig:
++    """Structured `permissions` block — matches on-disk + TS upstream contract.
++
++    F-47 (2026-06-02): replaces the legacy ``list[PermissionRule]`` shape that
++    was drifting from the on-disk dict format
++    (``src/permissions/updates.py:persist_permission_update``) and the TS
++    upstream ``permissions.*`` contract. Field names are Python snake_case;
++    ``from_dict`` / ``to_dict`` translate to/from the camelCase on-disk keys
++    used by the rest of the system.
++
++    Unknown sub-keys land in :attr:`additional` (forward-compat bag) so
++    newer schema additions do not require touching this dataclass.
++    """
++
++    allow_bypass_permissions_mode: bool = False
++    default_mode: str | None = None
++    # Always-initialized 3-behavior skeleton: downstream code can read
++    # ``rules["allow"]`` / ``rules["deny"]`` / ``rules["ask"]`` without a
++    # KeyError. ``to_dict()`` still drops the empty rules dict to keep
++    # the on-disk shape minimal.
++    rules: dict[str, list[str]] = field(
++        default_factory=lambda: {"allow": [], "deny": [], "ask": []}
++    )
++    additional_directories: list[str] = field(default_factory=list)
++    additional: dict[str, Any] = field(default_factory=dict)
++
++    @classmethod
++    def from_dict(cls, data: Any) -> "PermissionsConfig":
++        if not isinstance(data, dict):
++            return cls()
++
++        rules: dict[str, list[str]] = {}
++        rules_raw = data.get("rules")
++        rules_source: dict[str, Any] = rules_raw if isinstance(rules_raw, dict) else {}
++        for behavior in ("allow", "deny", "ask"):
++            bucket = rules_source.get(behavior)
++            if not isinstance(bucket, list):
++                bucket = data.get(behavior, [])
++            if isinstance(bucket, list):
++                rules[behavior] = [str(x) for x in bucket]
++
++        add_dirs = data.get("additionalDirectories")
++        if not isinstance(add_dirs, list):
++            add_dirs = []
++        additional_directories = [str(d) for d in add_dirs]
++
++        allow_bypass = data.get("allowBypassPermissionsMode", False)
++        allow_bypass_permissions_mode = bool(allow_bypass)
++
++        default_mode_raw = data.get("defaultMode")
++        default_mode: str | None
++        if isinstance(default_mode_raw, str) and default_mode_raw:
++            default_mode = default_mode_raw
++        else:
++            default_mode = None
++
++        additional = {
++            k: v for k, v in data.items() if k not in _PERMISSIONS_KNOWN_SUBKEYS
++        }
++
++        return cls(
++            allow_bypass_permissions_mode=allow_bypass_permissions_mode,
++            default_mode=default_mode,
++            rules=rules,
++            additional_directories=additional_directories,
++            additional=additional,
++        )
++
++    def to_dict(self) -> dict[str, Any]:
++        d: dict[str, Any] = dict(self.additional)
++        d["allowBypassPermissionsMode"] = self.allow_bypass_permissions_mode
++        if self.default_mode is not None:
++            d["defaultMode"] = self.default_mode
++        if self.rules:
++            d["rules"] = {k: list(v) for k, v in self.rules.items()}
++        if self.additional_directories:
++            d["additionalDirectories"] = list(self.additional_directories)
++        return d
++
++
++@dataclass
++class ToolSettings:
++    """Per-tool configuration."""
++    enabled: bool = True
++    allowed_commands: list[str] = field(default_factory=list)
++    denied_commands: list[str] = field(default_factory=list)
++    timeout_seconds: int = 120
++
++
++@dataclass
++class OutputStyleSettings:
++    """Output style configuration."""
++    style: str = "default"  # "default" | "concise" | "verbose" | "markdown"
++    max_width: int = 120
++    show_thinking: bool = False
++
++
++@dataclass
++class CompactSettings:
++    """Compaction settings."""
++    auto_compact: bool = True
++    threshold_tokens: int = 100_000
++    max_compact_retries: int = 3
++
++
++@dataclass
++class HookSettings:
++    """Hook configuration."""
++    enabled: bool = True
++    timeout_ms: int = 30_000
++    max_concurrent: int = 5
++
++
++@dataclass
++class McpServerSettings:
++    """MCP server configuration."""
++    command: str = ""
++    args: list[str] = field(default_factory=list)
++    env: dict[str, str] = field(default_factory=dict)
++    enabled: bool = True
++
++
++@dataclass
++class SettingsSchema:
++    """Full settings schema matching TypeScript SettingsSchema."""
++
++    # Model
++    model: str = ""
++    small_fast_model: str = ""
++    # Advisor — reviewer tool. Empty string = unset (no /advisor).
++    # Persisted analogue of TS appState.advisorModel; the /advisor slash
++    # command writes here, and _call_model_sync reads from here at request
++    # time. See src/utils/advisor.py.
++    advisor_model: str = ""
++    # Provider key (matches ~/.clawcodex/config.json's providers map) that
++    # serves the advisor call. REQUIRED when advisor_model is set —
++    # clawcodex is multi-provider and the same model name (e.g.
++    # ``claude-opus-4-7``) can live behind anthropic, openai (litellm),
++    # openrouter, bedrock, ... so name-based inference is ambiguous.
++    # The /advisor command writes both fields together via the
++    # ``<provider>:<model>`` syntax. Empty + advisor_model set = misconfig
++    # that surfaces as a clear error at the first advisor call.
++    advisor_provider: str = ""
++    # Force client-side advisor mode (tool dispatch + separate API call)
++    # even when the main provider is first-party Anthropic. Default False
++    # lets the server-side beta path engage when applicable. Set via
++    # ``/advisor <model> --client``. See decide_advisor_mode() in
++    # src/utils/advisor.py for the full activation table.
++    advisor_client_mode: bool = False
++
++    # Provider
++    provider: str = "anthropic"
++
++    # Permission mode — F-47 back-compat reading channel.
++    # Reads through ``permissions.defaultMode`` first; this top-level
++    # field is kept for older binaries that wrote the mode outside the
++    # ``permissions`` block. Empty string means "unset" and is skipped
++    # by ``validate_settings``. F-46.2 will mark this deprecated.
++    permission_mode: str = ""
++
++    # Permission configuration — F-47 dict-shaped block.
++    # Replaces the legacy ``list[PermissionRule]`` (deleted in F-47 Sub-H).
++    # Matches on-disk format produced by
++    # ``src/permissions/updates.py:persist_permission_update`` and the
++    # TS upstream ``permissions.*`` contract.
++    permissions: PermissionsConfig = field(default_factory=PermissionsConfig)
++
++    # Tool settings
++    tools: dict[str, ToolSettings] = field(default_factory=dict)
++
++    # Output
++    output_style: OutputStyleSettings = field(default_factory=OutputStyleSettings)
++
++    # Compact
++    compact: CompactSettings = field(default_factory=CompactSettings)
++
++    # Hooks
++    hooks: HookSettings = field(default_factory=HookSettings)
++
++    # MCP servers
++    mcp_servers: dict[str, McpServerSettings] = field(default_factory=dict)
++
++    # Max turns
++    max_turns: int = 0  # 0 = unlimited
++
++    # Max cost (USD)
++    max_cost_usd: float = 0.0  # 0 = unlimited
++
++    # Effort
++    effort: str = ""  # "", "low", "medium", "high", "max"
++
++    # Plan mode
++    plan_mode: bool = False
++
++    # Non-interactive / SDK mode
++    non_interactive: bool = False
++
++    # Custom system prompt
++    custom_system_prompt: str = ""
++
++    # Append system prompt
++    append_system_prompt: str = ""
++
++    # Allowed tools list (empty = all)
++    allowed_tools: list[str] = field(default_factory=list)
++
++    # Denied tools list
++    denied_tools: list[str] = field(default_factory=list)
++
++    # Fast mode (use small model)
++    fast_mode: bool = False
++
++    # Session retention days
++    session_retention_days: int = 30
++
++    # Extra raw fields for forward compatibility
++    extra: dict[str, Any] = field(default_factory=dict)
++
++    def to_dict(self) -> dict[str, Any]:
++        """Serialize to dict."""
++        import dataclasses
++        d = dataclasses.asdict(self)
++        extra = d.pop("extra", {})
++        d.update(extra)
++        return d
++
++    @classmethod
++    def from_dict(cls, data: dict[str, Any]) -> SettingsSchema:
++        """Deserialize from dict.
++
++        F-47: ``permissions`` is now a structured dict (PermissionsConfig)
++        matching the on-disk + TS upstream contract. ``from_dict`` accepts
++        any of dict / list / None / missing and degrades safely to an
++        empty :class:`PermissionsConfig`; unknown sub-keys land in
++        ``PermissionsConfig.additional`` (forward-compat bag).
++
++        ``SettingsSchema.extra`` continues to receive *unknown top-level*
++        keys (sub-keys of ``permissions`` are NOT extra — they are owned by
++        ``PermissionsConfig``).
++        """
++        import dataclasses
++        known_fields = {f.name for f in dataclasses.fields(cls)}
++        known: dict[str, Any] = {}
++        extra: dict[str, Any] = {}
++        for k, v in data.items():
++            if k in known_fields:
++                known[k] = v
++            else:
++                extra[k] = v
++
++        # Convert nested objects
++        if "permissions" in known:
++            known["permissions"] = PermissionsConfig.from_dict(known["permissions"])
++        if "output_style" in known and isinstance(known["output_style"], dict):
++            known["output_style"] = OutputStyleSettings(**known["output_style"])
++        if "compact" in known and isinstance(known["compact"], dict):
++            known["compact"] = CompactSettings(**known["compact"])
++        if "hooks" in known and isinstance(known["hooks"], dict):
++            known["hooks"] = HookSettings(**known["hooks"])
++        if "tools" in known and isinstance(known["tools"], dict):
++            known["tools"] = {
++                name: ToolSettings(**v) if isinstance(v, dict) else v
++                for name, v in known["tools"].items()
++            }
++        if "mcp_servers" in known and isinstance(known["mcp_servers"], dict):
++            known["mcp_servers"] = {
++                name: McpServerSettings(**v) if isinstance(v, dict) else v
++                for name, v in known["mcp_servers"].items()
++            }
++
++        known["extra"] = extra
++        return cls(**known)

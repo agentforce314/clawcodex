@@ -1,6 +1,6 @@
 diff --git a/bridge/__init__.py b/bridge/__init__.py
 --- a/bridge/__init__.py	2026-05-27 20:45:07.000000 +0000
-+++ b/bridge/__init__.py	2026-05-26 11:55:53.677148 +0000
++++ b/bridge/__init__.py	2026-06-04 12:50:29.285420 +0000
 @@ -1,201 +1,202 @@
 -"""CCR bridge subsystem (Bridge v1 + Bridge v2 + shared primitives).
 -

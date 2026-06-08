@@ -1,0 +1,210 @@
+diff --git a/tui/widgets/messages/assistant_advisor.py b/tui/widgets/messages/assistant_advisor.py
+--- a/tui/widgets/messages/assistant_advisor.py	2026-05-27 20:45:07.000000 +0000
++++ b/tui/widgets/messages/assistant_advisor.py	2026-06-08 00:47:43.286630 +0000
+@@ -1,190 +1,16 @@
+-"""Advisor transcript row.
+-
+-Port of ``typescript/src/components/messages/AdvisorMessage.tsx``. Two
+-forms exist in the TS reference and we mirror both:
+-
+-1. **In-progress** — a ``server_tool_use(name="advisor")`` arrives. The
+-   row shows ``Advising using <model>`` with a rotating glyph.
+-2. **Completed** — the corresponding ``advisor_tool_result`` arrives.
+-   The row swaps to a dim ``✓ Advisor reviewed`` body; in verbose mode
+-   the full advice text is shown directly. Errors show
+-   ``Advisor unavailable (<code>)`` in the error color.
+-
+-The widget transitions in-place so the user's scroll position is
+-preserved (matching the rest of the transcript). Spinner animation is
+-left to the row's status header; we don't run a per-frame timer here
+-to avoid a Textual ``set_interval`` for every advisor call — the row
+-re-renders when ``mark_done`` / ``mark_error`` fires.
+-"""
+-
+-from __future__ import annotations
+-
+-from typing import Any
+-
+-from rich.text import Text
+-from textual.app import ComposeResult
+-from textual.reactive import reactive
+-from textual.widgets import Static
+-
+-from .base import BaseRow, RowHeader
+-
+-
+-# Verbose mode is read from settings on every advisor result. We keep it
+-# as a module-level default so tests can monkeypatch the lookup, and the
+-# widget falls back to the dim "Advisor reviewed" summary when settings
+-# can't be read (cold-start, test harnesses).
+-def _advisor_verbose_mode() -> bool:
+-    try:
+-        from src.settings.settings import get_settings
+-        # ``output_style.show_thinking`` doubles as the verbose toggle —
+-        # the existing knob the user already uses to opt into long
+-        # in-transcript text. Keeps us from introducing yet another
+-        # setting just for this widget.
+-        return bool(getattr(get_settings().output_style, "show_thinking", False))
+-    except Exception:
+-        return False
+-
+-
+-class AssistantAdvisorMessage(BaseRow):
+-    """Transcript row dedicated to the server-side advisor tool."""
+-
+-    DEFAULT_CSS = """
+-    AssistantAdvisorMessage {
+-        height: auto;
+-    }
+-    AssistantAdvisorMessage > Static.-advisor-body {
+-        padding: 0 1;
+-        color: $text-muted;
+-    }
+-    """
+-
+-    status: reactive[str] = reactive("requested")
+-
+-    def __init__(
+-        self,
+-        *,
+-        tool_use_id: str,
+-        advisor_model: str | None = None,
+-    ) -> None:
+-        super().__init__()
+-        self.tool_use_id = tool_use_id
+-        self.advisor_model = advisor_model or ""
+-        self._body_text: str = ""
+-        self._error_code: str | None = None
+-
+-    # ---- composition ----
+-    def compose(self) -> ComposeResult:
+-        header = RowHeader(self._header_text(), markup=False)
+-        header.add_class("-tool")
+-        yield header
+-        # Body is mounted with placeholder content; ``mark_done`` /
+-        # ``mark_error`` swap it via ``Static.update`` once the result
+-        # arrives. Pre-result it stays empty (the header already says
+-        # "Advising using …").
+-        yield Static(Text(""), markup=False, classes="-advisor-body")
+-
+-    # ---- lifecycle updates ----
+-    def mark_running(self) -> None:
+-        self._set_status("running")
+-
+-    def mark_done(self, text: str | None) -> None:
+-        self._body_text = text or ""
+-        self._set_status("done")
+-        self._refresh_body()
+-
+-    def mark_error(self, error_code: str | None) -> None:
+-        self._error_code = error_code or "error"
+-        self._set_status("error")
+-        self._refresh_body()
+-
+-    # ---- internals ----
+-    def _set_status(self, status: str) -> None:
+-        self.status = status
+-        header = self._header_widget()
+-        if header is None:
+-            return
+-        header.remove_class("-tool", "-tool-success", "-tool-error")
+-        if status == "done":
+-            header.add_class("-tool-success")
+-        elif status == "error":
+-            header.add_class("-tool-error")
+-        else:
+-            header.add_class("-tool")
+-        header.update(self._header_text())
+-
+-    def _refresh_body(self) -> None:
+-        body = self._body_widget()
+-        if body is None:
+-            return
+-        body.update(self._body_renderable())
+-
+-    def _header_text(self) -> Text:
+-        glyph = {
+-            "requested": "○",
+-            "running": "◐",
+-            "done": "✓",
+-            "error": "✗",
+-        }.get(self.status, "•")
+-        if self.status in ("requested", "running"):
+-            label = "Advising"
+-            if self.advisor_model:
+-                label = f"Advising using {self.advisor_model}"
+-            return Text(f"{glyph} {label}")
+-        if self.status == "done":
+-            return Text(f"{glyph} Advisor reviewed")
+-        return Text(f"{glyph} Advisor unavailable")
+-
+-    def _body_renderable(self) -> Text:
+-        if self.status == "error":
+-            code = self._error_code or "error"
+-            return Text(f"Advisor unavailable ({code})", style="red")
+-        if self.status == "done":
+-            if _advisor_verbose_mode() and self._body_text:
+-                return Text(self._body_text, style="dim")
+-            return Text(
+-                "Advisor has reviewed the conversation and will apply the feedback",
+-                style="dim",
+-            )
+-        return Text("")
+-
+-    def _header_widget(self) -> RowHeader | None:
+-        try:
+-            for header in self.query(RowHeader):
+-                return header
+-        except Exception:
+-            return None
+-        return None
+-
+-    def _body_widget(self) -> Static | None:
+-        try:
+-            for body in self.query(Static):
+-                if body.has_class("-advisor-body"):
+-                    return body
+-        except Exception:
+-            return None
+-        return None
+-
+-    def snapshot(self) -> Text:
+-        """Compact snapshot used by the post-exit scrollback dump."""
+-        status_color = {
+-            "done": "bold green",
+-            "error": "bold red",
+-        }.get(self.status, "bold #f5c451")
+-        return Text(str(self._header_text()), style=status_color)
+-
+-
+-# Helpers used to live here but are pure (no Textual deps), so they
+-# moved to ``src/utils/advisor.py`` for reuse by the agent bridge,
+-# tests, and any future telemetry consumer. Re-export so existing
+-# import paths keep working.
+-from src.utils.advisor import (
+-    extract_advisor_error_code,
+-    extract_advisor_result_text,
+-)
+-
+-
+-__all__ = [
+-    "AssistantAdvisorMessage",
+-    "extract_advisor_error_code",
+-    "extract_advisor_result_text",
+-]
++"""Facade — tui/widgets/messages/assistant_advisor.py has been moved to clawcodex_ext (lazy proxy).
++"""
++from __future__ import annotations
++
++__all__ = [
++    "AssistantAdvisorMessage",
++]
++
++
++def __getattr__(name: str):
++    import clawcodex_ext.tui.widgets.messages.assistant_advisor as _mod
++    if name in _mod.__dict__:
++        val = _mod.__dict__[name]
++        globals()[name] = val
++        return val
++    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -1,0 +1,15 @@
+diff --git a/repl/__init__.py b/repl/__init__.py
+--- a/repl/__init__.py	2026-05-27 20:45:07.000000 +0000
++++ b/repl/__init__.py	2026-06-08 00:47:43.226644 +0000
+@@ -1,5 +1,6 @@
+-"""REPL module for Claw Codex."""
+-
+-from .core import ClawcodexREPL
+-
+-__all__ = ["ClawcodexREPL"]
++"""REPL module for Claw Codex."""
++
++from .background_escape import BackgroundEscape
++from .core import ClawcodexREPL
++
++__all__ = ["ClawcodexREPL", "BackgroundEscape"]

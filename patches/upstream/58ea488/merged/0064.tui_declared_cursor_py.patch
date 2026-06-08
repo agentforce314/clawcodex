@@ -1,0 +1,262 @@
+diff --git a/tui/declared_cursor.py b/tui/declared_cursor.py
+--- a/tui/declared_cursor.py	2026-05-27 20:45:07.000000 +0000
++++ b/tui/declared_cursor.py	2026-06-08 00:47:43.256165 +0000
+@@ -1,237 +1,21 @@
+-"""Declared cursor — IME preedit positioning helper.
+-
+-Phase-6 of the ch13 refactor (gap #3) closes the gap between the prior
+-no-IME-support state and chapter
+-``typescript/src/ink/hooks/use-declared-cursor.ts``.
+-
+-**Problem.** Terminal emulators render IME preedit text (the in-flight
+-characters a CJK / Vietnamese / Indic IME shows before commit) at the
+-*physical cursor position*. If the cursor stays at the bottom of the
+-screen — Textual's default for any non-cursor widget — the preedit
+-text appears at the bottom even when the user is typing into a prompt
+-input near the top. Broken UX for any user typing through an IME.
+-
+-**Fix.** Widgets declare *where they want the cursor to land after
+-each frame*; this module emits a ``CSI <row> ; <col> H`` cursor-position
+-escape sequence so the terminal renders preedit at the input caret.
+-
+-The ``DeclaredCursor`` registry is module-level (one per process) and
+-the most-recent declaration wins — chapter semantics. Stale
+-declarations from unmounted widgets are cleared via the unregister
+-callable returned by :meth:`declare`.
+-
+-Production wiring (the prompt-input integration) is one call per
+-keystroke: after the input updates its caret, it calls
+-:func:`publish_cursor_position` with the screen-space ``(row, col)``.
+-The default :class:`DeclaredCursor` writes to ``sys.__stdout__`` after
+-the next tick — disabled by default in test harnesses to keep stdout
+-clean.
+-
+-Public surface:
+-
+-* :class:`DeclaredCursor` — registry instance.
+-* :func:`get_default_declared_cursor` — module-level singleton.
+-* :func:`publish_cursor_position` — convenience setter.
+-* :func:`flush_pending` — emit any pending cursor-position sequence.
+-* :func:`reset_for_tests` — test-only state reset.
+-"""
+-
+-from __future__ import annotations
+-
+-import logging
+-import os
+-import sys
+-from dataclasses import dataclass
+-from threading import Lock
+-from typing import Callable, Final
+-
+-
+-_logger = logging.getLogger(__name__)
+-
+-
+-_CURSOR_ENV: Final[str] = "CLAWCODEX_DISABLE_DECLARED_CURSOR"
+-
+-
+-@dataclass(frozen=True)
+-class CursorDeclaration:
+-    """An (owner, row, col) tuple describing the declared cursor target.
+-
+-    ``owner`` is an opaque caller-supplied key (typically the widget's
+-    ``id`` or ``self``) so unregister can remove the right entry without
+-    a separate handle.
+-    """
+-
+-    owner: object
+-    row: int
+-    col: int
+-
+-
+-class DeclaredCursor:
+-    """Registry for cursor declarations + emit hook.
+-
+-    Public methods are thread-safe; the emit path runs on whatever
+-    thread calls :meth:`flush_pending` (typically the Textual app's
+-    main thread).
+-    """
+-
+-    def __init__(self) -> None:
+-        self._lock = Lock()
+-        # Insertion-ordered list — most-recent declaration wins, but
+-        # we keep all declarations so stale entries from unmounted
+-        # widgets can be unregistered without losing the others.
+-        self._declarations: list[CursorDeclaration] = []
+-        self._pending_emit = False
+-        # Test seam: tests can replace this to capture emitted bytes.
+-        self._writer: Callable[[str], None] = self._default_writer
+-
+-    def declare(
+-        self, owner: object, row: int, col: int
+-    ) -> Callable[[], None]:
+-        """Register an ``(owner, row, col)`` declaration.
+-
+-        The most-recent declaration wins on the next emit. Returns an
+-        unregister callable; calling it twice is a no-op.
+-        """
+-
+-        if row < 0 or col < 0:
+-            raise ValueError(
+-                f"row/col must be non-negative; got {row}, {col}"
+-            )
+-        decl = CursorDeclaration(owner=owner, row=row, col=col)
+-        with self._lock:
+-            # If an existing declaration for this owner exists, replace
+-            # it in place rather than appending so the order doesn't
+-            # drift unexpectedly.
+-            for i, existing in enumerate(self._declarations):
+-                if existing.owner is owner:
+-                    self._declarations[i] = decl
+-                    self._pending_emit = True
+-                    break
+-            else:
+-                self._declarations.append(decl)
+-                self._pending_emit = True
+-
+-        unregistered = [False]
+-
+-        def _unregister() -> None:
+-            if unregistered[0]:
+-                return
+-            with self._lock:
+-                self._declarations = [
+-                    d for d in self._declarations if d.owner is not owner
+-                ]
+-                self._pending_emit = True
+-            unregistered[0] = True
+-
+-        return _unregister
+-
+-    def active(self) -> CursorDeclaration | None:
+-        """Return the most-recent declaration, or ``None`` if cleared."""
+-
+-        with self._lock:
+-            return self._declarations[-1] if self._declarations else None
+-
+-    def flush_pending(self) -> bool:
+-        """Emit a CSI cursor-position sequence if a declaration is active.
+-
+-        Returns ``True`` when a sequence was emitted, ``False`` when
+-        nothing was pending. Idempotent — calling twice without a fresh
+-        declaration is a no-op.
+-        """
+-
+-        if os.environ.get(_CURSOR_ENV) == "1":
+-            # Hard kill switch for environments where stdout writes are
+-            # forbidden (e.g. some CI containers or non-tty harnesses).
+-            return False
+-
+-        with self._lock:
+-            if not self._pending_emit:
+-                return False
+-            decl = self._declarations[-1] if self._declarations else None
+-            self._pending_emit = False
+-
+-        if decl is None:
+-            # Last-active was unregistered — emit a no-op CSI to reset
+-            # the cursor to wherever the framework parks it. Currently
+-            # we just skip; aggressively repositioning when no widget
+-            # cares would fight Textual's own cursor management.
+-            return False
+-
+-        # CSI sequences are 1-indexed; widgets pass screen-space
+-        # (row, col) zero-indexed.
+-        row1 = decl.row + 1
+-        col1 = decl.col + 1
+-        try:
+-            self._writer(f"\x1b[{row1};{col1}H")
+-        except Exception as exc:
+-            _logger.debug("declared cursor write failed: %s", exc)
+-            return False
+-        return True
+-
+-    def clear(self) -> None:
+-        with self._lock:
+-            self._declarations.clear()
+-            self._pending_emit = False
+-
+-    def set_writer(self, writer: Callable[[str], None]) -> None:
+-        """Replace the emit-target writer. Test seam."""
+-
+-        with self._lock:
+-            self._writer = writer
+-
+-    @staticmethod
+-    def _default_writer(text: str) -> None:
+-        stream = sys.__stdout__ or sys.stdout
+-        try:
+-            stream.write(text)
+-            stream.flush()
+-        except (OSError, ValueError, AttributeError):
+-            # Non-interactive harnesses, closed stdout, etc.
+-            pass
+-
+-
+-_DEFAULT: DeclaredCursor | None = None
+-_DEFAULT_LOCK = Lock()
+-
+-
+-def get_default_declared_cursor() -> DeclaredCursor:
+-    """Module-level singleton accessor."""
+-
+-    global _DEFAULT
+-    if _DEFAULT is None:
+-        with _DEFAULT_LOCK:
+-            if _DEFAULT is None:
+-                _DEFAULT = DeclaredCursor()
+-    return _DEFAULT
+-
+-
+-def publish_cursor_position(
+-    owner: object, row: int, col: int
+-) -> Callable[[], None]:
+-    """Convenience: declare on the singleton and return the unregister."""
+-
+-    return get_default_declared_cursor().declare(owner, row, col)
+-
+-
+-def flush_pending() -> bool:
+-    """Convenience: flush the singleton's pending emission."""
+-
+-    return get_default_declared_cursor().flush_pending()
+-
+-
+-def reset_for_tests() -> None:
+-    """Drop the singleton so tests don't leak declarations across cases."""
+-
+-    global _DEFAULT
+-    with _DEFAULT_LOCK:
+-        _DEFAULT = None
+-
+-
+-__all__ = [
+-    "CursorDeclaration",
+-    "DeclaredCursor",
+-    "flush_pending",
+-    "get_default_declared_cursor",
+-    "publish_cursor_position",
+-    "reset_for_tests",
+-]
++"""Facade — tui/declared_cursor.py has been moved to clawcodex_ext (lazy proxy).
++"""
++from __future__ import annotations
++
++__all__ = [
++    "CursorDeclaration",
++    "DeclaredCursor",
++    "get_default_declared_cursor",
++    "publish_cursor_position",
++    "flush_pending",
++    "reset_for_tests",
++]
++
++
++def __getattr__(name: str):
++    import clawcodex_ext.tui.declared_cursor as _mod
++    if name in _mod.__dict__:
++        val = _mod.__dict__[name]
++        globals()[name] = val
++        return val
++    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

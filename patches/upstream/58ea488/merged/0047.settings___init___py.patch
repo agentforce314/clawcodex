@@ -1,0 +1,60 @@
+diff --git a/settings/__init__.py b/settings/__init__.py
+--- a/settings/__init__.py	2026-05-27 20:45:07.000000 +0000
++++ b/settings/__init__.py	2026-06-08 00:47:43.231868 +0000
+@@ -1,27 +1,29 @@
+-"""Settings system — multi-source loading, validation, caching."""
+-
+-from __future__ import annotations
+-
+-from .types import SettingsSchema, PermissionRule, ToolSettings
+-from .constants import DEFAULT_SETTINGS
+-from .settings import load_settings, get_settings, invalidate_settings_cache
+-from .validation import validate_settings, ValidationError
+-from .change_detector import SettingsChangeDetector, SettingsDiff
+-from .managed_path import resolve_managed_settings_path
+-from .permission_validation import validate_permission_rules
+-
+-__all__ = [
+-    "DEFAULT_SETTINGS",
+-    "PermissionRule",
+-    "SettingsChangeDetector",
+-    "SettingsDiff",
+-    "SettingsSchema",
+-    "ToolSettings",
+-    "ValidationError",
+-    "get_settings",
+-    "invalidate_settings_cache",
+-    "load_settings",
+-    "resolve_managed_settings_path",
+-    "validate_permission_rules",
+-    "validate_settings",
+-]
++"""Settings system -- multi-source loading, validation, caching."""
++
++from __future__ import annotations
++
++# F-47: ``PermissionRule`` and ``validate_permission_rules`` were the
++# settings-layer fake-typed list[PermissionRule] (Sub-H deletion). The
++# runtime ``PermissionRule`` lives in ``src.permissions.types`` and is
++# unrelated. Permission rule validation is now integrated into
++# ``validate_settings`` (see ``src/settings/validation.py``).
++from .types import SettingsSchema, ToolSettings
++from .constants import DEFAULT_SETTINGS
++from .settings import load_settings, get_settings, invalidate_settings_cache
++from .validation import validate_settings, ValidationError
++from .change_detector import SettingsChangeDetector, SettingsDiff
++from .managed_path import resolve_managed_settings_path
++
++__all__ = [
++    "DEFAULT_SETTINGS",
++    "SettingsChangeDetector",
++    "SettingsDiff",
++    "SettingsSchema",
++    "ToolSettings",
++    "ValidationError",
++    "get_settings",
++    "invalidate_settings_cache",
++    "load_settings",
++    "resolve_managed_settings_path",
++    "validate_settings",
++]

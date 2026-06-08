@@ -1,0 +1,452 @@
+diff --git a/bridge/worktree.py b/bridge/worktree.py
+--- a/bridge/worktree.py	2026-05-27 20:45:07.000000 +0000
++++ b/bridge/worktree.py	2026-06-08 00:47:43.179220 +0000
+@@ -1,220 +1,227 @@
+-"""Per-session git worktree helper for ``--spawn worktree`` mode.
+-
+-When the bridge runs multi-session with ``--spawn worktree``, each
+-session is given an isolated working tree under
+-``<base>/.claude/worktrees/agent-<session_id>/`` so concurrent edits
+-don't stomp each other. This module owns the create/remove plumbing.
+-
+-The path layout (``<base>/.claude/worktrees/agent-<sid>/``) is a
+-clawcodex convention. Crash-recovery — sweeping orphan worktrees from
+-a previous run on daemon startup — is intentionally out of scope for
+-this phase; it belongs with the perpetual-mode work in Phase 12c.
+-
+-Best-effort semantics
+----------------------
+-``create_agent_worktree`` never raises. If the base dir isn't a git
+-repo, the session_id contains path-unsafe characters, the git binary
+-is missing, a subprocess fails or hangs, or the filesystem refuses
+-``mkdir`` — all roads lead to a fallback ``WorktreePaths`` with
+-``created=False`` and a warning log. The session still runs; it just
+-won't be isolated.
+-
+-Subprocesses are deadline-bounded (see ``_GIT_TIMEOUT_S``) so a stuck
+-``git worktree add`` from e.g. a wedged filesystem lock can't hang
+-the daemon's poll loop.
+-"""
+-
+-from __future__ import annotations
+-
+-import asyncio
+-import logging
+-import os
+-import re
+-from dataclasses import dataclass
+-
+-logger = logging.getLogger(__name__)
+-
+-# Strict allowlist for the directory-name portion of an agent worktree.
+-# Session IDs nominally arrive as ``cse_<hex>`` from the server, but the
+-# work-secret payload isn't strongly typed, so a malformed value could
+-# otherwise become a path-traversal vector (``session_id='../escape'``
+-# would land the worktree outside ``<base>/.claude/worktrees/``).
+-_SESSION_ID_RE = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
+-
+-# Wall-clock cap for any single git subprocess. ``git worktree add``
+-# and ``--force remove`` are normally sub-second, but can hang on a
+-# stuck ``.git/index.lock`` or a slow network filesystem. The cap
+-# turns a hang into a fallback (for add) or a logged warning (for
+-# remove) instead of a wedged daemon.
+-_GIT_TIMEOUT_S = 10.0
+-
+-
+-@dataclass
+-class WorktreePaths:
+-    """Bookkeeping handle returned by :func:`create_agent_worktree`.
+-
+-    Attributes
+-    ----------
+-    base_dir
+-        Original working directory passed to ``create_agent_worktree``.
+-        Used as ``cwd`` for the eventual ``git worktree remove`` call.
+-    working_dir
+-        What the session should actually run in. Equal to the new
+-        worktree path on success; equal to ``base_dir`` on fallback.
+-    created
+-        ``True`` if a real git worktree was created (and therefore must
+-        be removed on cleanup). ``False`` if we fell back to ``base_dir``.
+-    """
+-
+-    base_dir: str
+-    working_dir: str
+-    created: bool
+-
+-
+-async def _run_git(*args: str, cwd: str) -> tuple[int, str]:
+-    """Run ``git <args>`` in ``cwd``. Returns ``(returncode, stderr)``.
+-
+-    stdout is discarded — worktree commands don't return data we need.
+-    Every failure mode — missing git binary, cwd unreadable, subprocess
+-    spawn failure, communicate timeout — is converted to a non-zero
+-    return code so callers can fall back on a simple rc check. The
+-    one thing this CAN'T do is hang: ``_GIT_TIMEOUT_S`` caps the wait
+-    and we ``kill()`` the subprocess on timeout.
+-    """
+-    try:
+-        proc = await asyncio.create_subprocess_exec(
+-            'git', *args,
+-            cwd=cwd,
+-            stdout=asyncio.subprocess.DEVNULL,
+-            stderr=asyncio.subprocess.PIPE,
+-        )
+-    except (OSError, ValueError) as err:
+-        # FileNotFoundError (git not on PATH), PermissionError (cwd
+-        # not +x), NotADirectoryError, etc. — all OSError subclasses.
+-        # ValueError can come from create_subprocess_exec when args
+-        # contain NULs.
+-        return -1, str(err)
+-    # The try/finally guarantees we kill the subprocess on every exit
+-    # path: timeout, ``CancelledError`` from a parent task, or any
+-    # other exception. Without it, a cancelled ``_run_git`` leaves the
+-    # ``git`` process running after the daemon has shut down — see
+-    # the cancellation-cleanup discussion in the Phase 12a review.
+-    try:
+-        try:
+-            _, stderr_bytes = await asyncio.wait_for(
+-                proc.communicate(), timeout=_GIT_TIMEOUT_S,
+-            )
+-        except asyncio.TimeoutError:
+-            return -1, f'git timed out after {_GIT_TIMEOUT_S:.2f}s'
+-    finally:
+-        if proc.returncode is None:
+-            try:
+-                proc.kill()
+-            except ProcessLookupError:
+-                pass
+-            # Drain so the transport releases its FDs. Bounded so a
+-            # truly wedged process can't hang the finally block.
+-            try:
+-                await asyncio.wait_for(proc.wait(), timeout=1.0)
+-            except (asyncio.TimeoutError, asyncio.CancelledError):
+-                pass
+-    rc = proc.returncode if proc.returncode is not None else -1
+-    return rc, stderr_bytes.decode('utf-8', 'replace')
+-
+-
+-async def _is_git_repo(path: str) -> bool:
+-    rc, _ = await _run_git('rev-parse', '--is-inside-work-tree', cwd=path)
+-    return rc == 0
+-
+-
+-async def create_agent_worktree(
+-    base_dir: str, session_id: str,
+-) -> WorktreePaths:
+-    """Create ``<base>/.claude/worktrees/agent-<session_id>/`` as a
+-    detached worktree of ``base_dir``.
+-
+-    Returns a :class:`WorktreePaths` with ``created=True`` on success.
+-    On any failure — bad session_id, not a git repo, mkdir error, git
+-    command error, subprocess timeout — falls back to ``base_dir``
+-    with ``created=False`` and a warning log. Never raises.
+-    """
+-    # Validate session_id before it touches the filesystem. The
+-    # work-secret payload type is loose (server-provided string), so
+-    # nothing else stops a malicious or buggy ``id`` value from
+-    # turning into a path-traversal write target.
+-    if not _SESSION_ID_RE.match(session_id):
+-        logger.warning(
+-            '[worktree] session_id %r is not allowlist-safe — '
+-            'spawning in base dir', session_id,
+-        )
+-        return WorktreePaths(
+-            base_dir=base_dir, working_dir=base_dir, created=False,
+-        )
+-
+-    if not await _is_git_repo(base_dir):
+-        logger.warning(
+-            '[worktree] %s is not a git repo — spawning in base dir',
+-            base_dir,
+-        )
+-        return WorktreePaths(
+-            base_dir=base_dir, working_dir=base_dir, created=False,
+-        )
+-
+-    target = os.path.join(
+-        base_dir, '.claude', 'worktrees', f'agent-{session_id}',
+-    )
+-    parent = os.path.dirname(target)
+-    try:
+-        os.makedirs(parent, exist_ok=True)
+-    except OSError as err:
+-        logger.warning(
+-            '[worktree] mkdir(%s) failed: %s — spawning in base dir',
+-            parent, err,
+-        )
+-        return WorktreePaths(
+-            base_dir=base_dir, working_dir=base_dir, created=False,
+-        )
+-
+-    # ``--detach`` avoids polluting the branch namespace; the worktree
+-    # starts on whatever commit the base dir's HEAD pointed at when
+-    # we ran ``git worktree add`` (concurrent ``git reset`` is racy
+-    # but acceptable for an ephemeral agent worktree). It has no
+-    # branch attached, so ``--force`` removal stays clean later.
+-    rc, stderr = await _run_git(
+-        'worktree', 'add', '--detach', target, 'HEAD', cwd=base_dir,
+-    )
+-    if rc != 0:
+-        logger.warning(
+-            '[worktree] git worktree add failed (rc=%d): %s — '
+-            'spawning in base dir', rc, stderr.strip(),
+-        )
+-        return WorktreePaths(
+-            base_dir=base_dir, working_dir=base_dir, created=False,
+-        )
+-
+-    logger.info('[worktree] Created %s for session %s', target, session_id)
+-    return WorktreePaths(
+-        base_dir=base_dir, working_dir=target, created=True,
+-    )
+-
+-
+-async def remove_agent_worktree(paths: WorktreePaths) -> None:
+-    """Best-effort remove. No-op if ``paths.created`` is ``False``.
+-
+-    Uses ``--force`` so uncommitted edits in the session's worktree
+-    don't block cleanup — the entire point of an agent worktree is
+-    that we don't care about its working state after the session ends.
+-    """
+-    if not paths.created:
+-        return
+-    rc, stderr = await _run_git(
+-        'worktree', 'remove', '--force', paths.working_dir,
+-        cwd=paths.base_dir,
+-    )
+-    if rc != 0:
+-        logger.warning(
+-            '[worktree] git worktree remove failed (rc=%d): %s',
+-            rc, stderr.strip(),
+-        )
+-        return
+-    logger.info('[worktree] Removed %s', paths.working_dir)
++"""Per-session git worktree helper for ``--spawn worktree`` mode.
++
++When the bridge runs multi-session with ``--spawn worktree``, each
++session is given an isolated working tree under
++``<base>/.claude/worktrees/agent-<session_id>/`` so concurrent edits
++don't stomp each other. This module owns the create/remove plumbing.
++
++The path layout (``<base>/.claude/worktrees/agent-<sid>/``) is a
++clawcodex convention. Crash-recovery — sweeping orphan worktrees from
++a previous run on daemon startup — is intentionally out of scope for
++this phase; it belongs with the perpetual-mode work in Phase 12c.
++
++Best-effort semantics
++---------------------
++``create_agent_worktree`` never raises. If the base dir isn't a git
++repo, the session_id contains path-unsafe characters, the git binary
++is missing, a subprocess fails or hangs, or the filesystem refuses
++``mkdir`` — all roads lead to a fallback ``WorktreePaths`` with
++``created=False`` and a warning log. The session still runs; it just
++won't be isolated.
++
++Subprocesses are deadline-bounded (see ``_GIT_TIMEOUT_S``) so a stuck
++``git worktree add`` from e.g. a wedged filesystem lock can't hang
++the daemon's poll loop.
++"""
++
++from __future__ import annotations
++
++import asyncio
++import logging
++import os
++import re
++from dataclasses import dataclass
++
++logger = logging.getLogger(__name__)
++
++# Strict allowlist for the directory-name portion of an agent worktree.
++# Session IDs nominally arrive as ``cse_<hex>`` from the server, but the
++# work-secret payload isn't strongly typed, so a malformed value could
++# otherwise become a path-traversal vector (``session_id='../escape'``
++# would land the worktree outside ``<base>/.claude/worktrees/``).
++_SESSION_ID_RE = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
++
++# Wall-clock cap for any single git subprocess. ``git worktree add``
++# and ``--force remove`` are normally sub-second, but can hang on a
++# stuck ``.git/index.lock`` or a slow network filesystem. The cap
++# turns a hang into a fallback (for add) or a logged warning (for
++# remove) instead of a wedged daemon.
++_GIT_TIMEOUT_S = 10.0
++
++
++@dataclass
++class WorktreePaths:
++    """Bookkeeping handle returned by :func:`create_agent_worktree`.
++
++    Attributes
++    ----------
++    base_dir
++        Original working directory passed to ``create_agent_worktree``.
++        Used as ``cwd`` for the eventual ``git worktree remove`` call.
++    working_dir
++        What the session should actually run in. Equal to the new
++        worktree path on success; equal to ``base_dir`` on fallback.
++    created
++        ``True`` if a real git worktree was created (and therefore must
++        be removed on cleanup). ``False`` if we fell back to ``base_dir``.
++    """
++
++    base_dir: str
++    working_dir: str
++    created: bool
++
++
++async def _run_git(*args: str, cwd: str) -> tuple[int, str]:
++    """Run ``git <args>`` in ``cwd``. Returns ``(returncode, stderr)``.
++
++    stdout is discarded — worktree commands don't return data we need.
++    Every failure mode — missing git binary, cwd unreadable, subprocess
++    spawn failure, communicate timeout — is converted to a non-zero
++    return code so callers can fall back on a simple rc check. The
++    one thing this CAN'T do is hang: ``_GIT_TIMEOUT_S`` caps the wait
++    and we ``kill()`` the subprocess on timeout.
++    """
++    try:
++        proc = await asyncio.create_subprocess_exec(
++            'git', *args,
++            cwd=cwd,
++            stdout=asyncio.subprocess.DEVNULL,
++            stderr=asyncio.subprocess.PIPE,
++        )
++    except (OSError, ValueError) as err:
++        # FileNotFoundError (git not on PATH), PermissionError (cwd
++        # not +x), NotADirectoryError, etc. — all OSError subclasses.
++        # ValueError can come from create_subprocess_exec when args
++        # contain NULs.
++        return -1, str(err)
++    # The try/finally guarantees we kill the subprocess on every exit
++    # path: timeout, ``CancelledError`` from a parent task, or any
++    # other exception. Without it, a cancelled ``_run_git`` leaves the
++    # ``git`` process running after the daemon has shut down — see
++    # the cancellation-cleanup discussion in the Phase 12a review.
++    try:
++        try:
++            _, stderr_bytes = await asyncio.wait_for(
++                proc.communicate(), timeout=_GIT_TIMEOUT_S,
++            )
++        except asyncio.TimeoutError:
++            return -1, f'git timed out after {_GIT_TIMEOUT_S:.2f}s'
++    finally:
++        if proc.returncode is None:
++            try:
++                proc.kill()
++            except ProcessLookupError:
++                pass
++            # Drain so the transport releases its FDs. Bounded so a
++            # truly wedged process can't hang the finally block.
++            try:
++                await asyncio.wait_for(proc.wait(), timeout=1.0)
++            except (asyncio.TimeoutError, asyncio.CancelledError):
++                pass
++    rc = proc.returncode if proc.returncode is not None else -1
++    return rc, stderr_bytes.decode('utf-8', 'replace')
++
++
++async def _is_git_repo(path: str) -> bool:
++    rc, _ = await _run_git('rev-parse', '--is-inside-work-tree', cwd=path)
++    return rc == 0
++
++
++async def create_agent_worktree(
++    base_dir: str, session_id: str,
++) -> WorktreePaths:
++    """Create ``<base>/.claude/worktrees/agent-<session_id>/`` as a
++    detached worktree of ``base_dir``.
++
++    Returns a :class:`WorktreePaths` with ``created=True`` on success.
++    On any failure — bad session_id, not a git repo, mkdir error, git
++    command error, subprocess timeout — falls back to ``base_dir``
++    with ``created=False`` and a warning log. Never raises.
++    """
++    # Validate session_id before it touches the filesystem. The
++    # work-secret payload type is loose (server-provided string), so
++    # nothing else stops a malicious or buggy ``id`` value from
++    # turning into a path-traversal write target.
++    if not _SESSION_ID_RE.match(session_id):
++        logger.warning(
++            '[worktree] session_id %r is not allowlist-safe — '
++            'spawning in base dir', session_id,
++        )
++        return WorktreePaths(
++            base_dir=base_dir, working_dir=base_dir, created=False,
++        )
++
++    if not await _is_git_repo(base_dir):
++        logger.warning(
++            '[worktree] %s is not a git repo — spawning in base dir',
++            base_dir,
++        )
++        return WorktreePaths(
++            base_dir=base_dir, working_dir=base_dir, created=False,
++        )
++
++    target = os.path.join(
++        base_dir, '.claude', 'worktrees', f'agent-{session_id}',
++    )
++    parent = os.path.dirname(target)
++    try:
++        os.makedirs(parent, exist_ok=True)
++    except OSError as err:
++        logger.warning(
++            '[worktree] mkdir(%s) failed: %s — spawning in base dir',
++            parent, err,
++        )
++        return WorktreePaths(
++            base_dir=base_dir, working_dir=base_dir, created=False,
++        )
++
++    # ``--detach`` avoids polluting the branch namespace; the worktree
++    # starts on whatever commit the base dir's HEAD pointed at when
++    # we ran ``git worktree add`` (concurrent ``git reset`` is racy
++    # but acceptable for an ephemeral agent worktree). It has no
++    # branch attached, so ``--force`` removal stays clean later.
++    rc, stderr = await _run_git(
++        'worktree', 'add', '--detach', target, 'HEAD', cwd=base_dir,
++    )
++    if rc != 0:
++        logger.warning(
++            '[worktree] git worktree add failed (rc=%d): %s — '
++            'spawning in base dir', rc, stderr.strip(),
++        )
++        return WorktreePaths(
++            base_dir=base_dir, working_dir=base_dir, created=False,
++        )
++
++    logger.info('[worktree] Created %s for session %s', target, session_id)
++    return WorktreePaths(
++        base_dir=base_dir, working_dir=target, created=True,
++    )
++
++
++async def remove_agent_worktree(paths: WorktreePaths) -> None:
++    """Best-effort remove. No-op if ``paths.created`` is ``False``.
++
++    Uses ``--force`` so uncommitted edits in the session's worktree
++    don't block cleanup — the entire point of an agent worktree is
++    that we don't care about its working state after the session ends.
++    """
++    if not paths.created:
++        return
++    rc, stderr = await _run_git(
++        'worktree', 'remove', '--force', paths.working_dir,
++        cwd=paths.base_dir,
++    )
++    if rc != 0:
++        logger.warning(
++            '[worktree] git worktree remove failed (rc=%d): %s',
++            rc, stderr.strip(),
++        )
++        return
++    logger.info('[worktree] Removed %s', paths.working_dir)
++
++
++__all__ = [
++    'WorktreePaths',
++    'create_agent_worktree',
++    'remove_agent_worktree',
++]
+\ No newline at end of file

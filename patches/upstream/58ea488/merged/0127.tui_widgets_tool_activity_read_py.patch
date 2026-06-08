@@ -1,0 +1,45 @@
+diff --git a/tui/widgets/tool_activity/read.py b/tui/widgets/tool_activity/read.py
+--- a/tui/widgets/tool_activity/read.py	2026-05-27 20:45:07.000000 +0000
++++ b/tui/widgets/tool_activity/read.py	2026-06-08 00:47:43.305295 +0000
+@@ -1,25 +1,16 @@
+-"""Read tool activity."""
+-
+-from __future__ import annotations
+-
+-from typing import Any
+-
+-from rich.text import Text
+-
+-from .base import ToolActivity, truncated_panel
+-
+-
+-class ReadActivity(ToolActivity):
+-    def inflight_text(self) -> Text:
+-        path = self.tool_input.get("file_path") or self.tool_input.get("filePath") or ""
+-        return Text(f"read {path}" if path else "read …", style="dim")
+-
+-    def result_body(self, output: Any, *, is_error: bool) -> Any | None:
+-        if not isinstance(output, dict):
+-            return None
+-        f = output.get("file")
+-        if isinstance(f, dict):
+-            content = f.get("content")
+-            if isinstance(content, str) and content.strip():
+-                return truncated_panel(content, style="red" if is_error else "green")
+-        return None
++"""Facade — tui/widgets/tool_activity/read.py has been moved to clawcodex_ext (lazy proxy).
++"""
++from __future__ import annotations
++
++__all__ = [
++    "ReadActivity",
++]
++
++
++def __getattr__(name: str):
++    import clawcodex_ext.tui.widgets.tool_activity.read as _mod
++    if name in _mod.__dict__:
++        val = _mod.__dict__[name]
++        globals()[name] = val
++        return val
++    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -1,0 +1,334 @@
+diff --git a/tui/vim_text_objects.py b/tui/vim_text_objects.py
+--- a/tui/vim_text_objects.py	2026-05-27 20:45:07.000000 +0000
++++ b/tui/vim_text_objects.py	2026-06-08 00:47:43.282352 +0000
+@@ -1,314 +1,16 @@
+-"""Vim text-object resolution.
+-
+-Phase-4 wave-1 of the ch13 refactor (gap #4 sub-item). Mirrors
+-``typescript/src/vim/textObjects.ts`` — given a buffer, a cursor
+-position, and a text-object specifier (``iw``, ``aw``, ``i"``, ``a{``,
+-etc.), resolve the spanning :class:`Range` the operator should act on.
+-
+-Specifiers are a 2-character pair: the first char is ``i`` (inner —
+-exclude surrounding whitespace / delimiters) or ``a`` (around — include
+-them); the second is the object kind (``w`` word / ``s`` sentence /
+-``p`` paragraph / quote chars / bracket chars).
+-
+-Coverage (chapter parity, wave-1):
+-
+-* ``iw`` / ``aw`` — word
+-* ``ip`` / ``ap`` — paragraph
+-* ``i"`` / ``a"`` — double-quoted
+-* ``i'`` / ``a'`` — single-quoted
+-* ``` i` ``` / ``` a` ``` — backtick-quoted
+-* ``i(`` / ``a(`` — paren block (alias ``i)`` / ``a)``)
+-* ``i[`` / ``a[`` — bracket block (alias ``i]`` / ``a]``)
+-* ``i{`` / ``a{`` — brace block (alias ``i}`` / ``a}``)
+-* ``i<`` / ``a<`` — angle block (alias ``i>`` / ``a>``)
+-
+-Returns ``None`` when no object matches at the cursor — operator code
+-should treat that as a no-op.
+-"""
+-
+-from __future__ import annotations
+-
+-from typing import Final
+-
+-from .vim_buffer import Cursor, Range, VimBuffer
+-
+-
+-# Brace pairs that match each other. Each entry maps the *open or close*
+-# character to the (open, close) tuple so callers don't need to remember
+-# which side they're on.
+-_BRACE_PAIRS: Final[dict[str, tuple[str, str]]] = {
+-    "(": ("(", ")"),
+-    ")": ("(", ")"),
+-    "[": ("[", "]"),
+-    "]": ("[", "]"),
+-    "{": ("{", "}"),
+-    "}": ("{", "}"),
+-    "<": ("<", ">"),
+-    ">": ("<", ">"),
+-}
+-
+-_QUOTE_CHARS: Final[frozenset[str]] = frozenset({'"', "'", "`"})
+-
+-
+-def find_text_object(
+-    buffer: VimBuffer,
+-    at: Cursor,
+-    specifier: str,
+-) -> Range | None:
+-    """Resolve ``specifier`` (``iw``, ``a"``, etc.) under ``at``.
+-
+-    Returns ``None`` if the cursor isn't inside an object of the given
+-    kind (e.g. ``i"`` when the line has no quotes).
+-    """
+-
+-    if len(specifier) != 2:
+-        return None
+-    inner_or_around = specifier[0]
+-    kind = specifier[1]
+-    if inner_or_around not in ("i", "a"):
+-        return None
+-    inner = inner_or_around == "i"
+-
+-    if kind == "w":
+-        return _word(buffer, at, inner=inner)
+-    if kind == "s":
+-        return _sentence(buffer, at, inner=inner)
+-    if kind == "p":
+-        return _paragraph(buffer, at, inner=inner)
+-    if kind in _QUOTE_CHARS:
+-        return _quoted(buffer, at, quote=kind, inner=inner)
+-    if kind in _BRACE_PAIRS:
+-        open_ch, close_ch = _BRACE_PAIRS[kind]
+-        return _brace(buffer, at, open_ch=open_ch, close_ch=close_ch, inner=inner)
+-    return None
+-
+-
+-# ---- Word ------------------------------------------------------------------
+-
+-
+-def _word(buffer: VimBuffer, at: Cursor, *, inner: bool) -> Range | None:
+-    """``iw`` / ``aw``: a run of word chars; ``a`` includes trailing whitespace."""
+-
+-    line = buffer.line(at.row) if at.row < buffer.line_count else ""
+-    if not line:
+-        return None
+-    col = max(0, min(at.col, len(line) - 1)) if line else 0
+-    if col >= len(line):
+-        return None
+-    if not _is_word_char(line[col]):
+-        # Cursor is on a non-word char — vim's ``iw`` matches the run of
+-        # whitespace too; for simplicity we return None when the cursor
+-        # is on a separator. Callers can decide.
+-        return None
+-    start = col
+-    while start > 0 and _is_word_char(line[start - 1]):
+-        start -= 1
+-    end = col
+-    while end < len(line) and _is_word_char(line[end]):
+-        end += 1
+-    if not inner:
+-        # Include trailing whitespace (or leading whitespace if no
+-        # trailing whitespace exists).
+-        trail = end
+-        while trail < len(line) and line[trail].isspace():
+-            trail += 1
+-        if trail > end:
+-            end = trail
+-        else:
+-            while start > 0 and line[start - 1].isspace():
+-                start -= 1
+-    return Range(start=Cursor(at.row, start), end=Cursor(at.row, end))
+-
+-
+-def _is_word_char(ch: str) -> bool:
+-    return ch.isalnum() or ch == "_"
+-
+-
+-# ---- Sentence --------------------------------------------------------------
+-
+-
+-_SENTENCE_TERMINATORS: Final[frozenset[str]] = frozenset({".", "!", "?"})
+-
+-
+-def _sentence(buffer: VimBuffer, at: Cursor, *, inner: bool) -> Range | None:
+-    """Sentence: bounded by terminator chars (``.``, ``!``, ``?``).
+-
+-    Only operates on the cursor's line; multi-line sentences are
+-    deliberately out of scope for wave-1 (vim's real behavior tracks
+-    paragraph boundaries which adds complexity).
+-    """
+-
+-    line = buffer.line(at.row) if at.row < buffer.line_count else ""
+-    if not line:
+-        return None
+-    col = max(0, min(at.col, len(line) - 1))
+-    start = col
+-    while start > 0 and line[start - 1] not in _SENTENCE_TERMINATORS:
+-        start -= 1
+-    while start < len(line) and line[start].isspace():
+-        start += 1
+-    end = col
+-    while end < len(line) and line[end] not in _SENTENCE_TERMINATORS:
+-        end += 1
+-    if end < len(line) and not inner:
+-        end += 1  # include the terminator on ``a``-mode
+-    if not inner:
+-        while end < len(line) and line[end].isspace():
+-            end += 1
+-    if start >= end:
+-        return None
+-    return Range(start=Cursor(at.row, start), end=Cursor(at.row, end))
+-
+-
+-# ---- Paragraph -------------------------------------------------------------
+-
+-
+-def _paragraph(buffer: VimBuffer, at: Cursor, *, inner: bool) -> Range | None:
+-    """Paragraph: contiguous run of non-empty lines.
+-
+-    ``i`` mode = the non-empty lines themselves;
+-    ``a`` mode = extends to include surrounding blank lines.
+-    """
+-
+-    if buffer.line_count == 0:
+-        return None
+-    if at.row >= buffer.line_count:
+-        return None
+-    if not buffer.line(at.row).strip():
+-        # Cursor on a blank line. ``ap`` covers the blank-line run.
+-        if not inner:
+-            start = at.row
+-            while start > 0 and not buffer.line(start - 1).strip():
+-                start -= 1
+-            end = at.row
+-            while end + 1 < buffer.line_count and not buffer.line(end + 1).strip():
+-                end += 1
+-            return Range(
+-                start=Cursor(start, 0),
+-                end=Cursor(end, len(buffer.line(end))),
+-            )
+-        return None
+-
+-    start = at.row
+-    while start > 0 and buffer.line(start - 1).strip():
+-        start -= 1
+-    end = at.row
+-    while end + 1 < buffer.line_count and buffer.line(end + 1).strip():
+-        end += 1
+-
+-    if not inner:
+-        # Extend to include trailing blank lines.
+-        while end + 1 < buffer.line_count and not buffer.line(end + 1).strip():
+-            end += 1
+-
+-    return Range(
+-        start=Cursor(start, 0),
+-        end=Cursor(end, len(buffer.line(end))),
+-    )
+-
+-
+-# ---- Quoted ----------------------------------------------------------------
+-
+-
+-def _quoted(
+-    buffer: VimBuffer, at: Cursor, *, quote: str, inner: bool
+-) -> Range | None:
+-    """``i"``: text between matching quotes on the same line.
+-
+-    Multi-line quote pairs are out of scope (rare in practice; ``vim``
+-    itself only tracks single-line quote pairs).
+-    """
+-
+-    line = buffer.line(at.row) if at.row < buffer.line_count else ""
+-    if not line:
+-        return None
+-
+-    # Walk the line and find every quote position; pick the pair that
+-    # brackets the cursor.
+-    positions = [i for i, ch in enumerate(line) if ch == quote]
+-    if len(positions) < 2:
+-        return None
+-    pair: tuple[int, int] | None = None
+-    # Walk pairs (0,1), (2,3), … — vim's "alternating" pair logic. The
+-    # cursor must lie *between* the two indices (inclusive).
+-    for i in range(0, len(positions) - 1, 2):
+-        left = positions[i]
+-        right = positions[i + 1]
+-        if left <= at.col <= right:
+-            pair = (left, right)
+-            break
+-    if pair is None:
+-        return None
+-    left, right = pair
+-    if inner:
+-        return Range(
+-            start=Cursor(at.row, left + 1),
+-            end=Cursor(at.row, right),
+-        )
+-    return Range(start=Cursor(at.row, left), end=Cursor(at.row, right + 1))
+-
+-
+-# ---- Brace -----------------------------------------------------------------
+-
+-
+-def _brace(
+-    buffer: VimBuffer,
+-    at: Cursor,
+-    *,
+-    open_ch: str,
+-    close_ch: str,
+-    inner: bool,
+-) -> Range | None:
+-    """``i{``: text inside the nearest enclosing brace pair.
+-
+-    Searches the *current line* for the enclosing pair (multi-line
+-    matching is wave-2). Returns ``None`` if the cursor isn't inside
+-    a brace pair on this line.
+-    """
+-
+-    line = buffer.line(at.row) if at.row < buffer.line_count else ""
+-    if not line:
+-        return None
+-    # Walk left from the cursor counting depth; locate the unmatched
+-    # open brace if any.
+-    depth = 0
+-    open_idx: int | None = None
+-    for i in range(at.col, -1, -1):
+-        if i >= len(line):
+-            continue
+-        ch = line[i]
+-        if ch == close_ch and i != at.col:
+-            depth += 1
+-        elif ch == open_ch:
+-            if depth == 0:
+-                open_idx = i
+-                break
+-            depth -= 1
+-    if open_idx is None:
+-        return None
+-    # Now walk right from after the open brace counting depth.
+-    depth = 0
+-    close_idx: int | None = None
+-    for i in range(open_idx + 1, len(line)):
+-        ch = line[i]
+-        if ch == open_ch:
+-            depth += 1
+-        elif ch == close_ch:
+-            if depth == 0:
+-                close_idx = i
+-                break
+-            depth -= 1
+-    if close_idx is None:
+-        return None
+-    if inner:
+-        return Range(
+-            start=Cursor(at.row, open_idx + 1),
+-            end=Cursor(at.row, close_idx),
+-        )
+-    return Range(
+-        start=Cursor(at.row, open_idx),
+-        end=Cursor(at.row, close_idx + 1),
+-    )
+-
+-
+-__all__ = ["find_text_object"]
++"""Facade — tui/vim_text_objects.py has been moved to clawcodex_ext (lazy proxy).
++"""
++from __future__ import annotations
++
++__all__ = [
++    "find_text_object",
++]
++
++
++def __getattr__(name: str):
++    import clawcodex_ext.tui.vim_text_objects as _mod
++    if name in _mod.__dict__:
++        val = _mod.__dict__[name]
++        globals()[name] = val
++        return val
++    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
