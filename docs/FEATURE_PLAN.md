@@ -86,6 +86,8 @@
     - [8.7 依赖与协同](#8-7-依赖与协同)
     - [8.8 实施建议顺序](#8-8-实施建议顺序)
     - [8.9 风险评估](#8-9-风险评估)
+- [九、自升级闭环（IR-5）](#九自升级闭环ir-5)
+    - [9.1 开源社区新特性雷达（SR-5.1）](#91-开源社区新特性雷达sr-51)
 - [附录：F-Number 快速索引](#附录-f-number-快速索引)
 
 ---
@@ -8136,6 +8138,577 @@ Phase 1 (F-91) ──→ Phase 2 (F-92) ──→ Phase 3 (F-93) ──→ Phase
 | SessionMetadata 字段缺失 | 高 | 中 | 文档已备 transcript 聚合回退 |
 | URL 导入 SSRF 攻击 | 低 | 高 | 禁 localhost/私有 IP；仅 --allow-import 启用
 
+
+---
+
+## 九、自升级闭环（IR-5）
+
+> **说明**：本章对应 ROADMAP §4.1 IR-5 自升级闭环，是 ClawCodex 长期进化的顶层架构。目前仅 SR-5.1 已有详细设计，其余 SR-5.2~SR-5.5 仍为 🔭 长期规划。
+
+**长期闭环目标**: ClawCodex 能定期收集当前最新 Agent 开源社区的新特性，结合自身架构和用户使用数据生成新特性规划，再通过 Orchestrator、Cron、远程启动、Agent2Agent 协作、SOP 转换和验证报告系统开发 ClawCodex 自身，最终形成 Agent 自己升级/更新自己的能力循环。
+
+```
+SR-5.1 开源社区新特性雷达    ← 本节（完整设计）
+SR-5.2 自我规划与路线图生成   ← 🔭 待补充设计
+SR-5.3 自主开发 ClawCodex 自身 ← 🔭 待补充设计
+SR-5.4 自我更新、发布与回滚    ← 🔭 待补充设计
+SR-5.5 经验沉淀与策略优化      ← 🔭 待补充设计
+SR-5.6 CCB 对标缺口补缺        → 见 §七
+```
+
+---
+
+### 9.1 开源社区新特性雷达（SR-5.1）
+
+**状态**: 🔭 长期规划 | **优先级**: P2 | **代码**: 0%
+
+**目标**: 持续抓取开源 Agent 项目（Claude Code、Aider、SWE-agent、OpenHands、AutoGen、CrewAI、LangGraph 等）的 release / commit / PR / issue，抽取候选特性并按分类与评分去重整理，生成结构化的社区动态摘要报告。
+
+#### 9.1.1 背景与动机
+
+ClawCodex 定位为 Claude Code 的 Python 移植版 + 自主扩展平台。开源 Agent 生态（Aider、SWE-agent、OpenHands、AutoGen、CrewAI、LangGraph 等）每个月都有新的能力出现，ClawCodex 需要一个系统化渠道来发现、评估并吸收这些社区创新。
+
+当前手动跟踪方式存在三个问题：
+1. **遗漏**：依赖开发者个人订阅，容易遗漏关键 release
+2. **噪声**：Release note 信息密度低，需要人工辨别哪些是新特性
+3. **评估成本高**：即使看到新特性，也需要手动分析是否适合 ClawCodex 架构
+
+SR-5.1 的目标是把这个过程自动化：抓取 → 抽取 → 去重 → 评分 → 报告。
+
+#### 9.1.2 目标跟踪的项目
+
+**Phase 1（核心 Agent 项目）**：
+
+| 项目 | 仓库 | 跟踪内容 | 关注理由 |
+|------|------|---------|---------|
+| Claude Code | anthropics/claude-code | Release / CHANGELOG | 上游源，核心对齐目标 |
+| Aider | paul-gauthier/aider | Release / PR / Commit | Python 生态最活跃的编码 Agent |
+| SWE-agent | princeton-nlp/SWE-agent | Release / PR | 自动修复 GitHub issue 的标杆项目 |
+| OpenHands | All-Hands-AI/OpenHands | Release / PR / Issue | 通用 AI 软件工程 Agent |
+| AutoGen | microsoft/autogen | Release / PR | 多 Agent 对话框架 |
+| CrewAI | crewAIInc/crewAI | Release / PR | 多 Agent 编排框架 |
+| LangGraph | langchain-ai/langgraph | Release / PR | Agent 图状工作流引擎 |
+
+**Phase 2（扩展关注）**：
+- Cline / Continue.dev（VS Code 编码 Agent）
+- CodeGate / Goose（安全/沙箱方向）
+- TaskWarden / Eliza（Agent 框架/运行时方向）
+- OpenClaw（ClawCodex 自己的上游基准）
+
+#### 9.1.3 整体流程
+
+```text
+定时触发（Cron）
+    │
+    ▼
+抓取层（AR-5.1.1） → 从各源（GitHub Release / Commit / PR / Issue API）拉取增量
+    │
+    ▼
+抽取层（AR-5.1.2） → LLM 辅助提取结构化 feature record
+    │
+    ▼
+去重与分类（AR-5.1.2） → 跨项目去重 + Taxonomy 分类
+    │
+    ▼
+评分引擎（AR-5.1.3） → 热度/成熟度/适配成本/战略价值
+    │
+    ▼
+报告生成（AR-5.1.3） → 周报/月报 Community Digest（Markdown + JSON）
+    │
+    ▼
+持久化与通知（AR-5.1.4） → 结果存入本地 store，可选推送到用户通道
+```
+
+#### 9.1.4 子特性分解
+
+| AR 编号 | 名称 | 核心能力 | 状态 | 工时估算 |
+|---------|------|---------|:----:|:--------:|
+| AR-5.1.1 | 源注册表与抓取器 | 源配置、Loader、Release/Commit/PR/Issue Fetcher、抓取缓存 | 🔭 长期规划 | 2 周 |
+| AR-5.1.2 | 候选特性抽取与分类 | Feature Extraction Pipeline、JSON feature records、跨项目去重、Taxonomy 分类 | 🔭 长期规划 | 2 周 |
+| AR-5.1.3 | 评分与报告系统 | 趋势评分模型、周报/月报 Community Digest、权重配置 | 🔭 长期规划 | 2.5 周 |
+| AR-5.1.4 | Cron 集成 | 周期触发抓取与报告生成 | 🔭 长期规划 → F-22 | 0.3 周 |
+
+**合计工时**: ~6.8 周（单人 full-time，含集成测试）
+
+---
+
+#### 9.1.5 AR-5.1.1 源注册表与抓取器
+
+**文件路径**: `clawcodex_ext/community_radar/fetcher.py`, `clawcodex_ext/community_radar/registry.py`
+
+##### 源注册表 (`SourceRegistry`)
+
+```python
+@dataclass
+class WatchSource:
+    name: str                         # 项目简称，如 "aider"
+    repo: str                         # GitHub "owner/repo"
+    track_releases: bool = True       # 是否跟踪 Release
+    track_commits: bool = False       # 是否跟踪 Commit（默认关闭）
+    track_prs: bool = False           # 是否跟踪 PR（默认关闭）
+    track_issues: bool = False        # 是否跟踪 Issue（默认关闭）
+    release_tag_filter: str | None = None  # 正则过滤 tag（如 "v\d+\.\d+\.\d+"）
+    changelog_path: str | None = None      # 自定义 CHANGELOG 路径
+    notes: str | None = None               # 关注理由
+
+class SourceRegistry:
+    """管理待跟踪的源列表，支持 YAML/JSON 配置"""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self._sources: dict[str, WatchSource] = {}
+
+    def load(self) -> dict[str, WatchSource]: ...
+    def save(self) -> None: ...
+    def add(self, source: WatchSource) -> None: ...
+    def remove(self, name: str) -> None: ...
+    def get(self, name: str) -> WatchSource | None: ...
+    def list(self) -> list[WatchSource]: ...
+
+    # 内置默认源
+    @classmethod
+    def with_defaults(cls) -> "SourceRegistry": ...
+```
+
+##### 配置格式
+
+```yaml
+# ~/.clawcodex/community-radar/sources.yaml
+sources:
+  - name: claude-code
+    repo: anthropics/claude-code
+    track_releases: true
+    changelog_path: CHANGELOG.md
+    notes: 上游源，核心对齐目标
+
+  - name: aider
+    repo: paul-gauthier/aider
+    track_releases: true
+    track_commits: false
+    release_tag_filter: "\\d+\\.\\d+\\.\\d+"
+    notes: Python 生态最活跃的编码 Agent
+
+  - name: swe-agent
+    repo: princeton-nlp/SWE-agent
+    track_releases: true
+    track_prs: false
+    notes: 自动修复 GitHub issue 的标杆项目
+
+  # ... 其余项目
+```
+
+##### 抓取器 (`Fetcher`)
+
+```python
+class Fetcher:
+    """从各源拉取增量数据的核心引擎"""
+
+    def __init__(self, github_token: str, cache_dir: Path):
+        self._session: httpx.Client = ...
+        self._cache_dir = cache_dir
+        self._etag_store: dict[str, str] = {}  # ETag 用于增量
+
+    def fetch_releases(self, source: WatchSource, since: str | None) -> list[Release]:
+        """获取新 release（逐页，受 ETH rate limit 约束）"""
+        ...
+
+    def fetch_commits(self, source: WatchSource, since: str | None) -> list[Commit]:
+        """获取新 commit（可选）"""
+        ...
+
+    def fetch_prs(self, source: WatchSource, since: str | None) -> list[PullRequest]:
+        """获取新 PR（可选）"""
+        ...
+
+    def fetch_release_notes(self, release: Release) -> str | None:
+        """尝试获取 release body 或 CHANGELOG 条目"""
+        ...
+
+    @dataclass
+    class FetchResult:
+        releases: list[Release]
+        commits: list[Commit]
+        prs: list[PullRequest]
+        errors: list[str]
+```
+
+**关键设计决策**:
+- 使用 `ETag` / `If-None-Match` 头实现增量拉取，减少 API 配额消耗
+- 初次运行全量拉取，后续仅拉取上次拉取之后的新数据
+- 每次拉取后持久化 cursor / ETag 到 `cache_dir/cursors.json`
+- GitHub API 受 5000 req/h 限制，对于 ~10 个源每 24h 拉取一次完全够用
+- Release body 优先从 GitHub Release API 获取，回退到解析 CHANGELOG 文件
+
+##### 缓存策略
+
+| 数据类型 | 缓存位置 | 缓存策略 | 清理 |
+|---------|---------|---------|------|
+| Release body | `cache_dir/releases/{source}.json` | 无限期保留 | 手动清理 |
+| Commit | `cache_dir/commits/{source}.json` | TTL 30 天 | 自动清理 |
+| PR | `cache_dir/prs/{source}.json` | TTL 30 天 | 自动清理 |
+| Cursor/ETag | `cache_dir/cursors.json` | 永久 | 重建清空 |
+
+---
+
+#### 9.1.6 AR-5.1.2 候选特性抽取与分类
+
+**文件路径**: `clawcodex_ext/community_radar/extractor.py`, `clawcodex_ext/community_radar/classifier.py`
+
+##### Feature Record 数据模型
+
+```python
+@dataclass
+class FeatureRecord:
+    id: str                          # hash(source.name + title + type)
+    source: str                      # 来源项目名
+    title: str                       # 特性标题（简短）
+    description: str                 # 特性描述（1-3 句）
+    category: FeatureCategory        # 分类（见下）
+    feature_type: FeatureType        # 特性类型
+    released_at: str | None          # ISO 8601
+    url: str                         # 原文链接
+    related_projects: list[str]      # 跨项目参考：哪些项目也实现了类似特性
+    tags: list[str]                  # 自由标签
+    raw_body: str | None             # 原始 release note / commit message 片段
+
+class FeatureCategory(Enum):
+    AGENT_LOOP = "agent_loop"            # Agent 循环增强
+    TOOL_SYSTEM = "tool_system"          # 工具系统
+    PROVIDER = "provider"                # Provider/模型
+    PERMISSION = "permission"            # 权限/安全
+    MEMORY = "memory"                    # 记忆/上下文
+    MCP = "mcp"                          # MCP 协议
+    MULTI_AGENT = "multi_agent"          # 多 Agent
+    ORCHESTRATOR = "orchestrator"        # 编排/自动化
+    TUI_REPL = "tui_repl"               # UI 交互
+    CLI = "cli"                          # CLI 体验
+    OBSERVABILITY = "observability"      # 可观测性
+    INFRA = "infra"                      # 基础设施/架构
+
+class FeatureType(Enum):
+    NEW = "new"                          # 全新特性
+    ENHANCEMENT = "enhancement"          # 已有特性增强
+    BREAKING = "breaking"                # 破坏性变更（需迁移）
+    DEPRECATION = "deprecation"          # 弃用警告
+    BUGFIX = "bugfix"                    # 修复（不视为新特性）
+```
+
+##### 抽取流水线
+
+```python
+class FeatureExtractor:
+    """从 Release / CHANGELOG 文本中抽取候选特性"""
+
+    def __init__(self, llm_client: LiteLLM | None = None):
+        self._llm = llm_client  # 可选，LLM 仅用于高置信度分类
+
+    def extract(self, release_body: str) -> list[FeatureRecord]:
+        """从 release note 中提取特性记录（基于规则 + LLM 辅助）"""
+        ...
+
+    def _extract_by_patterns(self, text: str) -> list[str]:
+        """基于 Markdown 标题、- [x] 列表、## Added / ## Changed 等常见模式抽取候选"""
+        ...
+
+    def _classify_with_llm(self, candidates: list[str]) -> list[FeatureRecord]:
+        """LLM 辅助分类（当规则匹配质量不足时触发）"""
+        ...
+```
+
+**抽取策略（由简到繁）**：
+
+1. **规则优先**：基于常见 release note 格式的启发式抽取
+   - `## Added / ## New` 分段下的列表项
+   - `- [x]` 复选框完成项
+   - `## Breaking Changes` 下内容
+   - 版本号 `vX.Y.Z` 后的更新条目
+2. **LLM 辅助**：当规则匹配失败或置信度低时，调用 LLM 从 release body 中抽取
+3. **跨项目去重**：基于 title + description 的语义相似度（TF-IDF + cosine），同一特性在不同项目出现时合并为一个 `FeatureRecord` 并填充 `related_projects`
+
+**Taxonomy 分类树**（FeatureCategory 是顶级节点，实现中可扩展子类）：
+```
+agent_loop
+  ├── prompt_engineering
+  ├── tool_selection
+  ├── planning
+  ├── self_correction
+  └── context_management
+tool_system
+  ├── new_tool
+  ├── tool_improvement
+  └── mcp_extension
+multi_agent
+  ├── a2a_protocol
+  ├── team_management
+  └── task_delegation
+...
+```
+
+---
+
+#### 9.1.7 AR-5.1.3 评分与报告系统
+
+**文件路径**: `clawcodex_ext/community_radar/scorer.py`, `clawcodex_ext/community_radar/reporter.py`
+
+##### 评分模型
+
+```python
+@dataclass
+class FeatureScore:
+    record_id: str
+    overall: float                    # 综合评分（0-100）
+    dimensions: dict[str, float]      # 各维度评分
+
+    # 各维度
+    popularity: float                 # 热度（社区关注度）
+    maturity: float                   # 成熟度（代码质量/文档/测试）
+    adaptation_cost: float            # 适配成本（越低越好）
+    strategic_value: float            # 战略价值（与 ClawCodex 路线图契合度）
+    architecture_fit: float           # 架构适配度（与三层解耦约束兼容性）
+```
+
+**评分维度定义**：
+
+| 维度 | 权重 | 输入因子 | 计算方法 |
+|------|:----:|---------|---------|
+| 热度 | 15% | GitHub stars trend、PR 活跃度、社区讨论量 | Min-Max 归一化到 0-100 |
+| 成熟度 | 20% | 是否已有稳定 release、测试覆盖、文档完整度 | 基于 metadata 的规则评分 |
+| 适配成本 | 25% | 与 ClawCodex 架构差异度、需改动的文件范围 | Architecture Fit Checker（SR-5.2）评估 |
+| 战略价值 | 25% | 是否在 ROADMAP/FEATURE_PLAN 中已有规划 | 关键词匹配 + LLM 语义匹配 |
+| 架构适配 | 15% | 是否可落入 clawcodex_ext/*、是否破坏上游同步 | 基于 F-48 解耦规则的自动化检查 |
+
+##### 报告生成
+
+```python
+class CommunityDigest:
+    """社区动态报告"""
+
+    period: str                       # "weekly" | "monthly"
+    generated_at: str                 # ISO 8601
+    summary: str                      # LLM 生成的摘要
+    new_features: list[FeatureRecord] # 本期新特性
+    trending: list[FeatureRecord]     # 高评分特性
+    breaking_changes: list[FeatureRecord]  # 破坏性变更预警
+    stats: DigestStats                # 统计摘要
+
+@dataclass
+class DigestStats:
+    total_releases: int
+    total_features: int
+    by_category: dict[str, int]
+    top_projects: list[tuple[str, int]]  # (project_name, feature_count)
+```
+
+报告输出为双格式：
+- **Markdown**：可直接阅读的周报格式
+- **JSON**：供程序消费的结构化数据
+
+##### Community Digest 模板示例
+
+```markdown
+# ClawCodex 社区周报 v2026-W26
+
+> 生成时间: 2026-06-29T08:00:00Z
+> 覆盖范围: 7 个项目 · 12 个新 release · 18 条特性记录
+
+## 摘要
+
+本周社区新特性集中在 **MCP 工具扩展** 和 **Agent 自纠正** 两个方向。
+Aider 新增了 `--lint` 模式的自动修复能力，SWE-agent 改进了 issue 定位的准确率。
+
+## 高评分候选特性
+
+| 特性 | 来源 | 评分 | 分类 | 简述 |
+|------|------|:----:|------|------|
+| --lint auto-fix | Aider | 85 | tool_system | 自动修复 lint 错误 |
+| Agent self-critique | Claude Code | 78 | agent_loop | 执行前自我审查 |
+| Context compression | OpenHands | 72 | agent_loop | 自动压缩历史上下文 |
+
+## 破坏性变更预警
+
+| 项目 | 版本 | 变更 | 影响评估 |
+|------|:----:|------|---------|
+| langgraph | v0.3.0 | StateGraph API 重构 | 高——需要迁移现有 Agent 定义 |
+
+## 分类分布
+
+- agent_loop: 6
+- tool_system: 5
+- multi_agent: 3
+- mcp: 2
+- cli: 1
+- observability: 1
+```
+
+---
+
+#### 9.1.8 AR-5.1.4 Cron 集成
+
+通过 ClawCodex 已有的 Cron 系统（F-22）进行调度：
+
+```yaml
+# workflow.md 配置扩展
+community_radar:
+  enabled: false                      # 默认关闭
+  cron_schedule: "0 8 * * 1"         # 每周一早上8点（UTC）
+  max_features_per_report: 20
+  output_dir: ".reports/community-radar"
+  notify: false                       # 是否推送到用户通道
+```
+
+Cron 集成点：
+- `CronTask` 配置一个 durable task，fire 时触发 `run_community_scan()`
+- 扫描结果写入 `output_dir/{yyyy-Www}.md` + `.json`
+- 可选通过进度报告通道通知用户
+
+---
+
+#### 9.1.9 三方集成组件
+
+以下开源项目可作为 SR-5.1 的可选集成组件，不需要重新制造轮子：
+
+**释放通知类（可复用其 API 轮询模式）**：
+
+| 项目 | 类型 | 用途 | 集成方式 |
+|------|------|------|---------|
+| [StackPulse](https://github.com/daniel-ctn/stack-pulse) | 🔓 开源 MIT | GitHub release 监控 + AI 摘要（breaking changes/deprecations/migration notes）；有公开 feed | 可复用其 fetcher + AI digest 思路，或直接订阅其 feed |
+| GitHub Release Monitor | 🔓 开源 | Docker 自托管，GitHub releases 监控 + 邮件/Apprise 通知 | 可借鉴其 Docker 部署架构 + 通知流水线设计 |
+| NewReleases.io | 🌐 在线服务 | 多通道 release 通知（Slack/Email/Webhook） | 参考其报警路由设计 |
+| Releases Tracker (GitHub App) | 🔓 开源 | 自动订阅 starred 项目，每小时检查 | 参考其 GitHub App OAuth 流程和自动订阅模式 |
+| GitWatchman | 🌐 在线服务 | 邮件 release 通知 | 参考其通知模板设计 |
+
+**分析/报告类（可复用其输出格式和模板）**：
+
+| 项目 | 类型 | 用途 | 集成方式 |
+|------|------|------|---------|
+| Weekly Digest (GitHub App) | 🔓 开源 | 按周生成仓库活动摘要（PR/Issue/Commit） | 可复用其 Weekly Digest 模板和调度模式 |
+| Conventional Changelog | 🔓 开源 | 从 commit 生成 changelog | 可复用其 commit message 解析规则 |
+| Star History | 🌐 在线服务 | 星标增长趋势对比 | 参考其跨项目对比的展示思路 |
+| Release Watcher | 🌐 在线服务 | 集中列示关注的 GitHub releases | 参考其聚合展示 UI 设计 |
+
+**不推荐集成**的类别：纯 changelog 自动生成工具（`commit-and-tag-version`、`ShipLog`、`CommitCatalog` 等）与 SR-5.1 目标方向不同，SR-5.1 关注的是**跨项目的社区新特性发现**，而非单个项目的 changelog 格式化。
+
+---
+
+#### 9.1.10 与 ClawCodex 现有能力的协同
+
+| 现有组件/能力 | SR-5.1 中的角色 | 说明 |
+|-------------|----------------|------|
+| **F-22 Cron 系统** | AR-5.1.4 调度基础 | Cron durable task 提供定时触发能力 |
+| **LiteLLM Provider** | AR-5.1.2/5.1.3 LLM 接口 | 用于特性分类、评分、报告摘要生成 |
+| **ReportWriter**（extensions/orchestrator） | 报告格式参考 | .md + .json 双写模式可复用 |
+| **WebSearch / WebFetch 内置工具** | 人工触发时辅助 | 开发者手动查询社区动态时可利用内置工具 |
+| **LocalTracker** | 可选集成 | 生成的 feature proposal 可通过 LocalTracker 进 issue 队列 |
+| **ProgressReporter Sink**（F-40） | 可选集成 | 长时间抓取任务进度上报 |
+| **Feature Gate**（F-68 设计） | 架构适配检查 | 评估新特性与 Feature Flag 系统的兼容性 |
+
+#### 9.1.11 文件结构
+
+```
+clawcodex_ext/community_radar/
+├── __init__.py              # 库入口
+├── registry.py              # SourceRegistry — 源注册表
+├── fetcher.py               # Fetcher — 抓取引擎
+├── models.py                # WatchSource, FeatureRecord, FeatureScore 等数据模型
+├── extractor.py             # FeatureExtractor — 特性抽取
+├── classifier.py            # 分类器（Taxonomy + LLM）
+├── deduplicator.py          # 跨项目去重
+├── scorer.py                # 评分引擎
+├── reporter.py              # CommunityDigest 报告生成
+├── config.py                # 配置加载
+├── cli.py                   # clawcodex-dev community-radar 子命令
+├── templates/
+│   ├── weekly_digest.md.j2  # 周报 Markdown 模板
+│   └── monthly_digest.md.j2 # 月报 Markdown 模板
+└── tests/
+    ├── test_registry.py
+    ├── test_fetcher.py
+    ├── test_extractor.py
+    ├── test_classifier.py
+    ├── test_deduplicator.py
+    ├── test_scorer.py
+    └── test_reporter.py
+```
+
+配置目录：`~/.clawcodex/community-radar/`
+```
+~/.clawcodex/community-radar/
+├── sources.yaml              # 源配置
+├── config.yaml               # 运行配置（schedule/权重/通知）
+└── cache/
+    ├── cursors.json           # 增量 cursor / ETag
+    ├── releases/              # release body 缓存
+    ├── commits/               # commit 缓存
+    └── prs/                   # PR 缓存
+```
+
+#### 9.1.12 实施阶段
+
+**Phase 1 — 最小可用（2 周）**：
+1. 实现 `WatchSource` / `SourceRegistry` + YAML 配置加载
+2. 实现 `Fetcher.fetch_releases()` 对 GitHub Release API 的 ETag 增量拉取
+3. 实现 `FeatureExtractor` 的规则优先抽取模式
+4. 实现 JSON 格式的原始结果持久化
+5. 手工触发扫描：`clawcodex-dev community-radar scan` 子命令
+
+**Phase 2 — 智能抽取（2 周）**：
+1. 接入 LLM 辅助分类（FeatureRecord.category + feature_type）
+2. 实现跨项目去重（TF-IDF + cosine similarity）
+3. 实现基础评分模型（4 维度：热度/成熟度/适配成本/战略价值）
+4. 生成 Markdown 格式周报
+
+**Phase 3 — 报告与扩展（1.5 周）**：
+1. 完善评分模型（加入架构适配维度）
+2. 模板化报告生成（Jinja2 模板）
+3. 接入 Cron 系统（F-22），实现定时自动扫描
+
+**Phase 4 — 集成与增强（1.3 周）**：
+1. 扩展关注源到 Phase 2 项目
+2. 可选的通知推送（通过 ReportWriter 通道）
+3. 与 SR-5.2（自我规划）对接的 JSON 输出格式定型
+4. 单元测试 + 集成测试
+
+#### 9.1.13 验收标准
+
+| # | 验收项 | 验收方式 |
+|---|--------|---------|
+| 1 | 可通过 YAML 配置关注源，支持添加/删除/列出 | `clawcodex-dev community-radar source list` 展示当前源 |
+| 2 | 能拉取指定源的最新 release 并缓存 | 运行 scan 后 `cache/releases/` 目录下有 JSON 文件 |
+| 3 | 增量拉取不重复消费 GitHub API 配额 | 第二次运行只产生少量 API 请求（仅新数据） |
+| 4 | Release note 中的新特性可被规则抽取 | 在已知格式（Conventional Changelog / Keep a Changelog）上测试通过 |
+| 5 | 同一特性在不同项目出现时被合并去重 | aider 和 claude-code 同时支持某特性时只记录一次 |
+| 6 | 每周生成 Community Digest（Markdown + JSON）| 报告有摘要、分类分布、高评分候选 |
+| 7 | 可通过 Cron 定时触发 | 配置 `cron_schedule` 后自动按计划运行 |
+| 8 | 非破坏性：不修改 `src/*` 任何文件 | git diff 确认全部落在 `clawcodex_ext/community_radar/` |
+
+#### 9.1.14 风险与约束
+
+| 风险 | 影响 | 缓解措施 |
+|------|------|---------|
+| GitHub API Rate Limit | 数据拉取不完整 | ETag 增量 + 合理调度间隔（至少 1h）+ 可配置 token pool |
+| Release note 格式不统一 | 抽取效果差 | 规则 + LLM 双通道；规则覆盖常见格式，LLM 做兜底 |
+| 评价模型不公平 | 误导路线图方向 | 初期只做信息展示不自动决策；用户审查可纠正权重 |
+| 信息噪声导致报告质量低 | 用户忽略报告 | 评分阈值过滤 + 最高评分限条数；用户可配置关注分类 |
+| 自升级误改核心上游代码 | 破坏 upstream sync | 强制 Architecture Fit Checker；默认写入 `clawcodex_ext/*` |
+
+#### 9.1.15 已拟定的设计决定
+
+1. **不另造数据库**：缓存使用 JSON 文件，复用 ClawCodex 已有的纯文件存储模式
+2. **不强制 LLM**：规则抽取优先，LLM 仅作辅助分类和摘要生成（用户可配置关闭）
+3. **不自动创建 Issue/PR**：Phase 1-3 只做信息收集展示，接入 SR-5.2 后才自动生成 proposal
+4. **并行设计**：AR-5.1.1 和 AR-5.1.2 可并行开发（抓取器与抽取器独立）
+5. **StackPulse 作为参考架构**：其 `fetcher → AI digest → feed` 三阶段架构设计可直接借鉴
+6. **`clawcodex_ext/community_radar/` 作为落地路径**：不修改 `src/*`，符合 F-48 解耦约束
+
+#### 9.1.16 依赖与协同
+
+| 依赖 | 类型 | 说明 |
+|------|------|------|
+| F-22 Cron 系统 | 必需（Phase 3+） | 定时触发扫描和报告生成 |
+| LiteLLM Provider | 可选（Phase 2+） | LLM 辅助分类和摘要生成 |
+| httpx / aiohttp | 必需 | GitHub API 客户端 |
+| scikit-learn | 可选（Phase 2+） | TF-IDF 去重向量化 |
+| Jinja2 | 必需（Phase 3+） | 报告模板渲染 |
 
 ---
 
