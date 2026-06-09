@@ -6581,6 +6581,11 @@ def create_app(config: RCSConfig) -> FastAPI:
 - SSE Tool Progress 事件可复用作为 F-82.5 的事件流实现方案
 - LRU Agent 缓存方案可直接迁移（只需替换 Hermes 类型为 ClawCodex Agent 类型）
 
+##### 依赖与协同（v3 新增）
+
+- **F-82 ≠ Visualizer 的前置依赖**。Visualizer（多 Session 可视化分析平台）选择路径 B（独立 FastAPI app），不阻塞 F-82 落地。F-82 上线后可通过 `mount_viz(app: FastAPI)` 合并。
+- SessionMetadata 缺字段（`end_time`、`context_tokens`、`detected_mode`、`config`）需在 SessionStorage 层补齐，建议作为 visualizer Phase 0 子任务，或分配新 F-N。
+
 ---
 
 #### F-83: Ultraplan 高级规划模式
