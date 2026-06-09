@@ -46,6 +46,7 @@ class SessionMetadata:
     last_updated: float = field(default_factory=time.time)
     last_user_input: str = ""
     agent_name: str = ""  # S-R4-A: agent type used for the session
+    tags: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -59,6 +60,7 @@ class SessionMetadata:
             "last_updated": self.last_updated,
             "last_user_input": self.last_user_input,
             "agent_name": self.agent_name,
+            "tags": self.tags,
         }
 
     @classmethod
@@ -74,6 +76,7 @@ class SessionMetadata:
             last_updated=data.get("last_updated", time.time()),
             last_user_input=data.get("last_user_input", ""),
             agent_name=data.get("agent_name", ""),
+            tags=data.get("tags", []),
         )
 
 
@@ -106,6 +109,7 @@ class SessionStorage:
         model: str = "",
         cwd: str = "",
         title: str = "",
+        tags: list[str] | None = None,
     ) -> SessionMetadata:
         """Initialize session metadata."""
         self._metadata = SessionMetadata(
@@ -113,6 +117,7 @@ class SessionStorage:
             model=model,
             cwd=cwd,
             title=title,
+            tags=tags or [],
         )
         self._save_metadata()
         return self._metadata
@@ -266,8 +271,13 @@ class SessionStorage:
         sessions_dir: Path | None = None,
         *,
         limit: int = 50,
+        tag_filter: str | None = None,
     ) -> list[SessionMetadata]:
-        """List recent sessions sorted by last_updated descending."""
+        """List recent sessions sorted by last_updated descending.
+
+        When tag_filter is set, only sessions whose tags list contains
+        any entry starting with tag_filter are returned.
+        """
         base = sessions_dir or SESSIONS_DIR
         if not base.exists():
             return []
@@ -281,7 +291,11 @@ class SessionStorage:
                 continue
             try:
                 data = json.loads(meta_path.read_text(encoding="utf-8"))
-                sessions.append(SessionMetadata.from_dict(data))
+                meta = SessionMetadata.from_dict(data)
+                if tag_filter is not None:
+                    if not any(t.startswith(tag_filter) for t in meta.tags):
+                        continue
+                sessions.append(meta)
             except Exception:
                 continue
 

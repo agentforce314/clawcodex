@@ -133,6 +133,7 @@ def run_cli(argv: list[str] | None = None) -> int:
     # Resolve --continue: auto-detect the most recent session (S-R3).
     if getattr(args, 'continue', None) and not getattr(args, 'resume', None):
         from src.services.session_storage import SessionStorage
+
         try:
             metas = SessionStorage.list_sessions(limit=1)
             if metas:
@@ -141,6 +142,31 @@ def run_cli(argv: list[str] | None = None) -> int:
                 print("No previous sessions found to continue.", file=sys.stderr)
         except Exception:
             print("Unable to list sessions for --continue.", file=sys.stderr)
+
+    # Resolve --resume: if the value is not a known session ID, try it
+    # as a tag prefix so `--resume cron:task:build` works directly.
+    resume_val = getattr(args, "resume", None)
+    if resume_val and resume_val != "browse":
+        from pathlib import Path
+        from src.services.session_storage import SESSIONS_DIR, SessionStorage
+
+        session_dir = SESSIONS_DIR / resume_val
+        if not session_dir.is_dir():
+            # Not a session directory — try tag prefix lookup.
+            metas = SessionStorage.list_sessions(tag_filter=str(resume_val), limit=1)
+            if metas:
+                print(
+                    f"Resuming session {metas[0].session_id[:8]}... "
+                    f"(matched by tag '{resume_val}')",
+                    file=sys.stderr,
+                )
+                args.resume = metas[0].session_id
+            else:
+                print(
+                    f"No session found for ID or tag '{resume_val}'.",
+                    file=sys.stderr,
+                )
+                return 1
 
     if args.version:
         from src import __version__

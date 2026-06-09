@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 import uuid
@@ -21,6 +22,7 @@ MAX_CRON_RUNS = 200
 DEFAULT_RUNTIME = "automatic"
 DEFAULT_TRIGGER = "scheduled-task"
 DEFAULT_OWNER_KEY = "local"
+logger = logging.getLogger(__name__)
 CronRunStatus = Literal["queued", "running", "completed", "failed", "cancelled"]
 CronRunRuntime = Literal["automatic", "flow_step"]
 
@@ -261,6 +263,8 @@ def create_queued_run(
         )
         updated_runs.append(run)
         write_cron_runs(workspace_root, updated_runs)
+        if params.owner_session_id is not None:
+            _tag_session_with_cron_run(params.owner_session_id, run.task_id, run.id)
         return run
 
 
@@ -383,6 +387,28 @@ def _is_stale_active_run(run: CronRun) -> bool:
     except PermissionError:
         return False
     return False
+
+
+def _tag_session_with_cron_run(session_id: str, task_id: str, run_id: str) -> None:
+    """Tag a session with cron task and run identifiers. Errors are caught and logged."""
+    try:
+        from src.services.session_storage import SessionStorage
+
+        storage = SessionStorage(session_id=session_id)
+        meta = storage.get_metadata()
+        if meta is None:
+            return
+        existing = list(meta.tags)
+        new_tags = [f"cron:task:{task_id}", f"cron:run:{run_id}"]
+        merged = existing + [t for t in new_tags if t not in existing]
+        storage.update_metadata(tags=merged)
+    except Exception:
+        logger.exception(
+            "Failed to tag session %s with cron task %s, run %s",
+            session_id,
+            task_id,
+            run_id,
+        )
 
 
 def _truncate_prompt_preview(prompt: str, max_length: int = 80) -> str:
