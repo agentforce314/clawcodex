@@ -2090,16 +2090,35 @@ class ClawcodexREPL:
 
         width = getattr(self.console, "width", 80)
         content_width = max(28, min(width - 12, 72))
-        table = Table.grid(padding=(0, 1))
-        table.add_column(style="bright_black", justify="right", no_wrap=True)
-        table.add_column(style="white", ratio=1)
-        table.add_row("Version", Text.assemble(("ClawCodex", "bold white"), ("  ", ""), (f"v{__version__}", "bold cyan")))
-        table.add_row("Model", Text(model_label, style="bold magenta"))
-        table.add_row("Provider", Text(provider_label, style="bold green"))
-        table.add_row("Workspace", Text(self._truncate_middle(display_path, content_width - 12), style="bold blue"))
 
-        footer = Text("/help  •  /tools  •  /tui  •  /stream  •  /exit", style="dim")
-        mascot_block = Text(mascot_ascii, style="bold orange3", no_wrap=True)
+        # /logo: resolve the persisted palette (best-effort — fall back to the
+        # original hardcoded styles so the banner never fails to render).
+        try:
+            from src.config import load_config
+            from src.utils.logo_palettes import banner_palette, mascot_gradient_text
+
+            _logo = load_config().get("logoColor")
+            _st = banner_palette(_logo)
+            mascot_block = mascot_gradient_text(_logo, mascot_ascii.split("\n"))
+            border, title_st, accent, value, label, dim = (
+                _st.border, _st.title, _st.accent, _st.value, _st.label, _st.dim,
+            )
+        except Exception:
+            border, title_st, accent, value, label, dim = (
+                "bright_black", "bold bright_cyan", "bold white", "bold magenta",
+                "bright_black", "dim",
+            )
+            mascot_block = Text(mascot_ascii, style="bold orange3", no_wrap=True)
+
+        table = Table.grid(padding=(0, 1))
+        table.add_column(style=label, justify="right", no_wrap=True)
+        table.add_column(style="white", ratio=1)
+        table.add_row("Version", Text.assemble(("ClawCodex", accent), ("  ", ""), (f"v{__version__}", accent)))
+        table.add_row("Model", Text(model_label, style=value))
+        table.add_row("Provider", Text(provider_label, style=value))
+        table.add_row("Workspace", Text(self._truncate_middle(display_path, content_width - 12), style=value))
+
+        footer = Text("/help  •  /tools  •  /tui  •  /stream  •  /exit", style=dim)
         body = Group(
             Columns([mascot_block, table], align="center", expand=False),
             Text(""),
@@ -2107,9 +2126,9 @@ class ClawcodexREPL:
         )
         header = Panel(
             body,
-            border_style="bright_black",
-            title="[bold bright_cyan] CLAWCODEX [/bold bright_cyan]",
-            subtitle="[dim]interactive terminal[/dim]",
+            border_style=border,
+            title=f"[{title_st}] CLAWCODEX [/{title_st}]",
+            subtitle=f"[{dim}]interactive terminal[/{dim}]",
             padding=(1, 2),
         )
         self.console.print(header)

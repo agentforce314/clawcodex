@@ -31,6 +31,7 @@ from .statusline import STATUSLINE_COMMAND
 from .theme_command import THEME_COMMAND
 from .effort_command import EFFORT_COMMAND
 from .model_command import MODEL_COMMAND
+from .logo_command import LOGO_COMMAND
 from .types import Command, CommandType, CompactionResult, LocalCommand, PromptCommand
 
 
@@ -1240,6 +1241,7 @@ def get_builtin_commands() -> list[Command]:
         THEME_COMMAND,
         EFFORT_COMMAND,
         MODEL_COMMAND,
+        LOGO_COMMAND,
     ]
     if is_buddy_command_enabled():
         cmds.append(BUDDY_COMMAND)
