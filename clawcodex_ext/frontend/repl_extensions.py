@@ -81,3 +81,60 @@ def install_repl_extensions(repl: "ClawcodexREPL", ctx) -> None:
         return
 
     attach_observer(runtime, _ReplRuntimeObserver(repl))
+
+    # ---- SIGTERM / SIGINT: save session + print resume hint (S-R1) ----
+    _register_signal_session_save(repl)
+
+
+def _register_signal_session_save(repl: "ClawcodexREPL") -> None:
+    """Register a graceful-shutdown cleanup that saves the session and
+    prints a resume hint when the process receives SIGTERM/SIGINT.
+
+    Uses the upstream ``register_cleanup`` from ``src.utils.graceful_shutdown``
+    which is already installed by ``init()``.
+    """
+    try:
+        from src.utils.graceful_shutdown import register_cleanup
+    except ImportError:
+        return
+
+    # Capture session reference once at registration time.
+    sid_ref = {  # mutable container so the closure can re-read .session_id
+        "session": None,
+        "printed": False,
+    }
+
+    def _capture_ref() -> None:
+        sid_ref["session"] = getattr(repl, "session", None)
+
+    # Snapshot the session now and also just before the cleanup runs.
+    _capture_ref()
+
+    def _cleanup() -> None:
+        if sid_ref["printed"]:
+            return
+        sid_ref["printed"] = True
+        _capture_ref()
+        session = sid_ref["session"]
+        if session is None:
+            return
+        # Save session state
+        try:
+            session.save()
+        except Exception:
+            pass
+        # Print resume hint (only if stdout is a TTY)
+        sid = getattr(session, "session_id", None) or ""
+        if not sid:
+            return
+        try:
+            import sys
+            if sys.stdout.isatty():
+                from rich.console import Console
+                Console().print(
+                    f"\n[dim]Resume this session with: clawcodex --resume {sid}[/dim]"
+                )
+        except Exception:
+            pass
+
+    register_cleanup(_cleanup)

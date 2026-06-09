@@ -150,7 +150,27 @@ def run_tui(options: TUIOptions) -> int:
         app.run(inline=True, inline_no_clear=True, mouse=False)
     except KeyboardInterrupt:
         return 130
+
+    # Print resume hint after TUI exits (S-R1).
+    _print_resume_hint_after_tui(app)
     return 0
+
+
+def _print_resume_hint_after_tui(app) -> None:
+    """Print resume hint to the host terminal after TUI teardown."""
+    import sys
+
+    if not sys.stdout.isatty():
+        return
+    session = getattr(app, "session", None)
+    if session is None:
+        return
+    sid = getattr(session, "session_id", None) or ""
+    if not sid:
+        return
+    from rich.console import Console
+
+    Console().print(f"\n[dim]Resume this session with: clawcodex --resume {sid}[/dim]")
 
 
 def _replay_transcript_to_host(app) -> None:

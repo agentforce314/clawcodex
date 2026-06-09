@@ -118,6 +118,19 @@ Examples:
         help='Resume a previous session by session ID; without SESSION_ID, browse sessions',
     )
     noninteractive.add_argument(
+        '-c', '--continue',
+        action='store_true',
+        default=None,
+        help='Resume the most recent session (alias for --resume with auto-detected latest)',
+    )
+    noninteractive.add_argument(
+        '--fork-session',
+        type=str,
+        default=None,
+        metavar='SESSION_ID',
+        help='Create a new session ID but preserve conversation history from the given session',
+    )
+    noninteractive.add_argument(
         '--verbose',
         action='store_true',
         help='Emit verbose diagnostics to stderr',

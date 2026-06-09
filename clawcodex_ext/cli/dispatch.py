@@ -130,6 +130,18 @@ def run_cli(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv[1:])
     profile_checkpoint("argparse_done")
 
+    # Resolve --continue: auto-detect the most recent session (S-R3).
+    if getattr(args, 'continue', None) and not getattr(args, 'resume', None):
+        from src.services.session_storage import SessionStorage
+        try:
+            metas = SessionStorage.list_sessions(limit=1)
+            if metas:
+                args.resume = metas[0].session_id
+            else:
+                print("No previous sessions found to continue.", file=sys.stderr)
+        except Exception:
+            print("Unable to list sessions for --continue.", file=sys.stderr)
+
     if args.version:
         from src import __version__
         print(f"claw-codex version {__version__} (Python)")
@@ -178,13 +190,10 @@ def run_cli(argv: list[str] | None = None) -> int:
     elif getattr(args, 'legacy_repl', False) or args.no_tui:
         explicit_tui = False
 
-    # ``--resume`` without a SESSION_ID requires the TUI session browser
-    # (the REPL has no equivalent UI). Force TUI mode in this case.
+    # ``--resume`` without a SESSION_ID means "browse" mode.
+    # REPL mode now has its own session browser, so no need to force TUI.
     resume_val = getattr(args, 'resume', None)
-    if resume_val == 'browse' and explicit_tui is not True:
-        from src.entrypoints.tui import _textual_available
-        if _textual_available():
-            explicit_tui = True
+    resume_browse = (resume_val == 'browse')
 
     # Build RuntimeContext once from resolved args — shared by all frontends.
     runtime_opts = RuntimeOptions(
@@ -199,6 +208,7 @@ def run_cli(argv: list[str] | None = None) -> int:
         skip_permissions=getattr(args, 'dangerously_skip_permissions', False),
         resume_session_id=resume_val if resume_val and resume_val != 'browse' else None,
         resume_browse=(resume_val == 'browse'),
+        fork_session_id=getattr(args, 'fork_session', None),
         verbose=getattr(args, 'verbose', False),
     )
     ctx = RuntimeContext.build(runtime_opts)

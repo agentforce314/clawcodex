@@ -1117,8 +1117,12 @@ class ClawCodexTUI(App):
             role = getattr(msg, "role", None) or ""
             content = getattr(msg, "content", None) or ""
             if role == "user":
-                # User messages are not replayed — the transcript already
-                # shows them inline with the prompt input.
+                # Render user messages (S-R2 fix).  User messages are
+                # posted through the transcript directly so the resume
+                # view shows the full conversation context.
+                text = _flatten_message_text(content)
+                if text and self._repl_screen is not None:
+                    self._repl_screen.transcript.append_user(text)
                 continue
             if role == "assistant":
                 text = _flatten_message_text(content)

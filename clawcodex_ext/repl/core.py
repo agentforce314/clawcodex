@@ -2351,6 +2351,7 @@ class ClawcodexREPL:
 
                 if user_input is None:
                     # app.exit() was called (e.g., Ctrl+B)
+                    self._print_resume_hint()
                     self.console.print("\n[blue]Goodbye![/blue]")
                     break
 
@@ -2365,8 +2366,10 @@ class ClawcodexREPL:
 
             except KeyboardInterrupt:
                 self.console.print("\n[yellow]Interrupted. Type /exit to quit.[/yellow]")
+                self._print_resume_hint()
                 continue
             except EOFError:
+                self._print_resume_hint()
                 self.console.print("\n[blue]Goodbye![/blue]")
                 break
 
@@ -2477,7 +2480,15 @@ class ClawcodexREPL:
         cmd = raw.lower()
 
         if cmd in ['/exit', '/quit', '/q']:
+            # Save session and print resume hint before exiting.
+            try:
+                self.session.save()
+            except Exception:
+                pass
+            sid = getattr(self.session, 'session_id', '') or ''
             self.console.print("[blue]Goodbye![/blue]")
+            if sid:
+                self.console.print(f"[dim]Resume with: clawcodex --resume {sid}[/dim]")
             sys.exit(0)
 
         elif cmd == '/login':
@@ -3567,6 +3578,17 @@ class ClawcodexREPL:
                 self.console.print(f"\n[red]Error: {e}[/red]")
                 import traceback
                 traceback.print_exc()
+
+    def _print_resume_hint(self) -> None:
+        """Print a hint showing the session ID for ``--resume``, matching CCB's
+        ``printResumeHint()``.  Only printed when stdout is a TTY and the
+        session has a valid session ID."""
+        if not sys.stdout.isatty():
+            return
+        sid = getattr(self.session, "session_id", None) or ""
+        if not sid:
+            return
+        self.console.print(f"\n[dim]Resume this session with: clawcodex --resume {sid}[/dim]")
 
     def _handle_background_escape(self) -> None:
         """Handle Ctrl+B background escape: fork the agent into a background process.

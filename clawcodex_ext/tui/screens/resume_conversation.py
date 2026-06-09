@@ -38,6 +38,9 @@ class SessionEntry:
     msg_count: int = 0
     last_updated: float = 0.0
     cwd: str = ""
+    last_user_input: str = ""
+    # Cached transcript text for content search (loaded lazily).
+    _transcript_text: str = field(default="", repr=False)
 
     @property
     def display_label(self) -> str:
@@ -52,8 +55,16 @@ class SessionEntry:
                 parts.append(dt_str)
             except Exception:
                 pass
-        # Title
-        parts.append(self.title or "(untitled)")
+        # Last user input (truncated) — more useful than title
+        if self.last_user_input:
+            preview = self.last_user_input
+            if len(preview) > 60:
+                preview = preview[:57] + "…"
+            parts.append(preview)
+        elif self.title:
+            parts.append(self.title)
+        else:
+            parts.append("(untitled)")
         label = " | ".join(parts)
         # Description: model + msg count
         desc_parts: list[str] = []
@@ -71,7 +82,16 @@ class SessionEntry:
     @property
     def searchable_text(self) -> str:
         """All text that should be matched by fuzzy search."""
-        parts = [self.title, self.model, self.cwd, self.session_id]
+        parts = [
+            self.title,
+            self.model,
+            self.cwd,
+            self.session_id,
+            self.last_user_input,
+        ]
+        # Include transcript text if cached (for content search).
+        if self._transcript_text:
+            parts.append(self._transcript_text)
         return " ".join(p for p in parts if p)
 
 
@@ -195,6 +215,30 @@ class ResumeConversation(DialogScreen[str | None]):
                 session_id = getattr(meta, "session_id", None) or ""
                 if not session_id:
                     continue
+                # Load transcript text for content search.
+                transcript_text = ""
+                try:
+                    storage = SessionStorage(session_id=session_id)
+                    messages = storage.read_messages()
+                    text_parts: list[str] = []
+                    for msg in messages:
+                        role = getattr(msg, "role", None) or ""
+                        content = getattr(msg, "content", None) or ""
+                        if isinstance(content, str):
+                            text_parts.append(content)
+                        elif isinstance(content, list):
+                            for item in content:
+                                if isinstance(item, str):
+                                    text_parts.append(item)
+                                elif isinstance(item, dict):
+                                    if item.get("type") in (None, "text"):
+                                        text_parts.append(str(item.get("text") or ""))
+                    transcript_text = " ".join(text_parts)
+                    # Truncate to avoid excessive memory use.
+                    if len(transcript_text) > 2000:
+                        transcript_text = transcript_text[:2000]
+                except Exception:
+                    pass
                 out.append(SessionEntry(
                     session_id=session_id,
                     title=getattr(meta, "title", None) or "",
@@ -202,6 +246,8 @@ class ResumeConversation(DialogScreen[str | None]):
                     msg_count=getattr(meta, "message_count", None) or 0,
                     last_updated=getattr(meta, "last_updated", None) or 0.0,
                     cwd=getattr(meta, "cwd", None) or "",
+                    last_user_input=getattr(meta, "last_user_input", None) or "",
+                    _transcript_text=transcript_text,
                 ))
             return out
         except Exception:

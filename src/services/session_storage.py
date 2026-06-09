@@ -44,6 +44,7 @@ class SessionMetadata:
     total_cost: float = 0.0
     message_count: int = 0
     last_updated: float = field(default_factory=time.time)
+    last_user_input: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -55,6 +56,7 @@ class SessionMetadata:
             "total_cost": self.total_cost,
             "message_count": self.message_count,
             "last_updated": self.last_updated,
+            "last_user_input": self.last_user_input,
         }
 
     @classmethod
@@ -68,6 +70,7 @@ class SessionMetadata:
             total_cost=data.get("total_cost", 0.0),
             message_count=data.get("message_count", 0),
             last_updated=data.get("last_updated", time.time()),
+            last_user_input=data.get("last_user_input", ""),
         )
 
 

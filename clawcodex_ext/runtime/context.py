@@ -32,6 +32,7 @@ class RuntimeOptions:
     skip_permissions: bool = False  # backward-compat alias for headless
     resume_session_id: str | None = None
     resume_browse: bool = False
+    fork_session_id: str | None = None
     verbose: bool = False
     append_system_prompt: str = ""
     agent_dir_override: Path | None = None
@@ -123,6 +124,23 @@ class RuntimeContext:
             session, _tail_follower = resume_session_with_tail(
                 options.resume_session_id,
             )
+
+        # Fork session: load existing history into a new session (S-R4-F)
+        if options.fork_session_id and not options.resume_session_id:
+            from src.agent import Session as AgentSession
+            old_session = AgentSession.resume(options.fork_session_id)
+            if old_session is not None:
+                # Create a brand new session
+                new_session = AgentSession.create(
+                    provider_name,
+                    options.model or getattr(provider, "model", ""),
+                )
+                # Copy conversation messages from old session
+                if old_session.conversation and old_session.conversation.messages:
+                    new_session.conversation.messages = list(
+                        old_session.conversation.messages
+                    )
+                session = new_session
 
         runtime = cls(
             provider=provider,
