@@ -132,6 +132,7 @@
 | F-86 | Kairos/Brief 调度 | P2 | ⏳ 待开始 | 见 FEATURE_PLAN §7.5 |
 | F-87 | Workflow Scripts | P2 | ⏳ 待开始 | 见 FEATURE_PLAN §7.5 |
 | F-88 | Explore/Plan Agent | P2 | ⏳ 待开始 | 见 FEATURE_PLAN §7.5 |
+| F-89 | @agent-name 多入口统一支持 | P1 | 📋 设计完成 | 见 FEATURE_PLAN §3.4 |
 
 ---
 
@@ -399,6 +400,45 @@
 **状态**: ✅ 完成（含 F-47.1 hotfix）
 
 > 详细进度已归档至 [ARCHIVED_PROGRESS.md §五.9 F-47 Permission Settings Schema 重构](./ARCHIVED_PROGRESS.md#五9-f-47-permission-settings-schema-重构)。
+
+
+## F-89: @agent-name 多入口统一支持
+
+**状态**: 📋 设计完成 | **优先级**: P1
+**规划文档**: `docs/FEATURE_PLAN.md` → `§3.4 @agent-name 多入口统一支持（F-89）`
+
+### 目标
+
+将 `expand_agent_mentions()` 能力从 REPL 扩展到 Headless（`--print`）、API 层、TUI 三入口，实现四入口一致的 `@agent-<type>` 委托体验。
+
+### 当前基线
+
+| 入口 | `@agent-name` 支持 | 代码位置 |
+|------|-------------------|----------|
+| REPL | ✅ 支持 | `clawcodex_ext/repl/core.py:3035` |
+| Headless | ❌ 不支持 | `src/entrypoints/headless.py` 无调用 |
+| API 层 | ❌ 不支持 | `extensions/api/query_loop.py` / `session.py` 无调用 |
+| TUI | ❌ 不支持 | `clawcodex_ext/frontend/tui.py` 无调用 |
+
+### 实施阶段
+
+| 阶段 | 入口 | 改动点 | 工作量 | 状态 |
+|------|------|--------|--------|------|
+| Phase 1 | Headless | `headless.py` 在 `_run_headless()` 前插入 `expand_agent_mentions()` | ~5 行 | 📋 待开始 |
+| Phase 2 | API 层 | `extensions/api/query_loop.py` 或 `session.py` 在 `chat()` 入口增加 | ~10 行 | 📋 待开始 |
+| Phase 3 | TUI | `clawcodex_ext/frontend/tui.py` 在输入处理后增加 | ~5 行 | 📋 待开始 |
+
+### 验收标准
+
+1. `clawcodex-dev --print "@agent-explore 列出当前目录文件"` → LLM 收到 agent_mention system-reminder
+2. 通过 API SDK 调用 `session.chat("@agent-video-ops ...")` → agent_mention 生效
+3. TUI 中输入 `@agent-critic review this` → 同 REPL 行为
+4. 未知 agent type 被静默忽略
+
+### 依赖与协同
+
+- 无外部依赖，`expand_agent_mentions()` 已在 `clawcodex_ext/command_system/input_processing.py` 中存在
+- 配合 F-50（SOP 转换器固化）：`pos convert` 生成的 Agent 可在 Headless/API/TUI 中通过 `@agent-<name>` 调用
 
 
 ## 五、Architecture & SDK 下沉进度

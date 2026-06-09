@@ -1984,6 +1984,99 @@ class WorkflowConfig:
 
 ---
 
+### 3.4 @agent-name 多入口统一支持（F-89）
+
+#### 背景与问题
+
+`@agent-<type>` 语法是 clawcodex 内置的 Agent 委托机制，用户通过在输入中写出 `@agent-explore` 或 `@"explore (agent)"` 告知 LLM 应使用 Agent tool 将任务委派给指定 Agent。
+
+当前实现仅在 **REPL**（交互式会话）中支持：
+
+| 入口 | `@agent-name` 支持 | 代码位置 |
+|------|-------------------|----------|
+| REPL（`clawcodex-dev`） | ✅ 支持 | `clawcodex_ext/repl/core.py:3035` → `expand_agent_mentions()` |
+| Headless（`--print`） | ❌ 不支持 | `src/entrypoints/headless.py` 无调用 |
+| API 层（`extensions/api/`） | ❌ 不支持 | `extensions/api/query_loop.py` / `session.py` 无调用 |
+| TUI | ❌ 不支持 | `clawcodex_ext/frontend/tui.py` 无调用 |
+
+这意味着通过脚本、API 集成或一次性查询使用 clawcodex 的用户无法享受 `@agent-name` 委托便利，限制了 Agent 系统的可编程性和可集成性。
+
+#### 目标
+
+将 `expand_agent_mentions()` 的能力统一接入 Headless、API、TUI 三个入口，实现 **REPL/Headless/API/TUI 四入口一致的 `@agent-name` 委托体验**。
+
+#### 现状诊断
+
+```
+clawcodex_ext/command_system/input_processing.py
+├── expand_agent_mentions()              ← 核心实现（已有，可直接调用）
+├── format_at_mention_attachments()       ← agent_mention 格式化为 system-reminder（已有）
+├── _AGENT_MENTION_UNQUOTED_RE            ← 正则匹配 @agent-xxx（已有）
+└── _AGENT_MENTION_QUOTED_RE              ← 正则匹配 @"xxx (agent)"（已有）
+
+被调用方（已有，无需修改）：
+├── src/agent/load_agents_dir.py          ← 扫描 .claude/agents/*.md，按 type 查找
+└── extensions/pos_converter/default_agent.py ← resolve_agent_by_type()
+```
+
+**缺失接线：**
+
+| 入口文件 | 当前行为 | 需增加 |
+|----------|---------|--------|
+| `src/entrypoints/headless.py` | 直接构造 `Conversation` → 调用 SDK | 在用户输入进入 conversation 前调用 `expand_agent_mentions()` |
+| `extensions/api/query_loop.py` | 接收文本 prompt → 构建 API 请求 | 在 prompt 进入 Session 前解析 `@agent-` 提及 |
+| `extensions/api/session.py` | `Session.chat()` 处理消息 | 在 `user_input` 注入前插入 agent_mention attachment |
+| `clawcodex_ext/frontend/tui.py` | 未接 `expand_agent_mentions()` | 在输入管道中补充 |
+
+#### 接入点设计
+
+```
+用户输入 "@agent-abc do X"
+    │
+    ├─► REPL:  ClawcodexREPL.chat() → expand_agent_mentions() ✅ 已存在
+    │
+    ├─► Headless: headless.py → preprocess_input() → expand_agent_mentions() ← 新增
+    │
+    ├─► API: Session.chat() 或 QueryLoop → _resolve_mentions() → expand_agent_mentions() ← 新增
+    │
+    └─► TUI: TUIFrontend.dispatch_input() → expand_agent_mentions() ← 新增
+              │
+              ▼
+        agent_mention attachment → format_at_mention_attachments()
+              │
+              ▼
+        <system-reminder> 注入 → LLM 收到 → Agent tool 调用
+```
+
+#### 实现切片
+
+| 阶段 | 入口 | 改动点 | 工作量 | 风险 |
+|------|------|--------|--------|------|
+| Phase 1 | Headless | `headless.py` 在 `_run_headless()` 调用前插入 `expand_agent_mentions()` | ~5 行 | 低 |
+| Phase 2 | API 层 | `extensions/api/query_loop.py` 或 `session.py` 中在 `chat()` 入口处增加 | ~10 行 | 低 |
+| Phase 3 | TUI | `clawcodex_ext/frontend/tui.py` 在输入处理后增加 | ~5 行 | 低 |
+
+#### 验收标准
+
+1. `clawcodex-dev --print "@agent-explore 列出当前目录文件"` → LLM 收到 agent_mention system-reminder
+2. 通过 API SDK 调用 `session.chat("@agent-video-ops 处理这个视频")` → agent_mention 生效
+3. TUI 中输入 `@agent-critic review this code` → 同 REPL 行为
+4. 已知 agent type 被正确解析，未知 agent type 被静默忽略（不报错）
+5. 现有 REPL 功能不退化
+
+#### 风险与约束
+
+- Headless 运行无需可用 agent 列表——`expand_agent_mentions(text, agents=None)` 传入 `None` 时仍解析语法，只是不做有效性校验（REPL 中有 `_available_agents()` 做白名单过滤）。Headless 应传入可用列表或保持 `None`。
+- API 层应避免依赖前端上下文——`expand_agent_mentions` 是纯函数，无副作用，可安全使用。
+- 不影响非 @agent 输入（`@file`、`@directory` 等 `@mention` 功能已由 `expand_at_mentions()` 独立处理）。
+
+#### 依赖与协同
+
+- 无外部依赖，仅需调用 `clawcodex_ext/command_system/input_processing.py` 中已有的函数
+- 配合 F-50（SOP 转换器固化）：用户通过 `pos convert` 生成的 Agent 可在 Headless/API 中通过 `@agent-<name>` 调用
+
+---
+
 ## 四、Architecture & SDK 下沉
 
 ### 4.1 F-48: src/ 核心路径二开修改解耦方案
@@ -7556,3 +7649,4 @@ F-74 (Sandbox) ──→ 长期迭代（P2）
 | F-86 | Kairos/Brief 调度 | §7.5 | ⏳ 待开始 |
 | F-87 | Workflow Scripts | §7.5 | ⏳ 待开始 |
 | F-88 | Explore/Plan Agent | §7.5 | ⏳ 待开始 |
+| F-89 | @agent-name 多入口统一支持 | §3.4 | 📋 设计完成 |
