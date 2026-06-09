@@ -8043,20 +8043,21 @@ extensions/visualizer/
 | **F-91-A** | 5 个 Pydantic 模型（SessionVizData / TimelineBar / Anomaly / AgentTreeNode / OperationStats） | ⏳ 待开始 | — | Phase 1 |
 | **F-91-B** | 4 个解析器（session / transcript / multi_agent / tool_events） | ⏳ 待开始 | — | Phase 1 |
 | **F-91-C** | 7 个构建器（gantt / timeline / comparison / stats / anomaly / export / agent_tree） | ⏳ 待开始 | — | Phase 1 |
-| **F-92** | Visualizer 后端 API + 实时推送 | ⏳ 待开始 | 1.5 周 | Phase 2 |
-| **F-92-A** | 独立 FastAPI app + /api/viz/ 路由（15 个端点） | ⏳ 待开始 | — | Phase 2 |
+| **F-92** | Visualizer 后端 API + 实时推送 | ⏳ 待开始 | 2 周 | Phase 2 |
+| **F-92-A** | 独立 FastAPI app + /api/viz/ 路由（20 个端点含 import/export/share） | ⏳ 待开始 | — | Phase 2 |
 | **F-92-B** | WebSocket live tail（/api/viz/ws/sessions/{sid}） | ⏳ 待开始 | — | Phase 2 |
-| **F-92-C** | 条件性导入（--allow-import, SSRF 校验） | ⏳ 待开始 | — | Phase 2 |
-| **F-93** | Visualizer 前端（Jinja2 + ECharts CDN） | ⏳ 待开始 | 2 周 | Phase 3 |
+| **F-92-C** | 条件性导入（--allow-import, SSRF 校验）+ 导出（PNG/SVG/JSON/PDF） | ⏳ 待开始 | — | Phase 2 |
+| **F-92-D** | 分享链接管理（POST/GET /api/viz/share） | ⏳ 待开始 | — | Phase 2 |
+| **F-93** | Visualizer 前端（Jinja2 + ECharts CDN） | ⏳ 待开始 | 2.5 周 | Phase 3 |
 | **F-93-A** | 甘特图主页面（相对/绝对/窗口时间轴三模式） | ⏳ 待开始 | — | Phase 3 |
 | **F-93-B** | 搜索/筛选/异常面板/跨 session 对比 | ⏳ 待开始 | — | Phase 3 |
 | **F-93-C** | 多 Agent 树（P0: 简化版, P1: 完整版） | ⏳ 待开始 | — | Phase 3.5 |
 | **F-94** | CLI 集成 + workspace 扫描 | ⏳ 待开始 | 1 周 | Phase 4 |
 | **F-94-A** | clawcodex-dev viz 子命令 | ⏳ 待开始 | — | Phase 4 |
 | **F-94-B** | workspace 多租户（workspaces.json + 自动扫描） | ⏳ 待开始 | — | Phase 4 |
-| **F-95** | Orchestrator 协同链接 | ⏳ 待开始 | 1 周 | Phase 5 |
+| **F-95** | Orchestrator 协同链接 + 分享链接持久化 | ⏳ 待开始 | 1 周 | Phase 5 |
 | **F-95-A** | F-38 报告 / F-45 tool events / F-54 debug 链接 | ⏳ 待开始 | — | Phase 5 |
-| **F-95-B** | 导出（PNG/SVG/JSON/PDF）+ 分享链接 | ⏳ 待开始 | — | Phase 5 |
+| **F-95-B** | 分享链接 v1.1 后端持久化（TTL 7天）+ PDF 导出集成 | ⏳ 待开始 | — | Phase 5 |
 
 ### 8.4 核心数据模型
 
@@ -8105,7 +8106,7 @@ extensions/visualizer/
 | 特性 | 关系 | 说明 |
 |------|------|------|
 | F-38（验证报告） | **被 consumer** | visualizer 显示 F-38 report links |
-| F-40（ProgressSink） | **被 consumer** | visualizer 订阅实时进度事件 |
+| F-40（ProgressSink） | **被 consumer** | visualizer 订阅实时进度事件；**只接新 sink 协议**，不兼容旧 ProgressReporter 单例 |
 | F-45（tool events） | **被 consumer** | visualizer 读取 events.ndjson |
 | F-51（no-op 检测） | **复用** | anomaly_builder 复用 F-51 阈值 |
 | F-54（debug.ndjson） | **被 consumer** | visualizer 显示 debug 时序图 |
@@ -8119,10 +8120,11 @@ extensions/visualizer/
 ```
 Phase 1 (F-91) ──→ Phase 2 (F-92) ──→ Phase 3 (F-93) ──→ Phase 4 (F-94) ──→ Phase 5 (F-95)
 模型先行              API 可用             前端可用              CLI 集成           Orchestrator 协同
-(3 周)               (1.5 周)              (2 周)               (1 周)             (1 周)
+(3 周)               (2 周)               (2.5 周)            (1 周)             (1 周)
+                                        ╰─ Phase 3.5: 多 Agent 树主线化 (1 周)
 ```
 
-**预计总工期**：8.5 周（单人 full-time）
+**预计总工期**：10.5 周（单人 full-time，不含 Phase 0 数据摸底 1 周）
 
 ### 8.9 风险评估
 
@@ -8132,6 +8134,7 @@ Phase 1 (F-91) ──→ Phase 2 (F-92) ──→ Phase 3 (F-93) ──→ Phase
 | F-54 路径最终不同 | 低 | 低 | _has_debug_ndjson 中已备 fallback 路径 |
 | 前端 ECharts 性能瓶颈 | 低 | 中 | Canvas 渲染 + dataZoom 降级 |
 | SessionMetadata 字段缺失 | 高 | 中 | 文档已备 transcript 聚合回退 |
+| URL 导入 SSRF 攻击 | 低 | 高 | 禁 localhost/私有 IP；仅 --allow-import 启用
 
 
 ---
