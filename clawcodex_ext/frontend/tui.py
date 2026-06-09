@@ -22,7 +22,7 @@ class TUIFrontend(FrontendPlugin):
             max_turns=ctx.options.max_turns,
             allowed_tools=ctx.options.allowed_tools,
             disallowed_tools=ctx.options.disallowed_tools,
-            stream=ctx.options.stream,
+            stream=True,
             permission_mode=ctx.options.permission_mode,
             is_bypass_permissions_mode_available=ctx.options.is_bypass_permissions_mode_available,
             workspace_root=ctx.workspace_root,
