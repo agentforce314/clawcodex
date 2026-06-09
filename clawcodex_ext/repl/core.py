@@ -2170,7 +2170,16 @@ class ClawcodexREPL:
         The .json session file is a snapshot saved at fork time and doesn't
         include background agent output. The JSONL transcript has the complete
         history and is used by TailFollower in TUI --resume mode.
+
+        F-49 Phase 0.4.2: if Session.resume() already populated messages
+        (via the core Phase 0.4.1 fix in session.py), this method is a
+        quick-return no-op — kept as a defensive double-check.
         """
+        # F-49 Phase 0.4.2: quick-return if messages already populated
+        # by Session.resume()'s JSONL back-fill (Phase 0.4.1).
+        if self.session.conversation.messages:
+            return
+
         try:
             from src.services.session_storage import SessionStorage
             from src.types.messages import message_from_dict

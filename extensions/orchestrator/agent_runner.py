@@ -178,6 +178,62 @@ class AgentSession:
     session_end_reason: str | None = None
     session_end_summary: str = ""
 
+    def _save_json_snapshot(self) -> None:
+        """F-49 Phase 0.4.5: write a ``src.agent.Session``-compatible
+        ``.json`` snapshot so ``Session.load()`` can fast-path on
+        ``--resume`` instead of replaying the full JSONL transcript.
+
+        The snapshot is built from the JSONL transcript (which is the
+        authoritative source) rather than from ``AgentSession`` fields
+        that don't carry a full Conversation.  Best-effort: failures
+        are logged but never propagated.
+        """
+        if not self.run_id:
+            return
+        try:
+            from src.agent.session import Session as CoreSession
+            from src.services.session_storage import SessionStorage
+            from src.types.messages import message_from_dict
+
+            storage = SessionStorage(session_id=self.run_id)
+            entries = storage.read_transcript()
+            messages = []
+            for entry in entries:
+                # Skip background-completion markers
+                if (
+                    entry.get("role") == "system"
+                    and entry.get("content") == "__background_complete__"
+                ):
+                    continue
+                try:
+                    messages.append(message_from_dict(entry))
+                except Exception:
+                    pass
+
+            # Build a CoreSession and save it — Session.save() writes
+            # the ``.json`` snapshot to ~/.clawcodex/sessions/{sid}.json.
+            from src.types.conversation import Conversation
+            snap = CoreSession.__new__(CoreSession)
+            snap.session_id = self.run_id
+            snap.provider = self._snapshot_provider or ""
+            snap.model = self._snapshot_model or ""
+            snap.conversation = Conversation(messages=messages)
+            snap.created_at = datetime.now(timezone.utc).isoformat()
+            snap.updated_at = datetime.now(timezone.utc).isoformat()
+            snap.save()
+        except Exception:
+            logger.exception(
+                "F-49 Phase 0.4.5: failed to write .json snapshot "
+                "for run_id=%s", self.run_id,
+            )
+
+    # Snapshot helpers: provider/model strings for the .json snapshot.
+    # Set by AgentRunner.run() before the main loop starts so the
+    # finally-block can use them even if the session has been
+    # partially cleaned up.
+    _snapshot_provider: str = ""
+    _snapshot_model: str = ""
+
 
 @dataclass
 class RetryItem:

@@ -187,6 +187,36 @@ class Session:
                 pass
             if loaded is None:
                 return None
+        # F-49 Phase 0.4.1: if conversation.messages is still empty
+        # (happens when the session was created by Cron/Orchestrator
+        # which only write JSONL, not the .json snapshot), back-fill
+        # from the SessionStorage transcript.  This single fix makes
+        # --resume work uniformly across all consumers (CLI/REPL/TUI)
+        # without each needing its own transcript sync logic.
+        if not loaded.conversation.messages:
+            try:
+                from src.services.session_storage import SessionStorage
+                from src.types.messages import message_from_dict
+
+                storage = SessionStorage(session_id=session_id)
+                entries = storage.read_transcript()
+                if entries:
+                    messages = []
+                    for entry in entries:
+                        # Skip background-completion markers
+                        if (
+                            entry.get("role") == "system"
+                            and entry.get("content") == "__background_complete__"
+                        ):
+                            continue
+                        try:
+                            messages.append(message_from_dict(entry))
+                        except Exception:
+                            pass
+                    if messages:
+                        loaded.conversation.messages = messages
+            except Exception:
+                pass  # Best-effort; don't fail resume
         switch_session(SessionId(session_id))
         restore_cost_state_for_session(session_id)
         return loaded
