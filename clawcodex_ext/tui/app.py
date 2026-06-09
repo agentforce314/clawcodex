@@ -551,6 +551,17 @@ class ClawCodexTUI(App):
             transcript.clear_transcript()
             self._agent_bridge.reset_advisor_dedup()
             return
+        if result.system_text in ("__stream_on__", "__stream_off__", "__stream_toggle__", "__stream_status__"):
+            if result.system_text == "__stream_on__":
+                self.stream = True
+            elif result.system_text == "__stream_off__":
+                self.stream = False
+            elif result.system_text == "__stream_toggle__":
+                self.stream = not self.stream
+            self._agent_bridge._stream = self.stream
+            status = "enabled" if self.stream else "disabled"
+            transcript.append_system(f"Stream mode {status}.")
+            return
         if result.system_text:
             transcript.append_system(result.system_text, style="muted")
         if result.prompt_text:
