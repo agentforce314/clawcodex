@@ -341,6 +341,17 @@ def set_theme(name: str) -> None:
     _get_default_manager().set_global("theme", name)
 
 
+def set_logo_color(name: str) -> None:
+    """Persist the startup logo color palette to the global config.
+
+    Mirrors TS ``/logo`` (``saveGlobalConfig(c => ({...c, logoColor: chosen}))``). A
+    top-level config key (like :func:`set_theme`), read via
+    ``load_config().get("logoColor")`` by the startup banners — NOT a nested settings
+    field.
+    """
+    _get_default_manager().set_global("logoColor", name)
+
+
 def set_effort(value: Optional[str]) -> None:
     """Persist the reasoning-effort choice to user settings (``settings.effort``)
     and invalidate the settings read-cache.

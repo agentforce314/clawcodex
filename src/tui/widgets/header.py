@@ -93,29 +93,48 @@ class StartupHeader(Static):
         display_path = _display_cwd(self._workspace_root)
         width = self._width_hint or 80
         content_width = max(28, min(width - 12, 72))
+
+        # /logo: resolve the persisted palette (best-effort — fall back to the
+        # original hardcoded styles so the banner never fails to render).
+        try:
+            from src.config import load_config
+            from src.utils.logo_palettes import banner_palette, mascot_gradient_text
+
+            _logo = load_config().get("logoColor")
+            _st = banner_palette(_logo)
+            mascot_block = mascot_gradient_text(_logo, _MASCOT.split("\n"))
+            border, title_st, accent, value, label, dim = (
+                _st.border, _st.title, _st.accent, _st.value, _st.label, _st.dim,
+            )
+        except Exception:
+            border, title_st, accent, value, label, dim = (
+                "bright_black", "bold bright_cyan", "bold white", "bold magenta",
+                "bright_black", "dim",
+            )
+            mascot_block = Text(_MASCOT, style="bold orange3", no_wrap=True)
+
         table = Table.grid(padding=(0, 1))
-        table.add_column(style="bright_black", justify="right", no_wrap=True)
+        table.add_column(style=label, justify="right", no_wrap=True)
         table.add_column(style="white", ratio=1)
         table.add_row(
             "Version",
             Text.assemble(
-                ("ClawCodex", "bold white"),
+                ("ClawCodex", accent),
                 ("  ", ""),
-                (f"v{self._version}", "bold cyan"),
+                (f"v{self._version}", accent),
             ),
         )
-        table.add_row("Model", Text(self._model or "unknown", style="bold magenta"))
+        table.add_row("Model", Text(self._model or "unknown", style=value))
         table.add_row(
             "Provider",
-            Text(f"{self._provider.upper()} Provider", style="bold green"),
+            Text(f"{self._provider.upper()} Provider", style=value),
         )
         table.add_row(
             "Workspace",
-            Text(_truncate_middle(display_path, content_width - 12), style="bold blue"),
+            Text(_truncate_middle(display_path, content_width - 12), style=value),
         )
 
-        footer = Text(self._slash_hints, style="dim")
-        mascot_block = Text(_MASCOT, style="bold orange3", no_wrap=True)
+        footer = Text(self._slash_hints, style=dim)
         body = Group(
             Columns([mascot_block, table], align="center", expand=False),
             Text(""),
@@ -123,8 +142,8 @@ class StartupHeader(Static):
         )
         return Panel(
             body,
-            border_style="bright_black",
-            title="[bold bright_cyan] CLAWCODEX [/bold bright_cyan]",
-            subtitle="[dim]interactive terminal[/dim]",
+            border_style=border,
+            title=f"[{title_st}] CLAWCODEX [/{title_st}]",
+            subtitle=f"[{dim}]interactive terminal[/{dim}]",
             padding=(0, 2),
         )
