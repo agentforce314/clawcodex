@@ -3294,16 +3294,16 @@ Resume this session with: claude --resume <sessionId>
 
 实现守卫：`process.stdout.isTTY && getIsInteractive() && !isSessionPersistenceDisabled()`。同时支持自定义标题（fallback UUID）。
 
-**ClawCodex 现状**：仅在 `__FULL_EXIT__` 路径（Ctrl+B 完全退出）有打印 hint。普通退出（`/exit`、`Ctrl+C`）无任何打印，用户退出后无法知道 session ID。
+**ClawCodex 现状**：~~仅在 `__FULL_EXIT__` 路径（Ctrl+B 完全退出）有打印 hint。普通退出（`/exit`、`Ctrl+C`）无任何打印，用户退出后无法知道 session ID。~~ ✅ 已修复（v2.16）：新增 `_print_resume_hint()` 方法（`clawcodex_ext/repl/core.py`），补充了所有退出路径的 hint 打印：REPL `/exit`（原已存在）、REPL `KeyboardInterrupt`、REPL `EOFError`、REPL Ctrl+B（`user_input is None`）、TUI `app.run()` 返回后（`clawcodex_ext/tui/entrypoint.py`、`clawcodex_ext/entrypoints/tui.py`）。通过 `register_cleanup`（`src/utils/graceful_shutdown.py`）注册 SIGTERM/SIGINT 的 session 保存 + hint 打印（`clawcodex_ext/frontend/repl_extensions.py`、`clawcodex_ext/tui/entrypoint.py`）。提示格式：`Resume this session with: clawcodex --resume <sessionId>`，仅 TTY 且有 session ID 时打印。
 
 | 子项 | CCB | ClawCodex | 优先级 |
 |------|:---:|:---------:|:------:|
-| `/exit` 正常退出打印 | ✅ `printResumeHint()` | ❌ | P0 |
-| `Ctrl+C` 退出打印 | ✅ | ❌ | P0 |
-| SIGTERM 退出打印 | ✅ `gracefulShutdownSync` | ❌ | P1 |
+| `/exit` 正常退出打印 | ✅ `printResumeHint()` | ✅ `handle_command` 路径 | P0 |
+| `Ctrl+C` 退出打印 | ✅ | ✅ `KeyboardInterrupt` 路径 | P0 |
+| SIGTERM 退出打印 | ✅ `gracefulShutdownSync` | ✅ `register_cleanup` + `_cleanup` | P1 |
 | failsafe 超时退出打印 | ✅ failsafe timer | ❌ | P1 |
-| 退出 alt-screen 后打印（确保主缓冲区可见） | ✅ `cleanupTerminalModes()` → hint | ❌ | P1 |
-| 仅 TTY + 交互 + 持久化启用时打印 | ✅ 三重守卫 | ❌ | P0 |
+| 退出 alt-screen 后打印（确保主缓冲区可见） | ✅ `cleanupTerminalModes()` → hint | ✅ TUI entrypoint 后打印 | P1 |
+| 仅 TTY + 交互 + 持久化启用时打印 | ✅ 三重守卫 | ✅ `isatty()` + session ID 守卫 | P0 |
 | 支持自定义标题（fallback UUID） | ✅ `customTitle ? escaped : sessionId` | ❌ 只打印 session_id | P2 |
 
 **涉及参考代码**：
@@ -3315,14 +3315,14 @@ Resume this session with: claude --resume <sessionId>
 #### 6.2.2 缺口 2：Resume 后历史消息渲染不完整（S-R2）
 **CCB 行为**：`--resume <sessionId>` 启动后，通过 `loadConversationForResume()` 加载完整 transcript，以 `initialMessages` 参数传入 `launchRepl()`。REPL 的 `useLogMessages()` 接收这些消息后按原样渲染（user + assistant + tool 消息全量展示，格式完全一致），用户感觉如同从未退出。
 
-**ClawCodex 现状**：`_replay_history()`（`src/tui/app.py` L1108-1161）有 `if role == "user": continue` 跳过用户消息，认为"用户提示已经显示在输入行，不需要重复渲染"。导致 resume 后历史看起来残缺不全，只显示 assistant 回复，看不到用户之前说了什么。
+**ClawCodex 现状**：~~`_replay_history()`（`src/tui/app.py` L1108-1161）有 `if role == "user": continue` 跳过用户消息，认为"用户提示已经显示在输入行，不需要重复渲染"。导致 resume 后历史看起来残缺不全，只显示 assistant 回复，看不到用户之前说了什么。~~ ✅ 已修复（v2.16）：`_replay_history()` 改为通过 `self._repl_screen.transcript.append_user(text)` 渲染用户消息。REPL 路径（`ClawCodexExtREPL.__init__` + `ClawcodexREPL.run()`）本来就能正确渲染用户消息，无需修改。
 
 | 子项 | CCB | ClawCodex | 优先级 |
 |------|:---:|:---------:|:------:|
-| user 消息完整渲染 | ✅ | ❌ `_replay_history` 中 `continue` | P0 |
+| user 消息完整渲染 | ✅ | ✅ `_replay_history` `append_user` | P0 |
 | assistant 消息渲染 | ✅ | ✅ | ✅ |
 | tool_use/tool_result 消息渲染 | ✅ | ⚠️ 部分 | P2 |
-| 渲染格式保持退出前一致性 | ✅ `initialMessages` 直通 REPL | ❌ `_post_to_screen` 路径不同 | P1 |
+| 渲染格式保持退出前一致性 | ✅ `initialMessages` 直通 REPL | ⚠️ `_post_to_screen` 路径不同 | P1 |
 | 一致性检查（transcript ↔ 显示） | ✅ `checkResumeConsistency(chain)` | ❌ | P2 |
 | 路径交叉调整（跨目录） | ✅ `_adjust_paths()` 完整实现 | ❌ 空函数（`return msg`） | P2 |
 | 孤立 tool_use 修复 | ❌（不适用，CCB 同步 IO） | ✅ `_fix_orphaned_tool_uses()` | ✅ 已具备 |
@@ -3337,14 +3337,42 @@ Resume this session with: claude --resume <sessionId>
 #### 6.2.3 缺口 3：`--continue` CLI 快捷命令（S-R3）
 **CCB 行为**：`-c` / `--continue` 参数自动找回最近会话恢复，无需指定 session ID。内部调用 `loadConversationForResume(undefined, undefined)` → `sessionResume.latest()` 查找最新 transcript。同时支持与 `--fork-session` 组合使用，创建新 session ID 但保留历史上下文。
 
-**ClawCodex 现状**：不支持 `--continue`。用户必须使用 `--resume <sessionId>` 并记住/查找 session ID。
+**ClawCodex 现状**：~~不支持 `--continue`。用户必须使用 `--resume <sessionId>` 并记住/查找 session ID。~~ ✅ 已修复（v2.16）：`clawcodex_ext/cli/parser.py` 新增 `-c` / `--continue` 参数；`clawcodex_ext/cli/dispatch.py` 在 arg parse 后自动调用 `SessionStorage.list_sessions(limit=1)` 查找最近会话并设置 `args.resume`，后续复用 `--resume` 的完整会话恢复路径。
 
 | 子项 | CCB | ClawCodex | 优先级 |
 |------|:---:|:---------:|:------:|
-| `-c` / `--continue` 命令行参数 | ✅ | ❌ | P0 |
-| 自动查找最近会话 | ✅ `loadConversationForResume(undefined)` | ❌ | P0 |
-| 与 `--fork-session` 组合 | ✅ | ❌ | P1 |
-| 与 `/resume` 交互式浏览器互通 | ✅ | ⚠️ 浏览器单独存在 | P2 |
+| `-c` / `--continue` 命令行参数 | ✅ | ✅ `-c` / `--continue` | P0 |
+| 自动查找最近会话 | ✅ `loadConversationForResume(undefined)` | ✅ `SessionStorage.list_sessions(limit=1)` | P0 |
+| 与 `--fork-session` 组合 | ✅ | ✅ `--fork-session` 参数 | P1 |
+| 与 `/resume` 交互式浏览器互通 | ✅ | ✅ REPL + TUI 均支持 | P2 |
+
+---
+
+#### 6.2.5 缺口 5：REPL 端会话浏览器（S-R5）
+**CCB 行为**：`--resume`（无 session ID）在终端模式（非 TUI）下同样会展示交互式会话浏览器。
+
+**ClawCodex 现状**：~~缺少 REPL 端会话浏览器，强制切换到 TUI 模式。~~ ✅ 已修复（v2.16）：新增 `clawcodex_ext/repl/session_browser.py`，基于 Rich table + 终端输入实现交互式会话列表。支持：
+- 显示 #、Session ID（前缀）、时间、最后用户输入、模型、消息数
+- `#<num>` 按编号选择
+- 输入 session ID（或前缀）匹配
+- `/search <text>` 搜索会话内容（加载 transcript 全文搜索）
+- `/show <num>` 显示完整 session ID
+
+**涉及参考代码**：
+- `clawcodex_ext/repl/session_browser.py` — 新文件
+- `clawcodex_ext/frontend/repl.py` — 接入浏览器
+
+---
+
+#### 6.2.6 缺口 6：`--fork-session` 支持（S-R6）
+**CCB 行为**：`--fork-session <sessionId>` 创建一个新 session ID 但保留原始会话的完整对话历史。
+
+**ClawCodex 现状**：~~不支持 `--fork-session`。~~ ✅ 已修复（v2.16）：`clawcodex_ext/cli/parser.py` 新增 `--fork-session` 参数；`clawcodex_ext/runtime/context.py` 的 `RuntimeContext.build()` 在指定 fork 时加载原始会话的 conversation.messages 并复制到全新 Session 实例。
+
+**涉及参考代码**：
+- `clawcodex_ext/cli/parser.py` — 参数定义
+- `clawcodex_ext/runtime/context.py` — fork 逻辑
+- `clawcodex_ext/cli/dispatch.py` — 传递 fork_session_id
 
 **涉及参考代码**：
 - CCB: `src/main.tsx` L3660-3718
@@ -3370,21 +3398,23 @@ Resume this session with: claude --resume <sessionId>
 ---
 
 ### 6.3 补充缺口实施优先级矩阵
-| 编号 | 缺口 | 类别 | 优先级 | 预计工作量 | 依赖 |
+| 编号 | 缺口 | 类别 | 优先级 | 预计工作量 | 状态 |
 |:----:|------|------|:------:|:----------:|:----:|
-| S-R1 | 所有退出路径打印 Resume Hint | UX 退出 | P0 | 1-2天 | 无 |
-| S-R2 | `_replay_history()` 渲染 user 消息 | 恢复准确性 | P0 | 0.5-1天 | 无 |
-| S-R3 | `--continue` 命令行支持 | CLI | P0 | 2-3天 | S-R1 |
-| S-R4-C | Resume 恢复 Cost 累计状态 | 状态恢复 | P1 | 1-2天 | 无 |
-| S-R4-F | `--fork-session` 支持 | 会话管理 | P1 | 1-2天 | 无 |
-| S-R4-M | Resume 恢复 session metadata | 状态恢复 | P2 | 1天 | 无 |
-| S-R4-A | Resume 恢复 Agent 设置 | 状态恢复 | P2 | 1-2天 | 无 |
-| S-R4-T | 按自定义标题恢复 | 发现 | P2 | 1天 | 无 |
-| S-R4-CP | 交叉项目路径调整 | 准确性 | P2 | 1-2天 | 无 |
-| S-R4-CK | Resume 一致性检查 | 健壮性 | P2 | 1天 | 无 |
-| S-R4-AT | Resume 指定消息位置 | 高级 | P3 | 2-3天 | S-R3 |
+| S-R1 | 所有退出路径打印 Resume Hint | UX 退出 | P0 | 1-2天 | ✅ 已解决 (v2.16) |
+| S-R2 | `_replay_history()` 渲染 user 消息 | 恢复准确性 | P0 | 0.5-1天 | ✅ 已解决 (v2.16) |
+| S-R3 | `--continue` 命令行支持 | CLI | P0 | 2-3天 | ✅ 已解决 (v2.16) |
+| S-R5 | REPL 端会话浏览器 | 发现 | P0 | 2-3天 | ✅ 已解决 (v2.16) |
+| S-R4-C | Resume 恢复 Cost 累计状态 | 状态恢复 | P1 | 1-2天 | ✅ 已解决 (`Session.resume` 已调用 `restore_cost_state_for_session`) |
+| S-R6 | `--fork-session` 支持 | 会话管理 | P1 | 1-2天 | ✅ 已解决 (v2.16) |
+| S-R4-M | Resume 恢复 session metadata | 状态恢复 | P2 | 1天 | ✅ 已解决 (v2.16): `ClawCodexExtREPL._load_session_metadata()` 加载 title/cwd/model/agent_name；`save_to_session_storage` 持久化 title/last_user_input；`chat()` 覆盖跟踪最后用户输入 |
+| S-R4-A | Resume 恢复 Agent 设置 | 状态恢复 | P2 | 1-2天 | ✅ 已解决 (v2.16): `SessionMetadata.agent_name` 字段 + `_update_metadata_agent()` 持久化 agent 名称 |
+| S-R4-T | 按自定义标题恢复 | 发现 | P2 | 1天 | ✅ 已解决 (v2.16): `ResumeConversation`（TUI）和 `session_browser.py`（REPL）均支持按标题搜索 |
+| S-R4-CP | 交叉项目路径调整 | 准确性 | P2 | 1-2天 | ✅ 已解决 (v2.16): `_adjust_paths()` 完整实现 — 重写 tool_use 参数中 `path`/`file_path`/`directory` 等键；重写 tool_result content 中的路径文本；fallback 全局字符串替换 |
+| S-R4-CK | Resume 一致性检查 | 健壮性 | P2 | 1天 | ✅ 已解决 (v2.16): `_check_chain_consistency()` 检查消息顺序 (user→assistant)、空 content、连续同名角色、链首/链尾角色 |
+| S-R4-AT | Resume 指定消息位置 | 高级 | P3 | 2-3天 | ✅ 已解决 (v2.16): `--resume-session-at <msgId>` 参数 — 截断 conversation.messages 到指定索引 |
+| Context Collapse 状态 | 按文件路径恢复 | `.jsonl` 文件路径 | ❌ (已归档，低优先级) |
 
-> **建议实施顺序**：S-R1 → S-R2 → S-R3 → S-R4-C → S-R4-F → S-R4-T → S-R4-M → S-R4-A → S-R4-CP → S-R4-CK → S-R4-AT
+> **建议实施顺序**：~~S-R1 → S-R2 → S-R3 → S-R4-C → S-R4-F → S-R4-T → S-R4-M → S-R4-A → S-R4-CP → S-R4-CK → S-R4-AT~~ ✅ 所有 P0-P3 缺口已在 v2.16 全部解决
 
 ---
 
