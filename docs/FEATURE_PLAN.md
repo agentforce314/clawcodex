@@ -699,22 +699,27 @@ Session.resume() 恢复的 transcript 内容:
 - **workspace 相对路径**：如果 tool result 包含长文件内容（如 `Read` 工具读取了大型文件），文件引用路径不应硬编码为 `~/.clawcodex/` 绝对路径，否则跨机器恢复时路径失效。`metadata.json` 中的 `cwd` 字段用于辅助恢复时进行路径解析。
 - **清理策略**：orchestrator 的 cleanup 策略（`retention_days`）与普通 session 一致，F-11（sessionStorage 容量限制）已覆盖此场景。
 
-**Phase 0 改造前后的文件对比**：
+**当前文件结构（F-49 统一后）**：
 
 ```
-改造前（当前）：
-{workspace}/.event_logs/
-  └── {issue_id}.ndjson                    ← 扁平事件，无法 resume
-
-改造后：
-~/.clawcodex/sessions/{run_id}.json        ← Session 快照
+# 主转录（Message 级别，可 resume）
+~/.clawcodex/sessions/{run_id}.json        ← Session 快照（含 cost 计数）
 ~/.clawcodex/sessions/{run_id}/
   ├── metadata.json                         ← 元数据
   ├── transcript.jsonl                      ← Message 对话转录（每行一个 Message dict）
   └── content/                              ← 大内容文件引用
-{workspace}/.event_logs/
-  └── {issue_id}.ndjson                    ← 可选保留（向后兼容），或删除
+
+# 辅助日志（非 Message 级别，不可用于 resume）
+~/.clawcodex/tool-events/{run_id}/events.ndjson
+  └── 每行 8 字段：ts / tool / params / approved / deny_reason / permission_mode / turn / session_run_id
+      （F-45 审计旁路，50MB rotate）
+
+{workspace}/.orchestrator_control/runs/{run_id}/debug.ndjson
+  └── 每行 {ts, stage, ...fields}
+      （F-49 debug 日志，best-effort 写入）
 ```
+
+注意：旧的 `{workspace}/.event_logs/{issue_id}.ndjson` 格式已于 F-49 Phase 0 中完全移除，不再存在。
 
 注意：`~/.clawcodex/sessions/{run_id}.json`（Session 快照）不是必选项 —— 它由 `Session.save()` 产生，包含 `conversation`、`cost`、`provider`、`model` 等完整元数据。orchestrator 若只写 `transcript.jsonl`，则 `session_resume.resume_session()` 也可工作（它会从 transcript 重建 message 列表 + 从 metadata 恢复 model/provider）。`Session.save()` 额外提供 `cost` 快照用于 resume 时恢复 token/费用计数，建议保留。
 
@@ -786,7 +791,6 @@ class ControlSocket:
 #### 1.4.2 Issue 会话统一存储与实时介入协议（F-49）
 
 **状态**: 📋 设计完成
-
 **状态**: 📋 设计完成
 **优先级**: P1
 **依赖**: F-21（后台运行 + 恢复同步）、F-38（验证与报告闭环）、F-40（ProgressReporter Sink 协议重构）
@@ -795,28 +799,30 @@ class ControlSocket:
 
 当前系统存在**两套并行但不可互操作的事件记录系统**：
 
-| 维度 | 路径 A：正常 REPL 会话（`SessionStorage`） | 路径 B：Headless Issue Agent（`_write_event_log`） |
+| 维度 | 路径 A：正常 REPL 会话（`SessionStorage`） | 路径 B：Headless Issue Agent（旧格式 `_write_event_log` → 已统一） |
 |------|------|------|
-| 存储位置 | `~/.clawcodex/sessions/{sid}/` | `{workspace}/.event_logs/{issue_id}.ndjson` |
-| 格式 | `transcript.jsonl` — 每行一个 `Message` dict (`role`, `content` blocks, `tool_use_id`) | 每行扁平事件 `{timestamp, type, tool_name, params}` |
-| 可读性 | `session_resume.py` → `list[Message]` | 仅 `_run_tail` CLI 命令显示 |
-| 配套设施 | `TailFollower`、`Session.load/resume`、`SessionStorage.read_transcript()` | 无 |
-| 可恢复性 | ✅ 可重建 LLM context | ❌ 不能用于 `--resume` |
-| 控制通道 | `asyncio.Event` + Unix socket（F-21） | 文件轮询 `{.orchestrator_control/{cmd}.control}` |
+| 存储位置 | `~/.clawcodex/sessions/{sid}/` | 已统一为 `~/.clawcodex/sessions/{run_id}/`（与路径 A 相同） |
+| 格式 | `transcript.jsonl` — 每行一个 `Message` dict (`role`, `content` blocks, `tool_use_id`) | 已统一，同上格式 |
+| 可读性 | `session_resume.py` → `list[Message]` | 已统一 |
+| 配套设施 | `TailFollower`、`Session.load/resume`、`SessionStorage.read_transcript()` | 已统一 |
+| 可恢复性 | ✅ 可重建 LLM context | ✅ 已统一，可重建 LLM context |
+| 控制通道 | `asyncio.Event` + Unix socket（F-21） | 文件轮询 `{.orchestrator_control/{cmd}.control}`（待 F-54 Phase 1 统一） |
 
-核心矛盾：**Headless agent 写 `.event_logs/` 扁平 NDJSON，上游已完备的 `SessionStorage` + `TailFollower` + `session_resume` 基础设施完全无法消费**。Observe/tail/takeover/resume 每个功能都需要在两条路径上重复实现。
+**改造前**：Headless agent 写 `.event_logs/{id}.ndjson` 扁平 NDJSON；REPL 写 `transcript.jsonl`。两路不可互通。Observe/tail/takeover/resume 每个功能都需要在两条路径上重复实现。
+
+**F-49 Phase 0 已完成**：统一为 `~/.clawcodex/sessions/{run_id}/transcript.jsonl`，`.event_logs/` 已完全移除。
 
 ##### 目标
 
 统一 headless agent 和 REPL 会话的存储格式，在此之上建立双向实时介入协议（Unix socket），使 operator 可以通过 `attach` CLI 观察、中断、接管、恢复 issue agent 的运行。
 
-| 场景 | 当前状态 | 目标状态 |
-|------|---------|---------|
-| 实时观察 | `tail` CLI 读 `.event_logs/` | `attach` CLI 通过 socket 流式接收 `TextDelta` / `ToolCallEvent` / `ToolResultEvent` / `PhaseComplete` |
+| 场景 | F-49 Phase 0 后状态 | 目标状态（Phase 1+） |
+|------|-------------------|---------|
+| 实时观察 | `attach` CLI 读 `transcript.jsonl`（F-49） | `attach` CLI 通过 socket 流式接收 `TextDelta` / `ToolCallEvent` / `ToolResultEvent` / `PhaseComplete` |
 | Ctrl+C 中断 | ❌ 不支持（仅 `stop` 控制文件） | socket 发送 `pause` → agent 挂起等待 operator 输入 |
 | 人工接管 | ❌ 不支持 | `pause` 后 operator 键入 hint，agent 恢复后消费 |
 | `/resume` 恢复自动值守 | ❌ 不支持 | socket 发送 `resume`（可选附带 prompt）→ agent 继续 loop |
-| Session 恢复崩溃 | ❌ `.event_logs/` 无法重建 LLM context | 统一使用 `SessionStorage` → `session_resume.resume_session()` |
+| Session 恢复崩溃 | ✅ `SessionStorage` → `session_resume.resume_session()`（F-49 已完成） | 已达目标 |
 | detach | ❌ 不支持 | socket `detach` → agent 继续运行，operator 断开 |
 
 ##### 核心设计
@@ -842,14 +848,15 @@ AgentRunner (headless)
 
 ##### 改造点清单
 
-**Phase 0 — 统一事件存储**（1-2天，核心基础）
+**Phase 0 — 统一事件存储** ✅ 已完成
 
-| 文件 | 改动 |
-|------|------|
-| `extensions/orchestrator/agent_runner.py` | `AgentSession` 增加 `session_storage: SessionStorage`；`run()` 中 `init_metadata(model, cwd, title)`；替换 `_write_event_log()` → `session_storage.write_raw(msg_dict)` + `flush()` |
-| `extensions/orchestrator/agent_runner.py` | 删除 `_write_event_log()` 方法；删除 `.event_logs/` 目录创建逻辑 |
-| `extensions/orchestrator/cli/issue.py` | `_run_tail` 改为读 `transcript.jsonl`（或保留兼容双读） |
-| `src/services/session_storage.py` | 无改动（复用现有 `SessionStorage`） |
+| 文件 | 改动 | 状态 |
+|------|------|------|
+| `extensions/orchestrator/agent_runner.py` | `AgentSession` 增加 `session_storage: SessionStorage`；`run()` 中 `init_metadata(model, cwd, title)`；替换 `_write_event_log()` → `session_storage.write_raw(msg_dict)` + `flush()` | ✅ 完成 |
+| `extensions/orchestrator/agent_runner.py` | 删除 `_write_event_log()` 方法；删除 `.event_logs/` 目录创建逻辑 | ✅ 完成 |
+| `extensions/orchestrator/cli/issue.py` | `_run_tail` 改为读 `transcript.jsonl` | ✅ 完成 |
+| `src/services/session_storage.py` | 无改动（复用现有 `SessionStorage`） | ✅ 无需改动 |
+| (新增) `extensions/orchestrator/debug_log.py` | `append_debug_event()` — 写入 `.orchestrator_control/runs/{run_id}/debug.ndjson` | ✅ 完成 |
 
 统一后的效果：headless agent 的每个 tool_use / tool_result / text_delta **都以 Message dict 格式写入 session JSONL**，`TailFollower` 可以直接 follow，`session_resume` 可以直接重建 LLM context。
 
@@ -931,35 +938,323 @@ AgentRunner.run() 事件循环
 | `F-38 git_sync` | Phase 0 无影响 — git_sync 操作 workspace git，不改 session 存储 |
 | `F-39 retry` | Phase 2 扩展 — retry 可携带 `--attach` 参数在新 run 上立即 attach |
 
+**Phase 0.2 — CLI 介入：会话恢复（--resume）+ 实时观察 + 问题追溯**
+
+统一格式后的核心收益：**`clawcodex --resume <run_id>` 可直接恢复 orchestrator headless agent run 的完整对话，进入交互式 REPL**，operator 可继续对话，新内容追加到同一 transcript。
+
+| 场景 | 机制 | 代码来源 |
+|------|------|---------|
+| **完整会话恢复（核心）** | `clawcodex --resume <run_id>` → `Session.resume(run_id)` 读取 transcript + metadata，重建 Conversation，进入交互式 REPL | `src.agent.session.Session.resume()` — 完全复用，0 改动 |
+| **TUI 实时增量观察** | `clawcodex --tui --resume <run_id>` → TailFollower 从 transcript 末尾输出增量 | `src.services.tail_follower.TailFollower` — 完全复用 |
+| **接管 agent run** | operator 在 REPL 中直接输入指令替代 headless agent 的下一 turn；退出可选 detach / finish / re-orchestrate | `Session.resume()` + 前台 REPL |
+| **崩溃恢复** | orchestrator 检测到 agent 进程退出后，用 `Session.resume()` 重建 context，在新的 `AgentRunner` 中继续 | `Session.resume()` → `session_resume.resume_session()` |
+| **只读追溯** | `issue transcript --run <run_id>` 文本输出对话历史，适合管道处理 | 新增 `_run_transcript` 子命令 |
+
+`--resume` 三种模式：
+
+```
+clawcodex --resume <run_id>               → 完整会话恢复，进入交互式 REPL
+clawcodex --tui --resume <run_id>         → TUI 模式，TailFollower 增量显示 + 可输入
+clawcodex --resume <run_id> --readonly    → 只读查看历史，不进入交互模式
+```
+
+并发安全：agent 已结束时正常恢复可写；agent 正在运行时 `--resume` 获得只读历史快照不干扰运行中 agent；需写入需通过 socket 先 pause。
+
+**Phase 0.3 — 大内容文件引用**
+
+复用 `SessionStorage._replace_large_content()` 内置行为，自动将大 tool result 替换为文件引用（存储于 `~/.clawcodex/sessions/<run_id>/content/`），AgentRunner 无需感知。
+
+验收标准：headless agent 的每轮 tool_use / tool_result / text_delta 以 Message dict 格式写入 session JSONL，`TailFollower` 可直接 follow，`session_resume` 可直接重建 LLM context。整个 Phase 0 不修改 `src/services/session_storage.py` 一行代码。
+
+---
+
+#### 1.4.3 全场景会话恢复统一闭包（F-49 Phase 0.4 — Session Resume 统一）
+
+**状态**: 📋 设计草稿中
+**优先级**: P1
+**依赖**: F-49 Phase 0 ~ 0.3（统一事件存储），F-21（后台运行 + 恢复同步）
+
+##### 问题现状：SessionStorage 回退路径的消息缺失
+
+F-49 Phase 0 统一了事件存储格式（全部使用 `~/.clawcodex/sessions/{run_id}/transcript.jsonl`），但在 `--resume` 恢复链上仍然存在一个关键缺口：
+
+```
+Session.resume(sid)                          # src/agent/session.py:135
+  → Session.load(sid)                        # 尝试 ~/.clawcodex/sessions/{sid}.json
+    ├── 找到 → 返回完整 Session（含 Conversation.messages）✅
+    └── 未找到 → load_from_session_storage()  # 回退到 SessionStorage 目录格式
+         → 仅恢复 metadata（session_id, model, start/end time）
+         → conversation=Conversation()        # ← 空的！
+```
+
+| 消费方 | resume 后的处理 | 行为 |
+|--------|---------------|------|
+| **REPL** `repl/app.py:136` | `_sync_conversation_from_transcript()` 从 JSONL 重新填充 | ✅ 全量恢复 |
+| **TUI** `tui/app.py:229` | 仅 `if self.session.conversation.messages: self._replay_history()` | ❌ 格式 B 恢复后消息为空，不会 replay 历史 |
+| **CLI** `dispatch.py` | 无显式 transcript 同步 | ❌ 格式 B 恢复后 conversation 空 |
+| **Cron bg_runner** | 仅写 JSONL，不写 .json 快照 | ⚠️ 只能走 SessionStorage 回退 |
+| **Orchestrator** | 仅写 JSONL，不写 .json 快照 | ⚠️ 只能走 SessionStorage 回退 |
+
+核心矛盾：**CLI/TUI 的 `--resume` 对于 Cron/Orchestrator 写入的会话只能恢复出一个空壳**，必须依赖每个消费者自行补丁。
+
+##### 目标
+
+彻底消除上述差距，使所有场景的 `--resume` 行为一致且可递归恢复：
+
+```
+所有写入方（CLI / REPL / TUI / Cron / Orchestrator）
+       │ 统一写 SessionStorage JSONL
+       ▼
+~/.clawcodex/sessions/<sid>/transcript.jsonl
+       │
+       ▼ --resume 统一消费
+Session.resume(sid) → 返回的 Session.conversation.messages 非空
+       │
+       ▼ 递归 resume
+再次 Session.resume(sid) → 与退出前状态一致
+```
+
+##### 设计
+
+**A. `Session.resume()` 自愈修复（核心，一处修复全局生效）**
+
+在 `Session.resume()` 的 SessionStorage 回退路径末尾，增加从 JSONL 加载消息的逻辑：
+
+```python
+# load_from_session_storage 之后，conversation 为空时：
+if not loaded.conversation.messages:
+    try:
+        from src.services.session_storage import SessionStorage
+        storage = SessionStorage(session_id=session_id)
+        entries = storage.read_transcript()
+        from src.types.messages import message_from_dict
+        messages = [message_from_dict(e) for e in entries]
+        loaded.conversation.messages = messages
+    except Exception:
+        pass  # 不阻断 resume
+```
+
+效果：**一处修复，CLI/REPL/TUI/Cron/Orchestrator 全场景受益**。REPL 的 `_sync_conversation_from_transcript()` 将成为冗余（但保留作为防御性 double-check）。
+
+**B. `Session.save()` 双写一致性保障**
+
+当前 `Session.save()` 同时写 `.json` 快照 + JSONL。但对于从 SessionStorage 回退路径恢复的会话（conversation 通过 A 补全后），首次 `save()` 把 `.json` 快照写出来，后续 `--resume` 就走快路径 `Session.load()` 了。
+
+**C. 新增：Cron `background_runner.py` 运行结束写 `.json` 快照**
+
+```python
+# 在 _run_agent_headless() 末尾，调用 session.save() 写 .json 快照
+session.save()  # 让 agent 结束后也能通过快路径 --resume
+```
+
+**D. 新增：Orchestrator `agent_runner.py` 运行结束写 `.json` 快照**
+
+```python
+# 在 AgentRunner.run() 末尾，调用 session.save() 写 .json 快照
+session.save()
+```
+
+##### 改造点清单
+
+**Phase 0.4.1 — 核心修复：`Session.resume()` 加载 JSONL 消息**（0.5 天）
+
+| 文件 | 改动 |
+|------|------|
+| `src/agent/session.py` | `Session.resume()` 的 SessionStorage 回退分支末尾，增加从 `SessionStorage.read_transcript()` 加载 messages 到 `conversation.messages` 的逻辑 |
+| `(无)` | 不修改 `load_from_session_storage()` / `session_persist.py` — 保持原有契约 |
+
+验收：`Session.resume(run_id)` for orchestrator-run 返回的 `session.conversation.messages` 非空。
+
+**Phase 0.4.2 — 统一 clean-up：移除冗余的 caller 侧 transcript 同步**（0.5 天）
+
+| 文件 | 改动 |
+|------|------|
+| `clawcodex_ext/repl/core.py` | 保留 `_sync_conversation_from_transcript()` 作为防御性 double-check；在方法开头检查若 `session.conversation.messages` 已非空则直接 return |
+| `clawcodex_ext/repl/app.py` | 无改动（仍保留 `_sync_conversation_from_transcript` 调用） |
+
+验收：REPL resume 后 conversation 正常，`_sync_conversation` 成为 quick-return no-op。
+
+**Phase 0.4.3 — TUI resume 路径修复**（0.5 天）
+
+| 文件 | 改动 |
+|------|------|
+| `clawcodex_ext/tui/entrypoint.py` | `Session.resume()` 调用后，增加 `resume_session_with_tail()` 调用中的 transcript 消息加载（或依赖 Phase 0.4.1 核心修复已生效） |
+| `clawcodex_ext/tui/app.py` | `on_mount()` 中的 `if self.session.conversation.messages:` 改为无条件调用 `_replay_history()`（若 messages 为空则不渲染）或由核心修复保证非空 |
+
+验收：`clawcodex --tui --resume <run_id>` 显示 orchestrator run 的完整历史。
+
+**Phase 0.4.4 — CLI dispatch resume 路径修复**（0.5 天）
+
+| 文件 | 改动 |
+|------|------|
+| `clawcodex_ext/cli/dispatch.py` | `Session.resume()` 调用后，确保 `conversation.messages` 非空（若 Phase 0.4.1 已修复则自动生效） |
+
+验收：`clawcodex --resume <run_id>` 进入 REPL 后显示历史消息。
+
+**Phase 0.4.5 — Cron/Orchestrator 运行结束写 .json 快照**（1 天）
+
+| 文件 | 改动 |
+|------|------|
+| `clawcodex_ext/agent/background_runner.py` | `_run_agent_headless()` 末尾（finally 块中）调用 `session.save()` 确保 `.json` 快照写入 |
+| `extensions/orchestrator/agent_runner.py` | `run()` 末尾（SessionComplete / 异常退出时）调用 `session.save()` 确保 `.json` 快照写入 |
+
+验收：Cron/Orchestrator 执行后，`~/.clawcodex/sessions/<run_id>.json` 存在，可通过快路径 `Session.load()` 恢复。
+
+**Phase 0.4.6 — 递归 resume 一致性验收**（0.5 天）
+
+| 文件 | 改动 |
+|------|------|
+| `tests/test_session_resume_unified.py` | 新增测试：orchestrator 场景的 JSONL → `Session.resume()` → `Session.save()` → 再次 `Session.resume()` → 消息与第一次一致 |
+
+验收：三轮递归 resume 消息内容不变。
+
+##### 消息流向全图
+
+```
+                    ┌─────────────────────────┐
+                    │  CLI / REPL / TUI 交互    │
+                    │  Session.save()           │
+                    │    → .json (快照)         │
+                    │    → JSONL (追加)         │
+                    └──────────┬──────────────┘
+                               │
+                    ┌──────────┴──────────┐
+                    │  Cron bg_runner       │
+                    │  storage.write_msg()  │
+                    │    → JSONL (追加)     │
+                    │  结束 → session.save()│
+                    │    → .json (快照)     │
+                    └──────────┬──────────────┘
+                               │
+                    ┌──────────┴──────────┐
+                    │  Orchestrator        │
+                    │  _flush_transcript() │
+                    │    → JSONL (追加)    │
+                    │  结束 → session.save()│
+                    │    → .json (快照)    │
+                    └──────────┴──────────────┘
+                                        │
+                                        ▼
+~/.clawcodex/sessions/<sid>/
+  ├── <sid>.json            # 全量快照（所有写入方最终都会产生）
+  └── <sid>/
+        ├── transcript.jsonl  # 追加日志（统一格式）
+        └── metadata.json
+
+                                        │
+                                        ▼
+                              Session.resume(<sid>)
+                                ├── Session.load() → .json 快照 ✅
+                                └── fallback → JSONL 加载消息 ✅ (Phase 0.4.1)
+```
+
+##### 验收标准
+
+| # | 验收场景 | 预期行为 |
+|---|---------|---------|
+| 1 | CLI 交互 → exit → --resume | 完整 Conversation，消息不变 |
+| 2 | REPL 交互 → exit → --resume | 完整 Conversation，消息不变 |
+| 3 | TUI 交互 → exit → --resume (TUI 或 REPL) | 完整 Conversation，历史可见 |
+| 4 | Cron bg_runner 运行 → --resume | 完整 Conversation，含所有 tool_use / tool_result |
+| 5 | Orchestrator agent_runner 运行 → --resume | 完整 Conversation，含所有 tool_use / tool_result |
+| 6 | Cron/Orch → --resume → exit → 再次 --resume | 递归一致 |
+| 7 | 跨场景混合写入（eg: Orchestrator 写 → --resume REPL 追加 → exit → --resume TUI） | 所有消息（原始 + 追加）完整 |
+| 8 | `.json` 快照不存在时，`--resume` 也能恢复 | 依赖 SessionStorage JSONL fallback |
+
 ##### 风险与约束
 
 | 风险 | 缓解措施 |
 |------|---------|
-| `.event_logs/` 有存量用户 | Phase 0 保持向后兼容写入（双写），Phase 2 删除时发 deprecation warning |
-| Unix socket 在 Windows 不可用 | 回退到 Named Pipe 或 TCP localhost socket；socket path 抽象为 `BindAddress` Protocol |
-| Phase 1 pause 时 agent 在 tool call 中间 | 不中断正在执行的 tool call；tool call 返回后检查 `paused` flag 再挂起 |
-| 多客户端 attach 冲突 | `ControlSocket` 广播 + 最后写入者优先（Last-write-wins） |
-| 安全：任意本地进程可连接 socket | socket 设置 `umask 0077`（仅 owner）；`/takeover` 需额外的身份确认 |
+| `Session.resume()` 的 SessionStorage fallback 路径加载 JSONL 后，`conversation.messages` 可能包含大量消息，超出 `max_history`（默认 2000） | 加载后不截断 — `max_history` 仅在新 `add_message()` 时生效；或与 `Conversation.from_dict()` 保持行为一致 |
+| JSONL 中的 malformed 行导致部分消息缺失 | 与 `session_resume.resume_session()` 行为一致：跳过 malformed 行并记录 warning |
+| `_sync_conversation_from_transcript()` 在 REPL 中变为冗余但仍被调用 | 加 early-return 检查：`if self.session.conversation.messages: return`，O(1) 开销 |
+| `session.save()` 从 Cron/Orchestrator 调用时可能缺失 provider / model 信息 | 在 `AgentRunner.run()` 中 `session.provider` 和 `session.model` 已设置；`load_from_session_storage` 返回的 model 字段也可用 |
 
 ##### 已拟定的设计决定
 
-1. **Phase 0 优先于一切**。存储不统一，后面所有基础设施 `SessionStorage` / `TailFollower` / `session_resume` 全用不上。不完成 Phase 0 不开始 Phase 1。
-2. **使用 Unix domain socket**（非文件轮询、非 SSE、非 gRPC）。轮询延迟高；SSE 单向；gRPC 依赖重。Unix socket 是 asyncio 原生支持的最轻量双向方案。
-3. **`SessionStorage` 不改一行**。Phase 0 零改动上游文件 — `SessionStorage` 的 `write_raw()` 方法就是为这种场景设计的。
-4. **`ControlSocket` 落地在 `extensions/orchestrator/`**，不入侵 `src/`。遵守 F-48 解耦约束。
-5. **attach TUI 不需要 curses/textual**。用最简单的 `select.poll()` + `sys.stdin.read()` + `print()` 实现，避免新增依赖。
+1. **核心修复在 `Session.resume()` 完成**（一处修复，全局受益），而非在每个消费者处加补丁。
+2. **`.json` 快照在 Cron/Orchestrator 结束时写入**，保证下次 resume 走快路径，同时也作为备份。
+3. **保留 REPL 的 `_sync_conversation_from_transcript()`**，改为防御性 double-check（early return 模式），不破坏现有行为。
+4. **不修改 `SessionStorage`** — 所有改动在消费侧（`Session.resume()`、`background_runner.py`、`agent_runner.py`）。
+5. **POS Converter 不涉及** — 它是编译期代码生成工具，不产生运行时会话日志。
 
 ##### 依赖与协同
 
 | 依赖 | 类型 | 说明 |
 |------|------|------|
-| F-21 bg + `--resume` | 行为参考 | Ctrl+B / TailFollower 的用户体验作为 F-49 attach 的设计基线 |
-| F-38 git_sync | 无依赖 | git_sync 不改 session 存储，Phase 0 无影响 |
-| F-40 ProgressSink | 可复用 | Phase 1 `ControlSocket` 可注册为 `ProgressSink` 消费事件 |
-| F-48 解耦约束 | 架构约束 | 所有新代码落在 `extensions/orchestrator/` |
-| F-39 retry | Phase 2 联动 | retry 新 run 可 `--attach` 即时观察 |
-| `src/services/session_storage.py` | 硬依赖 | Phase 0 核心依赖，但零修改 |
-| `src/services/tail_follower.py` | 可选 | Phase 1 可读 transcript.jsonl 替代 socket |
+| F-49 Phase 0 ~ 0.3 | 硬依赖 | 格式统一是基础 |
+| F-21 bg + `--resume` | 行为参考 | Ctrl+B / TailFollower 的用户体验作为 resume 设计基线 |
+| F-40 ProgressSink | 无依赖 | Phase 0.4 不涉及事件分发变更 |
+| F-48 解耦约束 | 架构约束 | 改动尽量少入侵 `src/`；`Session.resume()` 是上游文件，接受微小修改 |
+| `src/services/session_storage.py` | 硬依赖 | 复用现有 `read_transcript()` 和 `message_from_dict()` |
+
+---
+
+#### 1.4.4 会话格式分层参考图（全场景一览）
+
+```
+Message 类型体系 (src/types/messages.py)
+┌───────────────────────────────────────────┐
+│  Message (role, content, uuid, timestamp) │
+│  ├── UserMessage                          │
+│  ├── AssistantMessage                     │
+│  ├── SystemMessage                        │
+│  └── ProgressMessage                      │
+│                                           │
+│  message_to_dict() / message_from_dict()  │
+│  ← 标准序列化契约                         │
+└───────────────────┬───────────────────────┘
+                    │
+════════════════════╪═══════════════════════════
+         运行时内存   │  持久化层
+                    │
+                    ▼
+┌───────────────────────────────────────────┐
+│  SessionStorage (src/services/             │
+│    session_storage.py)                     │
+│                                           │
+│  ~/.clawcodex/sessions/<sid>/             │
+│    ├── transcript.jsonl   ← JSONL 格式    │
+│    ├── metadata.json      ← SessionMetadata│
+│    └── content/           ← 大内容引用     │
+│                                           │
+│  write_message(Message) → message_to_dict │
+│    → f.write(json.dumps(msg_dict) + '\n') │
+│  read_transcript() → f.readlines()        │
+│    → message_from_dict(entry) → Message[] │
+└───────────────────┬───────────────────────┘
+                    │
+    ┌───────────────┼───────────────┐
+    │               │               │
+    ▼               ▼               ▼
+┌─────────┐  ┌──────────┐  ┌──────────────┐
+│ Session  │  │ .json    │  │ SessionStorage│
+│ .save()  │  │ 快照文件  │  │ JSONL 追加   │
+│ (双写)   │  │(快路径)   │  │(慢路径/增量) │
+└─────┬───┘  └────┬─────┘  └──────┬───────┘
+      │           │               │
+      └───────────┼───────────────┘
+                  │
+                  ▼
+         Session.resume(sid)
+           ├── Session.load()
+           │    (找到 .json → 快 ⚡)
+           └── load_from_session_storage()
+                + JSONL 消息加载 (Phase 0.4.1)
+                (未找到 .json → 但 JSONL 可用)
+                  → conversation.messages 非空 ✅
+```
+
+##### 全场景 resume 能力矩阵（Phase 0.4 完成后）
+
+| 写入方 | 写入形式 | resume 快路径 | resume 慢路径 | 递归 resume |
+|--------|---------|:------------:|:------------:|:----------:|
+| CLI 交互 | `.json` + JSONL | ✅ | ✅ | ✅ |
+| REPL 交互 | `.json` + JSONL | ✅ | ✅ | ✅ |
+| TUI 交互 | `.json` + JSONL | ✅ | ✅ | ✅ |
+| Cron bg_runner | JSONL + 结束写 `.json` | ✅ (事后) | ✅ (运行中) | ✅ |
+| Orchestrator | JSONL + 结束写 `.json` | ✅ (事后) | ✅ (运行中) | ✅ |
+| POS Converter | 不适用 | N/A | N/A | N/A |
 
 
 ---
@@ -3475,6 +3770,33 @@ Resume this session with: claude --resume <sessionId>
 - ClawCodex: `src/session/resume_conversation.py`（浏览器已实现）
 
 ---
+
+#### 6.2.7 缺口 7：Session 标签与按标签恢复（S-R7）
+
+**CCB 行为**：CCB 无此功能。
+
+**ClawCodex 扩展**：✅ 已实现（v2.17）。新增 **Session 标签系统**，使 session 可按来源标记并恢复：
+
+| 子项 | 状态 | 说明 |
+|------|:----:|------|
+| `SessionMetadata.tags` 字段 | ✅ | `src/services/session_storage.py:SessionMetadata.tags: list[str]`，序列化到 `metadata.json` |
+| `list_sessions(tag_filter=...)` | ✅ | 按 tag 前缀过滤，返回匹配的最近会话 |
+| `init_metadata(tags=...)` | ✅ | 创建 session 时可传入初始标签 |
+| Cron 自动打标签 | ✅ | `create_queued_run()` 写入 `CronRun` 后自动调用 `_tag_session_with_cron_run()`，打上 `cron:task:<task_id>` / `cron:run:<run_id>` 标签 |
+| `--resume` tag 降级 | ✅ | 如果 `--resume <value>` 不是已知 session ID，自动当作 tag 前缀查找 |
+
+**涉及参考代码**：
+- `src/services/session_storage.py` — `SessionMetadata.tags` + `tag_filter` 参数
+- `clawcodex_ext/cron_system/runs.py` — `_tag_session_with_cron_run()`
+- `clawcodex_ext/cli/dispatch.py` — tag→session_id 降级解析
+
+**使用方式**：
+```bash
+clawcodex --resume cron:task:nightly-build    # 按 cron 任务标签恢复
+clawcodex --resume cron:run:a1b2c3d4           # 按 run ID 恢复
+clawcodex --resume <session_id>                # 按 ID 恢复（不变）
+clawcodex --resume                              # 浏览模式（不变）
+```
 
 #### 6.2.4 缺口 4：Resume 时元数据与状态恢复不完整（S-R4）
 **CCB 行为**：resume 不仅恢复消息列表，还恢复以下旁路状态：
