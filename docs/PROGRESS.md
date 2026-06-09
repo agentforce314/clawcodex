@@ -126,6 +126,7 @@
 | F-80 | Agent 间自主观察与消息交互 | P2 | ⏳ 待开始 | Agent 间自主观察汇报、SendMessage 消息交互、Manager-Worker 协作增强；见 FEATURE_PLAN §4.14（F-80） |
 | F-81 | Native 原生模块系统（Python） | P1 | ⏳ 待开始 | 对标 CCB Rust/NAPI 原生模块，用纯 Python 等价实现音频捕获(sounddevice)、图像差异对比(Pillow+NumPy)、URL Scheme注册(webbrowser+xdg)、修饰键检测。F-61/F-64 前置依赖。预计 1 周。 |
 | F-82 | Remote Control Server 远程控制 | P1 | ⏳ 待开始 | 对标 CCB remote-control-server。FastAPI 实现：会话管理、Worker 调度/心跳/长轮询、SSE/WebSocket 事件流、ACP 中继、环境管理、Web 管理面板。预计 3-4 周。 |
+| F-90 | Hermes Gateway OpenAI 兼容 API 参考实现 | P2 | 📋 参考实现 | 来自 hermes-agent 的 OpenAI 兼容 API 服务器参考（aiohttp, 4305 行），为 F-82 提供 Chat Completions/Session/Runs/Cron 等端点实现参考。hermes 已完整实现，ClawCodex 可复用设计模式。详见 FEATURE_PLAN §7.1（F-90）。 |
 | F-83 | Ultraplan 规划 | P2 | ⏳ 待开始 | 见 FEATURE_PLAN §7.5 |
 | F-84 | Context Collapse | P2 | ⏳ 待开始 | 见 FEATURE_PLAN §7.5 |
 | F-85 | Templates 模板 | P1 | ⏳ 待开始 | 见 FEATURE_PLAN §7.6 |
@@ -1420,6 +1421,35 @@ CronTask due
 
 **依赖**: `fastapi` + `uvicorn`, `PyJWT`/`python-jose`, `sqlalchemy`/`aiosqlite`, `websockets`, `httpx`
 **估算总工时**: 3-4 周
+
+### F-90: Hermes Gateway OpenAI 兼容 API 参考实现
+
+**状态**: 📋 参考实现 | **优先级**: P2 | **对标**: CCB remote-control-server / OpenAI API 兼容层
+**来源**: `hermes-agent` 项目 `gateway/platforms/api_server.py`（4305 行，AGPL-3.0，aiohttp）
+
+本 F-Number 记录一个功能完整的开源参考实现，为 F-82 (Remote Control Server) 提供设计参考。hermes-agent 的 `hermes gateway run` 命令已完整实现以下功能：
+
+| 模块 | 状态（hermes-agent） | ClawCodex 参考价值 |
+|------|:-------------------:|-------------------|
+| Chat Completions `/v1/chat/completions` | ✅ 完整实现 | 消息规范化、SSE 流式、多模态兼容可直接迁移 |
+| Responses API `/v1/responses` | ✅ 完整实现 | `previous_response_id` 链式会话设计 |
+| Session 管理 `/api/sessions` | ✅ 完整实现 | CRUD + fork + chat + stream |
+| Runs 管理 `/v1/runs` + SSE events | ✅ 完整实现 | 异步执行 + SSE 生命周期事件 → F-82.5 直接参考 |
+| Cron Jobs `/api/jobs` | ✅ 完整实现 | CRUD + pause/resume/run |
+| 认证与安全 | ✅ 完整实现 | API_KEY 强制 + CORS + 密钥强度检测 + 端口冲突 |
+| Agent LRU 缓存 | ✅ 完整实现 | 128 个上限，1h TTL，线程安全 → 可复用 |
+| 客户端断连处理 | ✅ 完整实现 | ConnectionResetError → agent.interrupt() |
+
+**关键设计模式**（可直接迁移到 F-82）：
+
+| 模式 | 实现参考 | ClawCodex 适配建议 |
+|------|---------|-------------------|
+| SSE Tool Progress 事件 | `_write_sse_chat_completion()` 中推送 `hermes.tool.progress` 事件 | 复用事件 schema，替换 Agent 类型 |
+| 消息规范化 | `_normalize_chat_content()` 处理数组格式 content | 设为通用中间件 |
+| 会话连续性 | `X-Hermes-Session-Id` 头 + 指纹派生 `_derive_chat_session_id()` | 替换 SessionDB 实现 |
+| 孤儿 Run 清理 | 后台 `_sweep_orphaned_runs()` 定时器 | 可复用整套逻辑 |
+
+**启动流程**: `hermes gateway run` → `gateway/run.py:start_gateway()` → `APIServerAdapter.connect()` → aiohttp `TCPSite`
 
 ### F-83: Ultraplan 高级规划模式
 

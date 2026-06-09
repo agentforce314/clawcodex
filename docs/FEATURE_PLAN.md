@@ -182,6 +182,8 @@ F-34/F-35 中"CLI/TUI 新功能"的描述扩展为全项目范围：所有 front
 
 ---
 
+---
+
 ## 一、Orchestrator 系统
 
 
@@ -6208,6 +6210,55 @@ def create_app(config: RCSConfig) -> FastAPI:
 - `websockets`（WebSocket 传输，可选）
 - `httpx`（HTTP 客户端与 ACP 中继）
 
+#### F-90: Hermes Gateway 参考实现（OpenAI 兼容 API 服务器）
+
+> **来源**: `hermes-agent` 项目，`gateway/platforms/api_server.py` (4305 行)
+> **命令**: `hermes gateway run` | **默认端口**: `127.0.0.1:8642` | **认证**: `API_SERVER_KEY`
+> **底层**: aiohttp | **协议**: AGPL-3.0
+> **对标**: CCB `remote-control-server` / `openai-codex` API 兼容层
+
+**本 F-Number 记录一个功能完整的开源参考实现**，为 F-82 (Remote Control Server) 和 F-66 (ACP 协议) 提供具体架构参考。ClawCodex 可在实现 F-82 时选型复用以下设计模式。
+
+##### 参考 API 端点
+
+| 类别 | 端点 | 说明 |
+|------|------|------|
+| OpenAI 标准 | `POST /v1/chat/completions` | Chat Completions（stream/non-stream、工具调用、多模态） |
+| OpenAI 标准 | `POST /v1/responses` | Responses API（`previous_response_id` 链式会话） |
+| OpenAI 标准 | `GET /v1/models` | 模型列表 |
+| 会话管理 | `GET|POST /api/sessions` | 会话 CRUD |
+| 异步执行 | `POST /v1/runs` + `GET /v1/runs/{id}/events` | 异步 run + SSE 生命周期事件 |
+| Cron 管理 | `GET|POST /api/jobs` | 定时任务 CRUD |
+| 健康检查 | `GET /health` | 存活检测 |
+
+##### 可复用设计模式
+
+| 模式 | 说明 |
+|------|------|
+| SSE 流式工具事件 | `_write_sse_chat_completion()` 中 `hermes.tool.progress` 自定义事件推送 |
+| 消息规范化 | `_normalize_chat_content()` 处理数组格式 content（Open WebUI 等前端差异） |
+| 多模态兼容 | `_normalize_multimodal_content()` 处理图片等非文本内容 |
+| 会话连续性 | `X-Hermes-Session-Id` 头 + `_derive_chat_session_id()` 指纹派生 |
+| Agent LRU 缓存 | 每个会话缓存 AIAgent（上限 128 个，闲置 1h 淘汰） |
+| 客户端断连处理 | `ConnectionResetError` 异常捕获 → `agent.interrupt()` 停止 LLM 调用 |
+| 孤儿 Run 清理 | 后台定时 `_sweep_orphaned_runs()` 清理未消费的 SSE 流 |
+| 端口冲突检测 | `connect()` 前置 `SO_STREAM` 探测拒绝端口冲突 |
+
+##### 关键文件（参考路径）
+
+| 文件 | 行数 | 作用 |
+|------|:----:|------|
+| `gateway/platforms/api_server.py` | 4305 | `APIServerAdapter` 核心实现 |
+| `gateway/run.py` | ~850 | Gateway 主入口 `start_gateway()` |
+| `hermes_cli/gateway.py` | ~700 | CLI `cmd_gateway()` 入口 |
+
+##### F-82 选型建议
+
+- 若 F-82 需 Open WebUI / LobeChat 等前端接入，建议优先适配 OpenAI `/v1/chat/completions` + `/api/sessions` 接口
+- 消息规范化（`_normalize_chat_content`）可迁移为通用中间件
+- SSE Tool Progress 事件可复用作为 F-82.5 的事件流实现方案
+- LRU Agent 缓存方案可直接迁移（只需替换 Hermes 类型为 ClawCodex Agent 类型）
+
 ---
 
 #### F-83: Ultraplan 高级规划模式
@@ -7650,3 +7701,4 @@ F-74 (Sandbox) ──→ 长期迭代（P2）
 | F-87 | Workflow Scripts | §7.5 | ⏳ 待开始 |
 | F-88 | Explore/Plan Agent | §7.5 | ⏳ 待开始 |
 | F-89 | @agent-name 多入口统一支持 | §3.4 | 📋 设计完成 |
+| F-90 | Hermes Gateway OpenAI API 参考 | §7.1 | 📋 参考实现 |
