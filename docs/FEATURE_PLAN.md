@@ -4,7 +4,7 @@
 > 版本: v3.0（目录重构版）
 > 更新日期: 2026-06 | 上游同步: 58ea488 (dev-decoupling-refactor)
 > 
-> **v3.0 变更（目录重构）**：从目录视角合并同类项，原 10 章压缩为 **7 章 + 附录**。已完成特性降级为一行注记；F-40 被割裂的设计稿归入所属子节；§9(CCB 对标)与§10(Python 生态补缺)合并为单章并按子领域分组；跨章节重复概念去重。本文件保留 v2.17 所有内容，仅做结构重组。
+> **v3.0 变更（目录重构）**：从目录视角合并同类项，原 10 章压缩为 **8 章 + 附录**。已完成特性降级为一行注记；F-40 被割裂的设计稿归入所属子节；§9(CCB 对标)与§10(Python 生态补缺)合并为单章并按子领域分组；跨章节重复概念去重。本文件保留 v2.17 所有内容，仅做结构重组。
 
 ---
 
@@ -76,6 +76,16 @@
     - [7.4 可观测性与协议](#7-4-可观测性与协议)
     - [7.5 高级 Agent 模式](#7-5-高级-agent-模式)
     - [7.6 模板系统](#7-6-模板系统)
+- [八、Multi-Session 可视化分析平台（F-91~F-95）](#八multi-session-可视化分析平台f-91f-95)
+    - [8.1 背景](#8-1-背景)
+    - [8.2 架构总览](#8-2-架构总览)
+    - [8.3 子特性分解（F-91~F-95）](#8-3-子特性分解)
+    - [8.4 核心数据模型](#8-4-核心数据模型)
+    - [8.5 API 端点](#8-5-api-端点15-个)
+    - [8.6 关键设计决策](#8-6-关键设计决策)
+    - [8.7 依赖与协同](#8-7-依赖与协同)
+    - [8.8 实施建议顺序](#8-8-实施建议顺序)
+    - [8.9 风险评估](#8-9-风险评估)
 - [附录：F-Number 快速索引](#附录-f-number-快速索引)
 
 ---
@@ -7961,7 +7971,168 @@ F-70 (Plugin 系统) ←── F-72 (API 适配器) ←── 可并行开发
 F-74 (Sandbox) ──→ 长期迭代（P2）
 ```
 
-> **建议**: F-73（CI/CD 质量门禁）是**首个必须实施**的特性——无质量门禁就无法保证后续所有特性开发的质量。紧随其后的是 F-68（Feature Gate）作为架构基础设施。F-69（Budget Mode）和 F-71（工具补齐）可并行开发以快速提升用户体验和功能完整度。
+
+---
+
+## 八、Multi-Session 可视化分析平台（F-91~F-95）
+
+**状态**: 📋 设计完成（两份设计文档已冻结） | **优先级**: P0 | **代码**: 0%
+
+### 8.1 背景
+
+ClawCodex 当前缺少一个可视化的 Session 检视工具。每一次 Agent 执行都产生大量日志（transcript.jsonl、tool events、orchestrator report），但用户只能通过终端文本或逐行 grep 来理解执行过程。
+
+Multi-Session 可视化分析平台是一个独立的 Web 应用，通过甘特图时间轴的形式呈现每个 Session 中不同类型操作的执行时序、层级关系和性能指标，支持单 Session 调试到数十个 Session 批量对比。
+
+**设计文档引用**：
+- BE 集成方案：`多session可视化分析平台集成方案.md`（v3 定稿）
+- FE 产品设计：`多Session可视化分析平台设计文档-前端.md`（v3.1 定稿）
+
+### 8.2 架构总览
+
+```
+extensions/visualizer/
+├── server.py                    # 独立 FastAPI app（路径 B，默认 8765）
+├── ws.py                        # WebSocket live tail
+├── cli.py                       # clawcodex-dev viz 子命令
+├── orchestrator_link.py         # F-38/F-45/F-54 链接生成
+├── import_router.py             # 条件性 session 导入（--allow-import）
+├── models/
+│   └── viz_models.py            # 5 个 Pydantic 模型
+├── parsers/
+│   ├── session_parser.py        # SessionMetadata → viz 数据
+│   ├── transcript_parser.py     # 增量流式 JSONL 解析
+│   ├── multi_agent_parser.py    # mailbox cross-ref 推断
+│   └── tool_events_parser.py    # F-45 events.ndjson 解析
+├── builders/
+│   ├── gantt_data_builder.py    # 甘特图数据组装
+│   ├── timeline_builder.py      # 时间轴 bars
+│   ├── comparison_builder.py    # 跨 session 对比
+│   ├── stats_builder.py         # OperationStats 聚合
+│   ├── anomaly_builder.py       # F-51 no-op 阈值
+│   ├── export_builder.py        # PNG/SVG/JSON/PDF
+│   └── agent_tree_builder.py    # 多 Agent 树（P1）
+├── templates/                   # Jinja2 模板（零 npm）
+│   ├── base.html
+│   ├── index.html               # 甘特图主页面
+│   ├── session_row.html
+│   ├── stats_bar.html
+│   ├── anomaly_panel.html
+│   ├── export_dialog.html
+│   └── status_bar.html
+├── static/
+│   ├── css/style.css
+│   └── js/
+│       ├── app.js               # 搜索/过滤/交互
+│       ├── gantt.js             # ECharts 甘特图
+│       ├── websocket.js         # 原生 WebSocket
+│       └── utils.js             # 工具函数
+└── fixtures/                    # 示例数据
+```
+
+**关键技术栈**：
+- Python: FastAPI + Jinja2 + ECharts CDN
+- 零 npm 依赖，全进 wheel，pip install 即用
+- 独立 FastAPI app（路径 B），预留 `mount_viz(app)` 供 F-82 未来合并
+
+### 8.3 子特性分解
+
+| 编号 | 子特性 | 状态 | 预计工作量 | 对应 Phase |
+|------|--------|:----:|:----------:|:----------:|
+| **F-91** | Visualizer 核心数据管道 | ⏳ 待开始 | 3 周 | Phase 1 |
+| **F-91-A** | 5 个 Pydantic 模型（SessionVizData / TimelineBar / Anomaly / AgentTreeNode / OperationStats） | ⏳ 待开始 | — | Phase 1 |
+| **F-91-B** | 4 个解析器（session / transcript / multi_agent / tool_events） | ⏳ 待开始 | — | Phase 1 |
+| **F-91-C** | 7 个构建器（gantt / timeline / comparison / stats / anomaly / export / agent_tree） | ⏳ 待开始 | — | Phase 1 |
+| **F-92** | Visualizer 后端 API + 实时推送 | ⏳ 待开始 | 1.5 周 | Phase 2 |
+| **F-92-A** | 独立 FastAPI app + /api/viz/ 路由（15 个端点） | ⏳ 待开始 | — | Phase 2 |
+| **F-92-B** | WebSocket live tail（/api/viz/ws/sessions/{sid}） | ⏳ 待开始 | — | Phase 2 |
+| **F-92-C** | 条件性导入（--allow-import, SSRF 校验） | ⏳ 待开始 | — | Phase 2 |
+| **F-93** | Visualizer 前端（Jinja2 + ECharts CDN） | ⏳ 待开始 | 2 周 | Phase 3 |
+| **F-93-A** | 甘特图主页面（相对/绝对/窗口时间轴三模式） | ⏳ 待开始 | — | Phase 3 |
+| **F-93-B** | 搜索/筛选/异常面板/跨 session 对比 | ⏳ 待开始 | — | Phase 3 |
+| **F-93-C** | 多 Agent 树（P0: 简化版, P1: 完整版） | ⏳ 待开始 | — | Phase 3.5 |
+| **F-94** | CLI 集成 + workspace 扫描 | ⏳ 待开始 | 1 周 | Phase 4 |
+| **F-94-A** | clawcodex-dev viz 子命令 | ⏳ 待开始 | — | Phase 4 |
+| **F-94-B** | workspace 多租户（workspaces.json + 自动扫描） | ⏳ 待开始 | — | Phase 4 |
+| **F-95** | Orchestrator 协同链接 | ⏳ 待开始 | 1 周 | Phase 5 |
+| **F-95-A** | F-38 报告 / F-45 tool events / F-54 debug 链接 | ⏳ 待开始 | — | Phase 5 |
+| **F-95-B** | 导出（PNG/SVG/JSON/PDF）+ 分享链接 | ⏳ 待开始 | — | Phase 5 |
+
+### 8.4 核心数据模型
+
+5 个 Pydantic 模型（与前端 TypeScript 类型一一对应）：
+
+| 模型 | 字段数 | 作用 |
+|------|:------:|------|
+| `SessionVizData` | 23 | session 主数据，含 stats / timeline / anomalies 聚合 |
+| `TimelineBar` | 13 | 单个操作条形（type, label, start/end time, agent_id, group_id, parent_id, status, duration_ms, depth） |
+| `Anomaly` | 6 | 异常记录（type, severity, session_id, description, timestamp, suggestion） |
+| `AgentTreeNode` | 9 | 多 Agent 树节点（agent_id, name, parent_id, children, session_ref, status, stats） |
+| `OperationStats` | 7 | 统计聚合（total_ops, by_type, avg_duration, max_concurrent, context_tokens） |
+
+### 8.5 API 端点（15 个）
+
+| 方法 | 路径 | 用途 |
+|------|------|------|
+| GET | `/api/viz/health` | 健康检查 + `allow_import` 状态 |
+| GET | `/api/viz/workspaces` | 列出 workspaces |
+| GET | `/api/viz/workspaces/{id}/sessions?q=` | 搜索/列出 sessions |
+| GET | `/api/viz/sessions/{sid}` | 单个 session 完整 viz 数据 |
+| GET | `/api/viz/sessions/{sid}/stats` | 统计聚合 |
+| GET | `/api/viz/sessions/{sid}/anomalies` | 异常列表 |
+| GET | `/api/viz/sessions/{sid}/tree` | 多 Agent 树 |
+| GET | `/api/viz/sessions/{sid}/report` | F-38/F-45/F-54 链接 |
+| GET | `/api/viz/sessions/{sid}/export?format=` | 导出（png/svg/json） |
+| WS | `/api/viz/ws/sessions/{sid}` | WebSocket live tail |
+| POST | `/api/viz/import` | 导入外部 session（条件性） |
+| GET | `/api/viz/import/status/{task_id}` | 导入进度 |
+| GET | `/api/viz/compare?sessions=...` | 跨 session 对比数据 |
+| POST | `/api/viz/compare/export?format=pdf` | 对比报告导出 |
+| POST/DEL | `/api/viz/share` + `/api/viz/share/{id}` | 分享链接管理 |
+
+### 8.6 关键设计决策
+
+1. **F-82 路径 B**（独立 FastAPI app，不依赖 F-82），预留 `mount_viz(app)` 供未来合并
+2. **前端零 npm**：Jinja2 + ECharts CDN，全进 wheel，pip install 即用
+3. **F-54 正式路径**：`{workspace}/.orchestrator_control/runs/{run_id}/debug.ndjson`
+4. **增量流式解析**：`transcript_parser.py` 用 `file.seek` + `readlines`，不一次性 `read_all`
+5. **ECharts progressive: 5000**：大规模 session 降级策略
+6. **`--allow-import` 标志**：默认关闭，启用才开放导入端点
+7. **序列化约定**：FE ↔ BE 之间 camelCase ↔ snake_case 转换
+
+### 8.7 依赖与协同
+
+| 特性 | 关系 | 说明 |
+|------|------|------|
+| F-38（验证报告） | **被 consumer** | visualizer 显示 F-38 report links |
+| F-40（ProgressSink） | **被 consumer** | visualizer 订阅实时进度事件 |
+| F-45（tool events） | **被 consumer** | visualizer 读取 events.ndjson |
+| F-51（no-op 检测） | **复用** | anomaly_builder 复用 F-51 阈值 |
+| F-54（debug.ndjson） | **被 consumer** | visualizer 显示 debug 时序图 |
+| F-49（会话存储） | **被 consumer** | visualizer 从 SessionStorage 读取 |
+| F-82（Remote Control） | **无阻塞** | 路径 B 独立运行，F-82 上线后通过 `mount_viz()` 合并 |
+| SessionMetadata 字段补齐 | **前置依赖** | 缺 `end_time` / `context_tokens` / `detected_mode` / `config` |
+| MANIFEST.in 修复 | **前置依赖** | sdist 必须包含 extensions/*.py 和 extensions/*.json |
+
+### 8.8 实施建议顺序
+
+```
+Phase 1 (F-91) ──→ Phase 2 (F-92) ──→ Phase 3 (F-93) ──→ Phase 4 (F-94) ──→ Phase 5 (F-95)
+模型先行              API 可用             前端可用              CLI 集成           Orchestrator 协同
+(3 周)               (1.5 周)              (2 周)               (1 周)             (1 周)
+```
+
+**预计总工期**：8.5 周（单人 full-time）
+
+### 8.9 风险评估
+
+| 风险 | 可能性 | 影响 | 缓解措施 |
+|------|--------|------|---------|
+| 大型 Session 内存 OOM | 中 | 高 | 增量流式解析 + progressive 5000 |
+| F-54 路径最终不同 | 低 | 低 | _has_debug_ndjson 中已备 fallback 路径 |
+| 前端 ECharts 性能瓶颈 | 低 | 中 | Canvas 渲染 + dataZoom 降级 |
+| SessionMetadata 字段缺失 | 高 | 中 | 文档已备 transcript 聚合回退 |
+
 
 ---
 
@@ -8029,3 +8200,8 @@ F-74 (Sandbox) ──→ 长期迭代（P2）
 | F-88 | Explore/Plan Agent | §7.5 | ⏳ 待开始 |
 | F-89 | @agent-name 多入口统一支持 | §3.4 | 📋 设计完成 |
 | F-90 | Hermes Gateway OpenAI API 参考 | §7.1 | 📋 参考实现 |
+| **F-91** | **Visualizer 核心数据管道** | §8.3 | ⏳ **待开始 (P0)** |
+| **F-92** | **Visualizer 后端 API + WebSocket** | §8.3 | ⏳ **待开始 (P0)** |
+| **F-93** | **Visualizer 前端（Jinja2 + ECharts）** | §8.3 | ⏳ **待开始 (P0)** |
+| **F-94** | **Visualizer CLI 集成 + workspace 扫描** | §8.3 | ⏳ **待开始 (P0)** |
+| **F-95** | **Visualizer Orchestrator 协同链接** | §8.3 | ⏳ **待开始 (P0)** |
