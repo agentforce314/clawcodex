@@ -266,6 +266,19 @@ def dispatch_local_command(
             )
         except Exception as exc:
             return CommandDispatchResult(handled=True, error=f"/tools: {exc}")
+    if name == "/stream":
+        parts = raw.split(maxsplit=1)
+        if len(parts) == 1:
+            return CommandDispatchResult(handled=True, system_text="__stream_status__")
+        action = parts[1].strip().lower()
+        if action in ("on", "true", "1", "enable", "enabled"):
+            return CommandDispatchResult(handled=True, system_text="__stream_on__")
+        elif action in ("off", "false", "0", "disable", "disabled"):
+            return CommandDispatchResult(handled=True, system_text="__stream_off__")
+        elif action == "toggle":
+            return CommandDispatchResult(handled=True, system_text="__stream_toggle__")
+        else:
+            return CommandDispatchResult(handled=True, error="Usage: /stream [on|off|toggle]")
     if name == "/tui":
         # Already in TUI — no-op message instead of silently handing off.
         return CommandDispatchResult(
