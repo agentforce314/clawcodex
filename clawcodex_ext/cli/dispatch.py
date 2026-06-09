@@ -209,6 +209,7 @@ def run_cli(argv: list[str] | None = None) -> int:
         resume_session_id=resume_val if resume_val and resume_val != 'browse' else None,
         resume_browse=(resume_val == 'browse'),
         fork_session_id=getattr(args, 'fork_session', None),
+        resume_session_at=_parse_resume_at(getattr(args, 'resume_session_at', None)),
         verbose=getattr(args, 'verbose', False),
     )
     ctx = RuntimeContext.build(runtime_opts)
@@ -367,3 +368,19 @@ def _resolve_first_agent_in_dir(cwd: Path) -> dict[str, Any] | None:
             continue
 
     return best
+
+
+def _parse_resume_at(raw: str | None) -> int | None:
+    """Parse ``--resume-session-at`` value to an integer index.
+
+    Returns ``None`` when the argument is not given or cannot be parsed.
+    """
+    if raw is None:
+        return None
+    try:
+        val = int(raw)
+        if val < 0:
+            return None
+        return val
+    except (ValueError, TypeError):
+        return None

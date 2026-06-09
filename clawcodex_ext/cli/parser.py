@@ -131,6 +131,13 @@ Examples:
         help='Create a new session ID but preserve conversation history from the given session',
     )
     noninteractive.add_argument(
+        '--resume-session-at',
+        type=str,
+        default=None,
+        metavar='MSG_INDEX',
+        help='Resume a session at a specific message index (0-based); requires --resume or --continue',
+    )
+    noninteractive.add_argument(
         '--verbose',
         action='store_true',
         help='Emit verbose diagnostics to stderr',

@@ -119,6 +119,7 @@ class ClawCodexExtREPL(ClawcodexREPL):
 
         # ---- Session: create or resume ----
         self._resume_session_id = resume_session_id
+        self._session_metadata: dict[str, Any] | None = None  # S-R4-M: cached metadata
         if session is not None:
             self.session = session
         elif resume_session_id:
@@ -133,6 +134,8 @@ class ClawCodexExtREPL(ClawcodexREPL):
                     f"Model: {loaded_session.model}[/dim]"
                 )
                 self._sync_conversation_from_transcript(resume_session_id)
+                # S-R4-M: load and display session metadata
+                self._load_session_metadata(resume_session_id)
             else:
                 self.console.print(
                     f"[yellow]Session not found: {resume_session_id}. "
@@ -436,3 +439,59 @@ class ClawCodexExtREPL(ClawcodexREPL):
         )
 
         self._update_built_in_commands_with_command_system()
+
+    # ---- S-R4-M: session metadata management ----
+
+    def _load_session_metadata(self, session_id: str) -> None:
+        """Load metadata from SessionStorage and cache it on the instance."""
+        try:
+            from src.services.session_storage import SessionStorage
+            storage = SessionStorage(session_id=session_id)
+            meta = storage.get_metadata()
+            if meta is not None:
+                self._session_metadata = {
+                    "session_id": meta.session_id,
+                    "title": meta.title or "",
+                    "model": meta.model or "",
+                    "cwd": meta.cwd or "",
+                    "last_user_input": meta.last_user_input or "",
+                    "message_count": meta.message_count,
+                    "start_time": meta.start_time,
+                    "last_updated": meta.last_updated,
+                }
+                # Display title if set
+                if meta.title:
+                    self.console.print(f"[dim]Session title: {meta.title}[/dim]")
+        except Exception:
+            self._session_metadata = None
+
+    def _update_metadata_last_input(self, text: str) -> None:
+        """Update the ``last_user_input`` field in SessionStorage metadata."""
+        if not self.session:
+            return
+        try:
+            from src.services.session_storage import SessionStorage
+            storage = SessionStorage(session_id=self.session.session_id)
+            storage.update_metadata(last_user_input=text[:200])  # cap at 200 chars
+        except Exception:
+            pass
+
+    # ---- S-R4-A: agent metadata tracking ----
+
+    def _update_metadata_agent(self, agent_name: str) -> None:
+        """Store the agent name in SessionStorage metadata."""
+        if not self.session:
+            return
+        try:
+            from src.services.session_storage import SessionStorage
+            storage = SessionStorage(session_id=self.session.session_id)
+            storage.update_metadata(agent_name=agent_name)
+        except Exception:
+            pass
+
+    # ---- S-R4-M: track last_user_input in metadata (override chat) ----
+
+    def chat(self, user_input: str, max_turns: int | None = None):
+        """Override chat() to track the last user input in metadata."""
+        self._update_metadata_last_input(user_input)
+        return super().chat(user_input, max_turns=max_turns)

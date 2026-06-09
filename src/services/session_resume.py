@@ -79,6 +79,10 @@ def resume_session(
     # Handle snip boundaries
     messages = _handle_snip_boundaries(messages)
 
+    # S-R4-CK: run consistency check on the final message chain
+    consistency_warnings = _check_chain_consistency(messages)
+    warnings.extend(consistency_warnings)
+
     return ResumeResult(
         messages=messages,
         metadata=metadata,
@@ -181,11 +185,82 @@ def _fix_orphaned_tool_uses(messages: list[Message]) -> tuple[list[Message], lis
 def _adjust_paths(msg: Message, old_cwd: str, new_cwd: str) -> Message:
     """Adjust relative paths when resuming from a different directory.
 
-    This is a best-effort adjustment — only handles string content.
+    Best-effort: rewrites relative file paths in tool_use arguments and
+    tool_result content that start with *old_cwd* so they point to the
+    equivalent location under *new_cwd*.  Absolute paths and paths outside
+    *old_cwd* are left untouched.
+
+    Handles tool arguments with keys like ``path``, ``file_path``,
+    ``directory``, ``working_dir`` that contain a relative file path.
+    Falls back to a general string-replace of the old prefix as a safety
+    net for messages whose structure isn't explicitly mapped.
     """
-    # For now, just return the message as-is
-    # Full path adjustment would need to inspect tool_use/tool_result content
+    if old_cwd == new_cwd:
+        return msg
+
+    # ---- Tool-use arguments with known path keys ----
+    PATH_KEYS: set[str] = {"path", "file_path", "directory", "working_dir", "dir", "target_dir"}
+
+    if isinstance(msg, AssistantMessage) and isinstance(msg.content, list):
+        for block in msg.content:
+            btype = getattr(block, "type", None)
+            if btype == "tool_use":
+                inp = getattr(block, "input", None) or {}
+                if not isinstance(inp, dict):
+                    continue
+                modified = False
+                for key, val in inp.items():
+                    if key in PATH_KEYS and isinstance(val, str) and val.startswith(old_cwd):
+                        inp[key] = val.replace(old_cwd, new_cwd, 1)
+                        modified = True
+                if modified:
+                    try:
+                        block.input = inp  # mutate in-place
+                    except Exception:
+                        pass
+
+    # ---- Tool-result content with path references ----
+    if msg.role == "user" and isinstance(msg.content, list):
+        for block in msg.content:
+            btype = getattr(block, "type", None)
+            if btype == "tool_result":
+                content = getattr(block, "content", None)
+                if isinstance(content, str) and old_cwd in content:
+                    try:
+                        block.content = content.replace(old_cwd, new_cwd)
+                    except Exception:
+                        pass
+                elif isinstance(content, list):
+                    _rewrite_content_list(content, old_cwd, new_cwd)
+
+    # ---- Fallback: rewrite content text ----
+    content = getattr(msg, "content", None) or ""
+    if isinstance(content, str) and old_cwd in content:
+        try:
+            msg.content = content.replace(old_cwd, new_cwd)  # type: ignore[assignment]
+        except Exception:
+            pass
+    elif isinstance(content, list):
+        _rewrite_content_list(content, old_cwd, new_cwd)
+
     return msg
+
+
+def _rewrite_content_list(blocks: list, old_cwd: str, new_cwd: str) -> None:
+    """Rewrite path text inside a content-block list in-place."""
+    for item in blocks:
+        if isinstance(item, str) and old_cwd in item:
+            try:
+                blocks[blocks.index(item)] = item.replace(old_cwd, new_cwd)
+            except Exception:
+                pass
+        elif isinstance(item, dict):
+            for key, val in item.items():
+                if isinstance(val, str) and old_cwd in val:
+                    try:
+                        item[key] = val.replace(old_cwd, new_cwd)
+                    except Exception:
+                        pass
 
 
 def _handle_snip_boundaries(messages: list[Message]) -> list[Message]:
@@ -203,3 +278,95 @@ def _handle_snip_boundaries(messages: list[Message]) -> list[Message]:
         return messages[last_boundary_idx:]
 
     return messages
+
+
+def _check_chain_consistency(messages: list[Message]) -> list[str]:
+    """Validate the resume message chain for structural consistency (S-R4-CK).
+
+    Checks:
+    1. Message ordering follows user → assistant → user → assistant ...
+    2. Each assistant message has non-empty content or tool_use blocks.
+    3. No consecutive messages with the same role.
+
+    Returns a list of warning strings (empty = consistent).
+    """
+    warnings: list[str] = []
+    if not messages:
+        return warnings
+
+    prev_role: str | None = None
+    for i, msg in enumerate(messages):
+        role = getattr(msg, "role", None) or ""
+        if not role:
+            warnings.append(f"Message {i}: missing role")
+            continue
+
+        # Check consecutive same role
+        if prev_role == role:
+            warnings.append(
+                f"Message {i}: consecutive '{role}' messages (prev was message {i - 1})"
+            )
+
+        # Check ordering: user → assistant → user → assistant
+        if prev_role == "user" and role == "user":
+            warnings.append(
+                f"Message {i}: two consecutive user messages; "
+                "expected assistant between them"
+            )
+        if prev_role == "assistant" and role == "assistant":
+            warnings.append(
+                f"Message {i}: two consecutive assistant messages; "
+                "expected user between them"
+            )
+
+        # Check assistant messages have content
+        if role == "assistant":
+            content = getattr(msg, "content", None)
+            if not content:
+                warnings.append(f"Message {i}: assistant message has empty content")
+            elif isinstance(content, list) and len(content) == 0:
+                warnings.append(f"Message {i}: assistant message has empty content list")
+            else:
+                # Check that the content has at least text or tool_use
+                has_text = False
+                has_tool_use = False
+                if isinstance(content, list):
+                    for block in content:
+                        btype = getattr(block, "type", None) if not isinstance(block, dict) else block.get("type")
+                        if btype == "text":
+                            has_text = True
+                        elif btype == "tool_use":
+                            has_tool_use = True
+                if not has_text and not has_tool_use:
+                    # Single string content is fine
+                    if not isinstance(content, str) or not content.strip():
+                        warnings.append(
+                            f"Message {i}: assistant message has no text or tool_use content"
+                        )
+
+        prev_role = role
+
+    # Check that the chain starts with a user message
+    first_role = getattr(messages[0], "role", None) or ""
+    if first_role != "user":
+        warnings.append(
+            f"Chain starts with '{first_role}' message (expected 'user')"
+        )
+
+    # Check that the chain ends with an assistant message
+    last_role = getattr(messages[-1], "role", None) or ""
+    if last_role not in ("assistant", "user"):
+        warnings.append(
+            f"Chain ends with '{last_role}' message (expected 'assistant' or 'user')"
+        )
+
+    return warnings
+
+
+__all__ = [
+    "resume_session",
+    "ResumeResult",
+    "_fix_orphaned_tool_uses",
+    "_adjust_paths",
+    "_check_chain_consistency",
+]

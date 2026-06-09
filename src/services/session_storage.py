@@ -45,6 +45,7 @@ class SessionMetadata:
     message_count: int = 0
     last_updated: float = field(default_factory=time.time)
     last_user_input: str = ""
+    agent_name: str = ""  # S-R4-A: agent type used for the session
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -57,6 +58,7 @@ class SessionMetadata:
             "message_count": self.message_count,
             "last_updated": self.last_updated,
             "last_user_input": self.last_user_input,
+            "agent_name": self.agent_name,
         }
 
     @classmethod
@@ -71,6 +73,7 @@ class SessionMetadata:
             message_count=data.get("message_count", 0),
             last_updated=data.get("last_updated", time.time()),
             last_user_input=data.get("last_user_input", ""),
+            agent_name=data.get("agent_name", ""),
         )
 
 

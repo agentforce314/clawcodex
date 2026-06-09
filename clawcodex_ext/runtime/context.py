@@ -33,6 +33,7 @@ class RuntimeOptions:
     resume_session_id: str | None = None
     resume_browse: bool = False
     fork_session_id: str | None = None
+    resume_session_at: int | None = None  # S-R4-AT: message index to resume at
     verbose: bool = False
     append_system_prompt: str = ""
     agent_dir_override: Path | None = None
@@ -141,6 +142,14 @@ class RuntimeContext:
                         old_session.conversation.messages
                     )
                 session = new_session
+
+        # S-R4-AT: truncate conversation to a specific message index
+        if session is not None and options.resume_session_at is not None:
+            idx = options.resume_session_at
+            if session.conversation and session.conversation.messages:
+                total = len(session.conversation.messages)
+                if 0 <= idx < total:
+                    session.conversation.messages = session.conversation.messages[:idx + 1]
 
         runtime = cls(
             provider=provider,

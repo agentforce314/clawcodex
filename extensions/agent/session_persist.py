@@ -40,7 +40,7 @@ def save_to_session_storage(session: Any) -> None:
         storage.init_metadata(
             model=session.model,
             cwd=str(Path.cwd()),
-            title=f"session-{session.session_id[:8]}",
+            title=_derive_title(session),
         )
         # Write each message from the conversation.  Use ``write_raw``
         # with the serialised dict so we don't re-encode via
@@ -48,12 +48,50 @@ def save_to_session_storage(session: Any) -> None:
         # in ``Conversation.to_dict``).
         conv_dict = session.conversation.to_dict()
         messages_list = conv_dict.get("messages", []) if isinstance(conv_dict, dict) else []
+        # Track the last user input from the conversation
+        last_input = _extract_last_user_input(messages_list)
+        if last_input:
+            try:
+                storage.update_metadata(last_user_input=last_input[:200])
+            except Exception:
+                pass
         for msg_data in messages_list:
             if isinstance(msg_data, dict):
                 storage.write_raw(msg_data)
         storage.flush()
     except Exception:
         pass  # Best-effort; not critical if this fails.
+
+
+def _derive_title(session: Any) -> str:
+    """Derive a display title for the session."""
+    base = f"session-{session.session_id[:8]}"
+    # Try to get a title from the session object itself
+    title = getattr(session, "title", None) or ""
+    return title if title else base
+
+
+def _extract_last_user_input(messages_list: list) -> str:
+    """Extract the most recent user message text from the conversation."""
+    for msg in reversed(messages_list):
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content", "") or ""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, dict):
+                    if item.get("type") in (None, "text"):
+                        parts.append(str(item.get("text") or ""))
+            if parts:
+                return " ".join(parts)
+    return ""
 
 
 def load_from_session_storage(session_id: str) -> Optional[dict[str, Any]]:
