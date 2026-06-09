@@ -264,6 +264,12 @@ class ClawCodexTUI(App):
         # here to the host shell after the alt-screen exits.
         if not self.exit_snapshot:
             self._capture_exit_snapshot()
+        # Save session as a fallback (if exit() already saved, save is
+        # a no-op because the data is already on disk).
+        try:
+            self.session.save()
+        except Exception:
+            pass
 
     # ---- exit / snapshot ----------------------------------------------
     def _capture_exit_snapshot(self) -> None:
@@ -283,15 +289,23 @@ class ClawCodexTUI(App):
             self.exit_snapshot = []
 
     def exit(self, result=None, return_code=0, message=None):  # type: ignore[override]
-        """Capture transcript before handing control back to Textual.
+        """Capture transcript and save session before handing control back to Textual.
 
         Overriding ``exit()`` lets the entry-point reprint the
         conversation to the host terminal once the alt-screen unwinds,
         matching the TS ink reference's non-fullscreen UX where
         `/exit` leaves the printed text intact in scrollback.
+
+        Saving the session here ensures it is persisted regardless of
+        which exit path fires (``/exit``, Ctrl+D, exit-flow dialog).
         """
 
         self._capture_exit_snapshot()
+        # Save session state so it can be resumed later.
+        try:
+            self.session.save()
+        except Exception:
+            pass
         return super().exit(result, return_code=return_code, message=message)
 
     def _on_state_change(self) -> None:
@@ -1048,6 +1062,8 @@ class ClawCodexTUI(App):
     # ---- agent loop plumbing ----
     def submit_to_agent(self, prompt: str) -> None:
         ## _log(f'[app.py] submit_to_agent called: {prompt}')
+        # Track last user input in session metadata for the session browser.
+        self._update_metadata_last_input(prompt)
         try:
             self.history_store.append(prompt)
         except Exception:
@@ -1068,6 +1084,17 @@ class ClawCodexTUI(App):
             self.announcer.announce("Cancelling…", level="assertive", notify=False)
 
     # ---- helpers ----
+    def _update_metadata_last_input(self, text: str) -> None:
+        """Update the ``last_user_input`` field in SessionStorage metadata."""
+        if not self.session:
+            return
+        try:
+            from src.services.session_storage import SessionStorage
+            storage = SessionStorage(session_id=self.session.session_id)
+            storage.update_metadata(last_user_input=text[:200])  # cap at 200 chars
+        except Exception:
+            pass
+
     def _show_resume_browser(self) -> None:
         """Push the ResumeConversation modal so the user can pick a session."""
         screen = ResumeConversation()
@@ -1156,13 +1183,13 @@ class ClawCodexTUI(App):
                         elif kind == "thinking":
                             # Replay thinking content from historical session.
                             thinking_text = item.get("thinking", "") or ""
-                            if thinking_text:
-                                self.transcript.append_thinking_chunk(thinking_text)
+                            if thinking_text and self._repl_screen is not None:
+                                self._repl_screen.transcript.append_thinking_chunk(thinking_text)
                         elif kind == "redacted_thinking":
                             # Replay redacted thinking with redacted=True.
                             data = item.get("data", "") or ""
-                            if data:
-                                self.transcript.append_thinking_chunk(data, redacted=True)
+                            if data and self._repl_screen is not None:
+                                self._repl_screen.transcript.append_thinking_chunk(data, redacted=True)
 
     def _slash_command_words(self) -> list[str]:
         return build_command_words(self.workspace_root, self.tool_context)

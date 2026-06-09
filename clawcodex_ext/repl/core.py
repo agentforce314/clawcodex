@@ -2147,7 +2147,7 @@ class ClawcodexREPL:
                     else:
                         self.console.print("\n  [yellow]Session saved.[/yellow]")
                 self.console.print("[dim]Exiting clawcodex...[/dim]")
-                sys.exit(0)
+                raise SystemExit(0)
 
             # Ctrl+B → full exit to terminal shell (not back to CLI)
             if isinstance(result, tuple) and result[0] == "__FULL_EXIT__":
@@ -2160,7 +2160,7 @@ class ClawcodexREPL:
                 else:
                     self.console.print("\n  [dim]Session saved.[/dim]")
                 self.console.print("[dim]Exiting clawcodex...[/dim]")
-                sys.exit(0)
+                raise SystemExit(0)
 
             self.console.print("[dim]Returned from Textual TUI.[/dim]")
 
@@ -2196,6 +2196,125 @@ class ClawcodexREPL:
                 self.session.conversation.messages = messages
         except Exception:
             pass  # Best-effort, don't fail resume
+
+    def _replay_resume_history(self) -> None:
+        """Replay full conversation history on resume, rendering identically to live chat.
+
+        Produces the same visual output the user saw before exiting:
+        * User messages with ``❯`` prefix
+        * Assistant text rendered as Rich Markdown
+        * Tool calls as ``● ToolName(args)`` headers
+        * Tool results as ``  ⎿  result`` lines (with edit diff support)
+        * Thinking blocks rendered if visible, or stashed for Ctrl+O expansion
+
+        This mirrors the rendering logic in ``chat()``'s engine-stream handler
+        but operates on the static message list rather than a live stream.
+        """
+        from src.types.content_blocks import TextBlock, ToolUseBlock, ToolResultBlock
+        from src.types.content_blocks import ThinkingBlock, RedactedThinkingBlock
+        from src.tool_system.renderers import summarize_tool_use
+
+        self.console.print()
+        self.console.print("[dim]─── resumed conversation history ───[/dim]\n")
+
+        # Build a tool_use_id → (name, input) map so we can show
+        # the right header above each ToolResultBlock.
+        tool_use_map: dict[str, tuple[str, dict]] = {}
+        # Track pending tool-use headers that haven't been printed yet
+        # (deferred until the matching result arrives, same as live chat).
+        pending_tool_use_prints: dict[str, str] = {}
+        tool_block_needs_leading_space = False
+
+        for msg in self.session.conversation.messages:
+            role = getattr(msg, 'role', '') or ''
+            content = getattr(msg, 'content', None)
+
+            if role == 'system':
+                continue
+
+            if role == 'user':
+                if isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, ToolResultBlock):
+                            # Print the deferred ● ToolName(args) header
+                            header = pending_tool_use_prints.pop(
+                                block.tool_use_id, None
+                            )
+                            if header is not None:
+                                if tool_block_needs_leading_space:
+                                    self.console.print()
+                                self.console.print(header)
+                            # Print result line
+                            if block.is_error:
+                                err_text = block.content if isinstance(block.content, str) else str(block.content)
+                                self.console.print(f"[red]  ⎿  {err_text or 'Error'}[/red]")
+                            else:
+                                preview = self._format_tool_result_preview(
+                                    block, tool_use_map.get(block.tool_use_id),
+                                )
+                                if isinstance(preview, str):
+                                    if "\n" in preview:
+                                        first, *rest = preview.split("\n")
+                                        self.console.print(f"[dim]  ⎿  {first}[/dim]")
+                                        for ln in rest:
+                                            self.console.print(f"[dim]     {ln}[/dim]")
+                                    else:
+                                        self.console.print(f"[dim]  ⎿  {preview}[/dim]")
+                                else:
+                                    self.console.print("[dim]  ⎿  [/dim]", end="")
+                                    self.console.print(preview)
+                            tool_block_needs_leading_space = True
+                        elif isinstance(block, TextBlock):
+                            text = block.text or ""
+                            if text:
+                                self._echo_user_input(text)
+                elif isinstance(content, str) and content:
+                    self._echo_user_input(content)
+                continue
+
+            if role == 'assistant':
+                if isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, TextBlock) and block.text:
+                            self.console.print(Markdown(block.text))
+                        elif isinstance(block, ToolUseBlock):
+                            tool_use_map[block.id] = (block.name, block.input)
+                            summary = summarize_tool_use(block.name, block.input)
+                            if isinstance(summary, str) and summary:
+                                summary = self._shorten_path_text(summary)
+                            if summary:
+                                call_args = f"[dim]([/dim]{summary}[dim])[/dim]"
+                            else:
+                                call_args = ""
+                            pending_tool_use_prints[block.id] = (
+                                f"[green]●[/green] [bold cyan]{block.name}[/bold cyan]"
+                                + (f" {call_args}" if call_args else "")
+                            )
+                        elif isinstance(block, ThinkingBlock):
+                            # Replay thinking blocks matching live-chat behaviour:
+                            # visible → print directly; hidden → stash for Ctrl+O.
+                            thinking_text = block.thinking or ""
+                            if thinking_text:
+                                if self._thinking_visible:
+                                    self.console.print(thinking_text, end="", markup=False, highlight=False, soft_wrap=True)
+                                else:
+                                    self._thinking_chunks.append(thinking_text)
+                        elif isinstance(block, RedactedThinkingBlock):
+                            # Redacted thinking is never expandable — skip silently
+                            # in replay, same as live chat (no visible output).
+                            pass
+                elif isinstance(content, str) and content:
+                    self.console.print(Markdown(content))
+                continue
+
+        # Flush any tool-use headers that never received a result
+        for header in pending_tool_use_prints.values():
+            if tool_block_needs_leading_space:
+                self.console.print()
+            self.console.print(header)
+            tool_block_needs_leading_space = True
+
+        self.console.print("\n[dim]─── end of history ───[/dim]\n")
 
     def _flatten_message_content(self, content: Any) -> str:
         """Normalise Message.content (string or block list) to text."""
@@ -2289,37 +2408,11 @@ class ClawcodexREPL:
             self.console.print("Type [bold]/exit[/bold] to quit.\n")
 
         # Print conversation history when resuming a session
+        # — renders identically to live chat output so the user sees
+        # the same transcript they would have seen before exiting.
         resumed = getattr(self, '_resume_session_id', None)
         if resumed and self.session.conversation.messages:
-            self.console.print("[dim]--- conversation history ---[/dim]")
-            for msg in self.session.conversation.messages:
-                role = getattr(msg, 'role', '')
-                content = getattr(msg, 'content', '')
-
-                # Skip tool_result messages - they're results of agent's tool calls,
-                # not actual user inputs. Displaying them as user messages pollutes
-                # the conversation view.
-                if role == 'user' and isinstance(content, list):
-                    # Check if this is a tool_result message (user providing tool output)
-                    has_tool_result = any(
-                        (getattr(c, 'type', None) == 'tool_result') or
-                        (isinstance(c, dict) and c.get('type') == 'tool_result')
-                        for c in content if content
-                    )
-                    if has_tool_result:
-                        continue  # Skip tool_result messages
-
-                content_text = self._flatten_message_content(content)
-                if not content_text:
-                    continue
-
-                if role == 'user':
-                    self.console.print(f"[dim]❯ {content_text}[/dim]")
-                elif role == 'assistant' and content_text:
-                    # Truncate long assistant messages for preview
-                    preview = content_text[:300] + '...' if len(content_text) > 300 else content_text
-                    self.console.print(f"[magenta]{preview}[/magenta]")
-            self.console.print("[dim]--- end of history ---\n[/dim]")
+            self._replay_resume_history()
 
         while True:
             try:
@@ -2351,6 +2444,10 @@ class ClawcodexREPL:
 
                 if user_input is None:
                     # app.exit() was called (e.g., Ctrl+B)
+                    try:
+                        self.session.save()
+                    except Exception:
+                        pass
                     self._print_resume_hint()
                     self.console.print("\n[blue]Goodbye![/blue]")
                     break
@@ -2365,10 +2462,18 @@ class ClawcodexREPL:
                 self.chat(user_input)
 
             except KeyboardInterrupt:
+                try:
+                    self.session.save()
+                except Exception:
+                    pass
                 self.console.print("\n[yellow]Interrupted. Type /exit to quit.[/yellow]")
                 self._print_resume_hint()
                 continue
             except EOFError:
+                try:
+                    self.session.save()
+                except Exception:
+                    pass
                 self._print_resume_hint()
                 self.console.print("\n[blue]Goodbye![/blue]")
                 break
@@ -2489,7 +2594,7 @@ class ClawcodexREPL:
             self.console.print("[blue]Goodbye![/blue]")
             if sid:
                 self.console.print(f"[dim]Resume with: clawcodex --resume {sid}[/dim]")
-            sys.exit(0)
+            raise SystemExit(0)
 
         elif cmd == '/login':
             self.console.print("[cyan]Use [bold]clawcodex login[/bold] in a separate terminal to configure your API key.[/cyan]")
@@ -3626,7 +3731,7 @@ class ClawcodexREPL:
                 f"[dim]Resume with: clawcodex --resume {self.session.session_id}[/dim]"
             )
             self.console.print("[dim]Exiting clawcodex...[/dim]")
-            sys.exit(0)
+            raise SystemExit(0)
         else:
             # Windows graceful degradation — no os.fork(), subprocess
             # launch may also have failed.
