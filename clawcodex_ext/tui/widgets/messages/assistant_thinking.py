@@ -54,7 +54,6 @@ class AssistantThinkingMessage(BaseRow):
         color: $text-muted;
     }
     AssistantThinkingMessage > RowHeader.-thinking.-clickable {
-        cursor: pointer;
     }
     AssistantThinkingMessage > RowHeader.-thinking:hover {
         color: $text;

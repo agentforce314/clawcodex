@@ -145,6 +145,17 @@ class AssistantTextMessage(BaseRow):
         yield header
         yield Static(Text(""), markup=False, classes="-body")
 
+    def on_mount(self) -> None:
+        if self._finalised and self._final_text.strip():
+            body = self._body_widget()
+            if body is not None:
+                cache = get_markdown_cache()
+                rendered = cache.get_or_render(self._final_text)
+                self._last_body_renderable = rendered
+                body.update(rendered)
+        elif self.streaming_text:
+            self._refresh_body_plain()
+
     # ---- streaming ----
     def append_chunk(self, chunk: str) -> None:
         """Append a streamed chunk and re-render at safe checkpoints.
