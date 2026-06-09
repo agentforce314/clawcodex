@@ -177,6 +177,8 @@ class AgentSession:
     # silently inheriting ``status="completed"``.
     session_end_reason: str | None = None
     session_end_summary: str = ""
+    _snapshot_provider: str = ""
+    _snapshot_model: str = ""
 
     def _save_json_snapshot(self) -> None:
         """F-49 Phase 0.4.5: write a ``src.agent.Session``-compatible
@@ -187,53 +189,102 @@ class AgentSession:
         authoritative source) rather than from ``AgentSession`` fields
         that don't carry a full Conversation.  Best-effort: failures
         are logged but never propagated.
+
+        IMPORTANT: this writes the ``{sid}.json`` file directly instead
+        of calling ``CoreSession.save()`` to avoid the side-effect in
+        ``save_to_session_storage()`` which overwrites the SessionStorage
+        metadata (title, cwd, etc.) that ``run()`` already initialised
+        via ``session._transcript_storage.init_metadata()``.
         """
         if not self.run_id:
             return
         try:
-            from src.agent.session import Session as CoreSession
+            import json as _json
+            from src.agent.conversation import Conversation
             from src.services.session_storage import SessionStorage
             from src.types.messages import message_from_dict
 
-            storage = SessionStorage(session_id=self.run_id)
-            entries = storage.read_transcript()
+            storage: SessionStorage | None = getattr(self, "_transcript_storage", None)
             messages = []
-            for entry in entries:
-                # Skip background-completion markers
-                if (
-                    entry.get("role") == "system"
-                    and entry.get("content") == "__background_complete__"
-                ):
-                    continue
+            if storage is not None:
                 try:
-                    messages.append(message_from_dict(entry))
+                    blocks = storage.load_messages()
+                    for blk in blocks:
+                        try:
+                            msg = message_from_dict(blk)
+                            messages.append(msg)
+                        except Exception:
+                            pass
                 except Exception:
                     pass
 
-            # Build a CoreSession and save it — Session.save() writes
-            # the ``.json`` snapshot to ~/.clawcodex/sessions/{sid}.json.
-            from src.types.conversation import Conversation
-            snap = CoreSession.__new__(CoreSession)
-            snap.session_id = self.run_id
-            snap.provider = self._snapshot_provider or ""
-            snap.model = self._snapshot_model or ""
-            snap.conversation = Conversation(messages=messages)
-            snap.created_at = datetime.now(timezone.utc).isoformat()
-            snap.updated_at = datetime.now(timezone.utc).isoformat()
-            snap.save()
+            # Build cost block — mirrors Session._snapshot_cost_block()
+            # in src/agent/session.py so restore_cost_state_for_session()
+            # can restore bootstrap accumulators on --resume.
+            cost_block: dict = {}
+            try:
+                import time as _time
+                from src.bootstrap.state import (
+                    get_total_cost_usd,
+                    get_total_api_duration,
+                    get_total_api_duration_without_retries,
+                    get_total_tool_duration,
+                    get_total_lines_added,
+                    get_total_lines_removed,
+                    get_start_time,
+                    get_model_usage,
+                )
+                cost_block = {
+                    "total_cost_usd": get_total_cost_usd(),
+                    "total_api_duration": get_total_api_duration(),
+                    "total_api_duration_without_retries":
+                        get_total_api_duration_without_retries(),
+                    "total_tool_duration": get_total_tool_duration(),
+                    "total_lines_added": get_total_lines_added(),
+                    "total_lines_removed": get_total_lines_removed(),
+                    "last_duration": _time.time() - get_start_time(),
+                    "model_usage": {
+                        model: {
+                            "input_tokens": u.input_tokens,
+                            "output_tokens": u.output_tokens,
+                            "cache_creation_input_tokens": u.cache_creation_input_tokens,
+                            "cache_read_input_tokens": u.cache_read_input_tokens,
+                            "cost_usd": u.cost_usd,
+                        }
+                        for model, u in get_model_usage().items()
+                    },
+                }
+            except Exception:
+                # Best-effort: cost block is optional; restore tolerates
+                # missing fields with defaults of 0.
+                pass
+
+            # Write the .json snapshot directly — do NOT call
+            # CoreSession.save() because it triggers
+            # save_to_session_storage() which overwrites the
+            # SessionStorage metadata (title, cwd) that run()
+            # already initialised.
+            conv = Conversation(messages=messages)
+            snapshot_data = {
+                "session_id": self.run_id,
+                "provider": self._snapshot_provider or "",
+                "model": self._snapshot_model or "",
+                "conversation": conv.to_dict(),
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "cost": cost_block,
+            }
+            session_dir = Path.home() / ".clawcodex" / "sessions"
+            session_dir.mkdir(parents=True, exist_ok=True)
+            snapshot_path = session_dir / f"{self.run_id}.json"
+            with open(snapshot_path, "w", encoding="utf-8") as f:
+                _json.dump(snapshot_data, f, indent=2)
         except Exception:
             logger.exception(
                 "F-49 Phase 0.4.5: failed to write .json snapshot "
-                "for run_id=%s", self.run_id,
+                "run_id=%s",
+                self.run_id,
             )
-
-    # Snapshot helpers: provider/model strings for the .json snapshot.
-    # Set by AgentRunner.run() before the main loop starts so the
-    # finally-block can use them even if the session has been
-    # partially cleaned up.
-    _snapshot_provider: str = ""
-    _snapshot_model: str = ""
-
 
 @dataclass
 class RetryItem:
@@ -651,6 +702,12 @@ class AgentRunner:
         workspace = session.workspace
         if session.run_id is None:
             session.run_id = self._build_run_id(session)
+        # F-49 Phase 0.4.5: stash provider/model on the session so the
+        # exit-callback can write the .json snapshot even when the
+        # session has been partially cleaned up or the run aborted via
+        # exception / early return.
+        session._snapshot_provider = self.agent_config.provider or ""
+        session._snapshot_model = self.agent_config.model or ""
         if comment_tracker is not None and issue.id:
             await self._post_summary_placeholder(session, comment_tracker)
 
@@ -775,1084 +832,1090 @@ class AgentRunner:
                     )
 
         update_diagnostics()
+        try:
+            while turn_number < self.max_turns:
+                # Build prompt for this turn
+                if turn_number == 0:
+                    if session.prompt_override:
+                        prompt = session.prompt_override
+                    else:
+                        # Build clarification context if issue is in clarification flow
+                        clarification_context = ""
+                        pending_question = None
+                        options = None
 
-        while turn_number < self.max_turns:
-            # Build prompt for this turn
-            if turn_number == 0:
-                if session.prompt_override:
-                    prompt = session.prompt_override
+                        if clarification_resolver is not None and issue.id:
+                            # Check if this issue has a pending clarification
+                            resolved = clarification_resolver.get_answer(issue.id)
+                            if resolved and resolved.status.value in (
+                                "pending",
+                                "awaiting_local",
+                                "awaiting_author",
+                            ):
+                                # Get the pending item from queue to retrieve question + options
+                                pending_item = clarification_resolver._queue.get(issue.id)
+                                if pending_item:
+                                    pending_question = pending_item.question
+                                    options = pending_item.options if pending_item.options else None
+                                    clarification_context = PromptBuilder.build_clarification_context(
+                                        pending_question=pending_question,
+                                        options=options,
+                                    )
+
+                        prompt = PromptBuilder.render(
+                            issue,
+                            clarification_context=clarification_context,
+                            pending_question=pending_question,
+                            options=options,
+                            session=session,
+                        )
+                    session._issue_context = prompt  # Store for continuation
                 else:
-                    # Build clarification context if issue is in clarification flow
-                    clarification_context = ""
-                    pending_question = None
-                    options = None
-
-                    if clarification_resolver is not None and issue.id:
-                        # Check if this issue has a pending clarification
-                        resolved = clarification_resolver.get_answer(issue.id)
-                        if resolved and resolved.status.value in (
-                            "pending",
-                            "awaiting_local",
-                            "awaiting_author",
-                        ):
-                            # Get the pending item from queue to retrieve question + options
-                            pending_item = clarification_resolver._queue.get(issue.id)
-                            if pending_item:
-                                pending_question = pending_item.question
-                                options = pending_item.options if pending_item.options else None
-                                clarification_context = PromptBuilder.build_clarification_context(
-                                    pending_question=pending_question,
-                                    options=options,
-                                )
-
-                    prompt = PromptBuilder.render(
-                        issue,
-                        clarification_context=clarification_context,
-                        pending_question=pending_question,
-                        options=options,
+                    prompt = PromptBuilder.build_continuation_prompt(
+                        turn_number=turn_number,
+                        max_turns=self.max_turns,
+                        issue_context=getattr(session, "_issue_context", None),
                         session=session,
                     )
-                session._issue_context = prompt  # Store for continuation
-            else:
-                prompt = PromptBuilder.build_continuation_prompt(
-                    turn_number=turn_number,
-                    max_turns=self.max_turns,
-                    issue_context=getattr(session, "_issue_context", None),
-                    session=session,
-                )
-                logger.info(
-                    "Continuation turn %d/%s for issue_id=%s",
-                    turn_number,
-                    self.max_turns,
-                    issue.id,
-                )
-
-            # F-49 Phase 0: lazy-init SessionStorage and write user prompt
-            if session.run_id:
-                if session._transcript_storage is None:
-                    try:
-                        from src.services.session_storage import SessionStorage
-                        session._transcript_storage = SessionStorage(
-                            session_id=session.run_id,
-                        )
-                        session._transcript_storage.init_metadata(
-                            model=self.agent_config.model or "",
-                            cwd=str(session.workspace.path),
-                            title=(
-                                f"orchestrator-"
-                                f"{session.issue.identifier or session.issue.id}"
-                            ),
-                        )
-                    except Exception:
-                        logger.exception(
-                            "Failed to init transcript storage run_id=%s",
-                            session.run_id,
-                        )
-                # F-49 Phase 1: start the Unix control socket. Defensive:
-                # a socket failure must NOT abort the agent run — log
-                # and leave ``control_socket = None`` so the broadcast
-                # + poll sites become no-ops.
-                if session.control_socket is None:
-                    try:
-                        from extensions.orchestrator.control_socket import (
-                            ControlSocket,
-                        )
-                        from pathlib import Path as _CsPath
-                        sock_dir = _CsPath(
-                            session.workspace.path,
-                        ) / ".run_control"
-                        sock_path = sock_dir / f"{session.run_id}.sock"
-                        cs = ControlSocket(sock_path)
-                        await cs.start()
-                        session.control_socket = cs
-                        session.control_socket_path = str(sock_path)
-                    except Exception:
-                        logger.exception(
-                            "Failed to start control_socket run_id=%s",
-                            session.run_id,
-                        )
-                        session.control_socket = None
-                if session._transcript_storage is not None:
-                    try:
-                        from src.types.messages import create_user_message
-                        from src.types.content_blocks import TextBlock
-                        session._transcript_storage.write_message(
-                            create_user_message(
-                                content=[TextBlock(text=prompt)],
-                                origin="human",
-                            )
-                        )
-                    except Exception:
-                        logger.exception(
-                            "Failed to write transcript prompt run_id=%s",
-                            session.run_id,
-                        )
-
-            append_debug_event(
-                session.debug_log_path,
-                "agent_runner.turn_start",
-                issue_id=issue.id,
-                run_id=session.run_id,
-                turn=turn_number,
-                prompt_len=len(prompt),
-                output_len=len(session.output_text),
-            )
-            query_config = QueryConfig(
-                prompt=prompt,
-                workspace=workspace.path,
-                provider=self.agent_config.provider,
-                model=self.agent_config.model,
-                max_turns=self.max_turns,
-                permission_mode=self.agent_config.permission_mode,
-                run_id=session.run_id,
-                debug_log_path=session.debug_log_path,
-            )
-            runner = QueryRunner(query_config)
-
-            turn_has_tool_calls = False
-            turn_output = ""
-            turn_has_modifying_tool = False
-            # F-?? root-cause fix: per-turn tool-name accumulator feeding
-            # the loop-detection signature history.
-            turn_tool_names: list[str] = []
-
-            try:
-                stream_iter = runner.stream()
-                while True:
-                    try:
-                        event = await stream_iter.__anext__()
-                    except StopAsyncIteration:
-                        break
-                    event_type = type(event).__name__
-                    session.last_agent_event_at = time.time()
-                    session.last_agent_event = event_type
-                    event_tool_name = getattr(event, "tool_name", None)
-                    if event_tool_name:
-                        session.last_tool_name = event_tool_name
-                    append_debug_event(
-                        session.debug_log_path,
-                        "agent_runner.event",
-                        issue_id=issue.id,
-                        run_id=session.run_id,
-                        type=event_type,
-                        tool=event_tool_name,
-                        turn=turn_number,
-                        tool_count=tool_count,
-                        output_len=len(session.output_text),
+                    logger.info(
+                        "Continuation turn %d/%s for issue_id=%s",
+                        turn_number,
+                        self.max_turns,
+                        issue.id,
                     )
-                    if isinstance(event, TextDelta):
-                        session.output_text += event.content
-                        turn_output += event.content
-                        update_diagnostics()
-                        if status_dashboard is not None:
-                            try:
-                                status_dashboard.on_event(event, session)
-                            except Exception:
-                                pass
 
-                        # Push to event queue for CLI tail
-                        if session.event_queue is not None:
-                            try:
-                                session.event_queue.put_nowait(event)
-                            except Exception:
-                                pass
-
-                        # F-49 Phase 1: broadcast to attached socket clients.
-                        # Defensive: a broken socket must never abort the
-                        # agent run, so the whole block is wrapped in
-                        # try/except and guarded by ``is not None``.
-                        if session.control_socket is not None:
-                            try:
-                                await session.control_socket.send_event({
-                                    "type": event.__class__.__name__,
-                                    "data": self._event_to_broadcast_dict(
-                                        event,
-                                    ),
-                                })
-                            except Exception:
-                                pass
-
-                        # F-49 Phase 0: accumulate assistant text for transcript
-                        session._transcript_asst_text += event.content
-
-                    elif isinstance(event, ToolCallEvent):
-                        turn_has_tool_calls = True
-                        tool_count += 1
-                        update_diagnostics()
-                        # F-?? root-cause fix: collect tool names for the
-                        # turn signature so the loop-detection guard can
-                        # spot repeated tool-call patterns across turns.
-                        if event.tool_name:
-                            turn_tool_names.append(event.tool_name)
-                        # F-40 root-cause fix: has_made_progress tracking.
-                        # Once the LLM emits a modifying tool call, set the
-                        # flag so the stagnation guard uses the relaxed
-                        # (2×) threshold for subsequent empty turns.
-                        if event.tool_name in _MODIFYING_TOOL_NAMES:
-                            session.has_made_progress = True
-                            turn_has_modifying_tool = True
-
-                        # Pause support: wait for resume if session is paused
-                        if session.paused and session.pause_resume_event is not None:
-                            await session.pause_resume_event.wait()
-
-                        # Operator hint injection: check .operator_hints.md
-                        self._inject_operator_hints(session.workspace)
-
-                        # F-45: in headless (orchestrator) mode the api.query
-                        # stream yields ToolCallEvent with _approved=None
-                        # (TS upstream's ToolContext.approval_policy =
-                        # "bypassPermissions" + permission_handler = None
-                        # bypasses the user-prompt layer, not the policy
-                        # decision layer).  The orchestrator's ApprovalPolicy
-                        # is the authoritative source of "allowed vs denied";
-                        # call it here so the audit log captures real
-                        # decisions.  Then mirror the policy's verdict into
-                        # the per-tool NDJSON bypass.
-                        event = self._handle_tool_call(event, session_context)
-                        # Tag session_context with the current turn so the
-                        # NDJSON row carries the right `turn` value.
-                        session_context["turn"] = turn_number
-                        self._append_tool_event_log(event, session_context)
-
-                        if status_dashboard is not None:
-                            try:
-                                status_dashboard.on_event(event, session)
-                            except Exception:
-                                pass
-
-                        # Push to event queue for CLI tail
-                        if session.event_queue is not None:
-                            try:
-                                session.event_queue.put_nowait(event)
-                            except Exception:
-                                pass
-
-                        # F-49 Phase 1: broadcast to attached socket clients.
-                        # Defensive: a broken socket must never abort the
-                        # agent run, so the whole block is wrapped in
-                        # try/except and guarded by ``is not None``.
-                        if session.control_socket is not None:
-                            try:
-                                await session.control_socket.send_event({
-                                    "type": event.__class__.__name__,
-                                    "data": self._event_to_broadcast_dict(
-                                        event,
-                                    ),
-                                })
-                            except Exception:
-                                pass
-
-                        # F-49 Phase 0.1: buffer tool_use block for end-of-turn flush.
-                        # The spec requires ONE AssistantMessage per turn with N
-                        # ToolUseBlocks in event arrival order; the flush is called
-                        # from (a) the next ToolResultEvent, (b) SessionComplete,
-                        # (c) max_turns fallthrough, (d) 429 backoff reset.
-                        if session._transcript_storage is not None:
-                            try:
-                                from src.types.content_blocks import ToolUseBlock
-                                if event.tool_use_id:
-                                    session._transcript_tool_uses.append(
-                                        ToolUseBlock(
-                                            id=event.tool_use_id,
-                                            name=event.tool_name,
-                                            input=event.params,
-                                        )
-                                    )
-                            except Exception:
-                                logger.exception(
-                                    "Failed to buffer transcript tool_use "
-                                    "run_id=%s", session.run_id,
-                                )
-
-                    elif isinstance(event, ToolResultEvent):
-                        logger.debug(
-                            "Tool result issue_id=%s tool=%s is_error=%s",
-                            issue.id,
-                            event.tool_name,
-                            event.result.get("is_error", False),
-                        )
-                        if status_dashboard is not None:
-                            try:
-                                status_dashboard.on_event(event, session)
-                            except Exception:
-                                pass
-
-                        # Push to event queue for CLI tail
-                        if session.event_queue is not None:
-                            try:
-                                session.event_queue.put_nowait(event)
-                            except Exception:
-                                pass
-
-                        # F-49 Phase 1: broadcast to attached socket clients.
-                        # Defensive: a broken socket must never abort the
-                        # agent run, so the whole block is wrapped in
-                        # try/except and guarded by ``is not None``.
-                        if session.control_socket is not None:
-                            try:
-                                await session.control_socket.send_event({
-                                    "type": event.__class__.__name__,
-                                    "data": self._event_to_broadcast_dict(
-                                        event,
-                                    ),
-                                })
-                            except Exception:
-                                pass
-
-                        # F-49 Phase 0.1: buffer tool_result for end-of-turn flush.
-                        # Keyed by tool_use_id (populated by convert_tool_event
-                        # in extensions/api/query.py) so out-of-order arrivals
-                        # are paired correctly. Flush at the natural end-of-
-                        # tool-result point; the SessionComplete path also
-                        # flushes unconditionally, so missing results get a
-                        # synthetic error block.
-                        if (session._transcript_storage is not None
-                                and event.tool_use_id):
-                            try:
-                                from src.types.content_blocks import ToolResultBlock
-                                result_output = event.result.get("output", "")
-                                is_error = event.result.get("is_error", False)
-                                session._transcript_pending_results[
-                                    event.tool_use_id
-                                ] = ToolResultBlock(
-                                    tool_use_id=event.tool_use_id,
-                                    content=(
-                                        result_output
-                                        if isinstance(result_output, str)
-                                        else str(result_output)
-                                    ),
-                                    is_error=is_error,
-                                )
-                                if event.tool_use_id not in (
-                                    session._transcript_result_order
-                                ):
-                                    session._transcript_result_order.append(
-                                        event.tool_use_id,
-                                    )
-                                if len(session._transcript_result_order) >= len(
-                                    session._transcript_tool_uses
-                                ):
-                                    self._flush_turn_transcript(session)
-                            except Exception:
-                                logger.exception(
-                                    "Failed to buffer transcript tool_result "
-                                    "run_id=%s", session.run_id,
-                                )
-                        update_diagnostics()
-                        if status_dashboard is not None:
-                            try:
-                                status_dashboard.on_event(event, session)
-                            except Exception:
-                                pass
-
-                    elif isinstance(event, SessionComplete):
-                        # 429-aware backoff: detect rate limit BEFORE the
-                        # normal completion handling so we can re-issue
-                        # the same turn after sleeping instead of failing.
-                        if self._is_429_response(turn_output):
-                            new_status = await self._handle_rate_limit(
-                                session,
-                                turn_output,
-                                turn_number,
-                                status_dashboard,
+                # F-49 Phase 0: lazy-init SessionStorage and write user prompt
+                if session.run_id:
+                    if session._transcript_storage is None:
+                        try:
+                            from src.services.session_storage import SessionStorage
+                            session._transcript_storage = SessionStorage(
+                                session_id=session.run_id,
                             )
-                            if new_status == "rate_limit_circuit_open":
-                                return
-                            # F-49 Phase 0.1: reset per-turn transcript
-                            # buffers so the re-issued turn starts clean.
-                            # The previous code leaked _transcript_asst_text
-                            # and a stale _transcript_tool_use_id across
-                            # the backoff boundary.
-                            self._flush_turn_transcript(session)
-                            # Reset the per-turn accumulators so the
-                            # re-issued turn starts with a clean slate.
-                            turn_output = ""
-                            turn_has_tool_calls = False
-                            # Do NOT increment turn_number; the same
-                            # turn's prompt will be re-rendered below
-                            # when the outer while loop iterates.
-                            continue
-
-                        # Normal completion path — increment the turn
-                        # counter and emit PhaseComplete.
-                        # F-49 Phase 1: drain control commands at the
-                        # turn boundary. We use ``get_nowait()`` rather
-                        # than the ``poll_commands()`` async generator
-                        # so the runner does not block waiting for a
-                        # command that may never arrive — the common case
-                        # in headless / CI tests is no clients connected.
-                        # Defensive: each branch wrapped so a malformed
-                        # command never aborts the run.
-                        if session.control_socket is not None:
-                            try:
-                                _q = session.control_socket._command_queue
-                                while True:
-                                    try:
-                                        cmd = _q.get_nowait()
-                                    except asyncio.QueueEmpty:
-                                        break
-                                    if cmd.cmd == "pause":
-                                        session.paused = True
-                                        session.pause_reason = "operator_interrupt"
-                                        if session.pause_resume_event is not None:
-                                            session.pause_resume_event.clear()
-                                    elif cmd.cmd == "resume":
-                                        if cmd.payload:
-                                            session.prompt_override = cmd.payload
-                                        session.paused = False
-                                        if session.pause_resume_event is not None:
-                                            session.pause_resume_event.set()
-                                    elif cmd.cmd == "stop":
-                                        session.session_end_reason = "operator_stop"
-                                        session.session_end_summary = (
-                                            "operator sent stop via control socket"
-                                        )
-                                    elif cmd.cmd == "takeover":
-                                        session.session_end_reason = "operator_takeover"
-                                        session.session_end_summary = (
-                                            "operator requested takeover via control socket"
-                                        )
-                                    # inject / detach: parsed, no agent
-                                    # action yet (TODO Phase 2/3).
-                            except Exception:
-                                logger.exception(
-                                    "control_socket.poll_commands failed",
-                                )
-                        turn_number += 1
-                        session.turn_count = turn_number
-                        # F-49 Phase 0.1: emit any buffered turn content
-                        # (AssistantMessage + optional UserMessage) and
-                        # flush the storage buffer. The helper handles
-                        # empty buffers idempotently.
-                        if session._transcript_storage is not None:
-                            try:
-                                self._flush_turn_transcript(session)
-                                session._transcript_storage.flush()
-                            except Exception:
-                                logger.exception(
-                                    "Failed to flush transcript "
-                                    "run_id=%s", session.run_id,
-                                )
-                        # F-49 Phase 1: stop the control socket so the
-                        # .sock file is cleaned up and any attached
-                        # clients see EOF. Defensive: a stop failure
-                        # must not propagate out of the turn.
-                        if session.control_socket is not None:
-                            try:
-                                await session.control_socket.stop()
-                            except Exception:
-                                logger.exception(
-                                    "Failed to stop control_socket "
-                                    "run_id=%s", session.run_id,
-                                )
+                            session._transcript_storage.init_metadata(
+                                model=self.agent_config.model or "",
+                                cwd=str(session.workspace.path),
+                                title=(
+                                    f"orchestrator-"
+                                    f"{session.issue.identifier or session.issue.id}"
+                                ),
+                            )
+                        except Exception:
+                            logger.exception(
+                                "Failed to init transcript storage run_id=%s",
+                                session.run_id,
+                            )
+                    # F-49 Phase 1: start the Unix control socket. Defensive:
+                    # a socket failure must NOT abort the agent run — log
+                    # and leave ``control_socket = None`` so the broadcast
+                    # + poll sites become no-ops.
+                    if session.control_socket is None:
+                        try:
+                            from extensions.orchestrator.control_socket import (
+                                ControlSocket,
+                            )
+                            from pathlib import Path as _CsPath
+                            sock_dir = _CsPath(
+                                session.workspace.path,
+                            ) / ".run_control"
+                            sock_path = sock_dir / f"{session.run_id}.sock"
+                            cs = ControlSocket(sock_path)
+                            await cs.start()
+                            session.control_socket = cs
+                            session.control_socket_path = str(sock_path)
+                        except Exception:
+                            logger.exception(
+                                "Failed to start control_socket run_id=%s",
+                                session.run_id,
+                            )
                             session.control_socket = None
+                    if session._transcript_storage is not None:
+                        try:
+                            from src.types.messages import create_user_message
+                            from src.types.content_blocks import TextBlock
+                            session._transcript_storage.write_message(
+                                create_user_message(
+                                    content=[TextBlock(text=prompt)],
+                                    origin="human",
+                                )
+                            )
+                        except Exception:
+                            logger.exception(
+                                "Failed to write transcript prompt run_id=%s",
+                                session.run_id,
+                            )
+
+                append_debug_event(
+                    session.debug_log_path,
+                    "agent_runner.turn_start",
+                    issue_id=issue.id,
+                    run_id=session.run_id,
+                    turn=turn_number,
+                    prompt_len=len(prompt),
+                    output_len=len(session.output_text),
+                )
+                query_config = QueryConfig(
+                    prompt=prompt,
+                    workspace=workspace.path,
+                    provider=self.agent_config.provider,
+                    model=self.agent_config.model,
+                    max_turns=self.max_turns,
+                    permission_mode=self.agent_config.permission_mode,
+                    run_id=session.run_id,
+                    debug_log_path=session.debug_log_path,
+                )
+                runner = QueryRunner(query_config)
+
+                turn_has_tool_calls = False
+                turn_output = ""
+                turn_has_modifying_tool = False
+                # F-?? root-cause fix: per-turn tool-name accumulator feeding
+                # the loop-detection signature history.
+                turn_tool_names: list[str] = []
+
+                try:
+                    stream_iter = runner.stream()
+                    while True:
+                        try:
+                            event = await stream_iter.__anext__()
+                        except StopAsyncIteration:
+                            break
+                        event_type = type(event).__name__
+                        session.last_agent_event_at = time.time()
+                        session.last_agent_event = event_type
+                        event_tool_name = getattr(event, "tool_name", None)
+                        if event_tool_name:
+                            session.last_tool_name = event_tool_name
                         append_debug_event(
                             session.debug_log_path,
-                            "agent_runner.turn_complete",
+                            "agent_runner.event",
                             issue_id=issue.id,
                             run_id=session.run_id,
+                            type=event_type,
+                            tool=event_tool_name,
                             turn=turn_number,
-                            reason=event.reason,
                             tool_count=tool_count,
                             output_len=len(session.output_text),
                         )
+                        if isinstance(event, TextDelta):
+                            session.output_text += event.content
+                            turn_output += event.content
+                            update_diagnostics()
+                            if status_dashboard is not None:
+                                try:
+                                    status_dashboard.on_event(event, session)
+                                except Exception:
+                                    pass
 
-                        # Emit PhaseComplete event for progress reporting
-                        phase_event = PhaseComplete(
-                            phase=turn_number,
-                            turn_count=turn_number,
-                        )
-                        if sink is not None:
-                            # F-40: dispatch PhaseComplete + TurnComplete
-                            # through the new protocol methods. The old
-                            # ``on_event`` shim is no longer used by
-                            # AgentRunner; the F-38 stub tests were
-                            # already updated to record on these
-                            # callbacks.
-                            self._dispatch_sink(
-                                sink, "on_phase_complete", phase_event, session
+                            # Push to event queue for CLI tail
+                            if session.event_queue is not None:
+                                try:
+                                    session.event_queue.put_nowait(event)
+                                except Exception:
+                                    pass
+
+                            # F-49 Phase 1: broadcast to attached socket clients.
+                            # Defensive: a broken socket must never abort the
+                            # agent run, so the whole block is wrapped in
+                            # try/except and guarded by ``is not None``.
+                            if session.control_socket is not None:
+                                try:
+                                    await session.control_socket.send_event({
+                                        "type": event.__class__.__name__,
+                                        "data": self._event_to_broadcast_dict(
+                                            event,
+                                        ),
+                                    })
+                                except Exception:
+                                    pass
+
+                            # F-49 Phase 0: accumulate assistant text for transcript
+                            session._transcript_asst_text += event.content
+
+                        elif isinstance(event, ToolCallEvent):
+                            turn_has_tool_calls = True
+                            tool_count += 1
+                            update_diagnostics()
+                            # F-?? root-cause fix: collect tool names for the
+                            # turn signature so the loop-detection guard can
+                            # spot repeated tool-call patterns across turns.
+                            if event.tool_name:
+                                turn_tool_names.append(event.tool_name)
+                            # F-40 root-cause fix: has_made_progress tracking.
+                            # Once the LLM emits a modifying tool call, set the
+                            # flag so the stagnation guard uses the relaxed
+                            # (2×) threshold for subsequent empty turns.
+                            if event.tool_name in _MODIFYING_TOOL_NAMES:
+                                session.has_made_progress = True
+                                turn_has_modifying_tool = True
+
+                            # Pause support: wait for resume if session is paused
+                            if session.paused and session.pause_resume_event is not None:
+                                await session.pause_resume_event.wait()
+
+                            # Operator hint injection: check .operator_hints.md
+                            self._inject_operator_hints(session.workspace)
+
+                            # F-45: in headless (orchestrator) mode the api.query
+                            # stream yields ToolCallEvent with _approved=None
+                            # (TS upstream's ToolContext.approval_policy =
+                            # "bypassPermissions" + permission_handler = None
+                            # bypasses the user-prompt layer, not the policy
+                            # decision layer).  The orchestrator's ApprovalPolicy
+                            # is the authoritative source of "allowed vs denied";
+                            # call it here so the audit log captures real
+                            # decisions.  Then mirror the policy's verdict into
+                            # the per-tool NDJSON bypass.
+                            event = self._handle_tool_call(event, session_context)
+                            # Tag session_context with the current turn so the
+                            # NDJSON row carries the right `turn` value.
+                            session_context["turn"] = turn_number
+                            self._append_tool_event_log(event, session_context)
+
+                            if status_dashboard is not None:
+                                try:
+                                    status_dashboard.on_event(event, session)
+                                except Exception:
+                                    pass
+
+                            # Push to event queue for CLI tail
+                            if session.event_queue is not None:
+                                try:
+                                    session.event_queue.put_nowait(event)
+                                except Exception:
+                                    pass
+
+                            # F-49 Phase 1: broadcast to attached socket clients.
+                            # Defensive: a broken socket must never abort the
+                            # agent run, so the whole block is wrapped in
+                            # try/except and guarded by ``is not None``.
+                            if session.control_socket is not None:
+                                try:
+                                    await session.control_socket.send_event({
+                                        "type": event.__class__.__name__,
+                                        "data": self._event_to_broadcast_dict(
+                                            event,
+                                        ),
+                                    })
+                                except Exception:
+                                    pass
+
+                            # F-49 Phase 0.1: buffer tool_use block for end-of-turn flush.
+                            # The spec requires ONE AssistantMessage per turn with N
+                            # ToolUseBlocks in event arrival order; the flush is called
+                            # from (a) the next ToolResultEvent, (b) SessionComplete,
+                            # (c) max_turns fallthrough, (d) 429 backoff reset.
+                            if session._transcript_storage is not None:
+                                try:
+                                    from src.types.content_blocks import ToolUseBlock
+                                    if event.tool_use_id:
+                                        session._transcript_tool_uses.append(
+                                            ToolUseBlock(
+                                                id=event.tool_use_id,
+                                                name=event.tool_name,
+                                                input=event.params,
+                                            )
+                                        )
+                                except Exception:
+                                    logger.exception(
+                                        "Failed to buffer transcript tool_use "
+                                        "run_id=%s", session.run_id,
+                                    )
+
+                        elif isinstance(event, ToolResultEvent):
+                            logger.debug(
+                                "Tool result issue_id=%s tool=%s is_error=%s",
+                                issue.id,
+                                event.tool_name,
+                                event.result.get("is_error", False),
                             )
-                            self._dispatch_sink(
-                                sink,
-                                "on_turn_complete",
-                                TurnComplete(turn=turn_number),
-                                session,
-                            )
+                            if status_dashboard is not None:
+                                try:
+                                    status_dashboard.on_event(event, session)
+                                except Exception:
+                                    pass
 
-                        update_diagnostics()
-                        if event.reason == "success":
-                            # A successful turn resets the 429 backoff
-                            # counter — a 429 followed by a clean run is
-                            # a sign the rate window has passed.
-                            session.consecutive_429_count = 0
-                            session.rate_limit_pending_turn = None
+                            # Push to event queue for CLI tail
+                            if session.event_queue is not None:
+                                try:
+                                    session.event_queue.put_nowait(event)
+                                except Exception:
+                                    pass
 
-                            # Check if issue is still active before declaring completion
-                            # F-54 root-cause fix: pass the session so
-                            # ``_should_continue`` can also check the
-                            # workspace's git state and stop the
-                            # continuation loop when work is done.
-                            if tracker is not None and issue.id:
-                                is_active, refreshed_issue = await self._should_continue(
-                                    issue, tracker, session
+                            # F-49 Phase 1: broadcast to attached socket clients.
+                            # Defensive: a broken socket must never abort the
+                            # agent run, so the whole block is wrapped in
+                            # try/except and guarded by ``is not None``.
+                            if session.control_socket is not None:
+                                try:
+                                    await session.control_socket.send_event({
+                                        "type": event.__class__.__name__,
+                                        "data": self._event_to_broadcast_dict(
+                                            event,
+                                        ),
+                                    })
+                                except Exception:
+                                    pass
+
+                            # F-49 Phase 0.1: buffer tool_result for end-of-turn flush.
+                            # Keyed by tool_use_id (populated by convert_tool_event
+                            # in extensions/api/query.py) so out-of-order arrivals
+                            # are paired correctly. Flush at the natural end-of-
+                            # tool-result point; the SessionComplete path also
+                            # flushes unconditionally, so missing results get a
+                            # synthetic error block.
+                            if (session._transcript_storage is not None
+                                    and event.tool_use_id):
+                                try:
+                                    from src.types.content_blocks import ToolResultBlock
+                                    result_output = event.result.get("output", "")
+                                    is_error = event.result.get("is_error", False)
+                                    session._transcript_pending_results[
+                                        event.tool_use_id
+                                    ] = ToolResultBlock(
+                                        tool_use_id=event.tool_use_id,
+                                        content=(
+                                            result_output
+                                            if isinstance(result_output, str)
+                                            else str(result_output)
+                                        ),
+                                        is_error=is_error,
+                                    )
+                                    if event.tool_use_id not in (
+                                        session._transcript_result_order
+                                    ):
+                                        session._transcript_result_order.append(
+                                            event.tool_use_id,
+                                        )
+                                    if len(session._transcript_result_order) >= len(
+                                        session._transcript_tool_uses
+                                    ):
+                                        self._flush_turn_transcript(session)
+                                except Exception:
+                                    logger.exception(
+                                        "Failed to buffer transcript tool_result "
+                                        "run_id=%s", session.run_id,
+                                    )
+                            update_diagnostics()
+                            if status_dashboard is not None:
+                                try:
+                                    status_dashboard.on_event(event, session)
+                                except Exception:
+                                    pass
+
+                        elif isinstance(event, SessionComplete):
+                            # 429-aware backoff: detect rate limit BEFORE the
+                            # normal completion handling so we can re-issue
+                            # the same turn after sleeping instead of failing.
+                            if self._is_429_response(turn_output):
+                                new_status = await self._handle_rate_limit(
+                                    session,
+                                    turn_output,
+                                    turn_number,
+                                    status_dashboard,
                                 )
-                                if is_active and turn_number < self.max_turns:
-                                    # F-?? Fix 4: include the running noop
-                                    # streak in the continuation log so
-                                    # operators can spot stuck-on-finished
-                                    # runs from the daemon log alone
-                                    # (the previous message had no
-                                    # indicator that the agent was no
-                                    # longer making progress).
-                                    logger.info(
-                                        "Issue %s still active, continuing turn %d/%d "
-                                        "(noop_streak=%d/%d)",
-                                        issue.id,
-                                        turn_number,
-                                        self.max_turns,
-                                        no_work_streak,
-                                        max_no_op_turns,
-                                    )
-                                    # F-?? root-cause fix: stagnation guard.
-                                    # Counts consecutive turns where the LLM
-                                    # produced zero tool calls AND empty
-                                    # output — the exact pattern observed in
-                                    # F-09's repeated 30-min timeouts (run-06
-                                    # had 0 tool calls / 328 SessionComplete
-                                    # events in a tight loop). Independent of
-                                    # the workspace-dirty heuristic below,
-                                    # which silently never fires when the
-                                    # workspace has untracked files.
-                                    if (
-                                        not turn_has_tool_calls
-                                        and not turn_output.strip()
-                                    ):
-                                        no_work_streak += 1
-                                    else:
-                                        no_work_streak = 0
+                                if new_status == "rate_limit_circuit_open":
+                                    return
+                                # F-49 Phase 0.1: reset per-turn transcript
+                                # buffers so the re-issued turn starts clean.
+                                # The previous code leaked _transcript_asst_text
+                                # and a stale _transcript_tool_use_id across
+                                # the backoff boundary.
+                                self._flush_turn_transcript(session)
+                                # Reset the per-turn accumulators so the
+                                # re-issued turn starts with a clean slate.
+                                turn_output = ""
+                                turn_has_tool_calls = False
+                                # Do NOT increment turn_number; the same
+                                # turn's prompt will be re-rendered below
+                                # when the outer while loop iterates.
+                                continue
 
-                                    # F-40 root-cause fix: dual-threshold.
-                                    # An agent that has already made progress
-                                    # (emitted at least one modifying tool
-                                    # call — Write / Edit / …) is given 2× the
-                                    # configured max_no_op_turns before
-                                    # stagnation fires, because empty-turn
-                                    # streaks after productive work are
-                                    # more likely recoverable (the LLM may be
-                                    # in a temporary tail loop) than true
-                                    # deadlocks from a broken provider.
-                                    _stagnation_threshold = (
-                                        max_no_op_turns * 2
-                                        if session.has_made_progress
-                                        else max_no_op_turns
-                                    )
-                                    if no_work_streak >= _stagnation_threshold:
-                                        # F-54 root-cause fix: when the
-                                        # agent never emitted a single
-                                        # modifying tool call (Write/Edit)
-                                        # AND tool_count is 0 (SessionComplete
-                                        # returned immediately without any
-                                        # tool), the real reason is "LLM gave
-                                        # up without doing work", not
-                                        # stagnation.  Mark it as such so
-                                        # the orchestrator can retry.
-                                        if (
-                                            not getattr(session, "has_made_progress", False)
-                                            and tool_count == 0
-                                        ):
-                                            # F-54 root-cause fix: before
-                                            # declaring ``llm_gave_up``,
-                                            # verify via test_command.
-                                            if await self._run_verification(session):
-                                                session.status = "completed"
-                                                session.session_end_reason = (
-                                                    "already_completed"
-                                                )
-                                                session.session_end_summary = (
-                                                    "work already implemented "
-                                                    "(verification passed)"
-                                                )
-                                                logger.info(
-                                                    "Issue %s: work already done "
-                                                    "(verification passed) — "
-                                                    "marking completed",
-                                                    issue.id,
-                                                )
-                                            else:
-                                                session.session_end_reason = "llm_gave_up"
-                                                session.session_end_summary = (
-                                                    f"LLM returned SessionComplete(success) "
-                                                    f"after 0 tool calls with no code changes"
-                                                )
-                                                logger.warning(
-                                                    "LLM gave up immediately issue_id=%s "
-                                                    "turns=%s tools=%s — "
-                                                    "SessionComplete with 0 tools",
-                                                    issue.id,
-                                                    turn_number,
-                                                    tool_count,
-                                                )
-                                        else:
-                                            session.session_end_reason = "stagnation"
+                            # Normal completion path — increment the turn
+                            # counter and emit PhaseComplete.
+                            # F-49 Phase 1: drain control commands at the
+                            # turn boundary. We use ``get_nowait()`` rather
+                            # than the ``poll_commands()`` async generator
+                            # so the runner does not block waiting for a
+                            # command that may never arrive — the common case
+                            # in headless / CI tests is no clients connected.
+                            # Defensive: each branch wrapped so a malformed
+                            # command never aborts the run.
+                            if session.control_socket is not None:
+                                try:
+                                    _q = session.control_socket._command_queue
+                                    while True:
+                                        try:
+                                            cmd = _q.get_nowait()
+                                        except asyncio.QueueEmpty:
+                                            break
+                                        if cmd.cmd == "pause":
+                                            session.paused = True
+                                            session.pause_reason = "operator_interrupt"
+                                            if session.pause_resume_event is not None:
+                                                session.pause_resume_event.clear()
+                                        elif cmd.cmd == "resume":
+                                            if cmd.payload:
+                                                session.prompt_override = cmd.payload
+                                            session.paused = False
+                                            if session.pause_resume_event is not None:
+                                                session.pause_resume_event.set()
+                                        elif cmd.cmd == "stop":
+                                            session.session_end_reason = "operator_stop"
                                             session.session_end_summary = (
-                                                f"{no_work_streak} consecutive "
-                                                "turns with no tool calls and "
-                                                "empty output"
+                                                "operator sent stop via control socket"
                                             )
-                                        logger.warning(
-                                            "Stagnation detected issue_id=%s — "
-                                            "%d consecutive no-op turns, "
-                                            "breaking outer loop",
+                                        elif cmd.cmd == "takeover":
+                                            session.session_end_reason = "operator_takeover"
+                                            session.session_end_summary = (
+                                                "operator requested takeover via control socket"
+                                            )
+                                        # inject / detach: parsed, no agent
+                                        # action yet (TODO Phase 2/3).
+                                except Exception:
+                                    logger.exception(
+                                        "control_socket.poll_commands failed",
+                                    )
+                            turn_number += 1
+                            session.turn_count = turn_number
+                            # F-49 Phase 0.1: emit any buffered turn content
+                            # (AssistantMessage + optional UserMessage) and
+                            # flush the storage buffer. The helper handles
+                            # empty buffers idempotently.
+                            if session._transcript_storage is not None:
+                                try:
+                                    self._flush_turn_transcript(session)
+                                    session._transcript_storage.flush()
+                                except Exception:
+                                    logger.exception(
+                                        "Failed to flush transcript "
+                                        "run_id=%s", session.run_id,
+                                    )
+                            # F-49 Phase 1: stop the control socket so the
+                            # .sock file is cleaned up and any attached
+                            # clients see EOF. Defensive: a stop failure
+                            # must not propagate out of the turn.
+                            if session.control_socket is not None:
+                                try:
+                                    await session.control_socket.stop()
+                                except Exception:
+                                    logger.exception(
+                                        "Failed to stop control_socket "
+                                        "run_id=%s", session.run_id,
+                                    )
+                                session.control_socket = None
+                            append_debug_event(
+                                session.debug_log_path,
+                                "agent_runner.turn_complete",
+                                issue_id=issue.id,
+                                run_id=session.run_id,
+                                turn=turn_number,
+                                reason=event.reason,
+                                tool_count=tool_count,
+                                output_len=len(session.output_text),
+                            )
+
+                            # Emit PhaseComplete event for progress reporting
+                            phase_event = PhaseComplete(
+                                phase=turn_number,
+                                turn_count=turn_number,
+                            )
+                            if sink is not None:
+                                # F-40: dispatch PhaseComplete + TurnComplete
+                                # through the new protocol methods. The old
+                                # ``on_event`` shim is no longer used by
+                                # AgentRunner; the F-38 stub tests were
+                                # already updated to record on these
+                                # callbacks.
+                                self._dispatch_sink(
+                                    sink, "on_phase_complete", phase_event, session
+                                )
+                                self._dispatch_sink(
+                                    sink,
+                                    "on_turn_complete",
+                                    TurnComplete(turn=turn_number),
+                                    session,
+                                )
+
+                            update_diagnostics()
+                            if event.reason == "success":
+                                # A successful turn resets the 429 backoff
+                                # counter — a 429 followed by a clean run is
+                                # a sign the rate window has passed.
+                                session.consecutive_429_count = 0
+                                session.rate_limit_pending_turn = None
+
+                                # Check if issue is still active before declaring completion
+                                # F-54 root-cause fix: pass the session so
+                                # ``_should_continue`` can also check the
+                                # workspace's git state and stop the
+                                # continuation loop when work is done.
+                                if tracker is not None and issue.id:
+                                    is_active, refreshed_issue = await self._should_continue(
+                                        issue, tracker, session
+                                    )
+                                    if is_active and turn_number < self.max_turns:
+                                        # F-?? Fix 4: include the running noop
+                                        # streak in the continuation log so
+                                        # operators can spot stuck-on-finished
+                                        # runs from the daemon log alone
+                                        # (the previous message had no
+                                        # indicator that the agent was no
+                                        # longer making progress).
+                                        logger.info(
+                                            "Issue %s still active, continuing turn %d/%d "
+                                            "(noop_streak=%d/%d)",
                                             issue.id,
+                                            turn_number,
+                                            self.max_turns,
                                             no_work_streak,
+                                            max_no_op_turns,
                                         )
-                                        append_debug_event(
-                                            session.debug_log_path,
-                                            "agent_runner.stagnation_detected",
-                                            issue_id=issue.id,
-                                            run_id=session.run_id,
-                                            turn=turn_number,
-                                            no_work_streak=no_work_streak,
-                                        )
-                                        session.status = "stagnation"
-                                        self._dispatch_sink(
-                                            sink,
-                                            "on_session_complete",
-                                            SessionComplete(
-                                                reason="stagnation"
-                                            ),
-                                            session,
-                                        )
-                                        return
+                                        # F-?? root-cause fix: stagnation guard.
+                                        # Counts consecutive turns where the LLM
+                                        # produced zero tool calls AND empty
+                                        # output — the exact pattern observed in
+                                        # F-09's repeated 30-min timeouts (run-06
+                                        # had 0 tool calls / 328 SessionComplete
+                                        # events in a tight loop). Independent of
+                                        # the workspace-dirty heuristic below,
+                                        # which silently never fires when the
+                                        # workspace has untracked files.
+                                        if (
+                                            not turn_has_tool_calls
+                                            and not turn_output.strip()
+                                        ):
+                                            no_work_streak += 1
+                                        else:
+                                            no_work_streak = 0
 
-                                    # F-40 root-cause fix: read-only
-                                    # tool spiral guard.  When the agent
-                                    # spends multiple consecutive turns
-                                    # making ONLY read-only tool calls
-                                    # (Bash / Read / Grep / …) without a
-                                    # single Write / Edit, it is stuck
-                                    # in an investigation spiral (F-54's
-                                    # turn 1-6 pattern: 230+ Bash calls,
-                                    # 0 code changes).  Bash output is
-                                    # always non-empty, so we do NOT
-                                    # check ``turn_output`` here —
-                                    # the absence of modifying tools
-                                    # is the reliable indicator.
-                                    if (
-                                        turn_number > 0
-                                        and turn_has_tool_calls
-                                        and not turn_has_modifying_tool
-                                    ):
-                                        read_only_streak += 1
-                                    else:
-                                        read_only_streak = 0
-
-                                    if read_only_streak >= _MAX_READ_ONLY_TURNS:
-                                        session.session_end_reason = "read_only_loop"
-                                        session.session_end_summary = (
-                                            f"{read_only_streak} consecutive "
-                                            "turns with only read-only tool calls "
-                                            "and no code changes"
+                                        # F-40 root-cause fix: dual-threshold.
+                                        # An agent that has already made progress
+                                        # (emitted at least one modifying tool
+                                        # call — Write / Edit / …) is given 2× the
+                                        # configured max_no_op_turns before
+                                        # stagnation fires, because empty-turn
+                                        # streaks after productive work are
+                                        # more likely recoverable (the LLM may be
+                                        # in a temporary tail loop) than true
+                                        # deadlocks from a broken provider.
+                                        _stagnation_threshold = (
+                                            max_no_op_turns * 2
+                                            if session.has_made_progress
+                                            else max_no_op_turns
                                         )
-                                        logger.warning(
-                                            "Read-only tool loop detected issue_id=%s — "
-                                            "%d consecutive read-only turns, "
-                                            "breaking outer loop",
-                                            issue.id,
-                                            read_only_streak,
-                                        )
-                                        append_debug_event(
-                                            session.debug_log_path,
-                                            "agent_runner.read_only_loop_detected",
-                                            issue_id=issue.id,
-                                            run_id=session.run_id,
-                                            turn=turn_number,
-                                            read_only_streak=read_only_streak,
-                                        )
-                                        session.status = "read_only_loop"
-                                        self._dispatch_sink(
-                                            sink,
-                                            "on_session_complete",
-                                            SessionComplete(
-                                                reason="read_only_loop"
-                                            ),
-                                            session,
-                                        )
-                                        return
-
-                                    # F-?? root-cause fix: loop guard.
-                                    # Records this turn's tool-call
-                                    # signature and breaks if the same
-                                    # signature repeats >= threshold
-                                    # times within the recent window.
-                                    if turn_tool_names:
-                                        signature = "|".join(
-                                            sorted(turn_tool_names)
-                                        )
-                                    else:
-                                        signature = "<empty>"
-                                    tool_signature_history.append(signature)
-                                    if len(tool_signature_history) > loop_window:
-                                        tool_signature_history = (
-                                            tool_signature_history[-loop_window:]
-                                        )
-                                    if (
-                                        tool_signature_history.count(signature)
-                                        >= loop_threshold
-                                    ):
-                                        session.session_end_reason = (
-                                            "loop_detected"
-                                        )
-                                        session.session_end_summary = (
-                                            f"signature {signature!r} "
-                                            f"repeated "
-                                            f"{tool_signature_history.count(signature)} "
-                                            f"times in last {loop_window} turns"
-                                        )
-                                        logger.warning(
-                                            "Loop detected issue_id=%s — "
-                                            "signature %r repeated %d times, "
-                                            "breaking outer loop",
-                                            issue.id,
-                                            signature,
-                                            tool_signature_history.count(
-                                                signature
-                                            ),
-                                        )
-                                        append_debug_event(
-                                            session.debug_log_path,
-                                            "agent_runner.loop_detected",
-                                            issue_id=issue.id,
-                                            run_id=session.run_id,
-                                            turn=turn_number,
-                                            signature=signature,
-                                            repeat_count=(
-                                                tool_signature_history.count(
-                                                    signature
+                                        if no_work_streak >= _stagnation_threshold:
+                                            # F-54 root-cause fix: when the
+                                            # agent never emitted a single
+                                            # modifying tool call (Write/Edit)
+                                            # AND tool_count is 0 (SessionComplete
+                                            # returned immediately without any
+                                            # tool), the real reason is "LLM gave
+                                            # up without doing work", not
+                                            # stagnation.  Mark it as such so
+                                            # the orchestrator can retry.
+                                            if (
+                                                not getattr(session, "has_made_progress", False)
+                                                and tool_count == 0
+                                            ):
+                                                # F-54 root-cause fix: before
+                                                # declaring ``llm_gave_up``,
+                                                # verify via test_command.
+                                                if await self._run_verification(session):
+                                                    session.status = "completed"
+                                                    session.session_end_reason = (
+                                                        "already_completed"
+                                                    )
+                                                    session.session_end_summary = (
+                                                        "work already implemented "
+                                                        "(verification passed)"
+                                                    )
+                                                    logger.info(
+                                                        "Issue %s: work already done "
+                                                        "(verification passed) — "
+                                                        "marking completed",
+                                                        issue.id,
+                                                    )
+                                                else:
+                                                    session.session_end_reason = "llm_gave_up"
+                                                    session.session_end_summary = (
+                                                        f"LLM returned SessionComplete(success) "
+                                                        f"after 0 tool calls with no code changes"
+                                                    )
+                                                    logger.warning(
+                                                        "LLM gave up immediately issue_id=%s "
+                                                        "turns=%s tools=%s — "
+                                                        "SessionComplete with 0 tools",
+                                                        issue.id,
+                                                        turn_number,
+                                                        tool_count,
+                                                    )
+                                            else:
+                                                session.session_end_reason = "stagnation"
+                                                session.session_end_summary = (
+                                                    f"{no_work_streak} consecutive "
+                                                    "turns with no tool calls and "
+                                                    "empty output"
                                                 )
-                                            ),
-                                        )
-                                        session.status = "loop_detected"
-                                        self._dispatch_sink(
-                                            sink,
-                                            "on_session_complete",
-                                            SessionComplete(
-                                                reason="loop_detected"
-                                            ),
-                                            session,
-                                        )
-                                        return
-
-                                    # No-op detection: if the agent has run multiple
-                                    # consecutive turns without making any file changes,
-                                    # it is likely stuck (e.g. the issue deliverables
-                                    # already exist in the workspace). Force-complete
-                                    # instead of wasting API calls and retry loops.
-                                    workspace_path = str(session.workspace.path)
-                                    dirty = bool(get_file_status(workspace_path))
-                                    if dirty:
-                                        consecutive_clean_turns = 0
-                                    else:
-                                        consecutive_clean_turns += 1
-                                        if consecutive_clean_turns >= _NOOP_DETECTION_MAX_TURNS:
                                             logger.warning(
-                                                "No-op detection triggered issue_id=%s — "
-                                                "agent performed %d consecutive turns with "
-                                                "zero file changes, force-completing",
+                                                "Stagnation detected issue_id=%s — "
+                                                "%d consecutive no-op turns, "
+                                                "breaking outer loop",
                                                 issue.id,
-                                                consecutive_clean_turns,
+                                                no_work_streak,
                                             )
-                                            session.status = "completed"
-                                            session.session_end_reason = (
-                                                "noop_completed"
+                                            append_debug_event(
+                                                session.debug_log_path,
+                                                "agent_runner.stagnation_detected",
+                                                issue_id=issue.id,
+                                                run_id=session.run_id,
+                                                turn=turn_number,
+                                                no_work_streak=no_work_streak,
                                             )
-                                            session.session_end_summary = (
-                                                f"{consecutive_clean_turns} "
-                                                "consecutive clean turns"
-                                            )
-                                            # F-40: surface the
-                                            # no-op completion to the
-                                            # sink as a synthetic
-                                            # SessionComplete so
-                                            # downstream consumers
-                                            # always see a terminal
-                                            # event.
+                                            session.status = "stagnation"
                                             self._dispatch_sink(
                                                 sink,
                                                 "on_session_complete",
                                                 SessionComplete(
-                                                    reason="noop_completed"
+                                                    reason="stagnation"
                                                 ),
                                                 session,
                                             )
                                             return
-                                    continue  # Go to next turn
-                                session.issue = refreshed_issue or session.issue
 
-                            # F-?? root-cause fix: pre-existing bug
-                            # that conflated "issue is no longer
-                            # active" with "we ran out of turns".  When
-                            # the issue is still active but
-                            # ``turn_number`` has reached
-                            # ``max_turns``, the right status is
-                            # ``max_turns_exceeded`` and
-                            # ``session_end_reason`` is
-                            # ``budget_exhausted`` — the F-09 budget
-                            # test depends on this distinction.
-                            if turn_number >= self.max_turns:
-                                session.status = "max_turns_exceeded"
-                                session.session_end_reason = (
-                                    "budget_exhausted"
-                                )
-                                session.session_end_summary = (
-                                    f"reached max_turns="
-                                    f"{self.max_turns} after "
-                                    f"{turn_number} turns"
-                                )
-                                logger.info(
-                                    "Agent run reached max_turns "
-                                    "issue_id=%s turns=%s/%s tools=%s",
-                                    issue.id,
-                                    turn_number,
-                                    self.max_turns,
-                                    tool_count,
-                                )
-                            else:
-                                # F-54 root-cause fix: distinguish real
-                                # completions from "LLM gave up without
-                                # doing work".  When the session ends
-                                # but the agent never emitted a single
-                                # modifying tool call (Write/Edit), mark
-                                # as failed with reason "llm_gave_up"
-                                # so the orchestrator can retry rather
-                                # than treating it as a clean completion.
-                                if getattr(session, "has_made_progress", False):
-                                    session.status = "completed"
-                                    if session.session_end_reason is None:
-                                        session.session_end_reason = (
-                                            "task_complete"
-                                        )
-                                        session.session_end_summary = (
-                                            "issue no longer active"
-                                        )
+                                        # F-40 root-cause fix: read-only
+                                        # tool spiral guard.  When the agent
+                                        # spends multiple consecutive turns
+                                        # making ONLY read-only tool calls
+                                        # (Bash / Read / Grep / …) without a
+                                        # single Write / Edit, it is stuck
+                                        # in an investigation spiral (F-54's
+                                        # turn 1-6 pattern: 230+ Bash calls,
+                                        # 0 code changes).  Bash output is
+                                        # always non-empty, so we do NOT
+                                        # check ``turn_output`` here —
+                                        # the absence of modifying tools
+                                        # is the reliable indicator.
+                                        if (
+                                            turn_number > 0
+                                            and turn_has_tool_calls
+                                            and not turn_has_modifying_tool
+                                        ):
+                                            read_only_streak += 1
+                                        else:
+                                            read_only_streak = 0
+
+                                        if read_only_streak >= _MAX_READ_ONLY_TURNS:
+                                            session.session_end_reason = "read_only_loop"
+                                            session.session_end_summary = (
+                                                f"{read_only_streak} consecutive "
+                                                "turns with only read-only tool calls "
+                                                "and no code changes"
+                                            )
+                                            logger.warning(
+                                                "Read-only tool loop detected issue_id=%s — "
+                                                "%d consecutive read-only turns, "
+                                                "breaking outer loop",
+                                                issue.id,
+                                                read_only_streak,
+                                            )
+                                            append_debug_event(
+                                                session.debug_log_path,
+                                                "agent_runner.read_only_loop_detected",
+                                                issue_id=issue.id,
+                                                run_id=session.run_id,
+                                                turn=turn_number,
+                                                read_only_streak=read_only_streak,
+                                            )
+                                            session.status = "read_only_loop"
+                                            self._dispatch_sink(
+                                                sink,
+                                                "on_session_complete",
+                                                SessionComplete(
+                                                    reason="read_only_loop"
+                                                ),
+                                                session,
+                                            )
+                                            return
+
+                                        # F-?? root-cause fix: loop guard.
+                                        # Records this turn's tool-call
+                                        # signature and breaks if the same
+                                        # signature repeats >= threshold
+                                        # times within the recent window.
+                                        if turn_tool_names:
+                                            signature = "|".join(
+                                                sorted(turn_tool_names)
+                                            )
+                                        else:
+                                            signature = "<empty>"
+                                        tool_signature_history.append(signature)
+                                        if len(tool_signature_history) > loop_window:
+                                            tool_signature_history = (
+                                                tool_signature_history[-loop_window:]
+                                            )
+                                        if (
+                                            tool_signature_history.count(signature)
+                                            >= loop_threshold
+                                        ):
+                                            session.session_end_reason = (
+                                                "loop_detected"
+                                            )
+                                            session.session_end_summary = (
+                                                f"signature {signature!r} "
+                                                f"repeated "
+                                                f"{tool_signature_history.count(signature)} "
+                                                f"times in last {loop_window} turns"
+                                            )
+                                            logger.warning(
+                                                "Loop detected issue_id=%s — "
+                                                "signature %r repeated %d times, "
+                                                "breaking outer loop",
+                                                issue.id,
+                                                signature,
+                                                tool_signature_history.count(
+                                                    signature
+                                                ),
+                                            )
+                                            append_debug_event(
+                                                session.debug_log_path,
+                                                "agent_runner.loop_detected",
+                                                issue_id=issue.id,
+                                                run_id=session.run_id,
+                                                turn=turn_number,
+                                                signature=signature,
+                                                repeat_count=(
+                                                    tool_signature_history.count(
+                                                        signature
+                                                    )
+                                                ),
+                                            )
+                                            session.status = "loop_detected"
+                                            self._dispatch_sink(
+                                                sink,
+                                                "on_session_complete",
+                                                SessionComplete(
+                                                    reason="loop_detected"
+                                                ),
+                                                session,
+                                            )
+                                            return
+
+                                        # No-op detection: if the agent has run multiple
+                                        # consecutive turns without making any file changes,
+                                        # it is likely stuck (e.g. the issue deliverables
+                                        # already exist in the workspace). Force-complete
+                                        # instead of wasting API calls and retry loops.
+                                        workspace_path = str(session.workspace.path)
+                                        dirty = bool(get_file_status(workspace_path))
+                                        if dirty:
+                                            consecutive_clean_turns = 0
+                                        else:
+                                            consecutive_clean_turns += 1
+                                            if consecutive_clean_turns >= _NOOP_DETECTION_MAX_TURNS:
+                                                logger.warning(
+                                                    "No-op detection triggered issue_id=%s — "
+                                                    "agent performed %d consecutive turns with "
+                                                    "zero file changes, force-completing",
+                                                    issue.id,
+                                                    consecutive_clean_turns,
+                                                )
+                                                session.status = "completed"
+                                                session.session_end_reason = (
+                                                    "noop_completed"
+                                                )
+                                                session.session_end_summary = (
+                                                    f"{consecutive_clean_turns} "
+                                                    "consecutive clean turns"
+                                                )
+                                                # F-40: surface the
+                                                # no-op completion to the
+                                                # sink as a synthetic
+                                                # SessionComplete so
+                                                # downstream consumers
+                                                # always see a terminal
+                                                # event.
+                                                self._dispatch_sink(
+                                                    sink,
+                                                    "on_session_complete",
+                                                    SessionComplete(
+                                                        reason="noop_completed"
+                                                    ),
+                                                    session,
+                                                )
+                                                return
+                                        continue  # Go to next turn
+                                    session.issue = refreshed_issue or session.issue
+
+                                # F-?? root-cause fix: pre-existing bug
+                                # that conflated "issue is no longer
+                                # active" with "we ran out of turns".  When
+                                # the issue is still active but
+                                # ``turn_number`` has reached
+                                # ``max_turns``, the right status is
+                                # ``max_turns_exceeded`` and
+                                # ``session_end_reason`` is
+                                # ``budget_exhausted`` — the F-09 budget
+                                # test depends on this distinction.
+                                if turn_number >= self.max_turns:
+                                    session.status = "max_turns_exceeded"
+                                    session.session_end_reason = (
+                                        "budget_exhausted"
+                                    )
+                                    session.session_end_summary = (
+                                        f"reached max_turns="
+                                        f"{self.max_turns} after "
+                                        f"{turn_number} turns"
+                                    )
+                                    logger.info(
+                                        "Agent run reached max_turns "
+                                        "issue_id=%s turns=%s/%s tools=%s",
+                                        issue.id,
+                                        turn_number,
+                                        self.max_turns,
+                                        tool_count,
+                                    )
                                 else:
-                                    # F-54 root-cause fix: before
-                                    # declaring ``llm_gave_up``, run
-                                    # the workflow's ``test_command``
-                                    # to check if the work was already
-                                    # implemented in a previous session.
-                                    # If verification passes, treat
-                                    # this as a clean completion.
-                                    if await self._run_verification(session):
+                                    # F-54 root-cause fix: distinguish real
+                                    # completions from "LLM gave up without
+                                    # doing work".  When the session ends
+                                    # but the agent never emitted a single
+                                    # modifying tool call (Write/Edit), mark
+                                    # as failed with reason "llm_gave_up"
+                                    # so the orchestrator can retry rather
+                                    # than treating it as a clean completion.
+                                    if getattr(session, "has_made_progress", False):
                                         session.status = "completed"
-                                        session.session_end_reason = (
-                                            "already_completed"
-                                        )
-                                        session.session_end_summary = (
-                                            "work already implemented "
-                                            "(verification passed)"
-                                        )
-                                        logger.info(
-                                            "Issue %s: work already done "
-                                            "(verification passed) — "
-                                            "marking completed",
-                                            issue.id,
-                                        )
+                                        if session.session_end_reason is None:
+                                            session.session_end_reason = (
+                                                "task_complete"
+                                            )
+                                            session.session_end_summary = (
+                                                "issue no longer active"
+                                            )
                                     else:
-                                        session.status = "failed"
-                                        session.session_end_reason = "llm_gave_up"
-                                        session.session_end_summary = (
-                                            f"LLM returned SessionComplete(success) "
-                                            f"after {tool_count} read-only tool calls "
-                                            f"with no code changes"
-                                        )
-                                        logger.warning(
-                                            "LLM gave up without writing code "
-                                            "issue_id=%s turns=%s tools=%s "
-                                            "has_made_progress=False",
-                                            issue.id,
-                                            turn_number,
-                                            tool_count,
-                                        )
-                                logger.info(
-                                    "Agent run completed issue_id=%s "
-                                    "turns=%s/%s tools=%s",
+                                        # F-54 root-cause fix: before
+                                        # declaring ``llm_gave_up``, run
+                                        # the workflow's ``test_command``
+                                        # to check if the work was already
+                                        # implemented in a previous session.
+                                        # If verification passes, treat
+                                        # this as a clean completion.
+                                        if await self._run_verification(session):
+                                            session.status = "completed"
+                                            session.session_end_reason = (
+                                                "already_completed"
+                                            )
+                                            session.session_end_summary = (
+                                                "work already implemented "
+                                                "(verification passed)"
+                                            )
+                                            logger.info(
+                                                "Issue %s: work already done "
+                                                "(verification passed) — "
+                                                "marking completed",
+                                                issue.id,
+                                            )
+                                        else:
+                                            session.status = "failed"
+                                            session.session_end_reason = "llm_gave_up"
+                                            session.session_end_summary = (
+                                                f"LLM returned SessionComplete(success) "
+                                                f"after {tool_count} read-only tool calls "
+                                                f"with no code changes"
+                                            )
+                                            logger.warning(
+                                                "LLM gave up without writing code "
+                                                "issue_id=%s turns=%s tools=%s "
+                                                "has_made_progress=False",
+                                                issue.id,
+                                                turn_number,
+                                                tool_count,
+                                            )
+                                    logger.info(
+                                        "Agent run completed issue_id=%s "
+                                        "turns=%s/%s tools=%s",
+                                        issue.id,
+                                        turn_number,
+                                        self.max_turns,
+                                        tool_count,
+                                    )
+                            else:
+                                session.status = "failed"
+                                if session.session_end_reason is None:
+                                    # F-40: capture a per-reason end reason
+                                    # so downstream sinks can distinguish
+                                    # ``exit_code=N`` style failures from
+                                    # clean termination paths.
+                                    session.session_end_reason = (
+                                        f"exit_code={event.reason}"
+                                    )
+                                    session.session_end_summary = (
+                                        f"QueryRunner ended with reason={event.reason}"
+                                    )
+                                logger.warning(
+                                    "Agent run failed issue_id=%s reason=%s",
                                     issue.id,
-                                    turn_number,
-                                    self.max_turns,
-                                    tool_count,
+                                    event.reason,
                                 )
-                        else:
-                            session.status = "failed"
-                            if session.session_end_reason is None:
-                                # F-40: capture a per-reason end reason
-                                # so downstream sinks can distinguish
-                                # ``exit_code=N`` style failures from
-                                # clean termination paths.
-                                session.session_end_reason = (
-                                    f"exit_code={event.reason}"
+                            # F-40: terminal SessionComplete is the only
+                            # event the F-38 design never dispatched. The
+                            # reason we record on the wire is
+                            # ``session_end_reason`` (set by the success /
+                            # noop / max_turns / failure paths above) so
+                            # the dashboard sees a uniform
+                            # ``session_{reason}`` stage.
+                            if sink is not None:
+                                self._dispatch_sink(
+                                    sink,
+                                    "on_session_complete",
+                                    SessionComplete(
+                                        reason=session.session_end_reason
+                                        or event.reason
+                                    ),
+                                    session,
                                 )
-                                session.session_end_summary = (
-                                    f"QueryRunner ended with reason={event.reason}"
-                                )
-                            logger.warning(
-                                "Agent run failed issue_id=%s reason=%s",
-                                issue.id,
-                                event.reason,
-                            )
-                        # F-40: terminal SessionComplete is the only
-                        # event the F-38 design never dispatched. The
-                        # reason we record on the wire is
-                        # ``session_end_reason`` (set by the success /
-                        # noop / max_turns / failure paths above) so
-                        # the dashboard sees a uniform
-                        # ``session_{reason}`` stage.
-                        if sink is not None:
-                            self._dispatch_sink(
-                                sink,
-                                "on_session_complete",
-                                SessionComplete(
-                                    reason=session.session_end_reason
-                                    or event.reason
-                                ),
-                                session,
-                            )
-                        # F-49 Phase 0.1: final flush before returning.
-                        # Helper handles empty buffers idempotently.
-                        if session._transcript_storage is not None:
-                            try:
-                                self._flush_turn_transcript(session)
-                                session._transcript_storage.flush()
-                            except Exception:
-                                logger.exception(
-                                    "Failed to final-flush transcript "
-                                    "run_id=%s", session.run_id,
-                                )
-                        # F-49 Phase 1: stop the control socket on the
-                        # terminal SessionComplete path.
-                        if session.control_socket is not None:
-                            try:
-                                await session.control_socket.stop()
-                            except Exception:
-                                logger.exception(
-                                    "Failed to stop control_socket "
-                                    "run_id=%s", session.run_id,
-                                )
-                            session.control_socket = None
-                        return
-            except RateLimitError as exc:
-                # Typed fallback: if the headless runner ever propagates
-                # a RateLimitError directly (e.g. via ``await future``
-                # at extensions/api/query.py:173), treat it the same as
-                # a 429 detected in the text stream.
-                if is_rate_limit_error(exc):
-                    # Synthesize a minimal turn_output so the standard
-                    # detection helper recognizes the case.
-                    synthetic_output = turn_output or (
-                        f"Error code: 429 - {exc!s}"
-                    )
-                    new_status = await self._handle_rate_limit(
-                        session,
-                        synthetic_output,
-                        turn_number,
-                        status_dashboard,
-                    )
-                    if new_status == "rate_limit_circuit_open":
-                        return
-                    # F-49 Phase 0.1: reset per-turn transcript buffers.
+                            # F-49 Phase 0.1: final flush before returning.
+                            # Helper handles empty buffers idempotently.
+                            if session._transcript_storage is not None:
+                                try:
+                                    self._flush_turn_transcript(session)
+                                    session._transcript_storage.flush()
+                                except Exception:
+                                    logger.exception(
+                                        "Failed to final-flush transcript "
+                                        "run_id=%s", session.run_id,
+                                    )
+                            # F-49 Phase 1: stop the control socket on the
+                            # terminal SessionComplete path.
+                            if session.control_socket is not None:
+                                try:
+                                    await session.control_socket.stop()
+                                except Exception:
+                                    logger.exception(
+                                        "Failed to stop control_socket "
+                                        "run_id=%s", session.run_id,
+                                    )
+                                session.control_socket = None
+                            return
+                except RateLimitError as exc:
+                    # Typed fallback: if the headless runner ever propagates
+                    # a RateLimitError directly (e.g. via ``await future``
+                    # at extensions/api/query.py:173), treat it the same as
+                    # a 429 detected in the text stream.
+                    if is_rate_limit_error(exc):
+                        # Synthesize a minimal turn_output so the standard
+                        # detection helper recognizes the case.
+                        synthetic_output = turn_output or (
+                            f"Error code: 429 - {exc!s}"
+                        )
+                        new_status = await self._handle_rate_limit(
+                            session,
+                            synthetic_output,
+                            turn_number,
+                            status_dashboard,
+                        )
+                        if new_status == "rate_limit_circuit_open":
+                            return
+                        # F-49 Phase 0.1: reset per-turn transcript buffers.
+                        self._flush_turn_transcript(session)
+                        turn_output = ""
+                        turn_has_tool_calls = False
+                        continue
+                    # Not a 429 — re-raise to preserve existing behavior.
+                    raise
+
+                # If we consumed all events without SessionComplete (shouldn't
+                # happen with current QueryRunner, but be defensive), count the
+                # turn anyway
+                if not turn_has_tool_calls and turn_output:
+                    turn_number += 1
+                    session.turn_count = turn_number
+
+            # Reached max_turns
+            session.status = "max_turns_exceeded"
+            session.session_end_reason = "budget_exhausted"
+            session.session_end_summary = (
+                f"reached max_turns={self.max_turns} after {turn_number} turns"
+            )
+            logger.info(
+                "Agent run reached max_turns issue_id=%s turns=%s/%s tools=%s",
+                issue.id,
+                turn_number,
+                self.max_turns,
+                tool_count,
+            )
+
+            # Emit PhaseComplete event for progress reporting (max_turns path)
+            phase_event = PhaseComplete(
+                phase=turn_number,
+                turn_count=turn_number,
+            )
+            if sink is not None:
+                # F-40: max_turns path now dispatches BOTH PhaseComplete
+                # (so the trailing phase is recorded with its progress)
+                # AND SessionComplete(reason="budget_exhausted") so
+                # downstream consumers always see a terminal event. The
+                # ``on_session_complete`` call uses the runner's
+                # ``session_end_reason`` (set above) as the wire reason.
+                self._dispatch_sink(
+                    sink, "on_phase_complete", phase_event, session
+                )
+                self._dispatch_sink(
+                    sink,
+                    "on_turn_complete",
+                    TurnComplete(turn=turn_number),
+                    session,
+                )
+                self._dispatch_sink(
+                    sink,
+                    "on_session_complete",
+                    SessionComplete(
+                        reason=session.session_end_reason or "budget_exhausted"
+                    ),
+                    session,
+                )
+
+            session.tool_count = tool_count
+            # F-49 Phase 0.1: final flush before max_turns exit.
+            # Helper handles empty buffers idempotently; covers the
+            # "Late TextDelta flow interruption" case from the spec.
+            if session._transcript_storage is not None:
+                try:
                     self._flush_turn_transcript(session)
-                    turn_output = ""
-                    turn_has_tool_calls = False
-                    continue
-                # Not a 429 — re-raise to preserve existing behavior.
-                raise
-
-            # If we consumed all events without SessionComplete (shouldn't
-            # happen with current QueryRunner, but be defensive), count the
-            # turn anyway
-            if not turn_has_tool_calls and turn_output:
-                turn_number += 1
-                session.turn_count = turn_number
-
-        # Reached max_turns
-        session.status = "max_turns_exceeded"
-        session.session_end_reason = "budget_exhausted"
-        session.session_end_summary = (
-            f"reached max_turns={self.max_turns} after {turn_number} turns"
-        )
-        logger.info(
-            "Agent run reached max_turns issue_id=%s turns=%s/%s tools=%s",
-            issue.id,
-            turn_number,
-            self.max_turns,
-            tool_count,
-        )
-
-        # Emit PhaseComplete event for progress reporting (max_turns path)
-        phase_event = PhaseComplete(
-            phase=turn_number,
-            turn_count=turn_number,
-        )
-        if sink is not None:
-            # F-40: max_turns path now dispatches BOTH PhaseComplete
-            # (so the trailing phase is recorded with its progress)
-            # AND SessionComplete(reason="budget_exhausted") so
-            # downstream consumers always see a terminal event. The
-            # ``on_session_complete`` call uses the runner's
-            # ``session_end_reason`` (set above) as the wire reason.
-            self._dispatch_sink(
-                sink, "on_phase_complete", phase_event, session
+                    session._transcript_storage.flush()
+                except Exception:
+                    logger.exception(
+                        "Failed to final-flush transcript run_id=%s",
+                        session.run_id,
+                    )
+            # F-49 Phase 1: stop the control socket on max_turns exit.
+            if session.control_socket is not None:
+                try:
+                    await session.control_socket.stop()
+                except Exception:
+                    logger.exception(
+                        "Failed to stop control_socket run_id=%s",
+                        session.run_id,
+                    )
+                session.control_socket = None
+            append_debug_event(
+                session.debug_log_path,
+                "agent_runner.max_turns_exceeded",
+                issue_id=issue.id,
+                run_id=session.run_id,
+                turn_count=session.turn_count,
+                tool_count=session.tool_count,
+                output_len=len(session.output_text),
+                last_event_type=session.last_agent_event,
+                last_tool=session.last_tool_name,
             )
-            self._dispatch_sink(
-                sink,
-                "on_turn_complete",
-                TurnComplete(turn=turn_number),
-                session,
-            )
-            self._dispatch_sink(
-                sink,
-                "on_session_complete",
-                SessionComplete(
-                    reason=session.session_end_reason or "budget_exhausted"
-                ),
-                session,
-            )
+        finally:
+            # F-49 Phase 0.4.5: write .json snapshot on every exit path
+            # (normal, early return, exception).  Best-effort; errors
+            # are logged inside _save_json_snapshot().
+            session._save_json_snapshot()
 
-        session.tool_count = tool_count
-        # F-49 Phase 0.1: final flush before max_turns exit.
-        # Helper handles empty buffers idempotently; covers the
-        # "Late TextDelta flow interruption" case from the spec.
-        if session._transcript_storage is not None:
-            try:
-                self._flush_turn_transcript(session)
-                session._transcript_storage.flush()
-            except Exception:
-                logger.exception(
-                    "Failed to final-flush transcript run_id=%s",
-                    session.run_id,
-                )
-        # F-49 Phase 1: stop the control socket on max_turns exit.
-        if session.control_socket is not None:
-            try:
-                await session.control_socket.stop()
-            except Exception:
-                logger.exception(
-                    "Failed to stop control_socket run_id=%s",
-                    session.run_id,
-                )
-            session.control_socket = None
-        append_debug_event(
-            session.debug_log_path,
-            "agent_runner.max_turns_exceeded",
-            issue_id=issue.id,
-            run_id=session.run_id,
-            turn_count=session.turn_count,
-            tool_count=session.tool_count,
-            output_len=len(session.output_text),
-            last_event_type=session.last_agent_event,
-            last_tool=session.last_tool_name,
-        )
 
     def _build_run_id(self, session: AgentSession) -> str:
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
