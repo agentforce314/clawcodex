@@ -248,7 +248,8 @@ class REPLScreen(Screen):
                 app.announcer.announce(  # type: ignore[attr-defined]
                     f"Error: {message.error}", level="assertive"
                 )
-        self.prompt_input.focus_input()
+        self.prompt_input.set_enabled(True)
+        self.call_after_refresh(self.prompt_input.focus_input)
 
     # ---- permission modal handlers ----
     def on_permission_requested(self, message: PermissionRequested) -> None:
