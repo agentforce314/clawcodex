@@ -532,6 +532,18 @@ def show_config():
             console.print(f"    Base URL: {provider_config.get('base_url', 'Not set')}")
             console.print(f"    Default Model: {provider_config.get('default_model', 'Not set')}")
 
+        # Stored API keys (config "env" block, e.g. TAVILY_API_KEY). Values are
+        # masked — only the name and a hint are shown.
+        from src.secret_store import get_secret, list_secret_names
+
+        stored_names = list_secret_names()
+        if stored_names:
+            console.print("\n[cyan]Stored Keys (env):[/cyan]")
+            for name in stored_names:
+                value = get_secret(name) or ""
+                masked = f"{value[:4]}...{value[-4:]}" if len(value) > 10 else "Set"
+                console.print(f"    {name}: {masked}")
+
         console.print()
 
     except Exception as e:

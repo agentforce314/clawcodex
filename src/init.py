@@ -91,6 +91,15 @@ def init() -> None:
     apply_safe_config_environment_variables(extra_env=mdm_safe_env)
     profile_checkpoint("init_safe_env_vars_applied")
 
+    # Stored API keys: copy the config ``env`` block (e.g. TAVILY_API_KEY in
+    # ~/.clawcodex/config.json) into os.environ so every os.environ[...] reader
+    # sees them. override=False -> a real exported var and the managed/MDM safe
+    # env applied just above both win over the user's stored value.
+    _logger.info("init: applying stored config env (API keys)")
+    from src.secret_store import apply_config_env_to_environ
+    apply_config_env_to_environ()
+    profile_checkpoint("init_config_env_applied")
+
     _logger.info("init: setting up graceful shutdown")
     setup_graceful_shutdown()
     profile_checkpoint("init_after_graceful_shutdown")

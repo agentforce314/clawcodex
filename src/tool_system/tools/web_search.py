@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import html
 import json
-import re
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime
@@ -106,75 +105,78 @@ def _normalize_hit(raw: Any) -> dict[str, str] | None:
 
 
 # ---------------------------------------------------------------------------
-# DuckDuckGo search (HTML scraping fallback)
+# Tavily Search API — https://api.tavily.com/search
 # ---------------------------------------------------------------------------
+# Replaces the legacy DuckDuckGo backend (which scraped HTML and no longer
+# returns results). Configure with the TAVILY_API_KEY environment variable (a
+# key starting with ``tvly-``). Mirrors the TS adapter at
+# ``typescript/src/tools/WebSearchTool/providers/tavily.ts``.
 
-_RESULT_RE = re.compile(
-    r'<a[^>]+class="result__a"[^>]+href="(?P<url>[^"]+)"[^>]*>(?P<title>.*?)</a>.*?'
-    r'<a[^>]+class="result__snippet"[^>]*>(?P<snippet>.*?)</a>',
-    re.DOTALL,
-)
-
-
-def _strip_tags(s: str) -> str:
-    return html.unescape(re.sub(r"<[^>]+>", "", s)).strip()
+_TAVILY_URL = "https://api.tavily.com/search"
 
 
-def _ddg_html_search(query: str, num: int = 10) -> list[dict[str, str]]:
-    """Search DuckDuckGo via HTML scraping (legacy fallback)."""
-    url = "https://duckduckgo.com/html/?" + urllib.parse.urlencode({"q": query})
-    req = urllib.request.Request(url, headers={"User-Agent": "claw-codex/0.1"})
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        raw = resp.read(1_000_000).decode("utf-8", errors="replace")
+def _tavily_api_key() -> str | None:
+    # Resolved via the secret store: an exported TAVILY_API_KEY wins, otherwise
+    # the value stored in ~/.clawcodex/config.json under "env". Lazy import keeps
+    # the tool module free of a config dependency at import time.
+    from src.secret_store import get_secret
 
-    results: list[dict[str, str]] = []
-    for match in _RESULT_RE.finditer(raw):
-        results.append(
-            {
-                "title": _strip_tags(match.group("title")),
-                "url": html.unescape(match.group("url")),
-                "snippet": _strip_tags(match.group("snippet")),
-            }
-        )
-        if len(results) >= num:
-            break
-    return results
+    key = (get_secret("TAVILY_API_KEY") or "").strip()
+    return key or None
 
 
-# ---------------------------------------------------------------------------
-# DuckDuckGo search (via duckduckgo-search package, preferred)
-# ---------------------------------------------------------------------------
+def is_web_search_configured() -> bool:
+    """Whether a web-search backend is configured (a Tavily API key is set)."""
+    return _tavily_api_key() is not None
 
-def _ddg_package_search(query: str, num: int = 10) -> list[dict[str, str]] | None:
-    """Search DuckDuckGo via the duckduckgo-search package.
 
-    Returns None if the package is not installed, so caller can fall back.
+def _tavily_search(query: str, num: int = 15) -> list[dict[str, str]]:
+    """Search the web via Tavily.
+
+    Raises ``ToolInputError`` when ``TAVILY_API_KEY`` is unset (so the model and
+    user get a clear "configure search" signal rather than silent empty results)
+    or when the API call fails.
     """
+    key = _tavily_api_key()
+    if not key:
+        raise ToolInputError(
+            "Web search is not configured. Set the TAVILY_API_KEY environment "
+            "variable (get a free key at https://app.tavily.com)."
+        )
+
+    body = json.dumps(
+        {"query": query, "max_results": max(1, min(num, 20)), "include_answer": False}
+    ).encode("utf-8")
+    req = urllib.request.Request(
+        _TAVILY_URL,
+        data=body,
+        method="POST",
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
+    )
     try:
-        from duckduckgo_search import DDGS  # type: ignore[import-untyped]
-    except ImportError:
-        return None
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            raw = resp.read(2_000_000).decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            detail = exc.read(2000).decode("utf-8", errors="replace")
+        except Exception:
+            pass
+        raise ToolInputError(f"Tavily search error {exc.code}: {detail[:300]}") from exc
+    except urllib.error.URLError as exc:
+        raise ToolInputError(f"Tavily search failed: {exc.reason}") from exc
 
     try:
-        with DDGS() as ddgs:
-            raw_results = list(ddgs.text(query, max_results=num, safesearch="on"))
-    except Exception:
-        return None
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ToolInputError("Tavily returned a non-JSON response.") from exc
 
-    results: list[dict[str, str]] = []
-    for raw in raw_results:
-        hit = _normalize_hit(raw)
+    hits: list[dict[str, str]] = []
+    for raw_hit in data.get("results") or []:
+        hit = _normalize_hit(raw_hit)  # maps title/url/content via field aliases
         if hit:
-            results.append(hit)
-    return results
-
-
-def _search_duckduckgo(query: str, num: int = 10) -> list[dict[str, str]]:
-    """Search DuckDuckGo, preferring the package API over HTML scraping."""
-    pkg_results = _ddg_package_search(query, num)
-    if pkg_results is not None:
-        return pkg_results
-    return _ddg_html_search(query, num)
+            hits.append(hit)
+    return hits
 
 
 # ---------------------------------------------------------------------------
@@ -302,7 +304,7 @@ def _format_output(
     # Structured links
     if hits:
         results.append({
-            "tool_use_id": "ddg-search",
+            "tool_use_id": "tavily-search",
             "content": [{"title": h["title"], "url": h["url"]} for h in hits],
         })
 
@@ -330,8 +332,8 @@ def _web_search_call(tool_input: dict[str, Any], context: ToolContext) -> ToolRe
 
     start_time = time.monotonic()
 
-    # Search using DuckDuckGo (package preferred, HTML fallback)
-    results = _search_duckduckgo(query, num=10)
+    # Search via Tavily (requires TAVILY_API_KEY).
+    results = _tavily_search(query, num=15)
 
     # Apply domain filters
     results = _apply_domain_filters(
