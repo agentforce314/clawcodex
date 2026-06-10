@@ -68,6 +68,21 @@ def _load_skill_commands_cached(cwd: str) -> tuple[Command, ...]:
         return ()
 
 
+@lru_cache(maxsize=32)
+def _load_workflow_commands_cached(cwd: str) -> tuple[Command, ...]:
+    """Bundled + discovered workflow commands for ``cwd`` (cached by cwd).
+
+    Commands carry ``is_enabled=is_workflows_enabled`` so they're filtered out
+    fresh by ``get_commands`` when workflows are disabled, without busting the
+    discovery cache. Failures degrade to an empty tuple (non-critical)."""
+    try:
+        from .workflows_integration import load_workflow_commands
+        return tuple(load_workflow_commands(cwd))
+    except Exception as exc:  # noqa: BLE001 — workflows are non-critical
+        logger.debug("workflow command loading failed for %s: %s", cwd, exc)
+        return ()
+
+
 def get_commands(
     cwd: str | Path | None = None,
     *,
@@ -88,6 +103,7 @@ def get_commands(
     # Builtins fresh (re-evaluates conditional appends); skills cached by cwd.
     all_commands: list[Command] = [
         *get_builtin_commands(),
+        *_load_workflow_commands_cached(cwd_key),
         *_load_skill_commands_cached(cwd_key),
     ]
 
@@ -223,5 +239,6 @@ def clear_commands_cache() -> None:
     purpose so the aggregator doesn't reach across into the prompt layer.
     """
     _load_skill_commands_cached.cache_clear()
+    _load_workflow_commands_cached.cache_clear()
     get_skill_tool_commands.cache_clear()
     get_slash_command_tool_skills.cache_clear()

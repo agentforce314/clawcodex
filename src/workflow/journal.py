@@ -72,12 +72,17 @@ class Journal:
     # ── persistence (string-keyed for JSON) ───────────────────────────────────
 
     def to_json(self) -> str:
-        return json.dumps(
-            {key_to_str(k): {"fingerprint": r.fingerprint, "result": r.result} for k, r in self._records.items()},
-            default=str,
-        )
+        return records_to_json(self._records)
 
     @staticmethod
     def load(text: str) -> dict[CallKey, JournalRecord]:
         raw = json.loads(text)
         return {key_from_str(k): JournalRecord(v["fingerprint"], v["result"]) for k, v in raw.items()}
+
+
+def records_to_json(records: Mapping[CallKey, JournalRecord]) -> str:
+    """Serialize a records map (e.g. ``WorkflowResult.journal``) to JSON."""
+    return json.dumps(
+        {key_to_str(k): {"fingerprint": r.fingerprint, "result": r.result} for k, r in records.items()},
+        default=str,
+    )
