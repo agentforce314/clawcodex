@@ -11,14 +11,17 @@ Features:
 
 from __future__ import annotations
 
+import gzip
 import html
 import http.client
 import ipaddress
 import re
 import socket
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
+import zlib
 from typing import Any
 
 from ..build_tool import Tool, build_tool
@@ -34,21 +37,80 @@ from src.permissions.types import (
 # -- HTML to Markdown ----------------------------------------------------------
 
 _TAG_RE = re.compile(r"<[^>]+>")
+# Blocks whose *contents* are noise (script/style code, inline SVG paths, etc.).
+# Removed before conversion so they never leak into the extracted text — markdownify
+# strips the tags but can otherwise surface their text nodes.
+_NOISE_BLOCK_RE = re.compile(
+    r"<(script|style|noscript|svg|template)\b[^>]*>.*?</\1>",
+    flags=re.DOTALL | re.IGNORECASE,
+)
+
+
+def _strip_noise_blocks(raw: str) -> str:
+    return _NOISE_BLOCK_RE.sub(" ", raw)
+
 
 try:
     import markdownify as _md
 
     def _html_to_markdown(raw: str) -> str:
-        return _md.markdownify(raw, strip=["img", "script", "style"])
+        # Structured markdown: headings, lists, and links are preserved (so the
+        # model can cite sources and follow structure), unlike the flat regex
+        # fallback below.
+        text = _md.markdownify(_strip_noise_blocks(raw), strip=["img", "script", "style"])
+        return re.sub(r"\n{3,}", "\n\n", text).strip()  # collapse blank-line runs
 except ImportError:
     _md = None  # type: ignore[assignment]
 
     def _html_to_markdown(raw: str) -> str:
-        text = re.sub(r"<script[^>]*>.*?</script>", "", raw, flags=re.DOTALL | re.IGNORECASE)
-        text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.DOTALL | re.IGNORECASE)
-        text = _TAG_RE.sub(" ", text)
+        text = _TAG_RE.sub(" ", _strip_noise_blocks(raw))
         text = re.sub(r"\s+", " ", text).strip()
         return html.unescape(text)
+
+
+# Tags whose subtrees carry no readable content (ported from opencode's
+# extractTextFromHTML skip-list, plus svg/template).
+_NOISE_TAGS = ["script", "style", "noscript", "iframe", "object", "embed", "svg", "template"]
+
+try:
+    import bs4 as _bs4  # provided by markdownify's beautifulsoup4 dependency
+
+    def _html_to_text(raw: str) -> str:
+        """Plain-text extraction: drop noise subtrees, collect text nodes.
+
+        DOM-aware (BeautifulSoup), so it won't mangle text the way a flat regex
+        tag-strip can. Mirrors opencode's htmlparser2-based ``extractTextFromHTML``.
+        """
+        soup = _bs4.BeautifulSoup(raw, "html.parser")
+        for tag in soup(_NOISE_TAGS):
+            tag.decompose()
+        text = soup.get_text(separator="\n")
+        return re.sub(r"\n{3,}", "\n\n", text).strip()
+except ImportError:
+    _bs4 = None  # type: ignore[assignment]
+
+    def _html_to_text(raw: str) -> str:
+        text = _TAG_RE.sub(" ", _strip_noise_blocks(raw))
+        return html.unescape(re.sub(r"\s+", " ", text).strip())
+
+
+def _convert(content: str, content_type: str, fmt: str) -> str:
+    """Convert a fetched body to the requested ``fmt`` (markdown/text/html).
+
+    Non-HTML bodies (json, plain text, already-markdown) pass through unchanged;
+    binary image types return a short placeholder instead of decoded garbage.
+    Mirrors opencode's deterministic ``convert`` — no model involved.
+    """
+    mime = content_type.split(";", 1)[0].strip().lower()
+    if mime.startswith("image/") and mime != "image/svg+xml":
+        return f"[non-text content: {mime}]"
+    if "html" not in mime:
+        return content  # text/markdown/json/xml/etc — already usable
+    if fmt == "markdown":
+        return _html_to_markdown(content)
+    if fmt == "text":
+        return _html_to_text(content)
+    return content  # fmt == "html": return the raw HTML the caller asked for
 
 
 # -- URL Validation ------------------------------------------------------------
@@ -128,17 +190,92 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def _fetch_with_redirect_handling(url: str, timeout: float = 15) -> tuple[str, str, int]:
+# Many sites (Cloudflare and friends) answer 403 to non-browser User-Agents, so a
+# generic "claw-codex/0.1" UA silently failed on a large slice of the real web.
+# When a site instead challenges the *browser* UA (Cloudflare bot-fight), we retry
+# once with a plain bot UA — some WAFs pass bots while challenging browsers. Both
+# behaviours are borrowed from opencode's webfetch tool.
+_BROWSER_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+_FALLBACK_UA = "claw-codex"
+
+_MAX_FETCH_BYTES = 2_000_000
+
+
+def _accept_header(fmt: str) -> str:
+    """Content-negotiation Accept header preferring the requested format."""
+    if fmt == "markdown":
+        return "text/markdown;q=1.0, text/x-markdown;q=0.9, text/plain;q=0.8, text/html;q=0.7, */*;q=0.1"
+    if fmt == "text":
+        return "text/plain;q=1.0, text/markdown;q=0.9, text/html;q=0.8, */*;q=0.1"
+    if fmt == "html":
+        return "text/html;q=1.0, application/xhtml+xml;q=0.9, text/plain;q=0.8, text/markdown;q=0.7, */*;q=0.1"
+    return "*/*"
+
+
+def _request_headers(fmt: str, user_agent: str) -> dict[str, str]:
+    return {
+        "User-Agent": user_agent,
+        "Accept": _accept_header(fmt),
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate",
+    }
+
+
+def _charset_from_content_type(content_type: str) -> str | None:
+    match = re.search(r"charset=([^\s;]+)", content_type or "", flags=re.IGNORECASE)
+    return match.group(1).strip().strip('"\'') if match else None
+
+
+def _read_response_body(resp) -> str:
+    """Read, transparently decompress (gzip/deflate), and decode a response body."""
+    raw = resp.read(_MAX_FETCH_BYTES)
+    encoding = (resp.headers.get("Content-Encoding") or "").lower()
+    if "gzip" in encoding:
+        try:
+            raw = gzip.decompress(raw)
+        except Exception:
+            pass  # not actually gzipped -> use bytes as-is
+    elif "deflate" in encoding:
+        try:
+            raw = zlib.decompress(raw)
+        except zlib.error:
+            try:
+                raw = zlib.decompress(raw, -zlib.MAX_WBITS)  # raw deflate, no header
+            except Exception:
+                pass
+    charset = _charset_from_content_type(resp.headers.get("Content-Type", "")) or "utf-8"
+    try:
+        return raw.decode(charset, errors="replace")
+    except LookupError:  # unknown charset label
+        return raw.decode("utf-8", errors="replace")
+
+
+def _is_cloudflare_challenge(e: urllib.error.HTTPError) -> bool:
+    """403 with a Cloudflare bot-fight challenge marker."""
+    try:
+        return e.code == 403 and (e.headers.get("cf-mitigated") or "").lower() == "challenge"
+    except Exception:
+        return False
+
+
+def _fetch_with_redirect_handling(
+    url: str, timeout: float = 15, fmt: str = "markdown", user_agent: str = _BROWSER_UA
+) -> tuple[str, str, int]:
     opener = urllib.request.build_opener(_NoRedirectHandler)
     current_url = url
     for _ in range(_MAX_REDIRECTS):
-        req = urllib.request.Request(current_url, headers={"User-Agent": "claw-codex/0.1"})
+        req = urllib.request.Request(current_url, headers=_request_headers(fmt, user_agent))
         try:
             resp = opener.open(req, timeout=timeout)
-            raw_bytes = resp.read(1_000_000)
             content_type = resp.headers.get("Content-Type", "")
-            return raw_bytes.decode("utf-8", errors="replace"), content_type, resp.status
+            return _read_response_body(resp), content_type, resp.status
         except urllib.error.HTTPError as e:
+            # Cloudflare challenged the browser UA -> retry once with a bot UA.
+            if _is_cloudflare_challenge(e) and user_agent != _FALLBACK_UA:
+                return _fetch_with_redirect_handling(url, timeout, fmt, _FALLBACK_UA)
             if e.code in (301, 302, 303, 307, 308):
                 redirect_url = e.headers.get("Location", "")
                 if not redirect_url:
@@ -304,9 +441,15 @@ def _map_result_to_api(result: Any, tool_use_id: str) -> dict[str, Any]:
 
 # -- Main Call -----------------------------------------------------------------
 
+_VALID_FORMATS = ("markdown", "text", "html")
+
+
 def _web_fetch_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
     url = tool_input.get("url", "")
     prompt = tool_input.get("prompt", "")
+    fmt = tool_input.get("format") or "markdown"
+    if fmt not in _VALID_FORMATS:
+        fmt = "markdown"
 
     if not isinstance(url, str) or not url:
         raise ToolInputError("url must be a non-empty string")
@@ -315,14 +458,16 @@ def _web_fetch_call(tool_input: dict[str, Any], context: ToolContext) -> ToolRes
 
     start_time = time.time()
 
-    cached = _cache_get(url)
+    # Cache the *converted* content; key by format so a markdown fetch and a text
+    # fetch of the same URL don't collide.
+    cache_key = f"{fmt}:{url}"
+    cached = _cache_get(cache_key)
     if cached:
         content, content_type, status = cached
     else:
-        content, content_type, status = _fetch_with_redirect_handling(url)
-        if "text/html" in content_type:
-            content = _html_to_markdown(content)
-        _cache_set(url, content, content_type, status)
+        raw, content_type, status = _fetch_with_redirect_handling(url, fmt=fmt)
+        content = _convert(raw, content_type, fmt)
+        _cache_set(cache_key, content, content_type, status)
 
     if len(content) > 100_000:
         content = content[:100_000] + "\n\n... [truncated] ..."
@@ -350,20 +495,20 @@ def _web_fetch_call(tool_input: dict[str, Any], context: ToolContext) -> ToolRes
 
 _WEB_FETCH_PROMPT = """IMPORTANT: WebFetch WILL FAIL for authenticated or private URLs. Before using this tool, check if the URL points to an authenticated service (e.g. Google Docs, Confluence, Jira, GitHub). If so, look for a specialized MCP tool that provides authenticated access.
 
-- Fetches content from a specified URL and processes it using an AI model
-- Takes a URL and a prompt as input
-- Fetches the URL content, converts HTML to markdown
-- Processes the content with the prompt using a small, fast model
-- Returns the model's response about the content
-- Use this tool when you need to retrieve and analyze web content
+- Fetches content from a specified URL and returns it as text
+- Takes a URL and an optional `format` (markdown | text | html; default markdown)
+- Fetches the URL content and converts HTML deterministically (no model call):
+  `markdown` preserves headings/lists/links, `text` is clean plain text, `html` is raw
+- Use this tool when you need to retrieve and read web content
 
 Usage notes:
   - IMPORTANT: If an MCP-provided web fetch tool is available, prefer using that tool instead of this one, as it may have fewer restrictions.
   - The URL must be a fully-formed valid URL
   - HTTP URLs will be automatically upgraded to HTTPS
-  - The prompt should describe what information you want to extract from the page
+  - Use `format: "markdown"` (default) for reading; `format: "text"` to strip all structure; `format: "html"` for the raw page
+  - The `prompt` (optional) is passed through as context for what you're looking for; it does not trigger a separate model call
   - This tool is read-only and does not modify any files
-  - Results may be summarized if the content is very large
+  - Large results may be truncated
   - Includes a self-cleaning 15-minute cache for faster responses when repeatedly accessing the same URL
   - When a URL redirects to a different host, the tool will inform you and provide the redirect URL in a special format. You should then make a new WebFetch request with the redirect URL to fetch the content.
   - For GitHub URLs, prefer using the gh CLI via Bash instead (e.g., gh pr view, gh issue view, gh api)."""
@@ -396,7 +541,12 @@ WebFetchTool: Tool = build_tool(
             },
             "prompt": {
                 "type": "string",
-                "description": "The prompt to run on the fetched content",
+                "description": "Optional. What you're looking for on the page (passed through as context; does not trigger a separate model call)",
+            },
+            "format": {
+                "type": "string",
+                "enum": ["text", "markdown", "html"],
+                "description": "Format to return the content in. Defaults to markdown.",
             },
         },
         "required": ["url"],
