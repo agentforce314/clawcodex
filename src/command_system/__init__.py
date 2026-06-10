@@ -82,6 +82,7 @@ from .logo_command import LOGO_COMMAND, LogoCommand
 from .mcp_command import MCP_COMMAND, McpCommand
 from .tasks_command import TASKS_COMMAND, TasksCommand
 from .diff_command import DIFF_COMMAND, DiffCommand
+from .release_notes_command import RELEASE_NOTES_COMMAND
 from .types import (
     Command,
     CommandAvailability,
@@ -171,6 +172,7 @@ __all__ = [
     "TasksCommand",
     "DIFF_COMMAND",
     "DiffCommand",
+    "RELEASE_NOTES_COMMAND",
     "get_builtin_commands",
     "register_builtin_commands",
     # Moved-to-plugin factory + shell-at-prompt-build

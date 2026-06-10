@@ -35,6 +35,7 @@ from .logo_command import LOGO_COMMAND
 from .mcp_command import MCP_COMMAND
 from .tasks_command import TASKS_COMMAND
 from .diff_command import DIFF_COMMAND
+from .release_notes_command import RELEASE_NOTES_COMMAND
 from .types import Command, CommandType, CompactionResult, LocalCommand, PromptCommand
 
 
@@ -1248,6 +1249,7 @@ def get_builtin_commands() -> list[Command]:
         MCP_COMMAND,
         TASKS_COMMAND,
         DIFF_COMMAND,
+        RELEASE_NOTES_COMMAND,
     ]
     if is_buddy_command_enabled():
         cmds.append(BUDDY_COMMAND)
