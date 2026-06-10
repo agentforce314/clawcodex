@@ -22,6 +22,9 @@ MAX_ITEMS_PER_CALL = 4096
 #: Retry cap for schema-validated structured output (upstream parity).
 MAX_STRUCTURED_OUTPUT_RETRIES = 5
 
+#: How many times a single agent may be re-spawned via the `r` (retry) action.
+MAX_AGENT_RETRIES = 3
+
 #: Hard ceiling on the concurrency cap regardless of core count.
 _CONCURRENCY_HARD_MAX = 16
 

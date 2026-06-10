@@ -16,6 +16,7 @@ All mutations route through ``registry.update`` with synchronous mutators
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal, TYPE_CHECKING
@@ -114,6 +115,7 @@ def complete_workflow_task(task_id: str, *, result: Any, registry: "RuntimeTaskR
         return _terminal_replace(prev, status="completed", result=result, summary=_safe_summary(prev.progress))
 
     registry.update(task_id, _complete)
+    enqueue_workflow_notification(task_id, registry, status="completed")
 
 
 def fail_workflow_task(task_id: str, *, error: str, registry: "RuntimeTaskRegistry") -> None:
@@ -123,17 +125,20 @@ def fail_workflow_task(task_id: str, *, error: str, registry: "RuntimeTaskRegist
         return _terminal_replace(prev, status="failed", error=error)
 
     registry.update(task_id, _fail)
+    enqueue_workflow_notification(task_id, registry, status="failed", error=error)
 
 
 def kill_workflow_task(task_id: str, registry: "RuntimeTaskRegistry") -> None:
     """Abort the whole run (cascades to every subagent) and mark it killed."""
     captured_run: Any = None
+    fired = False
 
     def _kill(prev: TaskStateBase) -> TaskStateBase:
-        nonlocal captured_run
+        nonlocal captured_run, fired
         if not isinstance(prev, LocalWorkflowTaskState) or is_terminal_task_status(prev.status):
             return prev
         captured_run = prev.run
+        fired = True
         return _terminal_replace(prev, status="killed")
 
     registry.update(task_id, _kill)
@@ -143,6 +148,8 @@ def kill_workflow_task(task_id: str, registry: "RuntimeTaskRegistry") -> None:
             captured_run.controller.abort("workflow_stopped")
         except Exception:
             logger.exception("failed to abort workflow run %s", task_id)
+    if fired:
+        enqueue_workflow_notification(task_id, registry, status="killed")
 
 
 def skip_workflow_agent(task_id: str, agent_key: str, registry: "RuntimeTaskRegistry") -> bool:
@@ -159,10 +166,16 @@ def skip_workflow_agent(task_id: str, agent_key: str, registry: "RuntimeTaskRegi
 
 
 def retry_workflow_agent(task_id: str, agent_key: str, registry: "RuntimeTaskRegistry") -> bool:
-    """Reserved: re-spawning a single agent mid-run needs engine support that
-    does not exist yet. Reports unsupported rather than silently no-op'ing."""
-    logger.info("retry_workflow_agent is not yet supported (task=%s agent=%s)", task_id, agent_key)
-    return False
+    """Re-spawn one in-flight agent by its call-path key (the `r` action).
+    Returns whether a live agent was found to retry."""
+    state = registry.get(task_id)
+    if not isinstance(state, LocalWorkflowTaskState) or state.run is None:
+        return False
+    try:
+        return bool(state.run.retry_agent(agent_key))
+    except Exception:
+        logger.exception("failed to retry agent %s in workflow %s", agent_key, task_id)
+        return False
 
 
 def _safe_summary(progress: Any) -> str | None:
@@ -170,6 +183,86 @@ def _safe_summary(progress: Any) -> str | None:
         return progress.summary() if progress is not None else None
     except Exception:
         return None
+
+
+def _safe_token_total(progress: Any) -> int:
+    """Token total, tolerant of a concurrent mutation on the engine thread."""
+    try:
+        return int(progress.token_total) if progress is not None else 0
+    except Exception:
+        return 0
+
+
+def _render_result(result: Any) -> str | None:
+    """Render a workflow's return value for the <result> section (capped)."""
+    if result is None:
+        return None
+    if isinstance(result, str):
+        text = result
+    else:
+        try:
+            text = json.dumps(result, default=str, ensure_ascii=False)
+        except Exception:
+            text = str(result)
+    return text[:4000]
+
+
+def enqueue_workflow_notification(
+    task_id: str,
+    registry: "RuntimeTaskRegistry",
+    *,
+    status: str,
+    error: str | None = None,
+) -> bool:
+    """Deliver a workflow's terminal result to the model via the shared
+    ``<task-notification>`` queue (mirrors ``enqueue_agent_notification``).
+
+    The ``notified`` flag is check-and-set atomically, so exactly one envelope
+    is delivered even if complete/fail/kill race."""
+    from src.utils.message_queue_manager import enqueue_pending_notification
+    from src.utils.task_notification import build_task_notification_xml
+
+    # Read the token total OUTSIDE the registry mutator: progress is mutated by
+    # the engine on its own daemon thread, so iterating it under the registry
+    # lock could raise "list changed size during iteration". _safe_token_total
+    # guards it; the mutator itself only flips a scalar flag (the stock-agent
+    # pattern in enqueue_agent_notification).
+    snapshot = registry.get(task_id)
+    tokens = _safe_token_total(getattr(snapshot, "progress", None)) if snapshot is not None else 0
+
+    captured: dict[str, Any] = {}
+    should_enqueue = False
+
+    def _mark(prev: TaskStateBase) -> TaskStateBase:
+        nonlocal should_enqueue
+        if not isinstance(prev, LocalWorkflowTaskState) or prev.notified:
+            return prev
+        should_enqueue = True
+        captured.update(
+            name=prev.workflow_name or "workflow",
+            output_file=prev.output_file,
+            result=prev.result,
+            tool_use_id=prev.tool_use_id,
+        )
+        return replace(prev, notified=True)
+
+    registry.update(task_id, _mark)
+    if not should_enqueue:
+        return False
+
+    final_message = _render_result(captured["result"]) if status == "completed" else None
+    xml = build_task_notification_xml(
+        task_id=task_id,
+        description=captured["name"],
+        status=status,  # type: ignore[arg-type]
+        output_file=captured["output_file"],
+        error=error,
+        final_message=final_message,
+        usage={"total_tokens": tokens, "tool_uses": 0, "duration_ms": 0},
+        tool_use_id=captured["tool_use_id"],
+    )
+    enqueue_pending_notification(value=xml, mode="task-notification")
+    return True
 
 
 # ── Task adapter ──────────────────────────────────────────────────────────────
@@ -194,4 +287,5 @@ __all__ = [
     "kill_workflow_task",
     "skip_workflow_agent",
     "retry_workflow_agent",
+    "enqueue_workflow_notification",
 ]
