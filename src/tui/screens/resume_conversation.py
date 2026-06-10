@@ -105,10 +105,10 @@ class ResumeConversation(ModalScreen[str | None]):
     def _load_sessions(self) -> list[tuple[str, str]]:
         """Return ``(session_id, label)`` pairs to display.
 
-        Phase-8 close-out: ``SessionStorage.list_sessions()`` is now wired
-        from ``agent_bridge.py``; this method reads the metadata files
-        the agent loop writes during normal operation. Empty list when
-        no sessions exist (clean install, first run).
+        Reads the metadata files the session-persistence producer
+        (``services/session_persistence.SessionPersister``, driven by
+        ``agent_bridge``) writes during normal TUI operation. Empty list
+        when no sessions exist (clean install, first run).
         """
 
         try:
