@@ -95,9 +95,14 @@ class REPLScreen(Screen):
             workspace_root=self._workspace_root,
             provider_instance=provider_instance,
         )
+        # /vim: seed the editor mode from the persisted editorMode config key
+        # (best-effort; the command toggles it, effective on next launch).
+        from src.command_system.vim_command import initial_vim_mode
+
         self.prompt_input = PromptInput(
             words_provider=words_provider,
             suggestions_provider=suggestions_provider,
+            vim_mode=initial_vim_mode(),
         )
         # ARIA live region — stays height: 1 and only announces the
         # most recent status change. Mounted just above the status
