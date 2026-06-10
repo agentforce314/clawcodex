@@ -289,24 +289,21 @@ class TestWebFetchTool(ToolSystemTests):
 
 
 class TestWebSearchTool(ToolSystemTests):
-    """Tests for the refactored WebSearchTool.
+    """Tests for the Tavily-backed WebSearchTool.
 
-    All tests that exercise DuckDuckGo search patch both the package-based
-    search (``_ddg_package_search``) and ``urllib.request.urlopen`` to ensure
-    the HTML-scraping fallback path is taken with controlled data, regardless
-    of whether ``duckduckgo-search`` is installed in the test environment.
+    The HTTP boundary (``urllib.request.urlopen``) is patched to return canned
+    Tavily JSON and ``TAVILY_API_KEY`` is set, so the tests exercise the real
+    ``_tavily_search`` parsing + domain filtering + output formatting without
+    any network access.
     """
 
-    _DDG_PKG_PATCH = "src.tool_system.tools.web_search._ddg_package_search"
-
-    def test_web_search_parses_results(self) -> None:
-        html_doc = """
-        <a class="result__a" href="https://example.com/">Example</a>
-        <a class="result__snippet">Snippet</a>
-        """
+    @staticmethod
+    def _tavily_resp(results: list[dict[str, str]]):
+        """Build a fake urlopen response carrying a Tavily ``{"results": [...]}`` body."""
+        payload = json.dumps({"results": results}).encode("utf-8")
 
         class _Resp(io.BytesIO):
-            headers = {"Content-Type": "text/html"}
+            headers = {"Content-Type": "application/json"}
 
             def __enter__(self):
                 return self
@@ -314,8 +311,19 @@ class TestWebSearchTool(ToolSystemTests):
             def __exit__(self, exc_type, exc, tb):
                 return False
 
-        with patch(self._DDG_PKG_PATCH, return_value=None), \
-             patch.object(urllib.request, "urlopen", return_value=_Resp(html_doc.encode("utf-8"))):
+        return _Resp(payload)
+
+    def _patch_tavily(self, results: list[dict[str, str]]):
+        """Context: a configured key + urlopen returning the given Tavily results."""
+        return patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}), patch.object(
+            urllib.request, "urlopen", return_value=self._tavily_resp(results)
+        )
+
+    def test_web_search_parses_results(self) -> None:
+        env, net = self._patch_tavily(
+            [{"title": "Example", "url": "https://example.com/", "content": "Snippet"}]
+        )
+        with env, net:
             out = WebSearchTool.call({"query": "example"}, self.ctx).output
             self.assertEqual(out["query"], "example")
             self.assertIn("duration_seconds", out)
@@ -332,24 +340,11 @@ class TestWebSearchTool(ToolSystemTests):
 
     def test_web_search_domain_filtering_blocked(self) -> None:
         """blocked_domains filters out matching results."""
-        html_doc = """
-        <a class="result__a" href="https://example.com/">Example</a>
-        <a class="result__snippet">Snippet one</a>
-        <a class="result__a" href="https://other.org/">Other</a>
-        <a class="result__snippet">Snippet two</a>
-        """
-
-        class _Resp(io.BytesIO):
-            headers = {"Content-Type": "text/html"}
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                return False
-
-        with patch(self._DDG_PKG_PATCH, return_value=None), \
-             patch.object(urllib.request, "urlopen", return_value=_Resp(html_doc.encode("utf-8"))):
+        env, net = self._patch_tavily([
+            {"title": "Example", "url": "https://example.com/", "content": "Snippet one"},
+            {"title": "Other", "url": "https://other.org/", "content": "Snippet two"},
+        ])
+        with env, net:
             out = WebSearchTool.call(
                 {"query": "test", "blocked_domains": ["example.com"]}, self.ctx
             ).output
@@ -360,24 +355,11 @@ class TestWebSearchTool(ToolSystemTests):
 
     def test_web_search_domain_filtering_allowed(self) -> None:
         """allowed_domains keeps only matching results."""
-        html_doc = """
-        <a class="result__a" href="https://example.com/">Example</a>
-        <a class="result__snippet">Snippet one</a>
-        <a class="result__a" href="https://other.org/">Other</a>
-        <a class="result__snippet">Snippet two</a>
-        """
-
-        class _Resp(io.BytesIO):
-            headers = {"Content-Type": "text/html"}
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                return False
-
-        with patch(self._DDG_PKG_PATCH, return_value=None), \
-             patch.object(urllib.request, "urlopen", return_value=_Resp(html_doc.encode("utf-8"))):
+        env, net = self._patch_tavily([
+            {"title": "Example", "url": "https://example.com/", "content": "Snippet one"},
+            {"title": "Other", "url": "https://other.org/", "content": "Snippet two"},
+        ])
+        with env, net:
             out = WebSearchTool.call(
                 {"query": "test", "allowed_domains": ["example.com"]}, self.ctx
             ).output
@@ -387,24 +369,11 @@ class TestWebSearchTool(ToolSystemTests):
 
     def test_web_search_subdomain_matching(self) -> None:
         """Subdomain matching: sub.example.com matches example.com."""
-        html_doc = """
-        <a class="result__a" href="https://sub.example.com/page">Sub Example</a>
-        <a class="result__snippet">Sub snippet</a>
-        <a class="result__a" href="https://badexample.com/">Bad Example</a>
-        <a class="result__snippet">Bad snippet</a>
-        """
-
-        class _Resp(io.BytesIO):
-            headers = {"Content-Type": "text/html"}
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                return False
-
-        with patch(self._DDG_PKG_PATCH, return_value=None), \
-             patch.object(urllib.request, "urlopen", return_value=_Resp(html_doc.encode("utf-8"))):
+        env, net = self._patch_tavily([
+            {"title": "Sub Example", "url": "https://sub.example.com/page", "content": "Sub snippet"},
+            {"title": "Bad Example", "url": "https://badexample.com/", "content": "Bad snippet"},
+        ])
+        with env, net:
             out = WebSearchTool.call(
                 {"query": "test", "allowed_domains": ["example.com"]}, self.ctx
             ).output
@@ -435,7 +404,7 @@ class TestWebSearchTool(ToolSystemTests):
             "query": "python docs",
             "results": [
                 "**Python** -- The official docs (https://python.org)",
-                {"tool_use_id": "ddg-search", "content": [{"title": "Python", "url": "https://python.org"}]},
+                {"tool_use_id": "tavily-search", "content": [{"title": "Python", "url": "https://python.org"}]},
             ],
             "duration_seconds": 0.5,
         }
@@ -445,16 +414,14 @@ class TestWebSearchTool(ToolSystemTests):
         self.assertIn("REMINDER", api_result["content"])
         self.assertIn("sources", api_result["content"].lower())
 
-    def test_web_search_ddg_package_path(self) -> None:
-        """When duckduckgo-search package is available, use it instead of HTML scraping."""
-        mock_results = [
-            {"title": "Pkg Result", "url": "https://pkg.example.com/", "snippet": "From package"},
-        ]
-        with patch(self._DDG_PKG_PATCH, return_value=mock_results):
-            out = WebSearchTool.call({"query": "package test"}, self.ctx).output
-            self.assertEqual(out["query"], "package test")
-            links = out["results"][-1]
-            self.assertEqual(links["content"][0]["url"], "https://pkg.example.com/")
+    def test_web_search_unconfigured_raises(self) -> None:
+        """With no TAVILY_API_KEY set, search raises a clear 'configure' error."""
+        # Empty env var + empty config "env" block (isolate from real config).
+        with patch.dict(os.environ, {"TAVILY_API_KEY": ""}), \
+             patch("src.secret_store._config_env", return_value={}):
+            with self.assertRaises(Exception) as cm:
+                WebSearchTool.call({"query": "anything"}, self.ctx)
+            self.assertIn("TAVILY_API_KEY", str(cm.exception))
 
 
 class TestSleepTool(ToolSystemTests):
