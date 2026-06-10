@@ -57,6 +57,11 @@ dependencies = [
     # for all platforms and covers PNG/JPEG/GIF/WebP and palette quantization.
     # Without this, oversized images get rejected instead of downscaled.
     "Pillow>=10.0",
+    # HTML -> Markdown conversion for the WebFetch tool (port of TS Turndown).
+    # Preserves headings/lists/links so fetched pages are usable for research;
+    # without it WebFetch falls back to a flat regex tag-strip (no structure).
+    # Pulls in beautifulsoup4 (pure-Python).
+    "markdownify>=0.11",
 ]
 
 [project.optional-dependencies]
