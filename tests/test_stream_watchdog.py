@@ -127,20 +127,24 @@ class TestWatchdogIntegrationWithProvider(unittest.TestCase):
         from unittest.mock import patch as _patch
         from src.providers.anthropic_provider import AnthropicProvider
 
-        # Build a fake stream whose ``text_stream`` yields nothing for
+        # Build a fake stream whose full event iteration yields nothing for
         # long enough that the watchdog fires, then raises (mirrors
-        # ``close()`` interrupting the iterator).
+        # ``close()`` interrupting the iterator). The provider now drives
+        # the watchdog from the full event stream (``for event in stream``)
+        # rather than the text-only ``stream.text_stream`` view — see the
+        # thinking-aware liveness rework — so the stall has to happen on
+        # ``__iter__`` for the watchdog branch to be exercised.
         fake_response = MagicMock()
         fake_response.close = MagicMock()
 
-        def slow_text_stream():
+        def slow_event_stream():
             time.sleep(0.3)
             # After watchdog fires + closes response, iteration should raise.
             raise RuntimeError("stream closed by watchdog")
             yield  # unreachable; makes this a generator
 
         fake_stream = MagicMock()
-        fake_stream.text_stream = slow_text_stream()
+        fake_stream.__iter__ = MagicMock(return_value=slow_event_stream())
         fake_stream.response = fake_response
 
         # The context manager returns our fake stream.

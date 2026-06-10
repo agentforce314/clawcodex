@@ -36,11 +36,30 @@ from src.providers.anthropic_provider import AnthropicProvider
 from src.utils.abort_controller import AbortController, AbortError
 
 
+class _FakeTextDelta:
+    """Duck-typed ``TextDelta`` — the provider reads ``delta.text``."""
+
+    type = "text_delta"
+
+    def __init__(self, text: str):
+        self.text = text
+
+
+class _FakeStreamEvent:
+    """Duck-typed Anthropic stream event with a ``delta`` attribute."""
+
+    def __init__(self, delta=None):
+        self.delta = delta
+
+
 class _FakeStream:
     """Minimal stand-in for the Anthropic SDK's ``messages.stream`` ctx manager.
 
     Yields text chunks one at a time with a configurable delay so we can
-    simulate a slow streaming response that ESC needs to cancel.
+    simulate a slow streaming response that ESC needs to cancel. The
+    provider iterates the full event stream (post thinking-aware fix),
+    so this exposes ``__iter__`` yielding events whose ``delta.text``
+    matches each chunk.
     """
 
     def __init__(self, chunks: list[str], per_chunk_delay_s: float = 0.0):
@@ -57,8 +76,7 @@ class _FakeStream:
     def __exit__(self, exc_type, exc, tb):
         return False
 
-    @property
-    def text_stream(self):
+    def _yield_chunks_with_closure_check(self):
         for chunk in self._chunks:
             if self._closed.is_set():
                 # SDK's iterator would raise once the underlying HTTP
@@ -74,6 +92,17 @@ class _FakeStream:
                         raise ConnectionError("response closed mid-stream")
                     time.sleep(0.005)
             yield chunk
+
+    @property
+    def text_stream(self):
+        # Kept for backward-compat in case any other test still consumes
+        # the text-only view directly. The provider itself now iterates
+        # the full event stream below.
+        yield from self._yield_chunks_with_closure_check()
+
+    def __iter__(self):
+        for chunk in self._yield_chunks_with_closure_check():
+            yield _FakeStreamEvent(delta=_FakeTextDelta(chunk))
 
     def get_final_message(self):
         # Build a minimal "final message" shape the provider's
