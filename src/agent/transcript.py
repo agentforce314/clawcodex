@@ -83,6 +83,19 @@ def get_agent_transcript_path(agent_id: str) -> str:
     return str(_transcripts_root() / f"{safe_id}.jsonl")
 
 
+def get_workflow_run_path(run_id: str) -> str:
+    """Absolute path to a workflow run's journal file,
+    ``~/.clawcodex/transcripts/workflows/<run_id>.json``.
+
+    Workflow journals live alongside agent transcripts (the per-user session
+    storage root), not under the project tree, so resume state doesn't become
+    VCS noise. ``run_id`` is sanitized like an agent id."""
+    safe_id = _sanitize_agent_id(run_id)
+    root = _transcripts_root() / "workflows"
+    root.mkdir(parents=True, exist_ok=True)
+    return str(root / f"{safe_id}.json")
+
+
 def _sanitize_agent_id(agent_id: str) -> str:
     """Reject path-traversing agent_ids before we touch the filesystem.
 
