@@ -39,6 +39,7 @@ from .release_notes_command import RELEASE_NOTES_COMMAND
 from .copy_command import COPY_COMMAND
 from .vim_command import VIM_COMMAND
 from .memory_command import MEMORY_COMMAND
+from .stickers_command import STICKERS_COMMAND
 from .types import Command, CommandType, CompactionResult, LocalCommand, PromptCommand
 
 
@@ -1256,6 +1257,7 @@ def get_builtin_commands() -> list[Command]:
         COPY_COMMAND,
         VIM_COMMAND,
         MEMORY_COMMAND,
+        STICKERS_COMMAND,
     ]
     if is_buddy_command_enabled():
         cmds.append(BUDDY_COMMAND)
