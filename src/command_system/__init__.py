@@ -84,6 +84,7 @@ from .tasks_command import TASKS_COMMAND, TasksCommand
 from .diff_command import DIFF_COMMAND, DiffCommand
 from .release_notes_command import RELEASE_NOTES_COMMAND
 from .copy_command import COPY_COMMAND, CopyCommand
+from .vim_command import VIM_COMMAND
 from .types import (
     Command,
     CommandAvailability,
@@ -176,6 +177,7 @@ __all__ = [
     "RELEASE_NOTES_COMMAND",
     "COPY_COMMAND",
     "CopyCommand",
+    "VIM_COMMAND",
     "get_builtin_commands",
     "register_builtin_commands",
     # Moved-to-plugin factory + shell-at-prompt-build
