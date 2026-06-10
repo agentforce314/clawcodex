@@ -32,9 +32,14 @@ class _FakeRun:
     def __init__(self):
         self.controller = _FakeController()
         self.skipped = []
+        self.retried = []
 
     def abort_agent(self, key):
         self.skipped.append(key)
+        return key == "0"
+
+    def retry_agent(self, key):
+        self.retried.append(key)
         return key == "0"
 
 
@@ -112,10 +117,13 @@ def test_skip_agent_targets_one_controller():
     assert run.skipped == ["0", "9"]
 
 
-def test_retry_is_unsupported_for_now():
+def test_retry_agent_targets_one():
     reg = RuntimeTaskRegistry()
-    state = _register(reg)
-    assert retry_workflow_agent(state.id, "0", reg) is False
+    run = _FakeRun()
+    state = _register(reg, run=run)
+    assert retry_workflow_agent(state.id, "0", reg) is True
+    assert retry_workflow_agent(state.id, "9", reg) is False
+    assert run.retried == ["0", "9"]
 
 
 async def test_task_adapter_kill():

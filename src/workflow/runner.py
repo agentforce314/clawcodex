@@ -57,12 +57,37 @@ class LiveAgentRunner:
         self._run_id = run_id
         self._max_turns = max_turns
 
-    async def run(self, spec: AgentSpec, *, abort: AbortController, index: int) -> AgentOutcome:
+    async def run(self, spec: AgentSpec, *, abort: AbortController, index: str) -> AgentOutcome:
+        # isolation="worktree": run the agent in a throwaway git worktree so
+        # parallel file-mutating agents don't collide. Best-effort — if the
+        # worktree can't be created the agent runs in place.
+        if spec.isolation == "worktree":
+            import dataclasses
+            from pathlib import Path as _Path
+
+            from src.workflow.worktree import agent_worktree
+
+            base_cwd = str(self._parent_context.cwd) if getattr(self._parent_context, "cwd", None) else "."
+            async with agent_worktree(self._run_id, index, base_cwd) as wt:
+                context = (
+                    dataclasses.replace(self._parent_context, cwd=_Path(wt))
+                    if wt
+                    else self._parent_context
+                )
+                return await self._run_in_context(spec, context, abort=abort, index=index)
+        return await self._run_in_context(spec, self._parent_context, abort=abort, index=index)
+
+    async def _run_in_context(
+        self, spec: AgentSpec, parent_context: Any, *, abort: AbortController, index: str
+    ) -> AgentOutcome:
         # Imported lazily: ``src.agent`` pulls in the whole agent stack, which
         # the engine core deliberately never imports.
         from src.agent.agent_tool_utils import finalize_agent_tool, resolve_agent_tools
-        from src.agent.constants import WORKFLOW_TOOL_NAME
+        from src.agent.constants import ALL_AGENT_DISALLOWED_TOOLS, WORKFLOW_TOOL_NAME
         from src.agent.run_agent import RunAgentParams, run_agent
+        from src.tasks.progress import ProgressTracker, update_progress_from_message
+        from src.tool_system.registry import ToolRegistry
+        from src.types.messages import AssistantMessage
 
         agent_type = spec.agent_type or self._default_agent_type
         agent_definition = self._resolve_agent(agent_type)
@@ -77,23 +102,40 @@ class LiveAgentRunner:
         resolved = resolve_agent_tools(agent_definition, self._base_tools, is_async=False)
         worker_tools = [t for t in resolved.resolved_tools if getattr(t, "name", "") != WORKFLOW_TOOL_NAME]
 
-        # isolation="worktree" is not yet wired (run_agent worktree support is a
-        # later phase); a worktree request currently runs in-place.
         collector: Optional[StructuredOutputCollector] = None
         prompt = spec.prompt
+        structured_tool = None
         if spec.schema is not None:
             collector = StructuredOutputCollector(schema=spec.schema)
+            structured_tool = make_structured_output_tool(collector)
             worker_tools = [t for t in worker_tools if getattr(t, "name", "") != SYNTHETIC_OUTPUT_TOOL_NAME]
-            worker_tools.append(make_structured_output_tool(collector))
+            worker_tools.append(structured_tool)
             prompt = spec.prompt + _SCHEMA_NUDGE
         available_tools = worker_tools
 
+        # Tool DISPATCH resolves by name from the registry, not from
+        # ``available_tools`` — so the schema agent needs a per-call registry in
+        # which ``StructuredOutput`` is *our* validating tool (not the stock
+        # no-op) and ``Workflow`` is absent. Built per call so concurrent schema
+        # agents don't share a collector.
+        agent_registry = ToolRegistry()
+        for t in self._tool_registry.list_tools():
+            # Same firewall as the advertised pool: no Agent/Workflow/TaskStop/...
+            # so a subagent can't recurse or escalate via a by-name dispatch.
+            if getattr(t, "name", "") in ALL_AGENT_DISALLOWED_TOOLS:
+                continue
+            if structured_tool is not None and getattr(t, "name", "") == SYNTHETIC_OUTPUT_TOOL_NAME:
+                continue
+            agent_registry.register(t)
+        if structured_tool is not None:
+            agent_registry.register(structured_tool)
+
         params = RunAgentParams(
-            parent_context=self._parent_context,
+            parent_context=parent_context,
             agent_definition=agent_definition,
             prompt=prompt,
             available_tools=available_tools,
-            tool_registry=self._tool_registry,
+            tool_registry=agent_registry,
             provider=self._provider,
             model=spec.model,
             agent_id=agent_id,
@@ -108,16 +150,25 @@ class LiveAgentRunner:
             use_exact_tools=True,
         )
 
+        # Feed a ProgressTracker so finalize_agent_tool reports chapter-correct
+        # token totals (latest input + cumulative output) rather than the
+        # message.usage fallback — these tokens drive the workflow budget.
+        tracker = ProgressTracker()
         messages: list = []
         try:
             async for message in run_agent(params):
                 messages.append(message)
+                if isinstance(message, AssistantMessage):
+                    try:
+                        update_progress_from_message(tracker, message)
+                    except Exception:  # noqa: BLE001 — progress is best-effort
+                        pass
         except AbortError:
             raise  # cancellation unwinds; the engine marks the agent aborted
 
         # finalize_agent_tool raises if the run produced no assistant message;
         # the engine catches that and resolves agent() to None (a "death").
-        result = finalize_agent_tool(messages, agent_id, {"agent_type": agent_type})
+        result = finalize_agent_tool(messages, agent_id, {"agent_type": agent_type}, progress=tracker)
         tokens = result.total_tokens
         tool_uses = result.total_tool_use_count
 

@@ -45,6 +45,7 @@ class StatusLine(Static):
     turns: reactive[int] = reactive(0)
     is_thinking: reactive[bool] = reactive(False)
     queued: reactive[int] = reactive(0)
+    workflows: reactive[int] = reactive(0)
 
     def __init__(
         self,
@@ -81,9 +82,25 @@ class StatusLine(Static):
         if self._app_state is not None:
             self.is_thinking = self._app_state.is_thinking
             self.queued = len(self._app_state.queued_prompts)
+        self.workflows = self._count_workflows()
         if self.is_thinking:
             self._frame = (self._frame + 1) % len(_SPINNER_FRAMES)
         self._redraw()
+
+    def _count_workflows(self) -> int:
+        """Number of running/pending workflow runs (for the footer pill)."""
+        try:
+            tool_context = getattr(self.app, "tool_context", None)
+            if tool_context is None:
+                return 0
+            return sum(
+                1
+                for t in tool_context.runtime_tasks.all()
+                if getattr(t, "type", None) == "local_workflow"
+                and getattr(t, "status", "") in ("running", "pending")
+            )
+        except Exception:
+            return 0
 
     # ---- public API ----
     def bind_state(self, state: AppState) -> None:
@@ -125,6 +142,9 @@ class StatusLine(Static):
     def watch_queued(self, _: int) -> None:
         self._redraw()
 
+    def watch_workflows(self, _: int) -> None:
+        self._redraw()
+
     def _redraw(self) -> None:
         spinner = _SPINNER_FRAMES[self._frame] if self.is_thinking else " "
         self.update(self._compose_text(spinner=spinner))
@@ -164,6 +184,10 @@ class StatusLine(Static):
         right_bits: list[str] = [f"turn {self.turns}"]
         if self.queued:
             right_bits.append(f"queued {self.queued}")
+        if self.workflows:
+            right_bits.append(
+                "1 background workflow" if self.workflows == 1 else f"{self.workflows} background workflows"
+            )
         if state and state.usage:
             in_t = state.usage.get("input_tokens", 0)
             out_t = state.usage.get("output_tokens", 0)
