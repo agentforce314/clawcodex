@@ -51,6 +51,7 @@ LOCAL_BUILTINS: tuple[str, ...] = (
     "/diff",
     "/mcp",
     "/tasks",
+    "/workflows",
     "/rewind",
 )
 
@@ -287,6 +288,8 @@ def dispatch_local_command(
         return CommandDispatchResult(handled=True, open_dialog="mcp")
     if name == "/tasks":
         return CommandDispatchResult(handled=True, open_dialog="tasks")
+    if name == "/workflows":
+        return CommandDispatchResult(handled=True, open_dialog="workflows")
     if name == "/rewind":
         return CommandDispatchResult(handled=True, open_dialog="rewind")
 

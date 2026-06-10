@@ -305,26 +305,28 @@ designed to accept this port.
 | Resume persistence (Phase 9) | `Journal` persisted to the run's file; `resume_from_run_id` reloads it | ✅ |
 | Bundled workflow | `src/workflow/bundled/deep_research.py` (real fan-out → cross-check → cited report) | ✅ |
 
-**Remaining polish (not blocking; documented honestly):**
-- **Rich `/workflows` TUI dialog** — the headless `/workflows` list + the pill label are built and
-  tested; the Textual phases→agents drill-down with the `p`/`x`/`r`/`s` bindings is not (it builds on
-  the `/tasks` panel, which is itself a broken stub — `REPLScreen.focus_task_panel` is missing). The
-  per-run/agent control API it needs already exists (`kill_workflow_task`/`skip_workflow_agent`).
-- **Live pill wiring** — `workflow_pill_label` is tested; threading `runtime_tasks` onto the live
-  `StatusLine` is a small TUI edit not yet made.
-- **`retry_workflow_agent`** reports "unsupported" — re-spawning one agent mid-run needs engine support.
-- **Budget shared-pool / ProgressTracker** — `LiveAgentRunner` builds `RunAgentParams` correctly but
-  isn't wired to `Budget(base_spent=get_total_cost_usd)` / a `ProgressTracker`; do this when the tool
-  constructs the run with the real provider.
-- **Worktree-per-agent** (`wf_<runId>-<idx>`) — `isolation="worktree"` currently runs in-place.
-- **Live integration test** — `LiveAgentRunner`'s `run_agent` composition needs a real/recorded model
-  (the structured-output tool and the whole engine + launcher are unit-tested with a fake runner).
-- **Result delivery** — the final result is captured on the task (`complete_workflow_task`) and shown
-  by `/workflows`; auto-injecting the report back into the conversation on completion (the
-  async-agent `enqueue_*_notification` path) is a follow-up.
-- **Run-file location** — run journals are written under `<cwd>/.clawcodex/workflows/<run_id>.json`
-  (resume reads the same path; internally consistent). The spec's location is
-  `~/.claude/projects/<session>/`; aligning to the session dir is a deliberate, deferred change.
+**Polish — now built (port-plan §10 follow-ups):**
+
+| Item | Module | Tested |
+|---|---|---|
+| Result delivery to the model | `enqueue_workflow_notification` on terminal transitions | ✅ |
+| Run-file location | `get_workflow_run_path` → `~/.clawcodex/transcripts/workflows/` | ✅ |
+| `retry_workflow_agent` | engine bounded retry loop (`WorkflowRun.retry_agent`) | ✅ |
+| ProgressTracker tokens | `LiveAgentRunner` feeds `finalize_agent_tool(progress=…)` | ✅ |
+| Worktree-per-agent | `isolation="worktree"` → `wf_<runId>-<idx>` (`src/workflow/worktree.py`) | ✅ |
+| Live integration test | `LiveAgentRunner` → `run_agent` → real query loop w/ a fake provider | ✅ |
+| `/workflows` TUI dialog | `src/tui/screens/workflow_dialog.py` (list + detail, `x` stop, `r` retry) + opener | ✅ (pilot) |
+| Live pill | `StatusLine` shows "N background workflows" from `runtime_tasks` | ✅ (pilot) |
+
+The integration test caught two real bugs (fixed): tool **dispatch resolves by name from the
+registry**, so a schema agent needs a per-call registry where `StructuredOutput` is the validating
+tool; and that injected tool was **permission-blocked** in the subagent (now explicitly allowed).
+
+**Still remaining (genuinely small, not blocking):**
+- **`p` (pause) / `s` (save)** in the `/workflows` dialog — pause needs an engine pause gate; save
+  needs the `.claude/workflows` write + save dialog. The `x`/`r` actions and the detail view are built.
+- **Budget shared-pool** — `Budget(base_spent=…)` accepts a shared-pool getter, but no token-target
+  source is wired on this path (`budget_total` is `None` by default), so it's a param awaiting a caller.
 
 **Hardening (post adversarial review).** Fixed before merge: the background launch now runs on a
 dedicated daemon thread (`task_manager.start`) so the run outlives the throwaway `asyncio.run`
