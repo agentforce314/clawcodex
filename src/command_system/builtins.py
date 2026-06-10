@@ -38,6 +38,7 @@ from .diff_command import DIFF_COMMAND
 from .release_notes_command import RELEASE_NOTES_COMMAND
 from .copy_command import COPY_COMMAND
 from .vim_command import VIM_COMMAND
+from .memory_command import MEMORY_COMMAND
 from .types import Command, CommandType, CompactionResult, LocalCommand, PromptCommand
 
 
@@ -1254,6 +1255,7 @@ def get_builtin_commands() -> list[Command]:
         RELEASE_NOTES_COMMAND,
         COPY_COMMAND,
         VIM_COMMAND,
+        MEMORY_COMMAND,
     ]
     if is_buddy_command_enabled():
         cmds.append(BUDDY_COMMAND)
