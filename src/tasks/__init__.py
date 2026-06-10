@@ -36,12 +36,14 @@ from src.tasks.in_process_teammate import (
 )
 from src.tasks.local_agent import LocalAgentTask, LocalAgentTaskState
 from src.tasks.local_shell import LocalShellTask, LocalShellTaskState
+from src.tasks.local_workflow import LocalWorkflowTask, LocalWorkflowTaskState
 
 # N1 (Chunk C) — centralized registration. Idempotent (``register_task``
 # rejects duplicates), so importing ``src.tasks`` multiple times is safe.
 register_task(LocalShellTask())
 register_task(LocalAgentTask())
 register_task(InProcessTeammateTask())
+register_task(LocalWorkflowTask())
 
 __all__ = [
     "InProcessTeammateTask",
@@ -50,4 +52,6 @@ __all__ = [
     "LocalAgentTaskState",
     "LocalShellTask",
     "LocalShellTaskState",
+    "LocalWorkflowTask",
+    "LocalWorkflowTaskState",
 ]

@@ -293,15 +293,42 @@ designed to accept this port.
 | `runner.py` (`LiveAgentRunner`) | production seam: `run_agent` + `finalize_agent_tool` + structured tool | ⚠️ structured tool unit-tested; `run_agent` composition needs **live integration test** |
 | `demos/workflows/*.py` | the four JS demos ported to Python; run end-to-end against the engine | ✅ `test_demos.py` |
 
-**Deferred (plan Phases 5–9: integration — not yet built).** None of these exist yet, so the feature
-is not user-reachable: the Workflow tool (`src/tool_system/tools/workflow.py`), `LocalWorkflowTask`,
-the `/workflows` TUI + pill, command discovery + `/deep-research`, the permission renderer +
-auto-mode allowlist, the `disable_workflows` gating, **journal disk-persistence** (`Journal.to_json`/
-`load` exist and are tested but no caller writes them to the session dir yet — so resume currently
-works only in-process), and worktree-per-agent. `LiveAgentRunner` is constructed nowhere yet.
+**Built (plan Phases 5–9: integration) — the feature is now user-reachable behind the gate.**
 
-**Known integration wiring (when Phases 5–9 land):** pass `Budget(base_spent=get_total_cost_usd)` so
-the ceiling counts the shared pool (§4.4); pass a `ProgressTracker` to `finalize_agent_tool` for
-token parity; expose each run's per-agent controllers (already reachable via `WorkflowRun.abort_agent`)
-to the task layer for `x`/`r`; add the live structured-output integration test (schema agent returns a
-validated object; malformed → retry → `None` at the cap).
+| Piece | Module | Tested |
+|---|---|---|
+| Gating + constants | `src/workflow/gating.py`, `disable_workflows` setting, `CLAUDE_CODE_DISABLE_WORKFLOWS`, `WORKFLOW_TOOL_NAME` (+ recursion guard) | ✅ |
+| Background task (Phase 5) | `src/tasks/local_workflow.py` (state, lifecycle, `kill`/`skip`/`retry` API), registered; pill `src/tasks/pill_label.py` | ✅ |
+| Workflow tool (entry) | `src/tool_system/tools/workflow.py` + `src/workflow/launch.py`; registered (gated) in `defaults.py` | ✅ |
+| Commands (Phase 7) | `src/command_system/workflows_integration.py` (discovery + `/deep-research`) + `workflows_command.py` (`/workflows`), spliced into the aggregator | ✅ |
+| Permissions (Phase 8) | `auto_mode_classify` Workflow branch; subagents forced `acceptEdits` in `LiveAgentRunner` | ✅ (classify) |
+| Resume persistence (Phase 9) | `Journal` persisted to the run's file; `resume_from_run_id` reloads it | ✅ |
+| Bundled workflow | `src/workflow/bundled/deep_research.py` (real fan-out → cross-check → cited report) | ✅ |
+
+**Remaining polish (not blocking; documented honestly):**
+- **Rich `/workflows` TUI dialog** — the headless `/workflows` list + the pill label are built and
+  tested; the Textual phases→agents drill-down with the `p`/`x`/`r`/`s` bindings is not (it builds on
+  the `/tasks` panel, which is itself a broken stub — `REPLScreen.focus_task_panel` is missing). The
+  per-run/agent control API it needs already exists (`kill_workflow_task`/`skip_workflow_agent`).
+- **Live pill wiring** — `workflow_pill_label` is tested; threading `runtime_tasks` onto the live
+  `StatusLine` is a small TUI edit not yet made.
+- **`retry_workflow_agent`** reports "unsupported" — re-spawning one agent mid-run needs engine support.
+- **Budget shared-pool / ProgressTracker** — `LiveAgentRunner` builds `RunAgentParams` correctly but
+  isn't wired to `Budget(base_spent=get_total_cost_usd)` / a `ProgressTracker`; do this when the tool
+  constructs the run with the real provider.
+- **Worktree-per-agent** (`wf_<runId>-<idx>`) — `isolation="worktree"` currently runs in-place.
+- **Live integration test** — `LiveAgentRunner`'s `run_agent` composition needs a real/recorded model
+  (the structured-output tool and the whole engine + launcher are unit-tested with a fake runner).
+- **Result delivery** — the final result is captured on the task (`complete_workflow_task`) and shown
+  by `/workflows`; auto-injecting the report back into the conversation on completion (the
+  async-agent `enqueue_*_notification` path) is a follow-up.
+- **Run-file location** — run journals are written under `<cwd>/.clawcodex/workflows/<run_id>.json`
+  (resume reads the same path; internally consistent). The spec's location is
+  `~/.claude/projects/<session>/`; aligning to the session dir is a deliberate, deferred change.
+
+**Hardening (post adversarial review).** Fixed before merge: the background launch now runs on a
+dedicated daemon thread (`task_manager.start`) so the run outlives the throwaway `asyncio.run`
+dispatch loop — with a production-topology regression test; schema subagents now go through
+`resolve_agent_tools` (firewall + scoping, `Workflow` stripped — no recursion) before the injected
+`StructuredOutput` tool, instead of receiving the full base pool; and `run_agent` now honors
+`permission_mode_override`, so the `acceptEdits` guarantee for workflow subagents is actually applied.

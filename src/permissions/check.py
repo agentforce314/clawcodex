@@ -483,6 +483,11 @@ def auto_mode_classify(
     if tool_name == "Agent":
         return AutoModeDecision(allow=True, reason="agent tool")
 
+    if tool_name == "Workflow":
+        # Workflow orchestration is safe to auto-allow — each subagent it spawns
+        # goes through canUseTool individually.
+        return AutoModeDecision(allow=True, reason="workflow orchestrator")
+
     if tool_name.startswith("mcp__"):
         return AutoModeDecision(allow=False, reason="MCP tools require explicit approval")
 

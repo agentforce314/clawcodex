@@ -23,6 +23,9 @@ class AgentRecord:
     status: AgentStatus = "running"
     tokens: int = 0
     error: Optional[str] = None
+    #: The agent's deterministic call-path key (e.g. "0.1") — lets the UI/task
+    #: layer target this specific agent for skip/retry.
+    key: str = ""
 
 
 @dataclass
@@ -65,9 +68,9 @@ class WorkflowProgress:
         self._logs.append(message)
         self._changed()
 
-    def agent_started(self, index: int, label: str, phase: Optional[str]) -> AgentRecord:
+    def agent_started(self, index: int, label: str, phase: Optional[str], key: str = "") -> AgentRecord:
         phase = phase or self._current_phase
-        record = AgentRecord(index=index, label=label, phase=phase)
+        record = AgentRecord(index=index, label=label, phase=phase, key=key)
         self._phase_for(phase).agents.append(record)
         self._changed()
         return record
