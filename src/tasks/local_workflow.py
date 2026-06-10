@@ -185,6 +185,14 @@ def _safe_summary(progress: Any) -> str | None:
         return None
 
 
+def _safe_token_total(progress: Any) -> int:
+    """Token total, tolerant of a concurrent mutation on the engine thread."""
+    try:
+        return int(progress.token_total) if progress is not None else 0
+    except Exception:
+        return 0
+
+
 def _render_result(result: Any) -> str | None:
     """Render a workflow's return value for the <result> section (capped)."""
     if result is None:
@@ -214,6 +222,14 @@ def enqueue_workflow_notification(
     from src.utils.message_queue_manager import enqueue_pending_notification
     from src.utils.task_notification import build_task_notification_xml
 
+    # Read the token total OUTSIDE the registry mutator: progress is mutated by
+    # the engine on its own daemon thread, so iterating it under the registry
+    # lock could raise "list changed size during iteration". _safe_token_total
+    # guards it; the mutator itself only flips a scalar flag (the stock-agent
+    # pattern in enqueue_agent_notification).
+    snapshot = registry.get(task_id)
+    tokens = _safe_token_total(getattr(snapshot, "progress", None)) if snapshot is not None else 0
+
     captured: dict[str, Any] = {}
     should_enqueue = False
 
@@ -227,7 +243,6 @@ def enqueue_workflow_notification(
             output_file=prev.output_file,
             result=prev.result,
             tool_use_id=prev.tool_use_id,
-            tokens=(prev.progress.token_total if prev.progress is not None else 0),
         )
         return replace(prev, notified=True)
 
@@ -243,7 +258,7 @@ def enqueue_workflow_notification(
         output_file=captured["output_file"],
         error=error,
         final_message=final_message,
-        usage={"total_tokens": int(captured.get("tokens") or 0), "tool_uses": 0, "duration_ms": 0},
+        usage={"total_tokens": tokens, "tool_uses": 0, "duration_ms": 0},
         tool_use_id=captured["tool_use_id"],
     )
     enqueue_pending_notification(value=xml, mode="task-notification")

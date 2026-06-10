@@ -18,7 +18,7 @@ def test_worktree_slug():
     assert worktree_slug("wf_abc123def", "0.1.2") == "wf_abc123def-0-1-2"
 
 
-def test_agent_worktree_creates_and_removes(tmp_path):
+async def test_agent_worktree_creates_and_removes(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
     _git(["init"], repo)
@@ -29,7 +29,7 @@ def test_agent_worktree_creates_and_removes(tmp_path):
     _git(["commit", "-m", "init"], repo)
 
     captured = None
-    with agent_worktree("wf_test1234567", "0", str(repo)) as wt:
+    async with agent_worktree("wf_test1234567", "0", str(repo)) as wt:
         captured = wt
         assert wt is not None
         assert Path(wt).is_dir()
@@ -40,8 +40,8 @@ def test_agent_worktree_creates_and_removes(tmp_path):
     assert not Path(captured).exists()  # removed on context exit
 
 
-def test_agent_worktree_non_git_yields_none(tmp_path):
+async def test_agent_worktree_non_git_yields_none(tmp_path):
     d = tmp_path / "notgit"
     d.mkdir()
-    with agent_worktree("wf_x", "0", str(d)) as wt:
+    async with agent_worktree("wf_x", "0", str(d)) as wt:
         assert wt is None  # not a git repo -> best-effort, run in place
