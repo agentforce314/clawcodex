@@ -86,6 +86,7 @@ from .release_notes_command import RELEASE_NOTES_COMMAND
 from .copy_command import COPY_COMMAND, CopyCommand
 from .vim_command import VIM_COMMAND
 from .memory_command import MEMORY_COMMAND, MemoryCommand
+from .stickers_command import STICKERS_COMMAND
 from .types import (
     Command,
     CommandAvailability,
@@ -181,6 +182,7 @@ __all__ = [
     "VIM_COMMAND",
     "MEMORY_COMMAND",
     "MemoryCommand",
+    "STICKERS_COMMAND",
     "get_builtin_commands",
     "register_builtin_commands",
     # Moved-to-plugin factory + shell-at-prompt-build
