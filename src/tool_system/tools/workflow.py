@@ -134,9 +134,9 @@ def make_workflow_tool(
 
         run_id = "wf_" + uuid.uuid4().hex[:12]
         task_id = generate_task_id("local_workflow")
-        base = Path(context.cwd) if context.cwd else Path.cwd()
-        wf_dir = base / ".clawcodex" / "workflows"
-        output_file = str(wf_dir / f"{run_id}.json")
+        from src.agent.transcript import get_workflow_run_path
+
+        output_file = get_workflow_run_path(run_id)
         runner = factory(context, run_id)
 
         # Same-session resume: replay the prior run's journal if asked.
@@ -145,7 +145,10 @@ def make_workflow_tool(
         if isinstance(prior_run_id, str) and prior_run_id.strip():
             from src.workflow.launch import load_journal
 
-            resume = load_journal(str(wf_dir / f"{prior_run_id}.json"))
+            try:
+                resume = load_journal(get_workflow_run_path(prior_run_id))
+            except ValueError:
+                resume = None  # malformed run id
 
         coro = run_workflow_task(
             source=source,

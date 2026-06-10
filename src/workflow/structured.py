@@ -106,6 +106,8 @@ def make_structured_output_tool(collector: StructuredOutputCollector) -> Tool:
             is_error=True,
         )
 
+    from src.permissions.types import PermissionAllowDecision
+
     return build_tool(
         name=SYNTHETIC_OUTPUT_TOOL_NAME,
         input_schema={"type": "object", "additionalProperties": True},
@@ -118,4 +120,7 @@ def make_structured_output_tool(collector: StructuredOutputCollector) -> Tool:
         max_result_size_chars=100_000,
         is_read_only=lambda _input: True,
         is_concurrency_safe=lambda _input: True,
+        # Always allowed — it only records the model's own final answer; without
+        # this the subagent's permission context can block it before validation.
+        check_permissions=lambda tool_input, _ctx: PermissionAllowDecision(updated_input=tool_input),
     )

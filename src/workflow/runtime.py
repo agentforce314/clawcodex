@@ -28,7 +28,7 @@ from src.utils.abort_controller import (
 
 from .budget import Budget
 from .callpath import CallKey, current_branch, key_to_str, reset_branch, use_branch
-from .constants import MAX_ITEMS_PER_CALL
+from .constants import MAX_AGENT_RETRIES, MAX_ITEMS_PER_CALL
 from .errors import WorkflowError, WorkflowMetaError
 from .journal import MISS, Journal, JournalRecord
 from .primitives import await_item, run_stage
@@ -87,10 +87,22 @@ class WorkflowRun:
         # form the UI/task layer carries on each AgentRecord), reachable so the
         # task layer can stop one agent without aborting the whole run.
         self._agent_controllers: dict[str, AbortController] = {}
+        # Keys whose agent has been asked to retry (the `r` action).
+        self._retry_requested: set[str] = set()
 
     @property
     def controller(self) -> AbortController:
         return self._controller
+
+    def retry_agent(self, key: str) -> bool:
+        """Re-spawn one in-flight agent: flag it for retry and abort the current
+        attempt so ``agent()`` runs it again. Returns whether it was live."""
+        controller = self._agent_controllers.get(key)
+        if controller is None:
+            return False
+        self._retry_requested.add(key)
+        controller.abort("agent_retry")
+        return True
 
     @property
     def meta(self) -> WorkflowMeta:
@@ -161,19 +173,32 @@ class WorkflowRun:
         self._budget.check()
 
         record = self._progress.agent_started(self._next_display(), eff_label, eff_phase, key_str)
-        child = create_child_abort_controller(self._controller)
-        self._agent_controllers[key_str] = child
-        try:
-            async with self._scheduler.slot():
-                try:
-                    outcome = await self._runner.run(spec, abort=child, index=key_to_str(key))
-                except AbortError:
-                    self._progress.agent_finished(record, status="failed", error="aborted")
-                    raise
-                except Exception as exc:  # noqa: BLE001 — a subagent death -> None
-                    outcome = AgentOutcome(error=f"{type(exc).__name__}: {exc}")
-        finally:
-            self._agent_controllers.pop(key_str, None)
+        attempts = 0
+        while True:
+            child = create_child_abort_controller(self._controller)
+            self._agent_controllers[key_str] = child
+            try:
+                async with self._scheduler.slot():
+                    try:
+                        outcome = await self._runner.run(spec, abort=child, index=key_str)
+                    except AbortError:
+                        outcome = AgentOutcome(skipped=True)
+                    except Exception as exc:  # noqa: BLE001 — a subagent death -> None
+                        outcome = AgentOutcome(error=f"{type(exc).__name__}: {exc}")
+            finally:
+                self._agent_controllers.pop(key_str, None)
+            # The `r` (retry) action re-spawns a running agent, bounded.
+            if key_str in self._retry_requested and attempts < MAX_AGENT_RETRIES:
+                self._retry_requested.discard(key_str)
+                attempts += 1
+                continue
+            break
+
+        # A run-level kill (the whole controller aborted, vs. a single-agent
+        # skip) propagates to end the run; a lone skip just resolves to None.
+        if outcome.skipped and self._controller.signal.aborted:
+            self._progress.agent_finished(record, status="failed", error="aborted")
+            raise AbortError(self._controller.signal.reason or "aborted")
 
         self._budget.add(outcome.tokens)
         if outcome.error is not None:
