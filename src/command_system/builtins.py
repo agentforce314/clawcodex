@@ -33,6 +33,7 @@ from .effort_command import EFFORT_COMMAND
 from .model_command import MODEL_COMMAND
 from .logo_command import LOGO_COMMAND
 from .mcp_command import MCP_COMMAND
+from .tasks_command import TASKS_COMMAND
 from .types import Command, CommandType, CompactionResult, LocalCommand, PromptCommand
 
 
@@ -1244,6 +1245,7 @@ def get_builtin_commands() -> list[Command]:
         MODEL_COMMAND,
         LOGO_COMMAND,
         MCP_COMMAND,
+        TASKS_COMMAND,
     ]
     if is_buddy_command_enabled():
         cmds.append(BUDDY_COMMAND)
