@@ -9,6 +9,7 @@ the C3 firewall (Workflow stripped, StructuredOutput injected into the pool).
 from __future__ import annotations
 
 from src.agent.agent_definitions import GENERAL_PURPOSE_AGENT
+from src.agent.constants import ALL_AGENT_DISALLOWED_TOOLS
 from src.providers.base import ChatResponse
 from src.tool_system.context import ToolContext
 from src.tool_system.defaults import build_default_registry
@@ -64,8 +65,8 @@ async def test_text_agent_returns_final_text(tmp_path):
     runner = _runner(provider, tmp_path)
     out = await runner.run(AgentSpec(prompt="hi"), abort=create_abort_controller(), index="0")
     assert out.text is not None and "hello from the agent" in out.text
-    # Recursion guard: the Workflow tool must never be in a subagent's pool.
-    assert all("Workflow" not in names for names in provider.tools_seen)
+    # Firewall: no disallowed tool (Agent/Workflow/TaskStop/...) in a subagent pool.
+    assert all(not (set(names) & ALL_AGENT_DISALLOWED_TOOLS) for names in provider.tools_seen)
 
 
 async def test_schema_agent_returns_validated_object(tmp_path):
@@ -82,9 +83,9 @@ async def test_schema_agent_returns_validated_object(tmp_path):
     runner = _runner(provider, tmp_path)
     out = await runner.run(AgentSpec(prompt="produce", schema=schema), abort=create_abort_controller(), index="0")
     assert out.structured == {"answer": 42}
-    # The injected StructuredOutput tool reached the model; Workflow did not.
+    # The injected StructuredOutput tool reached the model; no disallowed tool did.
     assert any("StructuredOutput" in names for names in provider.tools_seen)
-    assert all("Workflow" not in names for names in provider.tools_seen)
+    assert all(not (set(names) & ALL_AGENT_DISALLOWED_TOOLS) for names in provider.tools_seen)
 
 
 async def test_schema_not_produced_resolves_to_none(tmp_path):
@@ -94,3 +95,4 @@ async def test_schema_not_produced_resolves_to_none(tmp_path):
     out = await runner.run(AgentSpec(prompt="produce", schema=schema), abort=create_abort_controller(), index="0")
     assert out.structured is None
     assert out.error is not None
+    assert "structured output not produced" in out.error  # the schema-miss path, not an incidental error

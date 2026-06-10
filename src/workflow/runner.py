@@ -68,7 +68,7 @@ class LiveAgentRunner:
             from src.workflow.worktree import agent_worktree
 
             base_cwd = str(self._parent_context.cwd) if getattr(self._parent_context, "cwd", None) else "."
-            with agent_worktree(self._run_id, index, base_cwd) as wt:
+            async with agent_worktree(self._run_id, index, base_cwd) as wt:
                 context = (
                     dataclasses.replace(self._parent_context, cwd=_Path(wt))
                     if wt
@@ -83,7 +83,7 @@ class LiveAgentRunner:
         # Imported lazily: ``src.agent`` pulls in the whole agent stack, which
         # the engine core deliberately never imports.
         from src.agent.agent_tool_utils import finalize_agent_tool, resolve_agent_tools
-        from src.agent.constants import WORKFLOW_TOOL_NAME
+        from src.agent.constants import ALL_AGENT_DISALLOWED_TOOLS, WORKFLOW_TOOL_NAME
         from src.agent.run_agent import RunAgentParams, run_agent
         from src.tasks.progress import ProgressTracker, update_progress_from_message
         from src.tool_system.registry import ToolRegistry
@@ -120,7 +120,9 @@ class LiveAgentRunner:
         # agents don't share a collector.
         agent_registry = ToolRegistry()
         for t in self._tool_registry.list_tools():
-            if getattr(t, "name", "") == WORKFLOW_TOOL_NAME:
+            # Same firewall as the advertised pool: no Agent/Workflow/TaskStop/...
+            # so a subagent can't recurse or escalate via a by-name dispatch.
+            if getattr(t, "name", "") in ALL_AGENT_DISALLOWED_TOOLS:
                 continue
             if structured_tool is not None and getattr(t, "name", "") == SYNTHETIC_OUTPUT_TOOL_NAME:
                 continue
