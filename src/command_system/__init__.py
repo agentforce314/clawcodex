@@ -80,6 +80,7 @@ from .effort_command import EFFORT_COMMAND, EffortCommand
 from .model_command import MODEL_COMMAND, ModelCommand
 from .logo_command import LOGO_COMMAND, LogoCommand
 from .mcp_command import MCP_COMMAND, McpCommand
+from .tasks_command import TASKS_COMMAND, TasksCommand
 from .types import (
     Command,
     CommandAvailability,
@@ -165,6 +166,8 @@ __all__ = [
     "LogoCommand",
     "MCP_COMMAND",
     "McpCommand",
+    "TASKS_COMMAND",
+    "TasksCommand",
     "get_builtin_commands",
     "register_builtin_commands",
     # Moved-to-plugin factory + shell-at-prompt-build
