@@ -81,6 +81,7 @@ from .model_command import MODEL_COMMAND, ModelCommand
 from .logo_command import LOGO_COMMAND, LogoCommand
 from .mcp_command import MCP_COMMAND, McpCommand
 from .tasks_command import TASKS_COMMAND, TasksCommand
+from .diff_command import DIFF_COMMAND, DiffCommand
 from .types import (
     Command,
     CommandAvailability,
@@ -168,6 +169,8 @@ __all__ = [
     "McpCommand",
     "TASKS_COMMAND",
     "TasksCommand",
+    "DIFF_COMMAND",
+    "DiffCommand",
     "get_builtin_commands",
     "register_builtin_commands",
     # Moved-to-plugin factory + shell-at-prompt-build
