@@ -144,6 +144,10 @@ class SettingsSchema:
     # Fast mode (use small model)
     fast_mode: bool = False
 
+    # Disable dynamic workflows (also honored via CLAUDE_CODE_DISABLE_WORKFLOWS
+    # and the camelCase ``disableWorkflows`` JSON key). See src/workflow/gating.py.
+    disable_workflows: bool = False
+
     # Session retention days
     session_retention_days: int = 30
 

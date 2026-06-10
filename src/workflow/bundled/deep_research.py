@@ -1,0 +1,124 @@
+meta = {
+    "name": "deep-research",
+    "description": "Investigate a question across many sources: fan out web searches, fetch and cross-check the findings, vote on each claim, and return a cited report.",
+    "when_to_use": "Run with a research question that needs sources cross-checked against each other. Requires the WebSearch tool.",
+    "phases": [
+        {"title": "Search", "detail": "Fan out web searches across several angles"},
+        {"title": "Verify", "detail": "Cross-check each claim with independent agents"},
+        {"title": "Synthesize", "detail": "Write a cited report from surviving claims"},
+    ],
+}
+
+# Bundled deep-research workflow (port of the upstream /deep-research bundle).
+# Each agent uses WebSearch/WebFetch to do the actual I/O; the script only
+# coordinates the fan-out, cross-checking, and synthesis.
+
+question = (args if isinstance(args, str) else (args or {}).get("question", "")).strip()
+if not question:
+    raise ValueError('Provide a research question via args — e.g. /deep-research "what changed in X?"')
+
+ANGLES = [
+    "official documentation and primary sources",
+    "recent news, changelogs, and release notes",
+    "expert analysis, comparisons, and critiques",
+    "community discussion and real-world reports",
+]
+
+CLAIMS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "claims": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "claim": {"type": "string"},
+                    "source": {"type": "string"},
+                },
+                "required": ["claim", "source"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["claims"],
+    "additionalProperties": False,
+}
+
+VERDICT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "supported": {"type": "boolean"},
+        "reason": {"type": "string"},
+    },
+    "required": ["supported", "reason"],
+    "additionalProperties": False,
+}
+
+log(f"Researching: {question}")
+
+# ── Phase 1: fan out searches across angles ──────────────────────────────────
+phase("Search")
+searches = await parallel([
+    agent(
+        f'Research the question "{question}" focusing on {angle}. Use web search and fetch the '
+        f"most relevant sources. Extract concrete, verifiable claims that answer the question, "
+        f"each with the URL it came from. Return the structured object.",
+        label=f"search:{angle.split(',')[0][:20]}",
+        phase="Search",
+        schema=CLAIMS_SCHEMA,
+    )
+    for angle in ANGLES
+])
+
+claims = []
+seen = set()
+for result in searches:
+    if not result:
+        continue
+    for item in result.get("claims", []):
+        key = item.get("claim", "").strip().lower()
+        if key and key not in seen:
+            seen.add(key)
+            claims.append(item)
+
+if not claims:
+    raise RuntimeError("No claims were gathered — the question may be too narrow or WebSearch is unavailable.")
+log(f"Gathered {len(claims)} distinct claims; cross-checking each.")
+
+# ── Phase 2: cross-check every claim independently ───────────────────────────
+phase("Verify")
+verdicts = await parallel([
+    agent(
+        f'Independently verify this claim about "{question}":\n\n  "{c["claim"]}"\n\n'
+        f"(originally cited from {c['source']}). Use web search to find corroborating or "
+        f"contradicting evidence from a DIFFERENT source. Decide whether it is supported.",
+        label="verify",
+        phase="Verify",
+        schema=VERDICT_SCHEMA,
+    )
+    for c in claims
+])
+
+survivors = [
+    c for c, v in zip(claims, verdicts)
+    if v and v.get("supported") is True
+]
+log(f"{len(survivors)} of {len(claims)} claims survived cross-checking.")
+
+# ── Phase 3: synthesize a cited report ───────────────────────────────────────
+phase("Synthesize")
+bullet_lines = "\n".join(f"- {c['claim']} (source: {c['source']})" for c in survivors)
+report = await agent(
+    f'Write a clear, well-organized report answering: "{question}".\n\n'
+    f"Use ONLY these cross-checked claims, citing the source for each point:\n\n{bullet_lines}\n\n"
+    f"Structure it with a short summary followed by the details. Note any open questions.",
+    label="synthesize",
+    phase="Synthesize",
+)
+
+return {
+    "question": question,
+    "report": report,
+    "claims_gathered": len(claims),
+    "claims_verified": len(survivors),
+}

@@ -235,8 +235,10 @@ async def run_agent(params: RunAgentParams) -> AsyncGenerator[Message, None]:
     start_time = time.time()
     agent_messages: list[Message] = []
 
-    # Resolve permission mode
-    effective_mode = resolve_permission_mode(
+    # Resolve permission mode. An explicit ``permission_mode_override`` wins
+    # (used by the workflow engine to force ``acceptEdits`` for its subagents);
+    # otherwise fall back to the inheritance rules.
+    effective_mode = params.permission_mode_override or resolve_permission_mode(
         params.parent_context,
         agent_def,
         is_async=params.is_async,

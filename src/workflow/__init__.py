@@ -24,6 +24,7 @@ from .errors import (
     WorkflowLimitError,
     WorkflowMetaError,
 )
+from .gating import is_workflows_enabled
 from .journal import Journal, JournalRecord, fingerprint
 from .progress import AgentRecord, PhaseRecord, WorkflowProgress
 from .runner import LiveAgentRunner
@@ -65,6 +66,7 @@ __all__ = [
     "WorkflowMetaError",
     "WorkflowLimitError",
     "WorkflowBudgetExceeded",
+    "is_workflows_enabled",
     "MAX_AGENTS_PER_RUN",
     "MAX_ITEMS_PER_CALL",
     "MAX_STRUCTURED_OUTPUT_RETRIES",

@@ -60,25 +60,33 @@ class LiveAgentRunner:
     async def run(self, spec: AgentSpec, *, abort: AbortController, index: int) -> AgentOutcome:
         # Imported lazily: ``src.agent`` pulls in the whole agent stack, which
         # the engine core deliberately never imports.
-        from src.agent.agent_tool_utils import finalize_agent_tool
+        from src.agent.agent_tool_utils import finalize_agent_tool, resolve_agent_tools
+        from src.agent.constants import WORKFLOW_TOOL_NAME
         from src.agent.run_agent import RunAgentParams, run_agent
 
         agent_type = spec.agent_type or self._default_agent_type
         agent_definition = self._resolve_agent(agent_type)
         agent_id = f"wf_{self._run_id}-{index}"
 
+        # Resolve the agent's *scoped, firewalled* toolset (applies
+        # ALL_AGENT_DISALLOWED_TOOLS — including Workflow, so a subagent can't
+        # recurse into another workflow — plus the agent definition's own tool
+        # scoping). We then pass it with use_exact_tools=True so run_agent keeps
+        # the injected StructuredOutput tool verbatim instead of re-resolving and
+        # dropping it. Belt-and-braces: strip Workflow even if it slips through.
+        resolved = resolve_agent_tools(agent_definition, self._base_tools, is_async=False)
+        worker_tools = [t for t in resolved.resolved_tools if getattr(t, "name", "") != WORKFLOW_TOOL_NAME]
+
         # isolation="worktree" is not yet wired (run_agent worktree support is a
         # later phase); a worktree request currently runs in-place.
         collector: Optional[StructuredOutputCollector] = None
-        available_tools = list(self._base_tools)
         prompt = spec.prompt
         if spec.schema is not None:
             collector = StructuredOutputCollector(schema=spec.schema)
-            available_tools = [
-                t for t in available_tools if getattr(t, "name", None) != SYNTHETIC_OUTPUT_TOOL_NAME
-            ]
-            available_tools.append(make_structured_output_tool(collector))
+            worker_tools = [t for t in worker_tools if getattr(t, "name", "") != SYNTHETIC_OUTPUT_TOOL_NAME]
+            worker_tools.append(make_structured_output_tool(collector))
             prompt = spec.prompt + _SCHEMA_NUDGE
+        available_tools = worker_tools
 
         params = RunAgentParams(
             parent_context=self._parent_context,
@@ -91,8 +99,13 @@ class LiveAgentRunner:
             agent_id=agent_id,
             abort_controller=abort,
             max_turns=self._max_turns,
-            # Keep the injected StructuredOutput tool in the pool verbatim.
-            use_exact_tools=spec.schema is not None,
+            # Workflow subagents always run acceptEdits (file edits auto-approved)
+            # regardless of the session's mode — per the official spec. run_agent
+            # honors this override ahead of the inheritance rules.
+            permission_mode_override="acceptEdits",
+            # We already resolved + firewalled + injected; don't let run_agent
+            # re-resolve (which would drop the injected StructuredOutput tool).
+            use_exact_tools=True,
         )
 
         messages: list = []
