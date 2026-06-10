@@ -414,8 +414,19 @@ class ClawCodexTUI(App):
             self._open_message_selector(transcript)
         elif name == "tasks":
             self._open_tasks_dialog(transcript)
+        elif name == "workflows":
+            self._open_workflows_dialog(transcript)
         else:
             transcript.append_system(f"Dialog '{name}' not available.", style="muted")
+
+    def _open_workflows_dialog(self, transcript: Transcript) -> None:
+        registry = getattr(self.tool_context, "runtime_tasks", None)
+        if registry is None:
+            transcript.append_system("Workflows are unavailable.", style="muted")
+            return
+        from src.tui.screens.workflow_dialog import WorkflowsScreen
+
+        self.push_screen(WorkflowsScreen(registry=registry))
 
     def _open_model_picker(self, transcript: Transcript) -> None:
         models = self._list_available_models()
