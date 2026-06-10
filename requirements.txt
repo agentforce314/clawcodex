@@ -9,6 +9,7 @@ textual>=0.79
 PyYAML>=6.0
 pathspec>=0.11
 mcp>=1.27.0
+markdownify>=0.11
 
 # Development Dependencies
 build>=1.0.0
