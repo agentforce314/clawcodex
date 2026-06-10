@@ -40,6 +40,7 @@ from .copy_command import COPY_COMMAND
 from .vim_command import VIM_COMMAND
 from .memory_command import MEMORY_COMMAND
 from .stickers_command import STICKERS_COMMAND
+from .rename_command import RENAME_COMMAND
 from .types import Command, CommandType, CompactionResult, LocalCommand, PromptCommand
 
 
@@ -1258,6 +1259,7 @@ def get_builtin_commands() -> list[Command]:
         VIM_COMMAND,
         MEMORY_COMMAND,
         STICKERS_COMMAND,
+        RENAME_COMMAND,
     ]
     if is_buddy_command_enabled():
         cmds.append(BUDDY_COMMAND)
