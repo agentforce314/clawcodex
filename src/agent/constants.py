@@ -7,6 +7,7 @@ from __future__ import annotations
 # --- Tool name constants ---
 AGENT_TOOL_NAME = "Agent"
 LEGACY_AGENT_TOOL_NAME = "Task"
+WORKFLOW_TOOL_NAME = "Workflow"
 
 # --- Built-in agent type identifiers ---
 VERIFICATION_AGENT_TYPE = "verification"
@@ -28,6 +29,8 @@ ALL_AGENT_DISALLOWED_TOOLS: frozenset[str] = frozenset([
     "ExitPlanMode",
     "EnterPlanMode",
     AGENT_TOOL_NAME,
+    # Prevent recursive workflow execution inside subagents.
+    WORKFLOW_TOOL_NAME,
     "AskUserQuestion",
     "TaskStop",
     "Brief",

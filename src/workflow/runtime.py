@@ -83,17 +83,26 @@ class WorkflowRun:
         self._resolve_workflow = resolve_workflow
         self._depth = depth
         self._display = 0
-        # S2: per-agent child controllers, keyed by call-path, reachable so the
-        # task layer can stop/retry one agent without aborting the whole run.
-        self._agent_controllers: dict[CallKey, AbortController] = {}
+        # S2: per-agent child controllers, keyed by the call-path *string* (the
+        # form the UI/task layer carries on each AgentRecord), reachable so the
+        # task layer can stop one agent without aborting the whole run.
+        self._agent_controllers: dict[str, AbortController] = {}
 
     @property
     def controller(self) -> AbortController:
         return self._controller
 
-    def abort_agent(self, key: CallKey) -> bool:
-        """Abort one in-flight agent by its call-path key. Returns whether a
-        live controller was found."""
+    @property
+    def meta(self) -> WorkflowMeta:
+        return self._meta
+
+    @property
+    def progress(self) -> WorkflowProgress:
+        return self._progress
+
+    def abort_agent(self, key: str) -> bool:
+        """Abort one in-flight agent by its call-path key string. Returns
+        whether a live controller was found."""
         controller = self._agent_controllers.get(key)
         if controller is None:
             return False
@@ -139,9 +148,10 @@ class WorkflowRun:
         eff_label = label or agent_type or "agent"
         eff_phase = phase or self._progress.current_phase
 
+        key_str = key_to_str(key)
         cached = self._journal.lookup(key, spec)
         if cached is not MISS:
-            record = self._progress.agent_started(self._next_display(), eff_label, eff_phase)
+            record = self._progress.agent_started(self._next_display(), eff_label, eff_phase, key_str)
             self._progress.agent_finished(record, status="cached")
             return cached
 
@@ -150,9 +160,9 @@ class WorkflowRun:
         self._scheduler.reserve()
         self._budget.check()
 
-        record = self._progress.agent_started(self._next_display(), eff_label, eff_phase)
+        record = self._progress.agent_started(self._next_display(), eff_label, eff_phase, key_str)
         child = create_child_abort_controller(self._controller)
-        self._agent_controllers[key] = child
+        self._agent_controllers[key_str] = child
         try:
             async with self._scheduler.slot():
                 try:
@@ -163,7 +173,7 @@ class WorkflowRun:
                 except Exception as exc:  # noqa: BLE001 — a subagent death -> None
                     outcome = AgentOutcome(error=f"{type(exc).__name__}: {exc}")
         finally:
-            self._agent_controllers.pop(key, None)
+            self._agent_controllers.pop(key_str, None)
 
         self._budget.add(outcome.tokens)
         if outcome.error is not None:
@@ -273,6 +283,7 @@ async def run_workflow(
     args: Any = None,
     run_id: str = "wf",
     on_progress: Optional[Callable[[WorkflowProgress], None]] = None,
+    on_start: Optional[Callable[["WorkflowRun"], None]] = None,
     resume: Optional[Mapping[CallKey, JournalRecord]] = None,
     resolve_workflow: Optional[Callable[[str], str]] = None,
     budget_total: Optional[int] = None,
@@ -311,6 +322,9 @@ async def run_workflow(
         resolve_workflow=resolve_workflow,
         depth=_depth,
     )
+
+    if on_start is not None:
+        on_start(run)  # e.g. register the background task with the live run
 
     # Establish this run's base branch for deterministic call-path keys, and
     # restore the caller's branch afterwards (matters for nested workflow()).

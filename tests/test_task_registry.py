@@ -195,15 +195,17 @@ def test_get_task_by_type_dispatches_correctly() -> None:
 
 def test_get_task_by_type_unknown_returns_none() -> None:
     """Out-of-scope chapter task types stay unregistered (per plan §3:
-    RemoteAgent / Workflow / Monitor / Dream are deferred). Chunk-F
-    registered ``in_process_teammate`` so it's no longer in this list.
+    RemoteAgent / Monitor / Dream are deferred). Chunk-F registered
+    ``in_process_teammate``; the workflow-engine integration registered
+    ``local_workflow`` — both are now implemented and no longer in this list.
     """
     # ``dream`` is out-of-scope (chapter §3 / plan §3 — deferred).
     assert get_task_by_type("dream") is None
-    # And so are remote_agent / monitor_mcp / local_workflow.
+    # And so are remote_agent / monitor_mcp.
     assert get_task_by_type("remote_agent") is None
     assert get_task_by_type("monitor_mcp") is None
-    assert get_task_by_type("local_workflow") is None
+    # ``local_workflow`` is now registered by the workflow-engine integration.
+    assert get_task_by_type("local_workflow") is not None
 
 
 def test_in_process_teammate_registered_post_chunk_f() -> None:
