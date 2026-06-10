@@ -18,11 +18,14 @@ events back to the Textual screen:
 
 Keeping this logic out of :class:`src.tui.app.ClawCodexTUI` lets unit
 tests drive :class:`AgentBridge` with a fake agent loop (see
-``tests/tui/test_agent_bridge.py``).
+``tests/test_esc_cancel_propagation.py`` and
+``tests/test_session_persistence.py``, which construct the bridge with
+stub dependencies).
 """
 
 from __future__ import annotations
 
+import os
 import threading
 import uuid
 from pathlib import Path
@@ -83,6 +86,16 @@ class AgentBridge:
         # callback also raises :class:`AbortError` on the worker thread
         # to tear down an in-flight HTTP stream cleanly.
         self._abort_controller: AbortController | None = None
+        # Session-persistence producer: writes the metadata + JSONL transcript
+        # that resume_session / the resume screen consume. Best-effort (never
+        # raises); start() initializes metadata only when absent so a
+        # /rename-set title survives restarts.
+        from src.services.session_persistence import SessionPersister
+
+        self._persister = SessionPersister(session_id=session.session_id)
+        self._persister.start(
+            model=getattr(provider, "model", "") or "", cwd=os.getcwd()
+        )
         # Wire permission handler: the tool dispatcher calls this from
         # the worker thread, we post to the UI and block on an Event.
         tool_context.permission_handler = self._permission_handler
@@ -143,6 +156,7 @@ class AgentBridge:
             self._tool_context.abort_controller = self._abort_controller
 
         self._session.conversation.add_user_message(prompt)
+        self._persister.record_user(prompt)
         self._post(AgentRunStarted(prompt=prompt))
         self._state.set_thinking(True, verb="Synthesizing")
         self._run_worker(
@@ -232,6 +246,8 @@ class AgentBridge:
                 # 400 at the API). Surface it now, not later.
                 try:
                     self._session.conversation.add_message(msg.role, msg.content)
+                    # Mirror into the session transcript (best-effort, never raises).
+                    self._persister.record(msg)
                 except Exception:
                     import logging
                     logging.getLogger(__name__).exception(
@@ -348,6 +364,8 @@ class AgentBridge:
         self._finish()
 
     def _finish(self) -> None:
+        # Durable persistence at the end of EVERY run (completion, abort, error).
+        self._persister.flush()
         self._state.set_thinking(False)
         self._state.clear_streaming_text()
         with self._busy_lock:
