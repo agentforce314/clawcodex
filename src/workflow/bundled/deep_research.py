@@ -47,10 +47,13 @@ CLAIMS_SCHEMA = {
 VERDICT_SCHEMA = {
     "type": "object",
     "properties": {
-        "supported": {"type": "boolean"},
+        # A string enum, not a bare boolean: many models (deepseek, glm, …)
+        # stringify booleans ("true") and fail strict boolean validation, then
+        # retry endlessly. A constrained string is emitted reliably.
+        "verdict": {"type": "string", "enum": ["supported", "unsupported", "unclear"]},
         "reason": {"type": "string"},
     },
-    "required": ["supported", "reason"],
+    "required": ["verdict", "reason"],
     "additionalProperties": False,
 }
 
@@ -102,7 +105,8 @@ verdicts = await parallel([
     agent(
         f'Independently verify this claim about "{question}":\n\n  "{c["claim"]}"\n\n'
         f"(originally cited from {c['source']}). Use web search to find corroborating or "
-        f"contradicting evidence from a DIFFERENT source. Decide whether it is supported.",
+        f"contradicting evidence from a DIFFERENT source, then return your verdict: "
+        f'"supported", "unsupported", or "unclear".',
         label="verify",
         phase="Verify",
         schema=VERDICT_SCHEMA,
@@ -112,7 +116,7 @@ verdicts = await parallel([
 
 survivors = [
     c for c, v in zip(claims, verdicts)
-    if v and v.get("supported") is True
+    if v and v.get("verdict") == "supported"
 ]
 log(f"{len(survivors)} of {len(claims)} claims survived cross-checking.")
 
