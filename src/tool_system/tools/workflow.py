@@ -113,7 +113,7 @@ def _default_runner_factory(registry: Any, provider: Any) -> Callable[[ToolConte
         # Env-tunable for workflows that genuinely need deeper agents.
         import os
 
-        max_turns = int(os.environ.get("CLAWCODEX_WORKFLOW_MAX_TURNS", "10"))
+        max_turns = int(os.environ.get("CLAWCODEX_WORKFLOW_MAX_TURNS", "18"))
 
         return LiveAgentRunner(
             provider=provider,
