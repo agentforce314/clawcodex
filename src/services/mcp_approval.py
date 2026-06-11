@@ -40,9 +40,11 @@ Both gates sit on the choke points every current and future consumer
 (doctor, /mcp, the eventual runtime mount) reads through; non-TUI
 sessions get warning notices for pending servers instead of a prompt.
 
-Deferred (documented): the TS bypass-mode auto-approve branch reads
-``skipDangerousModePermissionPrompt`` — that key lands with the C8
-bypass gate; until then bypass sessions see the same skip-with-warning.
+C8 update (was deferred in C7): the TS auto-approve branches are now
+ported — ``skipDangerousModePermissionPrompt`` (the C8 bypass-dialog
+acceptance) and non-interactive sessions both resolve to ``approved``
+(TS utils.ts:377-403), so headless/SDK runs match TS instead of the
+C7 interim skip-with-warning.
 """
 
 from __future__ import annotations
@@ -52,6 +54,7 @@ import os
 from typing import Any
 
 from src.services.mcp.normalization import normalize_name_for_mcp
+from src.services.startup_gates import _read_json_dict
 
 ENABLED_KEY = "enabledMcpjsonServers"
 DISABLED_KEY = "disabledMcpjsonServers"
@@ -64,15 +67,6 @@ def _local_settings_path(cwd: str | None = None) -> str:
     from src.permissions import settings_paths
 
     return settings_paths.local_settings_path(cwd)
-
-
-def _read_json_dict(path: str) -> dict[str, Any]:
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
 
 
 def _read_merged_settings(cwd: str | None = None) -> dict[str, Any]:
@@ -127,6 +121,34 @@ def get_mcpjson_server_status(
         return "approved"
     if settings.get(ENABLE_ALL_KEY) is True:
         return "approved"
+    # TS utils.ts:377-403 (deferred from C7, unlocked by C8): two
+    # auto-approve branches where no approval popup can be shown.
+    # (1) The user accepted the bypass-permissions dialog at some point
+    #     (skipDangerousModePermissionPrompt — read from user/local
+    #     settings only; TS explicitly excludes the project tier so a
+    #     repo cannot accept on the user's behalf).
+    # (2) Non-interactive session (SDK / -p / piped input) — the user
+    #     explicitly chose that mode and its docs warn to use trusted
+    #     directories only.
+    # TS additionally gates both on isSettingSourceEnabled(
+    # 'projectSettings'); this port has no setting-source disabling, so
+    # that condition is always true here.
+    try:
+        from src.services.startup_gates import (
+            has_skip_dangerous_mode_permission_prompt,
+        )
+
+        if has_skip_dangerous_mode_permission_prompt(cwd):
+            return "approved"
+    except Exception:
+        pass
+    try:
+        from src.bootstrap.state import get_is_non_interactive_session
+
+        if get_is_non_interactive_session():
+            return "approved"
+    except Exception:
+        pass
     return "pending"
 
 

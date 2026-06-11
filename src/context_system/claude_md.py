@@ -41,6 +41,11 @@ logger = logging.getLogger(__name__)
 
 _memory_files_cache: list[MemoryFileInfo] | None = None
 _memory_files_cache_key: str | None = None
+# Per-cwd memo of the C8 external-includes approval. The lookup behind
+# it shells out (git rev-parse) and reads the global config — far too
+# heavy per get_memory_files call. record_external_includes_choice
+# clears all caches, so in-process flips are still picked up.
+_external_includes_approval_cache: dict[str, bool] = {}
 
 
 def clear_memory_file_caches() -> None:
@@ -48,6 +53,7 @@ def clear_memory_file_caches() -> None:
     global _memory_files_cache, _memory_files_cache_key
     _memory_files_cache = None
     _memory_files_cache_key = None
+    _external_includes_approval_cache.clear()
 
 
 def reset_get_memory_files_cache() -> None:
@@ -336,6 +342,40 @@ def _path_in_working_path(path: str, working_path: str) -> bool:
         return False
 
 
+def _external_includes_approved(original_cwd: str) -> bool:
+    """C8: ``projects[path].hasClaudeMdExternalIncludesApproved`` from
+    the user-owned global config (TS getCurrentProjectConfig)."""
+
+    cached = _external_includes_approval_cache.get(original_cwd)
+    if cached is not None:
+        return cached
+    try:
+        from src import config as config_mod
+
+        entry = config_mod.get_project_entry(
+            config_mod.get_project_path_for_config(original_cwd)
+        )
+        approved = bool(entry.get("hasClaudeMdExternalIncludesApproved"))
+    except Exception:
+        approved = False
+    _external_includes_approval_cache[original_cwd] = approved
+    return approved
+
+
+def is_external_memory_file(
+    info: MemoryFileInfo, cwd: str | None = None
+) -> bool:
+    """TS getExternalClaudeMdIncludes predicate (claudemd.ts:1427-1437):
+    a non-User-tier INCLUDED file (has a parent) living outside the
+    original cwd. The User tier is excluded — the user's own
+    ~/CLAUDE.md may include anything without triggering the project
+    gate."""
+
+    if info.type == "User" or not info.parent:
+        return False
+    return not _path_in_working_path(info.path, cwd or _get_original_cwd())
+
+
 # ---------------------------------------------------------------------------
 # get_memory_files — main entry point (mirrors TS getMemoryFiles)
 # ---------------------------------------------------------------------------
@@ -356,14 +396,21 @@ async def get_memory_files(
     global _memory_files_cache, _memory_files_cache_key
 
     original_cwd = cwd or _get_original_cwd()
-    cache_key = f"{original_cwd}:{force_include_external}"
+    # TS claudemd.ts:812-815: externals load when forced (the gate's
+    # detection pass) OR when this project approved them via the C8
+    # external-includes dialog. The cache keys on the EFFECTIVE value
+    # so an approval recorded mid-session isn't masked by a stale
+    # pre-approval entry.
+    include_external = force_include_external or _external_includes_approved(
+        original_cwd
+    )
+    cache_key = f"{original_cwd}:{include_external}"
 
     if _memory_files_cache is not None and _memory_files_cache_key == cache_key:
         return list(_memory_files_cache)
 
     result: list[MemoryFileInfo] = []
     processed_paths: set[str] = set()
-    include_external = force_include_external
 
     home = str(Path.home())
 

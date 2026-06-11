@@ -58,12 +58,17 @@ def run_tui(options: TUIOptions) -> int:
             2,
         )
 
-    # ``is_interactive`` is set during bootstrap phase 2 by
+    # ``is_interactive`` is normally set during bootstrap phase 2 by
     # ``src.init.run_pre_action`` (called from ``cli.main``) before any
-    # entry point runs. Previously we set it here too, but that was the
-    # M7.1 gap closed in plan phase 1 of ch02-bootstrap. The TUI
-    # entrypoint can rely on ``get_is_interactive()`` already being
-    # ``True`` by the time this function runs.
+    # entry point runs. C8 re-asserts it here defensively: the bootstrap
+    # DEFAULT is non-interactive, and since the .mcp.json approval gate
+    # auto-approves non-interactive sessions (TS utils.ts:399-403), a
+    # future caller booting run_tui without the CLI bootstrap would
+    # otherwise silently auto-approve repo MCP servers inside an
+    # interactive UI.
+    from src.bootstrap.state import set_is_interactive
+
+    set_is_interactive(True)
     workspace_root = options.workspace_root or Path.cwd()
 
     # Build provider ------------------------------------------------------
@@ -156,7 +161,10 @@ def run_tui(options: TUIOptions) -> int:
         app.run(inline=True, inline_no_clear=True, mouse=False)
     except KeyboardInterrupt:
         return 130
-    return 0
+    # C8: startup gates exit via app.exit(return_code=...) — declining
+    # the trust or bypass dialog must propagate a non-zero exit code to
+    # the shell (TS gracefulShutdownSync(1)).
+    return app.return_code or 0
 
 
 def _replay_transcript_to_host(app) -> None:
