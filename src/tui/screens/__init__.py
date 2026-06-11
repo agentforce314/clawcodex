@@ -23,6 +23,7 @@ from .resume_conversation import (
     build_resume_entries,
 )
 from .theme_picker import ThemePickerScreen
+from .workspace_search import GlobalSearchScreen, QuickOpenScreen
 
 __all__ = [
     "CostThresholdScreen",
@@ -31,6 +32,7 @@ __all__ = [
     "EffortPickerScreen",
     "ExitFlowScreen",
     "FileDiff",
+    "GlobalSearchScreen",
     "HistoryEntry",
     "HistorySearchScreen",
     "IdleReturnScreen",
@@ -41,6 +43,7 @@ __all__ = [
     "MessageSelectorScreen",
     "ModelPickerScreen",
     "PermissionModal",
+    "QuickOpenScreen",
     "REPLScreen",
     "ResumeConversation",
     "ResumeEntry",
