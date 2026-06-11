@@ -222,14 +222,185 @@ class ClawCodexTUI(App):
         except Exception:
             pass
         self._state_unsub = self.app_state.subscribe(self._on_state_change)
+        # C8 → C6 → C7 boot chain, strictly sequential: the security
+        # gates (trust → external includes → bypass acceptance; TS
+        # interactiveHelpers order) must resolve BEFORE the .mcp.json
+        # approval prompts — a user who hasn't trusted the folder yet
+        # must not be asked to enable its MCP servers first.
+        self.call_after_refresh(self._run_startup_chain)
+
+    # ---- C8 startup security gates ---------------------------------------
+    def _run_startup_chain(self) -> None:
+        self._startup_gate_trust()
+
+    def _startup_gate_trust(self) -> None:
+        try:
+            from src.services.startup_gates import check_trust_accepted
+
+            needed = not check_trust_accepted()
+        except Exception:
+            # Fail CLOSED: a consent gate that errors must ask, not
+            # silently wave the folder through.
+            needed = True
+        if not needed:
+            self._startup_gate_includes()
+            return
+        from src.tui.screens.startup_gates import TrustFolderScreen
+
+        try:
+            from src.services.startup_gates import collect_trust_warnings
+
+            warnings = collect_trust_warnings()
+        except Exception:
+            warnings = []
+        self.push_screen(
+            TrustFolderScreen(str(self.workspace_root), warnings),
+            callback=self._on_trust_choice,
+        )
+
+    def _on_trust_choice(self, choice: str | None) -> None:
+        if choice != "trust":
+            # TS TrustDialog "No, exit" → gracefulShutdownSync(1).
+            self.exit(return_code=1)
+            return
+        persisted = False
+        try:
+            from src.services.startup_gates import record_trust_accepted
+
+            persisted = record_trust_accepted()
+        except Exception:
+            persisted = False
+        if not persisted and self._repl_screen is not None:
+            self._repl_screen.transcript.append_system(
+                "Folder trusted for this session only — could not write "
+                "the global config; you'll be asked again next launch.",
+                style="muted",
+            )
+        self._startup_gate_includes()
+
+    def _startup_gate_includes(self) -> None:
+        try:
+            from src.services.startup_gates import (
+                get_external_includes_state,
+            )
+
+            state = get_external_includes_state()
+        except Exception:
+            state = "declined"  # fail safe: no prompt, no external load
+        if state != "unset":
+            self._startup_gate_bypass()
+            return
+        self.run_worker(
+            self._detect_external_includes(),
+            exclusive=False,
+            name="c8-external-includes",
+        )
+
+    async def _detect_external_includes(self) -> None:
+        try:
+            from src.services.startup_gates import list_external_includes
+
+            externals = await list_external_includes()
+        except Exception:
+            externals = []
+        if not externals:
+            # Nothing external to approve — the question never arises
+            # (TS shows the dialog only when externals exist).
+            self._startup_gate_bypass()
+            return
+        from src.tui.screens.startup_gates import ExternalIncludesScreen
+
+        self.push_screen(
+            ExternalIncludesScreen(externals),
+            callback=self._on_includes_choice,
+        )
+
+    def _on_includes_choice(self, choice: str | None) -> None:
+        approved = choice == "yes"
+        persisted = False
+        try:
+            from src.services.startup_gates import (
+                record_external_includes_choice,
+            )
+
+            persisted = record_external_includes_choice(approved)
+        except Exception:
+            persisted = False
+        if self._repl_screen is not None:
+            transcript = self._repl_screen.transcript
+            if not persisted:
+                transcript.append_system(
+                    "Could not save the external-imports choice — "
+                    "you'll be asked again next launch.",
+                    style="muted",
+                )
+            elif approved:
+                transcript.append_system(
+                    "External CLAUDE.md imports enabled for this project.",
+                    style="muted",
+                )
+            else:
+                transcript.append_system(
+                    "External CLAUDE.md imports disabled for this project.",
+                    style="muted",
+                )
+        self._startup_gate_bypass()
+
+    def _startup_gate_bypass(self) -> None:
+        mode = getattr(
+            getattr(self.tool_context, "permission_context", None),
+            "mode",
+            "default",
+        )
+        if mode != "bypassPermissions":
+            self._finish_startup_gates()
+            return
+        try:
+            from src.services.startup_gates import (
+                has_skip_dangerous_mode_permission_prompt,
+            )
+
+            already_accepted = has_skip_dangerous_mode_permission_prompt()
+        except Exception:
+            already_accepted = False
+        if already_accepted:
+            self._finish_startup_gates()
+            return
+        from src.tui.screens.startup_gates import BypassPermissionsScreen
+
+        self.push_screen(
+            BypassPermissionsScreen(), callback=self._on_bypass_choice
+        )
+
+    def _on_bypass_choice(self, choice: str | None) -> None:
+        if choice == "accept":
+            persisted = False
+            try:
+                from src.services.startup_gates import record_bypass_accepted
+
+                persisted = record_bypass_accepted()
+            except Exception:
+                persisted = False
+            if not persisted and self._repl_screen is not None:
+                self._repl_screen.transcript.append_system(
+                    "Could not persist the bypass acceptance — you'll be "
+                    "asked again next launch.",
+                    style="muted",
+                )
+            self._finish_startup_gates()
+            return
+        # TS: explicit "No, exit" → exit 1; Esc (or any non-answer
+        # dismissal) → exit 0.
+        self.exit(return_code=1 if choice == "decline" else 0)
+
+    def _finish_startup_gates(self) -> None:
         # C6: surface ignored/malformed config files as startup rows
         # (TS StatusNotices / InvalidSettingsDialog family — Python's
         # loader silently falls back to {}, so warn honestly instead).
-        self.call_after_refresh(self._show_config_warnings)
+        self._show_config_warnings()
         # C7: prompt for any pending .mcp.json servers (TS
-        # handleMcpjsonServerApprovals — gated like TS: only after a
-        # clean settings read, which C6's warnings have just reported).
-        self.call_after_refresh(self._run_mcp_approvals)
+        # handleMcpjsonServerApprovals).
+        self._run_mcp_approvals()
 
     # ---- C7 .mcp.json server approvals ----------------------------------
     # cwd note: approvals deliberately key off the process cwd (the
