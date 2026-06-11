@@ -1189,6 +1189,15 @@ class ClawcodexREPL:
                 self.chat(prompt_text)
             return True
 
+        elif result.result_type == "compact":
+            # C3b: the engine now emits a typed compact result. The
+            # conversation was ALREADY mutated — falling through to the
+            # legacy chain would re-handle an executed command.
+            if result.text:
+                self.console.print("\n" + result.text)
+                self.console.print()
+            return True
+
         elif result.result_type == "skip":
             # Command handled silently
             return True

@@ -17,12 +17,43 @@ the visual output matches the new transcript regardless of entry point.
 
 from __future__ import annotations
 
+from collections import deque
 from typing import Any
 
+from rich.panel import Panel
 from rich.text import Text
 from textual.containers import VerticalScroll
 from textual.widget import Widget
 from textual.widgets import Static
+
+# Read/search tools whose consecutive DONE rows collapse into one summary
+# row (TS CollapsedReadSearchContent / GroupedToolUseContent scope).
+# ("ls" deliberately absent: no LS tool registration exists in
+# src/tool_system today.)
+_READ_GROUP_TOOLS = frozenset({"read", "grep", "glob"})
+# Collapse only once a run reaches this many rows (2 keeps short pairs
+# visible-but-compact; TS groups any consecutive run in transcript mode).
+_READ_GROUP_MIN = 3
+
+
+class _SnapshotStatic(Static):
+    """Static row that participates in the post-exit scrollback dump.
+
+    ``TranscriptView.snapshot()`` skips rows without a ``snapshot``
+    attribute — the C3b rows (compact boundary, read-group summary,
+    expanded panels) must not vanish from the dump (review M3).
+    """
+
+    def __init__(self, renderable: Any, **kwargs: Any) -> None:
+        super().__init__(renderable, **kwargs)
+        self._snapshot_renderable = renderable
+
+    def snapshot(self) -> Any:
+        return self._snapshot_renderable
+
+    def update(self, renderable: Any = "") -> None:  # type: ignore[override]
+        self._snapshot_renderable = renderable
+        super().update(renderable)
 
 from .messages import (
     AssistantAdvisorMessage,
@@ -74,6 +105,22 @@ class TranscriptView(VerticalScroll):
         # ``shouldRenderStatically`` with a snapshot of the message
         # list for the same reason).
         self._mounted_rows: list[Widget] = []
+        # C3b ctrl+o: bounded stash of (label, full_content) for rows whose
+        # body rendered truncated — mirrors the legacy REPL's
+        # ``_expandable_blocks`` (repl/core.py) including the maxlen.
+        self._expandables: deque[tuple[str, str]] = deque(maxlen=20)
+        # C3b read-group collapse state: rows + labels of the current run
+        # of consecutive completed read/search rows, and the summary row
+        # that replaces them once the run reaches _READ_GROUP_MIN.
+        self._read_rows: list[Widget] = []
+        self._read_labels: list[str] = []
+        self._read_group_row: Static | None = None
+        # Identity of this group's ctrl+o stash entry. Per-read CONTENT
+        # stashes land between folds (real Read outputs exceed the
+        # truncation limits), so position-based "is it newest?" checks
+        # miss — the entry is found by identity wherever it sits
+        # (review M2 residual).
+        self._read_group_entry: tuple[str, str] | None = None
         if max_messages is not None:
             self.max_messages = max(1, int(max_messages))
 
@@ -92,6 +139,7 @@ class TranscriptView(VerticalScroll):
     # ---- public API (Phase 0 compatibility) -----------------------
     def append_user(self, text: str) -> None:
         self._retire_active_assistant()
+        self._break_read_group()
         row = UserTextMessage(text)
         self.mount(row)
         self._scroll_end()
@@ -108,6 +156,7 @@ class TranscriptView(VerticalScroll):
         if active is not None and not isinstance(active, AssistantTextMessage):
             self._retire_active_assistant()
         if self._active_assistant is None:
+            self._break_read_group()
             self._active_assistant = AssistantTextMessage()
             self.mount(self._active_assistant)
         self._active_assistant.append_chunk(chunk)
@@ -138,6 +187,7 @@ class TranscriptView(VerticalScroll):
             active.has_class("-redacted") != redacted
         ):
             self._retire_active_assistant()
+            self._break_read_group()
             row = AssistantThinkingMessage(redacted=redacted)
             self._active_assistant = row  # type: ignore[assignment]
             self.mount(row)
@@ -151,6 +201,7 @@ class TranscriptView(VerticalScroll):
             active.finalise(text)
             self._active_assistant = None
         elif (text or "").strip():
+            self._break_read_group()
             row = AssistantThinkingMessage(redacted=redacted)
             self.mount(row)
             row.finalise(text)
@@ -161,6 +212,7 @@ class TranscriptView(VerticalScroll):
             self._active_assistant.finalise(text)
             self._active_assistant = None
         elif (text or "").strip():
+            self._break_read_group()
             row = AssistantTextMessage()
             self.mount(row)
             row.finalise(text)
@@ -181,6 +233,8 @@ class TranscriptView(VerticalScroll):
         key = tool_use_id or _synthetic_id(tool_name, tool_input)
 
         if kind == "tool_use":
+            if (tool_name or "").lower() not in _READ_GROUP_TOOLS:
+                self._break_read_group()
             row = AssistantToolUseMessage(
                 tool_use_id=key,
                 tool_name=tool_name,
@@ -195,10 +249,37 @@ class TranscriptView(VerticalScroll):
         if kind == "tool_result":
             row = self._tool_rows.pop(key, None)
             if row is not None:
+                # PRODUCTION SHAPE: result events arrive with
+                # tool_name="" (agent_loop_compat.py builds them without
+                # a name) — the row, captured at tool_use time, is the
+                # authoritative source (review B1).
+                effective_name = (
+                    getattr(row, "tool_name", "") or tool_name or ""
+                )
+                # C3b ctrl+o: stash full output for anything the row's
+                # panel will truncate (limits mirror
+                # tool_activity.base.truncated_panel). Matched rows only
+                # — the standalone fallback below renders untruncated.
+                if isinstance(tool_output, str) and tool_output:
+                    from .tool_activity.base import (
+                        _BODY_MAX_CHARS,
+                        _BODY_MAX_LINES,
+                    )
+
+                    if (
+                        len(tool_output) > _BODY_MAX_CHARS
+                        or tool_output.count("\n") + 1 > _BODY_MAX_LINES
+                    ):
+                        self.note_expandable(
+                            f"{effective_name or 'tool'} result", tool_output
+                        )
                 if is_error:
                     row.mark_error(tool_output)
+                    self._break_read_group()
                 else:
                     row.mark_done(tool_output)
+                    if effective_name.lower() in _READ_GROUP_TOOLS:
+                        self._on_read_tool_done(row, effective_name)
                 self._scroll_end()
                 return
             # No matching tool_use row; emit a standalone result row so
@@ -224,6 +305,7 @@ class TranscriptView(VerticalScroll):
             return
 
         if kind == "tool_error":
+            self._break_read_group()
             row = self._tool_rows.pop(key, None)
             if row is not None:
                 row.mark_error(tool_output, error=error)
@@ -264,6 +346,7 @@ class TranscriptView(VerticalScroll):
         silently dropped.
         """
         self._retire_active_assistant()
+        self._break_read_group()
         if kind == "start":
             if tool_use_id in self._advisor_rows:
                 return
@@ -303,8 +386,131 @@ class TranscriptView(VerticalScroll):
         """
 
         self._retire_active_assistant()
+        self._break_read_group()
         canonical = _canonical_system_style(style)
         self.mount(SystemMessage(text, style=canonical))
+        self._scroll_end()
+
+    def append_compact_boundary(self, text: str) -> None:
+        """Distinct rule-style row marking a conversation compaction
+        (TS CompactBoundaryMessage / CompactSummary)."""
+
+        self._retire_active_assistant()
+        self._break_read_group()
+        row = _SnapshotStatic(
+            Text(f"── ✻ {text} ──", style="bold dim"),
+            classes="compact-boundary",
+            markup=False,
+        )
+        self.mount(row)
+        self._scroll_end()
+
+    # ---- C3b ctrl+o expandables ------------------------------------
+    def note_expandable(self, label: str, full_text: str) -> None:
+        """Stash full content for a row that rendered truncated."""
+
+        if full_text:
+            self._expandables.append((label, full_text))
+
+    def expand_last(self) -> None:
+        """Re-print the most recent truncated block in full, as a fresh
+        row below (legacy-REPL ``_do_expand_last`` parity — the entry is
+        NOT popped, so repeated ctrl+o re-prints the same newest block
+        until a newer truncated row arrives)."""
+
+        if not self._expandables:
+            self.append_system("Nothing to expand.", style="muted")
+            return
+        label, full_text = self._expandables[-1]
+        self._retire_active_assistant()
+        self._break_read_group()
+        self.mount(
+            _SnapshotStatic(
+                Panel(
+                    Text(full_text),
+                    title=f"expanded: {label}",
+                    border_style="bright_black",
+                    padding=(0, 1),
+                ),
+                markup=False,
+            )
+        )
+        self._scroll_end()
+
+    # ---- C3b read-group collapse -------------------------------------
+    def _break_read_group(self) -> None:
+        self._read_rows = []
+        self._read_labels = []
+        self._read_group_row = None
+        self._read_group_entry = None
+
+    def _read_label(self, row: Widget, fallback_name: str) -> str:
+        tool_input = getattr(row, "tool_input", None) or {}
+        arg = (
+            tool_input.get("file_path")
+            or tool_input.get("pattern")
+            or tool_input.get("path")
+            or ""
+        )
+        name = getattr(row, "tool_name", "") or fallback_name or "tool"
+        return f"{name}({arg})" if arg else str(name)
+
+    def _remove_row(self, row: Widget) -> None:
+        try:
+            self._mounted_rows.remove(row)
+        except ValueError:
+            pass
+        try:
+            row.remove()
+        except Exception:
+            pass
+
+    def _on_read_tool_done(self, row: Widget, tool_name: str) -> None:
+        """Fold runs of completed read/search rows into one summary row.
+
+        The run accumulates silently until ``_READ_GROUP_MIN``; from then
+        on the individual rows are removed and a single summary row shows
+        the aggregated labels (full list reachable via ctrl+o — ONE stash
+        entry per group, updated in place across folds).
+        """
+
+        self._read_rows.append(row)
+        self._read_labels.append(self._read_label(row, tool_name))
+        if len(self._read_labels) < _READ_GROUP_MIN:
+            return
+        labels = self._read_labels
+        shown = labels[-4:]
+        prefix = "… , " if len(labels) > 4 else ""
+        summary = Text(
+            f"⌕ {len(labels)} reads/searches · "
+            + prefix
+            + ", ".join(shown)
+            + "  (ctrl+o for the full list)",
+            style="dim",
+        )
+        if self._read_group_row is None:
+            group = _SnapshotStatic(summary, classes="read-group", markup=False)
+            self.mount(group)
+            self._read_group_row = group
+        else:
+            self._read_group_row.update(summary)
+        for run_row in self._read_rows:
+            self._remove_row(run_row)
+        self._read_rows = []
+        stash_entry = ("collapsed reads/searches", "\n".join(labels))
+        # Replace THIS group's previous entry by identity, wherever it
+        # sits — per-read content stashes interleave between folds, so the
+        # entry is rarely the newest. Evicted (not found) → append fresh.
+        replaced = False
+        if self._read_group_entry is not None:
+            for i in range(len(self._expandables) - 1, -1, -1):
+                if self._expandables[i] is self._read_group_entry:
+                    self._expandables[i] = stash_entry
+                    replaced = True
+                    break
+        if not replaced:
+            self._expandables.append(stash_entry)
+        self._read_group_entry = stash_entry
         self._scroll_end()
 
     def clear_transcript(self) -> None:
@@ -312,6 +518,8 @@ class TranscriptView(VerticalScroll):
         self._tool_rows.clear()
         self._advisor_rows.clear()
         self._mounted_rows.clear()
+        self._expandables.clear()
+        self._break_read_group()
         try:
             for child in list(self.children):
                 child.remove()
