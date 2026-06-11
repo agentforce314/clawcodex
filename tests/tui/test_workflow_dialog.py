@@ -57,7 +57,10 @@ def test_format_workflow_detail_renders_phases_and_agents():
     assert "demo" in blob
     assert "Search" in blob
     assert "finder" in blob
-    assert "completed" in blob
+    # the completed agent renders with the ✔ status icon + token stats + phase progress
+    assert "✔" in blob
+    assert "tok" in blob
+    assert "1/1" in blob
 
 
 def test_format_workflow_detail_handles_no_phases():
