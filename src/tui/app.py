@@ -382,6 +382,52 @@ class ClawCodexTUI(App):
             # pre-clear context (TS shows nothing for an empty list).
             self.app_state.last_turn_input_tokens = 0
             return
+        if result.system_text == "__thinking__":
+            # C3b /thinking: flip the bridge's session override. First use
+            # DISABLES (auto → off, matching the TS toggle's "respond
+            # without extended thinking" default action), then alternates.
+            bridge = self._agent_bridge
+            new_value = bridge.extended_thinking is False
+            if new_value:
+                # Honest enable (review M4): an explicit True bypasses the
+                # query layer's model gate and a non-Anthropic provider
+                # ignores it silently — refuse instead of lying.
+                try:
+                    from src.providers.anthropic_provider import (
+                        AnthropicProvider,
+                    )
+                    from src.providers.minimax_provider import MinimaxProvider
+                    from src.query.query import (
+                        _model_supports_extended_thinking,
+                    )
+
+                    provider_obj = bridge._provider
+                    supported = isinstance(
+                        provider_obj, (AnthropicProvider, MinimaxProvider)
+                    ) and _model_supports_extended_thinking(
+                        getattr(provider_obj, "model", None)
+                    )
+                except Exception:
+                    supported = False
+                if not supported:
+                    transcript.append_system(
+                        "Extended thinking is not supported by the current "
+                        "model/provider — leaving it disabled.",
+                        style="muted",
+                    )
+                    return
+            bridge.extended_thinking = new_value
+            transcript.append_system(
+                "Extended thinking enabled for this session."
+                if new_value
+                else "Extended thinking disabled for this session — "
+                "the model will respond without extended thinking.",
+                style="muted",
+            )
+            return
+        if result.compact and result.system_text:
+            transcript.append_compact_boundary(result.system_text)
+            return
         if result.system_text:
             transcript.append_system(result.system_text, style="muted")
         if result.prompt_text:

@@ -116,6 +116,10 @@ class AgentBridge:
         # truncated or replaced.
         self._emitted_advisor_ids: set[str] = set()
         self._last_scanned_msg_index: int = 0
+        # C3b /thinking session override. None = auto (query gates on
+        # model support); True/False = explicit user toggle (TS
+        # ThinkingToggle: "Enable or disable thinking for this session").
+        self.extended_thinking: bool | None = None
 
     def reset_advisor_dedup(self) -> None:
         """Drop the advisor-dedup state.
@@ -350,6 +354,8 @@ class AgentBridge:
                     # its signal) so the provider sees the same signal
                     # ESC trips. See same fix in headless.py for why.
                     abort_controller=controller,
+                    # C3b /thinking session override (None = auto).
+                    extended_thinking=self.extended_thinking,
                 ))
             finally:
                 _loop.close()
