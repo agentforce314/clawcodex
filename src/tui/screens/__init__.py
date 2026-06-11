@@ -7,6 +7,7 @@ from .effort_picker import EffortPickerScreen
 from .exit_flow import ExitFlowScreen
 from .history_search import HistoryEntry, HistorySearchScreen, fuzzy_score
 from .idle_return import IdleReturnScreen
+from .mcp_approval import McpApprovalScreen
 from .mcp_dialogs import (
     McpElicitationScreen,
     McpListScreen,
@@ -36,6 +37,7 @@ __all__ = [
     "HistoryEntry",
     "HistorySearchScreen",
     "IdleReturnScreen",
+    "McpApprovalScreen",
     "McpElicitationScreen",
     "McpListScreen",
     "McpServer",
