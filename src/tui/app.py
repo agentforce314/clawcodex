@@ -416,8 +416,104 @@ class ClawCodexTUI(App):
             self._open_tasks_dialog(transcript)
         elif name == "workflows":
             self._open_workflows_dialog(transcript)
+        elif name == "resume":
+            self._open_resume_picker(transcript)
         else:
             transcript.append_system(f"Dialog '{name}' not available.", style="muted")
+
+    def _open_resume_picker(self, transcript: Transcript) -> None:
+        """C2: list persisted sessions; selection swaps the live session.
+
+        Refuses while the agent is busy (the bridge would also refuse —
+        this just gives the honest message before pushing a modal).
+        """
+
+        if self._agent_bridge.busy:
+            transcript.append_system(
+                "Cannot resume while the agent is working — try again when idle.",
+                style="muted",
+            )
+            return
+
+        from src.bootstrap.state import get_session_id
+        from src.services.session_storage import SessionStorage
+        from src.tui.screens.resume_conversation import (
+            ResumeConversation,
+            build_resume_entries,
+        )
+
+        try:
+            metas = SessionStorage.list_sessions()
+        except Exception:
+            metas = []
+        entries, hidden = build_resume_entries(
+            metas, exclude_session_id=str(get_session_id())
+        )
+
+        def _on_selected(session_id: str | None) -> None:
+            if not session_id:
+                return
+            loaded = self._agent_bridge.resume_session(session_id)
+            if loaded is None:
+                transcript.append_system(
+                    f"Could not resume {session_id}: no stored messages "
+                    "(or the agent became busy).",
+                    style="muted",
+                )
+                return
+            self._render_resumed_messages(transcript, session_id, loaded)
+
+        self.push_screen(
+            ResumeConversation(entries=entries, hidden_count=hidden),
+            callback=_on_selected,
+        )
+
+    def _render_resumed_messages(
+        self, transcript: Transcript, session_id: str, messages: list[Any]
+    ) -> None:
+        """Replay a resumed transcript into the view, degraded-but-honest.
+
+        Text content renders as normal user/assistant rows; non-text
+        blocks (tool calls/results, thinking) are counted and summarized
+        in one system row rather than fully re-rendered — the live
+        renderers are event-driven and replaying tool events would
+        re-trigger activity widgets for work that is not running.
+        """
+
+        transcript.clear_transcript()
+        skipped_blocks = 0
+        for message in messages:
+            role = getattr(message, "role", "")
+            content = getattr(message, "content", "")
+            if isinstance(content, str):
+                text = content
+            else:
+                parts: list[str] = []
+                for block in content or []:
+                    # The resume reader yields DATACLASS blocks (TextBlock
+                    # et al., types/content_blocks.py) for known types and
+                    # plain dicts for unknown ones — handle both shapes.
+                    if isinstance(block, dict):
+                        block_type = block.get("type")
+                        block_text = block.get("text", "")
+                    else:
+                        block_type = getattr(block, "type", None)
+                        block_text = getattr(block, "text", "")
+                    if block_type == "text":
+                        parts.append(str(block_text))
+                    else:
+                        skipped_blocks += 1
+                text = "\n".join(p for p in parts if p)
+            if not text:
+                continue
+            if role == "user":
+                transcript.append_user(text)
+            elif role == "assistant":
+                transcript.append_assistant(text)
+        note = f"Resumed session {session_id} ({len(messages)} messages)"
+        if skipped_blocks:
+            note += f"; {skipped_blocks} tool/attachment block(s) not re-rendered"
+        transcript.append_system(note, style="muted")
 
     def _open_workflows_dialog(self, transcript: Transcript) -> None:
         registry = getattr(self.tool_context, "runtime_tasks", None)
