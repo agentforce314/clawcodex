@@ -590,50 +590,49 @@ async def _call_model_sync(
     # synchronous chat() if the provider doesn't support structured streaming.
     if _diag:
         logger.warning("[DIAG] _call_model_sync: calling provider (streaming)...")
-    try:
+    def _do_provider_call():
+        # ``abort_signal`` reaches the provider so a tripped controller can close
+        # the streaming HTTP response immediately. ``on_text_chunk`` (when set)
+        # fires chunks live; falls back to a kwargless call if the provider's
+        # signature doesn't accept it, and to plain ``chat()`` if the provider
+        # has no streaming at all (emulating chunks from the final text).
         try:
-            # ``abort_signal`` reaches the provider so a tripped controller
-            # can close the streaming HTTP response immediately rather than
-            # waiting for the model to finish generating. Without this
-            # plumb, ESC during a tool-use-only response (no intermediate
-            # text chunks for an ``on_text_chunk`` to observe) waits the
-            # full model latency before the outer query loop bails.
-            # Forward on_text_chunk so the SDK fires chunks live (and
-            # the chunk callback can raise AbortError to tear down the
-            # stream mid-flight). Falls back to a kwargless call if
-            # the provider's signature doesn't accept on_text_chunk.
             if on_text_chunk is not None:
                 try:
-                    response = provider.chat_stream_response(
+                    return provider.chat_stream_response(
                         api_messages,
                         on_text_chunk=on_text_chunk,
                         abort_signal=abort_signal,
                         **call_kwargs,
                     )
                 except TypeError:
-                    response = provider.chat_stream_response(
+                    return provider.chat_stream_response(
                         api_messages, abort_signal=abort_signal, **call_kwargs,
                     )
-            else:
-                response = provider.chat_stream_response(
-                    api_messages, abort_signal=abort_signal, **call_kwargs,
-                )
+            return provider.chat_stream_response(
+                api_messages, abort_signal=abort_signal, **call_kwargs,
+            )
         except (NotImplementedError, AttributeError):
             if _diag:
                 logger.warning("[DIAG] _call_model_sync: streaming not supported, falling back to chat()")
-            response = provider.chat(api_messages, **call_kwargs)
-            # Emulate streaming chunks from the final text when the
-            # caller asked for live streaming (on_text_chunk set) but
-            # the provider only supports plain chat(). Legacy
-            # ``agent_loop._emit_text_chunks`` did this so the headless
-            # ``--include-partial-messages`` flag and CLI live-text UX
-            # work uniformly across providers — without it, a
-            # ``stream=True`` caller paired with a non-streaming
-            # provider would see the entire response materialize at
-            # once after the model finishes.
-            if on_text_chunk is not None and response.content:
+            resp = provider.chat(api_messages, **call_kwargs)
+            if on_text_chunk is not None and resp.content:
                 from ..tool_system.renderers import _emit_text_chunks
-                _emit_text_chunks(on_text_chunk, response.content)
+                _emit_text_chunks(on_text_chunk, resp.content)
+            return resp
+
+    try:
+        # The provider call is a BLOCKING sync call (streaming read on a worker
+        # thread + a poll loop). Running it directly on the event loop blocks it,
+        # so concurrent agents (e.g. a workflow's parallel() fan-out) serialize —
+        # one model call at a time. When there's no live-UI streaming callback
+        # (background/workflow agents have on_text_chunk=None), run it OFF the
+        # loop via to_thread so those agents truly run in parallel. The
+        # interactive path keeps its callbacks firing on the event-loop thread.
+        if on_text_chunk is None:
+            response = await asyncio.to_thread(_do_provider_call)
+        else:
+            response = _do_provider_call()
     except AbortError:
         # User-initiated cancel — propagate so the query loop's
         # ``except AbortError: pass`` boundary unwinds to the
