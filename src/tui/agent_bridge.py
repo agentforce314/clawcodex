@@ -138,6 +138,81 @@ class AgentBridge:
     def busy(self) -> bool:
         return self._busy
 
+    def resume_session(self, session_id: str) -> list[Any] | None:
+        """Swap the live conversation to a persisted session (C2 /resume).
+
+        Mirrors TS resume semantics: the picked session BECOMES the active
+        session — its id is installed via ``bootstrap.state.switch_session``
+        (the designated resume path, fires ``session_switched``), the
+        persister re-targets it so subsequent turns append to the SAME
+        store, and the in-memory conversation is replaced by the stored
+        transcript. Returns the loaded typed messages for the UI to
+        re-render, or ``None`` when refused (worker busy) / nothing
+        stored. Must be called from the UI thread while idle — the guard
+        is the same ``_busy_lock`` gate ``submit`` uses.
+        """
+
+        with self._busy_lock:
+            if self._busy:
+                return None
+
+            from src.services.session_persistence import SessionPersister
+            from src.services.session_resume import resume_session
+
+            # The full TS-parity reader: malformed-line recovery, orphaned
+            # tool_use repair, snip boundaries, cross-project path
+            # adjustment (session/resume.ts). Synchronous on the UI thread
+            # — acceptable for the degraded C2 scope (TS reads async);
+            # revisit if multi-MB transcripts make the freeze noticeable.
+            try:
+                result = resume_session(session_id, current_cwd=os.getcwd())
+            except Exception:
+                # Unreadable transcript (permissions, dir-shaped file…)
+                # must refuse, not crash the Textual callback chain.
+                return None
+            if not result.success or not result.messages:
+                return None
+            messages = result.messages
+
+            from src.bootstrap.state import switch_session
+            from src.services.cost_restore import restore_cost_state_for_session
+
+            # TS ResumeConversation.tsx:224-227: switchSession then
+            # restoreCostStateForSession, in lockstep. (TS also passes the
+            # session's project dir to switchSession; nothing consumes
+            # get_session_project_dir() in Python yet, so it is omitted.)
+            switch_session(session_id)
+            # Best-effort: TUI-born sessions don't write the flat cost
+            # snapshot yet, so this is usually a no-op today; it exists so
+            # resume of snapshot-bearing sessions restores accumulators.
+            restore_cost_state_for_session(session_id)
+
+            conversation = self._session.conversation
+            conversation.messages.clear()
+            conversation.messages.extend(messages)
+            self._session.session_id = session_id
+
+            # Advisor dedup: clear the emitted-ID set (old IDs are gone),
+            # but point the scan cursor at the END of the repopulated list
+            # — index 0 (the /clear semantics of reset_advisor_dedup)
+            # would make the first post-resume scan re-emit every
+            # HISTORICAL advisor event as fresh UI rows.
+            self._emitted_advisor_ids.clear()
+            self._last_scanned_msg_index = len(conversation.messages)
+
+            # Re-target persistence; start() only initializes metadata when
+            # absent, so the resumed session's existing metadata (title,
+            # counts) is preserved. NOTE: AppState.usage token counters are
+            # deliberately NOT reset/hydrated here — the status line keeps
+            # counting from the live process (decision recorded in the C2
+            # review; revisit with the C3 context/status work).
+            self._persister = SessionPersister(session_id=session_id)
+            self._persister.start(
+                model=getattr(self._provider, "model", "") or "",
+                cwd=os.getcwd(),
+            )
+            return list(messages)
+
     def submit(self, prompt: str) -> bool:
         """Queue ``prompt`` for the agent. Returns False if busy."""
 

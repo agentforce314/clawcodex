@@ -53,6 +53,8 @@ LOCAL_BUILTINS: tuple[str, ...] = (
     "/tasks",
     "/workflows",
     "/rewind",
+    # components C2:
+    "/resume",
 )
 
 
@@ -121,6 +123,7 @@ _LOCAL_BUILTIN_DESCRIPTIONS: dict[str, str] = {
     "/mcp": "Manage MCP servers",
     "/tasks": "Browse background tasks",
     "/rewind": "Rewind conversation to an earlier turn",
+    "/resume": "Resume a previous conversation",
 }
 
 
@@ -292,6 +295,12 @@ def dispatch_local_command(
         return CommandDispatchResult(handled=True, open_dialog="workflows")
     if name == "/rewind":
         return CommandDispatchResult(handled=True, open_dialog="rewind")
+    if name in ("/resume", "/continue"):
+        # /continue = TS alias (commands/resume/index.ts:7). Intercepted
+        # here too so the TUI opens the picker instead of falling through
+        # to the registry command's headless list. Any argument ("search
+        # term") is ignored on this surface — the modal IS the picker.
+        return CommandDispatchResult(handled=True, open_dialog="resume")
 
     return CommandDispatchResult(handled=False)
 

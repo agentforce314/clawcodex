@@ -1,14 +1,30 @@
 """Resume-conversation modal screen.
 
-Phase-8 of the ch13 refactor (gap #9) — see
-``my-docs/ch13-phase8-audit-result.md`` for the audit result and the
-rationale for shipping a placeholder rather than the full wiring.
+C2 of the components-folder parity plan upgraded this from the Phase-8
+placeholder (which honestly said "not yet wired" while the persistence
+producer didn't exist) to the real picker: the session-persistence
+producer landed in PR #260 (``services/session_persistence`` driven by
+``agent_bridge``), so ``SessionStorage.list_sessions()`` now has real
+rows to show. Mirrors the degraded scope of TS
+``components/LogSelector.tsx`` + ``screens/ResumeConversation.tsx``:
+list + select → resume. (TS deep-search / worktree filters / tag tabs
+ride on parked subsystems — gap doc §3.2 T2.)
 
-When the WI-8.0 audit found state (2) — `services/session_storage.py`
-exists as a module but no live caller writes transcripts — the
-Resume/Doctor screens were scope-limited to navigation surfaces that
-honestly say "not yet wired" to the user. This module provides that
-surface; future work fills in the listing once persistence is wired.
+Standing critic condition (gap doc §5 Q2): entries with
+``message_count == 0`` or no transcript are FILTERED out — a headless
+``/rename`` can create metadata-only sessions that would resume into an
+empty conversation — and a footer reports how many were hidden.
+
+The screen takes its entries by CONSTRUCTOR (the app does the listing
+and filtering) so it stays a pure, testable view. The entry model +
+filtering live in the UI-neutral ``src/services/session_listing`` (so
+headless ``/resume`` never imports Textual); they are re-exported here
+for compatibility.
+
+Parked (documented divergence): the TS picker shows a transcript
+preview pane (``SessionPreview.tsx``); Python's dormant
+``widgets/session_preview.py`` is NOT wired in this phase — the picker
+ships list+select only, preview rides with a later polish pass.
 """
 
 from __future__ import annotations
@@ -21,13 +37,13 @@ from textual.screen import ModalScreen
 from textual.widgets import OptionList, Static
 from textual.widgets.option_list import Option
 
+from src.services.session_listing import ResumeEntry, build_resume_entries
+
 
 class ResumeConversation(ModalScreen[str | None]):
-    """Modal listing past sessions; dismisses with the chosen session id.
+    """Modal listing resumable sessions; dismisses with the chosen id.
 
-    Currently a placeholder — :meth:`_load_sessions` returns ``[]`` until
-    transcript-persistence wiring lands. The Esc / Ctrl+C path returns
-    ``None`` so callers (slash commands) can ignore the dismissal.
+    Esc / q dismiss with ``None`` so callers can ignore the dismissal.
     """
 
     BINDINGS = [
@@ -56,7 +72,20 @@ class ResumeConversation(ModalScreen[str | None]):
         color: $text-muted;
         padding: 1 0 0 0;
     }
+    ResumeConversation Static.-footer {
+        color: $text-muted;
+        padding: 1 0 0 0;
+    }
     """
+
+    def __init__(
+        self,
+        entries: list[ResumeEntry] | None = None,
+        hidden_count: int = 0,
+    ) -> None:
+        super().__init__()
+        self._entries = list(entries or [])
+        self._hidden_count = hidden_count
 
     def compose(self) -> ComposeResult:
         with Middle():
@@ -72,26 +101,37 @@ class ResumeConversation(ModalScreen[str | None]):
                 markup=False,
             )
         )
-        sessions = self._load_sessions()
-        if not sessions:
-            body.mount(
-                Static(
-                    Text(
-                        "No persisted conversations yet.\n\n"
-                        "Transcript persistence is not wired into this build "
-                        "(see my-docs/ch13-phase8-audit-result.md). When the "
-                        "wiring lands, prior sessions will appear here.",
-                        style="dim",
-                    ),
-                    classes="-empty",
-                    markup=False,
+        if not self._entries:
+            empty = "No resumable conversations yet."
+            if self._hidden_count:
+                empty += (
+                    f"\n({self._hidden_count} metadata-only "
+                    "session(s) hidden — no stored messages.)"
                 )
+            body.mount(
+                Static(Text(empty, style="dim"), classes="-empty", markup=False)
             )
             return
         options = OptionList(
-            *(Option(label, id=session_id) for session_id, label in sessions)
+            *(
+                Option(entry.label(), id=entry.session_id)
+                for entry in self._entries
+            )
         )
         body.mount(options)
+        if self._hidden_count:
+            body.mount(
+                Static(
+                    Text(
+                        f"{self._hidden_count} unresumable (metadata-only) "
+                        "session(s) hidden",
+                        style="dim",
+                    ),
+                    classes="-footer",
+                    markup=False,
+                )
+            )
+        options.focus()
 
     def on_option_list_option_selected(
         self, event: OptionList.OptionSelected
@@ -101,36 +141,5 @@ class ResumeConversation(ModalScreen[str | None]):
     def action_dismiss_modal(self) -> None:
         self.dismiss(None)
 
-    # ---- internals ----
-    def _load_sessions(self) -> list[tuple[str, str]]:
-        """Return ``(session_id, label)`` pairs to display.
 
-        Reads the metadata files the session-persistence producer
-        (``services/session_persistence.SessionPersister``, driven by
-        ``agent_bridge``) writes during normal TUI operation. Empty list
-        when no sessions exist (clean install, first run).
-        """
-
-        try:
-            from src.services.session_storage import SessionStorage
-
-            metas = SessionStorage.list_sessions()
-            out: list[tuple[str, str]] = []
-            for meta in metas:
-                session_id = getattr(meta, "session_id", None) or getattr(
-                    meta, "id", None
-                )
-                label = (
-                    getattr(meta, "title", None)
-                    or getattr(meta, "summary", None)
-                    or session_id
-                    or "(unnamed session)"
-                )
-                if session_id:
-                    out.append((session_id, str(label)))
-            return out
-        except Exception:
-            return []
-
-
-__all__ = ["ResumeConversation"]
+__all__ = ["ResumeConversation", "ResumeEntry", "build_resume_entries"]
