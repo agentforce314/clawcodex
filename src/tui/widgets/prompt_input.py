@@ -178,6 +178,20 @@ class PromptInput(Vertical):
         self._input.value = ""
         self._hide_suggestions()
 
+    def append_value(self, text: str) -> None:
+        """Append ``text`` to the draft (C5 search/open insertions) and
+        put the cursor at the end."""
+
+        if not text:
+            return
+        new_value = (self._input.value or "") + text
+        self._input.value = new_value
+        try:
+            self._input.cursor_position = len(new_value)
+        except Exception:
+            pass
+        self.focus_input()
+
     def set_value(self, value: str) -> None:
         """Replace the draft text in the prompt (used by /history)."""
 
