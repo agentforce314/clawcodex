@@ -267,9 +267,13 @@ def test_headless_without_skip_permissions_installs_auto_deny_handler(fake_wirin
     assert code == 0
     ctx = captured["tool_context"]
     assert ctx.options.is_non_interactive_session is True
-    # Non-interactive mode installs an auto-deny handler that returns (False, False).
-    allowed, _ = ctx.permission_handler("Bash", "needs approval", None)
-    assert allowed is False
+    # Non-interactive mode installs an auto-deny handler that replies deny.
+    from src.permissions.types import PermissionAskRequest
+
+    reply = ctx.permission_handler(
+        PermissionAskRequest(tool_name="Bash", message="needs approval")
+    )
+    assert reply.behavior == "deny"
 
 
 def test_headless_with_skip_permissions_clears_handler(fake_wiring, tmp_path):
