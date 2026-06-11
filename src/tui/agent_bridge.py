@@ -29,7 +29,10 @@ import os
 import threading
 import uuid
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
+
+if TYPE_CHECKING:
+    from src.permissions.types import PermissionAskReply, PermissionAskRequest
 
 from src.agent import Session
 from src.tool_system.renderers import AgentLoopResult, ToolEvent
@@ -573,7 +576,9 @@ class AgentBridge:
         self._last_scanned_msg_index = len(messages)
 
     # ---- permission bridge ----
-    def _permission_handler(self, request: Any) -> Any:
+    def _permission_handler(
+        self, request: "PermissionAskRequest"
+    ) -> "PermissionAskReply":
         """Called from the worker thread whenever the tool dispatcher
         wants user approval.
 

@@ -43,18 +43,26 @@ def _make_ask_tool(name: str = "Bash"):
 
 class TestSettingsPaths(unittest.TestCase):
     def test_destination_mapping(self) -> None:
+        # Project tier is .clawcodex/ — NOT .claude/, which the real
+        # Claude Code harness owns (cross-tool interference otherwise).
         self.assertEqual(
             settings_path_for_destination("localSettings", "/tmp/p"),
-            "/tmp/p/.claude/settings.local.json",
+            "/tmp/p/.clawcodex/settings.local.json",
         )
         self.assertEqual(
             settings_path_for_destination("projectSettings", "/tmp/p"),
-            "/tmp/p/.claude/settings.json",
+            "/tmp/p/.clawcodex/settings.json",
         )
-        self.assertTrue(
-            settings_path_for_destination("userSettings").endswith(
-                "/.clawcodex/settings.json"
-            )
+        # The live user_settings_path() is conftest-isolated in tests
+        # (_isolate_user_permission_settings), so lock the canonical user
+        # tier via the constant it derives from.
+        import os
+
+        from src.permissions import settings_paths as sp_mod
+
+        self.assertEqual(
+            sp_mod.USER_SETTINGS_FILENAME,
+            os.path.join("~", ".clawcodex", "settings.json"),
         )
         self.assertIsNone(settings_path_for_destination("session"))
         self.assertIsNone(settings_path_for_destination("cliArg"))
@@ -70,7 +78,9 @@ class TestSettingsPaths(unittest.TestCase):
                 "managed_settings_path",
             },
         )
-        self.assertEqual(paths["local_settings_path"], "/tmp/p/.claude/settings.local.json")
+        self.assertEqual(
+            paths["local_settings_path"], "/tmp/p/.clawcodex/settings.local.json"
+        )
 
 
 class TestRegistryAskFlow(unittest.TestCase):
@@ -87,7 +97,7 @@ class TestRegistryAskFlow(unittest.TestCase):
         self.tmp.cleanup()
 
     def _local_settings(self) -> Path:
-        return self.root / ".claude" / "settings.local.json"
+        return self.root / ".clawcodex" / "settings.local.json"
 
     def _dispatch(self, command: str):
         return self.registry.dispatch(
@@ -168,7 +178,7 @@ class TestRegistryAskFlow(unittest.TestCase):
             cwd=str(self.root),
             mode="default",
             user_settings_path=str(self.root / "nonexistent-user-settings.json"),
-            project_settings_path=str(self.root / ".claude" / "settings.json"),
+            project_settings_path=str(self.root / ".clawcodex" / "settings.json"),
             local_settings_path=str(self._local_settings()),
         )
         tool = _make_ask_tool()
@@ -182,6 +192,85 @@ class TestRegistryAskFlow(unittest.TestCase):
             tool, {"command": "rm -r build"}, setup.context
         )
         self.assertEqual(other.behavior, "ask")
+
+
+class TestHeadlessStartupLoadsPersistedRules(unittest.TestCase):
+    """Executes the PRODUCTION headless setup block (not an inline copy):
+    a rule persisted in the workspace's local settings must be live in the
+    tool_context that run_headless constructs (review-A finding 5b)."""
+
+    def test_headless_setup_block_loads_rules(self) -> None:
+        import io
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from src.entrypoints import headless as headless_mod
+        from src.entrypoints.headless import HeadlessOptions, run_headless
+        from src.providers.base import ChatResponse
+
+        class _FakeProvider:
+            def __init__(self, api_key, base_url=None, model=None):
+                self.model = model or "fake"
+
+            def chat(self, messages, tools=None, **kw):
+                return ChatResponse(
+                    content="ok",
+                    model="fake",
+                    usage={"input_tokens": 1, "output_tokens": 1},
+                    finish_reason="end_turn",
+                    tool_uses=None,
+                )
+
+        class _FakeRegistry:
+            def list_tools(self):
+                return []
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            local = root / ".clawcodex" / "settings.local.json"
+            local.parent.mkdir(parents=True)
+            local.write_text(
+                json.dumps({"permissions": {"allow": ["Bash(git diff:*)"]}})
+            )
+
+            captured: dict = {}
+            original = headless_mod.run_query_as_agent_loop
+
+            async def _capture(*args, **kw):
+                captured["tool_context"] = kw["tool_context"]
+                return await original(*args, **kw)
+
+            with patch.object(
+                headless_mod, "get_provider_class", lambda n: _FakeProvider
+            ), patch.object(
+                headless_mod,
+                "get_provider_config",
+                lambda n: {"api_key": "x", "default_model": "fake"},
+            ), patch.object(
+                headless_mod, "get_default_provider", lambda: "anthropic"
+            ), patch.object(
+                headless_mod,
+                "build_default_registry",
+                lambda provider=None: _FakeRegistry(),
+            ), patch.object(
+                headless_mod, "run_query_as_agent_loop", _capture
+            ):
+                code = run_headless(
+                    HeadlessOptions(
+                        prompt="hi",
+                        output_format="text",
+                        stdout=io.StringIO(),
+                        stderr=io.StringIO(),
+                        workspace_root=root,
+                    )
+                )
+            self.assertEqual(code, 0)
+            ctx = captured["tool_context"]
+            self.assertIn(
+                "Bash(git diff:*)",
+                ctx.permission_context.always_allow_rules.get("localSettings", []),
+            )
 
 
 class TestHeadlessNoHandlerStillDenies(unittest.TestCase):

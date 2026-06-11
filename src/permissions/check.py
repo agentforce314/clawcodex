@@ -3,7 +3,7 @@ from __future__ import annotations
 import fnmatch
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
 
 from .bash_security import analyze_bash_command
@@ -359,7 +359,7 @@ def _with_default_suggestions(
     tool_name: str,
     tool_input: dict[str, Any] | None,
 ) -> PermissionAskDecision:
-    """Fill ``ask.suggestions`` with derived "don't ask again" rules.
+    """Return ``ask`` with derived "don't ask again" rules filled in.
 
     Mirrors TS bashPermissions.ts:1234-1236 (step 5: "Suggest prefix if
     available, otherwise exact command"). Two deliberate exclusions:
@@ -369,8 +369,15 @@ def _with_default_suggestions(
     * asks that already carry suggestions (a tool supplied its own) are
       left untouched.
 
-    Read asks get the ``Read(<dir>/**)`` rule via the previously-orphaned
-    :func:`create_read_rule_suggestion`.
+    Bash-only for now: the engine's content-rule matching is consulted
+    only for Bash commands (:298), and ``tool_always_allowed_rule``
+    requires content-less rules — a suggested ``Read(<dir>/**)`` rule
+    would persist but never match (review-A H1), so Read suggestions are
+    deliberately NOT derived until a path-rule matcher exists
+    (follow-up noted in the C1 plan).
+
+    Returns a copy (``dataclasses.replace``) rather than mutating —
+    the input can be a tool-owned decision object.
     """
 
     if ask.suggestions:
@@ -380,29 +387,15 @@ def _with_default_suggestions(
     if not tool_input:
         return ask
 
-    suggestions: list[Any] | None = None
     if tool_name == "Bash":
         command = tool_input.get("command", "")
         if isinstance(command, str) and command.strip():
             from .bash_suggestions import suggestions_for_bash_command
 
             suggestions = suggestions_for_bash_command(command)
-    elif tool_name == "Read":
-        file_path = tool_input.get("file_path") or tool_input.get("path")
-        if isinstance(file_path, str) and file_path:
-            import os as _os
+            if suggestions:
+                return replace(ask, suggestions=suggestions)
 
-            from .updates import create_read_rule_suggestion
-
-            suggestion = create_read_rule_suggestion(
-                _os.path.dirname(file_path) or file_path,
-                destination="localSettings",
-            )
-            suggestions = [suggestion] if suggestion else None
-
-    if not suggestions:
-        return ask
-    ask.suggestions = suggestions
     return ask
 
 

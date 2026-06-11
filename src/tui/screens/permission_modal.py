@@ -240,17 +240,6 @@ class PermissionModal(ModalScreen[bool]):
         self.dismiss(allowed)
 
 
-def _preview_tool_input(tool_input: Any) -> RenderableType | None:
-    """Dispatch to a tool-name-keyed renderer, falling back to generic.
-
-    The original signature is preserved so :class:`PermissionModal` keeps
-    the same call site. The dispatcher is the new behavior — Phase 7's
-    specialization happens through this single entry point.
-    """
-
-    return preview_for_tool(None, tool_input)
-
-
 def preview_for_tool(
     tool_name: str | None, tool_input: Any
 ) -> RenderableType | None:

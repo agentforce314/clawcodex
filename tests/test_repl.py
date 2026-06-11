@@ -631,6 +631,121 @@ class TestREPL(unittest.TestCase):
                     self.assertEqual(second.behavior, "allow")
                     self.assertEqual(prompt_calls, 1)
 
+    def _make_repl_for_menu(self):
+        with patch('src.repl.core.get_provider_config', return_value={
+            "api_key": "test_api_key_12345678",
+            "base_url": "https://open.bigmodel.cn/api/paas/v4",
+            "default_model": "glm-4.5",
+        }), patch('src.repl.core.PromptSession') as mock_prompt_session:
+            mock_prompt_session.return_value = Mock(prompt=Mock(return_value=""))
+            with patch('src.repl.core.Session.create'):
+                with patch('src.repl.core.get_provider_class') as mock_provider_class:
+                    mock_provider = Mock()
+                    mock_provider.model = "glm-4.5"
+                    mock_provider_class.return_value = mock_provider
+                    repl = ClawcodexREPL(provider_name="glm")
+                    repl.console.print = Mock()
+                    return repl
+
+    def _suggestion(self):
+        from src.permissions.types import (
+            PermissionRuleValue,
+            PermissionUpdateAddRules,
+        )
+
+        return PermissionUpdateAddRules(
+            destination="localSettings",
+            behavior="allow",
+            rules=(
+                PermissionRuleValue(tool_name="Bash", rule_content="git diff:*"),
+            ),
+        )
+
+    def test_permission_menu_always_option(self):
+        """With suggestions: row 2 = always; both '2' and 'a' choose it,
+        the reply carries chosen_updates, and the decision is NOT cached."""
+        from src.permissions.types import PermissionAskRequest
+
+        suggestion = self._suggestion()
+        for choice in ("2", "a"):
+            repl = self._make_repl_for_menu()
+            repl._safe_input = Mock(return_value=choice)
+            reply = repl._handle_permission_request(
+                PermissionAskRequest(
+                    tool_name="Bash",
+                    message="Run?",
+                    suggestions=(suggestion,),
+                )
+            )
+            self.assertEqual(reply.behavior, "allow")
+            self.assertEqual(reply.chosen_updates, (suggestion,))
+            self.assertEqual(repl._permission_decision_cache, {})
+
+    def test_permission_menu_numbering_with_suggestions(self):
+        """Without an enable row: 1=allow, 2=always, 3=deny, 4=feedback."""
+        from src.permissions.types import PermissionAskRequest
+
+        suggestion = self._suggestion()
+        repl = self._make_repl_for_menu()
+        repl._safe_input = Mock(return_value="3")
+        reply = repl._handle_permission_request(
+            PermissionAskRequest(
+                tool_name="Bash", message="Run?", suggestions=(suggestion,)
+            )
+        )
+        self.assertEqual(reply.behavior, "deny")
+        self.assertIsNone(reply.message)
+
+    def test_permission_menu_feedback_option(self):
+        """'d' (or the last row number) opens the feedback sub-prompt and
+        the note lands on the deny reply."""
+        from src.permissions.types import PermissionAskRequest
+
+        repl = self._make_repl_for_menu()
+        repl._safe_input = Mock(side_effect=["d", "try /tmp instead"])
+        reply = repl._handle_permission_request(
+            PermissionAskRequest(tool_name="Bash", message="Run?")
+        )
+        self.assertEqual(reply.behavior, "deny")
+        self.assertEqual(reply.message, "try /tmp instead")
+
+    def test_permission_menu_enable_row_shifts_numbering(self):
+        """allow_docs asks prepend the enable row: 1=enable, 2=allow,
+        3=deny, 4=feedback (no suggestions case)."""
+        from src.permissions.types import PermissionAskRequest
+
+        repl = self._make_repl_for_menu()
+        repl.tool_context.allow_docs = False
+        repl._safe_input = Mock(return_value="1")
+        reply = repl._handle_permission_request(
+            PermissionAskRequest(
+                tool_name="Write",
+                message="Writing documentation files is blocked unless "
+                "allow_docs is enabled",
+            )
+        )
+        self.assertEqual(reply.behavior, "allow")
+        self.assertTrue(repl.tool_context.allow_docs)
+
+    def test_repl_tool_context_is_registry_rebind_target(self):
+        """The REPL holds ONE ToolContext; an in-session applied rule
+        (registry rebinds permission_context on it) is visible to the
+        next dispatch through the same object."""
+        from src.permissions.types import PermissionRuleValue, PermissionUpdateAddRules
+        from src.permissions.updates import apply_permission_updates
+
+        repl = self._make_repl_for_menu()
+        before = repl.tool_context.permission_context
+        repl.tool_context.permission_context = apply_permission_updates(
+            before, [self._suggestion()]
+        )
+        self.assertIn(
+            "Bash(git diff:*)",
+            repl.tool_context.permission_context.always_allow_rules.get(
+                "localSettings", []
+            ),
+        )
+
 
 class TestConversation(unittest.TestCase):
     """Test conversation management."""

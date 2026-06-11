@@ -18,7 +18,10 @@ import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
+
+if TYPE_CHECKING:
+    from src.permissions.types import PermissionAskReply, PermissionUpdate
 
 
 class FocusedDialog(str, Enum):
@@ -74,9 +77,9 @@ class PendingPermission:
     request_id: str
     tool_name: str
     message: str
-    suggestions: tuple[Any, ...]
+    suggestions: tuple["PermissionUpdate", ...]
     tool_input: dict[str, Any] | None
-    decide: Callable[[Any], None]
+    decide: Callable[["PermissionAskReply"], None]
     created_at: float = field(default_factory=time.time)
 
 
@@ -124,9 +127,9 @@ class AppState:
         self,
         tool_name: str,
         message: str,
-        suggestions: tuple[Any, ...],
+        suggestions: tuple["PermissionUpdate", ...],
         tool_input: dict[str, Any] | None,
-        decide: Callable[[Any], None],
+        decide: Callable[["PermissionAskReply"], None],
     ) -> PendingPermission:
         with self._lock:
             request = PendingPermission(

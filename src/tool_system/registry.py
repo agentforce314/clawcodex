@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import logging
 import threading
 from typing import Any, Iterable
 
@@ -17,23 +18,33 @@ from src.permissions.types import (
     ToolPermissionContext,
 )
 
+log = logging.getLogger(__name__)
+
 
 def _apply_and_persist_updates(
     context: ToolContext, updates: tuple[PermissionUpdate, ...]
 ) -> None:
     """Apply accepted "don't ask again" updates and persist them.
 
-    In-memory application makes the rule effective for the rest of the
-    session; persistence (for userSettings/projectSettings/localSettings
-    destinations) makes it survive restarts, read back at startup via
-    ``setup_permissions``. Both halves are best-effort: a failed settings
-    write must never fail the already-approved tool call.
+    In-memory application makes the rule effective for later dispatches
+    through THIS ToolContext (note: a subagent created earlier holds a
+    reference to the PREVIOUS permission_context object — sharing is
+    by-reference at creation, `agent/subagent_context.py` — so an
+    "always" accepted mid-session does not reach already-running
+    subagents until restart; they fail safe by re-prompting. TS shares
+    one live context — documented divergence). Persistence (for
+    userSettings/projectSettings/localSettings destinations) makes it
+    survive restarts, read back at startup via ``setup_permissions``.
+    Both halves are best-effort: a failed settings write must never fail
+    the already-approved tool call — but it is logged, since the user
+    was just promised "don't ask again".
     """
 
     from src.permissions.settings_paths import settings_path_for_destination
     from src.permissions.updates import (
         apply_permission_updates,
         persist_permission_updates,
+        supports_persistence,
     )
 
     try:
@@ -43,17 +54,24 @@ def _apply_and_persist_updates(
             context.permission_context, list(updates)
         )
     except Exception:
-        pass
+        log.exception("failed to apply accepted permission updates in-memory")
     try:
         cwd = str(context.workspace_root) if context.workspace_root else None
-        persist_permission_updates(
+        results = persist_permission_updates(
             list(updates),
             settings_path_for_destination=lambda destination: (
                 settings_path_for_destination(destination, cwd)
             ),
         )
+        for update, ok in zip(updates, results):
+            if not ok and supports_persistence(update.destination):
+                log.warning(
+                    "permission update not persisted (destination=%s); "
+                    "the rule applies this session only",
+                    update.destination,
+                )
     except Exception:
-        pass
+        log.exception("failed to persist accepted permission updates")
 
 
 class ToolRegistry:
