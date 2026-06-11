@@ -64,6 +64,13 @@ class TestAgentLoopCompatAdapter(unittest.TestCase):
         self.assertEqual(result.response_text, "Hello from query()")
         self.assertEqual(result.usage["input_tokens"], 10)
         self.assertEqual(result.usage["output_tokens"], 5)
+        # C3a: last-wins per-response usage rides alongside the sums —
+        # the live-context measure (cache keys default 0 when the
+        # provider omits them).
+        self.assertEqual(result.usage["last_input_tokens"], 10)
+        self.assertEqual(result.usage["last_output_tokens"], 5)
+        self.assertEqual(result.usage["last_cache_read_input_tokens"], 0)
+        self.assertEqual(result.usage["last_cache_creation_input_tokens"], 0)
         self.assertGreaterEqual(result.num_turns, 1)
         self.assertIsNotNone(result.terminal)
         self.assertEqual(result.terminal.reason, "completed")

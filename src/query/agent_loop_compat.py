@@ -301,6 +301,23 @@ async def run_query_as_agent_loop(
             mu = getattr(msg, "usage", None) or {}
             usage["input_tokens"] += mu.get("input_tokens", 0)
             usage["output_tokens"] += mu.get("output_tokens", 0)
+            # C3a: also keep the LAST response's FULL usage (all four
+            # keys, last-wins — TS getCurrentUsage, utils/tokens.ts:
+            # 152-171). The cumulative sum above double-counts context
+            # across a multi-tool-call run and drops the cache keys, so
+            # it must NOT be used as a live-context measure
+            # (tokens.ts:407-420 warning). Last-wins also covers the
+            # parallel-tool-call case where N assistant records share
+            # one usage object.
+            if mu:
+                usage["last_input_tokens"] = int(mu.get("input_tokens", 0) or 0)
+                usage["last_output_tokens"] = int(mu.get("output_tokens", 0) or 0)
+                usage["last_cache_read_input_tokens"] = int(
+                    mu.get("cache_read_input_tokens", 0) or 0
+                )
+                usage["last_cache_creation_input_tokens"] = int(
+                    mu.get("cache_creation_input_tokens", 0) or 0
+                )
             # Capture text content and tool_use events.
             text_parts: list[str] = []
             content = msg.content
