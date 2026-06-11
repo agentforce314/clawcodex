@@ -13,6 +13,32 @@ from typing import Any, Generator, Optional
 from .base import BaseProvider, ChatResponse, MessageInput, TextChunkCallback
 
 
+def _apply_client_timeout(client: Any) -> Any:
+    """Bound an OpenAI-SDK client's read timeout + retries (env-tunable).
+
+    Without this, a streaming request to an endpoint that accepts the connection
+    but stalls mid-read blocks the *synchronous* SDK read for the SDK's 600s
+    default — and that read runs on the asyncio event loop the agent loop drives,
+    so one stalled stream freezes every concurrent workflow agent. ``read`` is
+    the max gap BETWEEN bytes, so legitimate long streams keep working as long as
+    data keeps flowing. Applied centrally (base ``client`` property) so every
+    subclass is covered. Tunable via CLAWCODEX_LLM_READ_TIMEOUT /
+    CLAWCODEX_LLM_CONNECT_TIMEOUT / CLAWCODEX_LLM_MAX_RETRIES.
+    """
+    try:
+        import os
+
+        import httpx
+
+        read = float(os.environ.get("CLAWCODEX_LLM_READ_TIMEOUT", "120"))
+        connect = float(os.environ.get("CLAWCODEX_LLM_CONNECT_TIMEOUT", "15"))
+        max_retries = int(os.environ.get("CLAWCODEX_LLM_MAX_RETRIES", "1"))
+        timeout = httpx.Timeout(connect=connect, read=read, write=30.0, pool=15.0)
+        return client.with_options(timeout=timeout, max_retries=max_retries)
+    except Exception:  # noqa: BLE001 — never break client creation over timeout cfg
+        return client
+
+
 def _anthropic_image_block_to_openai(block: dict[str, Any]) -> dict[str, Any] | None:
     """Translate an Anthropic image content block to OpenAI's
     ``image_url`` shape.
@@ -394,9 +420,16 @@ class OpenAICompatibleProvider(BaseProvider):
 
     @property
     def client(self) -> Any:
-        """Get or create the SDK client (lazy initialization)."""
+        """Get or create the SDK client (lazy initialization).
+
+        A bounded read timeout is applied centrally here so EVERY
+        openai-compatible provider (openai, openrouter, deepseek, glm, …) is
+        protected from a stalled streaming read blocking the asyncio event loop
+        — not just OpenAIProvider. The SDK default is read=600s, which freezes
+        concurrent workflow agents for up to 10 minutes on a stalled stream.
+        """
         if self._client is None:
-            self._client = self._create_client()
+            self._client = _apply_client_timeout(self._create_client())
         return self._client
 
     def _prepare_messages(self, messages: list[MessageInput]) -> list[dict[str, Any]]:
