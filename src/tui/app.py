@@ -730,6 +730,75 @@ class ClawCodexTUI(App):
             self.submit_to_agent(result.prompt_text)
 
     # ---- C4 bash-mode (`!` prefix) --------------------------------------
+    # ---- C9 `#` memory-append shortcut -----------------------------------
+    def run_memory_shortcut(self, note: str, transcript: Transcript) -> None:
+        # History first, like bash-mode does for `!` — a saved (or
+        # cancelled) note must stay reachable via up-arrow.
+        try:
+            self.history_store.append(f"#{note}")
+        except Exception:
+            pass
+        self.run_worker(
+            self._memory_shortcut_flow(note, transcript),
+            exclusive=False,
+            name="c9-memory-shortcut",
+        )
+
+    async def _memory_shortcut_flow(
+        self, note: str, transcript: Transcript
+    ) -> None:
+        try:
+            from src.command_system.memory_command import build_memory_options
+
+            options = await build_memory_options(str(self.workspace_root))
+        except Exception:
+            options = []
+        if not options:
+            transcript.append_system(
+                "Could not enumerate memory files — note not saved.",
+                style="muted",
+            )
+            self._insert_into_prompt(f"#{note}")
+            return
+        from src.tui.screens.memory_save import MemorySaveScreen
+
+        self.push_screen(
+            MemorySaveScreen(note, options),
+            callback=lambda path, _n=note, _t=transcript: (
+                self._on_memory_target(_n, path, _t)
+            ),
+        )
+
+    def _on_memory_target(
+        self, note: str, path: str | None, transcript: Transcript
+    ) -> None:
+        from src.services.memory_append import (
+            append_memory_note,
+            pick_saving_message,
+        )
+
+        if path is None:
+            # Verbatim TS cancel string (memory.tsx:65); the note goes
+            # back into the prompt so nothing typed is lost.
+            transcript.append_system("Cancelled memory editing", style="muted")
+            self._insert_into_prompt(f"#{note}")
+            return
+        ok = False
+        try:
+            ok = append_memory_note(path, note)
+        except Exception:
+            ok = False
+        if not ok:
+            transcript.append_system(
+                f"Could not write {path} — memory not saved.", style="muted"
+            )
+            self._insert_into_prompt(f"#{note}")
+            return
+        # TS UserMemoryInputMessage: the `#`-styled note row plus a
+        # random acknowledgement line.
+        transcript.append_system(f"# {note.strip()}", style="muted")
+        transcript.append_system(pick_saving_message(), style="muted")
+
     def run_bash_mode(self, command: str, transcript: Transcript) -> None:
         """Execute a user-typed ``!command`` directly (no agent turn).
 

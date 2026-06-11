@@ -14,6 +14,7 @@ from .mcp_dialogs import (
     McpServer,
     McpToolListScreen,
 )
+from .memory_save import MemorySaveScreen
 from .message_selector import MessageSelectorScreen, TranscriptMessage
 from .model_picker import ModelPickerScreen
 from .permission_modal import PermissionModal
@@ -49,6 +50,7 @@ __all__ = [
     "McpListScreen",
     "McpServer",
     "McpToolListScreen",
+    "MemorySaveScreen",
     "MessageSelectorScreen",
     "ModelPickerScreen",
     "PermissionModal",

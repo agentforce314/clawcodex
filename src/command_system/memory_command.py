@@ -68,7 +68,9 @@ def _resolve_project_memory_path(files: list, cwd: str) -> str:
     return str(Path(cwd) / "CLAUDE.md")
 
 
-async def _build_options(cwd: str) -> list[UIOption]:
+async def build_memory_options(cwd: str) -> list[UIOption]:
+    """Public: the memory-target hierarchy, shared by ``/memory`` and
+    the C9 ``#`` shortcut so the two pickers can never drift."""
     from src.context_system.claude_md import (
         clear_memory_file_caches,
         get_memory_files,
@@ -150,7 +152,7 @@ class MemoryCommand(InteractiveCommand):
 
     async def run(self, args: str, context: CommandContext) -> InteractiveOutcome:
         cwd = str(context.cwd)
-        options = await _build_options(cwd)
+        options = await build_memory_options(cwd)
         picked = await context.ui.select("Memory", options)
         if picked is None:
             # Verbatim TS (memory.tsx:65).
@@ -179,4 +181,4 @@ MEMORY_COMMAND = MemoryCommand(
 )
 
 
-__all__ = ["MEMORY_COMMAND", "MemoryCommand"]
+__all__ = ["MEMORY_COMMAND", "MemoryCommand", "build_memory_options"]
