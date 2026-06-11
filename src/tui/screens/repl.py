@@ -162,6 +162,11 @@ class REPLScreen(Screen):
             # fills in the output when the command finishes).
             app.run_bash_mode(text[1:], self.transcript)
             return
+        if text.startswith("#") and text[1:].strip():
+            # C9 memory shortcut: pick a memory file, append the note,
+            # no agent turn. A bare "#" falls through to the agent.
+            app.run_memory_shortcut(text[1:], self.transcript)
+            return
         self.transcript.append_user(text)
         self.status_bar.set_busy()
         self.status_bar.bump_turn()
