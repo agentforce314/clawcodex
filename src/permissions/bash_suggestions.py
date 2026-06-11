@@ -26,8 +26,8 @@ from .types import (
 
 BASH_TOOL_NAME = "Bash"
 
-# TS bashPermissions.ts:93
-_ENV_VAR_ASSIGN_RE = re.compile(r"^[A-Za-z_]\w*=")
+# TS bashPermissions.ts:93 — re.ASCII matches JS \w (ASCII-only).
+_ENV_VAR_ASSIGN_RE = re.compile(r"^[A-Za-z_]\w*=", re.ASCII)
 
 # TS bashPermissions.ts:165 — second token must look like a subcommand
 # ("commit", "run"), not a flag (-rf), filename (a.txt), path, or number.
@@ -105,14 +105,14 @@ SAFE_ENV_VARS = frozenset(
 def contains_unquoted_chaining(command: str) -> bool:
     """True when ``command`` chains multiple commands outside quotes.
 
-    Detects ``&&``, ``||``, ``;``, ``|`` and newlines that are not inside
-    single or double quotes. Used to (a) refuse PREFIX rule derivation for
-    compound commands (a prefix of the first sub-command would later
-    blanket-match the whole family) and (b) stop prefix rules from
-    auto-allowing compound commands at match time. Command substitution
-    (``$(…)``/backticks) is deliberately NOT treated as chaining here —
-    the per-sub-command safety screen rates it before any allow rule can
-    short-circuit.
+    Detects ``&&``, ``||``, ``;``, ``|``, newlines, and lone ``&``
+    (separator/background — both sides execute, same as ``;``) that are
+    not inside single or double quotes. ``>&``, ``<&`` and ``&>`` are
+    redirections, not chaining, and are skipped. Known non-goals,
+    accepted because the per-sub-command safety screen rates every
+    command before any allow rule can short-circuit: command
+    substitution (``$(…)``/backticks) and ANSI-C quoting (``$'…'`` —
+    an escaped quote inside it inverts this scanner's quote state).
     """
 
     in_single = False
@@ -131,8 +131,16 @@ def contains_unquoted_chaining(command: str) -> bool:
         elif not in_single and not in_double:
             if ch in (";", "|", "\n"):
                 return True
-            if ch == "&" and i + 1 < n and command[i + 1] == "&":
-                return True
+            if ch == "&":
+                if i + 1 < n and command[i + 1] == "&":
+                    return True
+                if i > 0 and command[i - 1] in "<>":
+                    i += 1
+                    continue  # 2>&1-style redirection
+                if i + 1 < n and command[i + 1] == ">":
+                    i += 2
+                    continue  # &> redirection
+                return True  # lone & — separator or backgrounding
         i += 1
     return False
 
@@ -189,7 +197,7 @@ def _extract_prefix_before_heredoc(command: str) -> str | None:
     # before a heredoc (`bash <<EOF`) would yield Bash(bash:*) ≈ Bash(*).
     if remaining[0] in BARE_SHELL_PREFIXES:
         return None
-    return " ".join(remaining[:2]) or None
+    return " ".join(remaining[:2])
 
 
 def suggestion_for_prefix(prefix: str) -> list[PermissionUpdate]:
@@ -240,11 +248,14 @@ def suggestions_for_bash_command(command: str) -> list[PermissionUpdate]:
     if not command:
         return []
 
-    if "<<" in command and command.index("<<") > 0:
+    heredoc_idx = command.find("<<")
+    if heredoc_idx != -1:
         # Heredoc: either a stable prefix before the operator, or nothing —
         # never fall through to the multiline first-line branch (that would
         # bake the heredoc operator into the rule, e.g. "bash <<EOF:*").
-        before = command[: command.index("<<")]
+        if heredoc_idx == 0:
+            return []
+        before = command[:heredoc_idx]
         if contains_unquoted_chaining(before):
             return []
         heredoc_prefix = _extract_prefix_before_heredoc(command)
@@ -252,16 +263,32 @@ def suggestions_for_bash_command(command: str) -> list[PermissionUpdate]:
             return suggestion_for_prefix(heredoc_prefix)
         return []
 
-    # Compound commands still get the first sub-command's prefix (a SUBSET
-    # of TS's per-sub-command suggestions): safe because the match-time
-    # guard in prepare_permission_matcher refuses to auto-allow any
-    # chained command, so a prefix rule can only ever skip prompts for
-    # SIMPLE commands.
     if "\n" in command:
+        # TS takes the first line verbatim as a prefix rule. Two Python
+        # adjustments (both consequences of the D3 whole-string matcher):
+        # a compound first line would mint a rule the chaining guard can
+        # never match (the user would be re-prompted forever), so derive
+        # the first sub-command's 2-word prefix instead; and a bare-shell
+        # first line is suppressed for the same reason as the heredoc D1
+        # guard.
         first_line = command.split("\n", 1)[0].strip()
-        if first_line:
-            return suggestion_for_prefix(first_line)
-        return []
+        if contains_unquoted_chaining(first_line):
+            prefix = get_simple_command_prefix(first_line)
+            return suggestion_for_prefix(prefix) if prefix else []
+        tokens = first_line.split()
+        if len(tokens) == 1 and tokens[0] in BARE_SHELL_PREFIXES:
+            return []
+        return suggestion_for_prefix(first_line)
+
+    if contains_unquoted_chaining(command):
+        # Single-line compound: the first sub-command's 2-word prefix (a
+        # SUBSET of TS's per-sub-command suggestions) — safe because the
+        # match-time guard refuses to auto-allow chained commands, so the
+        # rule only ever skips prompts for SIMPLE commands. No derivable
+        # prefix → no suggestion (an exact rule containing chaining would
+        # be unmatchable: dead).
+        prefix = get_simple_command_prefix(command)
+        return suggestion_for_prefix(prefix) if prefix else []
 
     prefix = get_simple_command_prefix(command)
     if prefix:
@@ -272,7 +299,9 @@ def suggestions_for_bash_command(command: str) -> list[PermissionUpdate]:
 
 __all__ = [
     "BARE_SHELL_PREFIXES",
+    "BASH_TOOL_NAME",
     "SAFE_ENV_VARS",
+    "contains_unquoted_chaining",
     "get_simple_command_prefix",
     "suggestion_for_prefix",
     "suggestion_for_exact_command",
