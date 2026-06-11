@@ -1,3 +1,5 @@
+import sys
+
 import pytest
 from unittest.mock import patch, MagicMock
 
@@ -92,7 +94,9 @@ class TestDiagnosticReport:
 
 class TestValidateStdioConfig:
     def test_valid_command(self):
-        config = McpStdioServerConfig(command="python")
+        # sys.executable always exists; bare "python" is absent on systems
+        # that only ship python3
+        config = McpStdioServerConfig(command=sys.executable)
         warnings = _validate_stdio_config("test", config)
         assert warnings == []
 

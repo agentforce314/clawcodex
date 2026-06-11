@@ -2,15 +2,69 @@
 
 from __future__ import annotations
 
+import os
 import unittest
 from unittest.mock import MagicMock, patch
 
 from src.providers import get_provider_class
 from src.providers.anthropic_provider import AnthropicProvider
 from src.providers.glm_provider import GLMProvider
-from src.providers.openai_compatible import _convert_anthropic_messages_to_openai
+from src.providers.openai_compatible import (
+    _apply_client_timeout,
+    _convert_anthropic_messages_to_openai,
+)
 from src.providers.openai_provider import OpenAIProvider
 from src.providers.base import ChatMessage, ChatResponse
+
+
+class TestApplyClientTimeout(unittest.TestCase):
+    """Guards the stalled-stream protection: every openai-compatible client
+    must get a bounded read timeout (the SDK default is read=600s, which
+    freezes the event loop on a stalled stream)."""
+
+    def test_wraps_client_with_bounded_timeout_and_retries(self):
+        import httpx
+
+        mock_client = MagicMock()
+        # Isolate from ambient CLAWCODEX_LLM_* tuning vars a developer may
+        # have exported (patch.dict snapshots and restores on exit)
+        with patch.dict("os.environ"):
+            for k in (
+                "CLAWCODEX_LLM_READ_TIMEOUT",
+                "CLAWCODEX_LLM_CONNECT_TIMEOUT",
+                "CLAWCODEX_LLM_MAX_RETRIES",
+            ):
+                os.environ.pop(k, None)
+            wrapped = _apply_client_timeout(mock_client)
+
+        self.assertIs(wrapped, mock_client.with_options.return_value)
+        mock_client.with_options.assert_called_once()
+        kwargs = mock_client.with_options.call_args.kwargs
+        self.assertEqual(kwargs["max_retries"], 1)
+        timeout = kwargs["timeout"]
+        self.assertIsInstance(timeout, httpx.Timeout)
+        self.assertEqual(timeout.read, 120.0)
+        self.assertEqual(timeout.connect, 15.0)
+
+    def test_env_overrides(self):
+        mock_client = MagicMock()
+        env = {
+            "CLAWCODEX_LLM_READ_TIMEOUT": "33",
+            "CLAWCODEX_LLM_CONNECT_TIMEOUT": "7",
+            "CLAWCODEX_LLM_MAX_RETRIES": "4",
+        }
+        with patch.dict("os.environ", env):
+            _apply_client_timeout(mock_client)
+
+        kwargs = mock_client.with_options.call_args.kwargs
+        self.assertEqual(kwargs["max_retries"], 4)
+        self.assertEqual(kwargs["timeout"].read, 33.0)
+        self.assertEqual(kwargs["timeout"].connect, 7.0)
+
+    def test_returns_client_unchanged_when_wrapping_fails(self):
+        mock_client = MagicMock()
+        mock_client.with_options.side_effect = TypeError("no with_options")
+        self.assertIs(_apply_client_timeout(mock_client), mock_client)
 
 
 class TestChatMessage(unittest.TestCase):
@@ -329,6 +383,7 @@ class TestOpenAIProvider(unittest.TestCase):
         """Test synchronous chat."""
         # Setup mock
         mock_client = MagicMock()
+        mock_client.with_options.return_value = mock_client
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = "Hello!"
@@ -348,11 +403,14 @@ class TestOpenAIProvider(unittest.TestCase):
         self.assertEqual(response.content, "Hello!")
         self.assertEqual(response.model, "gpt-4")
         self.assertEqual(response.usage["total_tokens"], 15)
+        # The client property must wire the timeout wrapper in
+        mock_client.with_options.assert_called_once()
 
     @patch("src.providers.openai_provider.OpenAI")
     def test_chat_accepts_dict_messages(self, mock_openai):
         """Test synchronous chat with dict messages."""
         mock_client = MagicMock()
+        mock_client.with_options.return_value = mock_client
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = "Hello!"
@@ -378,6 +436,7 @@ class TestOpenAIProvider(unittest.TestCase):
     def test_chat_stream_response_rebuilds_tool_calls(self, mock_openai):
         """Streaming chunks are rebuilt into a final response with tool calls."""
         mock_client = MagicMock()
+        mock_client.with_options.return_value = mock_client
 
         chunk1 = MagicMock()
         chunk1.model = "gpt-4"
@@ -447,6 +506,7 @@ class TestGLMProvider(unittest.TestCase):
         """Test synchronous chat."""
         # Setup mock
         mock_client = MagicMock()
+        mock_client.with_options.return_value = mock_client
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = "Hello!"
@@ -473,6 +533,7 @@ class TestGLMProvider(unittest.TestCase):
         """Test chat with reasoning content."""
         # Setup mock
         mock_client = MagicMock()
+        mock_client.with_options.return_value = mock_client
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = "Answer"

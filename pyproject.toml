@@ -91,6 +91,9 @@ asyncio_mode = "auto"
 # Prepend the project root so pytest imports the worktree's ``src/`` rather
 # than the parent repo's editable-install mapping.
 pythonpath = ["."]
+# Bare ``pytest`` otherwise collects reference_projects/, whose module names
+# collide with tests/agent and abort collection.
+testpaths = ["tests"]
 markers = [
     "integration: marks tests as integration (deselect with '-m \"not integration\"')",
     "linux_only: marks tests that require Linux (auto-skipped on macOS/Windows)",
