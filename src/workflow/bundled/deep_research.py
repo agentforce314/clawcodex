@@ -121,7 +121,9 @@ phase("Synthesize")
 bullet_lines = "\n".join(f"- {c['claim']} (source: {c['source']})" for c in survivors)
 report = await agent(
     f'Write a clear, well-organized report answering: "{question}".\n\n'
-    f"Use ONLY these cross-checked claims, citing the source for each point:\n\n{bullet_lines}\n\n"
+    f"You already have everything you need below — do NOT use any tools (no web search, "
+    f"no web fetch, no retrieving anything). Write the report DIRECTLY from these "
+    f"cross-checked claims, citing the source for each point:\n\n{bullet_lines}\n\n"
     f"Structure it with a short summary followed by the details. Note any open questions.",
     label="synthesize",
     phase="Synthesize",
