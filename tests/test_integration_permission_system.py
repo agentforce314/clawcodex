@@ -257,26 +257,72 @@ class TestSettingsLoader(unittest.TestCase):
 class TestHandlePermissionAsk(unittest.TestCase):
     def test_no_handler_returns_deny(self) -> None:
         decision = PermissionAskDecision(message="confirm?")
-        result = handle_permission_ask("TestTool", decision)
+        result, chosen = handle_permission_ask("TestTool", decision)
         self.assertEqual(result.behavior, "deny")
+        self.assertEqual(chosen, ())
 
     def test_handler_allows(self) -> None:
+        from src.permissions.types import PermissionAskReply, PermissionAskRequest
+
         decision = PermissionAskDecision(message="confirm?")
 
-        def handler(name: str, msg: str, suggestions: Any) -> tuple[bool, Any]:
-            return True, None
+        def handler(request: PermissionAskRequest) -> PermissionAskReply:
+            assert request.tool_name == "TestTool"
+            assert request.message == "confirm?"
+            return PermissionAskReply(behavior="allow")
 
-        result = handle_permission_ask("TestTool", decision, handler)
+        result, chosen = handle_permission_ask("TestTool", decision, handler)
         self.assertEqual(result.behavior, "allow")
+        self.assertEqual(chosen, ())
 
     def test_handler_denies(self) -> None:
+        from src.permissions.types import PermissionAskReply, PermissionAskRequest
+
         decision = PermissionAskDecision(message="confirm?")
 
-        def handler(name: str, msg: str, suggestions: Any) -> tuple[bool, Any]:
-            return False, None
+        def handler(request: PermissionAskRequest) -> PermissionAskReply:
+            return PermissionAskReply(behavior="deny")
 
-        result = handle_permission_ask("TestTool", decision, handler)
+        result, chosen = handle_permission_ask("TestTool", decision, handler)
         self.assertEqual(result.behavior, "deny")
+        self.assertEqual(chosen, ())
+
+    def test_handler_deny_feedback_reaches_message(self) -> None:
+        from src.permissions.types import PermissionAskReply, PermissionAskRequest
+
+        decision = PermissionAskDecision(message="confirm?")
+
+        def handler(request: PermissionAskRequest) -> PermissionAskReply:
+            return PermissionAskReply(behavior="deny", message="use rg instead")
+
+        result, _ = handle_permission_ask("TestTool", decision, handler)
+        self.assertEqual(result.behavior, "deny")
+        self.assertIn("use rg instead", result.message)
+
+    def test_handler_always_returns_chosen_updates(self) -> None:
+        from src.permissions.types import (
+            PermissionAskReply,
+            PermissionAskRequest,
+            PermissionRuleValue,
+            PermissionUpdateAddRules,
+        )
+
+        update = PermissionUpdateAddRules(
+            destination="localSettings",
+            behavior="allow",
+            rules=(PermissionRuleValue(tool_name="Bash", rule_content="git diff:*"),),
+        )
+        decision = PermissionAskDecision(message="confirm?", suggestions=[update])
+
+        def handler(request: PermissionAskRequest) -> PermissionAskReply:
+            assert request.suggestions == (update,)
+            return PermissionAskReply(
+                behavior="allow", chosen_updates=tuple(request.suggestions)
+            )
+
+        result, chosen = handle_permission_ask("TestTool", decision, handler)
+        self.assertEqual(result.behavior, "allow")
+        self.assertEqual(chosen, (update,))
 
 
 class TestBuildAppSmoke(unittest.TestCase):

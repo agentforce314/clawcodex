@@ -72,6 +72,29 @@ def extract_rules(updates: list[PermissionUpdate] | None) -> list[PermissionRule
     return out
 
 
+def suggestions_label(updates: tuple[PermissionUpdate, ...] | list[PermissionUpdate]) -> str | None:
+    """Human label for an "always allow" option, naming the rule(s).
+
+    Mirrors the intent of TS ``generateShellSuggestionsLabel``
+    (components/permissions/shellPermissionHelpers.tsx:65): name the
+    rules the user is about to save, e.g.
+    ``don't ask again for Bash(git diff:*)``.
+    """
+
+    rule_strings: list[str] = []
+    for rule_value in extract_rules(list(updates)):
+        try:
+            rule_strings.append(permission_rule_value_to_string(rule_value))
+        except Exception:
+            continue
+    if not rule_strings:
+        return None
+    shown = ", ".join(rule_strings[:3])
+    if len(rule_strings) > 3:
+        shown += ", …"
+    return f"don't ask again for {shown}"
+
+
 def has_rules(updates: list[PermissionUpdate] | None) -> bool:
     """True if ``updates`` contains at least one ``addRules`` rule."""
     return len(extract_rules(updates)) > 0

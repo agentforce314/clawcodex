@@ -13,8 +13,47 @@ from src.permissions.check import has_permissions_to_use_tool
 from src.permissions.handler import handle_permission_ask
 from src.permissions.types import (
     PermissionAskDecision,
+    PermissionUpdate,
     ToolPermissionContext,
 )
+
+
+def _apply_and_persist_updates(
+    context: ToolContext, updates: tuple[PermissionUpdate, ...]
+) -> None:
+    """Apply accepted "don't ask again" updates and persist them.
+
+    In-memory application makes the rule effective for the rest of the
+    session; persistence (for userSettings/projectSettings/localSettings
+    destinations) makes it survive restarts, read back at startup via
+    ``setup_permissions``. Both halves are best-effort: a failed settings
+    write must never fail the already-approved tool call.
+    """
+
+    from src.permissions.settings_paths import settings_path_for_destination
+    from src.permissions.updates import (
+        apply_permission_updates,
+        persist_permission_updates,
+    )
+
+    try:
+        # apply_permission_updates returns a FRESH context (input unchanged)
+        # — rebind it so every later dispatch sees the new rules.
+        context.permission_context = apply_permission_updates(
+            context.permission_context, list(updates)
+        )
+    except Exception:
+        pass
+    try:
+        cwd = str(context.workspace_root) if context.workspace_root else None
+        persist_permission_updates(
+            list(updates),
+            settings_path_for_destination=lambda destination: (
+                settings_path_for_destination(destination, cwd)
+            ),
+        )
+    except Exception:
+        pass
 
 
 class ToolRegistry:
@@ -80,19 +119,12 @@ class ToolRegistry:
 
         if decision.behavior == "ask":
             assert isinstance(decision, PermissionAskDecision)
-            handler_cb = None
-            if context.permission_handler is not None:
-                raw_handler = context.permission_handler
-
-                def _adapted_handler(
-                    tn: str, msg: str, suggestions: Any,
-                ) -> tuple[bool, dict[str, Any] | None]:
-                    allowed, _ = raw_handler(tn, msg, None)
-                    return allowed, None
-
-                handler_cb = _adapted_handler
-
-            final = handle_permission_ask(tool.name, decision, handler_cb)
+            final, chosen_updates = handle_permission_ask(
+                tool.name,
+                decision,
+                context.permission_handler,
+                tool_input=call.input,
+            )
 
             if final.behavior == "deny":
                 return ToolResult(
@@ -101,6 +133,9 @@ class ToolRegistry:
                     is_error=True,
                     tool_use_id=call.tool_use_id,
                 )
+
+            if chosen_updates:
+                _apply_and_persist_updates(context, chosen_updates)
 
             if hasattr(final, "updated_input") and final.updated_input:
                 call = ToolCall(

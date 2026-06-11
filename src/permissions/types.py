@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal, Union
+from typing import Any, Callable, Literal, Union
 
 
 # Mirrors typescript/src/types/permissions.ts:16-38.
@@ -308,6 +308,41 @@ PermissionResult = Union[
     PermissionDecision,
     PermissionPassthroughResult,
 ]
+
+
+@dataclass(frozen=True)
+class PermissionAskRequest:
+    """Everything an interactive surface needs to render a permission ask.
+
+    Mirrors what TS hands ``PermissionRequest.tsx`` via ``toolUseConfirm``:
+    the tool, the human message, the raw input (drives per-tool previews),
+    and the rule suggestions an "always allow" option would persist.
+    """
+
+    tool_name: str
+    message: str
+    tool_input: dict[str, Any] | None = None
+    suggestions: tuple[PermissionUpdate, ...] = ()
+    decision_reason: PermissionDecisionReason | None = None
+
+
+@dataclass(frozen=True)
+class PermissionAskReply:
+    """A surface's answer to a :class:`PermissionAskRequest`.
+
+    Mirrors TS ``PermissionResult``: allow may carry ``chosen_updates``
+    (the accepted "don't ask again" rules — TS ``updatedPermissions``) and
+    deny may carry ``message`` (the user's feedback, which reaches the
+    model in the tool error — TS deny-with-feedback).
+    """
+
+    behavior: Literal["allow", "deny"] = "deny"
+    updated_input: dict[str, Any] | None = None
+    chosen_updates: tuple[PermissionUpdate, ...] = ()
+    message: str | None = None
+
+
+PermissionAskHandler = Callable[[PermissionAskRequest], PermissionAskReply]
 
 
 def _empty_rules_by_source() -> ToolPermissionRulesBySource:

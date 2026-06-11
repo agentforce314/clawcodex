@@ -442,16 +442,24 @@ class ClawcodexREPL:
             get_available_mcp_servers=_get_mcp_servers_for_prompt,
         )
         self._engine_messages: list[Any] = []
-        from src.permissions.types import ToolPermissionContext
+        # C1: build the permission context through the settings loader so
+        # rules persisted by "always allow" (and hand-written settings
+        # files) are live in every session — previously this was a bare
+        # ruleless ToolPermissionContext. Setup warnings (dangerous rules,
+        # shadowed rules) are intentionally not surfaced yet — phase C6.
+        from src.permissions.settings_paths import default_setup_paths
+        from src.permissions.setup import setup_permissions
+
+        _perm_setup = setup_permissions(
+            cwd=str(Path.cwd()),
+            mode=self._permission_mode,  # type: ignore[arg-type]
+            is_bypass_available=self._is_bypass_permissions_mode_available,
+            **default_setup_paths(str(Path.cwd())),
+        )
 
         self.tool_context = ToolContext(
             workspace_root=Path.cwd(),
-            permission_context=ToolPermissionContext(
-                mode=self._permission_mode,  # type: ignore[arg-type]
-                is_bypass_permissions_mode_available=(
-                    self._is_bypass_permissions_mode_available
-                ),
-            ),
+            permission_context=_perm_setup.context,
         )
         self.tool_context.ask_user = self._ask_user_questions
         # Permission handler with status control for proper input handling
@@ -461,9 +469,11 @@ class ClawcodexREPL:
             # before the handler is ever consulted, but a few tools call the
             # handler directly (e.g. the doc-write gate). Auto-allow there
             # too so the user's explicit opt-in is honored end-to-end.
+            from src.permissions.types import PermissionAskReply
+
             self.tool_context.allow_docs = True
             self.tool_context.permission_handler = (
-                lambda _tn, _msg, _sug: (True, False)
+                lambda _request: PermissionAskReply(behavior="allow")
             )
         else:
             self.tool_context.permission_handler = self._handle_permission_request
@@ -908,28 +918,28 @@ class ClawcodexREPL:
 
         return answers
 
-    def _handle_permission_request(
-        self,
-        tool_name: str,
-        message: str,
-        suggestion: str | None,
-    ) -> tuple[bool, bool]:
+    def _handle_permission_request(self, request: Any) -> Any:
         """Handle interactive permission requests from tools.
 
-        Args:
-            tool_name: Name of the tool requesting permission.
-            message: Message explaining what permission is needed.
-            suggestion: Optional suggestion for enabling the setting.
-
-        Returns:
-            Tuple of (allowed: bool, continue_without_caching: bool).
-            continue_without_caching is always False since we don't cache in REPL.
+        C1: receives a :class:`src.permissions.types.PermissionAskRequest`
+        and returns a :class:`~src.permissions.types.PermissionAskReply`.
+        The console menu mirrors the TUI modal's option set: allow once /
+        allow always (when rule suggestions exist) / deny / deny with
+        feedback — plus the REPL-only ``allow_docs`` enable shortcut.
         """
+        from src.permissions.types import PermissionAskReply
+
+        tool_name = request.tool_name
+        message = request.message
+        suggestions = tuple(getattr(request, "suggestions", ()) or ())
+
         with self._permission_prompt_lock:
             cache_key = tool_name.strip().lower()
             cached = self._permission_decision_cache.get(cache_key)
             if cached is not None:
-                return cached, False
+                return PermissionAskReply(
+                    behavior="allow" if cached else "deny"
+                )
 
             # Stop the Rich status spinner if running, so we can get clean input
             if self._current_status is not None:
@@ -953,16 +963,29 @@ class ClawcodexREPL:
                     can_enable_setting = True
                     setting_to_enable = "allow_docs"
 
-            # Build options
-            options: list[tuple[str, str]] = [
-                ("y", "Yes, allow this action"),
-                ("n", "No, deny this action"),
-            ]
+            always_label: str | None = None
+            if suggestions:
+                from src.permissions.updates import suggestions_label
+
+                always_label = suggestions_label(suggestions)
+
+            # Build options as (key, description, action) rows so the
+            # numeric choices always match what was displayed.
+            options: list[tuple[str, str, str]] = []
             if can_enable_setting:
-                options.insert(0, ("e", f"Enable {setting_to_enable} and allow"))
+                options.append(
+                    ("e", f"Enable {setting_to_enable} and allow", "enable")
+                )
+            options.append(("y", "Yes, allow this action", "allow"))
+            if always_label:
+                options.append(("a", f"Yes, and {always_label}", "always"))
+            options.append(("n", "No, deny this action", "deny"))
+            options.append(
+                ("d", "No, and tell Claude what to do differently", "feedback")
+            )
 
             self.console.print("[bold]Options:[/bold]")
-            for i, (key, desc) in enumerate(options, start=1):
+            for i, (key, desc, _action) in enumerate(options, start=1):
                 self.console.print(f"  {i}. [{key}] {desc}")
             self.console.print("")
 
@@ -970,31 +993,42 @@ class ClawcodexREPL:
             # and the LiveStatus bottom region.
             choice = self._safe_input("Select option> ").strip().lower()
 
-            # Parse choice based on the actual displayed options
-            if can_enable_setting:
-                # Menu: 1=Enable, 2=Yes, 3=No
-                if choice in ("1", "e", "enable"):
-                    self._enable_permission_setting(setting_to_enable)
-                    self._permission_decision_cache[cache_key] = True
-                    return True, False
-                elif choice in ("2", "y", "yes", ""):
-                    self._permission_decision_cache[cache_key] = True
-                    return True, False
-                elif choice in ("3", "n", "no"):
-                    self._permission_decision_cache[cache_key] = False
-                    return False, False
+            action: str | None = None
+            if choice == "":
+                action = "allow"
             else:
-                # Menu: 1=Yes, 2=No
-                if choice in ("1", "y", "yes", ""):
-                    self._permission_decision_cache[cache_key] = True
-                    return True, False
-                elif choice in ("2", "n", "no"):
-                    self._permission_decision_cache[cache_key] = False
-                    return False, False
+                for i, (key, _desc, opt_action) in enumerate(options, start=1):
+                    if choice == str(i) or choice == key:
+                        action = opt_action
+                        break
+                if action is None and choice in ("yes",):
+                    action = "allow"
+                elif action is None and choice in ("no",):
+                    action = "deny"
+
+            if action == "enable":
+                self._enable_permission_setting(setting_to_enable)
+                self._permission_decision_cache[cache_key] = True
+                return PermissionAskReply(behavior="allow")
+            if action == "allow":
+                self._permission_decision_cache[cache_key] = True
+                return PermissionAskReply(behavior="allow")
+            if action == "always":
+                # Don't poison the cache with a plain allow — the rule
+                # itself now auto-allows future matching calls.
+                return PermissionAskReply(
+                    behavior="allow", chosen_updates=suggestions
+                )
+            if action == "deny":
+                self._permission_decision_cache[cache_key] = False
+                return PermissionAskReply(behavior="deny")
+            if action == "feedback":
+                note = self._safe_input("What should Claude do instead? > ").strip()
+                return PermissionAskReply(behavior="deny", message=note or None)
 
             # Default to deny for invalid input
             self.console.print("[dim]Invalid choice, defaulting to deny.[/dim]")
-            return False, False
+            return PermissionAskReply(behavior="deny")
 
     def _enable_permission_setting(self, setting_name: str | None) -> None:
         """Enable a permission setting in the tool context."""

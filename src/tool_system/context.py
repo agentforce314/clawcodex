@@ -7,7 +7,7 @@ from typing import Any, Callable, Optional
 
 from .errors import ToolPermissionError
 from .task_manager import TaskManager
-from src.permissions.types import ToolPermissionContext
+from src.permissions.types import PermissionAskHandler, ToolPermissionContext
 from src.services.swarm.agent_name_registry import AgentNameRegistry
 from src.task_registry import RuntimeTaskRegistry
 from src.utils.abort_controller import AbortController
@@ -150,7 +150,12 @@ class ToolContext:
     additional_working_directories: tuple[Path, ...] = ()
     allow_docs: bool = False
 
-    permission_handler: Callable[[str, str, Optional[str]], tuple[bool, bool]] | None = None
+    # C1 (components parity): request/reply protocol — the surface gets the
+    # full PermissionAskRequest (tool_input → previews, suggestions →
+    # "always allow") and answers with a PermissionAskReply (chosen_updates,
+    # deny feedback). Replaced the legacy (tool_name, message, suggestion)
+    # -> (allowed, enable) shape end-to-end; no shim.
+    permission_handler: PermissionAskHandler | None = None
 
     options: ToolUseOptions = field(default_factory=ToolUseOptions)
     # Always present; callers that own the per-run cancellation lifecycle
