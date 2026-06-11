@@ -555,8 +555,41 @@ class ClawCodexTUI(App):
             self._open_workflows_dialog(transcript)
         elif name == "resume":
             self._open_resume_picker(transcript)
+        elif name == "search" or name.startswith("search:"):
+            self._open_global_search(
+                transcript, name.partition(":")[2] if ":" in name else ""
+            )
+        elif name == "quickopen":
+            self._open_quick_open(transcript)
         else:
             transcript.append_system(f"Dialog '{name}' not available.", style="muted")
+
+    # ---- C5 workspace search dialogs -----------------------------------
+    def _insert_into_prompt(self, insertion: str | None) -> None:
+        if not insertion:
+            return
+        if self._repl_screen is not None:
+            self._repl_screen.prompt_input.append_value(insertion)
+
+    def _open_global_search(
+        self, transcript: Transcript, initial_query: str = ""
+    ) -> None:
+        from src.tui.screens.workspace_search import GlobalSearchScreen
+
+        self.push_screen(
+            GlobalSearchScreen(
+                cwd=str(self.workspace_root), initial_query=initial_query
+            ),
+            callback=self._insert_into_prompt,
+        )
+
+    def _open_quick_open(self, transcript: Transcript) -> None:
+        from src.tui.screens.workspace_search import QuickOpenScreen
+
+        self.push_screen(
+            QuickOpenScreen(cwd=str(self.workspace_root)),
+            callback=self._insert_into_prompt,
+        )
 
     def _open_resume_picker(self, transcript: Transcript) -> None:
         """C2: list persisted sessions; selection swaps the live session.
