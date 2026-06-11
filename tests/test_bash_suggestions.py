@@ -85,6 +85,34 @@ class TestSuggestionsForBashCommand(unittest.TestCase):
         rule = _only_rule(suggestions_for_bash_command("git diff && echo hi"))
         self.assertEqual(rule.rule_content, "git diff:*")
 
+    def test_compound_without_derivable_prefix_yields_nothing(self) -> None:
+        # An exact rule containing chaining would be unmatchable (dead).
+        self.assertEqual(suggestions_for_bash_command("ls && pwd"), [])
+
+    def test_multiline_compound_first_line_derives_prefix(self) -> None:
+        # A verbatim compound first line would mint a dead rule.
+        rule = _only_rule(
+            suggestions_for_bash_command("git fetch && git rebase\ngit push")
+        )
+        self.assertEqual(rule.rule_content, "git fetch:*")
+
+    def test_multiline_bare_shell_first_line_yields_nothing(self) -> None:
+        self.assertEqual(suggestions_for_bash_command("bash\necho hi"), [])
+
+    def test_heredoc_at_index_zero_yields_nothing(self) -> None:
+        self.assertEqual(suggestions_for_bash_command("<<EOF\nhi\nEOF"), [])
+
+    def test_heredoc_with_chained_before_segment_yields_nothing(self) -> None:
+        self.assertEqual(
+            suggestions_for_bash_command("true && cat <<EOF\nhi\nEOF"), []
+        )
+
+    def test_env_assignment_then_compound(self) -> None:
+        rule = _only_rule(
+            suggestions_for_bash_command("NODE_ENV=test npm run lint && npm test")
+        )
+        self.assertEqual(rule.rule_content, "npm run:*")
+
 
 class TestContainsUnquotedChaining(unittest.TestCase):
     def test_operators_detected(self) -> None:
@@ -115,6 +143,24 @@ class TestContainsUnquotedChaining(unittest.TestCase):
 
         self.assertFalse(contains_unquoted_chaining("git diff --stat"))
         self.assertFalse(contains_unquoted_chaining("ls -la /tmp"))
+
+    def test_lone_ampersand_detected_redirections_skipped(self) -> None:
+        from src.permissions.bash_suggestions import contains_unquoted_chaining
+
+        self.assertTrue(contains_unquoted_chaining("a & b"))
+        self.assertTrue(contains_unquoted_chaining("a&b"))
+        self.assertTrue(contains_unquoted_chaining("sleep 5 &"))
+        self.assertFalse(contains_unquoted_chaining("cmd 2>&1"))
+        self.assertFalse(contains_unquoted_chaining("cmd <&3"))
+        self.assertFalse(contains_unquoted_chaining("cmd &> out.log"))
+
+    def test_escaped_operators(self) -> None:
+        from src.permissions.bash_suggestions import contains_unquoted_chaining
+
+        self.assertFalse(contains_unquoted_chaining(r"echo a\;b"))
+        self.assertFalse(contains_unquoted_chaining(r"echo a\|b"))
+        # Double backslash = literal backslash, then a REAL separator.
+        self.assertTrue(contains_unquoted_chaining("echo a\\\\; rm x"))
 
 
 class TestMatcherChainingGuard(unittest.TestCase):
@@ -152,6 +198,42 @@ class TestMatcherChainingGuard(unittest.TestCase):
 
         self.assertTrue(prepare_permission_matcher("*")("a && b"))
         self.assertTrue(prepare_permission_matcher("")("a && b"))
+
+    def test_prefix_rule_word_boundary(self) -> None:
+        from src.permissions.check import prepare_permission_matcher
+
+        matcher = prepare_permission_matcher("git diff:*")
+        self.assertTrue(matcher("git diff"))
+        self.assertFalse(matcher("git diffx"))
+
+    def test_exact_rule_rejects_elongation(self) -> None:
+        from src.permissions.check import prepare_permission_matcher
+
+        matcher = prepare_permission_matcher("ls -la")
+        self.assertTrue(matcher("ls -la"))
+        self.assertTrue(matcher("ls -la /tmp"))
+        self.assertFalse(matcher("ls -lah"))
+        run = prepare_permission_matcher("npm run")
+        self.assertFalse(run("npm runabc"))
+
+    def test_basename_normalization_both_directions(self) -> None:
+        from src.permissions.check import prepare_permission_matcher
+
+        matcher = prepare_permission_matcher("git status:*")
+        # Intended direction: path-qualified executable matches.
+        self.assertTrue(matcher("/usr/bin/git status"))
+        # Accepted trade-off (locked deliberately): a same-named
+        # executable at ANY path also matches — the safety screen runs
+        # first on every command, which bounds the exposure.
+        self.assertTrue(matcher("/somewhere/else/git status"))
+
+    def test_exact_prefix_suffix_branch(self) -> None:
+        from src.permissions.check import prepare_permission_matcher
+
+        matcher = prepare_permission_matcher("git:status*")
+        self.assertTrue(matcher("git status --short"))
+        self.assertFalse(matcher("git push"))
+        self.assertFalse(matcher("git status && git push"))
 
 
 if __name__ == "__main__":

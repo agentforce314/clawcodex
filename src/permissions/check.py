@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
 
 from .bash_security import analyze_bash_command
+from .bash_suggestions import contains_unquoted_chaining
 from .rules import (
     get_ask_rule_for_tool,
     get_deny_rule_for_tool,
@@ -478,8 +479,6 @@ def prepare_permission_matcher(rule_content: str) -> Callable[[str], bool]:
     # per-AST-sub-command; Python matches whole strings, so chained
     # commands must simply re-prompt. ("" and "*" rules are explicit
     # allow-alls and stay unguarded.)
-    from .bash_suggestions import contains_unquoted_chaining
-
     if not rule_content:
         return lambda _: True
 
@@ -512,6 +511,11 @@ def prepare_permission_matcher(rule_content: str) -> Callable[[str], bool]:
             return _prefix_matcher
         else:
             def _exact_prefix_matcher(command: str) -> bool:
+                # Known limitation: like the pre-C1 code, this branch only
+                # matches single-word rule prefixes (the first token is
+                # compared to the whole prefix), so a user-written
+                # "git diff:--stat*" rule cannot match. No producer mints
+                # such rules today; fix alongside a real consumer.
                 if contains_unquoted_chaining(command):
                     return False
                 parts = command.strip().split(None, 1)
@@ -530,10 +534,21 @@ def prepare_permission_matcher(rule_content: str) -> Callable[[str], bool]:
             and fnmatch.fnmatch(command.strip(), rule_content)
         )
 
-    return lambda command: (
-        not contains_unquoted_chaining(command)
-        and command.strip().startswith(rule_content)
-    )
+    def _exact_or_word_prefix_matcher(command: str) -> bool:
+        # Rules without ":*" or wildcards: exact match, or the rule
+        # followed by a SPACE (word boundary). Bare startswith would let
+        # a stored rule match last-token elongations (a rule for one
+        # flag cluster matching a longer one) — meaningful since C1's
+        # suggestion layer started minting exact-command rules into this
+        # branch. The +space prefix form (vs TS pure equality) is kept
+        # for the pre-existing locked behavior of word-prefix rules like
+        # "npm run".
+        if contains_unquoted_chaining(command):
+            return False
+        cmd = command.strip()
+        return cmd == rule_content or cmd.startswith(rule_content + " ")
+
+    return _exact_or_word_prefix_matcher
 
 
 @dataclass(frozen=True)
