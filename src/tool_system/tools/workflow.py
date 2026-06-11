@@ -104,6 +104,17 @@ def _default_runner_factory(registry: Any, provider: Any) -> Callable[[ToolConte
                 logger.exception("agent resolution failed; falling back to general-purpose")
                 return GENERAL_PURPOSE_AGENT
 
+        # Cap per-agent turns. The subagent default (30) lets an aimless model
+        # (e.g. deepseek-flash) loop WebSearch/WebFetch ~30 times without ever
+        # finalizing via StructuredOutput — observed as agents "stuck" for
+        # minutes and burning ~30x the tokens. Workflow agents do focused tasks
+        # (search a few sources → emit; verify → emit; synthesize → write), so a
+        # tighter bound forces progress. Disciplined models finish well under it.
+        # Env-tunable for workflows that genuinely need deeper agents.
+        import os
+
+        max_turns = int(os.environ.get("CLAWCODEX_WORKFLOW_MAX_TURNS", "18"))
+
         return LiveAgentRunner(
             provider=provider,
             tool_registry=registry,
@@ -111,6 +122,7 @@ def _default_runner_factory(registry: Any, provider: Any) -> Callable[[ToolConte
             base_tools=list(registry.list_tools()),
             resolve_agent=resolve,
             run_id=run_id,
+            max_turns=max_turns,
         )
 
     return factory
