@@ -126,6 +126,9 @@ class PromptInput(Vertical):
         border: round $primary-darken-2;
         padding: 0 1;
     }
+    PromptInput.-bash-mode > Input {
+        border: round magenta;
+    }
     """
 
     BINDINGS = [
@@ -256,6 +259,10 @@ class PromptInput(Vertical):
 
     # ---- input events ----
     def on_input_changed(self, event: Input.Changed) -> None:
+        # C4 bash-mode affordance (TS inputModes getModeFromInput): a `!`
+        # prefix accents the input border. lstrip matches the dispatch
+        # predicate (the submit layer strips before routing).
+        self.set_class(event.value.lstrip().startswith("!"), "-bash-mode")
         self._refresh_suggestions(event.value, event.input.cursor_position)
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
