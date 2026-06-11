@@ -72,6 +72,22 @@ def _deep_research_command() -> Optional[PromptCommand]:
     )
 
 
+def bundled_workflow_commands() -> list[Command]:
+    """The cwd-independent bundled workflow slash commands (currently
+    ``/deep-research``).
+
+    Surfaced via ``get_builtin_commands()`` so they register into the global
+    command registry that both command suggestions and dispatch read — the
+    aggregator's :func:`get_commands` that also lists them has no real consumers.
+    Project/personal workflows are cwd-dependent and remain the aggregator's job.
+    """
+    out: list[Command] = []
+    deep = _deep_research_command()
+    if deep is not None:
+        out.append(deep)
+    return out
+
+
 def _discover_dir(directory: Path, loaded_from: str) -> list[PromptCommand]:
     commands: list[PromptCommand] = []
     try:
