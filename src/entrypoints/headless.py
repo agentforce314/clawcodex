@@ -160,8 +160,6 @@ def run_headless(options: HeadlessOptions) -> int:
     # round-5 fields. When skip_permissions wins, force bypass mode + bypass
     # availability so the registry's ``has_permissions_to_use_tool`` check
     # short-circuits to ``allow``.
-    from src.permissions.types import ToolPermissionContext
-
     if options.skip_permissions:
         effective_mode: str = "bypassPermissions"
         bypass_available = True
@@ -176,12 +174,21 @@ def run_headless(options: HeadlessOptions) -> int:
     # the next safe boundary — which can be several minutes for a
     # subprocess.wait() or an in-flight subagent.
     abort_controller = AbortController()
+    # C1: load persisted permission rules (settings files) at startup so
+    # "always allow" rules saved in interactive sessions auto-allow here
+    # too. Setup warnings intentionally unsurfaced until phase C6.
+    from src.permissions.settings_paths import default_setup_paths
+    from src.permissions.setup import setup_permissions
+
+    _perm_setup = setup_permissions(
+        cwd=str(workspace_root),
+        mode=effective_mode,  # type: ignore[arg-type]
+        is_bypass_available=bypass_available,
+        **default_setup_paths(str(workspace_root)),
+    )
     tool_context = ToolContext(
         workspace_root=workspace_root,
-        permission_context=ToolPermissionContext(
-            mode=effective_mode,  # type: ignore[arg-type]
-            is_bypass_permissions_mode_available=bypass_available,
-        ),
+        permission_context=_perm_setup.context,
         abort_controller=abort_controller,
     )
     tool_context.options.is_non_interactive_session = True
@@ -587,16 +594,19 @@ def _filter_registry(registry, *, keep) -> None:
 
 
 def _auto_deny_permission_handler(stderr: IO[str]):
-    def handler(tool_name: str, message: str, suggestion: Optional[str]):
+    from src.permissions.types import PermissionAskReply, PermissionAskRequest
+
+    def handler(request: PermissionAskRequest) -> PermissionAskReply:
         stderr.write(
-            f"[headless] denying permission for {tool_name}: {message}"
+            f"[headless] denying permission for {request.tool_name}: "
+            f"{request.message}"
             " (pass --dangerously-skip-permissions to bypass)\n"
         )
         try:
             stderr.flush()
         except Exception:
             pass
-        return False, False
+        return PermissionAskReply(behavior="deny")
 
     return handler
 

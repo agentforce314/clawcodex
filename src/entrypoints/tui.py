@@ -108,16 +108,23 @@ def run_tui(options: TUIOptions) -> int:
     # or ``--permission-mode``). When bypass is in effect we also flip
     # ``allow_docs`` so the doc-write gate in write.py / edit.py doesn't
     # second-guess the user's explicit opt-in.
-    from src.permissions.types import ToolPermissionContext
+    # C1: load persisted permission rules (settings files) at startup so
+    # "always allow" rules from prior sessions are live — the rule engine
+    # ran against empty rule sets before this. Setup warnings (dangerous /
+    # shadowed rules) intentionally unsurfaced until phase C6.
+    from src.permissions.settings_paths import default_setup_paths
+    from src.permissions.setup import setup_permissions
+
+    _perm_setup = setup_permissions(
+        cwd=str(workspace_root),
+        mode=options.permission_mode or "default",  # type: ignore[arg-type]
+        is_bypass_available=bool(options.is_bypass_permissions_mode_available),
+        **default_setup_paths(str(workspace_root)),
+    )
 
     tool_context = ToolContext(
         workspace_root=workspace_root,
-        permission_context=ToolPermissionContext(
-            mode=options.permission_mode or "default",  # type: ignore[arg-type]
-            is_bypass_permissions_mode_available=bool(
-                options.is_bypass_permissions_mode_available
-            ),
-        ),
+        permission_context=_perm_setup.context,
     )
     if options.permission_mode == "bypassPermissions":
         tool_context.allow_docs = True

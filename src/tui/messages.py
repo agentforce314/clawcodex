@@ -131,7 +131,7 @@ class PermissionRequested(Message):
     request_id: str
     tool_name: str
     message: str
-    suggestion: str | None = None
+    suggestions: tuple[Any, ...] = ()
     tool_input: dict[str, Any] | None = None
 
 
@@ -141,11 +141,14 @@ class PermissionResolved(Message):
 
     Always paired with a call to :meth:`AppState.resolve_permission` so
     the worker thread is unblocked *before* this message is posted.
+    ``always`` means the user accepted the suggested "don't ask again"
+    rules; ``feedback`` is the optional deny-with-feedback note.
     """
 
     request_id: str
     allowed: bool
-    enable_setting: bool = False
+    always: bool = False
+    feedback: str | None = None
 
 
 @dataclass

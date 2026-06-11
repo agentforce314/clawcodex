@@ -560,13 +560,25 @@ class TestREPL(unittest.TestCase):
 
                     repl._safe_input = fake_input  # type: ignore[assignment]
 
+                    from src.permissions.types import PermissionAskRequest
+
                     t1 = threading.Thread(
                         target=repl._handle_permission_request,
-                        args=("Grep", "Claude wants to use Grep. Allow?", None),
+                        args=(
+                            PermissionAskRequest(
+                                tool_name="Grep",
+                                message="Claude wants to use Grep. Allow?",
+                            ),
+                        ),
                     )
                     t2 = threading.Thread(
                         target=repl._handle_permission_request,
-                        args=("Read", "Claude wants to use Read. Allow?", None),
+                        args=(
+                            PermissionAskRequest(
+                                tool_name="Read",
+                                message="Claude wants to use Read. Allow?",
+                            ),
+                        ),
                     )
                     t1.start()
                     t2.start()
@@ -600,19 +612,23 @@ class TestREPL(unittest.TestCase):
 
                     repl._safe_input = fake_input  # type: ignore[assignment]
 
+                    from src.permissions.types import PermissionAskRequest
+
                     first = repl._handle_permission_request(
-                        "Grep",
-                        "Claude wants to use Grep. Allow?",
-                        None,
+                        PermissionAskRequest(
+                            tool_name="Grep",
+                            message="Claude wants to use Grep. Allow?",
+                        )
                     )
                     second = repl._handle_permission_request(
-                        "Grep",
-                        "Claude wants to use Grep. Allow?",
-                        None,
+                        PermissionAskRequest(
+                            tool_name="Grep",
+                            message="Claude wants to use Grep. Allow?",
+                        )
                     )
 
-                    self.assertEqual(first, (True, False))
-                    self.assertEqual(second, (True, False))
+                    self.assertEqual(first.behavior, "allow")
+                    self.assertEqual(second.behavior, "allow")
                     self.assertEqual(prompt_calls, 1)
 
 

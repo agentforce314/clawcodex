@@ -573,42 +573,43 @@ class AgentBridge:
         self._last_scanned_msg_index = len(messages)
 
     # ---- permission bridge ----
-    def _permission_handler(
-        self,
-        tool_name: str,
-        message: str,
-        suggestion: str | None,
-    ) -> tuple[bool, bool]:
+    def _permission_handler(self, request: Any) -> Any:
         """Called from the worker thread whenever the tool dispatcher
         wants user approval.
 
-        Posts a :class:`PermissionRequested` to the UI, which pushes a
-        modal; blocks the worker until the modal resolves via
+        Receives a :class:`src.permissions.types.PermissionAskRequest`
+        and returns a :class:`~src.permissions.types.PermissionAskReply`.
+        Posts a :class:`PermissionRequested` to the UI (with the REAL
+        ``tool_input`` so the modal's per-tool previews render, and the
+        derived rule ``suggestions`` so the always-allow option shows);
+        blocks the worker until the modal resolves via
         :class:`PermissionResolved`.
         """
 
-        done = threading.Event()
-        outcome: dict[str, bool] = {"allowed": False, "enable": False}
+        from src.permissions.types import PermissionAskReply
 
-        def _decide(allowed: bool, enable: bool) -> None:
-            outcome["allowed"] = allowed
-            outcome["enable"] = enable
+        done = threading.Event()
+        outcome: dict[str, Any] = {"reply": PermissionAskReply(behavior="deny")}
+
+        def _decide(reply: Any) -> None:
+            outcome["reply"] = reply
             done.set()
 
+        tool_input = _safe_copy(request.tool_input)
         pending = self._state.enqueue_permission(
-            tool_name=tool_name,
-            message=message,
-            suggestion=suggestion,
-            tool_input=None,
+            tool_name=request.tool_name,
+            message=request.message,
+            suggestions=tuple(request.suggestions),
+            tool_input=tool_input,
             decide=_decide,
         )
         self._post(
             PermissionRequested(
                 request_id=pending.request_id,
-                tool_name=tool_name,
-                message=message,
-                suggestion=suggestion,
-                tool_input=None,
+                tool_name=request.tool_name,
+                message=request.message,
+                suggestions=tuple(request.suggestions),
+                tool_input=tool_input,
             )
         )
         # Wait for the UI to call ``_decide``. No timeout — the UI is
@@ -620,7 +621,7 @@ class AgentBridge:
         # Remove the entry from the state queue; the modal already
         # dismissed itself and emitted ``PermissionResolved``.
         self._state.resolve_permission(pending.request_id)
-        return outcome["allowed"], outcome["enable"]
+        return outcome["reply"]
 
 
 def _safe_copy(value: Any) -> Any:
