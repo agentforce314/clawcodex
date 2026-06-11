@@ -18,7 +18,10 @@ import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
+
+if TYPE_CHECKING:
+    from src.permissions.types import PermissionAskReply, PermissionUpdate
 
 
 class FocusedDialog(str, Enum):
@@ -64,16 +67,19 @@ def priority_of(dialog: FocusedDialog) -> int:
 class PendingPermission:
     """A tool-permission request awaiting user decision.
 
-    ``decide`` is called from the permission modal with the user's choice;
-    it is safe to invoke from either thread.
+    ``decide`` is called from the permission modal with the user's
+    :class:`src.permissions.types.PermissionAskReply`; it is safe to
+    invoke from either thread. ``suggestions`` carries the derived
+    "don't ask again" :class:`~src.permissions.types.PermissionUpdate`
+    rules behind the modal's always-allow option (C1).
     """
 
     request_id: str
     tool_name: str
     message: str
-    suggestion: str | None
+    suggestions: tuple["PermissionUpdate", ...]
     tool_input: dict[str, Any] | None
-    decide: Callable[[bool, bool], None]
+    decide: Callable[["PermissionAskReply"], None]
     created_at: float = field(default_factory=time.time)
 
 
@@ -121,16 +127,16 @@ class AppState:
         self,
         tool_name: str,
         message: str,
-        suggestion: str | None,
+        suggestions: tuple["PermissionUpdate", ...],
         tool_input: dict[str, Any] | None,
-        decide: Callable[[bool, bool], None],
+        decide: Callable[["PermissionAskReply"], None],
     ) -> PendingPermission:
         with self._lock:
             request = PendingPermission(
                 request_id=f"perm-{next(self._ids)}",
                 tool_name=tool_name,
                 message=message,
-                suggestion=suggestion,
+                suggestions=suggestions,
                 tool_input=tool_input,
                 decide=decide,
             )

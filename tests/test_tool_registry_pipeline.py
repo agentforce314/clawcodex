@@ -160,7 +160,7 @@ class TestRegistryDispatch(unittest.TestCase):
         self.assertFalse(result.is_error)
 
     def test_dispatch_checks_permissions_ask_with_handler_deny(self) -> None:
-        from src.permissions.types import PermissionAskDecision
+        from src.permissions.types import PermissionAskDecision, PermissionAskReply
 
         def _ask(inp: dict, ctx: ToolContext):
             return PermissionAskDecision(message="confirm?")
@@ -171,7 +171,7 @@ class TestRegistryDispatch(unittest.TestCase):
             workspace_root=Path(self.tmp.name),
             permission_context=ToolPermissionContext(mode="default"),
         )
-        ctx.permission_handler = lambda name, msg, sug: (False, False)
+        ctx.permission_handler = lambda request: PermissionAskReply(behavior="deny")
         result = reg.dispatch(ToolCall(name="NeedApproval", input={}), ctx)
         self.assertTrue(result.is_error)
         self.assertIn("denied", result.output["error"])

@@ -135,7 +135,11 @@ class TestToolRegistryDispatchPermissions(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_dispatch_allows_regular_file_with_handler(self) -> None:
-        self.ctx.permission_handler = lambda name, msg, sug: (True, False)
+        from src.permissions.types import PermissionAskReply
+
+        self.ctx.permission_handler = lambda request: PermissionAskReply(
+            behavior="allow"
+        )
         result = self.registry.dispatch(
             ToolCall(name="Write", input={"file_path": str(self.root / "test.txt"), "content": "hello"}),
             self.ctx,
@@ -156,14 +160,16 @@ class TestToolRegistryDispatchPermissions(unittest.TestCase):
         )
 
     def test_dispatch_calls_permission_handler_for_ask(self) -> None:
-        call_count = 0
-        captured_args = None
+        from src.permissions.types import PermissionAskReply
 
-        def mock_handler(tool_name: str, message: str, suggestion: str | None):
-            nonlocal call_count, captured_args
+        call_count = 0
+        captured_request = None
+
+        def mock_handler(request):
+            nonlocal call_count, captured_request
             call_count += 1
-            captured_args = (tool_name, message, suggestion)
-            return True, False
+            captured_request = request
+            return PermissionAskReply(behavior="allow")
 
         self.ctx.permission_handler = mock_handler
 
@@ -173,12 +179,19 @@ class TestToolRegistryDispatchPermissions(unittest.TestCase):
         )
 
         self.assertEqual(call_count, 1)
-        self.assertEqual(captured_args[0], "Write")
+        self.assertEqual(captured_request.tool_name, "Write")
+        # C1: the registry forwards the REAL tool input to the surface.
+        self.assertEqual(
+            captured_request.tool_input.get("file_path"),
+            str(self.root / "test.md"),
+        )
         self.assertFalse(result.is_error)
 
     def test_dispatch_respects_handler_deny(self) -> None:
-        def mock_handler(tool_name: str, message: str, suggestion: str | None):
-            return False, False
+        from src.permissions.types import PermissionAskReply
+
+        def mock_handler(request):
+            return PermissionAskReply(behavior="deny")
 
         self.ctx.permission_handler = mock_handler
 
@@ -190,10 +203,28 @@ class TestToolRegistryDispatchPermissions(unittest.TestCase):
         self.assertTrue(result.is_error)
         self.assertIn("denied", result.output.get("error", "").lower())
 
+    def test_dispatch_deny_feedback_reaches_error(self) -> None:
+        from src.permissions.types import PermissionAskReply
+
+        def mock_handler(request):
+            return PermissionAskReply(behavior="deny", message="write it in /tmp")
+
+        self.ctx.permission_handler = mock_handler
+
+        result = self.registry.dispatch(
+            ToolCall(name="Write", input={"file_path": str(self.root / "test.md"), "content": "hello"}),
+            self.ctx,
+        )
+
+        self.assertTrue(result.is_error)
+        self.assertIn("write it in /tmp", result.output.get("error", ""))
+
     def test_dispatch_allows_after_handler_enables_setting(self) -> None:
-        def mock_handler(tool_name: str, message: str, suggestion: str | None):
+        from src.permissions.types import PermissionAskReply
+
+        def mock_handler(request):
             self.ctx.allow_docs = True
-            return True, False
+            return PermissionAskReply(behavior="allow")
 
         self.ctx.permission_handler = mock_handler
 

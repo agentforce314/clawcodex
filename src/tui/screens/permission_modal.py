@@ -6,13 +6,28 @@ unified preview and chapter
 routes to a per-tool body (Bash → command + matched rule; Edit →
 inline diff; Write → file path + content preview; etc.).
 
+C1 (components-folder parity) upgraded the decision surface from binary
+Allow/Deny to the TS ``PermissionPrompt.tsx`` option list:
+
+* **Allow once** (``y``)
+* **Allow always** (``a``, only when the ask carries rule suggestions) —
+  accepts the derived "don't ask again" rules; the registry applies them
+  to the live context and persists them (TS "Yes, and don't ask again")
+* **Deny** (``n`` / ``Esc``)
+* **Deny with feedback** (``d``) — opens a one-line input; the note
+  reaches the model in the tool error (TS "No, and tell Claude what to
+  do differently")
+
+The modal resolves by calling ``request.decide`` with a
+:class:`src.permissions.types.PermissionAskReply`.
+
 Architecture per refactoring-plan A9: a single :class:`PermissionModal`
 screen with a tool-name-keyed dispatcher to specialized render
 functions. Avoids a class-per-tool hierarchy that would make adding
 tools verbose. Per the ``mouse=False`` design constraint (gap analysis
 §1 read #2 (c)), all interactive elements are reachable via keyboard
 only; the buttons are decorative — the actual decisions fire from the
-``y`` / ``n`` / ``Esc`` keybindings registered on the modal.
+keybindings registered on the modal.
 """
 
 from __future__ import annotations
@@ -27,7 +42,9 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Center, Middle, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Button, Static
+from textual.widgets import Button, Input, Static
+
+from src.permissions.updates import suggestions_label
 
 from ..messages import PermissionResolved
 from ..state import PendingPermission
@@ -37,8 +54,10 @@ class PermissionModal(ModalScreen[bool]):
     """Modal that blocks input until the user decides on a tool call."""
 
     BINDINGS = [
-        Binding("y", "allow", "Allow", show=False),
+        Binding("y", "allow", "Allow once", show=False),
+        Binding("a", "allow_always", "Allow always", show=False),
         Binding("n", "deny", "Deny", show=False),
+        Binding("d", "deny_feedback", "Deny with feedback", show=False),
         Binding("escape", "deny", "Deny", show=False),
     ]
 
@@ -79,6 +98,11 @@ class PermissionModal(ModalScreen[bool]):
     def __init__(self, request: PendingPermission) -> None:
         super().__init__()
         self._request = request
+        self._always_label = suggestions_label(
+            getattr(request, "suggestions", ()) or ()
+        )
+        self._feedback_open = False
+        self._resolved = False
 
     # ---- composition ----
     def compose(self) -> ComposeResult:
@@ -109,35 +133,98 @@ class PermissionModal(ModalScreen[bool]):
         )
         if input_preview is not None:
             panel.mount(Static(input_preview, markup=False))
-        if self._request.suggestion:
-            panel.mount(
-                Static(
-                    Text(self._request.suggestion, style="italic dim"),
-                    markup=False,
-                )
-            )
         buttons = Vertical(id="buttons")
         panel.mount(buttons)
-        buttons.mount(Button("Allow (y)", id="allow", classes="-allow"))
-        buttons.mount(Button("Deny  (n)", id="deny", classes="-deny"))
+        buttons.mount(Button("Allow once (y)", id="allow", classes="-allow"))
+        if self._always_label:
+            buttons.mount(
+                Button(
+                    f"Allow always (a) — {self._always_label}",
+                    id="allow-always",
+                    classes="-allow",
+                )
+            )
+        buttons.mount(Button("Deny (n / esc)", id="deny", classes="-deny"))
+        buttons.mount(
+            Button(
+                "Deny, tell Claude what to do differently (d)",
+                id="deny-feedback",
+                classes="-deny",
+            )
+        )
+        feedback = Input(
+            placeholder="Tell Claude what to do differently… (enter to send)",
+            id="feedback-input",
+        )
+        feedback.display = False
+        panel.mount(feedback)
 
     # ---- events ----
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "allow":
             self.action_allow()
+        elif event.button.id == "allow-always":
+            self.action_allow_always()
         elif event.button.id == "deny":
             self.action_deny()
+        elif event.button.id == "deny-feedback":
+            self.action_deny_feedback()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "feedback-input":
+            self._resolve(allowed=False, feedback=event.value.strip() or None)
 
     def action_allow(self) -> None:
-        self._resolve(True)
+        if self._feedback_open:
+            return
+        self._resolve(allowed=True)
+
+    def action_allow_always(self) -> None:
+        if self._feedback_open or not self._always_label:
+            return
+        self._resolve(allowed=True, always=True)
 
     def action_deny(self) -> None:
-        self._resolve(False)
+        # Esc while the feedback input is open backs out to plain deny —
+        # same end state, so just resolve.
+        self._resolve(allowed=False)
+
+    def action_deny_feedback(self) -> None:
+        if self._feedback_open:
+            return
+        self._feedback_open = True
+        try:
+            feedback = self.query_one("#feedback-input", Input)
+        except Exception:
+            self._resolve(allowed=False)
+            return
+        feedback.display = True
+        feedback.focus()
 
     # ---- internals ----
-    def _resolve(self, allowed: bool) -> None:
+    def _resolve(
+        self,
+        *,
+        allowed: bool,
+        always: bool = False,
+        feedback: str | None = None,
+    ) -> None:
+        if self._resolved:
+            return
+        self._resolved = True
+        from src.permissions.types import PermissionAskReply
+
+        if allowed:
+            chosen = (
+                tuple(getattr(self._request, "suggestions", ()) or ())
+                if always
+                else ()
+            )
+            reply = PermissionAskReply(behavior="allow", chosen_updates=chosen)
+        else:
+            reply = PermissionAskReply(behavior="deny", message=feedback)
         try:
-            self._request.decide(allowed, False)
+            self._request.decide(reply)
         except Exception:
             pass
         # Post the decision to the app so status-line / state observers
@@ -146,21 +233,11 @@ class PermissionModal(ModalScreen[bool]):
             PermissionResolved(
                 request_id=self._request.request_id,
                 allowed=allowed,
-                enable_setting=False,
+                always=always,
+                feedback=feedback,
             )
         )
         self.dismiss(allowed)
-
-
-def _preview_tool_input(tool_input: Any) -> RenderableType | None:
-    """Dispatch to a tool-name-keyed renderer, falling back to generic.
-
-    The original signature is preserved so :class:`PermissionModal` keeps
-    the same call site. The dispatcher is the new behavior — Phase 7's
-    specialization happens through this single entry point.
-    """
-
-    return preview_for_tool(None, tool_input)
 
 
 def preview_for_tool(

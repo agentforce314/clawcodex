@@ -295,8 +295,12 @@ def test_headless_run_default_mode_keeps_auto_deny_handler(tmp_path, monkeypatch
     # Default mode keeps the auto-deny handler.
     assert ctx.permission_context.mode == "default"
     assert ctx.permission_handler is not None
-    allowed, _ = ctx.permission_handler("Bash", "needs approval", None)
-    assert allowed is False
+    from src.permissions.types import PermissionAskRequest
+
+    reply = ctx.permission_handler(
+        PermissionAskRequest(tool_name="Bash", message="needs approval")
+    )
+    assert reply.behavior == "deny"
 
 
 # ---------------------------------------------------------------------------

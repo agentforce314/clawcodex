@@ -3,10 +3,11 @@ from __future__ import annotations
 import fnmatch
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
 
 from .bash_security import analyze_bash_command
+from .bash_suggestions import contains_unquoted_chaining
 from .rules import (
     get_ask_rule_for_tool,
     get_deny_rule_for_tool,
@@ -308,14 +309,18 @@ def has_permissions_to_use_tool_inner(
                     )
 
     if tool_permission_result.behavior == "passthrough":
-        return PermissionAskDecision(
-            behavior="ask",
-            message=create_permission_request_message(
-                tool.name,
-                getattr(tool_permission_result, "decision_reason", None),
+        return _with_default_suggestions(
+            PermissionAskDecision(
+                behavior="ask",
+                message=create_permission_request_message(
+                    tool.name,
+                    getattr(tool_permission_result, "decision_reason", None),
+                ),
+                decision_reason=getattr(tool_permission_result, "decision_reason", None),
+                suggestions=getattr(tool_permission_result, "suggestions", None),
             ),
-            decision_reason=getattr(tool_permission_result, "decision_reason", None),
-            suggestions=getattr(tool_permission_result, "suggestions", None),
+            tool.name,
+            tool_input,
         )
 
     if tool_permission_result.behavior == "allow":
@@ -327,21 +332,71 @@ def has_permissions_to_use_tool_inner(
             decision_reason=getattr(tool_permission_result, "decision_reason", None),
         )
 
-    return _coerce_to_ask_decision(tool_permission_result, tool.name)
+    return _coerce_to_ask_decision(tool_permission_result, tool.name, tool_input)
 
 
 def _coerce_to_ask_decision(
     result: PermissionResult,
     tool_name: str,
+    tool_input: dict[str, Any] | None = None,
 ) -> PermissionAskDecision:
     if isinstance(result, PermissionAskDecision):
-        return result
-    return PermissionAskDecision(
-        behavior="ask",
-        message=getattr(result, "message", create_permission_request_message(tool_name)),
-        decision_reason=getattr(result, "decision_reason", None),
-        suggestions=getattr(result, "suggestions", None),
+        return _with_default_suggestions(result, tool_name, tool_input)
+    return _with_default_suggestions(
+        PermissionAskDecision(
+            behavior="ask",
+            message=getattr(result, "message", create_permission_request_message(tool_name)),
+            decision_reason=getattr(result, "decision_reason", None),
+            suggestions=getattr(result, "suggestions", None),
+        ),
+        tool_name,
+        tool_input,
     )
+
+
+def _with_default_suggestions(
+    ask: PermissionAskDecision,
+    tool_name: str,
+    tool_input: dict[str, Any] | None,
+) -> PermissionAskDecision:
+    """Return ``ask`` with derived "don't ask again" rules filled in.
+
+    Mirrors TS bashPermissions.ts:1234-1236 (step 5: "Suggest prefix if
+    available, otherwise exact command"). Two deliberate exclusions:
+
+    * safety-flagged asks keep an empty list — TS :1219 ("Don't suggest
+      saving a potentially dangerous command");
+    * asks that already carry suggestions (a tool supplied its own) are
+      left untouched.
+
+    Bash-only for now: the engine's content-rule matching is consulted
+    only for Bash commands (:298), and ``tool_always_allowed_rule``
+    requires content-less rules — a suggested ``Read(<dir>/**)`` rule
+    would persist but never match (review-A H1), so Read suggestions are
+    deliberately NOT derived until a path-rule matcher exists
+    (follow-up noted in the C1 plan).
+
+    Returns a copy (``dataclasses.replace``) rather than mutating —
+    the input can be a tool-owned decision object.
+    """
+
+    if ask.suggestions:
+        return ask
+    if isinstance(ask.decision_reason, SafetyCheckDecisionReason):
+        return ask
+    if not tool_input:
+        return ask
+
+    if tool_name == "Bash":
+        command = tool_input.get("command", "")
+        if isinstance(command, str) and command.strip():
+            from .bash_suggestions import suggestions_for_bash_command
+
+            suggestions = suggestions_for_bash_command(command)
+            if suggestions:
+                return replace(ask, suggestions=suggestions)
+
+    return ask
 
 
 def check_rule_based_permissions(
@@ -407,6 +462,16 @@ def check_rule_based_permissions(
 
 
 def prepare_permission_matcher(rule_content: str) -> Callable[[str], bool]:
+    # Chaining guard (C1): every non-explicit-wildcard rule refuses to
+    # auto-allow a command that chains further commands (&&, ||, ;, |,
+    # newline outside quotes). Without this, a rule like "git diff:*" (or
+    # the legacy single-word "git:*", or even an exact "ls -la" rule via
+    # the startswith fallback) would blanket-allow "<match> && anything"
+    # whenever the trailing command happens to rate benign in the safety
+    # screen. Deliberately stricter than TS, whose matcher runs
+    # per-AST-sub-command; Python matches whole strings, so chained
+    # commands must simply re-prompt. ("" and "*" rules are explicit
+    # allow-alls and stay unguarded.)
     if not rule_content:
         return lambda _: True
 
@@ -418,14 +483,34 @@ def prepare_permission_matcher(rule_content: str) -> Callable[[str], bool]:
         suffix = rule_content.split(":", 1)[1]
         if suffix == "*":
             def _prefix_matcher(command: str) -> bool:
+                # TS semantics (bashPermissions.ts:879-882): exact match or
+                # prefix followed by a space — which makes MULTI-WORD
+                # prefixes ("git diff:*") work. The previous version
+                # compared only the command's first token against the whole
+                # prefix, so multi-word prefix rules could never match
+                # (latent until C1 un-starved the rule engine). The
+                # path-basename normalization of the first token
+                # (`/usr/bin/git` → `git`) is a deliberate Python nicety.
+                if contains_unquoted_chaining(command):
+                    return False
                 parts = command.strip().split(None, 1)
                 if not parts:
                     return False
-                cmd_name = parts[0].rsplit("/", 1)[-1]
-                return cmd_name == prefix
+                head = parts[0].rsplit("/", 1)[-1]
+                normalized = (
+                    head if len(parts) == 1 else f"{head} {parts[1]}"
+                )
+                return normalized == prefix or normalized.startswith(prefix + " ")
             return _prefix_matcher
         else:
             def _exact_prefix_matcher(command: str) -> bool:
+                # Known limitation: like the pre-C1 code, this branch only
+                # matches single-word rule prefixes (the first token is
+                # compared to the whole prefix), so a user-written
+                # "git diff:--stat*" rule cannot match. No producer mints
+                # such rules today; fix alongside a real consumer.
+                if contains_unquoted_chaining(command):
+                    return False
                 parts = command.strip().split(None, 1)
                 if not parts:
                     return False
@@ -437,9 +522,26 @@ def prepare_permission_matcher(rule_content: str) -> Callable[[str], bool]:
             return _exact_prefix_matcher
 
     if "*" in rule_content or "?" in rule_content:
-        return lambda command: fnmatch.fnmatch(command.strip(), rule_content)
+        return lambda command: (
+            not contains_unquoted_chaining(command)
+            and fnmatch.fnmatch(command.strip(), rule_content)
+        )
 
-    return lambda command: command.strip().startswith(rule_content)
+    def _exact_or_word_prefix_matcher(command: str) -> bool:
+        # Rules without ":*" or wildcards: exact match, or the rule
+        # followed by a SPACE (word boundary). Bare startswith would let
+        # a stored rule match last-token elongations (a rule for one
+        # flag cluster matching a longer one) — meaningful since C1's
+        # suggestion layer started minting exact-command rules into this
+        # branch. The +space prefix form (vs TS pure equality) is kept
+        # for the pre-existing locked behavior of word-prefix rules like
+        # "npm run".
+        if contains_unquoted_chaining(command):
+            return False
+        cmd = command.strip()
+        return cmd == rule_content or cmd.startswith(rule_content + " ")
+
+    return _exact_or_word_prefix_matcher
 
 
 @dataclass(frozen=True)
