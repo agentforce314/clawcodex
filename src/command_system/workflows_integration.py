@@ -29,7 +29,13 @@ def _directive(name: str, path: str) -> str:
         f'Launch the dynamic workflow "{name}" — do NOT do the work yourself. '
         f"Call the Workflow tool with `script_path` set to \"{path}\" and pass the "
         f"user's input as `args` (parse it as JSON if it looks structured, otherwise "
-        f"pass it as a string):\n\n$ARGUMENTS"
+        f"pass it as a string).\n\n"
+        f"The Workflow tool launches the run in the BACKGROUND and returns a `run_id` "
+        f"immediately. As soon as it returns, STOP: reply with one short sentence "
+        f"confirming the workflow started (mention the run_id) and END YOUR TURN. Do "
+        f"NOT wait for it, poll it, call any tool again, or write the report yourself — "
+        f"the finished report is delivered automatically when the run completes.\n\n"
+        f"$ARGUMENTS"
     )
 
 
