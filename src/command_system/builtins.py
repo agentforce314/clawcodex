@@ -1263,6 +1263,19 @@ def get_builtin_commands() -> list[Command]:
     ]
     if is_buddy_command_enabled():
         cmds.append(BUDDY_COMMAND)
+    # Bundled dynamic-workflow slash commands (e.g. /deep-research). Registering
+    # them here (gated) surfaces them in BOTH command suggestions and dispatch —
+    # which read the global registry this populates — instead of only the
+    # aggregator's get_commands(), which has no real consumers.
+    try:
+        from src.workflow.gating import is_workflows_enabled
+
+        if is_workflows_enabled():
+            from .workflows_integration import bundled_workflow_commands
+
+            cmds.extend(bundled_workflow_commands())
+    except Exception:  # noqa: BLE001 — never break command listing on a bad file
+        pass
     return cmds
 
 
