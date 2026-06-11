@@ -60,6 +60,8 @@ LOCAL_BUILTINS: tuple[str, ...] = (
     # components C5:
     "/search",
     "/open",
+    # components C6:
+    "/doctor",
 )
 
 
@@ -135,6 +137,7 @@ _LOCAL_BUILTIN_DESCRIPTIONS: dict[str, str] = {
     "/thinking": "Toggle extended thinking for this session",
     "/search": "Search the workspace (insert @file#Lline)",
     "/open": "Quick-open a file (insert @path)",
+    "/doctor": "Diagnose and verify your installation and settings",
 }
 
 
@@ -321,6 +324,8 @@ def dispatch_local_command(
         )
     if name == "/open":
         return CommandDispatchResult(handled=True, open_dialog="quickopen")
+    if name == "/doctor":
+        return CommandDispatchResult(handled=True, open_dialog="doctor")
     if name in ("/resume", "/continue"):
         # /continue = TS alias (commands/resume/index.ts:7). Intercepted
         # here too so the TUI opens the picker instead of falling through

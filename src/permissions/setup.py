@@ -53,10 +53,18 @@ def _load_settings_file(path: str) -> dict[str, Any] | None:
     if not os.path.isfile(path):
         return None
     try:
-        with open(path, "r") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, OSError):
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (ValueError, OSError):
+        # ValueError covers JSONDecodeError AND UnicodeDecodeError — a
+        # mis-encoded settings file must degrade to "ignored", not crash
+        # setup_permissions before the TUI mounts (C6 review M2).
         return None
+    if not isinstance(data, dict):
+        # A top-level array previously escaped here and blew up in
+        # _extract_permissions (AttributeError) — same crash class.
+        return None
+    return data
 
 
 def _extract_permissions(settings: dict[str, Any] | None) -> dict[str, Any] | None:
