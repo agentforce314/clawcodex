@@ -17,6 +17,11 @@ from .message_selector import MessageSelectorScreen, TranscriptMessage
 from .model_picker import ModelPickerScreen
 from .permission_modal import PermissionModal
 from .repl import REPLScreen
+from .resume_conversation import (
+    ResumeConversation,
+    ResumeEntry,
+    build_resume_entries,
+)
 from .theme_picker import ThemePickerScreen
 
 __all__ = [
@@ -37,7 +42,10 @@ __all__ = [
     "ModelPickerScreen",
     "PermissionModal",
     "REPLScreen",
+    "ResumeConversation",
+    "ResumeEntry",
     "ThemePickerScreen",
     "TranscriptMessage",
+    "build_resume_entries",
     "fuzzy_score",
 ]
