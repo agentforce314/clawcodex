@@ -497,6 +497,13 @@ class ClawcodexREPL:
         # reference's "type while it's still thinking" affordance.
         self._queued_prompts: list[str] = []
         self._queued_prompts_lock = threading.Lock()
+        # True only while the main run() loop is blocked on the idle
+        # ``❯`` prompt. The background notification watcher reads this to
+        # decide whether it may wake the prompt (so a finished workflow's
+        # banner + summary surface without a keystroke); it never wakes a
+        # permission dialog or an in-progress chat turn.
+        self._at_prompt = False
+        self._notif_stop: threading.Event | None = None
         # Permission dialogs can be requested from different worker paths
         # (e.g. subagents/tools). Serialize interactive prompts so we never
         # mount competing prompt_toolkit applications at once.
@@ -1857,6 +1864,107 @@ class ClawcodexREPL:
         with self._queued_prompts_lock:
             return len(self._queued_prompts)
 
+    # ── background-task completion notifications ───────────────────────────────
+    def _deliver_pending_task_notifications(self) -> bool:
+        """Drain finished-task ``<task-notification>`` envelopes, print a
+        completion banner for each, then hand them to the agent as one turn so it
+        summarizes the result and points to where the output lives.
+
+        Returns whether anything was delivered (the run loop ``continue``s when
+        so, to re-read fresh input afterwards). Safe to call every turn — a empty
+        queue is a cheap no-op.
+        """
+        try:
+            from src.utils.message_queue_manager import drain_pending_notifications
+        except Exception:
+            return False
+        drained = drain_pending_notifications(mode="task-notification")
+        if not drained:
+            return False
+
+        from src.repl.task_notifications import build_notification_turn, parse_task_id, render_banner
+
+        registry = getattr(getattr(self, "tool_context", None), "runtime_tasks", None)
+        envelopes = [n.value for n in drained]
+        self.console.print()
+        for xml in envelopes:
+            state = None
+            if registry is not None:
+                task_id = parse_task_id(xml)
+                if task_id:
+                    try:
+                        state = registry.get(task_id)
+                    except Exception:
+                        state = None
+            for line in render_banner(xml, state):
+                self.console.print(line)
+
+        # Let the agent read the results and report conversationally.
+        self.chat(build_notification_turn(envelopes))
+        return True
+
+    def _wake_idle_prompt(self) -> None:
+        """Unblock the idle ``❯`` prompt from another thread so a freshly
+        finished workflow surfaces without a keystroke.
+
+        Only fires when the prompt is genuinely idle (running with an empty
+        buffer); a half-typed line is left untouched. Verified against
+        prompt_toolkit 3.0.x: ``app.exit(result="")`` makes ``prompt()`` return
+        ``""``, which the run loop treats as a no-op turn that then delivers.
+        """
+        session = getattr(self, "prompt_session", None)
+        app = getattr(session, "app", None)
+        loop = getattr(app, "loop", None)
+        if app is None or loop is None:
+            return
+        try:
+            if loop.is_closed():
+                return
+        except Exception:
+            return
+
+        def _exit_if_idle() -> None:
+            try:
+                if app.is_running and not app.current_buffer.text:
+                    app.exit(result="")
+            except Exception:
+                pass
+
+        try:
+            loop.call_soon_threadsafe(_exit_if_idle)
+        except Exception:
+            pass
+
+    def _notification_watcher(self, stop: threading.Event) -> None:
+        """Daemon loop: while the user idles at the prompt, wake it as soon as a
+        background task posts a completion notification."""
+        from src.utils.message_queue_manager import peek_pending_notifications
+
+        while not stop.is_set():
+            try:
+                if self._at_prompt and peek_pending_notifications():
+                    self._wake_idle_prompt()
+            except Exception:
+                pass
+            stop.wait(0.4)
+
+    def _start_notification_watcher(self) -> None:
+        if self._notif_stop is not None:
+            return
+        stop = threading.Event()
+        self._notif_stop = stop
+        threading.Thread(
+            target=self._notification_watcher,
+            args=(stop,),
+            name="repl-task-notifications",
+            daemon=True,
+        ).start()
+
+    def _stop_notification_watcher(self) -> None:
+        if self._notif_stop is not None:
+            self._notif_stop.set()
+            self._notif_stop = None
+
     def _status_message(self) -> str:
         """Spinner status text. Includes queued-prompt count when non-zero."""
 
@@ -2186,10 +2294,17 @@ class ClawcodexREPL:
     def run(self):
         """Run the REPL."""
         self._print_startup_header()
+        self._start_notification_watcher()
 
         while True:
             try:
                 self._refresh_completer()
+                # Surface any background task (workflow/agent) that finished
+                # since the last turn: print its banner and let the agent
+                # summarize it. Delivered work counts as a turn, so loop back
+                # to read fresh input afterwards.
+                if self._deliver_pending_task_notifications():
+                    continue
                 queued = self._pop_queued_prompt()
                 if queued is not None:
                     # Echo queued submissions with a dim background so
@@ -2209,7 +2324,15 @@ class ClawcodexREPL:
                     # up front so that newlines (via Shift+Enter / Meta+Enter
                     # / ``\`` + Enter) can live in the buffer. Plain Enter
                     # still submits via our custom ``c-m`` binding.
-                    user_input = self.prompt_session.prompt('❯ ')
+                    #
+                    # ``_at_prompt`` lets the notification watcher wake this
+                    # blocking read when a background workflow finishes; the
+                    # wake returns "" (handled as a no-op turn below).
+                    self._at_prompt = True
+                    try:
+                        user_input = self.prompt_session.prompt('❯ ')
+                    finally:
+                        self._at_prompt = False
 
                 if not user_input.strip():
                     continue
@@ -2226,6 +2349,8 @@ class ClawcodexREPL:
             except EOFError:
                 self.console.print("\n[blue]Goodbye![/blue]")
                 break
+
+        self._stop_notification_watcher()
 
     def handle_command(self, command: str):
         """Handle slash commands."""
