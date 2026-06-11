@@ -47,10 +47,13 @@ CLAIMS_SCHEMA = {
 VERDICT_SCHEMA = {
     "type": "object",
     "properties": {
-        "supported": {"type": "boolean"},
+        # A string enum, not a bare boolean: many models (deepseek, glm, …)
+        # stringify booleans ("true") and fail strict boolean validation, then
+        # retry endlessly. A constrained string is emitted reliably.
+        "verdict": {"type": "string", "enum": ["supported", "unsupported", "unclear"]},
         "reason": {"type": "string"},
     },
-    "required": ["supported", "reason"],
+    "required": ["verdict", "reason"],
     "additionalProperties": False,
 }
 
@@ -100,9 +103,15 @@ else:
 phase("Verify")
 verdicts = await parallel([
     agent(
-        f'Independently verify this claim about "{question}":\n\n  "{c["claim"]}"\n\n'
-        f"(originally cited from {c['source']}). Use web search to find corroborating or "
-        f"contradicting evidence from a DIFFERENT source. Decide whether it is supported.",
+        f'Fact-check this claim about "{question}":\n\n  "{c["claim"]}"\n\n'
+        f"(originally cited from {c['source']}). Use web search to check whether it holds up, "
+        f"then return your verdict:\n"
+        f'- "supported": the claim is accurate or consistent with what you find. This is the '
+        f"DEFAULT for a plausible, on-topic claim you do not find contradicted — do NOT reject "
+        f"a claim merely because you could not find a second confirming source.\n"
+        f'- "unsupported": ONLY if you find concrete evidence it is contradicted, outdated, '
+        f"factually wrong, or fabricated.\n"
+        f'- "unclear": you genuinely cannot assess it at all.',
         label="verify",
         phase="Verify",
         schema=VERDICT_SCHEMA,
@@ -110,9 +119,12 @@ verdicts = await parallel([
     for c in claims
 ])
 
+# Keep claims the cross-check did not refute (supported, and unclear-but-not-wrong),
+# so the report covers the breadth of the topic rather than only claims that happened
+# to be independently re-confirmed. Refuted ("unsupported") claims are dropped.
 survivors = [
     c for c, v in zip(claims, verdicts)
-    if v and v.get("supported") is True
+    if v and v.get("verdict") in ("supported", "unclear")
 ]
 log(f"{len(survivors)} of {len(claims)} claims survived cross-checking.")
 
