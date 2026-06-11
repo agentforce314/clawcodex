@@ -374,9 +374,11 @@ def get_mcp_configs_by_scope(
 
     Scope semantics (Phase 7 WI-7.1, gap #9):
       - ``local``: ``.mcp.json`` in the current working directory only.
-        Per the chapter, this scope requires user approval — currently
-        loaded unconditionally; future work can gate behind a workspace-
-        trust check (out of scope here).
+        Requires user approval — enforced downstream (C7) in
+        ``get_all_mcp_configs`` (pre-merge per-scope filter) and
+        ``get_mcp_config_by_name`` (per-name gate); this per-scope
+        loader stays unfiltered so the approval flow itself can
+        enumerate pending servers.
       - ``project``: ``.mcp.json`` files in **parent** directories of the
         cwd, walked toward the filesystem root. Closest-parent-wins.
         The cwd itself is intentionally excluded so it can be tagged
@@ -502,6 +504,17 @@ def get_mcp_config_by_name(name: str) -> ScopedMcpServerConfig | None:
     for scope in ("enterprise", "user", "project", "local"):
         servers, _ = get_mcp_configs_by_scope(scope)  # type: ignore[arg-type]
         if name in servers:
+            # C7: per-name resolves (reconnect_mcp_server, OAuth flows)
+            # must honor the same .mcp.json approval gate as the
+            # aggregate path — otherwise this is a side door that
+            # connects a pending/rejected repo server by name.
+            if scope in ("project", "local"):
+                from src.services.mcp_approval import (
+                    get_mcpjson_server_status,
+                )
+
+                if get_mcpjson_server_status(name) != "approved":
+                    continue
             return servers[name]
     # Also check managed (plugin) and dynamic (SDK-injected) servers.
     managed = get_managed_mcp_configs()
@@ -608,6 +621,24 @@ def get_all_mcp_configs() -> tuple[dict[str, ScopedMcpServerConfig], list[Valida
     user_servers, user_errors = get_mcp_configs_by_scope("user")
     project_servers, project_errors = get_mcp_configs_by_scope("project")
     local_servers, local_errors = get_mcp_configs_by_scope("local")
+
+    # C7: .mcp.json-derived servers (project/local scope) are untrusted
+    # until approved — a checked-out repo must not launch arbitrary MCP
+    # processes on its own say-so (TS getProjectMcpServerStatus gate).
+    # Filtered PRE-merge, per scope: filtering the merged map instead
+    # would let an unapproved repo server name-collide with (shadow) a
+    # user-scope server and then be dropped, knocking out BOTH.
+    from src.services.mcp_approval import filter_unapproved_mcpjson_servers
+
+    project_servers, project_pending = filter_unapproved_mcpjson_servers(
+        project_servers
+    )
+    local_servers, local_pending = filter_unapproved_mcpjson_servers(
+        local_servers
+    )
+    # Same name pending in both scopes → identical notice text; dedup.
+    approval_notices = list(dict.fromkeys(project_pending + local_pending))
+
     managed_servers = get_managed_mcp_configs()
     dynamic_servers = get_dynamic_mcp_configs()
     # Phase 7 WI-7.3: pick up any Claude.ai connectors that the agent's
@@ -661,6 +692,7 @@ def get_all_mcp_configs() -> tuple[dict[str, ScopedMcpServerConfig], list[Valida
     all_errors = (
         enterprise_errors + user_errors + project_errors + local_errors
         + _notices_to_validation_errors(notices)
+        + _notices_to_validation_errors(approval_notices)
         + _notices_to_validation_errors(dedup_notice_strings)
     )
     return filtered, all_errors
