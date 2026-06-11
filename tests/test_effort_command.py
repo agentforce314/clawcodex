@@ -219,7 +219,10 @@ async def test_arg_is_case_insensitive(isolated_settings):
     assert _persisted_effort() == "high"
 
 
-async def test_invalid_arg_does_not_persist(isolated_settings):
+async def test_invalid_arg_does_not_persist(isolated_settings, monkeypatch):
+    # Base effort contract (no workflow extension) — the `ultracode` menu option
+    # and valid-args entry are covered in test_ultracode.py.
+    monkeypatch.setenv("CLAUDE_CODE_DISABLE_WORKFLOWS", "1")
     tmp_path = isolated_settings
     out = await EFFORT_COMMAND.run("bogus", _ctx(tmp_path, ui=NullUIHost()))
     assert out.message == (
@@ -264,7 +267,8 @@ async def test_status_reports_persisted_level(isolated_settings):
 # --------------------------------------------------------------------------- #
 # D. Picker happy path
 # --------------------------------------------------------------------------- #
-async def test_picker_sets_level(isolated_settings):
+async def test_picker_sets_level(isolated_settings, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_DISABLE_WORKFLOWS", "1")  # base picker (no ultracode option)
     tmp_path = isolated_settings
     ui = FakeUIHost(pick="low")
     out = await EFFORT_COMMAND.run("", _ctx(tmp_path, ui=ui))
@@ -354,7 +358,8 @@ async def test_engine_arg_path_succeeds_headless(isolated_settings):
 # --------------------------------------------------------------------------- #
 # G. Options shape
 # --------------------------------------------------------------------------- #
-async def test_options_shape_marks_current_and_uses_raw_labels(isolated_settings):
+async def test_options_shape_marks_current_and_uses_raw_labels(isolated_settings, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_DISABLE_WORKFLOWS", "1")  # base picker (no ultracode option)
     tmp_path = isolated_settings
     await EFFORT_COMMAND.run("high", _ctx(tmp_path, ui=NullUIHost()))  # current=high
     ui = FakeUIHost(pick="high")

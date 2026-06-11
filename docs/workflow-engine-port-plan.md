@@ -334,3 +334,18 @@ dispatch loop — with a production-topology regression test; schema subagents n
 `resolve_agent_tools` (firewall + scoping, `Workflow` stripped — no recursion) before the injected
 `StructuredOutput` tool, instead of receiving the full base pool; and `run_agent` now honors
 `permission_mode_override`, so the `acceptEdits` guarantee for workflow subagents is actually applied.
+
+**Addendum — §4.1 ultracode + §4.7 dynamic-command registration (closed two gaps).** The Phase-7
+row above overstated discovery: saved `.claude/workflows/*.py` were produced by `load_workflow_commands`
+but only fed the aggregator's `get_commands()`, which has **no real REPL consumers**, so `/<name>`
+never reached the global registry that dispatch + suggestions read (the same orphaning that hid
+`/deep-research` until #267). And the `ultracode` authoring keyword (§4.1) was never built (0 hits in
+`src/`). Both are now done (see `workflow-commands-and-ultracode-plan.md`):
+- **Dynamic commands** — `load_and_register_workflows(registry=None)` (mirrors `load_and_register_skills`,
+  same shadowing guard: builtins/bundled win, project beats personal) is called at REPL + TUI startup, so
+  saved workflows dispatch **and** autocomplete (with a `workflow` tag). ✅ `test_workflow_dynamic_commands.py`
+- **ultracode** — `src/workflow/ultracode.py`: the `\bultracode\b` keyword in a prompt (one-shot) and
+  `/effort ultracode` (session-long mode) append a `<system-reminder>` nudging the model to author a
+  workflow via the Workflow tool. Gated by `is_workflows_enabled()` (§4.8: keyword no-ops, the option
+  leaves the `/effort` menu when off). Note: Python's effort pipeline is inert, so `/effort ultracode`
+  contributes the orchestration mode only, not a reasoning level. ✅ `test_ultracode.py`
