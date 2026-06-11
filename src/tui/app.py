@@ -15,7 +15,10 @@ screen then materialises as a modal.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from src.services.bash_mode import BashModeOutcome
 
 from textual.app import App
 
@@ -433,6 +436,91 @@ class ClawCodexTUI(App):
         if result.prompt_text:
             transcript.append_user(f"(from slash command) {result.prompt_text[:80]}…")
             self.submit_to_agent(result.prompt_text)
+
+    # ---- C4 bash-mode (`!` prefix) --------------------------------------
+    def run_bash_mode(self, command: str, transcript: Transcript) -> None:
+        """Execute a user-typed ``!command`` directly (no agent turn).
+
+        Divergences from TS (documented; see services/bash_mode):
+        sequential only (a second ``!`` while one runs is refused — TS
+        queues), and no live progress streaming / ESC cancel yet (the
+        echo row shows "running…" until completion; cancel is a
+        follow-up). If the agent starts mid-flight, the conversation
+        texts DEFER via the bridge and land after the run (review B1).
+        """
+
+        command = (command or "").strip()
+        if not command:
+            transcript.append_system("Usage: !<shell command>", style="muted")
+            return
+        # History first: TS records queued/refused commands too (m11).
+        self.history_store.append(f"!{command}")
+        if getattr(self, "_bash_inflight", False):
+            transcript.append_system(
+                "A bash command is already running — wait for it to finish.",
+                style="muted",
+            )
+            return
+        if self._agent_bridge.busy:
+            transcript.append_system(
+                "Agent is working — bash mode is unavailable until idle.",
+                style="muted",
+            )
+            return
+        self._bash_inflight = True
+        row = transcript.append_bash_running(command)
+
+        def _work() -> None:
+            from src.services.bash_mode import run_bash_mode_command
+
+            try:
+                outcome = run_bash_mode_command(command, self.tool_context)
+            except Exception as exc:  # service contract: never raises
+                try:
+                    self.call_from_thread(
+                        self._bash_mode_error, command, str(exc), transcript
+                    )
+                except Exception:
+                    pass
+                return
+            try:
+                self.call_from_thread(
+                    self._finish_bash_mode, outcome, row, transcript
+                )
+            except Exception:
+                # App shutting down mid-flight; nothing to render.
+                self._bash_inflight = False
+
+        self.run_worker(
+            _work, thread=True, exit_on_error=False, group="bash-mode"
+        )
+
+    def _bash_mode_error(
+        self, command: str, error: str, transcript: Transcript
+    ) -> None:
+        self._bash_inflight = False
+        transcript.append_system(f"!{command}: {error}", style="error")
+
+    def _finish_bash_mode(
+        self,
+        outcome: "BashModeOutcome",
+        row: Any,
+        transcript: Transcript,
+    ) -> None:
+        self._bash_inflight = False
+        transcript.finish_bash_io(
+            row,
+            command=outcome.command,
+            stdout=outcome.stdout,
+            stderr=outcome.stderr,
+            exit_code=outcome.exit_code,
+            ok=outcome.ok,
+        )
+        # TS parity: both messages enter the CONVERSATION (the model sees
+        # them next turn) — via the bridge, which defers while a run is
+        # in flight so the texts can never interleave a tool_use/result
+        # pair (review B1); no agent turn fires (shouldQuery: false).
+        self._agent_bridge.append_user_texts(outcome.conversation_texts)
 
     # ---- Phase 2 dialog dispatcher -------------------------------------
     def _open_phase2_dialog(self, name: str, transcript: Transcript) -> None:
