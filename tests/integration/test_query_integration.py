@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from src.providers.base import ChatResponse
+from src.permissions.types import ToolPermissionContext
 from src.tool_system.context import ToolContext
 from src.tool_system.defaults import build_default_registry
 from src.types.content_blocks import TextBlock, ToolResultBlock, ToolUseBlock
@@ -24,7 +25,10 @@ class TestQueryIntegrationToolCalls(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.workspace = Path(self.temp_dir.name)
         self.registry = build_default_registry()
-        self.context = ToolContext(workspace_root=self.workspace)
+        self.context = ToolContext(
+            workspace_root=self.workspace,
+            permission_context=ToolPermissionContext(mode="bypassPermissions"),
+        )
 
     def tearDown(self):
         self.temp_dir.cleanup()
@@ -224,7 +228,10 @@ class TestQueryIntegrationErrors(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.workspace = Path(self.temp_dir.name)
         self.registry = build_default_registry()
-        self.context = ToolContext(workspace_root=self.workspace)
+        self.context = ToolContext(
+            workspace_root=self.workspace,
+            permission_context=ToolPermissionContext(mode="bypassPermissions"),
+        )
 
     def tearDown(self):
         self.temp_dir.cleanup()

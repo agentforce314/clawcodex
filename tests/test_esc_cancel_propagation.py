@@ -31,6 +31,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from src.permissions.types import ToolPermissionContext
 from src.providers.base import ChatResponse
 from src.query.agent_loop_compat import run_query_as_agent_loop_sync as run_agent_loop
 from src.tool_system.context import ToolContext
@@ -95,7 +96,12 @@ def _patch_anthropic_check(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _make_context(workspace: Path) -> ToolContext:
-    return ToolContext(workspace_root=workspace)
+    # Explicit bypass: these tests exercise ESC/abort propagation, not
+    # permissions (the ToolContext default is no longer bypass — #274).
+    return ToolContext(
+        workspace_root=workspace,
+        permission_context=ToolPermissionContext(mode="bypassPermissions"),
+    )
 
 
 def _build_registry_with_blocking_tool(

@@ -17,6 +17,7 @@ from src.permissions.types import (
     PermissionPassthroughResult,
 )
 from src.tool_system.context import ToolContext
+from src.tool_system.errors import ToolPermissionError
 from src.tool_system.tools.write import _check_permissions, _write_call
 
 
@@ -95,18 +96,12 @@ class WriteCarveOutNoOverrideTest(unittest.TestCase):
         self.assertIsInstance(result, PermissionPassthroughResult)
 
     def test_check_permissions_unchanged_for_outside_path(self):
-        # A path outside the workspace AND outside auto-mem
-        # should NOT bypass — falls through to allowlist/docs gate.
+        # A path outside the workspace AND outside auto-mem must NOT get the
+        # carve-out: the workspace allowlist raises (hard failure — #274).
         with tempfile.TemporaryDirectory() as outside:
             target = Path(outside) / "evil.md"
-            result = _check_permissions(
-                {"file_path": str(target)}, self.context
-            )
-            # ensure_allowed_path raises -> passthrough
-            # OR the .md gate fires. Either way, NOT a bypass-of-everything.
-            self.assertIsInstance(
-                result, (PermissionPassthroughResult, PermissionAskDecision)
-            )
+            with self.assertRaises(ToolPermissionError):
+                _check_permissions({"file_path": str(target)}, self.context)
 
     def test_call_writes_into_memory_dir(self):
         target = self._mem_dir / "test_carve_out_b.md"
