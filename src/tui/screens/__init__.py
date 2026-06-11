@@ -23,15 +23,22 @@ from .resume_conversation import (
     ResumeEntry,
     build_resume_entries,
 )
+from .startup_gates import (
+    BypassPermissionsScreen,
+    ExternalIncludesScreen,
+    TrustFolderScreen,
+)
 from .theme_picker import ThemePickerScreen
 from .workspace_search import GlobalSearchScreen, QuickOpenScreen
 
 __all__ = [
+    "BypassPermissionsScreen",
     "CostThresholdScreen",
     "DialogScreen",
     "DiffDialogScreen",
     "EffortPickerScreen",
     "ExitFlowScreen",
+    "ExternalIncludesScreen",
     "FileDiff",
     "GlobalSearchScreen",
     "HistoryEntry",
@@ -51,6 +58,7 @@ __all__ = [
     "ResumeEntry",
     "ThemePickerScreen",
     "TranscriptMessage",
+    "TrustFolderScreen",
     "build_resume_entries",
     "fuzzy_score",
 ]

@@ -155,14 +155,19 @@ def run_pre_action(args: object) -> None:
     set_is_interactive(_determine_is_interactive(args))
     set_client_type(_determine_client_type())
 
-    # Plan phase 1 default: trust the current directory until the
-    # trust-dialog ships in plan phase 2/3 (see A4 working assumption).
-    # Propagating the implicit "trusted" decision through the existing
-    # state setter keeps ``hooks/trust_gate.py`` and
-    # ``tool_system/context.py:workspace_trusted`` consumers behaving
-    # correctly.
-    # TODO(plan-phase-2): replace with checkHasTrustDialogAccepted()
-    # analog once the trust dialog ships.
+    # The trust dialog SHIPPED (components C8:
+    # ``services/startup_gates.check_trust_accepted`` + the TUI's
+    # TrustFolderScreen), but this placeholder must outlive it: the TUI
+    # is the only surface with a dialog — headless / -p / legacy-REPL
+    # sessions have no way to ask, and flipping the default to
+    # untrusted would hard-block their ``hooks/trust_gate.py`` and
+    # ``tool_system/context.py:workspace_trusted`` consumers with no
+    # way to consent. The dialog's accept path syncs this same flag via
+    # ``record_trust_accepted``, so narrowing this later only requires
+    # seeding interactive sessions from check_trust_accepted() here.
+    # TODO(components-C8 follow-up): seed from
+    # ``startup_gates.check_trust_accepted()`` for interactive sessions
+    # instead of unconditionally trusting.
     set_session_trust_accepted(True)
 
     profile_checkpoint("pre_action_end")

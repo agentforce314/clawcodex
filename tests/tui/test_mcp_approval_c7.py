@@ -38,6 +38,12 @@ def project(tmp_path, monkeypatch):
     # Approval reads/writes default to the process cwd — pin it too so
     # the no-cwd production call paths resolve to this project.
     monkeypatch.chdir(tmp_path)
+    # C8: non-interactive sessions auto-approve (TS utils.ts:399-403).
+    # The bootstrap default is non-interactive, so pin interactive mode
+    # to exercise the pending/approval flows these tests are about.
+    from src.bootstrap import state as bootstrap_state
+
+    monkeypatch.setattr(bootstrap_state._STATE, "is_interactive", True)
     return tmp_path
 
 
@@ -80,6 +86,30 @@ class TestStatusAndPersistence:
 
     def test_invalid_choice_rejected(self, project) -> None:
         assert not record_mcpjson_choice("alpha", "bogus", cwd=str(project))
+
+    def test_non_interactive_session_auto_approves(
+        self, project, monkeypatch
+    ) -> None:
+        """TS utils.ts:399-403: SDK / -p / piped sessions can't show a
+        popup; the mode itself is the consent."""
+
+        from src.bootstrap import state as bootstrap_state
+
+        monkeypatch.setattr(bootstrap_state._STATE, "is_interactive", False)
+        assert get_mcpjson_server_status("alpha", cwd=str(project)) == "approved"
+        # Explicit disable still wins.
+        record_mcpjson_choice("alpha", "disable", cwd=str(project))
+        assert get_mcpjson_server_status("alpha", cwd=str(project)) == "rejected"
+
+    def test_bypass_acceptance_auto_approves(self, project) -> None:
+        """TS utils.ts:377-390: a user who accepted the bypass dialog
+        (skipDangerousModePermissionPrompt) consents to repo servers."""
+
+        from src.services.startup_gates import record_bypass_accepted
+
+        assert get_mcpjson_server_status("alpha", cwd=str(project)) == "pending"
+        assert record_bypass_accepted()
+        assert get_mcpjson_server_status("alpha", cwd=str(project)) == "approved"
 
 
 class TestPendingListing:

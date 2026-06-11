@@ -234,6 +234,76 @@ class ConfigManager:
 
 
 # ---------------------------------------------------------------------------
+# Per-project state in the GLOBAL config (TS config.projects[path])
+# ---------------------------------------------------------------------------
+# TS keeps per-project security state (hasTrustDialogAccepted,
+# hasClaudeMdExternalIncludesApproved, ...) in the USER-owned global
+# config keyed by project path — deliberately NOT in the committable
+# project config, so a checked-out repo can never pre-accept its own
+# trust prompts. Same here: ``~/.clawcodex/config.json`` → "projects".
+
+_PROJECTS_KEY = "projects"
+
+
+def _global_config_file() -> Path:
+    # Resolve through the module attribute at call time so test
+    # isolation that re-points GLOBAL_CONFIG_DIR covers these helpers.
+    return Path(GLOBAL_CONFIG_DIR) / "config.json"
+
+
+def normalize_path_for_config_key(path: str | Path) -> str:
+    """Canonical absolute path used as a ``projects`` map key."""
+
+    return str(Path(path).resolve())
+
+
+def get_project_path_for_config(cwd: str | Path | None = None) -> str:
+    """Where per-project state is keyed: git root if in a repo, else cwd
+    (TS ``getProjectPathForConfig``)."""
+
+    root = _find_git_root(cwd)
+    if root is not None:
+        return normalize_path_for_config_key(root)
+    return normalize_path_for_config_key(cwd or Path.cwd())
+
+
+def get_project_entry(project_path: str | Path) -> dict[str, Any]:
+    """The global-config ``projects[path]`` entry ({} if absent)."""
+
+    config = _read_json(_global_config_file())
+    projects = config.get(_PROJECTS_KEY)
+    if not isinstance(projects, dict):
+        return {}
+    entry = projects.get(normalize_path_for_config_key(project_path))
+    return entry if isinstance(entry, dict) else {}
+
+
+def update_project_entry(
+    project_path: str | Path, updates: dict[str, Any]
+) -> bool:
+    """Merge *updates* into ``projects[path]`` in the global config."""
+
+    path = _global_config_file()
+    config = _read_json(path)
+    projects = config.get(_PROJECTS_KEY)
+    if not isinstance(projects, dict):
+        projects = {}
+    key = normalize_path_for_config_key(project_path)
+    entry = projects.get(key)
+    if not isinstance(entry, dict):
+        entry = {}
+    entry.update(updates)
+    projects[key] = entry
+    config[_PROJECTS_KEY] = projects
+    try:
+        _atomic_write_json(path, config)
+    except OSError:
+        return False
+    _get_default_manager().invalidate()
+    return True
+
+
+# ---------------------------------------------------------------------------
 # History (JSONL paste history)
 # ---------------------------------------------------------------------------
 
