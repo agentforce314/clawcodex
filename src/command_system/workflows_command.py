@@ -48,8 +48,16 @@ class WorkflowsCommand(InteractiveCommand):
                 message="No workflow runs. Start one with /deep-research or by asking for a workflow.",
                 display="system",
             )
-        lines = [f"• {_format_workflow(t)}" for t in runs]
-        return InteractiveOutcome(message="Workflows:\n" + "\n".join(lines), display="system")
+        from src.workflow.progress import render_run_lines
+
+        blocks: list[str] = []
+        for t in runs:
+            lines = render_run_lines(t)
+            run_id = getattr(t, "run_id", "") or ""
+            if run_id and lines:
+                lines[0] = f"{lines[0]}  (run: {run_id})"
+            blocks.append("\n".join(lines))
+        return InteractiveOutcome(message="\n\n".join(blocks), display="system")
 
 
 WORKFLOWS_COMMAND = WorkflowsCommand(
