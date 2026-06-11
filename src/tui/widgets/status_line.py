@@ -70,13 +70,102 @@ class StatusLine(Static):
         self._provider_instance = provider_instance
         self._frame = 0
         self._timer = None
+        # C3a: output of the user's settings ``statusLine.command`` hook
+        # (TS StatusLine.tsx). None = unconfigured/failed → default row.
+        self._custom_status: str | None = None
+        self._custom_timer = None
         initial = Text(f"{provider} · {model}    ready    turn 0")
         super().__init__(initial, markup=False)
 
     # ---- lifecycle ----
     def on_mount(self) -> None:
         self._timer = self.set_interval(1 / 10, self._tick)
+        # Custom statusline refresh. Divergence from TS (300ms debounce on
+        # message/mode/model changes): Python refreshes on AgentRunFinished
+        # (repl.py calls refresh_custom_status) plus a SLOW 30s keepalive
+        # for settings hot-reload — not a hot poll; the user's command
+        # shouldn't run hundreds of times an hour in an idle session.
+        self._custom_timer = self.set_interval(
+            30.0, self.refresh_custom_status
+        )
+        self.refresh_custom_status()
         self._redraw()
+
+    def refresh_custom_status(self) -> None:
+        """Kick the statusline-command worker (event-driven + keepalive)."""
+
+        try:
+            self.run_worker(
+                self._run_custom_status_command,
+                thread=True,
+                exclusive=True,
+                exit_on_error=False,
+                group="statusline-command",
+            )
+        except Exception:
+            pass
+
+    def _run_custom_status_command(self) -> None:
+        # Blanket-guarded: Textual workers default to exit_on_error=True,
+        # and ANY escaped exception here (codec errors, app teardown
+        # races) would otherwise take down the whole TUI — the one thing
+        # a status bar must never do.
+        try:
+            text = self._compute_custom_status()
+        except Exception:
+            text = None
+        try:
+            self.app.call_from_thread(self._set_custom_status, text)
+        except Exception:
+            pass  # app shutting down mid-flight
+
+    def _compute_custom_status(self) -> str | None:
+        from src.services.status_line_command import (
+            build_status_line_input,
+            execute_status_line_command,
+            read_status_line_config,
+        )
+
+        cwd = str(self._workspace_root)
+        config = read_status_line_config(cwd)
+        if config is None:
+            text = None
+        else:
+            state = self._app_state
+            usage = state.usage if state else {}
+            try:
+                from src.bootstrap.state import get_session_id
+
+                session_id = str(get_session_id())
+            except Exception:
+                session_id = ""
+            try:
+                from src.models import get_context_window_for_model
+
+                window = int(get_context_window_for_model(self._model) or 0)
+            except Exception:
+                window = 0
+            text = execute_status_line_command(
+                build_status_line_input(
+                    model_id=self._model,
+                    cwd=cwd,
+                    session_id=session_id,
+                    total_input_tokens=int(usage.get("input_tokens", 0) or 0),
+                    total_output_tokens=int(usage.get("output_tokens", 0) or 0),
+                    last_turn_input_tokens=int(
+                        getattr(state, "last_turn_input_tokens", 0) or 0
+                    ),
+                    context_window_size=window,
+                ),
+                cwd=cwd,
+                config=config,
+            )
+        return text
+
+    def _set_custom_status(self, text: str | None) -> None:
+        if text != self._custom_status:
+            self._custom_status = text
+            self._redraw()
 
     def _tick(self) -> None:
         if self._app_state is not None:
@@ -158,6 +247,14 @@ class StatusLine(Static):
             if secs > 0:
                 elapsed = f" {secs}s"
 
+        # TS parity: a configured statusLine command REPLACES the default
+        # row content; activity feedback (spinner + verb) is kept so the
+        # user still sees that the agent is working.
+        if self._custom_status:
+            if self.is_thinking:
+                return Text(f"{spinner} {verb}{elapsed}    {self._custom_status}")
+            return Text(self._custom_status)
+
         left_parts = [f"{self._provider} · {self._model}"]
         # Optional advisor segment — appears next to provider/model
         # when ``/advisor`` is configured. Mode label reflects what
@@ -194,6 +291,25 @@ class StatusLine(Static):
             total = in_t + out_t
             if total:
                 right_bits.append(f"tokens {total}")
+            # C3a context-% segment: live context = LAST response's
+            # prompt-side tokens vs the model's window (TS StatusLine
+            # context_window.used_percentage). Hidden until the first
+            # response lands.
+            last_ctx = getattr(state, "last_turn_input_tokens", 0)
+            if last_ctx:
+                try:
+                    from src.services.token_warning import (
+                        calculate_token_warning_state,
+                    )
+
+                    tw = calculate_token_warning_state(last_ctx, self._model)
+                    if tw.context_window > 0:
+                        seg = f"ctx {100 - tw.percent_left}%"
+                        if tw.is_above_warning:
+                            seg += " ⚠"
+                        right_bits.append(seg)
+                except Exception:
+                    pass
             # Advisor token segment — appears next to worker tokens
             # whenever the advisor has been consulted this session.
             # ``state.usage["advisor_*"]`` is mirrored from

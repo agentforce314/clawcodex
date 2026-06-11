@@ -99,6 +99,11 @@ class AppState:
     pending_permissions: list[PendingPermission] = field(default_factory=list)
     focused_dialog: FocusedDialog = FocusedDialog.PROMPT
     usage: dict[str, int] = field(default_factory=lambda: {"input_tokens": 0, "output_tokens": 0})
+    # Last API response's input-token count (incl. cache reads/creation):
+    # the canonical live-context measure for the context-% segment and the
+    # token warning — cumulative `usage` double-counts as context grows
+    # (TS utils/tokens.ts:407-420).
+    last_turn_input_tokens: int = 0
     last_error: str | None = None
 
     _subscribers: list[Callable[[], None]] = field(default_factory=list, repr=False, compare=False)
