@@ -226,6 +226,96 @@ class ClawCodexTUI(App):
         # (TS StatusNotices / InvalidSettingsDialog family — Python's
         # loader silently falls back to {}, so warn honestly instead).
         self.call_after_refresh(self._show_config_warnings)
+        # C7: prompt for any pending .mcp.json servers (TS
+        # handleMcpjsonServerApprovals — gated like TS: only after a
+        # clean settings read, which C6's warnings have just reported).
+        self.call_after_refresh(self._run_mcp_approvals)
+
+    # ---- C7 .mcp.json server approvals ----------------------------------
+    # cwd note: approvals deliberately key off the process cwd (the
+    # default of every mcp_approval call), NOT self.workspace_root —
+    # enumeration and enforcement in services/mcp/config both resolve
+    # from the process cwd, and splitting the two would persist
+    # approvals to a file enforcement never reads.
+    def _run_mcp_approvals(self) -> None:
+        try:
+            from src.services.mcp_approval import list_pending_mcpjson_servers
+
+            pending = list_pending_mcpjson_servers()
+        except Exception:
+            return
+        if pending:
+            self._prompt_next_mcp_approval(list(pending))
+
+    def _prompt_next_mcp_approval(self, queue: list[str]) -> None:
+        from src.services.mcp_approval import get_mcpjson_server_status
+        from src.tui.screens.mcp_approval import McpApprovalScreen
+
+        while queue:
+            name = queue.pop(0)
+            try:
+                still_pending = get_mcpjson_server_status(name) == "pending"
+            except Exception:
+                still_pending = False
+            if not still_pending:
+                # An earlier answer (enable_all, or a normalization-equal
+                # name) already decided this one — don't re-ask.
+                continue
+            self.push_screen(
+                McpApprovalScreen(name),
+                callback=lambda choice, _n=name, _q=queue: (
+                    self._on_mcp_approval(_n, choice, _q)
+                ),
+            )
+            return
+
+    def _on_mcp_approval(
+        self, name: str, choice: str | None, queue: list[str]
+    ) -> None:
+        transcript = (
+            self._repl_screen.transcript if self._repl_screen else None
+        )
+        if choice:
+            persisted = False
+            try:
+                from src.services.mcp_approval import record_mcpjson_choice
+
+                persisted = record_mcpjson_choice(name, choice)
+            except Exception:
+                persisted = False
+            if not persisted:
+                if transcript is not None:
+                    transcript.append_system(
+                        f"Could not save the choice for MCP server "
+                        f"'{name}' (settings file not writable) — it "
+                        "stays pending.",
+                        style="muted",
+                    )
+                self._prompt_next_mcp_approval(queue)
+                return
+        if transcript is not None:
+            if choice == "enable":
+                transcript.append_system(
+                    f"MCP server '{name}' enabled.", style="muted"
+                )
+            elif choice == "enable_all":
+                transcript.append_system(
+                    "All .mcp.json servers from this project enabled.",
+                    style="muted",
+                )
+            elif choice == "disable":
+                transcript.append_system(
+                    f"MCP server '{name}' disabled.", style="muted"
+                )
+            else:
+                transcript.append_system(
+                    f"MCP server '{name}' left pending — you'll be asked "
+                    "again next launch.",
+                    style="muted",
+                )
+        if choice == "enable_all":
+            queue.clear()  # everything else is now approved too
+        self._prompt_next_mcp_approval(queue)
 
     def _show_config_warnings(self) -> None:
         if self._repl_screen is None:
