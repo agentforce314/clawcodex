@@ -51,6 +51,15 @@ def _isolate_user_permission_settings(tmp_path, monkeypatch):
 
     isolated = str(tmp_path / "isolated-user-settings.json")
     monkeypatch.setattr(settings_paths, "user_settings_path", lambda: isolated)
+    # C6: the startup health check would otherwise read the developer's
+    # real ~/.clawcodex/config.json in every full-app test — a malformed
+    # file on a dev machine would inject warning rows into unrelated
+    # assertions.
+    import src.config as config_mod
+
+    monkeypatch.setattr(
+        config_mod, "GLOBAL_CONFIG_DIR", tmp_path / "isolated-global"
+    )
     yield
 
 

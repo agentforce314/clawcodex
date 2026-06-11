@@ -111,7 +111,8 @@ def run_tui(options: TUIOptions) -> int:
     # C1: load persisted permission rules (settings files) at startup so
     # "always allow" rules from prior sessions are live — the rule engine
     # ran against empty rule sets before this. Setup warnings (dangerous /
-    # shadowed rules) intentionally unsurfaced until phase C6.
+    # shadowed rules) surface as startup transcript rows via
+    # services/config_health.collect_rule_warnings (C6).
     from src.permissions.settings_paths import default_setup_paths
     from src.permissions.setup import setup_permissions
 

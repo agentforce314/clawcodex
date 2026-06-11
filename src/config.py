@@ -93,10 +93,17 @@ def _read_json(path: Path) -> dict[str, Any]:
         return {}
     try:
         with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
     except Exception as exc:
         logger.debug("Failed to read config %s: %s", path, exc)
         return {}
+    if not isinstance(data, dict):
+        # A non-object top level previously flowed into _deep_merge and
+        # raised AttributeError at the call site (C6 review M2) — treat
+        # it like any other unreadable config: ignored.
+        logger.debug("Ignoring non-object config %s", path)
+        return {}
+    return data
 
 
 def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:

@@ -50,9 +50,14 @@ class DoctorScreen(ModalScreen[None]):
     }
     """
 
-    def __init__(self, app_state: Any | None = None) -> None:
+    def __init__(
+        self,
+        app_state: Any | None = None,
+        workspace_root: Any | None = None,
+    ) -> None:
         super().__init__()
         self._app_state = app_state
+        self._workspace_root = workspace_root
 
     def compose(self) -> ComposeResult:
         with Middle():
@@ -90,10 +95,56 @@ class DoctorScreen(ModalScreen[None]):
     def _collect_sections(self) -> list[tuple[str, Any]]:
         sections: list[tuple[str, Any]] = []
         sections.append(("environment", self._render_environment()))
+        sections.append(("config health", self._render_config_health()))
+        sections.append(("permission rules", self._render_rule_health()))
         sections.append(("hyperlinks", self._render_hyperlinks()))
         sections.append(("frame metrics", self._render_frame_metrics()))
         sections.append(("storage", self._render_storage()))
         return sections
+
+    def _render_config_health(self) -> Any:
+        """C6: malformed/ignored config files (services/config_health)."""
+
+        try:
+            from src.services.config_health import collect_config_warnings
+
+            # Same root the startup rows use (m5): the app passes its
+            # workspace_root at push time.
+            warnings = collect_config_warnings(
+                str(self._workspace_root) if self._workspace_root else None
+            )
+        except Exception:
+            return Text("check failed", style="dim")
+        if not warnings:
+            return Text("all config files OK", style="green")
+        body = Text()
+        for i, warning in enumerate(warnings):
+            if i:
+                body.append("\n")
+            body.append(f"⚠ {warning.message()}", style="yellow")
+        return body
+
+    def _render_rule_health(self) -> Any:
+        """C6: dangerous/shadowed permission rules — same data the
+        startup rows and the headless report show (review follow-up:
+        the "Run /doctor" hint must lead somewhere that has it)."""
+
+        try:
+            from src.services.config_health import collect_rule_warnings
+
+            warnings = collect_rule_warnings(
+                str(self._workspace_root) if self._workspace_root else None
+            )
+        except Exception:
+            return Text("check failed", style="dim")
+        if not warnings:
+            return Text("no rule warnings", style="green")
+        body = Text()
+        for i, warning in enumerate(warnings):
+            if i:
+                body.append("\n")
+            body.append(f"⚠ {warning}", style="yellow")
+        return body
 
     def _render_environment(self) -> Any:
         """Provider, model, workspace, theme — read from app state when present."""
