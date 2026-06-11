@@ -378,6 +378,9 @@ class ClawCodexTUI(App):
         if result.system_text == "__clear__":
             transcript.clear_transcript()
             self._agent_bridge.reset_advisor_dedup()
+            # C3a: the context-% segment must not keep showing the
+            # pre-clear context (TS shows nothing for an empty list).
+            self.app_state.last_turn_input_tokens = 0
             return
         if result.system_text:
             transcript.append_system(result.system_text, style="muted")
@@ -461,6 +464,10 @@ class ClawCodexTUI(App):
                     style="muted",
                 )
                 return
+            # The resumed context size is unknown until its first turn —
+            # zero the live-context measure instead of showing the
+            # PREVIOUS session's percentage (C3a review F4).
+            self.app_state.last_turn_input_tokens = 0
             self._render_resumed_messages(transcript, session_id, loaded)
 
         self.push_screen(

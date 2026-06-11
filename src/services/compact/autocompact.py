@@ -11,6 +11,7 @@ Includes a circuit breaker to prevent infinite retry loops.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import time
 from dataclasses import dataclass, field
@@ -175,10 +176,20 @@ def calculate_token_warning_state(
 
     threshold = auto_compact_threshold if is_auto_compact_enabled() else effective
 
-    percent_left = max(
-        0,
-        round(((threshold - token_usage) / threshold) * 100),
-    ) if threshold > 0 else 0
+    # Display percentage uses the RAW context window (current TS
+    # autoCompact.ts: rawContextWindow feeds percentLeft) — the previous
+    # threshold-based denominator was a stale port (C3a review F3).
+    # floor(x+0.5) = JS Math.round half-up; Python round() banks.
+    percent_left = (
+        max(
+            0,
+            math.floor(
+                ((context_window - token_usage) / context_window) * 100 + 0.5
+            ),
+        )
+        if context_window > 0
+        else 0
+    )
 
     warning_threshold = threshold - WARNING_THRESHOLD_BUFFER_TOKENS
     error_threshold = threshold - ERROR_THRESHOLD_BUFFER_TOKENS

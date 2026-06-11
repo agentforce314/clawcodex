@@ -77,6 +77,7 @@ class REPLScreen(Screen):
         self._version = version
         self._provider = provider
         self._model = model
+        self._context_low_warned = False
         self._workspace_root = Path(workspace_root)
         self._words_provider = words_provider
         self._suggestions_provider = suggestions_provider
@@ -193,7 +194,47 @@ class REPLScreen(Screen):
                 app.announcer.announce(  # type: ignore[attr-defined]
                     f"Error: {message.error}", level="assertive"
                 )
+        self._maybe_warn_context_low()
+        # C3a event-driven statusline refresh (replaces hot polling): the
+        # data the user's command renders changes when a run finishes.
+        try:
+            self.status_bar.refresh_custom_status()
+        except Exception:
+            pass
         self.prompt_input.focus_input()
+
+    def _maybe_warn_context_low(self) -> None:
+        """C3a: one transcript warning per crossing of the TS context-low
+        threshold (TokenWarning.tsx); re-arms when usage drops back below
+        (e.g. after /compact or /clear)."""
+
+        app = self.app
+        state = getattr(app, "app_state", None)
+        tokens = int(getattr(state, "last_turn_input_tokens", 0) or 0)
+        if not tokens:
+            return
+        try:
+            from src.services.token_warning import (
+                calculate_token_warning_state,
+                context_low_message,
+            )
+
+            tw = calculate_token_warning_state(
+                tokens, getattr(state, "model", "") or ""
+            )
+        except Exception:
+            return
+        if tw.is_above_warning and not self._context_low_warned:
+            self._context_low_warned = True
+            # TS colors warning vs error distinctly; the buffers are equal
+            # today so error is the live branch — the fallback exists for
+            # the day TS diverges them again.
+            self.transcript.append_system(
+                context_low_message(tw),
+                style="error" if tw.is_above_error else "warning",
+            )
+        elif not tw.is_above_warning:
+            self._context_low_warned = False
 
     # ---- permission modal handlers ----
     def on_permission_requested(self, message: PermissionRequested) -> None:
