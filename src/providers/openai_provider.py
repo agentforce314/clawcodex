@@ -28,37 +28,24 @@ class OpenAIProvider(OpenAICompatibleProvider):
         super().__init__(api_key, base_url, model or "gpt-5.4")
 
     def _create_client(self) -> Any:
-        """Create OpenAI SDK client."""
+        """Create OpenAI SDK client.
+
+        The read timeout that prevents a stalled stream from freezing the event
+        loop is applied centrally by ``OpenAICompatibleProvider.client`` (via
+        ``_apply_client_timeout``) for every provider, so it isn't set here.
+        """
         if OpenAI is None:  # pragma: no cover
             raise ModuleNotFoundError(
                 "openai package is not installed. Install optional dependencies to use OpenAIProvider."
             )
-        import os
-
-        import httpx
-
-        # Bound how long a request may stall with NO bytes from the server.
-        # Without this the SDK's sync streaming read blocks forever when an
-        # endpoint accepts the request but never replies (observed with a
-        # LiteLLM proxy on streaming + tool calls) — which freezes the asyncio
-        # event loop the agent loop runs on, deadlocking every concurrent agent.
-        # ``read`` is the max gap *between* bytes, so legitimate long streams are
-        # fine as long as data keeps flowing. All tunable via env.
-        read_timeout = float(os.environ.get("CLAWCODEX_LLM_READ_TIMEOUT", "120"))
-        connect_timeout = float(os.environ.get("CLAWCODEX_LLM_CONNECT_TIMEOUT", "15"))
-        timeout = httpx.Timeout(connect=connect_timeout, read=read_timeout, write=30.0, pool=15.0)
-        max_retries = int(os.environ.get("CLAWCODEX_LLM_MAX_RETRIES", "1"))
-
-        kwargs: dict[str, Any] = {
-            "api_key": self.api_key,
-            "timeout": timeout,
-            "max_retries": max_retries,
-        }
+        kwargs: dict[str, Any] = {"api_key": self.api_key}
         if self.base_url:
             kwargs["base_url"] = self.base_url
         # Support SSL verification bypass for corporate/internal endpoints.
+        import os
         if os.environ.get("CLAWCODEX_SSL_VERIFY", "").lower() in ("0", "false", "no"):
-            kwargs["http_client"] = httpx.Client(verify=False, timeout=timeout)
+            import httpx
+            kwargs["http_client"] = httpx.Client(verify=False)
         return OpenAI(**kwargs)
 
     def get_available_models(self) -> list[str]:
