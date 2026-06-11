@@ -27,7 +27,10 @@ Naming conventions mirror the React side:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from src.permissions.types import PermissionUpdate
 
 from textual.message import Message
 
@@ -131,7 +134,7 @@ class PermissionRequested(Message):
     request_id: str
     tool_name: str
     message: str
-    suggestions: tuple[Any, ...] = ()
+    suggestions: tuple["PermissionUpdate", ...] = ()
     tool_input: dict[str, Any] | None = None
 
 

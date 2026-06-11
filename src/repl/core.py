@@ -303,7 +303,10 @@ import json
 import threading
 import time
 from collections import deque
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from src.permissions.types import PermissionAskReply, PermissionAskRequest
 
 from src.agent import Session
 from src.config import get_provider_config
@@ -466,9 +469,10 @@ class ClawcodexREPL:
         self._current_status = None
         if self._permission_mode == "bypassPermissions":
             # The bypass mode short-circuits the registry's permission check
-            # before the handler is ever consulted, but a few tools call the
-            # handler directly (e.g. the doc-write gate). Auto-allow there
-            # too so the user's explicit opt-in is honored end-to-end.
+            # before the handler is ever consulted; the allow-reply lambda is
+            # belt-and-braces for any future direct handler caller. (The old
+            # claim that the doc-write gate calls the handler directly was
+            # wrong — it flows through check_permissions → registry.)
             from src.permissions.types import PermissionAskReply
 
             self.tool_context.allow_docs = True
@@ -918,7 +922,9 @@ class ClawcodexREPL:
 
         return answers
 
-    def _handle_permission_request(self, request: Any) -> Any:
+    def _handle_permission_request(
+        self, request: "PermissionAskRequest"
+    ) -> "PermissionAskReply":
         """Handle interactive permission requests from tools.
 
         C1: receives a :class:`src.permissions.types.PermissionAskRequest`

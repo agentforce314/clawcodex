@@ -35,6 +35,26 @@ class _InMemoryKeyringBackend:
 
 
 @pytest.fixture(autouse=True)
+def _isolate_user_permission_settings(tmp_path, monkeypatch):
+    """Point the USER permission-settings file at an empty per-test path.
+
+    C1 wired ``setup_permissions`` into the REPL/TUI/headless startup
+    paths, which would otherwise read the developer's real
+    ``~/.clawcodex/settings.json`` during tests — machine-dependent allow
+    rules could then flip dispatch assertions (review-A finding 6). The
+    project/local tiers resolve from each test's cwd/workspace and the
+    repo intentionally has no ``.clawcodex/`` dir, so only the user tier
+    needs pinning.
+    """
+
+    from src.permissions import settings_paths
+
+    isolated = str(tmp_path / "isolated-user-settings.json")
+    monkeypatch.setattr(settings_paths, "user_settings_path", lambda: isolated)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _isolate_mcp_keyring(request, monkeypatch):
     """Swap ``keyring.get_keyring()`` to a per-test in-memory backend so
     MCP token-storage tests don't leak into the real OS keychain.

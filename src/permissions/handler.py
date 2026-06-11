@@ -66,7 +66,7 @@ def handle_permission_ask(
                 updated_input=reply.updated_input or decision.updated_input,
                 decision_reason=decision.decision_reason,
             ),
-            tuple(reply.chosen_updates),
+            tuple(reply.chosen_updates or ()),
         )
 
     feedback = (reply.message or "").strip()
