@@ -308,9 +308,25 @@ The configuration file is saved in in `~/.clawcodex/config.json`. Example struct
       "base_url": "https://api.deepseek.com",
       "default_model": "deepseek-v4-pro"
     }
+  },
+  "session": {
+    "auto_save": true,
+    "max_history": 100
+  },
+  "settings": {
+    "advisor_model": "claude-sonnet-4-6",
+    "advisor_client_mode": false,
+    "advisor_provider": "openai"
+  },
+  "env": {
+    "TAVILY_API_KEY": "tvly-YOUR-TAVILY-API-KEY"
   }
 }
 ```
+
+- **`session`** — REPL session persistence: `auto_save` writes each session automatically; `max_history` caps retained turns.
+- **`settings`** — the advisor model used for background helpers (`advisor_provider` / `advisor_model`, and `advisor_client_mode` to route via the client).
+- **`env`** — secrets and environment values injected at startup (e.g. `TAVILY_API_KEY` for web search). Managed via `clawcodex config`; keys here are exported into the process environment without overriding anything you already set in your shell.
 
 ### Run
 
