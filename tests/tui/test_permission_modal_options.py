@@ -110,6 +110,29 @@ async def test_deny_with_feedback_flow() -> None:
 
 
 @pytest.mark.asyncio
+async def test_feedback_input_consumes_binding_letters() -> None:
+    """Typing y/n/a/d into the focused feedback Input must not trigger the
+    screen bindings (Textual routes printable keys to the focused widget)."""
+
+    replies: list[PermissionAskReply] = []
+    app = _DialogHost()
+    async with app.run_test() as pilot:
+        app.push_screen(PermissionModal(_pending(replies, [_SUGGESTION])))
+        await pilot.pause()
+        await pilot.press("d")
+        await pilot.pause()
+        for ch in "dany":
+            await pilot.press(ch)
+        await pilot.pause()
+        assert replies == [], "screen bindings stole keys mid-typing"
+        await pilot.press("enter")
+        await pilot.pause()
+    assert len(replies) == 1
+    assert replies[0].behavior == "deny"
+    assert replies[0].message == "dany"
+
+
+@pytest.mark.asyncio
 async def test_escape_denies() -> None:
     replies: list[PermissionAskReply] = []
     app = _DialogHost()
