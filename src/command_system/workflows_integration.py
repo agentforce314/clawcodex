@@ -80,8 +80,14 @@ def bundled_workflow_commands() -> list[Command]:
     command registry that both command suggestions and dispatch read — the
     aggregator's :func:`get_commands` that also lists them has no real consumers.
     Project/personal workflows are cwd-dependent and remain the aggregator's job.
+
+    Includes the ``/workflows`` viewer so the Rich REPL can dispatch it (the TUI
+    has its own ``open_dialog`` fast-path, which runs before registry dispatch,
+    so registering here doesn't disturb it).
     """
-    out: list[Command] = []
+    from .workflows_command import WORKFLOWS_COMMAND
+
+    out: list[Command] = [WORKFLOWS_COMMAND]
     deep = _deep_research_command()
     if deep is not None:
         out.append(deep)

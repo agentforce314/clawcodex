@@ -34,3 +34,30 @@ def test_global_registry_resolves_deep_research(monkeypatch):
     assert getattr(cmd, "kind", None) == "workflow"
     # the dispatched prompt is the Workflow-tool directive, not raw text
     assert "Workflow tool" in getattr(cmd, "markdown_content", "")
+
+
+def test_global_registry_resolves_workflows_viewer(monkeypatch):
+    """``/workflows`` must dispatch in the Rich REPL (reads runtime_tasks)."""
+    monkeypatch.delenv("CLAUDE_CODE_DISABLE_WORKFLOWS", raising=False)
+    register_builtin_commands(None)
+    assert get_command_registry().get("workflows") is not None
+    assert "workflows" in _names(get_builtin_commands())
+
+
+def test_workflows_viewer_lists_runs():
+    """Given a runtime_tasks registry with a local_workflow task, it lists it."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from src.command_system.workflows_command import WORKFLOWS_COMMAND
+
+    task = SimpleNamespace(
+        type="local_workflow", status="running", workflow_name="deep-research",
+        run_id="wf_abc123", summary="Search · 4 agents",
+    )
+    ctx = SimpleNamespace(tool_context=SimpleNamespace(runtime_tasks=SimpleNamespace(all=lambda: [task])))
+    out = asyncio.run(WORKFLOWS_COMMAND.run("", ctx))
+    assert "deep-research" in out.message and "wf_abc123" in out.message
+
+    empty = SimpleNamespace(tool_context=SimpleNamespace(runtime_tasks=SimpleNamespace(all=lambda: [])))
+    assert "No workflow runs" in asyncio.run(WORKFLOWS_COMMAND.run("", empty)).message
