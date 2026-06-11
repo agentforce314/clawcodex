@@ -54,6 +54,9 @@ class REPLScreen(Screen):
 
     BINDINGS = [
         ("ctrl+l", "clear_transcript", "Clear transcript"),
+        # C3b: legacy-REPL parity — re-print the most recent truncated
+        # block in full (CtrlOToExpand).
+        ("ctrl+o", "expand_last", "Expand last truncated"),
     ]
 
     DEFAULT_CSS = """
@@ -142,6 +145,9 @@ class REPLScreen(Screen):
     # ---- actions ----
     def action_clear_transcript(self) -> None:
         self.transcript.clear_transcript()
+
+    def action_expand_last(self) -> None:
+        self.transcript.expand_last()
 
     # ---- prompt submission ----
     def on_prompt_submitted(self, message: PromptSubmitted) -> None:
