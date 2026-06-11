@@ -257,19 +257,14 @@ class TranscriptView(VerticalScroll):
                     getattr(row, "tool_name", "") or tool_name or ""
                 )
                 # C3b ctrl+o: stash full output for anything the row's
-                # panel will truncate (limits mirror
-                # tool_activity.base.truncated_panel). Matched rows only
-                # — the standalone fallback below renders untruncated.
+                # panel will truncate (THE shared limit implementation —
+                # tool_activity.base.truncate_body). Matched rows only —
+                # the standalone fallback below renders untruncated.
                 if isinstance(tool_output, str) and tool_output:
-                    from .tool_activity.base import (
-                        _BODY_MAX_CHARS,
-                        _BODY_MAX_LINES,
-                    )
+                    from .tool_activity.base import truncate_body
 
-                    if (
-                        len(tool_output) > _BODY_MAX_CHARS
-                        or tool_output.count("\n") + 1 > _BODY_MAX_LINES
-                    ):
+                    _shown, was_truncated = truncate_body(tool_output)
+                    if was_truncated:
                         self.note_expandable(
                             f"{effective_name or 'tool'} result", tool_output
                         )
@@ -403,6 +398,80 @@ class TranscriptView(VerticalScroll):
             markup=False,
         )
         self.mount(row)
+        self._scroll_end()
+
+    def append_bash_running(self, command: str) -> Widget:
+        """Mount the bash-mode echo row IMMEDIATELY (synchronous with the
+        submit — TS mounts BashModeProgress before awaiting); the returned
+        row is later completed via :meth:`finish_bash_io`."""
+
+        self._retire_active_assistant()
+        self._break_read_group()
+        header = Text("! ", style="bold magenta")
+        header.append(command, style="bold")
+        from rich.console import Group as _Group
+
+        row = _SnapshotStatic(
+            Panel(
+                _Group(header, Text("running…", style="dim")),
+                border_style="magenta",
+                padding=(0, 1),
+                title="bash",
+            ),
+            classes="bash-io",
+            markup=False,
+        )
+        self.mount(row)
+        self._scroll_end()
+        return row
+
+    def finish_bash_io(
+        self,
+        row: Widget,
+        *,
+        command: str,
+        stdout: str,
+        stderr: str,
+        exit_code: int,
+        ok: bool,
+    ) -> None:
+        """Fill the echo row with the command's output (TS
+        UserBashOutputMessage). BOTH streams render — git/npm/pip write
+        normal output to stderr with exit 0 (review M2); stderr is styled
+        red regardless. Truncation shares the tool-panel limits and the
+        full text is ctrl+o-expandable."""
+
+        from .tool_activity.base import truncate_body
+
+        header = Text("! ", style="bold magenta")
+        header.append(command, style="bold")
+        body_parts: list[Text] = [header]
+        combined = "\n".join(p for p in (stdout.rstrip("\n"), stderr.rstrip("\n")) if p)
+        out_shown, out_trunc = truncate_body(stdout)
+        err_shown, err_trunc = truncate_body(stderr)
+        if out_shown:
+            body_parts.append(Text(out_shown))
+        if err_shown:
+            body_parts.append(Text(err_shown, style="red"))
+        if out_trunc or err_trunc:
+            body_parts.append(Text("… (ctrl+o to expand)", style="dim"))
+            self.note_expandable(f"! {command}", combined)
+        if not ok:
+            body_parts.append(Text(f"exit {exit_code}", style="bold red"))
+        from rich.console import Group as _Group
+
+        renderable = Panel(
+            _Group(*body_parts),
+            border_style="magenta" if ok else "red",
+            padding=(0, 1),
+            title="bash",
+        )
+        try:
+            row.update(renderable)  # type: ignore[attr-defined]
+        except Exception:
+            self.mount(
+                _SnapshotStatic(renderable, classes="bash-io", markup=False)
+            )
         self._scroll_end()
 
     # ---- C3b ctrl+o expandables ------------------------------------

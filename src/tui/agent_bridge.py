@@ -120,6 +120,12 @@ class AgentBridge:
         # model support); True/False = explicit user toggle (TS
         # ThinkingToggle: "Enable or disable thinking for this session").
         self.extended_thinking: bool | None = None
+        # C4 bash-mode: user texts that arrived while a run was in flight.
+        # Appending mid-run can interleave between a tool_use and its
+        # tool_result in the conversation (durably, via the persister) —
+        # so they defer and drain in _finish() after the run's appends
+        # are over.
+        self._deferred_user_texts: list[str] = []
 
     def reset_advisor_dedup(self) -> None:
         """Drop the advisor-dedup state.
@@ -141,6 +147,55 @@ class AgentBridge:
     @property
     def busy(self) -> bool:
         return self._busy
+
+    def append_user_texts(self, texts: tuple[str, ...] | list[str]) -> None:
+        """Append plain user texts to the conversation + session store.
+
+        Safe at any time: while a run is in flight the texts DEFER and
+        drain in ``_finish()`` after the run's own appends — appending
+        mid-run could land between an assistant ``tool_use`` and its
+        ``tool_result``, making the next turn's pairing repair tell the
+        model a successful tool failed (C4 review B1). Idle → immediate
+        append + persist.
+        """
+
+        texts = [t for t in texts if t]
+        if not texts:
+            return
+        with self._busy_lock:
+            if self._busy:
+                self._deferred_user_texts.extend(texts)
+                return
+        for text in texts:
+            try:
+                self._session.conversation.add_user_message(text)
+                self._persister.record({"role": "user", "content": text})
+            except Exception:
+                pass
+        try:
+            self._persister.flush()
+        except Exception:
+            pass
+
+    def _drain_deferred_user_texts(self) -> None:
+        """Append parked texts (call only while no run is appending).
+
+        Residual window (C4 review note 1): a bash completion landing
+        while ``_finish`` is mid-drain/flush still defers — busy cannot
+        clear earlier without re-opening the interleave hazard for a
+        racing ``submit`` (its appends + controller swap). Those parked
+        texts land via the ``submit()`` drain below, BEFORE the next
+        prompt, so they are never lost and order stays correct.
+        """
+
+        with self._busy_lock:
+            pending, self._deferred_user_texts = self._deferred_user_texts, []
+        for text in pending:
+            try:
+                self._session.conversation.add_user_message(text)
+                self._persister.record({"role": "user", "content": text})
+            except Exception:
+                pass
 
     def resume_session(self, session_id: str) -> list[Any] | None:
         """Swap the live conversation to a persisted session (C2 /resume).
@@ -237,6 +292,11 @@ class AgentBridge:
             # controller that is never tripped by ESC.
             self._tool_context.abort_controller = self._abort_controller
 
+        # C4: texts parked during a previous run's teardown land BEFORE
+        # this prompt. We hold the run slot (busy=True) so new bash
+        # completions defer rather than racing this append; the worker
+        # hasn't spawned yet, so nothing else writes the conversation.
+        self._drain_deferred_user_texts()
         self._session.conversation.add_user_message(prompt)
         self._persister.record_user(prompt)
         self._post(AgentRunStarted(prompt=prompt))
@@ -468,6 +528,10 @@ class AgentBridge:
         self._finish()
 
     def _finish(self) -> None:
+        # C4: user texts that arrived mid-run append AFTER the run's own
+        # conversation writes are over (and before the durable flush
+        # below carries them to disk in the correct order).
+        self._drain_deferred_user_texts()
         # Durable persistence at the end of EVERY run (completion, abort, error).
         self._persister.flush()
         self._state.set_thinking(False)

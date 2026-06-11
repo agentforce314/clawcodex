@@ -90,11 +90,12 @@ _BODY_MAX_CHARS = 1500
 _BODY_MAX_LINES = 20
 
 
-def truncated_panel(text: str, *, style: str = "green") -> Panel:
-    """Render ``text`` in a bordered panel with stable truncation limits.
+def truncate_body(text: str) -> tuple[str, bool]:
+    """``(shown, truncated)`` under the shared panel limits.
 
-    Extracted from ``src.tui.widgets.transcript._truncated_panel`` so
-    individual tool-activity widgets render output consistently.
+    THE single truncation implementation — ``truncated_panel`` and the
+    transcript's bash/expandable paths all use it so the limits (and the
+    trailing-newline rstrip) can never drift apart (C4 review m5).
     """
 
     s = (text or "").rstrip("\n")
@@ -107,6 +108,17 @@ def truncated_panel(text: str, *, style: str = "green") -> Panel:
     if len(s) > _BODY_MAX_CHARS:
         s = s[:_BODY_MAX_CHARS]
         truncated = True
+    return s, truncated
+
+
+def truncated_panel(text: str, *, style: str = "green") -> Panel:
+    """Render ``text`` in a bordered panel with stable truncation limits.
+
+    Extracted from ``src.tui.widgets.transcript._truncated_panel`` so
+    individual tool-activity widgets render output consistently.
+    """
+
+    s, truncated = truncate_body(text)
     if truncated:
         s = f"{s}\n… (truncated)"
     return Panel(Text(s), border_style=style, padding=(0, 1))
