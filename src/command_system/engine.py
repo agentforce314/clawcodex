@@ -178,6 +178,18 @@ class CommandEngine:
                 return CommandResult.skip(command.name)
 
             display_text = local_result.display_text or local_result.value
+            if local_result.type == "compact":
+                # C3b: preserve the compact result type so UI surfaces can
+                # render a boundary row (TS CompactBoundaryMessage) instead
+                # of a plain system line. text still carries the
+                # user_display_message for surfaces that don't special-case.
+                return CommandResult(
+                    success=True,
+                    command_name=command.name,
+                    result_type="compact",
+                    text=display_text,
+                    display="system",
+                )
             return CommandResult.success_text(
                 command.name,
                 display_text,

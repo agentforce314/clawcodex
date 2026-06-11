@@ -55,6 +55,8 @@ LOCAL_BUILTINS: tuple[str, ...] = (
     "/rewind",
     # components C2:
     "/resume",
+    # components C3b:
+    "/thinking",
 )
 
 
@@ -79,6 +81,8 @@ class CommandDispatchResult:
     system_text: str | None = None
     open_dialog: str | None = None
     error: str | None = None
+    # C3b: system_text is a compaction notice — render as a boundary row.
+    compact: bool = False
 
 
 @dataclass(frozen=True)
@@ -124,6 +128,7 @@ _LOCAL_BUILTIN_DESCRIPTIONS: dict[str, str] = {
     "/tasks": "Browse background tasks",
     "/rewind": "Rewind conversation to an earlier turn",
     "/resume": "Resume a previous conversation",
+    "/thinking": "Toggle extended thinking for this session",
 }
 
 
@@ -295,6 +300,12 @@ def dispatch_local_command(
         return CommandDispatchResult(handled=True, open_dialog="workflows")
     if name == "/rewind":
         return CommandDispatchResult(handled=True, open_dialog="rewind")
+    if name == "/thinking":
+        # TS mounts ThinkingToggle from the prompt-input footer; Python's
+        # surface is this command (documented divergence). The app flips
+        # the bridge's session override on the sentinel (the __clear__
+        # pattern — this module stays UI-state-free).
+        return CommandDispatchResult(handled=True, system_text="__thinking__")
     if name in ("/resume", "/continue"):
         # /continue = TS alias (commands/resume/index.ts:7). Intercepted
         # here too so the TUI opens the picker instead of falling through
@@ -337,6 +348,12 @@ async def dispatch_registry_command(
 
     if result.result_type == "text":
         return CommandDispatchResult(handled=True, system_text=result.text or "")
+
+    if result.result_type == "compact":
+        # C3b: typed so the app renders a boundary row, not a plain line.
+        return CommandDispatchResult(
+            handled=True, system_text=result.text or "", compact=True
+        )
 
     if result.result_type == "prompt":
         prompt_text = ""

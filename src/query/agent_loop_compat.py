@@ -193,6 +193,7 @@ async def run_query_as_agent_loop(
     on_message: Callable[[Message], None] | None = None,
     cancel_signal: AbortSignal | None = None,
     abort_controller: AbortController | None = None,
+    extended_thinking: bool | None = None,
 ) -> AgentLoopRunResult:
     """Drive the canonical query() loop and adapt to AgentLoopResult.
 
@@ -252,6 +253,9 @@ async def run_query_as_agent_loop(
         provider=provider,
         abort_controller=abort_controller,
         max_turns=max_turns,
+        # C3b /thinking: None = auto (model-gated default), True/False =
+        # explicit session override (TS ThinkingToggle semantics).
+        extended_thinking=extended_thinking,
         # Critic-flagged: forward on_text_chunk into QueryParams so
         # the provider's chat_stream_response fires chunks LIVE. The
         # adapter must NOT call on_text_chunk(full_text) once at the
