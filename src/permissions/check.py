@@ -48,6 +48,8 @@ class CheckPermissionsTool(Protocol):
         self, tool_input: dict[str, Any], context: Any
     ) -> PermissionResult: ...
 
+    def is_read_only(self, tool_input: dict[str, Any]) -> bool: ...
+
 
 @runtime_checkable
 class RequiresInteractionTool(Protocol):
@@ -319,19 +321,27 @@ def has_permissions_to_use_tool_inner(
 
     # Read-only tools don't require permission prompts (TS parity:
     # read-only tools resolve via checkReadPermissionForTool → allow).
-    # Runs after deny/ask rules so explicit rules still win; the
-    # workspace-root allowlist is still enforced by ensure_allowed_path
-    # inside each tool's call.
-    try:
-        is_read_only = bool(tool.is_read_only(tool_input))
-    except Exception:
-        is_read_only = False
-    if is_read_only:
-        return PermissionAllowDecision(
-            behavior="allow",
-            updated_input=_get_updated_input_or_fallback(tool_permission_result, tool_input),
-            decision_reason=OtherDecisionReason(reason="Tool is read-only"),
-        )
+    # Runs after deny/ask rules so explicit rules still win, and ONLY when
+    # the tool's own check_permissions expressed no opinion (passthrough) —
+    # a read-only tool that returns its own ask (e.g. WebFetch domain
+    # gating) must keep that ask, exactly as in TS where the read-only
+    # allow lives inside each tool's checkPermissions.
+    # Documented divergence: TS asks for out-of-workspace read paths (the
+    # user can approve a one-off); this port allows here and hard-fails in
+    # the tool's call via ensure_allowed_path, with
+    # additional_working_directories as the escape hatch.
+    if tool_permission_result.behavior == "passthrough":
+        try:
+            is_read_only = bool(tool.is_read_only(tool_input))
+        except Exception:
+            log.debug("tool.is_read_only failed for %s", tool.name, exc_info=True)
+            is_read_only = False
+        if is_read_only:
+            return PermissionAllowDecision(
+                behavior="allow",
+                updated_input=_get_updated_input_or_fallback(tool_permission_result, tool_input),
+                decision_reason=OtherDecisionReason(reason="Tool is read-only"),
+            )
 
     if tool_permission_result.behavior == "passthrough":
         return _with_default_suggestions(
@@ -453,7 +463,13 @@ def check_rule_based_permissions(
     )
     try:
         tool_permission_result = tool.check_permissions(tool_input, tool_use_context)
-    except Exception:
+    except Exception as exc:
+        # Same contract as the main inner flow: workspace-allowlist
+        # violations propagate instead of soft-resolving (#274).
+        from src.tool_system.errors import ToolPermissionError
+
+        if isinstance(exc, ToolPermissionError):
+            raise
         log.exception("Error in tool.check_permissions for %s", tool.name)
 
     if tool_permission_result.behavior == "deny":
