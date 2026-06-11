@@ -158,12 +158,15 @@ class WorkflowRun:
             isolation=isolation,
         )
         eff_label = label or agent_type or "agent"
+        eff_agent_type = agent_type or "general-purpose"
         eff_phase = phase or self._progress.current_phase
 
         key_str = key_to_str(key)
         cached = self._journal.lookup(key, spec)
         if cached is not MISS:
-            record = self._progress.agent_started(self._next_display(), eff_label, eff_phase, key_str)
+            record = self._progress.agent_started(
+                self._next_display(), eff_label, eff_phase, key_str, agent_type=eff_agent_type
+            )
             self._progress.agent_finished(record, status="cached")
             return cached
 
@@ -172,7 +175,9 @@ class WorkflowRun:
         self._scheduler.reserve()
         self._budget.check()
 
-        record = self._progress.agent_started(self._next_display(), eff_label, eff_phase, key_str)
+        record = self._progress.agent_started(
+            self._next_display(), eff_label, eff_phase, key_str, agent_type=eff_agent_type
+        )
         attempts = 0
         while True:
             child = create_child_abort_controller(self._controller)
@@ -202,14 +207,21 @@ class WorkflowRun:
 
         self._budget.add(outcome.tokens)
         if outcome.error is not None:
-            self._progress.agent_finished(record, status="failed", tokens=outcome.tokens, error=outcome.error)
+            self._progress.agent_finished(
+                record, status="failed", tokens=outcome.tokens,
+                error=outcome.error, tool_count=outcome.tool_use_count,
+            )
             result: Any = None
         elif outcome.skipped:
-            self._progress.agent_finished(record, status="skipped", tokens=outcome.tokens)
+            self._progress.agent_finished(
+                record, status="skipped", tokens=outcome.tokens, tool_count=outcome.tool_use_count,
+            )
             result = None
         else:
             result = outcome.structured if schema is not None else outcome.text
-            self._progress.agent_finished(record, status="completed", tokens=outcome.tokens)
+            self._progress.agent_finished(
+                record, status="completed", tokens=outcome.tokens, tool_count=outcome.tool_use_count,
+            )
 
         self._journal.record(key, spec, result)
         return result

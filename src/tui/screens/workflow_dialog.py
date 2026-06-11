@@ -26,34 +26,33 @@ from .dialog_base import DialogScreen
 
 
 def format_workflow_detail(state: Any) -> list[str]:
-    """Render a workflow run's phases → agents tree as display lines."""
-    lines = [f"{getattr(state, 'workflow_name', 'workflow')}  [{getattr(state, 'status', '?')}]"]
-    summary = getattr(state, "summary", None)
-    if summary:
-        lines.append(summary)
-    progress = getattr(state, "progress", None)
-    phases = getattr(progress, "phases", None) or []
-    if not phases:
-        lines.append("(no phases yet)")
-    for phase in phases:
-        agents = getattr(phase, "agents", []) or []
-        lines.append(f"▸ {phase.title}  ({len(agents)} agents · {phase.token_total} tokens)")
-        for agent in agents:
-            lines.append(f"    • [{agent.status}] {agent.label}  ({agent.tokens} tok)")
-    return lines
+    """Render a workflow run's header + phases → agents tree as display lines.
+
+    Delegates to the shared :func:`src.workflow.progress.render_run_lines` so the
+    REPL ``/workflows`` command and this TUI dialog show identical rich detail
+    (status icons, agent type, tokens, tool count, duration, phase progress).
+    """
+    from src.workflow.progress import render_run_lines
+
+    return render_run_lines(state)
 
 
 def _agent_options(state: Any) -> list[SelectOption]:
+    from src.workflow.progress import format_tokens
+
     progress = getattr(state, "progress", None)
     phases = getattr(progress, "phases", None) or []
     options: list[SelectOption] = []
     for phase in phases:
         for agent in getattr(phase, "agents", []) or []:
+            stats = f"{format_tokens(agent.tokens)} tok"
+            if agent.tool_count:
+                stats += f" · {agent.tool_count} tools"
             options.append(
                 SelectOption(
-                    label=f"[{agent.status}] {agent.label}",
+                    label=f"{agent.icon} {agent.label}",
                     value=agent.key or "",
-                    description=f"{agent.tokens} tok · {phase.title}",
+                    description=f"{stats} · {phase.title}",
                     disabled=not agent.key,
                 )
             )
