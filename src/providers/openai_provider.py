@@ -33,14 +33,32 @@ class OpenAIProvider(OpenAICompatibleProvider):
             raise ModuleNotFoundError(
                 "openai package is not installed. Install optional dependencies to use OpenAIProvider."
             )
-        kwargs: dict[str, Any] = {"api_key": self.api_key}
+        import os
+
+        import httpx
+
+        # Bound how long a request may stall with NO bytes from the server.
+        # Without this the SDK's sync streaming read blocks forever when an
+        # endpoint accepts the request but never replies (observed with a
+        # LiteLLM proxy on streaming + tool calls) — which freezes the asyncio
+        # event loop the agent loop runs on, deadlocking every concurrent agent.
+        # ``read`` is the max gap *between* bytes, so legitimate long streams are
+        # fine as long as data keeps flowing. All tunable via env.
+        read_timeout = float(os.environ.get("CLAWCODEX_LLM_READ_TIMEOUT", "120"))
+        connect_timeout = float(os.environ.get("CLAWCODEX_LLM_CONNECT_TIMEOUT", "15"))
+        timeout = httpx.Timeout(connect=connect_timeout, read=read_timeout, write=30.0, pool=15.0)
+        max_retries = int(os.environ.get("CLAWCODEX_LLM_MAX_RETRIES", "1"))
+
+        kwargs: dict[str, Any] = {
+            "api_key": self.api_key,
+            "timeout": timeout,
+            "max_retries": max_retries,
+        }
         if self.base_url:
             kwargs["base_url"] = self.base_url
-        # Support SSL verification bypass for corporate/internal endpoints
-        import os
+        # Support SSL verification bypass for corporate/internal endpoints.
         if os.environ.get("CLAWCODEX_SSL_VERIFY", "").lower() in ("0", "false", "no"):
-            import httpx
-            kwargs["http_client"] = httpx.Client(verify=False)
+            kwargs["http_client"] = httpx.Client(verify=False, timeout=timeout)
         return OpenAI(**kwargs)
 
     def get_available_models(self) -> list[str]:

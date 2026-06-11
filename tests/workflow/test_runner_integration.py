@@ -96,3 +96,57 @@ async def test_schema_not_produced_resolves_to_none(tmp_path):
     assert out.structured is None
     assert out.error is not None
     assert "structured output not produced" in out.error  # the schema-miss path, not an incidental error
+
+
+async def test_schema_repair_retry_succeeds_on_second_attempt(tmp_path):
+    """A weak model that skips the tool on attempt 1 is re-prompted and succeeds."""
+    schema = {
+        "type": "object",
+        "properties": {"answer": {"type": "integer"}},
+        "required": ["answer"],
+        "additionalProperties": False,
+    }
+    provider = _ScriptedProvider([
+        _resp("Here is my answer in prose: 7"),  # attempt 1: no tool call -> fails
+        _resp(tool_uses=[{"id": "s1", "name": "StructuredOutput", "input": {"answer": 7}}], finish="tool_use"),
+        _resp("done"),  # attempt 2 wrap-up turn
+    ])
+    runner = _runner(provider, tmp_path)
+    out = await runner.run(AgentSpec(prompt="produce", schema=schema), abort=create_abort_controller(), index="0")
+    assert out.structured == {"answer": 7}
+    assert out.error is None
+    assert len(provider.tools_seen) >= 3  # a 2nd attempt ran after the 1st failed
+
+
+async def test_schema_repair_exhausts_attempts(tmp_path):
+    """When every attempt fails, the error names the attempt count; tokens summed."""
+    schema = {"type": "object", "properties": {"answer": {"type": "integer"}}, "required": ["answer"]}
+    provider = _ScriptedProvider([_resp("never uses the tool")])
+    registry = build_default_registry(provider=provider)
+    runner = LiveAgentRunner(
+        provider=provider,
+        tool_registry=registry,
+        parent_context=ToolContext(workspace_root=tmp_path),
+        base_tools=list(registry.list_tools()),
+        resolve_agent=lambda _t: GENERAL_PURPOSE_AGENT,
+        run_id="wf_itest",
+        max_turns=4,
+        schema_max_attempts=2,
+    )
+    out = await runner.run(AgentSpec(prompt="produce", schema=schema), abort=create_abort_controller(), index="0")
+    assert out.structured is None
+    assert "after 2 attempt(s)" in out.error
+    assert provider._turn >= 2  # both attempts actually ran
+
+
+def test_schema_repair_prompt_quotes_error_and_schema():
+    from src.workflow.runner import _schema_repair_prompt
+
+    schema = {"type": "object", "properties": {"x": {"type": "integer"}}, "required": ["x"]}
+    s = _schema_repair_prompt(schema, "output.x: expected integer, got string")
+    assert "expected integer, got string" in s
+    assert "StructuredOutput" in s
+    assert '"required"' in s  # the schema JSON is embedded
+    assert "do NOT" in s and "search" in s  # tells the model not to re-search
+    # a None error (model skipped the tool) gets explanatory phrasing
+    assert "did not call the StructuredOutput tool" in _schema_repair_prompt(schema, None)
