@@ -83,7 +83,18 @@ for result in searches:
 
 if not claims:
     raise RuntimeError("No claims were gathered — the question may be too narrow or WebSearch is unavailable.")
-log(f"Gathered {len(claims)} distinct claims; cross-checking each.")
+
+# Cap the verify fan-out: the Verify phase spawns one agent per claim, so a very
+# thorough search model (opus gathered 32) would otherwise launch dozens of
+# concurrent agents — slow, costly, and prone to overrunning a flaky endpoint.
+# Keep the first N distinct claims (search angles are ordered most-authoritative
+# first). Logged, never silent.
+MAX_VERIFY_CLAIMS = 10
+if len(claims) > MAX_VERIFY_CLAIMS:
+    log(f"Gathered {len(claims)} claims; verifying the first {MAX_VERIFY_CLAIMS} to bound the fan-out.")
+    claims = claims[:MAX_VERIFY_CLAIMS]
+else:
+    log(f"Gathered {len(claims)} distinct claims; cross-checking each.")
 
 # ── Phase 2: cross-check every claim independently ───────────────────────────
 phase("Verify")
