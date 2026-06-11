@@ -41,7 +41,7 @@ _TAG_RE = re.compile(r"<[^>]+>")
 # Removed before conversion so they never leak into the extracted text — markdownify
 # strips the tags but can otherwise surface their text nodes.
 _NOISE_BLOCK_RE = re.compile(
-    r"<(script|style|noscript|svg|template)\b[^>]*>.*?</\1>",
+    r"<(script|style|noscript|svg|template|iframe|object|embed)\b[^>]*>.*?</\1>",
     flags=re.DOTALL | re.IGNORECASE,
 )
 

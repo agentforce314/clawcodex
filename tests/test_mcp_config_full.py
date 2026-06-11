@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 import tempfile
 import pytest
 from pathlib import Path
@@ -71,7 +72,9 @@ class TestVscodeDiscovery:
 
 class TestValidateServerConnectivity:
     def test_valid_command(self):
-        config = McpStdioServerConfig(command="python")
+        # sys.executable always exists; bare "python" is absent on systems
+        # that only ship python3
+        config = McpStdioServerConfig(command=sys.executable)
         issues = validate_server_connectivity(config)
         assert issues == []
 
