@@ -228,11 +228,18 @@ def _security_review_private_prompt(
     allowed_tools = parse_slash_command_tools_from_frontmatter(
         parsed.frontmatter.get("allowed-tools")
     )
-    # Bridge CommandContext -> ToolContext (only workspace_root/cwd are needed; the
-    # default permission_context is bypassPermissions, matching the in-process path).
+    # Bridge CommandContext -> ToolContext. Explicit bypass: this executor only
+    # runs the frontmatter-allowlisted shell preprocessing for the slash
+    # command, matching the in-process path (the ToolContext default is no
+    # longer bypassPermissions — #274).
+    from src.permissions.types import ToolPermissionContext
     from src.tool_system.context import ToolContext  # lazy: keep tool_system off import chain
 
-    tool_context = ToolContext(workspace_root=context.workspace_root, cwd=context.cwd)
+    tool_context = ToolContext(
+        workspace_root=context.workspace_root,
+        cwd=context.cwd,
+        permission_context=ToolPermissionContext(mode="bypassPermissions"),
+    )
     executor = make_bash_shell_executor(
         tool_context, allowed_tools, slash_command_name="security-review"
     )

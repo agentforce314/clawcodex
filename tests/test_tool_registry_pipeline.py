@@ -81,7 +81,12 @@ class TestToolRegistry(unittest.TestCase):
 class TestRegistryDispatch(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
-        self.ctx = ToolContext(workspace_root=Path(self.tmp.name))
+        # Explicit bypass for plain dispatch-mechanics tests; permission-path
+        # tests below build their own default-mode contexts (#274).
+        self.ctx = ToolContext(
+            workspace_root=Path(self.tmp.name),
+            permission_context=ToolPermissionContext(mode="bypassPermissions"),
+        )
         self.reg = ToolRegistry()
         self.tool = _make_tool("Echo")
         self.reg.register(self.tool)
@@ -148,15 +153,19 @@ class TestRegistryDispatch(unittest.TestCase):
         self.assertTrue(result.is_error)
 
     def test_dispatch_checks_permissions_ask_with_handler_allow(self) -> None:
-        from src.permissions.types import PermissionAskDecision
+        from src.permissions.types import PermissionAskDecision, PermissionAskReply
 
         def _ask(inp: dict, ctx: ToolContext):
             return PermissionAskDecision(message="confirm?")
 
         t = _make_tool("NeedApproval", check_permissions=_ask)
         reg = ToolRegistry([t])
-        self.ctx.permission_handler = lambda name, msg, sug: (True, False)
-        result = reg.dispatch(ToolCall(name="NeedApproval", input={}), self.ctx)
+        ctx = ToolContext(
+            workspace_root=Path(self.tmp.name),
+            permission_context=ToolPermissionContext(mode="default"),
+        )
+        ctx.permission_handler = lambda request: PermissionAskReply(behavior="allow")
+        result = reg.dispatch(ToolCall(name="NeedApproval", input={}), ctx)
         self.assertFalse(result.is_error)
 
     def test_dispatch_checks_permissions_ask_with_handler_deny(self) -> None:

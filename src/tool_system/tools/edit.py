@@ -11,7 +11,7 @@ from typing import Any
 from ..build_tool import Tool, build_tool
 from ..context import ToolContext
 from ..diff_utils import unified_diff_hunks
-from ..errors import ToolInputError, ToolPermissionError
+from ..errors import ToolInputError
 from ..protocol import ToolResult
 from src.permissions.types import (
     PermissionAskDecision,
@@ -187,10 +187,9 @@ def _check_permissions(tool_input: dict[str, Any], context: ToolContext) -> Perm
     file_path = tool_input.get("file_path")
     if not isinstance(file_path, str):
         return PermissionPassthroughResult()
-    try:
-        path = context.ensure_allowed_path(file_path)
-    except ToolPermissionError:
-        return PermissionPassthroughResult()
+    # A path outside the workspace allowlist raises ToolPermissionError and
+    # propagates (hard structural failure, not an ask-able prompt) — see #274.
+    path = context.ensure_allowed_path(file_path)
     if path.suffix.lower() in {".md", ".markdown"} and not context.allow_docs:
         return PermissionAskDecision(
             message="Editing documentation files is blocked unless allow_docs is enabled",

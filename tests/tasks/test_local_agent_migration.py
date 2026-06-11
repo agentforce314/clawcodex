@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.tasks.local_agent import LocalAgentTaskState, is_local_agent_task
+from src.permissions.types import ToolPermissionContext
 from src.tool_system.context import ToolContext
 from src.tool_system.defaults import build_default_registry
 from src.tool_system.protocol import ToolCall
@@ -39,7 +40,10 @@ def test_launch_async_agent_registers_on_runtime_tasks(tmp_path: Path) -> None:
     """Headline WI-1.5 assertion: state lands on ``runtime_tasks``, NOT
     on ``context.tasks`` (no more ``metadata._internal=True`` workaround)."""
     registry = build_default_registry(provider=object())
-    ctx = ToolContext(workspace_root=tmp_path)
+    ctx = ToolContext(
+        workspace_root=tmp_path,
+        permission_context=ToolPermissionContext(mode="bypassPermissions"),
+    )
 
     async def _fake(_params):
         yield AssistantMessage(content=[TextBlock(text="ok")])
@@ -72,7 +76,10 @@ def test_async_agent_id_has_a_prefix(tmp_path: Path) -> None:
     """WI-1.5 prefixed-ID assertion: ``a<8 base36>`` instead of legacy
     32-char ``uuid4().hex``."""
     registry = build_default_registry(provider=object())
-    ctx = ToolContext(workspace_root=tmp_path)
+    ctx = ToolContext(
+        workspace_root=tmp_path,
+        permission_context=ToolPermissionContext(mode="bypassPermissions"),
+    )
 
     async def _fake(_params):
         yield AssistantMessage(content=[TextBlock(text="ok")])
@@ -108,7 +115,10 @@ def test_completed_lifecycle_terminal_status_is_chapter_10_vocabulary(
     ``run_agent`` and reaches into the provider code.
     """
     registry = build_default_registry(provider=object())
-    ctx = ToolContext(workspace_root=tmp_path)
+    ctx = ToolContext(
+        workspace_root=tmp_path,
+        permission_context=ToolPermissionContext(mode="bypassPermissions"),
+    )
 
     async def _fake(_params):
         yield AssistantMessage(content=[TextBlock(text="async done")])
@@ -138,7 +148,10 @@ def test_completed_lifecycle_terminal_status_is_chapter_10_vocabulary(
 
 def test_failed_lifecycle_records_error_on_state(tmp_path: Path) -> None:
     registry = build_default_registry(provider=object())
-    ctx = ToolContext(workspace_root=tmp_path)
+    ctx = ToolContext(
+        workspace_root=tmp_path,
+        permission_context=ToolPermissionContext(mode="bypassPermissions"),
+    )
 
     async def _failing(_params):
         if False:
@@ -173,7 +186,10 @@ def test_no_internal_metadata_dict_lingers(tmp_path: Path) -> None:
     runtime tasks live on the typed registry, not piggy-backed on the
     todo dict."""
     registry = build_default_registry(provider=object())
-    ctx = ToolContext(workspace_root=tmp_path)
+    ctx = ToolContext(
+        workspace_root=tmp_path,
+        permission_context=ToolPermissionContext(mode="bypassPermissions"),
+    )
 
     async def _fake(_params):
         yield AssistantMessage(content=[TextBlock(text="ok")])
@@ -203,7 +219,10 @@ def test_task_output_tool_reads_from_runtime_tasks(tmp_path: Path) -> None:
     runtime_tasks first and projects the typed state into the model-facing
     output shape."""
     registry = build_default_registry(provider=object())
-    ctx = ToolContext(workspace_root=tmp_path)
+    ctx = ToolContext(
+        workspace_root=tmp_path,
+        permission_context=ToolPermissionContext(mode="bypassPermissions"),
+    )
 
     async def _fake(_params):
         yield AssistantMessage(content=[TextBlock(text="hello there")])

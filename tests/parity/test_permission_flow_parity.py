@@ -43,6 +43,9 @@ def _make_mock_tool(name: str, is_mcp: bool = False):
             message=f"Claude wants to use {name}. Allow?",
         )
     )
+    # The TS vectors model a default (non-read-only) tool; a bare MagicMock
+    # would return a truthy Mock and trip the read-only auto-allow (#274).
+    tool.is_read_only = MagicMock(return_value=False)
     # Default: not user-interactive
     if hasattr(tool, "requires_user_interaction"):
         del tool.requires_user_interaction

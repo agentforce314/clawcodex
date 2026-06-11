@@ -29,6 +29,8 @@ from ..context import ToolContext
 from ..errors import ToolInputError, ToolPermissionError
 from ..protocol import ToolResult
 from src.permissions.types import (
+    PermissionAllowDecision,
+    PermissionAskDecision,
     PermissionPassthroughResult,
     PermissionResult,
 )
@@ -416,18 +418,27 @@ def _is_preapproved(hostname: str, pathname: str) -> bool:
 # -- Permission Check ----------------------------------------------------------
 
 def _check_permissions(tool_input: dict[str, Any], context: ToolContext) -> PermissionResult:
+    """Domain gating (TS parity): preapproved hosts auto-allow; everything
+    else asks. Returning a real ask (not passthrough) keeps WebFetch out of
+    the central read-only auto-allow — an arbitrary-URL fetch is promptable,
+    unlike a local read (#274)."""
     url = tool_input.get("url", "")
     if not isinstance(url, str) or not url:
+        # Passthrough resolves to read-only auto-allow, which is inert here:
+        # _web_fetch_call raises ToolInputError on an empty url before any
+        # network I/O (and dispatch schema validation rejects a missing one).
         return PermissionPassthroughResult()
     try:
         parsed = urllib.parse.urlparse(url)
         hostname = parsed.hostname or ""
         pathname = parsed.path or "/"
         if _is_preapproved(hostname, pathname):
-            return PermissionPassthroughResult()
+            return PermissionAllowDecision(behavior="allow", updated_input=tool_input)
     except Exception:
         pass
-    return PermissionPassthroughResult()
+    return PermissionAskDecision(
+        message=f"Claude wants to fetch {url}. Allow?",
+    )
 
 
 # -- Result Mapping ------------------------------------------------------------
