@@ -516,6 +516,17 @@ def expand_at_mentions(
         ):
             continue
 
+        # C5: the search dialog inserts ``@file#Lline`` (TS
+        # attachments.ts:2859-2861 parses the ``#L10-20`` fragment).
+        # Degraded port: strip the fragment so the FILE attaches — the
+        # line reference stays visible to the model in the prompt text;
+        # range slicing is a noted follow-up.
+        fragment_match = re.search(r"#L\d+(?:-\d+)?$", raw)
+        if fragment_match:
+            raw = raw[: fragment_match.start()]
+            if not raw:
+                continue
+
         expanded = os.path.expanduser(raw)
         if not os.path.isabs(expanded):
             expanded = os.path.abspath(os.path.join(cwd, expanded))

@@ -57,6 +57,9 @@ LOCAL_BUILTINS: tuple[str, ...] = (
     "/resume",
     # components C3b:
     "/thinking",
+    # components C5:
+    "/search",
+    "/open",
 )
 
 
@@ -69,10 +72,11 @@ class CommandDispatchResult:
       that should be forwarded to the agent as a user turn.
     * ``system_text`` — text to append to the transcript as a system
       message (from commands that emit a textual response).
-    * ``open_dialog`` — name of a Phase 2 dialog screen to push
-      (``model``, ``effort``, ``history``, ``cost``, ``idle``, ``exit``,
-      ``theme``). The app resolves the name to a concrete
-      :class:`DialogScreen` subclass.
+    * ``open_dialog`` — name of a dialog screen to push (``model``,
+      ``effort``, ``history``, ``cost``, ``idle``, ``exit``, ``theme``,
+      ``diff``, ``mcp``, ``tasks``, ``workflows``, ``rewind``,
+      ``resume``, ``search[:seed]``, ``quickopen``). The app resolves
+      the name to a concrete screen.
     * ``error`` — surfaced to the user as a red system line.
     """
 
@@ -129,6 +133,8 @@ _LOCAL_BUILTIN_DESCRIPTIONS: dict[str, str] = {
     "/rewind": "Rewind conversation to an earlier turn",
     "/resume": "Resume a previous conversation",
     "/thinking": "Toggle extended thinking for this session",
+    "/search": "Search the workspace (insert @file#Lline)",
+    "/open": "Quick-open a file (insert @path)",
 }
 
 
@@ -306,6 +312,15 @@ def dispatch_local_command(
         # the bridge's session override on the sentinel (the __clear__
         # pattern — this module stays UI-state-free).
         return CommandDispatchResult(handled=True, system_text="__thinking__")
+    if name == "/search":
+        # C5: the dialog has its own query input; any argument seeds it.
+        search_args = raw.split(" ", 1)[1].strip() if " " in raw else ""
+        return CommandDispatchResult(
+            handled=True,
+            open_dialog=f"search:{search_args}" if search_args else "search",
+        )
+    if name == "/open":
+        return CommandDispatchResult(handled=True, open_dialog="quickopen")
     if name in ("/resume", "/continue"):
         # /continue = TS alias (commands/resume/index.ts:7). Intercepted
         # here too so the TUI opens the picker instead of falling through
