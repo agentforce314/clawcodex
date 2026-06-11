@@ -409,6 +409,26 @@ class AgentBridge:
                         + int(result.usage.get("output_tokens", 0) or 0),
                     }
                 )
+                # C3a: live-context measure = the LAST response's
+                # prompt-side tokens (incl. cache reads/creation), via the
+                # compat layer's last-wins ``last_*`` keys — NOT the
+                # cumulative sums, which double-count across multi-tool
+                # runs and drop the cache components (TS tokens.ts:407-420).
+                last_ctx = (
+                    int(result.usage.get("last_input_tokens", 0) or 0)
+                    + int(
+                        result.usage.get("last_cache_read_input_tokens", 0)
+                        or 0
+                    )
+                    + int(
+                        result.usage.get(
+                            "last_cache_creation_input_tokens", 0
+                        )
+                        or 0
+                    )
+                )
+                if last_ctx:
+                    self._state.last_turn_input_tokens = last_ctx
             except Exception:
                 pass
         # Mirror the client-side advisor token counts from tool_context
