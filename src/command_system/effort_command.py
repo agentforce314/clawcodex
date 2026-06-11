@@ -76,6 +76,26 @@ _DESCRIPTIONS: dict[str, str] = {
 # TS effort.tsx:213: picker auto-pick description when effort is undefined.
 _AUTO_PICKER_DESC = "Use default effort level for your model"
 
+# workflow-engine §4.1: `/effort ultracode` enables the session-long workflow
+# auto-orchestration mode (not a persisted effort level — Python's effort
+# pipeline is inert, so this contributes the orchestration mode only).
+_ULTRACODE_ON_MSG = (
+    "Ultracode on: I'll plan and run a workflow (fan out subagents + verify) for "
+    "substantive tasks this session, instead of working turn by turn. "
+    "Reset with /effort high."
+)
+
+
+def _valid_options_str() -> str:
+    base = "low, medium, high, max, auto"
+    from src.workflow.gating import is_workflows_enabled
+
+    return f"{base}, ultracode" if is_workflows_enabled() else base
+
+
+def _invalid_msg(raw: str) -> str:
+    return f"Invalid argument: {raw}. Valid options are: {_valid_options_str()}"
+
 # TS effort.tsx:179 help text, minus the xhigh line (no OpenAI-effort path in Python).
 _USAGE = (
     "Usage: /effort [low|medium|high|max|auto]\n\n"
@@ -131,6 +151,19 @@ def _effort_options(current: str) -> list[UIOption]:
                 description="current" if level == current else None,
             )
         )
+    # Ultracode (workflow-engine §4.1) — workflow auto-orchestration mode. Only in
+    # the menu when workflows are enabled (§4.8: removed when off).
+    from src.workflow.gating import is_workflows_enabled
+    from src.workflow.ultracode import is_ultracode_session
+
+    if is_workflows_enabled():
+        options.append(
+            UIOption(
+                value="ultracode",
+                label="ultracode",
+                description="on" if is_ultracode_session() else "workflow auto-orchestration",
+            )
+        )
     return options
 
 
@@ -171,6 +204,13 @@ class EffortCommand(InteractiveCommand):
             )
             if picked is None:  # TS handleCancel -> onDone('Cancelled') (no options -> user).
                 return InteractiveOutcome(message="Cancelled", display="user")
+            from src.workflow.ultracode import set_ultracode_session
+
+            if picked == "ultracode":
+                set_ultracode_session(True)
+                return InteractiveOutcome(message=_ULTRACODE_ON_MSG, display="user")
+            # Any real effort choice exits ultracode mode (spec: "reset with /effort high").
+            set_ultracode_session(False)
             if picked == "auto":
                 set_effort(None)
                 # TS effort.tsx:213 (effort=undefined).
@@ -185,21 +225,28 @@ class EffortCommand(InteractiveCommand):
             )
 
         # 4. explicit arg (headless — TS executeEffort :108-123).
+        from src.workflow.ultracode import set_ultracode_session
+
+        if a == "ultracode":
+            # workflow-engine §4.1 / §4.8: only valid when workflows are enabled.
+            from src.workflow.gating import is_workflows_enabled
+
+            if not is_workflows_enabled():
+                return InteractiveOutcome(message=_invalid_msg(raw), display="user")
+            set_ultracode_session(True)
+            return InteractiveOutcome(message=_ULTRACODE_ON_MSG, display="user")
         if a in ("auto", "unset"):
             set_effort(None)  # TS unsetEffortLevel.
+            set_ultracode_session(False)
             return InteractiveOutcome(message="Effort level set to auto", display="user")
         if a in _levels():
             set_effort(a)  # TS setEffortValue (env-override / session-only branches dropped).
+            set_ultracode_session(False)  # selecting a real level exits ultracode
             return InteractiveOutcome(
                 message=f"Set effort level to {a}: {_DESCRIPTIONS[a]}", display="user"
             )
         # TS :120-122 (minus xhigh). Use the trimmed original-case arg in the message.
-        return InteractiveOutcome(
-            message=(
-                f"Invalid argument: {raw}. Valid options are: low, medium, high, max, auto"
-            ),
-            display="user",
-        )
+        return InteractiveOutcome(message=_invalid_msg(raw), display="user")
 
 
 EFFORT_COMMAND = EffortCommand(
