@@ -33,7 +33,12 @@ def test_global_registry_resolves_deep_research(monkeypatch):
     assert cmd is not None
     assert getattr(cmd, "kind", None) == "workflow"
     # the dispatched prompt is the Workflow-tool directive, not raw text
-    assert "Workflow tool" in getattr(cmd, "markdown_content", "")
+    directive = getattr(cmd, "markdown_content", "")
+    assert "Workflow tool" in directive
+    # ...and it tells the model to STOP after launching (background run), so the
+    # main turn doesn't run away "waiting" for the result.
+    assert "END YOUR TURN" in directive
+    assert "background" in directive.lower()
 
 
 def test_global_registry_resolves_workflows_viewer(monkeypatch):
