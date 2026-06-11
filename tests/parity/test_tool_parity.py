@@ -123,13 +123,19 @@ class TestToolPropertyParity(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.registry = build_default_registry(include_user_tools=False)
         cls.props_snapshot = _load_json("ts_tool_properties.json")
+        # TS defaults only govern tools ported from TS; Python-only additions
+        # (advisor, Workflow, ...) are free to pick their own properties.
+        names_snapshot = _load_json("ts_tool_names.json")
+        cls.ts_core_names = {
+            info["python_name"] for info in names_snapshot["core_tools"].values()
+        }
 
     def test_default_is_read_only_false(self) -> None:
         default_val = self.props_snapshot["defaults"]["is_read_only"]
-        # Tools not in overrides should use the default
+        # TS core tools not in overrides should use the default
         overridden = set(self.props_snapshot["tool_overrides"].keys())
         for tool in self.registry.list_tools():
-            if tool.name not in overridden:
+            if tool.name in self.ts_core_names and tool.name not in overridden:
                 result = tool.is_read_only({})
                 self.assertEqual(
                     result, default_val,
@@ -140,7 +146,7 @@ class TestToolPropertyParity(unittest.TestCase):
         default_val = self.props_snapshot["defaults"]["is_concurrency_safe"]
         overridden = set(self.props_snapshot["tool_overrides"].keys())
         for tool in self.registry.list_tools():
-            if tool.name not in overridden:
+            if tool.name in self.ts_core_names and tool.name not in overridden:
                 result = tool.is_concurrency_safe({})
                 self.assertEqual(
                     result, default_val,

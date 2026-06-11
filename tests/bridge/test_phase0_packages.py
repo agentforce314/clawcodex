@@ -17,17 +17,21 @@ def test_subsystem_packages_preserve_legacy_metadata_for_porting_workspace() -> 
 def test_legacy_services_bridge_is_removed() -> None:
     """Phase 18: ``src.services.bridge`` was a deprecation-shim package
     pointing callers at ``src.bridge``. With the CCR bridge port now
-    functionally complete (phases 12-17), the shim is removed.
-    Importing the dotted path must fail with ``ModuleNotFoundError``.
-    """
-    import importlib
+    functionally complete (phases 12-17), the shim is removed: no real
+    module may resolve at the dotted path.
 
-    try:
-        importlib.import_module('src.services.bridge')
-    except ModuleNotFoundError:
-        return
-    raise AssertionError(
-        'src.services.bridge should be removed but is still importable',
+    A leftover ``src/services/bridge/__pycache__`` directory (untracked, so
+    a branch switch doesn't delete it) still imports as a *namespace*
+    package — ``spec.origin is None`` — which is not the shim coming back,
+    so it is tolerated.
+    """
+    import importlib.util
+    import sys
+
+    sys.modules.pop('src.services.bridge', None)
+    spec = importlib.util.find_spec('src.services.bridge')
+    assert spec is None or spec.origin is None, (
+        f'src.services.bridge should be removed but resolves to {spec.origin}'
     )
 
 
