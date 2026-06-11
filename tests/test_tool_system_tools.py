@@ -59,7 +59,14 @@ class ToolSystemTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name).resolve()
-        self.ctx = ToolContext(workspace_root=self.root)
+        # Explicit bypass: these tests exercise tool behavior, not
+        # permissions (the ToolContext default is no longer bypass — #274).
+        from src.permissions.types import ToolPermissionContext
+
+        self.ctx = ToolContext(
+            workspace_root=self.root,
+            permission_context=ToolPermissionContext(mode="bypassPermissions"),
+        )
 
     def tearDown(self) -> None:
         self.tmp.cleanup()

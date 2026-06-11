@@ -174,7 +174,14 @@ class TestBashImageE2E(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name).resolve()
         self.registry = build_default_registry(include_user_tools=False)
-        self.ctx = ToolContext(workspace_root=self.root)
+        # Explicit bypass: exercises image output, not permissions (the
+        # ToolContext default is no longer bypassPermissions — #274).
+        from src.permissions.types import ToolPermissionContext
+
+        self.ctx = ToolContext(
+            workspace_root=self.root,
+            permission_context=ToolPermissionContext(mode="bypassPermissions"),
+        )
 
     def tearDown(self) -> None:
         self.tmp.cleanup()

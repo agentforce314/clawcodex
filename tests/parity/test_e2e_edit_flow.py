@@ -9,11 +9,17 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.permissions.types import ToolPermissionContext
+from src.permissions.types import PermissionAskReply, ToolPermissionContext
 from src.tool_system.context import ToolContext
 from src.tool_system.defaults import build_default_registry
 from src.tool_system.errors import ToolPermissionError
 from src.tool_system.protocol import ToolCall
+
+
+def _allow_all_handler(_request):
+    """Auto-approve permission prompts — the default-mode workspace
+    allowlist stays live (outside-root paths still raise before any ask)."""
+    return PermissionAskReply(behavior="allow")
 
 
 class TestE2EEditFlow(unittest.TestCase):
@@ -24,6 +30,7 @@ class TestE2EEditFlow(unittest.TestCase):
         self.root = Path(self.tmp.name).resolve()
         self.registry = build_default_registry(include_user_tools=False)
         self.ctx = ToolContext(workspace_root=self.root)
+        self.ctx.permission_handler = _allow_all_handler
 
         # Create a file to edit
         self.test_file = self.root / "target.py"
@@ -119,6 +126,7 @@ class TestE2EWriteFlow(unittest.TestCase):
         self.root = Path(self.tmp.name).resolve()
         self.registry = build_default_registry(include_user_tools=False)
         self.ctx = ToolContext(workspace_root=self.root)
+        self.ctx.permission_handler = _allow_all_handler
 
     def tearDown(self) -> None:
         self.tmp.cleanup()

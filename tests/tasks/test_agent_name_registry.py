@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
+from src.permissions.types import ToolPermissionContext
 from src.tool_system.context import ToolContext
 from src.tool_system.defaults import build_default_registry
 from src.tool_system.protocol import ToolCall
@@ -33,7 +34,10 @@ def test_agent_input_schema_declares_name_field() -> None:
 
 
 def test_registry_field_default_empty(tmp_path: Path) -> None:
-    ctx = ToolContext(workspace_root=tmp_path)
+    ctx = ToolContext(
+        workspace_root=tmp_path,
+        permission_context=ToolPermissionContext(mode="bypassPermissions"),
+    )
     assert len(ctx.agent_name_registry) == 0
 
 
@@ -41,7 +45,10 @@ def test_named_async_agent_registers_name_to_id(tmp_path: Path) -> None:
     """Spawn with ``name="researcher"`` populates
     ``ctx.agent_name_registry["researcher"]``."""
     registry = build_default_registry(provider=object())
-    ctx = ToolContext(workspace_root=tmp_path)
+    ctx = ToolContext(
+        workspace_root=tmp_path,
+        permission_context=ToolPermissionContext(mode="bypassPermissions"),
+    )
 
     async def _fake(_params):
         yield AssistantMessage(content=[TextBlock(text="ok")])
@@ -67,7 +74,10 @@ def test_named_async_agent_registers_name_to_id(tmp_path: Path) -> None:
 def test_unnamed_spawn_does_not_register(tmp_path: Path) -> None:
     """No ``name`` → registry stays empty."""
     registry = build_default_registry(provider=object())
-    ctx = ToolContext(workspace_root=tmp_path)
+    ctx = ToolContext(
+        workspace_root=tmp_path,
+        permission_context=ToolPermissionContext(mode="bypassPermissions"),
+    )
 
     async def _fake(_params):
         yield AssistantMessage(content=[TextBlock(text="ok")])
@@ -105,7 +115,10 @@ def test_collision_with_running_agent_raises(tmp_path: Path) -> None:
     from src.tool_system.errors import ToolInputError
 
     registry = build_default_registry(provider=object())
-    ctx = ToolContext(workspace_root=tmp_path)
+    ctx = ToolContext(
+        workspace_root=tmp_path,
+        permission_context=ToolPermissionContext(mode="bypassPermissions"),
+    )
 
     # Pre-populate the registry as if a running agent was already
     # registered.
@@ -213,7 +226,10 @@ def test_collision_with_terminal_agent_overwrites(tmp_path: Path) -> None:
     the new spawn overwrites the name → agent_id mapping. Older
     terminal holders remain reachable via raw task_id."""
     registry = build_default_registry(provider=object())
-    ctx = ToolContext(workspace_root=tmp_path)
+    ctx = ToolContext(
+        workspace_root=tmp_path,
+        permission_context=ToolPermissionContext(mode="bypassPermissions"),
+    )
 
     from src.tasks.local_agent import (
         complete_agent_task,

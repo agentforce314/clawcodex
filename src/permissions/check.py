@@ -236,7 +236,16 @@ def has_permissions_to_use_tool_inner(
     )
     try:
         tool_permission_result = tool.check_permissions(tool_input, tool_use_context)
-    except Exception:
+    except Exception as exc:
+        # Workspace-allowlist violations are hard structural failures, not
+        # ask-able prompts: propagate so dispatch callers surface the error
+        # instead of soft-denying through the ask path (#274). Lazy import:
+        # permissions/ must not import tool_system/ at module level (the
+        # DAG direction is tool_system -> permissions).
+        from src.tool_system.errors import ToolPermissionError
+
+        if isinstance(exc, ToolPermissionError):
+            raise
         log.exception("Error in tool.check_permissions for %s", tool.name)
 
     if tool_permission_result.behavior == "deny":
@@ -307,6 +316,22 @@ def has_permissions_to_use_tool_inner(
                         updated_input=tool_input,
                         decision_reason=RuleDecisionReason(rule=rule),
                     )
+
+    # Read-only tools don't require permission prompts (TS parity:
+    # read-only tools resolve via checkReadPermissionForTool → allow).
+    # Runs after deny/ask rules so explicit rules still win; the
+    # workspace-root allowlist is still enforced by ensure_allowed_path
+    # inside each tool's call.
+    try:
+        is_read_only = bool(tool.is_read_only(tool_input))
+    except Exception:
+        is_read_only = False
+    if is_read_only:
+        return PermissionAllowDecision(
+            behavior="allow",
+            updated_input=_get_updated_input_or_fallback(tool_permission_result, tool_input),
+            decision_reason=OtherDecisionReason(reason="Tool is read-only"),
+        )
 
     if tool_permission_result.behavior == "passthrough":
         return _with_default_suggestions(

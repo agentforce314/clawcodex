@@ -30,6 +30,7 @@ from src.permissions import (
 )
 from src.permissions.handler import handle_permission_ask
 from src.permissions.loader import apply_rules_to_context, settings_to_rules
+from src.permissions.types import PermissionAskReply
 from src.tool_system.build_tool import Tool, build_tool
 from src.tool_system.context import ToolContext
 from src.tool_system.defaults import build_default_registry
@@ -204,7 +205,9 @@ class TestRegistryDispatchWithNewPermissions(unittest.TestCase):
             check_permissions=_check,
         )
         reg = ToolRegistry([tool])
-        self.ctx.permission_handler = lambda name, msg, sug: (True, False)
+        # With the default-mode context (#274) the ask path actually runs:
+        # the handler must speak the PermissionAskReply protocol.
+        self.ctx.permission_handler = lambda request: PermissionAskReply(behavior="allow")
         result = reg.dispatch(ToolCall(name="NeedApproval", input={}), self.ctx)
         self.assertFalse(result.is_error)
 
@@ -215,7 +218,7 @@ class TestRegistryDispatchWithNewPermissions(unittest.TestCase):
             call=_noop_call,
         )
         reg = ToolRegistry([tool])
-        self.ctx.permission_handler = lambda name, msg, sug: (True, False)
+        self.ctx.permission_handler = lambda request: PermissionAskReply(behavior="allow")
         result = reg.dispatch(ToolCall(name="Simple", input={}), self.ctx)
         self.assertFalse(result.is_error)
 

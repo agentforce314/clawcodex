@@ -66,8 +66,11 @@ class GlobLimits:
 @dataclass
 class ToolContext:
     workspace_root: Path
+    # "default" so the workspace-root allowlist is on unless a caller
+    # explicitly opts into bypass — an implicit bypassPermissions default
+    # silently disabled the sandbox for every SDK/embedder caller (#274).
     permission_context: ToolPermissionContext = field(
-        default_factory=lambda: ToolPermissionContext(mode="bypassPermissions")
+        default_factory=lambda: ToolPermissionContext(mode="default")
     )
     cwd: Path | None = None
     read_file_fingerprints: dict[Path, tuple[int, int] | tuple[int, int, bool]] = field(default_factory=dict)

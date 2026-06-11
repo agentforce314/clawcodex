@@ -18,6 +18,7 @@ from unittest.mock import patch
 import pytest
 
 from src.agent.fork_subagent import FORK_AGENT
+from src.permissions.types import ToolPermissionContext
 from src.tool_system.context import ToolContext, ToolUseOptions
 from src.tool_system.defaults import build_default_registry
 from src.tool_system.errors import ToolInputError
@@ -42,7 +43,12 @@ def _set_fork_env(monkeypatch: pytest.MonkeyPatch, *, enabled: bool) -> None:
 
 
 def _make_interactive_context(tmp_path: Path) -> ToolContext:
-    ctx = ToolContext(workspace_root=tmp_path)
+    # Explicit bypass: these tests exercise fork routing, not permissions
+    # (the ToolContext default is no longer bypassPermissions — #274).
+    ctx = ToolContext(
+        workspace_root=tmp_path,
+        permission_context=ToolPermissionContext(mode="bypassPermissions"),
+    )
     ctx.options = ToolUseOptions(is_non_interactive_session=False)
     return ctx
 
