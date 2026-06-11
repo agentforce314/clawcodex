@@ -13,13 +13,16 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from src.workflow.bundled import bundled_workflow_path
 from src.workflow.gating import is_workflows_enabled
 from src.workflow.sandbox import extract_meta
 
 from .types import Command, PromptCommand
+
+if TYPE_CHECKING:
+    from .registry import CommandRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -135,3 +138,44 @@ def load_workflow_commands(cwd: str) -> list[Command]:
         seen.add(cmd.name)
         commands.append(cmd)
     return commands
+
+
+def load_and_register_workflows(
+    project_root: str | Path | None = None,
+    registry: "CommandRegistry | None" = None,
+) -> list[PromptCommand]:
+    """Discover saved project/personal workflows and register them as ``/<name>``
+    commands into the command registry (global if ``registry`` is ``None``).
+
+    This is the workflow analogue of :func:`load_and_register_skills`, and exists
+    for the same reason: the aggregator's ``get_commands()`` lists these but has
+    no real consumers, so dispatch + suggestions (which read the GLOBAL registry)
+    never saw saved workflows. The REPL/TUI call this at startup, right after
+    ``load_and_register_skills``.
+
+    Precedence, all via the shadowing guard (a name already in the target wins):
+    builtins/bundled (registered first) beat saved workflows; **project beats
+    personal** (project is enumerated first); workflow-vs-workflow ties are
+    first-wins. Only the discovered project/personal commands are registered —
+    bundled ``/deep-research`` + ``/workflows`` already come from
+    ``register_builtin_commands``.
+
+    Gated by :func:`is_workflows_enabled`; returns ``[]`` when workflows are off.
+    """
+    if not is_workflows_enabled():
+        return []
+
+    from .registry import get_command_registry
+
+    cwd = Path(project_root) if project_root is not None else Path.cwd()
+    project = _discover_dir(cwd / ".claude" / "workflows", "project")
+    personal = _discover_dir(Path.home() / ".claude" / "workflows", "user")
+
+    target = registry if registry is not None else get_command_registry()
+    registered: list[PromptCommand] = []
+    for cmd in [*project, *personal]:  # project first → wins on a name clash
+        if target.get(cmd.name) is not None:
+            continue  # builtin / bundled / earlier workflow already owns the name
+        target.register(cmd)
+        registered.append(cmd)
+    return registered

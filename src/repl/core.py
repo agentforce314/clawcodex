@@ -1075,6 +1075,20 @@ class ClawcodexREPL:
             # Skill discovery must never block REPL startup; builtins still work.
             pass
 
+        # Saved workflows (.claude/workflows/*.py — project + personal) as
+        # /<name> commands, registered global-only after skills so builtins/
+        # bundled win on a name clash (same shadowing guard as skills). Without
+        # this, discovery lived only in the orphaned aggregator and /<name>
+        # never dispatched.
+        try:
+            from src.command_system.workflows_integration import (
+                load_and_register_workflows,
+            )
+
+            load_and_register_workflows(registry=None)
+        except Exception:
+            pass
+
         # Create command registry and register built-ins
         self.command_registry = CommandRegistry()
         register_builtin_commands(self.command_registry)
@@ -2939,6 +2953,17 @@ class ClawcodexREPL:
                         f"{user_input}\n\n{intro_text}"
                         if user_input else intro_text
                     )
+
+        # ultracode (workflow-engine §4.1): the `ultracode` keyword in this
+        # message, or the session-long `/effort ultracode` mode, appends a
+        # <system-reminder> nudging the model to author a workflow via the
+        # Workflow tool rather than working turn by turn. No-op (None) when
+        # workflows are disabled.
+        from src.workflow.ultracode import ultracode_reminder_for
+
+        ultra_reminder = ultracode_reminder_for(user_input)
+        if ultra_reminder:
+            user_input = f"{user_input}\n\n{ultra_reminder}" if user_input else ultra_reminder
 
         # Image @-mentions become real image content blocks on the user
         # message so the model sees the image directly (matches TS's

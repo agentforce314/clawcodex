@@ -1484,6 +1484,13 @@ class ClawCodexTUI(App):
 
             register_builtin_commands(None)
             load_and_register_skills(registry=None)
+            # Saved workflows (.claude/workflows/*.py) as /<name> commands —
+            # same global-only registration + shadowing guard as skills.
+            from src.command_system.workflows_integration import (
+                load_and_register_workflows,
+            )
+
+            load_and_register_workflows(registry=None)
         except Exception:
             pass
         self._skills_registered = True
