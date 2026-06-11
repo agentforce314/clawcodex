@@ -222,6 +222,37 @@ class ClawCodexTUI(App):
         except Exception:
             pass
         self._state_unsub = self.app_state.subscribe(self._on_state_change)
+        # C6: surface ignored/malformed config files as startup rows
+        # (TS StatusNotices / InvalidSettingsDialog family — Python's
+        # loader silently falls back to {}, so warn honestly instead).
+        self.call_after_refresh(self._show_config_warnings)
+
+    def _show_config_warnings(self) -> None:
+        if self._repl_screen is None:
+            return
+        try:
+            from src.services.config_health import (
+                collect_config_warnings,
+                collect_rule_warnings,
+            )
+
+            warnings = collect_config_warnings(str(self.workspace_root))
+            rule_warnings = collect_rule_warnings(str(self.workspace_root))
+            transcript = self._repl_screen.transcript
+            for warning in warnings:
+                transcript.append_system(
+                    f"⚠ {warning.message()}", style="warning"
+                )
+            for text in rule_warnings:
+                transcript.append_system(f"⚠ {text}", style="warning")
+            if warnings or rule_warnings:
+                transcript.append_system(
+                    "Run /doctor for details.", style="muted"
+                )
+        except Exception:
+            # A health-check failure must never crash app mount (the
+            # call_after_refresh callback would take the app down).
+            return
 
     def on_unmount(self) -> None:
         # Best-effort cleanup so we don't leave stale chrome on the host.
@@ -561,6 +592,15 @@ class ClawCodexTUI(App):
             )
         elif name == "quickopen":
             self._open_quick_open(transcript)
+        elif name == "doctor":
+            from src.tui.screens.doctor import DoctorScreen
+
+            self.push_screen(
+                DoctorScreen(
+                    app_state=self.app_state,
+                    workspace_root=self.workspace_root,
+                )
+            )
         else:
             transcript.append_system(f"Dialog '{name}' not available.", style="muted")
 
