@@ -392,3 +392,98 @@ def test_normal_completion_still_captures_final_usage() -> None:
     # ``response.usage`` would be the default empty dict, and the
     # ``↓ N tokens`` REPL spinner would silently lose count.
     assert response.usage.get("total_tokens") == 15
+
+
+class _FirehoseStream:
+    """Pathological proxy (#278): keeps yielding after ESC, ignores
+    ``response.close()`` entirely, and never raises."""
+
+    def __init__(self) -> None:
+        self.yielded = 0
+        self.response = MagicMock()  # close() is a silent no-op
+
+    def __iter__(self):
+        while True:
+            self.yielded += 1
+            time.sleep(0.001)
+            yield _FakeChunk(content="x")
+
+
+def test_firehose_stream_aborts_and_stops_accumulating() -> None:
+    """ESC against a stream that never goes quiet must still abort
+    promptly and bounded (#278): the worker stops enqueueing the moment
+    the abort trips, so the queue (bounded at 64) drains, the consumer
+    hits the Empty tick, and AbortError raises — instead of the queue
+    growing for as long as the proxy keeps sending."""
+    controller = AbortController()
+    stream = _FirehoseStream()
+    provider = _provider_with_stream(stream)
+
+    timer = threading.Timer(0.2, lambda: controller.abort("user_interrupt"))
+    timer.daemon = True
+    timer.start()
+
+    start = time.monotonic()
+    with pytest.raises(AbortError):
+        provider.chat_stream_response(
+            messages=[{"role": "user", "content": "hi"}],
+            abort_signal=controller.signal,
+        )
+    elapsed = time.monotonic() - start
+    assert elapsed < 2.0, f"abort took {elapsed:.2f}s against a firehose stream"
+
+    # The worker must notice the abort and stop reading: the yield
+    # count settles (within the worker's 0.25s put-poll) instead of
+    # growing for as long as the proxy keeps sending.
+    time.sleep(0.6)
+    settled = stream.yielded
+    time.sleep(0.5)
+    assert stream.yielded == settled, "worker kept draining after abort"
+
+
+def test_backpressure_happy_path_preserves_order_and_content() -> None:
+    """A stream larger than the queue bound (64) with a slow consumer
+    exercises the Full -> retry path: no drops, no duplicates, no
+    reordering (#278)."""
+    pieces = [f"c{i:03d}," for i in range(150)]
+    stream = _FakeStream(pieces)
+    provider = _provider_with_stream(stream)
+
+    seen: list[str] = []
+
+    def _slow_chunk(piece: str) -> None:
+        seen.append(piece)
+        time.sleep(0.001)
+
+    response = provider.chat_stream_response(
+        messages=[{"role": "user", "content": "hi"}],
+        on_text_chunk=_slow_chunk,
+        abort_signal=AbortController().signal,
+    )
+    assert response.content == "".join(pieces)
+    assert seen == pieces
+
+
+def test_consumer_crash_releases_worker() -> None:
+    """A consumer that dies for a NON-abort reason (on_text_chunk
+    raising) must not leave the worker retrying a full queue forever —
+    consumer_gone unblocks it and the stream stops being read (#278)."""
+    stream = _FirehoseStream()
+    provider = _provider_with_stream(stream)
+
+    def _exploding_chunk(_piece: str) -> None:
+        raise ValueError("ui callback bug")
+
+    with pytest.raises(ValueError, match="ui callback bug"):
+        provider.chat_stream_response(
+            messages=[{"role": "user", "content": "hi"}],
+            on_text_chunk=_exploding_chunk,
+            abort_signal=AbortController().signal,
+        )
+
+    # Worker must notice consumer_gone within one 0.25s put-poll and
+    # stop reading; the yield counter settles instead of growing.
+    time.sleep(0.6)
+    settled = stream.yielded
+    time.sleep(0.5)
+    assert stream.yielded == settled, "worker kept draining after consumer crash"
