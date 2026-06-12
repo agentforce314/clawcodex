@@ -45,11 +45,10 @@ def restore_cost_state_for_session(session_id: SessionId | str) -> bool:
     can call restore-then-switch or switch-then-restore.
 
     The on-disk location is ``~/.clawcodex/sessions/<sid>.json`` —
-    the same place ``Session.save`` writes. Today the Python
-    ``Session.save`` does NOT persist a ``cost`` block — this function
-    reads whatever cost fields are present and tolerates missing ones,
-    so it works correctly once persistence catches up (Phase-2.4
-    follow-up).
+    the same place ``Session.save`` writes. ``Session.save`` persists a
+    ``cost`` block since ch03 round-2 R2.1 (``agent/session.py:50-73``);
+    the missing-field tolerance below remains for snapshots written by
+    pre-R2.1 builds.
     """
     target = str(session_id)
     session_file = _sessions_dir() / f"{target}.json"

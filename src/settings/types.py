@@ -68,6 +68,17 @@ class SettingsSchema:
 
     # Model
     model: str = ""
+    # Provider key that ``model`` was chosen under (ch03 round-3 G1).
+    # Multi-provider port: a persisted model is meaningful only with the
+    # provider that served it — TS utils/model/model.ts:109-135 documents
+    # the cross-provider staleness failure (a stale settings.model kept
+    # firing at the wrong endpoint and 400ing after a provider switch).
+    # Same pairing rationale as advisor_model/advisor_provider below.
+    # Read-side guard: the persisted model applies ONLY when this matches
+    # the session's active provider. Distinct from ``provider`` (the
+    # active-provider selection) — reusing that key would make the guard
+    # vacuous and let /model mutate provider selection.
+    model_provider: str = ""
     small_fast_model: str = ""
     # Advisor — reviewer tool. Empty string = unset (no /advisor).
     # Persisted analogue of TS appState.advisorModel; the /advisor slash

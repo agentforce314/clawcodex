@@ -1088,7 +1088,7 @@ def reset_state_for_tests() -> None:
 
     Gated by the ``PYTEST_CURRENT_TEST`` environment variable, which pytest
     sets during test execution. Production calls raise ``RuntimeError``.
-    Mirrors TS ``resetStateForTests`` (``bootstrap/state.ts:993``).
+    Mirrors TS ``resetStateForTests`` (``bootstrap/state.ts:951``).
 
     Resets:
       * the ``_STATE`` dataclass singleton (all dataclass fields zero out)

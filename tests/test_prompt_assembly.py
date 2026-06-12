@@ -636,3 +636,49 @@ class TestClearContextCaches(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestUserContextBootstrapCache(unittest.TestCase):
+    """ch03 round-3 G3: get_user_context must populate the bootstrap
+    cached_claude_md_content (TS context.ts:173-176 — the DAG-leaf cache
+    that breaks the classifier->filesystem->permissions->classifier
+    cycle; consumer unported, cache is forward provisioning)."""
+
+    def setUp(self):
+        from src.bootstrap.state import reset_state_for_tests
+
+        clear_context_caches()
+        reset_state_for_tests()
+
+    tearDown = setUp
+
+    def test_user_context_populates_cache(self):
+        from unittest import mock
+
+        from src.bootstrap.state import get_cached_claude_md_content
+        from src.context_system import prompt_assembly as pa
+
+        fake_files = [object()]
+        with mock.patch.object(
+            pa, "get_memory_files", new=mock.AsyncMock(return_value=fake_files)
+        ), mock.patch.object(
+            pa, "get_claude_mds", return_value="# Project notes"
+        ):
+            asyncio.run(pa.get_user_context())
+        self.assertEqual(get_cached_claude_md_content(), "# Project notes")
+
+    def test_absent_claude_md_caches_none_not_stale(self):
+        from unittest import mock
+
+        from src.bootstrap.state import (
+            get_cached_claude_md_content,
+            set_cached_claude_md_content,
+        )
+        from src.context_system import prompt_assembly as pa
+
+        set_cached_claude_md_content("stale")
+        with mock.patch.object(
+            pa, "get_memory_files", new=mock.AsyncMock(return_value=[])
+        ), mock.patch.object(pa, "get_claude_mds", return_value=""):
+            asyncio.run(pa.get_user_context())
+        self.assertIsNone(get_cached_claude_md_content())

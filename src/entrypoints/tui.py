@@ -96,6 +96,14 @@ def run_tui(options: TUIOptions) -> int:
             base_url=provider_cfg.get("base_url"),
             model=model,
         )
+        # ch03 round-3 G1 read-side: a persisted /model choice survives
+        # restart — but override-first precedence (TS model.ts:109-135):
+        # an explicit options.model wins, and the provider_factory branch
+        # above is skipped entirely (the factory chose its model).
+        if options.model is None:
+            from src.settings.settings import apply_persisted_model
+
+            apply_persisted_model(provider, provider_name)
 
     # Build tool registry + context --------------------------------------
     from src.tool_system.context import ToolContext
