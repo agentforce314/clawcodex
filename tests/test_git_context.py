@@ -181,3 +181,41 @@ class TestFormatGitStatus(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestNoOptionalLocksFlag(unittest.TestCase):
+    """ch03 round-3 G2: the status and log probes must pass
+    --no-optional-locks (TS context.ts:63-72 — those two commands only)
+    so a concurrent git in the user's other terminal never blocks on our
+    read probes."""
+
+    def test_status_and_log_carry_the_flag_exactly(self):
+        calls: list[list[str]] = []
+
+        def fake_git_cmd(args, cwd, timeout=5.0):
+            calls.append(list(args))
+            # The is-git gate must pass or collect_git_context returns
+            # before running any probe.
+            if args == ["rev-parse", "--is-inside-work-tree"]:
+                return "true"
+            return ""
+
+        clear_git_caches()
+        with tempfile.TemporaryDirectory() as tmp:
+            _init_git_repo(tmp)
+            with patch(
+                "src.context_system.git_context._git_cmd",
+                side_effect=fake_git_cmd,
+            ):
+                _run(collect_git_context(tmp))
+        clear_git_caches()
+
+        flagged = [c for c in calls if c and c[0] == "--no-optional-locks"]
+        flagged_tails = {tuple(c[1:3]) for c in flagged}
+        self.assertIn(("status", "--short"), flagged_tails)
+        self.assertIn(("log", "--oneline"), flagged_tails)
+        # TS-exact: ONLY status + log get the flag.
+        self.assertEqual(len(flagged), 2, f"unexpected flagged calls: {flagged}")
+        unflagged = [c for c in calls if c and c[0] != "--no-optional-locks"]
+        for cmd in unflagged:
+            self.assertNotIn("--no-optional-locks", cmd)

@@ -165,9 +165,10 @@ def evaluate_prompt_cache_1h_eligibility(
     keeps 1h caching dormant. When the porting WI for these inputs lands,
     1h caching activates without requiring code changes here.
 
-    **Status (Phase 2):** this primitive is implemented but has NO
-    production caller today. ``grep -rn "evaluate_prompt_cache_1h_eligibility"
-    src/`` returns only the definition. The 1h cache path is therefore
+    **Status (ch03 round-3 refresh):** this primitive IS called by
+    ``initialize_prompt_cache_eligibility``
+    (``src/state/session_start.py:77``), but that session-start shim
+    itself has zero callers. The 1h cache path is therefore still
     end-to-end dormant: ``prompt_cache_1h_eligible`` stays at ``None``,
     ``should_1h_cache_ttl`` always returns False, every cache_control
     emits ``ttl: '5m'``. Activating 1h requires (a) porting the user-type
