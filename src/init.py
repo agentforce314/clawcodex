@@ -177,6 +177,18 @@ def run_pre_action(args: object) -> None:
         # workspace through.
         set_session_trust_accepted(False)
 
+    # #285: latch the 1h prompt-cache eligibility decision and install
+    # the configured query-source allowlist — without this the latch
+    # stays None and 1h caching is permanently dormant. Fail-soft.
+    try:
+        from src.state.session_start import initialize_prompt_cache_state
+
+        initialize_prompt_cache_state()
+    except Exception:
+        logging.getLogger(__name__).debug(
+            "prompt-cache state init failed", exc_info=True
+        )
+
     profile_checkpoint("pre_action_end")
 
 
