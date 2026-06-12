@@ -99,7 +99,6 @@ TOOL_DEFAULTS: dict[str, Any] = {
     "is_destructive": lambda _input: False,
     "check_permissions": lambda _input, _ctx: PermissionPassthroughResult(),
     "to_auto_classifier_input": lambda _input: "",
-    "user_facing_name": None,
 }
 
 

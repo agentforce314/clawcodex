@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import re
 import sys
@@ -1078,8 +1079,11 @@ def _dispatch_single_tool(
                 # Update the running aggregate AFTER the block is
                 # finalized (post-persistence, so the wrapper message
                 # size is what counts toward the budget — not the
-                # original 200K output).
-                tool_use_context.tool_result_chars_so_far += compute_block_chars(api_block)
+                # original 200K output). Non-finite-threshold tools
+                # (Read) don't count — TS skip-set semantics
+                # (query.ts:419-423, toolResultStorage.ts:841-851).
+                if math.isfinite(tool.max_result_size_chars):
+                    tool_use_context.tool_result_chars_so_far += compute_block_chars(api_block)
             raw_content = api_block.get("content", "")
             # Preserve list-of-content-blocks shape so multimodal tool_results
             # (e.g. Read's image content blocks, bash data:image/... captures)
