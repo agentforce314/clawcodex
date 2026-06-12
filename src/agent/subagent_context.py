@@ -171,6 +171,10 @@ def create_subagent_context(
         output_style_dir=parent_context.output_style_dir,
         additional_working_directories=parent_context.additional_working_directories,
         allow_docs=parent_context.allow_docs,
+        # Inherit, don't re-seed from bootstrap state: trust stays monotone
+        # with the parent and the fork path stays independent of mutable
+        # globals (#275).
+        workspace_trusted=parent_context.workspace_trusted,
         permission_handler=permission_handler,
         options=options,
         abort_controller=abort_controller,

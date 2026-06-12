@@ -26,6 +26,28 @@ def _make_parent_context(**kwargs) -> ToolContext:
     return ToolContext(**defaults)
 
 
+# --- Trust inheritance (#275) ---
+
+class TestWorkspaceTrustInheritance:
+    def test_trusted_parent_forks_trusted_child(self):
+        parent = _make_parent_context(workspace_trusted=True)
+        child = create_subagent_context(parent)
+        assert child.workspace_trusted is True
+
+    def test_untrusted_parent_forks_untrusted_child_despite_global_trust(self):
+        # The fork inherits from the parent, not from mutable bootstrap
+        # state — trust stays monotone with the parent.
+        from src.bootstrap.state import set_session_trust_accepted
+
+        set_session_trust_accepted(True)
+        try:
+            parent = _make_parent_context(workspace_trusted=False)
+            child = create_subagent_context(parent)
+            assert child.workspace_trusted is False
+        finally:
+            set_session_trust_accepted(False)
+
+
 # --- Default isolation ---
 
 class TestDefaultIsolation:

@@ -63,6 +63,19 @@ class GlobLimits:
     max_results: int | None = None
 
 
+def _session_trust_seed() -> bool:
+    """Default for ``ToolContext.workspace_trusted``: the bootstrap
+    session-trust flag (seeded by ``pre_action`` from the persisted
+    per-project decision, synced by the trust dialog's accept path).
+    Fail-safe False if bootstrap state is unavailable."""
+    try:
+        from src.bootstrap.state import get_session_trust_accepted
+
+        return get_session_trust_accepted()
+    except Exception:
+        return False
+
+
 @dataclass
 class ToolContext:
     workspace_root: Path
@@ -212,11 +225,15 @@ class ToolContext:
     # callers that still pass hooks via options get a ``DeprecationWarning``
     # but their behavior is preserved.
     hook_config_manager: Any | None = None
-    # Chapter-12 / Phase 0 / WI-0.2 — workspace-trust gate. Bootstrap flips
-    # this to ``True`` after the user accepts the trust dialog. Hooks (other
+    # Chapter-12 / Phase 0 / WI-0.2 — workspace-trust gate. Hooks (other
     # than ``HookSource.POLICY_SETTINGS``) are skipped while the workspace is
     # untrusted, mirroring TS' ``shouldSkipHookDueToTrust`` gate.
-    workspace_trusted: bool = False
+    # Seeded from bootstrap session trust at construction (#275): pre_action
+    # sets it from the persisted per-project decision, and the trust
+    # dialog's accept path syncs it via ``record_trust_accepted`` — a
+    # context built before the dialog must be flipped by the accepting
+    # surface (the TUI does; see ``_on_trust_choice``).
+    workspace_trusted: bool = field(default_factory=_session_trust_seed)
 
     # Chapter-9 / Fork Agents — captured bytes of the system prompt used on
     # the parent's most recent API call. Threaded into fork children so the

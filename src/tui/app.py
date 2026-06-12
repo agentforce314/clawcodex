@@ -270,6 +270,11 @@ class ClawCodexTUI(App):
             persisted = record_trust_accepted()
         except Exception:
             persisted = False
+        # The tool context was built before the dialog ran (untrusted seed);
+        # propagate acceptance so hooks stop being trust-skipped (#275).
+        # record_trust_accepted already synced the bootstrap flag for any
+        # contexts constructed after this point.
+        self.tool_context.workspace_trusted = True
         if not persisted and self._repl_screen is not None:
             self._repl_screen.transcript.append_system(
                 "Folder trusted for this session only — could not write "
