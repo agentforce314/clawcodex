@@ -18,9 +18,10 @@ has them). The latch is one-shot, so the wiring is wrong only if the
 auth signals aren't available *before* the first API call — at which
 point the writer would need to be invoked earlier.
 
-Call this from your application's session-start entry point (the
-equivalent of TS's API-client init path). Today the recommended call
-site is the REPL/TUI bootstrap, after settings have been loaded.
+Wired (#285): ``initialize_prompt_cache_state`` runs from
+``init.pre_action`` for every CLI invocation, and lazily from
+``should_1h_cache_ttl`` for SDK paths that skip pre_action (or after a
+/clear reset the latches).
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ import os
 from src.state.cache_state import (
     evaluate_prompt_cache_1h_eligibility,
     get_beta_header_latches,
+    populate_prompt_cache_1h_allowlist,
 )
 
 
@@ -81,6 +83,59 @@ def initialize_prompt_cache_eligibility(
     )
 
 
+def _read_configured_1h_sources() -> list[str]:
+    """The configured 1h-cache query sources (#285).
+
+    Resolution order:
+
+    1. ``CLAWCODEX_PROMPT_CACHE_1H_SOURCES`` — comma-separated query
+       sources (e.g. ``repl_main_thread``). The env var wins absolutely
+       when SET: ``CLAWCODEX_PROMPT_CACHE_1H_SOURCES=`` (set but empty)
+       is a kill switch that disables 1h even when settings configure
+       sources.
+    2. ``settings.prompt_cache_1h_sources`` — a list in the settings
+       schema (consulted only when the env var is unset).
+
+    Nothing configured means 1h caching stays dormant (the TS default
+    when the GrowthBook config returns nothing).
+    """
+    raw_env = os.environ.get("CLAWCODEX_PROMPT_CACHE_1H_SOURCES")
+    if raw_env is not None:
+        return [part.strip() for part in raw_env.split(",") if part.strip()]
+    try:
+        from src.settings.settings import get_settings
+
+        configured = get_settings().prompt_cache_1h_sources
+        if isinstance(configured, list):
+            return [s for s in configured if isinstance(s, str)]
+    except Exception:
+        pass  # settings unavailable — dormant default
+    return []
+
+
+def initialize_prompt_cache_state() -> None:
+    """Session-start wiring for the 1h prompt-cache path (#285).
+
+    Latches the eligibility decision (env-signal backed until an auth
+    subsystem lands) and installs the configured query-source allowlist.
+    Without this call, ``prompt_cache_1h_eligible`` stays ``None`` and
+    ``should_1h_cache_ttl`` always answers 5m — the pre-#285 dormant
+    state. Idempotent; fail-soft (cache TTL selection must never block
+    startup).
+    """
+    try:
+        initialize_prompt_cache_eligibility()
+        sources = _read_configured_1h_sources()
+        if sources:
+            populate_prompt_cache_1h_allowlist(sources)
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).debug(
+            "prompt-cache state initialization failed", exc_info=True
+        )
+
+
 def reset_eligibility_for_tests() -> None:
     """Test-only: clear the latch so a fresh evaluation can happen."""
     latches = get_beta_header_latches()
@@ -89,5 +144,6 @@ def reset_eligibility_for_tests() -> None:
 
 __all__ = [
     "initialize_prompt_cache_eligibility",
+    "initialize_prompt_cache_state",
     "reset_eligibility_for_tests",
 ]
