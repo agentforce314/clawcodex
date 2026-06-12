@@ -1,12 +1,15 @@
-"""Tests for ch02 round-2 PR-1 (G1): init() consumes prefetch results.
+"""Tests for init() prefetch consumption (ch02 round-2 G1 + round-3).
 
 Covers:
-- MDM payload parsing (extract_mdm_safe_env) — safe vs unsafe keys,
-  malformed inputs, missing fields, None / empty.
+- MDM payload parsing (extract_mdm_env) — UNFILTERED extraction (round-3:
+  the root-owned managed-prefs plist is the policy tier, TS applies
+  policySettings without a safe-key filter), malformed inputs, missing
+  fields, None / empty.
 - Keychain stash semantics — set/read, idempotence, None handling.
 - init() integration — MDM payload threaded into
   apply_safe_config_environment_variables(extra_env=...).
-- Precedence — config-file values still win over MDM extras (setdefault).
+- Precedence — the MDM policy tier applies LAST and overrides every other
+  tier AND the inherited shell env (round-3; TS policy precedence).
 """
 
 from __future__ import annotations
@@ -18,7 +21,8 @@ from unittest import mock
 from src.init import init, reset_init_for_test_only
 from src.permissions.trust_boundary import (
     apply_safe_config_environment_variables,
-    extract_mdm_safe_env,
+    extract_mdm_env,
+    reset_trust_boundary_for_test_only,
 )
 from src.utils.keychain_stash import (
     read_stashed_keychain,
@@ -27,44 +31,68 @@ from src.utils.keychain_stash import (
 )
 
 
+def _hermetic_tier_patches() -> list:
+    """Patch the disk-backed tier loaders so tests never read the real
+    user/global/project config or settings files."""
+    return [
+        mock.patch(
+            "src.permissions.trust_boundary._load_global_config_env",
+            return_value={},
+        ),
+        mock.patch(
+            "src.permissions.trust_boundary._load_user_settings_env",
+            return_value={},
+        ),
+        mock.patch(
+            "src.permissions.trust_boundary._load_project_scoped_env",
+            return_value={},
+        ),
+    ]
+
+
 _SAFE_KEY = "ANTHROPIC_MODEL"
 _UNSAFE_KEY = "ANTHROPIC_API_KEY"
 
 
-class ExtractMdmSafeEnvTests(unittest.TestCase):
-    def test_filters_to_safe_keys_only(self) -> None:
+class ExtractMdmEnvTests(unittest.TestCase):
+    def test_extraction_is_unfiltered(self) -> None:
+        # Round-3: MDM is the policy tier — no safe-key filter (TS
+        # applies policySettings unfiltered, managedEnv.ts:160-172).
         payload = (
             '{"env": {"' + _SAFE_KEY + '": "claude-opus-4-7", '
             '"' + _UNSAFE_KEY + '": "sk-secret"}}'
         )
-        result = extract_mdm_safe_env(payload)
-        self.assertEqual(result, {_SAFE_KEY: "claude-opus-4-7"})
+        result = extract_mdm_env(payload)
+        self.assertEqual(
+            result,
+            {_SAFE_KEY: "claude-opus-4-7", _UNSAFE_KEY: "sk-secret"},
+        )
 
     def test_returns_empty_dict_for_none_payload(self) -> None:
-        self.assertEqual(extract_mdm_safe_env(None), {})
+        self.assertEqual(extract_mdm_env(None), {})
 
     def test_returns_empty_dict_for_empty_payload(self) -> None:
-        self.assertEqual(extract_mdm_safe_env(""), {})
+        self.assertEqual(extract_mdm_env(""), {})
 
     def test_returns_empty_dict_for_malformed_json(self) -> None:
-        self.assertEqual(extract_mdm_safe_env('{not valid json'), {})
+        self.assertEqual(extract_mdm_env('{not valid json'), {})
 
     def test_returns_empty_dict_for_missing_env_key(self) -> None:
-        self.assertEqual(extract_mdm_safe_env('{"other": 1}'), {})
+        self.assertEqual(extract_mdm_env('{"other": 1}'), {})
 
     def test_returns_empty_dict_for_non_dict_env(self) -> None:
-        self.assertEqual(extract_mdm_safe_env('{"env": "not a dict"}'), {})
+        self.assertEqual(extract_mdm_env('{"env": "not a dict"}'), {})
 
     def test_returns_empty_dict_for_non_dict_root(self) -> None:
-        self.assertEqual(extract_mdm_safe_env('["a", "b"]'), {})
+        self.assertEqual(extract_mdm_env('["a", "b"]'), {})
 
     def test_skips_none_values(self) -> None:
         payload = '{"env": {"' + _SAFE_KEY + '": null}}'
-        self.assertEqual(extract_mdm_safe_env(payload), {})
+        self.assertEqual(extract_mdm_env(payload), {})
 
     def test_coerces_non_string_values(self) -> None:
         payload = '{"env": {"' + _SAFE_KEY + '": 42}}'
-        self.assertEqual(extract_mdm_safe_env(payload), {_SAFE_KEY: "42"})
+        self.assertEqual(extract_mdm_env(payload), {_SAFE_KEY: "42"})
 
 
 class KeychainStashTests(unittest.TestCase):
@@ -98,14 +126,27 @@ class KeychainStashTests(unittest.TestCase):
 
 class ApplySafeEnvExtraTests(unittest.TestCase):
     def setUp(self) -> None:
+        reset_trust_boundary_for_test_only()
         self._original = os.environ.get(_SAFE_KEY)
+        self._original_unsafe = os.environ.get(_UNSAFE_KEY)
         os.environ.pop(_SAFE_KEY, None)
+        os.environ.pop(_UNSAFE_KEY, None)
+        self._patches = _hermetic_tier_patches()
+        for p in self._patches:
+            p.start()
 
     def tearDown(self) -> None:
-        if self._original is None:
-            os.environ.pop(_SAFE_KEY, None)
-        else:
-            os.environ[_SAFE_KEY] = self._original
+        for p in self._patches:
+            p.stop()
+        for key, original in (
+            (_SAFE_KEY, self._original),
+            (_UNSAFE_KEY, self._original_unsafe),
+        ):
+            if original is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = original
+        reset_trust_boundary_for_test_only()
 
     def test_extra_env_applies_safe_keys(self) -> None:
         apply_safe_config_environment_variables(
@@ -113,25 +154,28 @@ class ApplySafeEnvExtraTests(unittest.TestCase):
         )
         self.assertEqual(os.environ.get(_SAFE_KEY), "from-mdm")
 
-    def test_extra_env_ignores_unsafe_keys(self) -> None:
+    def test_extra_env_applies_unsafe_keys_too(self) -> None:
+        # Round-3: the policy tier is unfiltered — an IT-managed API key
+        # or proxy is the use case managed preferences exist for.
         apply_safe_config_environment_variables(
             config_env={},
-            extra_env={_UNSAFE_KEY: "sk-leaked"},
+            extra_env={_UNSAFE_KEY: "sk-managed"},
         )
-        self.assertIsNone(os.environ.get(_UNSAFE_KEY))
+        self.assertEqual(os.environ.get(_UNSAFE_KEY), "sk-managed")
 
-    def test_extra_env_loses_to_existing_environ(self) -> None:
+    def test_extra_env_overrides_existing_environ(self) -> None:
+        # Round-3: MDM/policy alone overrides the inherited shell env
+        # (TS applies policySettings last; IT must win).
         os.environ[_SAFE_KEY] = "from-env"
+        reset_trust_boundary_for_test_only()  # snapshot includes the export
         apply_safe_config_environment_variables(
             config_env={}, extra_env={_SAFE_KEY: "from-mdm"}
         )
-        # setdefault: pre-existing wins
-        self.assertEqual(os.environ.get(_SAFE_KEY), "from-env")
+        self.assertEqual(os.environ.get(_SAFE_KEY), "from-mdm")
 
-    def test_config_env_overrides_extra_env_via_setdefault_ordering(self) -> None:
-        # extra_env applies FIRST via setdefault, then config_env via
-        # setdefault. So if both target the same key with no pre-existing
-        # env, extra_env wins (first writer to setdefault).
+    def test_extra_env_beats_config_env(self) -> None:
+        # MDM applies LAST (policy precedence) — it overwrites the
+        # global-config tier value.
         apply_safe_config_environment_variables(
             config_env={_SAFE_KEY: "from-config"},
             extra_env={_SAFE_KEY: "from-mdm"},
@@ -145,12 +189,19 @@ class InitConsumesPrefetchesTests(unittest.TestCase):
     def setUp(self) -> None:
         reset_init_for_test_only()
         reset_stashed_keychain_for_test_only()
+        reset_trust_boundary_for_test_only()
         self._original_safe = os.environ.get(_SAFE_KEY)
         os.environ.pop(_SAFE_KEY, None)
+        self._tier_patches = _hermetic_tier_patches()
+        for p in self._tier_patches:
+            p.start()
 
     def tearDown(self) -> None:
+        for p in self._tier_patches:
+            p.stop()
         reset_init_for_test_only()
         reset_stashed_keychain_for_test_only()
+        reset_trust_boundary_for_test_only()
         if self._original_safe is None:
             os.environ.pop(_SAFE_KEY, None)
         else:
