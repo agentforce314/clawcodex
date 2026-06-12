@@ -90,7 +90,13 @@ def run_tui(options: TUIOptions) -> int:
                 2,
             )
         provider_cls = get_provider_class(provider_name)
-        model = options.model or provider_cfg.get("default_model")
+        from src.settings.settings import get_persisted_model
+
+        model = (
+            options.model
+            or get_persisted_model(provider_name)
+            or provider_cfg.get("default_model")
+        )
         provider = provider_cls(
             api_key=provider_cfg["api_key"],
             base_url=provider_cfg.get("base_url"),

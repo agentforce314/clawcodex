@@ -416,12 +416,15 @@ class ClawcodexREPL:
             self.console.print("Run [bold]clawcodex login[/bold] to configure.")
             sys.exit(1)
 
-        # Initialize provider
+        # Initialize provider. The persisted /model choice (#280) wins
+        # over the provider's configured default.
+        from src.settings.settings import get_persisted_model
+
         provider_class = get_provider_class(provider_name)
         self.provider = provider_class(
             api_key=config["api_key"],
             base_url=config.get("base_url"),
-            model=config.get("default_model")
+            model=get_persisted_model(provider_name) or config.get("default_model")
         )
 
         # Create session

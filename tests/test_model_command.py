@@ -105,6 +105,17 @@ def _no_effort(monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def _isolated_config(tmp_path, monkeypatch):
+    """#280: ``_apply`` now persists the model choice to the global
+    config — point the writer at a per-test file (the theme/vim-command
+    pattern) so tests never touch the developer's real config."""
+    import src.config as cfg
+
+    monkeypatch.setattr(cfg, "GLOBAL_CONFIG_FILE", tmp_path / "config.json")
+    monkeypatch.setattr(cfg, "_default_manager", cfg.ConfigManager(cwd=tmp_path))
+
+
 # --------------------------------------------------------------------------- #
 # A. Metadata + registration
 # --------------------------------------------------------------------------- #
@@ -299,3 +310,34 @@ def test_repl_wires_provider_into_command_context():
 
     src_text = inspect.getsource(ClawcodexREPL._init_command_system)
     assert "provider=self.provider" in src_text
+
+
+# --------------------------------------------------------------------------- #
+# H. #280: the choice persists for the next launch
+# --------------------------------------------------------------------------- #
+async def test_set_persists_choice_for_restart(tmp_path):
+    """/model <name> writes settings.model paired with the provider key;
+    get_persisted_model restores it for the same provider only."""
+    from src.providers.anthropic_provider import AnthropicProvider
+
+    prov = AnthropicProvider(api_key="test", model="claude-sonnet-4-6")
+    out = await MODEL_COMMAND.run("claude-opus-4-6", _ctx(tmp_path, provider=prov))
+    assert "Set model to" in out.message
+
+    from src.settings.settings import get_persisted_model, invalidate_settings_cache
+
+    invalidate_settings_cache()  # simulate restart
+    assert get_persisted_model("anthropic", cwd=tmp_path) == "claude-opus-4-6"
+    assert get_persisted_model("glm", cwd=tmp_path) is None
+
+
+async def test_set_with_unknown_provider_class_does_not_pair(tmp_path):
+    """FakeProvider isn't a registered provider class — the model is
+    written unpaired and therefore not restored (fail-safe)."""
+    prov = FakeProvider(model=_SONNET)
+    await MODEL_COMMAND.run("opus", _ctx(tmp_path, provider=prov))
+
+    from src.settings.settings import get_persisted_model, invalidate_settings_cache
+
+    invalidate_settings_cache()
+    assert get_persisted_model("anthropic", cwd=tmp_path) is None
