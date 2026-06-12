@@ -1,9 +1,14 @@
-"""Unit tests for ``src/permissions/trust_boundary.py`` (P1.1).
+"""Unit tests for ``src/permissions/trust_boundary.py`` (ch02 round-3).
 
-Mirrors the chapter §"The Trust Boundary" semantic: only the safe env-
-var subset applies pre-trust; everything else (PATH, LD_PRELOAD,
-NODE_EXTRA_CA_CERTS, proxies, base URLs, API keys) is excluded by
-default-deny.
+The boundary is SOURCE-class based (TS managedEnv.ts:106-110):
+
+* trusted tiers (global config, user settings) apply IN FULL pre-trust;
+* project-scoped tiers apply only the ``SAFE_ENV_KEYS`` subset pre-trust
+  and in full post-trust;
+* the MDM policy tier applies in full, last, and alone may override the
+  inherited shell environment;
+* original (non-empty) shell env keys are never overridden by config
+  tiers — the port's documented shell-wins customization.
 """
 
 from __future__ import annotations
@@ -12,8 +17,6 @@ import os
 import unittest
 from unittest import mock
 
-import pytest
-
 from src.permissions.trust_boundary import (
     SAFE_ENV_KEYS,
     UNSAFE_ENV_KEYS,
@@ -21,14 +24,12 @@ from src.permissions.trust_boundary import (
     apply_full_config_environment_variables,
     apply_safe_config_environment_variables,
     is_safe_env_key,
+    reset_trust_boundary_for_test_only,
 )
 
 
 class TestSafeKeyAllowList(unittest.TestCase):
     def test_every_entry_in_safe_env_keys_is_safe(self) -> None:
-        # Every key in the allow-list must classify as safe — round-trip
-        # verifies no entry is shadowed by UNSAFE_ENV_KEYS or by a
-        # prefix match.
         for key in SAFE_ENV_KEYS:
             with self.subTest(key=key):
                 self.assertTrue(
@@ -38,17 +39,28 @@ class TestSafeKeyAllowList(unittest.TestCase):
 
     def test_set_size_matches_ts_port(self) -> None:
         # Sanity check: TS managedEnvConstants.ts:109-194 has 82 entries
-        # in SAFE_ENV_VARS. Our port should match exactly. If a future
-        # WI legitimately changes the count, update both this number
-        # and the corresponding TS comment.
+        # in SAFE_ENV_VARS. Our port should match exactly.
         self.assertEqual(
             len(SAFE_ENV_KEYS),
             82,
             "SAFE_ENV_KEYS count drifted from the TS port",
         )
 
+    def test_membership_is_case_insensitive(self) -> None:
+        # TS tests key.toUpperCase() (managedEnv.ts:175) — a project
+        # settings file may write `anthropic_model` and it still counts
+        # as the safe key.
+        self.assertTrue(is_safe_env_key("anthropic_model"))
+        self.assertTrue(is_safe_env_key("Disable_Telemetry"))
+
 
 class TestUnsafeKeysBlocked(unittest.TestCase):
+    """``is_safe_env_key`` is the PROJECT-TIER gate. These keys may
+    never apply pre-trust **from a project-scoped source**; trusted
+    tiers (global config, user settings, MDM) may legitimately set
+    them — see TS caCertsConfig.ts:59-66 for the same source-relative
+    distinction on NODE_EXTRA_CA_CERTS."""
+
     def test_path_returns_false(self) -> None:
         self.assertFalse(is_safe_env_key("PATH"))
 
@@ -59,9 +71,10 @@ class TestUnsafeKeysBlocked(unittest.TestCase):
         self.assertFalse(is_safe_env_key("NODE_OPTIONS"))
 
     def test_node_extra_ca_certs_returns_false(self) -> None:
-        # The round-1 critic-blocking-issue case: TS explicitly flags
-        # NODE_EXTRA_CA_CERTS as "TRUST ATTACKER-CONTROLLED SERVER"
-        # (managedEnvConstants.ts:99-103).
+        # TS flags NODE_EXTRA_CA_CERTS as "TRUST ATTACKER-CONTROLLED
+        # SERVER" for PROJECT sources (managedEnvConstants.ts:99-103);
+        # the same key from global config/user settings applies
+        # pre-trust via the trusted-tier pass (caCertsConfig.ts:59-66).
         self.assertFalse(is_safe_env_key("NODE_EXTRA_CA_CERTS"))
 
     def test_anthropic_base_url_returns_false(self) -> None:
@@ -88,139 +101,234 @@ class TestUnsafePrefixesBlocked(unittest.TestCase):
 
 class TestUnknownKeyDefaultDeny(unittest.TestCase):
     def test_random_key_returns_false(self) -> None:
-        # Default-deny: anything not in the allow-list returns False.
         self.assertFalse(is_safe_env_key("FOO_BAR_BAZ"))
 
     def test_empty_string_returns_false(self) -> None:
         self.assertFalse(is_safe_env_key(""))
 
 
-class TestApplySafeDoesNotApplyUnsafe(unittest.TestCase):
-    def test_unsafe_keys_excluded_from_safe_apply(self, *, monkeypatch=None):
-        # Use a synthetic config_env so we don't depend on real disk
-        # state. Pass it explicitly to bypass _load_config_env.
-        config_env = {
-            "ANTHROPIC_MODEL": "claude-sonnet-4-6",  # safe
-            "PATH": "/opt/evil/bin",                 # unsafe
-            "NODE_EXTRA_CA_CERTS": "/opt/evil.crt",  # unsafe
-            "LD_PRELOAD": "/opt/evil.so",            # unsafe (prefix)
-            "DISABLE_TELEMETRY": "1",                # safe
+class _HermeticEnvCase(unittest.TestCase):
+    """Base for application-semantics tests: resets the module's
+    shell-env snapshot, patches all tier loaders to empty (tests opt in
+    per tier), and restores every env key it touches."""
+
+    TOUCHED_KEYS: tuple[str, ...] = ()
+
+    def setUp(self) -> None:
+        reset_trust_boundary_for_test_only()
+        self._saved = {k: os.environ.get(k) for k in self.TOUCHED_KEYS}
+        for key in self.TOUCHED_KEYS:
+            os.environ.pop(key, None)
+        self._patches = [
+            mock.patch(
+                "src.permissions.trust_boundary._load_global_config_env",
+                return_value={},
+            ),
+            mock.patch(
+                "src.permissions.trust_boundary._load_user_settings_env",
+                return_value={},
+            ),
+            mock.patch(
+                "src.permissions.trust_boundary._load_project_scoped_env",
+                return_value={},
+            ),
+        ]
+        self.mock_global, self.mock_user, self.mock_project = [
+            p.start() for p in self._patches
+        ]
+
+    def tearDown(self) -> None:
+        for p in self._patches:
+            p.stop()
+        for key, value in self._saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        reset_trust_boundary_for_test_only()
+
+
+class TestTrustedTiersApplyFully(_HermeticEnvCase):
+    """TS applies trusted-source env IN FULL pre-trust
+    (managedEnv.ts:137-159) — including keys on the project-unsafe list."""
+
+    TOUCHED_KEYS = ("NODE_TLS_REJECT_UNAUTHORIZED", "ANTHROPIC_MODEL")
+
+    def test_global_config_unsafe_class_key_applies_pre_trust(self) -> None:
+        apply_safe_config_environment_variables(
+            config_env={"NODE_TLS_REJECT_UNAUTHORIZED": "0"}
+        )
+        self.assertEqual(os.environ.get("NODE_TLS_REJECT_UNAUTHORIZED"), "0")
+
+    def test_user_settings_env_applies_pre_trust(self) -> None:
+        self.mock_user.return_value = {"ANTHROPIC_MODEL": "from-user-settings"}
+        apply_safe_config_environment_variables(config_env={})
+        self.assertEqual(
+            os.environ.get("ANTHROPIC_MODEL"), "from-user-settings"
+        )
+
+    def test_user_settings_beat_global(self) -> None:
+        self.mock_user.return_value = {"ANTHROPIC_MODEL": "from-user-settings"}
+        apply_safe_config_environment_variables(
+            config_env={"ANTHROPIC_MODEL": "from-global"}
+        )
+        self.assertEqual(
+            os.environ.get("ANTHROPIC_MODEL"), "from-user-settings"
+        )
+
+
+class TestProjectTierSafeSubset(_HermeticEnvCase):
+    """Project-scoped sources: SAFE subset pre-trust (managedEnv.ts:173-178),
+    everything post-trust."""
+
+    TOUCHED_KEYS = (
+        "ANTHROPIC_MODEL",
+        "NODE_EXTRA_CA_CERTS",
+        "LD_PRELOAD",
+        "GIT_WORK_TREE_TEST_TB",
+    )
+
+    def test_project_safe_key_applies_pre_trust(self) -> None:
+        self.mock_project.return_value = {"ANTHROPIC_MODEL": "from-project"}
+        apply_safe_config_environment_variables(config_env={})
+        self.assertEqual(os.environ.get("ANTHROPIC_MODEL"), "from-project")
+
+    def test_project_safe_key_lowercase_applies_pre_trust(self) -> None:
+        self.mock_project.return_value = {"anthropic_model": "from-project"}
+        apply_safe_config_environment_variables(config_env={})
+        self.assertEqual(os.environ.get("anthropic_model"), "from-project")
+
+    def test_project_unsafe_keys_never_apply_pre_trust(self) -> None:
+        self.mock_project.return_value = {
+            "NODE_EXTRA_CA_CERTS": "/opt/evil.crt",
+            "LD_PRELOAD": "/opt/evil.so",
         }
-        with mock.patch.dict(os.environ, {}, clear=False):
-            # Remove any pre-existing keys to make the test deterministic
-            for k in ("ANTHROPIC_MODEL", "DISABLE_TELEMETRY", "PATH",
-                      "NODE_EXTRA_CA_CERTS", "LD_PRELOAD"):
-                os.environ.pop(k, None)
-            apply_safe_config_environment_variables(config_env)
+        apply_safe_config_environment_variables(config_env={})
+        self.assertIsNone(os.environ.get("NODE_EXTRA_CA_CERTS"))
+        self.assertIsNone(os.environ.get("LD_PRELOAD"))
 
-            self.assertEqual(os.environ.get("ANTHROPIC_MODEL"), "claude-sonnet-4-6")
-            self.assertEqual(os.environ.get("DISABLE_TELEMETRY"), "1")
-            # Unsafe keys: NOT applied.
-            self.assertNotEqual(os.environ.get("PATH"), "/opt/evil/bin")
-            self.assertIsNone(os.environ.get("NODE_EXTRA_CA_CERTS"))
-            self.assertIsNone(os.environ.get("LD_PRELOAD"))
+    def test_full_pass_applies_project_unsafe_keys(self) -> None:
+        # Post-trust the project tier applies in full — for keys not
+        # reserved by the shell snapshot (GIT_WORK_TREE-style keys are
+        # the TS-cited motivation, main.tsx:1955-1961).
+        self.mock_project.return_value = {
+            "GIT_WORK_TREE_TEST_TB": "/repo/worktree"
+        }
+        apply_full_config_environment_variables(config_env={})
+        self.assertEqual(
+            os.environ.get("GIT_WORK_TREE_TEST_TB"), "/repo/worktree"
+        )
+
+    def test_full_pass_project_beats_global(self) -> None:
+        self.mock_project.return_value = {"ANTHROPIC_MODEL": "from-project"}
+        apply_full_config_environment_variables(
+            config_env={"ANTHROPIC_MODEL": "from-global"}
+        )
+        self.assertEqual(os.environ.get("ANTHROPIC_MODEL"), "from-project")
 
 
-class TestApplySafeDoesNotOverwriteExisting(unittest.TestCase):
-    def test_setdefault_semantics(self) -> None:
-        # Pre-existing process env wins; setdefault doesn't clobber.
-        config_env = {"ANTHROPIC_MODEL": "from-config"}
-        with mock.patch.dict(os.environ, {"ANTHROPIC_MODEL": "from-shell"}, clear=False):
-            apply_safe_config_environment_variables(config_env)
-            self.assertEqual(os.environ["ANTHROPIC_MODEL"], "from-shell")
+class TestShellWinsCustomization(_HermeticEnvCase):
+    """Documented port divergence from TS Object.assign: variables
+    present (non-empty) in the ORIGINAL process environment are never
+    overridden by config tiers — only by the MDM policy tier. Mechanism:
+    TS's CCD spawn-env-keys filter (managedEnv.ts:62-80) always-on."""
+
+    TOUCHED_KEYS = ("ANTHROPIC_MODEL",)
+
+    def test_shell_var_survives_safe_and_full_pass(self) -> None:
+        os.environ["ANTHROPIC_MODEL"] = "from-shell"
+        reset_trust_boundary_for_test_only()  # snapshot AFTER the export
+        apply_safe_config_environment_variables(
+            config_env={"ANTHROPIC_MODEL": "from-config"}
+        )
+        self.assertEqual(os.environ["ANTHROPIC_MODEL"], "from-shell")
+        apply_full_config_environment_variables(
+            config_env={"ANTHROPIC_MODEL": "from-config"}
+        )
+        self.assertEqual(os.environ["ANTHROPIC_MODEL"], "from-shell")
+
+    def test_empty_shell_var_does_not_reserve_the_key(self) -> None:
+        # Carry-over from the retired secret_store applier: an empty env
+        # var counts as unset (`export FOO=` should not mask config).
+        os.environ["ANTHROPIC_MODEL"] = "   "
+        reset_trust_boundary_for_test_only()
+        apply_safe_config_environment_variables(
+            config_env={"ANTHROPIC_MODEL": "from-config"}
+        )
+        self.assertEqual(os.environ["ANTHROPIC_MODEL"], "from-config")
+
+    def test_mdm_overrides_shell(self) -> None:
+        # The policy tier is the single exception (TS applies
+        # policySettings last among trusted sources; IT must win).
+        os.environ["ANTHROPIC_MODEL"] = "from-shell"
+        reset_trust_boundary_for_test_only()
+        apply_safe_config_environment_variables(
+            config_env={}, extra_env={"ANTHROPIC_MODEL": "from-mdm"}
+        )
+        self.assertEqual(os.environ["ANTHROPIC_MODEL"], "from-mdm")
 
 
-class TestApplyFullOverwritesUnsafe(unittest.TestCase):
-    def test_full_apply_writes_unsafe_keys(self) -> None:
-        # Post-trust: the full apply writes everything, including
-        # explicitly-unsafe keys.
-        config_env = {"PATH": "/opt/safe/bin", "ANTHROPIC_MODEL": "claude-4"}
-        with mock.patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("PATH", None)
-            os.environ.pop("ANTHROPIC_MODEL", None)
-            apply_full_config_environment_variables(config_env)
-            self.assertEqual(os.environ.get("PATH"), "/opt/safe/bin")
-            self.assertEqual(os.environ.get("ANTHROPIC_MODEL"), "claude-4")
+class TestMdmPolicyTier(_HermeticEnvCase):
+    TOUCHED_KEYS = ("ANTHROPIC_MODEL", "HTTPS_PROXY")
 
-    def test_full_apply_overwrites_existing(self) -> None:
-        # Full apply uses assignment, not setdefault — so a config value
-        # wins over the shell value, mirroring TS's post-trust behavior.
-        config_env = {"ANTHROPIC_MODEL": "from-config"}
-        with mock.patch.dict(os.environ, {"ANTHROPIC_MODEL": "from-shell"}, clear=False):
-            apply_full_config_environment_variables(config_env)
-            self.assertEqual(os.environ["ANTHROPIC_MODEL"], "from-config")
+    def test_mdm_applies_last_over_other_tiers(self) -> None:
+        self.mock_project.return_value = {"ANTHROPIC_MODEL": "from-project"}
+        apply_safe_config_environment_variables(
+            config_env={"ANTHROPIC_MODEL": "from-global"},
+            extra_env={"ANTHROPIC_MODEL": "from-mdm"},
+        )
+        self.assertEqual(os.environ["ANTHROPIC_MODEL"], "from-mdm")
+
+    def test_mdm_unsafe_class_keys_apply(self) -> None:
+        # Root-owned policy tier is unfiltered (TS applies policySettings
+        # without a safe-key filter, managedEnv.ts:160-172) — the
+        # enterprise-proxy use case.
+        apply_safe_config_environment_variables(
+            config_env={}, extra_env={"HTTPS_PROXY": "http://corp-proxy:3128"}
+        )
+        self.assertEqual(
+            os.environ.get("HTTPS_PROXY"), "http://corp-proxy:3128"
+        )
+
+    def test_full_pass_reasserts_mdm_last(self) -> None:
+        # The safe pass stashes the MDM env; the full pass re-applies it
+        # after the project tier so policy survives post-trust too.
+        apply_safe_config_environment_variables(
+            config_env={}, extra_env={"ANTHROPIC_MODEL": "from-mdm"}
+        )
+        self.mock_project.return_value = {"ANTHROPIC_MODEL": "from-project"}
+        apply_full_config_environment_variables(config_env={})
+        self.assertEqual(os.environ["ANTHROPIC_MODEL"], "from-mdm")
 
 
 class TestLoadConfigEnvFallthrough(unittest.TestCase):
-    """Risk-register row 3: load_global must fall through cleanly
-    when no global config exists.
-    """
-
     def test_no_global_config_does_not_raise(self) -> None:
-        # apply_safe_config_environment_variables() with no arg loads
-        # from disk. On a fresh test machine without ~/.clawcodex/config.json
-        # this should succeed and apply nothing (returns empty dict).
-        # Mock ConfigManager.load_global to return {} (no env subkey)
-        # so the test doesn't depend on user-local config.
-        with mock.patch("src.config.ConfigManager.load_global", return_value={}):
+        reset_trust_boundary_for_test_only()
+        with mock.patch(
+            "src.config.ConfigManager.load_global", return_value={}
+        ), mock.patch(
+            "src.config.ConfigManager.load_project", return_value={}
+        ), mock.patch(
+            "src.config.ConfigManager.load_local", return_value={}
+        ), mock.patch(
+            "src.permissions.trust_boundary._read_settings_env",
+            return_value={},
+        ):
             apply_safe_config_environment_variables()  # must not raise
 
 
-class TestLoadConfigEnvOnlyReadsGlobal(unittest.TestCase):
-    """Security invariant: _load_config_env reads ONLY load_global,
-    never load_project / load_local. A malicious project clone
-    shipping ``.claude/config.json`` with ``env: {PATH: /opt/evil}``
-    must NOT poison the pre-trust env.
-
-    Per the chapter §"The Trust Boundary" and the TS reference
-    (managedEnv.ts:106-110, which reads from user/policy/flag sources
-    only). The plan's risk-register row 3 committed to this test.
-    """
-
-    def test_project_env_not_applied_pre_trust(self) -> None:
-        # Simulate the attack: global config has no env, but project
-        # config has a malicious PATH.
-        attacker_env = {"PATH": "/opt/evil/bin"}
-        original_path = os.environ.get("PATH", "")
-
-        # The implementation should only read load_global. If it
-        # reads load_project / load_local, the attacker's PATH would
-        # be in config_env and then is_safe_env_key("PATH") returns
-        # False so it's still not applied — but the security goal is
-        # to never even read the project config in the first place.
-        # We assert both: load_project is NOT called, and PATH stays
-        # unchanged.
-        with mock.patch(
-            "src.config.ConfigManager.load_global", return_value={"env": {}}
-        ) as mock_global, mock.patch(
-            "src.config.ConfigManager.load_project", return_value={"env": attacker_env}
-        ) as mock_project, mock.patch(
-            "src.config.ConfigManager.load_local", return_value={"env": attacker_env}
-        ) as mock_local:
-            apply_safe_config_environment_variables()
-            # PATH unchanged — defense-in-depth from is_safe_env_key.
-            self.assertEqual(os.environ.get("PATH", ""), original_path)
-            # _load_config_env reads only the global source.
-            mock_global.assert_called_once()
-            mock_project.assert_not_called()
-            mock_local.assert_not_called()
-
-
 class TestUnsafeKeySetIsAuditable(unittest.TestCase):
-    """Documented audit guarantees: the explicit unsafe set has
-    every name the chapter / TS reference calls out by name."""
+    """Documented audit guarantees: the explicit unsafe set has every
+    name the chapter / TS reference calls out by name. NB these are
+    PROJECT-TIER exclusions; trusted tiers may set them (the
+    classification is source-relative — caCertsConfig.ts:59-66)."""
 
     def test_chapter_mentioned_keys_are_explicitly_unsafe(self) -> None:
-        # Chapter §"The Trust Boundary": "PATH, LD_PRELOAD, NODE_OPTIONS".
-        # All three must be explicitly enumerated (PATH/NODE_OPTIONS in
-        # the set; LD_PRELOAD via UNSAFE_ENV_PREFIXES).
         self.assertIn("PATH", UNSAFE_ENV_KEYS)
         self.assertIn("NODE_OPTIONS", UNSAFE_ENV_KEYS)
         self.assertIn("LD_", UNSAFE_ENV_PREFIXES)
 
     def test_ts_attack_category_keys_explicitly_unsafe(self) -> None:
-        # TS managedEnvConstants.ts:92-103 comment block enumerates the
-        # explicit "DANGEROUS" categories. Audit that we keep them all.
         for expected in (
             "NODE_EXTRA_CA_CERTS",
             "NODE_TLS_REJECT_UNAUTHORIZED",

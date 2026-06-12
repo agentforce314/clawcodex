@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -149,12 +150,72 @@ def main():
         return _run_tui_mode(args)
 
     profile_checkpoint("mode_dispatch_repl")
+    # ch02 round-3: the legacy REPL is the DEFAULT interactive surface but
+    # had no folder-trust gate (C8 shipped one only for the opt-in TUI).
+    # Port hardening, consistent with C8 and stricter than TS (which gates
+    # only Anthropic-account setups, interactiveHelpers.tsx:139): ask
+    # before the full project env applies. Already-trusted sessions
+    # (including non-interactive ones seeded by run_pre_action) skip this.
+    from src.services.startup_gates import check_trust_accepted
+
+    if not check_trust_accepted():
+        if sys.stdin.isatty():
+            if not _prompt_folder_trust():
+                return 1
+        else:
+            # Piped-stdin REPL (scripted use) ≈ -p mode: implicit trust,
+            # matching the non-interactive branch of run_pre_action. The
+            # single documented asymmetry of the trust seeding matrix.
+            from src.permissions.trust_boundary import establish_session_trust
+
+            establish_session_trust()
     profile_checkpoint("phase4_dispatch")
     return start_repl(
         stream=args.stream,
         permission_mode=args._resolved_permission_mode,
         is_bypass_permissions_mode_available=args._resolved_is_bypass_available,
     )
+
+
+def _prompt_folder_trust() -> bool:
+    """Plain-text port of the C8 TrustFolderScreen for the legacy REPL.
+
+    Accept → persist (``record_trust_accepted``) + grant session trust +
+    apply the full env. Decline/EOF → False (caller exits 1, mirroring TS
+    TrustDialog's "No, exit" → gracefulShutdownSync(1)).
+    """
+    from src.permissions.trust_boundary import establish_session_trust
+    from src.services.startup_gates import (
+        collect_trust_warnings,
+        record_trust_accepted,
+    )
+
+    cwd = os.getcwd()
+    print("Do you trust the files in this folder?")
+    print(f"  {cwd}")
+    try:
+        warnings = collect_trust_warnings()
+    except Exception:
+        warnings = []
+    if warnings:
+        print()
+        for warning in warnings:
+            print(f"  ! {warning}")
+    print()
+    print(
+        "ClawCodex may read, execute, and modify files here. Accept only if "
+        "you trust this folder's contents and configuration."
+    )
+    try:
+        answer = input("Trust this folder? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+    if answer not in ("y", "yes"):
+        return False
+    record_trust_accepted()
+    establish_session_trust()
+    return True
 
 
 def _build_parser() -> argparse.ArgumentParser:

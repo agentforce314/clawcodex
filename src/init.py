@@ -32,7 +32,8 @@ from functools import cache
 
 from src.permissions.trust_boundary import (
     apply_safe_config_environment_variables,
-    extract_mdm_safe_env,
+    establish_session_trust,
+    extract_mdm_env,
 )
 from src.prefetch import (
     get_or_start_keychain_prefetch,
@@ -84,21 +85,19 @@ def init() -> None:
         wait_and_read_keychain(get_or_start_keychain_prefetch(), timeout=5.0)
     )
     mdm_payload = wait_and_read_mdm(get_or_start_mdm_raw_read(), timeout=2.0)
-    mdm_safe_env = extract_mdm_safe_env(mdm_payload)
+    mdm_env = extract_mdm_env(mdm_payload)
     profile_checkpoint("init_after_prefetch_consumption")
 
-    _logger.info("init: applying safe env vars")
-    apply_safe_config_environment_variables(extra_env=mdm_safe_env)
+    # ch02 round-3: the pre-trust pass applies the TRUSTED tiers in full
+    # (global config env — including stored API keys like TAVILY_API_KEY —
+    # and user settings env), the SAFE subset of the project-scoped tiers,
+    # and the MDM policy env last. Project/local tiers apply in full only
+    # after trust (run_pre_action seeding or a trust-gate accept). The old
+    # secret_store startup applier is gone — it copied the MERGED env
+    # (committable project tiers included) with no trust gate.
+    _logger.info("init: applying pre-trust env (trusted tiers + safe subset)")
+    apply_safe_config_environment_variables(extra_env=mdm_env)
     profile_checkpoint("init_safe_env_vars_applied")
-
-    # Stored API keys: copy the config ``env`` block (e.g. TAVILY_API_KEY in
-    # ~/.clawcodex/config.json) into os.environ so every os.environ[...] reader
-    # sees them. override=False -> a real exported var and the managed/MDM safe
-    # env applied just above both win over the user's stored value.
-    _logger.info("init: applying stored config env (API keys)")
-    from src.secret_store import apply_config_env_to_environ
-    apply_config_env_to_environ()
-    profile_checkpoint("init_config_env_applied")
 
     _logger.info("init: setting up graceful shutdown")
     setup_graceful_shutdown()
@@ -149,26 +148,27 @@ def run_pre_action(args: object) -> None:
     from src.bootstrap.state import (
         set_client_type,
         set_is_interactive,
-        set_session_trust_accepted,
     )
 
-    set_is_interactive(_determine_is_interactive(args))
+    is_interactive = _determine_is_interactive(args)
+    set_is_interactive(is_interactive)
     set_client_type(_determine_client_type())
 
-    # The trust dialog SHIPPED (components C8:
-    # ``services/startup_gates.check_trust_accepted`` + the TUI's
-    # TrustFolderScreen), but this placeholder must outlive it: the TUI
-    # is the only surface with a dialog — headless / -p / legacy-REPL
-    # sessions have no way to ask, and flipping the default to
-    # untrusted would hard-block their ``hooks/trust_gate.py`` and
-    # ``tool_system/context.py:workspace_trusted`` consumers with no
-    # way to consent. The dialog's accept path syncs this same flag via
-    # ``record_trust_accepted``, so narrowing this later only requires
-    # seeding interactive sessions from check_trust_accepted() here.
-    # TODO(components-C8 follow-up): seed from
-    # ``startup_gates.check_trust_accepted()`` for interactive sessions
-    # instead of unconditionally trusting.
-    set_session_trust_accepted(True)
+    # ch02 round-3 trust seeding (closes the C8 follow-up TODO). TS mapping
+    # (main.tsx:1955-1967, interactiveHelpers.tsx:139-194):
+    #   * non-interactive (-p / non-TTY stdout): trust is implicit — grant
+    #     it and apply the full env immediately so git spawns and tools see
+    #     project PATH/GIT_DIR etc.
+    #   * interactive + previously accepted for this folder (parent-walk in
+    #     check_trust_accepted): same.
+    #   * interactive + not yet accepted: stay untrusted (bootstrap default
+    #     is False); the surface's gate decides — the TUI TrustFolderScreen
+    #     (C8) or the legacy REPL's text prompt (cli.py) — and its accept
+    #     path calls establish_session_trust().
+    from src.services.startup_gates import check_trust_accepted
+
+    if not is_interactive or check_trust_accepted():
+        establish_session_trust()
 
     profile_checkpoint("pre_action_end")
 
