@@ -20,7 +20,7 @@ from ..types.messages import (
     create_assistant_api_error_message,
 )
 from ..types.content_blocks import TextBlock, ToolResultBlock, ToolUseBlock
-from ..tool_system.build_tool import Tool, Tools, find_tool_by_name
+from ..tool_system.build_tool import Tool, Tools
 from ..tool_system.context import ToolContext
 from ..tool_system.protocol import ToolCall, ToolResult
 from ..tool_system.registry import ToolRegistry
@@ -308,14 +308,13 @@ def _is_hook_stopped_continuation(msg: Message | None) -> bool:
     next turn — mirroring TS at query.ts:1698-1701.
 
     The attachment is produced by ``PreToolUse`` / ``PostToolUse`` hooks
-    that set ``prevent_continuation`` — see
-    ``src/services/tool_execution/tool_execution.py:362-372`` and
-    ``src/services/tool_execution/tool_hooks.py:185-195``. The current
-    production dispatch path (``_run_tools_partitioned`` → registry
-    dispatch) does NOT route through those producers — that wiring is
-    the C7 architectural-unification gap, deferred. Landing the terminal
-    mapping here means the contract is in place the moment any future
-    change wires hook-aware dispatch into the loop.
+    that set ``prevent_continuation`` (see
+    ``src/services/tool_execution/tool_execution.py`` and
+    ``tool_hooks.py``). WIRED at ch07 round-3 PR-1: the production loop
+    consumes orchestrator.run_tools, which routes through those
+    producers; detection happens IN the consumption loop (the attachment
+    never reaches the collected tool_results under raw user-role
+    collection).
 
     Local import of ``AttachmentMessage`` matches the pattern at
     ``_drain_pending_user_messages`` — keeps the top-level import list
@@ -887,382 +886,6 @@ async def _call_model_sync(
 
 
 # Max tools to run in parallel (TS default: 10, configurable via env var).
-# Reads CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY (the name documented in
-# chapter 7 and used in the TS reference). Falls back to the legacy
-# CLAWCODEX_MAX_TOOL_USE_CONCURRENCY with a DeprecationWarning so
-# users learn to migrate.
-def _resolve_max_tool_use_concurrency() -> int:
-    canonical = os.environ.get("CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY")
-    if canonical is not None:
-        return int(canonical)
-    legacy = os.environ.get("CLAWCODEX_MAX_TOOL_USE_CONCURRENCY")
-    if legacy is not None:
-        import warnings
-        warnings.warn(
-            "CLAWCODEX_MAX_TOOL_USE_CONCURRENCY is deprecated; use "
-            "CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return int(legacy)
-    return 10
-
-
-MAX_TOOL_USE_CONCURRENCY = _resolve_max_tool_use_concurrency()
-
-
-@dataclass
-class _ToolBatch:
-    """A batch of tool_use blocks with the same concurrency classification."""
-    is_concurrent_safe: bool
-    blocks: list[ToolUseBlock]
-
-
-def _partition_tool_calls(
-    tool_use_blocks: list[ToolUseBlock],
-    tools: Tools,
-) -> list[_ToolBatch]:
-    """Partition tool calls into batches per TS partitionToolCalls().
-
-    Consecutive ConcurrencySafe tools are grouped for parallel execution.
-    Non-safe tools each get their own exclusive batch.
-
-    Mirrors TS: evaluates isConcurrencySafe per-call with actual tool input
-    (not a static lookup), so e.g. read-only Bash commands can be parallel.
-    """
-    batches: list[_ToolBatch] = []
-    for block in tool_use_blocks:
-        tool = find_tool_by_name(tools, block.name)
-        try:
-            is_safe = bool(tool.is_concurrency_safe(block.input)) if tool else False
-        except Exception:
-            is_safe = False
-        if batches and is_safe and batches[-1].is_concurrent_safe:
-            batches[-1].blocks.append(block)
-        else:
-            batches.append(_ToolBatch(is_concurrent_safe=is_safe, blocks=[block]))
-    return batches
-
-
-def _is_user_cancelled_abort(tool_use_context: ToolContext) -> bool:
-    """True iff the abort signal fired with a user-initiated reason.
-
-    ``sibling_error`` is the streaming-executor's parallel-tool cascade
-    and is NOT a user-rejected signal — surfacing REJECT_MESSAGE for it
-    would mask the real underlying failure. Every other abort reason in
-    the Python runtime (``user_interrupt`` from ESC, ``interrupt`` held
-    in reserve for TS parity) is collapsed into the user-cancelled
-    bucket here.
-
-    Divergence vs TS: ``StreamingToolExecutor.ts:219-229`` treats
-    ``'interrupt'`` (user typed mid-stream) and ``'user_interrupted'``
-    (ESC) differently — for ``'interrupt'`` it only synthesizes
-    REJECT_MESSAGE on tools whose ``interruptBehavior() === 'cancel'``.
-    Python today emits neither ``'interrupt'`` nor any per-tool
-    ``interrupt_behavior`` override on the production path, so the
-    collapsed check is sound. If a future change wires up
-    ``'interrupt'`` as a real reason, the per-tool gate must land first.
-    """
-    ctrl = tool_use_context.abort_controller
-    if not ctrl.signal.aborted:
-        return False
-    return ctrl.signal.reason != "sibling_error"
-
-
-def _build_user_cancelled_result(tool_use_id: str) -> UserMessage:
-    """Synthetic tool_result returned when the user aborts mid-run.
-
-    The bash tool's interrupted path emits
-    ``<error>Command was aborted before completion</error>``, which the
-    model reads as a generic command failure — on the next turn it tends
-    to retry the command rather than honour the user's cancel. Replacing
-    the tool_result with REJECT_MESSAGE makes the cancellation
-    unambiguous. Mirrors
-    ``typescript/src/services/tools/StreamingToolExecutor.ts:153-205``
-    (``createSyntheticErrorMessage`` for ``user_interrupted``).
-    """
-    from ..types.messages import REJECT_MESSAGE
-    return UserMessage(
-        content=[
-            ToolResultBlock(
-                tool_use_id=tool_use_id,
-                content=REJECT_MESSAGE,
-                is_error=True,
-            )
-        ],
-    )
-
-
-def _dispatch_single_tool(
-    block: ToolUseBlock,
-    tool_registry: ToolRegistry,
-    tool_use_context: ToolContext,
-    tools: Tools | None = None,
-) -> tuple[UserMessage, list[UserMessage]]:
-    """Dispatch a single tool and return ``(primary, extras)``.
-
-    ``primary`` is always the tool_result UserMessage. ``extras`` is any
-    supplemental ``new_messages`` the tool returned (e.g. the image
-    dimensions metadata user message). Callers MUST emit all primaries
-    before any extras across a multi-tool batch — otherwise tool_result
-    pairing in ``ensure_tool_result_pairing`` mis-attributes the missing
-    pair and injects a synthetic error placeholder.
-
-    Routes through ``process_tool_result_block`` (mirrors TS Step 11 of
-    the execution pipeline at ``processToolResultBlock``) so the per-tool
-    persistence threshold AND the WI-5.1 per-message aggregate budget
-    both engage on the production path. The running aggregate is held on
-    ``tool_use_context.tool_result_chars_so_far`` (reset at the top of
-    each per-turn loop in :func:`query`).
-    """
-    # Pre-tool gate: ESC may trip after the model picked this tool but
-    # before we entered dispatch (e.g. between the post-streaming abort
-    # check and the head of the partition loop). Hand back the
-    # synthetic result instead of running the tool. Mirrors the initial-
-    # abort branch in ``StreamingToolExecutor.collectResults``
-    # (typescript/src/services/tools/StreamingToolExecutor.ts:278-292).
-    if _is_user_cancelled_abort(tool_use_context):
-        return _build_user_cancelled_result(block.id), []
-
-    try:
-        call = ToolCall(
-            name=block.name,
-            input=block.input,
-            tool_use_id=block.id,
-        )
-        result = tool_registry.dispatch(call, tool_use_context)
-
-        # Post-tool override: bash's interrupted payload reads as a
-        # generic failure; replace it so the resume turn sees an
-        # unambiguous "user rejected" signal. Mirrors TS at
-        # ``StreamingToolExecutor.ts:332-345``.
-        if _is_user_cancelled_abort(tool_use_context):
-            return _build_user_cancelled_result(block.id), []
-
-        tool = find_tool_by_name(tools, block.name) if tools else None
-        metadata: dict[str, Any] = {}
-        if isinstance(result.output, dict):
-            metadata["tool_output"] = result.output
-
-        if tool is not None:
-            # WI-5.1: route through ``process_tool_result_block`` so the
-            # 200K per-message aggregate cap is enforced. Without this
-            # call the production REPL ran ``map_result_to_api`` directly
-            # and never engaged the gate (critic B2).
-            #
-            # The read-decide-write on ``tool_result_chars_so_far`` is
-            # serialized via ``_aggregate_lock`` because ``_run_tools_partitioned``
-            # dispatches concurrency-safe tools (Read/Grep/Glob) via
-            # ``asyncio.to_thread`` (critic B6). The decision MUST be
-            # made on a fresh snapshot of the counter — otherwise N
-            # threads racing the read all see 0, all decide "under cap"
-            # and the cap is silently bypassed. ``process_tool_result_block``
-            # is called inside the critical section: for small blocks
-            # under threshold it just returns the block (no I/O); the
-            # rare persist-to-disk path runs while serialized but those
-            # are at most O(1) per turn (typically <5%).
-            from ..services.tool_execution.tool_result_persistence import (
-                compute_block_chars,
-                process_tool_result_block,
-                resolve_tool_results_dir,
-            )
-            tool_results_dir = resolve_tool_results_dir(tool_use_context)
-            with tool_use_context._aggregate_lock:
-                aggregate_so_far = tool_use_context.tool_result_chars_so_far
-                api_block = process_tool_result_block(
-                    tool,
-                    result.output,
-                    block.id,
-                    tool_results_dir=tool_results_dir,
-                    aggregate_chars_so_far=aggregate_so_far,
-                )
-                # Update the running aggregate AFTER the block is
-                # finalized (post-persistence, so the wrapper message
-                # size is what counts toward the budget — not the
-                # original 200K output). Non-finite-threshold tools
-                # (Read) don't count — TS skip-set semantics
-                # (query.ts:419-423, toolResultStorage.ts:841-851).
-                if math.isfinite(tool.max_result_size_chars):
-                    tool_use_context.tool_result_chars_so_far += compute_block_chars(api_block)
-            raw_content = api_block.get("content", "")
-            # Preserve list-of-content-blocks shape so multimodal tool_results
-            # (e.g. Read's image content blocks, bash data:image/... captures)
-            # reach the API as proper image/document blocks instead of being
-            # JSON-stringified into text. The Anthropic API rejects images
-            # delivered as text and the model just sees JSON gibberish in the
-            # tool_result content otherwise. ``ToolResultBlock.content`` and
-            # ``content_block_to_dict`` already handle list shape end-to-end
-            # (see content_blocks.py:159-173).
-            if isinstance(raw_content, (str, list)):
-                result_content: str | list[Any] = raw_content
-            else:
-                result_content = str(raw_content)
-        elif isinstance(result.output, str):
-            result_content = result.output
-        elif isinstance(result.output, dict):
-            result_content = json.dumps(result.output, ensure_ascii=False)
-        else:
-            result_content = str(result.output)
-
-        result_msg = UserMessage(
-            content=[
-                ToolResultBlock(
-                    tool_use_id=block.id,
-                    content=result_content,
-                    is_error=result.is_error,
-                    metadata=metadata,
-                )
-            ],
-        )
-        # Collect any supplemental messages the tool produced (e.g. the
-        # FileReadTool image-dimensions metadata user message and PDF
-        # page-image blocks). Mirrors TS messages flow where the Read
-        # tool's createUserMessage({isMeta:true}) returns are pushed
-        # into the conversation alongside the tool_result. Returned
-        # separately so callers can emit all primaries before any extras
-        # (see docstring).
-        extras: list[UserMessage] = []
-        if result.new_messages:
-            for msg in result.new_messages:
-                if isinstance(msg, UserMessage):
-                    extras.append(msg)
-                elif isinstance(msg, dict):
-                    # Defensive: accept the raw-dict form too.
-                    extras.append(UserMessage(
-                        content=msg.get("content", ""),
-                        isMeta=bool(msg.get("isMeta", False)),
-                    ))
-        return result_msg, extras
-    except AbortError as abort_err:
-        # Two contracts to satisfy at once:
-        #
-        # 1. **tool_use/tool_result pairing must stay intact** — every
-        #    emitted tool_use needs a paired tool_result or the next
-        #    API call 400s on the orphan. Returning a tool_result
-        #    (not raising) preserves the pair. Pinned by
-        #    ``tests/test_esc_reject_message_dispatch.py``.
-        # 2. **No follow-up API turn after AbortError** — the loop
-        #    must NOT issue another model call. Pinned by
-        #    ``test_agent_loop_does_not_swallow_abort_error_as_tool_error``.
-        #
-        # Reconcile both: when AbortError surfaces from a tool and
-        # the user-cancel signal isn't already tripped, trip it. The
-        # post-tool gate downstream sees the signal aborted, sets
-        # terminal=aborted_tools, and the adapter raises AbortError
-        # to the caller. The conversation ends well-formed (tool_use
-        # has its tool_result) AND the loop exits without another
-        # API turn. Critic-flagged on Stage 4 review.
-        if _is_user_cancelled_abort(tool_use_context):
-            return _build_user_cancelled_result(block.id), []
-        ctrl = getattr(tool_use_context, "abort_controller", None)
-        if ctrl is not None:
-            try:
-                ctrl.abort("tool_raised_abort_error")
-            except Exception:
-                pass
-        return UserMessage(
-            content=[
-                ToolResultBlock(
-                    tool_use_id=block.id,
-                    content=f"Error: Tool execution aborted ({abort_err})",
-                    is_error=True,
-                )
-            ],
-        ), []
-    except Exception as e:
-        # A late abort can still race the post-tool gate above (the
-        # signal trips between the post-tool check and the exception).
-        # Honour it here so a tool that raises an unrelated error AFTER
-        # ESC landed doesn't get reported as a tool bug when the user
-        # actually pressed ESC.
-        if _is_user_cancelled_abort(tool_use_context):
-            return _build_user_cancelled_result(block.id), []
-        error_str = f"Error: {e}"
-        return UserMessage(
-            content=[
-                ToolResultBlock(
-                    tool_use_id=block.id,
-                    content=error_str,
-                    is_error=True,
-                )
-            ],
-        ), []
-
-
-async def _run_tools_partitioned(
-    tool_use_blocks: list[ToolUseBlock],
-    tool_registry: ToolRegistry,
-    tool_use_context: ToolContext,
-    tools: Tools,
-) -> list[UserMessage]:
-    """Run tools with TS-matching concurrency: safe tools parallel, unsafe exclusive.
-
-    Mirrors typescript/src/tools/partitionToolCalls + runTools (Mode 2).
-    ConcurrencySafe tools (Read, Grep, Glob, etc.) run in parallel up to
-    MAX_TOOL_USE_CONCURRENCY.  Non-safe tools (Bash, Edit, Write) run
-    exclusively one at a time.
-    """
-    batches = _partition_tool_calls(tool_use_blocks, tools)
-    # Emit all primary tool_result messages first, then all supplemental
-    # (isMeta) messages. Interleaving (e.g. [a_result, a_meta, b_result])
-    # breaks ensure_tool_result_pairing because the merge guard refuses to
-    # combine tool_result-bearing user messages with text-only ones, so
-    # b_result becomes orphaned and the pairing logic injects a synthetic
-    # "[Tool result missing due to internal error]" placeholder.
-    primaries: list[UserMessage] = []
-    extras: list[UserMessage] = []
-
-    def _accumulate(pair: tuple[UserMessage, list[UserMessage]]) -> None:
-        primaries.append(pair[0])
-        extras.extend(pair[1])
-
-    for batch in batches:
-        if batch.is_concurrent_safe and len(batch.blocks) > 1:
-            coros = [
-                asyncio.to_thread(
-                    _dispatch_single_tool, block, tool_registry, tool_use_context, tools,
-                )
-                for block in batch.blocks[:MAX_TOOL_USE_CONCURRENCY]
-            ]
-            for pair in await asyncio.gather(*coros):
-                _accumulate(pair)
-            if len(batch.blocks) > MAX_TOOL_USE_CONCURRENCY:
-                overflow = [
-                    asyncio.to_thread(
-                        _dispatch_single_tool, block, tool_registry, tool_use_context, tools,
-                    )
-                    for block in batch.blocks[MAX_TOOL_USE_CONCURRENCY:]
-                ]
-                for pair in await asyncio.gather(*overflow):
-                    _accumulate(pair)
-        else:
-            for block in batch.blocks:
-                pair = await asyncio.to_thread(
-                    _dispatch_single_tool, block, tool_registry, tool_use_context, tools,
-                )
-                _accumulate(pair)
-
-    return [*primaries, *extras]
-
-
-def _run_tools_sync(
-    tool_use_blocks: list[ToolUseBlock],
-    tool_registry: ToolRegistry,
-    tool_use_context: ToolContext,
-) -> list[UserMessage]:
-    """Legacy synchronous tool execution (no partitioning).
-
-    Same primaries-first invariant as :func:`_run_tools_partitioned`.
-    """
-    primaries: list[UserMessage] = []
-    extras: list[UserMessage] = []
-    for block in tool_use_blocks:
-        primary, extras_for_block = _dispatch_single_tool(block, tool_registry, tool_use_context)
-        primaries.append(primary)
-        extras.extend(extras_for_block)
-    return [*primaries, *extras]
-
-
 async def query(
     params: QueryParams,
     *,
@@ -1319,6 +942,13 @@ async def query(
     ):
         snapshot_output_tokens_for_turn(params.token_budget)
     budget_tracker = create_budget_tracker()
+
+    # ch07 round-3 G1: the orchestrator lane sources tool lookup AND the
+    # concurrency partition from context.options.tools — production
+    # previously left it empty ([] default), which would silently route
+    # every tool through the base-list fallback and classify off
+    # defaults. Sync once per query.
+    params.tool_use_context.options.tools = list(params.tools)
 
     while True:
         messages = state.messages
@@ -1958,9 +1588,12 @@ async def query(
 
         if _diag:
             _tools_t0 = time.monotonic()
-            _batches = _partition_tool_calls(tool_use_blocks, params.tools)
+            from ..services.tool_execution.orchestrator import (
+                partition_tool_calls as _diag_partition,
+            )
+            _batches = _diag_partition(tool_use_blocks, tool_use_context)
             _batch_desc = ", ".join(
-                f"[{'parallel' if b.is_concurrent_safe else 'exclusive'}: {[bl.name for bl in b.blocks]}]"
+                f"[{'parallel' if b.is_concurrency_safe else 'exclusive'}: {[bl.name for bl in b.blocks]}]"
                 for b in _batches
             )
             logger.warning(
@@ -1985,12 +1618,56 @@ async def query(
         # to avoid touching ToolContext's public surface.
         setattr(tool_use_context, "_active_provider", params.provider)
 
-        tool_results = await _run_tools_partitioned(
-            tool_use_blocks,
-            params.tool_registry,
-            tool_use_context,
-            params.tools,
+        # ch07 round-3 G1 — the unified lane: TS's ungated runTools path
+        # (query.ts:1537-1539 else-branch), consumed per query.ts:1541-1565.
+        # run_tool_use brings hooks, input backfill (permissions see
+        # normalized input), call-input convergence, base-list fallback,
+        # error classification, and context modifiers to production.
+        from ..services.tool_execution.can_use_tool_adapter import (
+            build_can_use_tool,
         )
+        from ..services.tool_execution.orchestrator import run_tools
+
+        can_use_tool = build_can_use_tool(tool_use_context)
+        tool_results: list[UserMessage] = []
+        hook_stopped = False
+        async for update in run_tools(
+            tool_use_blocks,
+            assistant_messages,
+            can_use_tool,
+            tool_use_context,
+        ):
+            new_ctx = update.new_context
+            if new_ctx is not None and new_ctx is not tool_use_context:
+                # A context modifier produced a derived context — adopt
+                # it, re-imposing loop-managed state (dataclasses.replace
+                # does not carry dynamic attributes). Mirrors TS
+                # re-imposing queryTracking at query.ts:1559-1563.
+                setattr(new_ctx, "_active_provider", params.provider)
+                tool_use_context = new_ctx
+            msg = update.message
+            if msg is None:
+                continue  # batch-end context-only update
+            # In-loop hook-stop detection (TS query.ts:1545-1550): the
+            # marker rides an ATTACHMENT message, which is yielded to the
+            # surface but never collected into tool_results.
+            if _is_hook_stopped_continuation(msg):
+                hook_stopped = True
+            yield msg
+            # Collect RAW user-role Message objects (tool results + meta
+            # extras) for the next turn's history — normalization stays
+            # at API prep, where the unconditional merge + hoist handles
+            # the interleaved shape (ch07 G3). STRICT type check: TS
+            # filters collected toolResults to type=='user'
+            # (query.ts:1552-1557); AttachmentMessage SUBCLASSES
+            # UserMessage here (type='attachment') and must NOT enter
+            # next-turn history — attachment->history threading is the
+            # ch11/ch12 attachment-transformation surface.
+            if (
+                isinstance(msg, UserMessage)
+                and getattr(msg, "type", "user") == "user"
+            ):
+                tool_results.append(msg)
 
         if _diag:
             logger.warning(
@@ -2003,9 +1680,6 @@ async def query(
                         if hasattr(b, 'content'):
                             clen = len(b.content) if isinstance(b.content, str) else len(str(b.content))
                             logger.warning("[DIAG]   result: tool_use_id=%s  is_error=%s  content_len=%d", getattr(b, 'tool_use_id', '?'), getattr(b, 'is_error', False), clen)
-
-        for result_msg in tool_results:
-            yield result_msg
 
         if params.abort_controller.signal.aborted:
             if params.abort_controller.signal.reason != "interrupt":
@@ -2028,7 +1702,7 @@ async def query(
         #     for a different reason. Matches TS where the hook_stopped
         #     return at :1701 precedes the max_turns check at :1885.
         #   * BEFORE state reconstruction — no next iteration follows.
-        if any(_is_hook_stopped_continuation(msg) for msg in tool_results):
+        if hook_stopped:
             set_terminal(
                 holder, natural_termination, Terminal(reason="hook_stopped"),
             )

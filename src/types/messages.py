@@ -313,11 +313,16 @@ def normalize_messages_for_api(messages: list[MessageLike]) -> list[dict[str, An
     for message in messages:
         result = normalize_message_for_api(message)
         if result is not None:
+            # Consecutive user messages merge UNCONDITIONALLY — TS
+            # normalize user-case merge + mergeUserMessages' hoist+seam
+            # tail (messages.ts:2445-2455). Mixed tool_result + text
+            # merges are handled by the hoist + seam join inside
+            # _merge_user_api_messages; the old
+            # _should_merge_user_messages guard was port-invented (ch07
+            # round-3 G3) and forced callers into a primaries-first
+            # reorder to avoid orphaning results.
             if normalized and normalized[-1]["role"] == result["role"] == "user":
-                if _should_merge_user_messages(normalized[-1], result):
-                    normalized[-1] = _merge_user_api_messages(normalized[-1], result)
-                else:
-                    normalized.append(result)
+                normalized[-1] = _merge_user_api_messages(normalized[-1], result)
             else:
                 normalized.append(result)
     normalized = ensure_tool_result_pairing(normalized)
@@ -502,43 +507,36 @@ def ensure_tool_result_pairing(
     return result
 
 
-def _has_tool_result_blocks(msg: dict[str, Any]) -> bool:
-    content = msg.get("content", "")
-    if not isinstance(content, list):
-        return False
-    return any(
-        isinstance(block, dict) and block.get("type") == "tool_result"
-        for block in content
-    )
-
-
-def _has_non_tool_result_blocks(msg: dict[str, Any]) -> bool:
-    content = msg.get("content", "")
-    if isinstance(content, str):
-        return True
-    if not isinstance(content, list):
-        return False
-    return any(
-        not (isinstance(block, dict) and block.get("type") == "tool_result")
-        for block in content
-    )
-
-
-def _should_merge_user_messages(
-    existing: dict[str, Any],
-    new: dict[str, Any],
-) -> bool:
-    if _has_tool_result_blocks(existing) and _has_non_tool_result_blocks(new):
-        return False
-    if _has_tool_result_blocks(new) and _has_non_tool_result_blocks(existing):
-        return False
-    return True
-
-
 def _hoist_tool_results(content: list[dict[str, Any]]) -> list[dict[str, Any]]:
     tool_results = [b for b in content if isinstance(b, dict) and b.get("type") == "tool_result"]
     other_blocks = [b for b in content if not (isinstance(b, dict) and b.get("type") == "tool_result")]
     return tool_results + other_blocks
+
+
+def _join_text_at_seam(
+    a: list[dict[str, Any]],
+    b: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Mirror TS joinTextAtSeam (messages.ts:2511-2521).
+
+    Blocks stay SEPARATE; the "\\n" goes on a's side so no block's
+    startswith changes — system-reminder classification reads b's block
+    heads, and prepending to b would break it.
+    """
+    if a and b:
+        last_a, first_b = a[-1], b[0]
+        if (
+            isinstance(last_a, dict)
+            and last_a.get("type") == "text"
+            and isinstance(first_b, dict)
+            and first_b.get("type") == "text"
+        ):
+            return [
+                *a[:-1],
+                {**last_a, "text": last_a.get("text", "") + "\n"},
+                *b,
+            ]
+    return [*a, *b]
 
 
 def _merge_user_api_messages(
@@ -551,7 +549,10 @@ def _merge_user_api_messages(
         ec = [{"type": "text", "text": ec}]
     if isinstance(nc, str):
         nc = [{"type": "text", "text": nc}]
-    return {"role": "user", "content": _hoist_tool_results(ec + nc)}
+    return {
+        "role": "user",
+        "content": _hoist_tool_results(_join_text_at_seam(ec, nc)),
+    }
 
 
 def _is_system_local_command(message: MessageLike) -> bool:

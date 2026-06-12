@@ -14,7 +14,10 @@ class QueryConfig:
     effort: str = "high"
     temperature: float | None = None
     stop_sequences: list[str] | None = None
-    streaming_tool_execution: bool = True
+    # ch07 round-3: default False — PR-1 lands the TS UNGATED path
+    # (batch orchestrator); PR-2 owns wiring the streaming executor and
+    # any flip to True (TS gates via Statsig tengu_streaming_tool_execution2).
+    streaming_tool_execution: bool = False
     reactive_compact_enabled: bool = True
     context_collapse_enabled: bool = False
     token_budget_enabled: bool = True
@@ -42,7 +45,10 @@ class FrozenQueryConfig:
     effort: str = "high"
     temperature: float | None = None
     stop_sequences: tuple[str, ...] | None = None
-    streaming_tool_execution: bool = True
+    # ch07 round-3: default False — PR-1 lands the TS UNGATED path
+    # (batch orchestrator); PR-2 owns wiring the streaming executor and
+    # any flip to True (TS gates via Statsig tengu_streaming_tool_execution2).
+    streaming_tool_execution: bool = False
     reactive_compact_enabled: bool = True
     context_collapse_enabled: bool = False
     token_budget_enabled: bool = True

@@ -124,6 +124,19 @@ def _make_hook_stopped_attachment(
     })
 
 
+def _as_run_tools_stub(messages_factory):
+    """Adapt a list-of-Messages factory to the orchestrator.run_tools
+    async-generator seam (ch07 unification: the loop consumes
+    MessageUpdate(message=..., new_context=...) updates)."""
+    from src.services.tool_execution.orchestrator import MessageUpdate
+
+    async def _stub(_blocks, _assistants, _can_use_tool, _ctx, *a, **k):
+        for m in messages_factory():
+            yield MessageUpdate(message=m, new_context=_ctx)
+
+    return _stub
+
+
 class TestIsHookStoppedContinuationPredicate(unittest.TestCase):
     """Unit-test the detection helper in isolation."""
 
@@ -181,15 +194,12 @@ class TestHookStoppedTerminal(unittest.TestCase):
 
         params = _make_params(workspace=self.workspace, provider=provider)
 
-        async def patched_run_tools(*args, **kwargs):
-            return [
+        with patch(
+            "src.services.tool_execution.orchestrator.run_tools",
+            new=_as_run_tools_stub(lambda: [
                 _make_tool_result("toolu_001"),
                 _make_hook_stopped_attachment(tool_use_id="toolu_001"),
-            ]
-
-        with patch(
-            "src.query.query._run_tools_partitioned",
-            side_effect=patched_run_tools,
+            ]),
         ):
             messages, terminal = _run(run_query(params))
 
@@ -210,12 +220,11 @@ class TestHookStoppedTerminal(unittest.TestCase):
         params = _make_params(workspace=self.workspace, provider=provider)
         attachment = _make_hook_stopped_attachment(tool_use_id="toolu_002")
 
-        async def patched_run_tools(*args, **kwargs):
-            return [_make_tool_result("toolu_002"), attachment]
-
         with patch(
-            "src.query.query._run_tools_partitioned",
-            side_effect=patched_run_tools,
+            "src.services.tool_execution.orchestrator.run_tools",
+            new=_as_run_tools_stub(
+                lambda: [_make_tool_result("toolu_002"), attachment]
+            ),
         ):
             messages, terminal = _run(run_query(params))
 
@@ -243,12 +252,11 @@ class TestHookStoppedTerminal(unittest.TestCase):
 
         params = _make_params(workspace=self.workspace, provider=provider)
 
-        async def patched_run_tools(*args, **kwargs):
-            return [_make_tool_result("toolu_003")]  # no attachment
-
         with patch(
-            "src.query.query._run_tools_partitioned",
-            side_effect=patched_run_tools,
+            "src.services.tool_execution.orchestrator.run_tools",
+            new=_as_run_tools_stub(
+                lambda: [_make_tool_result("toolu_003")]  # no attachment
+            ),
         ):
             messages, terminal = _run(run_query(params))
 
@@ -271,7 +279,7 @@ class TestHookStoppedTerminal(unittest.TestCase):
             workspace=self.workspace, provider=provider, abort=abort,
         )
 
-        async def patched_run_tools(*args, **kwargs):
+        def _factory():
             # Trip the abort signal AND emit a hook_stopped attachment.
             # The abort check sits between these and the hook_stopped
             # check, so it must win.
@@ -282,8 +290,8 @@ class TestHookStoppedTerminal(unittest.TestCase):
             ]
 
         with patch(
-            "src.query.query._run_tools_partitioned",
-            side_effect=patched_run_tools,
+            "src.services.tool_execution.orchestrator.run_tools",
+            new=_as_run_tools_stub(_factory),
         ):
             messages, terminal = _run(run_query(params))
 
@@ -320,15 +328,12 @@ class TestHookStoppedDoesNotEmitMaxTurnsAttachment(unittest.TestCase):
             workspace=self.workspace, provider=provider, max_turns=1,
         )
 
-        async def patched_run_tools(*args, **kwargs):
-            return [
+        with patch(
+            "src.services.tool_execution.orchestrator.run_tools",
+            new=_as_run_tools_stub(lambda: [
                 _make_tool_result("toolu_005"),
                 _make_hook_stopped_attachment(tool_use_id="toolu_005"),
-            ]
-
-        with patch(
-            "src.query.query._run_tools_partitioned",
-            side_effect=patched_run_tools,
+            ]),
         ):
             messages, terminal = _run(run_query(params))
 

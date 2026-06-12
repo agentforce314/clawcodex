@@ -91,6 +91,14 @@ async def run_tool_use(
         # historical ``if abort_ctrl and …`` guard masked the field-is-None
         # hazard class that broke ESC propagation into subagents.
         if tool_use_context.abort_controller.signal.aborted:
+            if _is_user_cancelled_abort(tool_use_context):
+                # ESC tripped before dispatch: REJECT_MESSAGE so the
+                # model sees an unambiguous "user rejected" signal (TS
+                # StreamingToolExecutor.ts:153-205 user_interrupted).
+                yield MessageUpdateLazy(
+                    message=_build_user_cancelled_message(tool_use.id),
+                )
+                return
             content = _create_tool_result_stop(tool_use.id)
             yield MessageUpdateLazy(
                 message=create_user_message(
@@ -331,6 +339,17 @@ async def _check_permissions_and_call_tool(
 
         result = await _call_tool(tool, call_input, call_context)
 
+        # Post-tool override: a tool that observed the abort and returned
+        # (e.g. bash's interrupted payload) reads as a generic failure;
+        # replace it so the resume turn sees an unambiguous "user
+        # rejected" signal. Mirrors TS StreamingToolExecutor.ts:332-345;
+        # ported from the retired slim lane (ch07 unification).
+        if _is_user_cancelled_abort(tool_use_context):
+            resulting_messages.append(MessageUpdateLazy(
+                message=_build_user_cancelled_message(tool_use_id),
+            ))
+            return resulting_messages
+
         duration_ms = int((time.monotonic() - start_time) * 1000)
 
         # Step 11 — Result Budgeting. Per-tool max_result_size_chars is
@@ -369,9 +388,30 @@ async def _check_permissions_and_call_tool(
                 tool_result_block,
             )
 
+        # Build the in-process ToolResultBlock (dataclass, not the raw
+        # dict): preserves multimodal list content end-to-end (images/PDF
+        # blocks reach the API as blocks, not JSON-stringified text) and
+        # carries dict outputs as metadata["tool_output"] for display
+        # consumers (repl/core._format_tool_result_preview). The wire
+        # serialization strips metadata via content_block_to_dict.
+        from src.types.content_blocks import ToolResultBlock
+
+        raw_block_content = tool_result_block.get("content", "")
+        if not isinstance(raw_block_content, (str, list)):
+            raw_block_content = str(raw_block_content)
+        block_metadata: dict[str, Any] = {}
+        if isinstance(result.output, dict):
+            block_metadata["tool_output"] = result.output
+        result_block_obj = ToolResultBlock(
+            tool_use_id=tool_use_id,
+            content=raw_block_content,
+            is_error=bool(getattr(result, "is_error", False)),
+            metadata=block_metadata,
+        )
+
         resulting_messages.append(MessageUpdateLazy(
             message=create_user_message(
-                content=[tool_result_block],
+                content=[result_block_obj],
                 toolUseResult=result.data if not tool_use_context.agent_id else None,
             ),
             context_modifier=ContextModifier(
@@ -415,12 +455,32 @@ async def _check_permissions_and_call_tool(
 
         return resulting_messages
 
-    except AbortError:
-        content = _create_tool_result_stop(tool_use_id)
+    except AbortError as abort_err:
+        # Two contracts at once (ported from the retired slim lane;
+        # pinned by tests/test_esc_reject_message_dispatch.py and
+        # test_agent_loop_does_not_swallow_abort_error_as_tool_error):
+        # 1. tool_use/tool_result pairing stays intact — return a
+        #    result, don't raise (an orphaned tool_use 400s next call).
+        # 2. No follow-up API turn — when the signal isn't already
+        #    tripped, trip it so the loop's post-tools abort gate exits.
+        if _is_user_cancelled_abort(tool_use_context):
+            resulting_messages.append(MessageUpdateLazy(
+                message=_build_user_cancelled_message(tool_use_id),
+            ))
+            return resulting_messages
+        try:
+            tool_use_context.abort_controller.abort("tool_raised_abort_error")
+        except Exception:
+            pass
         resulting_messages.append(MessageUpdateLazy(
             message=create_user_message(
-                content=[content],
-                toolUseResult=CANCEL_MESSAGE,
+                content=[{
+                    "type": "tool_result",
+                    "content": f"Error: Tool execution aborted ({abort_err})",
+                    "is_error": True,
+                    "tool_use_id": tool_use_id,
+                }],
+                toolUseResult=f"Error: Tool execution aborted ({abort_err})",
             ),
         ))
         return resulting_messages
@@ -513,6 +573,48 @@ async def _resolve_permission(
         can_use_tool,
         assistant_message,
         tool_use_id,
+    )
+
+
+def _is_user_cancelled_abort(tool_use_context: Any) -> bool:
+    """True iff the abort signal fired with a user-initiated reason.
+
+    ``sibling_error`` (streaming-executor parallel cascade) and
+    ``streaming_fallback`` (discarded executor) are NOT user-rejected
+    signals — surfacing REJECT_MESSAGE for them would mask the real
+    failure. Every other reason (``user_interrupt`` from ESC,
+    ``interrupt`` reserved for TS parity, ``tool_raised_abort_error``)
+    collapses into the user-cancelled bucket. Moved from the retired
+    query.py slim lane at ch07 unification; see that lane's docstring
+    history for the TS interruptBehavior divergence note.
+    """
+    ctrl = tool_use_context.abort_controller
+    if not ctrl.signal.aborted:
+        return False
+    return ctrl.signal.reason not in ("sibling_error", "streaming_fallback")
+
+
+def _build_user_cancelled_message(tool_use_id: str) -> Any:
+    """Synthetic REJECT_MESSAGE tool_result for a user abort.
+
+    The bash tool's interrupted path emits ``<error>Command was aborted
+    before completion</error>`` which the model reads as a generic
+    failure and retries; REJECT_MESSAGE makes the cancellation
+    unambiguous. Mirrors TS ``createSyntheticErrorMessage`` for
+    ``user_interrupted`` (StreamingToolExecutor.ts:153-205).
+    """
+    from src.types.content_blocks import ToolResultBlock
+    from src.types.messages import REJECT_MESSAGE
+
+    return create_user_message(
+        content=[
+            ToolResultBlock(
+                tool_use_id=tool_use_id,
+                content=REJECT_MESSAGE,
+                is_error=True,
+            )
+        ],
+        toolUseResult="User rejected tool use",
     )
 
 

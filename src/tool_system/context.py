@@ -92,7 +92,7 @@ class ToolContext:
     # Reset to 0 between messages by the turn-loop dispatcher.
     #
     # ``_aggregate_lock`` synchronizes the read-decide-write across
-    # concurrent tool dispatches (critic B6). ``_run_tools_partitioned``
+    # concurrent tool dispatches (critic B6). The query loop's concurrent dispatch
     # uses ``asyncio.to_thread`` to fan out concurrency-safe tools (Read,
     # Grep, Glob) — without this lock, N threads would all read 0, all
     # decide their block is under the cap, and the per-message budget
