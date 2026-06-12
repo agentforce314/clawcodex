@@ -39,8 +39,12 @@ logger = logging.getLogger(__name__)
 # Module-level memoize cache for get_memory_files
 # ---------------------------------------------------------------------------
 
-_memory_files_cache: list[MemoryFileInfo] | None = None
-_memory_files_cache_key: str | None = None
+# (key, files) as ONE atomic reference — the deferred-prefetch lane
+# (ch02 round-3) made this cache cross-thread; two separate globals
+# could tear (reader matches an old key against new-key data). A single
+# tuple assignment is GIL-atomic: readers snapshot one reference and
+# check its own key.
+_memory_files_cache: tuple[str, list[MemoryFileInfo]] | None = None
 # Per-cwd memo of the C8 external-includes approval. The lookup behind
 # it shells out (git rev-parse) and reads the global config — far too
 # heavy per get_memory_files call. record_external_includes_choice
@@ -50,9 +54,8 @@ _external_includes_approval_cache: dict[str, bool] = {}
 
 def clear_memory_file_caches() -> None:
     """Clear the memoized memory files cache (call after compact)."""
-    global _memory_files_cache, _memory_files_cache_key
+    global _memory_files_cache
     _memory_files_cache = None
-    _memory_files_cache_key = None
     _external_includes_approval_cache.clear()
 
 
@@ -393,7 +396,7 @@ async def get_memory_files(
 
     Results are cached; call clear_memory_file_caches() to invalidate.
     """
-    global _memory_files_cache, _memory_files_cache_key
+    global _memory_files_cache
 
     original_cwd = cwd or _get_original_cwd()
     # TS claudemd.ts:812-815: externals load when forced (the gate's
@@ -406,8 +409,9 @@ async def get_memory_files(
     )
     cache_key = f"{original_cwd}:{include_external}"
 
-    if _memory_files_cache is not None and _memory_files_cache_key == cache_key:
-        return list(_memory_files_cache)
+    cached = _memory_files_cache  # one-reference snapshot (thread-safe)
+    if cached is not None and cached[0] == cache_key:
+        return list(cached[1])
 
     result: list[MemoryFileInfo] = []
     processed_paths: set[str] = set()
@@ -490,8 +494,7 @@ async def get_memory_files(
             conditional_rule=False,
         ))
 
-    _memory_files_cache = result
-    _memory_files_cache_key = cache_key
+    _memory_files_cache = (cache_key, result)
 
     return list(result)
 

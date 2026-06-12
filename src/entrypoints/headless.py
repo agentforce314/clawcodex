@@ -122,6 +122,19 @@ def run_headless(options: HeadlessOptions) -> int:
     stderr = options.stderr or sys.stderr
     stdin = options.stdin or sys.stdin
 
+    # ch02 round-3 GAP B: warm the user/system context memos now so the
+    # CLAUDE.md walk and git probes overlap with provider + registry
+    # construction below instead of running inside the first turn.
+    # Mirrors TS main.tsx:1973-1990 (non-interactive early kicks; trust
+    # is implicit in -p mode and was granted by run_pre_action).
+    # MUST use the resolved workspace_root, not the process cwd — the
+    # memos are key-less and first-writer pins the content the query
+    # path (which passes workspace_root) will read.
+    workspace_root = options.workspace_root or Path.cwd()
+    from src.deferred_init import start_deferred_prefetches
+
+    start_deferred_prefetches(cwd=str(workspace_root))
+
     provider_name = options.provider_name or get_default_provider()
     try:
         provider_cfg = get_provider_config(provider_name)
@@ -152,7 +165,7 @@ def run_headless(options: HeadlessOptions) -> int:
         deny = {name.lower() for name in options.disallowed_tools}
         _filter_registry(tool_registry, keep=lambda n: n.lower() not in deny)
 
-    workspace_root = options.workspace_root or Path.cwd()
+    # (workspace_root already resolved above, before the prefetch kick.)
 
     # Compute the effective permission context. ``skip_permissions=True`` is
     # the legacy alias and means "user passed --dangerously-skip-permissions";

@@ -57,8 +57,20 @@ def _isolate_user_permission_settings(tmp_path, monkeypatch):
     # assertions.
     import src.config as config_mod
 
+    # The isolated dir mirrors the prod layout (~/.clawcodex) so tests
+    # asserting on the path shape (test_config_path_is_in_home) hold.
+    _isolated_global_dir = tmp_path / "isolated-home" / ".clawcodex"
+    monkeypatch.setattr(config_mod, "GLOBAL_CONFIG_DIR", _isolated_global_dir)
+    # ch02 round-3: GLOBAL_CONFIG_FILE is read independently of the DIR
+    # constant (get_global_config_path) — isolate it too so the tier
+    # loaders (_load_global_config_env, get_secret's global fallback)
+    # never read the developer's real ~/.clawcodex/config.json. Before
+    # this, only the DIR was patched and FILE silently kept pointing at
+    # the developer's real config (critic nit 4 on PR #322).
     monkeypatch.setattr(
-        config_mod, "GLOBAL_CONFIG_DIR", tmp_path / "isolated-global"
+        config_mod,
+        "GLOBAL_CONFIG_FILE",
+        _isolated_global_dir / "config.json",
     )
     # C8: skip the startup security gates (trust / external includes /
     # bypass acceptance) in full-app tests — every app test would

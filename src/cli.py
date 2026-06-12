@@ -627,6 +627,15 @@ def start_repl(
     the in-process tool registry will short-circuit permission checks
     for the user (when ``--dangerously-skip-permissions`` is set).
     """
+    # ch02 round-3 GAP B: warm the context memos while the (heavy)
+    # src.repl import and REPL constructor run and the user types the
+    # first prompt. The dispatch-level trust gate already ran, so the
+    # system-context lane self-gates correctly. Mirrors TS
+    # startDeferredPrefetches (main.tsx:392-439) post-render kick.
+    from src.deferred_init import start_deferred_prefetches
+
+    start_deferred_prefetches()
+
     from src.config import get_default_provider
     from src.repl import ClawcodexREPL
 
