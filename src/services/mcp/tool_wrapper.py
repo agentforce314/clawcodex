@@ -32,6 +32,7 @@ from src.permissions.types import PermissionPassthroughResult, PermissionResult
 from src.tool_system.build_tool import McpInfo, Tool, build_tool
 from src.tool_system.context import ToolContext
 from src.tool_system.protocol import ToolResult
+from src.utils.abort_controller import AbortError
 
 from .client import McpClient
 from .mcp_string_utils import build_mcp_tool_name
@@ -253,8 +254,18 @@ def wrap_mcp_tool(
                     is_error=True,
                 )
 
+        # getattr: duck-typed/mocked contexts (spec'd mocks don't expose
+        # default_factory dataclass fields) may lack abort_controller.
+        abort_controller = getattr(ctx, "abort_controller", None)
+        abort_signal = (
+            abort_controller.signal if abort_controller is not None else None
+        )
         try:
-            result = await client.call_tool(mcp_tool.name, args)
+            result = await client.call_tool(
+                mcp_tool.name,
+                args,
+                abort_signal=abort_signal,
+            )
             content_blocks: list[dict[str, Any]] = list(result.content) if result.content else []
 
             # WI-8.2: budget-truncate before rendering so the model never
@@ -324,6 +335,10 @@ def wrap_mcp_tool(
                 is_error=False,
                 mcp_meta=mcp_meta,
             )
+        except AbortError:
+            # ESC-cancel (#277): propagate so the dispatch layer renders
+            # the user-cancel message instead of a generic tool error.
+            raise
         except Exception as e:
             return ToolResult(
                 name=fully_qualified_name,
