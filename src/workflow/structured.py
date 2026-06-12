@@ -13,6 +13,8 @@ Validation reuses the repository's only JSON-Schema validator,
 
 from __future__ import annotations
 
+import json
+import math
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional
 
@@ -37,6 +39,109 @@ def validate_structured(obj: Any, schema: Mapping[str, Any]) -> tuple[bool, Opti
         return False, str(exc)
 
 
+def _schema_types(schema: Mapping[str, Any]) -> tuple[str, ...]:
+    declared = schema.get("type")
+    if isinstance(declared, str):
+        return (declared,)
+    if isinstance(declared, list):
+        return tuple(t for t in declared if isinstance(t, str))
+    return ()
+
+
+def coerce_to_schema(obj: Any, schema: Any) -> Any:
+    """Lenient pre-pass for weak-model outputs (#282).
+
+    Weak models (glm et al.) emit JSON types as strings — ``"42"``,
+    ``"true"``, a JSON-encoded array — and burn every schema-repair
+    retry on trivially coercible mismatches. Keyed strictly on what the
+    schema *expects*: numeric/boolean strings coerce where the schema
+    wants ``number``/``integer``/``boolean``; string values parse via
+    ``json.loads`` where it wants ``array``/``object``; integral floats
+    coerce where it wants ``integer``. Anything that doesn't cleanly
+    coerce is returned unchanged so strict validation reports the real
+    error. Never raises.
+
+    Only ``type``/``properties``/``items`` are consulted —
+    ``anyOf``/``oneOf`` union schemas get no coercion (values pass
+    through to strict validation untouched).
+    """
+    if not isinstance(schema, Mapping):
+        return obj
+    types = _schema_types(schema)
+
+    if isinstance(obj, str):
+        # A string that already satisfies a union with "string" is left
+        # alone (ajv coerceTypes parity: coerce only when the value
+        # matches no declared type).
+        if "string" in types:
+            return obj
+        text = obj.strip()
+        if "boolean" in types and text.lower() in ("true", "false"):
+            return text.lower() == "true"
+        if "integer" in types:
+            try:
+                return int(text)
+            except ValueError:
+                # ajv coerceTypes parity: "3.0" -> 3 for integer
+                # schemas, but only for finite, integral floats.
+                try:
+                    parsed = float(text)
+                except ValueError:
+                    pass
+                else:
+                    if math.isfinite(parsed) and parsed.is_integer():
+                        return int(parsed)
+        if "number" in types:
+            try:
+                parsed = float(text)
+            except ValueError:
+                pass
+            else:
+                # isfinite: "NaN"/"Infinity" parse as floats but are
+                # not valid JSON numbers — let strict validation reject
+                # the original string loudly instead.
+                if math.isfinite(parsed):
+                    return int(parsed) if parsed.is_integer() else parsed
+        if ("array" in types or "object" in types) and text[:1] in ("[", "{"):
+            try:
+                decoded = json.loads(text)
+            except ValueError:
+                return obj
+            if (isinstance(decoded, list) and "array" in types) or (
+                isinstance(decoded, dict) and "object" in types
+            ):
+                return coerce_to_schema(decoded, schema)
+        return obj
+
+    # Bools never reach this branch (isinstance(True, float) is False)
+    # and fall through every other rule untouched — True must never
+    # become 1. inf/nan are excluded by is_integer().
+    if (
+        isinstance(obj, float)
+        and "integer" in types
+        and "number" not in types
+        and obj.is_integer()
+    ):
+        return int(obj)
+
+    if isinstance(obj, dict):
+        properties = schema.get("properties")
+        if isinstance(properties, Mapping):
+            return {
+                key: coerce_to_schema(value, properties.get(key))
+                for key, value in obj.items()
+            }
+        return obj
+
+    if isinstance(obj, list):
+        items = schema.get("items")
+        if isinstance(items, Mapping):
+            return [coerce_to_schema(item, items) for item in obj]
+        return obj
+
+    return obj
+
+
 @dataclass
 class StructuredOutputCollector:
     """Accumulates a schema subagent's ``StructuredOutput`` emissions.
@@ -58,6 +163,11 @@ class StructuredOutputCollector:
         if self.succeeded:
             return True, None
         self.attempts += 1
+        # Lenient pre-pass (#282): coerce string-typed scalars and
+        # JSON-encoded containers toward what the schema expects before
+        # strict validation, so weak-model outputs don't burn retries on
+        # trivially fixable type mismatches.
+        obj = coerce_to_schema(obj, self.schema)
         ok, error = validate_structured(obj, self.schema)
         if ok:
             self.value = obj
@@ -87,12 +197,16 @@ def make_structured_output_tool(collector: StructuredOutputCollector) -> Tool:
     def _call(tool_input: dict, context: Any) -> ToolResult:
         accepted, error = collector.offer(tool_input)
         if accepted:
+            # collector.value is the (possibly coerced — #282) accepted
+            # object; record that, not the raw emission, so every
+            # consumer sees the same schema-conformant shape.
+            accepted_value = collector.value
             outbox = getattr(context, "outbox", None)
             if outbox is not None:
-                outbox.append({"tool": SYNTHETIC_OUTPUT_TOOL_NAME, "structured_output": tool_input})
+                outbox.append({"tool": SYNTHETIC_OUTPUT_TOOL_NAME, "structured_output": accepted_value})
             return ToolResult(
                 name=SYNTHETIC_OUTPUT_TOOL_NAME,
-                output={"data": "Structured output accepted.", "structured_output": tool_input},
+                output={"data": "Structured output accepted.", "structured_output": accepted_value},
             )
         if collector.exhausted:
             return ToolResult(
