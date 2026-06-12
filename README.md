@@ -272,7 +272,7 @@ This flow will:
 4. optionally save a default model
 5. set the selected provider as default
 
-The configuration file is saved in in `~/.clawcodex/config.json`. Example structure:
+The configuration file is saved in `~/.clawcodex/config.json`. Example structure:
 
 ```json
 {
