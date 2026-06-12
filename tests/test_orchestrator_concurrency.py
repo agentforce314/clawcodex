@@ -247,8 +247,13 @@ class TestSubmissionOrderInvariant(unittest.IsolatedAsyncioTestCase):
             for b in content:
                 if isinstance(b, dict) and b.get("type") == "tool_result":
                     tid = b.get("tool_use_id")
-                    if tid:
-                        ids_seen.add(tid)
+                elif hasattr(b, "tool_use_id"):
+                    # ch07: run_tool_use builds ToolResultBlock objects.
+                    tid = b.tool_use_id
+                else:
+                    tid = None
+                if tid:
+                    ids_seen.add(tid)
 
         # All three submitted ids saw a tool_result. Without G1 the
         # slow tool's result might race the fast tools' completion.

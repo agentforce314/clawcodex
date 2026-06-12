@@ -61,6 +61,19 @@ def _make_params(
     )
 
 
+def _as_run_tools_stub(messages_factory):
+    """Adapt a list-of-Messages factory to the orchestrator.run_tools
+    async-generator seam (ch07 unification: the loop consumes
+    MessageUpdate(message=..., new_context=...) updates)."""
+    from src.services.tool_execution.orchestrator import MessageUpdate
+
+    async def _stub(_blocks, _assistants, _can_use_tool, _ctx, *a, **k):
+        for m in messages_factory():
+            yield MessageUpdate(message=m, new_context=_ctx)
+
+    return _stub
+
+
 class TestTerminalCompleted(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -180,21 +193,23 @@ class TestTerminalAbortedTools(unittest.TestCase):
         params = _make_params(workspace=self.workspace, provider=provider, abort=abort)
 
         async def aborting_runner(*args, **kwargs):
+            from src.services.tool_execution.orchestrator import MessageUpdate
             from src.types.content_blocks import ToolResultBlock
             abort.abort("user_abort")
-            return [
-                UserMessage(content=[
+            yield MessageUpdate(
+                message=UserMessage(content=[
                     ToolResultBlock(
                         tool_use_id="toolu_001",
                         content="aborted",
                         is_error=True,
                     ),
                 ]),
-            ]
+                new_context=None,
+            )
 
         with patch(
-            "src.query.query._run_tools_partitioned",
-            side_effect=aborting_runner,
+            "src.services.tool_execution.orchestrator.run_tools",
+            new=aborting_runner,
         ):
             _, terminal = _run(run_query(params))
         self.assertEqual(terminal.reason, "aborted_tools")
