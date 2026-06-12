@@ -105,34 +105,50 @@ class TestResetClearsCache(unittest.TestCase):
                 os.environ["PYTEST_CURRENT_TEST"] = saved
 
 
-class TestInitDoesNotApplyUnsafeEnv(unittest.TestCase):
-    """End-to-end: init() must NOT touch PATH or other unsafe vars."""
+class TestInitDoesNotClobberShellEnv(unittest.TestCase):
+    """End-to-end: init() must NOT touch vars the shell already set.
+
+    Round-3 framing: the GLOBAL config is a trusted tier and its env
+    applies in full (TS managedEnv.ts:137) — even keys like PATH — BUT
+    the port's shell-wins rule protects any variable already present in
+    the original process environment. PATH is always in the shell env,
+    so a config PATH never lands. (Project-tier unsafe keys are blocked
+    by classification — covered in test_trust_boundary.py.)"""
 
     def test_path_is_not_modified_by_init(self) -> None:
-        # Setup: pretend the user's global config has both safe and
-        # unsafe keys. apply_safe_config_environment_variables (real,
-        # not mocked) should only apply the safe one.
+        from src.permissions.trust_boundary import (
+            reset_trust_boundary_for_test_only,
+        )
+
         config_env = {
-            "PATH": "/opt/evil/bin",
+            "PATH": "/opt/somewhere/bin",
             "ANTHROPIC_MODEL": "claude-sonnet-4-6",
         }
         original_path = os.environ.get("PATH", "")
+        reset_trust_boundary_for_test_only()
 
         with mock.patch(
-            "src.permissions.trust_boundary._load_config_env",
+            "src.permissions.trust_boundary._load_global_config_env",
             return_value=config_env,
+        ), mock.patch(
+            "src.permissions.trust_boundary._load_user_settings_env",
+            return_value={},
+        ), mock.patch(
+            "src.permissions.trust_boundary._load_project_scoped_env",
+            return_value={},
         ), mock.patch.object(init_module, "setup_graceful_shutdown"), \
                 mock.patch.object(init_module, "start_api_preconnect"):
             os.environ.pop("ANTHROPIC_MODEL", None)
             init_module.init()
 
         try:
-            # PATH unchanged.
+            # PATH unchanged (shell-wins).
             self.assertEqual(os.environ.get("PATH", ""), original_path)
-            # ANTHROPIC_MODEL was applied (safe).
+            # ANTHROPIC_MODEL was applied (not in the shell snapshot).
             self.assertEqual(os.environ.get("ANTHROPIC_MODEL"), "claude-sonnet-4-6")
         finally:
             os.environ.pop("ANTHROPIC_MODEL", None)
+            reset_trust_boundary_for_test_only()
 
 
 class TestRunPreActionCallsInit(unittest.TestCase):
@@ -146,21 +162,29 @@ class TestRunPreActionCallsInit(unittest.TestCase):
 class TestRunPreActionSetsInteractive(unittest.TestCase):
     def test_default_args_interactive_true_when_tty(self) -> None:
         # We can't make sys.stdout a real TTY in unittest, so patch
-        # isatty to return True.
+        # isatty to return True. Trust seeding is exercised separately —
+        # stub establish + the persisted-trust check here.
         with mock.patch.object(init_module, "init"), \
+                mock.patch.object(init_module, "establish_session_trust"), \
+                mock.patch(
+                    "src.services.startup_gates.check_trust_accepted",
+                    return_value=False,
+                ), \
                 mock.patch.object(sys.stdout, "isatty", return_value=True):
             args = types.SimpleNamespace(print=False)
             init_module.run_pre_action(args)
             self.assertTrue(get_is_interactive())
 
     def test_print_mode_sets_interactive_false(self) -> None:
-        with mock.patch.object(init_module, "init"):
+        with mock.patch.object(init_module, "init"), \
+                mock.patch.object(init_module, "establish_session_trust"):
             args = types.SimpleNamespace(print=True)
             init_module.run_pre_action(args)
             self.assertFalse(get_is_interactive())
 
     def test_non_tty_stdout_sets_interactive_false(self) -> None:
         with mock.patch.object(init_module, "init"), \
+                mock.patch.object(init_module, "establish_session_trust"), \
                 mock.patch.object(sys.stdout, "isatty", return_value=False):
             args = types.SimpleNamespace(print=False)
             init_module.run_pre_action(args)
@@ -170,6 +194,7 @@ class TestRunPreActionSetsInteractive(unittest.TestCase):
 class TestRunPreActionSetsClientType(unittest.TestCase):
     def test_default_when_env_unset(self) -> None:
         with mock.patch.object(init_module, "init"), \
+                mock.patch.object(init_module, "establish_session_trust"), \
                 mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop("CLAUDE_CODE_ENTRYPOINT", None)
             args = types.SimpleNamespace(print=False)
@@ -178,6 +203,7 @@ class TestRunPreActionSetsClientType(unittest.TestCase):
 
     def test_sdk_py_override(self) -> None:
         with mock.patch.object(init_module, "init"), \
+                mock.patch.object(init_module, "establish_session_trust"), \
                 mock.patch.dict(os.environ, {"CLAUDE_CODE_ENTRYPOINT": "sdk-py"}):
             args = types.SimpleNamespace(print=False)
             init_module.run_pre_action(args)
@@ -187,23 +213,52 @@ class TestRunPreActionSetsClientType(unittest.TestCase):
         # Defensive default: an attacker setting this env var to a
         # random string shouldn't change behavior.
         with mock.patch.object(init_module, "init"), \
+                mock.patch.object(init_module, "establish_session_trust"), \
                 mock.patch.dict(os.environ, {"CLAUDE_CODE_ENTRYPOINT": "totally-random"}):
             args = types.SimpleNamespace(print=False)
             init_module.run_pre_action(args)
             self.assertEqual(get_client_type(), "cli")
 
 
-class TestRunPreActionSetsTrustAccepted(unittest.TestCase):
-    """A6 / P1.6: plan-phase-1 default is `set_session_trust_accepted(True)`
-    so existing trust-gate consumers behave correctly."""
+class TestRunPreActionTrustSeeding(unittest.TestCase):
+    """ch02 round-3 trust matrix (replaces the plan-phase-1 unconditional
+    `set_session_trust_accepted(True)`):
 
-    def test_pre_action_sets_trust_accepted_true(self) -> None:
-        # Pre-state: default False.
-        self.assertFalse(get_session_trust_accepted())
-        with mock.patch.object(init_module, "init"):
+    * non-interactive  → implicit trust (TS main.tsx:1955-1967);
+    * interactive + previously accepted → trusted;
+    * interactive + not accepted → stays untrusted (the surface's gate
+      decides later).
+    """
+
+    def _run(self, *, interactive: bool, persisted_trust: bool) -> mock.MagicMock:
+        establish = mock.MagicMock()
+        with mock.patch.object(init_module, "init"), \
+                mock.patch.object(
+                    init_module, "establish_session_trust", establish
+                ), \
+                mock.patch(
+                    "src.services.startup_gates.check_trust_accepted",
+                    return_value=persisted_trust,
+                ), \
+                mock.patch.object(
+                    sys.stdout, "isatty", return_value=interactive
+                ):
             args = types.SimpleNamespace(print=False)
             init_module.run_pre_action(args)
-        self.assertTrue(get_session_trust_accepted())
+        return establish
+
+    def test_non_interactive_gets_implicit_trust(self) -> None:
+        establish = self._run(interactive=False, persisted_trust=False)
+        establish.assert_called_once()
+
+    def test_interactive_previously_trusted_establishes(self) -> None:
+        establish = self._run(interactive=True, persisted_trust=True)
+        establish.assert_called_once()
+
+    def test_interactive_untrusted_stays_untrusted(self) -> None:
+        establish = self._run(interactive=True, persisted_trust=False)
+        establish.assert_not_called()
+        self.assertFalse(get_session_trust_accepted())
 
 
 if __name__ == "__main__":

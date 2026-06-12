@@ -151,6 +151,35 @@ def get_default_config() -> dict[str, Any]:
     }
 
 
+# Keys a committable project/local config tier may NOT contribute while the
+# session is untrusted. ``providers``/``default_provider`` would redirect API
+# traffic to a config-controlled host while the user's global credentials
+# remain attached; ``env`` is owned by permissions.trust_boundary's gated
+# passes. (TS has no analogue: its project files contribute settings only.)
+_UNTRUSTED_TIER_BLOCKED_KEYS: frozenset[str] = frozenset(
+    {"env", "providers", "default_provider"}
+)
+
+
+def _session_trusted() -> bool:
+    try:
+        from src.bootstrap.state import get_session_trust_accepted
+
+        return get_session_trust_accepted()
+    except Exception:
+        # Bootstrap state unavailable (early import, standalone script):
+        # fail toward the pre-round-3 behavior rather than breaking reads.
+        return True
+
+
+def _strip_untrusted_keys(tier: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in tier.items()
+        if key not in _UNTRUSTED_TIER_BLOCKED_KEYS
+    }
+
+
 # ---------------------------------------------------------------------------
 # ConfigManager — three-level loading + merge
 # ---------------------------------------------------------------------------
@@ -191,10 +220,26 @@ class ConfigManager:
         return dict(self._local_cache)
 
     def get_merged(self) -> dict[str, Any]:
-        """Return fully merged config: global < project < local."""
+        """Return fully merged config: global < project < local.
+
+        While the session is untrusted, the project/local tiers are
+        stripped of trust-sensitive keys before merging (ch02 round-3
+        gap A5): a committable ``.claude/config.json`` must not be able
+        to redirect API traffic (``providers.*.base_url`` riding the
+        user's global ``api_key``) or inject env before the folder-trust
+        gate. Checked at merge time so a mid-session trust grant takes
+        effect on the next read. Env application is separately owned by
+        ``permissions.trust_boundary``; the ``env`` strip here is
+        defense in depth for direct ``get_merged()["env"]`` readers.
+        """
         merged = self.load_global()
-        merged = _deep_merge(merged, self.load_project())
-        merged = _deep_merge(merged, self.load_local())
+        project = self.load_project()
+        local = self.load_local()
+        if not _session_trusted():
+            project = _strip_untrusted_keys(project)
+            local = _strip_untrusted_keys(local)
+        merged = _deep_merge(merged, project)
+        merged = _deep_merge(merged, local)
         return merged
 
     # --- writers ---

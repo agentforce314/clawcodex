@@ -12,23 +12,20 @@ top-level ``"env"`` object — one place for all configuration, no scattered
       }
     }
 
-Because the config hierarchy is global < project < local (deep-merged), an
-``env`` block may appear at any level; later levels override earlier ones.
-
 Resolution order for a single key (highest precedence first):
 
   1. the real process environment (an explicit ``export NAME=...``)
-  2. the merged config ``env`` block
+  2. the GLOBAL config ``env`` block
 
 So an exported shell variable always wins over the stored value (handy for
-temporary overrides and CI), while the config file is the durable store.
+temporary overrides and CI), while the global config file is the durable store.
 
-At startup :func:`apply_config_env_to_environ` copies the config ``env`` block
-into ``os.environ`` (without clobbering already-set variables) so every existing
-``os.environ[...]`` reader — tools, subprocesses, MCP servers — transparently
-sees the stored keys. :func:`get_secret` additionally falls back to reading the
-config directly, so it resolves correctly even on code paths that never ran
-startup ``init()`` (standalone scripts, tests).
+Environment APPLICATION is owned by ``src.permissions.trust_boundary`` (ch02
+round-3): the trusted tiers' env applies at ``init()``, project/local tiers
+only after the folder-trust gate. This module deliberately reads the GLOBAL
+tier only — its fallback exists for code paths that never ran startup
+``init()`` (standalone scripts, tests), and must not become a side door for
+untrusted project-tier values.
 
 Values are never logged; the global config file is written ``0600`` by
 ``src.config._atomic_write_json``.
@@ -67,11 +64,17 @@ def _coerce_env_map(section: Any) -> dict[str, str]:
 
 
 def _config_env() -> dict[str, str]:
-    """The merged config ``env`` block as a ``{NAME: value}`` map (may be empty)."""
-    try:
-        from src.config import load_config
+    """The GLOBAL config ``env`` block as a ``{NAME: value}`` map.
 
-        return _coerce_env_map(load_config().get(CONFIG_ENV_KEY))
+    Global tier only — project/local config env is trust-gated and applied
+    to ``os.environ`` by ``permissions.trust_boundary``; reading the merged
+    view here would leak untrusted project values into ``get_secret``
+    consumers before the trust gate runs.
+    """
+    try:
+        from src.config import ConfigManager
+
+        return _coerce_env_map(ConfigManager().load_global().get(CONFIG_ENV_KEY))
     except Exception as exc:  # config unreadable -> behave as if unset
         logger.debug("secret_store: could not read config env: %s", exc)
         return {}
@@ -90,29 +93,6 @@ def get_secret(name: str, default: str | None = None) -> str | None:
     if cfg_val and cfg_val.strip():
         return cfg_val
     return default
-
-
-def apply_config_env_to_environ(*, override: bool = False) -> list[str]:
-    """Copy the config ``env`` block into ``os.environ``.
-
-    Called once at startup (from :func:`src.init.init`). With ``override=False``
-    (the default) an already-set, non-empty environment variable is left
-    untouched, so an explicit ``export`` wins over the stored value. Returns the
-    list of variable NAMES applied (never values) for diagnostics.
-    """
-    applied: list[str] = []
-    for name, value in _config_env().items():
-        if not override and (os.environ.get(name) or "").strip():
-            continue
-        os.environ[name] = value
-        applied.append(name)
-    if applied:
-        logger.debug(
-            "secret_store: applied %d config env var(s): %s",
-            len(applied),
-            ", ".join(sorted(applied)),
-        )
-    return applied
 
 
 def list_secret_names() -> list[str]:

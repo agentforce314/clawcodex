@@ -143,8 +143,14 @@ class TestPreActionRunsForDefaultInvocation(unittest.TestCase):
         # We patch the actual REPL launcher so the test doesn't drag
         # in the full provider/registry/etc. stack. _resolve_permission_state
         # is allowed to run because cli.start_repl reads args._resolved_*.
+        # check_trust_accepted is patched True so the round-3 REPL trust
+        # gate (exercised in test_trust_wiring_round3.py) stays inert here.
         with mock.patch("src.init.run_pre_action") as mock_pre, \
                 mock.patch("src.cli.start_repl", return_value=0), \
+                mock.patch(
+                    "src.services.startup_gates.check_trust_accepted",
+                    return_value=True,
+                ), \
                 mock.patch("src.entrypoints.tui.should_use_tui", return_value=False), \
                 mock.patch.object(sys, "argv", ["clawcodex"]):
             from src import cli
@@ -158,15 +164,30 @@ class TestPreActionRunsForDefaultInvocation(unittest.TestCase):
 
 
 class TestInitSafeEnvApplyBeforeUnsafe(unittest.TestCase):
-    def test_safe_applied_unsafe_skipped(self) -> None:
+    def test_safe_applied_shell_path_preserved(self) -> None:
+        # Round-3: the global tier applies in full, but PATH is always
+        # in the original shell environment, so the shell-wins rule
+        # preserves it. Project-tier unsafe-key exclusion is covered in
+        # test_trust_boundary.py.
+        from src.permissions.trust_boundary import (
+            reset_trust_boundary_for_test_only,
+        )
+
         config_env = {
-            "ANTHROPIC_MODEL": "claude-sonnet-4-6",  # safe
-            "PATH": "/opt/evil/bin",                 # unsafe
+            "ANTHROPIC_MODEL": "claude-sonnet-4-6",
+            "PATH": "/opt/somewhere/bin",
         }
         original_path = os.environ.get("PATH", "")
+        reset_trust_boundary_for_test_only()
         with mock.patch(
-            "src.permissions.trust_boundary._load_config_env",
+            "src.permissions.trust_boundary._load_global_config_env",
             return_value=config_env,
+        ), mock.patch(
+            "src.permissions.trust_boundary._load_user_settings_env",
+            return_value={},
+        ), mock.patch(
+            "src.permissions.trust_boundary._load_project_scoped_env",
+            return_value={},
         ), mock.patch.object(init_module, "setup_graceful_shutdown"), \
                 mock.patch.object(init_module, "start_api_preconnect"):
             os.environ.pop("ANTHROPIC_MODEL", None)
@@ -176,6 +197,7 @@ class TestInitSafeEnvApplyBeforeUnsafe(unittest.TestCase):
                 self.assertEqual(os.environ.get("PATH", ""), original_path)
             finally:
                 os.environ.pop("ANTHROPIC_MODEL", None)
+                reset_trust_boundary_for_test_only()
 
 
 # ---------------------------------------------------------------------------
