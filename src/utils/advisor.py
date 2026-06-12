@@ -796,6 +796,25 @@ def execute_client_advisor(
         "output_tokens": int(raw_usage.get("output_tokens", 0) or 0),
     }
 
+    # ch04 round-3 G1: the client-side advisor is its own API call -- it
+    # must self-record into the bootstrap cost totals (the query loop's
+    # head only sees main-loop responses).
+    try:
+        from src.cost_tracker import record_api_usage
+
+        record_api_usage(
+            call_kwargs.get("model")
+            or getattr(response, "model", None)
+            or getattr(provider, "model", "unknown"),
+            raw_usage,
+        )
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).debug(
+            "advisor cost recording failed", exc_info=True
+        )
+
     text = getattr(response, "content", None) or ""
     if not isinstance(text, str) or not text.strip():
         return (False, "Advisor returned no text content.", usage)

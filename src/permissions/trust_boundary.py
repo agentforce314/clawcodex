@@ -389,13 +389,14 @@ def apply_full_config_environment_variables(
     interactive sessions, and every trust-gate accept path via
     :func:`establish_session_trust`.
 
-    Known divergence (documented): TS follows the full apply with CA/mTLS/
-    proxy cache clears + global agent reconfiguration (managedEnv.ts:201-207).
-    The port has no global agent layer — already-constructed HTTP clients
-    (the opt-in TUI builds one before its gates) keep their construction-time
-    proxy/CA settings until next launch; everything reading ``os.environ``
-    at call time picks the new values up immediately. Client
-    rebuild-on-accept is ch04 (API-layer) follow-up work.
+    Known divergence (documented; narrowed by the ch04 round-3 audit): TS
+    follows the full apply with CA/mTLS/proxy cache clears + global agent
+    reconfiguration (managedEnv.ts:201-207). The port needs no global
+    agent layer for the common case because ALL provider clients build
+    LAZILY at first call — which happens after the trust gates — so env
+    applied here (proxy/CA/base-url) reaches the client. The residual lag
+    is only the constructor-captured api_key/base_url CONFIG snapshot
+    (provider config read pre-gates), refreshed next launch.
     """
     _apply(
         _load_global_config_env() if config_env is None else dict(config_env)

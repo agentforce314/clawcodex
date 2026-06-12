@@ -289,10 +289,11 @@ class ClawCodexTUI(App):
         # Apply the full (project/local tiers included) env now that trust
         # is granted — TS pairs the dialog accept with
         # applyConfigEnvironmentVariables (interactiveHelpers.tsx:150+194).
-        # The provider client constructed before this screen keeps its
-        # construction-time proxy/CA settings until next launch (no global
-        # agent layer to reconfigure — ch04 follow-up); everything reading
-        # os.environ at call time sees the new values immediately.
+        # ch04 round-3 correction: ALL provider clients build LAZILY at
+        # first call (post-gates), so env-level proxy/CA/base-url applied
+        # here DOES reach the client. The residual lag is only the
+        # constructor-captured api_key/base_url CONFIG snapshot (read
+        # pre-gates), refreshed next launch.
         try:
             from src.permissions.trust_boundary import establish_session_trust
 
