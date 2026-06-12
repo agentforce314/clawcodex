@@ -346,9 +346,15 @@ class AnthropicProvider(BaseProvider):
                 max_tokens=max_tokens,
             )
 
+        from ._stream_worker import run_stream_on_worker
+
         streamed_text = ""
         watchdog_fired = False
         final_message = None
+        # Written by the worker (inside ``_produce``'s finally, BEFORE
+        # the exception/result is relayed to this thread) and read by
+        # the except handler / post-stream branch below — never raced.
+        _watchdog_state = {"fired": False}
         try:
             with client.messages.stream(
                 model=model,
@@ -362,32 +368,55 @@ class AnthropicProvider(BaseProvider):
                 # (see ``_stream_abort.py`` for the race-safe ordering
                 # and the close-via-stream.response.close mechanism).
                 # The provider keeps the watchdog and fallback logic
-                # local: they aren't abort-related.
+                # local: they aren't abort-related. The ITERATION runs on
+                # a worker thread (#279, see ``_stream_worker.py``) so
+                # ESC unwinds promptly even when a buffering proxy keeps
+                # the SDK's blocking read alive after the listener's
+                # close.
                 watchdog = StreamWatchdog(stream)
                 watchdog.arm()
-                try:
-                    for text in stream.text_stream:
-                        # Each chunk pushes the deadline forward.
-                        watchdog.reset()
-                        if not text:
-                            continue
-                        streamed_text += text
-                        if on_text_chunk is not None:
-                            on_text_chunk(text)
+
+                def _produce(emit):
                     try:
-                        final_message = stream.get_final_message()
-                    except Exception:
-                        final_message = None
+                        for text in stream.text_stream:
+                            # Each chunk pushes the deadline forward.
+                            watchdog.reset()
+                            if not text:
+                                continue
+                            if not emit(text):
+                                return None  # abort/consumer gone
+                        try:
+                            return stream.get_final_message()
+                        except Exception:
+                            return None
+                    finally:
+                        # Snapshot watchdog state BEFORE the result or
+                        # exception is relayed to the consumer (critic
+                        # B1 lineage: the except handler below reads it).
+                        _watchdog_state["fired"] = watchdog.fired
+                        watchdog.disarm()
+
+                def _on_text(text: str) -> None:
+                    nonlocal streamed_text
+                    streamed_text += text
+                    if on_text_chunk is not None:
+                        on_text_chunk(text)
+
+                try:
+                    final_message = run_stream_on_worker(
+                        _produce, _on_text, guard, thread_name="anthropic-stream"
+                    )
                 finally:
-                    # Snapshot watchdog state INSIDE the finally so it
-                    # survives an exception propagating through the
-                    # iterator (close() raises mid-stream). Critic B1
-                    # caught this — otherwise the assignment was on a
-                    # line never reached during the exception path and
-                    # the fallback branch below ran with watchdog_fired
-                    # still False.
-                    watchdog_fired = watchdog.fired
+                    # Consumer-side disarm guarantee: on the abort path
+                    # against a stuck stream, the worker (and _produce's
+                    # finally) may never unblock — without this, the
+                    # armed 90s timer would leak per ESC. disarm() is
+                    # idempotent; get_final_message racing the with-
+                    # block __exit__ on the worker is benign (httpx
+                    # raises cleanly on cross-thread close; the result
+                    # is dropped post-abort).
                     watchdog.disarm()
+                watchdog_fired = _watchdog_state["fired"]
         except Exception as streaming_exc:
             # Abort path FIRST: a user cancel must win over the
             # watchdog fallback (the abort listener may also have
@@ -399,8 +428,10 @@ class AnthropicProvider(BaseProvider):
             # WI-5.2 fallback path: stream interrupted by the idle
             # watchdog. Fall back to non-streaming so the user still
             # gets an answer. If the failure is something else
-            # (network/auth/etc.), re-raise the original.
-            if watchdog_fired:
+            # (network/auth/etc.), re-raise the original. Read the
+            # shared state, not the local: the local assignment after
+            # run_stream_on_worker never ran on this path.
+            if _watchdog_state["fired"]:
                 try:
                     return _fallback_to_chat()
                 except Exception as fallback_exc:

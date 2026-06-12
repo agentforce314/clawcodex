@@ -234,3 +234,56 @@ def test_listener_detached_after_normal_completion() -> None:
 
     # No listeners should remain attached after the call completes.
     assert controller.signal._listeners == []
+
+
+class _StuckAnthropicStream:
+    """Anthropic-SDK-shaped stream whose iterator never honors
+    ``response.close()`` — the buffering-proxy scenario (#279). The
+    worker-thread iteration must not rely on the iterator unblocking."""
+
+    def __init__(self) -> None:
+        self.response = MagicMock()
+        self._never_set = threading.Event()
+        self._iter_entered = threading.Event()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    @property
+    def text_stream(self):
+        self._iter_entered.set()
+        self._never_set.wait()  # blocks forever, even after close()
+        return
+        yield  # pragma: no cover
+
+    def get_final_message(self):  # pragma: no cover — never reached
+        raise AssertionError("unreachable")
+
+
+def test_abort_unwinds_promptly_even_when_iterator_never_returns() -> None:
+    """#279: the worker+queue decoupling ported from the OpenAI path.
+
+    Without it, ESC against a proxy that ignores ``response.close()``
+    left the caller blocked inside ``stream.text_stream`` until the
+    connection died on its own."""
+    controller = AbortController()
+    stream = _StuckAnthropicStream()
+    provider = _provider_with_stream(stream)
+
+    def _trip_after_worker_starts() -> None:
+        assert stream._iter_entered.wait(timeout=2.0), "worker never entered iterator"
+        controller.abort("user_interrupt")
+
+    threading.Thread(target=_trip_after_worker_starts, daemon=True).start()
+
+    start = time.monotonic()
+    with pytest.raises(AbortError):
+        provider.chat_stream_response(
+            messages=[{"role": "user", "content": "hi"}],
+            abort_signal=controller.signal,
+        )
+    elapsed = time.monotonic() - start
+    assert elapsed < 3.0, f"abort took {elapsed:.2f}s against a stuck iterator"
