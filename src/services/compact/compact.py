@@ -176,6 +176,25 @@ def _is_prompt_too_long_error(error_str: str) -> bool:
     )
 
 
+def _record_compaction_usage(context: "CompactContext", usage: Any) -> None:
+    """Record a summarize call's usage into the bootstrap cost totals
+    (ch04 round-3 G1 — TS counts every API call via addToTotalSessionCost
+    in the API layer; the port's direct provider calls must self-record).
+    Records under the summarize model (``context.model``), falling back
+    to the provider's. Never raises."""
+    try:
+        from src.cost_tracker import record_api_usage
+
+        model = (
+            getattr(context, "model", None)
+            or getattr(getattr(context, "provider", None), "model", None)
+            or "unknown"
+        )
+        record_api_usage(model, usage)
+    except Exception:
+        logger.debug("compaction cost recording failed", exc_info=True)
+
+
 def _fallback_summary(messages: list[Message]) -> str:
     """Generate a simple text fallback summary when the LLM call fails."""
     user_msgs: list[str] = []
@@ -348,6 +367,11 @@ async def compact_conversation(
             summary_text = response.content.strip() if response.content else ""
             if response.usage:
                 compaction_usage = dict(response.usage)
+            # ch04 round-3 G1: compaction's usage was extracted but never
+            # recorded — a dead cost head of the same class as the main
+            # loop's (critic-found). Distinct API call from any
+            # query_source="compact" loop turn, so no double count.
+            _record_compaction_usage(context, response.usage)
             break
         except Exception as e:
             error_str = str(e)
@@ -391,6 +415,7 @@ async def compact_conversation(
                 summary_text = response.content.strip() if response.content else ""
                 if response.usage:
                     compaction_usage = dict(response.usage)
+                _record_compaction_usage(context, response.usage)
                 break
             except Exception as e2:
                 logger.warning(
@@ -538,6 +563,11 @@ async def partial_compact_conversation(
             summary_text = response.content.strip() if response.content else ""
             if response.usage:
                 compaction_usage = dict(response.usage)
+            # ch04 round-3 G1: compaction's usage was extracted but never
+            # recorded — a dead cost head of the same class as the main
+            # loop's (critic-found). Distinct API call from any
+            # query_source="compact" loop turn, so no double count.
+            _record_compaction_usage(context, response.usage)
             break
         except Exception as e:
             error_str = str(e)
