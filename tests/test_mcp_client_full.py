@@ -229,7 +229,7 @@ class TestSessionExpiryRetry:
         # returns success. Tracker captures the call sequence.
         calls = []
 
-        async def fake_send_request(method, params=None):
+        async def fake_send_request(method, params=None, abort_signal=None):
             calls.append(method)
             if len(calls) == 1:
                 raise McpToolCallError(
@@ -270,7 +270,7 @@ class TestSessionExpiryRetry:
 
         calls = []
 
-        async def fake_send_request(method, params=None):
+        async def fake_send_request(method, params=None, abort_signal=None):
             calls.append(method)
             raise McpToolCallError(
                 '{"code":32600,"message":"Session terminated"}',
@@ -305,7 +305,7 @@ class TestSessionExpiryRetry:
         calls = []
         reconnect_called = []
 
-        async def fake_send_request(method, params=None):
+        async def fake_send_request(method, params=None, abort_signal=None):
             calls.append(method)
             raise McpToolCallError(
                 '{"code":-32602,"message":"Invalid params"}',
@@ -350,7 +350,7 @@ class TestSessionExpiryRetry:
             "Session expired",
         )
 
-        async def fake_send_request(method, params=None):
+        async def fake_send_request(method, params=None, abort_signal=None):
             raise original
 
         async def fake_reconnect():
@@ -387,7 +387,7 @@ class TestSessionExpiryRetry:
         N_CALLERS = 10
         call_history: list[str] = []
 
-        async def fake_send_request(method, params=None):
+        async def fake_send_request(method, params=None, abort_signal=None):
             idx = len(call_history)
             call_history.append(method)
             if idx < N_CALLERS:

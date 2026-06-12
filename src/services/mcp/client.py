@@ -7,6 +7,8 @@ import os
 import time
 from typing import Any, Callable
 
+from src.utils.abort_controller import AbortError, AbortSignal
+
 from .errors import (
     McpAuthError,
     McpSessionExpiredError,
@@ -335,6 +337,11 @@ class McpClient:
                     break
                 if msg.id is not None and msg.id in self._pending_requests:
                     future = self._pending_requests.pop(msg.id)
+                    if future.done():
+                        # Aborted (cancelled) request whose response raced
+                        # the cleanup — resolving it would raise
+                        # InvalidStateError and kill the receive loop.
+                        continue
                     if msg.error:
                         future.set_exception(
                             McpToolCallError(
@@ -355,24 +362,81 @@ class McpClient:
         self,
         method: str,
         params: dict[str, Any] | None = None,
+        abort_signal: AbortSignal | None = None,
     ) -> Any:
         if self._transport is None:
             raise RuntimeError("Transport not connected")
+        if abort_signal is not None:
+            abort_signal.throw_if_aborted()
         request_id = self._next_id()
         msg = JsonRpcMessage(
             method=method,
             params=params,
             id=request_id,
         )
-        future: asyncio.Future[Any] = asyncio.get_event_loop().create_future()
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[Any] = loop.create_future()
         self._pending_requests[request_id] = future
-        await self._transport.send(msg)
+
+        # ESC-cancel (#277): the abort listener fires on the aborting
+        # thread (TUI/REPL ESC handler), so hop onto this loop to cancel
+        # the pending future — wait_for then raises CancelledError, which
+        # we convert to AbortError after notifying the server. When user
+        # abort and a genuine task-cancel coincide, AbortError wins: this
+        # coroutine runs on a per-call asyncio.run loop in production, so
+        # no external task cancellation can reach it anyway.
+        registered_abort: Callable[[], None] | None = None
+        if abort_signal is not None:
+            def _on_abort() -> None:
+                loop.call_soon_threadsafe(future.cancel)
+
+            registered_abort = abort_signal.add_listener(_on_abort, once=True)
+            if abort_signal.aborted:
+                # Abort fired between throw_if_aborted and add_listener —
+                # the listener will never fire. Skip the send entirely.
+                self._pending_requests.pop(request_id, None)
+                abort_signal.remove_listener(registered_abort)
+                raise AbortError(abort_signal.reason or "user_interrupt")
+
         timeout_s = _get_tool_timeout_ms() / 1000.0
         try:
+            # Inside the try so the finally's listener/pending cleanup
+            # also covers a send that raises (closed transport, broken
+            # pipe) or is cancelled mid-await.
+            await self._transport.send(msg)
             return await asyncio.wait_for(future, timeout=timeout_s)
-        except asyncio.TimeoutError:
-            self._pending_requests.pop(request_id, None)
+        except asyncio.CancelledError:
+            if abort_signal is not None and abort_signal.aborted:
+                # JSON-RPC cancellation per MCP spec: best-effort
+                # notification so a compliant server stops the work; a
+                # server that ignores it merely leaks one request — the
+                # client is already unblocked. Bounded so a wedged
+                # transport (the likely cause of the hang being escaped)
+                # cannot block the unblock path.
+                try:
+                    await asyncio.wait_for(
+                        self._send_notification(
+                            "notifications/cancelled",
+                            {
+                                "requestId": request_id,
+                                "reason": abort_signal.reason or "user_interrupt",
+                            },
+                        ),
+                        timeout=2,
+                    )
+                except Exception:
+                    logger.debug(
+                        "failed to send cancellation for request %s", request_id
+                    )
+                raise AbortError(abort_signal.reason or "user_interrupt") from None
             raise
+        finally:
+            # No-op on the success path (the receive loop pops when it
+            # resolves); guarantees no stranded never-resolving future on
+            # timeout, abort, task-cancel, or send failure.
+            self._pending_requests.pop(request_id, None)
+            if abort_signal is not None and registered_abort is not None:
+                abort_signal.remove_listener(registered_abort)
 
     async def _send_notification(
         self,
@@ -411,6 +475,7 @@ class McpClient:
         tool_name: str,
         arguments: dict[str, Any] | None = None,
         meta: dict[str, Any] | None = None,
+        abort_signal: AbortSignal | None = None,
     ) -> McpToolResult:
         params: dict[str, Any] = {
             "name": tool_name,
@@ -425,7 +490,9 @@ class McpClient:
         # cache is cleared on detection so the next request reconnects
         # against a fresh session rather than reusing the expired one.
         try:
-            result = await self._send_request("tools/call", params)
+            result = await self._send_request(
+                "tools/call", params, abort_signal=abort_signal
+            )
         except McpToolCallError as err:
             if not is_mcp_session_expired_error(err):
                 # Regular tool error (invalid params, server-rejected, etc.) —
@@ -437,7 +504,9 @@ class McpClient:
             # failed and re-raised). A second session-expired here means
             # the server is unstable / the retry hit a fresh session that
             # already expired — propagate so we don't loop indefinitely.
-            result = await self._send_request("tools/call", params)
+            result = await self._send_request(
+                "tools/call", params, abort_signal=abort_signal
+            )
         if not result or not isinstance(result, dict):
             return McpToolResult()
 
