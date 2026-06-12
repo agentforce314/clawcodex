@@ -270,6 +270,19 @@ class ClawCodexTUI(App):
             persisted = record_trust_accepted()
         except Exception:
             persisted = False
+        # Apply the full (project/local tiers included) env now that trust
+        # is granted — TS pairs the dialog accept with
+        # applyConfigEnvironmentVariables (interactiveHelpers.tsx:150+194).
+        # The provider client constructed before this screen keeps its
+        # construction-time proxy/CA settings until next launch (no global
+        # agent layer to reconfigure — ch04 follow-up); everything reading
+        # os.environ at call time sees the new values immediately.
+        try:
+            from src.permissions.trust_boundary import establish_session_trust
+
+            establish_session_trust()
+        except Exception:
+            pass
         if not persisted and self._repl_screen is not None:
             self._repl_screen.transcript.append_system(
                 "Folder trusted for this session only — could not write "

@@ -60,34 +60,27 @@ def test_get_secret_default_when_missing(monkeypatch):
     assert ss.get_secret("MYKEY", "fallback") == "fallback"
 
 
-# --- apply_config_env_to_environ -----------------------------------------
+# --- global-tier scoping (ch02 round-3) -----------------------------------
+# Env APPLICATION moved to permissions.trust_boundary; the read fallback
+# here must see ONLY the global tier so untrusted project config can never
+# feed get_secret consumers before the trust gate.
 
 
-def test_apply_no_override_preserves_real_env(monkeypatch):
-    monkeypatch.setattr(ss, "_config_env", lambda: {"A_REAL": "cfg-a", "B_NEW": "cfg-b"})
-    monkeypatch.setenv("A_REAL", "exported-a")
-    monkeypatch.delenv("B_NEW", raising=False)
-    try:
-        applied = ss.apply_config_env_to_environ()
-        assert applied == ["B_NEW"]            # only the unset one
-        import os
+def test_config_env_reads_global_tier_only(monkeypatch):
+    from unittest import mock
 
-        assert os.environ["A_REAL"] == "exported-a"  # export preserved
-        assert os.environ["B_NEW"] == "cfg-b"         # filled from config
-    finally:
-        import os
-
-        os.environ.pop("B_NEW", None)
-
-
-def test_apply_override_true_replaces(monkeypatch):
-    monkeypatch.setattr(ss, "_config_env", lambda: {"A_REAL": "cfg-a"})
-    monkeypatch.setenv("A_REAL", "exported-a")
-    applied = ss.apply_config_env_to_environ(override=True)
-    assert applied == ["A_REAL"]
-    import os
-
-    assert os.environ["A_REAL"] == "cfg-a"
+    monkeypatch.delenv("MYKEY", raising=False)
+    monkeypatch.delenv("EVIL", raising=False)
+    with mock.patch(
+        "src.config.ConfigManager.load_global",
+        return_value={"env": {"MYKEY": "from-global"}},
+    ), mock.patch(
+        "src.config.ConfigManager.load_project",
+        return_value={"env": {"MYKEY": "from-project", "EVIL": "x"}},
+    ) as mock_project:
+        assert ss.get_secret("MYKEY") == "from-global"
+        assert ss.get_secret("EVIL") is None
+        mock_project.assert_not_called()
 
 
 def test_list_secret_names(monkeypatch):

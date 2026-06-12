@@ -87,23 +87,32 @@ def check_trust_accepted(cwd: str | Path | None = None) -> bool:
         current = parent
 
 
-def record_trust_accepted(cwd: str | Path | None = None) -> bool:
-    """Persist acceptance (TS TrustDialog.tsx:172-178). Home directory
-    → session-only; everything else → ``projects[path]`` entry."""
+def grant_session_trust() -> None:
+    """Set BOTH session-trust flags (this module's + bootstrap state's),
+    with no persistence.
 
+    The two flags exist because ``check_trust_accepted`` predates the
+    bootstrap port; they must never desync — e.g. a piped-stdout session
+    is classified non-interactive (implicit trust, full env applied in
+    ``run_pre_action``) yet still dispatches to the REPL, whose gate
+    consults ``check_trust_accepted``; without the sync it would prompt
+    AFTER the env was already applied.
+    """
     global _session_trust_accepted
     _session_trust_accepted = True
-    # Keep the BOOTSTRAP session-trust flag (the port of the same TS
-    # symbol, consumed by hooks/trust_gate.py and
-    # tool_system/context.workspace_trusted) in sync — today init.py
-    # pre-sets it True for every entrypoint, but once that placeholder
-    # narrows, an accepted dialog must still propagate trust there.
     try:
         from src.bootstrap.state import set_session_trust_accepted
 
         set_session_trust_accepted(True)
     except Exception:
         pass
+
+
+def record_trust_accepted(cwd: str | Path | None = None) -> bool:
+    """Persist acceptance (TS TrustDialog.tsx:172-178). Home directory
+    → session-only; everything else → ``projects[path]`` entry."""
+
+    grant_session_trust()
 
     from src import config as config_mod
 
@@ -280,6 +289,7 @@ __all__ = [
     "check_trust_accepted",
     "collect_trust_warnings",
     "get_external_includes_state",
+    "grant_session_trust",
     "has_skip_dangerous_mode_permission_prompt",
     "list_external_includes",
     "record_bypass_accepted",
