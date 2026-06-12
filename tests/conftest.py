@@ -81,6 +81,18 @@ def _isolate_user_permission_settings(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _reset_session_hook_env():
+    """#281: lifecycle hooks populate the session env buckets consumed by
+    the Bash tool at spawn — reset per test so a hook test's exports
+    can't leak into later Bash-tool assertions."""
+    from src.hooks.session_env import reset_session_hook_env_for_testing
+
+    reset_session_hook_env_for_testing()
+    yield
+    reset_session_hook_env_for_testing()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_mcp_keyring(request, monkeypatch):
     """Swap ``keyring.get_keyring()`` to a per-test in-memory backend so
     MCP token-storage tests don't leak into the real OS keychain.

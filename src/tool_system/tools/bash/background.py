@@ -76,6 +76,22 @@ def spawn_background_bash(
     # ``stdin=DEVNULL`` mirrors the foreground bash path: prevents background
     # commands that read fd 0 from blocking on a TTY inherited from clawcodex's
     # REPL (see bash_tool.py:_run_bash_with_abort for the same reasoning).
+    # The session hook env (#281) is merged exactly like the foreground path.
+    popen_env = None
+    try:
+        from src.hooks.session_env import get_session_hook_env
+
+        session_env = get_session_hook_env()
+        if session_env:
+            import os as _os
+
+            popen_env = {**_os.environ, **session_env}
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).debug(
+            "session hook env merge failed", exc_info=True
+        )
     proc = subprocess.Popen(
         ["bash", "-lc", wrapped],
         cwd=str(cwd),
@@ -83,6 +99,7 @@ def spawn_background_bash(
         stdout=output_handle,
         stderr=subprocess.STDOUT,
         start_new_session=True,
+        env=popen_env,
     )
 
     started_at = time.time()
