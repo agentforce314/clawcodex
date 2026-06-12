@@ -16,6 +16,47 @@ from src.tool_system.errors import ToolInputError, ToolPermissionError
 from src.tool_system.protocol import ToolCall
 
 
+def _drive_unified(ctx, registry, blocks):
+    """ch07 unification: drive the orchestrator lane (the production path
+    after PR-1; the slim ``_dispatch_single_tool`` lane was retired).
+    Returns the user-role messages run_tools yielded, in yield order."""
+    import asyncio as _asyncio
+
+    from src.services.tool_execution.orchestrator import run_tools
+    from src.tool_system.registry import get_all_base_tools
+    from src.types.messages import AssistantMessage, UserMessage
+
+    ctx.options.tools = get_all_base_tools(registry)
+    ctx.permission_context.mode = "bypassPermissions"
+
+    def _allow(*_a, **_k):
+        return {"behavior": "allow"}
+
+    async def _go():
+        out = []
+        async for u in run_tools(
+            blocks, [AssistantMessage(content="t")], _allow, ctx,
+        ):
+            if u.message is not None and isinstance(u.message, UserMessage):
+                out.append(u.message)
+        return out
+
+    return _asyncio.run(_go())
+
+
+def _split_primary_extras(msgs, tool_use_id):
+    """(primary, extras) shim over the unified lane's yield stream."""
+    primary = None
+    extras = []
+    for m in msgs:
+        c = getattr(m, "content", None)
+        if isinstance(c, list) and c and hasattr(c[0], "tool_use_id") and c[0].tool_use_id == tool_use_id:
+            primary = m
+        else:
+            extras.append(m)
+    return primary, extras
+
+
 class TestE2EFileRead(unittest.TestCase):
     """End-to-end file read flow."""
 
@@ -302,7 +343,7 @@ class TestE2EFileRead(unittest.TestCase):
         dimensions metadata reaches the model."""
         import io
         from PIL import Image
-        from src.query.query import _dispatch_single_tool
+        pass  # ch07: unified-lane driver (see _drive_unified above)
         from src.types.messages import UserMessage
         from src.types.content_blocks import ToolUseBlock
 
@@ -313,7 +354,8 @@ class TestE2EFileRead(unittest.TestCase):
         big.write_bytes(buf.getvalue())
 
         block = ToolUseBlock(id="tu_pd_1", name="Read", input={"file_path": str(big)})
-        primary, extras = _dispatch_single_tool(block, self.registry, self.ctx)
+        msgs = _drive_unified(self.ctx, self.registry, [block])
+        primary, extras = _split_primary_extras(msgs, block.id)
 
         # Primary is the tool_result carrying tu_pd_1.
         self.assertIsInstance(primary, UserMessage)
@@ -328,13 +370,14 @@ class TestE2EFileRead(unittest.TestCase):
 
     def test_production_dispatch_no_extras_for_text_read(self) -> None:
         """A plain text read produces a tool_result and no extras."""
-        from src.query.query import _dispatch_single_tool
+        pass  # ch07: unified-lane driver (see _drive_unified above)
         from src.types.content_blocks import ToolUseBlock
 
         text = self.root / "plain.txt"
         text.write_text("hello\nworld\n")
         block = ToolUseBlock(id="tu_pd_2", name="Read", input={"file_path": str(text)})
-        primary, extras = _dispatch_single_tool(block, self.registry, self.ctx)
+        msgs = _drive_unified(self.ctx, self.registry, [block])
+        primary, extras = _split_primary_extras(msgs, block.id)
         self.assertEqual(extras, [])
         # Verify the right tool_use_id and non-error status.
         self.assertEqual(primary.content[0].tool_use_id, "tu_pd_2")
@@ -350,14 +393,12 @@ class TestE2EFileRead(unittest.TestCase):
         a_meta (no tool_result for b), decided tu_b was missing, and injected
         a synthetic "[Tool result missing due to internal error]" placeholder.
 
-        Post-fix: primaries-first ordering yields ``[a_result, b_result, a_meta]``
-        so pairing succeeds for both. This test drives two image Reads
-        concurrently through ``_run_tools_partitioned`` and verifies both
-        tool_results survive the normalize+pairing pipeline."""
+        ch07 round-3: the fix moved into normalize itself (unconditional
+        merge + hoist + seam join, TS messages.ts:2445-2489); the unified
+        lane yields interleaved and pairing still holds."""
         import asyncio
         import io
         from PIL import Image
-        from src.query.query import _run_tools_partitioned
         from src.types.content_blocks import ToolUseBlock
         from src.types.messages import normalize_messages_for_api, AssistantMessage
 
@@ -374,15 +415,11 @@ class TestE2EFileRead(unittest.TestCase):
         block_a = ToolUseBlock(id="tu_a", name="Read", input={"file_path": str(path_a)})
         block_b = ToolUseBlock(id="tu_b", name="Read", input={"file_path": str(path_b)})
 
-        # Read is concurrency-safe so this exercises the parallel path.
-        from src.tool_system.registry import get_all_base_tools
-        tools = get_all_base_tools(self.registry)
-        results = asyncio.run(_run_tools_partitioned(
-            [block_a, block_b], self.registry, self.ctx, tools,
-        ))
+        # Read is concurrency-safe so this exercises the parallel path
+        # of the UNIFIED lane (interleaved yields; the merge+hoist in
+        # normalize handles pairing — no reordering shim).
+        results = _drive_unified(self.ctx, self.registry, [block_a, block_b])
 
-        # Primaries first, then extras: [a_result, b_result, a_meta, b_meta].
-        # Both tool_results land before any meta message.
         tool_result_msgs = [
             m for m in results
             if m.content and hasattr(m.content[0], "tool_use_id")
@@ -538,7 +575,7 @@ class TestE2EFileRead(unittest.TestCase):
         tool_result still arrives as a list of content blocks (not a
         ``<persisted-output>`` wrapper)."""
         from PIL import Image
-        from src.query.query import _dispatch_single_tool
+        pass  # ch07: unified-lane driver (see _drive_unified above)
         from src.services.tool_execution.tool_result_persistence import (
             MAX_TOOL_RESULTS_PER_MESSAGE_CHARS,
         )
@@ -557,7 +594,8 @@ class TestE2EFileRead(unittest.TestCase):
 
         tools = get_all_base_tools(self.registry)
         tu = ToolUseBlock(id="tu_agg", name="Read", input={"file_path": str(png)})
-        primary, _extras = _dispatch_single_tool(tu, self.registry, self.ctx, tools)
+        msgs = _drive_unified(self.ctx, self.registry, [tu])
+        primary, _extras = _split_primary_extras(msgs, tu.id)
 
         body = primary.content[0].content
         self.assertIsInstance(body, list,
@@ -594,7 +632,7 @@ class TestE2EFileRead(unittest.TestCase):
         full wire shape: the API payload's tool_result content must be
         a list whose first element is an ``image`` content block."""
         from PIL import Image
-        from src.query.query import _dispatch_single_tool
+        pass  # ch07: unified-lane driver (see _drive_unified above)
         from src.tool_system.registry import get_all_base_tools
         from src.types.content_blocks import ToolResultBlock, ToolUseBlock
         from src.types.messages import AssistantMessage, normalize_messages_for_api
@@ -609,7 +647,8 @@ class TestE2EFileRead(unittest.TestCase):
         # ``process_tool_result_block`` branch where Bug B lived.
         tools = get_all_base_tools(self.registry)
         tu = ToolUseBlock(id="tu_regress_b", name="Read", input={"file_path": str(png)})
-        primary, _extras = _dispatch_single_tool(tu, self.registry, self.ctx, tools)
+        msgs = _drive_unified(self.ctx, self.registry, [tu])
+        primary, _extras = _split_primary_extras(msgs, tu.id)
 
         # Direct check on the ToolResultBlock the dispatcher built.
         self.assertIsInstance(primary.content[0], ToolResultBlock)

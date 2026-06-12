@@ -240,3 +240,79 @@ class TestCreateVariants:
     def test_create_assistant_compact_boundary(self):
         msg = create_assistant_compact_boundary_message("summary text")
         assert isinstance(msg, AssistantMessage)
+
+
+class TestUnconditionalUserMergeRound3:
+    """ch07 round-3 G3: TS merges consecutive user messages
+    UNCONDITIONALLY (messages.ts:2457-2469) with tool_result hoisting and
+    joinTextAtSeam — the old mixed-merge guard was port-invented."""
+
+    def test_interleaved_results_and_meta_merge_to_one_hoisted_message(self):
+        from src.types.messages import (
+            AssistantMessage,
+            UserMessage,
+            normalize_messages_for_api,
+        )
+
+        msgs = [
+            AssistantMessage(content=[
+                {"type": "tool_use", "id": "tu_a", "name": "Read", "input": {}},
+                {"type": "tool_use", "id": "tu_b", "name": "Read", "input": {}},
+            ]),
+            UserMessage(content=[{
+                "type": "tool_result", "tool_use_id": "tu_a", "content": "A",
+            }]),
+            UserMessage(content="meta note for a", isMeta=True),
+            UserMessage(content=[{
+                "type": "tool_result", "tool_use_id": "tu_b", "content": "B",
+            }]),
+        ]
+        out = normalize_messages_for_api(msgs)
+        users = [m for m in out if m["role"] == "user"]
+        assert len(users) == 1
+        content = users[0]["content"]
+        # Hoist: tool_results first (a then b — submission order), text last.
+        assert [b.get("type") for b in content] == [
+            "tool_result", "tool_result", "text",
+        ]
+        assert content[0]["tool_use_id"] == "tu_a"
+        assert content[1]["tool_use_id"] == "tu_b"
+        assert "meta note" in content[2]["text"]
+
+    def test_text_text_seam_gets_newline(self):
+        from src.types.messages import UserMessage, normalize_messages_for_api
+
+        out = normalize_messages_for_api(
+            [UserMessage(content="2 + 2"), UserMessage(content="3 + 3")]
+        )
+        users = [m for m in out if m["role"] == "user"]
+        assert len(users) == 1
+        texts = [b["text"] for b in users[0]["content"] if b.get("type") == "text"]
+        # Blocks stay separate; "\n" appended to the LEFT block
+        # (TS joinTextAtSeam, messages.ts:2511-2521).
+        assert texts == ["2 + 2\n", "3 + 3"]
+
+    def test_interleaved_shape_produces_no_orphan_repairs(self):
+        from src.types.messages import (
+            AssistantMessage,
+            UserMessage,
+            normalize_messages_for_api,
+        )
+
+        msgs = [
+            AssistantMessage(content=[
+                {"type": "tool_use", "id": "tu_a", "name": "Read", "input": {}},
+                {"type": "tool_use", "id": "tu_b", "name": "Read", "input": {}},
+            ]),
+            UserMessage(content=[{
+                "type": "tool_result", "tool_use_id": "tu_a", "content": "A",
+            }]),
+            UserMessage(content="supplemental", isMeta=True),
+            UserMessage(content=[{
+                "type": "tool_result", "tool_use_id": "tu_b", "content": "B",
+            }]),
+        ]
+        out = normalize_messages_for_api(msgs)
+        joined = str(out)
+        assert "Tool result missing" not in joined
+        assert "[Tool result missing due to internal error]" not in joined

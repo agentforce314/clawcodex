@@ -30,10 +30,27 @@ if TYPE_CHECKING:
 
 
 def _get_max_tool_use_concurrency() -> int:
+    # Reads CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY (chapter-7 name, used in
+    # the TS reference) with the legacy CLAWCODEX_ alias + deprecation
+    # warning (moved from query.py at ch07 unification).
     try:
-        return int(os.environ.get("CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY", "10"))
+        canonical = os.environ.get("CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY")
+        if canonical is not None:
+            return int(canonical)
+        legacy = os.environ.get("CLAWCODEX_MAX_TOOL_USE_CONCURRENCY")
+        if legacy is not None:
+            import warnings
+
+            warnings.warn(
+                "CLAWCODEX_MAX_TOOL_USE_CONCURRENCY is deprecated; use "
+                "CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            return int(legacy)
     except (ValueError, TypeError):
         return 10
+    return 10
 
 
 @dataclass
