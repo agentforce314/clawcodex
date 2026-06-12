@@ -192,6 +192,8 @@ class MinimaxProvider(BaseProvider):
         if tools:
             extra_kwargs["tools"] = tools
 
+        from ._stream_worker import run_stream_on_worker
+
         streamed_text = ""
         final_message: Any = None
         try:
@@ -203,16 +205,30 @@ class MinimaxProvider(BaseProvider):
                 **extra_kwargs,
                 **{k: v for k, v in kwargs.items() if k not in ["model", "max_tokens", "tools"]},
             ) as stream, guard.attach(stream):
-                for text in stream.text_stream:
-                    if not text:
-                        continue
+                # Iteration runs on a worker thread (#279, see
+                # ``_stream_worker.py``) so ESC unwinds promptly even
+                # when a buffering proxy keeps the SDK's blocking read
+                # alive after the listener's close.
+                def _produce(emit):
+                    for text in stream.text_stream:
+                        if not text:
+                            continue
+                        if not emit(text):
+                            return None  # abort/consumer gone
+                    try:
+                        return stream.get_final_message()
+                    except Exception:
+                        return None
+
+                def _on_text(text: str) -> None:
+                    nonlocal streamed_text
                     streamed_text += text
                     if on_text_chunk is not None:
                         on_text_chunk(text)
-                try:
-                    final_message = stream.get_final_message()
-                except Exception:
-                    final_message = None
+
+                final_message = run_stream_on_worker(
+                    _produce, _on_text, guard, thread_name="minimax-stream"
+                )
         except Exception as streaming_exc:
             guard.reraise_if_aborted(streaming_exc)
             raise
