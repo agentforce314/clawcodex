@@ -29,57 +29,6 @@ from .context import (
 )
 from .agent_routing import get_model_for_agent, AgentModelConfig
 
-# Legacy porting types — previously in src/models.py, now shadowed by this package.
-# Re-exported for backward compatibility with src/commands.py etc.
-from dataclasses import dataclass as _dataclass, field as _field
-
-
-@_dataclass(frozen=True)
-class Subsystem:
-    name: str
-    path: str
-    file_count: int
-    notes: str
-
-
-@_dataclass(frozen=True)
-class PortingModule:
-    name: str
-    responsibility: str
-    source_hint: str
-    status: str = "planned"
-
-
-@_dataclass(frozen=True)
-class PermissionDenial:
-    tool_name: str
-    reason: str
-
-
-@_dataclass(frozen=True)
-class UsageSummary:
-    input_tokens: int = 0
-    output_tokens: int = 0
-
-    def add_turn(self, prompt: str, output: str) -> "UsageSummary":
-        return UsageSummary(
-            input_tokens=self.input_tokens + len(prompt.split()),
-            output_tokens=self.output_tokens + len(output.split()),
-        )
-
-
-@_dataclass
-class PortingBacklog:
-    title: str
-    modules: list[PortingModule] = _field(default_factory=list)
-
-    def summary_lines(self) -> list[str]:
-        return [
-            f"- {m.name} [{m.status}] — {m.responsibility} (from {m.source_hint})"
-            for m in self.modules
-        ]
-
-
 __all__ = [
     "BEDROCK_MODEL_MAP",
     "MODEL_ALIASES",

@@ -4,7 +4,7 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
-from src.models import Subsystem
+from .legacy_porting_types import Subsystem
 
 # scripts/audit/port_manifest.py → scripts/audit → scripts → <repo>; then <repo>/src
 DEFAULT_SRC_ROOT = Path(__file__).resolve().parent.parent.parent / 'src'
