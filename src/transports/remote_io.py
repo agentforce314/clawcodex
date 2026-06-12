@@ -139,9 +139,15 @@ class RemoteIO:
         if get_session_ingress_auth_token() is None:
             logger.error("[remote-io] No session ingress token available")
 
-        # TODO(parity): wire session_id from bootstrap once the
-        # equivalent of TS getSessionId() is ported. Currently None.
-        session_id: str | None = None
+        # TS getSessionId() parity (#284): the bootstrap session ID
+        # identifies this peer to the transport layer. Fail-soft — a
+        # broken bootstrap import must not block the transport.
+        try:
+            from src.bootstrap.state import get_session_id
+
+            session_id: str | None = get_session_id()
+        except Exception:
+            session_id = None
 
         self._transport: Transport = get_transport_for_url(
             self._url_str,
