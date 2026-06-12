@@ -33,13 +33,18 @@ def _make_assistant_msg() -> AssistantMessage:
 
 class TestResolveHookPermissionDecision:
     @pytest.mark.asyncio
-    async def test_no_hook_result_no_can_use_tool(self):
+    async def test_no_hook_result_no_can_use_tool_fails_closed(self):
+        # ch06 round-3: a missing permission handler DENIES. TS cannot
+        # express this state (canUseTool is required, query.ts:191); the
+        # old allow fallback made every tool call permitted whenever a
+        # caller forgot to wire can_use_tool.
         tool = _make_tool()
         ctx = _make_context()
         decision = await resolve_hook_permission_decision(
             None, tool, {}, ctx, None, _make_assistant_msg(), "tu_1"
         )
-        assert decision["behavior"] == "allow"
+        assert decision["behavior"] == "deny"
+        assert "no handler available" in decision["message"]
 
     @pytest.mark.asyncio
     async def test_hook_allow(self):

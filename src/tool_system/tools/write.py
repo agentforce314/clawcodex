@@ -220,7 +220,8 @@ def _write_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
     if not isinstance(content, str):
         raise ToolInputError("content must be a string")
 
-    # Path is already expanded by backfill_observable_input
+    # call() receives the MODEL-ORIGINAL path (backfill is the
+    # hooks/permissions audience only); both branches below self-expand.
     if _is_auto_memory_write(file_path):
         # Memory dir is outside the workspace allowlist; bypass it. The
         # auto-memory subsystem owns this path namespace and its own
@@ -262,7 +263,10 @@ def _write_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
         name="Write",
         output={
             "type": "update" if original_file is not None else "create",
-            "filePath": str(path),
+            # MODEL-ORIGINAL path, not the resolved one: tool results embed
+            # input fields verbatim (TS FileWriteTool.ts:377/:400 uses
+            # file_path for data.filePath; fullFilePath is fs/logging only).
+            "filePath": file_path,
             "content": content,
             "structuredPatch": hunks,
             "originalFile": original_file,
