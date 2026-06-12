@@ -342,237 +342,86 @@ class TestPerMessageAggregateBudget(unittest.TestCase):
         )
 
 
-class TestProductionPathBudgetEnforcement(unittest.TestCase):
-    """WI-5.1 critic B2: the production REPL routes tool execution through
-    ``query._dispatch_single_tool``. That function MUST go through
-    ``process_tool_result_block`` so the aggregate gate engages — the
-    prior layout called ``tool.map_result_to_api()`` directly, leaving
-    the 200K cap unenforced in production.
+# ch07 unification note: TestProductionPathBudgetEnforcement (which drove
+# the retired query._dispatch_single_tool with MagicMock plumbing) was
+# replaced by unified-lane coverage — see
+# tests/test_tool_pipeline_round3.py (aggregate skip-set, cap boundary,
+# production-lane run_tools variants) and
+# TestUnifiedLaneConcurrentCap below.
+
+
+class TestUnifiedLaneConcurrentCap(unittest.TestCase):
+    """Concurrent batches must not bypass the 200K per-message cap.
+
+    The slim lane needed ``_aggregate_lock`` because dispatch ran in
+    ``asyncio.to_thread``; the orchestrator lane's step-11
+    read-decide-write runs await-free ON the event loop, so concurrent
+    tools serialize naturally. This pins the end state: five 60K
+    results through one concurrent batch stay within cap + wrapper
+    slack.
     """
 
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
-        self.tool_results_dir = Path(self.tmpdir.name)
+        self.workspace = Path(self.tmpdir.name)
 
     def tearDown(self):
         self.tmpdir.cleanup()
 
-    def test_dispatch_single_tool_increments_aggregate_counter(self):
-        """A successful tool dispatch must bump
-        ``tool_use_context.tool_result_chars_so_far``.
-        """
-        from unittest.mock import MagicMock, patch as _patch
-        from src.query.query import _dispatch_single_tool
-        from src.tool_system.context import ToolContext
-        from src.types.content_blocks import ToolUseBlock
-
-        # Fake tool that returns a 30K-char string.
-        big_output = "x" * 30_000
-        fake_tool = MagicMock()
-        fake_tool.name = "Read"
-        fake_tool.max_result_size_chars = 50_000
-        fake_tool.map_result_to_api = MagicMock(
-            return_value={
-                "type": "tool_result",
-                "tool_use_id": "block-1",
-                "content": big_output,
-            }
-        )
-
-        fake_registry = MagicMock()
-        result_obj = MagicMock()
-        result_obj.output = big_output
-        result_obj.is_error = False
-        fake_registry.dispatch = MagicMock(return_value=result_obj)
-
-        ctx = ToolContext(workspace_root=self.tool_results_dir)
-        ctx.tool_result_chars_so_far = 0
-
-        block = ToolUseBlock(id="block-1", name="Read", input={})
-
-        with _patch(
-            "src.services.tool_execution.tool_result_persistence.resolve_tool_results_dir",
-            return_value=self.tool_results_dir,
-        ):
-            _dispatch_single_tool(block, fake_registry, ctx, tools=[fake_tool])
-
-        # Counter must reflect the block we just processed.
-        self.assertGreater(
-            ctx.tool_result_chars_so_far, 0,
-            "WI-5.1 critic B2: production path didn't increment the aggregate counter",
-        )
-
-    def test_dispatch_concurrent_does_not_bypass_cap(self):
-        """Critic B6: under parallel ``asyncio.to_thread`` dispatch (the
-        production path for concurrency-safe tools like Read/Grep/Glob),
-        N threads racing the counter read MUST NOT all see 0 and all
-        decide their block is under the cap. The ``_aggregate_lock`` on
-        ``ToolContext`` serializes the read-modify-write.
-
-        Test design:
-        - 6 dispatches run via ``asyncio.to_thread``.
-        - A ``threading.Barrier`` aligns all threads at the start of the
-          WI-5.1 read-modify-write region so they ALL hit the counter
-          at the same moment.
-        - ``compute_block_chars`` is patched to ``time.sleep`` BETWEEN
-          the lock'd read and the lock'd write, forcing GIL releases
-          and widening the race window deterministically across CPython
-          versions.
-        - With 6 × 40K-char blocks (240K total > 200K cap), the test
-          asserts (a) every write reflects in the final counter (no
-          lost updates), and (b) at least one block was persisted.
-        """
+    def test_concurrent_batch_respects_cap(self):
         import asyncio
-        import threading
-        import time
-        from unittest.mock import MagicMock, patch as _patch
-        from src.query.query import _dispatch_single_tool
-        from src.tool_system.context import ToolContext
-        from src.types.content_blocks import ToolUseBlock
 
-        big_output = "x" * 40_000
-        barrier = threading.Barrier(6)
+        from src.services.tool_execution.orchestrator import run_tools
+        from src.services.tool_execution.tool_result_persistence import (
+            MAX_TOOL_RESULTS_PER_MESSAGE_CHARS,
+        )
+        from src.tool_system.build_tool import build_tool
+        from src.tool_system.context import ToolContext, ToolUseOptions
+        from src.tool_system.protocol import ToolResult
+        from src.types.messages import AssistantMessage
 
-        def synced_dispatch(call, ctx):
-            barrier.wait(timeout=5.0)
-            r = MagicMock()
-            r.output = big_output
-            r.is_error = False
-            return r
+        def call(_inp, _ctx):
+            return ToolResult(name="BigSafe", output="z" * 60_000)
 
-        fake_registry = MagicMock()
-        fake_registry.dispatch.side_effect = synced_dispatch
+        tool = build_tool(
+            name="BigSafe",
+            input_schema={"type": "object", "properties": {},
+                          "additionalProperties": True},
+            call=call,
+            prompt="b",
+            description="b",
+            is_concurrency_safe=lambda _i: True,
+            max_result_size_chars=100_000,
+        )
+        ctx = ToolContext(
+            workspace_root=self.workspace,
+            options=ToolUseOptions(tools=[tool]),
+        )
+        ctx.permission_context.mode = "bypassPermissions"
 
-        fake_tool = MagicMock()
-        fake_tool.name = "Read"
-        fake_tool.max_result_size_chars = 50_000
-
-        def fake_map(output, block_id):
-            return {
-                "type": "tool_result",
-                "tool_use_id": block_id,
-                "content": output,
-            }
-        fake_tool.map_result_to_api.side_effect = fake_map
-
-        ctx = ToolContext(workspace_root=self.tool_results_dir)
+        from types import SimpleNamespace
 
         blocks = [
-            ToolUseBlock(id=f"b{i}", name="Read", input={})
-            for i in range(6)
+            SimpleNamespace(name="BigSafe", input={}, id=f"toolu_cap_{i}")
+            for i in range(5)
         ]
 
-        # Patch ``compute_block_chars`` to sleep so the read-modify-write
-        # path releases the GIL and the race window opens
-        # deterministically. Importantly we patch the name as it's
-        # resolved in ``src.query.query`` (since that's how
-        # ``_dispatch_single_tool`` imports it).
-        from src.services.tool_execution import tool_result_persistence as _trp
+        def allow(*_a, **_k):
+            return {"behavior": "allow"}
 
-        original_compute = _trp.compute_block_chars
+        async def drive():
+            async for _u in run_tools(
+                blocks, [AssistantMessage(content="t")], allow, ctx,
+            ):
+                pass
 
-        def slow_compute(block):
-            time.sleep(0.02)  # 20 ms — far exceeds any GIL switch interval
-            return original_compute(block)
-
-        async def run_parallel():
-            async def dispatch_one(b):
-                return await asyncio.to_thread(
-                    _dispatch_single_tool, b, fake_registry, ctx, [fake_tool]
-                )
-            return await asyncio.gather(*(dispatch_one(b) for b in blocks))
-
-        with _patch(
-            "src.services.tool_execution.tool_result_persistence.resolve_tool_results_dir",
-            return_value=self.tool_results_dir,
-        ), _patch(
-            "src.services.tool_execution.tool_result_persistence.compute_block_chars",
-            side_effect=slow_compute,
-        ):
-            results = asyncio.run(run_parallel())
-
-        # After 6 × 40K = 240K of inline content, the final counter
-        # should reflect ALL writes (no lost updates). With the lock,
-        # every write goes through ``+=`` under serialization — so the
-        # sum equals the actual block sizes. Without the lock, races
-        # lose writes (every thread reads 0 → counter = ONE block's
-        # worth, not six).
-        # results is now list[(primary, extras)] tuples; sum the primary
-        # tool_result content lengths.
-        self.assertEqual(
+        asyncio.run(drive())
+        # 3x60K fit under 200K; the 4th/5th force-persist to wrappers.
+        self.assertLessEqual(
             ctx.tool_result_chars_so_far,
-            sum(len(pair[0].content[0].content) for pair in results),
-            "Concurrent writes lost updates — aggregate counter doesn't "
-            "reflect every block's contribution. Lock is missing or "
-            "broken.",
-        )
-        # And at least one block must be persisted: the 240K total
-        # exceeds the 200K cap by 40K.
-        persisted_count = sum(
-            1
-            for pair in results
-            if "<persisted-output>" in pair[0].content[0].content
-        )
-        self.assertGreater(
-            persisted_count, 0,
-            "Critic B6: concurrent dispatch bypassed the WI-5.1 cap — "
-            "240K of inline content reached the message instead of "
-            "persisting the over-budget tail to disk",
+            MAX_TOOL_RESULTS_PER_MESSAGE_CHARS + 6_000,
         )
 
-    def test_dispatch_aggregate_triggers_persistence_when_over_cap(self):
-        """When the running aggregate would push past 200K, the next block
-        is persisted to disk instead of returned inline.
-        """
-        from unittest.mock import MagicMock, patch as _patch
-        from src.query.query import _dispatch_single_tool
-        from src.tool_system.context import ToolContext
-        from src.types.content_blocks import ToolUseBlock
-
-        # 30K output that alone fits under per-tool 50K threshold.
-        big_output = "x" * 30_000
-        fake_tool = MagicMock()
-        fake_tool.name = "Read"
-        fake_tool.max_result_size_chars = 50_000
-        fake_tool.map_result_to_api = MagicMock(
-            return_value={
-                "type": "tool_result",
-                "tool_use_id": "block-2",
-                "content": big_output,
-            }
-        )
-
-        fake_registry = MagicMock()
-        result_obj = MagicMock()
-        result_obj.output = big_output
-        result_obj.is_error = False
-        fake_registry.dispatch = MagicMock(return_value=result_obj)
-
-        ctx = ToolContext(workspace_root=self.tool_results_dir)
-        # Running aggregate already at 190K — the new 30K block must
-        # trigger persistence to keep the message within budget.
-        ctx.tool_result_chars_so_far = 190_000
-
-        block = ToolUseBlock(id="block-2", name="Read", input={})
-
-        with _patch(
-            "src.services.tool_execution.tool_result_persistence.resolve_tool_results_dir",
-            return_value=self.tool_results_dir,
-        ):
-            primary, extras = _dispatch_single_tool(
-                block, fake_registry, ctx, tools=[fake_tool]
-            )
-
-        # No supplemental messages expected for this test.
-        self.assertEqual(extras, [])
-        # The returned UserMessage's tool_result content should be the
-        # ``<persisted-output>`` wrapper, NOT the raw 30K output.
-        content = primary.content[0].content
-        self.assertIn(
-            "<persisted-output>", content,
-            "WI-5.1 critic B2: aggregate gate didn't fire on production path "
-            "— large block returned inline instead of persisted",
-        )
 
 
 if __name__ == "__main__":

@@ -164,11 +164,12 @@ class TestAggregateSkipSet(_Base):
 
 
 class TestProductionLaneAggregate(_Base):
-    def test_production_dispatch_skips_inf_tool_counting(self):
-        # The PRODUCTION lane (query._dispatch_single_tool -> registry
-        # dispatch) has its own counter site — pin its skip-set gate too.
-        from src.query.query import _dispatch_single_tool
-        from src.tool_system.registry import ToolRegistry
+    def test_production_lane_skips_inf_tool_counting(self):
+        # ch07 unification: the production lane IS orchestrator.run_tools
+        # — pin the aggregate skip-set through it (the slim
+        # _dispatch_single_tool lane this test originally pinned was
+        # retired in ch07 PR-1).
+        from src.services.tool_execution.orchestrator import run_tools
 
         big = "x" * (MAX_TOOL_RESULTS_PER_MESSAGE_CHARS + 50_000)
         read_like = _stub_tool(
@@ -180,27 +181,31 @@ class TestProductionLaneAggregate(_Base):
             "SmallTool",
             lambda _i, _c: ToolResult(name="SmallTool", output="y" * 1_000),
         )
-        registry = ToolRegistry([read_like, small_tool])
         ctx = self._context([read_like, small_tool])
 
-        primary, _extras = _dispatch_single_tool(
-            SimpleNamespace(name="ReadLike", input={}, id="toolu_prod_inf"),
-            registry,
-            ctx,
-            [read_like, small_tool],
-        )
+        def allow(*_a, **_k):
+            return {"behavior": "allow"}
+
+        async def drive(name, tid):
+            updates = []
+            async for u in run_tools(
+                [SimpleNamespace(name=name, input={}, id=tid)],
+                [AssistantMessage(content="batch")],
+                allow,
+                ctx,
+            ):
+                if u.message is not None:
+                    updates.append(u.message)
+            return updates
+
+        msgs = _run(drive("ReadLike", "toolu_prod_inf"))
         self.assertEqual(ctx.tool_result_chars_so_far, 0)
-        blocks = self._result_blocks([primary])
+        blocks = self._result_blocks(msgs)
         self.assertEqual(len(blocks), 1)
         self.assertNotIn(PERSISTED_OUTPUT_TAG, str(blocks[0].get("content", "")))
 
-        primary2, _ = _dispatch_single_tool(
-            SimpleNamespace(name="SmallTool", input={}, id="toolu_prod_small"),
-            registry,
-            ctx,
-            [read_like, small_tool],
-        )
-        blocks2 = self._result_blocks([primary2])
+        msgs2 = _run(drive("SmallTool", "toolu_prod_small"))
+        blocks2 = self._result_blocks(msgs2)
         self.assertNotIn(PERSISTED_OUTPUT_TAG, str(blocks2[0].get("content", "")))
         self.assertEqual(ctx.tool_result_chars_so_far, 1_000)
 

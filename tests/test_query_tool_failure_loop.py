@@ -80,6 +80,19 @@ def _ok_result(tool_use_id: str) -> UserMessage:
     )
 
 
+def _as_run_tools_stub(messages_factory):
+    """Adapt a list-of-Messages factory to the orchestrator.run_tools
+    async-generator seam (ch07 unification: the loop consumes
+    MessageUpdate(message=..., new_context=...) updates)."""
+    from src.services.tool_execution.orchestrator import MessageUpdate
+
+    async def _stub(_blocks, _assistants, _can_use_tool, _ctx, *a, **k):
+        for m in messages_factory():
+            yield MessageUpdate(message=m, new_context=_ctx)
+
+    return _stub
+
+
 class _FailingToolHarness:
     """Provider + patched tool runner that fail identically every turn."""
 
@@ -94,7 +107,12 @@ class _FailingToolHarness:
         return _tool_use_response(f"toolu_{self.turn:03d}")
 
     async def run_tools(self, tool_use_blocks, *args, **kwargs):
-        return [_failing_result(block.id) for block in tool_use_blocks]
+        # ch07 seam: orchestrator.run_tools is an async generator
+        # yielding MessageUpdate objects.
+        from src.services.tool_execution.orchestrator import MessageUpdate
+
+        for block in tool_use_blocks:
+            yield MessageUpdate(message=_failing_result(block.id), new_context=None)
 
 
 def _make_params(*, workspace: Path, provider, max_turns: int = 10) -> QueryParams:
@@ -125,8 +143,8 @@ class TestToolFailureLoopTerminal(unittest.TestCase):
         params = _make_params(workspace=self.workspace, provider=harness.provider)
 
         with patch(
-            "src.query.query._run_tools_partitioned",
-            side_effect=harness.run_tools,
+            "src.services.tool_execution.orchestrator.run_tools",
+            new=harness.run_tools,
         ):
             messages, terminal = _run(run_query(params))
 
@@ -157,8 +175,8 @@ class TestToolFailureLoopTerminal(unittest.TestCase):
         with patch.dict(
             "os.environ", {"CLAUDE_CODE_TOOL_FAILURE_LOOP_THRESHOLD": "0"}
         ), patch(
-            "src.query.query._run_tools_partitioned",
-            side_effect=harness.run_tools,
+            "src.services.tool_execution.orchestrator.run_tools",
+            new=harness.run_tools,
         ):
             _messages, terminal = _run(run_query(params))
 
@@ -180,16 +198,18 @@ class TestToolFailureLoopTerminal(unittest.TestCase):
         provider.chat.side_effect = next_response
 
         async def run_tools(tool_use_blocks, *args, **kwargs):
+            from src.services.tool_execution.orchestrator import MessageUpdate
+
             # Turn 3 succeeds; the rest fail identically.
-            if turn_box["n"] == 3:
-                return [_ok_result(b.id) for b in tool_use_blocks]
-            return [_failing_result(b.id) for b in tool_use_blocks]
+            for b in tool_use_blocks:
+                msg = _ok_result(b.id) if turn_box["n"] == 3 else _failing_result(b.id)
+                yield MessageUpdate(message=msg, new_context=None)
 
         params = _make_params(workspace=self.workspace, provider=provider)
 
         with patch(
-            "src.query.query._run_tools_partitioned",
-            side_effect=run_tools,
+            "src.services.tool_execution.orchestrator.run_tools",
+            new=run_tools,
         ):
             _messages, terminal = _run(run_query(params))
 
@@ -215,8 +235,8 @@ class TestCompatPathSurfacing(unittest.TestCase):
         seen_messages = []
 
         with patch(
-            "src.query.query._run_tools_partitioned",
-            side_effect=harness.run_tools,
+            "src.services.tool_execution.orchestrator.run_tools",
+            new=harness.run_tools,
         ):
             result = _run(run_query_as_agent_loop(
                 initial_messages=[UserMessage(content="do the thing")],
