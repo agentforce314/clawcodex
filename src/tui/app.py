@@ -14,6 +14,7 @@ screen then materialises as a modal.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -21,6 +22,8 @@ if TYPE_CHECKING:
     from src.services.bash_mode import BashModeOutcome
 
 from textual.app import App
+
+logger = logging.getLogger(__name__)
 
 from src import __version__ as CLAW_VERSION
 from src.agent import Session
@@ -222,6 +225,19 @@ class ClawCodexTUI(App):
         except Exception:
             pass
         self._state_unsub = self.app_state.subscribe(self._on_state_change)
+        # ch02 round-3 GAP B: post-render context warmup (TS
+        # startDeferredPrefetches, main.tsx:392-439). The system-context
+        # lane self-gates on session trust — already seeded by
+        # run_pre_action for previously-trusted folders; untrusted
+        # sessions warm only the user-context lane here and the
+        # system-context lane re-kicks after the trust gate accepts
+        # (_finish_startup_gates, TS interactiveHelpers.tsx:159).
+        try:
+            from src.deferred_init import start_deferred_prefetches
+
+            start_deferred_prefetches(cwd=str(self.workspace_root))
+        except Exception:
+            pass
         # C8 → C6 → C7 boot chain, strictly sequential: the security
         # gates (trust → external includes → bypass acceptance; TS
         # interactiveHelpers order) must resolve BEFORE the .mcp.json
@@ -282,7 +298,12 @@ class ClawCodexTUI(App):
 
             establish_session_trust()
         except Exception:
-            pass
+            # Loaders are tolerant so this is unlikely; silent partial
+            # state after an accepted dialog deserves at least a log.
+            logger.warning(
+                "trust accepted but full env application failed",
+                exc_info=True,
+            )
         if not persisted and self._repl_screen is not None:
             self._repl_screen.transcript.append_system(
                 "Folder trusted for this session only — could not write "
@@ -407,6 +428,22 @@ class ClawCodexTUI(App):
         self.exit(return_code=1 if choice == "decline" else 0)
 
     def _finish_startup_gates(self) -> None:
+        # ch02 round-3 GAP B: the gates are resolved — if the session is
+        # now trusted (pre-seeded or just accepted), warm the
+        # system-context lane that the on_mount kick had to skip while
+        # untrusted (TS interactiveHelpers.tsx:159 post-trust
+        # getSystemContext kick). Memoized → no-op when already warm.
+        try:
+            from src.bootstrap.state import get_session_trust_accepted
+            from src.deferred_init import start_deferred_prefetches
+
+            if get_session_trust_accepted():
+                start_deferred_prefetches(
+                    cwd=str(self.workspace_root),
+                    include_system_context=True,
+                )
+        except Exception:
+            pass
         # C6: surface ignored/malformed config files as startup rows
         # (TS StatusNotices / InvalidSettingsDialog family — Python's
         # loader silently falls back to {}, so warn honestly instead).
