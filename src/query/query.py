@@ -16,6 +16,7 @@ from ..types.messages import (
     Message,
     SystemMessage,
     UserMessage,
+    create_assistant_api_error_message,
 )
 from ..types.content_blocks import TextBlock, ToolResultBlock, ToolUseBlock
 from ..tool_system.build_tool import Tool, Tools, find_tool_by_name
@@ -27,6 +28,10 @@ from ..utils.image_validation import ImageSizeError
 from ..providers.base import BaseProvider, ChatResponse
 
 from .config import QueryConfig, build_query_config
+from .tool_failure_loop_guard import (
+    create_tool_failure_loop_guard_state,
+    update_tool_failure_loop_guard,
+)
 from .transitions import (
     QueryState,
     Terminal,
@@ -1178,6 +1183,10 @@ async def query(
         max_output_tokens_override=params.max_output_tokens_override,
     )
     config = build_query_config()
+    # Created once per query() call, persisting across turns — mirrors TS
+    # query.ts:311 (state built before the while(true) at :327). Any
+    # successful tool result resets the counters inside the guard.
+    tool_failure_guard_state = create_tool_failure_loop_guard_state()
 
     while True:
         messages = state.messages
@@ -1652,6 +1661,36 @@ async def query(
             )
             return
 
+        # Tool-failure-loop guard — mirrors TS query.ts:1638-1666: runs
+        # AFTER the abort and hook_stopped returns, BEFORE max_turns. On
+        # trip, yield the explanation as an API-error assistant message
+        # (TS createAssistantAPIErrorMessage at :1663-1665) and exit with
+        # the dedicated terminal reason. TS also fires a telemetry event
+        # here (tengu_tool_failure_loop_guard_tripped); the port has no
+        # logEvent analogue, so logger.debug carries the diagnostics.
+        guard_decision = update_tool_failure_loop_guard(
+            state=tool_failure_guard_state,
+            tool_use_blocks=tool_use_blocks,
+            tool_results=tool_results,
+        )
+        if guard_decision.tripped:
+            logger.debug(
+                "Tool failure loop guard tripped: kind=%s threshold=%s "
+                "tool_name=%s error_category=%s path=%s",
+                guard_decision.kind,
+                guard_decision.threshold,
+                guard_decision.tool_name,
+                guard_decision.error_category,
+                guard_decision.path,
+            )
+            yield create_assistant_api_error_message(guard_decision.message or "")
+            set_terminal(
+                holder,
+                natural_termination,
+                Terminal(reason="tool_failure_loop"),
+            )
+            return
+
         next_turn_count = turn_count + 1
 
         if params.max_turns and next_turn_count > params.max_turns:
@@ -1698,8 +1737,8 @@ async def run_query(
 
     Drives the canonical :func:`query` async generator, collects all
     yielded messages into a list, and returns ``(messages, terminal)``.
-    The terminal's reason discriminates why the loop stopped (10
-    distinct reasons per chapter §"Terminal States").
+    The terminal's reason discriminates why the loop stopped (11
+    distinct reasons, matching TS query/transitions.ts).
 
     Tests and convenience entry points should use this helper.
     Streaming consumers (REPL, TUI) should keep using ``async for``

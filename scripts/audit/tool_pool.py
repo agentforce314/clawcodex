@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from src.models import PortingModule
+from .legacy_porting_types import PortingModule
 from src.permissions import ToolPermissionContext
 from .tools import get_tools
 

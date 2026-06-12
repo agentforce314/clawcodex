@@ -57,13 +57,18 @@ out-parameter pattern: the caller passes a
 loop sets `holder.value` to the `Terminal(reason=...)` before the bare
 `return`. See `src/query/transitions.py:50-83` for the rationale.
 
-`TerminalReason` is a `Literal[...]` of ten values
-(`src/query/transitions.py:22-33`): `blocking_limit`, `image_error`,
+`TerminalReason` is a `Literal[...]` of eleven values
+(`src/query/transitions.py:22-34`): `blocking_limit`, `image_error`,
 `model_error`, `aborted_streaming`, `prompt_too_long`, `completed`,
-`stop_hook_prevented`, `aborted_tools`, `hook_stopped`, `max_turns`.
-This is a finer-grained partition of the TS reference's six variants
-(normal completion, user abort, token budget, stop hook, max turns,
-unrecoverable error) — every TS variant has a Python correspondent.
+`stop_hook_prevented`, `aborted_tools`, `hook_stopped`, `max_turns`,
+`tool_failure_loop` — the full set from TS `query/transitions.ts:1-12`.
+`tool_failure_loop` is produced by the tool-failure-loop guard
+(`src/query/tool_failure_loop_guard.py`, port of TS
+`query/toolFailureLoopGuard.ts`): when consecutive tool batches contain
+only failures and the same failure signature, error category, or file
+path recurs `CLAUDE_CODE_TOOL_FAILURE_LOOP_THRESHOLD` (default 3)
+times, the loop yields an explanatory API-error assistant message and
+stops instead of burning turns to `max_turns`.
 
 ---
 

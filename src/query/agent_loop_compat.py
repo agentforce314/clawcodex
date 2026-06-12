@@ -270,6 +270,7 @@ async def run_query_as_agent_loop(
     usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
     num_turns = 0
     last_assistant_text = ""
+    last_api_error_text = ""
 
     async for msg in query(params, terminal_holder=holder):
         if isinstance(msg, StreamEvent):
@@ -298,7 +299,23 @@ async def run_query_as_agent_loop(
                 on_message(msg)
             if _is_api_error:
                 # Don't count error turns or surface their text as the
-                # "response" — those are exit signals, not output.
+                # "response" — those are exit signals, not output. The
+                # text is still captured locally so graceful guard stops
+                # (tool_failure_loop) can surface it as response_text
+                # below — without persisting it via on_message (the S1
+                # no-poisoning contract stands). Content may be a plain
+                # str or a TextBlock list depending on the producer.
+                _err_content = msg.content
+                if isinstance(_err_content, str):
+                    last_api_error_text = _err_content.strip()
+                elif isinstance(_err_content, list):
+                    _err_parts = [
+                        block.text
+                        for block in _err_content
+                        if isinstance(block, TextBlock)
+                    ]
+                    if _err_parts:
+                        last_api_error_text = " ".join(_err_parts).strip()
                 continue
             num_turns += 1
             # Sum usage across turns.
@@ -417,6 +434,19 @@ async def run_query_as_agent_loop(
     # Tests pin this — see test_max_turns_respected.
     if terminal is not None and getattr(terminal, "reason", None) == "max_turns":
         response_text = "[Max tool turns reached]"
+    elif (
+        terminal is not None
+        and getattr(terminal, "reason", None) == "tool_failure_loop"
+    ):
+        # Graceful guard stop: the loop yielded the trip explanation as an
+        # isApiErrorMessage assistant message, which the S1 filter above
+        # deliberately keeps out of on_message/last_assistant_text. Surface
+        # it as response_text (same shape as the max_turns sentinel) so the
+        # TUI/headless caller shows WHY the run stopped instead of a silent
+        # empty success.
+        response_text = (
+            last_api_error_text or "[Stopped: repeated tool failures detected]"
+        )
     else:
         response_text = last_assistant_text or " ".join(response_text_parts).strip()
 
