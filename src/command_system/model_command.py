@@ -12,10 +12,10 @@ previously invisible (it lived only in the TUI's private ``LOCAL_BUILTINS``).
 ``kwargs.get("model", self.model)`` and neither the main loop nor the fast path passes a
 ``model=`` override, so the held provider's ``.model`` decides the next query's model. So
 this command sets **``ctx.provider.model``** (the channel inference reads), reachable on the
-REPL because Phase 7 also wires ``provider`` into the REPL command context. It is the **only**
-write: the reactive ``AppState.main_loop_model`` has no production reader (its
-``set_main_loop_model_override`` mirror is dead), and TS ``/model`` never writes disk — so
-this is session-only, no settings write.
+REPL because Phase 7 also wires ``provider`` into the REPL command context. Since #280 the
+choice is ALSO persisted: ``_apply`` routes through ``persist_model_choice`` (reactive store
+when wired, else a direct user-settings write paired with the provider key), and entrypoints
+restore it at the next launch via ``get_persisted_model``.
 
 **Headless keystone:** the arg paths (``/model <name>``, ``current``/``status``/…, ``help``)
 need no UI; only the no-args picker needs a surface (``NullUIHost.select`` raises there).
@@ -31,8 +31,8 @@ need no UI; only the no-args picker needs a surface (``NullUIHost.select`` raise
     the **exact listed id**; the picker is the ergonomic path there.
   * **Static description** ("Set the AI model"); TS's is dynamic ``…(currently {model})`` — a
     frozen ``CommandBase.description: str`` can't be a getter. ``current`` shows the live model.
-  * **``provider.model`` is the sole write** (Python reads it, not AppState — an architectural
-    divergence from TS, which writes ``AppState.mainLoopModel``).
+  * **``provider.model`` is the live-inference write**; ``persist_model_choice`` additionally
+    writes the reactive store / user settings so the choice survives restarts (#280).
   * **Effort suffix in ``current``** reads ``settings.effort`` (the Phase 6 channel), not
     AppState ``effortValue``.
   * **Label = ``display_name``** (drops TS ``renderModelLabel``'s ``(default)``/alias decoration).
@@ -116,13 +116,51 @@ def _show_current(context: CommandContext) -> str:
     return f"Current model: {_label(cur)}{_effort_suffix()}"
 
 
-def _apply(provider, model: str) -> None:
-    """Set the live model. ``provider.model`` is the channel inference reads; guarded
-    exactly like the TUI's ``_open_model_picker`` (app.py)."""
+def _provider_key(provider) -> str | None:
+    """Reverse-map a provider instance to its config key (exact class
+    match — each key resolves a distinct class). None for unknown/custom
+    providers, which skips the persistence pairing (#280)."""
+    try:
+        from src.providers import PROVIDER_INFO, get_provider_class
+
+        for name in PROVIDER_INFO:
+            try:
+                if type(provider) is get_provider_class(name):
+                    return name
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return None
+
+
+def _apply(provider, model: str, context) -> None:
+    """Set the live model + persist the choice (#280).
+
+    ``provider.model`` is the channel inference reads; guarded exactly
+    like the TUI's ``_open_model_picker`` (app.py). Persistence goes
+    through ``persist_model_choice``: via the reactive store when wired
+    (fires the side-effect router), else straight to user settings.
+    """
     try:
         provider.model = model
     except Exception:
         pass
+    try:
+        from src.state.app_state import persist_model_choice
+
+        persist_model_choice(
+            getattr(context, "app_state_store", None),
+            _provider_key(provider),
+            model,
+        )
+    except Exception:
+        # The live switch already took effect; only restarts lose it.
+        import logging
+
+        logging.getLogger(__name__).debug(
+            "model persistence failed", exc_info=True
+        )
 
 
 @dataclass(frozen=True)
@@ -161,7 +199,7 @@ class ModelCommand(InteractiveCommand):
             return InteractiveOutcome(
                 message=f"Kept model as {_label(current)}", display="system"
             )
-        _apply(prov, picked)
+        _apply(prov, picked, context)
         return InteractiveOutcome(message=f"Set model to {_label(picked)}", display="user")
 
     def _set(self, context: CommandContext, arg: str) -> InteractiveOutcome:
@@ -174,7 +212,7 @@ class ModelCommand(InteractiveCommand):
         # provider lists nothing (unknown provider) so a valid id still goes through.
         if models and canon not in models:
             return InteractiveOutcome(message=f"Model '{arg}' not found", display="system")
-        _apply(prov, canon)
+        _apply(prov, canon, context)
         return InteractiveOutcome(message=f"Set model to {_label(canon)}", display="user")
 
 

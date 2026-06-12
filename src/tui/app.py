@@ -1087,6 +1087,17 @@ class ClawCodexTUI(App):
             except Exception:
                 pass
             self.app_state.model = model_id
+            # Persist the choice so it survives restarts (#280) —
+            # through the reactive store when one exists (fires the
+            # side-effect router), else directly to user settings.
+            try:
+                from src.state.app_state import persist_model_choice
+
+                persist_model_choice(
+                    self._app_state_store, self.provider_name, model_id
+                )
+            except Exception:
+                pass
             transcript.append_system(f"Model switched to {model_id}.", style="muted")
             if self._repl_screen is not None:
                 self._repl_screen.status_bar.refresh_identity(model=model_id)

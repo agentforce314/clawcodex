@@ -144,6 +144,19 @@ class SettingsSchema:
     # Fast mode (use small model)
     fast_mode: bool = False
 
+    # Display preferences persisted by the AppState side-effect router
+    # (#280; TS onChangeAppState.ts:123-136). ``expanded_view`` stores the
+    # Python store's own 'none' | 'tasks' | 'teammates' shape directly
+    # rather than the TS legacy showExpandedTodos/showSpinnerTree boolean
+    # pair — this port's config file is not shared with TS Claude Code.
+    verbose: bool = False
+    expanded_view: str = ""  # "" = unset (AppState default applies)
+    # Provider key paired with the persisted ``model`` (#280): a /model
+    # choice is only restored when the next launch uses the same provider
+    # (the advisor_model/advisor_provider precedent — model names are
+    # provider-scoped in a multi-provider config).
+    model_provider: str = ""
+
     # Disable dynamic workflows (also honored via CLAUDE_CODE_DISABLE_WORKFLOWS
     # and the camelCase ``disableWorkflows`` JSON key). See src/workflow/gating.py.
     disable_workflows: bool = False

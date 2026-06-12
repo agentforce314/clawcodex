@@ -65,3 +65,45 @@ def get_settings(
     if _settings_cache is None:
         _settings_cache = load_settings(config_manager=config_manager, cwd=cwd)
     return _settings_cache
+
+
+def get_persisted_model(
+    provider_name: str | None,
+    *,
+    cwd: str | Path | None = None,
+) -> str | None:
+    """The user's persisted /model choice for ``provider_name``, or None.
+
+    Restore channel for #280: entrypoints resolve the startup model as
+    ``cli option > persisted model > provider default_model``. The model
+    is restored only when the persisted ``model_provider`` pairing
+    matches the launch provider — model names are provider-scoped in a
+    multi-provider config, and feeding provider B a model persisted on
+    provider A would fail the first API call.
+
+    Reads the config layers directly (most specific non-empty model
+    wins: local > project > global; an empty ``model`` does NOT mask a
+    less-specific layer) rather than the merged ``SettingsSchema`` — the
+    schema bakes in a DEFAULT_SETTINGS.model, which must NOT override a
+    provider's configured default for users who never ran /model.
+    Fail-soft — a broken settings file must not block startup.
+    """
+    try:
+        manager = ConfigManager(cwd=cwd)
+        for cfg in (
+            manager.load_local(),
+            manager.load_project(),
+            manager.load_global(),
+        ):
+            section = cfg.get("settings")
+            if isinstance(section, dict) and section.get("model"):
+                persisted_provider = section.get("model_provider") or ""
+                if provider_name and persisted_provider == provider_name:
+                    return str(section["model"])
+                # Unpaired or mismatched: the persisted model belongs to
+                # another provider (or predates the pairing) — fall back
+                # to the provider's own default.
+                return None
+        return None
+    except Exception:
+        return None
