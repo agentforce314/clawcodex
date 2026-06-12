@@ -155,8 +155,11 @@ async def test_constructor_uses_get_transport_for_url(stub_transport):
         args, kwargs = stub_transport.factory_calls[0]  # type: ignore[attr-defined]
         assert args == ("ws://example.com/x",)
         assert callable(kwargs.get("refresh_headers"))
-        # session_id is currently None (TODO marker in remote_io.py).
-        assert kwargs.get("session_id") is None
+        # #284: the bootstrap session ID identifies this peer to the
+        # transport layer (TS getSessionId() parity).
+        from src.bootstrap.state import get_session_id
+
+        assert kwargs.get("session_id") == get_session_id()
     finally:
         io.close()
 

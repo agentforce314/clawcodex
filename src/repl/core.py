@@ -467,6 +467,14 @@ class ClawcodexREPL:
             workspace_root=Path.cwd(),
             permission_context=_perm_setup.context,
         )
+        # #284: publish this session's PID file so peers can enumerate
+        # and dedup concurrent sessions (best-effort, never blocks startup).
+        try:
+            from src.utils.concurrent_sessions import register_session
+
+            register_session()
+        except Exception:
+            pass
         self.tool_context.ask_user = self._ask_user_questions
         # Permission handler with status control for proper input handling
         self._current_status = None
