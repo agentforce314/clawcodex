@@ -329,7 +329,7 @@ def _load_project_scoped_env(cwd: str | Path | None = None) -> dict[str, str]:
     cwd_str = str(cwd) if cwd is not None else None
     merged: dict[str, str] = {}
 
-    cm = config_mod.ConfigManager()
+    cm = config_mod.ConfigManager(cwd=cwd)
     merged.update(_coerce_env_block(cm.load_project().get("env")))          # S3
     merged.update(
         _read_settings_env(settings_paths.project_settings_path(cwd_str))   # S4
