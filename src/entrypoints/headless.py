@@ -198,6 +198,15 @@ def run_headless(options: HeadlessOptions) -> int:
         abort_controller=abort_controller,
     )
     tool_context.options.is_non_interactive_session = True
+
+    # #284: publish this session's PID file so peers can enumerate and
+    # dedup concurrent sessions (best-effort, never blocks startup).
+    try:
+        from src.utils.concurrent_sessions import register_session
+
+        register_session()
+    except Exception:
+        pass
     if options.skip_permissions or effective_mode == "bypassPermissions":
         tool_context.allow_docs = True
         tool_context.permission_handler = None
