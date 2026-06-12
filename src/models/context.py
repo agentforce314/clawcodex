@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import logging
+import os
+
 from .configs import get_model_config
+
+logger = logging.getLogger(__name__)
 
 # Default context window for unknown models
 DEFAULT_CONTEXT_WINDOW = 200_000
@@ -58,4 +63,45 @@ def get_model_max_output_tokens(model_id: str) -> int:
     config = get_model_config(base_id)
     if config:
         return config.max_output_tokens
+    return DEFAULT_MAX_OUTPUT_TOKENS
+
+
+def resolve_max_output_tokens(
+    override: int | None, model_id: str | None
+) -> int:
+    """Resolve the request-path ``max_tokens`` (ch04 round-3 G0).
+
+    Precedence mirrors TS ``claude.ts:1602-1605``:
+    1. explicit override (the query loop's 64K escalation passes through
+       here unchanged);
+    2. ``CLAUDE_CODE_MAX_OUTPUT_TOKENS`` env — the key has been on the
+       trusted-env allowlist since round 1 (``trust_boundary.py``);
+       consuming it closes that dangling promise. Invalid / non-positive
+       values are ignored with a debug log;
+    3. the per-model table via :func:`get_model_max_output_tokens`
+       (→ ``DEFAULT_MAX_OUTPUT_TOKENS`` 8_192 for unknown models).
+
+    Port decision vs TS: TS gates an 8_000 cap behind a remote flag with
+    a 32_000 literal default (``utils/context.ts:28,38``,
+    ``claude.ts:3417-3424``); the port has no remote-flag tier, so the
+    per-model table is the single source. Before this function existed,
+    normal requests silently went out at the provider-default 4096 — the
+    chapter's "8K-class default + one 64K retry" economics were not on
+    the wire.
+    """
+    if override is not None:
+        return override
+    raw = os.environ.get("CLAUDE_CODE_MAX_OUTPUT_TOKENS")
+    if raw:
+        try:
+            value = int(raw.strip())
+        except ValueError:
+            value = 0
+        if value > 0:
+            return value
+        logger.debug(
+            "ignoring invalid CLAUDE_CODE_MAX_OUTPUT_TOKENS=%r", raw
+        )
+    if model_id:
+        return get_model_max_output_tokens(model_id)
     return DEFAULT_MAX_OUTPUT_TOKENS
