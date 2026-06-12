@@ -194,16 +194,41 @@ class TestRunPreActionSetsClientType(unittest.TestCase):
 
 
 class TestRunPreActionSetsTrustAccepted(unittest.TestCase):
-    """A6 / P1.6: plan-phase-1 default is `set_session_trust_accepted(True)`
-    so existing trust-gate consumers behave correctly."""
+    """#275: pre_action seeds session trust from the persisted per-project
+    decision (startup_gates.check_trust_accepted) instead of hardcoding True."""
 
-    def test_pre_action_sets_trust_accepted_true(self) -> None:
-        # Pre-state: default False.
-        self.assertFalse(get_session_trust_accepted())
+    def tearDown(self) -> None:
+        from src.bootstrap.state import set_session_trust_accepted
+
+        set_session_trust_accepted(False)
+
+    def _run(self) -> None:
         with mock.patch.object(init_module, "init"):
             args = types.SimpleNamespace(print=False)
             init_module.run_pre_action(args)
+
+    def test_previously_trusted_dir_seeds_true(self) -> None:
+        self.assertFalse(get_session_trust_accepted())
+        with mock.patch(
+            "src.services.startup_gates.check_trust_accepted", return_value=True
+        ):
+            self._run()
         self.assertTrue(get_session_trust_accepted())
+
+    def test_never_trusted_dir_seeds_false(self) -> None:
+        with mock.patch(
+            "src.services.startup_gates.check_trust_accepted", return_value=False
+        ):
+            self._run()
+        self.assertFalse(get_session_trust_accepted())
+
+    def test_errored_trust_check_fails_closed(self) -> None:
+        with mock.patch(
+            "src.services.startup_gates.check_trust_accepted",
+            side_effect=RuntimeError("boom"),
+        ):
+            self._run()
+        self.assertFalse(get_session_trust_accepted())
 
 
 if __name__ == "__main__":

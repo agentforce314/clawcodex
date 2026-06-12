@@ -57,6 +57,15 @@ _session_trust_accepted = False
 def reset_session_trust_for_testing() -> None:
     global _session_trust_accepted
     _session_trust_accepted = False
+    # record_trust_accepted syncs the bootstrap flag (consumed by
+    # ToolContext.workspace_trusted seeding — #275); reset that too so
+    # trust acceptance can't leak across tests.
+    try:
+        from src.bootstrap.state import set_session_trust_accepted
+
+        set_session_trust_accepted(False)
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -94,10 +103,10 @@ def record_trust_accepted(cwd: str | Path | None = None) -> bool:
     global _session_trust_accepted
     _session_trust_accepted = True
     # Keep the BOOTSTRAP session-trust flag (the port of the same TS
-    # symbol, consumed by hooks/trust_gate.py and
-    # tool_system/context.workspace_trusted) in sync — today init.py
-    # pre-sets it True for every entrypoint, but once that placeholder
-    # narrows, an accepted dialog must still propagate trust there.
+    # symbol, seeded by init.py pre_action from the persisted decision
+    # and consumed by ToolContext.workspace_trusted seeding — #275) in
+    # sync, so contexts constructed after an accepted dialog start
+    # trusted.
     try:
         from src.bootstrap.state import set_session_trust_accepted
 

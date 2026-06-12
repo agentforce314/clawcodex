@@ -304,6 +304,9 @@ class TestAppGateChain:
         fake, rows, pushes, exits, finished = self._fake(proj)
         fake._on_trust_choice("trust")
         assert check_trust_accepted(proj)
+        # #275: acceptance propagates to the already-built tool context so
+        # hooks stop being trust-skipped mid-session.
+        assert fake.tool_context.workspace_trusted is True
         assert finished == ["warnings", "mcp"]
 
     def test_bypass_gate_prompts_only_in_bypass_mode(self, proj) -> None:
