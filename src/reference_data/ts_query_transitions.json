@@ -20,7 +20,8 @@
     "stop_hook_prevented",
     "aborted_tools",
     "hook_stopped",
-    "max_turns"
+    "max_turns",
+    "tool_failure_loop"
   ],
   "query_state_fields": [
     "messages",
