@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
-from src.models import PortingBacklog, PortingModule
+from .legacy_porting_types import PortingBacklog, PortingModule
 
 # ch01 round-2 P3: reference_data stays at src/reference_data/ because
 # ~20 production subsystem __init__.py files load JSON snapshots from there.
