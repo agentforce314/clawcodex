@@ -1132,6 +1132,26 @@ class ClawCodexTUI(App):
             except Exception:
                 pass
             self.app_state.model = model_id
+            # ch03 round-3 (plan-critic major-3): route through the
+            # reactive store so the §3.4 chokepoint fires — persistence
+            # (settings model + model_provider pair) and the bootstrap
+            # mirror. Without this, picker switches were the exact
+            # scattered-mutation disease the chapter narrates.
+            try:
+                from src.state.app_state import replace_state
+
+                self._ensure_command_context()
+                if self._app_state_store is not None:
+                    self._app_state_store.set_state(
+                        lambda s: replace_state(s, main_loop_model=model_id)
+                    )
+            except Exception:
+                # Render-state already switched; only persistence/mirror
+                # was lost — make that diagnosable.
+                logger.debug(
+                    "model picker: store routing failed; switch not persisted",
+                    exc_info=True,
+                )
             transcript.append_system(f"Model switched to {model_id}.", style="muted")
             if self._repl_screen is not None:
                 self._repl_screen.status_bar.refresh_identity(model=model_id)
@@ -1553,11 +1573,23 @@ class ClawCodexTUI(App):
             from src.command_system.engine import create_command_context
             from src.cost_tracker import CostTracker
             from src.history import HistoryLog
-            from src.state.app_state import create_app_state_store
+            from src.state.app_state import (
+                create_app_state_store,
+                set_active_provider_supplier,
+            )
             from src.tui.ui_host import TextualUIHost
 
             if self._app_state_store is None:
-                self._app_state_store = create_app_state_store()
+                # ch03 round-3 G1: seeded from persisted settings (model
+                # gated on the active provider). NB this store is LAZY —
+                # seeding fires at first command use, not app start
+                # (harmless: the TUI renders from tui/state.py). Anyone
+                # making this eager must re-check ordering vs provider
+                # construction in entrypoints/tui.py.
+                self._app_state_store = create_app_state_store(
+                    active_provider=self.provider_name
+                )
+                set_active_provider_supplier(lambda: self.provider_name)
 
             self._command_context = create_command_context(
                 workspace_root=self.workspace_root,

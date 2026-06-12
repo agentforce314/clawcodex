@@ -423,6 +423,15 @@ class ClawcodexREPL:
             base_url=config.get("base_url"),
             model=config.get("default_model")
         )
+        # ch03 round-3 G1 read-side: persisted /model survives restart.
+        # No explicit model parameter exists on this path, so the call is
+        # unconditional; the (model, provider) pair guard inside ignores
+        # cross-provider stale values. NB the mid-session provider-reinit
+        # flow rebuilds with default_model and deliberately does NOT
+        # re-apply the pair — restart-scoped parity is the boundary.
+        from src.settings.settings import apply_persisted_model
+
+        apply_persisted_model(self.provider, provider_name)
 
         # Create session
         self.session = Session.create(
@@ -1099,11 +1108,22 @@ class ClawcodexREPL:
 
         # Reactive AppState store backing interactive commands like
         # /permissions; held on self so the chosen mode persists for the
-        # REPL session.
-        from src.state.app_state import create_app_state_store
+        # REPL session. ch03 round-3 G1: seeded from persisted settings
+        # (model gated on the active provider) + the LIVE provider-name
+        # supplier so /model persistence records the provider that is
+        # active AT WRITE TIME (the provider-reinit flow reassigns
+        # self.provider_name mid-session — a captured string would
+        # poison the (model, provider) pair guard).
+        from src.state.app_state import (
+            create_app_state_store,
+            set_active_provider_supplier,
+        )
         from src.repl.ui_host import ReplUIHost
 
-        self.app_state_store = create_app_state_store()
+        self.app_state_store = create_app_state_store(
+            active_provider=self.provider_name
+        )
+        set_active_provider_supplier(lambda: self.provider_name)
 
         # Create command context
         self.command_context = create_command_context(
