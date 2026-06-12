@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, AsyncGenerator, Callable
@@ -50,16 +51,21 @@ async def run_tool_use(
     tool_use_context: ToolContext,
 ) -> AsyncGenerator[MessageUpdateLazy, None]:
     from src.tool_system.build_tool import find_tool_by_name
-    from src.tool_system.registry import get_all_base_tools
 
     tool_name = tool_use.name
     tool = find_tool_by_name(tool_use_context.options.tools, tool_name)
 
     if tool is None:
+        # Old-transcript names and pool-hidden tools resolve through the
+        # FULL base-tool list (TS toolExecution.ts:335-341:
+        # findToolByName(getAllBaseTools(), toolName)). Not a permission
+        # bypass: resolution still runs downstream for the resolved tool.
         try:
-            from src.tool_system.registry import ToolRegistry
-            fallback_registry = ToolRegistry(tool_use_context.options.tools)
-            tool = fallback_registry.get(tool_name)
+            from src.tool_system.defaults import build_default_registry
+
+            tool = find_tool_by_name(
+                build_default_registry().list_tools(), tool_name
+            )
         except Exception:
             pass
 
@@ -205,13 +211,18 @@ async def _check_permissions_and_call_tool(
             logger.debug("Validation error for %s: %s", tool.name, e)
 
     # ----- Step 6 — Input Backfill (clone, not mutate).
-    # The original API-bound input is preserved (preserves prompt cache);
-    # the cloned, backfilled input is what hooks and permissions see.
-    # Mirrors typescript/src/services/tools/toolExecution.ts backfill step.
+    # call() receives the MODEL-ORIGINAL input: tool results embed input
+    # fields verbatim (e.g. "File created successfully at: {path}"), and
+    # changing them alters the serialized transcript. The cloned,
+    # backfilled input is the hooks/permissions audience only.
+    # Mirrors typescript/src/services/tools/toolExecution.ts:838-853.
+    call_input = processed_input
+    backfilled_clone: dict[str, Any] | None = None
     if tool.backfill_observable_input is not None:
         try:
             backfilled = dict(processed_input)
             tool.backfill_observable_input(backfilled)
+            backfilled_clone = backfilled
             processed_input = backfilled
         except Exception as e:
             logger.debug("backfill_observable_input error for %s: %s", tool.name, e)
@@ -295,7 +306,30 @@ async def _check_permissions_and_call_tool(
         call_context.tool_use_id = tool_use_id
         call_context.user_modified = permission_decision.get("userModified", False)
 
-        result = await _call_tool(tool, processed_input, call_context)
+        # If processed_input still points at the backfill clone, no
+        # hook/permission replaced it — pass the pre-backfill call_input so
+        # call() sees the model's original field values. Hook/permission
+        # flows may return a fresh object derived from the backfilled clone
+        # (e.g. via schema re-parse): if its file_path matches the
+        # backfill-expanded value, restore the model's original so the tool
+        # result string embeds the path the model emitted. Other
+        # modifications flow through unchanged. Mirrors
+        # typescript/src/services/tools/toolExecution.ts:1212-1237.
+        if (
+            backfilled_clone is not None
+            and processed_input is not call_input
+            and isinstance(processed_input, dict)
+            and "file_path" in processed_input
+            and isinstance(call_input, dict)
+            and "file_path" in call_input
+            and processed_input.get("file_path")
+            == backfilled_clone.get("file_path")
+        ):
+            call_input = {**processed_input, "file_path": call_input["file_path"]}
+        elif processed_input is not backfilled_clone:
+            call_input = processed_input
+
+        result = await _call_tool(tool, call_input, call_context)
 
         duration_ms = int((time.monotonic() - start_time) * 1000)
 
@@ -325,9 +359,15 @@ async def _check_permissions_and_call_tool(
             tool_results_dir=tool_results_dir,
             aggregate_chars_so_far=tool_use_context.tool_result_chars_so_far,
         )
-        tool_use_context.tool_result_chars_so_far += compute_block_chars(
-            tool_result_block,
-        )
+        # Non-finite-threshold tools (Read) are excluded from the aggregate
+        # — TS skip-set semantics (query.ts:419-423,
+        # toolResultStorage.ts:841-851): skipped tools neither get replaced
+        # nor count toward the budget. process_tool_result_block still runs
+        # for them (empty-content marker applies to ALL tools).
+        if math.isfinite(tool.max_result_size_chars):
+            tool_use_context.tool_result_chars_so_far += compute_block_chars(
+                tool_result_block,
+            )
 
         resulting_messages.append(MessageUpdateLazy(
             message=create_user_message(

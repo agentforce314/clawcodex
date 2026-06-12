@@ -293,9 +293,30 @@ async def resolve_hook_permission_decision(
                     return decision
                 if hasattr(decision, "behavior"):
                     return {"behavior": decision.behavior, "message": getattr(decision, "message", None)}
+                return {
+                    "behavior": "deny",
+                    "message": (
+                        "Permission handler returned an unrecognized "
+                        f"decision for {tool.name}"
+                    ),
+                }
             except Exception as e:
                 logger.debug("can_use_tool error: %s", e)
-        return {"behavior": "allow"}
+                return {
+                    "behavior": "deny",
+                    "message": f"Permission handler failed for {tool.name}",
+                }
+        # FAIL CLOSED. TS cannot express a missing handler (canUseTool is a
+        # required field, query.ts:191), and the production lane's
+        # handlerless ask path denies the same way (handler.py:42-51) — an
+        # allow here would make every tool call permitted the moment a
+        # future caller forgets to wire can_use_tool.
+        return {
+            "behavior": "deny",
+            "message": (
+                f"Permission required but no handler available for {tool.name}"
+            ),
+        }
 
     if isinstance(hook_permission_result, dict):
         behavior = hook_permission_result.get("behavior")

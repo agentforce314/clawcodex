@@ -383,8 +383,12 @@ def maybe_persist_large_tool_result(
     # WI-5.1: per-message aggregate gate. Even when this block alone is
     # under ``threshold``, if adding it would push the running total
     # over ``aggregate_cap`` we persist it to disk to keep the message
-    # within budget. The TS reference checks the aggregate at the same
-    # point per ``toolLimits.ts:49`` semantics.
+    # within budget. DEVIATION: the TS reference enforces the aggregate
+    # ONLY at the wire (enforceToolResultBudget, with non-finite tools
+    # excluded from replacement AND counting via skipToolNames); the
+    # port decides at result-creation time instead — see
+    # my-docs/ch06-tools-round3-gap-analysis.md §3. Same 200K constant
+    # (toolLimits.ts:49); callers skip the counter for non-finite tools.
     aggregate_would_exceed = (aggregate_chars_so_far + size) > aggregate_cap
     if size <= threshold and not aggregate_would_exceed:
         return tool_result_block
