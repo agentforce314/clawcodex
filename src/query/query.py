@@ -49,6 +49,20 @@ from ..token_estimation import rough_token_count_estimation_for_messages
 logger = logging.getLogger(__name__)
 
 ESCALATED_MAX_TOKENS = 64_000
+
+# ch04 round-3 G3 — 529/overloaded retry lane. TS withRetry.ts: general
+# budget DEFAULT_MAX_RETRIES=10 with a 529-specific MAX_529_RETRIES=3
+# counter that triggers model-fallback or the external-user bail
+# (:346-385); the port adopts the bail posture (3 retries then the
+# existing model_error path). Gated to foreground sources only
+# (withRetry.ts:62-90) -- background lanes (compact, session_memory)
+# bail immediately to avoid gateway amplification.
+MAX_529_RETRIES = 3
+RETRY_BASE_DELAY_SECONDS = 0.5
+# Narrower than TS's FOREGROUND_529_RETRY_SOURCES (agents/sdk/compact/
+# side_question, withRetry.ts:62-90) -- minimal posture; widen to agent
+# sources when subagent traffic matters.
+FOREGROUND_529_RETRY_SOURCES = frozenset({"repl_main_thread"})
 MAX_OUTPUT_TOKENS_RECOVERY_LIMIT = 3
 PROMPT_TOO_LONG_ERROR_MESSAGE = (
     "Your conversation is too long. Please use /compact to reduce context size, "
@@ -323,6 +337,32 @@ def _model_supports_extended_thinking(model: str | None) -> bool:
     return bool(_THINKING_ELIGIBLE_MODEL_PATTERN.search(model))
 
 
+def _is_overloaded_error(e: Exception) -> bool:
+    """Anthropic 529 / overloaded_error classification (duck-typed so
+    test fakes and other providers' shapes participate)."""
+    status = getattr(e, "status_code", None)
+    if status == 529:
+        return True
+    text = str(e).lower()
+    return "overloaded_error" in text or "overloaded" in text
+
+
+def _retry_after_seconds(e: Exception, default: float) -> float:
+    """Honor a Retry-After header when the SDK exposes response headers."""
+    response = getattr(e, "response", None)
+    headers = getattr(response, "headers", None)
+    if headers:
+        raw = headers.get("retry-after")
+        if raw:
+            try:
+                value = float(raw)
+                if 0 < value <= 60:
+                    return value
+            except (TypeError, ValueError):
+                pass
+    return default
+
+
 async def _call_model_sync(
     *,
     provider: BaseProvider,
@@ -334,6 +374,7 @@ async def _call_model_sync(
     on_text_chunk: Callable[[str], None] | None = None,
     extended_thinking: bool | None = None,
     thinking_effort: str = "medium",
+    sdk_max_retries: int | None = None,
 ) -> tuple[list[AssistantMessage], list[ToolUseBlock]]:
     from ..types.messages import normalize_messages_for_api
     from ..utils.advisor import (
@@ -573,7 +614,27 @@ async def _call_model_sync(
                 flattened = ADVISOR_TOOL_INSTRUCTIONS
         api_messages = [{"role": "system", "content": flattened}, *api_messages]
 
-    if max_output_tokens_override is not None:
+    if is_anthropic and sdk_max_retries is not None:
+        # ch04 round-3 G3(c): the loop's manual 529 lane passes 0 here so
+        # SDK auto-retries don't stack under it; background loop sources
+        # pass None and keep the SDK default (their silent resilience).
+        call_kwargs["sdk_max_retries"] = sdk_max_retries
+
+    if is_anthropic:
+        # ch04 round-3 G0: resolve max_tokens on EVERY Anthropic request
+        # (override → CLAUDE_CODE_MAX_OUTPUT_TOKENS env → per-model
+        # table). Previously only the override branch set it and normal
+        # requests silently went out at the provider-default 4096.
+        # Non-Anthropic providers keep their override-only behavior —
+        # they send NO max_tokens today (the provider-API default
+        # applies) and capping them at the table default would be a
+        # silent behavior change outside this gap's evidence.
+        from ..models.context import resolve_max_output_tokens
+
+        call_kwargs["max_tokens"] = resolve_max_output_tokens(
+            max_output_tokens_override, getattr(provider, "model", None)
+        )
+    elif max_output_tokens_override is not None:
         call_kwargs["max_tokens"] = max_output_tokens_override
 
     # Extended thinking (Claude 4.x family). Forwarded straight through
@@ -760,6 +821,20 @@ async def _call_model_sync(
             "[DIAG] _call_model_sync: response in %.1fs  text=%d chars  tools=%d  finish=%s  usage=%s",
             _elapsed, _text_len, _tool_count, stop_reason, response.usage,
         )
+
+    # ch04 round-3 G1: the cost-accumulation head (TS addToTotalSessionCost,
+    # claude.ts:2270-2275). Streaming and the watchdog chat() fallback
+    # converge here, so every main-loop response is counted exactly once.
+    # Empty usage (a stream whose final-message read failed) records zeros.
+    try:
+        from ..cost_tracker import record_api_usage
+
+        record_api_usage(
+            getattr(response, "model", None) or getattr(provider, "model", "unknown"),
+            response.usage,
+        )
+    except Exception:
+        logger.debug("cost recording failed", exc_info=True)
 
     assistant_msg = AssistantMessage(
         content=assistant_blocks if assistant_blocks else "",
@@ -1336,18 +1411,85 @@ async def query(
         tool_use_blocks: list[ToolUseBlock] = []
         needs_follow_up = False
 
+        # ch04 round-3 G3: overloaded-retry lane. Yield-based like TS
+        # withRetry (status surfaces in the message stream, not a side
+        # channel). Constraints: foreground sources only; never after
+        # partial output (a mid-stream 529 with rendered text follows
+        # the normal error path -- no duplicate text); SDK auto-retry
+        # disabled underneath via sdk_max_retries=0 so "attempt k/3"
+        # tells the truth.
+        _is_foreground = params.query_source in FOREGROUND_529_RETRY_SOURCES
+        _streamed_any = [False]
+        _outer_chunk_cb = params.on_text_chunk
+
+        def _marking_chunk_cb(text: str) -> None:
+            _streamed_any[0] = True
+            if _outer_chunk_cb is not None:
+                _outer_chunk_cb(text)
+
         try:
-            returned_assistants, returned_tool_blocks = await _call_model_sync(
-                provider=params.provider,
-                messages=messages,
-                system_prompt=params.system_prompt,
-                tools=params.tools,
-                max_output_tokens_override=max_output_tokens_override,
-                abort_signal=params.abort_controller.signal,
-                on_text_chunk=params.on_text_chunk,
-                extended_thinking=params.extended_thinking,
-                thinking_effort=params.thinking_effort,
-            )
+            for _attempt in range(1, MAX_529_RETRIES + 2):
+                _streamed_any[0] = False
+                try:
+                    returned_assistants, returned_tool_blocks = await _call_model_sync(
+                        provider=params.provider,
+                        messages=messages,
+                        system_prompt=params.system_prompt,
+                        tools=params.tools,
+                        max_output_tokens_override=max_output_tokens_override,
+                        abort_signal=params.abort_controller.signal,
+                        on_text_chunk=(
+                            _marking_chunk_cb if _outer_chunk_cb is not None
+                            else None
+                        ),
+                        extended_thinking=params.extended_thinking,
+                        thinking_effort=params.thinking_effort,
+                        sdk_max_retries=0 if _is_foreground else None,
+                    )
+                    break
+                except AbortError:
+                    raise
+                except Exception as retry_exc:
+                    if (
+                        _is_foreground
+                        and _attempt <= MAX_529_RETRIES
+                        and not _streamed_any[0]
+                        and _is_overloaded_error(retry_exc)
+                        and not params.abort_controller.signal.aborted
+                    ):
+                        delay = _retry_after_seconds(
+                            retry_exc,
+                            RETRY_BASE_DELAY_SECONDS * (2 ** (_attempt - 1)),
+                        )
+                        yield SystemMessage(
+                            content=(
+                                f"Server overloaded — retrying in {delay:.1f}s "
+                                f"(attempt {_attempt}/{MAX_529_RETRIES})"
+                            ),
+                            level="warning",
+                            subtype="api_retry",
+                        )
+                        # Abort-aware backoff (critic): TS sleeps WITH the
+                        # signal (withRetry sleep(delay, signal)); a
+                        # Retry-After can direct up to 60s — ESC must not
+                        # be stuck behind it. Sliced sleep, checked every
+                        # 250ms; an abort falls through to the existing
+                        # aborted_streaming handling on the next attempt.
+                        _remaining = delay
+                        while _remaining > 0:
+                            if params.abort_controller.signal.aborted:
+                                break
+                            _tick = min(0.25, _remaining)
+                            await asyncio.sleep(_tick)
+                            _remaining -= _tick
+                        if params.abort_controller.signal.aborted:
+                            # Land in the REAL abort lane (the outer
+                            # except AbortError + post-call abort block),
+                            # so the user sees the interruption message
+                            # rather than a 529 model_error.
+                            raise AbortError("interrupted during retry backoff") from retry_exc
+                        continue
+                    raise
             assistant_messages = returned_assistants
             tool_use_blocks = returned_tool_blocks
             needs_follow_up = len(tool_use_blocks) > 0

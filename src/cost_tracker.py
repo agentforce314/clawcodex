@@ -28,6 +28,53 @@ from src.bootstrap.state import (
 from src.services.pricing import compute_cost
 
 
+def record_api_usage(model: str, usage: Any) -> float:
+    """Record one API response's usage into the bootstrap singleton.
+
+    The module-level cost-accumulation head (ch04 round-3 G1 — TS
+    ``addToTotalSessionCost``, ``claude.ts:2270-2275``): computes USD
+    cost from per-model pricing, merges into the per-model accumulator,
+    and updates the process-wide totals. Tolerant of ``None``/empty/
+    non-mapping usage (records zeros — a streaming completion whose
+    ``get_final_message()`` failed yields ``usage={}``).
+
+    Call sites: the query loop's response-complete convergence
+    (streaming + watchdog fallback), the compaction summarize calls,
+    and the client-side advisor call.
+    """
+    if not isinstance(usage, dict):
+        usage = {}
+    cost = compute_cost(model, usage)
+    bootstrap_usage = ModelUsage(
+        input_tokens=int(usage.get("input_tokens", 0) or 0),
+        output_tokens=int(usage.get("output_tokens", 0) or 0),
+        cache_creation_input_tokens=int(
+            usage.get("cache_creation_input_tokens", 0) or 0
+        ),
+        cache_read_input_tokens=int(
+            usage.get("cache_read_input_tokens", 0) or 0
+        ),
+        cost_usd=cost,
+    )
+    existing = get_model_usage().get(model)
+    if existing is not None:
+        bootstrap_usage = ModelUsage(
+            input_tokens=existing.input_tokens + bootstrap_usage.input_tokens,
+            output_tokens=existing.output_tokens + bootstrap_usage.output_tokens,
+            cache_creation_input_tokens=(
+                existing.cache_creation_input_tokens
+                + bootstrap_usage.cache_creation_input_tokens
+            ),
+            cache_read_input_tokens=(
+                existing.cache_read_input_tokens
+                + bootstrap_usage.cache_read_input_tokens
+            ),
+            cost_usd=existing.cost_usd + cost,
+        )
+    add_to_total_cost_state(cost, bootstrap_usage, model)
+    return cost
+
+
 @dataclass
 class CostTracker:
     """Facade over the bootstrap singleton.
@@ -56,36 +103,12 @@ class CostTracker:
     def record_usage(self, model: str, usage: dict[str, Any]) -> float:
         """Record a real API usage event into the bootstrap singleton.
 
-        Computes USD cost from per-model pricing, updates the
-        process-wide ``total_cost_usd`` accumulator, and stores a
-        ``last_usage`` snapshot for downstream consumers (e.g. the
-        ``/cost`` command's last-call summary).
+        Delegates the durable update to :func:`record_api_usage` and
+        additionally stores a ``last_usage`` snapshot for downstream
+        consumers (e.g. the ``/cost`` command's last-call summary).
         """
-        cost = compute_cost(model, usage)
-        bootstrap_usage = ModelUsage(
-            input_tokens=int(usage.get("input_tokens", 0)),
-            output_tokens=int(usage.get("output_tokens", 0)),
-            cache_creation_input_tokens=int(usage.get("cache_creation_input_tokens", 0)),
-            cache_read_input_tokens=int(usage.get("cache_read_input_tokens", 0)),
-            cost_usd=cost,
-        )
-        # Merge with any existing per-model accumulator
-        existing = get_model_usage().get(model)
-        if existing is not None:
-            bootstrap_usage = ModelUsage(
-                input_tokens=existing.input_tokens + bootstrap_usage.input_tokens,
-                output_tokens=existing.output_tokens + bootstrap_usage.output_tokens,
-                cache_creation_input_tokens=(
-                    existing.cache_creation_input_tokens
-                    + bootstrap_usage.cache_creation_input_tokens
-                ),
-                cache_read_input_tokens=(
-                    existing.cache_read_input_tokens + bootstrap_usage.cache_read_input_tokens
-                ),
-                cost_usd=existing.cost_usd + cost,
-            )
-        add_to_total_cost_state(cost, bootstrap_usage, model)
-        self.last_usage = dict(usage)
+        cost = record_api_usage(model, usage)
+        self.last_usage = dict(usage) if isinstance(usage, dict) else {}
         return cost
 
     @property

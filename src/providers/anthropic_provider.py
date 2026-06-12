@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import logging
+import os
 import sys
 from typing import Generator, Optional, Any, TYPE_CHECKING
+from urllib.parse import urlparse
+from uuid import uuid4
 
 from .base import BaseProvider, ChatResponse, MessageInput, TextChunkCallback
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from src.utils.abort_controller import AbortSignal
@@ -128,17 +134,60 @@ class AnthropicProvider(BaseProvider):
         self.client = mod.anthropic.Anthropic(**self._client_kwargs)
         return self.client
 
+    def _effective_base_url(self) -> str | None:
+        """The base URL the SDK will actually use.
+
+        ch04 round-3 G2 (critic-corrected first-party check): the
+        Anthropic SDK falls back to the ``ANTHROPIC_BASE_URL`` env var
+        when the constructor ``base_url`` is None — a constructor-only
+        check would treat env-configured proxies as first-party (the
+        exact incident class TS guards in ``providers.ts:120-135``).
+        """
+        return self._client_kwargs.get("base_url") or os.environ.get(
+            "ANTHROPIC_BASE_URL"
+        ) or None
+
+    def _is_first_party(self) -> bool:
+        """True iff requests go to Anthropic's own endpoint.
+
+        No effective base URL (SDK default) = first-party; otherwise the
+        parsed host must be ``api.anthropic.com`` (TS
+        ``isFirstPartyAnthropicBaseUrl``, providers.ts:120-135).
+        """
+        effective = self._effective_base_url()
+        if not effective:
+            return True
+        try:
+            return urlparse(effective).hostname == "api.anthropic.com"
+        except Exception:
+            return False
+
+    def _request_id_headers(self) -> dict[str, str]:
+        """Per-request ``x-client-request-id`` for first-party endpoints.
+
+        TS ``buildFetch`` (client.ts:556-589): a timeout never gets a
+        server-assigned request id, so the client-side UUID is the only
+        way to correlate it with server logs. First-party only —
+        third-party providers / strict proxies may reject unknown
+        headers.
+        """
+        if self._is_first_party():
+            return {"x-client-request-id": str(uuid4())}
+        return {}
+
     def has_custom_endpoint(self) -> bool:
-        """True iff the caller passed a non-default ``base_url``.
+        """True iff requests target a non-first-party endpoint.
 
         WI-2.3 (ch17 Phase 2): used by ``cache_state.is_first_party_provider``
         to decide whether ``scope: 'global'`` may be emitted on
         ``cache_control`` blocks (only valid against Anthropic's first-party
         endpoint; proxies / self-hosted / Bedrock shims would either 400
-        or silently drop the field). Public API so the cache-state module
-        doesn't read ``self._client_kwargs`` (encapsulation).
+        or silently drop the field). ch04 round-3 hardening: consults the
+        EFFECTIVE base URL (constructor -> ANTHROPIC_BASE_URL env), so an
+        env-configured proxy is also treated as custom — same incident
+        class as the request-id check above.
         """
-        return bool(self._client_kwargs.get("base_url"))
+        return not self._is_first_party()
 
     def _build_chat_response(self, response: Any) -> ChatResponse:
         """Convert Anthropic SDK response into the shared ChatResponse shape.
@@ -200,6 +249,44 @@ class AnthropicProvider(BaseProvider):
             raw_content_blocks=raw_content_blocks or None,
         )
 
+    def _client_for_request(self, kwargs: dict[str, Any]):
+        """Resolve the client, honoring a per-call ``sdk_max_retries``.
+
+        ch04 round-3 G3 condition (c): the manual 529 retry lane in the
+        query loop passes ``sdk_max_retries=0`` so the SDK's default
+        2 auto-retries don't stack underneath it (~9 wire attempts and a
+        lying attempt counter — TS sets maxRetries: 0 for the same
+        reason, claude.ts:1798). Direct callers (compaction, advisor,
+        title) keep the SDK default, preserving their silent resilience
+        to 429/connection blips.
+        """
+        client = self._ensure_client()
+        sdk_max_retries = kwargs.pop("sdk_max_retries", None)
+        if sdk_max_retries is not None:
+            try:
+                return client.with_options(max_retries=int(sdk_max_retries))
+            except Exception:
+                # SDK auto-retries silently re-enable under the manual
+                # lane in this (unexpected) case -- make it observable.
+                logger.debug(
+                    "with_options(max_retries=%s) failed; SDK default "
+                    "retries remain active under the retry lane",
+                    sdk_max_retries,
+                    exc_info=True,
+                )
+                return client
+        return client
+
+    def _merge_request_id(self, kwargs: dict[str, Any]) -> str | None:
+        """Inject the per-request id into kwargs' extra_headers (G2)."""
+        headers = self._request_id_headers()
+        if not headers:
+            return None
+        merged = dict(kwargs.get("extra_headers") or {})
+        merged.setdefault("x-client-request-id", headers["x-client-request-id"])
+        kwargs["extra_headers"] = merged
+        return merged["x-client-request-id"]
+
     def chat(
         self,
         messages: list[MessageInput],
@@ -225,10 +312,11 @@ class AnthropicProvider(BaseProvider):
         anthropic_messages = self._prepare_messages(messages)
 
         # Make API call
-        client = self._ensure_client()
+        client = self._client_for_request(kwargs)
         extra_kwargs: dict[str, Any] = {}
         if tools:
             extra_kwargs["tools"] = tools
+        self._merge_request_id(kwargs)
 
         response = client.messages.create(
             model=model,
@@ -320,10 +408,11 @@ class AnthropicProvider(BaseProvider):
         system = kwargs.pop("system", None)
         anthropic_messages = self._prepare_messages(messages)
 
-        client = self._ensure_client()
+        client = self._client_for_request(kwargs)
         extra_kwargs: dict[str, Any] = {}
         if tools:
             extra_kwargs["tools"] = tools
+        request_id = self._merge_request_id(kwargs)
 
         def _fallback_to_chat() -> ChatResponse:
             """Re-issue the request without streaming (WI-5.2 recovery path).
@@ -337,6 +426,10 @@ class AnthropicProvider(BaseProvider):
                 for k, v in kwargs.items()
                 if k not in ["model", "max_tokens", "tools"]
             }
+            # NB ``forwarded`` retains extra_headers with the STREAM's
+            # x-client-request-id; chat()'s setdefault keeps it, so the
+            # hung stream and its recovery request correlate under ONE id
+            # (deliberate; TS supports caller-pre-set ids the same way).
             return self.chat(
                 messages,
                 tools=tools,
@@ -401,6 +494,11 @@ class AnthropicProvider(BaseProvider):
             # gets an answer. If the failure is something else
             # (network/auth/etc.), re-raise the original.
             if watchdog_fired:
+                logger.warning(
+                    "stream idle watchdog fired; falling back to "
+                    "non-streaming (x-client-request-id=%s)",
+                    request_id or "n/a",
+                )
                 try:
                     return _fallback_to_chat()
                 except Exception as fallback_exc:
