@@ -578,3 +578,48 @@ async def execute_stop_hooks(
         timeout_ms=timeout_ms,
     ):
         yield result
+
+
+async def execute_stop_failure_hooks(
+    last_message: Any,
+    tool_use_context: Any,
+) -> AsyncGenerator[dict[str, Any], None]:
+    """Run StopFailure hooks (ch05 round-3 G1).
+
+    Fired when the loop ends a turn on an API-error response — the
+    death-spiral guard path where Stop hooks must NOT run (TS
+    query.ts:1346-1349 + the PTL/media surfacing exits :1256/:1263).
+    TS dispatches fire-and-forget; the port awaits at the (terminal)
+    exit paths — latency bounded by the hook timeout.
+    """
+    stdin_data = {
+        "hook_event": "StopFailure",
+        "error": _flatten_text(getattr(last_message, "content", "")) or "",
+    }
+    abort_signal = None
+    abort_ctrl = getattr(tool_use_context, "abort_controller", None)
+    if abort_ctrl:
+        abort_signal = abort_ctrl.signal
+    async for result in _run_hooks_for_event(
+        "StopFailure",
+        None,
+        stdin_data,
+        tool_use_context,
+        abort_signal=abort_signal,
+    ):
+        yield result
+
+
+def _flatten_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            text = getattr(block, "text", None)
+            if text is None and isinstance(block, dict):
+                text = block.get("text")
+            if isinstance(text, str):
+                parts.append(text)
+        return " ".join(parts)
+    return str(content or "")

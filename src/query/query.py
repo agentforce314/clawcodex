@@ -28,6 +28,17 @@ from ..utils.image_validation import ImageSizeError
 from ..providers.base import BaseProvider, ChatResponse
 
 from .config import QueryConfig, build_query_config
+from .continuation_nudge import (
+    MAX_CONTINUATION_NUDGES,
+    NUDGE_MESSAGE,
+    detect_continuation_signal,
+)
+from .stop_hooks import StopHookResult, handle_stop_hooks_streaming
+from .token_budget import (
+    ContinueDecision,
+    check_token_budget,
+    create_budget_tracker,
+)
 from .tool_failure_loop_guard import (
     create_tool_failure_loop_guard_state,
     update_tool_failure_loop_guard,
@@ -86,6 +97,10 @@ class QueryParams:
     provider: BaseProvider
     abort_controller: AbortController
     query_source: str = "repl_main_thread"
+    # ch05 round-3 G2: the +500k turn budget. Deliberate deviation from
+    # TS's ambient bootstrap-global design — params is the carrier; the
+    # bootstrap globals remain the mechanism (snapshot at query() entry).
+    token_budget: int | None = None
     max_output_tokens_override: int | None = None
     max_turns: int | None = None
     user_context: dict[str, str] | None = None
@@ -361,6 +376,24 @@ def _retry_after_seconds(e: Exception, default: float) -> float:
             except (TypeError, ValueError):
                 pass
     return default
+
+
+async def _fire_stop_failure_hooks(last_message: Any, tool_use_context: Any) -> None:
+    """Dispatch StopFailure hooks at the error-exit paths (ch05 G1).
+
+    TS fires fire-and-forget at query.ts:1256/:1263/:1347; the port
+    awaits (terminal paths; latency bounded by the hook timeout) and
+    never raises.
+    """
+    try:
+        from ..hooks.hook_executor import execute_stop_failure_hooks
+
+        async for _result in execute_stop_failure_hooks(
+            last_message, tool_use_context
+        ):
+            pass
+    except Exception:
+        logger.debug("StopFailure hook dispatch failed", exc_info=True)
 
 
 async def _call_model_sync(
@@ -1262,6 +1295,26 @@ async def query(
     # query.ts:311 (state built before the while(true) at :327). Any
     # successful tool result resets the counters inside the guard.
     tool_failure_guard_state = create_tool_failure_loop_guard_state()
+    # ch05 round-3 G2: snapshot the turn-token baseline + budget into the
+    # bootstrap globals (zero callers before this — without the snapshot,
+    # get_turn_output_tokens() returns SESSION-cumulative tokens and the
+    # budget check is silently wrong after any prior output). Tracker is
+    # once-per-query (TS query.ts:299) — per-iteration construction would
+    # disable diminishing-returns detection.
+    from ..bootstrap.state import snapshot_output_tokens_for_turn
+
+    # Top-level queries only: a nested subagent query() (Agent tool runs
+    # inside the main turn's tool phase) or a sidechannel must NOT
+    # re-snapshot — it would null the budget, re-baseline the turn counter,
+    # and zero the continuation count mid-turn. TS snapshots only at the
+    # REPL surface (REPL.tsx:2944); agent_id mirrors check_token_budget's
+    # own subagent discriminator.
+    if (
+        getattr(params.tool_use_context, "agent_id", None) is None
+        and params.query_source not in ("compact", "session_memory")
+    ):
+        snapshot_output_tokens_for_turn(params.token_budget)
+    budget_tracker = create_budget_tracker()
 
     while True:
         messages = state.messages
@@ -1609,6 +1662,8 @@ async def query(
             ):
                 if last_message is not None:
                     yield last_message
+                # ch05 G1: StopFailure fires on error exits (TS :1256).
+                await _fire_stop_failure_hooks(last_message, tool_use_context)
                 set_terminal(
                     holder,
                     natural_termination,
@@ -1701,6 +1756,8 @@ async def query(
                 # must remain.
                 if last_message is not None:
                     yield last_message
+                # ch05 G1: StopFailure fires on error exits (TS :1263).
+                await _fire_stop_failure_hooks(last_message, tool_use_context)
                 set_terminal(
                     holder,
                     natural_termination,
@@ -1712,9 +1769,179 @@ async def query(
                 )
                 return
 
-            if last_message and getattr(last_message, "isApiErrorMessage", False):
+            if last_message and (
+                getattr(last_message, "isApiErrorMessage", False)
+                or _is_withheld_max_output_tokens(last_message)
+            ):
+                # Death-spiral guard (TS query.ts:1346-1349): NO Stop hooks
+                # on an API-error response ("error -> hook blocking ->
+                # retry -> error -> ... the hook injects more tokens each
+                # cycle"); StopFailure hooks fire instead. The recovery-
+                # exhausted max-output-tokens message is included explicitly:
+                # the port tags it isApiErrorMessage=False (it carries real
+                # partial content), while TS's equivalent is a synthetic
+                # error message with isApiErrorMessage=true
+                # (claude.ts:2289-2295) — without this clause a blocking
+                # Stop hook re-opens the truncation spiral the recovery
+                # counter just closed.
+                await _fire_stop_failure_hooks(last_message, tool_use_context)
                 set_terminal(holder, natural_termination, Terminal(reason="completed"))
                 return
+
+            # ch05 round-3 G1 — Stop hooks at the clean no-tool-use exit
+            # (TS query.ts:1351-1391 via query/stopHooks.ts). The handler
+            # streams its own progress/system messages, then yields the
+            # final StopHookResult.
+            stop_result = StopHookResult()
+            try:
+                async for item in handle_stop_hooks_streaming(
+                    messages,
+                    assistant_messages,
+                    # The system-prompt param is signature-parity only —
+                    # _handle_stop_hooks_generator never reads it, so ""
+                    # for block-list prompts is deliberate.
+                    params.system_prompt
+                    if isinstance(params.system_prompt, str)
+                    else "",
+                    tool_use_context,
+                    params.query_source,
+                    state.stop_hook_active,
+                ):
+                    if isinstance(item, StopHookResult):
+                        stop_result = item
+                    else:
+                        yield item
+            except Exception:
+                logger.exception("stop hooks failed; continuing to exit")
+
+            if stop_result.prevent_continuation:
+                set_terminal(
+                    holder,
+                    natural_termination,
+                    Terminal(reason="stop_hook_prevented"),
+                )
+                return
+
+            if stop_result.blocking_errors:
+                # Stop hook says "not done" — retry with the blocking
+                # errors appended. PRESERVE has_attempted_reactive_compact:
+                # if compact already ran and couldn't recover, retrying
+                # after a stop-hook blocking error will produce the same
+                # result; resetting to False here caused an infinite loop
+                # burning thousands of API calls (TS query.ts:1375-1381).
+                state = QueryState(
+                    messages=[
+                        *messages,
+                        *assistant_messages,
+                        *stop_result.blocking_errors,
+                    ],
+                    tool_use_context=tool_use_context,
+                    auto_compact_tracking=state.auto_compact_tracking,
+                    max_output_tokens_recovery_count=0,
+                    has_attempted_reactive_compact=has_attempted_reactive_compact,
+                    max_output_tokens_override=None,
+                    stop_hook_active=True,
+                    turn_count=turn_count,
+                    pending_tool_use_summary=None,
+                    continuation_nudge_count=state.continuation_nudge_count,
+                    transition=Transition(reason="stop_hook_blocking"),
+                )
+                continue
+
+            # ch05 round-3 G2 — token budget (TS query.ts:1393-1441).
+            # No MAX_CONTINUATION_NUDGES interaction: budget continuations
+            # are bounded only by check_token_budget's 90%/diminishing
+            # rules (the nudge cap below is a SEPARATE mechanism).
+            from ..bootstrap.state import (
+                get_current_turn_token_budget,
+                get_turn_output_tokens,
+                increment_budget_continuation_count,
+            )
+
+            budget_decision = check_token_budget(
+                budget_tracker,
+                getattr(tool_use_context, "agent_id", None),
+                get_current_turn_token_budget(),
+                get_turn_output_tokens(),
+            )
+            if isinstance(budget_decision, ContinueDecision):
+                increment_budget_continuation_count()
+                logger.debug(
+                    "Token budget continuation #%d: %d%% (%d/%d)",
+                    budget_decision.continuation_count,
+                    budget_decision.pct,
+                    budget_decision.turn_tokens,
+                    budget_decision.budget,
+                )
+                state = QueryState(
+                    messages=[
+                        *messages,
+                        *assistant_messages,
+                        UserMessage(
+                            content=budget_decision.nudge_message,
+                            isMeta=True,
+                        ),
+                    ],
+                    tool_use_context=tool_use_context,
+                    auto_compact_tracking=state.auto_compact_tracking,
+                    max_output_tokens_recovery_count=0,
+                    has_attempted_reactive_compact=False,
+                    max_output_tokens_override=None,
+                    stop_hook_active=None,
+                    turn_count=turn_count,
+                    pending_tool_use_summary=None,
+                    continuation_nudge_count=state.continuation_nudge_count,
+                    transition=Transition(reason="token_budget_continuation"),
+                )
+                continue
+            if getattr(budget_decision, "completion_event", None):
+                logger.debug(
+                    "token budget completed: %s",
+                    budget_decision.completion_event,
+                )
+
+            # ch05 round-3 G5 — continuation nudge (TS query.ts:1443-1512):
+            # the model SAID it would act but called no tools. Capped at
+            # MAX_CONTINUATION_NUDGES per turn-chain.
+            if (
+                assistant_messages
+                and (params.max_turns is None or turn_count < params.max_turns)
+                and state.continuation_nudge_count < MAX_CONTINUATION_NUDGES
+            ):
+                last_assistant = assistant_messages[-1]
+                content = getattr(last_assistant, "content", "")
+                if isinstance(content, str):
+                    last_text = content
+                else:
+                    last_text = " ".join(
+                        getattr(b, "text", "")
+                        for b in content
+                        if getattr(b, "type", None) == "text"
+                    )
+                if last_text and detect_continuation_signal(last_text):
+                    logger.debug(
+                        "Continuation nudge triggered (%d/%d)",
+                        state.continuation_nudge_count + 1,
+                        MAX_CONTINUATION_NUDGES,
+                    )
+                    state = QueryState(
+                        messages=[
+                            *messages,
+                            *assistant_messages,
+                            UserMessage(content=NUDGE_MESSAGE, isMeta=True),
+                        ],
+                        tool_use_context=tool_use_context,
+                        auto_compact_tracking=state.auto_compact_tracking,
+                        max_output_tokens_recovery_count=0,
+                        has_attempted_reactive_compact=False,
+                        max_output_tokens_override=None,
+                        stop_hook_active=None,
+                        turn_count=turn_count,
+                        pending_tool_use_summary=None,
+                        continuation_nudge_count=state.continuation_nudge_count + 1,
+                        transition=Transition(reason="continuation_nudge"),
+                    )
+                    continue
 
             set_terminal(holder, natural_termination, Terminal(reason="completed"))
             return

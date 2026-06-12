@@ -34,6 +34,20 @@ def run_post_compact_cleanup(
     """
     cleared: list[str] = []
 
+    # ch05 round-3 G3: every compaction restarts the cache epoch — reset
+    # memoized prompt sections + beta-header latches (TS
+    # clearSystemPromptSections, constants/systemPromptSections.ts:65-68).
+    # Runs even with a None context (the reset is global state).
+    try:
+        from src.context_system.system_prompt_cache import (
+            clear_system_prompt_sections,
+        )
+
+        clear_system_prompt_sections()
+        cleared.append("system_prompt_sections")
+    except Exception:
+        pass
+
     if context is None:
         return cleared
 
