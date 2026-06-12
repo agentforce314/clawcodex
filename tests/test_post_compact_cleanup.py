@@ -16,9 +16,10 @@ class TestRunPostCompactCleanup(unittest.TestCase):
     """Tests for run_post_compact_cleanup()."""
 
     def test_none_context(self):
-        """No-op when context is None."""
+        """ch05 round-3 G3: the section/latch reset is GLOBAL state and
+        runs even with a None context; nothing else does."""
         result = run_post_compact_cleanup(None)
-        self.assertEqual(result, [])
+        self.assertEqual(result, ["system_prompt_sections"])
 
     def test_clears_registered_caches(self):
         """Clears all registered caches."""
@@ -67,10 +68,11 @@ class TestRunPostCompactCleanup(unittest.TestCase):
         self.assertIn("good_cache", result)
 
     def test_empty_context(self):
-        """Empty context returns empty list."""
+        """Empty context clears only the global section/latch state
+        (ch05 round-3 G3)."""
         ctx = PostCompactContext()
         result = run_post_compact_cleanup(ctx)
-        self.assertEqual(result, [])
+        self.assertEqual(result, ["system_prompt_sections"])
 
 
 if __name__ == "__main__":

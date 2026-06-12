@@ -727,6 +727,16 @@ class ClawCodexTUI(App):
             # C3a: the context-% segment must not keep showing the
             # pre-clear context (TS shows nothing for an empty list).
             self.app_state.last_turn_input_tokens = 0
+            # ch05 round-3 G3: this TUI-local path bypasses the registry
+            # /clear builtin — reset prompt sections + latches here too.
+            try:
+                from src.context_system.system_prompt_cache import (
+                    clear_system_prompt_sections,
+                )
+
+                clear_system_prompt_sections()
+            except Exception:
+                pass
             return
         if result.system_text == "__thinking__":
             # C3b /thinking: flip the bridge's session override. First use
