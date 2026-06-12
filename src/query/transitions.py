@@ -30,6 +30,7 @@ TerminalReason = Literal[
     "aborted_tools",
     "hook_stopped",
     "max_turns",
+    "tool_failure_loop",
 ]
 
 
