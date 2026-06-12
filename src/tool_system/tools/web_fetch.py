@@ -34,6 +34,7 @@ from src.permissions.types import (
     PermissionPassthroughResult,
     PermissionResult,
 )
+from src.utils.abortable_net import abortable_read, call_with_abort
 
 
 # -- HTML to Markdown ----------------------------------------------------------
@@ -231,9 +232,9 @@ def _charset_from_content_type(content_type: str) -> str | None:
     return match.group(1).strip().strip('"\'') if match else None
 
 
-def _read_response_body(resp) -> str:
+def _read_response_body(resp, abort_signal=None) -> str:
     """Read, transparently decompress (gzip/deflate), and decode a response body."""
-    raw = resp.read(_MAX_FETCH_BYTES)
+    raw = abortable_read(resp, _MAX_FETCH_BYTES, abort_signal)
     encoding = (resp.headers.get("Content-Encoding") or "").lower()
     if "gzip" in encoding:
         try:
@@ -264,20 +265,30 @@ def _is_cloudflare_challenge(e: urllib.error.HTTPError) -> bool:
 
 
 def _fetch_with_redirect_handling(
-    url: str, timeout: float = 15, fmt: str = "markdown", user_agent: str = _BROWSER_UA
+    url: str,
+    timeout: float = 15,
+    fmt: str = "markdown",
+    user_agent: str = _BROWSER_UA,
+    abort_signal=None,
 ) -> tuple[str, str, int]:
     opener = urllib.request.build_opener(_NoRedirectHandler)
     current_url = url
     for _ in range(_MAX_REDIRECTS):
+        if abort_signal is not None:
+            abort_signal.throw_if_aborted()
         req = urllib.request.Request(current_url, headers=_request_headers(fmt, user_agent))
         try:
-            resp = opener.open(req, timeout=timeout)
+            resp = call_with_abort(
+                lambda: opener.open(req, timeout=timeout), abort_signal
+            )
             content_type = resp.headers.get("Content-Type", "")
-            return _read_response_body(resp), content_type, resp.status
+            return _read_response_body(resp, abort_signal), content_type, resp.status
         except urllib.error.HTTPError as e:
             # Cloudflare challenged the browser UA -> retry once with a bot UA.
             if _is_cloudflare_challenge(e) and user_agent != _FALLBACK_UA:
-                return _fetch_with_redirect_handling(url, timeout, fmt, _FALLBACK_UA)
+                return _fetch_with_redirect_handling(
+                    url, timeout, fmt, _FALLBACK_UA, abort_signal
+                )
             if e.code in (301, 302, 303, 307, 308):
                 redirect_url = e.headers.get("Location", "")
                 if not redirect_url:
@@ -476,7 +487,9 @@ def _web_fetch_call(tool_input: dict[str, Any], context: ToolContext) -> ToolRes
     if cached:
         content, content_type, status = cached
     else:
-        raw, content_type, status = _fetch_with_redirect_handling(url, fmt=fmt)
+        raw, content_type, status = _fetch_with_redirect_handling(
+            url, fmt=fmt, abort_signal=context.abort_controller.signal
+        )
         content = _convert(raw, content_type, fmt)
         _cache_set(cache_key, content, content_type, status)
 
