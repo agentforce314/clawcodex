@@ -89,7 +89,35 @@ def _isolate_user_permission_settings(tmp_path, monkeypatch):
         )
     except Exception:
         pass  # textual not installed in this environment
+    # ch03 round-3: the active-provider supplier is a module-level slot;
+    # tests need it deterministically EMPTY (the "persists '' when
+    # unregistered" case) and must not leak a registration across tests.
+    # The shared default ConfigManager and the settings cache must reset
+    # too: store creation now SEEDS from them (seed_app_state_from_settings),
+    # so a test that populates either cache would otherwise bleed into
+    # every later store-creating test's seeds (critic major-1 on the ch03
+    # round-3 review).
+    def _reset_state_seams() -> None:
+        try:
+            from src.state.app_state import set_active_provider_supplier
+
+            set_active_provider_supplier(None)
+        except Exception:
+            pass
+        try:
+            config_mod._default_manager = None
+        except Exception:
+            pass
+        try:
+            from src.settings.settings import invalidate_settings_cache
+
+            invalidate_settings_cache()
+        except Exception:
+            pass
+
+    _reset_state_seams()
     yield
+    _reset_state_seams()
 
 
 @pytest.fixture(autouse=True)

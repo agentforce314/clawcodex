@@ -65,3 +65,29 @@ def get_settings(
     if _settings_cache is None:
         _settings_cache = load_settings(config_manager=config_manager, cwd=cwd)
     return _settings_cache
+
+
+def apply_persisted_model(provider: Any, provider_name: str) -> bool:
+    """Apply the persisted ``(model, model_provider)`` pair to a provider.
+
+    The effective read-side of the ch03 round-3 model persistence: the
+    port's live model channel is ``provider.model``, so a persisted
+    `/model` choice must reach the constructed provider to survive a
+    restart. Mirrors ``getUserSpecifiedModelSetting``
+    (TS ``utils/model/model.ts:109-135``) including its provider-match
+    guard — a model persisted under another provider is ignored (the
+    cross-provider staleness failure documented there). Callers gate on
+    explicit overrides: an explicit ``--model``-style choice made at
+    construction wins (override-first precedence), so call this only when
+    no explicit model was supplied.
+
+    Returns True iff the persisted model was applied.
+    """
+    try:
+        s = get_settings()
+    except Exception:
+        return False
+    if s.model and s.model_provider == provider_name:
+        provider.model = s.model
+        return True
+    return False

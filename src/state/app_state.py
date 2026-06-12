@@ -134,18 +134,64 @@ def get_default_app_state() -> AppState:
 # ---------------------------------------------------------------------------
 
 
+# Active-provider supplier slot (ch03 round-3 G1). Pattern matches the
+# listener slots below: entrypoints register a LIVE attribute read
+# (``lambda: self.provider_name``) so a mid-session provider reinit
+# (repl/core.py provider-switch flow) is reflected at persist time —
+# a captured string would persist /model choices under a stale provider
+# and defeat the (model, provider) pair guard.
+_active_provider_supplier: Callable[[], str | None] | None = None
+
+
+def set_active_provider_supplier(
+    cb: Callable[[], str | None] | None,
+) -> None:
+    global _active_provider_supplier
+    _active_provider_supplier = cb
+
+
+def _active_provider_name() -> str:
+    if _active_provider_supplier is None:
+        return ""
+    try:
+        return _active_provider_supplier() or ""
+    except Exception:
+        return ""
+
+
+def _persist_settings_keys(**keys: Any) -> None:
+    """Write keys into the global config's ``settings`` sub-key.
+
+    The advisor write idiom (shared default ConfigManager → save_global →
+    invalidate_settings_cache) hoisted for reuse by the model handler.
+    Raises on failure — CALLERS swallow and log, so the in-memory change
+    still works for the current process.
+    """
+    from src import config as cfg_mod
+    from src.settings.settings import invalidate_settings_cache
+
+    mgr = cfg_mod._get_default_manager()
+    cfg = mgr.load_global()
+    settings_section = cfg.get("settings")
+    if not isinstance(settings_section, dict):
+        settings_section = {}
+    settings_section.update(keys)
+    cfg["settings"] = settings_section
+    mgr.save_global(cfg)
+    invalidate_settings_cache()
+
+
 def _on_main_loop_model_change(old: AppState, new: AppState) -> None:
-    """Mirror model choice into bootstrap singleton.
+    """Mirror model choice into bootstrap + persist the (model, provider)
+    pair to settings.
 
-    Matches TS at ``onChangeAppState.ts:97-120`` — when the user changes
-    the model (via /model slash command or the model picker), the
-    bootstrap-state override must update so the next API call reads the
-    new value, and settings persistence happens as a side effect.
-
-    Settings persistence is currently no-op — the settings.json layering
-    lives in ``src.settings`` and the writer is not yet wired through
-    a single chokepoint. Plan §P2.1 left this stub here as the wiring
-    target.
+    Matches TS at ``onChangeAppState.ts:97-120`` (persist to user settings
+    + ``setMainLoopModelOverride``; TS also syncs the active provider
+    profile at ``:117-119`` — provider-profile sync is ch04 client
+    territory here). Unset convention: ``None`` model writes ``""`` for
+    BOTH keys — idiom consistency with the advisor handlers (NOT TS's
+    ``model: undefined`` key-removal; read-equivalent through the
+    defaults merge in ``load_settings``).
     """
     if old.main_loop_model == new.main_loop_model:
         return
@@ -155,18 +201,65 @@ def _on_main_loop_model_change(old: AppState, new: AppState) -> None:
         old.main_loop_model,
         new.main_loop_model,
     )
-    # TODO: persist to user settings via ``src.settings`` once the
-    # writer-side has a single chokepoint.
+    try:
+        _persist_settings_keys(
+            model=new.main_loop_model or "",
+            model_provider=(
+                _active_provider_name() if new.main_loop_model else ""
+            ),
+        )
+    except Exception:
+        logger.exception(
+            "Failed to persist model to settings; in-memory value still active"
+        )
+
+
+def _persist_config_keys(**keys: Any) -> None:
+    """Write top-level global-config keys (TS global config, not settings)."""
+    from src import config as cfg_mod
+
+    mgr = cfg_mod._get_default_manager()
+    cfg = mgr.load_global()
+    cfg.update(keys)
+    mgr.save_global(cfg)
 
 
 def _on_verbose_change(old: AppState, new: AppState) -> None:
+    """Persist ``verbose`` to the global config top level (TS
+    ``onChangeAppState.ts:144-148`` — config, not settings)."""
     if old.verbose == new.verbose:
         return
     logger.debug("AppState.verbose %s -> %s", old.verbose, new.verbose)
-    # TODO: persist to global config.
+    try:
+        _persist_config_keys(verbose=bool(new.verbose))
+    except Exception:
+        logger.exception("Failed to persist verbose to global config")
+
+
+# expanded_view domain is 'none' | 'tasks' | 'teammates' (AppStateStore.ts:96).
+# On-disk form is TS's legacy boolean pair; read-back priority is TS-exact
+# (main.tsx:2932): showSpinnerTree ? 'teammates' : showExpandedTodos ?
+# 'tasks' : 'none' — a (True, True) disk state reads as 'teammates'.
+_EXPANDED_VIEW_TO_BOOLS: dict[str, tuple[bool, bool]] = {
+    "none": (False, False),
+    "tasks": (True, False),
+    "teammates": (False, True),
+}
+
+
+def expanded_view_from_config_bools(
+    show_expanded_todos: bool, show_spinner_tree: bool
+) -> str:
+    if show_spinner_tree:
+        return "teammates"
+    if show_expanded_todos:
+        return "tasks"
+    return "none"
 
 
 def _on_expanded_view_change(old: AppState, new: AppState) -> None:
+    """Persist ``expanded_view`` to the global config as the legacy
+    showExpandedTodos + showSpinnerTree pair (TS onChangeAppState.ts:123-136)."""
     if old.expanded_view == new.expanded_view:
         return
     logger.debug(
@@ -174,8 +267,15 @@ def _on_expanded_view_change(old: AppState, new: AppState) -> None:
         old.expanded_view,
         new.expanded_view,
     )
-    # TODO: persist to global config as showExpandedTodos +
-    # showSpinnerTree (TS: onChangeAppState.ts:123-136).
+    todos, spinner = _EXPANDED_VIEW_TO_BOOLS.get(
+        new.expanded_view, (False, False)
+    )
+    try:
+        _persist_config_keys(
+            showExpandedTodos=todos, showSpinnerTree=spinner
+        )
+    except Exception:
+        logger.exception("Failed to persist expanded_view to global config")
 
 
 # Permission-mode notification hooks. Real listeners (CCR bridge, SDK
@@ -395,26 +495,83 @@ def on_change_app_state(old_state: AppState, new_state: AppState) -> None:
 # ---------------------------------------------------------------------------
 
 
+def seed_app_state_from_settings(active_provider: str | None) -> AppState:
+    """Read-side of the §3.4 persistence (ch03 round-3 G1).
+
+    TS seeds ``verbose`` from global config (``main.tsx:1129``, ``:2928``)
+    and ``expandedView`` from the showSpinnerTree/showExpandedTodos pair
+    (``:2932``); the model read mechanism is ``getUserSpecifiedModelSetting``
+    (``utils/model/model.ts:109-135``) whose provider-match guard this
+    mirrors: the persisted model applies ONLY when it was persisted under
+    the session's active provider — a stale cross-provider model must
+    never fire at the wrong endpoint.
+
+    NB ``get_settings()`` merges project/local "settings" sub-keys, so a
+    repo could shadow ``model`` — bounded by the provider-match guard and
+    by model choice being non-credential-bearing (the settings-tier trust
+    policy is ch15/16 work; ch02's untrusted strip covers
+    env/providers/default_provider).
+    """
+    from src import config as cfg_mod
+    from src.settings.settings import get_settings
+
+    try:
+        settings = get_settings()
+        cfg = cfg_mod._get_default_manager().load_global()
+    except Exception:
+        logger.exception("settings seed failed; starting from defaults")
+        return get_default_app_state()
+
+    model: str | None = settings.model or None
+    # Provider-mismatch guard: the persisted provider must be truthy AND
+    # match — a pair persisted with model_provider="" (unregistered
+    # supplier) is never applied, honoring the fail-safe contract.
+    if model and (
+        not settings.model_provider
+        or settings.model_provider != (active_provider or "")
+    ):
+        model = None
+    if model:
+        # Keep the bootstrap mirror consistent from the first read.
+        set_main_loop_model_override(model)
+
+    return AppState(
+        main_loop_model=model,
+        verbose=bool(cfg.get("verbose", False)),
+        expanded_view=expanded_view_from_config_bools(
+            bool(cfg.get("showExpandedTodos", False)),
+            bool(cfg.get("showSpinnerTree", False)),
+        ),
+    )
+
+
 def create_app_state_store(
     initial: AppState | None = None,
+    *,
+    active_provider: str | None = None,
 ) -> Store[AppState]:
     """Construct an AppState store with the centralized side-effect router.
 
     Equivalent to TS:
-    ``createStore(getDefaultAppState(), onChangeAppState)``.
+    ``createStore(getDefaultAppState(), onChangeAppState)`` — plus the
+    settings read-side: when ``initial`` is not supplied, the state is
+    seeded from persisted settings/config (model gated on
+    ``active_provider``; see :func:`seed_app_state_from_settings`).
     """
-    return create_store(
-        initial if initial is not None else get_default_app_state(),
-        on_change=on_change_app_state,
-    )
+    if initial is None:
+        initial = seed_app_state_from_settings(active_provider)
+    return create_store(initial, on_change=on_change_app_state)
 
 
 __all__ = [
     "AppState",
     "create_app_state_store",
+    "expanded_view_from_config_bools",
     "get_default_app_state",
     "on_change_app_state",
     "replace_state",
+    "seed_app_state_from_settings",
+    "set_active_provider_supplier",
     "set_permission_mode_listener",
     "set_session_metadata_listener",
 ]
