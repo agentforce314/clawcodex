@@ -176,6 +176,20 @@ def _is_prompt_too_long_error(error_str: str) -> bool:
     )
 
 
+def _mark_post_compaction_state() -> None:
+    """Set the bootstrap pending_post_compaction flag (ch05 round-3 G4).
+
+    Consume side is OTel cache-miss telemetry (TS consumePostCompaction,
+    services/api/logging.ts) — deferred; the mark keeps the state real.
+    Never raises."""
+    try:
+        from src.bootstrap.state import mark_post_compaction
+
+        mark_post_compaction()
+    except Exception:
+        logger.debug("mark_post_compaction failed", exc_info=True)
+
+
 def _record_compaction_usage(context: "CompactContext", usage: Any) -> None:
     """Record a summarize call's usage into the bootstrap cost totals
     (ch04 round-3 G1 — TS counts every API call via addToTotalSessionCost
@@ -372,6 +386,11 @@ async def compact_conversation(
             # loop's (critic-found). Distinct API call from any
             # query_source="compact" loop turn, so no double count.
             _record_compaction_usage(context, response.usage)
+            # ch05 round-3 G4: mark the post-compaction cache state at the
+            # SUCCESS site (TS compact.ts:73 / autoCompact.ts:350) — never
+            # in run_post_compact_cleanup, which /clear-adjacent paths may
+            # share; /clear must not register as a compaction.
+            _mark_post_compaction_state()
             break
         except Exception as e:
             error_str = str(e)
@@ -416,6 +435,7 @@ async def compact_conversation(
                 if response.usage:
                     compaction_usage = dict(response.usage)
                 _record_compaction_usage(context, response.usage)
+                _mark_post_compaction_state()
                 break
             except Exception as e2:
                 logger.warning(
@@ -568,6 +588,11 @@ async def partial_compact_conversation(
             # loop's (critic-found). Distinct API call from any
             # query_source="compact" loop turn, so no double count.
             _record_compaction_usage(context, response.usage)
+            # ch05 round-3 G4: mark the post-compaction cache state at the
+            # SUCCESS site (TS compact.ts:73 / autoCompact.ts:350) — never
+            # in run_post_compact_cleanup, which /clear-adjacent paths may
+            # share; /clear must not register as a compaction.
+            _mark_post_compaction_state()
             break
         except Exception as e:
             error_str = str(e)

@@ -162,6 +162,20 @@ def clear_command_call(args: str, context: CommandContext) -> LocalCommandResult
     if hasattr(context.history, "events"):
         context.history.events.clear()
 
+    # ch05 round-3 G3: a cleared conversation restarts the cache epoch —
+    # reset memoized prompt sections + beta-header latches (TS
+    # clearSystemPromptSections via /clear, commands/clear/caches.ts:74).
+    # Direct call, NOT run_post_compact_cleanup: /clear must not register
+    # as a compaction (pending_post_compaction telemetry).
+    try:
+        from src.context_system.system_prompt_cache import (
+            clear_system_prompt_sections,
+        )
+
+        clear_system_prompt_sections()
+    except Exception:
+        pass
+
     return LocalCommandResult(
         type="text",
         value="Conversation cleared.",
