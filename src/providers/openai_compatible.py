@@ -7,10 +7,13 @@ OpenAI-style /chat/completions API (OpenAI, GLM, Minimax, etc.).
 from __future__ import annotations
 
 import json
+import logging
 from abc import abstractmethod
 from typing import Any, Generator, Optional
 
 from .base import BaseProvider, ChatResponse, MessageInput, TextChunkCallback
+
+logger = logging.getLogger(__name__)
 
 
 def _apply_client_timeout(client: Any) -> Any:
@@ -567,12 +570,12 @@ class OpenAICompatibleProvider(BaseProvider):
         """Stream OpenAI-compatible chunks while rebuilding the final response.
 
         ESC-cancellation runs the SDK iteration on a daemon worker
-        thread that pushes chunks into a ``queue.Queue``. The main
-        thread polls the queue with a 100 ms timeout and re-checks
+        thread that pushes chunks into a bounded ``queue.Queue``. The
+        main thread polls the queue with a 100 ms timeout and re-checks
         ``guard.aborted`` between ticks. On abort the main thread
-        raises ``AbortError`` immediately and orphans the worker —
-        the worker dies when the underlying connection eventually
-        closes.
+        raises ``AbortError`` immediately; the worker notices the abort
+        (or the consumer's exit) at its next put attempt and stops
+        reading the stream.
 
         Why the worker indirection (vs. the simpler in-loop check
         used in earlier revisions): the OpenAI Python SDK uses sync
@@ -640,28 +643,59 @@ class OpenAICompatibleProvider(BaseProvider):
         # thread.
         #
         # Workaround: hoist the iteration onto a daemon worker thread
-        # that pushes chunks into a queue. The main thread polls the
-        # queue with a short timeout and re-checks ``guard.aborted``
-        # each tick. On abort we raise ``AbortError`` immediately and
-        # orphan the worker — it'll die when the underlying connection
-        # eventually closes (server-side, idle timeout, or the SDK's
-        # natural exhaustion). The cost is some wasted bandwidth on
-        # the orphaned read; the benefit is that the user's prompt
-        # comes back in ~100 ms regardless of LiteLLM/httpx behavior.
+        # that pushes chunks into a bounded queue. The main thread polls
+        # the queue with a short timeout and re-checks ``guard.aborted``
+        # each tick. On abort we raise ``AbortError`` immediately; the
+        # worker notices the abort (or the consumer's exit) at its next
+        # put attempt and stops reading the stream within one 0.25s
+        # poll. The benefit is that the user's prompt comes back in
+        # ~100 ms regardless of LiteLLM/httpx behavior.
         import queue as _queue
         import threading as _threading
 
         _DONE = object()
-        chunk_queue: _queue.Queue = _queue.Queue()
+        # Bounded (#278): after ESC the consumer stops draining, and a
+        # proxy that keeps sending bytes without closing the iterator
+        # would otherwise grow the queue without limit. 64 bounds the
+        # post-abort staleness to a trivial drain while giving the
+        # producer slack against transient consumer pauses.
+        chunk_queue: _queue.Queue = _queue.Queue(maxsize=64)
+        # Set when the consumer loop exits for ANY reason. Without it, a
+        # consumer that unwinds for a non-abort reason (on_text_chunk
+        # raising, KeyboardInterrupt) would leave the worker retrying a
+        # full queue forever — an immortal thread pinning the httpx
+        # connection open.
+        consumer_gone = _threading.Event()
+
+        def _put_or_drop_on_abort(item: Any) -> bool:
+            """Block until ``item`` is enqueued, or drop it once the
+            abort trips or the consumer exits (either way nobody will
+            drain it; keeping nothing alive is the point). Returns
+            False when dropped."""
+            while True:
+                if guard.aborted or consumer_gone.is_set():
+                    return False
+                try:
+                    chunk_queue.put(item, timeout=0.25)
+                    return True
+                except _queue.Full:
+                    continue
 
         def _drain_stream() -> None:
             try:
                 for c in stream:
-                    chunk_queue.put(c)
+                    if not _put_or_drop_on_abort(c):
+                        return  # stop reading; orphaned socket dies upstream
             except BaseException as exc:  # noqa: BLE001 — surface to consumer
-                chunk_queue.put(exc)
+                if not _put_or_drop_on_abort(exc):
+                    # Abort won the race against a genuine error; the
+                    # consumer raises AbortError, so keep the loser
+                    # visible somewhere.
+                    logger.debug(
+                        "stream error dropped after abort", exc_info=exc
+                    )
             finally:
-                chunk_queue.put(_DONE)
+                _put_or_drop_on_abort(_DONE)
 
         worker = _threading.Thread(
             target=_drain_stream,
@@ -669,7 +703,14 @@ class OpenAICompatibleProvider(BaseProvider):
             name=f"openai-stream-{id(stream)}",
         )
 
-        with guard.attach(stream):
+        import contextlib as _contextlib
+
+        with _contextlib.ExitStack() as _consumer_scope:
+            # Releases the worker (sets consumer_gone) no matter how the
+            # consumer loop exits — abort, callback error, or natural
+            # break — so a blocked put never outlives its consumer.
+            _consumer_scope.callback(consumer_gone.set)
+            _consumer_scope.enter_context(guard.attach(stream))
             worker.start()
             while True:
                 try:
