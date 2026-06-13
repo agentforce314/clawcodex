@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sys
 from typing import Generator, Optional, Any, TYPE_CHECKING
 from urllib.parse import urlparse
@@ -101,6 +102,43 @@ def _extract_usage_dict(usage: Any) -> dict[str, Any]:
         }
 
     return result
+
+
+# Claude 4.x and newer models support a much larger ``max_tokens`` ceiling
+# than the SDK's historical 4096 default — opus-4.x and sonnet-4.x accept
+# up to 32K (and up to 64K with the larger-output beta header). The legacy
+# 4096 default routinely truncated long completions on these models, which
+# in turn caused agent loops to either re-prompt to finish a half-written
+# patch or accept the truncated body verbatim. Bumping to 32K matches
+# Anthropic's documented standard ceiling for 4.x without requiring a
+# beta opt-in.
+#
+# Older Claude 3.x snapshots cap at 4K-8K depending on tier; pulling the
+# default up to 32K would make the API reject those requests with a 400.
+# Detection is by model-name pattern so newer 4.x point releases
+# (e.g. ``claude-opus-4-7-20260201``) opt in automatically.
+_LARGE_MAX_TOKENS_MODEL_PATTERN = re.compile(
+    r"claude-(?:sonnet|opus|haiku)-(?:4-\d+|[5-9]\b|\d{2,})",
+    re.IGNORECASE,
+)
+
+DEFAULT_MAX_OUTPUT_TOKENS_4X = 32000
+DEFAULT_MAX_OUTPUT_TOKENS_LEGACY = 4096
+
+
+def _default_max_tokens(model: str | None) -> int:
+    """Pick a sensible ``max_tokens`` ceiling for the given model.
+
+    Returns 32K for the Claude 4.x family (which is what the API allows
+    without beta opt-ins), and 4096 for everything else (preserves the
+    legacy ceiling on 3.x where the API rejects higher values).
+
+    A caller can always override via ``kwargs["max_tokens"]``; this only
+    affects the default when no value is supplied.
+    """
+    if model and _LARGE_MAX_TOKENS_MODEL_PATTERN.search(model):
+        return DEFAULT_MAX_OUTPUT_TOKENS_4X
+    return DEFAULT_MAX_OUTPUT_TOKENS_LEGACY
 
 
 class AnthropicProvider(BaseProvider):
@@ -304,7 +342,7 @@ class AnthropicProvider(BaseProvider):
             Chat response
         """
         model = self._get_model(**kwargs)
-        max_tokens = kwargs.get("max_tokens", 4096)
+        max_tokens = kwargs.get("max_tokens", _default_max_tokens(model))
 
         system = kwargs.pop("system", None)
 
@@ -346,7 +384,7 @@ class AnthropicProvider(BaseProvider):
             Chunks of response content
         """
         model = self._get_model(**kwargs)
-        max_tokens = kwargs.get("max_tokens", 4096)
+        max_tokens = kwargs.get("max_tokens", _default_max_tokens(model))
 
         # Convert messages
         anthropic_messages = self._prepare_messages(messages)
@@ -404,7 +442,7 @@ class AnthropicProvider(BaseProvider):
         guard.raise_if_pre_aborted()
 
         model = self._get_model(**kwargs)
-        max_tokens = kwargs.get("max_tokens", 4096)
+        max_tokens = kwargs.get("max_tokens", _default_max_tokens(model))
         system = kwargs.pop("system", None)
         anthropic_messages = self._prepare_messages(messages)
 
@@ -459,9 +497,41 @@ class AnthropicProvider(BaseProvider):
                 watchdog = StreamWatchdog(stream)
                 watchdog.arm()
                 try:
-                    for text in stream.text_stream:
-                        # Each chunk pushes the deadline forward.
+                    # Iterate the FULL event stream rather than the
+                    # text-only ``stream.text_stream`` view. With extended
+                    # thinking enabled (Anthropic Claude 4.x), the model
+                    # often emits 60–120s+ of ``thinking_delta`` events
+                    # with no intervening ``text_delta``s while it works
+                    # through a hard prompt. ``text_stream`` only yields
+                    # on text deltas, so the watchdog (default 90s idle)
+                    # would fire and close the stream mid-thinking — the
+                    # provider then falls back to non-streaming ``chat()``
+                    # which the Anthropic SDK rejects with
+                    # "Streaming is required for operations that may take
+                    # longer than 10 minutes."
+                    #
+                    # Resetting the watchdog on EVERY event type
+                    # (thinking deltas, input_json deltas, message_start /
+                    # _stop, content_block_start / _stop, message_delta)
+                    # keeps the stream alive as long as the model is
+                    # genuinely producing output. We still only accumulate
+                    # text into ``streamed_text`` and fire ``on_text_chunk``
+                    # for ``text_delta`` events — thinking is private and
+                    # must not be surfaced to the visible output channel.
+                    for event in stream:
+                        # Each event — text, thinking, tool, snapshot —
+                        # is liveness; push the deadline forward.
                         watchdog.reset()
+                        delta = getattr(event, "delta", None)
+                        if delta is None:
+                            continue
+                        # Only ``TextDelta`` carries a ``text`` field.
+                        # ``ThinkingDelta`` has ``thinking`` (deliberately
+                        # not surfaced — it's the private scratchpad).
+                        # ``InputJSONDelta`` has ``partial_json`` (handled
+                        # by the SDK's final-message accumulation, no
+                        # need to track here).
+                        text = getattr(delta, "text", None)
                         if not text:
                             continue
                         streamed_text += text
