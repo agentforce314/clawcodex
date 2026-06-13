@@ -161,10 +161,12 @@ class TestAdvisorCommandStorePath(unittest.TestCase):
             )
             res = advisor_command_call("anthropic:claude-opus-4-6", ctx)
             self.assertIn("Advisor set to anthropic:claude-opus-4-6", res.value)
-            # Two writes — model AND provider land separately on the store.
-            self.assertEqual(len(store.writes), 2)
+            # Three writes — model, provider, AND the master switch (advisor_enabled)
+            # land separately on the store; replace_state preserves the earlier fields.
+            self.assertEqual(len(store.writes), 3)
             self.assertEqual(store.writes[-1].advisor_model, "claude-opus-4-6")
             self.assertEqual(store.writes[-1].advisor_provider, "anthropic")
+            self.assertTrue(store.writes[-1].advisor_enabled)
 
     def test_unset_clears_when_set(self) -> None:
         with _IsolatedEnv():
@@ -206,6 +208,7 @@ class TestAdvisorCommandStorePath(unittest.TestCase):
             store = _FakeStore(initial=AppState(
                 advisor_model="claude-opus-4-6",
                 advisor_provider="anthropic",
+                advisor_enabled=True,  # master switch on (else inactive)
             ))
             provider = _fake_first_party_provider("claude-opus-4-5")
             ctx = _make_context(store=store, provider=provider)
@@ -222,8 +225,8 @@ class TestAdvisorCommandStorePath(unittest.TestCase):
             ctx = _make_context(store=store, provider=_fake_first_party_provider())
             res = advisor_command_call("anthropic:haiku", ctx)
             self.assertIn("Advisor set to", res.value)
-            # Two writes — model and provider land separately.
-            self.assertEqual(len(store.writes), 2)
+            # Three writes — model, provider, and the master switch (advisor_enabled).
+            self.assertEqual(len(store.writes), 3)
 
     def test_rejects_unknown_provider(self) -> None:
         # An unknown provider key must be rejected — clawcodex needs a
