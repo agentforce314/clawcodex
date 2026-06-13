@@ -62,6 +62,42 @@ def _workflow_to_command(path: Path, loaded_from: str) -> Optional[PromptCommand
     )
 
 
+_ULTRACODE_DIRECTIVE = (
+    "The user invoked /ultracode — they are explicitly opting into multi-agent "
+    'workflow orchestration and want you to AUTHOR and run a workflow (a "pipeline") '
+    "for the task below, instead of doing it turn by turn.\n\n"
+    "Design a workflow script for the task: decompose it into phases, fan out "
+    "subagents for the independent parts (parallel/pipeline), and adversarially verify "
+    "findings before synthesizing. Then launch it by calling the Workflow tool with "
+    "your script passed inline as `script` (see the Workflow tool's own description for "
+    "the script shape — it begins with `export const meta = {...}`). If the task below "
+    "is empty, ask the user what they want the workflow to do instead of guessing.\n\n"
+    "The Workflow tool launches the run in the BACKGROUND and returns a `run_id` "
+    "immediately. As soon as it returns, STOP: reply with one short sentence confirming "
+    "the workflow started (mention the run_id) and END YOUR TURN. Do NOT wait for it, "
+    "poll it, call another tool, or do the work yourself — the finished result is "
+    "delivered automatically when the run completes.\n\n"
+    "Task:\n$ARGUMENTS"
+)
+
+
+def _ultracode_command() -> PromptCommand:
+    """The ``/ultracode`` command: a discoverable, autocompleting slash form of the
+    ``ultracode`` authoring keyword. ``/ultracode <task>`` directs the model to
+    author a fresh workflow script for the task and launch it via the Workflow tool
+    (vs. ``/deep-research`` / saved ``/<name>``, which run an *existing* script)."""
+    return PromptCommand(
+        name="ultracode",
+        description="Author and run a multi-agent workflow (pipeline) for a task",
+        kind="workflow",
+        loaded_from="bundled",
+        source="bundled",
+        is_enabled=is_workflows_enabled,
+        argument_hint="<task>",
+        markdown_content=_ULTRACODE_DIRECTIVE,
+    )
+
+
 def _deep_research_command() -> Optional[PromptCommand]:
     path = bundled_workflow_path("deep_research")
     try:
@@ -96,7 +132,7 @@ def bundled_workflow_commands() -> list[Command]:
     """
     from .workflows_command import WORKFLOWS_COMMAND
 
-    out: list[Command] = [WORKFLOWS_COMMAND]
+    out: list[Command] = [WORKFLOWS_COMMAND, _ultracode_command()]
     deep = _deep_research_command()
     if deep is not None:
         out.append(deep)
@@ -122,7 +158,7 @@ def load_workflow_commands(cwd: str) -> list[Command]:
     (project wins over personal on a name clash)."""
     from .workflows_command import WORKFLOWS_COMMAND
 
-    commands: list[Command] = [WORKFLOWS_COMMAND]
+    commands: list[Command] = [WORKFLOWS_COMMAND, _ultracode_command()]
     deep = _deep_research_command()
     if deep is not None:
         commands.append(deep)

@@ -142,3 +142,38 @@ def test_picker_includes_ultracode_when_enabled():
 def test_picker_excludes_ultracode_when_disabled(monkeypatch):
     monkeypatch.setenv("CLAUDE_CODE_DISABLE_WORKFLOWS", "1")
     assert "ultracode" not in [o.value for o in _effort_options("auto")]
+
+
+# ── /ultracode slash command (discoverable authoring form) ────────────────────
+
+
+def _names(cmds):
+    return {getattr(c, "name", None) for c in cmds}
+
+
+def test_ultracode_is_a_registered_command():
+    from src.command_system.builtins import get_builtin_commands, register_builtin_commands
+    from src.command_system.registry import get_command_registry
+
+    assert "ultracode" in _names(get_builtin_commands())  # autocompletes + dispatches
+    register_builtin_commands(None)
+    cmd = get_command_registry().get("ultracode")
+    assert cmd is not None
+    assert getattr(cmd, "kind", None) == "workflow"
+
+
+def test_ultracode_command_directive_authors_and_launches():
+    from src.command_system.workflows_integration import _ultracode_command
+
+    directive = _ultracode_command().markdown_content or ""
+    assert "AUTHOR" in directive            # author a fresh workflow…
+    assert "Workflow tool" in directive     # …and launch it via the tool
+    assert "$ARGUMENTS" in directive        # the task is substituted in
+    assert "END YOUR TURN" in directive     # background run → don't block
+
+
+def test_ultracode_command_absent_when_workflows_disabled(monkeypatch):
+    from src.command_system.builtins import get_builtin_commands
+
+    monkeypatch.setenv("CLAUDE_CODE_DISABLE_WORKFLOWS", "1")
+    assert "ultracode" not in _names(get_builtin_commands())
