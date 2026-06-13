@@ -192,7 +192,7 @@ Python ports of the demo corpus should live alongside it (e.g. `demos/workflows/
 
 | Aspect | Behaviour (authoritative) |
 |---|---|
-| **Concurrency cap** | **Up to 16 concurrent agents, fewer on machines with limited CPU cores.** Excess `agent()` calls queue and run as slots free. (Upstream cap: `min(16, cpu_cores − 2)`.) |
+| **Concurrency cap** | Excess `agent()` calls queue and run as slots free. Upstream allows **up to 16** (`min(16, cpu_cores − 2)`). **ClawCodex defaults to a gentler `4`** — workflow agents are rate-limit-bound, not CPU-bound, so a big fan-out can burn a plan's window in one burst; raise it with `CLAUDE_CODE_WORKFLOW_MAX_AGENTS`. |
 | **Lifetime agent cap** | **1,000 agents total per run** — a runaway-loop backstop. |
 | **Per-call item cap** | A single `pipeline()`/`parallel()` call accepts at most 4,096 items; more is an explicit error, not silent truncation. |
 | **No mid-run user input** | Only agent permission prompts can pause a run. For sign-off between stages, run each stage as its own workflow. |
