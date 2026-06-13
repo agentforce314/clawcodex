@@ -167,12 +167,16 @@ def test_ultracode_command_directive_authors_and_saves():
 
     cmd = _ultracode_command()
     directive = cmd.markdown_content or ""
-    assert "AUTHOR" in directive                        # author a fresh workflow…
+    assert "write" in directive.lower()                 # write a script yourself…
     assert ".claude/workflows" in directive             # …saved as a /<name> command
-    assert "Write" in directive                         # via the Write tool
-    assert "do NOT call the Workflow tool" in directive  # NOT run immediately
+    assert "Write tool" in directive                    # via the Write tool
     assert "deep_research.py" in directive              # format template referenced
     assert "$ARGUMENTS" in directive                    # the task is substituted in
+    assert "do NOT run the workflow" in directive       # author only, no auto-launch
+    # Forbid the tool/skill hunt that broke a live session (model ToolSearch'd for
+    # a non-existent "ultracode" tool instead of authoring the file itself).
+    assert "ToolSearch" in directive
+    assert "skill" in directive
     # description reflects "save as a /<name> command", not "run"
     desc = (cmd.description or "").lower()
     assert "save" in desc and "/<name>" in desc
