@@ -343,6 +343,7 @@ def decide_advisor_mode(
     *,
     force_client_mode: bool = False,
     advisor_provider: str | None = None,
+    advisor_enabled: bool = True,
 ) -> str:
     """Pick activation mode for the upcoming turn.
 
@@ -368,7 +369,15 @@ def decide_advisor_mode(
        lands on the same Anthropic API as the main loop.
     5. Otherwise, if the advisor provider is configured → CLIENT_SIDE.
     6. Else INACTIVE — the configured advisor can't be reached.
+
+    ``advisor_enabled`` is the master switch (settings ``advisor_enabled``,
+    default False in production): when False the advisor is INACTIVE regardless
+    of model/provider. The parameter defaults True so direct callers (the
+    activation truth-table tests) keep their behavior; production call sites pass
+    ``get_settings().advisor_enabled``.
     """
+    if not advisor_enabled:
+        return ADVISOR_MODE_INACTIVE
     if _env_truthy(_DISABLE_ENV):
         return ADVISOR_MODE_INACTIVE
     if not advisor_model:
@@ -438,6 +447,9 @@ def format_advisor_status(
         return None
     try:
         settings = get_settings()
+        # Master switch off → no advisor segment at all (it isn't running).
+        if not bool(getattr(settings, "advisor_enabled", False)):
+            return None
         advisor_model = (getattr(settings, "advisor_model", "") or "").strip()
         advisor_provider = (getattr(settings, "advisor_provider", "") or "").strip()
         if not advisor_model:
@@ -450,6 +462,7 @@ def format_advisor_status(
             canonical,
             force_client_mode=force_client,
             advisor_provider=advisor_provider,
+            advisor_enabled=True,  # already checked above
         )
     except Exception:
         return None

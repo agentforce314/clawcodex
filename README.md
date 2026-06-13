@@ -314,6 +314,7 @@ The configuration file is saved in in `~/.clawcodex/config.json`. Example struct
     "max_history": 100
   },
   "settings": {
+    "advisor_enabled": false,
     "advisor_model": "claude-sonnet-4-6",
     "advisor_client_mode": false,
     "advisor_provider": "openai"
@@ -325,7 +326,7 @@ The configuration file is saved in in `~/.clawcodex/config.json`. Example struct
 ```
 
 - **`session`** — REPL session persistence: `auto_save` writes each session automatically; `max_history` caps retained turns.
-- **`settings`** — the advisor model used for background helpers (`advisor_provider` / `advisor_model`, and `advisor_client_mode` to route via the client).
+- **`settings`** — the advisor (reviewer) feature. **`advisor_enabled` is the master switch — `false` by default, so the advisor is OFF unless you opt in** (set it to `true`, or run `/advisor <provider>:<model>` which flips it on). `advisor_provider` / `advisor_model` pick the reviewer model; `advisor_client_mode` routes the call via the client.
 - **`env`** — secrets and environment values injected at startup (e.g. `TAVILY_API_KEY` for web search). Managed via `clawcodex config`; keys here are exported into the process environment without overriding anything you already set in your shell.
 
 ### Run

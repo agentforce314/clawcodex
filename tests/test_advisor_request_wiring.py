@@ -110,7 +110,13 @@ def _isolate_env():
 
 
 def _set_settings(**kwargs):
-    """Write keys into the global settings file + invalidate cache."""
+    """Write keys into the global settings file + invalidate cache.
+
+    Defaults ``advisor_enabled=True`` so a configured advisor is active: the
+    master switch defaults False in production, but these tests exercise the
+    *active* request-wiring paths. Tests that want it off pass it explicitly.
+    """
+    kwargs.setdefault("advisor_enabled", True)
     import src.config as cfg_mod
     from src.config import ConfigManager
     from src.settings.settings import invalidate_settings_cache
@@ -325,6 +331,19 @@ class TestAdvisorInactivePaths(unittest.TestCase):
             provider = _stub_provider_class(AnthropicProvider, cap)
             _run(provider, [UserMessage(content="x")])
             self._assert_inactive(cap)
+
+    def test_no_advisor_when_master_switch_off(self) -> None:
+        # Fully configured, first-party — but advisor_enabled=False (the default)
+        # keeps it inactive. This is the master-switch the user asked for.
+        _set_settings(
+            advisor_model="claude-opus-4-6",
+            advisor_provider="anthropic",
+            advisor_enabled=False,
+        )
+        cap = _Capture()
+        provider = _stub_provider_class(AnthropicProvider, cap)
+        _run(provider, [UserMessage(content="x")])
+        self._assert_inactive(cap)
 
     def test_no_advisor_when_provider_unknown(self) -> None:
         # Post multi-provider rewrite: routing is decided by the
