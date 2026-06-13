@@ -620,6 +620,44 @@ def _write_advisor_client_mode(context: CommandContext, value: bool) -> None:
     invalidate_settings_cache()
 
 
+def _read_current_advisor_enabled(context: CommandContext) -> bool:
+    """Resolve the advisor master switch (reactive store preferred, settings
+    fallback). Mirrors ``_read_current_advisor_client_mode``."""
+    store = getattr(context, "app_state_store", None)
+    if store is not None:
+        try:
+            return bool(getattr(store.get_state(), "advisor_enabled", False))
+        except Exception:
+            pass
+    try:
+        from ..settings.settings import get_settings
+        return bool(getattr(get_settings(), "advisor_enabled", False))
+    except Exception:
+        return False
+
+
+def _write_advisor_enabled(context: CommandContext, value: bool) -> None:
+    """Persist the advisor master switch (store-preferred, settings fallback).
+    Mirrors ``_write_advisor_client_mode`` — the store path fires
+    ``_on_advisor_enabled_change`` which persists to settings."""
+    store = getattr(context, "app_state_store", None)
+    if store is not None:
+        from ..state.app_state import replace_state
+        store.set_state(lambda s: replace_state(s, advisor_enabled=bool(value)))
+        return
+    from .. import config as cfg_mod
+    from ..settings.settings import invalidate_settings_cache
+    mgr = cfg_mod._get_default_manager()
+    cfg = mgr.load_global()
+    settings_section = cfg.get("settings")
+    if not isinstance(settings_section, dict):
+        settings_section = {}
+    settings_section["advisor_enabled"] = bool(value)
+    cfg["settings"] = settings_section
+    mgr.save_global(cfg)
+    invalidate_settings_cache()
+
+
 def advisor_command_call(args: str, context: CommandContext) -> LocalCommandResult:
     """Handle /advisor — configure the reviewer model.
 
@@ -690,6 +728,7 @@ def advisor_command_call(args: str, context: CommandContext) -> LocalCommandResu
     current_advisor = _read_current_advisor_model(context)
     current_provider = _read_current_advisor_provider(context)
     current_client_mode = _read_current_advisor_client_mode(context)
+    current_enabled = _read_current_advisor_enabled(context)
 
     main_loop_model = ""
     if provider is not None:
@@ -749,6 +788,7 @@ def advisor_command_call(args: str, context: CommandContext) -> LocalCommandResu
             current_advisor,
             force_client_mode=current_client_mode,
             advisor_provider=current_provider,
+            advisor_enabled=current_enabled,
         )
         mode_label = {
             ADVISOR_MODE_SERVER_SIDE: "active (server-side)",
@@ -758,6 +798,8 @@ def advisor_command_call(args: str, context: CommandContext) -> LocalCommandResu
         suffix = ""
         if current_client_mode:
             suffix = " [--client forced]"
+        if not current_enabled:
+            suffix += " [disabled: advisor_enabled is off]"
         return (
             f"Advisor: {current_provider}:{current_advisor} — {mode_label}{suffix}\n"
             'Use "/advisor unset" to disable or '
@@ -818,6 +860,8 @@ def advisor_command_call(args: str, context: CommandContext) -> LocalCommandResu
             _write_advisor_provider(context, None)
         if current_client_mode:
             _write_advisor_client_mode(context, False)
+        if current_enabled:
+            _write_advisor_enabled(context, False)  # master switch off
         if previous_model or previous_provider:
             prior = (
                 f"{previous_provider}:{previous_model}"
@@ -888,6 +932,8 @@ def advisor_command_call(args: str, context: CommandContext) -> LocalCommandResu
     normalized = canonical_model_name(resolved)
     _write_advisor_model(context, normalized)
     _write_advisor_provider(context, provider_part)
+    # Explicitly configuring the advisor opts in: flip the master switch on.
+    _write_advisor_enabled(context, True)
     if force_client_flag is True:
         _write_advisor_client_mode(context, True)
     elif force_client_flag is False:
@@ -907,6 +953,7 @@ def advisor_command_call(args: str, context: CommandContext) -> LocalCommandResu
         normalized,
         force_client_mode=effective_client_mode,
         advisor_provider=provider_part,
+        advisor_enabled=True,  # just enabled above
     )
     if chosen_mode == ADVISOR_MODE_SERVER_SIDE:
         mode_msg = "Will run server-side (Anthropic beta path)."

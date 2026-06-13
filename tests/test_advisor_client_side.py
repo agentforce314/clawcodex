@@ -232,7 +232,7 @@ class TestBuildAdvisorForwardedMessages(unittest.TestCase):
         with patch("src.utils.advisor._env_truthy", return_value=False), \
              patch("src.settings.settings.get_settings") as get_s, \
              patch("src.models.model.canonical_model_name", side_effect=lambda x: x):
-            fake = type("S", (), {"advisor_model": "claude-opus-4-7", "advisor_provider": "anthropic", "advisor_client_mode": False})()
+            fake = type("S", (), {"advisor_model": "claude-opus-4-7", "advisor_provider": "anthropic", "advisor_client_mode": False, "advisor_enabled": True})()
             get_s.return_value = fake
             out = format_advisor_status(None, "claude-haiku-4-5")
         self.assertIsNotNone(out)
@@ -252,7 +252,7 @@ class TestBuildAdvisorForwardedMessages(unittest.TestCase):
         from unittest.mock import patch
         with patch("src.utils.advisor._env_truthy", return_value=False), \
              patch("src.settings.settings.get_settings") as get_s:
-            fake = type("S", (), {"advisor_model": "", "advisor_provider": "", "advisor_client_mode": False})()
+            fake = type("S", (), {"advisor_model": "", "advisor_provider": "", "advisor_client_mode": False, "advisor_enabled": True})()
             get_s.return_value = fake
             out = format_advisor_status(None, "claude-haiku-4-5")
         self.assertIsNone(out)
@@ -264,7 +264,7 @@ class TestBuildAdvisorForwardedMessages(unittest.TestCase):
         with patch.dict(os.environ, {"CLAUDE_CODE_DISABLE_ADVISOR_TOOL": "1"}, clear=False), \
              patch("src.settings.settings.get_settings") as get_s, \
              patch("src.models.model.canonical_model_name", side_effect=lambda x: x):
-            fake = type("S", (), {"advisor_model": "claude-opus-4-7", "advisor_provider": "anthropic", "advisor_client_mode": False})()
+            fake = type("S", (), {"advisor_model": "claude-opus-4-7", "advisor_provider": "anthropic", "advisor_client_mode": False, "advisor_enabled": True})()
             get_s.return_value = fake
             out = format_advisor_status(None, "claude-haiku-4-5")
         # Even with model set, env-disable → mode is INACTIVE → label shows

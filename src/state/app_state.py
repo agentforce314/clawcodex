@@ -116,6 +116,12 @@ class AppState:
     # ``_on_advisor_client_mode_change``.
     advisor_client_mode: bool = False
 
+    # Master on/off switch for the advisor. Default False — the advisor is
+    # OFF unless explicitly enabled (config flag ``advisor_enabled`` or
+    # ``/advisor <provider>:<model>``). Persisted to ``settings.advisor_enabled``
+    # via ``_on_advisor_enabled_change``.
+    advisor_enabled: bool = False
+
 
 def replace_state(state: AppState, **changes: Any) -> AppState:
     """Return a copy of ``state`` with ``changes`` applied. Equivalent
@@ -453,6 +459,29 @@ def _on_advisor_client_mode_change(old: AppState, new: AppState) -> None:
         )
 
 
+def _on_advisor_enabled_change(old: AppState, new: AppState) -> None:
+    """Persist the advisor master switch to user settings + invalidate the read
+    cache. Same persistence pattern as ``_on_advisor_client_mode_change``."""
+    if old.advisor_enabled == new.advisor_enabled:
+        return
+    from src import config as cfg_mod
+    from src.settings.settings import invalidate_settings_cache
+    try:
+        mgr = cfg_mod._get_default_manager()
+        cfg = mgr.load_global()
+        settings_section = cfg.get("settings")
+        if not isinstance(settings_section, dict):
+            settings_section = {}
+        settings_section["advisor_enabled"] = bool(new.advisor_enabled)
+        cfg["settings"] = settings_section
+        mgr.save_global(cfg)
+        invalidate_settings_cache()
+    except Exception:
+        logger.exception(
+            "Failed to persist advisor_enabled to settings; in-memory value still active"
+        )
+
+
 # Registry. EVERY field in AppState must appear here as a handler
 # (function-form, including explicit no-ops). The coverage test enforces
 # this — adding a new AppState field without a handler entry fails
@@ -466,6 +495,7 @@ _FIELD_HANDLERS: dict[str, Callable[[AppState, AppState], None]] = {
     "advisor_model": _on_advisor_model_change,
     "advisor_provider": _on_advisor_provider_change,
     "advisor_client_mode": _on_advisor_client_mode_change,
+    "advisor_enabled": _on_advisor_enabled_change,
 }
 
 
