@@ -59,8 +59,10 @@ identical treatment — they have no `load_and_register_workflows`.
   - `ultracode_reminder_for(text) -> str | None` — the single decision used by the chat seam:
     returns the keyword `<system-reminder>` when the keyword is present, else the standing
     session reminder when session mode is on, else `None`; always `None` when workflows are disabled;
-  - reminder texts: confirm ultracode and instruct the model to **author/launch a workflow via the
-    Workflow tool** for this task (keyword = this turn; session = every substantive task this session).
+  - reminder texts: instruct the model to **author a workflow and SAVE it as a `/<name>` command**
+    (write a sandboxed-Python script to `.claude/workflows/<name>.py` with the Write tool, then tell the
+    user to run `/<name>`) — NOT to run it inline, and NOT to hunt for an "ultracode" tool/skill
+    (keyword = this message; session = substantive tasks this session). See **Part B.2**.
 - **REPL `chat()` wiring**: after the existing at-mention/companion-intro attachment block, append
   `ultracode_reminder_for(user_input)` to `user_input` when non-None (mirrors the companion-intro append).
 - **`/effort ultracode`** (`effort_command.py`): an `ultracode` branch (gated by
@@ -71,16 +73,24 @@ identical treatment — they have no `load_and_register_workflows`.
   case); `ultracode_reminder_for` precedence + gating (None when disabled); session set/clear/reset;
   `/effort ultracode` enables session mode and is gated; a real `/effort` level clears it.
 
-### Part B.2 — the `/ultracode` slash command (added from user feedback)
-The doc specifies only the bare `ultracode` keyword, but users naturally type `/ultracode` (like every
-other command) and got no autocomplete and no dispatch — the keyword fires only on non-slash input via
-`chat()`, so `/ultracode` hit `handle_command` as an unknown command. Add a discoverable, autocompleting
-**`/ultracode <task>`** command (bundled `PromptCommand`, `kind="workflow"`, gated by
-`is_workflows_enabled()`) whose directive tells the model to **author** a fresh workflow script for the
-task and launch it via the Workflow tool — vs. `/deep-research` / saved `/<name>`, which run an
-*existing* script. Lives in `workflows_integration.py::_ultracode_command`, registered through
-`bundled_workflow_commands()` (same path that makes `/deep-research` dispatch + autocomplete).
-The bare keyword + `/effort ultracode` session mode are unchanged.
+### Part B.2 — keyword-only, author + save (the final shape)
+This went through two corrections before landing on the Claude Code shape:
+
+1. A discoverable `/ultracode <task>` **slash command** was added (users typed `/ultracode` out of habit
+   and it didn't autocomplete). **Reverted** — on inspection, Claude Code's ultracode is triggered by the
+   **keyword only**, never a slash command. There is deliberately **no `/ultracode` command**; `bundled_workflow_commands()`
+   contributes only `/workflows` + `/deep-research`.
+2. The keyword action is **author + SAVE**, not author + run: the model writes a sandboxed-Python workflow
+   to `.claude/workflows/<name>.py` (modeled on `src/workflow/bundled/deep_research.py`) and tells the user
+   to run `/<name>` — it does **not** launch a background run. The saved file becomes a `/<name>` command
+   via Part A's `load_and_register_workflows`, re-run mid-session by `_refresh_workflow_commands` (mtime-gated)
+   so it's runnable without a restart.
+
+The keyword reminder is written as a blunt imperative ("WRITE a workflow script … with your Write tool")
+that **forbids the tool/skill hunt** — a live run had the model `ToolSearch` for a non-existent "ultracode"
+tool instead of authoring the file. Validated: a capable agent given this reminder authored a workflow that
+parses, registers as `/<name>`, and runs end-to-end through the engine. `/effort ultracode` (session mode)
+mirrors the same author + save behavior.
 
 ## Out of scope (call it out, don't half-build)
 - Wiring the keyword into the **TUI** chat path (different submission seam); the detection/reminder

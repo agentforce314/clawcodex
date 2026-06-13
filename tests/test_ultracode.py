@@ -53,11 +53,15 @@ def test_keyword_detection_disabled(monkeypatch):
 
 
 def test_reminder_for_keyword():
+    # The keyword triggers author + SAVE (write .claude/workflows/<name>.py, don't run).
     r = uc.ultracode_reminder_for("ultracode: build X")
     assert r is not None
     assert "<system-reminder>" in r
-    assert '"ultracode"' in r
-    assert "Workflow tool" in r
+    assert '"ultracode"' in r              # references the keyword
+    assert ".claude/workflows" in r        # author + save as a /<name> command
+    assert "Write the file" in r
+    assert "do NOT run" in r               # …don't run it now
+    assert "ToolSearch" in r               # forbid the tool/skill hunt (live-failure fix)
 
 
 def test_reminder_none_when_idle():
@@ -144,49 +148,22 @@ def test_picker_excludes_ultracode_when_disabled(monkeypatch):
     assert "ultracode" not in [o.value for o in _effort_options("auto")]
 
 
-# ── /ultracode slash command (discoverable authoring form) ────────────────────
+# ── ultracode is keyword-only: there is NO /ultracode command ─────────────────
 
 
-def _names(cmds):
-    return {getattr(c, "name", None) for c in cmds}
-
-
-def test_ultracode_is_a_registered_command():
+def test_no_ultracode_slash_command():
+    """Per the Claude Code approach, ultracode is triggered by the keyword, not a
+    slash command — /ultracode must NOT be registered (the keyword path + the
+    saved /<name> are what run)."""
     from src.command_system.builtins import get_builtin_commands, register_builtin_commands
     from src.command_system.registry import get_command_registry
 
-    assert "ultracode" in _names(get_builtin_commands())  # autocompletes + dispatches
+    assert "ultracode" not in {getattr(c, "name", None) for c in get_builtin_commands()}
     register_builtin_commands(None)
-    cmd = get_command_registry().get("ultracode")
-    assert cmd is not None
-    assert getattr(cmd, "kind", None) == "workflow"
-
-
-def test_ultracode_command_directive_authors_and_saves():
-    from src.command_system.workflows_integration import _ultracode_command
-
-    cmd = _ultracode_command()
-    directive = cmd.markdown_content or ""
-    assert "write" in directive.lower()                 # write a script yourself…
-    assert ".claude/workflows" in directive             # …saved as a /<name> command
-    assert "Write tool" in directive                    # via the Write tool
-    assert "deep_research.py" in directive              # format template referenced
-    assert "$ARGUMENTS" in directive                    # the task is substituted in
-    assert "do NOT run the workflow" in directive       # author only, no auto-launch
-    # Forbid the tool/skill hunt that broke a live session (model ToolSearch'd for
-    # a non-existent "ultracode" tool instead of authoring the file itself).
-    assert "ToolSearch" in directive
-    assert "skill" in directive
-    # description reflects "save as a /<name> command", not "run"
-    desc = (cmd.description or "").lower()
-    assert "save" in desc and "/<name>" in desc
-
-
-def test_ultracode_command_absent_when_workflows_disabled(monkeypatch):
-    from src.command_system.builtins import get_builtin_commands
-
-    monkeypatch.setenv("CLAUDE_CODE_DISABLE_WORKFLOWS", "1")
-    assert "ultracode" not in _names(get_builtin_commands())
+    assert get_command_registry().get("ultracode") is None
+    # the workflow surface is still there: /deep-research + /workflows
+    assert get_command_registry().get("deep-research") is not None
+    assert get_command_registry().get("workflows") is not None
 
 
 # ── in-session pickup of a freshly-authored /<name> workflow ──────────────────
@@ -194,7 +171,7 @@ def test_ultracode_command_absent_when_workflows_disabled(monkeypatch):
 
 def test_refresh_workflow_commands_picks_up_new_file(tmp_path, monkeypatch):
     """A workflow saved into .claude/workflows/ mid-session becomes a /<name>
-    command without a restart (the /ultracode → /<name> handoff)."""
+    command without a restart (the ultracode-keyword → saved-/<name> handoff)."""
     from src.command_system.registry import CommandRegistry, get_command_registry
     from src.repl.core import ClawcodexREPL
 
