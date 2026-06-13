@@ -71,6 +71,17 @@ identical treatment — they have no `load_and_register_workflows`.
   case); `ultracode_reminder_for` precedence + gating (None when disabled); session set/clear/reset;
   `/effort ultracode` enables session mode and is gated; a real `/effort` level clears it.
 
+### Part B.2 — the `/ultracode` slash command (added from user feedback)
+The doc specifies only the bare `ultracode` keyword, but users naturally type `/ultracode` (like every
+other command) and got no autocomplete and no dispatch — the keyword fires only on non-slash input via
+`chat()`, so `/ultracode` hit `handle_command` as an unknown command. Add a discoverable, autocompleting
+**`/ultracode <task>`** command (bundled `PromptCommand`, `kind="workflow"`, gated by
+`is_workflows_enabled()`) whose directive tells the model to **author** a fresh workflow script for the
+task and launch it via the Workflow tool — vs. `/deep-research` / saved `/<name>`, which run an
+*existing* script. Lives in `workflows_integration.py::_ultracode_command`, registered through
+`bundled_workflow_commands()` (same path that makes `/deep-research` dispatch + autocomplete).
+The bare keyword + `/effort ultracode` session mode are unchanged.
+
 ## Out of scope (call it out, don't half-build)
 - Wiring the keyword into the **TUI** chat path (different submission seam); the detection/reminder
   logic is a reusable pure module so the TUI can adopt it in a follow-up. REPL is the user's surface.
