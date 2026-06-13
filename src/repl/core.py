@@ -513,6 +513,10 @@ class ClawcodexREPL:
         # permission dialog or an in-progress chat turn.
         self._at_prompt = False
         self._notif_stop: threading.Event | None = None
+        # mtime signature of the .claude/workflows dirs, so a workflow just
+        # authored via /ultracode is picked up as a /<name> command mid-session
+        # (see _refresh_workflow_commands) without re-globbing every turn.
+        self._wf_dirs_sig: tuple | None = None
         # Permission dialogs can be requested from different worker paths
         # (e.g. subagents/tools). Serialize interactive prompts so we never
         # mount competing prompt_toolkit applications at once.
@@ -1982,6 +1986,38 @@ class ClawcodexREPL:
                 pass
             stop.wait(0.4)
 
+    def _refresh_workflow_commands(self) -> None:
+        """Pick up newly-saved ``.claude/workflows/*.py`` as ``/<name>`` commands
+        without a restart — so a workflow just authored via ``/ultracode`` is
+        runnable this session, exactly like ``/deep-research``.
+
+        mtime-gated on the project + personal workflow dirs so it only re-discovers
+        when one actually changes (idempotent: the shadowing guard in
+        ``load_and_register_workflows`` skips already-registered names)."""
+        try:
+            from pathlib import Path
+
+            dirs = [Path.cwd() / ".claude" / "workflows", Path.home() / ".claude" / "workflows"]
+            sig = tuple((str(d), d.stat().st_mtime_ns) for d in dirs if d.is_dir())
+        except Exception:
+            return
+        if sig == self._wf_dirs_sig:
+            return
+        self._wf_dirs_sig = sig
+        try:
+            from src.command_system.workflows_integration import load_and_register_workflows
+
+            # Global registry → dispatch (`/<name> <args>`) + autocomplete.
+            load_and_register_workflows(registry=None)
+            # Local registry → bare `/<name>` routes to execution (parity with
+            # /deep-research), not the slash palette.
+            registry = getattr(self, "command_registry", None)
+            if registry is not None:
+                load_and_register_workflows(registry=registry)
+                self._update_built_in_commands_with_command_system()
+        except Exception:
+            pass
+
     def _start_notification_watcher(self) -> None:
         if self._notif_stop is not None:
             return
@@ -2332,6 +2368,9 @@ class ClawcodexREPL:
 
         while True:
             try:
+                # Pick up a workflow just authored via /ultracode so its /<name>
+                # command is runnable this turn (before the completer rebuilds).
+                self._refresh_workflow_commands()
                 self._refresh_completer()
                 # Surface any background task (workflow/agent) that finished
                 # since the last turn: print its banner and let the agent

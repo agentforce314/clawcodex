@@ -162,14 +162,20 @@ def test_ultracode_is_a_registered_command():
     assert getattr(cmd, "kind", None) == "workflow"
 
 
-def test_ultracode_command_directive_authors_and_launches():
+def test_ultracode_command_directive_authors_and_saves():
     from src.command_system.workflows_integration import _ultracode_command
 
-    directive = _ultracode_command().markdown_content or ""
-    assert "AUTHOR" in directive            # author a fresh workflow…
-    assert "Workflow tool" in directive     # …and launch it via the tool
-    assert "$ARGUMENTS" in directive        # the task is substituted in
-    assert "END YOUR TURN" in directive     # background run → don't block
+    cmd = _ultracode_command()
+    directive = cmd.markdown_content or ""
+    assert "AUTHOR" in directive                        # author a fresh workflow…
+    assert ".claude/workflows" in directive             # …saved as a /<name> command
+    assert "Write" in directive                         # via the Write tool
+    assert "do NOT call the Workflow tool" in directive  # NOT run immediately
+    assert "deep_research.py" in directive              # format template referenced
+    assert "$ARGUMENTS" in directive                    # the task is substituted in
+    # description reflects "save as a /<name> command", not "run"
+    desc = (cmd.description or "").lower()
+    assert "save" in desc and "/<name>" in desc
 
 
 def test_ultracode_command_absent_when_workflows_disabled(monkeypatch):
@@ -177,3 +183,41 @@ def test_ultracode_command_absent_when_workflows_disabled(monkeypatch):
 
     monkeypatch.setenv("CLAUDE_CODE_DISABLE_WORKFLOWS", "1")
     assert "ultracode" not in _names(get_builtin_commands())
+
+
+# ── in-session pickup of a freshly-authored /<name> workflow ──────────────────
+
+
+def test_refresh_workflow_commands_picks_up_new_file(tmp_path, monkeypatch):
+    """A workflow saved into .claude/workflows/ mid-session becomes a /<name>
+    command without a restart (the /ultracode → /<name> handoff)."""
+    from src.command_system.registry import CommandRegistry, get_command_registry
+    from src.repl.core import ClawcodexREPL
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")  # empty personal dir
+
+    wfdir = tmp_path / ".claude" / "workflows"
+    wfdir.mkdir(parents=True)
+    (wfdir / "ultratest-scraper.py").write_text(
+        'meta = {"name": "ultratest-scraper", "description": "scrape something"}\n'
+        'return await agent("x")\n',
+        encoding="utf-8",
+    )
+
+    repl = ClawcodexREPL.__new__(ClawcodexREPL)
+    repl._wf_dirs_sig = None
+    repl.command_registry = CommandRegistry()
+    repl._original_built_ins = []
+    repl._built_in_commands = []
+
+    repl._refresh_workflow_commands()
+
+    # dispatchable via the global registry, and bare /<name> routes to execution
+    assert get_command_registry().get("ultratest-scraper") is not None
+    assert "/ultratest-scraper" in repl._built_in_commands
+
+    # mtime-gated: a second call with no dir change is a no-op (signature unchanged)
+    sig_after = repl._wf_dirs_sig
+    repl._refresh_workflow_commands()
+    assert repl._wf_dirs_sig == sig_after
