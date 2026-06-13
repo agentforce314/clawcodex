@@ -100,6 +100,13 @@ class SettingsSchema:
     # ``/advisor <model> --client``. See decide_advisor_mode() in
     # src/utils/advisor.py for the full activation table.
     advisor_client_mode: bool = False
+    # Master on/off switch for the advisor (reviewer tool). Default False —
+    # the advisor is OFF unless the user explicitly opts in, even when
+    # advisor_model/advisor_provider are configured. Enable via
+    # ``"advisor_enabled": true`` in ~/.clawcodex/config.json's "settings"
+    # block, or by running ``/advisor <provider>:<model>`` (which flips it on).
+    # ``decide_advisor_mode`` returns INACTIVE whenever this is False.
+    advisor_enabled: bool = False
 
     # Provider
     provider: str = "anthropic"

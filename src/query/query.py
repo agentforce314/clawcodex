@@ -450,7 +450,10 @@ async def _call_model_sync(
         configured = (getattr(settings, "advisor_model", "") or "").strip()
         configured_provider = (getattr(settings, "advisor_provider", "") or "").strip()
         force_client = bool(getattr(settings, "advisor_client_mode", False))
-        if configured:
+        # Master switch (default False): the advisor stays inactive unless the
+        # user opted in via `advisor_enabled` in ~/.clawcodex/config.json.
+        advisor_enabled = bool(getattr(settings, "advisor_enabled", False))
+        if configured and advisor_enabled:
             from ..models.model import canonical_model_name
             candidate = canonical_model_name(configured)
             advisor_mode = decide_advisor_mode(
@@ -459,6 +462,7 @@ async def _call_model_sync(
                 candidate,
                 force_client_mode=force_client,
                 advisor_provider=configured_provider,
+                advisor_enabled=advisor_enabled,
             )
             if advisor_mode != ADVISOR_MODE_INACTIVE:
                 advisor_model_normalized = candidate
