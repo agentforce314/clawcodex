@@ -63,32 +63,40 @@ def _workflow_to_command(path: Path, loaded_from: str) -> Optional[PromptCommand
 
 
 _ULTRACODE_DIRECTIVE = (
-    "The user invoked /ultracode — they are explicitly opting into multi-agent "
-    'workflow orchestration and want you to AUTHOR and run a workflow (a "pipeline") '
-    "for the task below, instead of doing it turn by turn.\n\n"
-    "Design a workflow script for the task: decompose it into phases, fan out "
-    "subagents for the independent parts (parallel/pipeline), and adversarially verify "
-    "findings before synthesizing. Then launch it by calling the Workflow tool with "
-    "your script passed inline as `script` (see the Workflow tool's own description for "
-    "the script shape — it begins with `export const meta = {...}`). If the task below "
-    "is empty, ask the user what they want the workflow to do instead of guessing.\n\n"
-    "The Workflow tool launches the run in the BACKGROUND and returns a `run_id` "
-    "immediately. As soon as it returns, STOP: reply with one short sentence confirming "
-    "the workflow started (mention the run_id) and END YOUR TURN. Do NOT wait for it, "
-    "poll it, call another tool, or do the work yourself — the finished result is "
-    "delivered automatically when the run completes.\n\n"
+    "The user invoked /ultracode — AUTHOR a reusable multi-agent workflow (a "
+    '"pipeline") for the task below and SAVE it as a slash command. Do NOT run it '
+    "now, and do NOT call the Workflow tool — the user will run it themselves with "
+    "`/<name>` (the same way `/deep-research` runs).\n\n"
+    "Steps:\n"
+    "1. Read `src/workflow/bundled/deep_research.py` first and mirror its exact "
+    "format: a top-level `meta = {\"name\": ..., \"description\": ..., \"phases\": "
+    "[{\"title\": ...}, ...]}` dict, then an async body that uses ONLY the injected "
+    "primitives — `await agent(prompt, schema=...)`, `parallel`, `pipeline`, "
+    "`phase`, `log`, `budget` — and ends with `return <result>`. It is sandboxed "
+    "Python: no `import`, no `open`, no `Date.now()`/`random` (the runtime withholds "
+    "them).\n"
+    "2. Design the workflow for the task: decompose into phases, fan out subagents "
+    "for the independent parts, verify, then synthesize. Give `meta.description` a "
+    "clear one-line summary — it becomes the slash command's description.\n"
+    "3. Choose a short kebab-case name (e.g. `hn-scraper`) and Write the script to "
+    "`.claude/workflows/<name>.py` with the Write tool (create the directory if "
+    "needed). The filename stem IS the command name.\n"
+    "4. Reply in two or three lines: confirm the workflow is saved and tell the user "
+    "to run it with `/<name> <args>` (runs in the background like /deep-research). "
+    "If the task below is empty, ask what the workflow should do instead of guessing.\n\n"
+    "Author and SAVE only — do not launch it.\n\n"
     "Task:\n$ARGUMENTS"
 )
 
 
 def _ultracode_command() -> PromptCommand:
-    """The ``/ultracode`` command: a discoverable, autocompleting slash form of the
-    ``ultracode`` authoring keyword. ``/ultracode <task>`` directs the model to
-    author a fresh workflow script for the task and launch it via the Workflow tool
-    (vs. ``/deep-research`` / saved ``/<name>``, which run an *existing* script)."""
+    """The ``/ultracode`` command: author a fresh workflow and SAVE it as a reusable
+    ``/<name>`` slash command (it does **not** run — the user launches it later with
+    ``/<name>``, exactly like ``/deep-research``). ``/deep-research`` and saved
+    ``/<name>`` run an *existing* script; ``/ultracode`` is the *generator*."""
     return PromptCommand(
         name="ultracode",
-        description="Author and run a multi-agent workflow (pipeline) for a task",
+        description="Author a multi-agent workflow (pipeline) and save it as a /<name> command",
         kind="workflow",
         loaded_from="bundled",
         source="bundled",
