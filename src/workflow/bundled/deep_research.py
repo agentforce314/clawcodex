@@ -17,11 +17,15 @@ question = (args if isinstance(args, str) else (args or {}).get("question", ""))
 if not question:
     raise ValueError('Provide a research question via args — e.g. /deep-research "what changed in X?"')
 
+# Search angles, ordered most-authoritative first. Kept deliberately lean (3,
+# not "every angle"): each angle is one web-searching subagent and the Search
+# phase is the single biggest cost driver of a run, so a fourth angle buys
+# breadth at a steep token price. The three here already span primary sources,
+# what's new, and outside scrutiny.
 ANGLES = [
     "official documentation and primary sources",
     "recent news, changelogs, and release notes",
     "expert analysis, comparisons, and critiques",
-    "community discussion and real-world reports",
 ]
 
 CLAIMS_SCHEMA = {
@@ -87,12 +91,13 @@ for result in searches:
 if not claims:
     raise RuntimeError("No claims were gathered — the question may be too narrow or WebSearch is unavailable.")
 
-# Cap the verify fan-out: the Verify phase spawns one agent per claim, so a very
-# thorough search model (opus gathered 32) would otherwise launch dozens of
-# concurrent agents — slow, costly, and prone to overrunning a flaky endpoint.
-# Keep the first N distinct claims (search angles are ordered most-authoritative
-# first). Logged, never silent.
-MAX_VERIFY_CLAIMS = 10
+# Cap the verify fan-out: the Verify phase spawns one web-searching agent per
+# claim, and (with Search) it dominates a run's token spend — a thorough search
+# model can gather 30+ claims, which would otherwise launch dozens of agents.
+# 6 keeps the report well-sourced while holding the cost down; raise it if you
+# want exhaustive cross-checking. Claims are ordered most-authoritative first
+# (by search angle), so the first 6 are the strongest. Logged, never silent.
+MAX_VERIFY_CLAIMS = 6
 if len(claims) > MAX_VERIFY_CLAIMS:
     log(f"Gathered {len(claims)} claims; verifying the first {MAX_VERIFY_CLAIMS} to bound the fan-out.")
     claims = claims[:MAX_VERIFY_CLAIMS]
