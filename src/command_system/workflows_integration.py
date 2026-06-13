@@ -62,67 +62,6 @@ def _workflow_to_command(path: Path, loaded_from: str) -> Optional[PromptCommand
     )
 
 
-_ULTRACODE_DIRECTIVE = (
-    "Your job right now: WRITE a new multi-agent workflow script (a reusable "
-    '"pipeline") for the task at the bottom of this message, and save it to a file '
-    "with your Write tool.\n\n"
-    "IMPORTANT — this is a writing task you do YOURSELF with the tools you already "
-    "have. There is NO \"ultracode\" tool, skill, or command to invoke or look up — "
-    "do NOT use ToolSearch, do NOT search for a skill, and do NOT call any "
-    "\"Workflow\" tool. You are not running anything; you are authoring a `.py` file "
-    "and stopping.\n\n"
-    "Steps:\n"
-    "1. Read `src/workflow/bundled/deep_research.py` for a complete, real example of "
-    "the format. A workflow is sandboxed async Python shaped like:\n\n"
-    "    meta = {\n"
-    "        \"name\": \"<kebab-name>\",\n"
-    "        \"description\": \"<one-line summary>\",\n"
-    "        \"phases\": [{\"title\": \"Search\"}, {\"title\": \"Research\"}, {\"title\": \"Write\"}],\n"
-    "    }\n"
-    "    phase(\"Search\")\n"
-    "    items = await agent(\"<prompt>\", schema={...})         # one subagent, returns data\n"
-    "    researched = await parallel([agent(f\"<prompt {x}>\") for x in items])  # fan out\n"
-    "    phase(\"Write\")\n"
-    "    return await agent(\"<synthesize from the results above>\")\n\n"
-    "Use ONLY the injected primitives — `await agent(prompt, schema=...)`, "
-    "`parallel`, `pipeline`, `phase`, `log`, `budget` — and end with `return "
-    "<result>`. No `import`, no `open`, no clock/random (the sandbox withholds them).\n"
-    "2. Design the pipeline for the task: decompose into phases, fan out subagents "
-    "for the independent parts, verify, then synthesize. Give `meta.description` a "
-    "clear one-line summary — it becomes the command's description.\n"
-    "3. Pick a short kebab-case name (e.g. `wc26-watch-guide`) and use the Write "
-    "tool to create `.claude/workflows/<name>.py` with the script. The filename stem "
-    "becomes the command name.\n"
-    "4. Then STOP. Reply in two or three lines: confirm the file you wrote and tell "
-    "the user to run it with `/<name>` (it runs in the background, like "
-    "/deep-research). If the task below is empty, ask what the workflow should do.\n\n"
-    "Write the file and stop — do NOT run the workflow.\n\n"
-    "Task:\n$ARGUMENTS"
-)
-
-
-def _ultracode_command() -> PromptCommand:
-    """The ``/ultracode`` command: author a fresh workflow and SAVE it as a reusable
-    ``/<name>`` slash command (it does **not** run — the user launches it later with
-    ``/<name>``, exactly like ``/deep-research``). ``/deep-research`` and saved
-    ``/<name>`` run an *existing* script; ``/ultracode`` is the *generator*.
-
-    The directive is written as a direct imperative ("WRITE a script… with your Write
-    tool") and explicitly forbids hunting for an "ultracode" tool/skill — an earlier
-    phrasing led models to ToolSearch for a non-existent ultracode tool instead of
-    authoring the file themselves."""
-    return PromptCommand(
-        name="ultracode",
-        description="Author a multi-agent workflow (pipeline) and save it as a /<name> command",
-        kind="workflow",
-        loaded_from="bundled",
-        source="bundled",
-        is_enabled=is_workflows_enabled,
-        argument_hint="<task>",
-        markdown_content=_ULTRACODE_DIRECTIVE,
-    )
-
-
 def _deep_research_command() -> Optional[PromptCommand]:
     path = bundled_workflow_path("deep_research")
     try:
@@ -157,7 +96,7 @@ def bundled_workflow_commands() -> list[Command]:
     """
     from .workflows_command import WORKFLOWS_COMMAND
 
-    out: list[Command] = [WORKFLOWS_COMMAND, _ultracode_command()]
+    out: list[Command] = [WORKFLOWS_COMMAND]
     deep = _deep_research_command()
     if deep is not None:
         out.append(deep)
@@ -183,7 +122,7 @@ def load_workflow_commands(cwd: str) -> list[Command]:
     (project wins over personal on a name clash)."""
     from .workflows_command import WORKFLOWS_COMMAND
 
-    commands: list[Command] = [WORKFLOWS_COMMAND, _ultracode_command()]
+    commands: list[Command] = [WORKFLOWS_COMMAND]
     deep = _deep_research_command()
     if deep is not None:
         commands.append(deep)
