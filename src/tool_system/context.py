@@ -275,6 +275,19 @@ class ToolContext:
     def allowed_roots(self) -> tuple[Path, ...]:
         roots: list[Path] = [self.workspace_root]
         roots.extend(self.additional_working_directories)
+        # The session's tool-results spill dir is an internal path the runtime
+        # writes large tool results to and then points the model back at (e.g. a
+        # workflow subagent told to Read the offloaded result). Reading it back
+        # must be allowed even though it sits outside workspace_root. Resolved so
+        # the /tmp → /private/tmp (macOS) match holds against the resolved path.
+        try:
+            from src.services.tool_execution.tool_result_persistence import (
+                resolve_tool_results_dir,
+            )
+
+            roots.append(resolve_tool_results_dir(self).resolve())
+        except Exception:
+            pass
         return tuple(roots)
 
     def ensure_allowed_path(self, path: str | Path) -> Path:

@@ -64,6 +64,27 @@ def _schema_repair_prompt(schema: Any, last_error: Optional[str]) -> str:
     )
 
 
+# Parent modes that already auto-approve at least as much as acceptEdits — never
+# downgrade these for a workflow subagent (matches resolve_permission_mode's
+# "permissive parent takes precedence" rule in src/agent/run_agent.py).
+_PERMISSIVE_PARENT_MODES = ("bypassPermissions", "acceptEdits", "dontAsk")
+
+
+def _subagent_permission_override(parent_context: Any) -> Optional[str]:
+    """Permission mode to force on a workflow subagent, or ``None`` to inherit.
+
+    Forces ``acceptEdits`` (auto-approve file edits) for restrictive sessions
+    (default/plan), but returns ``None`` for an already-permissive session so
+    ``resolve_permission_mode`` carries the parent mode through — crucially,
+    ``bypassPermissions`` from ``--dangerously-skip-permissions`` is inherited
+    rather than silently downgraded to the more-restrictive ``acceptEdits``.
+    """
+    mode = getattr(getattr(parent_context, "permission_context", None), "mode", None)
+    if mode in _PERMISSIVE_PARENT_MODES:
+        return None
+    return "acceptEdits"
+
+
 class LiveAgentRunner:
     def __init__(
         self,
@@ -179,9 +200,14 @@ class LiveAgentRunner:
                 agent_id=agent_id,
                 abort_controller=abort,
                 max_turns=self._max_turns,
-                # Workflow subagents always run acceptEdits (file edits auto-approved)
-                # regardless of the session's mode — per the official spec.
-                permission_mode_override="acceptEdits",
+                # Workflow subagents auto-approve file edits (acceptEdits) regardless
+                # of the session's mode — per the spec — but NEVER downgrade an
+                # already-permissive session. If the user launched with
+                # --dangerously-skip-permissions (bypassPermissions), or any other
+                # permissive parent mode, inherit it (override=None lets
+                # resolve_permission_mode carry the parent mode through); otherwise
+                # elevate restrictive modes (default/plan) to acceptEdits.
+                permission_mode_override=_subagent_permission_override(parent_context),
                 # Already resolved + firewalled + injected; don't let run_agent
                 # re-resolve (which would drop the injected StructuredOutput tool).
                 use_exact_tools=True,
