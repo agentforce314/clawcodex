@@ -254,7 +254,7 @@ Each phase is independently testable; the feature is usable behind the gate afte
 
 ## 8. Open decisions
 
-1. **Concurrency cap source** — fixed `16` (house style) vs. `min(16, cpu_count−2)` (faithful low-core reduction). Recommend the latter with a `CLAUDE_CODE_WORKFLOW_MAX_AGENTS` override. (§3.3)
+1. **Concurrency cap source** — ~~fixed `16` vs. `min(16, cpu_count−2)`~~ **RESOLVED:** defaults to a gentle **`4`** (`DEFAULT_MAX_CONCURRENT_AGENTS`, `CLAUDE_CODE_WORKFLOW_MAX_AGENTS` override). The `min(16, cpu−2)` heuristic was dropped — workflow agents are network/LLM-bound, so the real limiter is the provider rate-limit / token window, not core count, and 16-wide fan-out can exhaust a plan's 5-hour budget in one burst. (§3.3)
 2. **Structured-output return channel** — a new `ToolContext` field vs. a typed sentinel in `outbox`. Pick one explicit channel; do not overload the text path. (§4.3)
 3. **Progress delivery** — poll-on-interval (simplest, matches `StatusLine`) vs. a `WorkflowProgress` Textual message (push). (§5.4)
 4. **Budget unit** — token-target (parity with `token_budget.py`) vs. USD cap (parity with TS `maxBudgetUsd`). Spec leans token; implement the predicate on the production accumulator either way. (§4.4)
