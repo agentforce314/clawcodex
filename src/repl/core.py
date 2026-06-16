@@ -383,7 +383,7 @@ class ClawcodexREPL:
 
     def __init__(
         self,
-        provider_name: str = "glm",
+        provider_name: str = "zai",
         stream: bool = False,
         *,
         permission_mode: str = "default",
