@@ -51,5 +51,8 @@ VALID_EFFORT_VALUES = ("", "low", "medium", "high", "max")
 # Known valid output styles
 VALID_OUTPUT_STYLES = ("default", "concise", "verbose", "markdown")
 
+# Known valid spinner-verb merge modes (TS settings/types.ts:696)
+VALID_SPINNER_VERB_MODES = ("append", "replace")
+
 # Known valid permission modes
 VALID_PERMISSION_MODES = ("default", "plan", "bypassPermissions")

@@ -300,7 +300,9 @@ class AgentBridge:
         self._session.conversation.add_user_message(prompt)
         self._persister.record_user(prompt)
         self._post(AgentRunStarted(prompt=prompt))
-        self._state.set_thinking(True, verb="Synthesizing")
+        # Empty verb → AppState.set_thinking samples a random SPINNER_VERBS
+        # entry (TS Spinner.tsx:166), instead of a fixed "Synthesizing".
+        self._state.set_thinking(True)
         self._run_worker(
             self._run_agent_in_thread,
             thread=True,
