@@ -10,9 +10,13 @@ C1 (components-folder parity) upgraded the decision surface from binary
 Allow/Deny to the TS ``PermissionPrompt.tsx`` option list:
 
 * **Allow once** (``y``)
-* **Allow always** (``a``, only when the ask carries rule suggestions) —
-  accepts the derived "don't ask again" rules; the registry applies them
-  to the live context and persists them (TS "Yes, and don't ask again")
+* **Allow for the whole session** (``a``) — the per-tool option mirroring the
+  original (``allow all edits in <dir>/ during this session`` for file edits,
+  ``allow reading from <dir>/ …`` for reads, ``don't ask again for <rule>`` for
+  bash/other tools). The accepted updates (``setMode:acceptEdits`` /
+  ``addDirectories`` / ``addRules``) are applied to the live context and the
+  persistable ones saved; label text comes from
+  :func:`src.permissions.updates.session_option_label`.
 * **Deny** (``n`` / ``Esc``)
 * **Deny with feedback** (``d``) — opens a one-line input; the note
   reaches the model in the tool error (TS "No, and tell Claude what to
@@ -44,7 +48,7 @@ from textual.containers import Center, Middle, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Static
 
-from src.permissions.updates import suggestions_label
+from src.permissions.updates import session_option_label
 
 from ..messages import PermissionResolved
 from ..state import PendingPermission
@@ -98,8 +102,10 @@ class PermissionModal(ModalScreen[bool]):
     def __init__(self, request: PendingPermission) -> None:
         super().__init__()
         self._request = request
-        self._always_label = suggestions_label(
-            getattr(request, "suggestions", ()) or ()
+        self._always_label = session_option_label(
+            getattr(request, "suggestions", ()) or (),
+            getattr(request, "tool_name", None),
+            getattr(request, "tool_input", None),
         )
         self._feedback_open = False
         self._resolved = False
@@ -139,7 +145,7 @@ class PermissionModal(ModalScreen[bool]):
         if self._always_label:
             buttons.mount(
                 Button(
-                    f"Allow always (a) — {self._always_label}",
+                    f"Yes, {self._always_label} (a)",
                     id="allow-always",
                     classes="-allow",
                 )

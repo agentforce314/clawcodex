@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import fnmatch
 import logging
+import os
 import re
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
@@ -100,6 +101,58 @@ def _get_updated_input_or_fallback(
     if hasattr(permission_result, "updated_input") and permission_result.updated_input is not None:
         return permission_result.updated_input
     return fallback
+
+
+# File-editing tools whose "allow all edits during this session" option maps to
+# acceptEdits mode, and which acceptEdits mode auto-allows inside the working
+# roots (parity with typescript/src/utils/permissions/filesystem.ts:1382-1397).
+_FILE_EDIT_TOOLS: tuple[str, ...] = ("Write", "Edit", "MultiEdit", "NotebookEdit")
+
+
+def _allowed_roots_for_check(
+    context: ToolPermissionContext, tool_use_context: Any | None
+) -> list[str]:
+    """Working-directory roots used for acceptEdits path checks.
+
+    Prefers the live ``ToolContext.allowed_roots()`` (workspace + additional
+    dirs + internal paths); falls back to the cwd, and always folds in the
+    session-granted ``additional_working_directories`` from the permission
+    context so a just-accepted directory grant is honored.
+    """
+    roots: list[str] = []
+    if tool_use_context is not None:
+        try:
+            roots.extend(str(r) for r in tool_use_context.allowed_roots())
+        except Exception:
+            pass
+    if not roots:
+        roots.append(os.getcwd())
+    try:
+        roots.extend(context.additional_working_directories.keys())
+    except Exception:
+        pass
+    return roots
+
+
+def _path_in_working_roots(
+    file_path: str,
+    context: ToolPermissionContext,
+    tool_use_context: Any | None,
+) -> bool:
+    from pathlib import Path
+
+    abs_path = os.path.abspath(os.path.expanduser(file_path))
+    try:
+        target = Path(abs_path).resolve()
+    except OSError:
+        target = Path(abs_path)
+    for root in _allowed_roots_for_check(context, tool_use_context):
+        try:
+            target.relative_to(Path(root).resolve())
+            return True
+        except (ValueError, OSError):
+            continue
+    return False
 
 
 def has_permissions_to_use_tool(
@@ -253,7 +306,12 @@ def has_permissions_to_use_tool_inner(
         and tool.requires_user_interaction()
         and tool_permission_result.behavior == "ask"
     ):
-        return _coerce_to_ask_decision(tool_permission_result, tool.name)
+        return _coerce_to_ask_decision(
+            tool_permission_result,
+            tool.name,
+            context=context,
+            tool_use_context=tool_use_context,
+        )
 
     if (
         tool_permission_result.behavior == "ask"
@@ -263,7 +321,12 @@ def has_permissions_to_use_tool_inner(
         and hasattr(tool_permission_result.decision_reason, "rule")
         and tool_permission_result.decision_reason.rule.rule_behavior == "ask"
     ):
-        return _coerce_to_ask_decision(tool_permission_result, tool.name)
+        return _coerce_to_ask_decision(
+            tool_permission_result,
+            tool.name,
+            context=context,
+            tool_use_context=tool_use_context,
+        )
 
     if (
         tool_permission_result.behavior == "ask"
@@ -271,7 +334,12 @@ def has_permissions_to_use_tool_inner(
         and tool_permission_result.decision_reason is not None
         and tool_permission_result.decision_reason.type == "safetyCheck"
     ):
-        return _coerce_to_ask_decision(tool_permission_result, tool.name)
+        return _coerce_to_ask_decision(
+            tool_permission_result,
+            tool.name,
+            context=context,
+            tool_use_context=tool_use_context,
+        )
 
     should_bypass = (
         context.mode == "bypassPermissions"
@@ -286,6 +354,35 @@ def has_permissions_to_use_tool_inner(
             updated_input=_get_updated_input_or_fallback(tool_permission_result, tool_input),
             decision_reason=ModeDecisionReason(mode=context.mode),
         )
+
+    # acceptEdits mode: auto-allow file edits whose target is inside the working
+    # roots and is not a protected/dangerous path (parity with
+    # typescript/src/utils/permissions/filesystem.ts:1382-1397). This is what
+    # makes the file-edit "allow all edits during this session" option
+    # (setMode:acceptEdits) and the shift+tab "Accept edits" mode actually
+    # suppress later edit prompts. Gated on a passthrough tool result so an
+    # explicit tool ask (e.g. the docs gate) is still respected.
+    if (
+        context.mode == "acceptEdits"
+        and tool_permission_result.behavior == "passthrough"
+        and tool.name in _FILE_EDIT_TOOLS
+    ):
+        edit_path = tool_input.get("file_path") or tool_input.get("notebook_path")
+        if (
+            isinstance(edit_path, str)
+            and edit_path
+            and _path_in_working_roots(edit_path, context, tool_use_context)
+        ):
+            from .filesystem import check_path_safety_for_auto_edit
+
+            if check_path_safety_for_auto_edit(edit_path) is None:
+                return PermissionAllowDecision(
+                    behavior="allow",
+                    updated_input=_get_updated_input_or_fallback(
+                        tool_permission_result, tool_input
+                    ),
+                    decision_reason=ModeDecisionReason(mode="acceptEdits"),
+                )
 
     always_allowed = tool_always_allowed_rule(context, tool)
     if always_allowed:
@@ -321,6 +418,9 @@ def has_permissions_to_use_tool_inner(
             ),
             tool.name,
             tool_input,
+            context=context,
+            tool_use_context=tool_use_context,
+            from_passthrough=True,
         )
 
     if tool_permission_result.behavior == "allow":
@@ -332,16 +432,27 @@ def has_permissions_to_use_tool_inner(
             decision_reason=getattr(tool_permission_result, "decision_reason", None),
         )
 
-    return _coerce_to_ask_decision(tool_permission_result, tool.name, tool_input)
+    return _coerce_to_ask_decision(
+        tool_permission_result,
+        tool.name,
+        tool_input,
+        context=context,
+        tool_use_context=tool_use_context,
+    )
 
 
 def _coerce_to_ask_decision(
     result: PermissionResult,
     tool_name: str,
     tool_input: dict[str, Any] | None = None,
+    *,
+    context: ToolPermissionContext | None = None,
+    tool_use_context: Any | None = None,
 ) -> PermissionAskDecision:
     if isinstance(result, PermissionAskDecision):
-        return _with_default_suggestions(result, tool_name, tool_input)
+        return _with_default_suggestions(
+            result, tool_name, tool_input, context, tool_use_context
+        )
     return _with_default_suggestions(
         PermissionAskDecision(
             behavior="ask",
@@ -351,6 +462,8 @@ def _coerce_to_ask_decision(
         ),
         tool_name,
         tool_input,
+        context,
+        tool_use_context,
     )
 
 
@@ -358,44 +471,60 @@ def _with_default_suggestions(
     ask: PermissionAskDecision,
     tool_name: str,
     tool_input: dict[str, Any] | None,
+    context: ToolPermissionContext | None = None,
+    tool_use_context: Any | None = None,
+    *,
+    from_passthrough: bool = False,
 ) -> PermissionAskDecision:
-    """Return ``ask`` with derived "don't ask again" rules filled in.
+    """Return ``ask`` with the "allow for the whole session" updates filled in.
 
-    Mirrors TS bashPermissions.ts:1234-1236 (step 5: "Suggest prefix if
-    available, otherwise exact command"). Two deliberate exclusions:
+    These updates drive the middle "Yes, …" option every interactive surface
+    renders. The per-tool shape (Bash command-prefix rule, file-edit
+    ``setMode:acceptEdits``, content-less rule for other tools, plus a
+    directory grant for out-of-roots paths) lives in
+    :func:`src.permissions.updates.default_session_suggestions`, so both the
+    console and TUI prompts stay in sync from one source.
 
-    * safety-flagged asks keep an empty list — TS :1219 ("Don't suggest
-      saving a potentially dangerous command");
-    * asks that already carry suggestions (a tool supplied its own) are
-      left untouched.
+    Three deliberate exclusions are preserved:
 
-    Bash-only for now: the engine's content-rule matching is consulted
-    only for Bash commands (:298), and ``tool_always_allowed_rule``
-    requires content-less rules — a suggested ``Read(<dir>/**)`` rule
-    would persist but never match (review-A H1), so Read suggestions are
-    deliberately NOT derived until a path-rule matcher exists
-    (follow-up noted in the C1 plan).
+    * safety-flagged asks keep an empty list — TS ("Don't suggest saving a
+      potentially dangerous command");
+    * asks that already carry suggestions (a tool supplied its own) are left
+      untouched;
+    * only an ask the matcher manufactured from a ``passthrough`` tool result
+      (``from_passthrough``) gets a session option. An ask a tool raised
+      explicitly — e.g. the docs gate (``write.py``/``edit.py`` block ``.md``
+      edits unless ``allow_docs``) — or a configured ask-rule owns its own
+      gating, which a mode flip / blanket rule would not satisfy: the
+      acceptEdits auto-allow is itself ``passthrough``-gated, so "allow all
+      edits this session" would re-prompt the very file it was offered on
+      while silently widening session scope. So those asks keep Yes/No only.
 
-    Returns a copy (``dataclasses.replace``) rather than mutating —
-    the input can be a tool-owned decision object.
+    Returns a copy (``dataclasses.replace``) rather than mutating — the input
+    can be a tool-owned decision object.
     """
 
     if ask.suggestions:
         return ask
     if isinstance(ask.decision_reason, SafetyCheckDecisionReason):
         return ask
-    if not tool_input:
+    if not from_passthrough:
         return ask
 
-    if tool_name == "Bash":
-        command = tool_input.get("command", "")
-        if isinstance(command, str) and command.strip():
-            from .bash_suggestions import suggestions_for_bash_command
+    from .updates import default_session_suggestions
 
-            suggestions = suggestions_for_bash_command(command)
-            if suggestions:
-                return replace(ask, suggestions=suggestions)
+    allowed_roots: tuple[str, ...] | None = None
+    if tool_use_context is not None:
+        try:
+            allowed_roots = tuple(str(r) for r in tool_use_context.allowed_roots())
+        except Exception:
+            allowed_roots = None
 
+    suggestions = default_session_suggestions(
+        tool_name, tool_input, context, allowed_roots=allowed_roots
+    )
+    if suggestions:
+        return replace(ask, suggestions=tuple(suggestions))
     return ask
 
 
@@ -448,7 +577,12 @@ def check_rule_based_permissions(
         and hasattr(tool_permission_result.decision_reason, "rule")
         and tool_permission_result.decision_reason.rule.rule_behavior == "ask"
     ):
-        return _coerce_to_ask_decision(tool_permission_result, tool.name)
+        return _coerce_to_ask_decision(
+            tool_permission_result,
+            tool.name,
+            context=context,
+            tool_use_context=tool_use_context,
+        )
 
     if (
         tool_permission_result.behavior == "ask"
@@ -456,7 +590,12 @@ def check_rule_based_permissions(
         and tool_permission_result.decision_reason is not None
         and tool_permission_result.decision_reason.type == "safetyCheck"
     ):
-        return _coerce_to_ask_decision(tool_permission_result, tool.name)
+        return _coerce_to_ask_decision(
+            tool_permission_result,
+            tool.name,
+            context=context,
+            tool_use_context=tool_use_context,
+        )
 
     return None
 

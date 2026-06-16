@@ -991,9 +991,11 @@ class ClawcodexREPL:
 
             always_label: str | None = None
             if suggestions:
-                from src.permissions.updates import suggestions_label
+                from src.permissions.updates import session_option_label
 
-                always_label = suggestions_label(suggestions)
+                always_label = session_option_label(
+                    suggestions, tool_name, getattr(request, "tool_input", None)
+                )
 
             # Build options as (key, description, action) rows so the
             # numeric choices always match what was displayed.
@@ -1004,7 +1006,7 @@ class ClawcodexREPL:
                 )
             options.append(("y", "Yes, allow this action", "allow"))
             if always_label:
-                options.append(("a", f"Yes, and {always_label}", "always"))
+                options.append(("a", f"Yes, {always_label}", "always"))
             options.append(("n", "No, deny this action", "deny"))
             options.append(
                 ("d", "No, and tell Claude what to do differently", "feedback")
