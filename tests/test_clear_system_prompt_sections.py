@@ -13,9 +13,17 @@ from src.state import cache_state as cs
 class TestClearSystemPromptSections(unittest.TestCase):
     def setUp(self) -> None:
         cs.reset_for_test_only()
+        # Isolate the process-global prompt-section cache: other tests that
+        # exercise the TUI/headless cutover (build_effective_system_prompt →
+        # build_full_system_prompt_blocks) populate it, and this test asserts
+        # exact cache sizes. Clear it so collection order can't leak in.
+        from src.context_system.prompt_assembly import get_system_prompt_cache
+        get_system_prompt_cache().invalidate_all()
 
     def tearDown(self) -> None:
         cs.reset_for_test_only()
+        from src.context_system.prompt_assembly import get_system_prompt_cache
+        get_system_prompt_cache().invalidate_all()
 
     def test_clear_resets_all_toggle_latches(self) -> None:
         latches = cs.get_beta_header_latches()
