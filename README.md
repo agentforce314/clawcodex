@@ -41,6 +41,7 @@ python -m src.cli         # start the REPL
 
 ## 📰 News
 
+- **2026-06-16:** **Z.ai GLM-5.2 support (#343)** — new `zai` provider for Z.ai's OpenAI-compatible GLM Coding Plan (`https://api.z.ai/api/coding/paas/v4`), shipping `GLM-5.1` and the `GLM-5.2` preview; GLM-5.2 delivers coding capability comparable to Claude Opus 4.7. First app built end-to-end with GLM-5.2 — a [FIFA World Cup 2026 intro page](demos/wc26-intro/index.html) (animated hero + live countdown, three host nations, 16 stadiums, tournament format, and record-breaking facts).
 - **2026-06-11:** **Codebase stats** — Total Python files: 1,093 files; Total Lines of Python Code: **233,520 lines** (up from 213,777 lines on 2026-05-29; ~+19.7k lines from the interactive command-system batch, the dynamic workflow engine + `/deep-research`, and the Tavily web-tooling refresh).
 - **2026-06-10 to 2026-06-11:** **Dynamic workflow engine + `/deep-research` (#262–#264, #266–#271)** — Python workflow engine core (`agent()`/`parallel()`/`pipeline()`/`phase()`, journaling, resume) wired end-to-end: Workflow tool, `/workflows` TUI dialog + status-line pill, per-agent retry, worktree isolation, result delivery, and the bundled `/deep-research` harness registered as a slash command. Reliability: LLM read timeout applied centrally to all openai-compatible providers (#269), parallel agents no longer serialize on the event loop (#270), and the deep-research synthesize step forbids tools so the report-writer can't loop (#271). Follow-ups: workflow max-turns cap fix (#272), deep-research verdict-enum fix (#273), rich `/workflows` live monitor with phase progress + per-agent stats (#287).
 - **2026-06-10:** **Web tooling refresh (#265)** — dead DuckDuckGo scraping replaced with a Tavily-backed WebSearch plus config-backed secrets storage; WebFetch rebuilt with deterministic markdown/text/html extraction (borrowed from opencode).
@@ -50,7 +51,6 @@ python -m src.cli         # start the REPL
 - **2026-05-21:** **Codebase stats** — Total Python files: 890 files; Total Lines of Python Code: **183,768 lines** (up from 177,428 lines on 2026-05-16; net −4 files from the `src/tool_system/agent_loop.py` consolidation into `src/query/query.py`).
 - **2026-05-21:** **`/advisor` token-efficient coding mode (#181–#193)** — pair a cheap worker (`haiku-4-5`, $1/$5 per Mtok) with an expensive reviewer (`opus-4-7`, $5/$25) consulted only at decision points; ~6× cheaper than opus-only on typical sessions. Explicit `<provider>:<model>` syntax, cross-provider routing (e.g. `deepseek/deepseek-v4-pro` worker + `claude-opus-4-7` advisor via litellm), and live worker/advisor token + USD cost in the status bar.
 - **2026-05-16:** **Codebase stats** — Total Python files: 894 files; Total Lines of Python Code: **177,428 lines** (up from 167,034 lines on 2026-05-14; ~+10.4k lines in two days, mostly ESC-cancellation hardening + image-handling parity).
-- **2026-05-16:** **Image-handling parity (Tier C, #149/#154/#155/#156)** — Read tool TS image pipeline (sniff, resize/compress, base64 cap); `@image.png` mentions inline as real `ImageBlock`s instead of mojibake; cross-provider Anthropic `image`/`document` → OpenAI `image_url`/`file` translation; pre-API base64 size validation in `BaseProvider`.
 
 📚 Older items have moved to the full **[News archive](docs/NEWS.md)**.
 
@@ -421,6 +421,7 @@ Example:
 | [`demos/crm-app`](demos/crm-app) | React 18 + Vite + Vitest | Mini CRM with contacts, deals, dashboard, and a full test suite |
 | [`demos/linkedin-app`](demos/linkedin-app) | React 18 + Vite + React Router | LinkedIn-style feed: profile, network, jobs, messaging |
 | [`demos/minecraft-app`](demos/minecraft-app) | React + three.js + @react-three/fiber | Browser voxel sandbox with terrain, mining, HUD, and player controls |
+| [`demos/wc26-intro`](demos/wc26-intro) | Static HTML/CSS/JS | FIFA World Cup 2026 intro page — animated hero, live countdown, host nations, 16 stadiums, format, and record facts; built end-to-end with the new Z.ai **GLM-5.2** model |
 
 ```bash
 cd demos/crm-app   # or linkedin-app / minecraft-app
@@ -428,7 +429,9 @@ npm install
 npm run dev        # vite dev server
 ```
 
-Want to see how it's done? Open ClawCodex in any empty directory and ask it to build something — these three were generated exactly that way.
+`demos/wc26-intro` is a single static page — just open [`demos/wc26-intro/index.html`](demos/wc26-intro/index.html) in your browser.
+
+Want to see how it's done? Open ClawCodex in any empty directory and ask it to build something — they were all generated exactly that way.
 
 ***
 

@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FIFA World Cup 2026 — Tournament Overview</title>
+<style>
+  :root {
+    --green: #2ddb6e;
+    --red: #ff4757;
+    --blue: #3742fa;
+    --dark: #0a0e17;
+    --dark2: #131826;
+    --card: #1a2033;
+    --text: #e8ecf4;
+    --muted: #8892a6;
+    --gold: #ffd700;
+    --radius: 16px;
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+
+  body {
+    font-family: var(--font);
+    background: var(--dark);
+    color: var(--text);
+    overflow-x: hidden;
+  }
+
+  /* ---------- Nav ---------- */
+  nav {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    z-index: 100;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0 2rem;
+    height: 64px;
+    background: rgba(10,14,23,.85);
+    backdrop-filter: blur(14px);
+    border-bottom: 1px solid rgba(255,255,255,.06);
+  }
+  nav .logo { font-weight: 800; font-size: 1.15rem; letter-spacing: -0.5px; }
+  nav .logo span { color: var(--green); }
+  nav ul { display: flex; gap: 1.8rem; list-style: none; }
+  nav a {
+    color: var(--muted);
+    text-decoration: none;
+    font-size: .9rem;
+    font-weight: 500;
+    transition: color .2s;
+  }
+  nav a:hover { color: var(--text); }
+
+  @media (max-width: 720px) {
+    nav ul { display: none; }
+  }
+
+  /* ---------- Hero ---------- */
+  .hero {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    text-align: center;
+    padding: 2rem;
+    position: relative;
+    background:
+      radial-gradient(ellipse at 20% 20%, rgba(45,219,110,.15), transparent 50%),
+      radial-gradient(ellipse at 80% 80%, rgba(55,66,250,.15), transparent 50%),
+      radial-gradient(ellipse at 50% 50%, rgba(255,71,87,.08), transparent 60%),
+      var(--dark);
+  }
+
+  .hero .badge {
+    display: inline-block;
+    padding: .4rem 1.2rem;
+    border: 1px solid rgba(45,219,110,.4);
+    border-radius: 100px;
+    font-size: .8rem;
+    font-weight: 600;
+    color: var(--green);
+    margin-bottom: 1.5rem;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+  }
+
+  .hero h1 {
+    font-size: clamp(2.5rem, 8vw, 5.5rem);
+    font-weight: 900;
+    line-height: 1;
+    letter-spacing: -2px;
+    margin-bottom: 1rem;
+  }
+  .hero h1 .g { color: var(--green); }
+  .hero h1 .r { color: var(--red); }
+  .hero h1 .b { color: var(--blue); }
+
+  .hero .tagline {
+    font-size: clamp(1rem, 2.5vw, 1.4rem);
+    color: var(--muted);
+    max-width: 600px;
+    margin-bottom: .5rem;
+  }
+  .hero .dates {
+    font-size: clamp(1.1rem, 3vw, 1.6rem);
+    font-weight: 700;
+    margin-bottom: 2.5rem;
+  }
+
+  .countdown {
+    display: flex;
+    gap: 1.5rem;
+    margin-bottom: 2.5rem;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  .countdown .unit {
+    background: var(--card);
+    border-radius: var(--radius);
+    padding: 1rem 1.5rem;
+    min-width: 90px;
+    border: 1px solid rgba(255,255,255,.06);
+  }
+  .countdown .num {
+    font-size: 2.2rem;
+    font-weight: 800;
+    display: block;
+    line-height: 1;
+  }
+  .countdown .lbl {
+    font-size: .75rem;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-top: .3rem;
+  }
+
+  .hero .flags {
+    font-size: 2.5rem;
+    letter-spacing: .8rem;
+  }
+
+  .scroll-hint {
+    position: absolute;
+    bottom: 2rem;
+    font-size: .8rem;
+    color: var(--muted);
+    animation: bounce 2s infinite;
+  }
+  @keyframes bounce {
+    0%,100% { transform: translateY(0); }
+    50% { transform: translateY(8px); }
+  }
+
+  /* ---------- Stats Bar ---------- */
+  .stats-bar {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 1px;
+    background: rgba(255,255,255,.06);
+    border-top: 1px solid rgba(255,255,255,.06);
+    border-bottom: 1px solid rgba(255,255,255,.06);
+  }
+  .stats-bar .stat {
+    background: var(--dark2);
+    padding: 2.5rem 1rem;
+    text-align: center;
+  }
+  .stats-bar .num {
+    font-size: clamp(2rem, 5vw, 3rem);
+    font-weight: 900;
+    background: linear-gradient(135deg, var(--green), var(--blue));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .stats-bar .lbl {
+    font-size: .85rem;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-top: .3rem;
+  }
+  @media (max-width: 600px) {
+    .stats-bar { grid-template-columns: repeat(2, 1fr); }
+  }
+
+  /* ---------- Section ---------- */
+  section.block {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 5rem 2rem;
+  }
+  .section-title {
+    font-size: clamp(1.6rem, 4vw, 2.4rem);
+    font-weight: 800;
+    margin-bottom: .5rem;
+    letter-spacing: -1px;
+  }
+  .section-sub {
+    color: var(--muted);
+    font-size: 1rem;
+    margin-bottom: 2.5rem;
+  }
+
+  /* ---------- Host Countries ---------- */
+  .countries {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1.5rem;
+  }
+  .country-card {
+    background: var(--card);
+    border-radius: var(--radius);
+    padding: 2rem;
+    text-align: center;
+    border: 1px solid rgba(255,255,255,.06);
+    transition: transform .2s, border-color .2s;
+  }
+  .country-card:hover {
+    transform: translateY(-4px);
+    border-color: rgba(255,255,255,.15);
+  }
+  .country-card .flag { font-size: 3rem; margin-bottom: .5rem; }
+  .country-card h3 { font-size: 1.3rem; margin-bottom: .2rem; }
+  .country-card .venues { color: var(--muted); font-size: .9rem; }
+  .country-card .role {
+    margin-top: .8rem;
+    font-size: .8rem;
+    color: var(--gold);
+    font-weight: 600;
+  }
+  @media (max-width: 720px) {
+    .countries { grid-template-columns: 1fr; }
+  }
+
+  /* ---------- Stadium Grid ---------- */
+  .stadium-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 1.2rem;
+  }
+  .stadium-card {
+    background: var(--card);
+    border-radius: var(--radius);
+    overflow: hidden;
+    border: 1px solid rgba(255,255,255,.06);
+    transition: transform .2s, border-color .2s;
+    cursor: default;
+  }
+  .stadium-card:hover {
+    transform: translateY(-3px);
+    border-color: rgba(45,219,110,.3);
+  }
+  .stadium-card .top {
+    padding: 1.2rem 1.2rem .5rem;
+  }
+  .stadium-card .city {
+    font-size: 1.1rem;
+    font-weight: 700;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .stadium-card .country-tag {
+    font-size: 1.2rem;
+  }
+  .stadium-card .name {
+    color: var(--muted);
+    font-size: .85rem;
+    margin-top: .2rem;
+  }
+  .stadium-card .bottom {
+    padding: .5rem 1.2rem 1.2rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .stadium-card .cap {
+    color: var(--green);
+    font-weight: 700;
+    font-size: .9rem;
+  }
+  .stadium-card .games {
+    color: var(--muted);
+    font-size: .8rem;
+  }
+  .stadium-card .final-badge {
+    display: inline-block;
+    background: linear-gradient(135deg, var(--gold), #ffaa00);
+    color: #000;
+    font-size: .7rem;
+    font-weight: 800;
+    padding: .2rem .6rem;
+    border-radius: 100px;
+    text-transform: uppercase;
+    letter-spacing: .5px;
+  }
+
+  /* ---------- Format ---------- */
+  .format-flow {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .8rem;
+    align-items: center;
+  }
+  .format-step {
+    background: var(--card);
+    border: 1px solid rgba(255,255,255,.06);
+    border-radius: 12px;
+    padding: 1rem 1.3rem;
+    min-width: 130px;
+    text-align: center;
+  }
+  .format-step .title { font-weight: 700; font-size: .95rem; }
+  .format-step .detail { color: var(--muted); font-size: .8rem; margin-top: .2rem; }
+  .format-arrow {
+    color: var(--green);
+    font-size: 1.3rem;
+    font-weight: 700;
+  }
+  @media (max-width: 600px) {
+    .format-arrow { display: none; }
+  }
+
+  /* ---------- Facts ---------- */
+  .facts {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 1rem;
+  }
+  .fact-card {
+    background: var(--card);
+    border-radius: 12px;
+    padding: 1.5rem;
+    border-left: 3px solid var(--green);
+    border-top: 1px solid rgba(255,255,255,.06);
+    border-right: 1px solid rgba(255,255,255,.06);
+    border-bottom: 1px solid rgba(255,255,255,.06);
+  }
+  .fact-card .icon { font-size: 1.5rem; margin-bottom: .5rem; }
+  .fact-card h4 { font-size: .95rem; margin-bottom: .3rem; }
+  .fact-card p { color: var(--muted); font-size: .85rem; line-height: 1.5; }
+
+  /* ---------- Footer ---------- */
+  footer {
+    text-align: center;
+    padding: 3rem 2rem;
+    border-top: 1px solid rgba(255,255,255,.06);
+    color: var(--muted);
+    font-size: .85rem;
+  }
+  footer .flags { font-size: 1.5rem; margin-bottom: .5rem; }
+
+  /* ---------- Animations ---------- */
+  .fade-up {
+    opacity: 0;
+    transform: translateY(30px);
+    transition: opacity .6s ease, transform .6s ease;
+  }
+  .fade-up.visible {
+    opacity: 1;
+    transform: translateY(0);
+  }
+</style>
+</head>
+<body>
+
+<!-- Nav -->
+<nav>
+  <div class="logo">WC<span>26</span></div>
+  <ul>
+    <li><a href="#overview">Overview</a></li>
+    <li><a href="#countries">Hosts</a></li>
+    <li><a href="#stadiums">Stadiums</a></li>
+    <li><a href="#format">Format</a></li>
+    <li><a href="#facts">Facts</a></li>
+  </ul>
+</nav>
+
+<!-- Hero -->
+<header class="hero" id="overview">
+  <div class="badge">June 11 — July 19, 2026</div>
+  <h1><span class="g">WORLD</span> <span class="r">CUP</span> <span class="b">2026</span></h1>
+  <p class="tagline">The biggest World Cup in history. 48 nations. 104 matches. 16 cities across three countries.</p>
+  <p class="dates">June 11 — July 19, 2026</p>
+
+  <div class="countdown" id="countdown">
+    <div class="unit"><span class="num" id="cd-days">--</span><span class="lbl">Days to Final</span></div>
+    <div class="unit"><span class="num" id="cd-hours">--</span><span class="lbl">Hours</span></div>
+    <div class="unit"><span class="num" id="cd-mins">--</span><span class="lbl">Minutes</span></div>
+    <div class="unit"><span class="num" id="cd-secs">--</span><span class="lbl">Seconds</span></div>
+  </div>
+
+  <div class="flags">🇺🇸 🇲🇽 🇨🇦</div>
+
+  <div class="scroll-hint">Scroll to explore ↓</div>
+</header>
+
+<!-- Stats Bar -->
+<div class="stats-bar">
+  <div class="stat"><div class="num" data-target="48">0</div><div class="lbl">Teams</div></div>
+  <div class="stat"><div class="num" data-target="104">0</div><div class="lbl">Matches</div></div>
+  <div class="stat"><div class="num" data-target="16">0</div><div class="lbl">Host Cities</div></div>
+  <div class="stat"><div class="num" data-target="3">0</div><div class="lbl">Countries</div></div>
+</div>
+
+<!-- Host Countries -->
+<section class="block" id="countries">
+  <h2 class="section-title fade-up">Three Host Nations</h2>
+  <p class="section-sub fade-up">The first World Cup hosted across three countries.</p>
+  <div class="countries">
+    <div class="country-card fade-up">
+      <div class="flag">🇺🇸</div>
+      <h3>United States</h3>
+      <p class="venues">11 host cities</p>
+      <p class="role">Final host — MetLife Stadium, New York/New Jersey</p>
+    </div>
+    <div class="country-card fade-up">
+      <div class="flag">🇲🇽</div>
+      <h3>Mexico</h3>
+      <p class="venues">3 host cities</p>
+      <p class="role">Opening match — Mexico City (3rd time hosting)</p>
+    </div>
+    <div class="country-card fade-up">
+      <div class="flag">🇨🇦</div>
+      <h3>Canada</h3>
+      <p class="venues">2 host cities</p>
+      <p class="role">First men's World Cup host debut</p>
+    </div>
+  </div>
+</section>
+
+<!-- Stadiums -->
+<section class="block" id="stadiums">
+  <h2 class="section-title fade-up">16 Stadiums</h2>
+  <p class="section-sub fade-up">Iconic venues from Boston to Vancouver to Mexico City.</p>
+  <div class="stadium-grid" id="stadium-grid"></div>
+</section>
+
+<!-- Format -->
+<section class="block" id="format">
+  <h2 class="section-title fade-up">Tournament Format</h2>
+  <p class="section-sub fade-up">A brand-new format with 48 teams for the first time.</p>
+  <div class="format-flow fade-up" id="format-flow"></div>
+</section>
+
+<!-- Facts -->
+<section class="block" id="facts">
+  <h2 class="section-title fade-up">Record-Breaking Facts</h2>
+  <p class="section-sub fade-up">What makes the 2026 World Cup unlike any before it.</p>
+  <div class="facts" id="facts-grid"></div>
+</section>
+
+<!-- Footer -->
+<footer>
+  <div class="flags">🇺🇸 🇲🇽 🇨🇦</div>
+  <p>FIFA World Cup 2026 — Tournament Overview</p>
+  <p style="margin-top:.3rem; font-size:.75rem;">Built as a demo. Data accurate as of June 2026.</p>
+</footer>
+
+<script>
+// ---------- Data ----------
+const stadiums = [
+  // USA (11)
+  { city: "New York / New Jersey", name: "MetLife Stadium", country: "🇺🇸", cap: 82500, games: 8, special: "Final" },
+  { city: "Dallas", name: "AT&T Stadium", country: "🇺🇸", cap: 94000, games: 9, special: "Most matches" },
+  { city: "Los Angeles", name: "SoFi Stadium", country: "🇺🇸", cap: 70000, games: 8 },
+  { city: "Atlanta", name: "Mercedes-Benz Stadium", country: "🇺🇸", cap: 71000, games: 8, special: "Semifinal" },
+  { city: "Houston", name: "NRG Stadium", country: "🇺🇸", cap: 72000, games: 7 },
+  { city: "Kansas City", name: "Arrowhead Stadium", country: "🇺🇸", cap: 76000, games: 6 },
+  { city: "Miami", name: "Hard Rock Stadium", country: "🇺🇸", cap: 65000, games: 7 },
+  { city: "Philadelphia", name: "Lincoln Financial Field", country: "🇺🇸", cap: 69000, games: 6 },
+  { city: "Boston", name: "Gillette Stadium", country: "🇺🇸", cap: 65000, games: 6, special: "Quarterfinal" },
+  { city: "Seattle", name: "Lumen Field", country: "🇺🇸", cap: 69000, games: 6 },
+  { city: "San Francisco Bay Area", name: "Levi's Stadium", country: "🇺🇸", cap: 68500, games: 6 },
+  // Mexico (3)
+  { city: "Mexico City", name: "Estadio Azteca", country: "🇲🇽", cap: 87523, games: 5, special: "Opening match" },
+  { city: "Guadalajara", name: "Estadio Akron", country: "🇲🇽", cap: 49000, games: 4 },
+  { city: "Monterrey", name: "Estadio BBVA", country: "🇲🇽", cap: 53500, games: 4 },
+  // Canada (2)
+  { city: "Toronto", name: "BMO Field", country: "🇨🇦", cap: 45000, games: 6 },
+  { city: "Vancouver", name: "BC Place", country: "🇨🇦", cap: 54500, games: 5 },
+];
+
+const formatSteps = [
+  { title: "Group Stage", detail: "12 groups (A–L) of 4 teams · 72 matches" },
+  { title: "Round of 32", detail: "Top 2 + 8 best 3rd-place teams · 16 matches" },
+  { title: "Round of 16", detail: "8 matches" },
+  { title: "Quarterfinals", detail: "4 matches" },
+  { title: "Semifinals", detail: "2 matches" },
+  { title: "Final", detail: "July 19 · MetLife Stadium" },
+];
+
+const facts = [
+  { icon: "🏆", title: "First 48-team World Cup", text: "Expanded from 32 to 48 nations — the largest field in tournament history." },
+  { icon: "🌎", title: "Three host countries", text: "The first World Cup co-hosted by three nations across North America." },
+  { icon: "🏟️", title: "16 stadiums, most since 2002", text: "Matches spread across 16 venues in 16 cities — the most since Japan/Korea." },
+  { icon: "📊", title: "104 total matches", text: "Up from 64 in previous editions — more football than ever before." },
+  { icon: "🇲🇽", title: "Mexico hosts for a 3rd time", text: "Mexico becomes the first country to host the men's World Cup three times (1970, 1986, 2026)." },
+  { icon: "📅", title: "39-day spectacle", text: "From the opening match on June 11 to the final on July 19 — over five weeks of football." },
+];
+
+// ---------- Render Stadiums ----------
+const grid = document.getElementById("stadium-grid");
+stadiums.forEach(s => {
+  const card = document.createElement("div");
+  card.className = "stadium-card fade-up";
+  card.innerHTML = `
+    <div class="top">
+      <div class="city">${s.city} <span class="country-tag">${s.country}</span></div>
+      <div class="name">${s.name}</div>
+    </div>
+    <div class="bottom">
+      <span class="cap">${s.cap.toLocaleString()} seats</span>
+      ${s.special ? `<span class="final-badge">${s.special}</span>` : `<span class="games">${s.games} matches</span>`}
+    </div>
+  `;
+  grid.appendChild(card);
+});
+
+// ---------- Render Format ----------
+const ff = document.getElementById("format-flow");
+formatSteps.forEach((step, i) => {
+  const el = document.createElement("div");
+  el.className = "format-step fade-up";
+  el.innerHTML = `<div class="title">${step.title}</div><div class="detail">${step.detail}</div>`;
+  ff.appendChild(el);
+  if (i < formatSteps.length - 1) {
+    const arrow = document.createElement("div");
+    arrow.className = "format-arrow";
+    arrow.textContent = "→";
+    ff.appendChild(arrow);
+  }
+});
+
+// ---------- Render Facts ----------
+const fg = document.getElementById("facts-grid");
+facts.forEach(f => {
+  const card = document.createElement("div");
+  card.className = "fact-card fade-up";
+  card.innerHTML = `<div class="icon">${f.icon}</div><h4>${f.title}</h4><p>${f.text}</p>`;
+  fg.appendChild(card);
+});
+
+// ---------- Countdown to Final (July 19, 2026) ----------
+const finalDate = new Date("2026-07-19T15:00:00-04:00");
+function tick() {
+  const now = new Date();
+  const diff = finalDate - now;
+  if (diff <= 0) {
+    document.getElementById("cd-days").textContent = "0";
+    document.getElementById("cd-hours").textContent = "0";
+    document.getElementById("cd-mins").textContent = "0";
+    document.getElementById("cd-secs").textContent = "0";
+    return;
+  }
+  const d = Math.floor(diff / 86400000);
+  const h = Math.floor((diff % 86400000) / 3600000);
+  const m = Math.floor((diff % 3600000) / 60000);
+  const s = Math.floor((diff % 60000) / 1000);
+  document.getElementById("cd-days").textContent = d;
+  document.getElementById("cd-hours").textContent = h;
+  document.getElementById("cd-mins").textContent = m;
+  document.getElementById("cd-secs").textContent = s;
+}
+tick();
+setInterval(tick, 1000);
+
+// ---------- Animated Stat Counters ----------
+const counters = document.querySelectorAll(".stats-bar .num");
+const counterObserver = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting) {
+      const el = entry.target;
+      const target = parseInt(el.dataset.target);
+      let current = 0;
+      const step = Math.ceil(target / 40);
+      const interval = setInterval(() => {
+        current += step;
+        if (current >= target) {
+          current = target;
+          clearInterval(interval);
+        }
+        el.textContent = current;
+      }, 25);
+      counterObserver.unobserve(el);
+    }
+  });
+}, { threshold: 0.5 });
+counters.forEach(c => counterObserver.observe(c));
+
+// ---------- Fade-Up on Scroll ----------
+const fadeObserver = new IntersectionObserver((entries) => {
+  entries.forEach((entry, i) => {
+    if (entry.isIntersecting) {
+      setTimeout(() => entry.target.classList.add("visible"), i * 60);
+      fadeObserver.unobserve(entry.target);
+    }
+  });
+}, { threshold: 0.1 });
+document.querySelectorAll(".fade-up").forEach(el => fadeObserver.observe(el));
+</script>
+</body>
+</html>
