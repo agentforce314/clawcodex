@@ -376,7 +376,7 @@ class AgentBridge:
                 getattr(self._tool_context, "output_style_dir", None),
             ).prompt
             effective_system_prompt = build_effective_system_prompt(
-                _style_prompt, self._tool_context,
+                _style_prompt, self._tool_context, provider=self._provider,
             )
 
             def _persist(msg: Any) -> None:

@@ -94,7 +94,7 @@ def run_query_as_agent_loop_sync(
         getattr(tool_context, "output_style_dir", None),
     ).prompt
     effective_system_prompt = build_effective_system_prompt(
-        style_prompt, tool_context,
+        style_prompt, tool_context, provider=provider,
     )
 
     def _persist(msg: Any) -> None:
@@ -139,22 +139,77 @@ def run_query_as_agent_loop_sync(
     )
 
 
-def build_effective_system_prompt(style_prompt: str, tool_context: ToolContext) -> str:
-    """Assemble the cold-start system prompt for headless+TUI cutover.
+def build_effective_system_prompt(
+    style_prompt: str,
+    tool_context: ToolContext,
+    *,
+    provider: Any | None = None,
+    mcp_servers: list[Any] | None = None,
+    query_source: str = "main",
+) -> list[dict[str, Any]]:
+    """Assemble the cold-start system prompt for the headless+TUI cutover.
 
-    Combines the user's output-style prompt with the workspace
-    context block (CLAUDE.md, git status, cwd) produced by
-    ``build_context_prompt``. Lives here because the only callers are
-    the F.2/F.3 cutover code in ``src/entrypoints/headless.py`` and
-    ``src/tui/agent_bridge.py``; the canonical query() loop expects
-    the system_prompt pre-built (per its QueryParams.system_prompt
-    contract) so the cutover code uses this helper to match what
-    the legacy ``run_agent_loop`` did internally.
+    Returns the FULL system prompt as a **block list** (``list[dict]``) so the
+    ``query()`` loop still engages prompt caching: the canonical base sections
+    (``build_full_system_prompt_blocks`` — intro / # Doing tasks / # Executing
+    actions / # Using your tools / # Tone / output-efficiency / env / memory /
+    skills / …) with the resolved output-style prompt **appended**, then the
+    existing workspace + git + CLAUDE.md context preserved as a trailing
+    (uncached) block.
+
+    Why this exists: the TUI (``tui/agent_bridge.py``) and headless
+    (``entrypoints/headless.py``) cutover routes through ``query()``, which
+    passes ``params.system_prompt`` **verbatim** to the model — it has no base
+    build of its own. The engine/REPL path (``engine.py:124-188``) does the
+    canonical build when ``system_prompt`` is unset, but the cutover pre-sets
+    it, so before this fix the live TUI/headless agent received **no base
+    instructions** at all (only the style line + context). This helper restores
+    them, mirroring the engine's ``build_full_system_prompt_blocks`` +
+    ``append_system_prompt`` shape.
+
+    CLAUDE.md note: ``build_full_system_prompt_blocks``' memory section is
+    *auto-memory* (``MEMORY.md`` via ``load_memory_prompt``), **not** CLAUDE.md.
+    On the engine path CLAUDE.md is injected into the *messages* via
+    ``prepend_user_context``; the cutover does not do that, so we keep
+    ``build_context_prompt`` (which emits ``## Project Instructions``) to
+    preserve CLAUDE.md — option (b) in
+    ``my-docs/get-parity-by-folder/live-base-system-prompt-gap-analysis.md``.
+    This overlaps the base ``# Environment`` section on CWD/date (a benign,
+    documented duplication).
+
+    ``tools``/``tool_registry`` are deliberately NOT passed to
+    ``build_full_system_prompt_blocks`` (matching ``engine.py:167``): tool
+    schemas reach the model via the API ``tools=`` param, so emitting a prose
+    tool-docs section here would double-send them. ``provider``/``mcp_servers``
+    feed only the global cache-scope gate; ``None`` is safe (disables the
+    cross-user global scope, which TUI/headless should not use).
     """
-    # Local import — context_system is a heavier dep; only the cutover
-    # callers need it, no need to drag it into agent_loop_compat's
-    # import time.
+    # Local imports — context_system is a heavier dep; only the cutover
+    # callers need it, no need to drag it into agent_loop_compat's import time.
     from ..context_system import build_context_prompt
+    from ..context_system.prompt_assembly import build_full_system_prompt_blocks
+
+    cwd = str(tool_context.cwd or tool_context.workspace_root)
+
+    # Skills listing (best-effort; mirrors engine.py:183).
+    try:
+        from ..command_system import get_skill_tool_commands
+        skills = get_skill_tool_commands(cwd)
+    except Exception:
+        skills = None
+
+    blocks = build_full_system_prompt_blocks(
+        cwd=cwd,
+        output_style="default",          # style is appended below (mirror engine.py:169)
+        append_system_prompt=style_prompt,
+        query_source=query_source,
+        provider=provider,
+        mcp_servers=mcp_servers,
+        skills=skills,
+    )
+
+    # Preserve the existing workspace + git + CLAUDE.md context verbatim as a
+    # trailing uncached block (CLAUDE.md is NOT in the base blocks above).
     try:
         context_prompt = build_context_prompt(
             tool_context.workspace_root,
@@ -162,9 +217,10 @@ def build_effective_system_prompt(style_prompt: str, tool_context: ToolContext) 
         )
     except Exception:
         context_prompt = ""
-    if not context_prompt.strip():
-        return style_prompt
-    return f"{style_prompt}\n\n{context_prompt}"
+    if context_prompt.strip():
+        blocks = blocks + [{"type": "text", "text": context_prompt}]
+
+    return blocks
 
 
 @dataclass(frozen=True)
