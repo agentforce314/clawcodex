@@ -5,10 +5,15 @@ from __future__ import annotations
 import unittest
 from unittest.mock import Mock, patch, MagicMock
 from pathlib import Path
+import asyncio
+import gc
+import sys
 import tempfile
 import json
 import threading
 import time
+import types
+import warnings
 from rich.markdown import Markdown
 
 import src.config as config_module
@@ -745,6 +750,72 @@ class TestREPL(unittest.TestCase):
                 "localSettings", []
             ),
         )
+
+
+class TestSafeInputLoopGuard(unittest.TestCase):
+    """``_safe_input`` must not invoke the synchronous ``prompt_toolkit.prompt``
+    while an asyncio event loop is running in the calling thread.
+
+    The sync prompt drives ``loop.run_until_complete(Application.run_async())``
+    internally; nested inside an already-running loop it raises and leaks the
+    ``Application.run_async`` coroutine un-awaited -> a ``RuntimeWarning``. Off
+    the loop it must still reach the rich prompt_toolkit editor. A fake
+    ``prompt_toolkit`` module makes the test deterministic regardless of whether
+    the package (or a TTY) is available in the test environment.
+    """
+
+    def _make_repl(self):
+        # Skip the heavy __init__; _do_read only reads _active_live_status.
+        repl = ClawcodexREPL.__new__(ClawcodexREPL)
+        repl._active_live_status = None
+        return repl
+
+    @staticmethod
+    def _fake_pt(calls):
+        mod = types.ModuleType("prompt_toolkit")
+
+        def fake_prompt(prompt):  # mirrors prompt_toolkit.prompt's signature
+            calls.append(prompt)
+            return "from-pt"
+
+        mod.prompt = fake_prompt
+        return mod
+
+    def test_off_loop_uses_prompt_toolkit(self):
+        """No running loop -> the rich prompt_toolkit editor is used."""
+        calls: list[str] = []
+        repl = self._make_repl()
+        with patch.dict(sys.modules, {"prompt_toolkit": self._fake_pt(calls)}), \
+                patch("src.repl.core._HAS_PROMPT_TOOLKIT", True):
+            result = repl._safe_input("Q> ")
+        self.assertEqual(result, "from-pt")
+        self.assertEqual(calls, ["Q> "])
+
+    def test_on_loop_skips_prompt_toolkit_and_does_not_leak(self):
+        """Running loop -> prompt_toolkit is skipped (it would leak an
+        un-awaited ``Application.run_async`` coroutine); ``input()`` is used
+        and no RuntimeWarning escapes."""
+        calls: list[str] = []
+        repl = self._make_repl()
+
+        async def run():
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                with patch.dict(
+                    sys.modules, {"prompt_toolkit": self._fake_pt(calls)}
+                ), patch("src.repl.core._HAS_PROMPT_TOOLKIT", True), patch(
+                    "builtins.input", return_value="typed"
+                ):
+                    val = repl._safe_input("Q> ")
+                gc.collect()
+                gc.collect()
+            leaks = [w for w in caught if "never awaited" in str(w.message)]
+            return val, leaks
+
+        val, leaks = asyncio.run(run())
+        self.assertEqual(val, "typed")  # input() fallback, not prompt_toolkit
+        self.assertEqual(calls, [])  # prompt_toolkit never attempted
+        self.assertEqual(leaks, [])  # no un-awaited-coroutine RuntimeWarning
 
 
 class TestConversation(unittest.TestCase):

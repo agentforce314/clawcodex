@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import threading
 import time
+from unittest.mock import patch
 
 import pytest
 
@@ -114,6 +115,53 @@ def test_on_expand_callback_wired() -> None:
         assert cb is not None
         cb()
     assert called == ["ok"]
+
+
+def test_lifecycle_does_not_trigger_loop_exception_handler() -> None:
+    """Regression: a start -> update -> paused -> stop cycle must not push any
+    exception onto the prompt_toolkit Application's loop exception handler.
+
+    In a non-TTY context (headless pytest) the Application exits on its own
+    (EOF) before ``_stop`` runs. The old ``_stop`` then called ``app.exit()``
+    unconditionally, hitting "Return value already set". prompt_toolkit routes
+    that to the loop exception handler (``Application._handle_exception``),
+    which does ``ensure_future(in_term())`` to print the traceback — and that
+    ``in_term`` task is destroyed pending at ``loop.close()``, leaking
+    ``RuntimeWarning: coroutine '...in_term' was never awaited`` (the symptom
+    is GC-timed, so we assert on its deterministic root cause instead). The
+    guarded exit in ``_stop`` must keep the handler from ever firing.
+    """
+    import prompt_toolkit.application.application as appmod
+
+    fired: list[object] = []
+    # Record (and swallow) anything reaching the handler so a regression
+    # surfaces as captured context here rather than as a GC-timed warning at
+    # some unrelated test's teardown. Not delegating to the real handler keeps
+    # this test from itself scheduling the leaking in_term task.
+    def recording_handler(self, loop, context):  # noqa: ANN001
+        fired.append(context.get("exception") or context.get("message"))
+
+    with patch.object(appmod.Application, "_handle_exception", recording_handler):
+        for i in range(6):
+            status = LiveStatus(f"working {i}")
+            with status:
+                time.sleep(0.02)
+                status.update(f"step {i}")
+                with status.paused():
+                    pass
+
+    assert fired == [], (
+        "prompt_toolkit's loop exception handler fired during a normal "
+        f"LiveStatus lifecycle (it schedules a leaking in_term task): {fired}"
+    )
+    # The guard must not strand the background thread: a skipped exit() only
+    # happens when the app already finished, so every cycle still tears down.
+    live = [
+        t
+        for t in threading.enumerate()
+        if t.name == "clawcodex-live-status" and t.is_alive()
+    ]
+    assert live == [], f"LiveStatus threads stranded after teardown: {live}"
 
 
 def test_paused_context_releases_and_restores_application() -> None:
