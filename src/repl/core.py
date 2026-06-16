@@ -2048,8 +2048,11 @@ class ClawcodexREPL:
 
         Tries ``prompt_toolkit.prompt`` first because it cooperates with
         :func:`prompt_toolkit.patch_stdout.patch_stdout`. Falls back to
-        bare ``input()`` if prompt_toolkit isn't available or the runtime
-        can't open a TTY (e.g. piped stdin).
+        bare ``input()`` if prompt_toolkit isn't available, an asyncio
+        event loop is already running in this thread (the sync prompt
+        can't nest inside one — it would leak an un-awaited
+        ``Application.run_async`` coroutine), or the runtime can't open a
+        TTY (e.g. piped stdin).
 
         If a :class:`~src.repl.live_status.LiveStatus` is currently
         mounted (we're inside ``chat()``), pause it for the duration of
@@ -2061,7 +2064,25 @@ class ClawcodexREPL:
         live = self._active_live_status
 
         def _do_read() -> str:
-            if _HAS_PROMPT_TOOLKIT:
+            # ``prompt_toolkit.prompt`` (sync) internally drives a fresh
+            # ``Application`` via ``loop.run_until_complete``, which can't
+            # nest inside an already-running loop: it builds an
+            # ``Application.run_async`` coroutine, the nested run raises, and
+            # the coroutine is GC'd un-awaited -> RuntimeWarning. We can't
+            # assume a fixed thread per caller — the permission handler runs
+            # on the agent's loop thread, while sync tools like
+            # AskUserQuestion are offloaded to a worker thread via
+            # ``asyncio.to_thread`` — so we detect a running loop at read
+            # time. If one is running, skip prompt_toolkit and use blocking
+            # ``input()`` (it could not have worked anyway); otherwise — the
+            # idle ``❯`` prompt and the ``ui_host`` worker-thread read — keep
+            # the rich prompt_toolkit editor.
+            loop_running = True
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                loop_running = False
+            if _HAS_PROMPT_TOOLKIT and not loop_running:
                 try:
                     from prompt_toolkit import prompt as pt_prompt
 
@@ -2743,7 +2764,7 @@ class ClawcodexREPL:
 - Use Tab for command completion
 - Press Ctrl+C to interrupt current operation
 - Press Ctrl+D to exit
-- Multi-line input: Shift+Enter, Meta/Alt+Enter, or `\` + Enter inserts a newline; plain Enter submits
+- Multi-line input: Shift+Enter, Meta/Alt+Enter, or `\\` + Enter inserts a newline; plain Enter submits
 """
         self.console.print(Markdown(help_text))
 
