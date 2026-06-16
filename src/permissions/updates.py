@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
 from .rule_parser import (
@@ -415,3 +415,238 @@ def create_read_rule_suggestion(
         behavior="allow",
         destination=destination,
     )
+
+
+# ---------------------------------------------------------------------------
+# Per-tool "allow for the whole session" suggestions + labels
+# ---------------------------------------------------------------------------
+#
+# Mirrors the original Claude Code per-tool permission option set:
+#   typescript/src/components/permissions/FilePermissionDialog/permissionOptions.tsx
+#   typescript/src/utils/permissions/filesystem.ts:generateSuggestions (1436)
+#   typescript/src/components/permissions/FallbackPermissionRequest.tsx
+#
+# Adapted to the mechanisms the Python matcher (check.py) actually honors:
+#   * a file edit's "allow all edits during this session" maps to
+#     ``setMode:acceptEdits`` (honored by ``has_permissions_to_use_tool_inner``),
+#   * edits/reads whose target is outside the working roots also grant the
+#     directory (``addDirectories``, bridged into ``ToolContext.allowed_roots``),
+#   * Bash keeps its command-prefix rule (``suggestions_for_bash_command``),
+#   * every other tool gets a content-less allow rule (matched by
+#     ``tool_always_allowed_rule`` for any tool).
+#
+# Persistence destinations match the original exactly: file edits/reads apply
+# in-memory (``session``); Bash and other tools persist (``localSettings``).
+
+FILE_EDIT_TOOL_NAMES: tuple[str, ...] = ("Write", "Edit", "MultiEdit", "NotebookEdit")
+FILE_READ_TOOL_NAMES: tuple[str, ...] = ("Read", "Glob", "Grep")
+
+# Interaction / meta tools render their own dialogs in the original and never
+# carry a "don't ask again" option — never mint a session rule for them.
+_NO_SESSION_OPTION_TOOLS: frozenset[str] = frozenset(
+    {"AskUserQuestion", "EnterPlanMode", "ExitPlanMode"}
+)
+
+# NB: the original surfaces this option with a "(shift+tab)" hint, because there
+# the key cycles permission modes. This port has the cycle *logic*
+# (``src.permissions.cycle.cycle_permission_mode``) but no keybinding wired to
+# it — mode changes go through the ``/permissions`` command — so advertising the
+# shortcut would promise a keypress that does nothing. The hint is intentionally
+# omitted until a shift+tab binding exists.
+
+_PATH_INPUT_KEYS: tuple[str, ...] = ("file_path", "notebook_path", "path")
+
+
+def _tool_input_path(tool_input: dict[str, Any] | None) -> str | None:
+    if not tool_input:
+        return None
+    for key in _PATH_INPUT_KEYS:
+        value = tool_input.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _abs_path(file_path: str) -> str:
+    return os.path.abspath(os.path.expanduser(file_path))
+
+
+def _resolve(path: str) -> Path:
+    try:
+        return Path(path).resolve()
+    except OSError:
+        return Path(_abs_path(path))
+
+
+def _path_within_roots(
+    file_path: str, allowed_roots: tuple[str, ...] | None
+) -> bool:
+    """Whether ``file_path`` lives under one of ``allowed_roots``.
+
+    ``allowed_roots is None`` means "unknown" — assume inside so we do not
+    suggest a directory grant the matcher would never need. The real matcher
+    still gates access; this only shapes the suggestion/label.
+    """
+    if not allowed_roots:
+        return True
+    target = _resolve(file_path)
+    for root in allowed_roots:
+        try:
+            target.relative_to(_resolve(root))
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+def _grant_directory(tool_name: str, path: str) -> str | None:
+    """The directory to grant for an out-of-roots access.
+
+    Search tools (Glob/Grep) pass a directory as their target; file tools pass
+    a file, so we grant its parent. Mirrors TS ``getDirectoryForPath``.
+
+    Returns ``None`` for a filesystem-root grant (``/``) so we never register
+    the whole filesystem as a session working directory — same guard
+    :func:`create_read_rule_suggestion` already applies.
+    """
+    if tool_name in ("Glob", "Grep"):
+        directory = _abs_path(path)
+    else:
+        directory = os.path.dirname(_abs_path(path))
+    if not directory or directory == "/":
+        return None
+    return directory
+
+
+def default_session_suggestions(
+    tool_name: str,
+    tool_input: dict[str, Any] | None,
+    perm_context: ToolPermissionContext | None = None,
+    *,
+    allowed_roots: tuple[str, ...] | None = None,
+) -> list[PermissionUpdate]:
+    """Build the "allow for the whole session" updates for ``tool_name``.
+
+    Returns the :class:`PermissionUpdate` list an "always allow" choice would
+    apply. Empty list = no session option for this ask.
+    """
+    if tool_name in _NO_SESSION_OPTION_TOOLS:
+        return []
+    tool_input = tool_input or {}
+    mode = getattr(perm_context, "mode", "default")
+
+    # Bash: command-prefix rule, persisted (unchanged behavior).
+    if tool_name == "Bash":
+        command = tool_input.get("command", "")
+        if isinstance(command, str) and command.strip():
+            from .bash_suggestions import suggestions_for_bash_command
+
+            return suggestions_for_bash_command(command)
+        return []
+
+    # File edits: setMode acceptEdits (+ addDirectories when outside roots).
+    if tool_name in FILE_EDIT_TOOL_NAMES:
+        updates: list[PermissionUpdate] = []
+        if mode in ("default", "plan"):
+            updates.append(
+                PermissionUpdateSetMode(destination="session", mode="acceptEdits")
+            )
+        path = _tool_input_path(tool_input)
+        if path and not _path_within_roots(path, allowed_roots):
+            grant = _grant_directory(tool_name, path)
+            if grant is not None:
+                updates.append(
+                    PermissionUpdateAddDirectories(
+                        destination="session",
+                        directories=(grant,),
+                    )
+                )
+        return updates
+
+    # File reads/search: content-less session rule for the tool (+ a directory
+    # grant when the target is outside roots so execution is permitted too).
+    if tool_name in FILE_READ_TOOL_NAMES:
+        updates = [
+            PermissionUpdateAddRules(
+                destination="session",
+                behavior="allow",
+                rules=(PermissionRuleValue(tool_name=tool_name),),
+            )
+        ]
+        path = _tool_input_path(tool_input)
+        if path and not _path_within_roots(path, allowed_roots):
+            grant = _grant_directory(tool_name, path)
+            if grant is not None:
+                updates.append(
+                    PermissionUpdateAddDirectories(
+                        destination="session",
+                        directories=(grant,),
+                    )
+                )
+        return updates
+
+    # Every other tool (WebFetch, Skill, MCP, …): persisted content-less rule.
+    if tool_name:
+        return [
+            PermissionUpdateAddRules(
+                destination="localSettings",
+                behavior="allow",
+                rules=(PermissionRuleValue(tool_name=tool_name),),
+            )
+        ]
+    return []
+
+
+def _directory_label(directories: tuple[str, ...]) -> str:
+    if not directories:
+        return "this directory"
+    return os.path.basename(directories[0].rstrip("/")) or "this directory"
+
+
+def session_option_label(
+    suggestions: tuple[PermissionUpdate, ...] | list[PermissionUpdate],
+    tool_name: str | None = None,
+    tool_input: dict[str, Any] | None = None,
+) -> str | None:
+    """Human label for the session option, rendered as ``f"Yes, {label}"``.
+
+    Mirrors the per-tool option text in the original (permissionOptions.tsx /
+    FallbackPermissionRequest.tsx). Returns ``None`` when there is nothing to
+    offer (the caller then omits the option).
+    """
+    suggestions = tuple(suggestions or ())
+    if not suggestions:
+        return None
+
+    dir_update = next(
+        (
+            u
+            for u in suggestions
+            if isinstance(u, PermissionUpdateAddDirectories) and u.directories
+        ),
+        None,
+    )
+    has_accept_edits = any(
+        isinstance(u, PermissionUpdateSetMode) and u.mode == "acceptEdits"
+        for u in suggestions
+    )
+
+    # File edits — "allow all edits [in <dir>/] during this session".
+    if has_accept_edits or tool_name in FILE_EDIT_TOOL_NAMES:
+        if dir_update:
+            name = _directory_label(dir_update.directories)
+            return f"allow all edits in {name}/ during this session"
+        return "allow all edits during this session"
+
+    # File reads — "allow reading from <dir>/ during this session" / generic.
+    if tool_name in FILE_READ_TOOL_NAMES:
+        if dir_update:
+            name = _directory_label(dir_update.directories)
+            return f"allow reading from {name}/ during this session"
+        return "allow reading during this session"
+
+    # Bash and every other tool — "and don't ask again for <rule(s)>".
+    base = suggestions_label(suggestions)
+    if base:
+        return f"and {base}"
+    return None
