@@ -29,9 +29,11 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "gpt-4o-mini": 128_000,
     "gpt-4-turbo": 128_000,
     "gpt-4": 128_000,
-    # GLM / Minimax defaults
-    "glm-4": 128_000,
-    "glm-4-flash": 128_000,
+    # Z.ai GLM Coding Plan
+    "glm-5.2": 1_000_000,
+    "glm-5.1": 202_752,
+    "glm-4": 128_000,  # legacy GLM-4.x fallback
+    # Minimax defaults
     "minimax": 128_000,
     "abab": 128_000,
 }

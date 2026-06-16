@@ -26,8 +26,8 @@ need no UI; only the no-args picker needs a surface (``NullUIHost.select`` raise
     and TS ``'default'``-reset (no provider-default reachable from ``CommandContext``).
   * **Validation = alias-resolve + membership** in ``provider.get_available_models()`` (the
     list the picker uses), not TS's network ``validateModel``. Makes "Model 'x' not found"
-    reachable. ``MODEL_ALIASES`` is Claude-only, so on non-Anthropic providers (incl. GLM —
-    the REPL default, whose ``get_available_models()`` lists ``zai/glm-5``) set-by-name needs
+    reachable. ``MODEL_ALIASES`` is Claude-only, so on non-Anthropic providers (incl. Z.ai —
+    the REPL default, whose ``get_available_models()`` lists ``GLM-5.1``/``GLM-5.2``) set-by-name needs
     the **exact listed id**; the picker is the ergonomic path there.
   * **Static description** ("Set the AI model"); TS's is dynamic ``…(currently {model})`` — a
     frozen ``CommandBase.description: str`` can't be a getter. ``current`` shows the live model.

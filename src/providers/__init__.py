@@ -69,24 +69,14 @@ PROVIDER_INFO: dict[str, ProviderInfo] = {
             "gpt-3.5-turbo",
         ],
     },
-    "glm": {
-        "label": "Zhipu GLM (z.ai)",
-        "default_base_url": "https://open.bigmodel.cn/api/paas/v4",
-        "default_model": "zai/glm-5",
+    "zai": {
+        "label": "Z.ai (GLM Coding)",
+        "default_base_url": "https://api.z.ai/api/coding/paas/v4",
+        "default_model": "GLM-5.1",
         "available_models": [
-            # GLM-5 series (latest, requires zai/ prefix)
-            "zai/glm-5",
-            "zai/glm-5-turbo",
-            # GLM-4 series (standard, zai/ prefix)
-            "zai/glm-4",
-            "zai/glm-4-plus",
-            "zai/glm-4-air",
-            "zai/glm-4-flash",
-            "zai/glm-4.5",
-            "zai/glm-4.6",
-            "zai/glm-4.7",
-            # GLM-3 series (legacy)
-            "zai/glm-3-turbo",
+            # GLM Coding Plan (Z.ai direct, OpenAI-compatible)
+            "GLM-5.1",  # stable default
+            "GLM-5.2",  # opt-in preview
         ],
     },
     "minimax": {
@@ -173,15 +163,36 @@ PROVIDER_INFO: dict[str, ProviderInfo] = {
 }
 
 
+# Legacy / alternate provider names accepted during resolution. ``glm`` is the
+# pre-rename id for Z.ai (Zhipu rebranded as z.ai); ``z-ai`` / ``z_ai`` /
+# ``z.ai`` mirror CodeWhale's accepted spellings. Aliases are normalized in
+# ``get_provider_class`` / ``get_provider_info`` only — config lookups
+# (``get_provider_config``) stay literal so a ``[providers.glm]`` block written
+# before the rename still resolves by its own key.
+PROVIDER_ALIASES: dict[str, str] = {
+    "glm": "zai",
+    "z-ai": "zai",
+    "z_ai": "zai",
+    "z.ai": "zai",
+}
+
+
+def _canonical_provider_name(provider_name: str) -> str:
+    """Resolve a legacy/alternate provider spelling to its canonical id."""
+    return PROVIDER_ALIASES.get(provider_name, provider_name)
+
+
 def get_provider_info(provider_name: str) -> ProviderInfo:
-    """Get provider info by name."""
-    if provider_name not in PROVIDER_INFO:
+    """Get provider info by name (legacy aliases accepted)."""
+    canonical = _canonical_provider_name(provider_name)
+    if canonical not in PROVIDER_INFO:
         raise ValueError(f"Unknown provider: {provider_name}")
-    return PROVIDER_INFO[provider_name]
+    return PROVIDER_INFO[canonical]
 
 
 def get_provider_class(provider_name: str):
-    """Get provider class by name."""
+    """Get provider class by name (legacy aliases accepted)."""
+    provider_name = _canonical_provider_name(provider_name)
     if provider_name == "anthropic":
         from .anthropic_provider import AnthropicProvider
 
@@ -190,10 +201,10 @@ def get_provider_class(provider_name: str):
         from .openai_provider import OpenAIProvider
 
         return OpenAIProvider
-    if provider_name == "glm":
-        from .glm_provider import GLMProvider
+    if provider_name == "zai":
+        from .zai_provider import ZaiProvider
 
-        return GLMProvider
+        return ZaiProvider
     if provider_name == "minimax":
         from .minimax_provider import MinimaxProvider
 

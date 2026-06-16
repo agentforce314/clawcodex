@@ -26,7 +26,6 @@ classifiers = [
 dependencies = [
     "anthropic",
     "openai",
-    "zhipuai",
     "python-dotenv",
     "rich",
     "prompt-toolkit",
