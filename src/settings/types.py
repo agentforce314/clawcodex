@@ -38,6 +38,18 @@ class OutputStyleSettings:
 
 
 @dataclass
+class SpinnerVerbsSettings:
+    """Custom spinner-verb configuration.
+
+    Mirrors TS ``settings/types.ts:695`` (``spinnerVerbs``). ``mode``:
+    ``"append"`` adds ``verbs`` to the built-in defaults; ``"replace"``
+    uses only ``verbs``. See :mod:`src.constants.spinner_verbs`.
+    """
+    mode: str = "append"  # "append" | "replace"
+    verbs: list[str] = field(default_factory=list)
+
+
+@dataclass
 class CompactSettings:
     """Compaction settings."""
     auto_compact: bool = True
@@ -123,6 +135,9 @@ class SettingsSchema:
     # Output
     output_style: OutputStyleSettings = field(default_factory=OutputStyleSettings)
 
+    # Spinner verbs (None = built-in defaults)
+    spinner_verbs: SpinnerVerbsSettings | None = None
+
     # Compact
     compact: CompactSettings = field(default_factory=CompactSettings)
 
@@ -201,6 +216,8 @@ class SettingsSchema:
             ]
         if "output_style" in known and isinstance(known["output_style"], dict):
             known["output_style"] = OutputStyleSettings(**known["output_style"])
+        if "spinner_verbs" in known and isinstance(known["spinner_verbs"], dict):
+            known["spinner_verbs"] = SpinnerVerbsSettings(**known["spinner_verbs"])
         if "compact" in known and isinstance(known["compact"], dict):
             known["compact"] = CompactSettings(**known["compact"])
         if "hooks" in known and isinstance(known["hooks"], dict):
