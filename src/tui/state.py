@@ -20,6 +20,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Callable
 
+from src.constants.spinner_verbs import pick_spinner_verb
+
 if TYPE_CHECKING:
     from src.permissions.types import PermissionAskReply, PermissionUpdate
 
@@ -197,7 +199,10 @@ class AppState:
         with self._lock:
             self.is_thinking = thinking
             if thinking:
-                self.verb = verb or "Synthesizing"
+                # TS picks a fresh random verb per spinner mount
+                # (Spinner.tsx:166). When no explicit verb is given, sample
+                # from the SPINNER_VERBS pool instead of a fixed string.
+                self.verb = verb or pick_spinner_verb()
                 self.verb_started_at = time.time()
             else:
                 self.verb = "Ready"
