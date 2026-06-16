@@ -275,6 +275,21 @@ class ToolContext:
     def allowed_roots(self) -> tuple[Path, ...]:
         roots: list[Path] = [self.workspace_root]
         roots.extend(self.additional_working_directories)
+        # Session-granted directories from accepted permission updates.
+        # `PermissionUpdateAddDirectories` (e.g. the user choosing "allow all
+        # edits in <dir>/ during this session" for an out-of-cwd file) writes
+        # `ToolPermissionContext.additional_working_directories`; without folding
+        # those in here the grant never reaches `ensure_allowed_path` and the
+        # next edit/read in that directory still fails. Resolved so the
+        # /tmp → /private/tmp (macOS) match holds.
+        try:
+            for dir_path in self.permission_context.additional_working_directories.keys():
+                try:
+                    roots.append(Path(dir_path).resolve())
+                except OSError:
+                    roots.append(Path(dir_path))
+        except Exception:
+            pass
         # The session's tool-results spill dir is an internal path the runtime
         # writes large tool results to and then points the model back at (e.g. a
         # workflow subagent told to Read the offloaded result). Reading it back
