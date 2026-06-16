@@ -404,6 +404,24 @@ class LiveStatus:
         except Exception:
             pass
         finally:
+            # Cancel anything still pending before closing the loop. If an
+            # exception ever reaches the loop's handler while the app is up,
+            # prompt_toolkit schedules ``Application._handle_exception``'s
+            # ``in_term`` error-printer via ``ensure_future``; left pending at
+            # ``loop.close()`` it leaks as an un-awaited-coroutine
+            # RuntimeWarning. Draining (cancel + gather) awaits each task via
+            # its CancelledError instead. ``_stop``'s guarded exit prevents the
+            # usual trigger; this is defense-in-depth for any other straggler.
+            try:
+                pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    loop.run_until_complete(
+                        asyncio.gather(*pending, return_exceptions=True)
+                    )
+            except Exception:
+                pass
             try:
                 loop.close()
             except Exception:
@@ -457,8 +475,29 @@ class LiveStatus:
         app = self._app
         loop = self._loop
         if app is not None and loop is not None and not loop.is_closed():
+
+            def _exit_if_running() -> None:
+                # Guard against a double-exit. In a non-TTY context (piped or
+                # closed stdin) the app can already have exited on its own via
+                # EOF; calling ``exit()`` again raises "Return value already
+                # set", which prompt_toolkit routes to the loop exception
+                # handler -> ``ensure_future(in_term())``. That ``in_term`` task
+                # is then destroyed pending when the loop closes, leaking an
+                # un-awaited coroutine (and printing the traceback). Reading the
+                # future state on the loop thread keeps the check from racing
+                # the app's own exit. ``app.future`` is per-Application and
+                # reset to None between runs on this same loop thread, so it is
+                # always this app's current-or-None future — never a stale
+                # sibling run's, despite prompt_toolkit's general exit() caveat.
+                try:
+                    fut = app.future
+                    if fut is not None and not fut.done():
+                        app.exit()
+                except Exception:
+                    pass
+
             try:
-                loop.call_soon_threadsafe(app.exit)
+                loop.call_soon_threadsafe(_exit_if_running)
             except RuntimeError:
                 pass
         if self._thread is not None:
