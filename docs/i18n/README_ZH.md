@@ -41,6 +41,7 @@ python -m src.cli         # 启动 REPL
 
 ## 📰 新闻
 
+- **2026-06-16：** **Z.ai GLM-5.2 支持（#343）** —— 新增 `zai` provider，对接 Z.ai 的 OpenAI 兼容 GLM 编程套餐（`https://api.z.ai/api/coding/paas/v4`），提供 `GLM-5.1` 与 `GLM-5.2` 预览版；GLM-5.2 的编码能力可比肩 Claude Opus 4.7。首个用 GLM-5.2 端到端生成的应用——一个 [2026 世界杯介绍页](../../demos/wc26-intro/index.html)（动效首屏 + 实时倒计时、三个主办国、16 座球场、赛制说明与破纪录数据）。
 - **2026-06-11：** **代码库统计** —— Python 文件总数：1,093 个；Python 代码总行数：**233,520 行**（高于 2026-05-29 的 213,777 行；新增约 1.97 万行，主要来自交互式命令系统批次、动态 workflow 引擎 + `/deep-research`，以及 Tavily 网络工具链更新）。
 - **2026-06-10 至 2026-06-11：** **动态 workflow 引擎 + `/deep-research`（#262–#264、#266–#271）** —— Python workflow 引擎核心（`agent()`/`parallel()`/`pipeline()`/`phase()`、运行日志、断点恢复）完成端到端接线：Workflow 工具、`/workflows` TUI 对话框 + 状态栏指示、按 agent 重试、worktree 隔离、结果投递，以及注册为斜杠命令的内置 `/deep-research` 研究工作流。可靠性方面：LLM 读取超时统一应用到所有 openai 兼容 provider（#269），并行 agent 不再在事件循环上串行执行（#270），deep-research 的 synthesize 步骤禁用工具、避免报告撰写 agent 陷入循环（#271）。后续修复：workflow max-turns 上限修复（#272）、deep-research verdict 枚举修复（#273）、带阶段进度与各 agent 统计的 `/workflows` 实时监控（#287）。
 - **2026-06-10：** **Web 工具链更新（#265）** —— 用基于 Tavily 的 WebSearch 取代已失效的 DuckDuckGo 抓取，并新增基于配置文件的密钥存储；WebFetch 重写为确定性的 markdown/text/html 提取（借鉴 opencode）。
@@ -50,7 +51,6 @@ python -m src.cli         # 启动 REPL
 - **2026-05-21：** **代码库统计** —— Python 文件总数：890 个；Python 代码总行数：**183,768 行**（高于 2026-05-16 的 177,428 行；因 `src/tool_system/agent_loop.py` 合并进 `src/query/query.py`，文件数净减 4 个）。
 - **2026-05-21：** **`/advisor` 省 token 编码模式（#181–#193）** —— 让低成本 worker 模型（`haiku-4-5`，每 Mtok $1/$5）与高成本 reviewer（`opus-4-7`，$5/$25）搭档，仅在关键决策点咨询后者；典型会话比纯 opus 便宜约 6 倍。支持显式 `<provider>:<model>` 语法、跨 provider 路由（例如经 litellm 使用 `deepseek/deepseek-v4-pro` worker + `claude-opus-4-7` advisor），并在状态栏实时显示 worker/advisor 的 token 数与美元成本。
 - **2026-05-16：** **代码库统计** —— Python 文件总数：894 个；Python 代码总行数：**177,428 行**（高于 2026-05-14 的 167,034 行；两天新增约 1.04 万行，主要是 ESC 取消加固与图像处理对齐）。
-- **2026-05-16：** **图像处理对齐（Tier C，#149/#154/#155/#156）** —— Read 工具复刻 TS 图像管线（魔数嗅探、缩放/压缩、base64 上限）；`@image.png` 提及内联为真正的 `ImageBlock` 而非乱码；跨 provider 的 Anthropic `image`/`document` → OpenAI `image_url`/`file` 转换；`BaseProvider` 中调用 API 前的 base64 大小校验。
 
 📚 更早的条目已移至完整的 **[News 归档](../NEWS.md)**。
 
@@ -419,6 +419,7 @@ arguments: [path]
 | [`demos/crm-app`](../../demos/crm-app) | React 18 + Vite + Vitest | 迷你 CRM：联系人、商机、仪表盘与完整测试套件 |
 | [`demos/linkedin-app`](../../demos/linkedin-app) | React 18 + Vite + React Router | LinkedIn 风格信息流：个人主页、人脉、职位、私信 |
 | [`demos/minecraft-app`](../../demos/minecraft-app) | React + three.js + @react-three/fiber | 浏览器体素沙盒：地形、挖掘、HUD 与玩家控制 |
+| [`demos/wc26-intro`](../../demos/wc26-intro) | 纯静态 HTML/CSS/JS | 2026 世界杯介绍页——动效首屏、实时倒计时、主办国、16 座球场、赛制与破纪录数据；用全新的 Z.ai **GLM-5.2** 模型端到端生成 |
 
 ```bash
 cd demos/crm-app   # 或 linkedin-app / minecraft-app
@@ -426,7 +427,9 @@ npm install
 npm run dev        # vite 开发服务器
 ```
 
-想看看它是怎么做到的？在任意空目录里打开 ClawCodex，让它构建点什么——上面这三个就是这样生成的。
+`demos/wc26-intro` 是单文件静态页面——直接在浏览器中打开 [`demos/wc26-intro/index.html`](../../demos/wc26-intro/index.html) 即可。
+
+想看看它是怎么做到的？在任意空目录里打开 ClawCodex，让它构建点什么——上面这些都是这样生成的。
 
 ***
 
