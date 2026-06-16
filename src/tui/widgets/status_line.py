@@ -211,7 +211,9 @@ class StatusLine(Static):
     def bump_turn(self) -> None:
         self.turns += 1
 
-    def set_busy(self, verb: str = "Synthesizing") -> None:
+    def set_busy(self, verb: str = "") -> None:
+        # Empty verb → AppState.set_thinking samples a random SPINNER_VERBS
+        # entry (TS Spinner.tsx:166), instead of a fixed "Synthesizing".
         self.is_thinking = True
         if self._app_state is not None:
             self._app_state.set_thinking(True, verb=verb)

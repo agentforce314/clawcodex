@@ -12,6 +12,7 @@ from src.settings.types import (
     OutputStyleSettings,
     PermissionRule,
     SettingsSchema,
+    SpinnerVerbsSettings,
     ToolSettings,
 )
 from src.settings.constants import DEFAULT_SETTINGS
@@ -54,6 +55,17 @@ class TestSettingsSchema:
         assert len(s.permissions) == 1
         assert s.permissions[0].tool == "Bash"
 
+    def test_from_dict_spinner_verbs(self):
+        data = {"spinner_verbs": {"mode": "replace", "verbs": ["Vibing", "Whirring"]}}
+        s = SettingsSchema.from_dict(data)
+        assert isinstance(s.spinner_verbs, SpinnerVerbsSettings)
+        assert s.spinner_verbs.mode == "replace"
+        assert s.spinner_verbs.verbs == ["Vibing", "Whirring"]
+
+    def test_spinner_verbs_defaults_none(self):
+        # Absent key → None (built-in defaults used at read time).
+        assert SettingsSchema.from_dict({}).spinner_verbs is None
+
 
 class TestValidation:
     def test_valid_settings(self):
@@ -79,6 +91,22 @@ class TestValidation:
         s = SettingsSchema(output_style=OutputStyleSettings(max_width=10))
         errors = validate_settings(s)
         assert any(e.field == "output_style.max_width" for e in errors)
+
+    def test_invalid_spinner_verbs_mode(self):
+        s = SettingsSchema(spinner_verbs=SpinnerVerbsSettings(mode="bogus"))
+        errors = validate_settings(s)
+        assert any(e.field == "spinner_verbs.mode" for e in errors)
+
+    def test_valid_spinner_verbs_modes(self):
+        for mode in ("append", "replace"):
+            s = SettingsSchema(spinner_verbs=SpinnerVerbsSettings(mode=mode))
+            assert not any(e.field == "spinner_verbs.mode"
+                           for e in validate_settings(s))
+
+    def test_spinner_verbs_none_is_valid(self):
+        # Default (no override) must not produce a spinner_verbs error.
+        assert not any(e.field == "spinner_verbs.mode"
+                       for e in validate_settings(DEFAULT_SETTINGS))
 
     def test_negative_max_turns(self):
         s = SettingsSchema(max_turns=-1)
