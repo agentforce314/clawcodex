@@ -308,7 +308,7 @@ Examples:
         '--provider',
         type=str,
         default=None,
-        help='Override the provider (anthropic, openai, glm, minimax, openrouter, deepseek)',
+        help='Override the provider (anthropic, openai, zai, minimax, openrouter, deepseek)',
     )
     noninteractive.add_argument(
         '--allowed-tools',

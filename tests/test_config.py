@@ -63,7 +63,7 @@ class TestDefaultConfig(unittest.TestCase):
         self.assertIn("providers", config)
         self.assertIn("anthropic", config["providers"])
         self.assertIn("openai", config["providers"])
-        self.assertIn("glm", config["providers"])
+        self.assertIn("zai", config["providers"])
 
     def test_default_provider_is_anthropic(self):
         """Test that default provider is Anthropic."""
@@ -82,8 +82,8 @@ class TestDefaultConfig(unittest.TestCase):
             "gpt-5.4"
         )
         self.assertEqual(
-            config["providers"]["glm"]["default_model"],
-            "zai/glm-5"
+            config["providers"]["zai"]["default_model"],
+            "GLM-5.1"
         )
 
 
@@ -156,11 +156,11 @@ class TestProviderConfig(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             with _patch_global_config(temp_dir):
                 _reset_manager()
-                glm_config = get_provider_config("glm")
+                zai_config = get_provider_config("zai")
 
-                self.assertIn("api_key", glm_config)
-                self.assertIn("base_url", glm_config)
-                self.assertIn("default_model", glm_config)
+                self.assertIn("api_key", zai_config)
+                self.assertIn("base_url", zai_config)
+                self.assertIn("default_model", zai_config)
 
     def test_get_unknown_provider(self):
         """Test getting unknown provider."""

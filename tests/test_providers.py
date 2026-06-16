@@ -7,7 +7,8 @@ from unittest.mock import MagicMock, patch
 
 from src.providers import get_provider_class
 from src.providers.anthropic_provider import AnthropicProvider
-from src.providers.glm_provider import GLMProvider
+from src.providers.glm_provider import GLMProvider  # legacy back-compat alias
+from src.providers.zai_provider import ZaiProvider
 from src.providers.openai_compatible import _convert_anthropic_messages_to_openai
 from src.providers.openai_provider import OpenAIProvider
 from src.providers.base import ChatMessage, ChatResponse
@@ -48,7 +49,7 @@ class TestChatResponse(unittest.TestCase):
         """Test response with reasoning content."""
         response = ChatResponse(
             content="Answer",
-            model="glm-4.5",
+            model="GLM-5.1",
             usage={"input_tokens": 10, "output_tokens": 5},
             finish_reason="stop",
             reasoning_content="Reasoning process...",
@@ -422,28 +423,66 @@ class TestOpenAIProvider(unittest.TestCase):
         self.assertEqual(response.usage["total_tokens"], 15)
 
 
-class TestGLMProvider(unittest.TestCase):
-    """Test GLM provider."""
+class TestZaiProvider(unittest.TestCase):
+    """Test Z.ai (GLM) provider.
+
+    Z.ai's GLM Coding Plan is OpenAI-compatible, so the provider uses the
+    OpenAI SDK pointed at the Z.ai base URL (mirrors DeepSeek/OpenAI).
+    """
 
     def test_initialization(self):
-        """Test provider initialization."""
-        provider = GLMProvider(api_key="test_key")
-        self.assertEqual(provider.model, "zai/glm-5")
+        """Default model is the stable GLM-5.1, default base URL is the GLM Coding Plan."""
+        provider = ZaiProvider(api_key="test_key")
+        self.assertEqual(provider.model, "GLM-5.1")
+        self.assertEqual(provider.base_url, "https://api.z.ai/api/coding/paas/v4")
 
     def test_custom_model(self):
-        """Test provider with custom model."""
-        provider = GLMProvider(api_key="test_key", model="glm-4")
-        self.assertEqual(provider.model, "glm-4")
+        """Test provider with custom model (e.g. the GLM-5.2 preview)."""
+        provider = ZaiProvider(api_key="test_key", model="GLM-5.2")
+        self.assertEqual(provider.model, "GLM-5.2")
+
+    def test_custom_base_url(self):
+        """A configured base URL (e.g. the general API) overrides the default."""
+        provider = ZaiProvider(
+            api_key="test_key", base_url="https://api.z.ai/api/paas/v4"
+        )
+        self.assertEqual(provider.base_url, "https://api.z.ai/api/paas/v4")
 
     def test_get_available_models(self):
         """Test getting available models."""
-        provider = GLMProvider(api_key="test_key")
+        provider = ZaiProvider(api_key="test_key")
         models = provider.get_available_models()
-        self.assertIn("zai/glm-4.5", models)
-        self.assertIn("zai/glm-4", models)
+        self.assertIn("GLM-5.1", models)
+        self.assertIn("GLM-5.2", models)
 
-    @patch("src.providers.glm_provider.ZhipuAI")
-    def test_chat(self, mock_zhipu):
+    def test_legacy_glm_alias(self):
+        """``GLMProvider`` is preserved as a back-compat alias of ``ZaiProvider``."""
+        self.assertIs(GLMProvider, ZaiProvider)
+
+    def test_model_alias_canonicalization(self):
+        """Lowercase/aliased GLM ids are normalized to canonical ids on send.
+
+        The Z.ai endpoint expects ``GLM-5.x``; a config value like ``glm-5.2``
+        (the shape Z.ai users commonly write) must reach the API canonicalized.
+        ``provider.model`` keeps the user's spelling for display.
+        """
+        provider = ZaiProvider(api_key="test_key", model="glm-5.2")
+        self.assertEqual(provider.model, "glm-5.2")
+        self.assertEqual(provider._get_model(), "GLM-5.2")
+        # OpenRouter-style alias and the [1m] context suffix both resolve.
+        self.assertEqual(
+            ZaiProvider(api_key="k", model="zai-glm-5-1")._get_model(), "GLM-5.1"
+        )
+        self.assertEqual(
+            ZaiProvider(api_key="k", model="glm-5.2[1m]")._get_model(), "GLM-5.2"
+        )
+        # Unknown / custom ids pass through untouched.
+        self.assertEqual(
+            ZaiProvider(api_key="k", model="custom-model")._get_model(), "custom-model"
+        )
+
+    @patch("src.providers.zai_provider.OpenAI")
+    def test_chat(self, mock_openai):
         """Test synchronous chat."""
         # Setup mock
         mock_client = MagicMock()
@@ -451,42 +490,47 @@ class TestGLMProvider(unittest.TestCase):
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = "Hello!"
         mock_response.choices[0].message.reasoning_content = None
-        mock_response.model = "glm-4.5"
+        mock_response.model = "GLM-5.1"
         mock_response.usage = MagicMock(
             prompt_tokens=10, completion_tokens=5, total_tokens=15
         )
         mock_response.choices[0].finish_reason = "stop"
         mock_client.chat.completions.create.return_value = mock_response
-        mock_zhipu.return_value = mock_client
+        # ``OpenAICompatibleProvider.client`` wraps the SDK client with
+        # ``with_options(...)`` (bounded read timeout); return the same mock so
+        # the configured ``create`` stub is the one actually exercised.
+        mock_client.with_options.return_value = mock_client
+        mock_openai.return_value = mock_client
 
         # Test
-        provider = GLMProvider(api_key="test_key")
+        provider = ZaiProvider(api_key="test_key")
         messages = [ChatMessage(role="user", content="Hi")]
         response = provider.chat(messages)
 
         self.assertEqual(response.content, "Hello!")
-        self.assertEqual(response.model, "glm-4.5")
+        self.assertEqual(response.model, "GLM-5.1")
         self.assertIsNone(response.reasoning_content)
 
-    @patch("src.providers.glm_provider.ZhipuAI")
-    def test_chat_with_reasoning(self, mock_zhipu):
-        """Test chat with reasoning content."""
+    @patch("src.providers.zai_provider.OpenAI")
+    def test_chat_with_reasoning(self, mock_openai):
+        """GLM reasoning streams through ``reasoning_content`` and is surfaced."""
         # Setup mock
         mock_client = MagicMock()
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = "Answer"
         mock_response.choices[0].message.reasoning_content = "Thinking..."
-        mock_response.model = "glm-4.5"
+        mock_response.model = "GLM-5.1"
         mock_response.usage = MagicMock(
             prompt_tokens=10, completion_tokens=5, total_tokens=15
         )
         mock_response.choices[0].finish_reason = "stop"
         mock_client.chat.completions.create.return_value = mock_response
-        mock_zhipu.return_value = mock_client
+        mock_client.with_options.return_value = mock_client
+        mock_openai.return_value = mock_client
 
         # Test
-        provider = GLMProvider(api_key="test_key")
+        provider = ZaiProvider(api_key="test_key")
         messages = [ChatMessage(role="user", content="Complex question")]
         response = provider.chat(messages)
 
@@ -507,10 +551,19 @@ class TestGetProviderClass(unittest.TestCase):
         cls = get_provider_class("openai")
         self.assertEqual(cls, OpenAIProvider)
 
-    def test_get_glm_provider(self):
-        """Test getting GLM provider class."""
-        cls = get_provider_class("glm")
-        self.assertEqual(cls, GLMProvider)
+    def test_get_zai_provider(self):
+        """Test getting the Z.ai provider class by canonical id."""
+        cls = get_provider_class("zai")
+        self.assertEqual(cls, ZaiProvider)
+
+    def test_get_zai_provider_via_legacy_glm_alias(self):
+        """The pre-rename ``glm`` id still resolves to the Z.ai provider."""
+        self.assertEqual(get_provider_class("glm"), ZaiProvider)
+
+    def test_get_zai_provider_via_dotted_alias(self):
+        """CodeWhale's ``z.ai`` / ``z-ai`` spellings resolve to the Z.ai provider."""
+        self.assertEqual(get_provider_class("z.ai"), ZaiProvider)
+        self.assertEqual(get_provider_class("z-ai"), ZaiProvider)
 
     def test_get_unknown_provider(self):
         """Test getting unknown provider."""
