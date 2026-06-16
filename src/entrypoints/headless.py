@@ -307,7 +307,9 @@ def run_headless(options: HeadlessOptions) -> int:
                             getattr(tool_context, "output_style_dir", None),
                         ).prompt
                         effective_system_prompt = (
-                            build_effective_system_prompt(_style_prompt, tool_context)
+                            build_effective_system_prompt(
+                                _style_prompt, tool_context, provider=provider,
+                            )
                         )
 
                         def _persist(msg: Any) -> None:
