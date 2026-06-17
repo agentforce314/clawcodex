@@ -114,13 +114,13 @@ PROVIDER_PRESETS: dict[str, ProviderPreset] = {
         openclaude_base_url="",
         description="Anthropic Claude on both agents (uses native Claude path).",
     ),
-    "glm": ProviderPreset(
-        name="glm",
-        model="zai/glm-5",
-        clawcodex_provider="glm",
+    "zai": ProviderPreset(
+        name="zai",
+        model="glm-5.2",
+        clawcodex_provider="zai",
         openclaude_provider="openai",
-        openclaude_base_url="https://open.bigmodel.cn/api/paas/v4",
-        description="Zhipu GLM-5: clawcodex via 'glm' provider, openclaude via OpenAI-compatible API.",
+        openclaude_base_url="https://api.z.ai/api/coding/paas/v4",
+        description="Z.ai GLM-5.2: clawcodex via 'zai' provider, openclaude via OpenAI-compatible API.",
     ),
     "gemini": ProviderPreset(
         name="gemini",

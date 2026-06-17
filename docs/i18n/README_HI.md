@@ -72,7 +72,7 @@
 ### बहु-प्रदाता समर्थन
 
 ```python
-providers = ["Anthropic Claude", "OpenAI GPT", "Zhipu GLM"]  # + आसानी से विस्तारणीय
+providers = ["Anthropic Claude", "OpenAI GPT", "Z.ai GLM"]  # + आसानी से विस्तारणीय
 ```
 
 ### इंटरैक्टिव REPL
@@ -131,6 +131,23 @@ source .venv/bin/activate
 uv pip install -r requirements.txt
 ```
 
+कॉन्फ़िगरेशन फ़ाइल `~/.clawcodex/config.json` में सहेजी जाती है। न्यूनतम उदाहरण:
+
+```json
+{
+  "default_provider": "zai",
+  "providers": {
+    "zai": {
+      "api_key": "xxx-xxx",
+      "base_url": "https://api.z.ai/api/coding/paas/v4",
+      "default_model": "glm-5.2"
+    }
+  }
+}
+```
+
+`session`, `settings` और `env` ब्लॉक वैकल्पिक हैं — इन्हें छोड़ने पर उचित डिफ़ॉल्ट मान लागू होते हैं (पूरी संरचना नीचे)।
+
 ### कॉन्फ़िगर करें
 
 #### विकल्प 1: इंटरैक्टिव (अनुशंसित)
@@ -141,7 +158,7 @@ python -m src.cli login
 
 यह प्रक्रिया:
 
-1. आपको एक प्रदाता चुनने के लिए कहेगी: anthropic / openai / glm
+1. आपको एक प्रदाता चुनने के लिए कहेगी: anthropic / openai / zai
 2. उस प्रदाता की API कुंजी मांगेगी
 3. वैकल्पिक रूप से एक कस्टम base URL सहेजेगी
 4. वैकल्पिक रूप से एक डिफ़ॉल्ट मॉडल सहेजेगी
@@ -151,7 +168,7 @@ python -m src.cli login
 
 ```json
 {
-  "default_provider": "glm",
+  "default_provider": "zai",
   "providers": {
     "anthropic": {
       "api_key": "your-api-key",
@@ -163,10 +180,10 @@ python -m src.cli login
       "base_url": "https://api.openai.com/v1",
       "default_model": "gpt-4"
     },
-    "glm": {
+    "zai": {
       "api_key": "your-api-key",
-      "base_url": "https://open.bigmodel.cn/api/paas/v4",
-      "default_model": "glm-4.5"
+      "base_url": "https://api.z.ai/api/coding/paas/v4",
+      "default_model": "glm-5.2"
     }
   }
 }

@@ -72,7 +72,7 @@
 ### Поддержка нескольких провайдеров
 
 ```python
-providers = ["Anthropic Claude", "OpenAI GPT", "Zhipu GLM"]  # + легко расширить
+providers = ["Anthropic Claude", "OpenAI GPT", "Z.ai GLM"]  # + легко расширить
 ```
 
 ### Интерактивный REPL
@@ -131,6 +131,23 @@ source .venv/bin/activate
 uv pip install -r requirements.txt
 ```
 
+Файл конфигурации сохраняется в `~/.clawcodex/config.json`. Минимальный пример:
+
+```json
+{
+  "default_provider": "zai",
+  "providers": {
+    "zai": {
+      "api_key": "xxx-xxx",
+      "base_url": "https://api.z.ai/api/coding/paas/v4",
+      "default_model": "glm-5.2"
+    }
+  }
+}
+```
+
+Блоки `session`, `settings` и `env` необязательны — при их отсутствии применяются разумные значения по умолчанию (полная структура ниже).
+
 ### Настройка
 
 #### Вариант 1: Интерактивный (Рекомендуется)
@@ -141,7 +158,7 @@ python -m src.cli login
 
 Этот процесс:
 
-1. попросит вас выбрать провайдера: anthropic / openai / glm
+1. попросит вас выбрать провайдера: anthropic / openai / zai
 2. попросит ввести API ключ этого провайдера
 3. при необходимости сохранит пользовательский base URL
 4. при необходимости сохранит модель по умолчанию
@@ -151,7 +168,7 @@ python -m src.cli login
 
 ```json
 {
-  "default_provider": "glm",
+  "default_provider": "zai",
   "providers": {
     "anthropic": {
       "api_key": "your-api-key",
@@ -163,10 +180,10 @@ python -m src.cli login
       "base_url": "https://api.openai.com/v1",
       "default_model": "gpt-4"
     },
-    "glm": {
+    "zai": {
       "api_key": "your-api-key",
-      "base_url": "https://open.bigmodel.cn/api/paas/v4",
-      "default_model": "glm-4.5"
+      "base_url": "https://api.z.ai/api/coding/paas/v4",
+      "default_model": "glm-5.2"
     }
   }
 }

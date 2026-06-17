@@ -1,124 +1,113 @@
-# 环境配置指南
+# Setup Guide
 
-## 1. 激活虚拟环境
+Detailed installation and configuration for **clawcodex**. For a quick overview, see the [Quick Start](../../README.md#-quick-start) in the main README — this guide expands on each step and adds a provider reference and troubleshooting.
 
-```bash
-# 进入项目目录
-cd /root/Claw-Codex
+## Prerequisites
 
-# 激活虚拟环境
-source .venv/bin/activate
+- **Python 3.10+** (3.11 recommended)
+- **git**
+- **[uv](https://github.com/astral-sh/uv)** (recommended) or `pip`
+- An API key for at least one supported provider: Anthropic, OpenAI, Z.ai (GLM), MiniMax, OpenRouter, or DeepSeek
 
-# 确认 Python 版本
-python --version  # 应该显示 Python 3.11.x
-```
-
-## 2. 配置 GLM API Key
-
-### 方式一：环境变量（推荐用于测试）
+## 1. Clone and install
 
 ```bash
-# 临时设置（当前会话有效）
-export GLM_API_KEY="your_api_key_here"
+git clone https://github.com/agentforce314/clawcodex.git
+cd clawcodex
 
-# 永久设置（添加到 ~/.bashrc）
-echo 'export GLM_API_KEY="your_api_key_here"' >> ~/.bashrc
-source ~/.bashrc
+# Create and activate a virtual environment (uv recommended)
+uv venv --python 3.11
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+
+# Install the package with its entry point
+uv pip install -e ".[dev]"
 ```
 
-### 方式二：.env 文件（推荐用于开发）
+Confirm the CLI is available:
 
 ```bash
-# 在项目根目录创建 .env 文件
-cat > .env << 'EOF'
-# GLM API Configuration
-GLM_API_KEY=your_api_key_here
-GLM_BASE_URL=https://open.bigmodel.cn/api/paas/v4
-GLM_DEFAULT_MODEL=glm-4
-
-# Optional: Other APIs
-# ANTHROPIC_API_KEY=your_anthropic_key
-# OPENAI_API_KEY=your_openai_key
-EOF
-
-# .env 文件已在 .gitignore 中，不会被提交到 Git
+clawcodex --help
 ```
 
-## 3. GLM API 信息
+If you'd rather not install the entry point, you can always run `python -m src.cli` in place of `clawcodex`.
 
-### API 端点
-- **Base URL**: `https://open.bigmodel.cn/api/paas/v4`
-- **认证方式**: Bearer Token (API Key)
-- **文档**: https://open.bigmodel.cn/dev/api
+## 2. Configure a provider
 
-### 可用模型
-- `glm-4` - 最新的 GLM-4 模型（推荐）
-- `glm-4-flash` - 快速版本
-- `glm-3-turbo` - GLM-3 Turbo
+clawcodex reads its configuration from `~/.clawcodex/config.json`. Create it interactively or by hand.
 
-### API 调用示例（Python）
-```python
-from zhipuai import ZhipuAI
+### Option A — Interactive (recommended)
 
-client = ZhipuAI(api_key="your_api_key")
-
-response = client.chat.completions.create(
-    model="glm-4",
-    messages=[
-        {"role": "user", "content": "你好"}
-    ]
-)
-print(response.choices[0].message.content)
-```
-
-## 4. 验证配置
-
-### 测试环境变量
 ```bash
-# 检查环境变量是否设置
-echo $GLM_API_KEY
-
-# 如果使用 .env 文件，Python 会自动加载
-python -c "from dotenv import load_dotenv; import os; load_dotenv(); print(os.getenv('GLM_API_KEY'))"
+clawcodex login
 ```
 
-## 5. 后续步骤
+This walks you through:
 
-配置完成后，我会：
-1. 创建 `requirements.txt` 和 `setup.py`
-2. 安装依赖：`uv pip install -e .`
-3. 创建配置文件：`~/.clawcodex/config.json`
-4. 测试 GLM API 连接
+1. choosing a provider — `anthropic` / `openai` / `zai` / `minimax` / `openrouter` / `deepseek`
+2. entering that provider's API key
+3. optionally setting a custom base URL
+4. optionally setting a default model
+5. setting the chosen provider as the default
+
+### Option B — Edit the config file directly
+
+Create `~/.clawcodex/config.json` (only the providers you actually use are required):
+
+```json
+{
+  "default_provider": "zai",
+  "providers": {
+    "anthropic": {
+      "api_key": "your-api-key",
+      "base_url": "https://api.anthropic.com",
+      "default_model": "claude-sonnet-4-6"
+    },
+    "zai": {
+      "api_key": "your-api-key",
+      "base_url": "https://api.z.ai/api/coding/paas/v4",
+      "default_model": "glm-5.2"
+    }
+  },
+  "env": {
+    "TAVILY_API_KEY": "tvly-YOUR-TAVILY-API-KEY"
+  }
+}
+```
+
+- **`default_provider`** — which provider block to use unless overridden with `--provider`.
+- **`providers`** — one block per provider (`api_key`, `base_url`, `default_model`).
+- **`env`** — secrets and environment values injected at startup (e.g. `TAVILY_API_KEY` for web search). Manage these with `clawcodex config`.
+
+> **Secrets live in this single config file** (the `env` block and each provider's `api_key`) — clawcodex does **not** read `.env` files.
+
+## 3. Provider reference
+
+| Provider key | Base URL | Example model |
+|---|---|---|
+| `anthropic` | `https://api.anthropic.com` | `claude-sonnet-4-6` |
+| `openai` | `https://api.openai.com/v1` | `gpt-5.4` |
+| `zai` | `https://api.z.ai/api/coding/paas/v4` | `glm-5.2` (also `glm-5.1`) |
+| `minimax` | `https://api.minimaxi.com/anthropic` | `MiniMax-M2.7` |
+| `openrouter` | `https://openrouter.ai/api/v1` | `deepseek/deepseek-v4-pro` |
+| `deepseek` | `https://api.deepseek.com` | `deepseek-v4-pro` |
+
+> **Z.ai (GLM):** clawcodex uses Z.ai's OpenAI-compatible GLM Coding Plan at `https://api.z.ai/api/coding/paas/v4`, serving `GLM-5.1` (stable) and `GLM-5.2` (preview). The legacy provider name `glm` is still accepted as an alias for `zai`. Get a key at <https://z.ai/>.
+
+## 4. Run
+
+```bash
+clawcodex                  # start the inline REPL (same as: python -m src.cli)
+clawcodex --help           # all flags: --tui, -p, --provider, --model, …
+clawcodex --provider zai   # start this session with a specific provider
+```
+
+## Troubleshooting
+
+- **`clawcodex: command not found`** — activate your virtualenv (`source .venv/bin/activate`), or run `python -m src.cli`.
+- **`Unknown provider` / auth errors** — make sure the provider key in `~/.clawcodex/config.json` matches a block under `providers`, and that its `api_key` is set.
+- **Wrong Python version** — clawcodex needs Python 3.10+. Check with `python --version`; recreate the venv with `uv venv --python 3.11` if needed.
+- **Web search not working** — set `TAVILY_API_KEY` in the `env` block of the config (see above).
 
 ---
 
-## 常见问题
-
-### Q: API Key 在哪里获取？
-A: 访问 https://open.bigmodel.cn/ 注册账号后获取
-
-### Q: 如何获取 API Key？
-A:
-1. 登录智谱开放平台
-2. 进入「API 密钥」页面
-3. 创建新的 API Key
-
-### Q: 有免费额度吗？
-A: 新用户通常有免费试用额度，具体查看官网说明
-
----
-
-## 下一步
-
-请按以下步骤操作：
-
-1. ✅ **激活虚拟环境**：
-   ```bash
-   source .venv/bin/activate
-   ```
-
-2. ✅ **配置 API Key**（二选一）：
-   - 方式一：`export GLM_API_KEY="your_key"`
-   - 方式二：创建 `.env` 文件并写入
-
-3. ✅ **告诉我已完成**，我会继续后续步骤
+For full provider/model details and feature status, see the [main README](../../README.md) and [FEATURE_LIST.md](../../FEATURE_LIST.md).
