@@ -72,7 +72,7 @@
 ### دعم متعدد المزودين
 
 ```python
-providers = ["Anthropic Claude", "OpenAI GPT", "Zhipu GLM"]  # + سهل التوسيع
+providers = ["Anthropic Claude", "OpenAI GPT", "Z.ai GLM"]  # + سهل التوسيع
 ```
 
 ### REPL تفاعلي
@@ -131,6 +131,23 @@ source .venv/bin/activate
 uv pip install -r requirements.txt
 ```
 
+يتم حفظ ملف التكوين في `~/.clawcodex/config.json`. مثال مبسّط:
+
+```json
+{
+  "default_provider": "zai",
+  "providers": {
+    "zai": {
+      "api_key": "xxx-xxx",
+      "base_url": "https://api.z.ai/api/coding/paas/v4",
+      "default_model": "glm-5.2"
+    }
+  }
+}
+```
+
+كتل `session` و`settings` و`env` اختيارية — تُطبَّق قيم افتراضية معقولة عند حذفها (الهيكل الكامل أدناه).
+
 ### التكوين
 
 #### الخيار 1: تفاعلي (مُوصى به)
@@ -141,7 +158,7 @@ python -m src.cli login
 
 هذه العملية ستقوم بـ:
 
-1. مطالبتك باختيار مزود: anthropic / openai / glm
+1. مطالبتك باختيار مزود: anthropic / openai / zai
 2. مطالبتك بمفتاح API الخاص بذلك المزود
 3. حفظ عنوان URL أساسي مخصص اختياريًا
 4. حفظ نموذج افتراضي اختياريًا
@@ -151,7 +168,7 @@ python -m src.cli login
 
 ```json
 {
-  "default_provider": "glm",
+  "default_provider": "zai",
   "providers": {
     "anthropic": {
       "api_key": "your-api-key",
@@ -163,10 +180,10 @@ python -m src.cli login
       "base_url": "https://api.openai.com/v1",
       "default_model": "gpt-4"
     },
-    "glm": {
+    "zai": {
       "api_key": "your-api-key",
-      "base_url": "https://open.bigmodel.cn/api/paas/v4",
-      "default_model": "glm-4.5"
+      "base_url": "https://api.z.ai/api/coding/paas/v4",
+      "default_model": "glm-5.2"
     }
   }
 }
