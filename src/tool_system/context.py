@@ -330,6 +330,42 @@ class ToolContext:
         roots_str = ", ".join(str(r) for r in roots)
         raise ToolPermissionError(f"path is outside allowed working directories: {p} (allowed: {roots_str})")
 
+    def ensure_readable_path(self, path: str | Path) -> Path:
+        """Like :meth:`ensure_allowed_path` but also permits harness-internal
+        readable paths (tool-results / budget spill / scratchpad / memdir).
+
+        The Read tool uses this so reading back the runtime's own spilled tool
+        results — which sit outside ``workspace_root`` — does not raise. Mirrors
+        TS keeping ``checkReadableInternalPath`` separate from the write/cwd
+        allowlist; writes still go through :meth:`ensure_allowed_path`, so this
+        never widens write or ``cd`` scope.
+        """
+        p = Path(path).expanduser() if isinstance(path, str) else path.expanduser()
+        if not p.is_absolute():
+            base = self.cwd or self.workspace_root
+            p = (base / p).resolve()
+        else:
+            p = p.resolve()
+        mode = self.permission_context.mode
+        if mode == "bypassPermissions" or (
+            mode == "plan"
+            and self.permission_context.is_bypass_permissions_mode_available
+        ):
+            return p
+        roots = self.allowed_roots()
+        if any(_is_within(p, root) for root in roots):
+            return p
+        # Harness-internal readable paths (spilled tool results, scratchpad,
+        # memory) are readable even though they sit outside the working roots.
+        from src.permissions.filesystem import check_readable_internal_path
+
+        if check_readable_internal_path(str(p), self):
+            return p
+        roots_str = ", ".join(str(r) for r in roots)
+        raise ToolPermissionError(
+            f"path is outside allowed working directories: {p} (allowed: {roots_str})"
+        )
+
     def ensure_tool_allowed(self, tool_name: str) -> None:
         if self.permission_context.blocks(tool_name):
             raise ToolPermissionError(f"tool is blocked by permission context: {tool_name}")

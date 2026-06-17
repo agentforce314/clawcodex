@@ -31,6 +31,23 @@ STORED_REFERENCE_TEMPLATE = "[Tool result stored at: {path}]"
 # Manifest file name inside the budget directory
 MANIFEST_FILENAME = "budget_manifest.json"
 
+# Root for the per-process tool-result spill dir. Kept as a module constant so
+# the read-permission allowlist (``src/permissions/filesystem``'s
+# ``check_readable_internal_path``) and the writer below resolve the same path.
+# Mirrors how TS treats getToolResultsDir / getProjectTempDir as harness-internal
+# readable paths (typescript/src/utils/permissions/filesystem.ts:1678-1723).
+TOOL_RESULT_BUDGET_ROOT = Path("/tmp/claw_codex_budget")
+
+
+def get_tool_result_budget_dir() -> Path:
+    """Per-process spill dir for offloaded tool results: ``<root>/<pid>``.
+
+    Process-scoped (not the shared root) so the read allowlist only trusts this
+    session's own spill files, never another process's spill under the same
+    shared ``/tmp`` root.
+    """
+    return TOOL_RESULT_BUDGET_ROOT / str(os.getpid())
+
 
 @dataclass
 class StoredResult:
@@ -128,7 +145,7 @@ def apply_tool_result_budget(
         ``(modified_messages, tokens_saved)``
     """
     if budget_dir is None:
-        budget_dir = Path("/tmp/claw_codex_budget") / str(os.getpid())
+        budget_dir = get_tool_result_budget_dir()
     budget_dir = Path(budget_dir)
     budget_dir.mkdir(parents=True, exist_ok=True)
 
