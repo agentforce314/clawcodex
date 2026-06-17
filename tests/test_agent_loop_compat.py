@@ -10,12 +10,12 @@ import asyncio
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from src.providers.base import ChatResponse
 from src.tool_system.context import ToolContext
 from src.tool_system.defaults import build_default_registry
-from src.types.messages import UserMessage
+from src.types.messages import REJECT_MESSAGE, UserMessage
 from src.utils.abort_controller import AbortController
 
 from src.query.agent_loop_compat import (
@@ -315,6 +315,90 @@ class TestLiveStreamingAndPersistence(unittest.TestCase):
             and any(isinstance(b, ToolResultBlock) for b in m.content)
         ]
         self.assertGreaterEqual(len(users_with_tool_result), 1)
+
+    def test_denied_tool_result_is_persisted_so_resume_does_not_orphan(self):
+        """Regression: a REJECTED/denied tool_use must still persist its
+        tool_result so the NEXT turn (e.g. "please continue" after ESC)
+        is not sent with an orphaned tool_use.
+
+        ``run_tool_use`` builds the tool_result for the
+        permission-denied / abort / error paths as a RAW DICT
+        (``{"type": "tool_result", ...}``), not a typed
+        ``ToolResultBlock``. The adapter previously persisted only the
+        typed form, so the dict result was silently dropped and the
+        assistant's tool_use was left unmatched. The next API call then
+        400s with "tool_use ids were found without tool_result blocks
+        immediately after" — the exact failure when ESC-rejecting a
+        tool and resuming with "please continue".
+        """
+        provider = MagicMock()
+        provider.chat_stream_response.side_effect = NotImplementedError()
+        provider.chat.side_effect = [
+            ChatResponse(
+                content="let me search",
+                model="test",
+                usage={"input_tokens": 10, "output_tokens": 5},
+                finish_reason="tool_use",
+                tool_uses=[{
+                    "id": "toolu_vrtx_017XXX",
+                    "name": "Bash",
+                    "input": {"command": "true", "description": "noop"},
+                }],
+            ),
+            ChatResponse(
+                content="ok",
+                model="test",
+                usage={"input_tokens": 50, "output_tokens": 5},
+                finish_reason="end_turn",
+                tool_uses=None,
+            ),
+        ]
+
+        def deny_can_use_tool(_ctx):
+            # Mirror the permission-denied path: a raw-dict tool_result.
+            def deny(*_a, **_k):
+                return {"behavior": "deny", "message": REJECT_MESSAGE}
+            return deny
+
+        persisted: list = []
+
+        with patch(
+            "src.services.tool_execution.can_use_tool_adapter.build_can_use_tool",
+            deny_can_use_tool,
+        ):
+            _run(run_query_as_agent_loop(
+                initial_messages=[UserMessage(content="build app")],
+                provider=provider,
+                tool_registry=self.registry,
+                tool_context=self.context,
+                system_prompt="You are helpful.",
+                max_turns=5,
+                on_message=persisted.append,
+            ))
+
+        from src.types.content_blocks import ToolResultBlock
+
+        def _tool_result_ids(msg):
+            ids = []
+            content = getattr(msg, "content", None)
+            if isinstance(content, list):
+                for b in content:
+                    if isinstance(b, ToolResultBlock):
+                        ids.append(b.tool_use_id)
+                    elif isinstance(b, dict) and b.get("type") == "tool_result":
+                        ids.append(b.get("tool_use_id"))
+            return ids
+
+        persisted_result_ids = {
+            tid for m in persisted for tid in _tool_result_ids(m)
+        }
+        self.assertIn(
+            "toolu_vrtx_017XXX",
+            persisted_result_ids,
+            "Denied tool's tool_result was dropped — the tool_use is "
+            "orphaned and the next turn will 400. Persisted result ids: "
+            f"{persisted_result_ids}",
+        )
 
 
 if __name__ == "__main__":
