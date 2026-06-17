@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
 
 from .types import (
+    OtherDecisionReason,
+    PermissionAllowDecision,
     PermissionAskDecision,
     PermissionPassthroughResult,
     PermissionResult,
     SafetyCheckDecisionReason,
+    WorkingDirDecisionReason,
 )
 
 DANGEROUS_FILES: tuple[str, ...] = (
@@ -272,3 +276,176 @@ def is_in_scratchpad(file_path: str) -> bool:
         return _is_within(Path(abs_path), Path(scratchpad))
     except OSError:
         return False
+
+
+def _scratchpad_dir_path() -> str:
+    """Scratchpad path *without* the ``makedirs`` side effect of
+    :func:`get_scratchpad_dir` — safe to call from a permission check on every
+    read."""
+    tmp = os.environ.get("TMPDIR", "/tmp")
+    return os.path.join(tmp, "claude-scratchpad")
+
+
+def _readable_internal_dirs(context: Any) -> list[Path]:
+    """Harness-internal directories whose files are readable without a prompt.
+
+    Mirrors TS ``checkReadableInternalPath``
+    (``typescript/src/utils/permissions/filesystem.ts:1633``): the runtime
+    writes these paths and then points the model back at them (e.g. a large tool
+    result spilled to disk and replaced in-message with a reference), so reading
+    them must never prompt even though they sit outside ``workspace_root``.
+
+    Each source is best-effort — a missing/unimportable one is skipped, never
+    fatal — so a permission check never blows up on an optional subsystem.
+    """
+    dirs: list[Path] = []
+
+    # Per-session tool-results spill dir. Also folded into
+    # ``ToolContext.allowed_roots()``; included here so this predicate is
+    # correct when called standalone (and when ``context`` is None).
+    try:
+        from src.services.tool_execution.tool_result_persistence import (
+            resolve_tool_results_dir,
+        )
+
+        if context is not None:
+            dirs.append(resolve_tool_results_dir(context))
+    except Exception:
+        pass
+
+    # Tool-result budget spill dir (``/tmp/claw_codex_budget/<pid>``) — the
+    # compaction pipeline offloads large results here and the model reads them
+    # back. Process-scoped so we never trust another process's spill.
+    try:
+        from src.services.compact.tool_result_budget import (
+            get_tool_result_budget_dir,
+        )
+
+        dirs.append(get_tool_result_budget_dir())
+    except Exception:
+        pass
+
+    # Per-session scratchpad (path only — do not create it here).
+    try:
+        dirs.append(Path(_scratchpad_dir_path()))
+    except Exception:
+        pass
+
+    # Auto-memory (memdir): the ``~/.claude/projects/<slug>/memory/`` subtree
+    # ONLY. NOT ``get_memory_base_dir()`` — that returns the whole ``~/.claude``
+    # config home and would silently expose ``.credentials.json``, settings, and
+    # *other* projects' transcripts. Mirrors TS ``isAutoMemPath``
+    # (``typescript/src/memdir/paths.ts:274``), scoped to this project's slug.
+    try:
+        from src.memdir.paths import get_auto_mem_path
+
+        dirs.append(Path(get_auto_mem_path()))
+    except Exception:
+        pass
+
+    # NOTE: TS ``checkReadableInternalPath`` also allowlists session-plan files,
+    # the current project's transcript dir (``isProjectDirPath``), project-temp
+    # (``/tmp/claude/<cwd>/``), agent-memory, ``~/.claude/tasks``,
+    # ``~/.claude/teams``, and bundled-skills. Those subsystems are not (yet)
+    # ported here; omitting them only causes extra prompts (under-allow), never
+    # extra access. Extend this set when porting them — keep every entry
+    # narrowly scoped (never the ``~/.claude`` root).
+    return dirs
+
+
+def check_readable_internal_path(file_path: str, context: Any) -> bool:
+    """True when ``file_path`` resolves inside a harness-internal readable dir.
+
+    Compares fully resolved paths on both sides so the macOS ``/tmp`` →
+    ``/private/tmp`` symlink (and any other symlinked prefix) matches.
+    """
+    if not file_path:
+        return False
+    try:
+        target = Path(resolve_path(file_path))
+    except Exception:
+        return False
+    for d in _readable_internal_dirs(context):
+        try:
+            if _is_within(target, Path(resolve_path(str(d)))):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _path_in_allowed_roots(file_path: str, context: Any) -> bool:
+    """True when ``file_path`` resolves inside one of ``context.allowed_roots()``
+    (workspace + additional working dirs + session grants + tool-results dir)."""
+    if context is None:
+        return False
+    try:
+        roots = list(context.allowed_roots())
+    except Exception:
+        return False
+    try:
+        target = Path(resolve_path(file_path))
+    except Exception:
+        return False
+    for root in roots:
+        try:
+            if _is_within(target, Path(resolve_path(str(root)))):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def check_read_permission_for_tool(file_path: str, context: Any) -> PermissionResult:
+    """Path-based read permission, mirroring TS ``checkReadPermissionForTool``
+    (``typescript/src/utils/permissions/filesystem.ts:1048``).
+
+    Tool-level ``Read`` deny/ask rules are resolved upstream in
+    :func:`src.permissions.check.has_permissions_to_use_tool_inner` *before*
+    this runs, so this only supplies the path-based ``allow`` (working dir +
+    internal harness) and otherwise returns ``passthrough`` — which the caller
+    renders as the read ``ask`` (with the "allow reading during this session"
+    suggestion). Returning ``passthrough`` (not ``ask``) also keeps ``auto`` /
+    ``bypassPermissions`` modes allowing everything via the outer flow.
+    """
+    if not file_path:
+        return PermissionPassthroughResult()
+
+    # UNC paths — defense in depth (TS step 1). Check the raw input and the
+    # abspath form (which both preserve a ``//`` / ``\\`` prefix); ``resolve_path``
+    # collapses ``//`` → ``/`` so it cannot be used for this check.
+    expanded_abs = os.path.abspath(os.path.expanduser(file_path))
+    if (
+        file_path.startswith("\\\\")
+        or file_path.startswith("//")
+        or expanded_abs.startswith("\\\\")
+        or expanded_abs.startswith("//")
+    ):
+        return PermissionAskDecision(
+            behavior="ask",
+            message="UNC paths require manual approval for security reasons.",
+            decision_reason=OtherDecisionReason(reason="UNC path detected"),
+        )
+
+    abs_path = resolve_path(file_path)
+
+    # Reads inside an allowed working root (TS step 6).
+    if _path_in_allowed_roots(abs_path, context):
+        return PermissionAllowDecision(
+            behavior="allow",
+            decision_reason=WorkingDirDecisionReason(
+                reason="Read within an allowed working directory",
+            ),
+        )
+
+    # Reads of harness-internal paths (TS step 7 — checkReadableInternalPath).
+    if check_readable_internal_path(abs_path, context):
+        return PermissionAllowDecision(
+            behavior="allow",
+            decision_reason=OtherDecisionReason(
+                reason="Read of a harness-internal path",
+            ),
+        )
+
+    # Outside working dirs and not internal — defer to the ask flow.
+    return PermissionPassthroughResult()
