@@ -34,7 +34,7 @@ pip install -r requirements.txt
 
 python -m src.cli login   # 配置写入 ~/.clawcodex/config.json
 
-python -m src.cli         # 启动 REPL
+python -m src.cli --dangerously-skip-permissions   # 启动 REPL
 ```
 
 ***
