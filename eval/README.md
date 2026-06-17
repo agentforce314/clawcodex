@@ -189,7 +189,7 @@ flag. Available presets:
 | `openai` (default) | `gpt-4o` | `--provider openai` | OpenAI native |
 | `deepseek` | `deepseek-v4-pro` | `--provider deepseek` | OpenAI-compatible (`https://api.deepseek.com/v1`) |
 | `anthropic` | `claude-sonnet-4-6` | `--provider anthropic` | Anthropic native |
-| `glm` | `zai/glm-5` | `--provider glm` | OpenAI-compatible (`https://open.bigmodel.cn/api/paas/v4`) |
+| `zai` | `glm-5.2` | `--provider zai` | OpenAI-compatible (`https://api.z.ai/api/coding/paas/v4`) |
 
 Examples:
 
@@ -252,7 +252,7 @@ python eval/compare_results.py \
 | Flag | Default | Notes |
 |---|---|---|
 | `--scope` | `smoke` | `smoke` / `instances` / `all` (full split) |
-| `--provider` | `openai` | Preset: `openai` / `deepseek` / `anthropic` / `glm` |
+| `--provider` | `openai` | Preset: `openai` / `deepseek` / `anthropic` / `zai` |
 | `--model` | (preset's default) | Override the preset's model name |
 | `--clawcodex-provider` | (preset) | Override clawcodex `--provider` flag |
 | `--openclaude-provider` | (preset) | Override openclaude routing hint |

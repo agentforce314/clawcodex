@@ -72,7 +72,7 @@
 ### Suporte Multi-Provedor
 
 ```python
-providers = ["Anthropic Claude", "OpenAI GPT", "Zhipu GLM"]  # + fácil de estender
+providers = ["Anthropic Claude", "OpenAI GPT", "Z.ai GLM"]  # + fácil de estender
 ```
 
 ### REPL Interativo
@@ -131,6 +131,23 @@ source .venv/bin/activate
 uv pip install -r requirements.txt
 ```
 
+O arquivo de configuração é salvo em `~/.clawcodex/config.json`. Exemplo mínimo:
+
+```json
+{
+  "default_provider": "zai",
+  "providers": {
+    "zai": {
+      "api_key": "xxx-xxx",
+      "base_url": "https://api.z.ai/api/coding/paas/v4",
+      "default_model": "glm-5.2"
+    }
+  }
+}
+```
+
+Os blocos `session`, `settings` e `env` são opcionais — valores padrão razoáveis se aplicam quando omitidos (estrutura completa abaixo).
+
 ### Configurar
 
 #### Opção 1: Interativo (Recomendado)
@@ -141,7 +158,7 @@ python -m src.cli login
 
 Este processo irá:
 
-1. pedir que você escolha um provedor: anthropic / openai / glm
+1. pedir que você escolha um provedor: anthropic / openai / zai
 2. pedir a chave API desse provedor
 3. salvar opcionalmente uma URL base personalizada
 4. salvar opcionalmente um modelo padrão
@@ -151,7 +168,7 @@ O arquivo de configuração é salvo em `~/.clawcodex/config.json`. Exemplo de e
 
 ```json
 {
-  "default_provider": "glm",
+  "default_provider": "zai",
   "providers": {
     "anthropic": {
       "api_key": "your-api-key",
@@ -163,10 +180,10 @@ O arquivo de configuração é salvo em `~/.clawcodex/config.json`. Exemplo de e
       "base_url": "https://api.openai.com/v1",
       "default_model": "gpt-4"
     },
-    "glm": {
+    "zai": {
       "api_key": "your-api-key",
-      "base_url": "https://open.bigmodel.cn/api/paas/v4",
-      "default_model": "glm-4.5"
+      "base_url": "https://api.z.ai/api/coding/paas/v4",
+      "default_model": "glm-5.2"
     }
   }
 }
