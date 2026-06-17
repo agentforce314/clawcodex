@@ -37,6 +37,23 @@ python -m src.cli login   # 配置写入 ~/.clawcodex/config.json
 python -m src.cli --dangerously-skip-permissions   # 启动 REPL
 ```
 
+配置文件保存在 `~/.clawcodex/config.json`。最小示例：
+
+```json
+{
+  "default_provider": "zai",
+  "providers": {
+    "zai": {
+      "api_key": "xxx-xxx",
+      "base_url": "https://api.z.ai/api/coding/paas/v4",
+      "default_model": "glm-5.2"
+    }
+  }
+}
+```
+
+`session`、`settings` 和 `env` 块均为可选——省略时会使用合理的默认值。完整结构见 [配置](#配置)。
+
 ***
 
 ## 📰 新闻
@@ -132,7 +149,7 @@ arguments: [path]
 ClawCodex 的核心优势是**多提供商支持**：Claude Code 以 **Claude** 系列模型为目标，而我们希望在同一套 Agent 运行时之上支持**所有主流 LLM 提供商**——你可以自由切换厂商、区域与价位，而不必放弃工具、技能与编码闭环。正是这种灵活性，让 agentic 编程在规模化使用时真正可行。
 
 ```python
-providers = ["anthropic", "openai", "glm", "minimax", "openrouter", "deepseek"]  # OpenAI 兼容与 GLM API；可继续扩展
+providers = ["anthropic", "openai", "zai", "minimax", "openrouter", "deepseek"]  # OpenAI 兼容与 GLM API；可继续扩展
 ```
 
 ### 交互式 REPL（默认）与 Textual TUI（可选）
@@ -265,7 +282,7 @@ clawcodex login
 
 这个流程会：
 
-1. 让你选择 provider：anthropic / openai / glm / minimax / openrouter / deepseek
+1. 让你选择 provider：anthropic / openai / zai / minimax / openrouter / deepseek
 2. 让你输入该 provider 的 API key
 3. 可选：保存自定义 base URL
 4. 可选：保存默认 model
@@ -287,10 +304,10 @@ clawcodex login
       "base_url": "https://api.openai.com/v1",
       "default_model": "gpt-5.4"
     },
-    "glm": {
+    "zai": {
       "api_key": "your-api-key",
-      "base_url": "https://open.bigmodel.cn/api/paas/v4",
-      "default_model": "zai/glm-5"
+      "base_url": "https://api.z.ai/api/coding/paas/v4",
+      "default_model": "glm-5.2"
     },
     "minimax": {
       "api_key": "your-api-key",
