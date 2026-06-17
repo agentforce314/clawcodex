@@ -110,6 +110,75 @@ def _validate_skill_input(tool_input: dict[str, Any], context: ToolContext) -> V
 
 
 # ---------------------------------------------------------------------------
+# Permission check (adapted from TS SkillTool/SkillTool.ts checkPermissions)
+# ---------------------------------------------------------------------------
+
+def _skill_check_permissions(tool_input: dict[str, Any], context: ToolContext) -> Any:
+    """Resolve permission for a skill invocation.
+
+    Policy (see ``src/permissions/check.py`` NO_PERMISSION_TOOLS comment): the
+    invocation AUTO-ALLOWS. In this port a skill grants no ungated capability —
+    its embedded ``!`` shell is permission-checked in :func:`_make_shell_executor`
+    and the model's own tool calls are gated normally — so the invocation itself
+    need not prompt. This deliberately diverges from TS, which gates skills that
+    declare ``allowed-tools``; that pre-authorization is not wired through this
+    port, so there is nothing extra to gate.
+
+    Explicit rules still win. Blanket ``Skill`` deny/ask rules are honored
+    upstream in ``has_permissions_to_use_tool_inner`` (which runs before this);
+    this function additionally honors per-skill *content* rules — ``Skill(<name>)``
+    and ``Skill(<prefix>:*)`` — for both ``deny`` (security-critical: never
+    auto-allow a denied skill) and ``ask``. Rule matching mirrors TS'
+    ``ruleMatches`` (strip leading slash, then exact or ``<prefix>:*``).
+    """
+    from src.permissions.rules import get_rule_by_contents_for_tool
+    from src.permissions.types import (
+        PermissionAllowDecision,
+        PermissionAskDecision,
+        PermissionDenyDecision,
+        RuleDecisionReason,
+    )
+
+    raw = tool_input.get("skill")
+    command_name = raw.strip().lstrip("/") if isinstance(raw, str) else ""
+
+    perm_ctx = getattr(context, "permission_context", None)
+    if perm_ctx is None or not command_name:
+        # No rule context in scope (or malformed input — validate_input rejects
+        # that separately). Auto-allow per policy; a blanket ``Skill`` deny is
+        # still caught upstream from the real permission context.
+        return PermissionAllowDecision(behavior="allow", updated_input=tool_input)
+
+    def _rule_matches(rule_content: str) -> bool:
+        normalized = rule_content.lstrip("/")
+        if normalized == command_name:
+            return True
+        if normalized.endswith(":*"):
+            return command_name.startswith(normalized[:-2])
+        return False
+
+    # Per-skill deny rules first — an explicit deny must never be auto-allowed.
+    for rule_content, rule in get_rule_by_contents_for_tool(perm_ctx, "Skill", "deny").items():
+        if _rule_matches(rule_content):
+            return PermissionDenyDecision(
+                behavior="deny",
+                message="Skill execution blocked by permission rules",
+                decision_reason=RuleDecisionReason(rule=rule),
+            )
+
+    # Per-skill ask rules: honor an explicit "prompt me for this skill".
+    for rule_content, rule in get_rule_by_contents_for_tool(perm_ctx, "Skill", "ask").items():
+        if _rule_matches(rule_content):
+            return PermissionAskDecision(
+                behavior="ask",
+                message=f"Execute skill: {command_name}",
+                decision_reason=RuleDecisionReason(rule=rule),
+            )
+
+    return PermissionAllowDecision(behavior="allow", updated_input=tool_input)
+
+
+# ---------------------------------------------------------------------------
 # mapResultToApi (ported from TS SkillTool/SkillTool.ts
 #     mapToolResultToToolResultBlockParam)
 # ---------------------------------------------------------------------------
@@ -439,6 +508,7 @@ SkillTool: Tool = build_tool(
     description="Execute a skill within the main conversation",
     map_result_to_api=_skill_map_result_to_api,
     validate_input=_validate_skill_input,
+    check_permissions=_skill_check_permissions,
     max_result_size_chars=100_000,
     is_read_only=lambda _input: True,
     is_concurrency_safe=lambda _input: True,
