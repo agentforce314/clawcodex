@@ -177,6 +177,82 @@ def get_simple_command_prefix(command: str) -> str | None:
     return " ".join(remaining[:2])
 
 
+# Commands safe to generalize to a first-word ``Bash(<cmd>:*)`` rule: each is
+# read-only with respect to its OWN arguments — it cannot write a file, exec
+# another program, or mutate system state via any flag/positional, regardless of
+# arguments. This is the deterministic stand-in for TS's ``getFirstWordPrefix``
+# (bashPermissions.ts:222), which TS surfaces as an *editable* dialog default the
+# user can narrow; this port has no such field, so it must never auto-grant a
+# generalization the user can't take back — hence the allowlist rather than
+# "any first word".
+#
+# DELIBERATELY EXCLUDED (would be unsafe to generalize — and, crucially, a
+# rule-matched ``Bash(<cmd>:*)`` allow is NOT re-screened by the bash safety
+# check at match time, so the allowlist is the entire boundary): find / fd
+# (``-exec`` / ``-delete`` / ``-x``), sort / uniq / tee / xxd / base64 / info
+# (write via an output-file arg or flag — ``xxd in out``, ``base64 -o``,
+# ``info --output``), cp / mv / dd / install / ln / truncate (write), command /
+# env / xargs / shells (exec their args — also in BARE_SHELL_PREFIXES), sed / awk
+# (``-i`` in-place / ``system()``), git / npm / make (mutating subcommands —
+# read-only ``git`` subcommands still get the 2-word ``git status:*`` prefix),
+# and ``date`` (``-s`` sets the clock).
+#
+# KNOWN LIMITATION (pre-existing for ALL Bash prefix rules — including the
+# existing 2-word ``git status:*`` form — and shared with TS): an output
+# redirect like ``ls > FILE`` is matched by ``Bash(ls:*)`` and can clobber FILE.
+# Closing that needs a change to the rule MATCHER (refuse redirected commands),
+# which applies to every prefix rule and is out of scope for this UX fix.
+SAFE_PREFIX_COMMANDS: frozenset[str] = frozenset({
+    # listing / navigation / fs metadata
+    "ls", "pwd", "tree", "stat", "file", "basename", "dirname", "realpath",
+    "readlink", "du", "df", "free",
+    # file contents → stdout (no in-place / output-file arg). NB: xxd is
+    # EXCLUDED — ``xxd in out`` / ``xxd -r in out`` writes the second positional.
+    "cat", "head", "tail", "nl", "tac", "rev", "wc", "od", "hexdump",
+    "strings",
+    # text transforms: stdin/args → stdout (no output-file arg). NB: base64 is
+    # EXCLUDED — BSD/macOS ``base64 -o out`` writes a file.
+    "cut", "paste", "column", "fold", "expand", "unexpand", "fmt", "numfmt",
+    "tr", "comm", "cmp", "diff", "jq",
+    # read-only search (NO find/fd — they exec/delete)
+    "grep", "egrep", "fgrep", "rg", "locate",
+    # system / process / network info
+    "whoami", "hostname", "uname", "arch", "id", "groups", "nproc", "uptime",
+    "cal", "locale", "getconf", "printenv",
+    "ps", "pgrep", "lsof", "netstat", "ss", "which", "type",
+    # hashing (read → digest on stdout)
+    "sha256sum", "sha1sum", "md5sum", "cksum",
+    # pure / trivial. NB: info is EXCLUDED — GNU texinfo ``info --output=FILE``
+    # writes a file; ``man`` has no such flag (and the pager shell-escape is
+    # neutralized by the Bash tool's stdin=DEVNULL), so man stays.
+    "echo", "printf", "seq", "expr", "test", "true", "false", "sleep",
+    "man", "help", "tput",
+})
+
+
+def get_safe_first_word_prefix(command: str) -> str | None:
+    """``'ls demos/'`` → ``'ls'``; ``None`` unless the first word is read-only
+    w.r.t. its arguments (:data:`SAFE_PREFIX_COMMANDS`).
+
+    Lets a single ``Bash(ls:*)`` grant cover ``ls`` of any path instead of a
+    path-specific exact rule that re-prompts for every directory. The safe-set
+    restriction is the security control — see the set's comment for why a bare
+    ``getFirstWordPrefix`` port (TS) would be unsafe here.
+    """
+    tokens = [t for t in command.strip().split() if t]
+    remaining = _skip_safe_env_assignments(tokens)
+    if not remaining:
+        return None
+    cmd = remaining[0]
+    # Same shape gate as the subcommand regex: reject paths (./x, /usr/bin/ls),
+    # flags, and numbers — only a bare command name may generalize.
+    if not _SUBCOMMAND_RE.match(cmd):
+        return None
+    if cmd not in SAFE_PREFIX_COMMANDS:
+        return None
+    return cmd
+
+
 def _extract_prefix_before_heredoc(command: str) -> str | None:
     """Stable prefix before a ``<<`` heredoc (TS :285-316)."""
 
@@ -294,6 +370,14 @@ def suggestions_for_bash_command(command: str) -> list[PermissionUpdate]:
     if prefix:
         return suggestion_for_prefix(prefix)
 
+    # No 2-word prefix (e.g. ``ls demos/`` — second token is a path, not a
+    # subcommand). For a command that is read-only w.r.t. its arguments, offer a
+    # reusable first-word prefix (``Bash(ls:*)``) so the grant covers any path,
+    # instead of a path-specific exact rule that re-prompts every directory.
+    first_word = get_safe_first_word_prefix(command)
+    if first_word:
+        return suggestion_for_prefix(first_word)
+
     return suggestion_for_exact_command(command)
 
 
@@ -301,7 +385,9 @@ __all__ = [
     "BARE_SHELL_PREFIXES",
     "BASH_TOOL_NAME",
     "SAFE_ENV_VARS",
+    "SAFE_PREFIX_COMMANDS",
     "contains_unquoted_chaining",
+    "get_safe_first_word_prefix",
     "get_simple_command_prefix",
     "suggestion_for_prefix",
     "suggestion_for_exact_command",
