@@ -231,28 +231,51 @@ def _run_markdown_skill(skill_name: str, args: str, context: ToolContext) -> Too
     )
 
 
+def _permission_context_with_skill_bash_rules(
+    base: Any, allowed_tools: list[str] | None
+) -> Any:
+    """Return ``base`` with the skill's ``Bash(...)`` allowed-tools added as
+    session allow rules.
+
+    Mirrors TS injecting a skill's ``allowed-tools`` as
+    ``alwaysAllowRules.command`` for the duration of the call: commands the skill
+    declares auto-allow, while everything else stays gated. Non-Bash entries are
+    irrelevant to embedded shell and ignored. A new context is returned; ``base``
+    is never mutated.
+    """
+    from dataclasses import replace
+
+    bash_rules = [
+        t for t in (allowed_tools or []) if t == "Bash" or t.startswith("Bash(")
+    ]
+    if not bash_rules:
+        return base
+    # Use the ``command`` source (TS injects allowed-tools as the slash
+    # command's own rules), so these never conflate with genuine session grants.
+    merged = {src: list(rules) for src, rules in base.always_allow_rules.items()}
+    merged["command"] = merged.get("command", []) + bash_rules
+    return replace(base, always_allow_rules=merged)
+
+
 def _make_shell_executor(
     context: ToolContext,
     allowed_tools: list[str] | None,
     *,
     slash_command_name: str,
 ):
-    """Return a callable that runs a shell command via BashTool.
+    """Return a callable that runs a skill's embedded ``!`` shell command via
+    BashTool, **gated through the permission system**.
 
-    The returned executor matches the
-    ``runtime_substitution.ShellExecutor`` signature: ``(command, inline)
-    -> rendered text``. Errors and non-zero exits are formatted via
-    ``format_shell_error`` / ``format_shell_output`` so the renderer can
-    splice the result back into the prompt without raising.
-
-    The skill's ``allowed_tools`` list is documented for parity with TS
-    (which injects them as ``alwaysAllowRules.command`` for the duration
-    of the call), but the Python BashTool's ``call()`` path bypasses the
-    registry-level permission gate and runs the command directly under
-    the active ``ToolContext`` permission mode. Wiring the
-    ``alwaysAllowRules.command`` injection precisely is tracked as a
-    follow-up; in bypass-permissions sessions (the default for the
-    in-process SkillTool path) commands run unprompted.
+    The returned executor matches the ``runtime_substitution.ShellExecutor``
+    signature ``(command, inline) -> rendered text``. Before running, each
+    command is permission-checked exactly like any Bash tool call (deny rules →
+    bash safety screen → the skill's declared ``allowed_tools`` Bash rules), with
+    ``allowed_tools`` injected as the command's allow rules so declared commands
+    run silently. Only a permission ``allow`` runs; an undeclared or
+    safety-screened command is hard-denied and rendered inline as an error
+    (matching TS ``promptShellExecution``, which fails rather than prompting the
+    user mid-expansion). ``bypassPermissions`` mode still runs everything. So
+    embedded shell can no longer bypass the gate.
     """
     from .bash import BashTool
     from src.skills.runtime_substitution import (
@@ -260,9 +283,43 @@ def _make_shell_executor(
         format_shell_output,
     )
 
-    _ = allowed_tools  # acknowledged; precise injection deferred (see docstring)
+    # Skill-scoped permission context: the skill's declared Bash commands
+    # auto-allow; everything else flows through the normal gate.
+    skill_perm_ctx = _permission_context_with_skill_bash_rules(
+        context.permission_context, allowed_tools
+    )
 
     def _exec(command: str, inline: bool) -> str:
+        # Gate the command before running it. Mirrors TS ``promptShellExecution``:
+        # only a permission ``allow`` runs the command; anything else (``ask`` or
+        # ``deny``) is treated as denied and rendered inline as an error instead
+        # of executing — TS hard-denies here rather than prompting the user
+        # mid-skill-expansion, and we match that. A skill grants its commands by
+        # DECLARING them in ``allowed-tools``; undeclared / safety-screened
+        # commands do not run. Fails CLOSED on any gate error.
+        try:
+            from src.permissions.check import has_permissions_to_use_tool
+
+            decision = has_permissions_to_use_tool(
+                BashTool,
+                {"command": command},
+                skill_perm_ctx,
+                tool_use_context=context,
+            )
+        except Exception as exc:  # noqa: BLE001 — fail closed, never crash render
+            return format_shell_error(exc, command, inline=inline)
+
+        if decision.behavior != "allow":
+            reason = getattr(decision, "decision_reason", None)
+            if reason is not None and getattr(reason, "type", None) == "safetyCheck":
+                msg = getattr(decision, "message", None) or "blocked by a safety check"
+            else:
+                msg = (
+                    "command not permitted — declare it in the skill's "
+                    "`allowed-tools` (e.g. `Bash(<cmd>:*)`)"
+                )
+            return format_shell_error(msg, command, inline=inline)
+
         try:
             tr = BashTool.call({"command": command}, context)
         except Exception as exc:  # noqa: BLE001 — surface every failure
