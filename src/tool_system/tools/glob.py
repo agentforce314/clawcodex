@@ -140,8 +140,31 @@ _GLOB_PROMPT = """- Fast file pattern matching tool that works with any codebase
 - When you are doing an open ended search that may require multiple rounds of globbing and grepping, use the Agent tool instead"""
 
 
+def _glob_check_permissions(tool_input: dict, context):
+    """Path-based read permission, mirroring TS ``GlobTool.checkPermissions`` →
+    ``checkReadPermissionForTool``. The default search dir (cwd) and any path
+    inside the workspace are allowed silently; an explicit ``path`` outside the
+    workspace falls through to the read ``ask``.
+
+    A relative ``path`` is resolved against ``context.cwd`` (the same base the
+    executor uses), not the process cwd, so the check and the run agree."""
+    import os
+    from pathlib import Path
+
+    from src.permissions.filesystem import check_read_permission_for_tool
+
+    base = context.cwd or context.workspace_root
+    path = (tool_input or {}).get("path")
+    if not path:
+        path = str(base)
+    elif not os.path.isabs(os.path.expanduser(path)):
+        path = str(Path(base) / path)
+    return check_read_permission_for_tool(path, context)
+
+
 GlobTool: Tool = build_tool(
     name="Glob",
+    check_permissions=_glob_check_permissions,
     input_schema={
         "type": "object",
         "additionalProperties": False,
