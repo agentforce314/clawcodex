@@ -108,6 +108,61 @@ def _get_updated_input_or_fallback(
 # roots (parity with typescript/src/utils/permissions/filesystem.ts:1382-1397).
 _FILE_EDIT_TOOLS: tuple[str, ...] = ("Write", "Edit", "MultiEdit", "NotebookEdit")
 
+# Tools that are NOT necessarily gated — they never need a permission prompt.
+# This port centralizes the always-allow set here (one auditable surface)
+# instead of scattering identical ``check_permissions=allow`` across ~20 tool
+# files. The decision is mode-independent, matching how TS resolves these tools.
+#
+# Two membership rationales (kept distinct on purpose):
+#   * TS-DEFAULT-ALLOW — the base ``TOOL_DEFAULTS.checkPermissions`` returns
+#     ``{behavior:'allow'}`` (typescript/src/Tool.ts:777), so every TS tool with
+#     no override auto-allows. The Python base default is ``passthrough → ask``
+#     (build_tool.py), so these need to be named explicitly. Covers TodoWrite,
+#     ToolSearch, Sleep, Agent (AgentTool.tsx:1309), and the Python-only
+#     bookkeeping/coordination tools with no TS analog (Tasks, Team, Cron,
+#     worktree, Status, Brief, advisor, Clipboard*).
+#   * DELIBERATE UX DIVERGENCE — TS gates these but the project guideline
+#     ("allow if it is not necessarily gated; favor UX while keeping safety")
+#     says not to: WebSearch (TS WebSearchTool.ts:645 returns passthrough → ask;
+#     low-risk read-only, no arbitrary URL unlike WebFetch), AskUserQuestion
+#     (TS returns ask+requiresUserInteraction — the questions ARE the gate;
+#     Python's ``call`` collects answers via ``context.ask_user`` so a separate
+#     permission prompt is redundant), SendUserMessage, StructuredOutput.
+#
+# The check (in :func:`has_permissions_to_use_tool_inner`) is gated on a
+# ``passthrough`` tool result and runs AFTER deny/ask RULES, so a user-configured
+# ``deny``/``ask`` rule (and any explicit tool ``ask``) still wins.
+#
+# DELIBERATELY EXCLUDED (kept gated — these ARE necessarily gated):
+#   * file mutation: Write/Edit/MultiEdit/NotebookEdit
+#   * code execution: Bash
+#   * arbitrary network egress: WebFetch
+#   * input/path-conditional (carry their own check_permissions): Config (write),
+#     Glob, Grep, SendMessage (cross-machine bridge:/uds: recipients), and Skill
+#     (TS allows only skills with safe properties — and this port's skill
+#     executor runs embedded shell directly, so the invocation must stay gated).
+#   * MCP server access: MCP / ListMcpResourcesTool / ReadMcpResourceTool and
+#     dynamic ``mcp__*`` (external/untrusted boundary).
+#   * plan-mode meta tools: EnterPlanMode / ExitPlanMode (ExitPlanMode is the
+#     plan-confirmation gate).
+NO_PERMISSION_TOOLS: frozenset[str] = frozenset({
+    # Interactive / output (the interaction or output IS the action)
+    "AskUserQuestion", "SendUserMessage", "StructuredOutput",
+    # Read-only / introspection
+    "WebSearch", "ToolSearch", "LSP", "advisor", "Brief", "Status",
+    "ClipboardRead",
+    # Bookkeeping / harness state (no external side effects)
+    "TodoWrite", "ClipboardWrite", "Sleep",
+    "TaskCreate", "TaskGet", "TaskList", "TaskUpdate", "TaskOutput", "TaskStop",
+    # Orchestration / coordination — every sub-action they spawn is itself
+    # permission-checked, so the spawn is not the gate.
+    "Agent", "Workflow", "TeamCreate", "TeamDelete",
+    # Scheduling — the scheduled run is permission-checked when it fires.
+    "CronCreate", "CronList", "CronDelete",
+    # Local, reversible git-worktree management.
+    "EnterWorktree", "ExitWorktree",
+})
+
 
 def _allowed_roots_for_check(
     context: ToolPermissionContext, tool_use_context: Any | None
@@ -299,6 +354,23 @@ def has_permissions_to_use_tool_inner(
             behavior="deny",
             message=getattr(tool_permission_result, "message", f"Permission denied for {tool.name}"),
             decision_reason=getattr(tool_permission_result, "decision_reason", None),
+        )
+
+    # Not-necessarily-gated tools auto-allow (see NO_PERMISSION_TOOLS). Gated on
+    # ``passthrough`` so a tool that explicitly returns ``ask``/``deny`` is still
+    # honored, and placed AFTER the deny/ask RULE checks above so configured
+    # rules win. Mode-independent — matching TS, where these tools' own
+    # checkPermissions returns allow regardless of permission mode.
+    if (
+        tool_permission_result.behavior == "passthrough"
+        and tool.name in NO_PERMISSION_TOOLS
+    ):
+        return PermissionAllowDecision(
+            behavior="allow",
+            updated_input=_get_updated_input_or_fallback(tool_permission_result, tool_input),
+            decision_reason=OtherDecisionReason(
+                reason="auto-allow: tool is not necessarily gated (NO_PERMISSION_TOOLS)",
+            ),
         )
 
     if (
