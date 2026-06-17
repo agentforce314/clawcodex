@@ -293,7 +293,7 @@ def _read_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
             f"{ext} file. Please use appropriate tools for binary file analysis."
         )
 
-    path = context.ensure_allowed_path(file_path)
+    path = context.ensure_readable_path(file_path)
 
     # --- File not found: provide helpful suggestions ---
     if not path.exists():
@@ -704,6 +704,20 @@ def _read_map_result_to_api(output: Any, tool_use_id: str) -> dict[str, Any]:
 # Tool definition
 # ---------------------------------------------------------------------------
 
+
+def _read_check_permissions(tool_input: dict[str, Any], context: ToolContext):
+    """Path-based read permission, mirroring TS ``FileReadTool.checkPermissions``.
+
+    Working-dir and harness-internal reads are allowed silently; reads outside
+    the workspace return ``passthrough`` (→ the read ``ask``). Tool-level
+    ``Read`` deny/ask rules are still honored upstream, before this runs.
+    """
+    from src.permissions.filesystem import check_read_permission_for_tool
+
+    file_path = (tool_input or {}).get("file_path", "")
+    return check_read_permission_for_tool(file_path, context)
+
+
 ReadTool: Tool = build_tool(
     name="Read",
     input_schema={
@@ -739,6 +753,7 @@ ReadTool: Tool = build_tool(
         "required": ["file_path"],
     },
     call=_read_call,
+    check_permissions=_read_check_permissions,
     prompt=_render_prompt(),
     description="Read a file from the local filesystem.",
     map_result_to_api=_read_map_result_to_api,
