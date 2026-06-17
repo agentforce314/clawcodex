@@ -137,10 +137,17 @@ _FILE_EDIT_TOOLS: tuple[str, ...] = ("Write", "Edit", "MultiEdit", "NotebookEdit
 #   * file mutation: Write/Edit/MultiEdit/NotebookEdit
 #   * code execution: Bash
 #   * arbitrary network egress: WebFetch
-#   * input/path-conditional (carry their own check_permissions): Config (write),
-#     Glob, Grep, SendMessage (cross-machine bridge:/uds: recipients), and Skill
-#     (TS allows only skills with safe properties — and this port's skill
-#     executor runs embedded shell directly, so the invocation must stay gated).
+#   * input/conditional (carry their own check_permissions): Config (write),
+#     Glob, Grep, SendMessage (cross-machine bridge:/uds: recipients), and Skill.
+#     Skill's own check (``tools/skill.py:_skill_check_permissions``) AUTO-ALLOWS
+#     the invocation — in this port a skill grants no ungated capability: its
+#     embedded ``!`` shell is permission-checked in ``_make_shell_executor`` and
+#     the model's own tool calls are gated normally — while still honoring
+#     per-skill ``Skill(<name>)`` deny/ask content rules. (TS instead gates
+#     skills that declare ``allowed-tools``; we diverge because that
+#     pre-authorization is not wired through here, so there's nothing extra to
+#     gate. It lives here rather than in NO_PERMISSION_TOOLS because that
+#     content-rule handling is input-conditional, like Config/Grep.)
 #   * MCP server access: MCP / ListMcpResourcesTool / ReadMcpResourceTool and
 #     dynamic ``mcp__*`` (external/untrusted boundary).
 #   * plan-mode meta tools: EnterPlanMode / ExitPlanMode (ExitPlanMode is the
