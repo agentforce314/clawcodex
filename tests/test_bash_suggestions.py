@@ -10,6 +10,8 @@ from __future__ import annotations
 import unittest
 
 from src.permissions.bash_suggestions import (
+    SAFE_PREFIX_COMMANDS,
+    get_safe_first_word_prefix,
     get_simple_command_prefix,
     suggestions_for_bash_command,
 )
@@ -60,8 +62,11 @@ class TestSuggestionsForBashCommand(unittest.TestCase):
         self.assertEqual(rule.rule_content, "git diff:*")
 
     def test_exact_rule_when_no_prefix(self) -> None:
-        rule = _only_rule(suggestions_for_bash_command("ls -la"))
-        self.assertEqual(rule.rule_content, "ls -la")
+        # No 2-word prefix and not a safe-to-generalize command → exact rule.
+        # (NB: a safe read-only command like `ls -la` now yields `ls:*` — see
+        # TestFirstWordPrefixSuggestion.)
+        rule = _only_rule(suggestions_for_bash_command("mv old.txt new.txt"))
+        self.assertEqual(rule.rule_content, "mv old.txt new.txt")
 
     def test_heredoc_uses_prefix_before_operator(self) -> None:
         cmd = 'git commit -m "$(cat <<\'EOF\'\nmsg\nEOF\n)"'
@@ -234,6 +239,75 @@ class TestMatcherChainingGuard(unittest.TestCase):
         self.assertTrue(matcher("git status --short"))
         self.assertFalse(matcher("git push"))
         self.assertFalse(matcher("git status && git push"))
+
+
+class TestGetSafeFirstWordPrefix(unittest.TestCase):
+    def test_safe_command_returns_first_word(self) -> None:
+        self.assertEqual(get_safe_first_word_prefix("ls demos/"), "ls")
+        self.assertEqual(get_safe_first_word_prefix("cat a/b/c.txt"), "cat")
+        self.assertEqual(get_safe_first_word_prefix("grep -r foo ."), "grep")
+
+    def test_unsafe_command_returns_none(self) -> None:
+        # Commands that write/exec via their own args — must NOT generalize.
+        # Includes the write-via-output-arg trio (xxd/base64/info) a reviewer
+        # caught in the first cut.
+        for cmd in ("find . -name x", "sort -o /etc/x f", "tee /etc/x",
+                    "cp a /b", "mv a /b", "dd if=/dev/zero of=/x", "rm x",
+                    "xxd -r p.hex /victim", "base64 -d -i x -o /victim",
+                    "info --output=/victim coreutils"):
+            self.assertIsNone(get_safe_first_word_prefix(cmd), cmd)
+
+    def test_path_or_flag_first_token_returns_none(self) -> None:
+        self.assertIsNone(get_safe_first_word_prefix("./script.sh"))
+        self.assertIsNone(get_safe_first_word_prefix("/usr/bin/ls x"))
+        self.assertIsNone(get_safe_first_word_prefix("-rf x"))
+
+    def test_unsafe_env_var_returns_none(self) -> None:
+        self.assertIsNone(get_safe_first_word_prefix("LD_PRELOAD=x ls /"))
+
+    def test_safe_env_var_skipped(self) -> None:
+        self.assertEqual(get_safe_first_word_prefix("NO_COLOR=1 ls /"), "ls")
+
+    def test_no_shells_or_wrappers_in_safe_set(self) -> None:
+        for bad in ("bash", "sh", "env", "xargs", "sudo", "find", "fd",
+                    "sort", "uniq", "tee", "cp", "mv", "rm", "dd", "git",
+                    "sed", "awk", "command", "date", "npm", "curl",
+                    "xxd", "base64", "info"):
+            self.assertNotIn(bad, SAFE_PREFIX_COMMANDS, bad)
+
+
+class TestFirstWordPrefixSuggestion(unittest.TestCase):
+    def _rule(self, command: str):
+        updates = suggestions_for_bash_command(command)
+        return _only_rule(updates).rule_content if updates else None
+
+    def test_ls_path_generalizes_to_prefix(self) -> None:
+        self.assertEqual(self._rule("ls demos/"), "ls:*")
+        self.assertEqual(self._rule("cat foo.txt"), "cat:*")
+        self.assertEqual(self._rule("grep -r foo ."), "grep:*")
+
+    def test_reported_bug_one_grant_covers_sibling_paths(self) -> None:
+        # Approving `ls .../demos/` must cover `ls .../demos/elon-blog/`.
+        from src.permissions.check import prepare_permission_matcher
+
+        rule = self._rule("ls /Users/x/workspace/demos/")
+        self.assertEqual(rule, "ls:*")
+        matcher = prepare_permission_matcher(rule)
+        self.assertTrue(matcher("ls /Users/x/workspace/demos/elon-blog/"))
+
+    def test_dangerous_command_not_generalized_to_bare_prefix(self) -> None:
+        # Must never auto-suggest Bash(find:*)/Bash(sort:*)/Bash(xxd:*)/etc.
+        for cmd in ("find . -name x", "sort -o /etc/x f", "tee /etc/x",
+                    "xxd -r p.hex /victim", "base64 -d -i x -o /victim",
+                    "info --output=/victim coreutils"):
+            self.assertNotEqual(self._rule(cmd), f"{cmd.split()[0]}:*", cmd)
+
+    def test_two_word_prefix_still_wins(self) -> None:
+        # The 2-word prefix path is unchanged (takes precedence).
+        self.assertEqual(self._rule("git status"), "git status:*")
+
+    def test_unsafe_command_falls_back_to_exact(self) -> None:
+        self.assertEqual(self._rule("find . -name x"), "find . -name x")
 
 
 if __name__ == "__main__":
