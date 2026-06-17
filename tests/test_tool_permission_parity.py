@@ -27,7 +27,6 @@ _GATED = {
     "Edit", "Write", "MultiEdit", "NotebookEdit",  # file mutation
     "Bash",                                          # code execution
     "WebFetch",                                      # arbitrary network egress
-    "Skill",                                         # runs embedded shell / skill cmds
     "MCP", "ListMcpResourcesTool", "ReadMcpResourceTool",  # MCP boundary
     "EnterPlanMode", "ExitPlanMode",                 # plan-mode meta
 }
@@ -92,7 +91,6 @@ class TestGatedToolsStillAsk(_Base):
             "NotebookEdit": {"notebook_path": str(self.ws / "n.ipynb"), "new_source": "x"},
             "Bash": {"command": "echo hi"},
             "WebFetch": {"url": "https://example.com", "prompt": "x"},
-            "Skill": {"skill": "some-skill"},
             "MCP": {"server": "s", "tool": "t"},
             "ListMcpResourcesTool": {},
             "ReadMcpResourceTool": {"server": "s", "uri": "u"},
@@ -176,10 +174,47 @@ class TestSendMessageGate(_Base):
             "ask",
         )
 
-    def test_skill_is_gated(self) -> None:
-        # Skill runs embedded shell / declared tools — the invocation stays gated.
-        ctx = _ctx("default", self.ws)
-        self.assertEqual(_behavior(self.reg, "Skill", {"skill": "some-skill"}, ctx), "ask")
+
+class TestSkillAutoAllows(_Base):
+    """Skill invocations auto-allow, but explicit per-skill rules still win.
+
+    The invocation grants no ungated capability in this port — a skill's
+    embedded ``!`` shell is permission-checked (see TestSkillEmbeddedShellGated)
+    and the model's own tool calls are gated normally — so it need not prompt.
+    """
+
+    def test_skill_auto_allows(self) -> None:
+        # The skill INVOCATION auto-allows (it grants no ungated capability in
+        # this port — embedded shell + the model's tool calls are checked
+        # separately; see TestSkillEmbeddedShellGated). True in default and auto.
+        for mode in ("default", "auto"):
+            ctx = _ctx(mode, self.ws)
+            self.assertEqual(
+                _behavior(self.reg, "Skill", {"skill": "some-skill"}, ctx), "allow",
+                f"Skill should auto-allow in {mode} mode",
+            )
+
+    def test_skill_blanket_deny_rule_wins(self) -> None:
+        # A content-less ``Skill`` deny rule (honored upstream) beats auto-allow.
+        pc = ToolPermissionContext.from_iterables(deny_names=["Skill"])
+        ctx = ToolContext(workspace_root=self.ws, permission_context=pc)
+        self.assertEqual(_behavior(self.reg, "Skill", {"skill": "browse"}, ctx), "deny")
+
+    def test_skill_per_skill_deny_rule_wins(self) -> None:
+        # A per-skill ``Skill(browse)`` deny rule is honored by the tool's own
+        # check_permissions; an unrelated skill still auto-allows.
+        pc = ToolPermissionContext.from_iterables(deny_names=["Skill(browse)"])
+        ctx = ToolContext(workspace_root=self.ws, permission_context=pc)
+        self.assertEqual(_behavior(self.reg, "Skill", {"skill": "browse"}, ctx), "deny")
+        self.assertEqual(_behavior(self.reg, "Skill", {"skill": "/browse"}, ctx), "deny")
+        self.assertEqual(_behavior(self.reg, "Skill", {"skill": "qa"}, ctx), "allow")
+
+    def test_skill_prefix_deny_rule_matches(self) -> None:
+        # ``Skill(review:*)`` matches ``review-pr`` (TS ruleMatches prefix form).
+        pc = ToolPermissionContext.from_iterables(deny_names=["Skill(review:*)"])
+        ctx = ToolContext(workspace_root=self.ws, permission_context=pc)
+        self.assertEqual(_behavior(self.reg, "Skill", {"skill": "review-pr"}, ctx), "deny")
+        self.assertEqual(_behavior(self.reg, "Skill", {"skill": "browse"}, ctx), "allow")
 
 
 class TestConfigInputDependent(_Base):
