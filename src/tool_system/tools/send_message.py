@@ -531,10 +531,40 @@ def _send_message_classifier_input(input_data: dict) -> str:
     return f"to {to}"
 
 
+def _send_message_check_permissions(tool_input: dict, _context):
+    """Mirror TS ``SendMessageTool.checkPermissions`` (SendMessageTool.ts:585).
+
+    Local / team-mailbox / broadcast sends are allowed silently (coordination
+    traffic must not prompt). A cross-machine ``bridge:`` / ``uds:`` recipient
+    returns a non-classifier-approvable safety ``ask`` — bypass- and auto-mode
+    immune — because it is cross-trust-boundary prompt injection. (Those
+    transports are NotImplementedError stubs in this build, but the gate is
+    wired now so it cannot be forgotten when they land.)
+    """
+    from src.permissions.types import (
+        PermissionAllowDecision,
+        PermissionAskDecision,
+        SafetyCheckDecisionReason,
+    )
+
+    to = (tool_input or {}).get("to")
+    if isinstance(to, str) and (to.startswith("bridge:") or to.startswith("uds:")):
+        return PermissionAskDecision(
+            behavior="ask",
+            message=f"Send a message to cross-machine recipient {to}?",
+            decision_reason=SafetyCheckDecisionReason(
+                reason="Cross-machine message recipient requires confirmation",
+                classifier_approvable=False,
+            ),
+        )
+    return PermissionAllowDecision(behavior="allow", updated_input=tool_input)
+
+
 SendMessageTool: Tool = build_tool(
     name=SEND_MESSAGE_TOOL_NAME,
     input_schema=SEND_MESSAGE_INPUT_SCHEMA,
     call=_send_message_call,
+    check_permissions=_send_message_check_permissions,
     prompt=(
         "Send a message to a teammate, a remote peer, or broadcast to "
         "the team. The 'to' field accepts a teammate name, '*' for "
