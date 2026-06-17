@@ -75,8 +75,23 @@ def _config_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult
     )
 
 
+def _config_check_permissions(tool_input: dict, _context):
+    """Mirror TS ``ConfigTool.checkPermissions`` (ConfigTool.ts:98-107): reading
+    a config value (no ``value`` provided) is auto-allowed; setting one falls
+    through to the normal ask flow (which still surfaces a session option)."""
+    from src.permissions.types import (
+        PermissionAllowDecision,
+        PermissionPassthroughResult,
+    )
+
+    if "value" not in (tool_input or {}):
+        return PermissionAllowDecision(behavior="allow", updated_input=tool_input)
+    return PermissionPassthroughResult()
+
+
 ConfigTool: Tool = build_tool(
     name="Config",
+    check_permissions=_config_check_permissions,
     input_schema={
         "type": "object",
         "additionalProperties": False,
