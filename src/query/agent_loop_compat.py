@@ -56,6 +56,38 @@ from ..tool_system.renderers import (
 )
 
 
+def _is_tool_result_block(block: Any) -> bool:
+    """True for a tool_result block in EITHER shape it can arrive in.
+
+    ``run_tool_use`` (services/tool_execution/tool_execution.py) emits
+    tool_result blocks in TWO forms: the normal-success path and the
+    user-cancel REJECT path build typed ``ToolResultBlock`` instances,
+    but the permission-denied / generic-abort / tool-error paths build
+    RAW DICTS (``{"type": "tool_result", ...}``). The adapter must
+    persist and surface BOTH — an earlier ``isinstance(block,
+    ToolResultBlock)``-only check silently dropped the dict form, which
+    left the assistant's ``tool_use`` with no matching ``tool_result``
+    in the conversation. The NEXT API call then 400s with "tool_use ids
+    were found without tool_result blocks immediately after" — exactly
+    the failure seen when ESC-rejecting a tool (e.g. a permission
+    prompt) and then resuming with "please continue".
+    """
+    if isinstance(block, ToolResultBlock):
+        return True
+    return isinstance(block, dict) and block.get("type") == "tool_result"
+
+
+def _tool_result_fields(block: Any) -> tuple[str, Any, bool]:
+    """Read (tool_use_id, content, is_error) from either block shape."""
+    if isinstance(block, ToolResultBlock):
+        return block.tool_use_id, block.content, bool(block.is_error)
+    return (
+        block.get("tool_use_id", ""),
+        block.get("content", ""),
+        bool(block.get("is_error")),
+    )
+
+
 def run_query_as_agent_loop_sync(
     conversation: Any,
     provider: BaseProvider,
@@ -431,21 +463,28 @@ async def run_query_as_agent_loop(
                 continue
             content = msg.content
             if isinstance(content, list):
+                # Accept tool_result blocks in BOTH typed and raw-dict
+                # form (see _is_tool_result_block). The denial/abort/error
+                # paths in run_tool_use emit dicts; dropping them here
+                # orphans the matching tool_use and 400s the next turn.
                 has_tool_result = any(
-                    isinstance(block, ToolResultBlock) for block in content
+                    _is_tool_result_block(block) for block in content
                 )
                 if has_tool_result and on_message is not None:
                     on_message(msg)
                 if on_event is not None:
                     for block in content:
-                        if isinstance(block, ToolResultBlock):
+                        if _is_tool_result_block(block):
+                            tool_use_id, tool_output, is_error = (
+                                _tool_result_fields(block)
+                            )
                             on_event(ToolEvent(
                                 kind="tool_result",
                                 tool_name="",
-                                tool_use_id=block.tool_use_id,
-                                tool_output=block.content,
-                                is_error=bool(block.is_error),
-                                error=str(block.content) if block.is_error else None,
+                                tool_use_id=tool_use_id,
+                                tool_output=tool_output,
+                                is_error=is_error,
+                                error=str(tool_output) if is_error else None,
                             ))
 
     # Critic C1 fix: surface terminal abort/error reasons as exceptions
