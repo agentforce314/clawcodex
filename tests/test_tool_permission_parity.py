@@ -194,6 +194,65 @@ class TestConfigInputDependent(_Base):
         )
 
 
+class TestSkillEmbeddedShellGated(_Base):
+    """A skill's embedded ``!`` shell must go through the permission gate.
+
+    Previously ``_make_shell_executor`` ran ``BashTool.call`` directly, so
+    embedded shell bypassed permissions entirely. Now it is gated, with the
+    skill's ``allowed_tools`` injected as Bash allow rules.
+    """
+
+    def _exec(self, allowed, command, mode="default"):
+        from src.tool_system.tools.skill import _make_shell_executor
+
+        ctx = _ctx(mode, self.ws)
+        return _make_shell_executor(ctx, allowed, slash_command_name="/t")(command, False)
+
+    def test_declared_command_runs(self) -> None:
+        marker = self.ws / "declared.marker"
+        self._exec(["Bash(touch:*)"], f"touch {marker}")
+        self.assertTrue(marker.exists(), "declared command should execute")
+
+    def test_undeclared_command_blocked(self) -> None:
+        # Hard-denied in default mode (matches TS — not prompted, not run).
+        marker = self.ws / "undeclared.marker"
+        out = self._exec([], f"touch {marker}")
+        self.assertFalse(marker.exists(), "undeclared command must NOT execute")
+        self.assertIn("Error", out)
+
+    def test_dangerous_command_blocked_even_when_declared(self) -> None:
+        # Safety screen wins over an allowed_tools grant: the marker survives
+        # because the declared-but-destructive rm never runs.
+        marker = self.ws / "danger.marker"
+        marker.write_text("keep")
+        out = self._exec(["Bash(rm:*)"], f"rm -rf {marker}")
+        self.assertTrue(marker.exists(), "destructive command must be blocked despite being declared")
+        self.assertIn("Error", out)
+
+    def test_chained_command_blocked(self) -> None:
+        # Chaining can't ride in on a single-command allow rule.
+        marker = self.ws / "chain.marker"
+        out = self._exec(["Bash(echo:*)"], f"echo hi && touch {marker}")
+        self.assertFalse(marker.exists(), "chained command must not run")
+        self.assertIn("Error", out)
+
+    def test_bare_bash_grant_runs_safe_blocks_dangerous(self) -> None:
+        # A bare `Bash` allowed-tool grants all *non-screened* shell, but the
+        # safety screen still fires first for destructive commands.
+        safe = self.ws / "bare_safe.marker"
+        self._exec(["Bash"], f"touch {safe}")
+        self.assertTrue(safe.exists(), "bare Bash grant should run safe commands")
+        danger = self.ws / "bare_danger.marker"
+        danger.write_text("keep")
+        self._exec(["Bash"], f"rm -rf {danger}")
+        self.assertTrue(danger.exists(), "bare Bash grant must not bypass the safety screen")
+
+    def test_bypass_mode_runs_undeclared(self) -> None:
+        marker = self.ws / "bypass.marker"
+        self._exec([], f"touch {marker}", mode="bypassPermissions")
+        self.assertTrue(marker.exists())
+
+
 class TestRulesStillWin(_Base):
     def test_deny_rule_beats_central_allow(self) -> None:
         # A configured deny rule for an otherwise-allowed tool must still deny —
