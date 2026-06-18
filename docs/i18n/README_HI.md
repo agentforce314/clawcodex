@@ -142,9 +142,14 @@ uv pip install -r requirements.txt
       "base_url": "https://api.z.ai/api/coding/paas/v4",
       "default_model": "glm-5.2"
     }
+  },
+  "env": {
+    "TAVILY_API_KEY": "tvly-YOUR-TAVILY-API-KEY"
   }
 }
 ```
+
+> **नोट:** WebSearch टूल के लिए `TAVILY_API_KEY` आवश्यक है — [tavily.com](https://tavily.com) पर कुंजी प्राप्त करें।
 
 `session`, `settings` और `env` ब्लॉक वैकल्पिक हैं — इन्हें छोड़ने पर उचित डिफ़ॉल्ट मान लागू होते हैं (पूरी संरचना नीचे)।
 

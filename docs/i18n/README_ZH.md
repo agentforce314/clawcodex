@@ -48,9 +48,14 @@ python -m src.cli --dangerously-skip-permissions   # 启动 REPL
       "base_url": "https://api.z.ai/api/coding/paas/v4",
       "default_model": "glm-5.2"
     }
+  },
+  "env": {
+    "TAVILY_API_KEY": "tvly-YOUR-TAVILY-API-KEY"
   }
 }
 ```
+
+> **注意：** WebSearch 工具需要 `TAVILY_API_KEY`——可在 [tavily.com](https://tavily.com) 获取密钥。
 
 `session`、`settings` 和 `env` 块均为可选——省略时会使用合理的默认值。完整结构见 [配置](#配置)。
 
