@@ -48,9 +48,14 @@ The configuration file is saved at `~/.clawcodex/config.json`. Minimal example:
       "base_url": "https://api.z.ai/api/coding/paas/v4",
       "default_model": "glm-5.2"
     }
+  },
+  "env": {
+    "TAVILY_API_KEY": "tvly-YOUR-TAVILY-API-KEY"
   }
 }
 ```
+
+> **Note:** `TAVILY_API_KEY` is required for the WebSearch tool — get a key at [tavily.com](https://tavily.com).
 
 The `session`, `settings`, and `env` blocks are optional — sensible defaults apply when they're omitted. See [Configure](#configure) for the full structure.
 
