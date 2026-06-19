@@ -129,6 +129,39 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
         cost_cache_create_per_mtok=0.30,
         cost_cache_read_per_mtok=0.03,
     ),
+
+    # DeepSeek V4 series (OpenAI-compatible; api.deepseek.com). Registered so
+    # context-window-aware logic (compaction triggers, token warnings) uses
+    # DeepSeek's real ~1M window instead of the 200K default. Keys are the
+    # bare model ids used ONLY by the ``deepseek`` provider; OpenRouter's
+    # ``deepseek/…`` ids do not prefix-match ``deepseek-v4``, so OpenRouter is
+    # intentionally unaffected. Legacy ``deepseek-chat`` / ``deepseek-reasoner``
+    # are deliberately NOT registered: their prefix-match base would be the
+    # broad ``deepseek`` and could capture other ids.
+    #
+    # NOTE: ``get_model_config``'s prefix fallback bases these on
+    # ``deepseek-v4`` and ``pro`` precedes ``flash``, so a FUTURE
+    # dated/suffixed variant (e.g. ``deepseek-v4-flash-0701``) would fall back
+    # to ``pro``'s row — register such variants explicitly.
+    #
+    # Cost/pricing is intentionally NOT set here: DeepSeek's USD rates live in
+    # ``services/pricing.py`` (the single source the cost path reads). The
+    # ``ModelConfig.cost_*`` defaults are unread for these models — duplicating
+    # the rates here only invites 10× decimal drift between the two tables.
+    "deepseek-v4-pro": ModelConfig(
+        model_id="deepseek-v4-pro",
+        display_name="DeepSeek V4 Pro",
+        context_window=1_000_000,
+        max_output_tokens=8_192,
+        supports_cache=True,
+    ),
+    "deepseek-v4-flash": ModelConfig(
+        model_id="deepseek-v4-flash",
+        display_name="DeepSeek V4 Flash",
+        context_window=1_000_000,
+        max_output_tokens=8_192,
+        supports_cache=True,
+    ),
 }
 
 
