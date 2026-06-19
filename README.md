@@ -299,7 +299,7 @@ The configuration file is saved in `~/.clawcodex/config.json`. Example structure
 
 ```json
 {
-  "default_provider": "anthropic",
+  "default_provider": "deepseek",
   "providers": {
     "anthropic": {
       "api_key": "your-api-key",
