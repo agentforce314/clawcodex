@@ -396,6 +396,99 @@ async def _fire_stop_failure_hooks(last_message: Any, tool_use_context: Any) -> 
         logger.debug("StopFailure hook dispatch failed", exc_info=True)
 
 
+def _strip_block_metadata(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return copies of ``blocks`` with the internal ``_cache_scope`` key
+    removed, so it never reaches a provider's wire payload.
+
+    The Anthropic provider forwards system blocks verbatim to its SDK
+    (``call_kwargs["system"] = system_prompt``), so the inert ``_cache_scope``
+    tag emitted by the prompt assembler must be stripped before it lands on a
+    1P request. Non-Anthropic providers flatten only ``text`` and never see it.
+    """
+    cleaned: list[dict[str, Any]] = []
+    for blk in blocks:
+        if isinstance(blk, dict) and "_cache_scope" in blk:
+            blk = {k: v for k, v in blk.items() if k != "_cache_scope"}
+        cleaned.append(blk)
+    return cleaned
+
+
+def _split_system_prompt_blocks(
+    blocks: list[dict[str, Any]], *, relocate_request_scope: bool
+) -> tuple[str, str]:
+    """Flatten system-prompt blocks for an OpenAI-compatible provider.
+
+    Returns ``(system_text, volatile_tail_text)``.
+
+    The ``__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__`` marker is always dropped (it is
+    an Anthropic cache-only signal that would be unintelligible prose to other
+    models).
+
+    When ``relocate_request_scope`` is True (DeepSeek only), blocks tagged
+    ``_cache_scope == "request"`` — the env section, the auto-memory section
+    (which embeds the mutable ``MEMORY.md`` body), plan-mode / non-interactive
+    / tool-restriction sections — are routed into ``volatile_tail_text`` so the
+    caller can place them AFTER the conversation history. That keeps the
+    ``system + tools + history`` prefix byte-stable across turns, so DeepSeek's
+    automatic prefix cache covers it even when memory or the environment
+    changes mid-session.
+
+    When False (every other provider), the tail is empty and all non-boundary
+    text is concatenated into ``system_text`` — byte-for-byte the prior
+    behaviour.
+    """
+    from ..context_system.cache_boundary import SYSTEM_PROMPT_DYNAMIC_BOUNDARY
+
+    stable: list[str] = []
+    volatile: list[str] = []
+    for blk in blocks:
+        if not isinstance(blk, dict):
+            continue
+        text = blk.get("text")
+        if not text or text == SYSTEM_PROMPT_DYNAMIC_BOUNDARY:
+            continue
+        if relocate_request_scope and blk.get("_cache_scope") == "request":
+            volatile.append(str(text))
+        else:
+            stable.append(str(text))
+    return "\n\n".join(stable), "\n\n".join(volatile)
+
+
+def _append_session_context_tail(
+    api_messages: list[dict[str, Any]], tail_text: str
+) -> list[dict[str, Any]]:
+    """Place the DeepSeek relocated-volatile sections AFTER the conversation.
+
+    Wrapped as ambient ``<system-reminder>`` context. Merged into the trailing
+    user message when that is a plain user turn (string content, or a
+    content-block list with no ``tool_result``) so the wire keeps strict
+    user/assistant alternation. Otherwise — e.g. the turn ends in a tool result
+    (which converts to ``role:tool`` on the wire) — appended as a standalone
+    trailing user message, which lands correctly after the tool messages.
+    Returns a new list; ``api_messages`` is not mutated.
+    """
+    reminder = (
+        "<system-reminder>\n"
+        "Current session/environment context (ambient — not a new user request):\n"
+        f"{tail_text}\n"
+        "</system-reminder>"
+    )
+    last = api_messages[-1] if api_messages else None
+    if isinstance(last, dict) and last.get("role") == "user":
+        content = last.get("content")
+        if isinstance(content, str):
+            merged = dict(last)
+            merged["content"] = f"{content}\n\n{reminder}" if content else reminder
+            return [*api_messages[:-1], merged]
+        if isinstance(content, list) and not any(
+            isinstance(b, dict) and b.get("type") == "tool_result" for b in content
+        ):
+            merged = dict(last)
+            merged["content"] = [*content, {"type": "text", "text": reminder}]
+            return [*api_messages[:-1], merged]
+    return [*api_messages, {"role": "user", "content": reminder}]
+
+
 async def _call_model_sync(
     *,
     provider: BaseProvider,
@@ -617,6 +710,11 @@ async def _call_model_sync(
                     "%s — ADVISOR_TOOL_INSTRUCTIONS NOT injected",
                     type(system_prompt).__name__,
                 )
+        # Strip the inert ``_cache_scope`` metadata the assembler tags onto
+        # blocks; Anthropic forwards the system list verbatim to its SDK, so
+        # the tag must not reach the 1P wire.
+        if isinstance(system_prompt, list):
+            system_prompt = _strip_block_metadata(system_prompt)
         call_kwargs["system"] = system_prompt
     else:
         # Non-Anthropic providers (OpenAI-compat, GLM, etc.) consume the
@@ -629,14 +727,18 @@ async def _call_model_sync(
         # signal for the Anthropic backend; emitting it as raw text into
         # a non-Anthropic system prompt embeds an unintelligible token in
         # the prose that may confuse those models.
+        #
+        # DeepSeek-only: route the per-request-volatile (REQUEST-scope)
+        # sections to a trailing tail so the system prefix stays byte-stable
+        # for DeepSeek's automatic prefix cache. ``relocate_request_scope`` is
+        # False for every other provider, so ``flattened`` keeps every
+        # non-boundary block (byte-for-byte the prior behaviour) and
+        # ``volatile_tail`` is "".
+        is_deepseek = bool(getattr(provider, "is_deepseek", False))
+        volatile_tail = ""
         if isinstance(system_prompt, list):
-            from ..context_system.cache_boundary import SYSTEM_PROMPT_DYNAMIC_BOUNDARY
-            flattened = "\n\n".join(
-                str(blk.get("text", ""))
-                for blk in system_prompt
-                if isinstance(blk, dict)
-                and blk.get("text")
-                and blk.get("text") != SYSTEM_PROMPT_DYNAMIC_BOUNDARY
+            flattened, volatile_tail = _split_system_prompt_blocks(
+                system_prompt, relocate_request_scope=is_deepseek
             )
         else:
             flattened = system_prompt
@@ -650,6 +752,15 @@ async def _call_model_sync(
             else:
                 flattened = ADVISOR_TOOL_INSTRUCTIONS
         api_messages = [{"role": "system", "content": flattened}, *api_messages]
+        # DeepSeek: the relocated REQUEST-scope sections (env, auto-memory,
+        # plan-mode, …) ride a trailing <system-reminder> user message so they
+        # sit AFTER the conversation history. The system + tools + history
+        # prefix then stays byte-stable turn-over-turn and hits DeepSeek's
+        # automatic prefix cache even when memory or the environment changes
+        # mid-session. ``volatile_tail`` is always "" for other providers, so
+        # this is a strict no-op for them.
+        if volatile_tail:
+            api_messages = _append_session_context_tail(api_messages, volatile_tail)
 
     if is_anthropic and sdk_max_retries is not None:
         # ch04 round-3 G3(c): the loop's manual 529 lane passes 0 here so
