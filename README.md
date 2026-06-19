@@ -24,6 +24,21 @@
 
 ***
 
+<div align="center">
+
+# 🐋🔥 DeepSeek Prefix Cache
+
+# Run long agentic coding sessions for *pennies*
+
+### Cache-hit input bills at **`~$0.0435` / 1M tokens** — about **230× cheaper** than Claude Fable 5 (`$10` / 1M).
+
+ClawCodex keeps your request prefix **byte-stable**, so DeepSeek's prompt cache covers your whole
+`system + tools + history` span across turns. **The longer you code, the more you save.**
+
+</div>
+
+***
+
 ## ⚡ Quick Install
 
 ```bash
