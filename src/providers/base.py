@@ -49,6 +49,14 @@ TextChunkCallback: TypeAlias = Callable[[str], None]
 class BaseProvider(ABC):
     """Base class for LLM providers."""
 
+    #: Whether this provider talks to DeepSeek's API. Overridden to ``True``
+    #: in :class:`~src.providers.deepseek_provider.DeepSeekProvider`. Gates
+    #: DeepSeek-only token-efficiency behaviour (prompt-prefix-cache
+    #: stability) without affecting any other provider. Scope is the
+    #: ``deepseek`` provider class ONLY — a DeepSeek model served via
+    #: OpenRouter is intentionally NOT covered.
+    is_deepseek: bool = False
+
     def __init__(
         self, api_key: str, base_url: Optional[str] = None, model: Optional[str] = None
     ):

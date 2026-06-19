@@ -50,14 +50,19 @@ class TestGetPricing(unittest.TestCase):
         # model name was passed in.
         p = get_pricing("anthropic/claude-opus-4-7")
         self.assertEqual(p["input"], 5.0 / 1_000_000)
+        # The same strip prices DeepSeek-via-OpenRouter at the upstream
+        # DeepSeek rate (a directional estimate; the proxy may add markup).
+        d = get_pricing("deepseek/deepseek-v4-pro")
+        self.assertEqual(d["input"], 0.435 / 1_000_000)
 
     def test_unknown_model_returns_none(self) -> None:
         # Critic C1: unknowns return None instead of mispricing as
-        # Sonnet 3/15 (which would be ~10× off for DeepSeek-tier
-        # models the user actually runs).
+        # Sonnet 3/15 (which would be ~10× off for the cheap non-Claude
+        # models the user actually runs). DeepSeek V4 is now tabled, so the
+        # still-unpriced examples are Gemini / GPT-tier ids.
         self.assertIsNone(get_pricing("totally-unknown-model-xyz"))
-        self.assertIsNone(get_pricing("deepseek/deepseek-v4-pro"))
         self.assertIsNone(get_pricing("gpt-5.4"))
+        self.assertIsNone(get_pricing("google/gemini-2.5-pro"))
 
     def test_empty_model_returns_none(self) -> None:
         self.assertIsNone(get_pricing(""))
