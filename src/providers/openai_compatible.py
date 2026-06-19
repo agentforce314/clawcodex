@@ -383,6 +383,84 @@ def _convert_to_openai_tool_schema(anthropic_tool: dict[str, Any]) -> dict[str, 
     }
 
 
+def _close_truncated_json(s: str) -> str:
+    """Best-effort complete a JSON document cut off mid-stream.
+
+    Tool-call arguments stream as string deltas; an interrupted or late-
+    truncated stream can leave invalid JSON (an unterminated string, open
+    braces/brackets, a dangling comma/colon). This closes those so the partial
+    value is still recoverable, returning ``"{}"`` if the result is still not
+    valid JSON.
+    """
+    stack: list[str] = []  # expected closing chars, innermost last
+    in_str = False
+    esc = False
+    for c in s:
+        if in_str:
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                in_str = False
+            continue
+        if c == '"':
+            in_str = True
+        elif c == "{":
+            stack.append("}")
+        elif c == "[":
+            stack.append("]")
+        elif c in ("}", "]"):
+            if stack:
+                stack.pop()
+    out = s
+    if esc:  # a trailing backslash with nothing escaped — drop it
+        out = out[:-1]
+    if in_str:  # close the dangling string
+        out += '"'
+    trimmed = out.rstrip(" \t\r\n")
+    if trimmed.endswith(","):  # dangling comma before a closer
+        out = trimmed[:-1]
+    elif trimmed.endswith(":"):  # key with no value yet
+        out = trimmed + "null"
+    for closer in reversed(stack):
+        out += closer
+    return out if _is_valid_json(out) else "{}"
+
+
+def _is_valid_json(s: str) -> bool:
+    try:
+        json.loads(s)
+        return True
+    except Exception:
+        return False
+
+
+def _parse_tool_call_arguments(raw: str | None) -> dict[str, Any]:
+    """Parse streamed tool-call argument JSON, recovering truncation.
+
+    Empty/absent → ``{}``. Valid JSON object → parsed as-is. Invalid JSON →
+    best-effort close the truncation (see :func:`_close_truncated_json`) so a
+    resumed/replayed turn keeps the partial arguments instead of discarding
+    them; still falls back to ``{}`` when unrecoverable. Activates only on
+    already-invalid input, so the happy path is untouched for every provider.
+
+    Always returns a ``dict``: tool-call arguments are JSON objects, so a
+    top-level array/scalar (exotic or malformed) coerces to ``{}`` rather than
+    flowing downstream where ``input`` is consumed as a mapping.
+    """
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        try:
+            parsed = json.loads(_close_truncated_json(raw))
+        except Exception:
+            return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 class OpenAICompatibleProvider(BaseProvider):
     """Base class for providers using OpenAI-style chat completions API.
 
@@ -497,10 +575,7 @@ class OpenAICompatibleProvider(BaseProvider):
         if hasattr(choice.message, "tool_calls") and choice.message.tool_calls:
             tool_uses = []
             for tc in choice.message.tool_calls:
-                try:
-                    args = json.loads(tc.function.arguments) if tc.function.arguments else {}
-                except Exception:
-                    args = {}
+                args = _parse_tool_call_arguments(tc.function.arguments)
                 tool_uses.append({
                     "id": tc.id,
                     "name": tc.function.name,
@@ -762,10 +837,7 @@ class OpenAICompatibleProvider(BaseProvider):
             item = tool_calls_by_index[idx]
             if not item["name"]:
                 continue
-            try:
-                parsed_args = json.loads(item["arguments"]) if item["arguments"] else {}
-            except Exception:
-                parsed_args = {}
+            parsed_args = _parse_tool_call_arguments(item["arguments"])
             tool_uses.append({
                 "id": item["id"] or f"tool_call_{idx}",
                 "name": item["name"],
