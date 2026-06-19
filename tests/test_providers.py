@@ -137,7 +137,13 @@ class TestAnthropicProvider(unittest.TestCase):
         mock_stream = MagicMock()
         mock_stream.__enter__.return_value = mock_stream
         mock_stream.__exit__.return_value = False
-        mock_stream.text_stream = iter(["Hello", " world"])
+        # The provider iterates the FULL event stream (`for event in stream`)
+        # and reads text_delta events — not the text-only `stream.text_stream`
+        # view (anthropic_provider.py: extended-thinking watchdog). Yield two
+        # text-delta events so the on_text_chunk callback fires.
+        _ev1 = MagicMock(); _ev1.delta.text = "Hello"
+        _ev2 = MagicMock(); _ev2.delta.text = " world"
+        mock_stream.__iter__.return_value = iter([_ev1, _ev2])
 
         final_response = MagicMock()
         text_block = MagicMock()
@@ -339,6 +345,10 @@ class TestOpenAIProvider(unittest.TestCase):
         )
         mock_response.choices[0].finish_reason = "stop"
         mock_client.chat.completions.create.return_value = mock_response
+        # OpenAICompatibleProvider.client wraps the SDK client via
+        # _apply_client_timeout's with_options(...); return the same configured
+        # mock so the bounded-timeout copy keeps the stubbed `create`.
+        mock_client.with_options.return_value = mock_client
         mock_openai.return_value = mock_client
 
         # Test
@@ -363,6 +373,7 @@ class TestOpenAIProvider(unittest.TestCase):
         )
         mock_response.choices[0].finish_reason = "stop"
         mock_client.chat.completions.create.return_value = mock_response
+        mock_client.with_options.return_value = mock_client  # see _apply_client_timeout
         mock_openai.return_value = mock_client
 
         provider = OpenAIProvider(api_key="test_key")
@@ -406,6 +417,7 @@ class TestOpenAIProvider(unittest.TestCase):
         chunk2.choices[0].delta.tool_calls = [tool_call_delta]
 
         mock_client.chat.completions.create.return_value = iter([chunk1, chunk2])
+        mock_client.with_options.return_value = mock_client  # see _apply_client_timeout
         mock_openai.return_value = mock_client
 
         provider = OpenAIProvider(api_key="test_key")
