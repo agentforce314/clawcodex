@@ -135,12 +135,12 @@ Le fichier de configuration est enregistré dans `~/.clawcodex/config.json`. Exe
 
 ```json
 {
-  "default_provider": "zai",
+  "default_provider": "deepseek",
   "providers": {
-    "zai": {
+    "deepseek": {
       "api_key": "xxx-xxx",
-      "base_url": "https://api.z.ai/api/coding/paas/v4",
-      "default_model": "glm-5.2"
+      "base_url": "https://api.deepseek.com",
+      "default_model": "deepseek-v4-pro"
     }
   },
   "env": {
@@ -163,7 +163,7 @@ python -m src.cli login
 
 Ce processus va :
 
-1. vous demander de choisir un fournisseur : anthropic / openai / zai
+1. vous demander de choisir un fournisseur : anthropic / openai / zai / minimax / openrouter / deepseek
 2. vous demander la clé API de ce fournisseur
 3. enregistrer optionnellement une URL de base personnalisée
 4. enregistrer optionnellement un modèle par défaut
@@ -173,23 +173,51 @@ Le fichier de configuration est enregistré dans `~/.clawcodex/config.json`. Exe
 
 ```json
 {
-  "default_provider": "zai",
+  "default_provider": "deepseek",
   "providers": {
     "anthropic": {
       "api_key": "your-api-key",
       "base_url": "https://api.anthropic.com",
-      "default_model": "claude-sonnet-4-20250514"
+      "default_model": "claude-sonnet-4-6"
     },
     "openai": {
       "api_key": "your-api-key",
       "base_url": "https://api.openai.com/v1",
-      "default_model": "gpt-4"
+      "default_model": "gpt-5.4"
     },
     "zai": {
       "api_key": "your-api-key",
       "base_url": "https://api.z.ai/api/coding/paas/v4",
       "default_model": "glm-5.2"
+    },
+    "minimax": {
+      "api_key": "your-api-key",
+      "base_url": "https://api.minimaxi.com/anthropic",
+      "default_model": "MiniMax-M2.7"
+    },
+    "openrouter": {
+      "api_key": "your-api-key",
+      "base_url": "https://openrouter.ai/api/v1",
+      "default_model": "deepseek/deepseek-v4-pro"
+    },
+    "deepseek": {
+      "api_key": "your-api-key",
+      "base_url": "https://api.deepseek.com",
+      "default_model": "deepseek-v4-pro"
     }
+  },
+  "session": {
+    "auto_save": true,
+    "max_history": 100
+  },
+  "settings": {
+    "advisor_enabled": false,
+    "advisor_model": "claude-sonnet-4-6",
+    "advisor_client_mode": false,
+    "advisor_provider": "openai"
+  },
+  "env": {
+    "TAVILY_API_KEY": "tvly-YOUR-TAVILY-API-KEY"
   }
 }
 ```
