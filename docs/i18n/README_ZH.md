@@ -41,12 +41,12 @@ python -m src.cli --dangerously-skip-permissions   # 启动 REPL
 
 ```json
 {
-  "default_provider": "zai",
+  "default_provider": "deepseek",
   "providers": {
-    "zai": {
+    "deepseek": {
       "api_key": "xxx-xxx",
-      "base_url": "https://api.z.ai/api/coding/paas/v4",
-      "default_model": "glm-5.2"
+      "base_url": "https://api.deepseek.com",
+      "default_model": "deepseek-v4-pro"
     }
   },
   "env": {

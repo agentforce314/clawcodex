@@ -41,12 +41,12 @@ The configuration file is saved at `~/.clawcodex/config.json`. Minimal example:
 
 ```json
 {
-  "default_provider": "zai",
+  "default_provider": "deepseek",
   "providers": {
-    "zai": {
+    "deepseek": {
       "api_key": "xxx-xxx",
-      "base_url": "https://api.z.ai/api/coding/paas/v4",
-      "default_model": "glm-5.2"
+      "base_url": "https://api.deepseek.com",
+      "default_model": "deepseek-v4-pro"
     }
   },
   "env": {
@@ -63,6 +63,7 @@ The `session`, `settings`, and `env` blocks are optional — sensible defaults a
 
 ## 📰 News
 
+- **2026-06-18:** **DeepSeek prefix-cache exploitation — a HUGE token-cost win (#363)** — ClawCodex now keeps its request prefix **byte-stable** across turns so DeepSeek's automatic prompt-prefix cache covers the entire `system + tools + history` span. Per-request-volatile sections (env, the mutable `MEMORY.md` body, plan-mode, etc.) are relocated to a trailing `<system-reminder>` *after* the conversation history, so the cached prefix never breaks even when memory/env change. We also register DeepSeek's **1M-token context window**, map its prompt-cache usage onto the Anthropic `cache_read_input_tokens` convention, and surface a per-model **prompt-cache hit-rate** + cost in `/cost`. **Why this is enormous — the token economics:** Claude Fable 5 runs **$10 / $50** per 1M input/output tokens, while **DeepSeek-V4-Pro is just $0.435 / $0.87** — already **~23× cheaper on input** and **~57× cheaper on output**. And because **cache-hit input is billed at only 10%** of the normal input rate, the long, context-heavy sessions that agentic coding actually produces pay just **~$0.0435 per 1M input tokens** — roughly **230× cheaper than Fable 5 input**. The token efficiency ClawCodex unlocks here is **HUGE**. Everything is gated to the `deepseek` provider — every other provider's request is byte-for-byte unchanged. Follow-up: truncated tool-call argument JSON is now best-effort recovered in the shared OpenAI-compatible layer, so an interrupted DeepSeek stream keeps its partial tool args instead of dropping them to `{}` (#364).
 - **2026-06-16:** **Z.ai GLM-5.2 support (#343)** — new `zai` provider for Z.ai's OpenAI-compatible GLM Coding Plan (`https://api.z.ai/api/coding/paas/v4`), shipping `GLM-5.1` and the `GLM-5.2` preview; GLM-5.2 delivers coding capability comparable to Claude Opus 4.7. First app built end-to-end with GLM-5.2 — a [FIFA World Cup 2026 intro page](demos/wc26-intro/index.html) (animated hero + live countdown, three host nations, 16 stadiums, tournament format, and record-breaking facts).
 - **2026-06-11:** **Codebase stats** — Total Python files: 1,093 files; Total Lines of Python Code: **233,520 lines** (up from 213,777 lines on 2026-05-29; ~+19.7k lines from the interactive command-system batch, the dynamic workflow engine + `/deep-research`, and the Tavily web-tooling refresh).
 - **2026-06-10 to 2026-06-11:** **Dynamic workflow engine + `/deep-research` (#262–#264, #266–#271)** — Python workflow engine core (`agent()`/`parallel()`/`pipeline()`/`phase()`, journaling, resume) wired end-to-end: Workflow tool, `/workflows` TUI dialog + status-line pill, per-agent retry, worktree isolation, result delivery, and the bundled `/deep-research` harness registered as a slash command. Reliability: LLM read timeout applied centrally to all openai-compatible providers (#269), parallel agents no longer serialize on the event loop (#270), and the deep-research synthesize step forbids tools so the report-writer can't loop (#271). Follow-ups: workflow max-turns cap fix (#272), deep-research verdict-enum fix (#273), rich `/workflows` live monitor with phase progress + per-agent stats (#287).
