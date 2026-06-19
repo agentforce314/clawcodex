@@ -59,6 +59,25 @@ _TIER_HAIKU_3 = {
     "cache_creation": 0.30 / 1_000_000,
     "cache_read": 0.03 / 1_000_000,
 }
+# DeepSeek V4 (USD per million tokens). DeepSeek's automatic prefix cache
+# bills cache HITS at the low ``cache_read`` rate and cache MISSES at the
+# normal input rate; there is no separate cache-write charge, so
+# ``cache_creation`` mirrors ``input`` (a non-cached token is just input).
+# DeepSeekProvider maps its usage onto the Anthropic convention
+# (``input_tokens`` = miss, ``cache_read_input_tokens`` = hit), so these tiers
+# price correctly through the generic ``compute_cost``.
+_TIER_DEEPSEEK_FLASH = {
+    "input": 0.14 / 1_000_000,
+    "output": 0.28 / 1_000_000,
+    "cache_creation": 0.14 / 1_000_000,
+    "cache_read": 0.0028 / 1_000_000,
+}
+_TIER_DEEPSEEK_PRO = {
+    "input": 0.435 / 1_000_000,
+    "output": 0.87 / 1_000_000,
+    "cache_creation": 0.435 / 1_000_000,
+    "cache_read": 0.003625 / 1_000_000,
+}
 
 
 # Exact-match table — keyed by canonical model name. Order DOESN'T matter
@@ -82,6 +101,11 @@ PRICING: dict[str, dict[str, float]] = {
     "claude-opus-4-5": _TIER_5_25,
     "claude-opus-4-1": _TIER_15_75,
     "claude-opus-4-20250514": _TIER_15_75,
+    # DeepSeek V4 (api.deepseek.com). OpenRouter's ``deepseek/…`` ids resolve
+    # here too via get_pricing's vendor-prefix strip — consistent with how
+    # every proxied model is priced at its upstream rate.
+    "deepseek-v4-flash": _TIER_DEEPSEEK_FLASH,
+    "deepseek-v4-pro": _TIER_DEEPSEEK_PRO,
 }
 
 
@@ -126,10 +150,10 @@ def get_pricing(model: str) -> dict[str, float] | None:
          (legacy cost-tracker facade).
 
     Critic C1: returning ``None`` instead of a generic Sonnet-tier
-    fallback prevents silently mispricing non-Claude models by 10×
-    (DeepSeek $0.27/$1.10 vs sonnet $3/$15) or 3-5× (Gemini, GPT-5).
-    The user picks "no number" over "wrong number" for status-bar
-    honesty; per-provider tier tables are a future PR.
+    fallback prevents silently mispricing unknown non-Claude models by
+    3-10× (e.g. Gemini, GPT-5 vs sonnet $3/$15). The user picks "no
+    number" over "wrong number" for status-bar honesty. DeepSeek V4 is
+    now tabled above; other per-provider tiers remain a future PR.
     """
     if not model:
         return None

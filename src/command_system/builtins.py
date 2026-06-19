@@ -285,19 +285,39 @@ def cost_command_call(args: str, context: CommandContext) -> LocalCommandResult:
     Returns:
         LocalCommandResult
     """
-    tracker = context.cost_tracker
-    if tracker is None:
-        return LocalCommandResult(
-            type="text",
-            value="Cost tracking not available.",
+    from src.bootstrap.state import get_model_usage, get_total_cost_usd
+    from src.services.pricing import format_cost_usd
+
+    lines: list[str] = ["Session Cost:", ""]
+    lines.append(f"  Total: {format_cost_usd(get_total_cost_usd())}")
+
+    # Per-model token usage + prompt-cache hit-rate. ``cache_read_input_tokens``
+    # is the cached portion of the prompt (DeepSeek hits, Anthropic cache
+    # reads); ``input_tokens`` + ``cache_creation_input_tokens`` is the
+    # uncached portion. Surfacing the hit-rate is what makes the DeepSeek
+    # prefix-cache savings visible.
+    model_usage = get_model_usage()
+    for model, u in sorted(model_usage.items()):
+        cached = int(getattr(u, "cache_read_input_tokens", 0) or 0)
+        uncached = int(
+            (getattr(u, "input_tokens", 0) or 0)
+            + (getattr(u, "cache_creation_input_tokens", 0) or 0)
+        )
+        prompt_total = cached + uncached
+        hit_pct = (100.0 * cached / prompt_total) if prompt_total else 0.0
+        lines.append("")
+        lines.append(f"  {model}  {format_cost_usd(u.cost_usd)}")
+        lines.append(
+            f"    prompt {prompt_total:,} tok "
+            f"({cached:,} cached, {hit_pct:.0f}% hit) · "
+            f"output {int(getattr(u, 'output_tokens', 0) or 0):,} tok"
         )
 
-    lines = ["Session Cost:", ""]
-    lines.append(f"  Total units: {tracker.total_units}")
-
-    if tracker.events:
+    # Legacy free-form units/events (costHook ``/cost`` event log).
+    tracker = context.cost_tracker
+    if tracker is not None and (tracker.total_units or tracker.events):
         lines.append("")
-        lines.append("  Recent events:")
+        lines.append(f"  Recorded units: {tracker.total_units}")
         for event in tracker.events[-10:]:
             lines.append(f"    - {event}")
 

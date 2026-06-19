@@ -728,6 +728,12 @@ def build_full_system_prompt_blocks(
     ) -> None:
         for idx, section in enumerate(group):
             block: dict[str, Any] = {"type": "text", "text": section.content}
+            # Inert metadata for the query layer: routes per-request-volatile
+            # (REQUEST-scope) sections to the request tail for DeepSeek
+            # prefix-cache stability. Stripped before the wire for Anthropic;
+            # other OpenAI-compatible providers flatten only ``text`` and
+            # ignore it. See ``query._split_system_prompt_blocks``.
+            block["_cache_scope"] = scope.value
             if idx == len(group) - 1:
                 # Last block in this scope group → mark for caching.
                 cache_control: dict[str, Any] = {
