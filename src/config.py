@@ -409,12 +409,27 @@ def save_config(config: dict[str, Any]) -> None:
 
 
 def get_provider_config(provider: str) -> dict[str, Any]:
-    """Get configuration for a specific provider."""
+    """Get configuration for a specific provider.
+
+    The literal ``provider`` key is tried first, so a pre-rename block such as
+    ``[providers.glm]`` still resolves by its own key. When the literal name is
+    absent, fall back to the canonical id so an alias (``nim`` -> ``nvidia-nim``,
+    ``glm`` -> ``zai``, ``kimi`` -> ``moonshot`` …) passed via ``--provider``
+    resolves to the provider's default config block.
+    """
     config = load_config()
     providers = config.get("providers", {})
-    if provider not in providers:
-        raise ValueError(f"Unknown provider: {provider}")
-    return providers[provider]
+    if provider in providers:
+        return providers[provider]
+    try:
+        from src.providers import canonical_provider_name
+
+        canonical = canonical_provider_name(provider)
+    except Exception:
+        canonical = provider
+    if canonical != provider and canonical in providers:
+        return providers[canonical]
+    raise ValueError(f"Unknown provider: {provider}")
 
 
 def set_api_key(
