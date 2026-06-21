@@ -573,7 +573,7 @@ class TestGetProviderClass(unittest.TestCase):
         self.assertEqual(get_provider_class("glm"), ZaiProvider)
 
     def test_get_zai_provider_via_dotted_alias(self):
-        """CodeWhale's ``z.ai`` / ``z-ai`` spellings resolve to the Z.ai provider."""
+        """The ``z.ai`` / ``z-ai`` spellings resolve to the Z.ai provider."""
         self.assertEqual(get_provider_class("z.ai"), ZaiProvider)
         self.assertEqual(get_provider_class("z-ai"), ZaiProvider)
 

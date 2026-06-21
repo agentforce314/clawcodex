@@ -72,7 +72,16 @@
 ### دعم متعدد المزودين
 
 ```python
-providers = ["Anthropic Claude", "OpenAI GPT", "Z.ai GLM"]  # + سهل التوسيع
+providers = [
+    # بروتوكولات أصلية / مخصصة
+    "anthropic", "minimax", "deepseek", "zai", "openrouter", "openai", "gemini",
+    # مزودون متوافقون مع OpenAI
+    "nvidia-nim", "atlascloud", "wanjie-ark", "volcengine", "xiaomi-mimo",
+    "novita", "fireworks", "siliconflow", "siliconflow-cn", "arcee", "moonshot",
+    "huggingface", "together", "stepfun", "deepinfra",
+    # خوادم محلية (لا تتطلب مفتاح API)
+    "ollama", "vllm", "sglang",
+]  # 25 مزوداً؛ الأسماء المستعارة مثل nim و kimi و hf تُحلّ تلقائياً
 ```
 
 ### REPL تفاعلي

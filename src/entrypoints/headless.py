@@ -49,7 +49,11 @@ from src.cli_core import (
     ndjson_safe_dumps,
 )
 from src.config import get_default_provider, get_provider_config
-from src.providers import get_provider_class
+from src.providers import (
+    get_provider_class,
+    provider_requires_api_key,
+    resolve_api_key,
+)
 from src.tool_system.renderers import AgentLoopResult, ToolEvent
 from src.query.agent_loop_compat import (
     build_effective_system_prompt,
@@ -140,7 +144,11 @@ def run_headless(options: HeadlessOptions) -> int:
         provider_cfg = get_provider_config(provider_name)
     except Exception as exc:
         cli_error(f"error: unable to load provider config: {exc}", 2)
-    if not provider_cfg.get("api_key"):
+    # Config api_key wins; fall back to the provider's known env vars (e.g.
+    # ``DEEPSEEK_API_KEY``) so a freshly-added provider works without ``login``.
+    # Local providers (Ollama / vLLM / SGLang) need no key.
+    api_key = resolve_api_key(provider_name, provider_cfg)
+    if not api_key and provider_requires_api_key(provider_name):
         cli_error(
             f"error: API key for provider '{provider_name}' is not configured. "
             "Run `clawcodex login` to set it up.",
@@ -150,7 +158,7 @@ def run_headless(options: HeadlessOptions) -> int:
     provider_cls = get_provider_class(provider_name)
     model = options.model or provider_cfg.get("default_model")
     provider = provider_cls(
-        api_key=provider_cfg["api_key"],
+        api_key=api_key,
         base_url=provider_cfg.get("base_url"),
         model=model,
     )

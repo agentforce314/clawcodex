@@ -72,7 +72,16 @@
 ### Support multi-fournisseurs
 
 ```python
-providers = ["Anthropic Claude", "OpenAI GPT", "Z.ai GLM"]  # + facile à étendre
+providers = [
+    # Protocoles natifs / spécifiques
+    "anthropic", "minimax", "deepseek", "zai", "openrouter", "openai", "gemini",
+    # Fournisseurs compatibles OpenAI
+    "nvidia-nim", "atlascloud", "wanjie-ark", "volcengine", "xiaomi-mimo",
+    "novita", "fireworks", "siliconflow", "siliconflow-cn", "arcee", "moonshot",
+    "huggingface", "together", "stepfun", "deepinfra",
+    # Serveurs locaux (aucune clé API requise)
+    "ollama", "vllm", "sglang",
+]  # 25 fournisseurs ; les alias comme nim, kimi, hf sont résolus automatiquement
 ```
 
 ### REPL interactif
