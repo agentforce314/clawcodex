@@ -311,7 +311,11 @@ if TYPE_CHECKING:
 from src.agent import Session
 from src.config import get_provider_config
 from src.outputStyles import resolve_output_style
-from src.providers import get_provider_class
+from src.providers import (
+    get_provider_class,
+    provider_requires_api_key,
+    resolve_api_key,
+)
 from src.providers.anthropic_provider import AnthropicProvider
 from src.providers.base import ChatMessage
 from src.providers.minimax_provider import MinimaxProvider
@@ -409,9 +413,12 @@ class ClawcodexREPL:
         self.provider_name = provider_name
         self.stream = stream
 
-        # Load configuration
+        # Load configuration. Config api_key wins; fall back to the provider's
+        # known env vars so a freshly-added provider works without ``login``.
+        # Local providers (Ollama / vLLM / SGLang) need no key.
         config = get_provider_config(provider_name)
-        if not config.get("api_key"):
+        api_key = resolve_api_key(provider_name, config)
+        if not api_key and provider_requires_api_key(provider_name):
             self.console.print("[red]Error: API key not configured.[/red]")
             self.console.print("Run [bold]clawcodex login[/bold] to configure.")
             sys.exit(1)
@@ -419,7 +426,7 @@ class ClawcodexREPL:
         # Initialize provider
         provider_class = get_provider_class(provider_name)
         self.provider = provider_class(
-            api_key=config["api_key"],
+            api_key=api_key,
             base_url=config.get("base_url"),
             model=config.get("default_model")
         )
@@ -3521,13 +3528,13 @@ class ClawcodexREPL:
 
         # Reinitialize provider
         from src.config import get_provider_config
-        from src.providers import get_provider_class
+        from src.providers import get_provider_class, resolve_api_key
 
         config = get_provider_config(provider)
         provider_class = get_provider_class(provider)
 
         self.provider = provider_class(
-            api_key=config["api_key"],
+            api_key=resolve_api_key(provider, config),
             base_url=config.get("base_url"),
             model=config.get("default_model")
         )

@@ -72,7 +72,16 @@
 ### Suporte Multi-Provedor
 
 ```python
-providers = ["Anthropic Claude", "OpenAI GPT", "Z.ai GLM"]  # + fácil de estender
+providers = [
+    # Protocolos nativos / específicos
+    "anthropic", "minimax", "deepseek", "zai", "openrouter", "openai", "gemini",
+    # Provedores compatíveis com OpenAI (portados do registro do CodeWhale)
+    "nvidia-nim", "atlascloud", "wanjie-ark", "volcengine", "xiaomi-mimo",
+    "novita", "fireworks", "siliconflow", "siliconflow-cn", "arcee", "moonshot",
+    "huggingface", "together", "stepfun", "deepinfra",
+    # Servidores locais (nenhuma chave de API necessária)
+    "ollama", "vllm", "sglang",
+]  # 25 provedores; aliases como nim, kimi, hf são resolvidos automaticamente
 ```
 
 ### REPL Interativo
