@@ -170,8 +170,23 @@ Explain the code in $path. Start with an analogy, then draw a diagram.
 ClawCodex’s main advantage is **multi-provider support**: while Claude Code targets **Claude** models, we aim to support **every major LLM provider** behind the same agent runtime—so you can swap vendors, regions, and price tiers without giving up tools, skills, or the coding loop. That flexibility is what makes agentic coding practical at scale.
 
 ```python
-providers = ["anthropic", "openai", "zai", "minimax", "openrouter", "deepseek"]  # OpenAI-compatible & GLM APIs; more can be added
+providers = [
+    # Native / bespoke wire formats
+    "anthropic", "minimax", "deepseek", "zai", "openrouter", "openai", "gemini",
+    # OpenAI-compatible vendors (ported from CodeWhale's provider registry)
+    "nvidia-nim", "atlascloud", "wanjie-ark", "volcengine", "xiaomi-mimo",
+    "novita", "fireworks", "siliconflow", "siliconflow-cn", "arcee", "moonshot",
+    "huggingface", "together", "stepfun", "deepinfra",
+    # Local servers (no API key required)
+    "ollama", "vllm", "sglang",
+]  # 25 providers; aliases like `nim`, `kimi`, `hf` resolve automatically
 ```
+
+Any new OpenAI-compatible vendor is a one-row addition to
+`src/providers/openai_compatible_specs.py` (base URL + default model + API-key
+env vars). API keys resolve from config **or** the provider's standard env var
+(e.g. `TOGETHER_API_KEY`, `MOONSHOT_API_KEY`), so most providers work without
+editing `config.json`.
 
 ### Interactive REPL (default) and Textual TUI (opt-in)
 
@@ -239,7 +254,7 @@ clawcodex --allow-dangerously-skip-permissions         # allow /permission-mode 
 |--------|--------|-------------|
 | CLI Entry | ✅ | `clawcodex`, `login`, `config`, `-p` / `--print`, `--tui`, `--stream`, `--version` |
 | Interactive REPL | ✅ | Default inline REPL; optional Textual TUI; history, tab completion, multiline |
-| Multi-Provider | ✅ | Anthropic, OpenAI, Z.ai GLM, Minimax, OpenRouter, DeepSeek — including Anthropic→OpenAI image / document block translation for vision-capable OpenAI-compat backends |
+| Multi-Provider | ✅ | 25 providers — Anthropic, OpenAI, Gemini, Z.ai GLM, Minimax, OpenRouter, DeepSeek, plus a CodeWhale-parity OpenAI-compatible registry (NVIDIA NIM, Together, Novita, Fireworks, SiliconFlow, Moonshot/Kimi, DeepInfra, Hugging Face, Volcengine, StepFun, Arcee, AtlasCloud, Xiaomi MiMo, Wanjie Ark) and local servers (Ollama, vLLM, SGLang). Anthropic→OpenAI image / document block translation for vision-capable OpenAI-compat backends; per-provider API-key env-var fallback |
 | Session Persistence | ✅ | Save/load sessions locally |
 | Agent Loop | ✅ | Tool calling loop with streaming and headless mode |
 | Skill System | ✅ | SKILL.md-based slash-command skills with args + tool limits |
@@ -304,7 +319,7 @@ clawcodex login
 
 This flow will:
 
-1. ask you to choose a provider: anthropic / openai / zai / minimax / openrouter / deepseek
+1. ask you to choose a provider: anthropic / openai / gemini / zai / minimax / openrouter / deepseek, or any OpenAI-compatible vendor (together, novita, fireworks, moonshot, nvidia-nim, siliconflow, deepinfra, huggingface, …) and local servers (ollama / vllm / sglang)
 2. ask for that provider's API key
 3. optionally save a custom base URL
 4. optionally save a default model
@@ -521,7 +536,7 @@ clawcodex/
 │   ├── entrypoints/        # Headless (-p) and TUI bootstraps
 │   ├── repl/               # Inline REPL (prompt_toolkit + Rich)
 │   ├── tui/                # Textual UI (--tui, /tui)
-│   ├── providers/          # Anthropic, OpenAI, GLM, Minimax, OpenRouter, DeepSeek
+│   ├── providers/          # Anthropic, OpenAI, Gemini, Z.ai GLM, Minimax, OpenRouter, DeepSeek + OpenAI-compatible registry (openai_compatible_specs.py)
 │   ├── agent/              # Conversation, session, prompts
 │   ├── tool_system/        # Agent loop, tools, schemas
 │   ├── skills/             # SKILL.md loading and skill tool
