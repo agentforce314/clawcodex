@@ -72,7 +72,16 @@
 ### Поддержка нескольких провайдеров
 
 ```python
-providers = ["Anthropic Claude", "OpenAI GPT", "Z.ai GLM"]  # + легко расширить
+providers = [
+    # Нативные / специфичные протоколы
+    "anthropic", "minimax", "deepseek", "zai", "openrouter", "openai", "gemini",
+    # OpenAI-совместимые провайдеры (перенесены из реестра CodeWhale)
+    "nvidia-nim", "atlascloud", "wanjie-ark", "volcengine", "xiaomi-mimo",
+    "novita", "fireworks", "siliconflow", "siliconflow-cn", "arcee", "moonshot",
+    "huggingface", "together", "stepfun", "deepinfra",
+    # Локальные серверы (ключ API не требуется)
+    "ollama", "vllm", "sglang",
+]  # 25 провайдеров; псевдонимы вроде nim, kimi, hf разрешаются автоматически
 ```
 
 ### Интерактивный REPL
