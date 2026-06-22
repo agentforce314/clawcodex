@@ -157,7 +157,7 @@ ClawCodex 的核心优势是**多提供商支持**：Claude Code 以 **Claude** 
 providers = [
     # 原生 / 专用协议
     "anthropic", "minimax", "deepseek", "zai", "openrouter", "openai", "gemini",
-    # OpenAI 兼容厂商（移植自 CodeWhale 的 provider 注册表）
+    # OpenAI 兼容厂商
     "nvidia-nim", "atlascloud", "wanjie-ark", "volcengine", "xiaomi-mimo",
     "novita", "fireworks", "siliconflow", "siliconflow-cn", "arcee", "moonshot",
     "huggingface", "together", "stepfun", "deepinfra",
@@ -236,7 +236,7 @@ clawcodex --allow-dangerously-skip-permissions         # 允许之后通过 /per
 |------|------|------|
 | CLI 入口 | ✅ | `clawcodex`、`login`、`config`、`-p` / `--print`、`--tui`、`--stream`、`--version` |
 | 交互式 REPL | ✅ | 默认行内 REPL；可选 Textual TUI；历史、Tab 补全、多行输入 |
-| 多提供商支持 | ✅ | 25 个 provider —— Anthropic、OpenAI、Gemini、智谱 GLM、Minimax、OpenRouter、DeepSeek，外加与 CodeWhale 对齐的 OpenAI 兼容注册表（NVIDIA NIM、Together、Novita、Fireworks、SiliconFlow、Moonshot/Kimi、DeepInfra、Hugging Face、火山引擎、StepFun、Arcee、AtlasCloud、小米 MiMo、万捷 Ark）以及本地服务（Ollama、vLLM、SGLang）。含 Anthropic→OpenAI 的 image / document 块转换，适配具备视觉能力的 OpenAI 兼容后端；每个 provider 均支持 API Key 环境变量回退 |
+| 多提供商支持 | ✅ | 25 个 provider —— Anthropic、OpenAI、Gemini、智谱 GLM、Minimax、OpenRouter、DeepSeek，外加 OpenAI 兼容 provider 注册表（NVIDIA NIM、Together、Novita、Fireworks、SiliconFlow、Moonshot/Kimi、DeepInfra、Hugging Face、火山引擎、StepFun、Arcee、AtlasCloud、小米 MiMo、万捷 Ark）以及本地服务（Ollama、vLLM、SGLang）。含 Anthropic→OpenAI 的 image / document 块转换，适配具备视觉能力的 OpenAI 兼容后端；每个 provider 均支持 API Key 环境变量回退 |
 | 会话持久化 | ✅ | 本地保存/加载会话 |
 | Agent Loop | ✅ | 工具调用循环；支持流式与无头模式 |
 | Skill 系统 | ✅ | 基于 SKILL.md 的斜杠技能：参数与工具白名单 |

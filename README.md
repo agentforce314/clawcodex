@@ -173,7 +173,7 @@ ClawCodex’s main advantage is **multi-provider support**: while Claude Code ta
 providers = [
     # Native / bespoke wire formats
     "anthropic", "minimax", "deepseek", "zai", "openrouter", "openai", "gemini",
-    # OpenAI-compatible vendors (ported from CodeWhale's provider registry)
+    # OpenAI-compatible vendors
     "nvidia-nim", "atlascloud", "wanjie-ark", "volcengine", "xiaomi-mimo",
     "novita", "fireworks", "siliconflow", "siliconflow-cn", "arcee", "moonshot",
     "huggingface", "together", "stepfun", "deepinfra",
@@ -254,7 +254,7 @@ clawcodex --allow-dangerously-skip-permissions         # allow /permission-mode 
 |--------|--------|-------------|
 | CLI Entry | ✅ | `clawcodex`, `login`, `config`, `-p` / `--print`, `--tui`, `--stream`, `--version` |
 | Interactive REPL | ✅ | Default inline REPL; optional Textual TUI; history, tab completion, multiline |
-| Multi-Provider | ✅ | 25 providers — Anthropic, OpenAI, Gemini, Z.ai GLM, Minimax, OpenRouter, DeepSeek, plus a CodeWhale-parity OpenAI-compatible registry (NVIDIA NIM, Together, Novita, Fireworks, SiliconFlow, Moonshot/Kimi, DeepInfra, Hugging Face, Volcengine, StepFun, Arcee, AtlasCloud, Xiaomi MiMo, Wanjie Ark) and local servers (Ollama, vLLM, SGLang). Anthropic→OpenAI image / document block translation for vision-capable OpenAI-compat backends; per-provider API-key env-var fallback |
+| Multi-Provider | ✅ | 25 providers — Anthropic, OpenAI, Gemini, Z.ai GLM, Minimax, OpenRouter, DeepSeek, plus an OpenAI-compatible provider registry (NVIDIA NIM, Together, Novita, Fireworks, SiliconFlow, Moonshot/Kimi, DeepInfra, Hugging Face, Volcengine, StepFun, Arcee, AtlasCloud, Xiaomi MiMo, Wanjie Ark) and local servers (Ollama, vLLM, SGLang). Anthropic→OpenAI image / document block translation for vision-capable OpenAI-compat backends; per-provider API-key env-var fallback |
 | Session Persistence | ✅ | Save/load sessions locally |
 | Agent Loop | ✅ | Tool calling loop with streaming and headless mode |
 | Skill System | ✅ | SKILL.md-based slash-command skills with args + tool limits |

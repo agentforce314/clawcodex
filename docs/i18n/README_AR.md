@@ -75,7 +75,7 @@
 providers = [
     # بروتوكولات أصلية / مخصصة
     "anthropic", "minimax", "deepseek", "zai", "openrouter", "openai", "gemini",
-    # مزودون متوافقون مع OpenAI (منقولون من سجل CodeWhale)
+    # مزودون متوافقون مع OpenAI
     "nvidia-nim", "atlascloud", "wanjie-ark", "volcengine", "xiaomi-mimo",
     "novita", "fireworks", "siliconflow", "siliconflow-cn", "arcee", "moonshot",
     "huggingface", "together", "stepfun", "deepinfra",

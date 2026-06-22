@@ -163,15 +163,14 @@ PROVIDER_INFO: dict[str, ProviderInfo] = {
 }
 
 
-# --- Data-driven OpenAI-compatible providers (CodeWhale parity) ------------
+# --- Data-driven OpenAI-compatible providers ------------------------------
 # The bulk of LLM vendors speak the OpenAI ``/chat/completions`` wire format and
 # differ only in base URL / default model / API-key env vars. Those live in a
-# spec registry (``src/providers/openai_compatible_specs.py``, ported from
-# CodeWhale's ``crates/config/src/provider.rs``) and are merged in here so they
-# appear in ``login``, default config, model pickers, and the defaults table
-# exactly like the hand-written providers. Hand-written entries above win on any
-# id collision (there are none today — the registry holds only the providers
-# ClawCodex previously lacked).
+# spec registry (``src/providers/openai_compatible_specs.py``) and are merged in
+# here so they appear in ``login``, default config, model pickers, and the
+# defaults table exactly like the hand-written providers. Hand-written entries
+# above win on any id collision (there are none today — the registry holds only
+# the providers ClawCodex previously lacked).
 from .openai_compatible_specs import (  # noqa: E402
     SPECS_BY_ID as _SPECS_BY_ID,
     build_provider_class as _build_spec_provider_class,
@@ -185,7 +184,7 @@ for _spec_id, _spec_info in _spec_provider_info().items():
 
 # Legacy / alternate provider names accepted during resolution. ``glm`` is the
 # pre-rename id for Z.ai (Zhipu rebranded as z.ai); ``z-ai`` / ``z_ai`` /
-# ``z.ai`` mirror CodeWhale's accepted spellings. Aliases are normalized in
+# ``z.ai`` are the commonly-written spellings. Aliases are normalized in
 # ``get_provider_class`` / ``get_provider_info`` only — config lookups
 # (``get_provider_config``) stay literal so a ``[providers.glm]`` block written
 # before the rename still resolves by its own key.
@@ -267,8 +266,8 @@ def get_provider_class(provider_name: str):
 # API-key env-var candidates for the hand-written providers. The registry
 # providers carry their own ``env_vars`` (see ``openai_compatible_specs``);
 # these cover the classes that predate the registry so env-var resolution
-# (:func:`resolve_api_key`) is uniform across every provider. Mirrors
-# CodeWhale's per-provider ``env_vars`` lists.
+# (:func:`resolve_api_key`) is uniform across every provider — each value is
+# the vendor's conventional API-key environment variable.
 _BUILTIN_ENV_VARS: dict[str, tuple[str, ...]] = {
     "anthropic": ("ANTHROPIC_API_KEY",),
     "openai": ("OPENAI_API_KEY",),
@@ -312,7 +311,7 @@ def resolve_api_key(
     :func:`src.secret_store.get_secret` — which itself checks the real process
     environment, then the global config ``env`` block. This makes every
     provider, including the registry additions, usable by simply exporting e.g.
-    ``TOGETHER_API_KEY`` (CodeWhale parity) without hand-editing ``config.json``.
+    ``TOGETHER_API_KEY`` without hand-editing ``config.json``.
 
     Returns ``""`` when no key is found; callers gate fatality on
     :func:`provider_requires_api_key`.

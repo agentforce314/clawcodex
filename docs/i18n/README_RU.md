@@ -75,7 +75,7 @@
 providers = [
     # Нативные / специфичные протоколы
     "anthropic", "minimax", "deepseek", "zai", "openrouter", "openai", "gemini",
-    # OpenAI-совместимые провайдеры (перенесены из реестра CodeWhale)
+    # OpenAI-совместимые провайдеры
     "nvidia-nim", "atlascloud", "wanjie-ark", "volcengine", "xiaomi-mimo",
     "novita", "fireworks", "siliconflow", "siliconflow-cn", "arcee", "moonshot",
     "huggingface", "together", "stepfun", "deepinfra",

@@ -8,12 +8,9 @@ metadata as :class:`ProviderSpec` rows and synthesizes a concrete
 :class:`~src.providers.openai_compatible.OpenAICompatibleProvider` subclass for
 each one on demand.
 
-This mirrors the CodeWhale reference's ``crates/config/src/provider.rs``
-registry (the ``provider!`` macro table), porting the providers CodeWhale
-supports that ClawCodex previously lacked. Base URLs, default models, env-var
-candidates, and aliases are copied verbatim from CodeWhale's
-``crates/config/src/lib.rs`` constants so a user migrating between the two sees
-identical behaviour.
+Each row records the base URL, default model, accepted API-key env vars, and
+aliases for one vendor; these are the vendors' own published defaults, so a
+user pointing at any of them gets a working configuration out of the box.
 
 Providers with bespoke behaviour are intentionally NOT in this table and keep
 their hand-written classes:
@@ -24,14 +21,14 @@ their hand-written classes:
 * ``openrouter`` — optional ranking/attribution headers.
 * ``openai`` / ``gemini`` — kept as explicit classes (stable test import paths).
 
-CodeWhale's ``openai-codex`` provider is also intentionally excluded: it speaks
-the OpenAI *Responses* API over a ChatGPT OAuth token, which is a separate wire
+An OpenAI Codex / ChatGPT provider is intentionally excluded: it speaks the
+OpenAI *Responses* API over a ChatGPT OAuth token, which is a separate wire
 format ClawCodex's OpenAI-compatible layer does not implement.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, ClassVar, Optional
 
 try:
@@ -44,10 +41,7 @@ from .openai_compatible import OpenAICompatibleProvider
 
 @dataclass(frozen=True)
 class ProviderSpec:
-    """Static metadata describing one OpenAI-compatible provider.
-
-    Mirrors a row of CodeWhale's ``provider!`` macro table.
-    """
+    """Static metadata describing one OpenAI-compatible provider."""
 
     #: Canonical provider id — the value users pass to ``--provider`` and the
     #: key under ``config.json`` ``providers.<id>``. Lowercase, hyphenated.
@@ -63,7 +57,7 @@ class ProviderSpec:
     available_models: tuple[str, ...]
     #: API-key environment-variable candidates, highest precedence first.
     #: Used by ``src.providers.resolve_api_key`` to source a key when the
-    #: provider's ``config.json`` ``api_key`` is empty (CodeWhale parity).
+    #: provider's ``config.json`` ``api_key`` is empty.
     env_vars: tuple[str, ...]
     #: Alternate spellings accepted during provider resolution.
     aliases: tuple[str, ...] = ()
@@ -82,9 +76,9 @@ class ProviderSpec:
 
 
 # DeepSeek model ids served by the various OpenAI-compatible gateways, in the
-# id spelling each gateway expects. CodeWhale defaults most of these providers
-# to DeepSeek models (it is DeepSeek-focused, as is ClawCodex), so the defaults
-# below match CodeWhale's ``crates/config/src/lib.rs`` constants exactly.
+# id spelling each gateway expects. ClawCodex is DeepSeek-focused, so most of
+# these providers default to the DeepSeek model the gateway serves; every
+# default below is the vendor's own published model/base-URL.
 _SPECS: tuple[ProviderSpec, ...] = (
     ProviderSpec(
         id="nvidia-nim",
