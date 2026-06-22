@@ -1,7 +1,6 @@
 """Tests for the data-driven OpenAI-compatible provider registry.
 
-Covers the providers ported from CodeWhale's ``crates/config/src/provider.rs``
-into ``src/providers/openai_compatible_specs.py``: registry completeness,
+Covers ``src/providers/openai_compatible_specs.py``: registry completeness,
 generated-class defaults, alias resolution, API-key env-var fallback, and the
 keyless-local-provider path.
 """
@@ -27,7 +26,7 @@ from src.providers.openai_compatible_specs import (
     build_provider_class,
 )
 
-# The 18 providers ClawCodex previously lacked, ported from CodeWhale.
+# The 18 OpenAI-compatible providers added via the registry.
 EXPECTED_NEW_PROVIDERS = {
     "nvidia-nim",
     "atlascloud",
@@ -49,10 +48,9 @@ EXPECTED_NEW_PROVIDERS = {
     "deepinfra",
 }
 
-# A sample of (id -> (base_url, default_model)) copied verbatim from CodeWhale's
-# ``crates/config/src/lib.rs`` constants — a regression guard that our ports did
-# not drift from the reference.
-CODEWHALE_DEFAULTS = {
+# A sample of (id -> (base_url, default_model)) — each vendor's published
+# default — as a regression guard that the registry defaults do not drift.
+VENDOR_DEFAULTS = {
     "nvidia-nim": ("https://integrate.api.nvidia.com/v1", "deepseek-ai/deepseek-v4-pro"),
     "together": ("https://api.together.xyz/v1", "deepseek-ai/DeepSeek-V4-Pro"),
     "moonshot": ("https://api.moonshot.ai/v1", "kimi-k2.7-code"),
@@ -76,8 +74,8 @@ class TestRegistryCompleteness(unittest.TestCase):
             self.assertTrue(info["default_model"])
             self.assertTrue(info["available_models"])
 
-    def test_defaults_match_codewhale(self):
-        for pid, (base_url, model) in CODEWHALE_DEFAULTS.items():
+    def test_defaults_match_vendor_published(self):
+        for pid, (base_url, model) in VENDOR_DEFAULTS.items():
             spec = SPECS_BY_ID[pid]
             self.assertEqual(spec.default_base_url, base_url, pid)
             self.assertEqual(spec.default_model, model, pid)
@@ -130,7 +128,7 @@ class TestProviderResolution(unittest.TestCase):
         self.assertEqual(get_provider_class("moonshot").__name__, "MoonshotProvider")
 
     def test_get_provider_class_via_alias(self):
-        # CodeWhale aliases resolve to the canonical provider class.
+        # Aliases resolve to the canonical provider class.
         self.assertIs(get_provider_class("nim"), get_provider_class("nvidia-nim"))
         self.assertIs(get_provider_class("kimi"), get_provider_class("moonshot"))
         self.assertIs(get_provider_class("hf"), get_provider_class("huggingface"))

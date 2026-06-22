@@ -75,7 +75,7 @@
 providers = [
     # नेटिव / विशिष्ट प्रोटोकॉल
     "anthropic", "minimax", "deepseek", "zai", "openrouter", "openai", "gemini",
-    # OpenAI-संगत प्रदाता (CodeWhale की रजिस्ट्री से पोर्ट किए गए)
+    # OpenAI-संगत प्रदाता
     "nvidia-nim", "atlascloud", "wanjie-ark", "volcengine", "xiaomi-mimo",
     "novita", "fireworks", "siliconflow", "siliconflow-cn", "arcee", "moonshot",
     "huggingface", "together", "stepfun", "deepinfra",

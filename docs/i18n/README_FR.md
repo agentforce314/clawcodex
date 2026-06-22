@@ -75,7 +75,7 @@
 providers = [
     # Protocoles natifs / spécifiques
     "anthropic", "minimax", "deepseek", "zai", "openrouter", "openai", "gemini",
-    # Fournisseurs compatibles OpenAI (portés du registre de CodeWhale)
+    # Fournisseurs compatibles OpenAI
     "nvidia-nim", "atlascloud", "wanjie-ark", "volcengine", "xiaomi-mimo",
     "novita", "fireworks", "siliconflow", "siliconflow-cn", "arcee", "moonshot",
     "huggingface", "together", "stepfun", "deepinfra",

@@ -7,11 +7,10 @@ reuses the OpenAI SDK pointed at the Z.ai base URL — the same shape as
 :class:`~src.providers.deepseek_provider.DeepSeekProvider` — rather than a
 vendor-specific SDK.
 
-Ported from the CodeWhale ``zai`` provider: canonical id ``zai`` (aliases
-``z-ai`` / ``z_ai`` / ``z.ai``, plus the pre-rename ``glm``), default model
-``GLM-5.1`` with ``GLM-5.2`` as an opt-in preview. GLM models stream their
-chain-of-thought through ``reasoning_content``, which the shared
-``OpenAICompatibleProvider`` already surfaces.
+Canonical id ``zai`` (aliases ``z-ai`` / ``z_ai`` / ``z.ai``, plus the
+pre-rename ``glm``), default model ``GLM-5.1`` with ``GLM-5.2`` as an opt-in
+preview. GLM models stream their chain-of-thought through ``reasoning_content``,
+which the shared ``OpenAICompatibleProvider`` already surfaces.
 """
 
 from __future__ import annotations
@@ -26,11 +25,10 @@ except ModuleNotFoundError:  # pragma: no cover
 from .openai_compatible import OpenAICompatibleProvider
 
 
-# Canonical Z.ai GLM model ids, keyed by accepted lowercase aliases. Ported
-# from CodeWhale's ``canonical_zai_model_id``: the Z.ai endpoint expects the
-# capitalized ``GLM-5.x`` ids, so a config value like ``glm-5.2`` (or the
-# OpenRouter-style ``zai-glm-5-2``) is normalized before the request. Unknown /
-# custom model ids pass through unchanged.
+# Canonical Z.ai GLM model ids, keyed by accepted lowercase aliases. The Z.ai
+# endpoint expects the capitalized ``GLM-5.x`` ids, so a config value like
+# ``glm-5.2`` (or the OpenRouter-style ``zai-glm-5-2``) is normalized before the
+# request. Unknown / custom model ids pass through unchanged.
 _GLM_MODEL_ALIASES: dict[str, str] = {
     "glm-5.1": "GLM-5.1",
     "glm-5-1": "GLM-5.1",
