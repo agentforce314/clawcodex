@@ -41,6 +41,27 @@ ClawCodex keeps your request prefix **byte-stable**, so DeepSeek's prompt cache 
 
 ## ⚡ Quick Install
 
+**One line** — installs `uv`, Python 3.10+, and puts `clawcodex` on your PATH:
+
+```bash
+curl -fsSL https://clawcodex.app/install.sh | bash
+```
+
+Then configure a provider and start coding:
+
+```bash
+clawcodex login   # interactive provider + API key setup → ~/.clawcodex/config.json
+clawcodex         # start the REPL in any project
+```
+
+The installer also ships `clawcodex` lifecycle helpers — `doctor` (diagnose your
+environment), `verify` (health-check the install), `update`, and `uninstall`. It is
+re-run-safe and works on macOS, Linux, and WSL. To pass flags through the pipe, use
+`curl -fsSL https://clawcodex.app/install.sh | bash -s -- --dry-run`.
+
+<details>
+<summary><b>Or install manually from source</b></summary>
+
 ```bash
 git clone https://github.com/agentforce314/clawcodex.git
 cd clawcodex
@@ -51,6 +72,8 @@ python -m src.cli login   # writes config to ~/.clawcodex/config.json
 
 python -m src.cli --dangerously-skip-permissions   # start the REPL
 ```
+
+</details>
 
 The configuration file is saved at `~/.clawcodex/config.json`. Minimal example:
 
