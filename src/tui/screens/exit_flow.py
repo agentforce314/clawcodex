@@ -21,7 +21,10 @@ ExitAction = Literal["quit", "quit-clear", "cancel"]
 
 
 class ExitFlowScreen(DialogScreen["ExitAction"]):
-    """Confirm-exit dialog pushed when the user hits Ctrl+D / ``/exit``.
+    """Confirm-exit dialog pushed by ``/exit``.
+
+    (Ctrl+C / Ctrl+D exit directly via the double-press flow in
+    ``ClawCodexTUI._request_exit`` and do NOT push this dialog.)
 
     Resolves with:
       * ``"quit"``       — leave, keep conversation in session history.
