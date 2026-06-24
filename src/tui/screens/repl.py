@@ -109,6 +109,7 @@ class REPLScreen(Screen):
         self.prompt_input = PromptInput(
             words_provider=words_provider,
             suggestions_provider=suggestions_provider,
+            files_provider=self._workspace_files,
             vim_mode=initial_vim_mode(),
         )
         # Dim preview of prompts queued while a run is in flight (parity
@@ -127,6 +128,30 @@ class REPLScreen(Screen):
 
     def compose(self) -> ComposeResult:
         yield self._fullscreen
+
+    def _workspace_files(self) -> list[str]:
+        """Cached workspace file list for the ``@``-mention dropdown.
+
+        ``rg --files`` is run once per session and reused (same snapshot
+        strategy as the ``/open`` quick-open dialog) so typing ``@`` never
+        spawns ripgrep per keystroke. Failures degrade to an empty list.
+        """
+
+        cached = getattr(self, "_workspace_files_cache", None)
+        if cached is not None:
+            return cached
+        try:
+            from src.services.workspace_search import list_workspace_files
+
+            files, _truncated = list_workspace_files(str(self._workspace_root))
+        except Exception:
+            # Transient ripgrep failure — don't cache, so the next `@`
+            # keystroke retries (TS resets its file-list promise on error).
+            return []
+        # Cache successful results (including a legitimately empty repo) so
+        # `@` typing never re-spawns ripgrep per keystroke.
+        self._workspace_files_cache = files
+        return files
 
     def on_mount(self) -> None:
         self._fullscreen.scroll_region().mount(self.header_widget)
