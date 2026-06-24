@@ -51,7 +51,7 @@ Then configure a provider and start coding:
 
 ```bash
 clawcodex login   # interactive provider + API key setup → ~/.clawcodex/config.json
-clawcodex         # start the REPL in any project
+clawcodex --dangerously-skip-permissions         # start the REPL in any project
 ```
 
 The installer also ships `clawcodex` lifecycle helpers — `doctor` (diagnose your
