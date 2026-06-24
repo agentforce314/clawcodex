@@ -172,7 +172,7 @@ python -m src.cli login
 
 यह प्रक्रिया:
 
-1. आपको एक प्रदाता चुनने के लिए कहेगी: anthropic / openai / zai / minimax / openrouter / deepseek
+1. आपको एक प्रदाता चुनने के लिए कहेगी: anthropic / openai / gemini / zai / minimax / openrouter / deepseek, या कोई भी OpenAI-संगत वेंडर (together, novita, fireworks, moonshot, nvidia-nim, siliconflow, deepinfra, huggingface, …) और स्थानीय सर्वर (ollama / vllm / sglang)
 2. उस प्रदाता की API कुंजी मांगेगी
 3. वैकल्पिक रूप से एक कस्टम base URL सहेजेगी
 4. वैकल्पिक रूप से एक डिफ़ॉल्ट मॉडल सहेजेगी

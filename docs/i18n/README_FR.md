@@ -172,7 +172,7 @@ python -m src.cli login
 
 Ce processus va :
 
-1. vous demander de choisir un fournisseur : anthropic / openai / zai / minimax / openrouter / deepseek
+1. vous demander de choisir un fournisseur : anthropic / openai / gemini / zai / minimax / openrouter / deepseek, ou tout fournisseur compatible OpenAI (together, novita, fireworks, moonshot, nvidia-nim, siliconflow, deepinfra, huggingface, …) et serveurs locaux (ollama / vllm / sglang)
 2. vous demander la clé API de ce fournisseur
 3. enregistrer optionnellement une URL de base personnalisée
 4. enregistrer optionnellement un modèle par défaut
