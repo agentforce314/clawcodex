@@ -239,6 +239,17 @@ class PromptInput(Vertical):
 
         return self._input.value or ""
 
+    def record_history(self, text: str) -> None:
+        """Append ``text`` to the in-session ↑/↓ history.
+
+        Used by the double-Esc clear so a discarded draft is recoverable
+        with ↑ (TS handleEscape → addToHistory on the second press).
+        """
+
+        if text:
+            self._history.append(text)
+            self._history_pos = None
+
     # ---- bracketed paste ----
     def handle_paste(self, text: str) -> PasteInfo:
         """Insert a bracketed-paste payload as a single atomic operation.
