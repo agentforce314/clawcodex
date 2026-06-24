@@ -34,6 +34,8 @@ from ..messages import (
     AssistantMessage,
     PermissionRequested,
     PermissionResolved,
+    QueuedPromptReady,
+    QueuedPromptsChanged,
     StateChanged,
     ToolEventMessage,
 )
@@ -41,6 +43,7 @@ from ..a11y import LiveRegion, aria_label
 from ..widgets.fullscreen_layout import FullscreenLayout
 from ..widgets.header import StartupHeader
 from ..widgets.prompt_input import PromptInput, PromptSubmitted
+from ..widgets.queued_commands import QueuedCommands
 from ..widgets.status_line import StatusLine
 from ..widgets.transcript_view import Transcript
 
@@ -108,6 +111,10 @@ class REPLScreen(Screen):
             suggestions_provider=suggestions_provider,
             vim_mode=initial_vim_mode(),
         )
+        # Dim preview of prompts queued while a run is in flight (parity
+        # with PromptInputQueuedCommands). Mounted directly above the
+        # prompt input; hidden while the queue is empty.
+        self.queued_commands = QueuedCommands()
         # ARIA live region — stays height: 1 and only announces the
         # most recent status change. Mounted just above the status
         # bar so it's adjacent to the prompt for single-sweep reads.
@@ -126,6 +133,10 @@ class REPLScreen(Screen):
         self._fullscreen.scroll_region().mount(self.transcript)
         self._fullscreen.bottom_region().mount(self.live_region)
         self._fullscreen.bottom_region().mount(self.status_bar)
+        # Order: live region, status line, queued preview, prompt — so
+        # the queued text sits right above the input (TS marginTop), with
+        # the at-a-glance count staying on the status line.
+        self._fullscreen.bottom_region().mount(self.queued_commands)
         self._fullscreen.bottom_region().mount(self.prompt_input)
         # Bind the status line to app state so the spinner / queue count
         # reflect the authoritative agent state.
@@ -167,10 +178,91 @@ class REPLScreen(Screen):
             # no agent turn. A bare "#" falls through to the agent.
             app.run_memory_shortcut(text[1:], self.transcript)
             return
-        self.transcript.append_user(text)
-        self.status_bar.set_busy()
-        self.status_bar.bump_turn()
-        app.submit_to_agent(text)
+        # Plain agent prompt. ``submit_to_agent`` returns False when the
+        # bridge is busy and the prompt was QUEUED — in that case it
+        # shows only in the dim queued-prompts preview (refreshed via
+        # QueuedPromptsChanged), NOT the transcript, until the drain runs
+        # it (TS parity: queued commands live above the input, not in the
+        # conversation). Only render the user row + bump the turn when a
+        # run actually started.
+        if app.submit_to_agent(text):
+            self.transcript.append_user(text)
+            self.status_bar.set_busy()
+            self.status_bar.bump_turn()
+
+    # ---- queued-prompt drain (TS useCommandQueue auto-processing) ----
+    def on_queued_prompt_ready(self, _: QueuedPromptReady) -> None:
+        """Drain the oldest queued prompt now that the bridge is idle.
+
+        Posted by ``AgentBridge._finish`` after a run ends. We re-check
+        idle + non-empty on the UI thread (authoritative — the worker
+        side is only a filter), pop the oldest prompt, and replay it like
+        a plain prompt. ``record_history=False`` because it was recorded
+        when first typed. One pop per ``QueuedPromptReady`` → FIFO, one
+        prompt per turn (the next run's ``_finish`` posts again if more
+        remain).
+        """
+
+        app = self.app
+        bridge = getattr(app, "_agent_bridge", None)
+        state = getattr(app, "app_state", None)
+        if bridge is None or state is None:
+            return
+        # A spurious post (queue cleared by ESC, or a run started in the
+        # meantime) must be a safe no-op.
+        if bridge.busy or not state.queued_prompts:
+            return
+        text = state.queued_prompts.pop(0)
+        self._refresh_queued_preview()
+        # We just confirmed the bridge idle on this single UI thread, so
+        # the submit starts a run (returns True). The defensive ``else``
+        # only matters if that invariant is ever broken — then the bridge
+        # re-queued it under its lock and it drains on the next turn.
+        if app.submit_to_agent(text, record_history=False):
+            self.transcript.append_user(text)
+            self.status_bar.set_busy()
+            self.status_bar.bump_turn()
+        else:  # pragma: no cover - unreachable on the single UI thread
+            self._refresh_queued_preview()
+
+    def pop_queue_into_input(self) -> None:
+        """ESC Priority 2: drain queued prompts back into the prompt input.
+
+        TS ``popAllEditable`` (``messageQueueManager.ts:428``): the queued
+        texts (in order) are joined with the current draft by newlines and
+        loaded into the input for editing; the queue is then emptied.
+        Prompts are moved INTO the input, never discarded — so ESC can
+        never lose what the user typed. (Images / cursor-offset handling
+        in TS are N-A for the plain-``str`` Python queue.)
+
+        Caveat: the prompt input is still single-line (Textual ``Input``;
+        a ``TextArea`` swap is Phase-2 — see ``prompt_input.py``). A merged
+        value containing ``\\n`` (only when there are multiple queued
+        prompts, or a non-empty draft) is preserved verbatim in the value
+        (correct on submit) but renders flat until that swap.
+        """
+
+        app = self.app
+        state = getattr(app, "app_state", None)
+        if state is None or not state.queued_prompts:
+            return
+        queued = list(state.queued_prompts)
+        current = self.prompt_input.current_text()
+        merged = "\n".join(t for t in [*queued, current] if t)
+        state.queued_prompts.clear()
+        self.prompt_input.set_value(merged)
+        self.prompt_input.focus_input()
+        self._refresh_queued_preview()
+
+    def on_queued_prompts_changed(self, _: QueuedPromptsChanged) -> None:
+        self._refresh_queued_preview()
+
+    def _refresh_queued_preview(self) -> None:
+        """Rebuild the dim queued-prompts widget from live app state."""
+
+        state = getattr(self.app, "app_state", None)
+        prompts = list(getattr(state, "queued_prompts", []) or [])
+        self.queued_commands.set_prompts(prompts)
 
     # ---- agent message handlers ----
     def on_agent_run_started(self, _: AgentRunStarted) -> None:

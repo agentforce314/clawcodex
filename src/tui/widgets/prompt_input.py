@@ -198,6 +198,11 @@ class PromptInput(Vertical):
         self._input.value = value or ""
         self._hide_suggestions()
 
+    def current_text(self) -> str:
+        """The current draft text (used by the ESC queue-pop, /history)."""
+
+        return self._input.value or ""
+
     # ---- bracketed paste ----
     def handle_paste(self, text: str) -> PasteInfo:
         """Insert a bracketed-paste payload as a single atomic operation.
