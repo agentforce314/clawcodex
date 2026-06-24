@@ -105,6 +105,17 @@ class _PasteAwareInput(Input):
 
 
 _NAME_COLUMN_WIDTH = 22  # left column reserved for "/name (alias)"
+# A "large" paste is replaced in the buffer by a "[Pasted text #id +N lines]"
+# placeholder (TS PromptInput.tsx:1240-1265 / history.ts formatPastedText) and
+# expanded back to the real text on submit, so a multi-thousand-line/char paste
+# doesn't flood the input. Char threshold matches TS (imagePaste.ts:30, 800).
+# Line trigger: TS placeholders at >2 newlines (4+ visual lines); we use >=2
+# newlines (3+ lines) — DELIBERATELY one line more aggressive because this
+# port's input is single-line and renders embedded newlines flat, so even a
+# 3-line paste is unreadable inline.
+_PASTE_CHARS_THRESHOLD = 800
+_PASTE_NEWLINES_THRESHOLD = 2  # placeholder when newline count >= this
+_PASTE_PLACEHOLDER_RE = re.compile(r"\[Pasted text #(\d+)(?: \+\d+ lines)?\]")
 # TS shows 6 rows in the non-overlay slash menu
 # (PromptInputFooterSuggestions.tsx:175 → ``Math.min(6, …)``). The full
 # candidate set is still ranked; only the display is capped.
@@ -182,6 +193,10 @@ class PromptInput(Vertical):
         # Round 2 / WI-R2.5: most-recent bracketed paste classification.
         # Test seam — the host reads :class:`PromptPasted` instead.
         self._last_paste: PasteInfo | None = None
+        # Large-paste placeholders: id → full pasted text. The buffer shows
+        # "[Pasted text #id +N lines]"; expand_pastes() restores it at submit.
+        self._pasted_blobs: dict[int, str] = {}
+        self._paste_counter: int = 0
         # Round 2 / WI-R2.4: passive status surfaces around the input.
         # The mode indicator subscribes to ``VimState`` directly; the
         # footer reads ``VimState.enabled`` lazily. Both mounted as
@@ -212,6 +227,7 @@ class PromptInput(Vertical):
 
     def clear(self) -> None:
         self._input.value = ""
+        self._pasted_blobs.clear()
         self._hide_suggestions()
 
     def append_value(self, text: str) -> None:
@@ -272,9 +288,10 @@ class PromptInput(Vertical):
             inp = self._input
             value = inp.value or ""
             pos = max(0, min(inp.cursor_position, len(value)))
-            new_value = value[:pos] + info.text + value[pos:]
+            insert = self._paste_insert_text(info)
+            new_value = value[:pos] + insert + value[pos:]
             inp.value = new_value
-            inp.cursor_position = pos + info.length
+            inp.cursor_position = pos + len(insert)
         # Pasted content must never reopen the slash palette; the user
         # paste-bombed the prompt and likely wants to keep typing or
         # submit. Same rationale as the TS ``usePasteHandler`` reset.
@@ -283,6 +300,41 @@ class PromptInput(Vertical):
         # ``_history_pos`` untouched here is the explicit contract.
         self.post_message(PromptPasted(info=info))
         return info
+
+    def _paste_insert_text(self, info: PasteInfo) -> str:
+        """Raw text for small pastes; a placeholder for large ones.
+
+        A large paste (> _PASTE_CHARS_THRESHOLD chars or >=
+        _PASTE_NEWLINES_THRESHOLD newlines) is stashed under an id and shown
+        as "[Pasted text #id +N lines]" so it doesn't flood the single-line
+        input; ``expand_pastes`` restores it at submit.
+        """
+
+        newlines = info.line_count - 1
+        big = (
+            info.length > _PASTE_CHARS_THRESHOLD
+            or newlines >= _PASTE_NEWLINES_THRESHOLD
+        )
+        if not big:
+            return info.text
+        self._paste_counter += 1
+        pid = self._paste_counter
+        self._pasted_blobs[pid] = info.text
+        if newlines > 0:
+            return f"[Pasted text #{pid} +{newlines} lines]"
+        return f"[Pasted text #{pid}]"
+
+    def expand_pastes(self, text: str) -> str:
+        """Replace any "[Pasted text #id …]" placeholders with real text."""
+
+        if not self._pasted_blobs:
+            return text
+
+        def _repl(match: "re.Match[str]") -> str:
+            pid = int(match.group(1))
+            return self._pasted_blobs.get(pid, match.group(0))
+
+        return _PASTE_PLACEHOLDER_RE.sub(_repl, text)
 
     @property
     def last_paste(self) -> PasteInfo | None:
@@ -383,10 +435,12 @@ class PromptInput(Vertical):
         text = (event.value or "").strip()
         if not text:
             return
+        text = self.expand_pastes(text)  # restore large-paste placeholders
         self._history.append(text)
         self._history_pos = None
         self._hide_suggestions()
         self._input.value = ""
+        self._pasted_blobs.clear()
         self.post_message(PromptSubmitted(text=text))
 
     def on_option_list_option_selected(
@@ -574,9 +628,11 @@ class PromptInput(Vertical):
         elif action == "submit":
             text = value.strip()
             if text:
+                text = self.expand_pastes(text)
                 self._history.append(text)
                 self._history_pos = None
                 inp.value = ""
+                self._pasted_blobs.clear()
                 self.post_message(PromptSubmitted(text=text))
 
     # ---- suggestion plumbing ----
