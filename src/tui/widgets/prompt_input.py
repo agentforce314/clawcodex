@@ -19,6 +19,7 @@ Phase 2 to swap in a ``TextArea`` without changing the public surface.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -90,13 +91,16 @@ class _PasteAwareInput(Input):
 
 
 _NAME_COLUMN_WIDTH = 22  # left column reserved for "/name (alias)"
-_MAX_VISIBLE_SUGGESTIONS = 10
+# TS shows 6 rows in the non-overlay slash menu
+# (PromptInputFooterSuggestions.tsx:175 → ``Math.min(6, …)``). The full
+# candidate set is still ranked; only the display is capped.
+_MAX_VISIBLE_SUGGESTIONS = 6
 
 
 class _SlashSuggestions(OptionList):
     DEFAULT_CSS = """
     _SlashSuggestions {
-        max-height: 10;
+        max-height: 6;
         border: none;
         padding: 0;
         background: $background;
@@ -149,6 +153,9 @@ class PromptInput(Vertical):
         self._history_pos: int | None = None
         self._input = _PasteAwareInput(placeholder="Type a prompt, or / for commands")
         self._suggestions = _SlashSuggestions(classes="-hidden")
+        # slash → takes_args, for the currently-visible popup rows. Lets
+        # the accept path decide Enter=execute (zero-arg) vs fill (arg).
+        self._arg_lookup: dict[str, bool] = {}
         self._vim = VimState(enabled=vim_mode)
         self._yank_buffer: str = ""
         # Round 2 / WI-R2.5: most-recent bracketed paste classification.
@@ -285,25 +292,81 @@ class PromptInput(Vertical):
         self._refresh_suggestions(event.value, event.input.cursor_position)
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
+        # If the palette is open and a row is highlighted, accept the
+        # selection (execute zero-arg / fill arg-taking) instead of
+        # submitting the partial prompt. Mirrors TS handleEnter →
+        # applyCommandSuggestion(shouldExecute=true).
+        if not self._suggestions.has_class("-hidden"):
+            if self._accept_suggestion(execute=True):
+                return
         text = (event.value or "").strip()
         if not text:
             return
-        # If the palette is open and a row is highlighted, accept the
-        # selection instead of submitting the partial prompt.
-        if not self._suggestions.has_class("-hidden"):
-            idx = self._suggestions.highlighted
-            if idx is not None:
-                option = self._suggestions.get_option_at_index(idx)
-                if option is not None and option.id:
-                    self._input.value = option.id
-                    self._input.cursor_position = len(option.id)
-                    self._hide_suggestions()
-                    return
         self._history.append(text)
         self._history_pos = None
         self._hide_suggestions()
         self._input.value = ""
         self.post_message(PromptSubmitted(text=text))
+
+    def on_option_list_option_selected(
+        self, event: OptionList.OptionSelected
+    ) -> None:
+        """Enter on the popup after arrow-navigation.
+
+        Up/Down moves focus onto the ``OptionList`` (see ``on_key``), so a
+        subsequent Enter is delivered as ``OptionSelected`` here — NOT as
+        ``Input.Submitted``. Without this handler that Enter was a no-op
+        (the headline slash-menu bug). Accept + execute, then return
+        focus to the input.
+        """
+
+        event.stop()
+        self._accept_suggestion(execute=True, option=event.option)
+        self._input.focus()
+
+    def _accept_suggestion(
+        self,
+        *,
+        execute: bool,
+        option: Option | None = None,
+    ) -> bool:
+        """Accept the highlighted (or given) slash suggestion.
+
+        ``execute=True`` (Enter): run a zero-arg command immediately; for
+        an arg-taking command, fall back to filling ``/<name> `` so the
+        user can type the argument. ``execute=False`` (Tab): always fill
+        ``/<name> `` without running. Returns ``True`` if a row was
+        accepted.
+        """
+
+        if option is None:
+            idx = self._suggestions.highlighted
+            if idx is None:
+                return False
+            try:
+                option = self._suggestions.get_option_at_index(idx)
+            except Exception:
+                return False
+        if option is None or not option.id:
+            return False
+        slash = str(option.id)
+        run_now = execute and not self._arg_lookup.get(slash, False)
+        if run_now:
+            self._hide_suggestions()
+            self._history.append(slash)
+            self._history_pos = None
+            self._input.value = ""
+            self.post_message(PromptSubmitted(text=slash))
+        else:
+            filled = f"{slash} "
+            self._input.value = filled
+            try:
+                self._input.cursor_position = len(filled)
+            except Exception:
+                pass
+            self._hide_suggestions()
+            self._input.focus()
+        return True
 
     async def on_key(self, event: events.Key) -> None:
         key = event.key
@@ -317,8 +380,17 @@ class PromptInput(Vertical):
                 event.stop()
                 return
 
+        if key == "tab" and not self._suggestions.has_class("-hidden"):
+            # Tab completes the highlighted command without running it
+            # (TS handleTab → applyCommandSuggestion(shouldExecute=false)).
+            if self._accept_suggestion(execute=False):
+                event.stop()
+                return
         if key == "escape" and not self._suggestions.has_class("-hidden"):
             self._hide_suggestions()
+            # Arrow-nav may have moved focus onto the popup; bring it back
+            # so the next keystroke lands in the draft, not a hidden list.
+            self._input.focus()
             event.stop()
             return
         if key == "escape":
@@ -421,8 +493,14 @@ class PromptInput(Vertical):
                 suggestions = self._suggestions_provider() or []
             except Exception:
                 suggestions = []
+            self._arg_lookup = {
+                s.slash: s.takes_args
+                for s in suggestions
+                if isinstance(s, CommandSuggestion)
+            }
             return _options_from_suggestions(suggestions, partial)
 
+        self._arg_lookup = {}
         words = self._words_provider() or []
         return _options_from_words(words, partial)
 
@@ -458,11 +536,18 @@ def _options_from_suggestions(
 ) -> list[Option]:
     """Filter + rank rich command suggestions, then render two-column rows.
 
-    Sort order matches the TS ranking spirit: exact name → exact alias
-    → prefix name → prefix alias → fuzzy subsequence. Duplicates (same
-    name) are collapsed; aliases are surfaced only when the user typed
-    them so an unmatched ``/com<TAB>`` does not get polluted with the
-    full alias list.
+    Sort order: exact name → exact alias → prefix name → prefix alias →
+    name-part prefix. Matching is anchored to a word boundary: a prefix of
+    the whole name/alias, or a prefix of any ``[:_-]``-delimited part of
+    the name (TS Fuse's ``partKey``, ``commandSuggestions.ts:12,39``) — so
+    ``/notes`` surfaces ``/release-notes`` and ``/ceo`` surfaces
+    ``/plan-ceo-review``. This is a deliberate *narrowing* of the TS Fuse
+    config (which also fuzzy-matches descriptions at low weight); the
+    earlier port instead used an unbounded subsequence test, which produced
+    false matches like ``/st`` → ``/cost``/``/history`` and ``/co`` →
+    ``/doctor`` — those stay dropped (no ``-``/``:`` part begins with the
+    query). Duplicates (same name) are collapsed; aliases/parts are
+    surfaced only when the user typed their prefix.
     """
 
     scored: list[tuple[int, int, CommandSuggestion, str | None]] = []
@@ -499,16 +584,16 @@ def _options_from_suggestions(
                 if alias_prefix:
                     rank = 3
                     matched_alias = alias_prefix
-                elif _fuzzy_match(name_lc, partial):
-                    rank = 5
-                else:
-                    alias_fuzzy = next(
-                        (a for a in sugg.aliases if _fuzzy_match(a.lower(), partial)),
-                        None,
-                    )
-                    if alias_fuzzy:
-                        rank = 6
-                        matched_alias = alias_fuzzy
+                elif any(
+                    part.startswith(partial)
+                    for part in re.split(r"[:_-]", name_lc)
+                    if part
+                ):
+                    # Word-boundary part prefix (TS Fuse partKey): lets
+                    # ``/notes`` match ``release-notes`` and ``/ceo`` match
+                    # ``plan-ceo-review`` without unbounded subsequence.
+                    rank = 4
+                # else: no match (no subsequence fallback — see docstring).
         if rank is None:
             continue
         seen.add(name_lc)
@@ -584,10 +669,12 @@ def _render_suggestion_row(
 def _fuzzy_match(name: str, partial: str) -> bool:
     """Lightweight fuzzy matcher: prefix wins, subsequence falls back.
 
-    Matches the behavior of ``useTypeahead`` in
-    ``typescript/src/components/PromptInput/useTypeahead.ts`` at a
-    reduced fidelity (no scoring, no MRU). Prefix matches are always
-    preferred so the most common ``/ex<Tab>`` workflow feels snappy.
+    LEGACY: only the ``_options_from_words`` fallback path (no rich
+    ``suggestions_provider`` — tests / embedded callers) still uses this.
+    The production rich path (``_options_from_suggestions``) deliberately
+    uses prefix/part-prefix matching instead (no subsequence), so the two
+    paths intentionally differ; do not "unify" them without re-checking the
+    ``/st`` → ``/cost`` regression this guards against.
     """
 
     if name.startswith(partial):
