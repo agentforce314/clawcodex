@@ -172,7 +172,7 @@ python -m src.cli login
 
 Этот процесс:
 
-1. попросит вас выбрать провайдера: anthropic / openai / zai / minimax / openrouter / deepseek
+1. попросит вас выбрать провайдера: anthropic / openai / gemini / zai / minimax / openrouter / deepseek, либо любой OpenAI-совместимый провайдер (together, novita, fireworks, moonshot, nvidia-nim, siliconflow, deepinfra, huggingface, …) и локальные серверы (ollama / vllm / sglang)
 2. попросит ввести API ключ этого провайдера
 3. при необходимости сохранит пользовательский base URL
 4. при необходимости сохранит модель по умолчанию
