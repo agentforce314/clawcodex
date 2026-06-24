@@ -71,6 +71,11 @@ class PromptInputFooter(Static):
         super().__init__(Text(""), markup=False)
         self._vim = vim_state
         self._hints_provider = hints_provider
+        # Context flags that swap the hint set (TS PromptInputFooterLeftSide):
+        # while a run is in flight the footer collapses to "esc to interrupt";
+        # in bash mode it shows "! for bash mode".
+        self._loading: bool = False
+        self._bash_mode: bool = False
         # Track the most recent rendered line as a test seam — same
         # pattern :class:`PromptInputModeIndicator` uses.
         self._last_line: str = ""
@@ -90,6 +95,27 @@ class PromptInputFooter(Static):
 
         self._redraw()
 
+    def set_loading(self, loading: bool) -> None:
+        """Toggle the in-flight state (footer → ``esc to interrupt``).
+
+        Driven by :class:`~src.tui.widgets.status_line.StatusLine` so the
+        footer tracks the same ``is_thinking`` signal as the spinner — see
+        ``StatusLine.bind_footer``.
+        """
+
+        if loading == self._loading:
+            return
+        self._loading = loading
+        self._redraw()
+
+    def set_bash_mode(self, bash_mode: bool) -> None:
+        """Toggle bash mode (footer → ``! for bash mode``)."""
+
+        if bash_mode == self._bash_mode:
+            return
+        self._bash_mode = bash_mode
+        self._redraw()
+
     @property
     def last_line(self) -> str:
         """Most recently rendered hint line (test seam)."""
@@ -106,16 +132,23 @@ class PromptInputFooter(Static):
         return self._default_hints()
 
     def _default_hints(self) -> list[FooterHint]:
-        """Curated default hints — small enough to fit on one line.
+        """Context-aware default hints (TS ``PromptInputFooterLeftSide``).
 
-        Chosen for maximum discoverability of the actions a new user
-        hits within their first session: open a slash command, cancel
-        an in-flight request / dismiss the popup, clear the draft, and
-        (when relevant) vim mode chord. Every hint here corresponds to
-        a binding the host currently wires (``PromptInput.BINDINGS`` +
-        ``REPLScreen.BINDINGS``); future rounds replace this static set
-        with resolver output via ``hints_provider``.
+        Mode precedence mirrors the ink footer: bash mode wins first —
+        ``ModeIndicator`` returns ``! for bash mode`` before any loading
+        logic (PromptInputFooterLeftSide.tsx:317-319, ahead of the
+        ``getSpinnerHintParts(isLoading…)`` at :375). Then, while a run is
+        in flight, the only hint is ``esc to interrupt``; otherwise the
+        idle discoverability set. Keys are lowercased; ``to``-actions match
+        the TS ``KeyboardShortcutHint`` grammar (``esc to interrupt``),
+        while ``for``-hints (``/ for commands``, ``! for bash mode``) are
+        raw TS strings. Every idle hint maps to a wired binding.
         """
+
+        if self._bash_mode:
+            return [FooterHint(keys="!", label="for bash mode")]
+        if self._loading:
+            return [FooterHint(keys="esc", label="to interrupt")]
 
         vim = self._vim
 
@@ -123,10 +156,9 @@ class PromptInputFooter(Static):
             return vim is not None and vim.enabled
 
         return [
-            FooterHint(keys="/", label="command"),
-            FooterHint(keys="Esc", label="cancel"),
-            FooterHint(keys="Ctrl+L", label="clear"),
-            FooterHint(keys="i/Esc", label="vim", when=vim_active),
+            FooterHint(keys="/", label="for commands"),
+            FooterHint(keys="ctrl+l", label="to clear"),
+            FooterHint(keys="i/esc", label="vim", when=vim_active),
         ]
 
     def _redraw(self) -> None:

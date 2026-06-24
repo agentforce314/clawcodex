@@ -57,11 +57,11 @@ async def test_default_hints_rendered_with_vim_off():
     async with _Host(footer).run_test() as pilot:
         await pilot.pause()
         line = footer.last_line
-        # Three hints visible when vim is off — vim hint is filtered.
-        assert "/ command" in line
-        assert "Esc cancel" in line
-        assert "Ctrl+L clear" in line
-        assert "i/Esc vim" not in line
+        # Idle set with the TS "key to/for action" grammar, lowercase keys.
+        assert "/ for commands" in line
+        assert "ctrl+l to clear" in line
+        assert "i/esc vim" not in line  # vim hint filtered when vim off
+        assert "esc to interrupt" not in line  # not loading
 
 
 @pytest.mark.asyncio
@@ -71,7 +71,7 @@ async def test_vim_hint_appears_when_vim_on():
     async with _Host(footer).run_test() as pilot:
         await pilot.pause()
         line = footer.last_line
-        assert "i/Esc vim" in line
+        assert "i/esc vim" in line
 
 
 @pytest.mark.asyncio
@@ -81,11 +81,80 @@ async def test_refresh_hints_picks_up_vim_toggle():
     footer = PromptInputFooter(vim_state=vim)
     async with _Host(footer).run_test() as pilot:
         await pilot.pause()
-        assert "i/Esc vim" not in footer.last_line
+        assert "i/esc vim" not in footer.last_line
         vim.set_enabled(True)
         footer.refresh_hints()
         await pilot.pause()
-        assert "i/Esc vim" in footer.last_line
+        assert "i/esc vim" in footer.last_line
+
+
+@pytest.mark.asyncio
+async def test_loading_collapses_to_interrupt_hint():
+    """While a run is in flight the footer shows only 'esc to interrupt'."""
+    footer = PromptInputFooter(vim_state=VimState(enabled=False))
+    async with _Host(footer).run_test() as pilot:
+        await pilot.pause()
+        footer.set_loading(True)
+        await pilot.pause()
+        line = footer.last_line
+        assert line == "esc to interrupt"
+        assert "for commands" not in line  # idle hints hidden while busy
+        footer.set_loading(False)
+        await pilot.pause()
+        assert "/ for commands" in footer.last_line
+
+
+@pytest.mark.asyncio
+async def test_bash_mode_shows_bash_hint():
+    footer = PromptInputFooter(vim_state=VimState(enabled=False))
+    async with _Host(footer).run_test() as pilot:
+        await pilot.pause()
+        footer.set_bash_mode(True)
+        await pilot.pause()
+        assert footer.last_line == "! for bash mode"
+
+
+@pytest.mark.asyncio
+async def test_bash_mode_takes_precedence_over_loading():
+    # TS parity: ModeIndicator returns "! for bash mode" before any
+    # loading logic (PromptInputFooterLeftSide.tsx:317-319 ahead of :375).
+    footer = PromptInputFooter(vim_state=VimState(enabled=False))
+    async with _Host(footer).run_test() as pilot:
+        await pilot.pause()
+        footer.set_loading(True)
+        footer.set_bash_mode(True)
+        await pilot.pause()
+        assert footer.last_line == "! for bash mode"
+
+
+@pytest.mark.asyncio
+async def test_status_line_drives_footer_loading(monkeypatch):
+    """The footer's loading state rides the StatusLine's is_thinking signal."""
+    from pathlib import Path
+
+    from src.tui.state import AppState
+    from src.tui.widgets.status_line import StatusLine
+
+    monkeypatch.setattr(StatusLine, "refresh_custom_status", lambda self: None)
+    footer = PromptInputFooter(vim_state=VimState(enabled=False))
+    status = StatusLine(
+        provider="p", model="m", workspace_root=Path("/tmp"), app_state=AppState()
+    )
+
+    class _Host2(App):
+        def compose(self) -> ComposeResult:
+            yield status
+            yield footer
+
+    async with _Host2().run_test() as pilot:
+        await pilot.pause()
+        status.bind_footer(footer)
+        status.set_busy()  # is_thinking True → footer shows interrupt hint
+        await pilot.pause()
+        assert footer.last_line == "esc to interrupt"
+        status.set_idle()
+        await pilot.pause()
+        assert "/ for commands" in footer.last_line
 
 
 @pytest.mark.asyncio
