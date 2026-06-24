@@ -180,6 +180,19 @@ class CancelRequested(Message):
 
 
 @dataclass
+class ExitRequested(Message):
+    """User pressed Ctrl+D on an empty prompt.
+
+    The stock ``Input`` swallows Ctrl+D (delete-forward), which is a no-op
+    on an empty buffer — so the app's quit binding never fires. The
+    paste-aware input posts this instead, and the app runs the same
+    double-press exit flow as Ctrl+C (``ClawCodexTUI._request_exit``).
+    """
+
+    source: str = "ctrl-d"
+
+
+@dataclass
 class QueuedPromptReady(Message):
     """A queued prompt may be drained now that the bridge is idle.
 

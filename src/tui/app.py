@@ -15,6 +15,7 @@ screen then materialises as a modal.
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -42,7 +43,7 @@ from .commands import (
     dispatch_registry_command,
 )
 from .history_store import HistoryStore  # noqa: F401 (re-exported for tests)
-from .messages import CancelRequested, QueuedPromptsChanged
+from .messages import CancelRequested, ExitRequested, QueuedPromptsChanged
 from .screens.cost_threshold import CostThresholdScreen
 from .screens.diff_dialog import DiffDialogScreen, FileDiff
 from .screens.effort_picker import EffortPickerScreen
@@ -102,9 +103,14 @@ class ClawCodexTUI(App):
     TITLE = "ClawCodex"
     SUB_TITLE = "interactive terminal"
 
+    # NOTE: Ctrl+C/Ctrl+D reach these app actions only on the REPL screen
+    # (Textual's screen-level ctrl+c=copy SkipActions through to the app when
+    # nothing is selected). While a ModalScreen is open it captures these
+    # keys, so the double-press exit does NOT fire inside dialogs — every
+    # modal uses Esc to dismiss, which is the intended escape hatch.
     BINDINGS = [
         ("ctrl+c", "cancel_or_quit", "Cancel / Quit"),
-        ("ctrl+d", "quit", "Quit"),
+        ("ctrl+d", "request_quit", "Quit"),
     ]
 
     def __init__(
@@ -151,6 +157,13 @@ class ClawCodexTUI(App):
         # alt-screen tears down. Mirrors the TS ink behaviour where the
         # conversation the user saw stays on-screen after ``/exit``.
         self.exit_snapshot: list[Any] = []
+        # Double-press exit (Ctrl+C / Ctrl+D): first press arms + warns,
+        # a second press within the window exits. monotonic timestamp of
+        # the last arming press; None = not armed. (Must NOT default to 0.0:
+        # Linux CLOCK_MONOTONIC starts at boot, so a process launched in the
+        # first 0.8s would treat 0.0 as "armed" and exit on a single press —
+        # TS useDoublePress guards on an explicit timer flag too.)
+        self._pending_exit_at: float | None = None
         # Persistent prompt history used by the PromptInput (↑/↓) and
         # the /history slash-command dialog. The store is append-only
         # per turn and auto-rotates past ``max_entries``.
@@ -655,11 +668,56 @@ class ClawCodexTUI(App):
             pass
 
     # ---- bindings ----
+    _DOUBLE_PRESS_SECONDS = 0.8
+
     def action_cancel_or_quit(self) -> None:
-        # Phase 1 keeps Ctrl+C as exit. Real cancellation (interrupt the
-        # in-flight agent loop) lands in Phase 2 alongside the cost /
-        # idle dialogs.
-        self.exit()
+        # Ctrl+C: double-press to exit (TS handleCtrlC). A lone Ctrl+C no
+        # longer kills the app + discards the draft; the first press clears
+        # a non-empty draft (shell idiom) and warns, the second exits.
+        self._request_exit("ctrl-c")
+
+    def action_request_quit(self) -> None:
+        # Ctrl+D when the prompt input isn't focused (e.g. a modal). The
+        # focused-input case is handled by _PasteAwareInput → ExitRequested.
+        self._request_exit("ctrl-d")
+
+    def on_exit_requested(self, message: "ExitRequested") -> None:
+        self._request_exit(getattr(message, "source", "ctrl-d"))
+
+    def _active_prompt(self) -> Any | None:
+        screen = self._repl_screen
+        return getattr(screen, "prompt_input", None) if screen is not None else None
+
+    def _request_exit(self, source: str) -> None:
+        """Shared double-press exit for Ctrl+C / Ctrl+D."""
+        now = time.monotonic()
+        armed = (
+            self._pending_exit_at is not None
+            and (now - self._pending_exit_at) <= self._DOUBLE_PRESS_SECONDS
+        )
+        if armed:
+            self.exit()
+            return
+        label = "Ctrl-C" if source == "ctrl-c" else "Ctrl-D"
+        # Ctrl+C clears a non-empty draft on the first press (shell idiom);
+        # Ctrl+D only reaches here on an empty buffer.
+        if source == "ctrl-c":
+            prompt = self._active_prompt()
+            if prompt is not None and prompt.current_text():
+                try:
+                    prompt.clear()
+                except Exception:
+                    pass
+        self._pending_exit_at = now
+        try:
+            # Match the toast lifetime to the double-press window so the
+            # affordance disappears exactly when a press would re-arm.
+            self.notify(
+                f"Press {label} again to exit",
+                timeout=self._DOUBLE_PRESS_SECONDS,
+            )
+        except Exception:
+            pass
 
     # ---- local command dispatcher ----
     def handle_local_slash_command(self, text: str, transcript: Transcript) -> bool:
