@@ -60,6 +60,9 @@ class REPLScreen(Screen):
         # C3b: legacy-REPL parity — re-print the most recent truncated
         # block in full (CtrlOToExpand).
         ("ctrl+o", "expand_last", "Expand last truncated"),
+        # TS history:search (defaultBindings ctrl+r) — opens the existing
+        # reverse-history-search dialog (was reachable only via /history).
+        ("ctrl+r", "history_search", "Search history"),
     ]
 
     DEFAULT_CSS = """
@@ -187,6 +190,12 @@ class REPLScreen(Screen):
 
     def action_expand_last(self) -> None:
         self.transcript.expand_last()
+
+    def action_history_search(self) -> None:
+        app = self.app
+        opener = getattr(app, "_open_history_search", None)
+        if callable(opener):
+            opener(self.transcript)
 
     # ---- prompt submission ----
     def on_prompt_submitted(self, message: PromptSubmitted) -> None:
