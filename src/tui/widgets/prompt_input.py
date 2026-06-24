@@ -145,11 +145,18 @@ class PromptInput(Vertical):
         *,
         words_provider: Callable[[], list[str]],
         suggestions_provider: Callable[[], list[CommandSuggestion]] | None = None,
+        files_provider: Callable[[], list[str]] | None = None,
         vim_mode: bool = False,
     ) -> None:
         super().__init__()
         self._words_provider = words_provider
         self._suggestions_provider = suggestions_provider
+        # Returns the (host-cached) workspace file list for the `@`-mention
+        # dropdown. None disables @-completion (legacy/embedded callers).
+        self._files_provider = files_provider
+        # Which popup is showing: "slash" command palette or "at" file list.
+        # Drives how an accepted row is applied (execute/fill vs splice).
+        self._suggest_mode = "slash"
         self._history: list[str] = []
         self._history_pos: int | None = None
         self._input = _PasteAwareInput(placeholder="Type a prompt, or / for commands")
@@ -380,13 +387,14 @@ class PromptInput(Vertical):
         execute: bool,
         option: Option | None = None,
     ) -> bool:
-        """Accept the highlighted (or given) slash suggestion.
+        """Accept the highlighted (or given) suggestion row.
 
-        ``execute=True`` (Enter): run a zero-arg command immediately; for
-        an arg-taking command, fall back to filling ``/<name> `` so the
-        user can type the argument. ``execute=False`` (Tab): always fill
-        ``/<name> `` without running. Returns ``True`` if a row was
-        accepted.
+        In ``@``-mention mode the row is a file path → delegate to
+        ``_insert_file_mention`` (splice in place; ``execute`` ignored).
+        In slash mode: ``execute=True`` (Enter) runs a zero-arg command
+        immediately, or fills ``/<name> `` for an arg-taking one so the user
+        can type the argument; ``execute=False`` (Tab) always fills without
+        running. Returns ``True`` if a row was accepted.
         """
 
         if option is None:
@@ -399,6 +407,11 @@ class PromptInput(Vertical):
                 return False
         if option is None or not option.id:
             return False
+        # File mention: splice "@<path> " in place (mid-line safe) — never
+        # execute, never overwrite the whole draft. Both Enter and Tab fill.
+        if self._suggest_mode == "at":
+            self._insert_file_mention(str(option.id))
+            return True
         slash = str(option.id)
         run_now = execute and not self._arg_lookup.get(slash, False)
         if run_now:
@@ -417,6 +430,32 @@ class PromptInput(Vertical):
             self._hide_suggestions()
             self._input.focus()
         return True
+
+    def _insert_file_mention(self, path: str) -> None:
+        """Replace the ``@partial`` token under the cursor with ``@<path> ``.
+
+        Splices in place so surrounding text is preserved (TS
+        applyFileSuggestion), unlike the whole-line slash accept. Recomputes
+        the token from the live buffer so it's robust to cursor movement.
+        """
+
+        value = self._input.value or ""
+        cursor = self._input.cursor_position
+        token, start = _current_at_token(value[:cursor])
+        if token is None:
+            self._hide_suggestions()
+            return
+        from src.services.workspace_search import file_insertion
+
+        replacement = file_insertion(path)  # "@<path> "
+        new_value = value[:start] + replacement + value[cursor:]
+        self._input.value = new_value
+        try:
+            self._input.cursor_position = start + len(replacement)
+        except Exception:
+            pass
+        self._hide_suggestions()
+        self._input.focus()
 
     async def on_key(self, event: events.Key) -> None:
         key = event.key
@@ -518,13 +557,20 @@ class PromptInput(Vertical):
 
     # ---- suggestion plumbing ----
     def _refresh_suggestions(self, text: str, cursor: int) -> None:
-        token, _ = _current_slash_token(text[:cursor])
-        if token is None:
+        before = text[:cursor]
+        # Slash command palette takes precedence over @-mentions.
+        slash_token, _ = _current_slash_token(before)
+        if slash_token is not None:
+            self._suggest_mode = "slash"
+            options = self._build_suggestion_options(slash_token[1:].lower())
+        elif self._files_provider is not None and (
+            (at_token := _current_at_token(before)[0]) is not None
+        ):
+            self._suggest_mode = "at"
+            options = self._build_file_options(at_token[1:])
+        else:
             self._hide_suggestions()
             return
-        partial = token[1:].lower()
-
-        options = self._build_suggestion_options(partial)
         if not options:
             self._hide_suggestions()
             return
@@ -532,6 +578,22 @@ class PromptInput(Vertical):
         self._suggestions.add_options(options)
         self._suggestions.highlighted = 0
         self._suggestions.remove_class("-hidden")
+
+    def _build_file_options(self, partial: str) -> list[Option]:
+        """File rows for the ``@``-mention dropdown (reuses /search infra)."""
+        try:
+            files = self._files_provider() or []
+        except Exception:
+            files = []
+        if not files:
+            return []
+        from src.services.workspace_search import filter_files
+
+        matches = filter_files(files, partial, limit=_MAX_VISIBLE_SUGGESTIONS)
+        return [
+            Option(Text(path, no_wrap=True, overflow="ellipsis"), id=path)
+            for path in matches
+        ]
 
     def _build_suggestion_options(self, partial: str) -> list[Option]:
         """Return the rich Option rows to show under the prompt.
@@ -774,25 +836,27 @@ def _prev_word(text: str, pos: int) -> int:
     return pos
 
 
-def _current_slash_token(text_before_cursor: str) -> tuple[str | None, int]:
-    """Return ``(token, start_idx)`` for the slash command under the cursor.
+def _current_prefix_token(
+    text_before_cursor: str, sigil: str
+) -> tuple[str | None, int]:
+    """Return ``(token, start_idx)`` for a ``<sigil>word`` under the cursor.
 
-    Semantics locked in by :mod:`tests.tui.test_slash_token_parser`: a
-    slash token is a ``/word`` that either starts at the beginning of
-    the buffer or is preceded by whitespace. A slash followed by a
-    space has already been "committed" and does not re-open the popup.
+    A token is a ``<sigil>word`` that starts at the beginning of the buffer
+    or is preceded by whitespace, with no space inside it (a space commits
+    it and closes the popup). Shared by the ``/`` command palette and the
+    ``@`` file-mention dropdown.
     """
 
     text = text_before_cursor
     if not text:
         return None, 0
-    if text.startswith("/"):
+    if text.startswith(sigil):
         if " " in text:
             return None, 0
         return text, 0
     for i in range(len(text) - 1, -1, -1):
         ch = text[i]
-        if ch == "/":
+        if ch == sigil:
             if i > 0 and not text[i - 1].isspace():
                 return None, 0
             token = text[i:]
@@ -802,3 +866,26 @@ def _current_slash_token(text_before_cursor: str) -> tuple[str | None, int]:
         if ch.isspace():
             return None, 0
     return None, 0
+
+
+def _current_slash_token(text_before_cursor: str) -> tuple[str | None, int]:
+    """Return ``(token, start_idx)`` for the slash command under the cursor.
+
+    Semantics locked in by :mod:`tests.tui.test_slash_token_parser`: a
+    slash token is a ``/word`` that either starts at the beginning of
+    the buffer or is preceded by whitespace. A slash followed by a
+    space has already been "committed" and does not re-open the popup.
+    """
+
+    return _current_prefix_token(text_before_cursor, "/")
+
+
+def _current_at_token(text_before_cursor: str) -> tuple[str | None, int]:
+    """Return ``(token, start_idx)`` for the ``@file`` mention under the cursor.
+
+    Same boundary rules as the slash token (start-of-buffer or after
+    whitespace; no internal space), so ``email@host`` does NOT trigger the
+    dropdown but ``explain @util`` does. The ``@`` is included in the token.
+    """
+
+    return _current_prefix_token(text_before_cursor, "@")
