@@ -279,11 +279,16 @@ def dispatch_local_command(
     if name == "/clear":
         return CommandDispatchResult(handled=True, system_text="__clear__")
     if name == "/help":
+        from .widgets.shortcuts_help import shortcut_lines
+
         lines = [
             "Slash commands:",
             "  " + "  ".join(LOCAL_BUILTINS),
             "Tip: press `/` in the prompt to open the palette.",
             "Exit with /exit or Ctrl+D. /repl is an alias kept for parity.",
+            "",
+            "Keyboard shortcuts (press ? in the prompt to toggle):",
+            *("  " + line for line in shortcut_lines(vim_enabled=False)),
         ]
         return CommandDispatchResult(handled=True, system_text="\n".join(lines))
     if name == "/tools":

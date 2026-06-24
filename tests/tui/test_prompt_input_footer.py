@@ -57,9 +57,8 @@ async def test_default_hints_rendered_with_vim_off():
     async with _Host(footer).run_test() as pilot:
         await pilot.pause()
         line = footer.last_line
-        # Idle set with the TS "key to/for action" grammar, lowercase keys.
-        assert "/ for commands" in line
-        assert "ctrl+l to clear" in line
+        # TS idle footer is just "? for shortcuts" (full list in the ? panel).
+        assert "? for shortcuts" in line
         assert "i/esc vim" not in line  # vim hint filtered when vim off
         assert "esc to interrupt" not in line  # not loading
 
@@ -98,10 +97,10 @@ async def test_loading_collapses_to_interrupt_hint():
         await pilot.pause()
         line = footer.last_line
         assert line == "esc to interrupt"
-        assert "for commands" not in line  # idle hints hidden while busy
+        assert "shortcuts" not in line  # idle hints hidden while busy
         footer.set_loading(False)
         await pilot.pause()
-        assert "/ for commands" in footer.last_line
+        assert "? for shortcuts" in footer.last_line
 
 
 @pytest.mark.asyncio
@@ -154,7 +153,7 @@ async def test_status_line_drives_footer_loading(monkeypatch):
         assert footer.last_line == "esc to interrupt"
         status.set_idle()
         await pilot.pause()
-        assert "/ for commands" in footer.last_line
+        assert "? for shortcuts" in footer.last_line
 
 
 @pytest.mark.asyncio

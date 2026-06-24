@@ -76,6 +76,12 @@ class PromptInputFooter(Static):
         # in bash mode it shows "! for bash mode".
         self._loading: bool = False
         self._bash_mode: bool = False
+        # When the `?` shortcuts panel is open it replaces the footer (TS
+        # PromptInputFooter.tsx:135 `if (helpOpen) return <HelpMenu>`). The
+        # footer owns its own `-hidden` class — `_set_help` toggles this flag
+        # rather than poking the class, so a run starting while help is open
+        # can't un-hide the footer underneath the panel.
+        self._suppressed: bool = False
         # Track the most recent rendered line as a test seam — same
         # pattern :class:`PromptInputModeIndicator` uses.
         self._last_line: str = ""
@@ -114,6 +120,14 @@ class PromptInputFooter(Static):
         if bash_mode == self._bash_mode:
             return
         self._bash_mode = bash_mode
+        self._redraw()
+
+    def set_suppressed(self, suppressed: bool) -> None:
+        """Hide the footer entirely (the ``?`` panel takes its place)."""
+
+        if suppressed == self._suppressed:
+            return
+        self._suppressed = suppressed
         self._redraw()
 
     @property
@@ -155,13 +169,22 @@ class PromptInputFooter(Static):
         def vim_active() -> bool:
             return vim is not None and vim.enabled
 
+        # TS idle footer is just "? for shortcuts" — the full key list lives
+        # in the `?` panel (ShortcutsHelp). Keep the vim chord hint visible
+        # when vim is on since it's not in the idle panel's default view.
         return [
-            FooterHint(keys="/", label="for commands"),
-            FooterHint(keys="ctrl+l", label="to clear"),
+            FooterHint(keys="?", label="for shortcuts"),
             FooterHint(keys="i/esc", label="vim", when=vim_active),
         ]
 
     def _redraw(self) -> None:
+        # Suppressed → fully hidden, regardless of hint content (the `?`
+        # panel is showing in its place). Single owner of -hidden.
+        if self._suppressed:
+            self._last_line = ""
+            self.add_class("-hidden")
+            self.update(Text(""))
+            return
         hints = self._resolve_hints()
         visible: list[FooterHint] = []
         for hint in hints:
