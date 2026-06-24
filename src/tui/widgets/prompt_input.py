@@ -37,6 +37,7 @@ from ..paste import PasteInfo, classify_paste
 from ..vim import VimState
 from .prompt_input_footer import PromptInputFooter
 from .prompt_input_mode_indicator import PromptInputModeIndicator
+from .shortcuts_help import ShortcutsHelp
 
 
 @dataclass
@@ -167,12 +168,20 @@ class PromptInput(Vertical):
         # siblings of the existing ``Input`` + ``OptionList`` pair.
         self._mode_indicator = PromptInputModeIndicator(vim_state=self._vim)
         self._footer = PromptInputFooter(vim_state=self._vim)
+        # `?`-toggled shortcuts panel (TS PromptInputHelpMenu). Hidden until
+        # `?` is typed into an empty prompt; replaces the footer while open.
+        self._help = ShortcutsHelp(vim_state=self._vim, classes="-hidden")
+        self._help_open = False
+        # Guards the programmatic input reset when `?` toggles help, so the
+        # resulting Input.Changed doesn't immediately close the panel.
+        self._suppress_change = False
 
     def compose(self) -> ComposeResult:
         yield self._mode_indicator
         yield self._input
         yield self._suggestions
         yield self._footer
+        yield self._help
 
     def on_mount(self) -> None:
         self._input.focus()
@@ -290,6 +299,20 @@ class PromptInput(Vertical):
 
     # ---- input events ----
     def on_input_changed(self, event: Input.Changed) -> None:
+        # Swallow the echo from our own programmatic reset (the `?` toggle).
+        if self._suppress_change:
+            self._suppress_change = False
+            return
+        # `?` into an empty prompt toggles the shortcuts panel and is
+        # consumed (TS PromptInput.onChange: value === '?' → toggle, return).
+        if event.value == "?":
+            self._toggle_help()
+            self._suppress_change = True
+            self._input.value = ""
+            return
+        # Any other change closes the panel (TS: setHelpOpen(false)).
+        if self._help_open:
+            self._set_help(False)
         # C4 bash-mode affordance (TS inputModes getModeFromInput): a `!`
         # prefix accents the input border. lstrip matches the dispatch
         # predicate (the submit layer strips before routing).
@@ -297,6 +320,26 @@ class PromptInput(Vertical):
         self.set_class(bash_mode, "-bash-mode")
         self._footer.set_bash_mode(bash_mode)
         self._refresh_suggestions(event.value, event.input.cursor_position)
+
+    # ---- shortcuts help panel ----
+    def _toggle_help(self) -> None:
+        self._set_help(not self._help_open)
+
+    def _set_help(self, show: bool) -> None:
+        """Show/hide the `?` shortcuts panel, swapping it for the footer."""
+        self._help_open = show
+        if show:
+            self._help.refresh_content()
+            self._help.remove_class("-hidden")
+        else:
+            self._help.add_class("-hidden")
+        # Footer owns its own visibility — suppress it while the panel shows
+        # so a run starting mid-help can't render "esc to interrupt" beneath.
+        self._footer.set_suppressed(show)
+
+    @property
+    def help_open(self) -> bool:  # test seam
+        return self._help_open
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         # If the palette is open and a row is highlighted, accept the
@@ -387,6 +430,10 @@ class PromptInput(Vertical):
                 event.stop()
                 return
 
+        if key == "escape" and self._help_open:
+            self._set_help(False)
+            event.stop()
+            return
         if key == "tab" and not self._suggestions.has_class("-hidden"):
             # Tab completes the highlighted command without running it
             # (TS handleTab → applyCommandSuggestion(shouldExecute=false)).
