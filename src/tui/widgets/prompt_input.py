@@ -3,18 +3,19 @@
 Port of ``typescript/src/components/PromptInput/PromptInput.tsx`` at the
 fidelity required to feel like the ink reference:
 
-* Multi-line editing via ``Shift+Enter`` / ``Ctrl+J`` (Textual's default)
-  with plain ``Enter`` submitting the prompt.
+* Plain ``Enter`` submits the prompt.
 * Slash-command palette opens when the current token starts with ``/``
-  and fuzzy-filters as the user types.
+  and fuzzy-filters as the user types; ``@`` opens the file-mention list.
 * Up / Down navigate the in-session history when the palette is closed;
   when it is open, arrow keys drive the option list.
 * ``Escape`` closes the palette without losing the draft.
 * ``Ctrl+L`` clears the draft.
 
-Phase 1 deliberately keeps the implementation single-line-in-practice
-(using Textual's ``Input``) but exposes :meth:`set_multiline` for
-Phase 2 to swap in a ``TextArea`` without changing the public surface.
+The implementation is single-line in practice (Textual's ``Input``).
+Multi-line editing (``Shift+Enter`` / ``Ctrl+J`` newline insertion) needs
+a ``TextArea`` swap — a deliberately-deferred future change — so those
+keys are NOT yet wired (the earlier docstring claiming they worked was
+inaccurate).
 """
 
 from __future__ import annotations
@@ -28,11 +29,12 @@ from textual import events
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.message import Message
+from textual.binding import Binding
 from textual.widgets import Input, OptionList
 from textual.widgets.option_list import Option
 
 from ..commands import CommandSuggestion
-from ..messages import CancelRequested, PromptPasted
+from ..messages import CancelRequested, ExitRequested, PromptPasted
 from ..paste import PasteInfo, classify_paste
 from ..vim import VimState
 from .prompt_input_footer import PromptInputFooter
@@ -63,6 +65,17 @@ class _PasteAwareInput(Input):
     the host owns the buffer mutation so vim-mode shims, slash-popup
     suppression, and history-pointer hygiene all happen in one place.
     """
+
+    # Override the stock ``delete,ctrl+d → delete_right`` so Ctrl+D on an
+    # EMPTY buffer requests exit (TS handleEmptyCtrlD) instead of no-op'ing.
+    # The plain ``delete`` key keeps deleting forward (inherited binding).
+    BINDINGS = [Binding("ctrl+d", "smart_ctrl_d", "", show=False)]
+
+    def action_smart_ctrl_d(self) -> None:
+        if self.value:
+            self.action_delete_right()  # non-empty: normal forward-delete
+        else:
+            self.post_message(ExitRequested(source="ctrl-d"))
 
     def _on_paste(self, event: events.Paste) -> None:  # type: ignore[override]
         # Walk up the widget tree looking for a parent that knows how
