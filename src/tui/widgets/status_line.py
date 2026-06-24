@@ -27,7 +27,33 @@ from textual.widgets import Static
 from ..state import AppState
 
 
-_SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+# The signature Claude Code "sparkle" spinner: a density ramp of the six
+# glyphs (darwin set; other platforms swap ✽→*), animated as a ping-pong —
+# base frames followed by their reverse, advanced one step per tick. This
+# replaces the old generic braille spinner with the recognizable ink look.
+_SPINNER_BASE = ["·", "✢", "✳", "✶", "✻", "✽"]
+_SPINNER_FRAMES = _SPINNER_BASE + list(reversed(_SPINNER_BASE))
+
+
+def _format_elapsed(secs: int) -> str:
+    """``Ns`` under a minute, else ``Nm Ns`` (TS ``formatDuration``)."""
+    if secs < 60:
+        return f"{secs}s"
+    return f"{secs // 60}m {secs % 60}s"
+
+
+def _format_token_count(n: int) -> str:
+    """Compact count approximating TS ``formatNumber`` (``1321`` → ``1.3k``).
+
+    A deliberate approximation of ``Intl`` compact notation, not a faithful
+    port. The ``< 999_950`` bound keeps the ``k`` branch from rounding up to
+    ``1000.0k`` at one decimal — that boundary rolls into ``m`` instead.
+    """
+    if n < 1000:
+        return str(n)
+    if n < 999_950:
+        return f"{n / 1000:.1f}k"
+    return f"{n / 1_000_000:.1f}m"
 
 
 class StatusLine(Static):
@@ -237,24 +263,52 @@ class StatusLine(Static):
         self._redraw()
 
     def _redraw(self) -> None:
-        spinner = _SPINNER_FRAMES[self._frame] if self.is_thinking else " "
+        spinner = (
+            _SPINNER_FRAMES[self._frame % len(_SPINNER_FRAMES)]
+            if self.is_thinking
+            else " "
+        )
         self.update(self._compose_text(spinner=spinner))
+
+    def _busy_middle(self, spinner: str, verb: str) -> str:
+        """Render the working indicator: ``✶ Synthesizing… (5s · ↓ 1.2k tokens)``.
+
+        Ports the ink ``SpinnerAnimationRow`` look: glyph + verb + ``…`` +
+        a parenthesized status group with elapsed time and a live token
+        estimate (``round(chars/4)`` from the streamed response, the same
+        ``leaderTokens`` heuristic TS uses). Divergence from TS
+        ``SHOW_TOKENS_AFTER_MS`` (30s gate): TS hides this group on its
+        separate floating spinner row for the first 30s; the Python
+        status-line middle is the ONLY spinner surface and already showed
+        elapsed from 1s, so we keep live feedback from the start (tokens
+        appear once output streams). Token feedback is naturally absent
+        when ``/stream`` is off (no deltas arrive).
+        """
+
+        state = self._app_state
+        parts: list[str] = []
+        if state and state.verb_started_at:
+            secs = int(time.time() - state.verb_started_at)
+            if secs >= 1:
+                parts.append(_format_elapsed(secs))
+        if state and state.streaming_text:
+            # TS leaderTokens = round(responseChars / 4) (SpinnerAnimationRow).
+            tok = round(len(state.streaming_text) / 4)
+            if tok > 0:
+                parts.append(f"↓ {_format_token_count(tok)} tokens")
+        tail = f" ({' · '.join(parts)})" if parts else ""
+        return f"{spinner} {verb}…{tail}"
 
     def _compose_text(self, *, spinner: str) -> Text:
         state = self._app_state
         verb = state.verb if state else ("thinking" if self.is_thinking else "ready")
-        elapsed = ""
-        if state and state.is_thinking and state.verb_started_at:
-            secs = int(time.time() - state.verb_started_at)
-            if secs > 0:
-                elapsed = f" {secs}s"
 
         # TS parity: a configured statusLine command REPLACES the default
         # row content; activity feedback (spinner + verb) is kept so the
         # user still sees that the agent is working.
         if self._custom_status:
             if self.is_thinking:
-                return Text(f"{spinner} {verb}{elapsed}    {self._custom_status}")
+                return Text(f"{self._busy_middle(spinner, verb)}    {self._custom_status}")
             return Text(self._custom_status)
 
         left_parts = [f"{self._provider} · {self._model}"]
@@ -279,7 +333,7 @@ class StatusLine(Static):
             left_parts.append(advisor_seg)
         left = " · ".join(left_parts)
         cwd = self._display_cwd()
-        middle = f"{spinner} {verb}{elapsed}" if self.is_thinking else verb
+        middle = self._busy_middle(spinner, verb) if self.is_thinking else verb
         right_bits: list[str] = [f"turn {self.turns}"]
         if self.queued:
             right_bits.append(f"queued {self.queued}")
