@@ -180,9 +180,13 @@ async def test_handle_paste_multiline_preserved():
         await pilot.pause()
         prompt.handle_paste("line1\nline2\nline3")
         await pilot.pause()
-        # Stock Input._on_paste would have kept only "line1"; verify the
-        # whole multi-line payload survives.
-        assert prompt._input.value == "line1\nline2\nline3"
+        # Stock Input._on_paste would have kept only "line1". A 3-line paste
+        # now shows a placeholder in the (single-line) buffer, but the whole
+        # multi-line payload survives intact in the blob store and is
+        # restored by expand_pastes — i.e. it is NOT truncated.
+        assert prompt._input.value == "[Pasted text #1 +2 lines]"
+        assert prompt._pasted_blobs[1] == "line1\nline2\nline3"
+        assert prompt.expand_pastes(prompt._input.value) == "line1\nline2\nline3"
         assert prompt.last_paste is not None
         assert prompt.last_paste.line_count == 3
 
@@ -296,11 +300,13 @@ async def test_paste_routes_through_subclassed_input():
         prompt._input.focus()
         # Fire the Paste event directly at the input. The custom
         # _on_paste handler should walk up to PromptInput and route
-        # through handle_paste; the buffer should contain the *full*
-        # multi-line payload (stock Input truncates to first line).
+        # through handle_paste. A 3-line paste shows a placeholder, but the
+        # full payload is preserved in the blob (stock Input would truncate
+        # to the first line — verify routing happened and nothing was lost).
         prompt._input.post_message(events.Paste(text="multi\nline\npaste"))
         await pilot.pause()
-        assert prompt._input.value == "multi\nline\npaste"
+        assert prompt._input.value == "[Pasted text #1 +2 lines]"
+        assert prompt._pasted_blobs[1] == "multi\nline\npaste"
         assert prompt.last_paste is not None
         assert prompt.last_paste.line_count == 3
         # And the host received the bubbled-up message.
