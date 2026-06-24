@@ -106,10 +106,21 @@ class CommandSuggestion:
     aliases: tuple[str, ...] = ()
     tag: str | None = None
     source: str = "builtin"
+    # Names of inline arguments the command accepts (e.g. ``("name",)`` for
+    # ``/rename <name>``). Empty = zero-arg. Drives Enter-vs-Tab in the
+    # popup: Enter EXECUTES a zero-arg command but only FILLS ``/<name> ``
+    # for an arg-taking one so the user can type the argument — matching TS
+    # ``applyCommandSuggestion`` (commandSuggestions.ts: execute iff
+    # ``type !== 'prompt' || argNames.length === 0``).
+    arg_names: tuple[str, ...] = ()
 
     @property
     def slash(self) -> str:
         return f"/{self.name}"
+
+    @property
+    def takes_args(self) -> bool:
+        return bool(self.arg_names)
 
 
 _LOCAL_BUILTIN_DESCRIPTIONS: dict[str, str] = {
@@ -182,6 +193,11 @@ def build_command_suggestions(
                 continue
             aliases = tuple(getattr(cmd, "aliases", []) or [])
             tag = "workflow" if getattr(cmd, "kind", None) == "workflow" else None
+            # Only prompt-template commands carry inline arg names (TS
+            # ``type === 'prompt'``). Builtins/dialogs/skills are zero-arg
+            # from the popup's perspective — Enter executes them (they open
+            # their own dialog / show usage when an arg is actually needed).
+            arg_names = tuple(getattr(cmd, "arg_names", ()) or ())
             push(
                 CommandSuggestion(
                     name=cmd.name,
@@ -189,6 +205,7 @@ def build_command_suggestions(
                     aliases=aliases,
                     tag=tag,
                     source=getattr(cmd, "loaded_from", "builtin") or "builtin",
+                    arg_names=arg_names,
                 )
             )
     except Exception:
