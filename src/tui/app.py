@@ -164,6 +164,10 @@ class ClawCodexTUI(App):
         # first 0.8s would treat 0.0 as "armed" and exit on a single press —
         # TS useDoublePress guards on an explicit timer flag too.)
         self._pending_exit_at: float | None = None
+        # Double-Esc draft clear (TS handleEscape): first idle Esc on a
+        # non-empty draft warns, a second within the window clears + saves
+        # to history. None = not armed (same boot-monotonic reasoning).
+        self._pending_clear_at: float | None = None
         # Persistent prompt history used by the PromptInput (↑/↓) and
         # the /history slash-command dialog. The store is append-only
         # per turn and auto-rotates past ``max_entries``.
@@ -1719,6 +1723,38 @@ class ClawCodexTUI(App):
             return
         if self.app_state.queued_prompts and self._repl_screen is not None:
             self._repl_screen.pop_queue_into_input()
+            return
+        # Priority 3: idle Esc on a non-empty draft → double-press to clear
+        # (TS handleEscape: first press warns, second clears + saves to
+        # history so ↑ can recover it).
+        self._handle_double_esc()
+
+    def _handle_double_esc(self) -> None:
+        prompt = self._active_prompt()
+        if prompt is None:
+            return
+        draft = prompt.current_text()
+        if not draft:
+            return  # nothing to clear; idle Esc on an empty prompt is a no-op
+        now = time.monotonic()
+        armed = (
+            self._pending_clear_at is not None
+            and (now - self._pending_clear_at) <= self._DOUBLE_PRESS_SECONDS
+        )
+        if armed:
+            self._pending_clear_at = None
+            try:
+                prompt.record_history(draft)
+                self.history_store.append(draft)
+            except Exception:
+                pass
+            prompt.clear()
+            return
+        self._pending_clear_at = now
+        try:
+            self.notify("Press Esc again to clear", timeout=self._DOUBLE_PRESS_SECONDS)
+        except Exception:
+            pass
 
     # ---- helpers ----
     def _build_default_tool_context(self) -> ToolContext:

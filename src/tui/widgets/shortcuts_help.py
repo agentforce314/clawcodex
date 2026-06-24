@@ -22,8 +22,8 @@ from textual.widgets import Static
 from ..vim import VimState
 
 # (key, action) pairs — every entry maps to a binding the TUI wires today.
-# ``double-tap esc`` / ``shift+tab`` / ``ctrl+r`` are intentionally absent
-# until their wiring PRs land.
+# ``shift+tab`` (permission-mode cycle) is intentionally absent until the
+# permission-mode→gating wiring lands (a cosmetic toggle would mislead).
 _BASE_SHORTCUTS: list[tuple[str, str]] = [
     ("/", "for commands"),
     ("!", "for bash mode"),
@@ -31,9 +31,11 @@ _BASE_SHORTCUTS: list[tuple[str, str]] = [
     ("#", "to add a memory"),
     ("tab", "to complete a command"),
     ("↑ ↓", "to navigate history"),
+    ("ctrl+r", "to search history"),
     ("ctrl+l", "to clear the draft"),
     ("ctrl+o", "to expand last output"),
     ("esc", "to interrupt"),
+    ("esc esc", "to clear input"),
     ("?", "for shortcuts"),
     ("/exit", "to quit"),
 ]
