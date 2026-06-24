@@ -180,6 +180,37 @@ class CancelRequested(Message):
 
 
 @dataclass
+class QueuedPromptReady(Message):
+    """A queued prompt may be drained now that the bridge is idle.
+
+    Posted from :meth:`src.tui.agent_bridge.AgentBridge._finish` *after*
+    ``busy`` clears, when ``AppState.queued_prompts`` is non-empty. The
+    REPL screen re-checks on the UI thread and, if still idle + the queue
+    is non-empty, pops the oldest prompt and submits it — FIFO, one per
+    turn (the Python parity of TS ``useCommandQueue`` auto-processing).
+    The worker-side check is only a cheap filter; the UI handler is
+    authoritative, so a spurious post (e.g. a queue cleared by ESC) is a
+    safe no-op.
+    """
+
+    pass
+
+
+@dataclass
+class QueuedPromptsChanged(Message):
+    """The queued-prompts list changed; rebuild the dim preview widget.
+
+    Posted whenever ``AppState.queued_prompts`` is mutated: appended
+    (a prompt submitted while busy), popped (drain), or cleared (ESC).
+    The screen reads the live list from
+    ``src.tui.app.ClawCodexTUI.app_state.queued_prompts`` and refreshes
+    :class:`src.tui.widgets.queued_commands.QueuedCommands`.
+    """
+
+    pass
+
+
+@dataclass
 class PromptPasted(Message):
     """Bracketed-paste landed in the :class:`PromptInput` widget.
 

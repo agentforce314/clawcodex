@@ -51,6 +51,7 @@ from .messages import (
     AssistantChunk,
     AssistantMessage,
     PermissionRequested,
+    QueuedPromptReady,
     ToolEventMessage,
 )
 from .state import AppState
@@ -273,10 +274,21 @@ class AgentBridge:
             return list(messages)
 
     def submit(self, prompt: str) -> bool:
-        """Queue ``prompt`` for the agent. Returns False if busy."""
+        """Start an agent run for ``prompt``. Returns False if busy.
+
+        When a run is already in flight the prompt is **enqueued** onto
+        ``app_state.queued_prompts`` *under* ``_busy_lock``, so the
+        enqueue is atomic with the busy check. This pairs with
+        :meth:`_finish`, which clears ``busy`` and reads the queue under
+        the same lock: a run can therefore never finish in the gap
+        between "is it busy?" and "enqueue", which would otherwise leave
+        the prompt stranded with no drain ever posted. The REPL drains
+        the queue one-per-turn (see ``QueuedPromptReady``).
+        """
 
         with self._busy_lock:
             if self._busy:
+                self._state.queued_prompts.append(prompt)
                 return False
             self._busy = True
             self._abort_controller = AbortController()
@@ -560,6 +572,18 @@ class AgentBridge:
             # reading the context field, so replacing here doesn't
             # orphan them either.
             self._tool_context.abort_controller = AbortController()
+            # Drain decision, made under the same lock as the enqueue in
+            # ``submit`` so the two can't interleave. ``busy`` is already
+            # False above, so a ``QueuedPromptReady`` posted now is
+            # guaranteed to find the bridge idle on the UI thread.
+            has_queued = bool(self._state.queued_prompts)
+        # Post OUTSIDE the lock (``_post`` marshals to the UI thread). The
+        # worker-side non-empty check is only a filter — the REPL handler
+        # re-checks idle + non-empty before popping, so a queue cleared by
+        # ESC in the meantime is a harmless no-op. Fires on every exit
+        # path (completion, abort, error) because all route through here.
+        if has_queued:
+            self._post(QueuedPromptReady())
 
     # ---- advisor rendering ----
     def _emit_advisor_events(self) -> None:
