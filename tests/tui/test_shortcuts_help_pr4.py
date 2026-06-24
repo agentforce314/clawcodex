@@ -26,10 +26,9 @@ from src.tui.widgets.shortcuts_help import (
 
 def test_wired_shortcuts_lists_real_bindings_only():
     keys = {k for k, _ in wired_shortcuts(vim_enabled=False)}
-    # Wired today:
-    assert {"/", "!", "#", "tab", "ctrl+l", "ctrl+o", "esc", "?", "/exit"} <= keys
+    # Wired today (@ landed with the @-mention dropdown):
+    assert {"/", "!", "@", "#", "tab", "ctrl+l", "ctrl+o", "esc", "?", "/exit"} <= keys
     # NOT wired yet — must not be advertised:
-    assert "@" not in keys  # @-mention dropdown is a later PR
     assert "shift+tab" not in keys
     assert "ctrl+r" not in keys
 

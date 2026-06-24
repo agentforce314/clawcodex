@@ -22,12 +22,12 @@ from textual.widgets import Static
 from ..vim import VimState
 
 # (key, action) pairs — every entry maps to a binding the TUI wires today.
-# ``@ for file paths`` is intentionally absent until the @-mention dropdown
-# lands; ``double-tap esc`` / ``shift+tab`` / ``ctrl+r`` likewise wait for
-# their wiring PRs.
+# ``double-tap esc`` / ``shift+tab`` / ``ctrl+r`` are intentionally absent
+# until their wiring PRs land.
 _BASE_SHORTCUTS: list[tuple[str, str]] = [
     ("/", "for commands"),
     ("!", "for bash mode"),
+    ("@", "for file paths"),
     ("#", "to add a memory"),
     ("tab", "to complete a command"),
     ("↑ ↓", "to navigate history"),
