@@ -42,7 +42,7 @@ from .commands import (
     dispatch_registry_command,
 )
 from .history_store import HistoryStore  # noqa: F401 (re-exported for tests)
-from .messages import CancelRequested
+from .messages import CancelRequested, QueuedPromptsChanged
 from .screens.cost_threshold import CostThresholdScreen
 from .screens.diff_dialog import DiffDialogScreen, FileDiff
 from .screens.effort_picker import EffortPickerScreen
@@ -1620,23 +1620,47 @@ class ClawCodexTUI(App):
         return self._command_context
 
     # ---- agent loop plumbing ----
-    def submit_to_agent(self, prompt: str) -> None:
-        try:
-            self.history_store.append(prompt)
-        except Exception:
-            pass
-        submitted = self._agent_bridge.submit(prompt)
-        if not submitted:
-            # If the bridge is busy we queue the prompt for the next
-            # turn so the user can keep typing. Phase 2 adds a visible
-            # queued-prompts pill in the status line.
-            self.app_state.queued_prompts.append(prompt)
+    def submit_to_agent(self, prompt: str, *, record_history: bool = True) -> bool:
+        """Submit ``prompt`` to the agent.
+
+        Returns ``True`` if a run started, or ``False`` if the bridge was
+        busy and the prompt was **queued** for the next turn (the bridge
+        enqueues it under its busy lock; the REPL drains the queue
+        one-per-turn). Pass ``record_history=False`` to skip the prompt-
+        history append — used by the queue drain, since a queued prompt
+        was already recorded to history when it was first typed.
+        """
+
+        if record_history:
+            try:
+                self.history_store.append(prompt)
+            except Exception:
+                pass
+        started = self._agent_bridge.submit(prompt)
+        if not started:
+            # The bridge already appended to ``queued_prompts`` under its
+            # busy lock; surface the change so the REPL refreshes the dim
+            # queued-prompts preview (and the status-line count pill).
+            self._post_to_screen(QueuedPromptsChanged())
+        return started
 
     def on_cancel_requested(self, _: CancelRequested) -> None:
-        """ESC from the prompt — cancel the in-flight agent run, if any."""
+        """ESC from the prompt — TS ``useCancelRequest.handleCancel`` parity.
+
+        Priority 1: if a run is in flight, cancel it and **return** — the
+        queue is left intact (``useCancelRequest.ts:97-102``). Priority 2:
+        if idle with a non-empty queue, pop the queued prompts **back into
+        the input** for editing rather than discarding them
+        (``:104-109`` → ``popAllEditable``). ESC never destroys the queue;
+        ``clearCommandQueue`` is the separate kill-agents gesture
+        (``handleKillAgents``), not this handler.
+        """
 
         if self._agent_bridge.cancel():
             self.announcer.announce("Cancelling…", level="assertive", notify=False)
+            return
+        if self.app_state.queued_prompts and self._repl_screen is not None:
+            self._repl_screen.pop_queue_into_input()
 
     # ---- helpers ----
     def _build_default_tool_context(self) -> ToolContext:
