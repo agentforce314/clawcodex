@@ -172,7 +172,7 @@ python -m src.cli login
 
 هذه العملية ستقوم بـ:
 
-1. مطالبتك باختيار مزود: anthropic / openai / zai / minimax / openrouter / deepseek
+1. مطالبتك باختيار مزود: anthropic / openai / gemini / zai / minimax / openrouter / deepseek، أو أي مزود متوافق مع OpenAI (together, novita, fireworks, moonshot, nvidia-nim, siliconflow, deepinfra, huggingface, …) وخوادم محلية (ollama / vllm / sglang)
 2. مطالبتك بمفتاح API الخاص بذلك المزود
 3. حفظ عنوان URL أساسي مخصص اختياريًا
 4. حفظ نموذج افتراضي اختياريًا
