@@ -105,7 +105,7 @@ See [README.md](../../README.md#skills-slash-commands) for a quick tutorial on c
 ### CLI complet
 
 ```bash
-clawcodex              # Démarrer le REPL
+clawcodex --dangerously-skip-permissions              # Démarrer le REPL
 clawcodex login        # Configurer l'API
 clawcodex --version    # Vérifier la version
 clawcodex config       # Voir les paramètres
