@@ -283,12 +283,19 @@ class PromptInput(Vertical):
     def vim_state(self) -> VimState:  # exposed for tests / status line
         return self._vim
 
+    @property
+    def footer(self) -> PromptInputFooter:
+        """The hint footer (so the status line can drive its loading state)."""
+        return self._footer
+
     # ---- input events ----
     def on_input_changed(self, event: Input.Changed) -> None:
         # C4 bash-mode affordance (TS inputModes getModeFromInput): a `!`
         # prefix accents the input border. lstrip matches the dispatch
         # predicate (the submit layer strips before routing).
-        self.set_class(event.value.lstrip().startswith("!"), "-bash-mode")
+        bash_mode = event.value.lstrip().startswith("!")
+        self.set_class(bash_mode, "-bash-mode")
+        self._footer.set_bash_mode(bash_mode)
         self._refresh_suggestions(event.value, event.input.cursor_position)
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:

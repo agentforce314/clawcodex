@@ -19,12 +19,16 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from rich.text import Text
 from textual.reactive import reactive
 from textual.widgets import Static
 
 from ..state import AppState
+
+if TYPE_CHECKING:
+    from .prompt_input_footer import PromptInputFooter
 
 
 # The signature Claude Code "sparkle" spinner: a density ramp of the six
@@ -96,6 +100,11 @@ class StatusLine(Static):
         self._provider_instance = provider_instance
         self._frame = 0
         self._timer = None
+        # Optional hint footer driven off the same is_thinking signal, so
+        # "esc to interrupt" appears exactly while the spinner animates
+        # (single source of truth — see bind_footer / watch_is_thinking).
+        self._footer: "PromptInputFooter | None" = None
+        self._footer_loading = False
         # C3a: output of the user's settings ``statusLine.command`` hook
         # (TS StatusLine.tsx). None = unconfigured/failed → default row.
         self._custom_status: str | None = None
@@ -222,6 +231,30 @@ class StatusLine(Static):
         self._app_state = state
         self._redraw()
 
+    def bind_footer(self, footer: "PromptInputFooter") -> None:
+        """Attach the prompt hint footer so it tracks ``is_thinking``.
+
+        The footer's "esc to interrupt" hint must appear exactly while the
+        agent is busy. Rather than re-derive busy in the REPL screen, the
+        footer rides the same reactive the spinner does (``watch_is_thinking``
+        fires from the tick that polls ``AppState.is_thinking`` and from the
+        explicit ``set_busy``/``set_idle`` setters).
+        """
+
+        self._footer = footer
+        self._sync_footer_loading()
+
+    def _sync_footer_loading(self) -> None:
+        if self._footer is None:
+            return
+        if self.is_thinking == self._footer_loading:
+            return
+        self._footer_loading = self.is_thinking
+        try:
+            self._footer.set_loading(self.is_thinking)
+        except Exception:
+            pass
+
     def refresh_identity(
         self,
         *,
@@ -251,6 +284,7 @@ class StatusLine(Static):
 
     # ---- render ----
     def watch_is_thinking(self, _: bool) -> None:
+        self._sync_footer_loading()
         self._redraw()
 
     def watch_turns(self, _: int) -> None:

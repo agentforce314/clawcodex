@@ -143,6 +143,9 @@ class REPLScreen(Screen):
         app: "ClawCodexTUI" = self.app  # type: ignore[assignment]
         if hasattr(app, "app_state"):
             self.status_bar.bind_state(app.app_state)
+        # Drive the footer's "esc to interrupt" hint off the same busy
+        # signal as the spinner (single source of truth).
+        self.status_bar.bind_footer(self.prompt_input.footer)
         # Attach the live region to the app's announcer so every
         # cross-screen announcement mirrors into this REPL.
         if hasattr(app, "announcer"):
