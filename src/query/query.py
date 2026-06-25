@@ -1797,6 +1797,15 @@ async def query(
                             logger.warning("[DIAG]   result: tool_use_id=%s  is_error=%s  content_len=%d", getattr(b, 'tool_use_id', '?'), getattr(b, 'is_error', False), clen)
 
         if params.abort_controller.signal.aborted:
+            # NOTE: unlike the streaming-abort path above (which calls
+            # ``_yield_missing_tool_result_blocks`` for the in-flight
+            # assistant turn), we deliberately do NOT synthesize results
+            # for tool_use blocks left unrun by a mid-execution abort.
+            # ``normalize_messages_for_api`` → ``ensure_tool_result_pairing``
+            # backfills the missing tool_result blocks at API-prep time on
+            # the next turn, so the model never sees a dangling tool_use.
+            # Do not "fix" this by yielding blocks here without first
+            # confirming it doesn't double-pair against that backstop.
             if params.abort_controller.signal.reason != "interrupt":
                 yield _create_user_interruption_message(tool_use=True)
             set_terminal(holder, natural_termination, Terminal(reason="aborted_tools"))
