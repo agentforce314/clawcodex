@@ -235,10 +235,33 @@ def _convert_anthropic_messages_to_openai(
                     translated = _translate_anthropic_multimodal_block(block)
                     non_tool_blocks.append(translated if translated is not None else block)
 
-            # Emit non-tool content first as user message
-            if non_tool_blocks:
-                result.append({"role": "user", "content": non_tool_blocks})
-
+            # Emit tool_result blocks as ``role=tool`` messages FIRST,
+            # BEFORE any non-tool user content. OpenAI-compatible APIs
+            # require an assistant message carrying ``tool_calls`` to be
+            # followed IMMEDIATELY by the matching ``role=tool`` messages
+            # (one per ``tool_call_id``). A single Anthropic user message
+            # can carry BOTH tool_result blocks AND plain text — that is
+            # exactly what ``normalize_messages_for_api`` produces when it
+            # merges a rejected/interrupted tool turn with the user's next
+            # prompt (reject 4 Reads, then type "please continue"). Emitting
+            # the text first would slip a ``role=user`` message between the
+            # ``tool_calls`` and the tool responses, and the API rejects the
+            # request with "An assistant message with 'tool_calls' must be
+            # followed by tool messages responding to each 'tool_call_id'
+            # (insufficient tool messages following tool_calls message)".
+            # So tool messages go first; remaining user content is appended
+            # AFTER the loop. Mirrors TS openaiShim.ts:546-567.
+            #
+            # Multimodal tool_results additionally split into a ``role=tool``
+            # text message PLUS a synthetic ``role=user`` carrying the image/
+            # file blocks (OpenAI tool messages can't hold multimodal
+            # content). Those synthetic user messages are COLLECTED here and
+            # emitted only AFTER the whole loop — never inline — so a second
+            # tool_result in the same batch (parallel tool calls, e.g. one
+            # Read returns an image and another returns text) can't drop a
+            # ``role=user`` BETWEEN two ``role=tool`` messages and detach the
+            # later tool_call from its response.
+            deferred_multimodal_user_messages: list[dict[str, Any]] = []
             # Emit each tool_result as a separate role=tool message
             for tr in tool_results:
                 raw_content = tr.get("content", "")
@@ -347,10 +370,21 @@ def _convert_anthropic_messages_to_openai(
                             f"[content for tool_use_id={tool_use_id}]"
                         ),
                     }
-                    result.append({
+                    # DEFER (do not append inline): collected and emitted
+                    # after the loop so it never splits two tool messages.
+                    deferred_multimodal_user_messages.append({
                         "role": "user",
                         "content": [correlation_text, *multimodal_blocks_from_tool],
                     })
+
+            # All ``role=tool`` messages have now been emitted contiguously
+            # right after the assistant ``tool_calls``. NOW emit the deferred
+            # multimodal user payloads, then any remaining non-tool user
+            # content — both must follow every tool message so neither splits
+            # a tool_calls/tool-response run.
+            result.extend(deferred_multimodal_user_messages)
+            if non_tool_blocks:
+                result.append({"role": "user", "content": non_tool_blocks})
             continue
 
         # Fallback
