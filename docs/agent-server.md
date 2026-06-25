@@ -29,7 +29,28 @@ is "finish Direct Connect," not a new bridge.
 
 ## Build / run
 
-### 1. Backend — `clawcodex agent-server`
+### Quick start — one command
+
+```bash
+cd tui_typescript && bun install && cd ..   # one-time: install the TUI deps
+clawcodex tui                               # starts the backend + TUI together
+```
+
+`clawcodex tui` starts the agent-server **in-process** on an ephemeral loopback
+port and spawns the Ink TUI as a managed child pointed at it — the client/server
+split is invisible. It auto-detects a runner (`bun`, else a built `node` dist);
+override with `CLAWCODEX_TUI_CMD`, point at the client with `--tui-dir`, or use
+`--print-connect` to start only the server and print the `cc://` URL + token.
+
+> Why a server at all? The TUI is TypeScript and the engine is Python — two
+> runtimes that can't share memory, so they talk over the Direct Connect
+> WebSocket protocol. `clawcodex tui` just manages both ends for you. The
+> two-process pieces below are for running them separately (e.g. attaching the
+> reference `claude open cc://…` client, or remote use).
+
+### Separate processes
+
+#### 1. Backend — `clawcodex agent-server`
 
 ```bash
 clawcodex agent-server                 # ephemeral port, default provider/model
