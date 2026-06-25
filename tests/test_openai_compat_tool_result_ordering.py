@@ -209,5 +209,93 @@ class TestToolResultOrdering(unittest.TestCase):
         _assert_tool_calls_immediately_followed(self, out)
 
 
+class TestOrphanToolResultGuard(unittest.TestCase):
+    """An OpenAI ``role=tool`` message is only valid as a response to a
+    ``tool_call`` that was actually emitted. A tool_result whose
+    tool_use_id never appears in any assistant ``tool_use`` is an ORPHAN;
+    the API rejects it with "messages with role 'tool' must be a response
+    to a preceding message with 'tool_calls'". The converter drops such
+    orphans (mirrors TS openaiShim.ts:548). ``ensure_tool_result_pairing``
+    is the upstream backstop, but its reverse-strip only fires when the
+    previous message is NOT an assistant, so an orphan trailing a
+    text-only assistant turn (a stale id after compaction/resume) reaches
+    the converter and must be dropped here."""
+
+    def test_orphan_tool_result_dropped(self) -> None:
+        """A tool_result with no matching assistant tool_use is dropped,
+        not emitted as a (illegal) standalone ``role=tool`` message."""
+        messages = [
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "ghost", "content": "stale"},
+                {"type": "text", "text": "hello"},
+            ]},
+        ]
+        out = _convert_anthropic_messages_to_openai(messages)
+        self.assertNotIn("tool", [m["role"] for m in out])
+        # The genuine user text survives.
+        self.assertEqual(out[-1]["role"], "user")
+        self.assertEqual(out[-1]["content"][0]["text"], "hello")
+
+    def test_valid_tool_result_still_emitted(self) -> None:
+        """Guard must NOT over-drop: a tool_result whose id WAS emitted as
+        a tool_call is still converted to a ``role=tool`` message."""
+        messages = [
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "call_ok", "name": "Read", "input": {}},
+            ]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "call_ok", "content": "ok"},
+            ]},
+        ]
+        out = _convert_anthropic_messages_to_openai(messages)
+        self.assertEqual([m["role"] for m in out], ["assistant", "tool"])
+        self.assertEqual(out[1]["tool_call_id"], "call_ok")
+        _assert_tool_calls_immediately_followed(self, out)
+
+    def test_orphan_after_text_only_assistant_end_to_end(self) -> None:
+        """The exact gap: a stale orphan tool_result trails a TEXT-ONLY
+        assistant turn, so ``ensure_tool_result_pairing`` does NOT strip
+        it. Run the real prep pipeline + converter and assert the result
+        is a VALID payload (orphan dropped, every ``role=tool`` backed by
+        a preceding ``tool_calls``, the user's text preserved)."""
+        conversation = [
+            AssistantMessage(content=[
+                ToolUseBlock(id="call_x", name="Read", input={"file_path": "/x"}),
+            ]),
+            UserMessage(content=[
+                ToolResultBlock(tool_use_id="call_x", content="ok", is_error=False),
+            ]),
+            AssistantMessage(content=[TextBlock(text="done — what next?")]),
+            UserMessage(content=[
+                ToolResultBlock(tool_use_id="call_ghost", content="stale", is_error=True),
+                TextBlock(text="please continue"),
+            ]),
+        ]
+        api_messages = normalize_messages_for_api(conversation)
+        out = _convert_anthropic_messages_to_openai(api_messages)
+
+        tool_ids = [m["tool_call_id"] for m in out if m["role"] == "tool"]
+        self.assertIn("call_x", tool_ids)
+        self.assertNotIn("call_ghost", tool_ids)
+        # Every emitted role=tool must be backed by a tool_call somewhere
+        # before it (no dangling tool message).
+        emitted_calls: set[str] = set()
+        for m in out:
+            if m["role"] == "assistant":
+                for tc in m.get("tool_calls", []):
+                    emitted_calls.add(tc["id"])
+            elif m["role"] == "tool":
+                self.assertIn(m["tool_call_id"], emitted_calls)
+        # The user's genuine text survived the drop.
+        self.assertTrue(
+            any(
+                m["role"] == "user"
+                and isinstance(m["content"], list)
+                and any(b.get("text") == "please continue" for b in m["content"])
+                for m in out
+            )
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
