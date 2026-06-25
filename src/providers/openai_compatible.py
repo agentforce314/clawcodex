@@ -7,10 +7,13 @@ OpenAI-style /chat/completions API (OpenAI, GLM, Minimax, etc.).
 from __future__ import annotations
 
 import json
+import logging
 from abc import abstractmethod
 from typing import Any, Generator, Optional
 
 from .base import BaseProvider, ChatResponse, MessageInput, TextChunkCallback
+
+logger = logging.getLogger(__name__)
 
 
 def _apply_client_timeout(client: Any) -> Any:
@@ -160,6 +163,43 @@ def _convert_anthropic_messages_to_openai(
        passing through as an unrecognised Anthropic block.
     """
     result: list[dict[str, Any]] = []
+
+    # Pre-scan every assistant message for the tool_use ids it declares.
+    # An OpenAI ``role=tool`` message is only valid as a response to a
+    # ``tool_call`` that was actually emitted; a tool_result whose
+    # tool_use_id never appears in any assistant ``tool_use`` is an ORPHAN
+    # and the API rejects it ("messages with role 'tool' must be a
+    # response to a preceding message with 'tool_calls'"). The tool_result
+    # branch below drops such orphans. ``ensure_tool_result_pairing``
+    # (src/types/messages.py) is the upstream backstop but its reverse-
+    # strip only fires when the previous message is NOT an assistant, so
+    # an orphan trailing a text-only assistant turn (a stale id after
+    # compaction/resume) slips through to here. Mirrors TS
+    # openaiShim.ts:498/548 ``knownToolCallIds``. (The symmetric assistant-
+    # side guard — dropping a tool_use that has no result — is NOT ported;
+    # ``ensure_tool_result_pairing`` backfills synthetic results for every
+    # tool_use upstream, so no orphan tool_call reaches the converter.)
+    #
+    # Intentionally ``tool_use``-only — NOT ``server_tool_use`` /
+    # ``mcp_tool_use`` (which ``ensure_tool_result_pairing`` does recognize,
+    # messages.py). Those server-side shapes never reach THIS converter:
+    # the Anthropic server-advisor path strips them before non-Anthropic
+    # providers (query.py strip_advisor_blocks), and client-side MCP
+    # surfaces as a plain ``tool_use``. Matches TS, which builds
+    # knownToolCallIds only from converted tool_use (openaiShim.ts:638).
+    # Do not widen this to server/mcp shapes without re-checking that path,
+    # or you risk un-dropping genuine orphans.
+    known_tool_call_ids: set[str] = set()
+    for scan_msg in messages:
+        if scan_msg.get("role") != "assistant":
+            continue
+        scan_content = scan_msg.get("content")
+        if not isinstance(scan_content, list):
+            continue
+        for scan_block in scan_content:
+            if isinstance(scan_block, dict) and scan_block.get("type") == "tool_use":
+                known_tool_call_ids.add(scan_block.get("id", ""))
+
     for msg in messages:
         role = msg.get("role", "user")
         content = msg.get("content", "")
@@ -264,6 +304,18 @@ def _convert_anthropic_messages_to_openai(
             deferred_multimodal_user_messages: list[dict[str, Any]] = []
             # Emit each tool_result as a separate role=tool message
             for tr in tool_results:
+                tool_use_id = tr.get("tool_use_id", "")
+                # Orphan guard: drop a tool_result whose id was never
+                # emitted as a tool_call (see the pre-scan note above).
+                # With no preceding ``tool_calls`` entry the API rejects
+                # the ``role=tool`` message. Mirrors TS openaiShim.ts:548.
+                if tool_use_id not in known_tool_call_ids:
+                    logger.debug(
+                        "Dropping orphan tool_result for tool_use_id=%r "
+                        "(no matching tool_call in history)",
+                        tool_use_id,
+                    )
+                    continue
                 raw_content = tr.get("content", "")
                 # Collect any image blocks separately. OpenAI's ``role=tool``
                 # message only accepts a text ``content`` string -- it
@@ -326,7 +378,6 @@ def _convert_anthropic_messages_to_openai(
                 # On Anthropic the equivalent stays a single
                 # multimodal tool_result with no split; there is no
                 # equivalent Anthropic-side limitation.
-                tool_use_id = tr.get("tool_use_id", "")
                 if multimodal_blocks_from_tool:
                     correlation = (
                         f"[multimodal content for tool_use_id={tool_use_id} "
