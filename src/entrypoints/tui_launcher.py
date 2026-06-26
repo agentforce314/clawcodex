@@ -1,19 +1,23 @@
-"""``clawcodex tui`` — one command to run the TypeScript Ink TUI.
+"""``clawcodex tui`` — run the TypeScript Ink TUI.
 
-The TUI (TypeScript) and the agent engine (Python) are separate runtimes, so
-they talk over the Direct Connect WebSocket protocol — that's why there is a
-"server". This launcher hides the split: it starts the agent-server *in this
-process* on an ephemeral loopback port, then spawns the Ink TUI as a child
-pointed at it, and tears the server down when the TUI exits. The user runs one
-command; the client/server plumbing is invisible.
+Architecture (the hermes-agent route): the **TypeScript Ink TUI is the parent**
+and spawns the **Python agent-server as a child** it owns. This launcher is a
+thin bootstrap — it resolves the Ink client command plus the command the client
+should use to spawn the backend (``CLAWCODEX_AGENT_SERVER_CMD``), then execs the
+client. The client spawns the agent-server, reads its ``cc://`` URL, connects,
+and tears the child down on exit:
+
+    clawcodex tui   →   node ui-tui  →   python -m src.entrypoints.agent_server_cli
+
+Usage::
 
     clawcodex tui [--provider P] [--model M] [--permission-mode MODE]
                   [--workspace DIR] [--tui-dir DIR] [--print-connect]
 
-`--print-connect` starts the server and prints the cc:// URL + token without
-spawning a TUI (useful for attaching the reference `claude open cc://…` client
-or debugging). The TUI command is auto-detected (bun, else a built node dist);
-override with the `CLAWCODEX_TUI_CMD` env var.
+``--print-connect`` instead runs the agent-server directly and prints its
+``cc://`` URL + token, then waits (for attaching the reference client or
+debugging). The TUI command is auto-detected (``bun``, else a built ``node``
+dist); override with ``CLAWCODEX_TUI_CMD``.
 """
 
 from __future__ import annotations
@@ -28,16 +32,17 @@ import signal
 import sys
 from pathlib import Path
 
-from src.server.agent_server import AgentServerConfig, make_spawn_agent
-from src.server.server import DirectConnectServer
-from src.server.session_manager import SessionManager
-from src.server.types import ServerConfig
+from src.entrypoints.agent_server_cli import run_agent_server_subcommand
+
+#: Repo root (src/entrypoints/tui_launcher.py → parents[2]); used so the spawned
+#: ``python -m src.entrypoints.agent_server_cli`` resolves via PYTHONPATH.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def run_tui_launcher(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="clawcodex tui",
-        description="Run the TypeScript Ink TUI on a local agent-server (one command).",
+        description="Run the Ink TUI; it spawns + owns a Python agent-server child.",
     )
     parser.add_argument("--provider", default=None)
     parser.add_argument("--model", default=None)
@@ -47,8 +52,11 @@ def run_tui_launcher(argv: list[str]) -> int:
     parser.add_argument("--tui-dir", default=None,
                         help="Path to the ui-tui client (default: auto-detect).")
     parser.add_argument("--print-connect", action="store_true",
-                        help="Start the server, print cc:// URL + token, and wait (no TUI spawn).")
+                        help="Run the agent-server directly, print cc:// URL + token, and wait (no TUI).")
     args = parser.parse_args(argv)
+
+    if args.print_connect:
+        return _print_connect(args)
     try:
         return asyncio.run(_launch(args))
     except KeyboardInterrupt:
@@ -89,6 +97,29 @@ def _resolve_tui_command(tui_dir: Path | None) -> list[str] | None:
     return None
 
 
+def _agent_server_cmd(args) -> list[str]:
+    """Command the Ink client runs to spawn the Python agent-server child.
+
+    The client appends ``--host 127.0.0.1 --port 0 --token <random>``.
+    """
+    cmd = [sys.executable, "-m", "src.entrypoints.agent_server_cli",
+           "--permission-mode", args.permission_mode]
+    if args.provider:
+        cmd += ["--provider", args.provider]
+    if args.model:
+        cmd += ["--model", args.model]
+    return cmd
+
+
+def _child_env(args) -> dict[str, str]:
+    """Env for the Ink client: where to find the backend command + the src root."""
+    env = dict(os.environ)
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = str(_REPO_ROOT) + (os.pathsep + existing if existing else "")
+    env["CLAWCODEX_AGENT_SERVER_CMD"] = " ".join(_agent_server_cmd(args))
+    return env
+
+
 @contextlib.contextmanager
 def _parent_ignores_sigint():
     """Make the parent ignore Ctrl-C so the child (which owns the TTY) handles it.
@@ -109,58 +140,40 @@ def _parent_ignores_sigint():
                 signal.signal(signal.SIGINT, prev)
 
 
+def _print_connect(args) -> int:
+    """Run the agent-server directly, printing its cc:// URL + token, and wait."""
+    workspace = str(Path(args.workspace).resolve()) if args.workspace else str(Path.cwd())
+    token = secrets.token_urlsafe(24)
+    print(f"agent-server: token {token}")
+    return run_agent_server_subcommand([
+        "--host", "127.0.0.1", "--port", "0", "--token", token,
+        "--permission-mode", args.permission_mode,
+        *(["--provider", args.provider] if args.provider else []),
+        *(["--model", args.model] if args.model else []),
+        "--workspace", workspace,
+    ])
+
+
 async def _launch(args) -> int:
     workspace = str(Path(args.workspace).resolve()) if args.workspace else str(Path.cwd())
-    index_path = Path.home() / ".clawcodex" / "server-sessions.json"
-    index_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = _resolve_tui_command(_resolve_tui_dir(args.tui_dir))
+    if cmd is None:
+        print(
+            "clawcodex tui: could not find/run the Ink TUI client.\n"
+            "  - pass --tui-dir DIR (or set CLAWCODEX_TUI_DIR) to the ui-tui folder, and\n"
+            "  - install a runner: `bun` (no build), or `node` after `npm install && npm run build`.\n"
+            "  - or set CLAWCODEX_TUI_CMD to a custom launch command.",
+            file=sys.stderr,
+        )
+        return 1
 
-    # Per-launch server token: required on POST /sessions even on loopback.
-    token = secrets.token_urlsafe(24)
-    server_config = ServerConfig(host="127.0.0.1", port=0, auth_token=token, workspace=workspace)
-    manager = SessionManager(workspace=workspace, index_path=index_path)
-    agent_config = AgentServerConfig(
-        provider_name=args.provider, model=args.model, permission_mode=args.permission_mode
-    )
-    server = DirectConnectServer(
-        config=server_config, manager=manager, spawn_agent=make_spawn_agent(agent_config)
-    )
-
-    await server.start()
-    port = server.bound_http_port
-    cc_url = f"cc://127.0.0.1:{port}"
-    serve_task = asyncio.get_running_loop().create_task(server.serve_forever())
-
-    try:
-        if args.print_connect:
-            print(f"agent-server: {cc_url}")
-            print(f"agent-server: token {token}")
-            print("agent-server: waiting (Ctrl-C to stop)")
-            with contextlib.suppress(asyncio.CancelledError):
-                await asyncio.Event().wait()
-            return 0
-
-        cmd = _resolve_tui_command(_resolve_tui_dir(args.tui_dir))
-        if cmd is None:
-            print(
-                "clawcodex tui: could not find/run the Ink TUI client.\n"
-                "  - pass --tui-dir DIR (or set CLAWCODEX_TUI_DIR) to the ui-tui folder, and\n"
-                "  - install a runner: `bun` (no build), or `node` after `npm install && npm run build`.\n"
-                f"  - or set CLAWCODEX_TUI_CMD to a custom launch command.\n"
-                f"  (the server is up at {cc_url})",
-                file=sys.stderr,
-            )
-            return 1
-
-        full = [*cmd, cc_url, "--token", token, "--cwd", workspace]
-        with _parent_ignores_sigint():
-            child = await asyncio.create_subprocess_exec(*full)  # inherits stdio/TTY
-            rc = await child.wait()
-        return rc if rc is not None else 0
-    finally:
-        await server.stop()
-        serve_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await serve_task
+    env = _child_env(args)
+    # No URL argument → the client spawns + owns the backend (hermes route).
+    full = [*cmd, "--cwd", workspace]
+    with _parent_ignores_sigint():
+        child = await asyncio.create_subprocess_exec(*full, env=env)  # inherits stdio/TTY
+        rc = await child.wait()
+    return rc if rc is not None else 0
 
 
 __all__ = ["run_tui_launcher"]
