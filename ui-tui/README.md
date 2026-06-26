@@ -19,9 +19,13 @@ package rather than the reference tree's vendored Ink fork.
 | File | Purpose |
 |---|---|
 | `src/protocol.ts` | Wire types shared with the Python server + helpers |
-| `src/client.ts` | Direct Connect client: `POST /sessions` + NDJSON-over-WS |
-| `src/sdkMessageAdapter.ts` | SDK message → transcript entries |
-| `src/App.tsx` | Ink UI: transcript, live stream, permission prompt, input |
+| `src/client.ts` | Direct Connect client: `POST /sessions` + NDJSON-over-WS + control ops |
+| `src/sdkMessageAdapter.ts` | SDK messages → transcript entries (text, tool calls, tool results) |
+| `src/markdown.tsx` | Dependency-free Markdown → Ink renderer (streaming-tolerant) |
+| `src/theme.ts` | Color palette + glyphs |
+| `src/slashCommands.ts` | Slash-command registry + matching |
+| `src/components/` | `Message`, `Spinner`, `StatusBar`, `PermissionDialog`, `SlashMenu` |
+| `src/App.tsx` | Ink UI: transcript, live markdown stream, spinner, slash menu, permission, status |
 | `src/cli.tsx` | Entry point — parses `cc://`/`http://` URL, renders `App` |
 | `scripts/smoke.ts` | Headless connectivity smoke (one turn + permission) |
 
@@ -62,9 +66,12 @@ If the server was started with `--token T`, pass `--token T` (or set
 ### Keys
 
 - type + Enter — send a prompt
+- `/` — open the slash-command menu (`↑↓` select · `tab` complete · enter run)
 - `y` / `n` — allow / deny a tool-permission prompt
 - `Esc` — interrupt the in-flight turn
 - `Ctrl-C` — quit
+
+Slash commands: `/help`, `/clear`, `/model <name>`, `/mode <default|acceptEdits|plan|…>`, `/quit`.
 
 ## Typecheck / smoke
 
@@ -75,9 +82,14 @@ bun run scripts/smoke.ts http://127.0.0.1:<port>    # against a live server
 
 ## Status & scope
 
-This client implements the data plane (init, streaming text, assistant, tool
-results, result) and the permission round-trip + interrupt control ops — enough
-to drive a real session. It is intentionally minimal (a focused port, not the
-full 5000-line reference REPL). Richer UX (slash commands, history, MCP/hook
-surfaces, autocomplete from `system/init` tool schemas) is the Phase-4 follow-up
-described in the proposal.
+This is a **purpose-built Claude-Code-style TUI** (the hermes-agent approach —
+own client + own rendering, not a fork of the reference REPL). It renders:
+streaming **Markdown** assistant output, **tool calls** (`⏺ Bash(…)`) + indented
+results (`⎿`), an animated **working spinner**, a **slash-command menu** with
+tab-complete, a bordered **permission dialog**, and a live **status bar**
+(model · mode), over the Direct Connect protocol. Verified end-to-end against
+`clawcodex agent-server` (streamed turn + usage).
+
+Still ahead (grow incrementally): multiline input, input history, `@`-file
+mentions, autocomplete seeded from `system/init` tool schemas, session
+resume/history, and richer tool-result rendering.
