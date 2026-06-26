@@ -35,6 +35,25 @@ if ! command -v rsync >/dev/null 2>&1; then
   exit 1
 fi
 
+# M1 guard (migration plan / critic): the connect path needs files that are
+# ABSENT from the gitignored local ./typescript reference — it is an INCOMPLETE
+# subset (17 of main.tsx's imports resolve to missing files), so `bun run build`
+# over it fails. Vendor from a COMPLETE upstream checkout/tarball of
+# @gitlawb/openclaude@0.9.2 instead. Warn loudly (and stop) if the source looks
+# partial; override with VENDOR_ALLOW_INCOMPLETE=1 to copy anyway.
+_missing=()
+for _req in src/server/parseConnectUrl.ts src/server/server.ts src/server/sessionManager.ts; do
+  [[ -e "$SRC_DIR/$_req" ]] || _missing+=("$_req")
+done
+if (( ${#_missing[@]} )); then
+  echo "WARNING: $SRC_DIR looks INCOMPLETE — missing connect-path files:" >&2
+  printf '  - %s\n' "${_missing[@]}" >&2
+  echo "  This subset will NOT 'bun run build' (critic M1). Vendor from a complete" >&2
+  echo "  @gitlawb/openclaude@0.9.2 checkout/tarball, not the gitignored typescript/." >&2
+  echo "  Pass a complete SRC_DIR, or set VENDOR_ALLOW_INCOMPLETE=1 to copy anyway." >&2
+  [[ "${VENDOR_ALLOW_INCOMPLETE:-}" == "1" ]] || exit 2
+fi
+
 # What the vendored build needs (source + build config), and what it must NOT
 # carry (deps, build output, the separate web app, tests, VCS, large assets).
 INCLUDE=(src scripts bin package.json tsconfig.json bun.lock README.md LICENSE)

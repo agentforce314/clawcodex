@@ -235,3 +235,63 @@ async def test_e2e_unknown_route_returns_404(tmp_path):
             await serve_task
         except asyncio.CancelledError:
             pass
+
+
+@pytest.mark.asyncio
+async def test_ws_accepts_global_launcher_token_like_real_client(tmp_path):
+    """The real openclaude TS client keeps the launcher's *global* token and
+    sends it as the WS ``Authorization: Bearer`` header — it never reads the
+    per-session ``auth_token`` from the POST /sessions response. The server must
+    accept that (critic B1a / migration plan), not only the per-session
+    query-param token the Python port uses. A wrong token is still rejected.
+    """
+    from websockets.asyncio.client import connect as ws_connect
+    from websockets.exceptions import WebSocketException
+
+    global_token = 'launcher-global-token'
+    config = ServerConfig(
+        host='127.0.0.1', port=_free_port(),
+        auth_token=global_token, workspace=str(tmp_path),
+    )
+    manager = SessionManager(workspace=str(tmp_path), index_path=tmp_path / 'idx.json')
+    spawn = _make_fake_agent_factory([
+        {'type': 'assistant', 'uuid': 'a1', 'message': {'content': 'ok'}},
+    ])
+    server = DirectConnectServer(config=config, manager=manager, spawn_agent=spawn)
+    await server.start()
+    serve_task = asyncio.get_running_loop().create_task(server.serve_forever())
+    try:
+        # POST /sessions with the GLOBAL token, as the launcher + openclaude do.
+        async with httpx.AsyncClient() as http:
+            resp = await http.post(
+                f'http://127.0.0.1:{config.port}/sessions',
+                headers={'authorization': f'Bearer {global_token}',
+                         'content-type': 'application/json'},
+                content=json.dumps({'cwd': str(tmp_path)}),
+            )
+        assert resp.status_code == 201, resp.text
+        body = resp.json()
+        assert body['auth_token'] != global_token  # server minted a distinct T_s
+        ws_base = body['ws_url'].split('?', 1)[0]   # drop the per-session ?token
+
+        # (1) Real-client pattern: Bearer <global> header, NO per-session token.
+        async with ws_connect(
+            ws_base, additional_headers={'authorization': f'Bearer {global_token}'},
+        ) as ws:
+            await ws.send(json.dumps({'type': 'user', 'message': {'content': 'hi'}}))
+            got = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
+            assert got['type'] == 'assistant' and got['message']['content'] == 'ok'
+
+        # (2) Wrong token, no valid query param → rejected (server closes 1008).
+        with pytest.raises(WebSocketException):
+            async with ws_connect(
+                ws_base, additional_headers={'authorization': 'Bearer wrong'},
+            ) as ws:
+                await asyncio.wait_for(ws.recv(), timeout=5)
+    finally:
+        await server.stop()
+        serve_task.cancel()
+        try:
+            await serve_task
+        except asyncio.CancelledError:
+            pass
