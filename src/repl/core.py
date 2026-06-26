@@ -734,6 +734,15 @@ class ClawcodexREPL:
                 # background highlight.
                 'prompt': 'bold fg:ansiblue bg:#262626',
                 'bottom-toolbar': 'fg:#888888 bg:default',
+                # Top/bottom rules that bracket the input row, mirroring
+                # Claude Code's bordered input box (PromptInput.tsx renders
+                # it with ``borderStyle="round"`` + ``borderLeft/Right=
+                # {false}`` — i.e. horizontal rules only, no sides). The
+                # ``❯`` marker carries ``class:prompt`` (dim bg), so the
+                # rule must reset ``bg:default`` to escape that highlight;
+                # ``bold`` keeps the top rule (which inherits class:prompt)
+                # and the bottom rule (in the toolbar) the same weight.
+                'input-rule': 'bold fg:#585858 bg:default',
                 # Slash-command completion menu (two-column layout:
                 # /name on the left, [tag] + description on the right).
                 # Mirrors the TS reference where unselected rows are dim
@@ -753,6 +762,71 @@ class ClawcodexREPL:
             prompt_continuation=self._prompt_continuation,
             bottom_toolbar=self._bottom_toolbar,
         )
+
+    def _input_border_width(self) -> int:
+        """Column count for the input box's top/bottom rule lines.
+
+        Prefers the live prompt_toolkit output size (so the rules re-flow
+        on terminal resize) and falls back to ``shutil`` when no app is
+        running (e.g. unit tests calling these helpers directly).
+        """
+
+        try:
+            from prompt_toolkit.application import get_app
+            cols = get_app().output.get_size().columns
+            if cols and cols > 0:
+                return int(cols)
+        except Exception:
+            pass
+        try:
+            import shutil
+            return shutil.get_terminal_size((100, 24)).columns
+        except Exception:
+            return 80
+
+    def _prompt_message(self):
+        """Prompt rendered each turn: a full-width rule above the ``❯``
+        marker — the top edge of Claude Code's bordered input box.
+
+        ``PromptInput.tsx`` draws the input row with ``borderStyle="round"``
+        and ``borderLeft/Right={false}``, leaving just horizontal rules top
+        and bottom. prompt_toolkit splits a multi-line message at the last
+        ``\\n`` (see ``_split_multiline_prompt``): everything before it is
+        rendered on the line(s) above the input, so the rule sits directly
+        over ``❯``. The matching bottom rule is emitted by
+        :meth:`_bottom_toolbar`. Returned as a callable so the width tracks
+        terminal resizes between redraws.
+        """
+
+        from prompt_toolkit.formatted_text import FormattedText
+
+        rule = "─" * self._input_border_width()
+        return FormattedText([
+            ("class:input-rule", rule + "\n"),
+            ("class:prompt", "❯ "),
+        ])
+
+    def _with_bottom_rule(self, status: str):
+        """Wrap the footer ``status`` with the bottom edge of the input box:
+        a full-width rule directly beneath the input, above the status row.
+
+        The bottom rule lives in the ``bottom_toolbar`` (rather than the
+        prompt message) so it is filtered out once the prompt is accepted —
+        the box visually collapses on submit, matching the reference, while
+        the top rule from :meth:`_prompt_message` stays as a per-turn
+        divider in scrollback.
+        """
+
+        try:
+            from prompt_toolkit.formatted_text import FormattedText
+
+            rule = "─" * self._input_border_width()
+            return FormattedText([
+                ("class:input-rule", rule + "\n"),
+                ("", status),
+            ])
+        except Exception:
+            return status
 
     def _bottom_toolbar(self):
         """Single-line status footer for the input prompt.
@@ -822,7 +896,7 @@ class ClawcodexREPL:
                 f" · cost {format_cost_usd(total_cost)}"
                 if total_cost > 0 else ""
             )
-            return (
+            status = (
                 f" {provider} · {model} · {cwd} ·{advisor_part} "
                 f"turns: {self._stats_turns} · "
                 f"tokens: {self._stats_input_tokens} in / "
@@ -830,6 +904,7 @@ class ClawcodexREPL:
                 f"{advisor_tokens}"
                 f"{cost_part} "
             )
+            return self._with_bottom_rule(status)
         except Exception:
             # Never let the toolbar break the input prompt.
             return ""
@@ -2433,7 +2508,9 @@ class ClawcodexREPL:
                     # wake returns "" (handled as a no-op turn below).
                     self._at_prompt = True
                     try:
-                        user_input = self.prompt_session.prompt('❯ ')
+                        user_input = self.prompt_session.prompt(
+                            self._prompt_message
+                        )
                     finally:
                         self._at_prompt = False
 
