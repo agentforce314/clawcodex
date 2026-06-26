@@ -1,11 +1,24 @@
 # clawcodex-tui (TypeScript Ink client)
 
 A standalone TypeScript **Ink** TUI client for the clawcodex **Python** agent
-backend. It connects to a running `clawcodex agent-server` over the Direct
-Connect (`cc://`) NDJSON-over-WebSocket protocol, renders the streamed agent
-output, and handles tool-permission prompts. All agent logic — the model loop,
-tool execution, permissions, MCP, hooks — runs in the Python backend; this
-process only renders and collects input.
+backend, talking the Direct Connect (`cc://`) NDJSON-over-WebSocket protocol.
+All agent logic — the model loop, tool execution, permissions, MCP, hooks — runs
+in the Python backend; this process renders the streamed output and collects
+input.
+
+**Architecture (the hermes-agent route): the TUI is the parent and spawns +
+owns the Python backend as a child.** Run with no URL and the client spawns
+`clawcodex agent-server` itself (`src/spawnBackend.ts`), reads the child's
+`cc://` URL, connects, and tears the child down on exit — the backend even dies
+if the TUI crashes (it runs with `--exit-on-parent`, exiting on stdin EOF when
+the parent's pipe closes). Pass a `cc://` URL to instead **attach** to an
+already-running server:
+
+```text
+  clawcodex tui                      node ui-tui/dist/cli.js
+    └─ spawns ─▶  node ui-tui  ─ spawns ─▶  python -m src.entrypoints.agent_server_cli
+                  (TUI, parent)             (agent-server, child it owns)
+```
 
 This is **Phase 3** of the TUI redesign (`my-docs/tui-interface-redesign/`).
 It is kept deliberately separate from the reference implementation under
@@ -32,36 +45,37 @@ package rather than the reference tree's vendored Ink fork.
 ## Prerequisites
 
 - Node ≥ 18 (or [Bun](https://bun.sh), recommended — runs the TS directly).
-- A running Python backend: `clawcodex agent-server` (see `../docs/agent-server.md`).
+- For attach mode only: a running `clawcodex agent-server` (see `../docs/agent-server.md`).
 
 ## Install
 
 ```bash
 cd ui-tui
-bun install         # or: npm install
+bun install && npm run build   # or just `bun install` to run the TS directly
 ```
 
 ## Run
 
-Start the backend in one terminal (it prints a `cc://` URL):
+### Spawn mode (default) — one command, the TUI owns the backend
 
 ```bash
-clawcodex agent-server
-# → agent-server: connect a TUI with  cc://127.0.0.1:53884
+clawcodex tui          # spawns node ui-tui, which spawns the python agent-server
 ```
 
-Then connect the TUI in another terminal:
+The TUI starts the backend itself (no URL needed). Under the hood it runs the
+client with no URL; the client spawns `clawcodex agent-server` on an ephemeral
+loopback port + per-launch token, then connects. First launch shows
+`starting agent-server…` for ~20s while the Python agent stack imports.
+
+### Attach mode — connect to an already-running server
 
 ```bash
-# with Bun (no build step):
-bun run src/cli.tsx cc://127.0.0.1:53884
-
-# or build + run with Node:
-npm run build && node dist/cli.js cc://127.0.0.1:53884
+clawcodex agent-server                       # terminal 1 → prints a cc:// URL + token
+node dist/cli.js cc://127.0.0.1:<port> --token <token>   # terminal 2 (or: bun run src/cli.tsx …)
 ```
 
-If the server was started with `--token T`, pass `--token T` (or set
-`CLAWCODEX_TUI_TOKEN`). Use `--cwd DIR` to set the session working directory.
+Pass `--token T` (or set `CLAWCODEX_TUI_TOKEN`) to match the server's `--token`.
+Use `--cwd DIR` to set the session working directory.
 
 ### Keys
 

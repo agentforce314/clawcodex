@@ -36,11 +36,14 @@ cd ui-tui && bun install && cd ..   # one-time: install the TUI deps
 clawcodex tui                               # starts the backend + TUI together
 ```
 
-`clawcodex tui` starts the agent-server **in-process** on an ephemeral loopback
-port and spawns the Ink TUI as a managed child pointed at it — the client/server
-split is invisible. It auto-detects a runner (`bun`, else a built `node` dist);
-override with `CLAWCODEX_TUI_CMD`, point at the client with `--tui-dir`, or use
-`--print-connect` to start only the server and print the `cc://` URL + token.
+`clawcodex tui` launches the **Ink TUI as the parent**, which **spawns + owns
+the Python agent-server as a child** (the hermes-agent route): the client starts
+`clawcodex agent-server` itself on an ephemeral loopback port + per-launch token,
+reads its `cc://` URL, connects, and tears the child down on exit (the backend
+runs with `--exit-on-parent`, so it also dies if the TUI crashes). It auto-detects
+a runner (`bun`, else a built `node` dist); override with `CLAWCODEX_TUI_CMD`,
+point at the client with `--tui-dir`, or use `--print-connect` to run only the
+server and print the `cc://` URL + token.
 
 > Why a server at all? The TUI is TypeScript and the engine is Python — two
 > runtimes that can't share memory, so they talk over the Direct Connect
