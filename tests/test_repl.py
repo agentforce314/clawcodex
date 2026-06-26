@@ -1215,5 +1215,90 @@ class TestInputBoxBorder(unittest.TestCase):
         self.assertIn("footer-here", rendered)
 
 
+class TestEditDiffGutter(unittest.TestCase):
+    """The legacy REPL's edit-diff preview must mirror Claude Code's
+    ``StructuredDiff`` gutter: a line-number column sized to the patch
+    (``digits + 1``) followed by a single ``+``/``-``/`` `` sigil, with the
+    code column aligned across add, remove, AND context rows and the source
+    indentation left intact. Regression guard for the old width-4 gutter that
+    drifted context lines a column left of ``+``/``-`` once line numbers hit
+    four digits. Also pins the 5-space indent that aligns the diff under the
+    tool-result ``⎿`` corner (it used to wrap back to column 0).
+    """
+
+    # Diff rows indent to the ``⎿`` content column ("  ⎿  " == 5 cells).
+    INDENT = 5
+
+    def _render(self, hunks, width=120):
+        from rich.console import Console
+
+        console = Console(width=width, force_terminal=False, color_system=None)
+        stub = types.SimpleNamespace()
+        stub.console = console
+        stub._EDIT_DIFF_MAX_LINES = 50
+        stub._format_edit_diff_preview = (
+            ClawcodexREPL._format_edit_diff_preview.__get__(stub)
+        )
+        with console.capture() as cap:
+            console.print(stub._format_edit_diff_preview(hunks))
+        return [ln for ln in cap.get().splitlines() if ln.strip()]
+
+    @staticmethod
+    def _code_col(line):
+        import re
+
+        m = re.match(r"^(\s*\d+)\s([+\- ])", line)
+        return m.end() if m else None
+
+    def test_columns_align_at_four_digits(self):
+        # Mixed add / remove / context with 4-digit line numbers — the case
+        # the old hard-coded width-4 gutter misaligned.
+        hunks = [{
+            "oldStart": 1137, "oldLines": 4, "newStart": 1137, "newLines": 7,
+            "lines": [
+                "             )",                       # context
+                "+class TestInputBoxBorder(unittest.TestCase):",
+                "+    WIDTH = 40",                       # add, 4-space indent
+                "-    old_attr = 2",                     # remove
+                " }",                                    # context
+            ],
+        }]
+        lines = self._render(hunks)
+        body = lines[1:]  # skip the summary
+        cols = {self._code_col(l) for l in body}
+        cols.discard(None)
+        self.assertEqual(len(cols), 1, f"code columns must align: {cols}")
+        # Layout: indent + (digits + 1) num field + space + sigil.
+        self.assertEqual(min(cols), self.INDENT + 4 + 3)
+        # Every row is indented under the corner, never flush-left.
+        self.assertTrue(all(l.startswith(" " * self.INDENT) for l in body))
+
+    def test_gutter_width_adapts_to_line_numbers(self):
+        three = self._render([{
+            "oldStart": 346, "oldLines": 1, "newStart": 346, "newLines": 2,
+            "lines": [" a", "+b"],
+        }])
+        five = self._render([{
+            "oldStart": 10000, "oldLines": 1, "newStart": 10000, "newLines": 2,
+            "lines": [" a", "+b"],
+        }])
+        self.assertEqual(self._code_col(three[1]), self.INDENT + 3 + 3)
+        self.assertEqual(self._code_col(five[1]), self.INDENT + 5 + 3)
+
+    def test_source_indentation_preserved(self):
+        lines = self._render([{
+            "oldStart": 346, "oldLines": 1, "newStart": 346, "newLines": 4,
+            "lines": [
+                " }",
+                "+.standings-grid {",      # indent 0
+                "+  display: grid;",        # indent 2
+                "+    gap: 1.2rem;",        # indent 4
+            ],
+        }])
+        self.assertTrue(any(l.rstrip().endswith("+.standings-grid {") for l in lines))
+        self.assertTrue(any(l.rstrip().endswith("+  display: grid;") for l in lines))
+        self.assertTrue(any(l.rstrip().endswith("+    gap: 1.2rem;") for l in lines))
+
+
 if __name__ == '__main__':
     unittest.main()

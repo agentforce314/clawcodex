@@ -1528,11 +1528,22 @@ class ClawcodexREPL:
     def _format_edit_diff_preview(self, hunks: list[dict]):
         """Render an Edit/MultiEdit structured patch as a Rich :class:`Group`.
 
-        Mirrors the TUI's ``EditActivity`` body: a one-line
-        ``Added X lines, removed Y lines`` summary above the line-numbered
-        diff with red/green markers and shaded backgrounds. Long diffs are
-        truncated with a ``… +N more diff lines`` footer to keep the
-        scrollback compact.
+        Mirrors Claude Code's ``StructuredDiff`` gutter exactly
+        (``StructuredDiff/Fallback.tsx``): a right-aligned line-number
+        column whose width tracks the patch's largest line number
+        (``digits + 1``), then a single ``+`` / ``-`` / `` `` sigil, then the
+        source line with its indentation untouched. The critical detail is
+        that added, removed, AND context rows all share that one gutter
+        width — ``"{num:>w} {sigil}{code}"`` — so the code column lines up no
+        matter the line type. The previous implementation hard-coded a
+        width-4 number column for adds/removes but formatted context rows
+        separately, so once line numbers reached four digits the context
+        lines drifted a column left of the ``+``/``-`` rows and the indents
+        looked ragged.
+
+        A one-line ``Added X lines, removed Y lines`` summary sits above;
+        long diffs truncate with a ``… +N more diff lines`` footer to keep
+        the scrollback compact.
         """
 
         adds = 0
@@ -1558,7 +1569,57 @@ class ClawcodexREPL:
         # screen border.
         target_right = max(1, console_width - 7)
 
+        # Gutter width follows ``computeGutterWidth`` in StructuredDiff.tsx:
+        # the widest line number's digit count + 1, so numbers right-align in
+        # the column with one leading pad cell (the shaded bar begins just
+        # left of the digits). Derived from the patch, not hard-coded, so a
+        # 3-digit and a 5-digit file each get a snug, correctly-aligned
+        # column.
+        max_line_no = 1
+        for hunk in hunks:
+            old_end = (int(hunk.get("oldStart", 0) or 0)
+                       + int(hunk.get("oldLines", 0) or 0) - 1)
+            new_end = (int(hunk.get("newStart", 0) or 0)
+                       + int(hunk.get("newLines", 0) or 0) - 1)
+            max_line_no = max(max_line_no, old_end, new_end)
+        num_width = len(str(max_line_no)) + 1
+
+        # Colors mirror ``typescript/src/utils/theme.ts darkTheme``
+        # (``diffAdded: 'rgb(34,92,43)'``, ``diffRemoved: 'rgb(122,41,54)'``).
+        ADD_BG = "rgb(34,92,43)"
+        REMOVE_BG = "rgb(122,41,54)"
+
+        # The diff is printed under the tool-result ``⎿`` corner, whose
+        # content column sits 5 cells in (``"  ⎿  "``). The caller rides the
+        # summary on the corner line, so every diff row must indent to that
+        # same column to read as part of the block (and to match Claude
+        # Code, which renders the diff indented under the tool call). Without
+        # this the rows wrapped back to column 0 while the summary floated at
+        # column 5 — the body looked flush-left and detached. Left unstyled
+        # so the shaded bar starts at the gutter, not the screen edge.
+        indent = "     "
+
         diff = Text()
+
+        def _emit(lineno: int | None, sigil: str, body: str, bg: str | None):
+            # One shared layout for every row: right-aligned number (or blank
+            # for wrapped/spacer rows), a space, the sigil, then the code with
+            # its original leading whitespace. ``body`` already has the diff
+            # marker stripped, so its indentation is the file's own.
+            num_part = (str(lineno).rjust(num_width)
+                        if lineno is not None else " " * num_width)
+            gutter = f"{num_part} {sigil}"
+            if bg is None:
+                # Context: dim, no shaded bar; code keeps its indent.
+                diff.append(indent + gutter + body + "\n", style="dim")
+                return
+            visible = len(gutter) + cell_len(body)
+            padding = max(0, target_right - len(indent) - visible)
+            diff.append(indent)
+            diff.append(gutter, style=f"on {bg}")
+            diff.append(body + " " * padding, style=f"on {bg}")
+            diff.append("\n")
+
         rendered = 0
         truncated = False
         for hunk in hunks:
@@ -1576,41 +1637,14 @@ class ClawcodexREPL:
                 # on newlines and produce blank rows between every entry.
                 stripped = raw.rstrip("\n").rstrip("\r")
                 if stripped.startswith("+"):
-                    # Colors mirror ``typescript/src/utils/theme.ts darkTheme``
-                    # (``diffAdded: 'rgb(34,92,43)'``,
-                    # ``diffRemoved: 'rgb(122,41,54)'``). The bar begins
-                    # one column to the left of the line-number digits
-                    # (i.e. the gutter carries a 1-col leading bg pad).
-                    body = stripped[1:]
-                    num_str = str(new_lineno)
-                    lead = " " * max(0, 4 - len(num_str) - 1)
-                    gutter = f" {num_str} "
-                    visible = len(gutter) + 1 + cell_len(body)
-                    padding = max(0, target_right - len(lead) - visible)
-                    diff.append(lead)
-                    diff.append(gutter, style="on rgb(34,92,43)")
-                    diff.append("+", style="bold on rgb(34,92,43)")
-                    diff.append(body + " " * padding, style="on rgb(34,92,43)")
-                    diff.append("\n")
+                    _emit(new_lineno, "+", stripped[1:], ADD_BG)
                     new_lineno += 1
                 elif stripped.startswith("-"):
-                    body = stripped[1:]
-                    num_str = str(old_lineno)
-                    lead = " " * max(0, 4 - len(num_str) - 1)
-                    gutter = f" {num_str} "
-                    visible = len(gutter) + 1 + cell_len(body)
-                    padding = max(0, target_right - len(lead) - visible)
-                    diff.append(lead)
-                    diff.append(gutter, style="on rgb(122,41,54)")
-                    diff.append("-", style="bold on rgb(122,41,54)")
-                    diff.append(body + " " * padding, style="on rgb(122,41,54)")
-                    diff.append("\n")
+                    _emit(old_lineno, "-", stripped[1:], REMOVE_BG)
                     old_lineno += 1
                 else:
                     body = stripped[1:] if stripped.startswith(" ") else stripped
-                    # Context lines have no bg; keep gutter width aligned
-                    # with add/remove rows so columns line up.
-                    diff.append(f"{old_lineno:>4}  " + body + "\n", style="dim")
+                    _emit(old_lineno, " ", body, None)
                     old_lineno += 1
                     new_lineno += 1
                 rendered += 1
@@ -1618,8 +1652,9 @@ class ClawcodexREPL:
         if truncated:
             total = sum(len(h.get("lines") or []) for h in hunks)
             remaining = max(0, total - rendered)
+            # Align the ``…`` under the code column (indent + gutter).
             diff.append(
-                f"     … +{remaining} more diff "
+                f"{indent}{' ' * (num_width + 2)}… +{remaining} more diff "
                 f"{'line' if remaining == 1 else 'lines'}\n",
                 style="dim",
             )
