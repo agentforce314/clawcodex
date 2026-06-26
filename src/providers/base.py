@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Callable, Generator, Optional, TYPE_CHECKING, TypeAlias
@@ -89,6 +90,31 @@ class BaseProvider(ABC):
             Chat response
         """
         pass
+
+    async def chat_async(
+        self,
+        messages: list[MessageInput],
+        tools: Optional[list[dict[str, Any]]] = None,
+        **kwargs,
+    ) -> ChatResponse:
+        """Asynchronous chat completion.
+
+        Default implementation offloads the synchronous :meth:`chat` to a
+        worker thread via :func:`asyncio.to_thread`, giving async callers —
+        full/partial compaction (``services/compact/compact.py``), agent
+        hooks (``hooks/exec_agent_hook.py``), and the memdir selector
+        (``memdir/find_relevant_memories.py``) — a non-blocking entry point
+        without every provider needing a native async SDK client. The
+        providers wrap blocking HTTP SDKs (``openai`` / ``anthropic``), so
+        running ``chat`` inline on the event loop would stall concurrent
+        work (and, in compaction's case, the whole turn); the thread offload
+        keeps the loop responsive. Providers backed by an async client may
+        override this with a true coroutine implementation.
+
+        Accepts the same positional ``messages`` / ``tools`` and ``**kwargs``
+        (``model``, ``max_tokens``, ``system``, …) as :meth:`chat`.
+        """
+        return await asyncio.to_thread(self.chat, messages, tools, **kwargs)
 
     @abstractmethod
     def chat_stream(
