@@ -12,9 +12,6 @@ import { Box, Text } from 'ink'
 import React from 'react'
 import { theme } from './theme.js'
 
-let _k = 0
-const key = () => `md${_k++}`
-
 // ── inline spans ──────────────────────────────────────────────────────────
 
 const INLINE_RE =
@@ -24,31 +21,35 @@ const INLINE_RE =
 export function parseInline(text: string): React.ReactNode[] {
   const out: React.ReactNode[] = []
   let rest = text
+  // Local, deterministic keys (reset per call) so React can reconcile the
+  // inline spans across re-renders of a streaming buffer.
+  let n = 0
+  const k = () => `s${n++}`
   while (rest.length > 0) {
     const m = INLINE_RE.exec(rest)
     if (!m || m.index === undefined) {
-      out.push(<Text key={key()}>{rest}</Text>)
+      out.push(<Text key={k()}>{rest}</Text>)
       break
     }
     if (m.index > 0) {
-      out.push(<Text key={key()}>{rest.slice(0, m.index)}</Text>)
+      out.push(<Text key={k()}>{rest.slice(0, m.index)}</Text>)
     }
     const tok = m[0]
     if (m[1]) {
       out.push(
-        <Text key={key()} color={theme.code}>
+        <Text key={k()} color={theme.code}>
           {tok.slice(1, -1)}
         </Text>,
       )
     } else if (m[2]) {
       out.push(
-        <Text key={key()} bold>
+        <Text key={k()} bold>
           {tok.slice(2, -2)}
         </Text>,
       )
     } else if (m[3]) {
       out.push(
-        <Text key={key()} italic>
+        <Text key={k()} italic>
           {tok.slice(1, -1)}
         </Text>,
       )
@@ -57,7 +58,7 @@ export function parseInline(text: string): React.ReactNode[] {
       const label = tok.slice(1, close)
       const url = tok.slice(close + 2, -1)
       out.push(
-        <Text key={key()}>
+        <Text key={k()}>
           <Text color={theme.link} underline>
             {label}
           </Text>
@@ -204,12 +205,11 @@ export function Markdown({ text }: { text: string }): React.ReactElement {
           )
         }
         if (b.type === 'list') {
-          let n = 0
           return (
             <Box key={idx} flexDirection="column">
               {b.items.map((it, j) => {
-                n += 1
-                const bullet = it.ordered ? `${n}. ` : '• '
+                const num = parseInt(it.marker, 10)
+                const bullet = it.ordered ? `${Number.isFinite(num) ? num : j + 1}. ` : '• '
                 return (
                   <Box key={j}>
                     <Text color={theme.accent}>{`  ${bullet}`}</Text>
