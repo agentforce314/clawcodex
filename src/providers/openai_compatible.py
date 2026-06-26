@@ -609,6 +609,51 @@ class OpenAICompatibleProvider(BaseProvider):
             "total_tokens": getattr(usage, "total_tokens", 0),
         }
 
+    @staticmethod
+    def _with_system_prompt(
+        provider_messages: list[dict[str, Any]],
+        kwargs: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Fold an Anthropic-style ``system`` kwarg into the message list.
+
+        OpenAI-compatible chat completions have no top-level ``system``
+        parameter — the system prompt is a ``role="system"`` message. Several
+        callers in this port pass ``system=`` as a kwarg, mirroring the
+        Anthropic provider: compaction's ``COMPACT_SYSTEM_PROMPT``
+        (``services/compact/compact.py``), agent hooks, and the memdir
+        selector. The normal query loop already prepends a system message for
+        these providers (``query.py`` non-Anthropic branch), so the kwarg only
+        reaches here on those side paths. Without this translation it is
+        splatted into ``completions.create()``, which raises
+        ``TypeError: Completions.create() got an unexpected keyword argument
+        'system'`` — the failure that drops compaction to its text-extraction
+        fallback on DeepSeek/GLM/OpenAI/OpenRouter.
+
+        Pops ``system`` from ``kwargs`` (so it is NOT forwarded to the SDK) and
+        returns ``provider_messages`` with a leading system message when the
+        kwarg was a non-empty string or Anthropic-style list of text blocks;
+        otherwise returns ``provider_messages`` unchanged.
+        """
+        system = kwargs.pop("system", None)
+        if not system:
+            return provider_messages
+        if isinstance(system, str):
+            text = system
+        elif isinstance(system, list):
+            parts: list[str] = []
+            for block in system:
+                if isinstance(block, str):
+                    parts.append(block)
+                elif isinstance(block, dict):
+                    parts.append(str(block.get("text", "")))
+            text = "\n".join(p for p in parts if p)
+        else:
+            text = str(system)
+        text = text.strip()
+        if not text:
+            return provider_messages
+        return [{"role": "system", "content": text}, *provider_messages]
+
     def chat(
         self,
         messages: list[MessageInput],
@@ -635,6 +680,10 @@ class OpenAICompatibleProvider(BaseProvider):
         if tools:
             converted = [_convert_to_openai_tool_schema(t) for t in tools]
             extra_kwargs["tools"] = [t for t in converted if t is not None]
+
+        # Fold an Anthropic-style ``system`` kwarg into a leading system
+        # message (and pop it from kwargs so it isn't forwarded to the SDK).
+        provider_messages = self._with_system_prompt(provider_messages, kwargs)
 
         # Make API call
         response = self.client.chat.completions.create(
@@ -703,6 +752,10 @@ class OpenAICompatibleProvider(BaseProvider):
             converted = [_convert_to_openai_tool_schema(t) for t in tools]
             extra_kwargs["tools"] = [t for t in converted if t is not None]
 
+        # Fold an Anthropic-style ``system`` kwarg into a leading system
+        # message (and pop it from kwargs so it isn't forwarded to the SDK).
+        provider_messages = self._with_system_prompt(provider_messages, kwargs)
+
         # Stream API call
         stream = self.client.chat.completions.create(
             model=model,
@@ -768,6 +821,11 @@ class OpenAICompatibleProvider(BaseProvider):
         # counts. The spinner row + ``/stats`` rely on this — see
         # ``_build_usage_dict`` below and the consumer in
         # ``src/query/query.py``.
+        # Fold an Anthropic-style ``system`` kwarg into a leading system
+        # message before the kwargs splat below (and pop it from kwargs so it
+        # isn't forwarded to the SDK).
+        provider_messages = self._with_system_prompt(provider_messages, kwargs)
+
         stream_kwargs = {k: v for k, v in kwargs.items() if k not in ["model", "tools"]}
         existing_stream_options = stream_kwargs.pop("stream_options", None) or {}
         stream_kwargs["stream_options"] = {
