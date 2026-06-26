@@ -45,7 +45,7 @@ def run_tui_launcher(argv: list[str]) -> int:
     parser.add_argument("--workspace", default=None,
                         help="Workspace root the agent operates in (default: cwd).")
     parser.add_argument("--tui-dir", default=None,
-                        help="Path to the tui_typescript client (default: auto-detect).")
+                        help="Path to the ui-tui client (default: auto-detect).")
     parser.add_argument("--print-connect", action="store_true",
                         help="Start the server, print cc:// URL + token, and wait (no TUI spawn).")
     args = parser.parse_args(argv)
@@ -56,16 +56,16 @@ def run_tui_launcher(argv: list[str]) -> int:
 
 
 def _resolve_tui_dir(explicit: str | None) -> Path | None:
-    """Locate the tui_typescript client directory."""
+    """Locate the ui-tui client directory."""
     candidates: list[Path] = []
     if explicit:
         candidates.append(Path(explicit).expanduser())
     env = os.environ.get("CLAWCODEX_TUI_DIR")
     if env:
         candidates.append(Path(env).expanduser())
-    # Walk up from this file looking for a sibling tui_typescript/.
+    # Walk up from this file looking for a sibling ui-tui/.
     here = Path(__file__).resolve()
-    candidates.extend(parent / "tui_typescript" for parent in here.parents)
+    candidates.extend(parent / "ui-tui" for parent in here.parents)
     for cand in candidates:
         if (cand / "src" / "cli.tsx").exists():
             return cand.resolve()
@@ -143,7 +143,7 @@ async def _launch(args) -> int:
         if cmd is None:
             print(
                 "clawcodex tui: could not find/run the Ink TUI client.\n"
-                "  - pass --tui-dir DIR (or set CLAWCODEX_TUI_DIR) to the tui_typescript folder, and\n"
+                "  - pass --tui-dir DIR (or set CLAWCODEX_TUI_DIR) to the ui-tui folder, and\n"
                 "  - install a runner: `bun` (no build), or `node` after `npm install && npm run build`.\n"
                 f"  - or set CLAWCODEX_TUI_CMD to a custom launch command.\n"
                 f"  (the server is up at {cc_url})",
