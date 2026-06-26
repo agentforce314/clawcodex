@@ -1137,5 +1137,83 @@ class TestREPLConversationSanitization(unittest.TestCase):
         )
 
 
+class TestInputBoxBorder(unittest.TestCase):
+    """The legacy REPL brackets the ``❯`` input with top/bottom rules,
+    mirroring Claude Code's bordered input box (``PromptInput.tsx`` renders
+    the row with ``borderStyle="round"`` + ``borderLeft/Right={false}``, i.e.
+    horizontal rules only). These helpers build that box without needing a
+    full REPL instance — bind the real methods to a stand-in.
+    """
+
+    WIDTH = 40
+
+    def _stub(self):
+        stub = types.SimpleNamespace()
+        stub._input_border_width = lambda: self.WIDTH
+        stub._prompt_message = ClawcodexREPL._prompt_message.__get__(stub)
+        stub._with_bottom_rule = ClawcodexREPL._with_bottom_rule.__get__(stub)
+        return stub
+
+    def test_prompt_message_is_rule_above_marker(self):
+        from prompt_toolkit.formatted_text import to_formatted_text
+        from prompt_toolkit.shortcuts.prompt import _split_multiline_prompt
+
+        stub = self._stub()
+        msg = stub._prompt_message()
+        get_prompt = lambda: to_formatted_text(msg, style="class:prompt")
+        has_before, before, first_line = _split_multiline_prompt(get_prompt)
+
+        # Multi-line: the rule renders above, ``❯`` is the input line.
+        self.assertTrue(has_before())
+        self.assertEqual("".join(c for _s, c in before()), "─" * self.WIDTH)
+        self.assertEqual("".join(c for _s, c in first_line()), "❯ ")
+        # Rule escapes the dim prompt bg; the marker keeps class:prompt.
+        self.assertIn("class:input-rule", before()[0][0])
+        self.assertIn("class:prompt", first_line()[-1][0])
+
+    def test_bottom_rule_wraps_status(self):
+        stub = self._stub()
+        frags = list(stub._with_bottom_rule(" provider · model "))
+        self.assertEqual(frags[0], ("class:input-rule", "─" * self.WIDTH + "\n"))
+        self.assertEqual(frags[1], ("", " provider · model "))
+
+    def test_renders_through_prompt_toolkit(self):
+        """End-to-end: the rules, marker, and footer actually paint."""
+        import io
+
+        try:
+            from prompt_toolkit import PromptSession
+            from prompt_toolkit.styles import Style
+            from prompt_toolkit.output.plain_text import PlainTextOutput
+            from prompt_toolkit.input.defaults import create_pipe_input
+        except Exception as exc:  # pragma: no cover - env without pt extras
+            self.skipTest(f"prompt_toolkit render harness unavailable: {exc}")
+
+        stub = self._stub()
+        style = Style.from_dict({
+            "prompt": "bold fg:ansiblue bg:#262626",
+            "bottom-toolbar": "fg:#888888 bg:default",
+            "input-rule": "bold fg:#585858 bg:default",
+        })
+        buf = io.StringIO()
+        with create_pipe_input() as inp:
+            session = PromptSession(
+                message=stub._prompt_message,
+                bottom_toolbar=lambda: stub._with_bottom_rule(" footer-here "),
+                style=style,
+                input=inp,
+                output=PlainTextOutput(buf),
+                multiline=False,
+            )
+            inp.send_text("hi\r")
+            result = session.prompt()
+
+        rendered = buf.getvalue()
+        self.assertEqual(result, "hi")
+        self.assertIn("─" * self.WIDTH, rendered)  # top + bottom rules painted
+        self.assertIn("❯", rendered)
+        self.assertIn("footer-here", rendered)
+
+
 if __name__ == '__main__':
     unittest.main()
