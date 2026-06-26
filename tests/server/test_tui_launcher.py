@@ -20,10 +20,10 @@ pytestmark = pytest.mark.integration
 
 
 def test_resolve_tui_dir_finds_repo_client():
-    """Auto-detect locates the sibling tui_typescript/ via the upward walk."""
+    """Auto-detect locates the sibling ui-tui/ via the upward walk."""
     found = _resolve_tui_dir(None)
-    assert found is not None, "expected to find tui_typescript by walking up from the package"
-    assert found.name == "tui_typescript"
+    assert found is not None, "expected to find ui-tui by walking up from the package"
+    assert found.name == "ui-tui"
     assert (found / "src" / "cli.tsx").exists()
 
 

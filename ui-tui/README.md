@@ -33,7 +33,7 @@ package rather than the reference tree's vendored Ink fork.
 ## Install
 
 ```bash
-cd tui_typescript
+cd ui-tui
 bun install         # or: npm install
 ```
 
