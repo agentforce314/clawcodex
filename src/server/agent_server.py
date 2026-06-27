@@ -112,6 +112,7 @@ class _AgentSession:
     system_prompt: Any = "You are a helpful assistant."
     init_error: str | None = None
     _session_name: str | None = None  # user-set label (/rename) shown in /resume
+    _mcp_runtime: Any = None  # McpRuntime (connected MCP servers) when configured
 
     # Worker + cross-thread coordination.
     _inbox: _queue.Queue = field(default_factory=_queue.Queue)
@@ -703,6 +704,12 @@ class _AgentSession:
             await asyncio.get_running_loop().run_in_executor(
                 None, lambda: worker.join(timeout=5.0)
             )
+        if self._mcp_runtime is not None:
+            try:
+                self._mcp_runtime.shutdown()  # disconnect MCP servers + stop their loop
+            except Exception:  # noqa: BLE001
+                logger.debug("[agent-server] MCP shutdown failed", exc_info=True)
+            self._mcp_runtime = None
 
 
 def make_spawn_agent(config: AgentServerConfig | None = None):
@@ -797,6 +804,28 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
             deny = {n.lower() for n in cfg.disallowed_tools}
             _filter_registry(registry, keep=lambda n: n.lower() not in deny)
 
+        # Connect configured MCP servers (guarded: no servers ⇒ no-op). Their
+        # tools run on McpRuntime's dedicated loop so they survive the per-turn
+        # asyncio.run. Registered after allow/deny filtering so an MCP-enabling
+        # user always gets them.
+        try:
+            from src.server.mcp_runtime import McpRuntime
+
+            mcp_rt = McpRuntime()
+            if mcp_rt.start():
+                for mtool in mcp_rt.tools:
+                    try:
+                        registry.register(mtool)
+                    except Exception:  # noqa: BLE001
+                        logger.debug("[mcp] register failed: %s", getattr(mtool, "name", "?"), exc_info=True)
+                sess._mcp_runtime = mcp_rt
+                logger.info(
+                    "[agent-server] MCP: %d tool(s) from %d server(s)",
+                    len(mcp_rt.tools), len(mcp_rt.servers),
+                )
+        except Exception:  # noqa: BLE001 — MCP must never break startup
+            logger.debug("[agent-server] MCP bootstrap skipped", exc_info=True)
+
         workspace_root = Path(sess.cwd)
         mode = perm_mode or cfg.permission_mode or "default"
         bypass = mode == "bypassPermissions"
@@ -812,6 +841,8 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
             abort_controller=AbortController(),
         )
         tool_context.options.is_non_interactive_session = True
+        if sess._mcp_runtime is not None:
+            tool_context.mcp_clients = sess._mcp_runtime.clients  # server-name catalog for the agent tool
 
         try:
             from src.outputStyles import resolve_output_style
