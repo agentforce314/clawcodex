@@ -83,6 +83,10 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   } | null>(null)
   const [slashSel, setSlashSel] = useState(0)
   const [atSel, setAtSel] = useState(0)
+  // Submitted-prompt history for ↑/↓ recall (readline-style; -1 = live draft).
+  const historyRef = useRef<string[]>([])
+  const [histIdx, setHistIdx] = useState(-1)
+  const draftRef = useRef('')
   const localSeq = useRef(0)
   const bannerAdded = useRef(false)
   const [toolActivity, setToolActivity] = useState<string | null>(null)
@@ -367,6 +371,23 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         return
       }
     }
+    // Input history recall with ↑/↓ when no menu is open (readline-style).
+    if (!slashOpen && !atOpen) {
+      const h = historyRef.current
+      if (key.upArrow && h.length > 0) {
+        if (histIdx === -1) draftRef.current = input
+        const ni = Math.min(histIdx + 1, h.length - 1)
+        setHistIdx(ni)
+        setInput(h[h.length - 1 - ni] ?? '')
+        return
+      }
+      if (key.downArrow && histIdx !== -1) {
+        const ni = histIdx - 1
+        setHistIdx(ni)
+        setInput(ni === -1 ? draftRef.current : (h[h.length - 1 - ni] ?? ''))
+        return
+      }
+    }
     if (key.escape && busy) {
       client?.interrupt()
     }
@@ -467,6 +488,9 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     }
     if (!client || !ready || busy || permissions.length > 0) return
     client.sendPrompt(text)
+    if (historyRef.current[historyRef.current.length - 1] !== text) historyRef.current.push(text)
+    setHistIdx(-1)
+    draftRef.current = ''
     addEntry({ kind: 'user', text })
     setStream('')
     setBusy(true)
@@ -552,6 +576,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
                 setInput(v)
                 setSlashSel(0)
                 setAtSel(0)
+                setHistIdx(-1)
               }}
               onSubmit={onSubmit}
               placeholder={ready ? 'Type a message, or / for commands…' : 'starting agent-server…'}
