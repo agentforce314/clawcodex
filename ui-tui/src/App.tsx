@@ -17,6 +17,7 @@ import { Message } from './components/Message.js'
 import { PermissionDialog } from './components/PermissionDialog.js'
 import { SlashMenu } from './components/SlashMenu.js'
 import { FileMenu } from './components/FileMenu.js'
+import { VimInput } from './components/VimInput.js'
 import { searchFiles } from './fileIndex.js'
 import { Spinner } from './components/Spinner.js'
 import { StatusBar } from './components/StatusBar.js'
@@ -230,6 +231,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const [, setThemeVersion] = useState(0) // bumped on /theme to repaint the dynamic UI
   const [scrollOffset, setScrollOffset] = useState(0) // fullscreen: entries hidden from the bottom
   const [txFind, setTxFind] = useState<string | null>(null) // fullscreen Ctrl+F find query (null = closed)
+  const [vimMode, setVimMode] = useState(false) // /vim modal editing
 
   // Fullscreen uses the terminal's alternate screen so the bounded transcript
   // viewport renders in place (no scrollback spam). Enter on mount, restore on exit.
@@ -695,8 +697,8 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         return
       }
     }
-    // Input history recall with ↑/↓ when no menu is open (readline-style).
-    if (!slashOpen && !atOpen) {
+    // Input history recall with ↑/↓ when no menu is open (vim owns its own keys).
+    if (!slashOpen && !atOpen && !vimMode) {
       const h = historyRef.current
       if (key.upArrow && h.length > 0) {
         if (histIdx === -1) draftRef.current = input
@@ -739,6 +741,12 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         client?.close()
         exit()
         return true
+      case 'vim': {
+        const next = !vimMode
+        setVimMode(next)
+        addEntry({ kind: 'system', text: `vim mode ${next ? 'on' : 'off'}` })
+        return true
+      }
       case 'rename': {
         if (!arg) {
           addEntry({ kind: 'system', text: 'usage: /rename <name>' })
@@ -1181,30 +1189,51 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
             paddingX={1}
             width="100%"
           >
-            <Text color={ready ? theme.accent : theme.dim}>{busy ? '… ' : '❯ '}</Text>
-            <TextInput
-              value={input}
-              onChange={(v) => {
-                // Collapse a large paste to a placeholder so it doesn't flood
-                // the input (the original's [Pasted text #N]). Normal typing
-                // inserts one char at a time, so this only fires on paste.
-                const { ins, p, s } = diffInsert(input, v)
-                const nLines = ins ? ins.split('\n').length : 0
-                if (ins && (ins.length > 200 || nLines >= 4)) {
-                  const n = (pasteCounter.current += 1)
-                  const token = `[Pasted text #${n}${nLines > 1 ? ` +${nLines} lines` : ''}]`
-                  pasteStore.current.set(token, ins)
-                  setInput(v.slice(0, p) + token + (s ? v.slice(v.length - s) : ''))
-                } else {
+            {vimMode ? (
+              <VimInput
+                value={input}
+                onChange={(v) => {
                   setInput(v)
-                }
-                setSlashSel(0)
-                setAtSel(0)
-                setHistIdx(-1)
-              }}
-              onSubmit={onSubmit}
-              placeholder={ready ? 'Type a message, or / for commands…' : 'starting agent-server…'}
-            />
+                  setSlashSel(0)
+                  setAtSel(0)
+                  setHistIdx(-1)
+                }}
+                onSubmit={onSubmit}
+                // Stay active during slash/@ menus: VimInput ignores nav keys
+                // (App handles ↑/↓/Tab) and its Enter routes through onSubmit,
+                // which performs menu completion. Gating it off here would strand
+                // typing after the first "/" or "@".
+                active
+                placeholder={ready ? 'Type a message, or / for commands…' : 'starting agent-server…'}
+              />
+            ) : (
+              <>
+                <Text color={ready ? theme.accent : theme.dim}>{busy ? '… ' : '❯ '}</Text>
+                <TextInput
+                  value={input}
+                  onChange={(v) => {
+                    // Collapse a large paste to a placeholder so it doesn't flood
+                    // the input (the original's [Pasted text #N]). Normal typing
+                    // inserts one char at a time, so this only fires on paste.
+                    const { ins, p, s } = diffInsert(input, v)
+                    const nLines = ins ? ins.split('\n').length : 0
+                    if (ins && (ins.length > 200 || nLines >= 4)) {
+                      const n = (pasteCounter.current += 1)
+                      const token = `[Pasted text #${n}${nLines > 1 ? ` +${nLines} lines` : ''}]`
+                      pasteStore.current.set(token, ins)
+                      setInput(v.slice(0, p) + token + (s ? v.slice(v.length - s) : ''))
+                    } else {
+                      setInput(v)
+                    }
+                    setSlashSel(0)
+                    setAtSel(0)
+                    setHistIdx(-1)
+                  }}
+                  onSubmit={onSubmit}
+                  placeholder={ready ? 'Type a message, or / for commands…' : 'starting agent-server…'}
+                />
+              </>
+            )}
           </Box>
         </>
       )}
