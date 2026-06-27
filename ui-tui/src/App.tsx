@@ -814,6 +814,19 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         })
         return true
       }
+      case 'config': {
+        if (client) {
+          void client.requestControl('get_settings').then((r) => {
+            const m = String(r?.['model'] ?? model)
+            const pm = String(r?.['permission_mode'] ?? mode)
+            const avail = Array.isArray(r?.['available_models']) ? (r['available_models'] as string[]) : []
+            const lines = [`model: ${m}`, `mode: ${pm}`, `server: ${serverLabel}`]
+            if (avail.length) lines.push(`available models: ${avail.slice(0, 12).join(', ')}`)
+            addEntry({ kind: 'system', text: `Config:\n${lines.join('\n')}` })
+          })
+        }
+        return true
+      }
       case 'agents': {
         if (client) {
           void client.requestControl('list_agents').then((r) => {
