@@ -760,6 +760,23 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         }
         return true
       }
+      case 'mcp': {
+        if (client) {
+          void client.requestControl('list_mcp').then((r) => {
+            const servers = Array.isArray(r?.['servers']) ? (r['servers'] as Record<string, unknown>[]) : []
+            if (!servers.length) {
+              addEntry({ kind: 'system', text: 'no MCP servers connected (configure servers in .mcp.json / config.json)' })
+              return
+            }
+            const lines = servers.map((s) => {
+              const tools = Array.isArray(s['tools']) ? (s['tools'] as string[]) : []
+              return `● ${String(s['name'])} — ${tools.length} tool${tools.length === 1 ? '' : 's'}: ${tools.join(', ')}`
+            })
+            addEntry({ kind: 'system', text: `MCP servers:\n${lines.join('\n')}` })
+          })
+        }
+        return true
+      }
       case 'branch': {
         if (client) {
           void client.requestControl('branch').then((r) => {
