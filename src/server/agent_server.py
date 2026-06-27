@@ -47,6 +47,7 @@ loop with ``loop.call_soon_threadsafe`` (asyncio.Queue is not thread-safe).
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import queue as _queue
 import threading
@@ -228,6 +229,12 @@ class _AgentSession:
         if subtype == "rewind":
             self._do_rewind(request_id, inner.get("turns", 1))
             return
+        if subtype == "list_sessions":
+            self._reply(request_id, {"sessions": _list_saved_sessions()})
+            return
+        if subtype == "resume":
+            self._do_resume(request_id, inner.get("session_id"))
+            return
         if subtype == "clear":
             # Reset the conversation so /clear actually starts a fresh context
             # (not just the client screen). Idle-only.
@@ -285,6 +292,60 @@ class _AgentSession:
         """Forward a spawned subagent's progress to the client (the original's
         AgentProgressLine). Wired onto tool_context.agent_progress_emit."""
         self._emit({"type": "agent_progress", "session_id": self.session_id, **ev})
+
+    def _save_session(self) -> None:
+        """Persist the conversation to disk so it can be /resume'd. Best-effort,
+        called at each turn end."""
+        try:
+            if self.session is None:
+                return
+            msgs = self.session.conversation.messages
+            if not msgs:
+                return
+            d = _sessions_dir()
+            d.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "session_id": self.session_id,
+                "model": getattr(self.provider, "model", None) or self.config.model or "",
+                "cwd": self.cwd,
+                "updated_at": time.time(),
+                "message_count": len(msgs),
+                "preview": _first_prompt_preview(msgs),
+                "conversation": self.session.conversation.to_dict(),
+            }
+            (d / f"{self.session_id}.json").write_text(json.dumps(payload), encoding="utf-8")
+        except Exception:  # noqa: BLE001 — persistence must never break a turn
+            logger.debug("[agent-server] session save failed", exc_info=True)
+
+    def _do_resume(self, request_id: object, session_id: object) -> None:
+        """Load a saved conversation into this session (the original's /resume).
+        Idle-only — replacing the conversation mid-turn would race the worker."""
+        with self._lock:
+            active = self._current_abort is not None
+        if active:
+            self._reply(request_id, {"ok": False, "error": "cannot resume during an active turn"})
+            return
+        try:
+            if not isinstance(session_id, str) or not session_id:
+                self._reply(request_id, {"ok": False, "error": "missing session_id"})
+                return
+            f = _sessions_dir() / f"{session_id}.json"
+            if not f.exists():
+                self._reply(request_id, {"ok": False, "error": "session not found"})
+                return
+            from src.agent.conversation import Conversation
+
+            data = json.loads(f.read_text(encoding="utf-8"))
+            conv = Conversation.from_dict(data.get("conversation", {"messages": []}))
+            self.session.conversation = conv
+            self._reply(request_id, {
+                "ok": True,
+                "count": len(conv.messages),
+                "preview": data.get("preview", ""),
+            })
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[agent-server] resume failed")
+            self._reply(request_id, {"ok": False, "error": str(exc)})
 
     def _do_rewind(self, request_id: object, turns: object) -> None:
         """Drop the last N prompt-turns from the conversation (the original's
@@ -577,6 +638,7 @@ class _AgentSession:
             duration_ms=int((time.monotonic() - start) * 1000),
             total_cost_usd=_cost,
         ))
+        self._save_session()  # persist for /resume
 
     async def shutdown(self) -> None:
         self._stop.set()
@@ -799,6 +861,53 @@ def _result_message(
     if error is not None:
         payload["error"] = error
     return payload
+
+
+def _sessions_dir() -> Path:
+    return Path.home() / ".clawcodex" / "sessions"
+
+
+def _first_prompt_preview(msgs: list) -> str:
+    """First real user prompt text (for the /resume session list)."""
+    for m in msgs:
+        if getattr(m, "role", None) != "user":
+            continue
+        c = getattr(m, "content", None)
+        if isinstance(c, str):
+            return c[:80]
+        if isinstance(c, list):
+            for b in c:
+                t = b.get("type") if isinstance(b, dict) else getattr(b, "type", None)
+                if t == "text":
+                    txt = b.get("text") if isinstance(b, dict) else getattr(b, "text", "")
+                    if txt:
+                        return str(txt)[:80]
+    return ""
+
+
+def _list_saved_sessions(limit: int = 20) -> list[dict]:
+    """Saved sessions, newest first (for /resume)."""
+    out: list[dict] = []
+    try:
+        d = _sessions_dir()
+        if not d.exists():
+            return []
+        for f in d.glob("*.json"):
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001
+                continue
+            out.append({
+                "session_id": data.get("session_id", f.stem),
+                "updated_at": data.get("updated_at", 0),
+                "preview": data.get("preview", ""),
+                "message_count": data.get("message_count", 0),
+                "model": data.get("model", ""),
+            })
+        out.sort(key=lambda s: s.get("updated_at", 0), reverse=True)
+    except Exception:  # noqa: BLE001
+        pass
+    return out[:limit]
 
 
 def _system_message(session_id: str, text: str, *, level: str = "info") -> dict:
