@@ -109,6 +109,16 @@ function transcriptToMarkdown(entries: TranscriptEntry[]): string {
   return out.join('\n')
 }
 
+/** Compact relative age for the /resume list (updated_at in epoch seconds). */
+function relAge(sec: number): string {
+  if (!sec) return ''
+  const diff = Date.now() / 1000 - sec
+  if (diff < 60) return 'just now'
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
+  return `${Math.floor(diff / 86400)}d ago`
+}
+
 /** The chunk inserted between `oldV` and `newV` (common prefix/suffix diff). */
 function diffInsert(oldV: string, newV: string): { ins: string; p: number; s: number } {
   let p = 0
@@ -164,9 +174,11 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const pasteCounter = useRef(0)
   // Interactive select picker (the original's CustomSelect) for /mode, /theme.
   const [picker, setPicker] = useState<{
-    kind: 'mode' | 'theme' | 'model'
+    kind: 'mode' | 'theme' | 'model' | 'resume'
     title: string
     options: string[]
+    /** Optional value per option (e.g. session_id); falls back to the label. */
+    values?: string[]
     sel: number
   } | null>(null)
   // Ctrl+R reverse history search.
@@ -218,8 +230,8 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     setAtSel(0)
   }
 
-  /** Apply an interactive-picker selection (/mode, /theme, /model). */
-  const applyPick = (kind: 'mode' | 'theme' | 'model', value: string): void => {
+  /** Apply an interactive-picker selection (/mode, /theme, /model, /resume). */
+  const applyPick = (kind: 'mode' | 'theme' | 'model' | 'resume', value: string): void => {
     if (!value) return
     if (kind === 'mode') {
       client?.sendControl('set_permission_mode', { mode: value })
@@ -229,6 +241,15 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
       client?.sendControl('set_model', { model: value })
       setModel(value)
       addEntry({ kind: 'system', text: `model → ${value}` })
+    } else if (kind === 'resume') {
+      void client?.requestControl('resume', { session_id: value }).then((r) => {
+        if (r && r['ok']) {
+          addEntry({ kind: 'system', text: `↻ resumed session — ${Number(r['count']) || 0} messages restored` })
+          void client?.requestControl('get_context_usage').then(applyContextUsage)
+        } else {
+          addEntry({ kind: 'error', text: `resume failed: ${r && r['error'] ? String(r['error']) : 'no response'}` })
+        }
+      })
     } else if (applyTheme(value)) {
       setThemeVersion((v) => v + 1)
       addEntry({ kind: 'system', text: `theme → ${value}` })
@@ -452,7 +473,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         return
       }
       if (key.return) {
-        applyPick(picker.kind, picker.options[picker.sel] ?? '')
+        applyPick(picker.kind, (picker.values ?? picker.options)[picker.sel] ?? '')
         setPicker(null)
         return
       }
@@ -586,6 +607,25 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         client?.close()
         exit()
         return true
+      case 'resume': {
+        if (client) {
+          void client.requestControl('list_sessions').then((r) => {
+            const sessions = Array.isArray(r?.['sessions']) ? (r['sessions'] as Record<string, unknown>[]) : []
+            if (!sessions.length) {
+              addEntry({ kind: 'system', text: 'no saved sessions' })
+              return
+            }
+            const options = sessions.map((s) => {
+              const prev = String(s['preview'] || '(no preview)').slice(0, 50)
+              const age = relAge(Number(s['updated_at']) || 0)
+              return `${prev}  ·  ${Number(s['message_count']) || 0} msgs${age ? `  ·  ${age}` : ''}`
+            })
+            const values = sessions.map((s) => String(s['session_id']))
+            setPicker({ kind: 'resume', title: 'Resume session', options, values, sel: 0 })
+          })
+        }
+        return true
+      }
       case 'rewind': {
         const n = Math.max(1, parseInt(arg, 10) || 1)
         if (client) {
