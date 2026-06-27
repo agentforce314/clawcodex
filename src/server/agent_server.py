@@ -246,6 +246,20 @@ class _AgentSession:
         if subtype == "branch":
             self._do_branch(request_id)
             return
+        if subtype == "list_permissions":
+            ctx = self.tool_context.permission_context if self.tool_context else None
+            mode, allow, deny = "default", [], []
+            if ctx is not None:
+                try:
+                    from src.permissions import get_allow_rules, get_deny_rules
+
+                    mode = getattr(ctx, "mode", "default") or "default"
+                    allow = [_fmt_rule(r) for r in get_allow_rules(ctx)]
+                    deny = [_fmt_rule(r) for r in get_deny_rules(ctx)]
+                except Exception:  # noqa: BLE001
+                    logger.debug("[agent-server] list_permissions failed", exc_info=True)
+            self._reply(request_id, {"mode": mode, "allow": allow, "deny": deny})
+            return
         if subtype == "list_mcp":
             rt = self._mcp_runtime
             servers = (
@@ -941,6 +955,14 @@ def _result_message(
     if error is not None:
         payload["error"] = error
     return payload
+
+
+def _fmt_rule(rule: Any) -> str:
+    """Render a PermissionRule as e.g. ``Bash(ls:*)`` or ``Read`` (for /permissions)."""
+    v = getattr(rule, "rule_value", None)
+    tool = getattr(v, "tool_name", "") or "?"
+    content = getattr(v, "rule_content", None)
+    return f"{tool}({content})" if content else tool
 
 
 def _sessions_dir() -> Path:
