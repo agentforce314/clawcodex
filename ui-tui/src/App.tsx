@@ -141,10 +141,10 @@ export function App({ info, serverLabel }: Props): React.ReactElement {
     const head = permissions[0]
     if (head) {
       const c = ch.toLowerCase()
-      if (c === 'y') {
+      if (c === 'y' || ch === '1') {
         client?.respondPermission(head.requestId, 'allow')
         setPermissions((q) => q.slice(1))
-      } else if (c === 'n' || c === 'd') {
+      } else if (c === 'n' || c === 'd' || ch === '2') {
         client?.respondPermission(head.requestId, 'deny', { message: 'denied by user' })
         setPermissions((q) => q.slice(1))
       } else if (key.escape) {
@@ -268,7 +268,7 @@ export function App({ info, serverLabel }: Props): React.ReactElement {
         </Box>
       ) : null}
 
-      {busy ? (
+      {busy && permissions.length === 0 ? (
         <Box>
           <Spinner startedAt={turnStartedAt} />
         </Box>
@@ -298,11 +298,10 @@ export function App({ info, serverLabel }: Props): React.ReactElement {
               placeholder={connected ? 'Type a message, or / for commands…' : 'connecting…'}
             />
           </Box>
-          <Text color={theme.dim}>{'  enter send · / commands · esc interrupt · ^C quit'}</Text>
         </>
       )}
 
-      <StatusBar connected={connected} serverLabel={serverLabel} model={model} mode={mode} busy={busy} />
+      <StatusBar connected={connected} model={model} mode={mode} busy={busy} />
     </Box>
   )
 }
