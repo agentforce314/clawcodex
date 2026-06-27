@@ -786,6 +786,21 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         })
         return true
       }
+      case 'permissions': {
+        if (client) {
+          void client.requestControl('list_permissions').then((r) => {
+            const mode = String(r?.['mode'] ?? 'default')
+            const allow = Array.isArray(r?.['allow']) ? (r['allow'] as string[]) : []
+            const deny = Array.isArray(r?.['deny']) ? (r['deny'] as string[]) : []
+            const lines = [`mode: ${mode}`]
+            if (allow.length) lines.push(`allow: ${allow.join(', ')}`)
+            if (deny.length) lines.push(`deny: ${deny.join(', ')}`)
+            if (!allow.length && !deny.length) lines.push('(no explicit allow/deny rules)')
+            addEntry({ kind: 'system', text: `Permissions:\n${lines.join('\n')}` })
+          })
+        }
+        return true
+      }
       case 'mcp': {
         if (client) {
           void client.requestControl('list_mcp').then((r) => {
