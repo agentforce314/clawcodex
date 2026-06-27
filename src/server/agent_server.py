@@ -488,14 +488,24 @@ class _AgentSession:
             with self._lock:
                 self._current_abort = None
 
+        _usage = result.usage if result.num_turns > 0 else None
+        _cost = 0.0
+        if _usage:
+            try:
+                from src.services.pricing import compute_cost
+
+                _cost = compute_cost(getattr(self.provider, "model", None) or self.config.model or "", _usage)
+            except Exception:  # noqa: BLE001 — cost is best-effort, never break the turn
+                _cost = 0.0
         self._emit(_result_message(
             self.session_id,
             subtype="success",
             num_turns=result.num_turns,
             result=result.response_text,
             is_error=False,
-            usage=result.usage if result.num_turns > 0 else None,
+            usage=_usage,
             duration_ms=int((time.monotonic() - start) * 1000),
+            total_cost_usd=_cost,
         ))
 
     async def shutdown(self) -> None:
@@ -703,6 +713,7 @@ def _result_message(
     usage: dict | None = None,
     error: str | None = None,
     duration_ms: int = 0,
+    total_cost_usd: float = 0.0,
 ) -> dict:
     payload: dict[str, Any] = {
         "type": "result",
@@ -713,6 +724,7 @@ def _result_message(
         "duration_ms": duration_ms,
         "is_error": is_error,
         "usage": usage or None,
+        "total_cost_usd": total_cost_usd,
     }
     if error is not None:
         payload["error"] = error

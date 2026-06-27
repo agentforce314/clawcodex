@@ -120,6 +120,11 @@ function fmtK(n: number): string {
   return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)
 }
 
+/** USD cost: sub-cent shows 4 decimals ($0.0042), else 2 ($1.23). */
+export function fmtCost(c: number): string {
+  return c < 0.01 ? `$${c.toFixed(4)}` : `$${c.toFixed(2)}`
+}
+
 function toolResultText(content: string | ContentBlock[] | undefined): string {
   if (typeof content === 'string') return content
   if (!Array.isArray(content)) return ''
@@ -242,6 +247,7 @@ export function messageToEntries(msg: ServerMessage): TranscriptEntry[] {
       num_turns?: number
       usage?: Record<string, number> | null
       error?: string
+      total_cost_usd?: number
     }
     if (m.subtype === 'error') {
       return [{ id: nextId(), kind: 'error', text: `error: ${m.error ?? 'unknown'}` }]
@@ -254,8 +260,10 @@ export function messageToEntries(msg: ServerMessage): TranscriptEntry[] {
     const outTok = u['output_tokens'] ?? u['output'] ?? 0
     const total = inTok + outTok
     const tok = total > 0 ? ` · ${fmtK(total)} tokens` : ''
+    const cost = typeof m.total_cost_usd === 'number' ? m.total_cost_usd : 0
+    const costStr = cost > 0 ? ` · ${fmtCost(cost)}` : ''
     const turns = m.num_turns ?? 0
-    return [{ id: nextId(), kind: 'result', text: `done · ${turns} turn${turns === 1 ? '' : 's'}${tok}` }]
+    return [{ id: nextId(), kind: 'result', text: `done · ${turns} turn${turns === 1 ? '' : 's'}${tok}${costStr}` }]
   }
 
   return []
