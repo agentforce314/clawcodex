@@ -12,6 +12,7 @@ import { Markdown } from '../markdown.js'
 import { theme } from '../theme.js'
 import { Banner } from './Banner.js'
 import { DiffView } from './DiffView.js'
+import { TOOL_VERB } from '../toolMeta.js'
 import type { TranscriptEntry } from '../sdkMessageAdapter.js'
 
 const RESULT_MAX_LINES = 8
@@ -69,6 +70,17 @@ export function Message({ entry }: { entry: TranscriptEntry }): React.ReactEleme
         </Box>
       )
     case 'tool': {
+      // Collapsed summary of several same-kind calls (e.g. "Read 4 files").
+      if (entry.count && entry.count > 1) {
+        const noun = TOOL_VERB[entry.toolName ?? '']?.noun || 'files'
+        return (
+          <Text>
+            <Text color={theme.success}>⏺ </Text>
+            <Text bold>{entry.toolName}</Text>
+            <Text color={theme.dim}>{` ${entry.count} ${noun}`}</Text>
+          </Text>
+        )
+      }
       const diff = entry.diff
       const isWeb = entry.toolName === 'WebFetch' || entry.toolName === 'WebSearch'
       return (
