@@ -1,0 +1,167 @@
+/**
+ * Convert server SDK messages into flat transcript entries the Ink UI renders.
+ *
+ * Distilled from typescript/src/remote/sdkMessageAdapter.ts. Streaming
+ * `stream_event` deltas are handled in App.tsx (they mutate a live buffer);
+ * everything else maps to zero-or-more finished entries here — including
+ * tool_use blocks (rendered as Claude-Code-style tool calls) and tool_result
+ * blocks (the indented ⎿ output).
+ */
+import {
+  blocksToText,
+  type ContentBlock,
+  type ServerMessage,
+} from './protocol.js'
+
+export type EntryKind =
+  | 'user'
+  | 'assistant'
+  | 'tool'
+  | 'toolResult'
+  | 'system'
+  | 'result'
+  | 'error'
+
+export interface TranscriptEntry {
+  id: string
+  kind: EntryKind
+  text: string
+  /** tool calls only: the tool name + a compact one-line args preview. */
+  toolName?: string
+  argsText?: string
+}
+
+let _seq = 0
+function nextId(): string {
+  _seq += 1
+  return `e${_seq}`
+}
+
+/** Pull the human-readable text out of a `stream_event` text delta, if any. */
+export function streamDeltaText(msg: ServerMessage): string | null {
+  const m = msg as { type?: string; event?: { delta?: { type?: string; text?: string } } }
+  if (m.type !== 'stream_event') return null
+  const delta = m.event?.delta
+  if (delta && delta.type === 'text_delta' && typeof delta.text === 'string') {
+    return delta.text
+  }
+  return null
+}
+
+/** Compact one-line preview of tool input (Claude-Code style: Bash(cmd)). */
+export function formatToolArgs(input: unknown): string {
+  if (input == null) return ''
+  if (typeof input === 'string') return truncate(input)
+  if (typeof input !== 'object') return truncate(String(input))
+  const obj = input as Record<string, unknown>
+  // Prefer the single most meaningful field if present.
+  for (const k of ['command', 'file_path', 'path', 'pattern', 'query', 'url', 'prompt']) {
+    if (typeof obj[k] === 'string') return truncate(obj[k] as string)
+  }
+  const parts = Object.entries(obj).map(
+    ([k, v]) => `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`,
+  )
+  return truncate(parts.join(', '))
+}
+
+function truncate(s: string, max = 100): string {
+  const one = s.replace(/\s+/g, ' ').trim()
+  return one.length > max ? `${one.slice(0, max - 1)}…` : one
+}
+
+function toolResultText(content: string | ContentBlock[] | undefined): string {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  const parts: string[] = []
+  for (const block of content) {
+    if (block && block.type === 'tool_result') {
+      const inner = block['content']
+      parts.push(typeof inner === 'string' ? inner : JSON.stringify(inner))
+    } else if (block && block.type === 'text' && typeof block.text === 'string') {
+      parts.push(block.text)
+    }
+  }
+  return parts.join('\n')
+}
+
+/** Map one server message to finished transcript entries (excludes stream_event). */
+export function messageToEntries(msg: ServerMessage): TranscriptEntry[] {
+  const type = (msg as { type: string }).type
+
+  if (type === 'system') {
+    const m = msg as {
+      subtype?: string
+      model?: string
+      permission_mode?: string
+      protocol_version?: string
+      tools?: unknown[]
+      message?: string
+      level?: string
+    }
+    if (m.subtype === 'init') {
+      const tools = Array.isArray(m.tools) ? m.tools.length : 0
+      return [
+        {
+          id: nextId(),
+          kind: 'system',
+          text: `connected · ${m.model ?? '?'} · ${m.permission_mode ?? '?'} · ${tools} tools · v${m.protocol_version ?? '?'}`,
+        },
+      ]
+    }
+    if (m.message) {
+      return [{ id: nextId(), kind: m.level === 'error' ? 'error' : 'system', text: m.message }]
+    }
+    return []
+  }
+
+  if (type === 'assistant') {
+    const m = msg as { message: { content: string | ContentBlock[] } }
+    const content = m.message?.content
+    const out: TranscriptEntry[] = []
+    const text = blocksToText(content)
+    if (text.trim()) out.push({ id: nextId(), kind: 'assistant', text })
+    if (Array.isArray(content)) {
+      for (const block of content) {
+        if (block && block.type === 'tool_use') {
+          out.push({
+            id: nextId(),
+            kind: 'tool',
+            text: '',
+            toolName: String((block as { name?: string }).name ?? 'tool'),
+            argsText: formatToolArgs((block as { input?: unknown }).input),
+          })
+        }
+      }
+    }
+    return out
+  }
+
+  if (type === 'user') {
+    const m = msg as { message: { content: string | ContentBlock[] } }
+    const text = toolResultText(m.message?.content)
+    return text ? [{ id: nextId(), kind: 'toolResult', text }] : []
+  }
+
+  if (type === 'result') {
+    const m = msg as {
+      subtype: string
+      num_turns?: number
+      usage?: Record<string, number> | null
+      error?: string
+    }
+    if (m.subtype === 'error') {
+      return [{ id: nextId(), kind: 'error', text: `error: ${m.error ?? 'unknown'}` }]
+    }
+    if (m.subtype === 'cancelled') {
+      return [{ id: nextId(), kind: 'system', text: 'interrupted' }]
+    }
+    const usage = m.usage
+      ? ` · ${Object.entries(m.usage)
+          .map(([k, v]) => `${k}=${v}`)
+          .join(' ')}`
+      : ''
+    return [{ id: nextId(), kind: 'result', text: `done (${m.num_turns ?? 0} turns)${usage}` }]
+  }
+
+  return []
+}
