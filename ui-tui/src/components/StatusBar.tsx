@@ -20,6 +20,7 @@ interface Props {
   mode: string
   busy: boolean
   context?: ContextUsage | null
+  cost?: number
 }
 
 const MODE_COLOR: Record<string, string | undefined> = {
@@ -42,13 +43,16 @@ function ctxColor(pct: number): string {
   return theme.dim
 }
 
-export function StatusBar({ connected, model, mode, busy, context }: Props): React.ReactElement {
+export function StatusBar({ connected, model, mode, busy, context, cost }: Props): React.ReactElement {
   const dot = !connected ? theme.dim : busy ? theme.warn : theme.success
   const modeColor = MODE_COLOR[mode] ?? theme.dim
   return (
     <Box marginTop={1} justifyContent="space-between">
       <Text color={theme.dim}>? for shortcuts</Text>
       <Box>
+        {cost && cost > 0 ? (
+          <Text color={theme.dim}>{`${cost < 0.01 ? `$${cost.toFixed(4)}` : `$${cost.toFixed(2)}`} · `}</Text>
+        ) : null}
         {context ? (
           <>
             <Text color={ctxColor(context.percentage)}>{`${Math.round(context.percentage)}%`}</Text>
