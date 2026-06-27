@@ -31,6 +31,13 @@ export interface TodoItem {
   activeForm?: string
 }
 
+export interface ContextData {
+  percentage: number
+  totalTokens: number
+  maxTokens: number
+  categories: { name: string; tokens: number }[]
+}
+
 export type EntryKind =
   | 'banner'
   | 'user'
@@ -40,6 +47,7 @@ export type EntryKind =
   | 'system'
   | 'result'
   | 'error'
+  | 'context'
 
 export interface TranscriptEntry {
   id: string
@@ -62,6 +70,8 @@ export interface TranscriptEntry {
   count?: number
   /** TodoWrite tool calls: the todo list to render as a checklist. */
   todos?: TodoItem[]
+  /** /context entries: the context-window usage breakdown to visualize. */
+  contextData?: ContextData
   /** banner only: the session info snapshot, captured once at init. */
   bannerData?: { model: string; mode: string; tools: number; cwd?: string }
 }
