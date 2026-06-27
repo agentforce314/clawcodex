@@ -761,6 +761,18 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         }
         return true
       }
+      case 'init': {
+        if (client && ready && !busy && permissions.length === 0) {
+          dispatchPrompt(
+            'Analyze this codebase and create a CLAUDE.md file capturing: the build, lint, and ' +
+              'test commands; the high-level architecture; and any conventions a new contributor ' +
+              'should know. If a CLAUDE.md already exists, improve it rather than duplicating it.',
+          )
+        } else {
+          addEntry({ kind: 'system', text: 'cannot /init right now (agent busy or not ready)' })
+        }
+        return true
+      }
       case 'cost': {
         const cost = `$${(sessionCost || 0).toFixed(4)}`
         const cu = contextUsage
