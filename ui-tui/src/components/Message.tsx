@@ -61,12 +61,15 @@ export function Message({ entry }: { entry: TranscriptEntry }): React.ReactEleme
       )
     case 'tool': {
       const diff = entry.toolName ? toolDiff(entry.toolName, entry.input ?? {}) : null
+      const isWeb = entry.toolName === 'WebFetch' || entry.toolName === 'WebSearch'
       return (
         <Box flexDirection="column">
           <Text>
             <Text color={theme.success}>⏺ </Text>
             <Text bold>{entry.toolName}</Text>
-            <Text color={theme.dim}>{`(${entry.argsText})`}</Text>
+            <Text color={theme.dim}>(</Text>
+            <Text color={isWeb ? theme.link : theme.dim}>{entry.argsText}</Text>
+            <Text color={theme.dim}>)</Text>
           </Text>
           {diff ? <DiffView lines={diff} /> : null}
         </Box>
