@@ -46,6 +46,12 @@ export interface TranscriptEntry {
   input?: Record<string, unknown>
   /** Edit/Write tool calls: precomputed diff (with true file line numbers). */
   diff?: DiffLine[]
+  /** tool calls: the tool_use id (used to correlate + collapse results). */
+  toolUseId?: string
+  /** tool results: the tool_use ids they answer (to drop collapsed-read results). */
+  forToolUseIds?: string[]
+  /** collapsed tool summary: how many same-kind calls this entry represents. */
+  count?: number
   /** banner only: the session info snapshot, captured once at init. */
   bannerData?: { model: string; mode: string; tools: number; cwd?: string }
 }
@@ -157,6 +163,7 @@ export function messageToEntries(msg: ServerMessage): TranscriptEntry[] {
             argsText: formatToolArgs(tinput),
             input: tinput,
             diff,
+            toolUseId: String((block as { id?: string }).id ?? ''),
           })
         }
       }
@@ -166,8 +173,14 @@ export function messageToEntries(msg: ServerMessage): TranscriptEntry[] {
 
   if (type === 'user') {
     const m = msg as { message: { content: string | ContentBlock[] } }
-    const text = toolResultText(m.message?.content)
-    return text ? [{ id: nextId(), kind: 'toolResult', text }] : []
+    const content = m.message?.content
+    const text = toolResultText(content)
+    const forToolUseIds = Array.isArray(content)
+      ? content
+          .filter((b) => b && b.type === 'tool_result')
+          .map((b) => String((b as { tool_use_id?: string }).tool_use_id ?? ''))
+      : []
+    return text ? [{ id: nextId(), kind: 'toolResult', text, forToolUseIds }] : []
   }
 
   if (type === 'result') {
