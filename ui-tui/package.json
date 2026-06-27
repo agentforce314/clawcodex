@@ -1,0 +1,31 @@
+{
+  "name": "clawcodex-tui",
+  "version": "0.1.0",
+  "private": true,
+  "description": "TypeScript Ink TUI client for the clawcodex Python agent-server (Direct Connect cc://).",
+  "type": "module",
+  "bin": {
+    "clawcodex-tui": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/cli.js",
+    "dev": "bun run src/cli.tsx"
+  },
+  "dependencies": {
+    "ink": "^5.0.1",
+    "ink-text-input": "^6.0.0",
+    "react": "^18.3.1",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.5.0",
+    "@types/react": "^18.3.5",
+    "@types/ws": "^8.5.12",
+    "typescript": "^5.6.2"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
