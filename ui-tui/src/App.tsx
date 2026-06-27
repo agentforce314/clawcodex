@@ -804,6 +804,23 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         })
         return true
       }
+      case 'agents': {
+        if (client) {
+          void client.requestControl('list_agents').then((r) => {
+            const agents = Array.isArray(r?.['agents']) ? (r['agents'] as Record<string, unknown>[]) : []
+            if (!agents.length) {
+              addEntry({ kind: 'system', text: 'no agents available' })
+              return
+            }
+            const lines = agents.map((a) => {
+              const when = String(a['when'] || '').replace(/\s+/g, ' ').slice(0, 60)
+              return `● ${String(a['type'])} (${String(a['source'])})${when ? ` — ${when}` : ''}`
+            })
+            addEntry({ kind: 'system', text: `Agents (${agents.length}):\n${lines.join('\n')}` })
+          })
+        }
+        return true
+      }
       case 'permissions': {
         if (client) {
           void client.requestControl('list_permissions').then((r) => {
