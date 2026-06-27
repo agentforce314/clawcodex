@@ -1,115 +1,130 @@
 /**
- * Minimal line diff for Edit/Write tool calls, rendered Claude-Code style
- * (green added / red removed lines with a line-number gutter). Not a full Myers
- * diff — it trims the common prefix/suffix and shows the changed middle, which
- * is exactly right for an Edit's old_string→new_string region.
+ * Build the diff payload for an Edit/Write/MultiEdit tool call as
+ * StructuredPatchHunk[] — the exact shape openclaude's StructuredDiff renderer
+ * consumes. Mirrors typescript/src/components/FileEditToolDiff.tsx#loadDiffData:
+ *
+ *   - when the on-disk file is available, diff the WHOLE file with the edit(s)
+ *     applied → structuredPatch emits hunks with true file line numbers and 3
+ *     lines of surrounding context (no hand-rolled context window);
+ *   - otherwise fall back to diffing the tool inputs only (old_string as the
+ *     "file"), numbered from line 1, exactly like upstream diffToolInputsOnly.
  */
-export interface DiffLine {
-  type: 'add' | 'del' | 'ctx'
-  text: string
-  oldNo?: number
-  newNo?: number
+import {
+  getPatchForDisplay,
+  getPatchFromContents,
+  type FileEdit,
+  type StructuredPatchHunk,
+} from './patch.js'
+
+export interface ToolDiff {
+  /**
+   * 'edit'  → render a +/- StructuredDiff from `hunks` (Edit/MultiEdit, or a
+   *           Write that overwrites a file we can read pre-write).
+   * 'write' → render the full new `content` syntax-highlighted (ColorFile), the
+   *           way the original shows a created file (no +/- markers).
+   */
+  kind: 'edit' | 'write'
+  hunks: StructuredPatchHunk[]
+  /** kind==='write': the full new file content (rendered via ColorFile). */
+  content?: string
+  /** First line of the file (shebang detection for syntax highlighting). */
+  firstLine: string | null
+  /** Full file content, when available — passed to ColorDiff for context. */
+  fileContent?: string
+  filePath: string
+  /** Display verb for the tool-use line: Update / Create / Write. */
+  displayName: string
 }
 
-export function lineDiff(oldStr: string, newStr: string, startLine = 1): DiffLine[] {
-  const o = oldStr.split('\n')
-  const n = newStr.split('\n')
-  let p = 0
-  while (p < o.length && p < n.length && o[p] === n[p]) p++
-  let s = 0
-  while (s < o.length - p && s < n.length - p && o[o.length - 1 - s] === n[n.length - 1 - s]) s++
-  const out: DiffLine[] = []
-  let oldNo = startLine
-  let newNo = startLine
-  for (let i = 0; i < p; i++) out.push({ type: 'ctx', text: o[i] ?? '', oldNo: oldNo++, newNo: newNo++ })
-  for (let i = p; i < o.length - s; i++) out.push({ type: 'del', text: o[i] ?? '', oldNo: oldNo++ })
-  for (let i = p; i < n.length - s; i++) out.push({ type: 'add', text: n[i] ?? '', newNo: newNo++ })
-  for (let i = 0; i < s; i++) {
-    out.push({ type: 'ctx', text: o[o.length - s + i] ?? '', oldNo: oldNo++, newNo: newNo++ })
-  }
-  return out
+function firstLineOf(s: string): string | null {
+  return s.split('\n', 1)[0] ?? null
 }
 
-/**
- * File line number where `probe` begins in `fileContent` (1-based). The original
- * computes this from the patch hunk's oldStart; we locate the changed region
- * directly. Tries old_string (pre-edit file) then new_string (post-edit file),
- * so it works whether or not the edit has already been applied on disk.
- */
-function startLineOf(fileContent: string | undefined, oldS: string, newS: string): number {
-  if (!fileContent) return 1
-  const probe = oldS && fileContent.includes(oldS) ? oldS : newS && fileContent.includes(newS) ? newS : null
-  if (!probe) return 1
-  const idx = fileContent.indexOf(probe)
-  if (idx <= 0) return 1
-  let line = 1
-  for (let i = 0; i < idx; i++) if (fileContent[i] === '\n') line++
-  return line
-}
-
-/** Unchanged file lines shown above/below the change, for orientation. */
-const CONTEXT_LINES = 3
-
-/**
- * Surround the changed region with a few unchanged file lines (the original
- * shows ~3 above/below). Uses the on-disk file and the located start line; if
- * the file isn't available or the region can't be found, returns the diff as-is.
- */
-function withFileContext(
-  core: DiffLine[],
-  fileContent: string | undefined,
-  oldS: string,
-  newS: string,
-  start: number,
-): DiffLine[] {
-  if (!fileContent) return core
-  const fileLines = fileContent.split('\n')
-  const probe = oldS && fileContent.includes(oldS) ? oldS : newS && fileContent.includes(newS) ? newS : null
-  if (!probe) return core
-  const span = probe.split('\n').length
-  const before: DiffLine[] = []
-  for (let i = Math.max(0, start - 1 - CONTEXT_LINES); i < start - 1; i++) {
-    before.push({ type: 'ctx', text: fileLines[i] ?? '', oldNo: i + 1, newNo: i + 1 })
-  }
-  const afterStart = start - 1 + span // 0-based index just past the changed region
-  const after: DiffLine[] = []
-  for (let i = afterStart; i < Math.min(fileLines.length, afterStart + CONTEXT_LINES); i++) {
-    after.push({ type: 'ctx', text: fileLines[i] ?? '', oldNo: i + 1, newNo: i + 1 })
-  }
-  return [...before, ...core, ...after]
+function str(v: unknown): string {
+  return typeof v === 'string' ? v : ''
 }
 
 /**
- * Build a diff for an Edit/Write/MultiEdit tool call from its raw input.
- * `fileContent` (the on-disk file) lets us emit true file line numbers; without
- * it we fall back to region-relative (1-based) numbering.
+ * Build a ToolDiff from a tool call's raw input. `fileContent` (the on-disk
+ * file, read best-effort by the caller) yields true file line numbers; without
+ * it we diff the inputs region-relative.
  */
-export function toolDiff(
+export function buildToolDiff(
   toolName: string,
   input: Record<string, unknown>,
   fileContent?: string,
-): DiffLine[] | null {
+): ToolDiff | null {
+  const filePath = str(input['file_path']) || str(input['path']) || ''
+
   if (toolName === 'Write') {
-    const content = typeof input['content'] === 'string' ? (input['content'] as string) : ''
-    if (!content) return null
-    return content.split('\n').map((text, i) => ({ type: 'add', text, newNo: i + 1 }))
-  }
-  if (toolName === 'Edit') {
-    const oldS = typeof input['old_string'] === 'string' ? (input['old_string'] as string) : ''
-    const newS = typeof input['new_string'] === 'string' ? (input['new_string'] as string) : ''
-    if (!oldS && !newS) return null
-    const start = startLineOf(fileContent, oldS, newS)
-    return withFileContext(lineDiff(oldS, newS, start), fileContent, oldS, newS, start)
-  }
-  if (toolName === 'MultiEdit') {
-    const edits = Array.isArray(input['edits']) ? (input['edits'] as Record<string, unknown>[]) : []
-    const out: DiffLine[] = []
-    for (const e of edits) {
-      const oldS = typeof e['old_string'] === 'string' ? (e['old_string'] as string) : ''
-      const newS = typeof e['new_string'] === 'string' ? (e['new_string'] as string) : ''
-      out.push(...lineDiff(oldS, newS, startLineOf(fileContent, oldS, newS)))
+    const content = str(input['content'])
+    // If we can read the pre-write file AND it differs, show a real diff
+    // (the original's "update" path); otherwise show the new content
+    // highlighted (the "create" path). The file-not-yet-written and
+    // file-unreadable cases both fall to 'write'.
+    if (fileContent !== undefined && fileContent !== content && content) {
+      const hunks = getPatchFromContents({ filePath, oldContent: fileContent, newContent: content })
+      if (hunks.length) {
+        return {
+          kind: 'edit',
+          hunks,
+          firstLine: firstLineOf(content),
+          fileContent: content,
+          filePath,
+          displayName: 'Update',
+        }
+      }
     }
-    return out.length ? out : null
+    if (!content) return null
+    return {
+      kind: 'write',
+      hunks: [],
+      content,
+      firstLine: firstLineOf(content),
+      filePath,
+      displayName: 'Write',
+    }
   }
+
+  if (toolName === 'Edit') {
+    const old_string = str(input['old_string'])
+    const new_string = str(input['new_string'])
+    if (!old_string && !new_string) return null
+    const replace_all = input['replace_all'] === true
+    const edit: FileEdit = { old_string, new_string, replace_all }
+    const displayName = old_string === '' ? 'Create' : 'Update'
+    if (fileContent && fileContent.includes(old_string)) {
+      const hunks = getPatchForDisplay({ filePath, fileContents: fileContent, edits: [edit] })
+      if (!hunks.length) return null
+      return { kind: 'edit', hunks, firstLine: firstLineOf(fileContent), fileContent, filePath, displayName }
+    }
+    // inputs-only: treat old_string as the whole "file"
+    const hunks = getPatchForDisplay({ filePath, fileContents: old_string, edits: [edit] })
+    if (!hunks.length) return null
+    return { kind: 'edit', hunks, firstLine: null, filePath, displayName }
+  }
+
+  if (toolName === 'MultiEdit') {
+    const raw = Array.isArray(input['edits']) ? (input['edits'] as Record<string, unknown>[]) : []
+    const edits: FileEdit[] = raw.map(e => ({
+      old_string: str(e['old_string']),
+      new_string: str(e['new_string']),
+      replace_all: e['replace_all'] === true,
+    }))
+    if (!edits.length) return null
+    if (fileContent) {
+      const hunks = getPatchForDisplay({ filePath, fileContents: fileContent, edits })
+      if (hunks.length) {
+        return { kind: 'edit', hunks, firstLine: firstLineOf(fileContent), fileContent, filePath, displayName: 'Update' }
+      }
+    }
+    // inputs-only: one patch per edit, old_string as its "file"
+    const hunks = edits.flatMap(e =>
+      getPatchForDisplay({ filePath, fileContents: e.old_string, edits: [e] }),
+    )
+    if (!hunks.length) return null
+    return { kind: 'edit', hunks, firstLine: null, filePath, displayName: 'Update' }
+  }
+
   return null
 }
