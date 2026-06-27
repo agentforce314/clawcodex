@@ -47,6 +47,38 @@ function startLineOf(fileContent: string | undefined, oldS: string, newS: string
   return line
 }
 
+/** Unchanged file lines shown above/below the change, for orientation. */
+const CONTEXT_LINES = 3
+
+/**
+ * Surround the changed region with a few unchanged file lines (the original
+ * shows ~3 above/below). Uses the on-disk file and the located start line; if
+ * the file isn't available or the region can't be found, returns the diff as-is.
+ */
+function withFileContext(
+  core: DiffLine[],
+  fileContent: string | undefined,
+  oldS: string,
+  newS: string,
+  start: number,
+): DiffLine[] {
+  if (!fileContent) return core
+  const fileLines = fileContent.split('\n')
+  const probe = oldS && fileContent.includes(oldS) ? oldS : newS && fileContent.includes(newS) ? newS : null
+  if (!probe) return core
+  const span = probe.split('\n').length
+  const before: DiffLine[] = []
+  for (let i = Math.max(0, start - 1 - CONTEXT_LINES); i < start - 1; i++) {
+    before.push({ type: 'ctx', text: fileLines[i] ?? '', oldNo: i + 1, newNo: i + 1 })
+  }
+  const afterStart = start - 1 + span // 0-based index just past the changed region
+  const after: DiffLine[] = []
+  for (let i = afterStart; i < Math.min(fileLines.length, afterStart + CONTEXT_LINES); i++) {
+    after.push({ type: 'ctx', text: fileLines[i] ?? '', oldNo: i + 1, newNo: i + 1 })
+  }
+  return [...before, ...core, ...after]
+}
+
 /**
  * Build a diff for an Edit/Write/MultiEdit tool call from its raw input.
  * `fileContent` (the on-disk file) lets us emit true file line numbers; without
@@ -66,7 +98,8 @@ export function toolDiff(
     const oldS = typeof input['old_string'] === 'string' ? (input['old_string'] as string) : ''
     const newS = typeof input['new_string'] === 'string' ? (input['new_string'] as string) : ''
     if (!oldS && !newS) return null
-    return lineDiff(oldS, newS, startLineOf(fileContent, oldS, newS))
+    const start = startLineOf(fileContent, oldS, newS)
+    return withFileContext(lineDiff(oldS, newS, start), fileContent, oldS, newS, start)
   }
   if (toolName === 'MultiEdit') {
     const edits = Array.isArray(input['edits']) ? (input['edits'] as Record<string, unknown>[]) : []
