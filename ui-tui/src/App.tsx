@@ -8,6 +8,8 @@
  */
 import { Box, Static, Text, useApp, useInput } from 'ink'
 import TextInput from 'ink-text-input'
+import { writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import React, { useEffect, useRef, useState } from 'react'
 import { DirectConnectClient } from './client.js'
 import type { Transport } from './transport.js'
@@ -54,6 +56,59 @@ const HELP = [
  * (non-Static) region inside the viewport so Ink can erase it cleanly instead of
  * leaking re-rendered copies into scrollback.
  */
+/** Serialize the transcript to readable Markdown (for /export). */
+function transcriptToMarkdown(entries: TranscriptEntry[]): string {
+  const out: string[] = ['# clawcodex transcript', '']
+  for (const e of entries) {
+    switch (e.kind) {
+      case 'user':
+        out.push(`### › ${e.text}`, '')
+        break
+      case 'assistant':
+        out.push(e.text, '')
+        break
+      case 'thinking':
+        out.push(`> ∴ _${e.text.replace(/\n/g, ' ')}_`, '')
+        break
+      case 'tool': {
+        if (e.todos) {
+          out.push('**Todos:**')
+          for (const t of e.todos) out.push(`- [${t.status === 'completed' ? 'x' : ' '}] ${t.content}`)
+          out.push('')
+        } else if (e.agent) {
+          out.push(`\`Task(${e.agent.description})\`${e.agent.subagentType ? ` · ${e.agent.subagentType}` : ''}`, '')
+        } else {
+          const name = e.diff ? e.diff.displayName : e.toolName
+          out.push(`\`${name}(${e.argsText ?? ''})\``)
+          if (e.diff) {
+            out.push('```diff')
+            if (e.diff.kind === 'write' && e.diff.content) out.push(...e.diff.content.split('\n').map((l) => `+${l}`))
+            else for (const h of e.diff.hunks) out.push(...h.lines)
+            out.push('```')
+          }
+          out.push('')
+        }
+        break
+      }
+      case 'toolResult':
+        out.push('```', e.text, '```', '')
+        break
+      case 'result':
+        out.push(`_${e.text}_`, '')
+        break
+      case 'error':
+        out.push(`**Error:** ${e.text}`, '')
+        break
+      case 'system':
+        out.push(`_${e.text}_`, '')
+        break
+      default:
+        break
+    }
+  }
+  return out.join('\n')
+}
+
 /** The chunk inserted between `oldV` and `newV` (common prefix/suffix diff). */
 function diffInsert(oldV: string, newV: string): { ins: string; p: number; s: number } {
   let p = 0
@@ -528,6 +583,18 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         client?.close()
         exit()
         return true
+      case 'export': {
+        try {
+          const md = transcriptToMarkdown(entries)
+          const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+          const file = join(process.cwd(), `clawcodex-transcript-${ts}.md`)
+          writeFileSync(file, md, 'utf8')
+          addEntry({ kind: 'system', text: `exported transcript → ${file}` })
+        } catch (e) {
+          addEntry({ kind: 'error', text: `export failed: ${String((e as Error).message)}` })
+        }
+        return true
+      }
       case 'theme': {
         if (!arg) {
           const options = ['dark', 'light']
