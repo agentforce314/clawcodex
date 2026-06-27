@@ -314,7 +314,7 @@ clone_or_update_repo() {
     # backup / clone so --dry-run never mutates the filesystem.
     if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
         if [[ -d "$CLAWCODEX_HOME/.git" ]]; then
-            _script_p1; echo "[DRY-RUN] would run: git -C $CLAWCODEX_HOME pull --ff-only"
+            _script_p1; echo "[DRY-RUN] would update $CLAWCODEX_HOME: restore uv.lock, then git pull --ff-only (reset to origin/$REPO_REF if it can't fast-forward)"
         elif [[ -e "$CLAWCODEX_HOME" ]]; then
             _script_p1; echo "[DRY-RUN] would back up non-git $CLAWCODEX_HOME, then clone $REPO_URL (ref: $REPO_REF)"
         else
@@ -325,12 +325,24 @@ clone_or_update_repo() {
 
     if [[ -d "$CLAWCODEX_HOME/.git" ]]; then
         log_info "Existing repo found at $CLAWCODEX_HOME — pulling latest changes..."
+        # A previous install's `uv sync` re-pins the *tracked* uv.lock in place;
+        # that local change blocks `git pull --ff-only`, so without this the
+        # installer would warn and silently keep old code on every update. This
+        # dir is a managed mirror (not a working copy), so discard the
+        # installer's own tracked churn before pulling.
+        git -C "$CLAWCODEX_HOME" checkout -- uv.lock >/dev/null 2>&1 || true
         # git -C (not a cd-subshell) keeps this a direct `if` condition, so an
         # expected pull failure doesn't trip the ERR trap.
         if git -C "$CLAWCODEX_HOME" pull --ff-only >/dev/null 2>&1; then
             log_ok "Updated via fast-forward"
+        # Fallback: shallow clones can't always fast-forward, and any stray
+        # tracked edits would block the pull. Reset the managed mirror to the
+        # remote ref so updates are never silently skipped.
+        elif git -C "$CLAWCODEX_HOME" fetch --depth 1 origin "$REPO_REF" >/dev/null 2>&1 &&
+             git -C "$CLAWCODEX_HOME" reset --hard FETCH_HEAD >/dev/null 2>&1; then
+            log_ok "Updated (reset to origin/$REPO_REF)"
         else
-            log_warn "git pull --ff-only failed (likely local edits or non-FF history). Continuing with existing code."
+            log_warn "Could not update $CLAWCODEX_HOME to latest; continuing with existing code."
         fi
         return
     fi
