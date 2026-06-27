@@ -24,7 +24,7 @@ import { READ_LIKE, TOOL_VERB, toolActivityLabel } from './toolMeta.js'
 import { messageToEntries, streamDeltaText, type TranscriptEntry } from './sdkMessageAdapter.js'
 import { matchSlash, resolveSlash } from './slashCommands.js'
 import { parseProtocolMajor, SUPPORTED_PROTOCOL_MAJOR } from './protocol.js'
-import { applyTheme, theme } from './theme.js'
+import { applyTheme, currentThemeName, theme } from './theme.js'
 
 interface Props {
   transport: Transport
@@ -94,6 +94,13 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const historyRef = useRef<string[]>([])
   const [histIdx, setHistIdx] = useState(-1)
   const draftRef = useRef('')
+  // Interactive select picker (the original's CustomSelect) for /mode, /theme.
+  const [picker, setPicker] = useState<{
+    kind: 'mode' | 'theme'
+    title: string
+    options: string[]
+    sel: number
+  } | null>(null)
   // Ctrl+R reverse history search.
   const [searchMode, setSearchMode] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
@@ -141,6 +148,19 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const completeAt = (pick: string): void => {
     setInput(input.replace(/@([^\s]*)$/, `@${pick} `))
     setAtSel(0)
+  }
+
+  /** Apply an interactive-picker selection (/mode, /theme). */
+  const applyPick = (kind: 'mode' | 'theme', value: string): void => {
+    if (!value) return
+    if (kind === 'mode') {
+      client?.sendControl('set_permission_mode', { mode: value })
+      setMode(value)
+      addEntry({ kind: 'system', text: `mode → ${value}` })
+    } else if (applyTheme(value)) {
+      setThemeVersion((v) => v + 1)
+      addEntry({ kind: 'system', text: `theme → ${value}` })
+    }
   }
 
   const addEntry = (e: Omit<TranscriptEntry, 'id'>) =>
@@ -349,6 +369,27 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
       exit()
       return
     }
+    // Interactive picker (/mode, /theme): arrow-navigate, Enter picks, Esc cancels.
+    if (picker) {
+      if (key.upArrow) {
+        setPicker((p) => (p ? { ...p, sel: (p.sel - 1 + p.options.length) % p.options.length } : p))
+        return
+      }
+      if (key.downArrow) {
+        setPicker((p) => (p ? { ...p, sel: (p.sel + 1) % p.options.length } : p))
+        return
+      }
+      if (key.return) {
+        applyPick(picker.kind, picker.options[picker.sel] ?? '')
+        setPicker(null)
+        return
+      }
+      if (key.escape) {
+        setPicker(null)
+        return
+      }
+      return // picker swallows all other keys
+    }
     // Ctrl+R: open reverse history search, or cycle to the next older match.
     if (key.ctrl && ch === 'r') {
       if (!searchMode) {
@@ -471,6 +512,16 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         exit()
         return true
       case 'theme': {
+        if (!arg) {
+          const options = ['dark', 'light']
+          setPicker({
+            kind: 'theme',
+            title: 'Select theme',
+            options,
+            sel: Math.max(0, options.indexOf(currentThemeName())),
+          })
+          return true
+        }
         if (applyTheme(arg)) {
           setThemeVersion((v) => v + 1) // repaint dynamic UI; new output uses the theme
           addEntry({ kind: 'system', text: `theme → ${arg}` })
@@ -535,6 +586,16 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
       }
       case 'control': {
         if (!arg) {
+          if (cmd.control === 'set_permission_mode') {
+            const options = ['default', 'acceptEdits', 'plan', 'bypassPermissions']
+            setPicker({
+              kind: 'mode',
+              title: 'Select permission mode',
+              options,
+              sel: Math.max(0, options.indexOf(mode)),
+            })
+            return true
+          }
           addEntry({ kind: 'system', text: `usage: ${cmd.name} <value>` })
           return true
         }
@@ -673,6 +734,31 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
 
       {permission ? (
         <PermissionDialog toolName={permission.toolName} input={permission.input} />
+      ) : picker ? (
+        <Box
+          flexDirection="column"
+          borderStyle="round"
+          borderColor={theme.suggestion}
+          borderLeft={false}
+          borderRight={false}
+          paddingX={1}
+          marginTop={1}
+        >
+          <Text color={theme.dim}>{picker.title}</Text>
+          {picker.options.map((opt, i) =>
+            i === picker.sel ? (
+              <Text key={opt}>
+                <Text color={theme.suggestion} bold>
+                  {'❯ '}
+                </Text>
+                <Text bold>{opt}</Text>
+              </Text>
+            ) : (
+              <Text key={opt} color={theme.dim}>{`  ${opt}`}</Text>
+            ),
+          )}
+          <Text color={theme.dim}>↑↓ select · enter confirm · esc cancel</Text>
+        </Box>
       ) : searchMode ? (
         <Box
           borderStyle="round"
