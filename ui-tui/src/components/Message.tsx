@@ -92,7 +92,14 @@ export function Message({ entry }: { entry: TranscriptEntry }): React.ReactEleme
             <Text color={isWeb ? theme.link : theme.dim}>{entry.argsText}</Text>
             <Text color={theme.dim}>)</Text>
           </Text>
-          {diff ? <DiffView lines={diff} /> : null}
+          {diff ? (
+            <DiffView
+              lines={diff}
+              filePath={
+                typeof entry.input?.['file_path'] === 'string' ? (entry.input['file_path'] as string) : undefined
+              }
+            />
+          ) : null}
         </Box>
       )
     }
