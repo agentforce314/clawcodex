@@ -246,6 +246,15 @@ class _AgentSession:
         if subtype == "branch":
             self._do_branch(request_id)
             return
+        if subtype == "list_mcp":
+            rt = self._mcp_runtime
+            servers = (
+                [{"name": n, "tools": tools} for n, tools in rt.servers.items()]
+                if rt is not None
+                else []
+            )
+            self._reply(request_id, {"servers": servers})
+            return
         if subtype == "clear":
             # Reset the conversation so /clear actually starts a fresh context
             # (not just the client screen). Idle-only.
