@@ -952,6 +952,14 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         </Box>
       ) : null}
 
+      {contextUsage && contextUsage.percentage >= 80 ? (
+        <Box marginTop={1}>
+          <Text color={contextUsage.percentage >= 90 ? theme.error : theme.warn}>
+            {`⚠ Context ${Math.round(contextUsage.percentage)}% used — run /compact to free space`}
+          </Text>
+        </Box>
+      ) : null}
+
       {permission ? (
         <PermissionDialog toolName={permission.toolName} input={permission.input} />
       ) : picker ? (
