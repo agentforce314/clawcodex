@@ -54,6 +54,16 @@ const HELP = [
  * (non-Static) region inside the viewport so Ink can erase it cleanly instead of
  * leaking re-rendered copies into scrollback.
  */
+/** The chunk inserted between `oldV` and `newV` (common prefix/suffix diff). */
+function diffInsert(oldV: string, newV: string): { ins: string; p: number; s: number } {
+  let p = 0
+  const max = Math.min(oldV.length, newV.length)
+  while (p < max && oldV[p] === newV[p]) p++
+  let s = 0
+  while (s < oldV.length - p && s < newV.length - p && oldV[oldV.length - 1 - s] === newV[newV.length - 1 - s]) s++
+  return { ins: newV.slice(p, newV.length - s), p, s }
+}
+
 function streamTail(text: string, cols: number, maxLines: number): string {
   if (maxLines < 1) maxLines = 1
   const width = cols < 8 ? 8 : cols
@@ -94,6 +104,9 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const historyRef = useRef<string[]>([])
   const [histIdx, setHistIdx] = useState(-1)
   const draftRef = useRef('')
+  // Large pastes collapse to a `[Pasted text #N]` placeholder (token → real text).
+  const pasteStore = useRef<Map<string, string>>(new Map())
+  const pasteCounter = useRef(0)
   // Interactive select picker (the original's CustomSelect) for /mode, /theme.
   const [picker, setPicker] = useState<{
     kind: 'mode' | 'theme' | 'model'
@@ -637,10 +650,19 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     }
   }
 
+  /** Replace `[Pasted text #N]` placeholders with their real text for the model. */
+  const expandPastes = (t: string): string => {
+    let e = t
+    for (const [token, real] of pasteStore.current) {
+      if (e.includes(token)) e = e.split(token).join(real)
+    }
+    return e
+  }
+
   /** Send a prompt now and start a turn (shared by submit + queue drain). */
   const dispatchPrompt = (text: string): void => {
     if (!client) return
-    client.sendPrompt(text)
+    client.sendPrompt(expandPastes(text)) // model gets the full paste; transcript shows the placeholder
     if (historyRef.current[historyRef.current.length - 1] !== text) historyRef.current.push(text)
     addEntry({ kind: 'user', text })
     setStream('')
@@ -819,7 +841,19 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
             <TextInput
               value={input}
               onChange={(v) => {
-                setInput(v)
+                // Collapse a large paste to a placeholder so it doesn't flood
+                // the input (the original's [Pasted text #N]). Normal typing
+                // inserts one char at a time, so this only fires on paste.
+                const { ins, p, s } = diffInsert(input, v)
+                const nLines = ins ? ins.split('\n').length : 0
+                if (ins && (ins.length > 200 || nLines >= 4)) {
+                  const n = (pasteCounter.current += 1)
+                  const token = `[Pasted text #${n}${nLines > 1 ? ` +${nLines} lines` : ''}]`
+                  pasteStore.current.set(token, ins)
+                  setInput(v.slice(0, p) + token + (s ? v.slice(v.length - s) : ''))
+                } else {
+                  setInput(v)
+                }
                 setSlashSel(0)
                 setAtSel(0)
                 setHistIdx(-1)
