@@ -48,6 +48,7 @@ export type EntryKind =
   | 'result'
   | 'error'
   | 'context'
+  | 'thinking'
 
 export interface TranscriptEntry {
   id: string
@@ -168,6 +169,20 @@ export function messageToEntries(msg: ServerMessage): TranscriptEntry[] {
     const m = msg as { message: { content: string | ContentBlock[] } }
     const content = m.message?.content
     const out: TranscriptEntry[] = []
+    // Thinking blocks render first (the original's ∴ Thinking), before the
+    // assistant's spoken text.
+    if (Array.isArray(content)) {
+      const thinking = content
+        .filter((b) => b && (b.type === 'thinking' || b.type === 'redacted_thinking'))
+        .map((b) =>
+          b.type === 'redacted_thinking'
+            ? '[redacted thinking]'
+            : String((b as { thinking?: string }).thinking ?? ''),
+        )
+        .filter((t) => t.trim())
+        .join('\n')
+      if (thinking.trim()) out.push({ id: nextId(), kind: 'thinking', text: thinking })
+    }
     const text = blocksToText(content)
     if (text.trim()) out.push({ id: nextId(), kind: 'assistant', text })
     if (Array.isArray(content)) {
