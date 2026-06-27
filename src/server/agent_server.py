@@ -225,6 +225,9 @@ class _AgentSession:
         if subtype == "compact":
             await self._do_compact(request_id, inner.get("instructions"))
             return
+        if subtype == "rewind":
+            self._do_rewind(request_id, inner.get("turns", 1))
+            return
         # Unknown subtype — error back so a correlating client doesn't hang.
         if isinstance(request_id, str):
             self._emit({
@@ -267,6 +270,46 @@ class _AgentSession:
         """Forward a spawned subagent's progress to the client (the original's
         AgentProgressLine). Wired onto tool_context.agent_progress_emit."""
         self._emit({"type": "agent_progress", "session_id": self.session_id, **ev})
+
+    def _do_rewind(self, request_id: object, turns: object) -> None:
+        """Drop the last N prompt-turns from the conversation (the original's
+        /rewind). A prompt-turn starts at a real user prompt (string/text
+        content — not a tool_result, which is also role 'user') and runs to the
+        end. Idle-only: the worker mutates the conversation during a turn."""
+        with self._lock:
+            active = self._current_abort is not None
+        if active:
+            self._reply(request_id, {"ok": False, "error": "cannot rewind during an active turn"})
+            return
+        try:
+            n = int(turns) if isinstance(turns, (int, float)) else 1
+            n = max(1, n)
+            msgs = self.session.conversation.messages if self.session is not None else []
+
+            def is_prompt(m: Any) -> bool:
+                if getattr(m, "role", None) != "user":
+                    return False
+                c = getattr(m, "content", None)
+                if isinstance(c, str):
+                    return True
+                if isinstance(c, list):
+                    for b in c:
+                        t = b.get("type") if isinstance(b, dict) else getattr(b, "type", None)
+                        if t == "text":
+                            return True
+                return False
+
+            prompt_idxs = [i for i, m in enumerate(msgs) if is_prompt(m)]
+            if not prompt_idxs:
+                self._reply(request_id, {"ok": True, "removed": 0, "count": len(msgs)})
+                return
+            target = prompt_idxs[max(0, len(prompt_idxs) - n)]
+            removed = len(msgs) - target
+            del msgs[target:]
+            self._reply(request_id, {"ok": True, "removed": removed, "count": len(msgs)})
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[agent-server] rewind failed")
+            self._reply(request_id, {"ok": False, "error": str(exc)})
 
     def _system_prompt_text(self) -> str:
         """The active system prompt as a plain string (it may be a block list —

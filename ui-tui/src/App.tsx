@@ -583,6 +583,28 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         client?.close()
         exit()
         return true
+      case 'rewind': {
+        const n = Math.max(1, parseInt(arg, 10) || 1)
+        if (client) {
+          void client.requestControl('rewind', { turns: n }).then((r) => {
+            if (r && r['ok']) {
+              const removed = Number(r['removed']) || 0
+              const count = Number(r['count']) || 0
+              addEntry({
+                kind: 'system',
+                text: `↩ rewound — dropped ${removed} message${removed === 1 ? '' : 's'} (${count} remaining)`,
+              })
+              void client.requestControl('get_context_usage').then(applyContextUsage)
+            } else {
+              addEntry({
+                kind: 'error',
+                text: `rewind failed: ${r && r['error'] ? String(r['error']) : 'no response'}`,
+              })
+            }
+          })
+        }
+        return true
+      }
       case 'doctor': {
         addEntry({
           kind: 'system',
