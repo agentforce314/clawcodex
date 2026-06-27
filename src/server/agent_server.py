@@ -228,6 +228,21 @@ class _AgentSession:
         if subtype == "rewind":
             self._do_rewind(request_id, inner.get("turns", 1))
             return
+        if subtype == "clear":
+            # Reset the conversation so /clear actually starts a fresh context
+            # (not just the client screen). Idle-only.
+            with self._lock:
+                active = self._current_abort is not None
+            if active:
+                self._reply(request_id, {"ok": False, "error": "cannot clear during an active turn"})
+                return
+            try:
+                if self.session is not None:
+                    self.session.conversation.clear()
+                self._reply(request_id, {"ok": True, "count": 0})
+            except Exception as exc:  # noqa: BLE001
+                self._reply(request_id, {"ok": False, "error": str(exc)})
+            return
         # Unknown subtype — error back so a correlating client doesn't hang.
         if isinstance(request_id, str):
             self._emit({
