@@ -11,6 +11,7 @@ import TextInput from 'ink-text-input'
 import React, { useEffect, useRef, useState } from 'react'
 import { DirectConnectClient, type SessionInfo } from './client.js'
 import { Markdown } from './markdown.js'
+import { Banner } from './components/Banner.js'
 import { Message } from './components/Message.js'
 import { PermissionDialog } from './components/PermissionDialog.js'
 import { SlashMenu } from './components/SlashMenu.js'
@@ -49,6 +50,7 @@ export function App({ info, serverLabel }: Props): React.ReactElement {
   const [turnStartedAt, setTurnStartedAt] = useState(0)
   const [model, setModel] = useState('?')
   const [mode, setMode] = useState('?')
+  const [tools, setTools] = useState(0)
   const [connected, setConnected] = useState(false)
   const [client, setClient] = useState<DirectConnectClient | null>(null)
   const [slashSel, setSlashSel] = useState(0)
@@ -108,9 +110,10 @@ export function App({ info, serverLabel }: Props): React.ReactElement {
           flushStream() // commit a partial left over by interrupt/error (no-op on success)
         }
         if (type === 'system' && (msg as { subtype?: string }).subtype === 'init') {
-          const m = msg as { model?: string; permission_mode?: string; protocol_version?: string }
+          const m = msg as { model?: string; permission_mode?: string; protocol_version?: string; tools?: unknown[] }
           setModel(m.model ?? '?')
           setMode(m.permission_mode ?? '?')
+          setTools(Array.isArray(m.tools) ? m.tools.length : 0)
           const major = parseProtocolMajor(m.protocol_version)
           if (major !== null && major !== SUPPORTED_PROTOCOL_MAJOR) {
             addEntry({
@@ -242,7 +245,17 @@ export function App({ info, serverLabel }: Props): React.ReactElement {
 
   return (
     <Box flexDirection="column">
-      <Static items={entries}>{(entry) => <Message key={entry.id} entry={entry} />}</Static>
+      {entries.length === 0 && streaming === '' ? (
+        <Banner model={model} mode={mode} tools={tools} cwd={info.workDir} />
+      ) : null}
+
+      <Static items={entries}>
+        {(entry) => (
+          <Box key={entry.id} marginTop={entry.kind === 'tool' || entry.kind === 'toolResult' ? 0 : 1}>
+            <Message entry={entry} />
+          </Box>
+        )}
+      </Static>
 
       {streaming ? (
         <Box>
@@ -266,8 +279,8 @@ export function App({ info, serverLabel }: Props): React.ReactElement {
       ) : (
         <>
           {slashOpen ? <SlashMenu matches={slashMatches} selected={sel} /> : null}
-          <Box>
-            <Text color={connected ? theme.user : theme.dim}>{busy ? '… ' : '❯ '}</Text>
+          <Box borderStyle="round" borderColor={theme.dim} paddingX={1}>
+            <Text color={connected ? theme.accent : theme.dim}>{busy ? '… ' : '❯ '}</Text>
             <TextInput
               value={input}
               onChange={(v) => {
@@ -278,6 +291,7 @@ export function App({ info, serverLabel }: Props): React.ReactElement {
               placeholder={connected ? 'Type a message, or / for commands…' : 'connecting…'}
             />
           </Box>
+          <Text color={theme.dim}>{'  enter send · / commands · esc interrupt · ^C quit'}</Text>
         </>
       )}
 

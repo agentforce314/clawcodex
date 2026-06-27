@@ -69,6 +69,10 @@ function truncate(s: string, max = 100): string {
   return one.length > max ? `${one.slice(0, max - 1)}…` : one
 }
 
+function fmtK(n: number): string {
+  return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)
+}
+
 function toolResultText(content: string | ContentBlock[] | undefined): string {
   if (typeof content === 'string') return content
   if (!Array.isArray(content)) return ''
@@ -99,14 +103,8 @@ export function messageToEntries(msg: ServerMessage): TranscriptEntry[] {
       level?: string
     }
     if (m.subtype === 'init') {
-      const tools = Array.isArray(m.tools) ? m.tools.length : 0
-      return [
-        {
-          id: nextId(),
-          kind: 'system',
-          text: `connected · ${m.model ?? '?'} · ${m.permission_mode ?? '?'} · ${tools} tools · v${m.protocol_version ?? '?'}`,
-        },
-      ]
+      // Connection info is shown in the welcome Banner, not the transcript.
+      return []
     }
     if (m.message) {
       return [{ id: nextId(), kind: m.level === 'error' ? 'error' : 'system', text: m.message }]
@@ -155,12 +153,13 @@ export function messageToEntries(msg: ServerMessage): TranscriptEntry[] {
     if (m.subtype === 'cancelled') {
       return [{ id: nextId(), kind: 'system', text: 'interrupted' }]
     }
-    const usage = m.usage
-      ? ` · ${Object.entries(m.usage)
-          .map(([k, v]) => `${k}=${v}`)
-          .join(' ')}`
-      : ''
-    return [{ id: nextId(), kind: 'result', text: `done (${m.num_turns ?? 0} turns)${usage}` }]
+    const u = (m.usage ?? {}) as Record<string, number>
+    const inTok = u['input_tokens'] ?? u['input'] ?? 0
+    const outTok = u['output_tokens'] ?? u['output'] ?? 0
+    const total = inTok + outTok
+    const tok = total > 0 ? ` · ${fmtK(total)} tokens` : ''
+    const turns = m.num_turns ?? 0
+    return [{ id: nextId(), kind: 'result', text: `done · ${turns} turn${turns === 1 ? '' : 's'}${tok}` }]
   }
 
   return []
