@@ -161,6 +161,21 @@ export function Message({ entry }: { entry: TranscriptEntry }): React.ReactEleme
       if (entry.todos) {
         return <TodoList todos={entry.todos} />
       }
+      // Agent/Task (subagent spawn) renders as a Task card.
+      if (entry.agent) {
+        const a = entry.agent
+        const label = a.name ? `${a.description} (@${a.name})` : a.description
+        return (
+          <Text>
+            <Text color={theme.suggestion}>⏺ </Text>
+            <Text bold>Task</Text>
+            <Text color={theme.dim}>(</Text>
+            <Text color={theme.suggestion}>{label}</Text>
+            <Text color={theme.dim}>)</Text>
+            {a.subagentType ? <Text color={theme.dim}>{`  · ${a.subagentType}`}</Text> : null}
+          </Text>
+        )
+      }
       // Collapsed summary of several same-kind calls (e.g. "Read 4 files").
       if (entry.count && entry.count > 1) {
         const noun = TOOL_VERB[entry.toolName ?? '']?.noun || 'files'

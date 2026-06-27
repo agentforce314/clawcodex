@@ -72,6 +72,8 @@ export interface TranscriptEntry {
   todos?: TodoItem[]
   /** /context entries: the context-window usage breakdown to visualize. */
   contextData?: ContextData
+  /** Agent/Task tool calls: the spawned subagent's task + type. */
+  agent?: { description: string; subagentType: string; name: string }
   /** banner only: the session info snapshot, captured once at init. */
   bannerData?: { model: string; mode: string; tools: number; cwd?: string }
 }
@@ -171,6 +173,22 @@ export function messageToEntries(msg: ServerMessage): TranscriptEntry[] {
             string,
             unknown
           >
+          // Agent/Task (subagent spawn) renders as a Task card.
+          if (toolName === 'Agent' || toolName === 'Task') {
+            out.push({
+              id: nextId(),
+              kind: 'tool',
+              text: '',
+              toolName,
+              agent: {
+                description: String(tinput['description'] ?? ''),
+                subagentType: String(tinput['subagent_type'] ?? ''),
+                name: String(tinput['name'] ?? ''),
+              },
+              toolUseId: String((block as { id?: string }).id ?? ''),
+            })
+            continue
+          }
           // TodoWrite renders as a checklist, not a generic tool call.
           if (toolName === 'TodoWrite' && Array.isArray(tinput['todos'])) {
             out.push({
