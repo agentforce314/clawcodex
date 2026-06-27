@@ -779,6 +779,16 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         addEntry({ kind: 'system', text: `Memory files:\n${lines.join('\n')}` })
         return true
       }
+      case 'prompt': {
+        if (cmd.promptText) {
+          if (client && ready && !busy && permissions.length === 0) {
+            dispatchPrompt(cmd.promptText)
+          } else {
+            addEntry({ kind: 'system', text: `cannot run ${cmd.name} now (agent busy or not ready)` })
+          }
+        }
+        return true
+      }
       case 'init': {
         if (client && ready && !busy && permissions.length === 0) {
           dispatchPrompt(
