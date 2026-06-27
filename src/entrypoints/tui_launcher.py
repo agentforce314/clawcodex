@@ -4,8 +4,9 @@ Architecture (the hermes-agent route): the **TypeScript Ink TUI is the parent**
 and spawns the **Python agent-server as a child** it owns. This launcher is a
 thin bootstrap — it resolves the Ink client command plus the command the client
 should use to spawn the backend (``CLAWCODEX_AGENT_SERVER_CMD``), then execs the
-client. The client spawns the agent-server, reads its ``cc://`` URL, connects,
-and tears the child down on exit:
+client. The client spawns the agent-server and talks to it over the child's
+stdin/stdout (NDJSON) — a pipe can't idle-time-out — tearing the child down on
+exit:
 
     clawcodex tui   →   node ui-tui  →   python -m src.entrypoints.agent_server_cli
 
@@ -100,7 +101,7 @@ def _resolve_tui_command(tui_dir: Path | None) -> list[str] | None:
 def _agent_server_cmd(args) -> list[str]:
     """Command the Ink client runs to spawn the Python agent-server child.
 
-    The client appends ``--host 127.0.0.1 --port 0 --token <random>``.
+    The client appends ``--stdio`` and talks over the child's stdin/stdout.
     """
     cmd = [sys.executable, "-m", "src.entrypoints.agent_server_cli",
            "--permission-mode", args.permission_mode]
