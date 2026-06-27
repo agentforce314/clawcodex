@@ -279,7 +279,14 @@ export function App({ info, serverLabel }: Props): React.ReactElement {
       ) : (
         <>
           {slashOpen ? <SlashMenu matches={slashMatches} selected={sel} /> : null}
-          <Box borderStyle="round" borderColor={theme.dim} paddingX={1}>
+          <Box
+            borderStyle="round"
+            borderColor={theme.promptBorder}
+            borderLeft={false}
+            borderRight={false}
+            paddingX={1}
+            width="100%"
+          >
             <Text color={connected ? theme.accent : theme.dim}>{busy ? '… ' : '❯ '}</Text>
             <TextInput
               value={input}

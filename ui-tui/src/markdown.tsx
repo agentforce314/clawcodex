@@ -47,7 +47,7 @@ export function parseInline(text: string): React.ReactNode[] {
     const tok = m[0]
     if (m[1]) {
       out.push(
-        <Text key={k()} color={theme.code}>
+        <Text key={k()} color={theme.suggestion}>
           {tok.slice(1, -1)}
         </Text>,
       )
@@ -164,7 +164,7 @@ function parseBlocks(src: string): Block[] {
   return blocks
 }
 
-const HEADING_COLOR = [theme.heading, theme.heading, theme.accent, theme.accent, theme.dim, theme.dim]
+const HEADING_COLOR = [theme.heading, theme.heading, theme.heading, theme.heading, theme.dim, theme.dim]
 
 export function Markdown({ text }: { text: string }): React.ReactElement {
   const blocks = parseBlocks(text)
@@ -176,12 +176,9 @@ export function Markdown({ text }: { text: string }): React.ReactElement {
           // the Claude Code look (no box; cli-highlight colors the code).
           const lines = highlightCode(b.lines.join('\n'), b.lang)
           return (
-            <Box key={idx} flexDirection="column" marginY={0}>
+            <Box key={idx} flexDirection="column" marginY={0} paddingLeft={2}>
               {(lines.length ? lines : [' ']).map((ln, j) => (
-                <Box key={j}>
-                  <Text color={theme.dim}>{'  │ '}</Text>
-                  <Text>{ln || ' '}</Text>
-                </Box>
+                <Text key={j}>{ln || ' '}</Text>
               ))}
             </Box>
           )
@@ -220,7 +217,7 @@ export function Markdown({ text }: { text: string }): React.ReactElement {
                 const bullet = it.ordered ? `${Number.isFinite(num) ? num : j + 1}. ` : '- '
                 return (
                   <Box key={j}>
-                    <Text color={theme.accent}>{`  ${bullet}`}</Text>
+                    <Text color={theme.assistant}>{`  ${bullet}`}</Text>
                     <Text>{parseInline(it.text)}</Text>
                   </Box>
                 )
