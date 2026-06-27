@@ -16,6 +16,7 @@ export interface SlashCommand {
     | 'compact'
     | 'rewind'
     | 'resume'
+    | 'rename'
     | 'theme'
     | 'export'
     | 'copy'
@@ -39,6 +40,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/compact', description: 'Summarize & compact the conversation: /compact [instructions]', kind: 'compact' },
   { name: '/rewind', description: 'Undo the last turn(s): /rewind [N]', kind: 'rewind' },
   { name: '/resume', description: 'Resume a saved session', kind: 'resume' },
+  { name: '/rename', description: 'Name the current session: /rename <name>', kind: 'rename' },
   { name: '/theme', description: 'Switch color theme: /theme <dark|light>', kind: 'theme' },
   { name: '/export', description: 'Save the transcript to a markdown file', kind: 'export' },
   { name: '/copy', description: "Copy the last response to the clipboard", kind: 'copy' },
