@@ -761,6 +761,19 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         }
         return true
       }
+      case 'cost': {
+        const cost = `$${(sessionCost || 0).toFixed(4)}`
+        const cu = contextUsage
+        const ctxPart = cu
+          ? ` · ${Math.round(cu.percentage)}% context (${cu.totalTokens.toLocaleString()}/${cu.maxTokens.toLocaleString()} tokens)`
+          : ''
+        const prompts = entries.filter((e) => e.kind === 'user').length
+        addEntry({
+          kind: 'system',
+          text: `Session: ${prompts} prompt${prompts === 1 ? '' : 's'} · ${cost}${ctxPart}`,
+        })
+        return true
+      }
       case 'mcp': {
         if (client) {
           void client.requestControl('list_mcp').then((r) => {
