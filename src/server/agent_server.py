@@ -248,6 +248,11 @@ class _AgentSession:
             },
         })
 
+    def _emit_agent_progress(self, ev: dict) -> None:
+        """Forward a spawned subagent's progress to the client (the original's
+        AgentProgressLine). Wired onto tool_context.agent_progress_emit."""
+        self._emit({"type": "agent_progress", "session_id": self.session_id, **ev})
+
     def _system_prompt_text(self) -> str:
         """The active system prompt as a plain string (it may be a block list —
         build_effective_system_prompt returns the full base block list)."""
@@ -611,6 +616,7 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
         sess.provider_name = provider_name
         sess.tool_registry = registry
         sess.tool_context = tool_context
+        tool_context.agent_progress_emit = sess._emit_agent_progress  # stream subagent progress
         sess.session = Session.create(provider_name, getattr(provider, "model", model or ""))
         sess.system_prompt = system_prompt
     except Exception as exc:  # noqa: BLE001
