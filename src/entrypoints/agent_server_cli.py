@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import sys
 from pathlib import Path
 
 from src.server.agent_server import AgentServerConfig, PROTOCOL_VERSION, make_spawn_agent
@@ -29,6 +30,28 @@ from src.server.session_manager import SessionManager
 from src.server.types import ServerConfig
 
 logger = logging.getLogger(__name__)
+
+
+def _exit_when_stdin_closes() -> None:
+    """Exit the process when stdin reaches EOF (parent TUI went away).
+
+    The Ink TUI spawns this server with stdin wired to a pipe it holds open.
+    If the TUI exits — even a hard crash that skips its cleanup — the OS closes
+    that pipe, stdin EOFs here, and we exit. Mirrors hermes's gateway, which
+    exits on stdin EOF when its Node parent goes away. Daemon thread so it never
+    blocks normal shutdown.
+    """
+    import os as _os
+    import threading as _threading
+
+    def _watch() -> None:
+        try:
+            sys.stdin.buffer.read()  # blocks until the parent closes the pipe
+        except Exception:  # noqa: BLE001
+            pass
+        _os._exit(0)
+
+    _threading.Thread(target=_watch, name="agent-server-parent-watch", daemon=True).start()
 
 
 def run_agent_server_subcommand(argv: list[str]) -> int:
@@ -51,7 +74,15 @@ def run_agent_server_subcommand(argv: list[str]) -> int:
     parser.add_argument("--workspace", default=None,
                         help="Workspace root the agent operates in (default: cwd).")
     parser.add_argument("--max-turns", type=int, default=20, dest="max_turns")
+    parser.add_argument(
+        "--exit-on-parent", action="store_true", dest="exit_on_parent",
+        help="Exit when stdin reaches EOF — used when a parent TUI spawns this "
+             "server, so the backend reliably dies if the TUI crashes (hermes route).",
+    )
     args = parser.parse_args(argv)
+
+    if args.exit_on_parent:
+        _exit_when_stdin_closes()
 
     workspace = str(Path(args.workspace).resolve()) if args.workspace else str(Path.cwd())
 
@@ -102,3 +133,12 @@ async def _serve(args, workspace: str, agent_config: AgentServerConfig) -> int:
 
 
 __all__ = ["run_agent_server_subcommand"]
+
+
+if __name__ == "__main__":
+    # Standalone entry so the Ink TUI can spawn the backend as
+    #   python -m src.entrypoints.agent_server_cli --host … --port 0 --token …
+    # (the hermes route: the TS client owns the Python child).
+    import sys
+
+    raise SystemExit(run_agent_server_subcommand(sys.argv[1:]))
