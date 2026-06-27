@@ -82,19 +82,26 @@ def _resolve_tui_dir(explicit: str | None) -> Path | None:
 
 
 def _resolve_tui_command(tui_dir: Path | None) -> list[str] | None:
-    """The base command (without connection args) that runs the Ink TUI."""
+    """The base command (without connection args) that runs the Ink TUI.
+
+    Prefer the built ``dist`` on node: it uses standard node module resolution.
+    ``bun run src/cli.tsx`` (no build) is the fallback — but bun can mis-resolve
+    ``react/jsx-dev-runtime`` from its global auto-install cache ("Cannot find
+    package 'react' from …/.bun/install/cache/…"), so it's no longer the default
+    when a dist exists.
+    """
     override = os.environ.get("CLAWCODEX_TUI_CMD")
     if override:
         return override.split()
     if tui_dir is None:
         return None
-    bun = shutil.which("bun")
-    if bun:
-        return [bun, "run", str(tui_dir / "src" / "cli.tsx")]
     node = shutil.which("node")
     dist = tui_dir / "dist" / "cli.js"
     if node and dist.exists():
         return [node, str(dist)]
+    bun = shutil.which("bun")
+    if bun:
+        return [bun, "run", str(tui_dir / "src" / "cli.tsx")]
     return None
 
 
