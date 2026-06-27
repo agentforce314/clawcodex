@@ -123,6 +123,14 @@ function relAge(sec: number): string {
  *  keeps the proven inline <Static> path untouched. */
 const FULLSCREEN = process.env['CLAWCODEX_FULLSCREEN'] === '1'
 
+/** Searchable text of an entry (for fullscreen Ctrl+F find). */
+export function entryText(e: TranscriptEntry): string {
+  if (e.text) return e.text
+  if (e.todos) return e.todos.map((t) => t.content).join(' ')
+  if (e.agent) return e.agent.description
+  return e.argsText ?? ''
+}
+
 /** Generous upper estimate of an entry's rendered rows (for fullscreen
  *  windowing — over-estimating under-fills the viewport, never overflows). */
 export function estimateRows(e: TranscriptEntry, cols: number): number {
@@ -221,6 +229,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const [sessionCost, setSessionCost] = useState(0) // cumulative USD across turns
   const [, setThemeVersion] = useState(0) // bumped on /theme to repaint the dynamic UI
   const [scrollOffset, setScrollOffset] = useState(0) // fullscreen: entries hidden from the bottom
+  const [txFind, setTxFind] = useState<string | null>(null) // fullscreen Ctrl+F find query (null = closed)
 
   // Fullscreen uses the terminal's alternate screen so the bounded transcript
   // viewport renders in place (no scrollback spam). Enter on mount, restore on exit.
@@ -297,6 +306,32 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     setInput(input.replace(/@([^\s]*)$/, `@${pick} `))
     setAtSel(0)
   }
+
+  /** Fullscreen Ctrl+F: scroll to a transcript match. `older`=true finds the
+   *  next match above the current view; else the newest match. */
+  const findJump = (query: string, older: boolean): void => {
+    const q = query.trim().toLowerCase()
+    if (!q) return
+    const matches: number[] = []
+    for (let i = 0; i < entries.length; i++) {
+      if (entryText(entries[i] as TranscriptEntry).toLowerCase().includes(q)) matches.push(i)
+    }
+    if (!matches.length) return
+    const curBottom = entries.length - 1 - scrollOffset
+    let target = matches[matches.length - 1] as number // newest
+    if (older) {
+      const prev = [...matches].reverse().find((i) => i < curBottom)
+      if (prev !== undefined) target = prev
+    }
+    setScrollOffset(Math.max(0, entries.length - 1 - target))
+  }
+
+  // Jump to the newest match as the find query changes (kept out of the key
+  // handler to avoid a stale-closure read of txFind during fast typing).
+  useEffect(() => {
+    if (FULLSCREEN && txFind) findJump(txFind, false)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [txFind])
 
   /** Apply an interactive-picker selection (/mode, /theme, /model, /resume). */
   const applyPick = (kind: 'mode' | 'theme' | 'model' | 'resume', value: string): void => {
@@ -528,6 +563,29 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     if (key.ctrl && ch === 'c') {
       client?.close()
       exit()
+      return
+    }
+    // Fullscreen Ctrl+F transcript find.
+    if (FULLSCREEN && txFind !== null) {
+      if (key.escape || key.return) {
+        setTxFind(null)
+        return
+      }
+      if (key.ctrl && ch === 'f') {
+        findJump(txFind, true) // next older match
+        return
+      }
+      if (key.backspace || key.delete) {
+        setTxFind((q) => (q ?? '').slice(0, -1)) // jump driven by the effect on txFind
+        return
+      }
+      if (ch && !key.ctrl && !key.meta && ch.length === 1 && ch >= ' ') {
+        setTxFind((q) => (q ?? '') + ch)
+      }
+      return // find mode swallows other keys
+    }
+    if (FULLSCREEN && key.ctrl && ch === 'f') {
+      setTxFind('')
       return
     }
     // Interactive picker (/mode, /theme): arrow-navigate, Enter picks, Esc cancels.
@@ -1090,6 +1148,17 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         >
           <Text color={theme.dim}>{`(reverse-i-search)\`${searchQuery}\`: `}</Text>
           <Text>{searchMatch}</Text>
+        </Box>
+      ) : FULLSCREEN && txFind !== null ? (
+        <Box
+          borderStyle="round"
+          borderColor={theme.promptBorder}
+          borderLeft={false}
+          borderRight={false}
+          paddingX={1}
+          width="100%"
+        >
+          <Text color={theme.dim}>{`(find)\`${txFind}\`  ^F next · esc done`}</Text>
         </Box>
       ) : (
         <>
