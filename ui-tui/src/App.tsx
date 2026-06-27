@@ -96,7 +96,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const draftRef = useRef('')
   // Interactive select picker (the original's CustomSelect) for /mode, /theme.
   const [picker, setPicker] = useState<{
-    kind: 'mode' | 'theme'
+    kind: 'mode' | 'theme' | 'model'
     title: string
     options: string[]
     sel: number
@@ -150,13 +150,17 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     setAtSel(0)
   }
 
-  /** Apply an interactive-picker selection (/mode, /theme). */
-  const applyPick = (kind: 'mode' | 'theme', value: string): void => {
+  /** Apply an interactive-picker selection (/mode, /theme, /model). */
+  const applyPick = (kind: 'mode' | 'theme' | 'model', value: string): void => {
     if (!value) return
     if (kind === 'mode') {
       client?.sendControl('set_permission_mode', { mode: value })
       setMode(value)
       addEntry({ kind: 'system', text: `mode → ${value}` })
+    } else if (kind === 'model') {
+      client?.sendControl('set_model', { model: value })
+      setModel(value)
+      addEntry({ kind: 'system', text: `model → ${value}` })
     } else if (applyTheme(value)) {
       setThemeVersion((v) => v + 1)
       addEntry({ kind: 'system', text: `theme → ${value}` })
@@ -593,6 +597,25 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
               title: 'Select permission mode',
               options,
               sel: Math.max(0, options.indexOf(mode)),
+            })
+            return true
+          }
+          if (cmd.control === 'set_model' && client) {
+            // Pull the provider's model list, then open the picker.
+            void client.requestControl('get_settings').then((r) => {
+              const models = Array.isArray(r?.['available_models'])
+                ? (r['available_models'] as unknown[]).map(String).filter(Boolean)
+                : []
+              if (models.length) {
+                setPicker({
+                  kind: 'model',
+                  title: 'Select model',
+                  options: models,
+                  sel: Math.max(0, models.indexOf(model)),
+                })
+              } else {
+                addEntry({ kind: 'system', text: `usage: ${cmd.name} <name>  (no model list available)` })
+              }
             })
             return true
           }
