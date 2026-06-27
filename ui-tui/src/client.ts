@@ -65,6 +65,8 @@ const FILTERED = new Set([
 
 export class DirectConnectClient {
   private closed = false;
+  // request_id → resolver, for control pulls (get_context_usage, get_settings).
+  private pending = new Map<string, (response: Record<string, unknown> | null) => void>();
 
   constructor(
     private readonly transport: Transport,
@@ -107,6 +109,18 @@ export class DirectConnectClient {
         this.cb.onPermissionRequest(cr.request, cr.request_id);
       } else if (typeof cr.request_id === 'string') {
         this.sendErrorResponse(cr.request_id, `unsupported control subtype: ${subtype}`);
+      }
+      return;
+    }
+    if (type === 'control_response') {
+      // Resolve a correlated control pull (get_context_usage, …). Unmatched
+      // responses (e.g. permission acks) fall through and are ignored.
+      const cr = msg as { response?: { request_id?: string; response?: unknown } };
+      const rid = cr.response?.request_id;
+      if (rid && this.pending.has(rid)) {
+        const resolve = this.pending.get(rid) as (r: Record<string, unknown> | null) => void;
+        this.pending.delete(rid);
+        resolve((cr.response?.response as Record<string, unknown>) ?? null);
       }
       return;
     }
@@ -155,6 +169,29 @@ export class DirectConnectClient {
       type: 'control_request',
       request_id: randomUUID(),
       request: { subtype, ...fields },
+    });
+  }
+
+  /**
+   * Fire a control_request and resolve with the server's control_response
+   * payload (e.g. get_context_usage, get_settings). Resolves null on timeout so
+   * a slow/closed link never hangs the caller.
+   */
+  requestControl(
+    subtype: string,
+    fields: Record<string, unknown> = {},
+    timeoutMs = 5000,
+  ): Promise<Record<string, unknown> | null> {
+    const requestId = randomUUID();
+    return new Promise((resolve) => {
+      this.pending.set(requestId, resolve);
+      this.send({ type: 'control_request', request_id: requestId, request: { subtype, ...fields } });
+      setTimeout(() => {
+        if (this.pending.has(requestId)) {
+          this.pending.delete(requestId);
+          resolve(null);
+        }
+      }, timeoutMs);
     });
   }
 
