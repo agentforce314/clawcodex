@@ -16,6 +16,8 @@ import { PermissionDialog } from './components/PermissionDialog.js'
 import { SlashMenu } from './components/SlashMenu.js'
 import { Spinner } from './components/Spinner.js'
 import { StatusBar } from './components/StatusBar.js'
+import { LiveTools, type LiveGroup } from './components/LiveTools.js'
+import { READ_LIKE, TOOL_VERB, toolActivityLabel } from './toolMeta.js'
 import { messageToEntries, streamDeltaText, type TranscriptEntry } from './sdkMessageAdapter.js'
 import { matchSlash, resolveSlash } from './slashCommands.js'
 import { parseProtocolMajor, SUPPORTED_PROTOCOL_MAJOR } from './protocol.js'
@@ -55,28 +57,6 @@ function streamTail(text: string, cols: number, maxLines: number): string {
   return visual.slice(-maxLines).join('\n')
 }
 
-const TOOL_VERB: Record<string, { verb: string; noun: string }> = {
-  Read: { verb: 'Reading', noun: 'files' },
-  Edit: { verb: 'Editing', noun: 'files' },
-  Write: { verb: 'Writing', noun: 'files' },
-  MultiEdit: { verb: 'Editing', noun: 'files' },
-  Bash: { verb: 'Running', noun: 'commands' },
-  Grep: { verb: 'Searching', noun: '' },
-  Glob: { verb: 'Globbing', noun: '' },
-  WebFetch: { verb: 'Fetching', noun: '' },
-  WebSearch: { verb: 'Searching', noun: '' },
-}
-
-/** Live spinner label, e.g. "Reading 3 files" (collapsed count) or "Running git status". */
-function toolActivityLabel(name: string | undefined, args: string | undefined, count: number): string {
-  const { verb, noun } = (name && TOOL_VERB[name]) || {
-    verb: name ? `Using ${name}` : 'Working',
-    noun: '',
-  }
-  if (count > 1 && noun) return `${verb} ${count} ${noun}`
-  const target = (args || '').split(/[\\/]/).pop() || args || ''
-  return target ? `${verb} ${target}` : verb
-}
 
 export function App({ transport, serverLabel }: Props): React.ReactElement {
   const { exit } = useApp()
@@ -98,6 +78,11 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const bannerAdded = useRef(false)
   const [toolActivity, setToolActivity] = useState<string | null>(null)
   const turnToolCounts = useRef<Record<string, number>>({})
+  // Live, in-place tool-progress block: Read-like calls collapse here (not into
+  // Static) until the round ends, then freeze into a committed summary.
+  const [liveTools, setLiveTools] = useState<LiveGroup[]>([])
+  const liveRef = useRef<LiveGroup[]>([])
+  const collapsedIds = useRef<Set<string>>(new Set())
 
   const slashMatches = !input.includes(' ') ? matchSlash(input) : []
   const slashOpen = slashMatches.length > 0 && permissions.length === 0
@@ -120,6 +105,34 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     const s = streamRef.current
     if (s.trim()) addEntry({ kind: 'assistant', text: s })
     setStream('')
+  }
+
+  const syncLive = () => setLiveTools([...liveRef.current])
+  const addLive = (name: string, args: string) => {
+    const g = liveRef.current.find((x) => x.name === name)
+    if (g) {
+      g.count += 1
+      g.current = args
+    } else {
+      liveRef.current.push({ name, count: 1, current: args })
+    }
+    syncLive()
+  }
+  /** Freeze the live read-groups into committed collapsed-summary entries. */
+  const takeLive = (): TranscriptEntry[] => {
+    const groups = liveRef.current
+    if (!groups.length) return []
+    liveRef.current = []
+    collapsedIds.current.clear()
+    syncLive()
+    return groups.map((g) => ({
+      id: `l${localSeq.current++}`,
+      kind: 'tool' as const,
+      text: '',
+      toolName: g.name,
+      argsText: g.current,
+      count: g.count,
+    }))
   }
 
   useEffect(() => {
@@ -196,16 +209,29 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         }
         const newEntries = messageToEntries(msg)
         if (newEntries.length) {
-          // Update the live tool-progress label (collapses repeated tools, e.g.
-          // "Reading 3 files") as each tool call streams in.
+          const toCommit: TranscriptEntry[] = []
           for (const e of newEntries) {
             if (e.kind === 'tool') {
               const verb = (e.toolName && TOOL_VERB[e.toolName]?.verb) || e.toolName || 'tool'
               const n = (turnToolCounts.current[verb] = (turnToolCounts.current[verb] ?? 0) + 1)
               setToolActivity(toolActivityLabel(e.toolName, e.argsText, n))
             }
+            if (e.kind === 'tool' && READ_LIKE.has(e.toolName ?? '')) {
+              // Collapse into the live block (not Static); drop its result later.
+              if (e.toolUseId) collapsedIds.current.add(e.toolUseId)
+              addLive(e.toolName ?? 'tool', e.argsText ?? '')
+            } else if (
+              e.kind === 'toolResult' &&
+              (e.forToolUseIds?.length ?? 0) > 0 &&
+              (e.forToolUseIds ?? []).every((id) => collapsedIds.current.has(id))
+            ) {
+              // Result for collapsed reads → drop (kept collapsed, like the original).
+            } else {
+              // Preserve order: freeze the live read-group before this entry.
+              toCommit.push(...takeLive(), e)
+            }
           }
-          setEntries((prev) => [...prev, ...newEntries])
+          if (toCommit.length) setEntries((prev) => [...prev, ...toCommit])
         }
       },
     })
@@ -323,6 +349,9 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     setBusy(true)
     turnToolCounts.current = {}
     setToolActivity(null)
+    liveRef.current = []
+    collapsedIds.current.clear()
+    setLiveTools([])
     setTurnStartedAt(Date.now())
     setInput('')
     setSlashSel(0)
@@ -360,9 +389,13 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         </Box>
       ) : null}
 
+      {liveTools.length > 0 ? <LiveTools groups={liveTools} /> : null}
+
       {busy && permissions.length === 0 ? (
         <Box>
-          <Spinner startedAt={turnStartedAt} activity={toolActivity} />
+          {/* Spinner shows the activity for non-read tools; the live block above
+              carries it while reads are collapsing. */}
+          <Spinner startedAt={turnStartedAt} activity={liveTools.length ? null : toolActivity} />
         </Box>
       ) : null}
 
