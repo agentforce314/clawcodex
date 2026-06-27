@@ -320,6 +320,43 @@ def make_agent_tool(
             parent_system_prompt=fork_parent_system_prompt,
         )
 
+        # Stream the subagent's live progress to the UI when the host wired a
+        # hook (agent-server only). run_agent calls on_message per message, so
+        # this covers both the sync and background paths. Purely additive — no
+        # hook means no behavior change.
+        _emit_progress = getattr(context, "agent_progress_emit", None)
+        if _emit_progress is not None:
+            from src.tasks.progress import (
+                ProgressTracker,
+                total_tokens_from_tracker,
+                update_progress_from_message,
+            )
+
+            _tracker = ProgressTracker()
+
+            def _on_subagent_message(message: Any) -> None:
+                try:
+                    update_progress_from_message(_tracker, message)
+                    acts = _tracker.recent_activities
+                    activity = None
+                    if acts:
+                        last = acts[-1]
+                        activity = last.activity_description or last.tool_name
+                    _emit_progress({
+                        "agent_id": agent_id,
+                        "name": agent_name,
+                        "description": description,
+                        "subagent_type": subagent_type,
+                        "activity": activity,
+                        "tool_use_count": _tracker.tool_use_count,
+                        "tokens": total_tokens_from_tracker(_tracker),
+                        "status": "running",
+                    })
+                except Exception:
+                    logger.debug("subagent progress emit failed", exc_info=True)
+
+            run_params.on_message = _on_subagent_message
+
         if is_async:
             return _launch_async_agent(
                 run_params=run_params,
