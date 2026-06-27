@@ -87,6 +87,9 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const historyRef = useRef<string[]>([])
   const [histIdx, setHistIdx] = useState(-1)
   const draftRef = useRef('')
+  // Prompts typed while the agent is busy — queued, then sent at turn end.
+  const queuedRef = useRef<string[]>([])
+  const [queued, setQueued] = useState<string[]>([])
   const localSeq = useRef(0)
   const bannerAdded = useRef(false)
   const [toolActivity, setToolActivity] = useState<string | null>(null)
@@ -460,6 +463,33 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     }
   }
 
+  /** Send a prompt now and start a turn (shared by submit + queue drain). */
+  const dispatchPrompt = (text: string): void => {
+    if (!client) return
+    client.sendPrompt(text)
+    if (historyRef.current[historyRef.current.length - 1] !== text) historyRef.current.push(text)
+    addEntry({ kind: 'user', text })
+    setStream('')
+    setBusy(true)
+    turnToolCounts.current = {}
+    setToolActivity(null)
+    liveRef.current = []
+    collapsedIds.current.clear()
+    setLiveTools([])
+    setAgentLines([])
+    setTurnStartedAt(Date.now())
+  }
+
+  // Drain one queued prompt when the turn ends (busy → false).
+  useEffect(() => {
+    if (!busy && ready && permissions.length === 0 && queuedRef.current.length > 0) {
+      const next = queuedRef.current.shift() as string
+      setQueued([...queuedRef.current])
+      dispatchPrompt(next)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [busy, ready, permissions.length])
+
   const onSubmit = (value: string): void => {
     const text = value.trim()
     if (!text) return
@@ -486,23 +516,19 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         return
       }
     }
-    if (!client || !ready || busy || permissions.length > 0) return
-    client.sendPrompt(text)
-    if (historyRef.current[historyRef.current.length - 1] !== text) historyRef.current.push(text)
+    if (!client || !ready || permissions.length > 0) return
     setHistIdx(-1)
     draftRef.current = ''
-    addEntry({ kind: 'user', text })
-    setStream('')
-    setBusy(true)
-    turnToolCounts.current = {}
-    setToolActivity(null)
-    liveRef.current = []
-    collapsedIds.current.clear()
-    setLiveTools([])
-    setAgentLines([])
-    setTurnStartedAt(Date.now())
     setInput('')
     setSlashSel(0)
+    if (busy) {
+      // Queue prompts typed while the agent is working (the original's queued
+      // commands); the drain effect sends the next one when the turn ends.
+      queuedRef.current.push(text)
+      setQueued([...queuedRef.current])
+      return
+    }
+    dispatchPrompt(text)
   }
 
   return (
@@ -559,6 +585,15 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         <PermissionDialog toolName={permission.toolName} input={permission.input} />
       ) : (
         <>
+          {queued.length > 0 ? (
+            <Box flexDirection="column" marginBottom={1}>
+              {queued.map((q, i) => (
+                <Text key={i} color={theme.dim}>
+                  {`  ⏎ ${q.length > 72 ? `${q.slice(0, 71)}…` : q}`}
+                </Text>
+              ))}
+            </Box>
+          ) : null}
           {slashOpen ? <SlashMenu matches={slashMatches} selected={sel} /> : null}
           {atOpen ? <FileMenu matches={atMatches} selected={atSelClamped} /> : null}
           <Box
