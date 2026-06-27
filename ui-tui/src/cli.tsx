@@ -78,7 +78,7 @@ async function main(): Promise<void> {
     }
     connectUrl = backend.ccUrl
     connectToken = backend.token
-    serverLabel = backend.ccUrl
+    serverLabel = 'local' // spawn mode: the backend is internal — don't show the ephemeral URL
     dispose = backend.dispose
     // Make sure the child dies with us, however we exit.
     const cleanup = () => dispose?.()

@@ -35,9 +35,15 @@ export function Message({ entry }: { entry: TranscriptEntry }): React.ReactEleme
   switch (entry.kind) {
     case 'user':
       return (
-        <Box>
-          <Text color={theme.user} bold>{'› '}</Text>
-          <Text color={theme.user}>{entry.text}</Text>
+        <Box borderStyle="round" borderColor={theme.dim} paddingX={1}>
+          <Box width={2}>
+            <Text color={theme.user} bold>
+              ›
+            </Text>
+          </Box>
+          <Box flexGrow={1}>
+            <Text color={theme.user}>{entry.text}</Text>
+          </Box>
         </Box>
       )
     case 'assistant':
