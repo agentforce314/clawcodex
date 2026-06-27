@@ -6,8 +6,8 @@
  * Python agent-server started by `clawcodex agent-server`.
  */
 import { randomUUID } from 'node:crypto';
-import WebSocket from 'ws';
 import type { ControlRequestMessage, ServerMessage } from './protocol.js';
+import type { Transport } from './transport.js';
 
 export interface SessionInfo {
   sessionId: string;
@@ -64,32 +64,21 @@ const FILTERED = new Set([
 ]);
 
 export class DirectConnectClient {
-  private ws: WebSocket | undefined;
   private closed = false;
 
   constructor(
-    private readonly info: SessionInfo,
+    private readonly transport: Transport,
     private readonly cb: ClientCallbacks,
   ) {}
 
   connect(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const headers: Record<string, string> = {};
-      if (this.info.authToken) headers['authorization'] = `Bearer ${this.info.authToken}`;
-      const ws = new WebSocket(this.info.wsUrl, { headers });
-      this.ws = ws;
-      ws.on('open', () => {
-        this.cb.onConnected?.();
-        resolve();
-      });
-      ws.on('message', (data: WebSocket.RawData) => this.onData(data.toString('utf8')));
-      ws.on('close', () => {
+    return this.transport.start({
+      onData: (text) => this.onData(text),
+      onOpen: () => this.cb.onConnected?.(),
+      onClose: () => {
         if (!this.closed) this.cb.onDisconnected?.();
-      });
-      ws.on('error', (err: Error) => {
-        this.cb.onError?.(err);
-        reject(err);
-      });
+      },
+      onError: (err) => this.cb.onError?.(err),
     });
   }
 
@@ -177,13 +166,13 @@ export class DirectConnectClient {
   }
 
   private send(obj: unknown): void {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(obj));
-    }
+    // Trailing newline = NDJSON frame boundary (required by the stdio transport;
+    // harmless over WS, where the server already splits on '\n').
+    this.transport.send(JSON.stringify(obj) + '\n');
   }
 
   close(): void {
     this.closed = true;
-    this.ws?.close();
+    this.transport.close();
   }
 }
