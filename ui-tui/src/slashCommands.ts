@@ -7,7 +7,19 @@ export interface SlashCommand {
   name: string
   description: string
   /** how the command is handled when submitted. */
-  kind: 'clear' | 'help' | 'quit' | 'control' | 'context' | 'compact' | 'theme' | 'export' | 'copy' | 'doctor' | 'send'
+  kind:
+    | 'clear'
+    | 'help'
+    | 'quit'
+    | 'control'
+    | 'context'
+    | 'compact'
+    | 'rewind'
+    | 'theme'
+    | 'export'
+    | 'copy'
+    | 'doctor'
+    | 'send'
   /** for kind:'control' — the control_request subtype. */
   control?: string
 }
@@ -24,6 +36,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   },
   { name: '/context', description: 'Show context-window usage by category', kind: 'context' },
   { name: '/compact', description: 'Summarize & compact the conversation: /compact [instructions]', kind: 'compact' },
+  { name: '/rewind', description: 'Undo the last turn(s): /rewind [N]', kind: 'rewind' },
   { name: '/theme', description: 'Switch color theme: /theme <dark|light>', kind: 'theme' },
   { name: '/export', description: 'Save the transcript to a markdown file', kind: 'export' },
   { name: '/copy', description: "Copy the last response to the clipboard", kind: 'copy' },
