@@ -9,7 +9,7 @@ is "finish Direct Connect," not a new bridge.
 
 ```
 ┌── terminal ─────────────────┐         ┌── Python: clawcodex agent-server ──┐
-│ TS Ink TUI (tui_typescript/)│  cc://  │ DirectConnectServer (src/server/)  │
+│ TS Ink TUI (ui-tui/)│  cc://  │ DirectConnectServer (src/server/)  │
 │  • renders streamed turn    │ <─────> │  • make_spawn_agent → query()      │
 │  • permission prompt (y/n)  │  NDJSON │  • serves can_use_tool round-trip  │
 │  • prompt input             │   / WS  │  • runs ALL tools (same filesystem)│
@@ -25,22 +25,25 @@ is "finish Direct Connect," not a new bridge.
 | CLI entrypoint | `src/entrypoints/agent_server_cli.py` → `clawcodex agent-server` |
 | Python Direct Connect client (used by tests) | `src/server/direct_connect_manager.py` (pre-existing) |
 | End-to-end tests | `tests/server/test_agent_server_e2e.py` |
-| TypeScript Ink client | `tui_typescript/` |
+| TypeScript Ink client | `ui-tui/` |
 
 ## Build / run
 
 ### Quick start — one command
 
 ```bash
-cd tui_typescript && bun install && cd ..   # one-time: install the TUI deps
+cd ui-tui && bun install && cd ..   # one-time: install the TUI deps
 clawcodex tui                               # starts the backend + TUI together
 ```
 
-`clawcodex tui` starts the agent-server **in-process** on an ephemeral loopback
-port and spawns the Ink TUI as a managed child pointed at it — the client/server
-split is invisible. It auto-detects a runner (`bun`, else a built `node` dist);
-override with `CLAWCODEX_TUI_CMD`, point at the client with `--tui-dir`, or use
-`--print-connect` to start only the server and print the `cc://` URL + token.
+`clawcodex tui` launches the **Ink TUI as the parent**, which **spawns + owns
+the Python agent-server as a child** (the hermes-agent route): the client starts
+`clawcodex agent-server` itself on an ephemeral loopback port + per-launch token,
+reads its `cc://` URL, connects, and tears the child down on exit (the backend
+runs with `--exit-on-parent`, so it also dies if the TUI crashes). It auto-detects
+a runner (`bun`, else a built `node` dist); override with `CLAWCODEX_TUI_CMD`,
+point at the client with `--tui-dir`, or use `--print-connect` to run only the
+server and print the `cc://` URL + token.
 
 > Why a server at all? The TUI is TypeScript and the engine is Python — two
 > runtimes that can't share memory, so they talk over the Direct Connect
@@ -74,13 +77,13 @@ credentials with `clawcodex login` first. The server binds `127.0.0.1` only; use
 ### 2. Frontend — the Ink TUI
 
 ```bash
-cd tui_typescript
+cd ui-tui
 bun install
 bun run src/cli.tsx cc://127.0.0.1:8791          # Bun: no build step
 # or: npm install && npm run build && node dist/cli.js cc://127.0.0.1:8791
 ```
 
-See `tui_typescript/README.md` for keys and options.
+See `ui-tui/README.md` for keys and options.
 
 ### Alternative frontend
 
@@ -112,7 +115,7 @@ server-side default-deny timeout so a dead client can't wedge a tool.
 PYTHONPATH="$PWD" python -m pytest tests/server/ -o addopts="" -q
 
 # TypeScript typecheck + live smoke
-cd tui_typescript && npm run typecheck
+cd ui-tui && npm run typecheck
 bun run scripts/smoke.ts http://127.0.0.1:<port>   # against a running server
 ```
 
@@ -120,7 +123,7 @@ bun run scripts/smoke.ts http://127.0.0.1:<port>   # against a running server
 client against the **real** server + agent-server with a stubbed provider (no
 network): streaming turn, permission allow/deny, interrupt, and the control-op
 round-trip. The cross-language path (TS client ↔ Python server) is covered by
-`tui_typescript/scripts/smoke.ts`.
+`ui-tui/scripts/smoke.ts`.
 
 ## What is and isn't done
 

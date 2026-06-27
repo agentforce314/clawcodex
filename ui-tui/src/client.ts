@@ -160,6 +160,15 @@ export class DirectConnectClient {
     });
   }
 
+  /** Fire a control_request (e.g. set_model, set_permission_mode). */
+  sendControl(subtype: string, fields: Record<string, unknown> = {}): void {
+    this.send({
+      type: 'control_request',
+      request_id: randomUUID(),
+      request: { subtype, ...fields },
+    });
+  }
+
   private sendErrorResponse(requestId: string, error: string): void {
     this.send({
       type: 'control_response',
