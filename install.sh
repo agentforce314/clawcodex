@@ -62,6 +62,10 @@ readonly LOCAL_BIN="$HOME/.local/bin"
 readonly PYTHON_MIN_VERSION="3.10"
 readonly ENTRY_POINT="clawcodex"   # the single registered entry in pyproject.toml
 readonly RC_MARKER="# clawcodex installer — managed by install.sh"
+# Node is needed to run the Ink TUI (`clawcodex tui`). Use an existing node if
+# present; otherwise the official Node binary is fetched (no sudo) into here.
+readonly NODE_VERSION="${CLAWCODEX_NODE_VERSION:-v22.12.0}"
+readonly NODE_DIR="$HOME/.clawcodex/node"
 
 # How to refer to "this installer" in user-facing hints. When run as a file,
 # that's the script path; when piped (curl | bash) there is no file, so $0 is
@@ -464,6 +468,85 @@ install_deps() {
 }
 
 # ============================================================================
+#  Node + the Ink TUI client (`clawcodex tui`)
+# ============================================================================
+
+# Ensure `node`/`npm` are available. Reuses an existing install; otherwise fetches
+# the official Node binary (no sudo) into ~/.clawcodex/node and links it onto PATH
+# (~/.local/bin, already added to the shell rc). Non-fatal: returns 1 if Node
+# can't be provided (the Python REPL works without it).
+provision_node() {
+    if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
+        log_ok "node $(node --version 2>/dev/null) already installed"
+        return 0
+    fi
+    if [[ "${DRY_RUN:-0}" -ne 0 ]]; then
+        _script_p1; echo "[DRY-RUN] would fetch Node $NODE_VERSION into $NODE_DIR and link node/npm into $LOCAL_BIN"
+        return 0
+    fi
+    local plat arch
+    case "$(uname -s)" in
+        Darwin) plat="darwin" ;;
+        Linux)  plat="linux" ;;
+        *) log_warn "Node auto-install unsupported on $(uname -s) — install Node 18+ for 'clawcodex tui'."; return 1 ;;
+    esac
+    case "$(uname -m)" in
+        arm64|aarch64) arch="arm64" ;;
+        x86_64|amd64)  arch="x64" ;;
+        *) log_warn "Node auto-install unsupported on $(uname -m) — install Node 18+ for 'clawcodex tui'."; return 1 ;;
+    esac
+    local tarball="node-${NODE_VERSION}-${plat}-${arch}.tar.gz"
+    local url="https://nodejs.org/dist/${NODE_VERSION}/${tarball}"
+    log_info "Installing Node ${NODE_VERSION} (${plat}-${arch}) for the TUI (no sudo)..."
+    local tmp; tmp="$(mktemp -d)"
+    if ! curl -fsSL --max-time 180 "$url" -o "$tmp/$tarball"; then
+        log_warn "Node download failed ($url) — install Node 18+ manually for 'clawcodex tui'."
+        rm -rf "$tmp"; return 1
+    fi
+    rm -rf "$NODE_DIR"; mkdir -p "$NODE_DIR"
+    if ! tar -xzf "$tmp/$tarball" -C "$NODE_DIR" --strip-components=1; then
+        log_warn "Node extract failed — install Node 18+ manually for 'clawcodex tui'."
+        rm -rf "$tmp"; return 1
+    fi
+    rm -rf "$tmp"
+    mkdir -p "$LOCAL_BIN"
+    ln -sf "$NODE_DIR/bin/node" "$LOCAL_BIN/node"
+    ln -sf "$NODE_DIR/bin/npm" "$LOCAL_BIN/npm"
+    ln -sf "$NODE_DIR/bin/npx" "$LOCAL_BIN/npx"
+    export PATH="$LOCAL_BIN:$PATH"
+    if command -v node >/dev/null 2>&1; then
+        log_ok "Node $(node --version 2>/dev/null) installed"
+        return 0
+    fi
+    log_warn "Node installed to $NODE_DIR but not on PATH — add $LOCAL_BIN to PATH."
+    return 1
+}
+
+# Build the TypeScript Ink TUI so `clawcodex tui` has a node-runnable client
+# (node + dist/cli.js + node_modules). Non-fatal: the REPL works without it.
+build_tui() {
+    local tui_dir="$CLAWCODEX_HOME/ui-tui"
+    if [[ ! -f "$tui_dir/package.json" ]]; then
+        log_warn "ui-tui not found at $tui_dir — skipping TUI build (the REPL still works)."
+        return 0
+    fi
+    if [[ "${DRY_RUN:-0}" -ne 0 ]]; then
+        _script_p1; echo "[DRY-RUN] would run: npm install && npm run build   (in $tui_dir)"
+        return 0
+    fi
+    if ! provision_node; then
+        log_warn "Skipping TUI build — Node unavailable. 'clawcodex' (REPL) works; 'clawcodex tui' needs Node 18+."
+        return 0
+    fi
+    log_info "Building the Ink TUI client (npm install + build; first run ~30s)..."
+    if ( cd "$tui_dir" && npm install --no-audit --no-fund >/dev/null 2>&1 && npm run build >/dev/null 2>&1 ); then
+        log_ok "TUI client built — run 'clawcodex tui'"
+    else
+        log_warn "TUI build failed — 'clawcodex' (REPL) still works. Retry: (cd \"$tui_dir\" && npm install && npm run build)"
+    fi
+}
+
+# ============================================================================
 #  Locate the venv's entry-point binary
 # ============================================================================
 find_venv_entry() {
@@ -586,6 +669,7 @@ run_post_install_setup() {
         log_ok "Next, configure a provider + API key:"
         echo -e "    ${C_BOLD}clawcodex login${C_RESET}        # interactive provider + key setup"
         echo -e "    ${C_BOLD}clawcodex${C_RESET}              # start the REPL in any project"
+        echo -e "    ${C_BOLD}clawcodex tui${C_RESET}          # the Ink TUI (Claude-Code-style)"
     else
         log_warn "clawcodex not on PATH yet — run 'source ~/.bashrc' (or ~/.zshrc) first."
     fi
@@ -847,6 +931,7 @@ cmd_update() {
     create_venv
     install_deps
     register_commands
+    build_tui
     log_ok "Update complete."
     log_info "Run '$SELF_CMD verify' to confirm health."
 }
@@ -1018,28 +1103,31 @@ install_main() {
         echo -e "  ${C_BOLD}Debug:${C_RESET}       ${C_YELLOW}ON (set -x trace)${C_RESET}"
     fi
 
-    log_step "1/7  Checking prerequisites"
+    log_step "1/8  Checking prerequisites"
     check_git
 
-    log_step "2/7  Installing uv (Astral, no sudo)"
+    log_step "2/8  Installing uv (Astral, no sudo)"
     export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
     install_uv
 
-    log_step "3/7  Provisioning Python $PYTHON_MIN_VERSION+"
+    log_step "3/8  Provisioning Python $PYTHON_MIN_VERSION+"
     ensure_python
 
-    log_step "4/7  Cloning / updating repository"
+    log_step "4/8  Cloning / updating repository"
     clone_or_update_repo
 
-    log_step "5/7  $([[ $USE_VENV -eq 1 ]] && echo "Creating virtual environment" || echo "Preparing (no venv — using system Python)")"
+    log_step "5/8  $([[ $USE_VENV -eq 1 ]] && echo "Creating virtual environment" || echo "Preparing (no venv — using system Python)")"
     create_venv
 
-    log_step "6/7  Installing dependencies"
+    log_step "6/8  Installing dependencies"
     install_deps
 
-    log_step "7/7  Registering global command & patching PATH"
+    log_step "7/8  Registering global command & patching PATH"
     register_commands
     update_shell_rc
+
+    log_step "8/8  Building the Ink TUI client (node + dist)"
+    build_tui
 
     echo ""
     log_ok "Installation complete!"
