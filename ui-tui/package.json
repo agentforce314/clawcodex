@@ -14,6 +14,7 @@
     "dev": "bun run src/cli.tsx"
   },
   "dependencies": {
+    "cli-highlight": "^2.1.11",
     "ink": "^5.0.1",
     "ink-text-input": "^6.0.0",
     "react": "^18.3.1",
