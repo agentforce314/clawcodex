@@ -207,6 +207,31 @@ export function Message({ entry }: { entry: TranscriptEntry }): React.ReactEleme
     }
     case 'toolResult':
       return <ToolResult text={entry.text} isError={entry.isError} />
+    case 'thinking': {
+      // ∴ Thinking (dim italic) + the reasoning, capped (the original's
+      // AssistantThinkingMessage; full text lives in scrollback).
+      const lines = entry.text.split('\n')
+      const MAX = 14
+      const shown = lines.slice(0, MAX)
+      const extra = lines.length - shown.length
+      return (
+        <Box flexDirection="column">
+          <Text dimColor italic>
+            ∴ Thinking
+          </Text>
+          <Box flexDirection="column" paddingLeft={2}>
+            {shown.map((l, i) => (
+              <Text key={i} dimColor italic>
+                {l || ' '}
+              </Text>
+            ))}
+            {extra > 0 ? (
+              <Text dimColor italic>{`… +${extra} more lines`}</Text>
+            ) : null}
+          </Box>
+        </Box>
+      )
+    }
     case 'context':
       return entry.contextData ? <ContextView data={entry.contextData} /> : null
     case 'result':
