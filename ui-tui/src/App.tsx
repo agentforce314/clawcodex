@@ -119,6 +119,63 @@ function relAge(sec: number): string {
   return `${Math.floor(diff / 86400)}d ago`
 }
 
+/** Opt-in fullscreen/alt-screen transcript (CLAWCODEX_FULLSCREEN=1). Default off
+ *  keeps the proven inline <Static> path untouched. */
+const FULLSCREEN = process.env['CLAWCODEX_FULLSCREEN'] === '1'
+
+/** Generous upper estimate of an entry's rendered rows (for fullscreen
+ *  windowing — over-estimating under-fills the viewport, never overflows). */
+export function estimateRows(e: TranscriptEntry, cols: number): number {
+  const w = Math.max(20, cols - 2)
+  const wrap = (s: string): number =>
+    (s || '').split('\n').reduce((a, ln) => a + Math.max(1, Math.ceil((ln.length || 1) / w)), 0)
+  const top = 1 // inter-entry marginTop
+  switch (e.kind) {
+    case 'banner':
+      return 14
+    case 'thinking':
+      return top + Math.min(16, wrap(e.text)) + 1
+    case 'tool': {
+      if (e.todos) return top + e.todos.length + 1
+      let r = top + 1
+      if (e.diff) {
+        r +=
+          (e.diff.kind === 'write'
+            ? Math.min(12, (e.diff.content || '').split('\n').length)
+            : e.diff.hunks.reduce((a, h) => a + h.lines.length, 0)) + 3
+      }
+      return r
+    }
+    case 'toolResult':
+      return top + Math.min(9, wrap(e.text))
+    case 'context':
+      return top + (e.contextData?.categories.length ?? 0) + 3
+    default:
+      return top + wrap(e.text)
+  }
+}
+
+/** The tail window of entries that fits `viewportRows`, after hiding
+ *  `scrollOffset` entries from the bottom. Pure — unit-tested. */
+export function windowFromBottom(
+  entries: TranscriptEntry[],
+  cols: number,
+  viewportRows: number,
+  scrollOffset: number,
+): TranscriptEntry[] {
+  if (entries.length === 0) return []
+  const end = Math.max(1, Math.min(entries.length, entries.length - scrollOffset))
+  let used = 0
+  let start = end
+  for (let i = end - 1; i >= 0; i--) {
+    const h = estimateRows(entries[i] as TranscriptEntry, cols)
+    if (used + h > viewportRows && start < end) break
+    used += h
+    start = i
+  }
+  return entries.slice(start, end)
+}
+
 /** The chunk inserted between `oldV` and `newV` (common prefix/suffix diff). */
 function diffInsert(oldV: string, newV: string): { ins: string; p: number; s: number } {
   let p = 0
@@ -163,6 +220,17 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   } | null>(null)
   const [sessionCost, setSessionCost] = useState(0) // cumulative USD across turns
   const [, setThemeVersion] = useState(0) // bumped on /theme to repaint the dynamic UI
+  const [scrollOffset, setScrollOffset] = useState(0) // fullscreen: entries hidden from the bottom
+
+  // Fullscreen uses the terminal's alternate screen so the bounded transcript
+  // viewport renders in place (no scrollback spam). Enter on mount, restore on exit.
+  useEffect(() => {
+    if (!FULLSCREEN) return
+    process.stdout.write('\x1b[?1049h')
+    return () => {
+      process.stdout.write('\x1b[?1049l')
+    }
+  }, [])
   const [slashSel, setSlashSel] = useState(0)
   const [atSel, setAtSel] = useState(0)
   // Submitted-prompt history for ↑/↓ recall (readline-style; -1 = live draft).
@@ -516,6 +584,12 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
       }
       return // search mode swallows all other keys
     }
+    // Fullscreen transcript scroll (PgUp older / PgDn newer).
+    if (FULLSCREEN && (key.pageUp || key.pageDown)) {
+      if (key.pageUp) setScrollOffset((o) => Math.min(Math.max(0, entries.length - 1), o + 5))
+      else setScrollOffset((o) => Math.max(0, o - 5))
+      return
+    }
     const head = permissions[0]
     if (head) {
       const c = ch.toLowerCase()
@@ -848,6 +922,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     collapsedIds.current.clear()
     setLiveTools([])
     setAgentLines([])
+    setScrollOffset(0) // follow the tail on a new turn
     setTurnStartedAt(Date.now())
   }
 
@@ -902,18 +977,30 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     dispatchPrompt(text)
   }
 
+  const termRows = process.stdout.rows ?? 24
+  // Fullscreen: render the height-aware tail window (newest at the bottom);
+  // overflow:hidden is just a safety clip since heights are over-estimated.
+  const visibleEntries = FULLSCREEN
+    ? windowFromBottom(entries, process.stdout.columns ?? 80, Math.max(4, termRows - 4), scrollOffset)
+    : entries
+  const renderEntry = (entry: TranscriptEntry): React.ReactElement => (
+    <Box key={entry.id} marginTop={['tool', 'toolResult', 'banner'].includes(entry.kind) ? 0 : 1}>
+      <Message entry={entry} />
+    </Box>
+  )
+
   return (
-    <Box flexDirection="column">
-      <Static items={entries}>
-        {(entry) => (
-          <Box
-            key={entry.id}
-            marginTop={['tool', 'toolResult', 'banner'].includes(entry.kind) ? 0 : 1}
-          >
-            <Message entry={entry} />
-          </Box>
-        )}
-      </Static>
+    <Box flexDirection="column" {...(FULLSCREEN ? { height: termRows } : {})}>
+      {FULLSCREEN ? (
+        <Box flexGrow={1} flexDirection="column" overflow="hidden">
+          {scrollOffset > 0 ? (
+            <Text color={theme.dim}>{`↑ ${scrollOffset} newer — PgDn to follow`}</Text>
+          ) : null}
+          {visibleEntries.map(renderEntry)}
+        </Box>
+      ) : (
+        <Static items={entries}>{renderEntry}</Static>
+      )}
 
       {streaming ? (
         <Box>
