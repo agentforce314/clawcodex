@@ -38,9 +38,14 @@ interface PendingPermission {
 }
 
 const HELP = [
-  'enter — send · esc — interrupt · ^C — quit',
-  '/help /clear /model <m> /mode <m> /quit',
-  '↑↓ — slash menu · tab — complete',
+  'Commands:',
+  '  /help   /clear   /quit',
+  '  /model <m>   /mode <default|acceptEdits|plan|…>   /theme <dark|light>',
+  '  /context   (window usage)        /compact [instructions]   (summarize)',
+  'Keys:',
+  '  enter — send        esc — interrupt        ^C / ^D — quit',
+  '  ↑↓ — history        ^R — reverse-search    tab — complete',
+  '  @ — file mention    / — command menu       (type while busy → queued)',
 ].join('\n')
 
 /**
