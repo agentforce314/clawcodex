@@ -29,9 +29,9 @@ export function DiffView({ lines }: { lines: DiffLine[] }): React.ReactElement {
   const extra = lines.length - shown.length
   const numW = Math.max(1, ...lines.map((l) => String(l.oldNo ?? l.newNo ?? 0).length))
   const cols = process.stdout.columns ?? 80
-  const gutterW = numW + 1
+  const gutterW = numW + 1 // right-aligned line number + a single space
   const contentW = Math.max(8, cols - gutterW - 1) // content column fills the rest of the row
-  const segW = Math.max(4, contentW - 2) // room for "<marker> "
+  const segW = Math.max(4, contentW - 1) // room for the 1-char marker (no space — it hugs the code)
   const added = lines.filter((l) => l.type === 'add').length
   const removed = lines.filter((l) => l.type === 'del').length
 
@@ -54,7 +54,7 @@ export function DiffView({ lines }: { lines: DiffLine[] }): React.ReactElement {
             <Box flexDirection="column">
               {segs.map((seg, j) => (
                 <Text key={j} backgroundColor={bg} color={fg}>
-                  {`${marker} ${seg}`.padEnd(contentW)}
+                  {`${marker}${seg}`.padEnd(contentW)}
                 </Text>
               ))}
             </Box>

@@ -30,8 +30,33 @@ export function lineDiff(oldStr: string, newStr: string, startLine = 1): DiffLin
   return out
 }
 
-/** Build a diff for an Edit/Write/MultiEdit tool call from its raw input. */
-export function toolDiff(toolName: string, input: Record<string, unknown>): DiffLine[] | null {
+/**
+ * File line number where `probe` begins in `fileContent` (1-based). The original
+ * computes this from the patch hunk's oldStart; we locate the changed region
+ * directly. Tries old_string (pre-edit file) then new_string (post-edit file),
+ * so it works whether or not the edit has already been applied on disk.
+ */
+function startLineOf(fileContent: string | undefined, oldS: string, newS: string): number {
+  if (!fileContent) return 1
+  const probe = oldS && fileContent.includes(oldS) ? oldS : newS && fileContent.includes(newS) ? newS : null
+  if (!probe) return 1
+  const idx = fileContent.indexOf(probe)
+  if (idx <= 0) return 1
+  let line = 1
+  for (let i = 0; i < idx; i++) if (fileContent[i] === '\n') line++
+  return line
+}
+
+/**
+ * Build a diff for an Edit/Write/MultiEdit tool call from its raw input.
+ * `fileContent` (the on-disk file) lets us emit true file line numbers; without
+ * it we fall back to region-relative (1-based) numbering.
+ */
+export function toolDiff(
+  toolName: string,
+  input: Record<string, unknown>,
+  fileContent?: string,
+): DiffLine[] | null {
   if (toolName === 'Write') {
     const content = typeof input['content'] === 'string' ? (input['content'] as string) : ''
     if (!content) return null
@@ -41,7 +66,7 @@ export function toolDiff(toolName: string, input: Record<string, unknown>): Diff
     const oldS = typeof input['old_string'] === 'string' ? (input['old_string'] as string) : ''
     const newS = typeof input['new_string'] === 'string' ? (input['new_string'] as string) : ''
     if (!oldS && !newS) return null
-    return lineDiff(oldS, newS)
+    return lineDiff(oldS, newS, startLineOf(fileContent, oldS, newS))
   }
   if (toolName === 'MultiEdit') {
     const edits = Array.isArray(input['edits']) ? (input['edits'] as Record<string, unknown>[]) : []
@@ -49,7 +74,7 @@ export function toolDiff(toolName: string, input: Record<string, unknown>): Diff
     for (const e of edits) {
       const oldS = typeof e['old_string'] === 'string' ? (e['old_string'] as string) : ''
       const newS = typeof e['new_string'] === 'string' ? (e['new_string'] as string) : ''
-      out.push(...lineDiff(oldS, newS))
+      out.push(...lineDiff(oldS, newS, startLineOf(fileContent, oldS, newS)))
     }
     return out.length ? out : null
   }
