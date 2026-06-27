@@ -11,6 +11,8 @@
 import { highlight } from 'cli-highlight'
 import { Box, Text } from 'ink'
 import React from 'react'
+import stringWidth from 'string-width'
+import wrapAnsi from 'wrap-ansi'
 import { theme } from './theme.js'
 
 /** Syntax-highlight a code block to an ANSI string (Ink Text passes ANSI through). */
@@ -81,15 +83,42 @@ export function parseInline(text: string): React.ReactNode[] {
   return out
 }
 
+/** Strip inline markdown markers to plain text (for table cells, where styled
+ *  spans can't be cleanly wrapped). */
+function stripInline(s: string): string {
+  return s
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/__([^_]+)__/g, '$1')
+    .replace(/\*([^*]+)\*/g, '$1')
+    .replace(/_([^_]+)_/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)\s]+\)/g, '$1')
+}
+
 // ── block elements ──────────────────────────────────────────────────────────
 
+type Align = 'left' | 'center' | 'right'
 type Block =
   | { type: 'code'; lang?: string; lines: string[] }
   | { type: 'heading'; level: number; text: string }
   | { type: 'quote'; lines: string[] }
   | { type: 'list'; items: { ordered: boolean; marker: string; text: string }[] }
+  | { type: 'table'; header: string[]; aligns: Align[]; rows: string[][] }
   | { type: 'hr' }
   | { type: 'para'; lines: string[] }
+
+/** Split a `| a | b |` row into trimmed cells (tolerant of missing edge pipes). */
+function parseTableRow(line: string): string[] {
+  let s = line.trim()
+  if (s.startsWith('|')) s = s.slice(1)
+  if (s.endsWith('|')) s = s.slice(0, -1)
+  return s.split('|').map((c) => c.trim())
+}
+
+/** A GFM table delimiter row, e.g. `|:---|---:|:--:|`. */
+function isTableSeparator(line: string): boolean {
+  return /^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?\s*$/.test(line) && line.includes('-')
+}
 
 function parseBlocks(src: string): Block[] {
   const lines = src.replace(/\t/g, '  ').split('\n')
@@ -130,6 +159,21 @@ function parseBlocks(src: string): Block[] {
       blocks.push({ type: 'quote', lines: body })
       continue
     }
+    // GFM table: a header row followed by a `---|---` delimiter row.
+    if (line.includes('|') && isTableSeparator(lines[i + 1] ?? '')) {
+      const header = parseTableRow(line)
+      const aligns: Align[] = parseTableRow(lines[i + 1] ?? '').map((c) =>
+        c.startsWith(':') && c.endsWith(':') ? 'center' : c.endsWith(':') ? 'right' : 'left',
+      )
+      i += 2
+      const rows: string[][] = []
+      while (i < lines.length && (lines[i] ?? '').includes('|') && (lines[i] ?? '').trim() !== '') {
+        rows.push(parseTableRow(lines[i] ?? ''))
+        i++
+      }
+      blocks.push({ type: 'table', header, aligns, rows })
+      continue
+    }
     const listItem = line.match(/^(\s*)([-*+]|\d+[.)])\s+(.*)$/)
     if (listItem) {
       const items: { ordered: boolean; marker: string; text: string }[] = []
@@ -166,6 +210,85 @@ function parseBlocks(src: string): Block[] {
 
 const HEADING_COLOR = [theme.heading, theme.heading, theme.heading, theme.heading, theme.dim, theme.dim]
 
+const MIN_COL = 5
+
+/** Pad `s` to `width` per alignment (visible-width aware). */
+function pad(s: string, width: number, align: Align): string {
+  const gap = Math.max(0, width - stringWidth(s))
+  if (align === 'right') return ' '.repeat(gap) + s
+  if (align === 'center') {
+    const l = Math.floor(gap / 2)
+    return ' '.repeat(l) + s + ' '.repeat(gap - l)
+  }
+  return s + ' '.repeat(gap)
+}
+
+/** Render a GFM table with box-drawing borders, a bold header, per-column
+ *  alignment, and cell wrapping — the original Claude Code table look. */
+function TableBlock({ block }: { block: Extract<Block, { type: 'table' }> }): React.ReactElement {
+  const numCols = block.header.length
+  const rows = block.rows.map((r) => Array.from({ length: numCols }, (_, c) => stripInline(r[c] ?? '')))
+  const header = Array.from({ length: numCols }, (_, c) => stripInline(block.header[c] ?? ''))
+  const aligns = Array.from({ length: numCols }, (_, c) => block.aligns[c] ?? 'left')
+
+  // Natural width per column, then shrink proportionally if the table overflows.
+  const natural = Array.from({ length: numCols }, (_, c) =>
+    Math.max(MIN_COL, ...[header, ...rows].map((r) => stringWidth(r[c] ?? ''))),
+  )
+  const overhead = numCols * 3 + 1 // "│ " + " │ "… borders + padding
+  const termW = (process.stdout.columns ?? 80) - 1
+  let widths = natural
+  const sum = natural.reduce((a, b) => a + b, 0)
+  if (sum + overhead > termW) {
+    const avail = Math.max(numCols * MIN_COL, termW - overhead)
+    widths = natural.map((w) => Math.max(MIN_COL, Math.floor((w / sum) * avail)))
+  }
+
+  const rule = (l: string, m: string, r: string): React.ReactElement => (
+    <Text color={theme.subtle}>{l + widths.map((w) => '─'.repeat(w + 2)).join(m) + r}</Text>
+  )
+  const renderRow = (cells: string[], bold: boolean, key: string): React.ReactElement[] => {
+    const wrapped = cells.map((c, i) =>
+      wrapAnsi(c, widths[i] ?? MIN_COL, { hard: true, trim: false }).split('\n'),
+    )
+    const height = Math.max(1, ...wrapped.map((w) => w.length))
+    const out: React.ReactElement[] = []
+    for (let li = 0; li < height; li++) {
+      const segs: React.ReactNode[] = [
+        <Text key="l" color={theme.subtle}>
+          {'│ '}
+        </Text>,
+      ]
+      for (let c = 0; c < numCols; c++) {
+        segs.push(
+          <Text key={`c${c}`} bold={bold}>
+            {pad(wrapped[c]?.[li] ?? '', widths[c] ?? MIN_COL, aligns[c] ?? 'left')}
+          </Text>,
+        )
+        segs.push(
+          <Text key={`s${c}`} color={theme.subtle}>
+            {c < numCols - 1 ? ' │ ' : ' │'}
+          </Text>,
+        )
+      }
+      out.push(<Text key={`${key}-${li}`}>{segs}</Text>)
+    }
+    return out
+  }
+
+  return (
+    <Box flexDirection="column">
+      {rule('┌', '┬', '┐')}
+      {renderRow(header, true, 'h')}
+      {rule('├', '┼', '┤')}
+      {rows.map((r, ri) => (
+        <React.Fragment key={ri}>{renderRow(r, false, `r${ri}`)}</React.Fragment>
+      ))}
+      {rule('└', '┴', '┘')}
+    </Box>
+  )
+}
+
 export function Markdown({ text }: { text: string }): React.ReactElement {
   const blocks = parseBlocks(text)
   return (
@@ -188,6 +311,9 @@ export function Markdown({ text }: { text: string }): React.ReactElement {
               {parseInline(b.text)}
             </Text>
           )
+        }
+        if (b.type === 'table') {
+          return <TableBlock key={idx} block={b} />
         }
         if (b.type === 'hr') {
           return (
