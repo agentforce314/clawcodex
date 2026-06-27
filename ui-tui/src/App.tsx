@@ -489,6 +489,32 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         }
         return true
       }
+      case 'compact': {
+        if (client) {
+          addEntry({ kind: 'system', text: 'Compacting conversation…' })
+          void client
+            .requestControl('compact', arg ? { instructions: arg } : {}, 120_000)
+            .then((r) => {
+              if (r && r['ok']) {
+                const saved = Number(r['tokens_saved']) || 0
+                const pre = Number(r['pre_compact_count']) || 0
+                const post = Number(r['post_compact_count']) || 0
+                const sv = saved >= 1000 ? `${(saved / 1000).toFixed(1)}k` : String(saved)
+                addEntry({
+                  kind: 'system',
+                  text: `Compacted ${pre} → ${post} messages · saved ${sv} tokens`,
+                })
+                void client.requestControl('get_context_usage').then(applyContextUsage)
+              } else {
+                addEntry({
+                  kind: 'error',
+                  text: `compact failed: ${r && r['error'] ? String(r['error']) : 'no response'}`,
+                })
+              }
+            })
+        }
+        return true
+      }
       case 'control': {
         if (!arg) {
           addEntry({ kind: 'system', text: `usage: ${cmd.name} <value>` })
