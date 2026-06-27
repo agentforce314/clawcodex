@@ -29,6 +29,8 @@ export interface TranscriptEntry {
   /** tool calls only: the tool name + a compact one-line args preview. */
   toolName?: string
   argsText?: string
+  /** tool calls only: the raw input (used to render Edit/Write diffs). */
+  input?: Record<string, unknown>
 }
 
 let _seq = 0
@@ -127,6 +129,7 @@ export function messageToEntries(msg: ServerMessage): TranscriptEntry[] {
             text: '',
             toolName: String((block as { name?: string }).name ?? 'tool'),
             argsText: formatToolArgs((block as { input?: unknown }).input),
+            input: ((block as { input?: Record<string, unknown> }).input ?? {}) as Record<string, unknown>,
           })
         }
       }
