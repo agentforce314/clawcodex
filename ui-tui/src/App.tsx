@@ -994,7 +994,12 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
       {FULLSCREEN ? (
         <Box flexGrow={1} flexDirection="column" overflow="hidden">
           {scrollOffset > 0 ? (
-            <Text color={theme.dim}>{`↑ ${scrollOffset} newer — PgDn to follow`}</Text>
+            <Text color={theme.dim} wrap="truncate-end">
+              {(() => {
+                const lastPrompt = [...entries].reverse().find((e) => e.kind === 'user')?.text
+                return `┊ ${lastPrompt ? lastPrompt : ''}  · ↑ ${scrollOffset} newer — PgDn to follow`
+              })()}
+            </Text>
           ) : null}
           {visibleEntries.map(renderEntry)}
         </Box>
