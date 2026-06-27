@@ -15,14 +15,14 @@ export function DiffView({ lines }: { lines: DiffLine[] }): React.ReactElement {
   const extra = lines.length - shown.length
   const width = Math.max(1, ...lines.map((l) => String(l.oldNo ?? l.newNo ?? 0).length))
   return (
-    <Box flexDirection="column" marginLeft={2}>
+    <Box flexDirection="column">
       {shown.map((l, i) => {
         const no = l.type === 'del' ? l.oldNo : l.newNo
         const marker = l.type === 'add' ? '+' : l.type === 'del' ? '-' : ' '
         const bg = l.type === 'add' ? theme.diffAddBg : l.type === 'del' ? theme.diffDelBg : undefined
         return (
           <Text key={i} backgroundColor={bg} color={l.type === 'ctx' ? theme.dim : undefined} wrap="truncate-end">
-            {` ${marker} ${String(no ?? '').padStart(width)} ${l.text || ' '} `}
+            {`${marker} ${String(no ?? '').padStart(width)} ${l.text || ' '}`}
           </Text>
         )
       })}

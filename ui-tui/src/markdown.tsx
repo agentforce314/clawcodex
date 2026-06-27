@@ -172,8 +172,7 @@ export function Markdown({ text }: { text: string }): React.ReactElement {
     <Box flexDirection="column">
       {blocks.map((b, idx) => {
         if (b.type === 'code') {
-          // Borderless, syntax-highlighted, with a dim left gutter — matches
-          // the Claude Code look (no box; cli-highlight colors the code).
+          // Borderless, indented, syntax-highlighted via cli-highlight.
           const lines = highlightCode(b.lines.join('\n'), b.lang)
           return (
             <Box key={idx} flexDirection="column" marginY={0} paddingLeft={2}>

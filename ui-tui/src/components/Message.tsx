@@ -10,6 +10,7 @@ import { Box, Text } from 'ink'
 import React from 'react'
 import { Markdown } from '../markdown.js'
 import { theme } from '../theme.js'
+import { Banner } from './Banner.js'
 import { DiffView } from './DiffView.js'
 import { toolDiff } from '../diff.js'
 import type { TranscriptEntry } from '../sdkMessageAdapter.js'
@@ -35,6 +36,8 @@ function ToolResult({ text }: { text: string }): React.ReactElement {
 
 export function Message({ entry }: { entry: TranscriptEntry }): React.ReactElement | null {
   switch (entry.kind) {
+    case 'banner':
+      return entry.bannerData ? <Banner {...entry.bannerData} /> : null
     case 'user':
       return (
         <Box>
