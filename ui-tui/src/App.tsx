@@ -81,6 +81,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     totalTokens: number
     maxTokens: number
   } | null>(null)
+  const [sessionCost, setSessionCost] = useState(0) // cumulative USD across turns
   const [slashSel, setSlashSel] = useState(0)
   const [atSel, setAtSel] = useState(0)
   // Submitted-prompt history for ↑/↓ recall (readline-style; -1 = live draft).
@@ -251,6 +252,8 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
           setBusy(false)
           setToolActivity(null)
           setAgentLines([]) // subagents are done when the turn ends
+          const turnCost = Number((msg as { total_cost_usd?: number }).total_cost_usd) || 0
+          if (turnCost > 0) setSessionCost((c) => c + turnCost)
           flushStream() // commit a partial left over by interrupt/error (no-op on success)
           void c.requestControl('get_context_usage').then(applyContextUsage) // refresh after each turn
         }
@@ -704,7 +707,14 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         </>
       )}
 
-      <StatusBar connected={connected} model={model} mode={mode} busy={busy} context={contextUsage} />
+      <StatusBar
+        connected={connected}
+        model={model}
+        mode={mode}
+        busy={busy}
+        context={contextUsage}
+        cost={sessionCost}
+      />
     </Box>
   )
 }
