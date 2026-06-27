@@ -25,6 +25,7 @@ export const theme = {
   promptBorder: 'rgb(136,136,136)', // input rule
   userBg: 'rgb(55,55,55)', // user message background
   spinner: 'rgb(215,119,87)', // claude orange
+  spinnerShimmer: 'rgb(235,159,127)', // lighter claude orange — spinner glimmer sweep
   diffAddBg: 'rgb(34,92,43)', // dark green — added lines
   diffDelBg: 'rgb(122,41,54)', // dark red — removed lines
 } as const
