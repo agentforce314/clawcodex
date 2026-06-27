@@ -89,6 +89,45 @@ function TodoList({ todos }: { todos: NonNullable<TranscriptEntry['todos']> }): 
   )
 }
 
+function fmtTok(n: number): string {
+  return n >= 1000 ? `${(n / 1000).toFixed(n >= 100_000 ? 0 : 1)}k` : String(n)
+}
+
+/** Context-window usage breakdown (the original's /context ContextVisualization):
+ *  a total bar colored by headroom + per-category token bars. */
+function ContextView({ data }: { data: NonNullable<TranscriptEntry['contextData']> }): React.ReactElement {
+  const { percentage, totalTokens, maxTokens, categories } = data
+  const W = 28
+  const filled = Math.max(0, Math.min(W, Math.round((percentage / 100) * W)))
+  const barColor = percentage >= 90 ? theme.error : percentage >= 70 ? theme.warn : theme.success
+  const nameW = Math.max(8, ...categories.map((c) => c.name.length))
+  return (
+    <Box flexDirection="column">
+      <Text>
+        <Text color={theme.success}>⏺ </Text>
+        <Text bold>Context</Text>
+      </Text>
+      <Box>
+        <Text color={theme.dim}>{'  ⎿ '}</Text>
+        <Text color={barColor}>{'█'.repeat(filled)}</Text>
+        <Text color={theme.subtle}>{'░'.repeat(W - filled)}</Text>
+        <Text color={theme.dim}>{`  ${Math.round(percentage)}% · ${fmtTok(totalTokens)}/${fmtTok(maxTokens)} tokens`}</Text>
+      </Box>
+      {categories.map((c, i) => {
+        const seg = Math.max(1, Math.min(W, Math.round((c.tokens / Math.max(1, maxTokens)) * W)))
+        return (
+          <Box key={i}>
+            <Text color={theme.dim}>{'     '}</Text>
+            <Text>{c.name.padEnd(nameW)}</Text>
+            <Text color={theme.accent}>{`  ${'▪'.repeat(seg)}`}</Text>
+            <Text color={theme.dim}>{`  ${fmtTok(c.tokens)}`}</Text>
+          </Box>
+        )
+      })}
+    </Box>
+  )
+}
+
 export function Message({ entry }: { entry: TranscriptEntry }): React.ReactElement | null {
   switch (entry.kind) {
     case 'banner':
@@ -153,6 +192,8 @@ export function Message({ entry }: { entry: TranscriptEntry }): React.ReactEleme
     }
     case 'toolResult':
       return <ToolResult text={entry.text} isError={entry.isError} />
+    case 'context':
+      return entry.contextData ? <ContextView data={entry.contextData} /> : null
     case 'result':
       return <Text color={theme.success}>{`✓ ${entry.text}`}</Text>
     case 'error':
