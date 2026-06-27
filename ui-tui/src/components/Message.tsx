@@ -12,7 +12,6 @@ import { Markdown } from '../markdown.js'
 import { theme } from '../theme.js'
 import { Banner } from './Banner.js'
 import { DiffView } from './DiffView.js'
-import { toolDiff } from '../diff.js'
 import type { TranscriptEntry } from '../sdkMessageAdapter.js'
 
 const RESULT_MAX_LINES = 8
@@ -63,7 +62,7 @@ export function Message({ entry }: { entry: TranscriptEntry }): React.ReactEleme
         </Box>
       )
     case 'tool': {
-      const diff = entry.toolName ? toolDiff(entry.toolName, entry.input ?? {}) : null
+      const diff = entry.diff
       const isWeb = entry.toolName === 'WebFetch' || entry.toolName === 'WebSearch'
       return (
         <Box flexDirection="column">
