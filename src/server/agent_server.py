@@ -221,6 +221,9 @@ class _AgentSession:
         if subtype == "get_context_usage":
             self._reply(request_id, self._context_usage())
             return
+        if subtype == "compact":
+            await self._do_compact(request_id, inner.get("instructions"))
+            return
         # Unknown subtype — error back so a correlating client doesn't hang.
         if isinstance(request_id, str):
             self._emit({
@@ -301,6 +304,37 @@ class _AgentSession:
         except Exception as exc:  # noqa: BLE001 — never let a usage pull break the session
             out["error"] = str(exc)
         return out
+
+    async def _do_compact(self, request_id: object, instructions: object) -> None:
+        """Manually compact the conversation (the original's /compact). Idle-only:
+        the worker thread mutates the conversation during a turn, so refuse
+        mid-turn rather than race the message list."""
+        with self._lock:
+            active = self._current_abort is not None
+        if active:
+            self._reply(request_id, {"ok": False, "error": "cannot compact during an active turn"})
+            return
+        try:
+            from src.compact_service.service import compact_conversation
+
+            model = getattr(self.provider, "model", None) or self.config.model or ""
+            instr = instructions if isinstance(instructions, str) and instructions.strip() else None
+            res = await compact_conversation(
+                self.session.conversation,
+                self.provider,
+                model,
+                custom_instructions=instr,
+                trigger="manual",
+            )
+            self._reply(request_id, {
+                "ok": True,
+                "tokens_saved": res.tokens_saved,
+                "pre_compact_count": res.pre_compact_count,
+                "post_compact_count": res.post_compact_count,
+            })
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[agent-server] compact failed")
+            self._reply(request_id, {"ok": False, "error": str(exc)})
 
     def _resolve_permission(self, msg: dict) -> None:
         response = msg.get("response")
