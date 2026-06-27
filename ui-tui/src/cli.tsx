@@ -14,6 +14,7 @@
  *   clawcodex-tui [--cwd DIR]                                # spawn + own a backend
  *   clawcodex-tui <cc://host:port> [--token T] [--cwd DIR]   # attach
  */
+import './forceColor.js' // MUST be first — sets FORCE_COLOR before chalk/Ink load
 import { render } from 'ink'
 import React from 'react'
 import { App } from './App.js'

@@ -21,6 +21,7 @@ import { theme } from '../theme.js'
 import type { DiffLine } from '../diff.js'
 
 const MAX_LINES = 80
+const MAX_DIFF_WIDTH = 120 // readable cap so wide terminals don't stretch the tint
 const RESET = '\x1b[0m'
 const ADD_BG: [number, number, number] = [34, 92, 43]
 const DEL_BG: [number, number, number] = [122, 41, 54]
@@ -70,9 +71,12 @@ export function DiffView({ lines, filePath }: { lines: DiffLine[]; filePath?: st
   const cols = process.stdout.columns ?? 80
   const indent = 2 // sit under the "⎿" summary
   const gutterW = indent + numW + 1 // indent + right-aligned number + a space
-  const contentMax = Math.max(8, cols - gutterW - 1)
+  // Cap the content column at a readable width so a very wide terminal (or one
+  // long line) doesn't stretch the tint across the whole screen — a no-op on
+  // normal terminals, it just bounds the worst case.
+  const contentMax = Math.max(8, Math.min(cols - gutterW - 1, MAX_DIFF_WIDTH))
   // Tint width = the longest line in the hunk (marker + code), capped at the
-  // terminal — a tight block for short hunks instead of a full-width bar.
+  // content column — a tight block for short hunks instead of a full-width bar.
   const longest = Math.max(2, ...shown.map((l) => 1 + (l.text?.length ?? 0)))
   const blockW = Math.min(contentMax, longest)
   const segW = Math.max(4, blockW) // wrap target (marker is counted in bgRow)
