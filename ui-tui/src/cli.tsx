@@ -4,10 +4,11 @@
  *
  * Two modes:
  *   - spawn (default): the TUI is the parent — it spawns the Python
- *     agent-server as a child it owns (the hermes-agent route), reads the
- *     child's `cc://` URL, connects, and tears the child down on exit.
+ *     agent-server as a child it owns (the hermes-agent route) and talks over
+ *     the child's stdin/stdout (NDJSON). A pipe can't idle-time-out, so the
+ *     session never silently disconnects.
  *   - attach: pass a `cc://`/`http://` URL to connect to an already-running
- *     `clawcodex agent-server` (e.g. a remote one).
+ *     `clawcodex agent-server` (e.g. a remote one) over WebSocket.
  *
  * Usage:
  *   clawcodex-tui [--cwd DIR]                                # spawn + own a backend
@@ -17,7 +18,7 @@ import { render } from 'ink'
 import React from 'react'
 import { App } from './App.js'
 import { createSession } from './client.js'
-import { spawnBackend } from './spawnBackend.js'
+import { StdioTransport, WsTransport, type Transport } from './transport.js'
 
 interface Args {
   url: string | undefined
@@ -50,36 +51,42 @@ function toHttpUrl(url: string): string {
   return url // already http:// or https://
 }
 
+/** Resolve the agent-server command (env override, else `clawcodex agent-server`). */
+function resolveAgentCmd(): string[] {
+  const raw = process.env['CLAWCODEX_AGENT_SERVER_CMD']?.trim()
+  return raw ? raw.split(/\s+/) : ['clawcodex', 'agent-server']
+}
+
 async function main(): Promise<void> {
   const { url, token, cwd } = parseArgs(process.argv.slice(2))
 
-  let connectUrl: string
-  let connectToken: string | undefined
+  let transport: Transport
   let serverLabel: string
   let dispose: (() => void) | undefined
 
   if (url) {
-    // Attach to an already-running server.
-    connectUrl = url
-    connectToken = token
-    serverLabel = url
-  } else {
-    // Spawn + own the Python backend (hermes route).
-    process.stderr.write(
-      'clawcodex-tui: starting agent-server (first launch can take ~20s)…\n',
-    )
-    let backend
+    // Attach to an already-running / remote server over WebSocket.
+    let info
     try {
-      backend = await spawnBackend({ cwd })
+      info = await createSession(toHttpUrl(url), cwd, token)
     } catch (err) {
-      console.error(`clawcodex-tui: ${(err as Error).message}`)
+      console.error(`clawcodex-tui: failed to create session: ${(err as Error).message}`)
       process.exit(1)
       return
     }
-    connectUrl = backend.ccUrl
-    connectToken = backend.token
-    serverLabel = 'local' // spawn mode: the backend is internal — don't show the ephemeral URL
-    dispose = backend.dispose
+    transport = new WsTransport(info.wsUrl, info.authToken)
+    serverLabel = url
+  } else {
+    // Spawn + own the Python backend over stdio (hermes route). The child emits
+    // system/init when ready; the app shows "starting…" until then.
+    process.stderr.write(
+      'clawcodex-tui: starting agent-server (first launch can take ~20s)…\n',
+    )
+    const [cmd, ...base] = resolveAgentCmd()
+    const stdio = new StdioTransport(cmd!, [...base, '--stdio'], { cwd })
+    transport = stdio
+    serverLabel = 'local' // spawn mode: the backend is internal
+    dispose = () => stdio.close()
     // Make sure the child dies with us, however we exit.
     const cleanup = () => dispose?.()
     process.on('exit', cleanup)
@@ -93,17 +100,7 @@ async function main(): Promise<void> {
     })
   }
 
-  let info
-  try {
-    info = await createSession(toHttpUrl(connectUrl), cwd, connectToken)
-  } catch (err) {
-    console.error(`clawcodex-tui: failed to create session: ${(err as Error).message}`)
-    dispose?.()
-    process.exit(1)
-    return
-  }
-
-  const { waitUntilExit } = render(<App info={info} serverLabel={serverLabel} />)
+  const { waitUntilExit } = render(<App transport={transport} serverLabel={serverLabel} />)
   await waitUntilExit()
   dispose?.()
 }

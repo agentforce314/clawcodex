@@ -20,8 +20,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import sys
+import threading
 from pathlib import Path
 
 from src.server.agent_server import AgentServerConfig, PROTOCOL_VERSION, make_spawn_agent
@@ -79,9 +81,18 @@ def run_agent_server_subcommand(argv: list[str]) -> int:
         help="Exit when stdin reaches EOF — used when a parent TUI spawns this "
              "server, so the backend reliably dies if the TUI crashes (hermes route).",
     )
+    parser.add_argument(
+        "--stdio", action="store_true",
+        help="Talk NDJSON over stdin/stdout (one session) instead of HTTP+"
+             "WebSocket — the default LOCAL transport for the TUI (a pipe can't "
+             "idle-time-out). stdout is reserved for JSON frames; diagnostics go "
+             "to stderr; stdin EOF ends the session.",
+    )
     args = parser.parse_args(argv)
 
-    if args.exit_on_parent:
+    # In --stdio mode the inbound reader owns stdin, so the EOF watcher (which
+    # also reads stdin) must NOT run — EOF is detected by the reader instead.
+    if args.exit_on_parent and not args.stdio:
         _exit_when_stdin_closes()
 
     workspace = str(Path(args.workspace).resolve()) if args.workspace else str(Path.cwd())
@@ -93,11 +104,86 @@ def run_agent_server_subcommand(argv: list[str]) -> int:
         max_turns=args.max_turns,
     )
 
+    if args.stdio:
+        try:
+            return asyncio.run(_serve_stdio(workspace, agent_config))
+        except KeyboardInterrupt:
+            return 0
+
     try:
         return asyncio.run(_serve(args, workspace, agent_config))
     except KeyboardInterrupt:
         print("\nagent-server: shutting down")
         return 0
+
+
+async def _serve_stdio(workspace: str, agent_config: AgentServerConfig) -> int:
+    """Single-session stdio transport — the hermes route's local link.
+
+    Pumps newline-delimited JSON between this process's stdin/stdout and the
+    in-process agent, reusing ``make_spawn_agent``/``AgentHandle`` exactly as the
+    WS pump does. There is no socket, so nothing can idle-time-out. ``stdout`` is
+    RESERVED for JSON frames (diagnostics go to ``stderr``); ``stdin`` EOF — the
+    parent TUI going away — ends the session.
+    """
+    index_path = Path.home() / ".clawcodex" / "server-sessions.json"
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    manager = SessionManager(workspace=workspace, index_path=index_path)
+    info = manager.create_session(cwd=workspace)
+    spawn = make_spawn_agent(agent_config)
+    agent = await spawn(info.id, workspace, None)  # emits system/init as its first frame
+    manager.mark_running(info.id)
+
+    loop = asyncio.get_running_loop()
+    out = sys.stdout
+
+    async def outbound() -> None:
+        """Agent → stdout: one JSON object per line, flushed."""
+        async for msg in agent.messages_from_agent():
+            try:
+                out.write(json.dumps(msg) + "\n")
+                out.flush()
+            except (BrokenPipeError, OSError):
+                return
+
+    # Inbound: a daemon thread reads stdin lines and dispatches them onto the
+    # loop (mirrors the existing threaded pattern). stdin EOF resolves `closed`.
+    closed: asyncio.Future[None] = loop.create_future()
+
+    def _resolve_closed() -> None:
+        if not closed.done():
+            closed.set_result(None)
+
+    def _read_stdin() -> None:
+        try:
+            for raw in sys.stdin:
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    parsed = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(parsed, dict):
+                    asyncio.run_coroutine_threadsafe(agent.send_to_agent(parsed), loop)
+        except Exception:  # noqa: BLE001 - any stdin error ends the session cleanly
+            pass
+        finally:
+            loop.call_soon_threadsafe(_resolve_closed)
+
+    threading.Thread(target=_read_stdin, name="agent-server-stdin", daemon=True).start()
+
+    out_task = loop.create_task(outbound())
+    try:
+        await asyncio.wait({out_task, closed}, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        if not out_task.done():
+            out_task.cancel()
+        try:
+            await agent.shutdown()
+        except Exception:  # noqa: BLE001
+            pass
+    return 0
 
 
 async def _serve(args, workspace: str, agent_config: AgentServerConfig) -> int:

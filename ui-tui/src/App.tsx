@@ -9,7 +9,8 @@
 import { Box, Static, Text, useApp, useInput } from 'ink'
 import TextInput from 'ink-text-input'
 import React, { useEffect, useRef, useState } from 'react'
-import { DirectConnectClient, type SessionInfo } from './client.js'
+import { DirectConnectClient } from './client.js'
+import type { Transport } from './transport.js'
 import { Message } from './components/Message.js'
 import { PermissionDialog } from './components/PermissionDialog.js'
 import { SlashMenu } from './components/SlashMenu.js'
@@ -21,7 +22,7 @@ import { parseProtocolMajor, SUPPORTED_PROTOCOL_MAJOR } from './protocol.js'
 import { theme } from './theme.js'
 
 interface Props {
-  info: SessionInfo
+  transport: Transport
   serverLabel: string
 }
 
@@ -54,7 +55,7 @@ function streamTail(text: string, cols: number, maxLines: number): string {
   return visual.slice(-maxLines).join('\n')
 }
 
-export function App({ info, serverLabel }: Props): React.ReactElement {
+export function App({ transport, serverLabel }: Props): React.ReactElement {
   const { exit } = useApp()
   const [entries, setEntries] = useState<TranscriptEntry[]>([])
   const [streaming, setStreaming] = useState('')
@@ -97,12 +98,13 @@ export function App({ info, serverLabel }: Props): React.ReactElement {
   }
 
   useEffect(() => {
-    const c = new DirectConnectClient(info, {
+    const c = new DirectConnectClient(transport, {
       onConnected: () => setConnected(true),
       onDisconnected: () => {
         setConnected(false)
+        setReady(false) // gate the input so submits don't vanish into a dead link
         setBusy(false)
-        addEntry({ kind: 'system', text: 'disconnected' })
+        addEntry({ kind: 'system', text: 'backend disconnected' })
       },
       onError: (err) => addEntry({ kind: 'error', text: String(err.message) }),
       onPermissionRequest: (req, requestId) =>
@@ -127,7 +129,13 @@ export function App({ info, serverLabel }: Props): React.ReactElement {
           flushStream() // commit a partial left over by interrupt/error (no-op on success)
         }
         if (type === 'system' && (msg as { subtype?: string }).subtype === 'init') {
-          const m = msg as { model?: string; permission_mode?: string; protocol_version?: string; tools?: unknown[] }
+          const m = msg as {
+            model?: string
+            permission_mode?: string
+            protocol_version?: string
+            tools?: unknown[]
+            cwd?: string
+          }
           const toolCount = Array.isArray(m.tools) ? m.tools.length : 0
           setModel(m.model ?? '?')
           setMode(m.permission_mode ?? '?')
@@ -148,7 +156,7 @@ export function App({ info, serverLabel }: Props): React.ReactElement {
                 model: m.model ?? '?',
                 mode: m.permission_mode ?? '?',
                 tools: toolCount,
-                cwd: info.workDir,
+                cwd: m.cwd,
               },
             })
           }
@@ -168,7 +176,7 @@ export function App({ info, serverLabel }: Props): React.ReactElement {
     c.connect().catch(() => {}) // failures surface via onError / onDisconnected
     return () => c.close()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [info])
+  }, [transport])
 
   useInput((ch, key) => {
     if (key.ctrl && ch === 'c') {
