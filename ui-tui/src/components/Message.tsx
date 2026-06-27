@@ -60,7 +60,7 @@ export function Message({ entry }: { entry: TranscriptEntry }): React.ReactEleme
     case 'tool':
       return (
         <Text>
-          <Text color={theme.assistant}>⏺ </Text>
+          <Text color={theme.success}>⏺ </Text>
           <Text bold>{entry.toolName}</Text>
           <Text color={theme.dim}>{`(${entry.argsText})`}</Text>
         </Text>
