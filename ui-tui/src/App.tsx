@@ -814,6 +814,25 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         })
         return true
       }
+      case 'diff': {
+        runBang('git --no-pager diff')
+        return true
+      }
+      case 'stats': {
+        const prompts = entries.filter((e) => e.kind === 'user').length
+        const tools = entries.filter((e) => e.kind === 'tool').length
+        const cu = contextUsage
+        const lines = [
+          `prompts: ${prompts}`,
+          `tool calls: ${tools}`,
+          `cost: $${(sessionCost || 0).toFixed(4)}`,
+        ]
+        if (cu) {
+          lines.push(`context: ${Math.round(cu.percentage)}% (${cu.totalTokens.toLocaleString()}/${cu.maxTokens.toLocaleString()})`)
+        }
+        addEntry({ kind: 'system', text: `Session stats:\n${lines.join('\n')}` })
+        return true
+      }
       case 'config': {
         if (client) {
           void client.requestControl('get_settings').then((r) => {
