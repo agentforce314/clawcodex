@@ -10,7 +10,6 @@ import { Box, Static, Text, useApp, useInput } from 'ink'
 import TextInput from 'ink-text-input'
 import React, { useEffect, useRef, useState } from 'react'
 import { DirectConnectClient, type SessionInfo } from './client.js'
-import { Banner } from './components/Banner.js'
 import { Message } from './components/Message.js'
 import { PermissionDialog } from './components/PermissionDialog.js'
 import { SlashMenu } from './components/SlashMenu.js'
@@ -68,9 +67,11 @@ export function App({ info, serverLabel }: Props): React.ReactElement {
   const [mode, setMode] = useState('?')
   const [tools, setTools] = useState(0)
   const [connected, setConnected] = useState(false)
+  const [ready, setReady] = useState(false) // system/init received — banner committed, submit allowed
   const [client, setClient] = useState<DirectConnectClient | null>(null)
   const [slashSel, setSlashSel] = useState(0)
   const localSeq = useRef(0)
+  const bannerAdded = useRef(false)
 
   const slashMatches = !input.includes(' ') ? matchSlash(input) : []
   const slashOpen = slashMatches.length > 0 && permissions.length === 0
@@ -127,9 +128,30 @@ export function App({ info, serverLabel }: Props): React.ReactElement {
         }
         if (type === 'system' && (msg as { subtype?: string }).subtype === 'init') {
           const m = msg as { model?: string; permission_mode?: string; protocol_version?: string; tools?: unknown[] }
+          const toolCount = Array.isArray(m.tools) ? m.tools.length : 0
           setModel(m.model ?? '?')
           setMode(m.permission_mode ?? '?')
-          setTools(Array.isArray(m.tools) ? m.tools.length : 0)
+          setTools(toolCount)
+          // Commit the welcome banner as the FIRST Static entry so it stays in
+          // scrollback as the conversation grows (the original keeps its logo).
+          // It must be APPENDED before any other entry — <Static> is append-only
+          // and tracks by index, so prepending would skip the banner and
+          // duplicate the next row. Submit is gated on `ready` (set here) so a
+          // user message can never beat the banner into the list.
+          setReady(true)
+          if (!bannerAdded.current) {
+            bannerAdded.current = true
+            addEntry({
+              kind: 'banner',
+              text: '',
+              bannerData: {
+                model: m.model ?? '?',
+                mode: m.permission_mode ?? '?',
+                tools: toolCount,
+                cwd: info.workDir,
+              },
+            })
+          }
           const major = parseProtocolMajor(m.protocol_version)
           if (major !== null && major !== SUPPORTED_PROTOCOL_MAJOR) {
             addEntry({
@@ -249,7 +271,7 @@ export function App({ info, serverLabel }: Props): React.ReactElement {
         return
       }
     }
-    if (!client || !connected || busy || permissions.length > 0) return
+    if (!client || !ready || busy || permissions.length > 0) return
     client.sendPrompt(text)
     addEntry({ kind: 'user', text })
     setStream('')
@@ -261,13 +283,12 @@ export function App({ info, serverLabel }: Props): React.ReactElement {
 
   return (
     <Box flexDirection="column">
-      {entries.length === 0 && streaming === '' ? (
-        <Banner model={model} mode={mode} tools={tools} cwd={info.workDir} />
-      ) : null}
-
       <Static items={entries}>
         {(entry) => (
-          <Box key={entry.id} marginTop={entry.kind === 'tool' || entry.kind === 'toolResult' ? 0 : 1}>
+          <Box
+            key={entry.id}
+            marginTop={['tool', 'toolResult', 'banner'].includes(entry.kind) ? 0 : 1}
+          >
             <Message entry={entry} />
           </Box>
         )}
@@ -311,7 +332,7 @@ export function App({ info, serverLabel }: Props): React.ReactElement {
             paddingX={1}
             width="100%"
           >
-            <Text color={connected ? theme.accent : theme.dim}>{busy ? '… ' : '❯ '}</Text>
+            <Text color={ready ? theme.accent : theme.dim}>{busy ? '… ' : '❯ '}</Text>
             <TextInput
               value={input}
               onChange={(v) => {
@@ -319,7 +340,7 @@ export function App({ info, serverLabel }: Props): React.ReactElement {
                 setSlashSel(0)
               }}
               onSubmit={onSubmit}
-              placeholder={connected ? 'Type a message, or / for commands…' : 'connecting…'}
+              placeholder={ready ? 'Type a message, or / for commands…' : 'starting agent-server…'}
             />
           </Box>
         </>
