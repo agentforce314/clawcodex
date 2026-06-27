@@ -242,6 +242,9 @@ class _AgentSession:
         if subtype == "resume":
             self._do_resume(request_id, inner.get("session_id"))
             return
+        if subtype == "branch":
+            self._do_branch(request_id)
+            return
         if subtype == "clear":
             # Reset the conversation so /clear actually starts a fresh context
             # (not just the client screen). Idle-only.
@@ -324,6 +327,35 @@ class _AgentSession:
             (d / f"{self.session_id}.json").write_text(json.dumps(payload), encoding="utf-8")
         except Exception:  # noqa: BLE001 — persistence must never break a turn
             logger.debug("[agent-server] session save failed", exc_info=True)
+
+    def _do_branch(self, request_id: object) -> None:
+        """Fork the current conversation to a new saved session (the original's
+        /branch). Read-only on the live session — just writes a copy under a new
+        id so /resume can switch to it later."""
+        try:
+            if self.session is None or not self.session.conversation.messages:
+                self._reply(request_id, {"ok": False, "error": "nothing to branch"})
+                return
+            msgs = self.session.conversation.messages
+            new_id = f"{self.session_id}-b{_uuid.uuid4().hex[:6]}"
+            base = self._session_name or _first_prompt_preview(msgs) or self.session_id
+            d = _sessions_dir()
+            d.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "session_id": new_id,
+                "model": getattr(self.provider, "model", None) or self.config.model or "",
+                "cwd": self.cwd,
+                "updated_at": time.time(),
+                "message_count": len(msgs),
+                "preview": _first_prompt_preview(msgs),
+                "name": f"branch of {base}",
+                "conversation": self.session.conversation.to_dict(),
+            }
+            (d / f"{new_id}.json").write_text(json.dumps(payload), encoding="utf-8")
+            self._reply(request_id, {"ok": True, "session_id": new_id})
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[agent-server] branch failed")
+            self._reply(request_id, {"ok": False, "error": str(exc)})
 
     def _do_resume(self, request_id: object, session_id: object) -> None:
         """Load a saved conversation into this session (the original's /resume).
