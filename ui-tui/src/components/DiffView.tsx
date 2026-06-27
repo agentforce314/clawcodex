@@ -1,116 +1,99 @@
 /**
- * Renders a line diff (from diff.ts) the way the original Claude Code does:
+ * Renders an Edit/MultiEdit/Write tool result the way the original Claude Code
+ * does, driving openclaude's pure-TS ColorDiff / ColorFile renderers (see
+ * ../colorDiff.ts). Layout mirrors MessageResponse + FileEditToolUpdatedMessage /
+ * FileWriteToolCreatedMessage:
  *
- *  - a NON-colored, right-aligned line-number gutter;
- *  - the code is SYNTAX-HIGHLIGHTED (via cli-highlight) on top of the add/del
- *    tint — the background is baked into the ANSI and re-applied after every
- *    syntax reset, so a `\x1b[0m` mid-line doesn't punch a hole in the tint;
- *  - the tint extends only to the LONGEST line in the hunk (capped at the
- *    terminal width), not the full terminal — short lines get a tight block,
- *    not a full-width bar;
- *  - long lines wrap (ANSI-aware) keeping the marker + tint on each row;
- *  - context lines (unchanged) render highlighted with no tint.
+ *   ⎿  Added N lines, removed M lines        (edit summary; omitted for writes)
+ *      <diff hunks | highlighted new content, width = columns - 12>
+ *      … +N lines                            (write truncation hint)
  *
- * Topped with an "⎿ Added N, removed M lines" summary.
+ * ColorDiff/ColorFile emit fully ANSI-escaped rows (dimmed line-number gutter,
+ * +/-/space markers, add/remove backgrounds, highlight.js syntax colors,
+ * word-level diff), so we just print each row in a <Text>. No dashed frame —
+ * that belongs to the permission preview, not the result message.
  */
-import { highlight } from 'cli-highlight'
 import { Box, Text } from 'ink'
 import React from 'react'
-import wrapAnsi from 'wrap-ansi'
+import { ColorDiff, ColorFile } from '../colorDiff.js'
+import { countPatchLines } from '../patch.js'
+import type { ToolDiff } from '../diff.js'
 import { theme } from '../theme.js'
-import type { DiffLine } from '../diff.js'
 
-const MAX_LINES = 80
-const MAX_DIFF_WIDTH = 120 // readable cap so wide terminals don't stretch the tint
-const RESET = '\x1b[0m'
-const ADD_BG: [number, number, number] = [34, 92, 43]
-const DEL_BG: [number, number, number] = [122, 41, 54]
+// CC's default dark theme — Monokai syntax colors + dark add/del tints.
+const THEME_NAME = 'dark'
+// Original truncates created-file previews to the first 10 lines.
+const WRITE_MAX_LINES = 10
+// Safety cap so a giant edit can't flood the live viewport.
+const EDIT_MAX_LINES = 240
 
-/** Visible width (ANSI codes don't count). */
-const stripAnsi = (s: string): string => s.replace(/\x1b\[[0-9;]*m/g, '')
-
-const LANG: Record<string, string> = {
-  ts: 'typescript', tsx: 'typescript', mts: 'typescript', cts: 'typescript',
-  js: 'javascript', jsx: 'javascript', mjs: 'javascript', cjs: 'javascript',
-  py: 'python', rs: 'rust', go: 'go', rb: 'ruby', java: 'java', kt: 'kotlin',
-  c: 'c', h: 'c', cpp: 'cpp', cc: 'cpp', hpp: 'cpp', cs: 'csharp', swift: 'swift',
-  php: 'php', json: 'json', yml: 'yaml', yaml: 'yaml', toml: 'ini', ini: 'ini',
-  sh: 'bash', bash: 'bash', zsh: 'bash', md: 'markdown', css: 'css', scss: 'scss',
-  html: 'xml', xml: 'xml', sql: 'sql', lua: 'lua', dockerfile: 'dockerfile',
-}
-function langOf(path?: string): string | undefined {
-  const ext = (path || '').split(/[./\\]/).pop()?.toLowerCase()
-  return ext ? LANG[ext] : undefined
-}
-function hl(code: string, lang?: string): string {
-  if (!code) return ''
-  try {
-    return highlight(code, { language: lang, ignoreIllegals: true })
-  } catch {
-    return code
+/** "Added 3 lines, removed 2 lines" — exact phrasing/casing from upstream. */
+function editSummary(added: number, removed: number): string {
+  const parts: string[] = []
+  if (added > 0) parts.push(`Added ${added} ${added > 1 ? 'lines' : 'line'}`)
+  if (removed > 0) {
+    const verb = added === 0 ? 'Removed' : 'removed'
+    parts.push(`${verb} ${removed} ${removed > 1 ? 'lines' : 'line'}`)
   }
+  return parts.join(', ')
 }
 
-/**
- * Build one rendered row: marker + highlighted code, padded to `width`, with the
- * background re-applied after every syntax reset so the tint spans the full row.
- */
-function bgRow(ansi: string, bg: [number, number, number] | null, marker: string, width: number): string {
-  const pad = ' '.repeat(Math.max(0, width - 1 - stripAnsi(ansi).length)) // -1 for the marker
-  if (!bg) return `${marker}${ansi}${pad}`
-  const BG = `\x1b[48;2;${bg[0]};${bg[1]};${bg[2]}m`
-  const body = ansi.replace(/\x1b\[0m/g, RESET + BG) // keep the tint past each reset
-  return `${BG}${marker}${body}${pad}${RESET}`
-}
-
-export function DiffView({ lines, filePath }: { lines: DiffLine[]; filePath?: string }): React.ReactElement {
-  const shown = lines.slice(0, MAX_LINES)
-  const extra = lines.length - shown.length
-  const lang = langOf(filePath)
-  const numW = Math.max(1, ...lines.map((l) => String(l.oldNo ?? l.newNo ?? 0).length))
+export function DiffView({ diff }: { diff: ToolDiff }): React.ReactElement | null {
   const cols = process.stdout.columns ?? 80
-  const indent = 2 // sit under the "⎿" summary
-  const gutterW = indent + numW + 1 // indent + right-aligned number + a space
-  // Cap the content column at a readable width so a very wide terminal (or one
-  // long line) doesn't stretch the tint across the whole screen — a no-op on
-  // normal terminals, it just bounds the worst case.
-  const contentMax = Math.max(8, Math.min(cols - gutterW - 1, MAX_DIFF_WIDTH))
-  // Tint width = the longest line in the hunk (marker + code), capped at the
-  // content column — a tight block for short hunks instead of a full-width bar.
-  const longest = Math.max(2, ...shown.map((l) => 1 + (l.text?.length ?? 0)))
-  const blockW = Math.min(contentMax, longest)
-  const segW = Math.max(4, blockW) // wrap target (marker is counted in bgRow)
-  const added = lines.filter((l) => l.type === 'add').length
-  const removed = lines.filter((l) => l.type === 'del').length
+  // Exact width the original passes to its diff/code renderers.
+  const width = Math.max(20, cols - 12)
+
+  const bodyRows: { text: string; sep?: boolean }[] = []
+  let summary = ''
+  let hint = ''
+
+  if (diff.kind === 'write') {
+    const content = diff.content ?? ''
+    const all = content.split('\n')
+    const shown = all.slice(0, WRITE_MAX_LINES).join('\n')
+    const lines = new ColorFile(shown, diff.filePath).render(THEME_NAME, width, false) ?? []
+    for (const l of lines) bodyRows.push({ text: l })
+    const extra = all.length - WRITE_MAX_LINES
+    if (extra > 0) hint = `… +${extra} ${extra === 1 ? 'line' : 'lines'}`
+  } else {
+    if (!diff.hunks.length) return null
+    const { added, removed } = countPatchLines(diff.hunks)
+    summary = editSummary(added, removed)
+    diff.hunks.forEach((hunk, i) => {
+      if (i > 0) bodyRows.push({ text: '...', sep: true })
+      const lines =
+        new ColorDiff(hunk, diff.firstLine, diff.filePath, diff.fileContent ?? null).render(
+          THEME_NAME,
+          width,
+          false,
+        ) ?? []
+      for (const l of lines) bodyRows.push({ text: l })
+    })
+    const over = bodyRows.length - EDIT_MAX_LINES
+    if (over > 0) {
+      bodyRows.length = EDIT_MAX_LINES
+      hint = `… +${over} ${over === 1 ? 'line' : 'lines'}`
+    }
+  }
 
   return (
-    <Box flexDirection="column">
-      <Text color={theme.dim}>
-        {`  ⎿ Added ${added} line${added === 1 ? '' : 's'}, removed ${removed} line${removed === 1 ? '' : 's'}`}
-      </Text>
-      {shown.map((l, i) => {
-        const no = l.type === 'del' ? l.oldNo : l.newNo
-        const marker = l.type === 'add' ? '+' : l.type === 'del' ? '-' : ' '
-        const bg = l.type === 'add' ? ADD_BG : l.type === 'del' ? DEL_BG : null
-        const ansi = hl(l.text ?? '', lang)
-        const rows =
-          stripAnsi(ansi).length <= segW - 1
-            ? [ansi]
-            : wrapAnsi(ansi, segW - 1, { hard: true, trim: false }).split('\n')
-        return (
-          <Box key={i}>
-            <Box width={gutterW} flexShrink={0}>
-              <Text color={theme.dim}>{`  ${String(no ?? '').padStart(numW)} `}</Text>
-            </Box>
-            <Box flexDirection="column">
-              {rows.map((row, j) => (
-                <Text key={j}>{bgRow(row, bg, j === 0 ? marker : ' ', blockW)}</Text>
-              ))}
-            </Box>
-          </Box>
-        )
-      })}
-      {extra > 0 ? <Text color={theme.dim}>{`    … +${extra} more lines`}</Text> : null}
+    <Box flexDirection="row">
+      <Box flexShrink={0}>
+        <Text color={theme.dim}>{'  ⎿  '}</Text>
+      </Box>
+      <Box flexDirection="column" flexGrow={1}>
+        {summary ? <Text>{summary}</Text> : null}
+        {bodyRows.map((r, i) =>
+          r.sep ? (
+            <Text key={i} dimColor>
+              {'...'}
+            </Text>
+          ) : (
+            <Text key={i}>{r.text}</Text>
+          ),
+        )}
+        {hint ? <Text color={theme.dim}>{hint}</Text> : null}
+      </Box>
     </Box>
   )
 }
