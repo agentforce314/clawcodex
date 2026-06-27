@@ -219,7 +219,7 @@ class _AgentSession:
             })
             return
         if subtype == "get_context_usage":
-            self._reply(request_id, {"protocol_version": PROTOCOL_VERSION})
+            self._reply(request_id, self._context_usage())
             return
         # Unknown subtype — error back so a correlating client doesn't hang.
         if isinstance(request_id, str):
@@ -247,6 +247,55 @@ class _AgentSession:
                 "response": response,
             },
         })
+
+    def _system_prompt_text(self) -> str:
+        """The active system prompt as a plain string (it may be a block list —
+        build_effective_system_prompt returns the full base block list)."""
+        sp = self.system_prompt
+        if isinstance(sp, str):
+            return sp
+        if isinstance(sp, list):
+            parts: list[str] = []
+            for b in sp:
+                if isinstance(b, dict):
+                    parts.append(str(b.get("text", "")))
+                else:
+                    parts.append(str(getattr(b, "text", b)))
+            return "\n".join(parts)
+        return str(sp)
+
+    def _context_usage(self) -> dict:
+        """Live context-window usage for the status bar (the original's
+        get_context_usage). Best-effort — any failure degrades to just the
+        protocol version so the client never hangs or crashes."""
+        out: dict = {"protocol_version": PROTOCOL_VERSION}
+        try:
+            from src.context_system.context_analyzer import analyze_context
+
+            model = getattr(self.provider, "model", None) or self.config.model or ""
+            messages = (
+                self.session.conversation.get_messages() if self.session is not None else []
+            )
+            data = analyze_context(
+                conversation_api_messages=messages,
+                model=model,
+                system_prompt=self._system_prompt_text(),
+                tool_schemas=_tool_schemas(self.tool_registry),
+                claude_md_content="",
+            )
+            out.update({
+                "total_tokens": data.total_tokens,
+                "max_tokens": data.max_tokens,
+                "percentage": round(data.percentage, 1),
+                "categories": [
+                    {"name": c.name, "tokens": c.tokens}
+                    for c in data.categories
+                    if not c.is_deferred and c.name != "Free space"
+                ],
+            })
+        except Exception as exc:  # noqa: BLE001 — never let a usage pull break the session
+            out["error"] = str(exc)
+        return out
 
     def _resolve_permission(self, msg: dict) -> None:
         response = msg.get("response")
