@@ -8,9 +8,19 @@
  * can render a live streaming buffer mid-token. Not a spec-complete parser —
  * a focused port of the Claude-Code look, full control, zero deps.
  */
+import { highlight } from 'cli-highlight'
 import { Box, Text } from 'ink'
 import React from 'react'
 import { theme } from './theme.js'
+
+/** Syntax-highlight a code block to an ANSI string (Ink Text passes ANSI through). */
+function highlightCode(code: string, lang?: string): string[] {
+  try {
+    return highlight(code, { language: lang, ignoreIllegals: true }).split('\n')
+  } catch {
+    return code.split('\n')
+  }
+}
 
 // ── inline spans ──────────────────────────────────────────────────────────
 
@@ -162,18 +172,16 @@ export function Markdown({ text }: { text: string }): React.ReactElement {
     <Box flexDirection="column">
       {blocks.map((b, idx) => {
         if (b.type === 'code') {
+          // Borderless, syntax-highlighted, with a dim left gutter — matches
+          // the Claude Code look (no box; cli-highlight colors the code).
+          const lines = highlightCode(b.lines.join('\n'), b.lang)
           return (
-            <Box
-              key={idx}
-              flexDirection="column"
-              borderStyle="round"
-              borderColor={theme.border}
-              paddingX={1}
-            >
-              {(b.lines.length ? b.lines : ['']).map((ln, j) => (
-                <Text key={j} color={theme.code}>
-                  {ln || ' '}
-                </Text>
+            <Box key={idx} flexDirection="column" marginY={0}>
+              {(lines.length ? lines : [' ']).map((ln, j) => (
+                <Box key={j}>
+                  <Text color={theme.dim}>{'  │ '}</Text>
+                  <Text>{ln || ' '}</Text>
+                </Box>
               ))}
             </Box>
           )
@@ -209,7 +217,7 @@ export function Markdown({ text }: { text: string }): React.ReactElement {
             <Box key={idx} flexDirection="column">
               {b.items.map((it, j) => {
                 const num = parseInt(it.marker, 10)
-                const bullet = it.ordered ? `${Number.isFinite(num) ? num : j + 1}. ` : '• '
+                const bullet = it.ordered ? `${Number.isFinite(num) ? num : j + 1}. ` : '- '
                 return (
                   <Box key={j}>
                     <Text color={theme.accent}>{`  ${bullet}`}</Text>
