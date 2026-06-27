@@ -7,7 +7,7 @@ export interface SlashCommand {
   name: string
   description: string
   /** how the command is handled when submitted. */
-  kind: 'clear' | 'help' | 'quit' | 'control' | 'context' | 'compact' | 'send'
+  kind: 'clear' | 'help' | 'quit' | 'control' | 'context' | 'compact' | 'theme' | 'send'
   /** for kind:'control' — the control_request subtype. */
   control?: string
 }
@@ -24,6 +24,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   },
   { name: '/context', description: 'Show context-window usage by category', kind: 'context' },
   { name: '/compact', description: 'Summarize & compact the conversation: /compact [instructions]', kind: 'compact' },
+  { name: '/theme', description: 'Switch color theme: /theme <dark|light>', kind: 'theme' },
   { name: '/quit', description: 'Exit the TUI', kind: 'quit' },
 ]
 
