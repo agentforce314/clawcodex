@@ -22,6 +22,7 @@ export interface SlashCommand {
     | 'vim'
     | 'mcp'
     | 'cost'
+    | 'init'
     | 'export'
     | 'copy'
     | 'doctor'
@@ -53,6 +54,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/export', description: 'Save the transcript to a markdown file', kind: 'export' },
   { name: '/copy', description: "Copy the last response to the clipboard", kind: 'copy' },
   { name: '/mcp', description: 'List connected MCP servers and their tools', kind: 'mcp' },
+  { name: '/init', description: 'Analyze the codebase and create/improve CLAUDE.md', kind: 'init' },
   { name: '/doctor', description: 'Show connection + session diagnostics', kind: 'doctor' },
   { name: '/quit', description: 'Exit the TUI', kind: 'quit' },
 ]
