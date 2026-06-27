@@ -15,9 +15,12 @@
   },
   "dependencies": {
     "cli-highlight": "^2.1.11",
+    "diff": "^8.0.3",
+    "highlight.js": "^11.11.1",
     "ink": "^5.0.1",
     "ink-text-input": "^6.0.0",
     "react": "^18.3.1",
+    "string-width": "^7.2.0",
     "wrap-ansi": "^9.0.2",
     "ws": "^8.18.0"
   },
@@ -25,6 +28,7 @@
     "@types/node": "^22.5.0",
     "@types/react": "^18.3.5",
     "@types/ws": "^8.5.12",
+    "ink-testing-library": "^4.0.0",
     "typescript": "^5.6.2"
   },
   "engines": {
