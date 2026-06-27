@@ -583,6 +583,19 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         client?.close()
         exit()
         return true
+      case 'copy': {
+        // Copy the last assistant response via OSC 52 (terminal clipboard; works
+        // in iTerm2/kitty/wezterm/… without a clipboard library).
+        const last = [...entries].reverse().find((e) => e.kind === 'assistant' && e.text.trim())
+        if (last) {
+          const b64 = Buffer.from(last.text, 'utf8').toString('base64')
+          process.stdout.write(`\x1b]52;c;${b64}\x07`)
+          addEntry({ kind: 'system', text: 'copied last response to clipboard' })
+        } else {
+          addEntry({ kind: 'system', text: 'nothing to copy' })
+        }
+        return true
+      }
       case 'export': {
         try {
           const md = transcriptToMarkdown(entries)
