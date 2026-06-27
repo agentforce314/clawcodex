@@ -14,6 +14,8 @@ import type { Transport } from './transport.js'
 import { Message } from './components/Message.js'
 import { PermissionDialog } from './components/PermissionDialog.js'
 import { SlashMenu } from './components/SlashMenu.js'
+import { FileMenu } from './components/FileMenu.js'
+import { searchFiles } from './fileIndex.js'
 import { Spinner } from './components/Spinner.js'
 import { StatusBar } from './components/StatusBar.js'
 import { LiveTools, type LiveGroup } from './components/LiveTools.js'
@@ -74,6 +76,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const [ready, setReady] = useState(false) // system/init received — banner committed, submit allowed
   const [client, setClient] = useState<DirectConnectClient | null>(null)
   const [slashSel, setSlashSel] = useState(0)
+  const [atSel, setAtSel] = useState(0)
   const localSeq = useRef(0)
   const bannerAdded = useRef(false)
   const [toolActivity, setToolActivity] = useState<string | null>(null)
@@ -88,6 +91,22 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const slashOpen = slashMatches.length > 0 && permissions.length === 0
   const sel = Math.min(slashSel, Math.max(0, slashMatches.length - 1))
   const permission = permissions[0] ?? null
+
+  // `@`-mention file autocomplete: an @token at the end of the input (after
+  // start or whitespace) opens a file-suggestion dropdown (the original's
+  // @-typeahead). Mutually exclusive with the slash menu.
+  const atToken = (() => {
+    if (slashOpen || input.startsWith('/')) return null
+    const m = /(?:^|\s)@([^\s]*)$/.exec(input)
+    return m ? (m[1] as string) : null
+  })()
+  const atMatches = atToken !== null ? searchFiles(process.cwd(), atToken, Date.now()) : []
+  const atOpen = atMatches.length > 0 && permissions.length === 0
+  const atSelClamped = Math.min(atSel, Math.max(0, atMatches.length - 1))
+  const completeAt = (pick: string): void => {
+    setInput(input.replace(/@([^\s]*)$/, `@${pick} `))
+    setAtSel(0)
+  }
 
   const addEntry = (e: Omit<TranscriptEntry, 'id'>) =>
     setEntries((prev) => [...prev, { ...e, id: `l${localSeq.current++}` }])
@@ -279,6 +298,21 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         return
       }
     }
+    if (atOpen) {
+      if (key.upArrow) {
+        setAtSel((s) => (s - 1 + atMatches.length) % atMatches.length)
+        return
+      }
+      if (key.downArrow) {
+        setAtSel((s) => (s + 1) % atMatches.length)
+        return
+      }
+      if (key.tab) {
+        const pick = atMatches[atSelClamped]
+        if (pick) completeAt(pick)
+        return
+      }
+    }
     if (key.escape && busy) {
       client?.interrupt()
     }
@@ -326,6 +360,13 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const onSubmit = (value: string): void => {
     const text = value.trim()
     if (!text) return
+    // Enter while the @-file menu is open completes the highlighted path
+    // instead of submitting.
+    if (atOpen) {
+      const pick = atMatches[atSelClamped]
+      if (pick) completeAt(pick)
+      return
+    }
     // Never send a partial slash to the model: run an exact command, else
     // complete to the highlighted match.
     if (text.startsWith('/')) {
@@ -404,6 +445,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
       ) : (
         <>
           {slashOpen ? <SlashMenu matches={slashMatches} selected={sel} /> : null}
+          {atOpen ? <FileMenu matches={atMatches} selected={atSelClamped} /> : null}
           <Box
             borderStyle="round"
             borderColor={theme.promptBorder}
@@ -418,6 +460,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
               onChange={(v) => {
                 setInput(v)
                 setSlashSel(0)
+                setAtSel(0)
               }}
               onSubmit={onSubmit}
               placeholder={ready ? 'Type a message, or / for commands…' : 'starting agent-server…'}
