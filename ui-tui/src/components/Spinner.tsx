@@ -20,7 +20,14 @@ const VERBS = [
   'Conjuring',
 ]
 
-export function Spinner({ startedAt }: { startedAt: number }): React.ReactElement {
+export function Spinner({
+  startedAt,
+  activity,
+}: {
+  startedAt: number
+  /** Live tool activity (e.g. "Reading 3 files") — shown instead of the verb. */
+  activity?: string | null
+}): React.ReactElement {
   const [frame, setFrame] = useState(0)
   const [verb] = useState(() => VERBS[Math.floor(Math.random() * VERBS.length)])
   const [elapsed, setElapsed] = useState(0)
@@ -36,10 +43,8 @@ export function Spinner({ startedAt }: { startedAt: number }): React.ReactElemen
 
   return (
     <Text color={theme.spinner}>
-      {FRAMES[frame]} {verb}…{' '}
-      <Text color={theme.dim}>
-        ({elapsed}s · esc to interrupt)
-      </Text>
+      {FRAMES[frame]} {activity || verb}…{' '}
+      <Text color={theme.dim}>({elapsed}s · esc to interrupt)</Text>
     </Text>
   )
 }

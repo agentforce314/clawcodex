@@ -55,6 +55,29 @@ function streamTail(text: string, cols: number, maxLines: number): string {
   return visual.slice(-maxLines).join('\n')
 }
 
+const TOOL_VERB: Record<string, { verb: string; noun: string }> = {
+  Read: { verb: 'Reading', noun: 'files' },
+  Edit: { verb: 'Editing', noun: 'files' },
+  Write: { verb: 'Writing', noun: 'files' },
+  MultiEdit: { verb: 'Editing', noun: 'files' },
+  Bash: { verb: 'Running', noun: 'commands' },
+  Grep: { verb: 'Searching', noun: '' },
+  Glob: { verb: 'Globbing', noun: '' },
+  WebFetch: { verb: 'Fetching', noun: '' },
+  WebSearch: { verb: 'Searching', noun: '' },
+}
+
+/** Live spinner label, e.g. "Reading 3 files" (collapsed count) or "Running git status". */
+function toolActivityLabel(name: string | undefined, args: string | undefined, count: number): string {
+  const { verb, noun } = (name && TOOL_VERB[name]) || {
+    verb: name ? `Using ${name}` : 'Working',
+    noun: '',
+  }
+  if (count > 1 && noun) return `${verb} ${count} ${noun}`
+  const target = (args || '').split(/[\\/]/).pop() || args || ''
+  return target ? `${verb} ${target}` : verb
+}
+
 export function App({ transport, serverLabel }: Props): React.ReactElement {
   const { exit } = useApp()
   const [entries, setEntries] = useState<TranscriptEntry[]>([])
@@ -73,6 +96,8 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const [slashSel, setSlashSel] = useState(0)
   const localSeq = useRef(0)
   const bannerAdded = useRef(false)
+  const [toolActivity, setToolActivity] = useState<string | null>(null)
+  const turnToolCounts = useRef<Record<string, number>>({})
 
   const slashMatches = !input.includes(' ') ? matchSlash(input) : []
   const slashOpen = slashMatches.length > 0 && permissions.length === 0
@@ -126,6 +151,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         if (type === 'assistant') setStream('') // final assistant replaces the live stream
         if (type === 'result') {
           setBusy(false)
+          setToolActivity(null)
           flushStream() // commit a partial left over by interrupt/error (no-op on success)
         }
         if (type === 'system' && (msg as { subtype?: string }).subtype === 'init') {
@@ -169,7 +195,18 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
           }
         }
         const newEntries = messageToEntries(msg)
-        if (newEntries.length) setEntries((e) => [...e, ...newEntries])
+        if (newEntries.length) {
+          // Update the live tool-progress label (collapses repeated tools, e.g.
+          // "Reading 3 files") as each tool call streams in.
+          for (const e of newEntries) {
+            if (e.kind === 'tool') {
+              const verb = (e.toolName && TOOL_VERB[e.toolName]?.verb) || e.toolName || 'tool'
+              const n = (turnToolCounts.current[verb] = (turnToolCounts.current[verb] ?? 0) + 1)
+              setToolActivity(toolActivityLabel(e.toolName, e.argsText, n))
+            }
+          }
+          setEntries((prev) => [...prev, ...newEntries])
+        }
       },
     })
     setClient(c)
@@ -284,6 +321,8 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     addEntry({ kind: 'user', text })
     setStream('')
     setBusy(true)
+    turnToolCounts.current = {}
+    setToolActivity(null)
     setTurnStartedAt(Date.now())
     setInput('')
     setSlashSel(0)
@@ -323,7 +362,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
 
       {busy && permissions.length === 0 ? (
         <Box>
-          <Spinner startedAt={turnStartedAt} />
+          <Spinner startedAt={turnStartedAt} activity={toolActivity} />
         </Box>
       ) : null}
 
