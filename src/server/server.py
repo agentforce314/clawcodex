@@ -382,15 +382,29 @@ class DirectConnectServer:
             await ws.close(code=1008, reason='no such session')
             return
 
-        # Token from header OR query param.
-        provided = ''
+        # Accept the per-session token T_s (minted above, carried in the ws_url
+        # query param) OR the launcher's global token T_g (required on POST
+        # /sessions). The REAL openclaude TS client keeps the global token and
+        # sends it as the WS ``Authorization: Bearer`` header — it ignores the
+        # per-session ``auth_token`` in the POST response — so a strict
+        # per-session-only check rejects it (client sends T_g, server expected
+        # T_s; see critic B1a / migration plan). Both tokens are per-launch
+        # secrets behind the loopback bind and the POST /sessions gate, so
+        # honouring either on the WS is no weaker than POST, which already
+        # accepts T_g. Check BOTH the Bearer header and the query param so a
+        # transport quirk (the real client's header is bun-only) can't lock a
+        # client out.
         authz = request.headers.get('authorization', '') if request.headers else ''
-        if authz.startswith('Bearer '):
-            provided = authz[len('Bearer '):]
-        else:
-            params = parse_qs(query_str)
-            provided = (params.get('token') or [''])[0]
-        if not secrets.compare_digest(provided, expected_token):
+        header_token = authz[len('Bearer '):] if authz.startswith('Bearer ') else ''
+        query_token = (parse_qs(query_str).get('token') or [''])[0]
+        accepted = [t for t in (expected_token, self.config.auth_token) if t]
+
+        def _token_ok(provided: str) -> bool:
+            return bool(provided) and any(
+                secrets.compare_digest(provided, valid) for valid in accepted
+            )
+
+        if not (_token_ok(header_token) or _token_ok(query_token)):
             await ws.close(code=1008, reason='invalid token')
             return
 

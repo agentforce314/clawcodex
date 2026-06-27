@@ -85,6 +85,12 @@ def main():
         if token == 'doctor':
             from src.entrypoints.doctor import run_doctor
             return run_doctor()
+        if token == 'agent-server':
+            from src.entrypoints.agent_server_cli import run_agent_server_subcommand
+            return run_agent_server_subcommand(rest)
+        if token == 'tui':
+            from src.entrypoints.tui_launcher import run_tui_launcher
+            return run_tui_launcher(rest)
 
     parser = _build_parser()
     args = parser.parse_args(argv)

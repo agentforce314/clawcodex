@@ -1,0 +1,730 @@
+"""Agent server — the real :data:`SpawnAgent` for :class:`DirectConnectServer`.
+
+This is the load-bearing piece of the "TS Ink TUI as a client of the Python
+backend" redesign (see ``my-docs/tui-interface-redesign/``). It drives the
+canonical agent loop (:mod:`src.query.query`, via the
+:func:`src.query.agent_loop_compat.run_query_as_agent_loop` adapter) for one
+Direct Connect session and bridges it to the NDJSON wire protocol that the
+Direct Connect client (:mod:`src.server.direct_connect_manager`, a port of
+``typescript/src/server/directConnectManager.ts``) already speaks. Because the
+TS client and this server agree on that protocol, the existing Ink TUI can
+``claude open cc://…`` straight into this server with no TS changes.
+
+Wire protocol
+-------------
+server → client (``messages_from_agent``)::
+
+    {type:'system', subtype:'init', model, tools:[{name,description,input_schema}],
+     permission_mode, protocol_version, session_id, cwd}     # once, on connect
+    {type:'stream_event', event:{...text_delta...}}           # live token deltas
+    {type:'assistant', uuid, session_id, message:{role,content}}
+    {type:'user',      uuid, session_id, message:{role,content:[tool_result…]}}
+    {type:'control_request', request_id, request:{subtype:'can_use_tool', …}}
+    {type:'control_response', response:{subtype, request_id, response}}  # to client pulls
+    {type:'result', subtype:'success'|'error'|'cancelled', usage, num_turns, …}
+
+client → server (``send_to_agent``)::
+
+    {type:'user', message:{role:'user', content:<str|blocks>}}            # a prompt
+    {type:'control_response', response:{request_id, response:{behavior,…}}} # perm reply
+    {type:'control_request', request:{subtype:'interrupt'}}               # cancel turn
+    {type:'control_request', request:{subtype:'set_permission_mode', mode}}
+    {type:'control_request', request:{subtype:'set_model', model}}
+    {type:'control_request', request_id, request:{subtype:'get_settings'|'get_context_usage'}}
+
+Concurrency model
+-----------------
+The canonical permission handler is a **blocking, synchronous** callable
+(``PermissionAskHandler``). To turn a permission ask into a wire round-trip we
+must block *something* until the client answers — but never the asyncio loop
+that pumps the WebSocket (that would deadlock: the reply can't arrive). So we
+run the whole ``query()`` turn in a **worker thread** (the same pattern the
+Textual TUI's ``AgentBridge`` uses), and the permission handler blocks that
+thread on a :class:`threading.Event`. Outbound messages are handed to the main
+loop with ``loop.call_soon_threadsafe`` (asyncio.Queue is not thread-safe).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import queue as _queue
+import threading
+import time
+import uuid as _uuid
+from collections.abc import AsyncIterator, Mapping
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from src.server.server import AgentHandle
+from src.utils.abort_controller import AbortController, AbortError
+
+logger = logging.getLogger(__name__)
+
+#: Wire-protocol version. Emitted in ``system/init`` so client and server can
+#: refuse a mismatched major. Bump the major on any breaking shape change.
+PROTOCOL_VERSION = "0.1.0"
+
+#: Default ceiling for a permission round-trip. A disconnected/dead client must
+#: not wedge a tool forever, so we default-deny after this (proposal §7).
+DEFAULT_PERMISSION_TIMEOUT_S = 300.0
+
+_SHUTDOWN = object()  # sentinel pushed onto the worker inbox to stop it
+
+
+@dataclass
+class AgentServerConfig:
+    """Static configuration for an agent-server (one per process/server)."""
+
+    provider_name: str | None = None
+    model: str | None = None
+    permission_mode: str = "default"
+    max_turns: int = 20
+    allowed_tools: tuple[str, ...] = ()
+    disallowed_tools: tuple[str, ...] = ()
+    permission_timeout_s: float = DEFAULT_PERMISSION_TIMEOUT_S
+
+
+@dataclass
+class _Pending:
+    event: threading.Event
+    reply: dict[str, Any] | None = None
+
+
+@dataclass
+class _AgentSession:
+    """Per-WS-connection agent state, bridging the worker thread ↔ asyncio loop."""
+
+    session_id: str
+    cwd: str
+    config: AgentServerConfig
+    loop: asyncio.AbstractEventLoop
+    out_queue: asyncio.Queue[dict | None]
+
+    # Built lazily/eagerly at spawn; see ``_build_runtime``.
+    provider: Any = None
+    provider_name: str = ""
+    tool_registry: Any = None
+    tool_context: Any = None
+    session: Any = None
+    system_prompt: Any = "You are a helpful assistant."
+    init_error: str | None = None
+
+    # Worker + cross-thread coordination.
+    _inbox: _queue.Queue = field(default_factory=_queue.Queue)
+    _worker: threading.Thread | None = None
+    _stop: threading.Event = field(default_factory=threading.Event)
+    _lock: threading.Lock = field(default_factory=threading.Lock)
+    _pending: dict[str, _Pending] = field(default_factory=dict)
+    _current_abort: AbortController | None = None
+
+    # ─── outbound helpers (worker thread → main loop) ──────────────────────
+
+    def _emit(self, msg: dict) -> None:
+        """Thread-safe enqueue of one outbound SDK message.
+
+        Every message is passed through ``_json_safe`` so a stray
+        non-serializable value can never make the server's ``json.dumps`` in
+        the WS pump raise and silently kill the outbound stream.
+        """
+        try:
+            self.loop.call_soon_threadsafe(self.out_queue.put_nowait, _json_safe(msg))
+        except RuntimeError:
+            # Loop closed (server shutting down) — drop.
+            pass
+
+    def _close_stream(self) -> None:
+        try:
+            self.loop.call_soon_threadsafe(self.out_queue.put_nowait, None)
+        except RuntimeError:
+            pass
+
+    # ─── init ──────────────────────────────────────────────────────────────
+
+    def emit_init(self) -> None:
+        """Emit ``system/init`` — the first message the client sees on connect."""
+        tools = _tool_schemas(self.tool_registry)
+        self._emit({
+            "type": "system",
+            "subtype": "init",
+            "session_id": self.session_id,
+            "protocol_version": PROTOCOL_VERSION,
+            "model": getattr(self.provider, "model", self.config.model),
+            "provider": self.provider_name,
+            "cwd": self.cwd,
+            "tools": tools,
+            "permission_mode": _current_mode(self.tool_context, self.config.permission_mode),
+            "apiKeySource": "config",
+        })
+        if self.init_error is not None:
+            self._emit(_system_message(self.session_id, self.init_error, level="error"))
+
+    # ─── inbound (main loop) ───────────────────────────────────────────────
+
+    async def send_to_agent(self, msg: dict) -> None:
+        """Route one client → server message. Runs on the main asyncio loop."""
+        msg_type = msg.get("type")
+        if msg_type == "user":
+            self._inbox.put(_extract_prompt_text(msg))
+            return
+        if msg_type == "control_response":
+            self._resolve_permission(msg)
+            return
+        if msg_type == "control_request":
+            await self._handle_control_request(msg)
+            return
+        logger.debug("[agent-server] ignoring unknown inbound type: %s", msg_type)
+
+    async def _handle_control_request(self, msg: dict) -> None:
+        inner = msg.get("request")
+        if not isinstance(inner, dict):
+            return
+        subtype = inner.get("subtype")
+        request_id = msg.get("request_id")
+        if subtype == "interrupt":
+            with self._lock:
+                abort = self._current_abort
+                pendings = list(self._pending.values())
+            # Release any in-flight permission ask NOW so the worker unblocks
+            # immediately rather than at permission_timeout_s (proposal §7: ESC
+            # during a permission prompt must both deny the pending ask AND
+            # abort the turn). Mirrors shutdown()'s deny-release.
+            for pending in pendings:
+                pending.reply = {"behavior": "deny", "message": "interrupted"}
+                pending.event.set()
+            if abort is not None:
+                abort.abort("user_interrupt")
+            return
+        if subtype == "set_permission_mode":
+            mode = inner.get("mode")
+            if isinstance(mode, str) and self.tool_context is not None:
+                _set_mode(self.tool_context, mode)
+            self._ack(request_id)
+            return
+        if subtype == "set_model":
+            model = inner.get("model")
+            if isinstance(model, str) and self.provider is not None:
+                try:
+                    self.provider.model = model
+                except Exception:  # noqa: BLE001
+                    pass
+            self._ack(request_id)
+            return
+        if subtype == "get_settings":
+            self._reply(request_id, {
+                "permission_mode": _current_mode(self.tool_context, self.config.permission_mode),
+                "model": getattr(self.provider, "model", None),
+                "provider": self.provider_name,
+            })
+            return
+        if subtype == "get_context_usage":
+            self._reply(request_id, {"protocol_version": PROTOCOL_VERSION})
+            return
+        # Unknown subtype — error back so a correlating client doesn't hang.
+        if isinstance(request_id, str):
+            self._emit({
+                "type": "control_response",
+                "response": {
+                    "subtype": "error",
+                    "request_id": request_id,
+                    "error": f"unsupported control request subtype: {subtype}",
+                },
+            })
+
+    def _ack(self, request_id: object) -> None:
+        if isinstance(request_id, str):
+            self._reply(request_id, {"ok": True})
+
+    def _reply(self, request_id: object, response: dict) -> None:
+        if not isinstance(request_id, str):
+            return
+        self._emit({
+            "type": "control_response",
+            "response": {
+                "subtype": "success",
+                "request_id": request_id,
+                "response": response,
+            },
+        })
+
+    def _resolve_permission(self, msg: dict) -> None:
+        response = msg.get("response")
+        if not isinstance(response, dict):
+            return
+        request_id = response.get("request_id")
+        inner = response.get("response")
+        if not isinstance(request_id, str):
+            return
+        with self._lock:
+            pending = self._pending.get(request_id)
+        if pending is None:
+            return
+        pending.reply = inner if isinstance(inner, dict) else {"behavior": "deny"}
+        pending.event.set()
+
+    # ─── permission handler (worker thread; BLOCKS) ────────────────────────
+
+    def permission_handler(self, request: Any) -> Any:
+        from src.permissions.types import PermissionAskReply
+
+        request_id = str(_uuid.uuid4())
+        pending = _Pending(event=threading.Event())
+        with self._lock:
+            self._pending[request_id] = pending
+
+        self._emit({
+            "type": "control_request",
+            "request_id": request_id,
+            "request": {
+                "subtype": "can_use_tool",
+                "tool_name": getattr(request, "tool_name", ""),
+                "input": getattr(request, "tool_input", None) or {},
+                "tool_use_id": None,
+            },
+        })
+
+        got = pending.event.wait(timeout=self.config.permission_timeout_s)
+        with self._lock:
+            self._pending.pop(request_id, None)
+
+        if not got:
+            return PermissionAskReply(
+                behavior="deny", message="permission request timed out"
+            )
+        reply = pending.reply or {"behavior": "deny"}
+        behavior = reply.get("behavior")
+        if behavior == "allow":
+            updated = reply.get("updatedInput")
+            if not isinstance(updated, dict):
+                updated = reply.get("updated_input")
+            return PermissionAskReply(
+                behavior="allow",
+                updated_input=updated if isinstance(updated, dict) else None,
+            )
+        return PermissionAskReply(
+            behavior="deny", message=str(reply.get("message", "")) or "denied by user"
+        )
+
+    # ─── worker thread (runs query() turns) ────────────────────────────────
+
+    def start(self) -> None:
+        self._worker = threading.Thread(
+            target=self._run_worker,
+            name=f"agent-server-{self.session_id}",
+            daemon=True,
+        )
+        self._worker.start()
+
+    def _run_worker(self) -> None:
+        while not self._stop.is_set():
+            item = self._inbox.get()
+            if item is _SHUTDOWN or self._stop.is_set():
+                break
+            assert isinstance(item, str)
+            self._run_turn(item)
+        self._close_stream()
+
+    def _run_turn(self, prompt: str) -> None:
+        from src.query.agent_loop_compat import run_query_as_agent_loop
+
+        if self.init_error is not None:
+            self._emit(_result_message(
+                self.session_id, subtype="error", num_turns=0,
+                result=self.init_error, is_error=True, error=self.init_error,
+            ))
+            return
+
+        abort = AbortController()
+        with self._lock:
+            self._current_abort = abort
+        # Wire the per-turn controller into the tool context so an interrupt
+        # tears down an in-flight tool (Bash supervisor, etc.), not just the
+        # model stream. A fresh controller per turn avoids a prior turn's
+        # abort pre-cancelling the next one.
+        if self.tool_context is not None:
+            self.tool_context.abort_controller = abort
+
+        self.session.conversation.add_user_message(prompt)
+        start = time.monotonic()
+
+        def on_text_chunk(chunk: str) -> None:
+            self._emit({
+                "type": "stream_event",
+                "session_id": self.session_id,
+                "event": {
+                    "type": "content_block_delta",
+                    "delta": {"type": "text_delta", "text": chunk},
+                },
+            })
+
+        def on_message(message: Any) -> None:
+            # Persist into the session conversation so the next turn pairs
+            # tool_use ↔ tool_result, then ship the SDK envelope to the client.
+            try:
+                self.session.conversation.add_message(message.role, message.content)
+            except Exception:  # noqa: BLE001
+                logger.exception("[agent-server] persist failed")
+            env = _sdk_envelope(message, self.session_id)
+            if env is not None:
+                self._emit(env)
+
+        try:
+            result = asyncio.run(run_query_as_agent_loop(
+                initial_messages=list(self.session.conversation.messages),
+                provider=self.provider,
+                tool_registry=self.tool_registry,
+                tool_context=self.tool_context,
+                system_prompt=self.system_prompt,
+                max_turns=self.config.max_turns,
+                on_text_chunk=on_text_chunk,
+                on_message=on_message,
+                abort_controller=abort,
+            ))
+        except AbortError:
+            self._emit(_result_message(
+                self.session_id, subtype="cancelled", num_turns=0,
+                result="", is_error=False,
+                duration_ms=int((time.monotonic() - start) * 1000),
+            ))
+            return
+        except Exception as exc:  # noqa: BLE001 - one bad turn must not kill the session
+            logger.exception("[agent-server] turn failed")
+            self._emit(_result_message(
+                self.session_id, subtype="error", num_turns=0,
+                result=str(exc), is_error=True, error=str(exc),
+                duration_ms=int((time.monotonic() - start) * 1000),
+            ))
+            return
+        finally:
+            with self._lock:
+                self._current_abort = None
+
+        self._emit(_result_message(
+            self.session_id,
+            subtype="success",
+            num_turns=result.num_turns,
+            result=result.response_text,
+            is_error=False,
+            usage=result.usage if result.num_turns > 0 else None,
+            duration_ms=int((time.monotonic() - start) * 1000),
+        ))
+
+    async def shutdown(self) -> None:
+        self._stop.set()
+        # Unblock any in-flight permission asks with a deny.
+        with self._lock:
+            pendings = list(self._pending.values())
+            abort = self._current_abort
+        for pending in pendings:
+            pending.reply = {"behavior": "deny", "message": "session closed"}
+            pending.event.set()
+        if abort is not None:
+            abort.abort("session_closed")
+        self._inbox.put(_SHUTDOWN)
+        worker = self._worker
+        if worker is not None:
+            # Bounded join: a well-behaved tool honours the abort and unwinds
+            # promptly. A tool that ignores the abort (e.g. a blocking sleep)
+            # can outlive this 5s window — the thread is a daemon so it never
+            # blocks process exit, but `_close_stream` is deferred until it
+            # actually returns. Acceptable for the spike; revisit if a tool
+            # needs hard preemption.
+            await asyncio.get_running_loop().run_in_executor(
+                None, lambda: worker.join(timeout=5.0)
+            )
+
+
+def make_spawn_agent(config: AgentServerConfig | None = None):
+    """Build a :data:`SpawnAgent` bound to ``config``.
+
+    The returned coroutine matches the ``DirectConnectServer.spawn_agent``
+    contract: ``(session_id, cwd, permission_mode) -> AgentHandle``.
+    """
+
+    cfg = config or AgentServerConfig()
+
+    async def spawn(session_id: str, cwd: str, perm_mode: str | None) -> AgentHandle:
+        loop = asyncio.get_running_loop()
+        out_queue: asyncio.Queue[dict | None] = asyncio.Queue()
+        sess = _AgentSession(
+            session_id=session_id,
+            cwd=cwd,
+            config=cfg,
+            loop=loop,
+            out_queue=out_queue,
+        )
+        # Build the provider/registry/tool_context off the event loop — these
+        # touch config/filesystem and must not block the WS pump.
+        await loop.run_in_executor(None, lambda: _build_runtime(sess, perm_mode))
+        # Wire the permission handler now that tool_context exists.
+        if sess.tool_context is not None and sess.init_error is None:
+            sess.tool_context.permission_handler = sess.permission_handler
+        sess.start()
+        sess.emit_init()
+
+        async def messages_from_agent() -> AsyncIterator[dict]:
+            while True:
+                item = await out_queue.get()
+                if item is None:
+                    return
+                yield item
+
+        return AgentHandle(
+            send_to_agent=sess.send_to_agent,
+            messages_from_agent=messages_from_agent,
+            shutdown=sess.shutdown,
+        )
+
+    return spawn
+
+
+# ─── runtime construction (mirrors entrypoints/headless.py) ───────────────────
+
+
+def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
+    """Construct provider, registry, session, tool_context for ``sess``.
+
+    Errors are captured into ``sess.init_error`` rather than raised, so the
+    client gets a clean error message instead of a bare socket close.
+    """
+    try:
+        from src.config import get_default_provider, get_provider_config
+        from src.permissions.settings_paths import default_setup_paths
+        from src.permissions.setup import setup_permissions
+        from src.providers import (
+            get_provider_class,
+            provider_requires_api_key,
+            resolve_api_key,
+        )
+        from src.agent import Session
+        from src.tool_system.context import ToolContext
+        from src.tool_system.defaults import build_default_registry
+
+        cfg = sess.config
+        provider_name = cfg.provider_name or get_default_provider()
+        provider_cfg = get_provider_config(provider_name)
+        api_key = resolve_api_key(provider_name, provider_cfg)
+        if not api_key and provider_requires_api_key(provider_name):
+            sess.init_error = (
+                f"API key for provider '{provider_name}' is not configured. "
+                "Run `clawcodex login` to set it up."
+            )
+            sess.provider_name = provider_name
+            return
+
+        provider_cls = get_provider_class(provider_name)
+        model = cfg.model or provider_cfg.get("default_model")
+        provider = provider_cls(
+            api_key=api_key, base_url=provider_cfg.get("base_url"), model=model
+        )
+
+        registry = build_default_registry(provider=provider)
+        if cfg.allowed_tools:
+            allow = {n.lower() for n in cfg.allowed_tools}
+            _filter_registry(registry, keep=lambda n: n.lower() in allow)
+        if cfg.disallowed_tools:
+            deny = {n.lower() for n in cfg.disallowed_tools}
+            _filter_registry(registry, keep=lambda n: n.lower() not in deny)
+
+        workspace_root = Path(sess.cwd)
+        mode = perm_mode or cfg.permission_mode or "default"
+        bypass = mode == "bypassPermissions"
+        perm_setup = setup_permissions(
+            cwd=str(workspace_root),
+            mode=mode,  # type: ignore[arg-type]
+            is_bypass_available=bypass,
+            **default_setup_paths(str(workspace_root)),
+        )
+        tool_context = ToolContext(
+            workspace_root=workspace_root,
+            permission_context=perm_setup.context,
+            abort_controller=AbortController(),
+        )
+        tool_context.options.is_non_interactive_session = True
+
+        try:
+            from src.outputStyles import resolve_output_style
+            from src.query.agent_loop_compat import build_effective_system_prompt
+
+            style_prompt = resolve_output_style(
+                getattr(tool_context, "output_style_name", None),
+                getattr(tool_context, "output_style_dir", None),
+            ).prompt
+            system_prompt = build_effective_system_prompt(
+                style_prompt, tool_context, provider=provider
+            )
+        except Exception:  # noqa: BLE001 - fall back to a plain prompt
+            logger.debug("[agent-server] system prompt build failed", exc_info=True)
+            system_prompt = "You are a helpful assistant."
+
+        sess.provider = provider
+        sess.provider_name = provider_name
+        sess.tool_registry = registry
+        sess.tool_context = tool_context
+        sess.session = Session.create(provider_name, getattr(provider, "model", model or ""))
+        sess.system_prompt = system_prompt
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("[agent-server] runtime build failed")
+        sess.init_error = f"agent-server failed to start: {exc}"
+
+
+def _filter_registry(registry, *, keep) -> None:
+    try:
+        entries = list(registry.list_tools())
+    except Exception:  # noqa: BLE001
+        return
+    for tool in entries:
+        name = getattr(tool, "name", "")
+        if not keep(name):
+            try:
+                registry.unregister(name)
+            except Exception:  # noqa: BLE001
+                continue
+
+
+# ─── message shaping ─────────────────────────────────────────────────────────
+
+
+def _sdk_envelope(message: Any, session_id: str) -> dict | None:
+    """Wrap a :class:`Message` into the SDK envelope the client renders."""
+    from src.types.messages import message_to_dict
+
+    try:
+        d = message_to_dict(message)
+    except Exception:  # noqa: BLE001
+        return None
+    role = d.get("role", getattr(message, "role", "assistant"))
+    msg_type = "assistant" if role == "assistant" else "user"
+    return {
+        "type": msg_type,
+        "uuid": d.get("uuid"),
+        "session_id": session_id,
+        "message": {"role": role, "content": d.get("content")},
+    }
+
+
+def _result_message(
+    session_id: str,
+    *,
+    subtype: str,
+    num_turns: int,
+    result: str,
+    is_error: bool,
+    usage: dict | None = None,
+    error: str | None = None,
+    duration_ms: int = 0,
+) -> dict:
+    payload: dict[str, Any] = {
+        "type": "result",
+        "subtype": subtype,
+        "session_id": session_id,
+        "num_turns": num_turns,
+        "result": result,
+        "duration_ms": duration_ms,
+        "is_error": is_error,
+        "usage": usage or None,
+    }
+    if error is not None:
+        payload["error"] = error
+    return payload
+
+
+def _system_message(session_id: str, text: str, *, level: str = "info") -> dict:
+    return {
+        "type": "system",
+        "subtype": "status",
+        "session_id": session_id,
+        "level": level,
+        "message": text,
+    }
+
+
+def _extract_prompt_text(msg: dict) -> str:
+    message = msg.get("message")
+    if isinstance(message, dict):
+        content = message.get("content")
+    else:
+        content = msg.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(str(block.get("text", "")))
+            elif isinstance(block, str):
+                parts.append(block)
+        return "".join(parts)
+    return str(content) if content is not None else ""
+
+
+def _tool_schemas(registry: Any) -> list[dict[str, Any]]:
+    """JSON-able ``[{name, description, input_schema}]`` for ``system/init``.
+
+    Mirrors the canonical API tool-schema build at ``query.py:637`` — the
+    description comes from ``tool.prompt()`` (a string), NOT the raw
+    ``tool.description`` field, which may be a callable for dynamic tools.
+    """
+    out: list[dict[str, Any]] = []
+    if registry is None:
+        return out
+    try:
+        tools = list(registry.list_tools())
+    except Exception:  # noqa: BLE001 - init must never crash the session
+        logger.debug("[agent-server] tool enumeration failed", exc_info=True)
+        return out
+    for tool in tools:
+        is_enabled = getattr(tool, "is_enabled", None)
+        if callable(is_enabled) and not is_enabled():
+            continue
+        try:
+            prompt = getattr(tool, "prompt", None)
+            desc = prompt() if callable(prompt) else getattr(tool, "description", "")
+        except Exception:  # noqa: BLE001
+            desc = ""
+        schema = getattr(tool, "input_schema", None)
+        out.append({
+            "name": getattr(tool, "name", ""),
+            "description": desc if isinstance(desc, str) else "",
+            "input_schema": dict(schema) if isinstance(schema, Mapping) else None,
+        })
+    return out
+
+
+def _json_safe(obj: Any) -> Any:
+    """Recursively coerce ``obj`` into a JSON-serializable structure.
+
+    Unknown/opaque values (functions, dataclasses, …) degrade to ``str`` so a
+    single bad field never makes the WS pump's ``json.dumps`` raise.
+    """
+    if obj is None or isinstance(obj, (bool, int, float, str)):
+        return obj
+    if isinstance(obj, Mapping):
+        return {str(k): _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(v) for v in obj]
+    return str(obj)
+
+
+def _current_mode(tool_context: Any, default: str) -> str:
+    if tool_context is None:
+        return default
+    pc = getattr(tool_context, "permission_context", None)
+    return getattr(pc, "mode", default) if pc is not None else default
+
+
+def _set_mode(tool_context: Any, mode: str) -> None:
+    pc = getattr(tool_context, "permission_context", None)
+    if pc is not None:
+        try:
+            pc.mode = mode  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            pass
+
+
+__all__ = [
+    "AgentServerConfig",
+    "PROTOCOL_VERSION",
+    "make_spawn_agent",
+]
