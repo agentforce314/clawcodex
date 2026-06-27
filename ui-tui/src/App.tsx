@@ -575,6 +575,9 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         // Static output is flushed to scrollback; reclaim the screen too.
         process.stdout.write('\x1b[2J\x1b[3J\x1b[H')
         setEntries([])
+        setSessionCost(0)
+        setContextUsage(null)
+        client?.sendControl('clear') // reset the backend conversation, not just the screen
         return true
       case 'help':
         addEntry({ kind: 'system', text: HELP })
