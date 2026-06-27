@@ -216,6 +216,7 @@ class _AgentSession:
                 "permission_mode": _current_mode(self.tool_context, self.config.permission_mode),
                 "model": getattr(self.provider, "model", None),
                 "provider": self.provider_name,
+                "available_models": self._available_models(),
             })
             return
         if subtype == "get_context_usage":
@@ -250,6 +251,17 @@ class _AgentSession:
                 "response": response,
             },
         })
+
+    def _available_models(self) -> list[str]:
+        """Provider's selectable models (for the /model picker). Best-effort."""
+        try:
+            fn = getattr(self.provider, "get_available_models", None)
+            if callable(fn):
+                models = fn()
+                return [str(m) for m in models] if models else []
+        except Exception:  # noqa: BLE001
+            pass
+        return []
 
     def _emit_agent_progress(self, ev: dict) -> None:
         """Forward a spawned subagent's progress to the client (the original's
