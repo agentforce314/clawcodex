@@ -164,7 +164,7 @@ function parseBlocks(src: string): Block[] {
   return blocks
 }
 
-const HEADING_COLOR = [theme.heading, theme.heading, theme.accent, theme.accent, theme.dim, theme.dim]
+const HEADING_COLOR = [theme.heading, theme.heading, theme.heading, theme.heading, theme.dim, theme.dim]
 
 export function Markdown({ text }: { text: string }): React.ReactElement {
   const blocks = parseBlocks(text)
@@ -220,7 +220,7 @@ export function Markdown({ text }: { text: string }): React.ReactElement {
                 const bullet = it.ordered ? `${Number.isFinite(num) ? num : j + 1}. ` : '- '
                 return (
                   <Box key={j}>
-                    <Text color={theme.accent}>{`  ${bullet}`}</Text>
+                    <Text color={theme.dim}>{`  ${bullet}`}</Text>
                     <Text>{parseInline(it.text)}</Text>
                   </Box>
                 )
