@@ -170,6 +170,11 @@ class ToolContext:
     messages: list[Any] = field(default_factory=list)
     set_response_length: Callable[[Callable[[int], int]], None] | None = None
     set_in_progress_tool_use_ids: Callable[[Callable[[set[str]], set[str]]], None] | None = None
+    # Optional hook to stream a spawned subagent's live progress to the UI
+    # (the Agent tool sets run_params.on_message → this). Wired only by the
+    # agent-server (forwards an ``agent_progress`` message to the client); SDK /
+    # REPL / unit-test paths leave it ``None`` and emit nothing.
+    agent_progress_emit: Callable[[dict[str, Any]], None] | None = None
     # Mirrors TS Tool.ts:231
     # ``setHasInterruptibleToolInProgress?: (v: boolean) => void``.
     # Optional callback wired only in interactive (REPL/TUI) contexts; SDK
