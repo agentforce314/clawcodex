@@ -10,7 +10,6 @@ import { Box, Static, Text, useApp, useInput } from 'ink'
 import TextInput from 'ink-text-input'
 import React, { useEffect, useRef, useState } from 'react'
 import { DirectConnectClient, type SessionInfo } from './client.js'
-import { Markdown } from './markdown.js'
 import { Banner } from './components/Banner.js'
 import { Message } from './components/Message.js'
 import { PermissionDialog } from './components/PermissionDialog.js'
@@ -38,6 +37,23 @@ const HELP = [
   '/help /clear /model <m> /mode <m> /quit',
   '↑↓ — slash menu · tab — complete',
 ].join('\n')
+
+/**
+ * Tail of a live buffer that fits `maxLines` visual rows at `cols` width — hard-
+ * wraps each logical line, then keeps the last `maxLines`. Keeps the streaming
+ * (non-Static) region inside the viewport so Ink can erase it cleanly instead of
+ * leaking re-rendered copies into scrollback.
+ */
+function streamTail(text: string, cols: number, maxLines: number): string {
+  if (maxLines < 1) maxLines = 1
+  const width = cols < 8 ? 8 : cols
+  const visual: string[] = []
+  for (const ln of text.split('\n')) {
+    if (ln.length <= width) visual.push(ln)
+    else for (let i = 0; i < ln.length; i += width) visual.push(ln.slice(i, i + width))
+  }
+  return visual.slice(-maxLines).join('\n')
+}
 
 export function App({ info, serverLabel }: Props): React.ReactElement {
   const { exit } = useApp()
@@ -262,8 +278,16 @@ export function App({ info, serverLabel }: Props): React.ReactElement {
           <Box width={2}>
             <Text color={theme.accent}>⏺</Text>
           </Box>
-          <Box flexDirection="column" flexGrow={1}>
-            <Markdown text={streaming} />
+          <Box flexGrow={1}>
+            {/* The live stream is the only UNBOUNDED part of the dynamic (non-
+                Static) region. If it overflows the viewport Ink can't erase the
+                scrolled-off rows, so each re-render (the spinner ticks ~10×/s)
+                leaves a stale copy in scrollback → the message appears dozens of
+                times. Cap it to a viewport-fitting tail (plain text); the full
+                markdown commits to <Static> when the assistant message lands. */}
+            <Text>
+              {streamTail(streaming, (process.stdout.columns ?? 80) - 4, (process.stdout.rows ?? 24) - 10)}
+            </Text>
           </Box>
         </Box>
       ) : null}
