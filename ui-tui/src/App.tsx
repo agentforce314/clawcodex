@@ -360,6 +360,34 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         client?.close()
         exit()
         return true
+      case 'context': {
+        // Pull a fresh usage snapshot, then render the category breakdown.
+        if (client) {
+          void client.requestControl('get_context_usage').then((r) => {
+            applyContextUsage(r)
+            if (r && typeof r['percentage'] === 'number') {
+              addEntry({
+                kind: 'context',
+                text: '',
+                contextData: {
+                  percentage: r['percentage'] as number,
+                  totalTokens: Number(r['total_tokens']) || 0,
+                  maxTokens: Number(r['max_tokens']) || 0,
+                  categories: Array.isArray(r['categories'])
+                    ? (r['categories'] as { name?: unknown; tokens?: unknown }[]).map((c) => ({
+                        name: String(c.name ?? ''),
+                        tokens: Number(c.tokens) || 0,
+                      }))
+                    : [],
+                },
+              })
+            } else {
+              addEntry({ kind: 'system', text: 'context usage unavailable' })
+            }
+          })
+        }
+        return true
+      }
       case 'control': {
         if (!arg) {
           addEntry({ kind: 'system', text: `usage: ${cmd.name} <value>` })
