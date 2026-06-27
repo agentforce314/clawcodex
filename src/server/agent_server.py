@@ -246,6 +246,21 @@ class _AgentSession:
         if subtype == "branch":
             self._do_branch(request_id)
             return
+        if subtype == "list_agents":
+            agents: list[dict] = []
+            try:
+                from src.agent.load_agents_dir import get_agent_definitions_with_overrides
+
+                for a in get_agent_definitions_with_overrides(self.cwd):
+                    agents.append({
+                        "type": a.agent_type,
+                        "source": getattr(a, "source", "built-in"),
+                        "when": getattr(a, "when_to_use", "") or "",
+                    })
+            except Exception:  # noqa: BLE001
+                logger.debug("[agent-server] list_agents failed", exc_info=True)
+            self._reply(request_id, {"agents": agents})
+            return
         if subtype == "list_permissions":
             ctx = self.tool_context.permission_context if self.tool_context else None
             mode, allow, deny = "default", [], []
