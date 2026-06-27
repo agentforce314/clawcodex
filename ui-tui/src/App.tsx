@@ -19,6 +19,7 @@ import { searchFiles } from './fileIndex.js'
 import { Spinner } from './components/Spinner.js'
 import { StatusBar } from './components/StatusBar.js'
 import { LiveTools, type LiveGroup } from './components/LiveTools.js'
+import { AgentProgressLine, type AgentLine } from './components/AgentProgressLine.js'
 import { READ_LIKE, TOOL_VERB, toolActivityLabel } from './toolMeta.js'
 import { messageToEntries, streamDeltaText, type TranscriptEntry } from './sdkMessageAdapter.js'
 import { matchSlash, resolveSlash } from './slashCommands.js'
@@ -91,6 +92,8 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const [liveTools, setLiveTools] = useState<LiveGroup[]>([])
   const liveRef = useRef<LiveGroup[]>([])
   const collapsedIds = useRef<Set<string>>(new Set())
+  // Live subagent progress lines, keyed by agent_id; cleared at turn end.
+  const [agentLines, setAgentLines] = useState<AgentLine[]>([])
 
   const slashMatches = !input.includes(' ') ? matchSlash(input) : []
   const slashOpen = slashMatches.length > 0 && permissions.length === 0
@@ -196,10 +199,38 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
           return
         }
         const type = (msg as { type?: string }).type
+        if (type === 'agent_progress') {
+          // Live subagent progress (the original's AgentProgressLine). Upsert
+          // by agent_id; lines clear at turn end.
+          const m = msg as {
+            agent_id?: string
+            name?: string
+            description?: string
+            activity?: string
+            tool_use_count?: number
+            tokens?: number
+          }
+          if (m.agent_id) {
+            const id = m.agent_id
+            setAgentLines((prev) => [
+              ...prev.filter((l) => l.agentId !== id),
+              {
+                agentId: id,
+                name: m.name ?? '',
+                description: m.description ?? '',
+                activity: m.activity ?? '',
+                toolUseCount: Number(m.tool_use_count) || 0,
+                tokens: Number(m.tokens) || 0,
+              },
+            ])
+          }
+          return
+        }
         if (type === 'assistant') setStream('') // final assistant replaces the live stream
         if (type === 'result') {
           setBusy(false)
           setToolActivity(null)
+          setAgentLines([]) // subagents are done when the turn ends
           flushStream() // commit a partial left over by interrupt/error (no-op on success)
           void c.requestControl('get_context_usage').then(applyContextUsage) // refresh after each turn
         }
@@ -444,6 +475,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     liveRef.current = []
     collapsedIds.current.clear()
     setLiveTools([])
+    setAgentLines([])
     setTurnStartedAt(Date.now())
     setInput('')
     setSlashSel(0)
@@ -482,6 +514,14 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
       ) : null}
 
       {liveTools.length > 0 ? <LiveTools groups={liveTools} /> : null}
+
+      {agentLines.length > 0 ? (
+        <Box flexDirection="column">
+          {agentLines.map((l) => (
+            <AgentProgressLine key={l.agentId} line={l} />
+          ))}
+        </Box>
+      ) : null}
 
       {busy && permissions.length === 0 ? (
         <Box>
