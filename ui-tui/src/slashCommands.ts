@@ -16,6 +16,7 @@ export interface SlashCommand {
     | 'compact'
     | 'rewind'
     | 'resume'
+    | 'branch'
     | 'rename'
     | 'theme'
     | 'vim'
@@ -41,6 +42,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/compact', description: 'Summarize & compact the conversation: /compact [instructions]', kind: 'compact' },
   { name: '/rewind', description: 'Undo the last turn(s): /rewind [N]', kind: 'rewind' },
   { name: '/resume', description: 'Resume a saved session', kind: 'resume' },
+  { name: '/branch', description: 'Fork the current session to a new one', kind: 'branch' },
   { name: '/rename', description: 'Name the current session: /rename <name>', kind: 'rename' },
   { name: '/theme', description: 'Switch color theme: /theme <dark|light>', kind: 'theme' },
   { name: '/vim', description: 'Toggle vim editing mode', kind: 'vim' },
