@@ -50,6 +50,8 @@ export interface TranscriptEntry {
   toolUseId?: string
   /** tool results: the tool_use ids they answer (to drop collapsed-read results). */
   forToolUseIds?: string[]
+  /** tool results: the tool reported an error (rendered in red). */
+  isError?: boolean
   /** collapsed tool summary: how many same-kind calls this entry represents. */
   count?: number
   /** banner only: the session info snapshot, captured once at init. */
@@ -180,7 +182,10 @@ export function messageToEntries(msg: ServerMessage): TranscriptEntry[] {
           .filter((b) => b && b.type === 'tool_result')
           .map((b) => String((b as { tool_use_id?: string }).tool_use_id ?? ''))
       : []
-    return text ? [{ id: nextId(), kind: 'toolResult', text, forToolUseIds }] : []
+    const isError =
+      Array.isArray(content) &&
+      content.some((b) => b && b.type === 'tool_result' && (b as { is_error?: boolean }).is_error === true)
+    return text ? [{ id: nextId(), kind: 'toolResult', text, forToolUseIds, isError }] : []
   }
 
   if (type === 'result') {
