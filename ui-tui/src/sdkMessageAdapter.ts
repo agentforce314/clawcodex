@@ -13,7 +13,7 @@ import {
   type ContentBlock,
   type ServerMessage,
 } from './protocol.js'
-import { toolDiff, type DiffLine } from './diff.js'
+import { buildToolDiff, type ToolDiff } from './diff.js'
 
 /** Best-effort read of the edited file (local in spawn mode) for true line numbers. */
 function readFileSafe(p: unknown): string | undefined {
@@ -44,8 +44,8 @@ export interface TranscriptEntry {
   argsText?: string
   /** tool calls only: the raw input (used to render Edit/Write diffs). */
   input?: Record<string, unknown>
-  /** Edit/Write tool calls: precomputed diff (with true file line numbers). */
-  diff?: DiffLine[]
+  /** Edit/Write tool calls: precomputed diff hunks (with true file line numbers). */
+  diff?: ToolDiff
   /** tool calls: the tool_use id (used to correlate + collapse results). */
   toolUseId?: string
   /** tool results: the tool_use ids they answer (to drop collapsed-read results). */
@@ -153,7 +153,7 @@ export function messageToEntries(msg: ServerMessage): TranscriptEntry[] {
           >
           const diff =
             toolName === 'Edit' || toolName === 'Write' || toolName === 'MultiEdit'
-              ? (toolDiff(toolName, tinput, readFileSafe(tinput['file_path'])) ?? undefined)
+              ? (buildToolDiff(toolName, tinput, readFileSafe(tinput['file_path'])) ?? undefined)
               : undefined
           out.push({
             id: nextId(),

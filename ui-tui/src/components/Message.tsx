@@ -83,23 +83,19 @@ export function Message({ entry }: { entry: TranscriptEntry }): React.ReactEleme
       }
       const diff = entry.diff
       const isWeb = entry.toolName === 'WebFetch' || entry.toolName === 'WebSearch'
+      // File-edit tools display as Update/Create/Write (the original's
+      // userFacingName), not the raw tool id.
+      const name = diff ? diff.displayName : entry.toolName
       return (
         <Box flexDirection="column">
           <Text>
             <Text color={theme.success}>⏺ </Text>
-            <Text bold>{entry.toolName}</Text>
+            <Text bold>{name}</Text>
             <Text color={theme.dim}>(</Text>
             <Text color={isWeb ? theme.link : theme.dim}>{entry.argsText}</Text>
             <Text color={theme.dim}>)</Text>
           </Text>
-          {diff ? (
-            <DiffView
-              lines={diff}
-              filePath={
-                typeof entry.input?.['file_path'] === 'string' ? (entry.input['file_path'] as string) : undefined
-              }
-            />
-          ) : null}
+          {diff ? <DiffView diff={diff} /> : null}
         </Box>
       )
     }
