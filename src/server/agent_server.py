@@ -111,6 +111,7 @@ class _AgentSession:
     session: Any = None
     system_prompt: Any = "You are a helpful assistant."
     init_error: str | None = None
+    _session_name: str | None = None  # user-set label (/rename) shown in /resume
 
     # Worker + cross-thread coordination.
     _inbox: _queue.Queue = field(default_factory=_queue.Queue)
@@ -232,6 +233,12 @@ class _AgentSession:
         if subtype == "list_sessions":
             self._reply(request_id, {"sessions": _list_saved_sessions()})
             return
+        if subtype == "rename":
+            name = inner.get("name")
+            self._session_name = str(name).strip() if isinstance(name, str) and name.strip() else None
+            self._save_session()
+            self._reply(request_id, {"ok": True, "name": self._session_name or ""})
+            return
         if subtype == "resume":
             self._do_resume(request_id, inner.get("session_id"))
             return
@@ -311,6 +318,7 @@ class _AgentSession:
                 "updated_at": time.time(),
                 "message_count": len(msgs),
                 "preview": _first_prompt_preview(msgs),
+                "name": self._session_name,
                 "conversation": self.session.conversation.to_dict(),
             }
             (d / f"{self.session_id}.json").write_text(json.dumps(payload), encoding="utf-8")
@@ -901,6 +909,7 @@ def _list_saved_sessions(limit: int = 20) -> list[dict]:
                 "session_id": data.get("session_id", f.stem),
                 "updated_at": data.get("updated_at", 0),
                 "preview": data.get("preview", ""),
+                "name": data.get("name") or "",
                 "message_count": data.get("message_count", 0),
                 "model": data.get("model", ""),
             })

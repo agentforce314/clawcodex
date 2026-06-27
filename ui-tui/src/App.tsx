@@ -607,6 +607,19 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         client?.close()
         exit()
         return true
+      case 'rename': {
+        if (!arg) {
+          addEntry({ kind: 'system', text: 'usage: /rename <name>' })
+        } else if (client) {
+          void client.requestControl('rename', { name: arg }).then((r) => {
+            addEntry({
+              kind: r && r['ok'] ? 'system' : 'error',
+              text: r && r['ok'] ? `session renamed → ${arg}` : 'rename failed',
+            })
+          })
+        }
+        return true
+      }
       case 'resume': {
         if (client) {
           void client.requestControl('list_sessions').then((r) => {
@@ -616,7 +629,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
               return
             }
             const options = sessions.map((s) => {
-              const prev = String(s['preview'] || '(no preview)').slice(0, 50)
+              const prev = String(s['name'] || s['preview'] || '(no preview)').slice(0, 50)
               const age = relAge(Number(s['updated_at']) || 0)
               return `${prev}  ·  ${Number(s['message_count']) || 0} msgs${age ? `  ·  ${age}` : ''}`
             })
