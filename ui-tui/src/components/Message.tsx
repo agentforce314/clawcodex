@@ -58,6 +58,37 @@ function ToolResult({ text, isError }: { text: string; isError?: boolean }): Rea
   )
 }
 
+/** TodoWrite checklist — matches the original TaskListV2: ✔ completed (green,
+ *  struck through, dim), ◼ in-progress (orange, bold), ◻ pending. */
+function TodoList({ todos }: { todos: NonNullable<TranscriptEntry['todos']> }): React.ReactElement {
+  const icon = (s: string): { glyph: string; color: string | undefined } =>
+    s === 'completed'
+      ? { glyph: '✔', color: theme.success }
+      : s === 'in_progress'
+        ? { glyph: '◼', color: theme.accent }
+        : { glyph: '◻', color: undefined }
+  return (
+    <Box flexDirection="column">
+      <Text>
+        <Text color={theme.success}>⏺ </Text>
+        <Text bold>Update Todos</Text>
+      </Text>
+      {todos.map((t, i) => {
+        const { glyph, color } = icon(t.status)
+        const done = t.status === 'completed'
+        return (
+          <Box key={i}>
+            <Text color={color}>{`  ${glyph} `}</Text>
+            <Text bold={t.status === 'in_progress'} strikethrough={done} dimColor={done}>
+              {t.content}
+            </Text>
+          </Box>
+        )
+      })}
+    </Box>
+  )
+}
+
 export function Message({ entry }: { entry: TranscriptEntry }): React.ReactElement | null {
   switch (entry.kind) {
     case 'banner':
@@ -87,6 +118,10 @@ export function Message({ entry }: { entry: TranscriptEntry }): React.ReactEleme
         </Box>
       )
     case 'tool': {
+      // TodoWrite renders as a checklist (the original's TaskListV2 look).
+      if (entry.todos) {
+        return <TodoList todos={entry.todos} />
+      }
       // Collapsed summary of several same-kind calls (e.g. "Read 4 files").
       if (entry.count && entry.count > 1) {
         const noun = TOOL_VERB[entry.toolName ?? '']?.noun || 'files'
