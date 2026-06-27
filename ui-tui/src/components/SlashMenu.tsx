@@ -1,4 +1,9 @@
-/** Slash-command autocomplete dropdown shown above the input. */
+/**
+ * Slash-command suggestions shown above the input — matches the original
+ * PromptInputFooterSuggestions: a borderless list where the selected row is a
+ * full-width highlighted bar (background + inverse text), format
+ * "/name   description".
+ */
 import { Box, Text } from 'ink'
 import React from 'react'
 import { theme } from '../theme.js'
@@ -11,21 +16,28 @@ interface Props {
 
 export function SlashMenu({ matches, selected }: Props): React.ReactElement | null {
   if (matches.length === 0) return null
+  const nameW = Math.max(...matches.map((c) => c.name.length))
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={theme.border} paddingX={1}>
+    <Box flexDirection="column" marginBottom={1}>
       {matches.map((c, i) => {
         const on = i === selected
+        if (on) {
+          // Selected: full-width highlighted bar, › prefix, dark bold text.
+          return (
+            <Box key={c.name} width="100%">
+              <Text backgroundColor={theme.suggestion} color="black" bold wrap="truncate">
+                {`› ${c.name.padEnd(nameW)}   ${c.description} `}
+              </Text>
+            </Box>
+          )
+        }
         return (
           <Box key={c.name}>
-            <Text color={on ? theme.accent : theme.dim} bold={on}>
-              {on ? '❯ ' : '  '}
-              {c.name.padEnd(10)}
-            </Text>
-            <Text color={theme.dim}>{c.description}</Text>
+            <Text>{`  ${c.name.padEnd(nameW)}`}</Text>
+            <Text color={theme.dim}>{`   ${c.description}`}</Text>
           </Box>
         )
       })}
-      <Text color={theme.dim}>{'  ↑↓ select · tab complete · enter run'}</Text>
     </Box>
   )
 }

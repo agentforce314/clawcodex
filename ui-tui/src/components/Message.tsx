@@ -10,6 +10,8 @@ import { Box, Text } from 'ink'
 import React from 'react'
 import { Markdown } from '../markdown.js'
 import { theme } from '../theme.js'
+import { DiffView } from './DiffView.js'
+import { toolDiff } from '../diff.js'
 import type { TranscriptEntry } from '../sdkMessageAdapter.js'
 
 const RESULT_MAX_LINES = 8
@@ -57,14 +59,22 @@ export function Message({ entry }: { entry: TranscriptEntry }): React.ReactEleme
           </Box>
         </Box>
       )
-    case 'tool':
+    case 'tool': {
+      const diff = entry.toolName ? toolDiff(entry.toolName, entry.input ?? {}) : null
+      const isWeb = entry.toolName === 'WebFetch' || entry.toolName === 'WebSearch'
       return (
-        <Text>
-          <Text color={theme.assistant}>⏺ </Text>
-          <Text bold>{entry.toolName}</Text>
-          <Text color={theme.dim}>{`(${entry.argsText})`}</Text>
-        </Text>
+        <Box flexDirection="column">
+          <Text>
+            <Text color={theme.success}>⏺ </Text>
+            <Text bold>{entry.toolName}</Text>
+            <Text color={theme.dim}>(</Text>
+            <Text color={isWeb ? theme.link : theme.dim}>{entry.argsText}</Text>
+            <Text color={theme.dim}>)</Text>
+          </Text>
+          {diff ? <DiffView lines={diff} /> : null}
+        </Box>
       )
+    }
     case 'toolResult':
       return <ToolResult text={entry.text} />
     case 'result':

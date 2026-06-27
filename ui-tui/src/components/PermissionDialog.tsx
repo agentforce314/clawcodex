@@ -1,7 +1,9 @@
 /**
- * Tool-permission prompt — a bordered Claude-Code-style dialog. The wire
- * protocol's control_response is allow/deny, so we offer (y) allow / (n) deny
- * (esc = deny). The args preview shows what the tool wants to do.
+ * Tool-permission prompt — matches the original Claude Code permission dialog
+ * (components/permissions/PermissionDialog.tsx): a top-rule-only frame in the
+ * permission blue-purple, the tool name + an args preview, then a numbered
+ * option list with "Yes" highlighted. The wire protocol is allow/deny, so the
+ * keys are 1/y = allow, 2/n = deny, esc = interrupt.
  */
 import { Box, Text } from 'ink'
 import React from 'react'
@@ -14,44 +16,48 @@ interface Props {
 
 export function PermissionDialog({ toolName, input }: Props): React.ReactElement {
   const keys = Object.keys(input ?? {})
-  const preview =
-    keys.length > 0
-      ? keys
-          .map((k) => {
-            const v = (input as Record<string, unknown>)[k]
-            const s = typeof v === 'string' ? v : JSON.stringify(v)
-            return `${k}: ${s.length > 120 ? `${s.slice(0, 119)}…` : s}`
-          })
-          .join('\n')
-      : null
+  const preview = keys.map((k) => {
+    const v = (input as Record<string, unknown>)[k]
+    const s = typeof v === 'string' ? v : JSON.stringify(v)
+    return `${k}: ${s.length > 120 ? `${s.slice(0, 119)}…` : s}`
+  })
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={theme.warn} paddingX={1}>
-      <Text color={theme.warn} bold>
-        ⏵ Permission required
-      </Text>
+    <Box
+      flexDirection="column"
+      borderStyle="round"
+      borderColor={theme.suggestion}
+      borderBottom={false}
+      borderLeft={false}
+      borderRight={false}
+      paddingX={1}
+      marginTop={1}
+    >
       <Text>
-        Allow <Text bold color={theme.tool}>{toolName}</Text> to run?
+        <Text color={theme.suggestion} bold>
+          {toolName}
+        </Text>
+        <Text color={theme.dim}>{' wants to run'}</Text>
       </Text>
-      {preview ? (
+      {preview.length ? (
         <Box flexDirection="column" marginTop={1}>
-          {preview.split('\n').map((ln, i) => (
+          {preview.map((ln, i) => (
             <Text key={i} color={theme.dim}>
-              {ln}
+              {`  ${ln}`}
             </Text>
           ))}
         </Box>
       ) : null}
-      <Box marginTop={1}>
-        <Text color={theme.success} bold>
-          (y)
+      <Box marginTop={1} flexDirection="column">
+        <Text color={theme.dim}>Do you want to proceed?</Text>
+        <Text>
+          <Text color={theme.suggestion} bold>
+            {'❯ '}
+          </Text>
+          <Text bold>1. Yes</Text>
+          <Text color={theme.dim}>{'   (y)'}</Text>
         </Text>
-        <Text>{' allow   '}</Text>
-        <Text color={theme.error} bold>
-          (n)
-        </Text>
-        <Text>{' deny   '}</Text>
-        <Text color={theme.dim}>esc to deny</Text>
+        <Text color={theme.dim}>{'  2. No, and tell the agent what to do differently   (n / esc)'}</Text>
       </Box>
     </Box>
   )
