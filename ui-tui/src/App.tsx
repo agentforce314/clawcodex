@@ -583,6 +583,23 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         client?.close()
         exit()
         return true
+      case 'doctor': {
+        addEntry({
+          kind: 'system',
+          text: [
+            'clawcodex diagnostics',
+            `  connection  ${connected ? 'connected' : 'disconnected'}`,
+            `  server      ${serverLabel}`,
+            `  model       ${model}`,
+            `  mode        ${mode}`,
+            `  tools       ${tools}`,
+            `  protocol    v${SUPPORTED_PROTOCOL_MAJOR}.x`,
+            `  theme       ${currentThemeName()}`,
+            `  cwd         ${process.cwd()}`,
+          ].join('\n'),
+        })
+        return true
+      }
       case 'copy': {
         // Copy the last assistant response via OSC 52 (terminal clipboard; works
         // in iTerm2/kitty/wezterm/… without a clipboard library).
