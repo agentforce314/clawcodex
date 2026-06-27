@@ -760,6 +760,20 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         }
         return true
       }
+      case 'branch': {
+        if (client) {
+          void client.requestControl('branch').then((r) => {
+            addEntry({
+              kind: r && r['ok'] ? 'system' : 'error',
+              text:
+                r && r['ok']
+                  ? `⎇ branched to ${String(r['session_id'])} — /resume to switch`
+                  : `branch failed: ${r && r['error'] ? String(r['error']) : 'no response'}`,
+            })
+          })
+        }
+        return true
+      }
       case 'resume': {
         if (client) {
           void client.requestControl('list_sessions').then((r) => {
