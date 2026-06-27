@@ -26,12 +26,15 @@ export interface SlashCommand {
     | 'permissions'
     | 'memory'
     | 'agents'
+    | 'prompt'
     | 'export'
     | 'copy'
     | 'doctor'
     | 'send'
   /** for kind:'control' — the control_request subtype. */
   control?: string
+  /** for kind:'prompt' — the LLM-visible text the command expands to. */
+  promptText?: string
 }
 
 export const SLASH_COMMANDS: SlashCommand[] = [
@@ -60,6 +63,30 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/permissions', description: 'Show active permission mode and rules', kind: 'permissions' },
   { name: '/agents', description: 'List available subagent types', kind: 'agents' },
   { name: '/init', description: 'Analyze the codebase and create/improve CLAUDE.md', kind: 'init' },
+  {
+    name: '/review',
+    description: 'Review the current changes for bugs and quality',
+    kind: 'prompt',
+    promptText:
+      'Review the current changes (run `git diff`) for bugs, edge cases, and quality issues. ' +
+      'Be specific with file:line references and suggest concrete fixes.',
+  },
+  {
+    name: '/security-review',
+    description: 'Security review of the current changes',
+    kind: 'prompt',
+    promptText:
+      'Perform a security review of the current changes (run `git diff`), focusing on injection, ' +
+      'auth/authz, secrets, SSRF, and unsafe deserialization. Report findings with severity and fixes.',
+  },
+  {
+    name: '/commit-message',
+    description: 'Draft a commit message for the current changes',
+    kind: 'prompt',
+    promptText:
+      'Run `git diff --staged` (fall back to `git diff`) and draft a concise Conventional Commits ' +
+      'message for the changes. Output only the commit message.',
+  },
   { name: '/memory', description: 'Show the loaded CLAUDE.md memory files', kind: 'memory' },
   { name: '/doctor', description: 'Show connection + session diagnostics', kind: 'doctor' },
   { name: '/quit', description: 'Exit the TUI', kind: 'quit' },
