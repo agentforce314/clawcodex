@@ -21,6 +21,7 @@ export interface SlashCommand {
     | 'theme'
     | 'vim'
     | 'mcp'
+    | 'cost'
     | 'export'
     | 'copy'
     | 'doctor'
@@ -40,6 +41,8 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     control: 'set_permission_mode',
   },
   { name: '/context', description: 'Show context-window usage by category', kind: 'context' },
+  { name: '/cost', description: 'Show session cost and token usage', kind: 'cost' },
+  { name: '/usage', description: 'Show token usage and context window', kind: 'cost' },
   { name: '/compact', description: 'Summarize & compact the conversation: /compact [instructions]', kind: 'compact' },
   { name: '/rewind', description: 'Undo the last turn(s): /rewind [N]', kind: 'rewind' },
   { name: '/resume', description: 'Resume a saved session', kind: 'resume' },
