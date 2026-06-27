@@ -18,10 +18,7 @@ import React from 'react'
 import { ColorDiff, ColorFile } from '../colorDiff.js'
 import { countPatchLines } from '../patch.js'
 import type { ToolDiff } from '../diff.js'
-import { theme } from '../theme.js'
-
-// CC's default dark theme — Monokai syntax colors + dark add/del tints.
-const THEME_NAME = 'dark'
+import { currentThemeName, theme } from '../theme.js'
 // Original truncates created-file previews to the first 10 lines.
 const WRITE_MAX_LINES = 10
 // Safety cap so a giant edit can't flood the live viewport.
@@ -51,7 +48,7 @@ export function DiffView({ diff }: { diff: ToolDiff }): React.ReactElement | nul
     const content = diff.content ?? ''
     const all = content.split('\n')
     const shown = all.slice(0, WRITE_MAX_LINES).join('\n')
-    const lines = new ColorFile(shown, diff.filePath).render(THEME_NAME, width, false) ?? []
+    const lines = new ColorFile(shown, diff.filePath).render(currentThemeName(), width, false) ?? []
     for (const l of lines) bodyRows.push({ text: l })
     const extra = all.length - WRITE_MAX_LINES
     if (extra > 0) hint = `… +${extra} ${extra === 1 ? 'line' : 'lines'}`
@@ -63,7 +60,7 @@ export function DiffView({ diff }: { diff: ToolDiff }): React.ReactElement | nul
       if (i > 0) bodyRows.push({ text: '...', sep: true })
       const lines =
         new ColorDiff(hunk, diff.firstLine, diff.filePath, diff.fileContent ?? null).render(
-          THEME_NAME,
+          currentThemeName(),
           width,
           false,
         ) ?? []

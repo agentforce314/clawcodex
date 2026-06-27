@@ -24,7 +24,7 @@ import { READ_LIKE, TOOL_VERB, toolActivityLabel } from './toolMeta.js'
 import { messageToEntries, streamDeltaText, type TranscriptEntry } from './sdkMessageAdapter.js'
 import { matchSlash, resolveSlash } from './slashCommands.js'
 import { parseProtocolMajor, SUPPORTED_PROTOCOL_MAJOR } from './protocol.js'
-import { theme } from './theme.js'
+import { applyTheme, theme } from './theme.js'
 
 interface Props {
   transport: Transport
@@ -82,6 +82,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     maxTokens: number
   } | null>(null)
   const [sessionCost, setSessionCost] = useState(0) // cumulative USD across turns
+  const [, setThemeVersion] = useState(0) // bumped on /theme to repaint the dynamic UI
   const [slashSel, setSlashSel] = useState(0)
   const [atSel, setAtSel] = useState(0)
   // Submitted-prompt history for ↑/↓ recall (readline-style; -1 = live draft).
@@ -464,6 +465,15 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         client?.close()
         exit()
         return true
+      case 'theme': {
+        if (applyTheme(arg)) {
+          setThemeVersion((v) => v + 1) // repaint dynamic UI; new output uses the theme
+          addEntry({ kind: 'system', text: `theme → ${arg}` })
+        } else {
+          addEntry({ kind: 'system', text: `usage: ${cmd.name} <dark|light>` })
+        }
+        return true
+      }
       case 'context': {
         // Pull a fresh usage snapshot, then render the category breakdown.
         if (client) {
