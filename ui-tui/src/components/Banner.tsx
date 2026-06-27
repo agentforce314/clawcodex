@@ -1,12 +1,13 @@
 /**
- * Welcome / session panel shown before the first message — the clawcodex
- * analogue of Claude Code's intro banner + provider box. Carries the
- * connection info (model · mode · tools · cwd) so it doesn't clutter the
- * transcript, plus a one-line tip.
+ * Welcome / session panel — ported from the original Claude Code startup screen
+ * (typescript/src/components/StartupScreen.ts): a ✦ tagline, a double-border
+ * info box (dim padEnd labels + accent/default values), a `● Ready — type /help
+ * to begin` line, and a dim+accent version line.
  */
 import { Box, Text } from 'ink'
 import React from 'react'
 import { theme } from '../theme.js'
+import { Logo } from './Logo.js'
 
 interface Props {
   model: string
@@ -21,11 +22,11 @@ function shorten(cwd?: string): string | undefined {
   return home && cwd.startsWith(home) ? `~${cwd.slice(home.length)}` : cwd
 }
 
-function Row({ label, value }: { label: string; value: string }): React.ReactElement {
+function Row({ label, value, accent }: { label: string; value: string; accent?: boolean }): React.ReactElement {
   return (
     <Text>
-      <Text color={theme.dim}>{label.padEnd(7)}</Text>
-      {value}
+      <Text color={theme.dim}>{` ${label.padEnd(9)}`}</Text>
+      <Text color={accent ? theme.accent : theme.assistant}>{value}</Text>
     </Text>
   )
 }
@@ -33,33 +34,33 @@ function Row({ label, value }: { label: string; value: string }): React.ReactEle
 export function Banner({ model, mode, tools, cwd }: Props): React.ReactElement {
   const dir = shorten(cwd)
   return (
-    <Box
-      flexDirection="column"
-      borderStyle="round"
-      borderColor={theme.accent}
-      paddingX={2}
-      paddingY={1}
-      marginBottom={1}
-    >
+    <Box flexDirection="column" marginBottom={1}>
+      <Box marginTop={1} marginBottom={1}>
+        <Logo />
+      </Box>
       <Text>
-        <Text bold color={theme.accent}>
-          clawcodex
-        </Text>
-        <Text color={theme.dim}>{'  ·  a Claude-Code-style TUI on the Python backend'}</Text>
+        <Text color={theme.accent}>✦</Text>
+        <Text color={theme.dim}>{'  Any model. Every tool. Zero limits.  '}</Text>
+        <Text color={theme.accent}>✦</Text>
       </Text>
-      <Box marginTop={1} flexDirection="column">
-        <Row label="model" value={model} />
+
+      <Box flexDirection="column" borderStyle="round" borderColor="rgb(130,95,75)" marginTop={1}>
+        <Row label="model" value={model} accent />
         <Row label="mode" value={mode} />
         <Row label="tools" value={String(tools)} />
         {dir ? <Row label="cwd" value={dir} /> : null}
+        <Text> </Text>
+        <Text>
+          <Text color={theme.accent}>{' ● '}</Text>
+          <Text color={theme.dim}>{'local    Ready — type '}</Text>
+          <Text color={theme.accent}>/help</Text>
+          <Text color={theme.dim}>{' to begin'}</Text>
+        </Text>
       </Box>
-      <Box marginTop={1}>
-        <Text color={theme.dim}>{'Type a message · '}</Text>
-        <Text color={theme.accent}>/help</Text>
-        <Text color={theme.dim}>{' for commands · '}</Text>
-        <Text color={theme.accent}>^C</Text>
-        <Text color={theme.dim}>{' to quit'}</Text>
-      </Box>
+      <Text>
+        <Text color={theme.dim}>{'  clawcodex-tui '}</Text>
+        <Text color={theme.accent}>v0.1</Text>
+      </Text>
     </Box>
   )
 }
