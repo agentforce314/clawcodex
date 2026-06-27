@@ -18,6 +18,13 @@ const RESULT_MAX_LINES = 8
 
 function ToolResult({ text }: { text: string }): React.ReactElement {
   const lines = text.replace(/\s+$/, '').split('\n')
+  // Collapse a long line-numbered file dump (Read / cat -n) to a single line —
+  // several Reads otherwise bury the transcript under hundreds of content lines.
+  // The original keeps these collapsed (ctrl+o to expand).
+  const numbered = lines.filter((l) => /^\s*\d+[\t |→]/.test(l)).length
+  if (lines.length > 6 && numbered >= lines.length * 0.6) {
+    return <Text color={theme.dim}>{`  ⎿ Read ${lines.length} lines`}</Text>
+  }
   const shown = lines.slice(0, RESULT_MAX_LINES)
   const extra = lines.length - shown.length
   return (
