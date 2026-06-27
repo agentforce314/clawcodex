@@ -18,6 +18,7 @@ export interface SlashCommand {
     | 'resume'
     | 'rename'
     | 'theme'
+    | 'vim'
     | 'export'
     | 'copy'
     | 'doctor'
@@ -42,6 +43,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/resume', description: 'Resume a saved session', kind: 'resume' },
   { name: '/rename', description: 'Name the current session: /rename <name>', kind: 'rename' },
   { name: '/theme', description: 'Switch color theme: /theme <dark|light>', kind: 'theme' },
+  { name: '/vim', description: 'Toggle vim editing mode', kind: 'vim' },
   { name: '/export', description: 'Save the transcript to a markdown file', kind: 'export' },
   { name: '/copy', description: "Copy the last response to the clipboard", kind: 'copy' },
   { name: '/doctor', description: 'Show connection + session diagnostics', kind: 'doctor' },
