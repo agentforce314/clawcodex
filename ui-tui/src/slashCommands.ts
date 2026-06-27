@@ -26,6 +26,7 @@ export interface SlashCommand {
     | 'permissions'
     | 'memory'
     | 'agents'
+    | 'config'
     | 'prompt'
     | 'export'
     | 'copy'
@@ -62,6 +63,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/mcp', description: 'List connected MCP servers and their tools', kind: 'mcp' },
   { name: '/permissions', description: 'Show active permission mode and rules', kind: 'permissions' },
   { name: '/agents', description: 'List available subagent types', kind: 'agents' },
+  { name: '/config', description: 'Show model, mode, and available models', kind: 'config' },
   { name: '/init', description: 'Analyze the codebase and create/improve CLAUDE.md', kind: 'init' },
   {
     name: '/review',
