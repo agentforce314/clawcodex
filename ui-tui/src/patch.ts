@@ -67,7 +67,10 @@ export function getPatchFromContents({
   if (!result) return []
   return result.hunks.map(h => ({
     ...h,
-    lines: h.lines.map(unescapeFromDiff),
+    // Drop the `\ No newline at end of file` markers the diff library emits for
+    // non-newline-terminated content — real code lines are prefixed +/-/space,
+    // so only these markers start with a literal backslash.
+    lines: h.lines.filter(l => l[0] !== '\\').map(unescapeFromDiff),
   }))
 }
 
@@ -118,7 +121,10 @@ export function getPatchForDisplay({
   if (!result) return []
   return result.hunks.map(h => ({
     ...h,
-    lines: h.lines.map(unescapeFromDiff),
+    // Drop the `\ No newline at end of file` markers the diff library emits for
+    // non-newline-terminated content — real code lines are prefixed +/-/space,
+    // so only these markers start with a literal backslash.
+    lines: h.lines.filter(l => l[0] !== '\\').map(unescapeFromDiff),
   }))
 }
 
