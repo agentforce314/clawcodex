@@ -87,6 +87,10 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const historyRef = useRef<string[]>([])
   const [histIdx, setHistIdx] = useState(-1)
   const draftRef = useRef('')
+  // Ctrl+R reverse history search.
+  const [searchMode, setSearchMode] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchSel, setSearchSel] = useState(0)
   // Prompts typed while the agent is busy — queued, then sent at turn end.
   const queuedRef = useRef<string[]>([])
   const [queued, setQueued] = useState<string[]>([])
@@ -118,6 +122,15 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const atMatches = atToken !== null ? searchFiles(process.cwd(), atToken, Date.now()) : []
   const atOpen = atMatches.length > 0 && permissions.length === 0
   const atSelClamped = Math.min(atSel, Math.max(0, atMatches.length - 1))
+
+  // Ctrl+R reverse search: history entries containing the query, newest first.
+  const searchMatches = searchMode
+    ? historyRef.current
+        .filter((h) => (searchQuery ? h.includes(searchQuery) : true))
+        .reverse()
+    : []
+  const searchSelClamped = Math.min(searchSel, Math.max(0, searchMatches.length - 1))
+  const searchMatch = searchMatches[searchSelClamped] ?? ''
   const completeAt = (pick: string): void => {
     setInput(input.replace(/@([^\s]*)$/, `@${pick} `))
     setAtSel(0)
@@ -326,6 +339,39 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
       client?.close()
       exit()
       return
+    }
+    // Ctrl+R: open reverse history search, or cycle to the next older match.
+    if (key.ctrl && ch === 'r') {
+      if (!searchMode) {
+        setSearchMode(true)
+        setSearchQuery('')
+        setSearchSel(0)
+      } else {
+        setSearchSel((s) => (searchMatches.length ? (s + 1) % searchMatches.length : 0))
+      }
+      return
+    }
+    if (searchMode) {
+      if (key.escape) {
+        setSearchMode(false)
+        return
+      }
+      if (key.return) {
+        if (searchMatch) setInput(searchMatch)
+        setSearchMode(false)
+        setHistIdx(-1)
+        return
+      }
+      if (key.backspace || key.delete) {
+        setSearchQuery((q) => q.slice(0, -1))
+        setSearchSel(0)
+        return
+      }
+      if (ch && !key.ctrl && !key.meta && ch.length === 1 && ch >= ' ') {
+        setSearchQuery((q) => q + ch)
+        setSearchSel(0)
+      }
+      return // search mode swallows all other keys
     }
     const head = permissions[0]
     if (head) {
@@ -583,6 +629,18 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
 
       {permission ? (
         <PermissionDialog toolName={permission.toolName} input={permission.input} />
+      ) : searchMode ? (
+        <Box
+          borderStyle="round"
+          borderColor={theme.promptBorder}
+          borderLeft={false}
+          borderRight={false}
+          paddingX={1}
+          width="100%"
+        >
+          <Text color={theme.dim}>{`(reverse-i-search)\`${searchQuery}\`: `}</Text>
+          <Text>{searchMatch}</Text>
+        </Box>
       ) : (
         <>
           {queued.length > 0 ? (
