@@ -10,8 +10,6 @@ import { Box, Static, Text, useApp, useInput } from 'ink'
 import TextInput from 'ink-text-input'
 import React, { useEffect, useRef, useState } from 'react'
 import { DirectConnectClient, type SessionInfo } from './client.js'
-import { Markdown } from './markdown.js'
-import { Banner } from './components/Banner.js'
 import { Message } from './components/Message.js'
 import { PermissionDialog } from './components/PermissionDialog.js'
 import { SlashMenu } from './components/SlashMenu.js'
@@ -39,6 +37,23 @@ const HELP = [
   '↑↓ — slash menu · tab — complete',
 ].join('\n')
 
+/**
+ * Tail of a live buffer that fits `maxLines` visual rows at `cols` width — hard-
+ * wraps each logical line, then keeps the last `maxLines`. Keeps the streaming
+ * (non-Static) region inside the viewport so Ink can erase it cleanly instead of
+ * leaking re-rendered copies into scrollback.
+ */
+function streamTail(text: string, cols: number, maxLines: number): string {
+  if (maxLines < 1) maxLines = 1
+  const width = cols < 8 ? 8 : cols
+  const visual: string[] = []
+  for (const ln of text.split('\n')) {
+    if (ln.length <= width) visual.push(ln)
+    else for (let i = 0; i < ln.length; i += width) visual.push(ln.slice(i, i + width))
+  }
+  return visual.slice(-maxLines).join('\n')
+}
+
 export function App({ info, serverLabel }: Props): React.ReactElement {
   const { exit } = useApp()
   const [entries, setEntries] = useState<TranscriptEntry[]>([])
@@ -52,9 +67,11 @@ export function App({ info, serverLabel }: Props): React.ReactElement {
   const [mode, setMode] = useState('?')
   const [tools, setTools] = useState(0)
   const [connected, setConnected] = useState(false)
+  const [ready, setReady] = useState(false) // system/init received — banner committed, submit allowed
   const [client, setClient] = useState<DirectConnectClient | null>(null)
   const [slashSel, setSlashSel] = useState(0)
   const localSeq = useRef(0)
+  const bannerAdded = useRef(false)
 
   const slashMatches = !input.includes(' ') ? matchSlash(input) : []
   const slashOpen = slashMatches.length > 0 && permissions.length === 0
@@ -111,9 +128,30 @@ export function App({ info, serverLabel }: Props): React.ReactElement {
         }
         if (type === 'system' && (msg as { subtype?: string }).subtype === 'init') {
           const m = msg as { model?: string; permission_mode?: string; protocol_version?: string; tools?: unknown[] }
+          const toolCount = Array.isArray(m.tools) ? m.tools.length : 0
           setModel(m.model ?? '?')
           setMode(m.permission_mode ?? '?')
-          setTools(Array.isArray(m.tools) ? m.tools.length : 0)
+          setTools(toolCount)
+          // Commit the welcome banner as the FIRST Static entry so it stays in
+          // scrollback as the conversation grows (the original keeps its logo).
+          // It must be APPENDED before any other entry — <Static> is append-only
+          // and tracks by index, so prepending would skip the banner and
+          // duplicate the next row. Submit is gated on `ready` (set here) so a
+          // user message can never beat the banner into the list.
+          setReady(true)
+          if (!bannerAdded.current) {
+            bannerAdded.current = true
+            addEntry({
+              kind: 'banner',
+              text: '',
+              bannerData: {
+                model: m.model ?? '?',
+                mode: m.permission_mode ?? '?',
+                tools: toolCount,
+                cwd: info.workDir,
+              },
+            })
+          }
           const major = parseProtocolMajor(m.protocol_version)
           if (major !== null && major !== SUPPORTED_PROTOCOL_MAJOR) {
             addEntry({
@@ -233,7 +271,7 @@ export function App({ info, serverLabel }: Props): React.ReactElement {
         return
       }
     }
-    if (!client || !connected || busy || permissions.length > 0) return
+    if (!client || !ready || busy || permissions.length > 0) return
     client.sendPrompt(text)
     addEntry({ kind: 'user', text })
     setStream('')
@@ -245,13 +283,12 @@ export function App({ info, serverLabel }: Props): React.ReactElement {
 
   return (
     <Box flexDirection="column">
-      {entries.length === 0 && streaming === '' ? (
-        <Banner model={model} mode={mode} tools={tools} cwd={info.workDir} />
-      ) : null}
-
       <Static items={entries}>
         {(entry) => (
-          <Box key={entry.id} marginTop={entry.kind === 'tool' || entry.kind === 'toolResult' ? 0 : 1}>
+          <Box
+            key={entry.id}
+            marginTop={['tool', 'toolResult', 'banner'].includes(entry.kind) ? 0 : 1}
+          >
             <Message entry={entry} />
           </Box>
         )}
@@ -262,8 +299,16 @@ export function App({ info, serverLabel }: Props): React.ReactElement {
           <Box width={2}>
             <Text color={theme.accent}>⏺</Text>
           </Box>
-          <Box flexDirection="column" flexGrow={1}>
-            <Markdown text={streaming} />
+          <Box flexGrow={1}>
+            {/* The live stream is the only UNBOUNDED part of the dynamic (non-
+                Static) region. If it overflows the viewport Ink can't erase the
+                scrolled-off rows, so each re-render (the spinner ticks ~10×/s)
+                leaves a stale copy in scrollback → the message appears dozens of
+                times. Cap it to a viewport-fitting tail (plain text); the full
+                markdown commits to <Static> when the assistant message lands. */}
+            <Text>
+              {streamTail(streaming, (process.stdout.columns ?? 80) - 4, (process.stdout.rows ?? 24) - 10)}
+            </Text>
           </Box>
         </Box>
       ) : null}
@@ -287,7 +332,7 @@ export function App({ info, serverLabel }: Props): React.ReactElement {
             paddingX={1}
             width="100%"
           >
-            <Text color={connected ? theme.accent : theme.dim}>{busy ? '… ' : '❯ '}</Text>
+            <Text color={ready ? theme.accent : theme.dim}>{busy ? '… ' : '❯ '}</Text>
             <TextInput
               value={input}
               onChange={(v) => {
@@ -295,7 +340,7 @@ export function App({ info, serverLabel }: Props): React.ReactElement {
                 setSlashSel(0)
               }}
               onSubmit={onSubmit}
-              placeholder={connected ? 'Type a message, or / for commands…' : 'connecting…'}
+              placeholder={ready ? 'Type a message, or / for commands…' : 'starting agent-server…'}
             />
           </Box>
         </>

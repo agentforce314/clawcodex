@@ -14,6 +14,7 @@ import {
 } from './protocol.js'
 
 export type EntryKind =
+  | 'banner'
   | 'user'
   | 'assistant'
   | 'tool'
@@ -31,6 +32,8 @@ export interface TranscriptEntry {
   argsText?: string
   /** tool calls only: the raw input (used to render Edit/Write diffs). */
   input?: Record<string, unknown>
+  /** banner only: the session info snapshot, captured once at init. */
+  bannerData?: { model: string; mode: string; tools: number; cwd?: string }
 }
 
 let _seq = 0
