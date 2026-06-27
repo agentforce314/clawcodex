@@ -16,6 +16,7 @@ import type { Transport } from './transport.js'
 import { Message } from './components/Message.js'
 import { PermissionDialog } from './components/PermissionDialog.js'
 import { SlashMenu } from './components/SlashMenu.js'
+import { exec } from 'node:child_process'
 import { FileMenu } from './components/FileMenu.js'
 import { VimInput } from './components/VimInput.js'
 import { searchFiles } from './fileIndex.js'
@@ -1033,6 +1034,26 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [busy, ready, permissions.length])
 
+  // Bash mode (`!cmd`): run a shell command client-side and show its output,
+  // without involving the model. The TUI runs in the same cwd as the
+  // agent-server, so this matches the agent's working directory (the original
+  // runs `!` commands in-process too).
+  const runBang = (cmd: string): void => {
+    addEntry({ kind: 'system', text: `! ${cmd}` })
+    try {
+      exec(cmd, { cwd: process.cwd(), timeout: 30_000, maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
+        const out = `${stdout || ''}${stderr ? (stdout ? '\n' : '') + stderr : ''}`.replace(/\s+$/, '')
+        if (err && !out) {
+          addEntry({ kind: 'error', text: `(exit ${(err as { code?: number }).code ?? 1})` })
+        } else {
+          addEntry({ kind: err ? 'error' : 'toolResult', text: out || '(no output)' })
+        }
+      })
+    } catch (e) {
+      addEntry({ kind: 'error', text: `bash failed: ${String(e)}` })
+    }
+  }
+
   const onSubmit = (value: string): void => {
     const text = value.trim()
     if (!text) return
@@ -1058,6 +1079,16 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         }
         return
       }
+    }
+    // Bash mode: `!cmd` runs a shell command instead of prompting the model.
+    if (text.startsWith('!')) {
+      const cmd = text.slice(1).trim()
+      setHistIdx(-1)
+      draftRef.current = ''
+      setInput('')
+      setSlashSel(0)
+      if (cmd) runBang(cmd)
+      return
     }
     if (!client || !ready || permissions.length > 0) return
     setHistIdx(-1)
@@ -1239,7 +1270,9 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
               />
             ) : (
               <>
-                <Text color={ready ? theme.accent : theme.dim}>{busy ? '… ' : '❯ '}</Text>
+                <Text color={input.startsWith('!') ? theme.error : ready ? theme.accent : theme.dim}>
+                  {busy ? '… ' : input.startsWith('!') ? '! ' : '❯ '}
+                </Text>
                 <TextInput
                   value={input}
                   onChange={(v) => {
