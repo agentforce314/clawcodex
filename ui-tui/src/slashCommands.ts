@@ -27,6 +27,8 @@ export interface SlashCommand {
     | 'memory'
     | 'agents'
     | 'config'
+    | 'diff'
+    | 'stats'
     | 'prompt'
     | 'export'
     | 'copy'
@@ -64,6 +66,8 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/permissions', description: 'Show active permission mode and rules', kind: 'permissions' },
   { name: '/agents', description: 'List available subagent types', kind: 'agents' },
   { name: '/config', description: 'Show model, mode, and available models', kind: 'config' },
+  { name: '/diff', description: 'Show the working-tree git diff', kind: 'diff' },
+  { name: '/stats', description: 'Show session statistics', kind: 'stats' },
   { name: '/init', description: 'Analyze the codebase and create/improve CLAUDE.md', kind: 'init' },
   {
     name: '/review',
