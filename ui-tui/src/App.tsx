@@ -75,6 +75,11 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const [connected, setConnected] = useState(false)
   const [ready, setReady] = useState(false) // system/init received — banner committed, submit allowed
   const [client, setClient] = useState<DirectConnectClient | null>(null)
+  const [contextUsage, setContextUsage] = useState<{
+    percentage: number
+    totalTokens: number
+    maxTokens: number
+  } | null>(null)
   const [slashSel, setSlashSel] = useState(0)
   const [atSel, setAtSel] = useState(0)
   const localSeq = useRef(0)
@@ -154,6 +159,17 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     }))
   }
 
+  /** Apply a get_context_usage control-response payload to the status bar. */
+  const applyContextUsage = (r: Record<string, unknown> | null): void => {
+    if (r && typeof r['percentage'] === 'number') {
+      setContextUsage({
+        percentage: r['percentage'] as number,
+        totalTokens: Number(r['total_tokens']) || 0,
+        maxTokens: Number(r['max_tokens']) || 0,
+      })
+    }
+  }
+
   useEffect(() => {
     const c = new DirectConnectClient(transport, {
       onConnected: () => setConnected(true),
@@ -185,6 +201,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
           setBusy(false)
           setToolActivity(null)
           flushStream() // commit a partial left over by interrupt/error (no-op on success)
+          void c.requestControl('get_context_usage').then(applyContextUsage) // refresh after each turn
         }
         if (type === 'system' && (msg as { subtype?: string }).subtype === 'init') {
           const m = msg as {
@@ -205,6 +222,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
           // duplicate the next row. Submit is gated on `ready` (set here) so a
           // user message can never beat the banner into the list.
           setReady(true)
+          void c.requestControl('get_context_usage').then(applyContextUsage) // seed the status bar
           if (!bannerAdded.current) {
             bannerAdded.current = true
             addEntry({
@@ -469,7 +487,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         </>
       )}
 
-      <StatusBar connected={connected} model={model} mode={mode} busy={busy} />
+      <StatusBar connected={connected} model={model} mode={mode} busy={busy} context={contextUsage} />
     </Box>
   )
 }
