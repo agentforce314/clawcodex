@@ -24,6 +24,7 @@ export interface SlashCommand {
     | 'cost'
     | 'init'
     | 'permissions'
+    | 'memory'
     | 'export'
     | 'copy'
     | 'doctor'
@@ -57,6 +58,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/mcp', description: 'List connected MCP servers and their tools', kind: 'mcp' },
   { name: '/permissions', description: 'Show active permission mode and rules', kind: 'permissions' },
   { name: '/init', description: 'Analyze the codebase and create/improve CLAUDE.md', kind: 'init' },
+  { name: '/memory', description: 'Show the loaded CLAUDE.md memory files', kind: 'memory' },
   { name: '/doctor', description: 'Show connection + session diagnostics', kind: 'doctor' },
   { name: '/quit', description: 'Exit the TUI', kind: 'quit' },
 ]
