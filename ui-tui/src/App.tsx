@@ -298,11 +298,10 @@ export function App({ info, serverLabel }: Props): React.ReactElement {
               placeholder={connected ? 'Type a message, or / for commands…' : 'connecting…'}
             />
           </Box>
-          <Text color={theme.dim}>{'  enter send · / commands · esc interrupt · ^C quit'}</Text>
         </>
       )}
 
-      <StatusBar connected={connected} serverLabel={serverLabel} model={model} mode={mode} busy={busy} />
+      <StatusBar connected={connected} model={model} mode={mode} busy={busy} />
     </Box>
   )
 }
