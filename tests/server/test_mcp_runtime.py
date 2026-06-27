@@ -50,6 +50,32 @@ def test_runtime_connects_lists_and_calls(monkeypatch, tmp_path: Path) -> None:
         rt.shutdown()
 
 
+def test_mcp_tools_register_into_default_registry(monkeypatch, tmp_path: Path) -> None:
+    """The agent-server wiring: MCP tools register into a build_default_registry
+    and are callable by name (what the model's tool dispatch does)."""
+    _configure(monkeypatch, tmp_path)
+    from src.tool_system.build_tool import find_tool_by_name
+    from src.tool_system.defaults import build_default_registry
+
+    class _StubProvider:
+        model = "stub"
+
+    registry = build_default_registry(provider=_StubProvider())
+    rt = McpRuntime()
+    try:
+        assert rt.start() is True
+        for mtool in rt.tools:
+            registry.register(mtool)
+        tools = list(registry.list_tools())
+        tool = find_tool_by_name(tools, "mcp__test-server__echo")
+        assert tool is not None
+        res = tool.call({"message": "via registry"}, ToolContext(workspace_root="."))
+        assert res.is_error is False
+        assert "via registry" in res.output
+    finally:
+        rt.shutdown()
+
+
 def test_runtime_no_servers_is_noop(monkeypatch) -> None:
     import src.services.mcp.config as mcpconfig
 
