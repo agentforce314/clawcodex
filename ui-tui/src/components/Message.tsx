@@ -17,8 +17,25 @@ import type { TranscriptEntry } from '../sdkMessageAdapter.js'
 
 const RESULT_MAX_LINES = 8
 
-function ToolResult({ text }: { text: string }): React.ReactElement {
+function ToolResult({ text, isError }: { text: string; isError?: boolean }): React.ReactElement {
   const lines = text.replace(/\s+$/, '').split('\n')
+  // Errors render in red (the original's error tool-result variant) and aren't
+  // collapsed — the message is what the user needs to see.
+  if (isError) {
+    const shown = lines.slice(0, RESULT_MAX_LINES)
+    const extra = lines.length - shown.length
+    return (
+      <Box flexDirection="column">
+        {shown.map((ln, i) => (
+          <Box key={i}>
+            <Text color={theme.error}>{i === 0 ? '  ⎿ ' : '    '}</Text>
+            <Text color={theme.error}>{ln || ' '}</Text>
+          </Box>
+        ))}
+        {extra > 0 ? <Text color={theme.error}>{`    … +${extra} more line${extra === 1 ? '' : 's'}`}</Text> : null}
+      </Box>
+    )
+  }
   // Collapse a long line-numbered file dump (Read / cat -n) to a single line —
   // several Reads otherwise bury the transcript under hundreds of content lines.
   // The original keeps these collapsed (ctrl+o to expand).
@@ -100,7 +117,7 @@ export function Message({ entry }: { entry: TranscriptEntry }): React.ReactEleme
       )
     }
     case 'toolResult':
-      return <ToolResult text={entry.text} />
+      return <ToolResult text={entry.text} isError={entry.isError} />
     case 'result':
       return <Text color={theme.success}>{`✓ ${entry.text}`}</Text>
     case 'error':
