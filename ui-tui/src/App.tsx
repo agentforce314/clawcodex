@@ -17,6 +17,8 @@ import { Message } from './components/Message.js'
 import { PermissionDialog } from './components/PermissionDialog.js'
 import { SlashMenu } from './components/SlashMenu.js'
 import { exec } from 'node:child_process'
+import { readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { FileMenu } from './components/FileMenu.js'
 import { VimInput } from './components/VimInput.js'
 import { searchFiles } from './fileIndex.js'
@@ -759,6 +761,22 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
             })
           })
         }
+        return true
+      }
+      case 'memory': {
+        const files = [
+          { label: 'project', path: join(process.cwd(), 'CLAUDE.md') },
+          { label: 'global', path: join(homedir(), '.claude', 'CLAUDE.md') },
+        ]
+        const lines = files.map((f) => {
+          try {
+            const n = readFileSync(f.path, 'utf8').split('\n').length
+            return `${f.label}: ${f.path} (${n} lines)`
+          } catch {
+            return `${f.label}: ${f.path} (not found)`
+          }
+        })
+        addEntry({ kind: 'system', text: `Memory files:\n${lines.join('\n')}` })
         return true
       }
       case 'init': {
