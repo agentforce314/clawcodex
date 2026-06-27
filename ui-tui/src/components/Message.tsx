@@ -60,11 +60,9 @@ export function Message({ entry }: { entry: TranscriptEntry }): React.ReactEleme
     case 'tool':
       return (
         <Text>
-          <Text color={theme.tool}>⏺ </Text>
-          <Text color={theme.tool} bold>{entry.toolName}</Text>
-          <Text color={theme.tool}>(</Text>
-          <Text color={theme.dim}>{entry.argsText}</Text>
-          <Text color={theme.tool}>)</Text>
+          <Text color={theme.assistant}>⏺ </Text>
+          <Text bold>{entry.toolName}</Text>
+          <Text color={theme.dim}>{`(${entry.argsText})`}</Text>
         </Text>
       )
     case 'toolResult':
