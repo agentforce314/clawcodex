@@ -25,6 +25,12 @@ function readFileSafe(p: unknown): string | undefined {
   }
 }
 
+export interface TodoItem {
+  content: string
+  status: 'pending' | 'in_progress' | 'completed'
+  activeForm?: string
+}
+
 export type EntryKind =
   | 'banner'
   | 'user'
@@ -54,6 +60,8 @@ export interface TranscriptEntry {
   isError?: boolean
   /** collapsed tool summary: how many same-kind calls this entry represents. */
   count?: number
+  /** TodoWrite tool calls: the todo list to render as a checklist. */
+  todos?: TodoItem[]
   /** banner only: the session info snapshot, captured once at init. */
   bannerData?: { model: string; mode: string; tools: number; cwd?: string }
 }
@@ -153,6 +161,18 @@ export function messageToEntries(msg: ServerMessage): TranscriptEntry[] {
             string,
             unknown
           >
+          // TodoWrite renders as a checklist, not a generic tool call.
+          if (toolName === 'TodoWrite' && Array.isArray(tinput['todos'])) {
+            out.push({
+              id: nextId(),
+              kind: 'tool',
+              text: '',
+              toolName,
+              todos: tinput['todos'] as TodoItem[],
+              toolUseId: String((block as { id?: string }).id ?? ''),
+            })
+            continue
+          }
           const diff =
             toolName === 'Edit' || toolName === 'Write' || toolName === 'MultiEdit'
               ? (buildToolDiff(toolName, tinput, readFileSafe(tinput['file_path'])) ?? undefined)

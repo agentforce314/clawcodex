@@ -264,6 +264,11 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
             ) {
               // Result for collapsed reads → drop (kept collapsed, like the original).
             } else {
+              // TodoWrite's "Todos modified" result is noise — the checklist IS
+              // the output; collapse its result like a read.
+              if (e.kind === 'tool' && e.toolName === 'TodoWrite' && e.toolUseId) {
+                collapsedIds.current.add(e.toolUseId)
+              }
               // Preserve order: freeze the live read-group before this entry.
               toCommit.push(...takeLive(), e)
             }
