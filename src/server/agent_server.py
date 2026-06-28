@@ -110,6 +110,7 @@ class _AgentSession:
     tool_context: Any = None
     session: Any = None
     system_prompt: Any = "You are a helpful assistant."
+    _base_system_prompt: Any = None  # system prompt before the /plan section is composed in
     init_error: str | None = None
     _session_name: str | None = None  # user-set label (/rename) shown in /resume
     _mcp_runtime: Any = None  # McpRuntime (connected MCP servers) when configured
@@ -236,6 +237,9 @@ class _AgentSession:
             return
         if subtype == "insights":
             self._do_insights(request_id)
+            return
+        if subtype == "plan":
+            self._do_plan(request_id, inner.get("action"), inner.get("text"))
             return
         if subtype == "set_effort":
             effort = inner.get("effort")
@@ -581,6 +585,40 @@ class _AgentSession:
             logger.exception("[agent-server] set_provider failed")
             self._reply(request_id, {"ok": False, "error": str(exc)})
 
+    def _compose_with_plan(self, base: Any) -> Any:
+        """Append the active /plan as a system-prompt section so the agent follows
+        it. No plan → returns base unchanged (regression-safe)."""
+        try:
+            from src.plan import get_plan
+
+            plan = get_plan(self.cwd)
+            if plan and isinstance(base, list):
+                return base + [{"type": "text", "text": f"# Current Plan\nFollow this plan set by the user:\n\n{plan}"}]
+        except Exception:  # noqa: BLE001
+            logger.debug("[agent-server] plan compose failed", exc_info=True)
+        return base
+
+    def _do_plan(self, request_id: object, action: object, text: object) -> None:
+        """/plan: view (default) | set <text> | clear. The plan is injected into
+        the system prompt (the original's /plan)."""
+        try:
+            from src.plan import clear_plan, get_plan, set_plan
+
+            act = str(action or "view").strip().lower()
+            if act == "set":
+                if not isinstance(text, str) or not text.strip():
+                    self._reply(request_id, {"ok": False, "error": "usage: /plan <text>"})
+                    return
+                set_plan(self.cwd, text)
+            elif act == "clear":
+                clear_plan(self.cwd)
+            if act in ("set", "clear") and self._base_system_prompt is not None:
+                self.system_prompt = self._compose_with_plan(self._base_system_prompt)
+            self._reply(request_id, {"ok": True, "plan": get_plan(self.cwd)})
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[agent-server] plan failed")
+            self._reply(request_id, {"ok": False, "error": str(exc)})
+
     def _do_insights(self, request_id: object) -> None:
         """/insights: a model-based analysis of the session (the original's
         Insights). Runs the model call in a daemon thread (_emit is thread-safe)
@@ -748,7 +786,8 @@ class _AgentSession:
                 from src.query.agent_loop_compat import build_effective_system_prompt
 
                 style_prompt = resolve_output_style(style, getattr(tc, "output_style_dir", None)).prompt
-                self.system_prompt = build_effective_system_prompt(style_prompt, tc, provider=self.provider)
+                self._base_system_prompt = build_effective_system_prompt(style_prompt, tc, provider=self.provider)
+                self.system_prompt = self._compose_with_plan(self._base_system_prompt)
             except Exception:  # noqa: BLE001 - keep the style set even if rebuild is unavailable
                 logger.debug("[agent-server] system prompt rebuild after set_output_style failed", exc_info=True)
             self._reply(request_id, {"ok": True, "style": style})
@@ -1296,7 +1335,8 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
         sess.tool_context = tool_context
         tool_context.agent_progress_emit = sess._emit_agent_progress  # stream subagent progress
         sess.session = Session.create(provider_name, getattr(provider, "model", model or ""))
-        sess.system_prompt = system_prompt
+        sess._base_system_prompt = system_prompt
+        sess.system_prompt = sess._compose_with_plan(system_prompt)  # honor an existing /plan
     except Exception as exc:  # noqa: BLE001
         logger.exception("[agent-server] runtime build failed")
         sess.init_error = f"agent-server failed to start: {exc}"

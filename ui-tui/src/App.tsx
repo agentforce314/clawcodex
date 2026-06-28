@@ -1101,6 +1101,46 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         })
         return true
       }
+      case 'plan': {
+        const a = arg.trim()
+        if (!a) {
+          void client?.requestControl('plan', { action: 'view' }).then((r) => {
+            const plan = String((r && r['plan']) || '')
+            addEntry({ kind: 'system', text: plan ? `Current plan:\n${plan}` : 'no plan set — /plan <text> to set one' })
+          })
+          return true
+        }
+        if (a.toLowerCase() === 'clear') {
+          void client?.requestControl('plan', { action: 'clear' }).then(() => addEntry({ kind: 'system', text: 'plan cleared' }))
+          return true
+        }
+        if (a.toLowerCase() === 'edit') {
+          void client?.requestControl('plan', { action: 'view' }).then((r) => {
+            const cur = String((r && r['plan']) || '')
+            const sin = process.stdin as unknown as { setRawMode?: (m: boolean) => void }
+            const canRaw = typeof sin.setRawMode === 'function'
+            let next = cur
+            try {
+              if (canRaw) sin.setRawMode?.(false)
+              next = editInEditor(cur)
+            } catch (e) {
+              addEntry({ kind: 'error', text: `editor failed: ${(e as Error).message}` })
+              return
+            } finally {
+              if (canRaw) sin.setRawMode?.(true)
+              setThemeVersion((v) => v + 1)
+            }
+            void client
+              ?.requestControl('plan', { action: 'set', text: next })
+              .then(() => addEntry({ kind: 'system', text: 'plan updated' }))
+          })
+          return true
+        }
+        void client?.requestControl('plan', { action: 'set', text: a }).then((r) => {
+          addEntry({ kind: 'system', text: r && r['ok'] ? 'plan set — the agent will follow it' : 'plan failed' })
+        })
+        return true
+      }
       case 'insights': {
         addEntry({ kind: 'system', text: '∴ analyzing session…' })
         void client?.requestControl('insights', {}, 120_000).then((r) => {
