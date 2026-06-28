@@ -862,6 +862,19 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         }
         return true
       }
+      case 'addDir': {
+        if (!arg) {
+          addEntry({ kind: 'system', text: 'usage: /add-dir <path>' })
+        } else if (client) {
+          void client.requestControl('add_dir', { path: arg }).then((r) => {
+            addEntry({
+              kind: r && r['ok'] ? 'system' : 'error',
+              text: r && r['ok'] ? `added working dir: ${String(r['path'])}` : `add-dir failed: ${r && r['error'] ? String(r['error']) : 'no response'}`,
+            })
+          })
+        }
+        return true
+      }
       case 'releaseNotes': {
         addEntry({
           kind: 'system',
