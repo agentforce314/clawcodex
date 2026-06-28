@@ -1260,6 +1260,21 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         }
         return true
       }
+      case 'debugToolCall': {
+        // Inspect the last tool call (the original's debug-tool-call): raw input +
+        // matching result, for debugging tool behavior.
+        const tools = entries.filter((e) => e.kind === 'tool' && e.toolName)
+        const last = tools[tools.length - 1]
+        if (!last) {
+          addEntry({ kind: 'system', text: 'no tool calls in this session yet' })
+          return true
+        }
+        const res = entries.find((e) => e.kind === 'toolResult' && (e.forToolUseIds ?? []).includes(last.toolUseId ?? ''))
+        const input = JSON.stringify(last.input ?? {}, null, 2)
+        const result = res?.text ? res.text.slice(0, 600) : '(no result captured)'
+        addEntry({ kind: 'system', text: `debug ${last.toolName}\ninput:\n${input}\nresult:\n${result}` })
+        return true
+      }
       case 'env': {
         // Curated runtime environment (the original's `env`, adapted — no secret
         // env vars, only non-sensitive runtime facts).

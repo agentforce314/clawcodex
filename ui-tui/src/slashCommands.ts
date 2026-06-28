@@ -67,6 +67,7 @@ export interface SlashCommand {
     | 'timestamps'
     | 'diagnostics'
     | 'env'
+    | 'debugToolCall'
     | 'diff'
     | 'stats'
     | 'prompt'
@@ -112,6 +113,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/timestamps', description: 'Toggle message timestamps', kind: 'timestamps' },
   { name: '/diagnostics', description: 'Run the project typecheck/lint and show issues', kind: 'diagnostics' },
   { name: '/env', description: 'Show the runtime environment (platform, node, terminal, shell)', kind: 'env' },
+  { name: '/debug-tool-call', description: 'Show the last tool call (raw input + result) for debugging', kind: 'debugToolCall' },
   { name: '/permissions', description: 'Show active permission mode and rules', kind: 'permissions' },
   { name: '/agents', description: 'List available subagent types', kind: 'agents' },
   { name: '/skills', description: 'List available skills', kind: 'skills' },
