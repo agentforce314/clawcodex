@@ -6,7 +6,6 @@ half that keeps this from being effort-style inert.
 """
 from __future__ import annotations
 
-import inspect
 from pathlib import Path
 
 import pytest
@@ -103,14 +102,6 @@ def test_initial_vim_mode_safe_on_error(monkeypatch):
     assert initial_vim_mode() is False
 
 
-def test_repl_screen_seeds_vim_mode():
-    # Wiring guard: the sole PromptInput construction site passes vim_mode=.
-    from src.tui.screens import repl as repl_mod
-
-    src_text = inspect.getsource(repl_mod)
-    assert "vim_mode=initial_vim_mode()" in src_text
-
-
 # --------------------------------------------------------------------------- #
 # C. Registration + metadata + safety + dispatch
 # --------------------------------------------------------------------------- #
@@ -126,12 +117,6 @@ def test_safety_and_dispatch():
     assert "vim" in REMOTE_SAFE_COMMANDS  # name-based remote filter (matches TS)
     assert "vim" not in BRIDGE_SAFE_COMMANDS
     assert is_bridge_safe_command(VIM_COMMAND) is False  # LOCAL, not allowlisted
-    from src.tui.commands import dispatch_local_command
-
-    res = dispatch_local_command(
-        "/vim", session=None, workspace_root=Path("."), tool_registry=None
-    )
-    assert res.handled is False
 
 
 # --------------------------------------------------------------------------- #

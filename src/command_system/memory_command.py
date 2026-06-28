@@ -11,7 +11,7 @@ hint.
 
 Deliberate divergences (documented for parity review):
   * **No ``$EDITOR`` spawn.** TS ``editFileInEditor`` suspends the Ink app; Python has
-    no suspend-aware helper, and spawning an editor inside the Textual TUI corrupts the
+    no suspend-aware helper, and spawning an editor inside a full-screen TUI corrupts the
     screen. The success message is adapted accordingly (an "Opened … in your editor"
     claim would be false — the ``/copy`` clipboard standard); the cancel/error strings
     stay TS-verbatim.

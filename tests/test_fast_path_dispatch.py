@@ -1,13 +1,14 @@
-"""WI-4.3 acceptance tests — fast-path subcommands skip the TUI/REPL load.
+"""WI-4.3 acceptance tests — fast-path subcommands skip the interactive load.
 
 The chapter's fast-path-dispatch pattern (TS ``main.tsx:914+``): specialized
 subcommands like ``claude mcp``, ``claude doctor``, ``claude daemon`` get an
-early-return that imports only what they need, skipping the React REPL.
+early-return that imports only what they need, skipping the interactive UI.
 Python mirrors this at ``src/cli.py``'s pre-argparse subcommand sieve.
 
 These tests run each fast-path subcommand in a subprocess and assert the
-heavyweight modules (TUI, REPL, full tool registry) are NOT in
-``sys.modules`` afterward — i.e., the import graph stayed light.
+heavyweight modules (the Ink-TUI launcher, the agent-server, the full tool
+registry) are NOT in ``sys.modules`` afterward — i.e., the import graph stayed
+light.
 """
 
 from __future__ import annotations
@@ -45,8 +46,8 @@ def _run_clawcodex_subcommand(*argv: str) -> tuple[int, dict]:
         # Report which heavyweight modules made it into sys.modules.
         loaded = {{
             "rc": int(rc) if rc is not None else 0,
-            "tui_app": "src.tui.app" in sys.modules,
-            "repl_core": "src.repl.core" in sys.modules,
+            "tui_launcher": "src.entrypoints.tui_launcher" in sys.modules,
+            "agent_server": "src.server.agent_server" in sys.modules,
             "tool_loader": "src.tool_system.loader" in sys.modules,
             "anthropic_sdk": "anthropic" in sys.modules,
             # Sanity: our entrypoint module IS expected to load.
@@ -83,41 +84,41 @@ def _run_clawcodex_subcommand(*argv: str) -> tuple[int, dict]:
     return rc, report
 
 
-def test_mcp_list_does_not_load_tui_or_repl():
+def test_mcp_list_does_not_load_interactive_ui():
     """``clawcodex mcp list`` is the canonical fast-path test from the plan."""
     rc, report = _run_clawcodex_subcommand("mcp", "list")
     # The handler may exit non-zero on its own logic (e.g., no MCP servers
     # configured) but the fast-path acceptance is about the import graph,
     # not the exit code.
     assert report["entrypoint_target"], "expected mcp entrypoint module to load"
-    assert not report["tui_app"], (
-        "fast-path mcp must NOT load src.tui.app"
+    assert not report["tui_launcher"], (
+        "fast-path mcp must NOT load src.entrypoints.tui_launcher"
     )
-    assert not report["repl_core"], (
-        "fast-path mcp must NOT load src.repl.core"
+    assert not report["agent_server"], (
+        "fast-path mcp must NOT load src.server.agent_server"
     )
 
 
-def test_mcp_help_does_not_load_tui_or_repl():
+def test_mcp_help_does_not_load_interactive_ui():
     rc, report = _run_clawcodex_subcommand("mcp", "--help")
     assert report["entrypoint_target"]
-    assert not report["tui_app"]
-    assert not report["repl_core"]
+    assert not report["tui_launcher"]
+    assert not report["agent_server"]
 
 
-def test_doctor_does_not_load_tui_or_repl():
+def test_doctor_does_not_load_interactive_ui():
     rc, report = _run_clawcodex_subcommand("doctor")
     assert report["entrypoint_target"]
-    assert not report["tui_app"]
-    assert not report["repl_core"]
+    assert not report["tui_launcher"]
+    assert not report["agent_server"]
 
 
-def test_daemon_does_not_load_tui_or_repl():
+def test_daemon_does_not_load_interactive_ui():
     rc, report = _run_clawcodex_subcommand("daemon")
     # daemon is a stub; expected to exit non-zero with "not yet implemented".
     assert report["entrypoint_target"]
-    assert not report["tui_app"]
-    assert not report["repl_core"]
+    assert not report["tui_launcher"]
+    assert not report["agent_server"]
 
 
 def test_mcp_list_does_not_load_anthropic_sdk():
@@ -136,8 +137,8 @@ def test_version_short_circuit_remains_lightest():
     # --version short-circuits BEFORE the subcommand sieve so no entrypoint
     # module loads.
     assert not report["entrypoint_target"]
-    assert not report["tui_app"]
-    assert not report["repl_core"]
+    assert not report["tui_launcher"]
+    assert not report["agent_server"]
     assert not report["anthropic_sdk"]
 
 

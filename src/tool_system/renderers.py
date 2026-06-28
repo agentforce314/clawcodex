@@ -2,15 +2,13 @@
 ch05 consolidation, post-cutover).
 
 These symbols are pure data + display helpers — no dependency on the
-agent loop itself. They live here so the cutover paths (TUI bridge,
-headless writer, REPL display, transcript widgets) can import them
-without dragging in the legacy ``agent_loop`` module.
+agent loop itself. They live here so the cutover paths (the agent-server
+and the headless writer) can import them without dragging in the legacy
+``agent_loop`` module.
 
-The neutral ``tool_system`` location (vs. ``tui/``) was deliberate:
-importing from ``src.tui.tool_summary_renderers`` triggers
-``src/tui/__init__.py``'s app loader, which created a circular import
-via ``agent_bridge → agent_loop_compat → tui``. ``src.tool_system``
-has no such cycle.
+The neutral ``tool_system`` location was deliberate: keeping these display
+helpers out of any UI package avoids the import cycles a UI-package home
+would otherwise create.
 """
 
 from __future__ import annotations

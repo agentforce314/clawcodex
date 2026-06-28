@@ -4,7 +4,7 @@ Five concept tiers (rarity / species / eye / hat / stat) plus the bones-
 and-soul shape types underlying ``Companion``.
 
 ``RARITY_COLORS`` values are Python palette field names (matching
-``src.tui.theme.Palette`` fields), not raw color strings. Consumers
+``src.utils.theme.Palette`` fields), not raw color strings. Consumers
 ``getattr(palette, RARITY_COLORS[rarity])`` to materialize.
 See ``my-docs/get-parity-by-folder/buddy-gap-analysis.md`` §3.5 / §4.4
 for the TS-key → Python-key mapping rationale.
@@ -144,7 +144,7 @@ RARITY_STARS: dict[Rarity, str] = {
     'legendary': '★★★★★',
 }
 
-# RARITY_COLORS values are src/tui/theme.py Palette field names,
+# RARITY_COLORS values are src/utils/theme.py Palette field names,
 # NOT theme color strings. Consumers materialize via
 # ``getattr(palette, RARITY_COLORS[rarity])``.
 #

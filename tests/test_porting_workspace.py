@@ -246,9 +246,11 @@ class PortingWorkspaceTests(unittest.TestCase):
             text=True,
         )
         self.assertIn('Architecture Stats', result.stdout)
-        # Sanity-check the markdown contains the book's named abstractions.
+        # Sanity-check the markdown contains the named abstractions. The book's
+        # fifth slot ("Rendering engine"/src/tui) was repointed to the Python
+        # agent-server when the UI moved to the TypeScript Ink client.
         for expected in ('Generator loop', 'Tools', 'Memory', 'Hooks',
-                         'Rendering engine', 'MCP'):
+                         'Agent server', 'MCP'):
             self.assertIn(expected, result.stdout)
 
     def test_bootstrap_graph_and_direct_modes_run(self) -> None:

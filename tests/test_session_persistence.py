@@ -1,4 +1,4 @@
-"""Tests for the session-persistence producer (SessionPersister + agent_bridge wiring).
+"""Tests for the session-persistence producer (SessionPersister).
 
 The bar (from the /rename review): a session produced by the persister must be
 genuinely resumable — ``resume_session`` round-trips it, ``list_sessions`` shows it
@@ -7,7 +7,6 @@ with the right ``message_count`` — and persistence must NEVER break the live s
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -106,47 +105,6 @@ def test_round_trip_resume_and_list(sessions_dir):
     ids = {m.session_id: m for m in metas}
     assert "sid-rt" in ids
     assert ids["sid-rt"].message_count == 3
-
-
-# --------------------------------------------------------------------------- #
-# C. agent_bridge wiring (behavioral, via the esc-cancel harness pattern)
-# --------------------------------------------------------------------------- #
-def test_bridge_records_user_prompt_and_flushes(sessions_dir, tmp_path):
-    from src.agent.session import Session
-    from src.tool_system.context import ToolContext
-    from src.tool_system.registry import ToolRegistry
-    from src.tui.agent_bridge import AgentBridge
-    from src.tui.state import AppState
-
-    def _post(_msg: Any) -> None:
-        return None
-
-    def _no_run_worker(*_args: Any, **_kwargs: Any) -> None:
-        return None
-
-    session = Session.create("test", "test-model")
-    bridge = AgentBridge(
-        post_message=_post,
-        session=session,
-        provider=MagicMock(model="test-model"),
-        tool_registry=ToolRegistry(),
-        tool_context=ToolContext(workspace_root=tmp_path),
-        app_state=AppState(),
-        run_worker=_no_run_worker,
-    )
-
-    # Metadata initialized at construction.
-    storage = SessionStorage(session_id=session.session_id, sessions_dir=sessions_dir)
-    meta = storage.get_metadata()
-    assert meta is not None and meta.model == "test-model"
-
-    assert bridge.submit("persist me") is True
-    bridge._finish()  # the durable flush point (runs on every terminal path)
-
-    entries = SessionStorage(
-        session_id=session.session_id, sessions_dir=sessions_dir
-    ).read_transcript()
-    assert any(e["role"] == "user" and e["content"] == "persist me" for e in entries)
 
 
 def test_session_id_unified_with_bootstrap(sessions_dir):

@@ -73,7 +73,7 @@ ARCHIVE_ROOT_FILES = {
     # loop lives at ``src/query/query.py``; the rest of the loop's
     # components live in the ``src/query/`` package.
     'query.ts': 'query',
-    'replLauncher.tsx': 'replLauncher.py',
+    'replLauncher.tsx': 'entrypoints/tui_launcher.py',  # Ink-TUI launcher replaced the Python REPL launcher
     # ch01 round-2 P3: ``src/setup.py`` was audit scaffolding, relocated to
     # ``scripts/audit/setup.py``. Production initialization lives under
     # ``src/bootstrap/``.

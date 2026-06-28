@@ -58,20 +58,10 @@ def test_mcp_metadata_mirrors_ts():
 
 
 # --------------------------------------------------------------------------- #
-# B. Bridge-safety + dispatch inversion
+# B. Bridge-safety
 # --------------------------------------------------------------------------- #
 def test_mcp_blocked_from_bridge_by_type():
     assert is_bridge_safe_command(MCP_COMMAND) is False
-
-
-def test_dispatch_local_command_intercepts_mcp():
-    from src.tui.commands import dispatch_local_command
-
-    res = dispatch_local_command(
-        "/mcp", session=None, workspace_root=Path("."), tool_registry=None
-    )
-    assert res.handled is True
-    assert res.open_dialog == "mcp"
 
 
 # --------------------------------------------------------------------------- #

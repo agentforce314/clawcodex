@@ -89,8 +89,7 @@ def main():
             from src.entrypoints.agent_server_cli import run_agent_server_subcommand
             return run_agent_server_subcommand(rest)
         if token == 'tui':
-            from src.entrypoints.tui_launcher import run_tui_launcher
-            return run_tui_launcher(rest)
+            return _run_tui_subcommand(rest)
 
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -140,51 +139,81 @@ def main():
         profile_checkpoint("phase4_dispatch")
         return _run_print_mode(args)
 
-    # Interactive path: decide between the Textual TUI (new default) and the
-    # legacy Rich REPL. Explicit flags win; otherwise auto-detect a compatible TTY.
-    explicit_tui: bool | None = None
-    if args.tui:
-        explicit_tui = True
-    elif getattr(args, 'legacy_repl', False) or args.no_tui:
-        explicit_tui = False
+    # Interactive path: the sole interactive UI is the TypeScript Ink TUI, which
+    # spawns + owns a Python agent-server child (see
+    # :mod:`src.entrypoints.tui_launcher`). The former in-process surfaces — the
+    # opt-in Textual TUI (``src/tui/``) and the Rich/prompt_toolkit REPL
+    # (``src/repl/``) — were removed in favor of this single, higher-fidelity
+    # client. ``clawcodex tui`` is the explicit form (``_run_tui_subcommand``
+    # runs this same bootstrap + trust gate).
+    profile_checkpoint("mode_dispatch_tui")
 
-    from src.entrypoints.tui import should_use_tui
+    # Folder-trust gate — runs HERE in the Python parent, before we hand the TTY
+    # to the Ink client, because the agent-server backend performs no trust gate
+    # of its own. Already-trusted sessions (incl. ones seeded by run_pre_action)
+    # skip the prompt.
+    if not _gate_folder_trust():
+        return 1
 
-    if should_use_tui(explicit_tui):
-        profile_checkpoint("mode_dispatch_tui")
-        profile_checkpoint("phase4_dispatch")
-        return _run_tui_mode(args)
-
-    profile_checkpoint("mode_dispatch_repl")
-    # ch02 round-3: the legacy REPL is the DEFAULT interactive surface but
-    # had no folder-trust gate (C8 shipped one only for the opt-in TUI).
-    # Port hardening, consistent with C8 and stricter than TS (which gates
-    # only Anthropic-account setups, interactiveHelpers.tsx:139): ask
-    # before the full project env applies. Already-trusted sessions
-    # (including non-interactive ones seeded by run_pre_action) skip this.
-    from src.services.startup_gates import check_trust_accepted
-
-    if not check_trust_accepted():
-        if sys.stdin.isatty():
-            if not _prompt_folder_trust():
-                return 1
-        else:
-            # Piped-stdin REPL (scripted use) ≈ -p mode: implicit trust,
-            # matching the non-interactive branch of run_pre_action. The
-            # single documented asymmetry of the trust seeding matrix.
-            from src.permissions.trust_boundary import establish_session_trust
-
-            establish_session_trust()
     profile_checkpoint("phase4_dispatch")
-    return start_repl(
-        stream=args.stream,
+    from src.entrypoints.tui_launcher import launch_ink_tui
+
+    return launch_ink_tui(
+        provider=args.provider,
+        model=args.model,
         permission_mode=args._resolved_permission_mode,
-        is_bypass_permissions_mode_available=args._resolved_is_bypass_available,
     )
 
 
+def _gate_folder_trust() -> bool:
+    """Run the folder-trust gate; return ``False`` only when an interactive user
+    declines (the caller then exits 1).
+
+    Shared by the default interactive entry and the ``clawcodex tui`` subcommand
+    — both hand control to the tool-executing agent-server, which has no trust
+    gate of its own, so the gate must run before either spawns it.
+    """
+    from src.services.startup_gates import check_trust_accepted
+
+    if check_trust_accepted():
+        return True
+    if sys.stdin.isatty():
+        return _prompt_folder_trust()
+    # Non-TTY (piped) stdin: grant trust implicitly. The Ink TUI needs a real
+    # TTY to render, so this path normally proceeds to a clean launch failure
+    # rather than an interactive session — but trust is still established so the
+    # project env is applied for any diagnostics.
+    from src.permissions.trust_boundary import establish_session_trust
+
+    establish_session_trust()
+    return True
+
+
+def _run_tui_subcommand(rest: list[str]) -> int:
+    """``clawcodex tui`` — the explicit form of the default interactive entry.
+
+    Unlike the lean ``mcp`` / ``doctor`` / ``daemon`` fast-paths, this launches
+    the tool-executing agent-server, so it runs the SAME interactive bootstrap
+    (``run_pre_action`` — config-env application + trust seeding) and
+    folder-trust gate as the default ``clawcodex`` entry before handing off to
+    the Ink client. Without this, ``clawcodex tui`` would reach the backend with
+    no trust prompt and without the project env the child inherits.
+    """
+    from types import SimpleNamespace
+
+    from src.init import run_pre_action
+
+    # ``print=False`` => treated as an interactive session by run_pre_action.
+    run_pre_action(SimpleNamespace(print=False))
+    if not _gate_folder_trust():
+        return 1
+    from src.entrypoints.tui_launcher import run_tui_launcher
+
+    return run_tui_launcher(rest)
+
+
 def _prompt_folder_trust() -> bool:
-    """Plain-text port of the C8 TrustFolderScreen for the legacy REPL.
+    """Plain-text folder-trust prompt (port of the C8 TrustFolderScreen).
 
     Accept → persist (``record_trust_accepted``) + grant session trust +
     apply the full env. Decline/EOF → False (caller exits 1, mirroring TS
@@ -234,8 +263,8 @@ Examples:
   clawcodex --version                   Show version
   clawcodex login                       Configure API keys
   clawcodex config                      Show current configuration
-  clawcodex --stream                    Start REPL with live response rendering
-  clawcodex                             Start interactive REPL
+  clawcodex                             Start the interactive Ink TUI
+  clawcodex tui                         Start the interactive Ink TUI (explicit)
   clawcodex -p "hello"                  Non-interactive mode (text output)
   clawcodex -p "hi" --output-format json
   clawcodex -p --output-format stream-json --input-format stream-json < input.ndjson
@@ -245,34 +274,14 @@ Examples:
     parser.add_argument('prompt', nargs='?', help='Prompt to send in non-interactive mode')
     parser.add_argument('--version', action='store_true', help='Show version information')
     parser.add_argument('--config', action='store_true', help='Show current configuration')
-    parser.add_argument('--stream', action='store_true', help='Enable live rendering in REPL')
 
-    # ---- Interactive UI selection ----
+    # ---- Interactive UI ----
     #
-    # The default interactive experience is the prompt_toolkit + rich REPL,
-    # which matches the TS Ink reference's terminal-native behavior:
-    # transcript flows into scrollback, only the prompt + status row are
-    # live, and native mouse copy works. ``--tui`` opts into the Textual
-    # in-app experience; ``--legacy-repl`` / ``--no-tui`` are kept as
-    # no-op aliases for back-compat (they already select the default).
-    ui_group = parser.add_mutually_exclusive_group()
-    ui_group.add_argument(
-        '--tui',
-        action='store_true',
-        help='Use the Textual in-app TUI (opt-in; default is the inline REPL)',
-    )
-    ui_group.add_argument(
-        '--legacy-repl',
-        dest='legacy_repl',
-        action='store_true',
-        help='Use the inline prompt_toolkit + rich REPL (this is the default)',
-    )
-    ui_group.add_argument(
-        '--no-tui',
-        dest='no_tui',
-        action='store_true',
-        help='Alias for --legacy-repl (kept for backward compatibility)',
-    )
+    # The sole interactive UI is the TypeScript Ink TUI — ``clawcodex`` with no
+    # mode flags, or the explicit ``clawcodex tui`` subcommand. It spawns + owns
+    # a Python agent-server child (see :mod:`src.entrypoints.tui_launcher`). The
+    # former in-process Textual TUI (``--tui``) and Rich REPL (``--legacy-repl`` /
+    # ``--no-tui`` / ``--stream``) were removed in favor of this single client.
 
     # ---- Non-interactive / print mode (Phase 1 parity) ----
     noninteractive = parser.add_argument_group("non-interactive mode")
@@ -476,27 +485,6 @@ def _run_print_mode(args) -> int:
     return run_headless(options)
 
 
-def _run_tui_mode(args) -> int:
-    """Boot the Textual-based interactive TUI (Phase 11)."""
-
-    from src.entrypoints.tui import TUIOptions, run_tui
-
-    allowed = _split_csv(args.allowed_tools)
-    disallowed = _split_csv(args.disallowed_tools)
-
-    options = TUIOptions(
-        provider_name=args.provider,
-        model=args.model,
-        max_turns=args.max_turns,
-        allowed_tools=tuple(allowed),
-        disallowed_tools=tuple(disallowed),
-        stream=True,
-        permission_mode=args._resolved_permission_mode,
-        is_bypass_permissions_mode_available=args._resolved_is_bypass_available,
-    )
-    return run_tui(options)
-
-
 def _split_csv(value: str | None) -> list[str]:
     if not value:
         return []
@@ -617,42 +605,6 @@ def show_config():
         console.print(f"\n[red]Error loading configuration: {e}[/red]\n")
         return 1
 
-    return 0
-
-
-def start_repl(
-    stream: bool = False,
-    *,
-    permission_mode: str = "default",
-    is_bypass_permissions_mode_available: bool = False,
-):
-    """Start interactive REPL.
-
-    ``permission_mode`` and ``is_bypass_permissions_mode_available`` are
-    resolved by :func:`_resolve_permission_state`. They control whether
-    the in-process tool registry will short-circuit permission checks
-    for the user (when ``--dangerously-skip-permissions`` is set).
-    """
-    # ch02 round-3 GAP B: warm the context memos while the (heavy)
-    # src.repl import and REPL constructor run and the user types the
-    # first prompt. The dispatch-level trust gate already ran, so the
-    # system-context lane self-gates correctly. Mirrors TS
-    # startDeferredPrefetches (main.tsx:392-439) post-render kick.
-    from src.deferred_init import start_deferred_prefetches
-
-    start_deferred_prefetches()
-
-    from src.config import get_default_provider
-    from src.repl import ClawcodexREPL
-
-    provider = get_default_provider()
-    repl = ClawcodexREPL(
-        provider_name=provider,
-        stream=stream,
-        permission_mode=permission_mode,
-        is_bypass_permissions_mode_available=is_bypass_permissions_mode_available,
-    )
-    repl.run()
     return 0
 
 

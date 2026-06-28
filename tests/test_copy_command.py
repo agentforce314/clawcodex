@@ -6,7 +6,6 @@ surface. Clipboard + copy-dir are monkeypatched; config isolated for ``copyFullR
 """
 from __future__ import annotations
 
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -340,10 +339,3 @@ def test_registered_and_metadata():
 def test_safety_and_dispatch():
     assert is_bridge_safe_command(COPY_COMMAND) is False  # INTERACTIVE by type
     assert "copy" in REMOTE_SAFE_COMMANDS  # the orthogonal name-based remote filter
-    from src.tui.commands import dispatch_local_command
-
-    res = dispatch_local_command(
-        "/copy", session=None, workspace_root=Path("."), tool_registry=None
-    )
-    assert res.handled is False
-    assert res.open_dialog is None
