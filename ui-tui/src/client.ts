@@ -49,6 +49,8 @@ export async function createSession(
 export interface ClientCallbacks {
   onMessage: (msg: ServerMessage) => void;
   onPermissionRequest: (req: ControlRequestMessage['request'], requestId: string) => void;
+  /** An MCP server requested user input (elicitation/create, §6). */
+  onElicitation?: (params: Record<string, unknown>, requestId: string) => void;
   onConnected?: () => void;
   onDisconnected?: () => void;
   onError?: (err: Error) => void;
@@ -107,6 +109,9 @@ export class DirectConnectClient {
       const subtype = cr.request?.subtype;
       if (subtype === 'can_use_tool' && typeof cr.request_id === 'string') {
         this.cb.onPermissionRequest(cr.request, cr.request_id);
+      } else if (subtype === 'mcp_elicitation' && typeof cr.request_id === 'string' && this.cb.onElicitation) {
+        const params = (cr.request as { params?: Record<string, unknown> })?.params ?? {};
+        this.cb.onElicitation(params, cr.request_id);
       } else if (typeof cr.request_id === 'string') {
         this.sendErrorResponse(cr.request_id, `unsupported control subtype: ${subtype}`);
       }
@@ -160,6 +165,14 @@ export class DirectConnectClient {
       behavior === 'allow'
         ? { behavior: 'allow', updatedInput: opts.updatedInput ?? {} }
         : { behavior: 'deny', message: opts.message ?? '' };
+    this.send({
+      type: 'control_response',
+      response: { subtype: 'success', request_id: requestId, response },
+    });
+  }
+
+  /** Send a raw control_response payload (e.g. an MCP elicitation result). */
+  respondControl(requestId: string, response: Record<string, unknown>): void {
     this.send({
       type: 'control_response',
       response: { subtype: 'success', request_id: requestId, response },
