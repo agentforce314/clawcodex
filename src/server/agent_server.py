@@ -278,6 +278,21 @@ class _AgentSession:
                 logger.debug("[agent-server] list_agents failed", exc_info=True)
             self._reply(request_id, {"agents": agents})
             return
+        if subtype == "list_hooks":
+            info: dict = {}
+            try:
+                from src.settings.settings import load_settings
+
+                h = load_settings(cwd=self.cwd).hooks
+                info = {
+                    "enabled": bool(getattr(h, "enabled", True)),
+                    "timeout_ms": int(getattr(h, "timeout_ms", 0)),
+                    "max_concurrent": int(getattr(h, "max_concurrent", 0)),
+                }
+            except Exception:  # noqa: BLE001
+                logger.debug("[agent-server] list_hooks failed", exc_info=True)
+            self._reply(request_id, {"hooks": info})
+            return
         if subtype == "add_dir":
             path = inner.get("path")
             try:
