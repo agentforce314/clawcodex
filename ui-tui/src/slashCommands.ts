@@ -63,6 +63,7 @@ export interface SlashCommand {
     | 'lang'
     | 'btw'
     | 'prComments'
+    | 'thinking'
     | 'diff'
     | 'stats'
     | 'prompt'
@@ -104,6 +105,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/lang', description: 'Set preferred response language: /lang <language> (or clear)', kind: 'lang' },
   { name: '/btw', description: 'Ask a side question without saving it to history: /btw <question>', kind: 'btw' },
   { name: '/pr-comments', description: "Show the current branch's PR comments (via gh)", kind: 'prComments' },
+  { name: '/thinking', description: 'Toggle extended thinking: /thinking [on|off]', kind: 'thinking' },
   { name: '/permissions', description: 'Show active permission mode and rules', kind: 'permissions' },
   { name: '/agents', description: 'List available subagent types', kind: 'agents' },
   { name: '/skills', description: 'List available skills', kind: 'skills' },
