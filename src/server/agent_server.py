@@ -1102,6 +1102,18 @@ class _AgentSession:
                 },
             })
 
+        def on_thinking_chunk(chunk: str) -> None:
+            # Live reasoning deltas → a separate thinking delta the TUI renders
+            # in its streaming thinking view (the original's live thinking, §3).
+            self._emit({
+                "type": "stream_event",
+                "session_id": self.session_id,
+                "event": {
+                    "type": "content_block_delta",
+                    "delta": {"type": "thinking_delta", "thinking": chunk},
+                },
+            })
+
         def on_message(message: Any) -> None:
             # Persist into the session conversation so the next turn pairs
             # tool_use ↔ tool_result, then ship the SDK envelope to the client.
@@ -1125,6 +1137,7 @@ class _AgentSession:
                 system_prompt=self.system_prompt,
                 max_turns=self.config.max_turns,
                 on_text_chunk=on_text_chunk,
+                on_thinking_chunk=on_thinking_chunk,
                 on_message=on_message,
                 abort_controller=abort,
             ))
