@@ -1,0 +1,24 @@
+
+██╔════╝██║     ██╔══██╗██║    ██║██╔════╝██╔═══██╗██╔══██╗██╔════╝╚██╗██╔╝
+██║     ██║     ███████║██║ █╗ ██║██║     ██║   ██║██║  ██║█████╗   ╚███╔╝
+██║     ██║     ██╔══██║██║███╗██║██║     ██║   ██║██║  ██║██╔══╝   ██╔██╗
+╚██████╗███████╗██║  ██║╚███╔███╔╝╚██████╗╚██████╔╝██████╔╝███████╗██╔╝ ██╗
+✦  Any model. Every tool. Zero limits.  ✦╝ ╚═════╝ ╚═════╝ ╚══════╝╚═╝  ╚═╝
+
+╭─────────────────────────────────────────────────────────────────────────╮
+│ tools    3efaultk-v4-pro                                                │
+│ ● local    Ready — type /help to begin                                  │
+╰─────────────────────────────────────────────────────────────────────────╯
+  clawcodex-tui v0.1
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ Bash command  clean cache
+ ⚠ this command looks destructive — review carefully before allowing
+
+   2. Yes, and don’t ask again this session   (a)
+   3. No, and tell the agent what to do differently   (n / esc)
+  tab to amend · esc to cancel
+
+? for shortcuts                                                          ● deepseek-v4-pro · default

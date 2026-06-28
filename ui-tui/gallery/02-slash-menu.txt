@@ -1,0 +1,23 @@
+
+ ╚═════╝╚══════╝╚═╝  ╚═╝ ╚══╝╚══╝  ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝╚═╝  ╚═╝
+✦  Any model. Every tool. Zero limits.  ✦
+╭─────────────────────────────────────────────────────────────────────────╮
+· ⚠ new folder — files/commands run here; /trust to acknowledge───────────╯
+  /model             Switch model: /model <name>
+  /usage             Show token usage and context windowrytEdits|plan|…>
+  /rename            Name the current session: /rename <name>ompact [instructions]
+  /copy              Copy the last response to the clipboard
+  /btw               Ask a side question without saving it to history: /btw <question>
+  /skills            List available skillsnt typesnd rules (via gh)
+  /release-notes     Where to find release notesmand: /statusline <cmd> (or clear)
+  /upgrade           How to update clawcodex: /add-dir <path>
+  /buddy             Toggle the companion sprite: /buddy [cat|duck|blob|off]ar)
+  /settings          Open the settings menurecallp): /search <query>
+  /bg                Run a shell command in the background: /bg <cmd> (or /bg kill <id>)
+  /plan              Set a plan the agent follows: /plan [<text>|edit|clear]>
+  /diff              Show the working-tree git diffe modelse]uery>
+  /security-review   Security review of the current changesd qualitymd
+  /color             Switch color theme (alias of /theme)ss changes
+  /session           Show session + connection diagnostics>
+────────────────────────────────────────────────────────────────────────────────────────────────────
+─❯ / help───────────────────────────────────────────────────────────────────────────────────────────
