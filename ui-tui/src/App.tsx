@@ -273,6 +273,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const fastModeRef = useRef<string | null>(null) // /fast: prev model while fast mode is on
   const resumeSessionsRef = useRef<Record<string, unknown>[]>([]) // all sessions, for TagTabs filter
   const [resumeAll, setResumeAll] = useState(false) // TagTabs (§6): all-projects vs this-project
+  const resumeFilterRef = useRef('') // LogSelector (§6): session search filter
   const [fastMode, setFastMode] = useState(false) // FastIcon (§7) — ⚡ in the footer
   const [effort, setEffort] = useState('') // EffortCallout (§7) — reasoning effort in the footer
   const [permFeedback, setPermFeedback] = useState<string | null>(null) // Tab-to-amend feedback field
@@ -540,21 +541,24 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     addEntry({ kind: 'system', text: `mode → ${mode}` })
   }
 
-  // TagTabs (§6): (re)build the resume picker filtered to all / this project.
+  // TagTabs (§6) + LogSelector search (§6): (re)build the resume picker filtered to
+  // all / this project and matching the search filter.
   const openResumePicker = (all: boolean): void => {
     const cwd = process.cwd()
-    const list = all
-      ? resumeSessionsRef.current
-      : resumeSessionsRef.current.filter((s) => String(s['cwd'] || '') === cwd)
+    const q = resumeFilterRef.current.toLowerCase()
+    const list = resumeSessionsRef.current
+      .filter((s) => all || String(s['cwd'] || '') === cwd)
+      .filter((s) => !q || String(s['name'] || s['preview'] || '').toLowerCase().includes(q))
     const options = list.map((s) => {
       const prev = String(s['name'] || s['preview'] || '(no preview)').slice(0, 50)
       const age = relAge(Number(s['updated_at']) || 0)
       return `${prev}  ·  ${Number(s['message_count']) || 0} msgs${age ? `  ·  ${age}` : ''}`
     })
     const values = list.map((s) => String(s['session_id']))
+    const f = resumeFilterRef.current
     setPicker({
       kind: 'resume',
-      title: `Resume — ${all ? 'all projects' : 'this project'} (Tab to toggle)`,
+      title: `Resume — ${all ? 'all projects' : 'this project'}${f ? ` · "${f}"` : ''} (Tab toggles, type to search)`,
       options,
       values,
       sel: 0,
@@ -965,6 +969,16 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         const next = !resumeAll
         setResumeAll(next)
         openResumePicker(next)
+        return
+      }
+      if (picker.kind === 'resume' && (key.backspace || key.delete)) {
+        resumeFilterRef.current = resumeFilterRef.current.slice(0, -1) // LogSelector search
+        openResumePicker(resumeAll)
+        return
+      }
+      if (picker.kind === 'resume' && ch && !key.ctrl && !key.meta && ch.length === 1 && ch >= ' ') {
+        resumeFilterRef.current += ch // LogSelector search: type to filter sessions
+        openResumePicker(resumeAll)
         return
       }
       if (key.upArrow) {
@@ -1894,6 +1908,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
               return
             }
             resumeSessionsRef.current = sessions
+            resumeFilterRef.current = '' // fresh search each open
             // Default to this-project; fall back to all if none here (TagTabs, §6).
             const here = sessions.filter((s) => String(s['cwd'] || '') === process.cwd())
             const all = !here.length
