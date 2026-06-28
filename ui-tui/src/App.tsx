@@ -608,6 +608,13 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
       setExpanded((e) => !e)
       return
     }
+    // Ctrl+L: redraw. In fullscreen, clear the alt-screen and force a repaint;
+    // in inline mode a repaint is harmless (Static stays in scrollback).
+    if (key.ctrl && ch === 'l') {
+      if (FULLSCREEN) process.stdout.write('\x1b[2J\x1b[3J\x1b[H')
+      setThemeVersion((v) => v + 1) // force a re-render
+      return
+    }
     // Fullscreen Ctrl+F transcript find.
     if (FULLSCREEN && txFind !== null) {
       if (key.escape || key.return) {
