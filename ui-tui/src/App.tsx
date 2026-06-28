@@ -245,6 +245,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const [streaming, setStreaming] = useState('')
   const streamRef = useRef('') // source of truth for the live buffer (no stale closures)
   const [permissions, setPermissions] = useState<PendingPermission[]>([]) // FIFO queue
+  const alwaysAllowRef = useRef<Set<string>>(new Set()) // tools the user said "don't ask again"
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [turnStartedAt, setTurnStartedAt] = useState(0)
@@ -754,7 +755,13 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
       if (c === 'y' || ch === '1') {
         client?.respondPermission(head.requestId, 'allow')
         setPermissions((q) => q.slice(1))
-      } else if (c === 'n' || c === 'd' || ch === '2') {
+      } else if (c === 'a' || ch === '2') {
+        // "Yes, and don't ask again" — remember the tool + auto-allow future asks.
+        alwaysAllowRef.current.add(head.toolName)
+        client?.respondPermission(head.requestId, 'allow')
+        setPermissions((q) => q.slice(1))
+        addEntry({ kind: 'system', text: `always allowing ${head.toolName} this session` })
+      } else if (c === 'n' || c === 'd' || ch === '3') {
         client?.respondPermission(head.requestId, 'deny', { message: 'denied by user' })
         setPermissions((q) => q.slice(1))
       } else if (key.escape) {
@@ -1481,6 +1488,16 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     if (statusCmd && !busy) runStatusline(statusCmd)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [busy, statusCmd])
+
+  // Auto-allow tools the user marked "don't ask again" (skip the prompt).
+  useEffect(() => {
+    const head = permissions[0]
+    if (head && alwaysAllowRef.current.has(head.toolName)) {
+      client?.respondPermission(head.requestId, 'allow')
+      setPermissions((q) => q.slice(1))
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [permissions])
 
   // Bash mode (`!cmd`): run a shell command client-side and show its output,
   // without involving the model. The TUI runs in the same cwd as the

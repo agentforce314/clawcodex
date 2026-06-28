@@ -134,7 +134,8 @@ export function PermissionDialog({ toolName, input }: Props): React.ReactElement
           <Text bold>1. Yes</Text>
           <Text color={theme.dim}>{'   (y)'}</Text>
         </Text>
-        <Text color={theme.dim}>{'  2. No, and tell the agent what to do differently   (n / esc)'}</Text>
+        <Text color={theme.dim}>{'  2. Yes, and don’t ask again this session   (a)'}</Text>
+        <Text color={theme.dim}>{'  3. No, and tell the agent what to do differently   (n / esc)'}</Text>
       </Box>
     </Box>
   )
