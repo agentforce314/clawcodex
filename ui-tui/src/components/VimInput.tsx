@@ -127,22 +127,46 @@ export function VimInput({
   const insertStart = useRef(0)
   // readline kill-ring / line edits shared by both modes' insert state.
   const killRing = useRef('')
+  // kill-ring history + last-yank state for Meta+Y (cycle to an older kill).
+  const killHistory = useRef<string[]>([])
+  const yankState = useRef<{ pos: number; len: number; idx: number } | null>(null)
+  const yankActive = useRef(false) // was the immediately-previous key a yank?
+  const pushKill = (s: string): void => {
+    if (!s) return
+    killRing.current = s
+    killHistory.current.unshift(s)
+    if (killHistory.current.length > 30) killHistory.current.pop()
+  }
   const killWordBack = (): void => {
     const left = value.slice(0, cursor).replace(/\s+$/, '')
     const cut = Math.max(left.lastIndexOf(' '), left.lastIndexOf('/'), left.lastIndexOf('\t')) + 1
-    killRing.current = value.slice(cut, cursor)
+    pushKill(value.slice(cut, cursor))
     onChange(value.slice(0, cut) + value.slice(cursor))
     setCursor(cut)
   }
   const readlineEdit = (
     input: string,
     key: { ctrl?: boolean; meta?: boolean; leftArrow?: boolean; rightArrow?: boolean },
+    wasYank = false,
   ): boolean => {
     // word-wise cursor movement: Ctrl/Alt + ←/→, or Alt+b / Alt+f
     if ((key.ctrl || key.meta) && key.leftArrow) return (setCursor(prevWord(value, cursor)), true)
     if ((key.ctrl || key.meta) && key.rightArrow) return (setCursor(nextWord(value, cursor)), true)
     if (key.meta && input === 'b') return (setCursor(prevWord(value, cursor)), true)
     if (key.meta && input === 'f') return (setCursor(nextWord(value, cursor)), true)
+    // Meta+Y — cycle to an older kill, replacing the just-yanked text (readline).
+    if (key.meta && input === 'y') {
+      const ys = yankState.current
+      if (wasYank && ys && killHistory.current.length > 1) {
+        const nidx = (ys.idx + 1) % killHistory.current.length
+        const repl = killHistory.current[nidx] ?? ''
+        onChange(value.slice(0, ys.pos) + repl + value.slice(ys.pos + ys.len))
+        setCursor(ys.pos + repl.length)
+        yankState.current = { pos: ys.pos, len: repl.length, idx: nidx }
+        yankActive.current = true
+      }
+      return true
+    }
     // Ctrl+_ (\x1f) — undo the last edit (readline standard).
     if (input === '\x1f' || (key.ctrl && input === '_')) {
       const prev = undoStack.current.pop()
@@ -156,7 +180,7 @@ export function VimInput({
     // Alt+D — kill word forward (readline).
     if (key.meta && input === 'd') {
       const end = nextWord(value, cursor)
-      killRing.current = value.slice(cursor, end)
+      pushKill(value.slice(cursor, end))
       onChange(value.slice(0, cursor) + value.slice(end))
       return true
     }
@@ -177,21 +201,23 @@ export function VimInput({
     if (input === 'e') return (setCursor(value.length), true)
     if (input === 'w') return (killWordBack(), true)
     if (input === 'u') {
-      killRing.current = value.slice(0, cursor)
+      pushKill(value.slice(0, cursor))
       onChange(value.slice(cursor))
       setCursor(0)
       return true
     }
     if (input === 'k') {
-      killRing.current = value.slice(cursor)
+      pushKill(value.slice(cursor))
       onChange(value.slice(0, cursor))
       return true
     }
     if (input === 'y') {
-      // yank the last killed text at the cursor
+      // yank the last killed text at the cursor; arm Meta+Y cycling.
       if (killRing.current) {
         onChange(value.slice(0, cursor) + killRing.current + value.slice(cursor))
         setCursor(cursor + killRing.current.length)
+        yankState.current = { pos: cursor, len: killRing.current.length, idx: 0 }
+        yankActive.current = true
       }
       return true
     }
@@ -209,7 +235,9 @@ export function VimInput({
   useInput(
     (input, key) => {
       if (!active) return
-      if (readlineEdit(input, key)) return // Ctrl+A/E/W/U/K in either mode
+      const wasYank = yankActive.current // was the previous key a yank? (for Meta+Y)
+      yankActive.current = false
+      if (readlineEdit(input, key, wasYank)) return // Ctrl+A/E/W/U/K/Y, Meta+Y in either mode
       if (normal) {
         // Text-object pending (after d/c/y + i/a): this key is the object (w/"/(/…).
         if (pendingTextObj) {
