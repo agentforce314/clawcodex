@@ -293,7 +293,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const pasteCounter = useRef(0)
   // Interactive select picker (the original's CustomSelect) for /mode, /theme.
   const [picker, setPicker] = useState<{
-    kind: 'mode' | 'theme' | 'model' | 'resume' | 'rewindpick' | 'historyrecall'
+    kind: 'mode' | 'theme' | 'model' | 'resume' | 'rewindpick' | 'historyrecall' | 'settings'
     title: string
     options: string[]
     /** Optional value per option (e.g. session_id); falls back to the label. */
@@ -399,7 +399,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   }
 
   const applyPick = (
-    kind: 'mode' | 'theme' | 'model' | 'resume' | 'rewindpick' | 'historyrecall',
+    kind: 'mode' | 'theme' | 'model' | 'resume' | 'rewindpick' | 'historyrecall' | 'settings',
     value: string,
   ): void => {
     if (!value) return
@@ -410,6 +410,10 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     if (kind === 'historyrecall') {
       setInput(value)
       setHistIdx(-1)
+      return
+    }
+    if (kind === 'settings') {
+      runSlash(`/${value}`) // route to the chosen setter (/model, /mode, /theme, …)
       return
     }
     if (kind === 'mode') {
@@ -685,8 +689,9 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         return
       }
       if (key.return) {
-        applyPick(picker.kind, (picker.values ?? picker.options)[picker.sel] ?? '')
-        setPicker(null)
+        const picked = (picker.values ?? picker.options)[picker.sel] ?? ''
+        setPicker(null) // close first so applyPick may open a nested picker (/settings)
+        applyPick(picker.kind, picked)
         return
       }
       if (key.escape) {
@@ -943,6 +948,11 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
       }
       case 'stickers': {
         addEntry({ kind: 'system', text: 'Claude Code stickers: https://www.stickermule.com/claudecode' })
+        return true
+      }
+      case 'settings': {
+        const opts = ['model', 'mode', 'theme', 'effort', 'provider']
+        setPicker({ kind: 'settings', title: 'Settings (select to change)', options: opts, sel: 0 })
         return true
       }
       case 'history': {
