@@ -18,6 +18,9 @@ interface Props {
   onSubmit: (v: string) => void
   active: boolean
   placeholder?: string
+  /** When false, this is the default readline input (insert-only): Esc does not
+   *  enter normal mode and no [N]/[I] tag is shown. When true, /vim is on. */
+  vimEnabled?: boolean
 }
 
 const WORD = /[\p{L}\p{N}_]/u
@@ -34,14 +37,40 @@ function prevWord(s: string, c: number): number {
   return Math.max(0, i)
 }
 
-export function VimInput({ value, onChange, onSubmit, active, placeholder }: Props): React.ReactElement {
+export function VimInput({
+  value,
+  onChange,
+  onSubmit,
+  active,
+  placeholder,
+  vimEnabled = true,
+}: Props): React.ReactElement {
   const [normal, setNormal] = useState(false) // start in insert (like the original entering /vim)
   const [cursor, setCursor] = useState(value.length)
   const clamp = (c: number, max = value.length): number => Math.max(0, Math.min(max, c))
 
+  // readline kill-ring / line edits shared by both modes' insert state.
+  const killWordBack = (): void => {
+    const left = value.slice(0, cursor).replace(/\s+$/, '')
+    const cut = Math.max(left.lastIndexOf(' '), left.lastIndexOf('/'), left.lastIndexOf('\t')) + 1
+    const newLeft = left.slice(0, cut)
+    onChange(newLeft + value.slice(cursor))
+    setCursor(newLeft.length)
+  }
+  const readlineEdit = (input: string, key: { ctrl?: boolean }): boolean => {
+    if (!key.ctrl) return false
+    if (input === 'a') return (setCursor(0), true)
+    if (input === 'e') return (setCursor(value.length), true)
+    if (input === 'w') return (killWordBack(), true)
+    if (input === 'u') return (onChange(value.slice(cursor)), setCursor(0), true) // kill to start
+    if (input === 'k') return (onChange(value.slice(0, cursor)), true) // kill to end
+    return false
+  }
+
   useInput(
     (input, key) => {
       if (!active) return
+      if (readlineEdit(input, key)) return // Ctrl+A/E/W/U/K in either mode
       if (normal) {
         if (input === 'i') return setNormal(false)
         if (input === 'a') {
@@ -75,9 +104,11 @@ export function VimInput({ value, onChange, onSubmit, active, placeholder }: Pro
       }
       // insert mode
       if (key.escape) {
-        setNormal(true)
-        setCursor((c) => Math.max(0, c - 1))
-        return
+        if (vimEnabled) {
+          setNormal(true)
+          setCursor((c) => Math.max(0, c - 1))
+        }
+        return // when vim is off, Esc is left for App (interrupt) — no normal mode
       }
       if (key.return) return onSubmit(value)
       if (key.leftArrow) return setCursor((c) => clamp(c - 1))
@@ -100,7 +131,7 @@ export function VimInput({ value, onChange, onSubmit, active, placeholder }: Pro
   // Render: mode tag + text with a block cursor (reverse video).
   const cur = clamp(cursor)
   const empty = value.length === 0
-  const tag = normal ? '[N] ' : '[I] '
+  const tag = vimEnabled ? (normal ? '[N] ' : '[I] ') : ''
   if (empty && placeholder) {
     return (
       <Text>
