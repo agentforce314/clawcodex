@@ -914,6 +914,29 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         addEntry({ kind: 'system', text: 'Claude Code stickers: https://www.stickermule.com/claudecode' })
         return true
       }
+      case 'search': {
+        if (!arg) {
+          addEntry({ kind: 'system', text: 'usage: /search <query>' })
+          return true
+        }
+        const q = arg.replace(/'/g, "'\\''") // safe single-quote for the shell
+        addEntry({ kind: 'system', text: `/search ${arg}` })
+        exec(
+          `rg -n -S --max-count=50 --max-columns=200 -- '${q}'`,
+          { cwd: process.cwd(), timeout: 15_000, maxBuffer: 512 * 1024 },
+          (err, stdout, stderr) => {
+            const out = `${stdout || ''}`.trim()
+            if (out) {
+              addEntry({ kind: 'toolResult', text: out.split('\n').slice(0, 40).join('\n') })
+            } else if (err && (err as { code?: number }).code === 1) {
+              addEntry({ kind: 'system', text: 'no matches' })
+            } else {
+              addEntry({ kind: 'error', text: stderr ? String(stderr).split('\n')[0] : 'search failed' })
+            }
+          },
+        )
+        return true
+      }
       case 'buddy': {
         if (arg === 'off') {
           setBuddy(null)
