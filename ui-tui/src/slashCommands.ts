@@ -66,6 +66,7 @@ export interface SlashCommand {
     | 'thinking'
     | 'timestamps'
     | 'diagnostics'
+    | 'env'
     | 'diff'
     | 'stats'
     | 'prompt'
@@ -110,6 +111,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/thinking', description: 'Toggle extended thinking: /thinking [on|off]', kind: 'thinking' },
   { name: '/timestamps', description: 'Toggle message timestamps', kind: 'timestamps' },
   { name: '/diagnostics', description: 'Run the project typecheck/lint and show issues', kind: 'diagnostics' },
+  { name: '/env', description: 'Show the runtime environment (platform, node, terminal, shell)', kind: 'env' },
   { name: '/permissions', description: 'Show active permission mode and rules', kind: 'permissions' },
   { name: '/agents', description: 'List available subagent types', kind: 'agents' },
   { name: '/skills', description: 'List available skills', kind: 'skills' },
