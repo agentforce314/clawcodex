@@ -27,6 +27,7 @@ import { BUDDY_SPECIES, CompanionSprite } from './components/CompanionSprite.js'
 import { FileMenu } from './components/FileMenu.js'
 import { VimInput } from './components/VimInput.js'
 import { searchFiles, prewarmFileIndex } from './fileIndex.js'
+import { note as perfNote, bumpRender as perfBumpRender } from './perfDebug.js'
 import { Spinner } from './components/Spinner.js'
 import { StatusBar } from './components/StatusBar.js'
 import { DevBar } from './components/DevBar.js'
@@ -247,6 +248,7 @@ function streamTail(text: string, cols: number, maxLines: number): string {
 
 
 export function App({ transport, serverLabel }: Props): React.ReactElement {
+  perfBumpRender() // perf diagnostics (CLAWCODEX_DEBUG_PERF=1): count renders
   const { exit } = useApp()
   const [entries, setEntries] = useState<TranscriptEntry[]>([])
   const [streaming, setStreaming] = useState('')
@@ -700,6 +702,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         setElicit({ requestId, message, field, value: '' })
       },
       onMessage: (msg) => {
+        perfNote(`msg:${(msg as { type?: string }).type ?? '?'}`)
         const think = streamThinkingDelta(msg)
         if (think !== null) {
           appendThinkingStream(think)
@@ -842,6 +845,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   }, [transport])
 
   useInput((ch, key) => {
+    perfNote(`key:${key.backspace ? 'backspace' : key.delete ? 'delete' : key.return ? 'return' : ch ? JSON.stringify(ch).slice(0, 8) : 'special'}`)
     // Terminal focus events (DECSET 1004) arrive as "[I" / "[O" — track + swallow.
     if (ch === '[I') {
       focusedRef.current = true
