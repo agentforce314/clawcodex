@@ -39,6 +39,7 @@ export interface SlashCommand {
     | 'upgrade'
     | 'provider'
     | 'effort'
+    | 'plugin'
     | 'diff'
     | 'stats'
     | 'prompt'
@@ -89,6 +90,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/upgrade', description: 'How to update clawcodex', kind: 'upgrade' },
   { name: '/provider', description: 'Switch LLM provider: /provider <name>', kind: 'provider' },
   { name: '/effort', description: 'Set reasoning effort: /effort <low|medium|high> (or clear)', kind: 'effort' },
+  { name: '/plugin', description: 'List installed plugins', kind: 'plugin' },
   { name: '/config', description: 'Show model, mode, and available models', kind: 'config' },
   { name: '/diff', description: 'Show the working-tree git diff', kind: 'diff' },
   { name: '/stats', description: 'Show session statistics', kind: 'stats' },

@@ -862,6 +862,20 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         }
         return true
       }
+      case 'plugin': {
+        if (client) {
+          void client.requestControl('list_plugins').then((r) => {
+            const plugins = Array.isArray(r?.['plugins']) ? (r['plugins'] as Record<string, unknown>[]) : []
+            if (!plugins.length) {
+              addEntry({ kind: 'system', text: 'no plugins installed (~/.claude/plugins or .claude/plugins)' })
+              return
+            }
+            const lines = plugins.map((p) => `● ${String(p['name'])}${p['enabled'] ? '' : ' (disabled)'}`)
+            addEntry({ kind: 'system', text: `Plugins (${plugins.length}):\n${lines.join('\n')}` })
+          })
+        }
+        return true
+      }
       case 'effort': {
         if (client) {
           void client.requestControl('set_effort', { effort: arg }).then((r) => {
