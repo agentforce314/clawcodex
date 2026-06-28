@@ -230,6 +230,9 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     maxTokens: number
   } | null>(null)
   const [sessionCost, setSessionCost] = useState(0) // cumulative USD across turns
+  const [statusCmd, setStatusCmd] = useState<string | null>(null) // /statusline shell command
+  const [statusText, setStatusText] = useState('') // its latest rendered output
+  const statusCmdRef = useRef<string | null>(null) // guards async output against a later clear
   const [, setThemeVersion] = useState(0) // bumped on /theme to repaint the dynamic UI
   const [scrollOffset, setScrollOffset] = useState(0) // fullscreen: entries hidden from the bottom
   const [txFind, setTxFind] = useState<string | null>(null) // fullscreen Ctrl+F find query (null = closed)
@@ -845,6 +848,20 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         }
         return true
       }
+      case 'statusline': {
+        if (!arg || arg === 'clear' || arg === 'off') {
+          statusCmdRef.current = null
+          setStatusCmd(null)
+          setStatusText('')
+          addEntry({ kind: 'system', text: 'status line cleared' })
+        } else {
+          statusCmdRef.current = arg
+          setStatusCmd(arg)
+          runStatusline(arg)
+          addEntry({ kind: 'system', text: `status line set: ${arg}` })
+        }
+        return true
+      }
       case 'keybindings': {
         const keys = [
           'Enter         submit',
@@ -1200,6 +1217,12 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [busy, ready, permissions.length])
 
+  // Refresh the custom status line (/statusline) when set and at each turn end.
+  useEffect(() => {
+    if (statusCmd && !busy) runStatusline(statusCmd)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [busy, statusCmd])
+
   // Bash mode (`!cmd`): run a shell command client-side and show its output,
   // without involving the model. The TUI runs in the same cwd as the
   // agent-server, so this matches the agent's working directory (the original
@@ -1217,6 +1240,23 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
       })
     } catch (e) {
       addEntry({ kind: 'error', text: `bash failed: ${String(e)}` })
+    }
+  }
+
+  // /statusline: run a user shell command and show its first output line as a
+  // custom status line (the original's statusLine.command). Re-runs each turn end.
+  const runStatusline = (cmd: string): void => {
+    try {
+      exec(cmd, { cwd: process.cwd(), timeout: 5000, maxBuffer: 64 * 1024 }, (err, stdout, stderr) => {
+        if (statusCmdRef.current !== cmd) return // a later clear/change supersedes this run
+        const out =
+          `${stdout || ''}`.split('\n')[0]?.trim() ||
+          (stderr ? String(stderr).split('\n')[0]?.trim() : '') ||
+          ''
+        setStatusText(err && !out ? '' : out)
+      })
+    } catch {
+      /* never break the UI on a bad statusline command */
     }
   }
 
@@ -1456,6 +1496,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         </>
       )}
 
+      {statusText ? <Text color={theme.dim}>{statusText}</Text> : null}
       <StatusBar
         connected={connected}
         model={model}
