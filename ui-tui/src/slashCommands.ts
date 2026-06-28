@@ -45,6 +45,7 @@ export interface SlashCommand {
     | 'stickers'
     | 'search'
     | 'history'
+    | 'settings'
     | 'diff'
     | 'stats'
     | 'prompt'
@@ -101,6 +102,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/stickers', description: 'Where to get Claude Code stickers', kind: 'stickers' },
   { name: '/search', description: 'Search file contents (ripgrep): /search <query>', kind: 'search' },
   { name: '/history', description: 'Pick a past prompt to recall', kind: 'history' },
+  { name: '/settings', description: 'Open the settings menu', kind: 'settings' },
   { name: '/config', description: 'Show model, mode, and available models', kind: 'config' },
   { name: '/diff', description: 'Show the working-tree git diff', kind: 'diff' },
   { name: '/stats', description: 'Show session statistics', kind: 'stats' },
