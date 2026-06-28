@@ -156,3 +156,26 @@ test('/exit runs the quit handler (closes the connection and exits)', async () =
   assert.ok(closed, '/exit should close the connection via the quit handler')
   try { r.unmount() } catch { /* exit() may have already torn down */ }
 })
+
+test('terminal resize triggers a full reset (no stacked input boxes)', async () => {
+  const writes = []
+  const orig = process.stdout.write.bind(process.stdout)
+  process.stdout.write = (chunk, ...rest) => {
+    const s = String(chunk)
+    writes.push(s)
+    if (s.includes('\x1b[2J')) return true // swallow the clear so this test run isn't wiped
+    return orig(chunk, ...rest)
+  }
+  try {
+    mount()
+    await wait(150)
+    process.stdout.emit('resize')
+    await wait(160) // > 80ms debounce
+  } finally {
+    process.stdout.write = orig
+  }
+  assert.ok(
+    writes.some((w) => w.includes('\x1b[2J') && w.includes('\x1b[3J') && w.includes('\x1b[H')),
+    'resize should clear screen + scrollback + home (full reset), not leave stacked frames',
+  )
+})
