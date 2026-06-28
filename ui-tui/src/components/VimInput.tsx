@@ -42,6 +42,21 @@ function endWord(s: string, c: number): number {
   while (i < s.length - 1 && WORD.test(s[i + 1] ?? '')) i++ // to word end
   return Math.min(Math.max(0, s.length - 1), Math.max(c, i))
 }
+/** Target index for a vim motion char (used by operators + the `.` recorder). */
+function motionTarget(s: string, c: number, m: string): number | null {
+  if (m === 'w') return nextWord(s, c)
+  if (m === 'b') return prevWord(s, c)
+  if (m === 'e') return endWord(s, c) + 1
+  if (m === '$' || m === 'G') return s.length
+  if (m === '0') return 0
+  if (m === '^') {
+    const f = s.search(/\S/)
+    return f >= 0 ? f : 0
+  }
+  if (m === 'l') return c + 1
+  if (m === 'h') return c - 1
+  return null
+}
 const PAIRS: Record<string, string> = { '(': ')', '[': ']', '{': '}', '<': '>' }
 /** Range [lo,hi) for a vim text object (iw/aw, i"/a", i(/a(, …). null if none. */
 function textObjectRange(s: string, cur: number, around: boolean, obj: string): [number, number] | null {
@@ -104,6 +119,8 @@ export function VimInput({
 
   // vim unnamed register (populated by x/D/s/C; pasted by p/P).
   const vimReg = useRef('')
+  // `.` repeat: last buffer change as a pure replay (current value/cursor → new).
+  const lastChange = useRef<((v: string, c: number) => { value: string; cursor: number; reg?: string }) | null>(null)
   // readline kill-ring / line edits shared by both modes' insert state.
   const killRing = useRef('')
   const killWordBack = (): void => {
@@ -197,6 +214,15 @@ export function VimInput({
             setCursor(lo)
           }
           if (op === 'c') setNormal(false)
+          if (op === 'd') {
+            const ar = around
+            const ob = input
+            lastChange.current = (v, cc) => {
+              const rg = textObjectRange(v, cc, ar, ob)
+              if (!rg) return { value: v, cursor: cc }
+              return { value: v.slice(0, rg[0]) + v.slice(rg[1]), cursor: rg[0], reg: v.slice(rg[0], rg[1]) }
+            }
+          }
           return
         }
         // Find/replace-pending (f/F/t/T/r): this key is the target character.
@@ -209,6 +235,10 @@ export function VimInput({
             if (value && cursor < value.length) {
               onChange(value.slice(0, cursor) + tgt + value.slice(cursor + 1))
             }
+            lastChange.current = (v, cc) => ({
+              value: cc < v.length ? v.slice(0, cc) + tgt + v.slice(cc + 1) : v,
+              cursor: cc,
+            })
             return
           }
           if (fop === 'f') {
@@ -246,17 +276,7 @@ export function VimInput({
             if (op === 'c') setNormal(false)
             return
           }
-          let target: number | null = null
-          if (input === 'w') target = nextWord(value, cursor)
-          else if (input === 'b') target = prevWord(value, cursor)
-          else if (input === 'e') target = endWord(value, cursor) + 1
-          else if (input === '$' || input === 'G') target = value.length
-          else if (input === '0') target = 0
-          else if (input === '^') {
-            const f = value.search(/\S/)
-            target = f >= 0 ? f : 0
-          } else if (input === 'l' || key.rightArrow) target = cursor + 1
-          else if (input === 'h' || key.leftArrow) target = cursor - 1
+          const target = motionTarget(value, cursor, input)
           if (target === null) return // unknown motion → cancel the operator
           const lo = Math.max(0, Math.min(cursor, target))
           const hi = Math.min(value.length, Math.max(cursor, target))
@@ -268,6 +288,16 @@ export function VimInput({
             setCursor(lo)
           }
           if (op === 'c') setNormal(false)
+          if (op === 'd') {
+            const m = input
+            lastChange.current = (v, cc) => {
+              const t = motionTarget(v, cc, m)
+              if (t === null) return { value: v, cursor: cc }
+              const lo2 = Math.max(0, Math.min(cc, t))
+              const hi2 = Math.min(v.length, Math.max(cc, t))
+              return { value: v.slice(0, lo2) + v.slice(hi2), cursor: lo2, reg: v.slice(lo2, hi2) }
+            }
+          }
           return
         }
         // Count prefix: accumulate digits (0 is a count digit only mid-count;
@@ -278,6 +308,16 @@ export function VimInput({
         }
         const n = Math.max(1, parseInt(count || '1', 10))
         if (count) setCount('') // consume the count for this command
+        if (input === '.') {
+          const fn = lastChange.current
+          if (fn) {
+            const r = fn(value, cursor)
+            onChange(r.value)
+            setCursor(clamp(r.cursor, Math.max(0, r.value.length - 1)))
+            if (r.reg !== undefined) vimReg.current = r.reg
+          }
+          return
+        }
         if (input === 'd' || input === 'c' || input === 'y') return setPendingOp(input)
         if (input === 'f' || input === 'F' || input === 't' || input === 'T' || input === 'r') {
           return setPendingFind(input)
@@ -325,6 +365,11 @@ export function VimInput({
             onChange(value.slice(0, cursor) + value.slice(cursor + n))
             setCursor((c) => clamp(c, Math.max(0, value.length - n - 1)))
           }
+          lastChange.current = (v, cc) => ({
+            value: v.slice(0, cc) + v.slice(cc + n),
+            cursor: Math.min(cc, Math.max(0, v.length - n - 1)),
+            reg: v.slice(cc, cc + n),
+          })
           return
         }
         if (input === '~') {
@@ -334,10 +379,17 @@ export function VimInput({
             onChange(value.slice(0, cursor) + tog + value.slice(cursor + 1))
             setCursor((c) => clamp(c + 1, Math.max(0, value.length - 1)))
           }
+          lastChange.current = (v, cc) => {
+            if (!v || cc >= v.length) return { value: v, cursor: cc }
+            const c0 = v[cc] ?? ''
+            const tog = c0 === c0.toLowerCase() ? c0.toUpperCase() : c0.toLowerCase()
+            return { value: v.slice(0, cc) + tog + v.slice(cc + 1), cursor: Math.min(cc + 1, Math.max(0, v.length - 1)) }
+          }
           return
         }
         if (input === 'D') {
           vimReg.current = value.slice(cursor)
+          lastChange.current = (v, cc) => ({ value: v.slice(0, cc), cursor: Math.max(0, cc - 1), reg: v.slice(cc) })
           return onChange(value.slice(0, cursor))
         }
         if (input === 'C') {
@@ -355,10 +407,17 @@ export function VimInput({
           return setNormal(false)
         }
         if (input === 'p' || input === 'P') {
+          const before = input === 'P'
           if (vimReg.current) {
-            const at = input === 'p' ? clamp(cursor + 1) : cursor
+            const at = before ? cursor : clamp(cursor + 1)
             onChange(value.slice(0, at) + vimReg.current + value.slice(at))
             setCursor(clamp(at + vimReg.current.length - 1, value.length + vimReg.current.length - 1))
+          }
+          lastChange.current = (v, cc) => {
+            const text = vimReg.current
+            if (!text) return { value: v, cursor: cc }
+            const at = before ? cc : Math.min(cc + 1, v.length)
+            return { value: v.slice(0, at) + text + v.slice(at), cursor: at + text.length - 1 }
           }
           return
         }
