@@ -9,7 +9,7 @@
  *   Enter submit.  Insert: type · ←/→ · Backspace · Esc→normal · Enter submit.
  */
 import { Text, useInput } from 'ink'
-import React, { useRef, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { theme } from '../theme.js'
 
 interface Props {
@@ -49,6 +49,22 @@ export function VimInput({
   const [cursor, setCursor] = useState(value.length)
   const clamp = (c: number, max = value.length): number => Math.max(0, Math.min(max, c))
 
+  // readline undo (Ctrl+_): track each value change as an undo step. The effect
+  // snapshots the prior value on every change; undo pops it back. isUndoing
+  // guards the undo's own onChange from being re-recorded.
+  const undoStack = useRef<string[]>([])
+  const prevValue = useRef(value)
+  const isUndoing = useRef(false)
+  useEffect(() => {
+    if (isUndoing.current) {
+      isUndoing.current = false
+    } else if (value !== prevValue.current) {
+      undoStack.current.push(prevValue.current)
+      if (undoStack.current.length > 200) undoStack.current.shift()
+    }
+    prevValue.current = value
+  }, [value])
+
   // readline kill-ring / line edits shared by both modes' insert state.
   const killRing = useRef('')
   const killWordBack = (): void => {
@@ -67,6 +83,16 @@ export function VimInput({
     if ((key.ctrl || key.meta) && key.rightArrow) return (setCursor(nextWord(value, cursor)), true)
     if (key.meta && input === 'b') return (setCursor(prevWord(value, cursor)), true)
     if (key.meta && input === 'f') return (setCursor(nextWord(value, cursor)), true)
+    // Ctrl+_ (\x1f) — undo the last edit (readline standard).
+    if (input === '\x1f' || (key.ctrl && input === '_')) {
+      const prev = undoStack.current.pop()
+      if (prev !== undefined) {
+        isUndoing.current = true
+        onChange(prev)
+        setCursor(prev.length)
+      }
+      return true
+    }
     if (!key.ctrl) return false
     if (input === 'a') return (setCursor(0), true)
     if (input === 'e') return (setCursor(value.length), true)
