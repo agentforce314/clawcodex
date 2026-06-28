@@ -54,6 +54,7 @@ export function VimInput({
   const [normal, setNormal] = useState(false) // start in insert (like the original entering /vim)
   const [cursor, setCursor] = useState(value.length)
   const [pendingOp, setPendingOp] = useState<string | null>(null) // operator-pending: d/c/y
+  const [pendingFind, setPendingFind] = useState<string | null>(null) // f/F/t/T/r awaiting a char
   const clamp = (c: number, max = value.length): number => Math.max(0, Math.min(max, c))
 
   // readline undo (Ctrl+_): track each value change as an undo step. The effect
@@ -152,6 +153,33 @@ export function VimInput({
       if (!active) return
       if (readlineEdit(input, key)) return // Ctrl+A/E/W/U/K in either mode
       if (normal) {
+        // Find/replace-pending (f/F/t/T/r): this key is the target character.
+        if (pendingFind) {
+          const fop = pendingFind
+          setPendingFind(null)
+          const tgt = input
+          if (!tgt) return
+          if (fop === 'r') {
+            if (value && cursor < value.length) {
+              onChange(value.slice(0, cursor) + tgt + value.slice(cursor + 1))
+            }
+            return
+          }
+          if (fop === 'f') {
+            const i = value.indexOf(tgt, cursor + 1)
+            if (i >= 0) setCursor(i)
+          } else if (fop === 'F') {
+            const i = value.lastIndexOf(tgt, Math.max(0, cursor - 1))
+            if (i >= 0) setCursor(i)
+          } else if (fop === 't') {
+            const i = value.indexOf(tgt, cursor + 1)
+            if (i > 0) setCursor(i - 1)
+          } else if (fop === 'T') {
+            const i = value.lastIndexOf(tgt, Math.max(0, cursor - 1))
+            if (i >= 0) setCursor(i + 1)
+          }
+          return
+        }
         // Operator-pending (d/c/y): the previous key was an operator; this key is
         // its motion (or a repeat for the whole-line form dd/cc/yy).
         if (pendingOp) {
@@ -192,6 +220,9 @@ export function VimInput({
           return
         }
         if (input === 'd' || input === 'c' || input === 'y') return setPendingOp(input)
+        if (input === 'f' || input === 'F' || input === 't' || input === 'T' || input === 'r') {
+          return setPendingFind(input)
+        }
         if (input === 'i') return setNormal(false)
         if (input === 'a') {
           setCursor((c) => clamp(c + 1))
