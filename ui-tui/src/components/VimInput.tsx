@@ -121,6 +121,10 @@ export function VimInput({
   const vimReg = useRef('')
   // `.` repeat: last buffer change as a pure replay (current value/cursor → new).
   const lastChange = useRef<((v: string, c: number) => { value: string; cursor: number; reg?: string }) | null>(null)
+  // Insert-session capture for `.`: the pre-delete (pure) + the live cursor where
+  // typing begins. Set when a change enters insert; consumed on Esc.
+  const insertPre = useRef<((v: string, c: number) => { value: string; cursor: number }) | null>(null)
+  const insertStart = useRef(0)
   // readline kill-ring / line edits shared by both modes' insert state.
   const killRing = useRef('')
   const killWordBack = (): void => {
@@ -194,6 +198,14 @@ export function VimInput({
     return false
   }
 
+  // Enter insert mode, arming `.`-repeat capture: `pre` re-applies the change's
+  // pre-delete on replay; `start` is the live index where typed text begins.
+  const enterInsert = (pre: (v: string, c: number) => { value: string; cursor: number }, start: number): void => {
+    insertPre.current = pre
+    insertStart.current = start
+    setNormal(false)
+  }
+
   useInput(
     (input, key) => {
       if (!active) return
@@ -213,7 +225,15 @@ export function VimInput({
           } else {
             setCursor(lo)
           }
-          if (op === 'c') setNormal(false)
+          if (op === 'c') {
+            const ar = around
+            const ob = input
+            return enterInsert((v, c) => {
+              const rg = textObjectRange(v, c, ar, ob)
+              if (!rg) return { value: v, cursor: c }
+              return { value: v.slice(0, rg[0]) + v.slice(rg[1]), cursor: rg[0] }
+            }, lo)
+          }
           if (op === 'd') {
             const ar = around
             const ob = input
@@ -273,7 +293,10 @@ export function VimInput({
               onChange('')
               setCursor(0)
             }
-            if (op === 'c') setNormal(false)
+            if (op === 'c') {
+              enterInsert(() => ({ value: '', cursor: 0 }), 0)
+              return
+            }
             return
           }
           const target = motionTarget(value, cursor, input)
@@ -287,7 +310,16 @@ export function VimInput({
           } else {
             setCursor(lo)
           }
-          if (op === 'c') setNormal(false)
+          if (op === 'c') {
+            const m = input
+            return enterInsert((v, c) => {
+              const t = motionTarget(v, c, m)
+              if (t === null) return { value: v, cursor: c }
+              const lo2 = Math.max(0, Math.min(c, t))
+              const hi2 = Math.min(v.length, Math.max(c, t))
+              return { value: v.slice(0, lo2) + v.slice(hi2), cursor: lo2 }
+            }, lo)
+          }
           if (op === 'd') {
             const m = input
             lastChange.current = (v, cc) => {
@@ -322,18 +354,18 @@ export function VimInput({
         if (input === 'f' || input === 'F' || input === 't' || input === 'T' || input === 'r') {
           return setPendingFind(input)
         }
-        if (input === 'i') return setNormal(false)
+        if (input === 'i') return enterInsert((v, c) => ({ value: v, cursor: c }), cursor)
         if (input === 'a') {
           setCursor((c) => clamp(c + 1))
-          return setNormal(false)
+          return enterInsert((v, c) => ({ value: v, cursor: Math.min(c + 1, v.length) }), Math.min(cursor + 1, value.length))
         }
         if (input === 'A') {
           setCursor(value.length)
-          return setNormal(false)
+          return enterInsert((v) => ({ value: v, cursor: v.length }), value.length)
         }
         if (input === 'I') {
           setCursor(0)
-          return setNormal(false)
+          return enterInsert((v) => ({ value: v, cursor: 0 }), 0)
         }
         if (input === 'h' || key.leftArrow) return setCursor((c) => clamp(c - n))
         if (input === 'l' || key.rightArrow) return setCursor((c) => clamp(c + n))
@@ -396,7 +428,7 @@ export function VimInput({
           // change to end of line: kill to end + enter insert
           vimReg.current = value.slice(cursor)
           onChange(value.slice(0, cursor))
-          return setNormal(false)
+          return enterInsert((v, c) => ({ value: v.slice(0, c), cursor: c }), cursor)
         }
         if (input === 's') {
           // substitute char: delete char under cursor + enter insert
@@ -404,7 +436,7 @@ export function VimInput({
             vimReg.current = value[cursor] ?? ''
             onChange(value.slice(0, cursor) + value.slice(cursor + 1))
           }
-          return setNormal(false)
+          return enterInsert((v, c) => ({ value: v.slice(0, c) + v.slice(c + 1), cursor: c }), cursor)
         }
         if (input === 'p' || input === 'P') {
           const before = input === 'P'
@@ -427,6 +459,20 @@ export function VimInput({
       // insert mode
       if (key.escape) {
         if (vimEnabled) {
+          // Record the insert session as a `.`-repeatable change: the typed text
+          // between insertStart and the cursor, replayed after the pre-delete.
+          if (insertPre.current) {
+            const pre = insertPre.current
+            const text = value.slice(insertStart.current, cursor)
+            insertPre.current = null
+            lastChange.current = (v, cc) => {
+              const r = pre(v, cc)
+              return {
+                value: r.value.slice(0, r.cursor) + text + r.value.slice(r.cursor),
+                cursor: r.cursor + Math.max(0, text.length - 1),
+              }
+            }
+          }
           setNormal(true)
           setCursor((c) => Math.max(0, c - 1))
         }
