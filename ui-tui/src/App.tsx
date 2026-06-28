@@ -845,6 +845,22 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         }
         return true
       }
+      case 'skills': {
+        if (client) {
+          void client.requestControl('list_skills').then((r) => {
+            const skills = Array.isArray(r?.['skills']) ? (r['skills'] as Record<string, unknown>[]) : []
+            const total = Number(r?.['total']) || skills.length
+            if (!total) {
+              addEntry({ kind: 'system', text: 'no skills available' })
+              return
+            }
+            const shown = skills.slice(0, 24).map((s) => `● ${String(s['name'])}`)
+            const more = total > shown.length ? `\n…and ${total - shown.length} more` : ''
+            addEntry({ kind: 'system', text: `Skills (${total}):\n${shown.join('\n')}${more}` })
+          })
+        }
+        return true
+      }
       case 'agents': {
         if (client) {
           void client.requestControl('list_agents').then((r) => {
