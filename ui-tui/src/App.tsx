@@ -862,6 +862,21 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         }
         return true
       }
+      case 'provider': {
+        if (!arg) {
+          addEntry({ kind: 'system', text: 'usage: /provider <name>' })
+        } else if (client) {
+          void client.requestControl('set_provider', { provider: arg }).then((r) => {
+            if (r && r['ok']) {
+              if (r['model']) setModel(String(r['model']))
+              addEntry({ kind: 'system', text: `provider → ${String(r['provider'])}${r['model'] ? ` (${String(r['model'])})` : ''}` })
+            } else {
+              addEntry({ kind: 'error', text: `provider switch failed: ${r && r['error'] ? String(r['error']) : 'no response'}` })
+            }
+          })
+        }
+        return true
+      }
       case 'hooks': {
         if (client) {
           void client.requestControl('list_hooks').then((r) => {

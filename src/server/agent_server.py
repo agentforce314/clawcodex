@@ -214,6 +214,9 @@ class _AgentSession:
                     pass
             self._ack(request_id)
             return
+        if subtype == "set_provider":
+            self._do_set_provider(request_id, inner.get("provider"))
+            return
         if subtype == "get_settings":
             self._reply(request_id, {
                 "permission_mode": _current_mode(self.tool_context, self.config.permission_mode),
@@ -422,6 +425,54 @@ class _AgentSession:
             (d / f"{self.session_id}.json").write_text(json.dumps(payload), encoding="utf-8")
         except Exception:  # noqa: BLE001 — persistence must never break a turn
             logger.debug("[agent-server] session save failed", exc_info=True)
+
+    def _do_set_provider(self, request_id: object, name: object) -> None:
+        """Switch the LLM provider mid-session (the original's /provider). Rebuilds
+        the provider + tool registry but keeps the conversation. Idle-only."""
+        with self._lock:
+            active = self._current_abort is not None
+        if active:
+            self._reply(request_id, {"ok": False, "error": "cannot switch provider during an active turn"})
+            return
+        try:
+            if not isinstance(name, str) or not name:
+                self._reply(request_id, {"ok": False, "error": "missing provider"})
+                return
+            from src.config import get_provider_config
+            from src.providers import get_provider_class, provider_requires_api_key, resolve_api_key
+            from src.tool_system.defaults import build_default_registry
+
+            provider_cfg = get_provider_config(name)
+            api_key = resolve_api_key(name, provider_cfg)
+            if not api_key and provider_requires_api_key(name):
+                self._reply(request_id, {"ok": False, "error": f"provider '{name}' is not configured (no API key)"})
+                return
+            provider_cls = get_provider_class(name)
+            model = provider_cfg.get("default_model")
+            provider = provider_cls(api_key=api_key, base_url=provider_cfg.get("base_url"), model=model)
+            registry = build_default_registry(provider=provider)
+            cfg = self.config
+            if cfg.allowed_tools:
+                allow = {n.lower() for n in cfg.allowed_tools}
+                _filter_registry(registry, keep=lambda n: n.lower() in allow)
+            if cfg.disallowed_tools:
+                deny = {n.lower() for n in cfg.disallowed_tools}
+                _filter_registry(registry, keep=lambda n: n.lower() not in deny)
+            if self._mcp_runtime is not None:  # keep MCP tools across the switch
+                for mtool in self._mcp_runtime.tools:
+                    try:
+                        registry.register(mtool)
+                    except Exception:  # noqa: BLE001
+                        pass
+            self.provider = provider
+            self.provider_name = name
+            cfg.provider_name = name
+            cfg.model = model
+            self.tool_registry = registry
+            self._reply(request_id, {"ok": True, "provider": name, "model": model or ""})
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[agent-server] set_provider failed")
+            self._reply(request_id, {"ok": False, "error": str(exc)})
 
     def _do_branch(self, request_id: object) -> None:
         """Fork the current conversation to a new saved session (the original's
