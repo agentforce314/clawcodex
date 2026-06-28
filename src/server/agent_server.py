@@ -114,6 +114,8 @@ class _AgentSession:
     _session_name: str | None = None  # user-set label (/rename) shown in /resume
     _mcp_runtime: Any = None  # McpRuntime (connected MCP servers) when configured
     _effort: str | None = None  # /effort reasoning level, injected via extra_body when set
+    _knowledge: Any = None  # KnowledgeGraph (lazy-loaded), populated at each turn end
+    _knowledge_enabled: bool = True  # the original's knowledgeGraphEnabled (default on)
 
     # Worker + cross-thread coordination.
     _inbox: _queue.Queue = field(default_factory=_queue.Queue)
@@ -220,6 +222,9 @@ class _AgentSession:
             return
         if subtype == "set_output_style":
             self._do_set_output_style(request_id, inner.get("style"))
+            return
+        if subtype == "knowledge":
+            self._do_knowledge(request_id, inner.get("action"))
             return
         if subtype == "set_effort":
             effort = inner.get("effort")
@@ -469,6 +474,43 @@ class _AgentSession:
             (d / f"{self.session_id}.json").write_text(json.dumps(payload), encoding="utf-8")
         except Exception:  # noqa: BLE001 — persistence must never break a turn
             logger.debug("[agent-server] session save failed", exc_info=True)
+        self._record_knowledge()
+
+    @staticmethod
+    def _message_text(msg: object) -> str:
+        """Best-effort text of a conversation message (str content or text blocks)."""
+        content = getattr(msg, "content", None)
+        if content is None and isinstance(msg, dict):
+            content = msg.get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for b in content:
+                t = getattr(b, "text", None)
+                if t is None and isinstance(b, dict):
+                    t = b.get("text")
+                if isinstance(t, str):
+                    parts.append(t)
+            return "\n".join(parts)
+        return ""
+
+    def _record_knowledge(self) -> None:
+        """Extract entities from the latest exchange into the knowledge graph
+        (the original's /knowledge auto-learning). Best-effort; gated by the flag."""
+        if not self._knowledge_enabled or self.session is None:
+            return
+        try:
+            from src.knowledge import KnowledgeGraph
+
+            if self._knowledge is None:
+                self._knowledge = KnowledgeGraph.load()
+            msgs = self.session.conversation.messages
+            text = "\n".join(self._message_text(m) for m in msgs[-2:])  # last user+assistant
+            if self._knowledge.record_from_text(text, now=time.time()):
+                self._knowledge.save()
+        except Exception:  # noqa: BLE001 — knowledge must never break a turn
+            logger.debug("[agent-server] knowledge record failed", exc_info=True)
 
     def _do_set_provider(self, request_id: object, name: object) -> None:
         """Switch the LLM provider mid-session (the original's /provider). Rebuilds
@@ -516,6 +558,37 @@ class _AgentSession:
             self._reply(request_id, {"ok": True, "provider": name, "model": model or ""})
         except Exception as exc:  # noqa: BLE001
             logger.exception("[agent-server] set_provider failed")
+            self._reply(request_id, {"ok": False, "error": str(exc)})
+
+    def _do_knowledge(self, request_id: object, action: object) -> None:
+        """/knowledge: status (default) | list | clear | enable | disable. Surfaces
+        the auto-populated knowledge graph (the original's Knowledge Graph engine)."""
+        try:
+            from src.knowledge import KnowledgeGraph
+
+            if self._knowledge is None:
+                self._knowledge = KnowledgeGraph.load()
+            act = str(action or "status").strip().lower()
+            if act == "clear":
+                self._knowledge.clear()
+                self._knowledge.save()
+                self._reply(request_id, {"ok": True, "enabled": self._knowledge_enabled, "stats": self._knowledge.stats()})
+                return
+            if act in ("enable", "disable"):
+                self._knowledge_enabled = act == "enable"
+                self._reply(request_id, {"ok": True, "enabled": self._knowledge_enabled, "stats": self._knowledge.stats()})
+                return
+            entities = (
+                [{"name": e.name, "type": e.type, "count": e.count} for e in self._knowledge.top(20)]
+                if act == "list"
+                else []
+            )
+            self._reply(
+                request_id,
+                {"ok": True, "enabled": self._knowledge_enabled, "stats": self._knowledge.stats(), "entities": entities},
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[agent-server] knowledge failed")
             self._reply(request_id, {"ok": False, "error": str(exc)})
 
     def _do_set_output_style(self, request_id: object, style: object) -> None:
