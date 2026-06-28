@@ -117,6 +117,7 @@ class _AgentSession:
     _knowledge: Any = None  # KnowledgeGraph (lazy-loaded), populated at each turn end
     _knowledge_enabled: bool = True  # the original's knowledgeGraphEnabled (default on)
     _knowledge_semantic: bool = False  # opt-in model-based extraction (vs heuristic)
+    _bgtasks: Any = None  # BackgroundTasks registry (lazy), the original's Ctrl+B runs
 
     # Worker + cross-thread coordination.
     _inbox: _queue.Queue = field(default_factory=_queue.Queue)
@@ -229,6 +230,9 @@ class _AgentSession:
             return
         if subtype == "wiki":
             self._do_wiki(request_id, inner.get("action"), inner.get("path"))
+            return
+        if subtype in ("bg_run", "bg_list", "bg_kill"):
+            self._do_bgtask(request_id, subtype, inner.get("command"), inner.get("id"))
             return
         if subtype == "set_effort":
             effort = inner.get("effort")
@@ -572,6 +576,41 @@ class _AgentSession:
             self._reply(request_id, {"ok": True, "provider": name, "model": model or ""})
         except Exception as exc:  # noqa: BLE001
             logger.exception("[agent-server] set_provider failed")
+            self._reply(request_id, {"ok": False, "error": str(exc)})
+
+    def _do_bgtask(self, request_id: object, subtype: str, command: object, tid: object) -> None:
+        """Background tasks (the original's Ctrl+B runs): bg_run starts a detached
+        shell command, bg_list lists them, bg_kill terminates one."""
+        try:
+            from src.background import BackgroundTasks
+
+            if self._bgtasks is None:
+                self._bgtasks = BackgroundTasks()
+            if subtype == "bg_run":
+                if not isinstance(command, str) or not command.strip():
+                    self._reply(request_id, {"ok": False, "error": "usage: /bg <command>"})
+                    return
+                t = self._bgtasks.start(command.strip(), self.cwd, now=time.time())
+                self._reply(request_id, {"ok": True, "id": t.id, "command": t.command})
+                return
+            if subtype == "bg_kill":
+                ok = self._bgtasks.kill(str(tid or ""))
+                self._reply(request_id, {"ok": ok})
+                return
+            # bg_list
+            tasks = [
+                {
+                    "id": t.id,
+                    "command": t.command,
+                    "status": t.status,
+                    "exit_code": t.exit_code,
+                    "output": (t.output or "")[-400:],
+                }
+                for t in self._bgtasks.list()
+            ]
+            self._reply(request_id, {"ok": True, "tasks": tasks})
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[agent-server] bgtask failed")
             self._reply(request_id, {"ok": False, "error": str(exc)})
 
     def _do_wiki(self, request_id: object, action: object, path: object) -> None:

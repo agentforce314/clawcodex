@@ -1100,12 +1100,38 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         })
         return true
       }
+      case 'bg': {
+        const a = arg.trim()
+        if (a.toLowerCase().startsWith('kill ')) {
+          const id = a.slice(5).trim()
+          void client?.requestControl('bg_kill', { id }).then((r) => {
+            addEntry({ kind: 'system', text: r && r['ok'] ? `killed bg task ${id}` : `no such task ${id}` })
+          })
+          return true
+        }
+        if (!a) {
+          addEntry({ kind: 'system', text: 'usage: /bg <command>  (or /bg kill <id>)' })
+          return true
+        }
+        void client?.requestControl('bg_run', { command: a }).then((r) => {
+          if (r && r['ok']) addEntry({ kind: 'system', text: `▶ background task ${String(r['id'])}: ${a}` })
+          else addEntry({ kind: 'error', text: `bg failed: ${r && r['error'] ? String(r['error']) : 'no response'}` })
+        })
+        return true
+      }
       case 'tasks': {
         const lines: string[] = []
         if (busy) lines.push(`● running — ${toolActivity || 'agent turn in progress'}`)
         if (queued.length) lines.push(`⏳ ${queued.length} queued prompt${queued.length === 1 ? '' : 's'}`)
-        if (!lines.length) lines.push('no active tasks')
-        addEntry({ kind: 'system', text: `Tasks:\n${lines.join('\n')}` })
+        void client?.requestControl('bg_list', {}).then((r) => {
+          const tasks = (r && (r['tasks'] as Array<{ id: string; command: string; status: string }>)) || []
+          for (const t of tasks) {
+            const icon = t.status === 'running' ? '●' : t.status === 'done' ? '✓' : t.status === 'killed' ? '⊘' : '✗'
+            lines.push(`${icon} bg ${t.id} [${t.status}] — ${t.command}`)
+          }
+          if (!lines.length) lines.push('no active tasks')
+          addEntry({ kind: 'system', text: `Tasks:\n${lines.join('\n')}` })
+        })
         return true
       }
       case 'settings': {
