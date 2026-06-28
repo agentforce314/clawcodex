@@ -179,3 +179,13 @@ test('terminal resize triggers a full reset (no stacked input boxes)', async () 
     'resize should clear screen + scrollback + home (full reset), not leave stacked frames',
   )
 })
+
+test('file index pre-warms async so file search never blocks input', async () => {
+  const { prewarmFileIndex, searchFiles } = await import('../dist/fileIndex.js')
+  await prewarmFileIndex(process.cwd()) // async walk off the render path
+  const t0 = performance.now()
+  const files = searchFiles(process.cwd(), 'App', Date.now())
+  const dt = performance.now() - t0
+  assert.ok(files.length > 0, 'should find files after prewarm')
+  assert.ok(dt < 50, `cached file search must be instant (no cold walk on the keystroke), took ${dt.toFixed(1)}ms`)
+})

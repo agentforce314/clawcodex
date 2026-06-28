@@ -26,7 +26,7 @@ import { homedir } from 'node:os'
 import { BUDDY_SPECIES, CompanionSprite } from './components/CompanionSprite.js'
 import { FileMenu } from './components/FileMenu.js'
 import { VimInput } from './components/VimInput.js'
-import { searchFiles } from './fileIndex.js'
+import { searchFiles, prewarmFileIndex } from './fileIndex.js'
 import { Spinner } from './components/Spinner.js'
 import { StatusBar } from './components/StatusBar.js'
 import { DevBar } from './components/DevBar.js'
@@ -311,6 +311,12 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const [txFind, setTxFind] = useState<string | null>(null) // fullscreen Ctrl+F find query (null = closed)
   const [vimMode, setVimMode] = useState(false) // /vim modal editing
   const [resizeKey, setResizeKey] = useState(0) // bumped on terminal resize to remount <Static> (inline)
+
+  // Warm the @-mention / file index off the render path so the first @, /open, or
+  // /files doesn't freeze input on a cold synchronous filesystem walk.
+  useEffect(() => {
+    void prewarmFileIndex(process.cwd())
+  }, [])
 
   // Fullscreen uses the terminal's alternate screen so the bounded transcript
   // viewport renders in place (no scrollback spam). Enter on mount, restore on exit.
