@@ -862,6 +862,29 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         }
         return true
       }
+      case 'hooks': {
+        if (client) {
+          void client.requestControl('list_hooks').then((r) => {
+            const h = (r?.['hooks'] as Record<string, unknown>) || {}
+            if (!Object.keys(h).length) {
+              addEntry({ kind: 'system', text: 'no hook configuration' })
+              return
+            }
+            addEntry({
+              kind: 'system',
+              text: `Hooks: ${h['enabled'] ? 'enabled' : 'disabled'} · timeout ${Number(h['timeout_ms']) || 0}ms · max ${Number(h['max_concurrent']) || 0} concurrent`,
+            })
+          })
+        }
+        return true
+      }
+      case 'upgrade': {
+        addEntry({
+          kind: 'system',
+          text: 'Update clawcodex: re-run the install script (curl … | bash) or `pip install -U clawcodex`.',
+        })
+        return true
+      }
       case 'addDir': {
         if (!arg) {
           addEntry({ kind: 'system', text: 'usage: /add-dir <path>' })
