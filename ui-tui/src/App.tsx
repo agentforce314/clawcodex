@@ -1230,6 +1230,17 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         })
         return true
       }
+      case 'btw': {
+        const q = arg.trim()
+        if (!q) {
+          addEntry({ kind: 'system', text: 'usage: /btw <question>' })
+        } else if (busy) {
+          addEntry({ kind: 'system', text: 'busy — wait for the current turn before a side question' })
+        } else {
+          dispatchPrompt(q, true) // ephemeral
+        }
+        return true
+      }
       case 'lang': {
         const lang = arg.trim()
         if (client) {
@@ -1946,10 +1957,13 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   }
 
   /** Send a prompt now and start a turn (shared by submit + queue drain). */
-  const dispatchPrompt = (text: string): void => {
+  const dispatchPrompt = (text: string, ephemeral = false): void => {
     if (!client) return
     const img = pendingImageRef.current
-    if (img) {
+    if (ephemeral) {
+      // Side question (/btw): answered with context but not saved to history.
+      client.sendEphemeralPrompt(expandPastes(text))
+    } else if (img) {
       // Multimodal: send text + image as a content-block list (inventory §1).
       pendingImageRef.current = null
       client.sendPromptBlocks([
@@ -1960,6 +1974,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
       client.sendPrompt(expandPastes(text)) // model gets the full paste; transcript shows the placeholder
     }
     if (historyRef.current[historyRef.current.length - 1] !== text) historyRef.current.push(text)
+    if (ephemeral) addEntry({ kind: 'system', text: '↪ side question — not saved to history' })
     addEntry({ kind: 'user', text })
     setStream('')
     setBusy(true)
