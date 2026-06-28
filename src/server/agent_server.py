@@ -226,6 +226,9 @@ class _AgentSession:
         if subtype == "knowledge":
             self._do_knowledge(request_id, inner.get("action"))
             return
+        if subtype == "wiki":
+            self._do_wiki(request_id, inner.get("action"), inner.get("path"))
+            return
         if subtype == "set_effort":
             effort = inner.get("effort")
             if isinstance(effort, str) and effort in ("minimal", "low", "medium", "high"):
@@ -558,6 +561,26 @@ class _AgentSession:
             self._reply(request_id, {"ok": True, "provider": name, "model": model or ""})
         except Exception as exc:  # noqa: BLE001
             logger.exception("[agent-server] set_provider failed")
+            self._reply(request_id, {"ok": False, "error": str(exc)})
+
+    def _do_wiki(self, request_id: object, action: object, path: object) -> None:
+        """/wiki: init | status | ingest <path>. File-based project wiki under
+        .clawcodex/wiki (the original's /wiki)."""
+        try:
+            from src.wiki import ingest_source, init_wiki, wiki_status
+
+            act = str(action or "status").strip().lower()
+            if act == "init":
+                self._reply(request_id, {"ok": True, **init_wiki(self.cwd)})
+            elif act == "ingest":
+                if not isinstance(path, str) or not path.strip():
+                    self._reply(request_id, {"ok": False, "error": "usage: /wiki ingest <path>"})
+                    return
+                self._reply(request_id, ingest_source(self.cwd, path.strip()))
+            else:
+                self._reply(request_id, {"ok": True, **wiki_status(self.cwd)})
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[agent-server] wiki failed")
             self._reply(request_id, {"ok": False, "error": str(exc)})
 
     def _do_knowledge(self, request_id: object, action: object) -> None:

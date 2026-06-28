@@ -546,6 +546,43 @@ async def test_control_knowledge(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_control_wiki(tmp_path):
+    """wiki control inits the structure and reports status."""
+    from src.tool_system.registry import ToolRegistry
+
+    with contextlib.ExitStack() as stack:
+        for p in _patches(_TextProvider, ToolRegistry([])):
+            stack.enter_context(p)
+        spawn = make_spawn_agent(AgentServerConfig(permission_mode="default"))
+        handle = await spawn("ds_test", str(tmp_path), None)
+        gen = handle.messages_from_agent()
+        try:
+            init = await asyncio.wait_for(gen.__anext__(), timeout=5)
+            assert init["subtype"] == "init"
+
+            async def _reply_for(rid, req):
+                await handle.send_to_agent({"type": "control_request", "request_id": rid, "request": req})
+                for _ in range(12):
+                    msg = await asyncio.wait_for(gen.__anext__(), timeout=5)
+                    if msg.get("type") == "control_response" and msg["response"].get("request_id") == rid:
+                        return msg["response"]["response"]
+                raise AssertionError(f"no reply for {rid}")
+
+            before = await _reply_for("w0", {"subtype": "wiki", "action": "status"})
+            assert before["initialized"] is False
+
+            ini = await _reply_for("w1", {"subtype": "wiki", "action": "init"})
+            assert ini["ok"] is True and len(ini["created_files"]) >= 4
+
+            after = await _reply_for("w2", {"subtype": "wiki", "action": "status"})
+            assert after["initialized"] is True and after["page_count"] == 1
+        finally:
+            await handle.shutdown()
+            with contextlib.suppress(Exception):
+                await gen.aclose()
+
+
+@pytest.mark.asyncio
 async def test_interrupt_trips_abort(tmp_path):
     """An interrupt control_request must trip the in-flight turn's abort."""
     from src.permissions.types import PermissionPassthroughResult
