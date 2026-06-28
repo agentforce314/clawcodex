@@ -19,6 +19,7 @@ import { render } from 'ink'
 import React from 'react'
 import { App } from './App.js'
 import { createSession } from './client.js'
+import { startStallDetector } from './perfDebug.js'
 import { StdioTransport, WsTransport, type Transport } from './transport.js'
 
 interface Args {
@@ -101,6 +102,7 @@ async function main(): Promise<void> {
     })
   }
 
+  startStallDetector() // opt-in (CLAWCODEX_DEBUG_PERF=1): logs event-loop stalls
   const { waitUntilExit } = render(<App transport={transport} serverLabel={serverLabel} />)
   await waitUntilExit()
   dispose?.()
