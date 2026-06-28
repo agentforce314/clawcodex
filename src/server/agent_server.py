@@ -174,7 +174,7 @@ class _AgentSession:
         """Route one client → server message. Runs on the main asyncio loop."""
         msg_type = msg.get("type")
         if msg_type == "user":
-            self._inbox.put(_extract_prompt_text(msg))
+            self._inbox.put(_extract_prompt_content(msg))  # str, or blocks for multimodal
             return
         if msg_type == "control_response":
             self._resolve_permission(msg)
@@ -966,11 +966,12 @@ class _AgentSession:
             item = self._inbox.get()
             if item is _SHUTDOWN or self._stop.is_set():
                 break
-            assert isinstance(item, str)
+            if not isinstance(item, (str, list)):  # str prompt, or multimodal blocks
+                continue
             self._run_turn(item)
         self._close_stream()
 
-    def _run_turn(self, prompt: str) -> None:
+    def _run_turn(self, prompt) -> None:  # prompt: str | list[ContentBlock] (multimodal)
         from src.query.agent_loop_compat import run_query_as_agent_loop
 
         if self.init_error is not None:
@@ -1436,6 +1437,22 @@ def _extract_prompt_text(msg: dict) -> str:
                 parts.append(block)
         return "".join(parts)
     return str(content) if content is not None else ""
+
+
+def _extract_prompt_content(msg: dict):
+    """Like ``_extract_prompt_text`` but PRESERVES a content-block list when it
+    carries non-text blocks (e.g. images) so multimodal input flows through to
+    ``add_user_message`` (MessageContent = str | list[ContentBlock]). Text-only
+    content still collapses to a plain string (the common path)."""
+    message = msg.get("message")
+    content = message.get("content") if isinstance(message, dict) else msg.get("content")
+    if isinstance(content, list):
+        has_nontext = any(
+            isinstance(b, dict) and b.get("type") not in (None, "text") for b in content
+        )
+        if has_nontext:
+            return content  # keep blocks intact (images, etc.)
+    return _extract_prompt_text(msg)
 
 
 def _tool_schemas(registry: Any) -> list[dict[str, Any]]:
