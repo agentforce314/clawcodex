@@ -1114,6 +1114,17 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         })
         return true
       }
+      case 'thinking': {
+        const a = arg.trim().toLowerCase()
+        const action = a === 'on' || a === 'off' ? a : 'toggle'
+        if (client) {
+          void client.requestControl('set_thinking', { action }).then((r) => {
+            const on = !!(r && r['thinking'])
+            addEntry({ kind: 'system', text: `extended thinking ${on ? 'on' : 'off'}` })
+          })
+        }
+        return true
+      }
       case 'prComments': {
         // Show the current branch's PR + comments via gh (the original's pr_comments).
         exec('gh pr view --comments', { cwd: process.cwd(), timeout: 15_000, maxBuffer: 512 * 1024 }, (err, stdout) => {
