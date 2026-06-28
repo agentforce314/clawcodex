@@ -845,6 +845,17 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         }
         return true
       }
+      case 'files': {
+        const files = searchFiles(process.cwd(), '', Date.now())
+        if (!files.length) {
+          addEntry({ kind: 'system', text: 'no files found' })
+          return true
+        }
+        const shown = files.slice(0, 30)
+        const more = files.length > shown.length ? ` (showing 30)` : ''
+        addEntry({ kind: 'system', text: `Files${more}:\n${shown.join('\n')}` })
+        return true
+      }
       case 'skills': {
         if (client) {
           void client.requestControl('list_skills').then((r) => {
