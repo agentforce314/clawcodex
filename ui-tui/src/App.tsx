@@ -271,6 +271,8 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const bashAllowPrefixRef = useRef<Set<string>>(new Set()) // Bash command prefixes auto-allowed (granular)
   const pendingImageRef = useRef<{ data: string; media_type: string; name: string } | null>(null) // /image attachment
   const fastModeRef = useRef<string | null>(null) // /fast: prev model while fast mode is on
+  const resumeSessionsRef = useRef<Record<string, unknown>[]>([]) // all sessions, for TagTabs filter
+  const [resumeAll, setResumeAll] = useState(false) // TagTabs (§6): all-projects vs this-project
   const [fastMode, setFastMode] = useState(false) // FastIcon (§7) — ⚡ in the footer
   const [effort, setEffort] = useState('') // EffortCallout (§7) — reasoning effort in the footer
   const [permFeedback, setPermFeedback] = useState<string | null>(null) // Tab-to-amend feedback field
@@ -536,6 +538,27 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     client?.sendControl('set_permission_mode', { mode })
     setMode(mode)
     addEntry({ kind: 'system', text: `mode → ${mode}` })
+  }
+
+  // TagTabs (§6): (re)build the resume picker filtered to all / this project.
+  const openResumePicker = (all: boolean): void => {
+    const cwd = process.cwd()
+    const list = all
+      ? resumeSessionsRef.current
+      : resumeSessionsRef.current.filter((s) => String(s['cwd'] || '') === cwd)
+    const options = list.map((s) => {
+      const prev = String(s['name'] || s['preview'] || '(no preview)').slice(0, 50)
+      const age = relAge(Number(s['updated_at']) || 0)
+      return `${prev}  ·  ${Number(s['message_count']) || 0} msgs${age ? `  ·  ${age}` : ''}`
+    })
+    const values = list.map((s) => String(s['session_id']))
+    setPicker({
+      kind: 'resume',
+      title: `Resume — ${all ? 'all projects' : 'this project'} (Tab to toggle)`,
+      options,
+      values,
+      sel: 0,
+    })
   }
 
   const setStream = (s: string) => {
@@ -937,6 +960,13 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     }
     // Interactive picker (/mode, /theme): arrow-navigate, Enter picks, Esc cancels.
     if (picker) {
+      if (picker.kind === 'resume' && key.tab) {
+        // TagTabs (§6): toggle all-projects / this-project filter.
+        const next = !resumeAll
+        setResumeAll(next)
+        openResumePicker(next)
+        return
+      }
       if (key.upArrow) {
         setPicker((p) => (p ? { ...p, sel: (p.sel - 1 + p.options.length) % p.options.length } : p))
         return
@@ -1863,13 +1893,12 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
               addEntry({ kind: 'system', text: 'no saved sessions' })
               return
             }
-            const options = sessions.map((s) => {
-              const prev = String(s['name'] || s['preview'] || '(no preview)').slice(0, 50)
-              const age = relAge(Number(s['updated_at']) || 0)
-              return `${prev}  ·  ${Number(s['message_count']) || 0} msgs${age ? `  ·  ${age}` : ''}`
-            })
-            const values = sessions.map((s) => String(s['session_id']))
-            setPicker({ kind: 'resume', title: 'Resume session', options, values, sel: 0 })
+            resumeSessionsRef.current = sessions
+            // Default to this-project; fall back to all if none here (TagTabs, §6).
+            const here = sessions.filter((s) => String(s['cwd'] || '') === process.cwd())
+            const all = !here.length
+            setResumeAll(all)
+            openResumePicker(all)
           })
         }
         return true
