@@ -247,6 +247,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const streamRef = useRef('') // source of truth for the live buffer (no stale closures)
   const [permissions, setPermissions] = useState<PendingPermission[]>([]) // FIFO queue
   const alwaysAllowRef = useRef<Set<string>>(new Set()) // tools the user said "don't ask again"
+  const pendingImageRef = useRef<{ data: string; media_type: string; name: string } | null>(null) // /image attachment
   const [permFeedback, setPermFeedback] = useState<string | null>(null) // Tab-to-amend feedback field
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
@@ -1100,6 +1101,34 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         })
         return true
       }
+      case 'image': {
+        const p = arg.trim()
+        if (!p) {
+          addEntry({ kind: 'system', text: 'usage: /image <path>' })
+          return true
+        }
+        try {
+          const buf = readFileSync(p)
+          const ext = (p.toLowerCase().split('.').pop() || '').trim()
+          const media =
+            ext === 'png'
+              ? 'image/png'
+              : ext === 'gif'
+                ? 'image/gif'
+                : ext === 'webp'
+                  ? 'image/webp'
+                  : 'image/jpeg'
+          const name = p.split('/').pop() || p
+          pendingImageRef.current = { data: buf.toString('base64'), media_type: media, name }
+          addEntry({
+            kind: 'system',
+            text: `📎 image attached: ${name} (${Math.round(buf.length / 1024)} KB) — sent with your next message`,
+          })
+        } catch (e) {
+          addEntry({ kind: 'error', text: `image read failed: ${(e as Error).message}` })
+        }
+        return true
+      }
       case 'bg': {
         const a = arg.trim()
         if (a.toLowerCase().startsWith('kill ')) {
@@ -1628,7 +1657,17 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   /** Send a prompt now and start a turn (shared by submit + queue drain). */
   const dispatchPrompt = (text: string): void => {
     if (!client) return
-    client.sendPrompt(expandPastes(text)) // model gets the full paste; transcript shows the placeholder
+    const img = pendingImageRef.current
+    if (img) {
+      // Multimodal: send text + image as a content-block list (inventory §1).
+      pendingImageRef.current = null
+      client.sendPromptBlocks([
+        { type: 'text', text: expandPastes(text) },
+        { type: 'image', source: { type: 'base64', media_type: img.media_type, data: img.data } },
+      ])
+    } else {
+      client.sendPrompt(expandPastes(text)) // model gets the full paste; transcript shows the placeholder
+    }
     if (historyRef.current[historyRef.current.length - 1] !== text) historyRef.current.push(text)
     addEntry({ kind: 'user', text })
     setStream('')
