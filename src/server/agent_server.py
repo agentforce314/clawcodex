@@ -246,6 +246,23 @@ class _AgentSession:
         if subtype == "branch":
             self._do_branch(request_id)
             return
+        if subtype == "list_skills":
+            skills: list[dict] = []
+            total = 0
+            try:
+                from src.skills.loader import get_all_skills
+
+                all_s = list(get_all_skills(project_root=self.cwd))
+                total = len(all_s)
+                for s in all_s[:120]:
+                    skills.append({
+                        "name": getattr(s, "name", "") or "",
+                        "description": str(getattr(s, "description", "") or "")[:80],
+                    })
+            except Exception:  # noqa: BLE001
+                logger.debug("[agent-server] list_skills failed", exc_info=True)
+            self._reply(request_id, {"skills": skills, "total": total})
+            return
         if subtype == "list_agents":
             agents: list[dict] = []
             try:
