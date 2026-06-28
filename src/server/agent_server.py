@@ -1650,6 +1650,7 @@ def _list_saved_sessions(limit: int = 20) -> list[dict]:
                 "name": data.get("name") or "",
                 "message_count": data.get("message_count", 0),
                 "model": data.get("model", ""),
+                "cwd": data.get("cwd", ""),  # for the TagTabs project filter
             })
         out.sort(key=lambda s: s.get("updated_at", 0), reverse=True)
     except Exception:  # noqa: BLE001
