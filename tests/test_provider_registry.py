@@ -183,7 +183,7 @@ class TestKeylessLocalProviders(unittest.TestCase):
         for pid in ("together", "moonshot", "nvidia-nim"):
             self.assertTrue(provider_requires_api_key(pid), pid)
 
-    @patch("src.providers.openai_compatible_specs.OpenAI")
+    @patch("openai.OpenAI")  # deferred import in _create_client → patch at source
     def test_empty_key_becomes_placeholder(self, mock_openai):
         # A keyless local provider must not pass an empty key to the SDK (which
         # would silently fall through to the OPENAI_API_KEY env lookup).
@@ -195,7 +195,7 @@ class TestKeylessLocalProviders(unittest.TestCase):
 
 
 class TestSpecProviderChat(unittest.TestCase):
-    @patch("src.providers.openai_compatible_specs.OpenAI")
+    @patch("openai.OpenAI")  # deferred import in _create_client → patch at source
     def test_chat_uses_openai_compatible_path(self, mock_openai):
         mock_client = MagicMock()
         mock_response = MagicMock()
@@ -221,6 +221,28 @@ class TestSpecProviderChat(unittest.TestCase):
         # The configured base URL reached the SDK client.
         self.assertEqual(
             mock_openai.call_args.kwargs["base_url"], "https://api.together.xyz/v1"
+        )
+
+
+class TestColdStartImports(unittest.TestCase):
+    def test_openai_not_imported_at_cold_start(self):
+        """`openai` (hundreds of submodules) must stay OFF the agent-server
+        cold-start import path — it's deferred to first client creation in
+        ``openai_compatible_specs._create_client``. Eagerly importing it again
+        would re-add ~300ms (and a lot of cold-cache disk I/O) to launch, which
+        is the window users feel as first-keystroke lag.
+        """
+        import os
+        import subprocess
+        import sys
+
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        code = "import sys; import src.cli; raise SystemExit(1 if 'openai' in sys.modules else 0)"
+        result = subprocess.run([sys.executable, "-c", code], cwd=repo, capture_output=True)
+        self.assertEqual(
+            result.returncode,
+            0,
+            "openai must not be imported when src.cli loads (keep it lazy)",
         )
 
 
