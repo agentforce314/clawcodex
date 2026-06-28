@@ -295,7 +295,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const pasteCounter = useRef(0)
   // Interactive select picker (the original's CustomSelect) for /mode, /theme.
   const [picker, setPicker] = useState<{
-    kind: 'mode' | 'theme' | 'model' | 'resume' | 'rewindpick' | 'historyrecall' | 'settings'
+    kind: 'mode' | 'theme' | 'model' | 'resume' | 'rewindpick' | 'historyrecall' | 'settings' | 'difffile'
     title: string
     options: string[]
     /** Optional value per option (e.g. session_id); falls back to the label. */
@@ -401,12 +401,16 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   }
 
   const applyPick = (
-    kind: 'mode' | 'theme' | 'model' | 'resume' | 'rewindpick' | 'historyrecall' | 'settings',
+    kind: 'mode' | 'theme' | 'model' | 'resume' | 'rewindpick' | 'historyrecall' | 'settings' | 'difffile',
     value: string,
   ): void => {
     if (!value) return
     if (kind === 'rewindpick') {
       requestRewind(Number(value) || 1)
+      return
+    }
+    if (kind === 'difffile') {
+      runBang(`git --no-pager diff -- '${value.replace(/'/g, "'\\''")}'`)
       return
     }
     if (kind === 'historyrecall') {
@@ -937,7 +941,17 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         return true
       }
       case 'diff': {
-        runBang('git --no-pager diff')
+        // DiffDialog (§4): with >1 changed file, pick one to view; else dump.
+        exec('git diff --name-only', { cwd: process.cwd(), timeout: 10_000, maxBuffer: 256 * 1024 }, (err, stdout) => {
+          const files = `${stdout || ''}`.split('\n').map((s) => s.trim()).filter(Boolean)
+          if (!files.length) {
+            addEntry({ kind: 'system', text: 'no working-tree changes' })
+          } else if (files.length === 1) {
+            runBang(`git --no-pager diff -- '${(files[0] as string).replace(/'/g, "'\\''")}'`)
+          } else {
+            setPicker({ kind: 'difffile', title: `Changed files (${files.length})`, options: files, sel: 0 })
+          }
+        })
         return true
       }
       case 'stats': {
