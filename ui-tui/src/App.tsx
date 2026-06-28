@@ -1000,6 +1000,14 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         addEntry({ kind: 'system', text: 'Claude Code stickers: https://www.stickermule.com/claudecode' })
         return true
       }
+      case 'tasks': {
+        const lines: string[] = []
+        if (busy) lines.push(`● running — ${toolActivity || 'agent turn in progress'}`)
+        if (queued.length) lines.push(`⏳ ${queued.length} queued prompt${queued.length === 1 ? '' : 's'}`)
+        if (!lines.length) lines.push('no active tasks')
+        addEntry({ kind: 'system', text: `Tasks:\n${lines.join('\n')}` })
+        return true
+      }
       case 'settings': {
         const opts = ['model', 'mode', 'theme', 'effort', 'provider']
         setPicker({ kind: 'settings', title: 'Settings (select to change)', options: opts, sel: 0 })
