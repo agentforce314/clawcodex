@@ -53,6 +53,14 @@ function ToolResult({
   if (!expanded && lines.length > 6 && numbered >= lines.length * 0.6) {
     return <Text color={theme.dim}>{`  ⎿ Read ${lines.length} lines (ctrl+o to expand)`}</Text>
   }
+  // Web search results are a few very long lines (result JSON) that wrap to
+  // dozens of rows. Collapse to a one-line summary — the original's WebSearch
+  // renderToolResultMessage shows only chrome, never the results. Full text
+  // stays available via ctrl+o (and the model always receives the full result).
+  if (!expanded && lines[0]?.startsWith('Web search results for query:')) {
+    const q = (lines[0].match(/"(.*)"/)?.[1] ?? '').slice(0, 60)
+    return <Text color={theme.dim}>{`  ⎿ 🔍 web search${q ? `: ${q}` : ''} (ctrl+o to expand)`}</Text>
+  }
   const shown = lines.slice(0, max)
   const extra = lines.length - shown.length
   return (
