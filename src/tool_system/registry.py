@@ -78,6 +78,10 @@ class ToolRegistry:
     def __init__(self, tools: Iterable[Tool] | None = None) -> None:
         self._tools: Tools = []
         self._by_name: dict[str, Tool] = {}
+        # MCP servers whose tools are hidden (the original's MCPServerMultiselect-
+        # Dialog). A tool named ``mcp__<server>__<tool>`` is hidden when <server>
+        # is in this set — so list_tools() (the agent's view) excludes it.
+        self.disabled_servers: set[str] = set()
         if tools:
             for tool in tools:
                 self.register(tool)
@@ -98,7 +102,17 @@ class ToolRegistry:
         return self._by_name.get(name.lower())
 
     def list_tools(self) -> Tools:
+        """Tools visible to the agent — excludes disabled-MCP-server tools."""
+        if not self.disabled_servers:
+            return list(self._tools)
+        return [t for t in self._tools if not self._server_disabled(t.name)]
+
+    def all_tools(self) -> Tools:
+        """Every registered tool, including hidden ones (for the multiselect UI)."""
         return list(self._tools)
+
+    def _server_disabled(self, tool_name: str) -> bool:
+        return any(tool_name.startswith(f"mcp__{s}__") for s in self.disabled_servers)
 
     def dispatch(self, call: ToolCall, context: ToolContext) -> ToolResult:
         tool = self._by_name.get(call.name.lower())
