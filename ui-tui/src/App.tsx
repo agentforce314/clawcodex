@@ -248,6 +248,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const [permissions, setPermissions] = useState<PendingPermission[]>([]) // FIFO queue
   const alwaysAllowRef = useRef<Set<string>>(new Set()) // tools the user said "don't ask again"
   const pendingImageRef = useRef<{ data: string; media_type: string; name: string } | null>(null) // /image attachment
+  const fastModeRef = useRef<string | null>(null) // /fast: prev model while fast mode is on
   const [permFeedback, setPermFeedback] = useState<string | null>(null) // Tab-to-amend feedback field
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
@@ -1098,6 +1099,32 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
           const ents = (r['entities'] as Array<{ name: string; type: string; count: number }>) || []
           const lines = ents.map((e) => `  ${e.type === 'file' ? '📄' : e.type === 'url' ? '🔗' : '◆'} ${e.name} ·${e.count}`)
           addEntry({ kind: 'system', text: lines.length ? `${head}\n${lines.join('\n')}` : head })
+        })
+        return true
+      }
+      case 'fast': {
+        // Toggle a faster model (the original's /fast). Heuristic: pick a model
+        // whose name reads "fast" from the provider's available list.
+        void client?.requestControl('get_settings', {}).then((r) => {
+          const models = ((r && (r['available_models'] as string[])) || []).filter(Boolean)
+          const cur = String((r && r['model']) || model)
+          if (fastModeRef.current) {
+            const prev = fastModeRef.current
+            fastModeRef.current = null
+            client?.sendControl('set_model', { model: prev })
+            setModel(prev)
+            addEntry({ kind: 'system', text: `fast mode off — model → ${prev}` })
+            return
+          }
+          const fast = models.find((m) => /haiku|mini|flash|turbo|lite|small|fast/i.test(m) && m !== cur)
+          if (!fast) {
+            addEntry({ kind: 'system', text: 'no faster model available in this provider' })
+            return
+          }
+          fastModeRef.current = cur
+          client?.sendControl('set_model', { model: fast })
+          setModel(fast)
+          addEntry({ kind: 'system', text: `⚡ fast mode on — model → ${fast}` })
         })
         return true
       }
