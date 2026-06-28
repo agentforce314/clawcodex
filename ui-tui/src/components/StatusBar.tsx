@@ -21,6 +21,8 @@ interface Props {
   busy: boolean
   context?: ContextUsage | null
   cost?: number
+  fast?: boolean // FastIcon (§7): ⚡ when fast mode is on
+  effort?: string // EffortCallout (§7): reasoning effort level when set
 }
 
 const MODE_COLOR: Record<string, string | undefined> = {
@@ -43,7 +45,7 @@ function ctxColor(pct: number): string {
   return theme.dim
 }
 
-export function StatusBar({ connected, model, mode, busy, context, cost }: Props): React.ReactElement {
+export function StatusBar({ connected, model, mode, busy, context, cost, fast, effort }: Props): React.ReactElement {
   const dot = !connected ? theme.dim : busy ? theme.warn : theme.success
   const modeColor = MODE_COLOR[mode] ?? theme.dim
   return (
@@ -59,10 +61,12 @@ export function StatusBar({ connected, model, mode, busy, context, cost }: Props
             <Text color={theme.dim}>{` (${fmtK(context.totalTokens)}/${fmtK(context.maxTokens)}) · `}</Text>
           </>
         ) : null}
+        {fast ? <Text color={theme.accent}>{'⚡ '}</Text> : null}
         <Text color={dot}>{'● '}</Text>
         <Text color={theme.dim}>{model}</Text>
         <Text color={theme.dim}>{' · '}</Text>
         <Text color={modeColor}>{mode}</Text>
+        {effort ? <Text color={theme.dim}>{` · ${effort}`}</Text> : null}
       </Box>
     </Box>
   )

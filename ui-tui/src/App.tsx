@@ -271,6 +271,8 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const bashAllowPrefixRef = useRef<Set<string>>(new Set()) // Bash command prefixes auto-allowed (granular)
   const pendingImageRef = useRef<{ data: string; media_type: string; name: string } | null>(null) // /image attachment
   const fastModeRef = useRef<string | null>(null) // /fast: prev model while fast mode is on
+  const [fastMode, setFastMode] = useState(false) // FastIcon (§7) — ⚡ in the footer
+  const [effort, setEffort] = useState('') // EffortCallout (§7) — reasoning effort in the footer
   const [permFeedback, setPermFeedback] = useState<string | null>(null) // Tab-to-amend feedback field
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
@@ -1410,6 +1412,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
           if (fastModeRef.current) {
             const prev = fastModeRef.current
             fastModeRef.current = null
+            setFastMode(false)
             client?.sendControl('set_model', { model: prev })
             setModel(prev)
             addEntry({ kind: 'system', text: `fast mode off — model → ${prev}` })
@@ -1421,6 +1424,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
             return
           }
           fastModeRef.current = cur
+          setFastMode(true)
           client?.sendControl('set_model', { model: fast })
           setModel(fast)
           addEntry({ kind: 'system', text: `⚡ fast mode on — model → ${fast}` })
@@ -1634,10 +1638,9 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
       case 'effort': {
         if (client) {
           void client.requestControl('set_effort', { effort: arg }).then((r) => {
-            addEntry({
-              kind: 'system',
-              text: `reasoning effort → ${r && r['effort'] ? String(r['effort']) : 'default'}`,
-            })
+            const lvl = r && r['effort'] ? String(r['effort']) : ''
+            setEffort(lvl && lvl !== 'default' ? `effort:${lvl}` : '') // EffortCallout (§7)
+            addEntry({ kind: 'system', text: `reasoning effort → ${lvl || 'default'}` })
           })
         }
         return true
@@ -2612,6 +2615,8 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         busy={busy}
         context={contextUsage}
         cost={sessionCost}
+        fast={fastMode}
+        effort={effort}
       />
     </Box>
   )
