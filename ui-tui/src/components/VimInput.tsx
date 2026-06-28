@@ -83,6 +83,7 @@ export function VimInput({
   const [pendingOp, setPendingOp] = useState<string | null>(null) // operator-pending: d/c/y
   const [pendingFind, setPendingFind] = useState<string | null>(null) // f/F/t/T/r awaiting a char
   const [pendingTextObj, setPendingTextObj] = useState<{ op: string; around: boolean } | null>(null)
+  const [count, setCount] = useState('') // numeric count prefix (e.g. 3 in 3w)
   const clamp = (c: number, max = value.length): number => Math.max(0, Math.min(max, c))
 
   // readline undo (Ctrl+_): track each value change as an undo step. The effect
@@ -269,6 +270,14 @@ export function VimInput({
           if (op === 'c') setNormal(false)
           return
         }
+        // Count prefix: accumulate digits (0 is a count digit only mid-count;
+        // a leading 0 is the line-start motion).
+        if (/^[0-9]$/.test(input) && (count !== '' || input !== '0')) {
+          setCount(count + input)
+          return
+        }
+        const n = Math.max(1, parseInt(count || '1', 10))
+        if (count) setCount('') // consume the count for this command
         if (input === 'd' || input === 'c' || input === 'y') return setPendingOp(input)
         if (input === 'f' || input === 'F' || input === 't' || input === 'T' || input === 'r') {
           return setPendingFind(input)
@@ -286,13 +295,25 @@ export function VimInput({
           setCursor(0)
           return setNormal(false)
         }
-        if (input === 'h' || key.leftArrow) return setCursor((c) => clamp(c - 1))
-        if (input === 'l' || key.rightArrow) return setCursor((c) => clamp(c + 1))
+        if (input === 'h' || key.leftArrow) return setCursor((c) => clamp(c - n))
+        if (input === 'l' || key.rightArrow) return setCursor((c) => clamp(c + n))
         if (input === '0') return setCursor(0)
         if (input === '$') return setCursor(Math.max(0, value.length - 1))
-        if (input === 'w') return setCursor(nextWord(value, cursor))
-        if (input === 'b') return setCursor(prevWord(value, cursor))
-        if (input === 'e') return setCursor(endWord(value, cursor))
+        if (input === 'w') {
+          let t = cursor
+          for (let i = 0; i < n; i++) t = nextWord(value, t)
+          return setCursor(t)
+        }
+        if (input === 'b') {
+          let t = cursor
+          for (let i = 0; i < n; i++) t = prevWord(value, t)
+          return setCursor(t)
+        }
+        if (input === 'e') {
+          let t = cursor
+          for (let i = 0; i < n; i++) t = endWord(value, t)
+          return setCursor(t)
+        }
         if (input === '^') {
           const fnb = value.search(/\S/)
           return setCursor(fnb >= 0 ? fnb : 0)
@@ -300,9 +321,9 @@ export function VimInput({
         if (input === 'G') return setCursor(Math.max(0, value.length - 1))
         if (input === 'x') {
           if (value) {
-            vimReg.current = value[cursor] ?? ''
-            onChange(value.slice(0, cursor) + value.slice(cursor + 1))
-            setCursor((c) => clamp(c, Math.max(0, value.length - 2)))
+            vimReg.current = value.slice(cursor, cursor + n)
+            onChange(value.slice(0, cursor) + value.slice(cursor + n))
+            setCursor((c) => clamp(c, Math.max(0, value.length - n - 1)))
           }
           return
         }
