@@ -43,3 +43,35 @@ export function trustFolder(cwd: string): void {
 export function untrustFolder(cwd: string): void {
   save(load().filter((p) => p !== cwd))
 }
+
+/**
+ * MCP server approval (the original's MCP server-trust dialog, §6): remember which
+ * MCP servers the user has approved. Stored at ~/.clawcodex/trusted-mcp.json.
+ */
+const MCP_TRUST_FILE = join(homedir(), '.clawcodex', 'trusted-mcp.json')
+
+function loadMcp(): string[] {
+  try {
+    const v = JSON.parse(readFileSync(MCP_TRUST_FILE, 'utf8'))
+    return Array.isArray(v) ? v.map(String) : []
+  } catch {
+    return []
+  }
+}
+
+export function isMcpTrusted(name: string): boolean {
+  return loadMcp().includes(name)
+}
+
+export function trustMcp(name: string): void {
+  const list = loadMcp()
+  if (!list.includes(name)) {
+    list.push(name)
+    try {
+      mkdirSync(dirname(MCP_TRUST_FILE), { recursive: true })
+      writeFileSync(MCP_TRUST_FILE, JSON.stringify(list), 'utf8')
+    } catch {
+      /* best-effort */
+    }
+  }
+}
