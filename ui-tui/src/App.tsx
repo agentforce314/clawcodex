@@ -33,6 +33,7 @@ import { AgentProgressLine, type AgentLine } from './components/AgentProgressLin
 import { READ_LIKE, TOOL_VERB, toolActivityLabel } from './toolMeta.js'
 import { messageToEntries, streamDeltaText, streamThinkingDelta, type TranscriptEntry } from './sdkMessageAdapter.js'
 import { matchSlash, resolveSlash } from './slashCommands.js'
+import { LOGO_PALETTES, setLogoPalette, getLogoPalette } from './components/Logo.js'
 import { parseProtocolMajor, SUPPORTED_PROTOCOL_MAJOR } from './protocol.js'
 import { applyTheme, currentThemeName, theme } from './theme.js'
 
@@ -323,6 +324,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
       | 'difffile'
       | 'outputstyle'
       | 'openfile'
+      | 'logopalette'
     title: string
     options: string[]
     /** Optional value per option (e.g. session_id); falls back to the label. */
@@ -438,10 +440,22 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
       | 'settings'
       | 'difffile'
       | 'outputstyle'
-      | 'openfile',
+      | 'openfile'
+      | 'logopalette',
     value: string,
   ): void => {
     if (!value) return
+    if (kind === 'logopalette') {
+      setLogoPalette(value)
+      // Re-show the banner so the new gradient is visible immediately.
+      addEntry({
+        kind: 'banner',
+        text: '',
+        bannerData: bannerDataRef.current ?? { model, mode, tools: 0, cwd: process.cwd() },
+      })
+      addEntry({ kind: 'system', text: `logo palette → ${value}` })
+      return
+    }
     if (kind === 'openfile') {
       // Insert the chosen file as an @-mention (the original's QuickOpen).
       setInput((prev) => (prev ? `${prev}@${value} ` : `@${value} `))
@@ -1572,10 +1586,15 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         return true
       }
       case 'logo': {
-        addEntry({
-          kind: 'banner',
-          text: '',
-          bannerData: bannerDataRef.current ?? { model, mode, tools: 0, cwd: process.cwd() },
+        // LogoPicker (§6/§7): pick a gradient palette for the wordmark. Re-shows
+        // the banner with the chosen palette on select.
+        const names = Object.keys(LOGO_PALETTES)
+        const cur = getLogoPalette()
+        setPicker({
+          kind: 'logopalette',
+          title: `Logo palette (current: ${cur})`,
+          options: names,
+          sel: Math.max(0, names.indexOf(cur)),
         })
         return true
       }
