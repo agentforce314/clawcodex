@@ -43,6 +43,7 @@ export interface SlashCommand {
     | 'reloadPlugins'
     | 'buddy'
     | 'stickers'
+    | 'search'
     | 'diff'
     | 'stats'
     | 'prompt'
@@ -97,6 +98,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/reload-plugins', description: 'Reload plugins from disk', kind: 'reloadPlugins' },
   { name: '/buddy', description: 'Toggle the companion sprite: /buddy [cat|duck|blob|off]', kind: 'buddy' },
   { name: '/stickers', description: 'Where to get Claude Code stickers', kind: 'stickers' },
+  { name: '/search', description: 'Search file contents (ripgrep): /search <query>', kind: 'search' },
   { name: '/config', description: 'Show model, mode, and available models', kind: 'config' },
   { name: '/diff', description: 'Show the working-tree git diff', kind: 'diff' },
   { name: '/stats', description: 'Show session statistics', kind: 'stats' },
