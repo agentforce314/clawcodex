@@ -141,9 +141,11 @@ function ContextView({ data }: { data: NonNullable<TranscriptEntry['contextData'
 export function Message({
   entry,
   expanded,
+  timestamp,
 }: {
   entry: TranscriptEntry
   expanded?: boolean
+  timestamp?: string
 }): React.ReactElement | null {
   switch (entry.kind) {
     case 'banner':
@@ -158,6 +160,7 @@ export function Message({
           </Box>
           <Box flexGrow={1}>
             <Text backgroundColor={theme.userBg}> {entry.text} </Text>
+            {timestamp ? <Text color={theme.dim}> {timestamp}</Text> : null}
           </Box>
         </Box>
       )
@@ -168,6 +171,7 @@ export function Message({
             <Text color={theme.assistant}>⏺</Text>
           </Box>
           <Box flexDirection="column" flexGrow={1}>
+            {timestamp ? <Text color={theme.dim}>{timestamp}</Text> : null}
             <Markdown text={entry.text} />
           </Box>
         </Box>

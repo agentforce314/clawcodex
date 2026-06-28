@@ -54,6 +54,8 @@ export interface TranscriptEntry {
   id: string
   kind: EntryKind
   text: string
+  /** wall-clock ms when the entry was added (for the optional MessageTimestamp, §3). */
+  ts?: number
   /** tool calls only: the tool name + a compact one-line args preview. */
   toolName?: string
   argsText?: string
