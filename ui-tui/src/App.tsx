@@ -655,6 +655,15 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
       setThemeVersion((v) => v + 1) // force a re-render
       return
     }
+    // Shift+Tab: cycle permission mode (the original's mode cycle, §5/§8).
+    if (key.tab && key.shift) {
+      const modes = ['default', 'acceptEdits', 'plan', 'bypassPermissions']
+      const next = modes[(modes.indexOf(mode) + 1) % modes.length] as string
+      client?.sendControl('set_permission_mode', { mode: next })
+      setMode(next)
+      addEntry({ kind: 'system', text: `mode → ${next}` })
+      return
+    }
     // Fullscreen Ctrl+F transcript find.
     if (FULLSCREEN && txFind !== null) {
       if (key.escape || key.return) {
