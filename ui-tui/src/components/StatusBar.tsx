@@ -23,6 +23,7 @@ interface Props {
   cost?: number
   fast?: boolean // FastIcon (§7): ⚡ when fast mode is on
   effort?: string // EffortCallout (§7): reasoning effort level when set
+  prBadge?: string // PrBadge (§7): current branch's PR (e.g. "#42")
 }
 
 const MODE_COLOR: Record<string, string | undefined> = {
@@ -45,7 +46,7 @@ function ctxColor(pct: number): string {
   return theme.dim
 }
 
-export function StatusBar({ connected, model, mode, busy, context, cost, fast, effort }: Props): React.ReactElement {
+export function StatusBar({ connected, model, mode, busy, context, cost, fast, effort, prBadge }: Props): React.ReactElement {
   const dot = !connected ? theme.dim : busy ? theme.warn : theme.success
   const modeColor = MODE_COLOR[mode] ?? theme.dim
   return (
@@ -61,6 +62,7 @@ export function StatusBar({ connected, model, mode, busy, context, cost, fast, e
             <Text color={theme.dim}>{` (${fmtK(context.totalTokens)}/${fmtK(context.maxTokens)}) · `}</Text>
           </>
         ) : null}
+        {prBadge ? <Text color={theme.dim}>{`⊟ ${prBadge} · `}</Text> : null}
         {fast ? <Text color={theme.accent}>{'⚡ '}</Text> : null}
         <Text color={dot}>{'● '}</Text>
         <Text color={theme.dim}>{model}</Text>
