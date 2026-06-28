@@ -58,6 +58,7 @@ export interface SlashCommand {
     | 'fast'
     | 'open'
     | 'trust'
+    | 'mcpTrust'
     | 'diff'
     | 'stats'
     | 'prompt'
@@ -94,6 +95,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/export', description: 'Save the transcript to a markdown file', kind: 'export' },
   { name: '/copy', description: "Copy the last response to the clipboard", kind: 'copy' },
   { name: '/mcp', description: 'List connected MCP servers and their tools', kind: 'mcp' },
+  { name: '/mcp-trust', description: 'Approve the connected MCP servers', kind: 'mcpTrust' },
   { name: '/permissions', description: 'Show active permission mode and rules', kind: 'permissions' },
   { name: '/agents', description: 'List available subagent types', kind: 'agents' },
   { name: '/skills', description: 'List available skills', kind: 'skills' },
