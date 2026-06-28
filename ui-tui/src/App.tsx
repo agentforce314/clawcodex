@@ -1529,6 +1529,12 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   }
 
   const onSubmit = (value: string): void => {
+    // Trailing-backslash line continuation (the original's multiline input):
+    // a line ending in `\` + Enter inserts a newline instead of submitting.
+    if (value.endsWith('\\') && !slashOpen && !atOpen) {
+      setInput(`${value.slice(0, -1)}\n`)
+      return
+    }
     const text = value.trim()
     if (!text) return
     // Enter while the @-file menu is open completes the highlighted path
