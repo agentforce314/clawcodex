@@ -248,6 +248,8 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const [streaming, setStreaming] = useState('')
   const streamRef = useRef('') // source of truth for the live buffer (no stale closures)
   const [permissions, setPermissions] = useState<PendingPermission[]>([]) // FIFO queue
+  // MCP elicitation form (a server requested user input, §6).
+  const [elicit, setElicit] = useState<{ requestId: string; message: string; field: string; value: string } | null>(null)
   const alwaysAllowRef = useRef<Set<string>>(new Set()) // tools the user said "don't ask again"
   const bashAllowPrefixRef = useRef<Set<string>>(new Set()) // Bash command prefixes auto-allowed (granular)
   const pendingImageRef = useRef<{ data: string; media_type: string; name: string } | null>(null) // /image attachment
@@ -566,6 +568,12 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
             input: (req as { input?: Record<string, unknown> }).input ?? {},
           },
         ]),
+      onElicitation: (params, requestId) => {
+        const message = String((params as { message?: unknown }).message ?? 'The MCP server requests input')
+        const schema = (params as { requestedSchema?: { properties?: Record<string, unknown> } }).requestedSchema
+        const field = schema?.properties ? Object.keys(schema.properties)[0] || 'value' : 'value'
+        setElicit({ requestId, message, field, value: '' })
+      },
       onMessage: (msg) => {
         const delta = streamDeltaText(msg)
         if (delta !== null) {
@@ -715,6 +723,30 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
       focusedRef.current = false
       blurAtRef.current = Date.now()
       return
+    }
+    // MCP elicitation form: capture input → respond accept/decline (§6).
+    if (elicit) {
+      if (key.escape) {
+        client?.respondControl(elicit.requestId, { action: 'decline' })
+        setElicit(null)
+        return
+      }
+      if (key.return) {
+        client?.respondControl(elicit.requestId, {
+          action: 'accept',
+          content: { [elicit.field]: elicit.value },
+        })
+        setElicit(null)
+        return
+      }
+      if (key.backspace || key.delete) {
+        setElicit((e) => (e ? { ...e, value: e.value.slice(0, -1) } : e))
+        return
+      }
+      if (ch && !key.ctrl && !key.meta && ch.length === 1 && ch >= ' ') {
+        setElicit((e) => (e ? { ...e, value: e.value + ch } : e))
+      }
+      return // elicitation swallows other keys
     }
     if (key.ctrl && ch === 'c') {
       client?.close()
@@ -2158,7 +2190,28 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         </Box>
       ) : null}
 
-      {permission ? (
+      {elicit ? (
+        <Box
+          flexDirection="column"
+          borderStyle="round"
+          borderColor={theme.suggestion}
+          borderLeft={false}
+          borderRight={false}
+          paddingX={1}
+          marginTop={1}
+        >
+          <Text color={theme.accent} bold>
+            {'⌯ MCP server requests input'}
+          </Text>
+          <Text>{elicit.message}</Text>
+          <Box>
+            <Text color={theme.dim}>{`${elicit.field}: `}</Text>
+            <Text>{elicit.value}</Text>
+            <Text inverse> </Text>
+          </Box>
+          <Text color={theme.dim}>{'  enter to send · esc to decline'}</Text>
+        </Box>
+      ) : permission ? (
         <Box flexDirection="column">
           <PermissionDialog toolName={permission.toolName} input={permission.input} />
           {permFeedback !== null ? (
@@ -2254,7 +2307,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
               vimEnabled={vimMode}
               onChange={handleInputChange}
               onSubmit={onSubmit}
-              active
+              active={!elicit}
               placeholder={ready ? 'Type a message, or / for commands…' : 'starting agent-server…'}
             />
             {/* Inline ghost-text completion for slash commands (inventory §1):
