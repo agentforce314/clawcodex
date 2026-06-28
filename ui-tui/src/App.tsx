@@ -18,6 +18,7 @@ import { SlashMenu } from './components/SlashMenu.js'
 import { exec } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
+import { BUDDY_SPECIES, CompanionSprite } from './components/CompanionSprite.js'
 import { FileMenu } from './components/FileMenu.js'
 import { VimInput } from './components/VimInput.js'
 import { searchFiles } from './fileIndex.js'
@@ -265,6 +266,10 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const [, setThemeVersion] = useState(0) // bumped on /theme to repaint the dynamic UI
   const [scrollOffset, setScrollOffset] = useState(0) // fullscreen: entries hidden from the bottom
   const [expanded, setExpanded] = useState(false) // Ctrl+O: expand collapsed tool results / thinking
+  const [buddy, setBuddy] = useState<string | null>(() => {
+    const b = process.env['CLAWCODEX_BUDDY']
+    return b ? (BUDDY_SPECIES.includes(b) ? b : 'cat') : null
+  }) // /buddy companion sprite (opt-in)
   const [txFind, setTxFind] = useState<string | null>(null) // fullscreen Ctrl+F find query (null = closed)
   const [vimMode, setVimMode] = useState(false) // /vim modal editing
 
@@ -902,6 +907,20 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
           setStatusCmd(arg)
           runStatusline(arg)
           addEntry({ kind: 'system', text: `status line set: ${arg}` })
+        }
+        return true
+      }
+      case 'buddy': {
+        if (arg === 'off') {
+          setBuddy(null)
+          addEntry({ kind: 'system', text: 'buddy off' })
+        } else if (arg && BUDDY_SPECIES.includes(arg)) {
+          setBuddy(arg)
+          addEntry({ kind: 'system', text: `buddy → ${arg}` })
+        } else {
+          const next = buddy ? null : 'cat'
+          setBuddy(next)
+          addEntry({ kind: 'system', text: next ? `buddy → ${next} (try: ${BUDDY_SPECIES.join(' / ')})` : 'buddy off' })
         }
         return true
       }
@@ -1552,6 +1571,12 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
           <Text color={contextUsage.percentage >= 90 ? theme.error : theme.warn}>
             {`⚠ Context ${Math.round(contextUsage.percentage)}% used — run /compact to free space`}
           </Text>
+        </Box>
+      ) : null}
+
+      {buddy ? (
+        <Box marginTop={1}>
+          <CompanionSprite species={buddy} />
         </Box>
       ) : null}
 
