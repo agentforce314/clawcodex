@@ -38,6 +38,8 @@ function isDestructive(cmd: string): boolean {
 interface Props {
   toolName: string
   input: Record<string, unknown>
+  /** Highlighted option index (0=Yes, 1=Yes-always, 2=No) — driven by ↑/↓. */
+  selected?: number
 }
 
 function readFileSafe(p: unknown): string | undefined {
@@ -126,8 +128,13 @@ function Preview({ toolName, input }: Props): React.ReactElement | null {
   )
 }
 
-export function PermissionDialog({ toolName, input }: Props): React.ReactElement {
+export function PermissionDialog({ toolName, input, selected = 0 }: Props): React.ReactElement {
   const { title, subtitle } = titleFor(toolName, input)
+  const options = [
+    { label: '1. Yes', hint: '(y)' },
+    { label: '2. Yes, and don’t ask again this session', hint: '(a)' },
+    { label: '3. No, and tell the agent what to do differently', hint: '(n / esc)' },
+  ]
   return (
     <Box
       flexDirection="column"
@@ -150,15 +157,20 @@ export function PermissionDialog({ toolName, input }: Props): React.ReactElement
 
       <Box marginTop={1} flexDirection="column">
         <Text color={theme.dim}>Do you want to proceed?</Text>
-        <Text>
-          <Text color={theme.suggestion} bold>
-            {'❯ '}
-          </Text>
-          <Text bold>1. Yes</Text>
-          <Text color={theme.dim}>{'   (y)'}</Text>
-        </Text>
-        <Text color={theme.dim}>{'  2. Yes, and don’t ask again this session   (a)'}</Text>
-        <Text color={theme.dim}>{'  3. No, and tell the agent what to do differently   (n / esc)'}</Text>
+        {options.map((o, i) => {
+          const on = i === selected
+          return (
+            <Text key={i}>
+              <Text color={theme.suggestion} bold>
+                {on ? '❯ ' : '  '}
+              </Text>
+              <Text bold={on} color={on ? undefined : theme.dim}>
+                {o.label}
+              </Text>
+              <Text color={theme.dim}>{`   ${o.hint}`}</Text>
+            </Text>
+          )
+        })}
       </Box>
     </Box>
   )
