@@ -1260,6 +1260,21 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         }
         return true
       }
+      case 'env': {
+        // Curated runtime environment (the original's `env`, adapted — no secret
+        // env vars, only non-sensitive runtime facts).
+        const e = process.env
+        const lines = [
+          `platform   ${process.platform} (${process.arch})`,
+          `node       ${process.version}`,
+          `terminal   ${e['TERM_PROGRAM'] || e['TERM'] || 'unknown'}`,
+          `shell      ${e['SHELL'] || 'unknown'}`,
+          `locale     ${e['LANG'] || e['LC_ALL'] || 'unknown'}`,
+          `cwd        ${process.cwd()}`,
+        ]
+        addEntry({ kind: 'system', text: `environment:\n  ${lines.join('\n  ')}` })
+        return true
+      }
       case 'diagnostics': {
         // DiagnosticsDisplay (§3), adapted to no-LSP: run the project's typecheck/
         // lint and show issues. Auto-detects the checker.
