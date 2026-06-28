@@ -2013,8 +2013,17 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     setSlashSel(0)
     if (busy) {
       // Queue prompts typed while the agent is working (the original's queued
-      // commands); the drain effect sends the next one when the turn ends.
-      queuedRef.current.push(text)
+      // commands) with now/next/later priority (inventory §1): a leading "now:"
+      // interrupts the current turn and runs next; "next:" jumps the queue;
+      // otherwise it's appended (later). The drain effect sends the front item
+      // when the turn ends.
+      const pri = text.match(/^(now|next)\s*:\s*([\s\S]+)$/i)
+      if (pri) {
+        queuedRef.current.unshift(pri[2] as string) // front of the queue
+        if ((pri[1] as string).toLowerCase() === 'now') client?.interrupt() // run it immediately
+      } else {
+        queuedRef.current.push(text) // later (default, FIFO)
+      }
       setQueued([...queuedRef.current])
       return
     }
