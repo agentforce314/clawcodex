@@ -75,3 +75,52 @@ def test_unknown_request_method_errors():
     _run(c, tx)
     replies = [m for m in tx.sent if m.id == 11]
     assert replies and replies[0].error and replies[0].error["code"] == -32601
+
+
+def test_agent_server_elicitation_bridge_round_trip():
+    """_make_elicitation_handler emits mcp_elicitation + returns the TUI reply."""
+    import threading as _t
+    from types import SimpleNamespace
+    from src.server.agent_server import _make_elicitation_handler
+
+    sess = SimpleNamespace(
+        _lock=_t.Lock(),
+        _pending={},
+        emitted=[],
+        config=SimpleNamespace(permission_timeout_s=2.0),
+    )
+    sess._emit = lambda m: sess.emitted.append(m)
+    handler = _make_elicitation_handler(sess)
+
+    async def go():
+        task = asyncio.create_task(handler({"message": "Name?"}))
+        for _ in range(100):
+            if sess.emitted:
+                break
+            await asyncio.sleep(0.01)
+        rid = sess.emitted[0]["request_id"]
+        with sess._lock:
+            sess._pending[rid].reply = {"action": "accept", "content": {"name": "Ada"}}
+            sess._pending[rid].event.set()
+        return await task
+
+    result = asyncio.run(go())
+    assert sess.emitted[0]["request"]["subtype"] == "mcp_elicitation"
+    assert result == {"action": "accept", "content": {"name": "Ada"}}
+
+
+def test_agent_server_elicitation_bridge_timeout_cancels():
+    import threading as _t
+    from types import SimpleNamespace
+    from src.server.agent_server import _make_elicitation_handler
+
+    sess = SimpleNamespace(
+        _lock=_t.Lock(),
+        _pending={},
+        emitted=[],
+        config=SimpleNamespace(permission_timeout_s=0.05),  # times out fast
+    )
+    sess._emit = lambda m: sess.emitted.append(m)
+    handler = _make_elicitation_handler(sess)
+    result = asyncio.run(handler({"message": "Name?"}))
+    assert result == {"action": "cancel"}

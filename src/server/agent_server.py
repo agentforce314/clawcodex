@@ -1229,6 +1229,38 @@ def make_spawn_agent(config: AgentServerConfig | None = None):
 # ─── runtime construction (mirrors entrypoints/headless.py) ───────────────────
 
 
+def _make_elicitation_handler(sess: "_AgentSession") -> Any:
+    """Async MCP elicitation handler that bridges a server's input request to the
+    TUI via the session's control-request round-trip (reusing the permission
+    ``_pending`` mechanism). Runs on the McpRuntime loop; ``_emit`` is thread-safe
+    and the main loop's control_response handler sets the pending event.
+    """
+
+    async def _elicit(params: dict[str, Any]) -> dict[str, Any]:
+        request_id = str(_uuid.uuid4())
+        pending = _Pending(event=threading.Event())
+        with sess._lock:
+            sess._pending[request_id] = pending
+        sess._emit({
+            "type": "control_request",
+            "request_id": request_id,
+            "request": {"subtype": "mcp_elicitation", "params": params},
+        })
+        loop = asyncio.get_event_loop()
+        try:
+            got = await loop.run_in_executor(
+                None, pending.event.wait, sess.config.permission_timeout_s
+            )
+        finally:
+            with sess._lock:
+                sess._pending.pop(request_id, None)
+        if not got:
+            return {"action": "cancel"}
+        return pending.reply or {"action": "decline"}
+
+    return _elicit
+
+
 def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
     """Construct provider, registry, session, tool_context for ``sess``.
 
@@ -1289,6 +1321,13 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
                     except Exception:  # noqa: BLE001
                         logger.debug("[mcp] register failed: %s", getattr(mtool, "name", "?"), exc_info=True)
                 sess._mcp_runtime = mcp_rt
+                # Wire MCP elicitation → TUI form (servers can request user input).
+                _eh = _make_elicitation_handler(sess)
+                for _cl in mcp_rt.clients.values():
+                    try:
+                        _cl.set_elicitation_handler(_eh)
+                    except Exception:  # noqa: BLE001
+                        pass
                 logger.info(
                     "[agent-server] MCP: %d tool(s) from %d server(s)",
                     len(mcp_rt.tools), len(mcp_rt.servers),
