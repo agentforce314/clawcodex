@@ -30,6 +30,7 @@ export interface SlashCommand {
     | 'skills'
     | 'files'
     | 'keybindings'
+    | 'statusline'
     | 'diff'
     | 'stats'
     | 'prompt'
@@ -71,6 +72,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/skills', description: 'List available skills', kind: 'skills' },
   { name: '/files', description: 'List files in the working directory', kind: 'files' },
   { name: '/keybindings', description: 'Show keyboard shortcuts', kind: 'keybindings' },
+  { name: '/statusline', description: 'Set a status-line shell command: /statusline <cmd> (or clear)', kind: 'statusline' },
   { name: '/config', description: 'Show model, mode, and available models', kind: 'config' },
   { name: '/diff', description: 'Show the working-tree git diff', kind: 'diff' },
   { name: '/stats', description: 'Show session statistics', kind: 'stats' },
