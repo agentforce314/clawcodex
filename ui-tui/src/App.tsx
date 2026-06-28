@@ -352,6 +352,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     }
   }, [])
   const [slashSel, setSlashSel] = useState(0)
+  const [permSel, setPermSel] = useState(0) // permission dialog: highlighted option (↑/↓ + Enter)
   const [atSel, setAtSel] = useState(0)
   // Submitted-prompt history for ↑/↓ recall (readline-style; -1 = live draft).
   const historyRef = useRef<string[]>([])
@@ -406,6 +407,12 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const slashOpen = slashMatches.length > 0 && permissions.length === 0
   const sel = Math.min(slashSel, Math.max(0, slashMatches.length - 1))
   const permission = permissions[0] ?? null
+
+  // Reset the permission dialog's highlighted option to "Yes" whenever a new
+  // prompt becomes active (↑/↓ moves it, Enter selects).
+  useEffect(() => {
+    setPermSel(0)
+  }, [permission?.requestId])
 
   // `@`-mention file autocomplete: an @token at the end of the input (after
   // start or whitespace) opens a file-suggestion dropdown (the original's
@@ -1097,30 +1104,51 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         return
       }
       const c = ch.toLowerCase()
+      // The three options, in display order — shared by the number/letter
+      // hotkeys AND ↑/↓+Enter navigation so both stay in sync.
+      const applyChoice = (choice: 'allow' | 'always' | 'deny'): void => {
+        if (choice === 'always') {
+          // For Bash, remember the command's first word (granular: allow `git`,
+          // still prompt `rm`); for other tools, the whole tool.
+          if (head.toolName === 'Bash') {
+            const pfx = String((head.input as { command?: string }).command ?? '').trim().split(/\s+/)[0] || ''
+            if (pfx) bashAllowPrefixRef.current.add(pfx)
+            addEntry({ kind: 'system', text: `always allowing \`${pfx}\` commands this session` })
+          } else {
+            alwaysAllowRef.current.add(head.toolName)
+            addEntry({ kind: 'system', text: `always allowing ${head.toolName} this session` })
+          }
+          client?.respondPermission(head.requestId, 'allow')
+        } else if (choice === 'allow') {
+          client?.respondPermission(head.requestId, 'allow')
+        } else {
+          client?.respondPermission(head.requestId, 'deny', { message: 'denied by user' })
+        }
+        setPermissions((q) => q.slice(1))
+      }
+      const CHOICES = ['allow', 'always', 'deny'] as const
+      if (key.upArrow) {
+        setPermSel((s) => (s + CHOICES.length - 1) % CHOICES.length)
+        return
+      }
+      if (key.downArrow) {
+        setPermSel((s) => (s + 1) % CHOICES.length)
+        return
+      }
+      if (key.return) {
+        applyChoice(CHOICES[permSel] ?? 'allow')
+        return
+      }
       if (key.tab) {
         setPermFeedback('') // open the feedback field (the original's Tab-to-amend)
         return
       }
       if (c === 'y' || ch === '1') {
-        client?.respondPermission(head.requestId, 'allow')
-        setPermissions((q) => q.slice(1))
+        applyChoice('allow')
       } else if (c === 'a' || ch === '2') {
-        // "Yes, and don't ask again". For Bash, remember the command's first word
-        // (granular: allow `git`, still prompt `rm`); for other tools, the whole
-        // tool — then auto-allow matching future asks.
-        if (head.toolName === 'Bash') {
-          const pfx = String((head.input as { command?: string }).command ?? '').trim().split(/\s+/)[0] || ''
-          if (pfx) bashAllowPrefixRef.current.add(pfx)
-          addEntry({ kind: 'system', text: `always allowing \`${pfx}\` commands this session` })
-        } else {
-          alwaysAllowRef.current.add(head.toolName)
-          addEntry({ kind: 'system', text: `always allowing ${head.toolName} this session` })
-        }
-        client?.respondPermission(head.requestId, 'allow')
-        setPermissions((q) => q.slice(1))
+        applyChoice('always')
       } else if (c === 'n' || c === 'd' || ch === '3') {
-        client?.respondPermission(head.requestId, 'deny', { message: 'denied by user' })
-        setPermissions((q) => q.slice(1))
+        applyChoice('deny')
       } else if (key.escape) {
         // esc at a permission prompt: interrupt — the server denies every
         // pending ask AND aborts the turn (agent_server §7).
@@ -2642,7 +2670,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         </Box>
       ) : permission ? (
         <Box flexDirection="column">
-          <PermissionDialog toolName={permission.toolName} input={permission.input} />
+          <PermissionDialog toolName={permission.toolName} input={permission.input} selected={permSel} />
           {permFeedback !== null ? (
             <Box paddingX={1}>
               <Text color={theme.dim}>{'tell the agent: '}</Text>
