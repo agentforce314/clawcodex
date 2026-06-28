@@ -432,9 +432,8 @@ def format_advisor_status(
     a stale configuration under an unsupported main loop shows
     ``"(inactive)"`` rather than silently lying about the state.
 
-    Shared between :mod:`src.repl.core` (prompt-toolkit bottom_toolbar)
-    and :mod:`src.tui.widgets.status_line` (Textual widget) so both
-    surfaces format the advisor identically.
+    Formats the advisor status segment uniformly for whatever status
+    surface renders it.
 
     Any unexpected failure (settings cache contention, future provider
     that throws on inspection) returns ``None`` — the status row must

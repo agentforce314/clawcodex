@@ -139,33 +139,17 @@ def test_chat(self, mock_anthropic):
     assert response.content == "Hello!"
 ```
 
-### 3. REPL Tests (`test_repl.py`)
+### 3. Interactive UI Tests
 
-Tests for interactive REPL:
+The interactive UI is the TypeScript Ink TUI (`ui-tui/`), which spawns the
+Python **agent-server** as its backend. They are tested separately:
 
-- **REPL Initialization**: Test REPL setup
-- **Command Handling**: Test slash commands
-- **Session Management**: Test save/load sessions
-- **Conversation**: Test message management
-- **Multiline Mode**: Test multiline input
-
-**Example:**
-```python
-def test_handle_command_multiline_toggle(self):
-    """Test /multiline command."""
-    repl = ClawcodexREPL(provider_name="glm")
-
-    # Initially False
-    assert repl.multiline_mode is False
-
-    # Toggle to True
-    repl.handle_command("/multiline")
-    assert repl.multiline_mode is True
-
-    # Toggle back to False
-    repl.handle_command("/multiline")
-    assert repl.multiline_mode is False
-```
+- **Ink client** (`ui-tui/test/`): `cd ui-tui && npm test`.
+- **Agent-server** (`tests/server/`): `test_agent_server_e2e.py`,
+  `test_agent_server_stdio.py`, `test_server_e2e.py` exercise the NDJSON /
+  WebSocket protocol and the end-to-end query+tool path the Ink client drives.
+- **Slash commands / skills**: the surface-agnostic command registry is covered
+  by `tests/test_*_command.py` against the headless `NullUIHost`.
 
 ### 4. Porting Workspace Tests (`test_porting_workspace.py`)
 

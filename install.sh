@@ -534,12 +534,13 @@ provision_node() {
     return 1
 }
 
-# Build the TypeScript Ink TUI so `clawcodex tui` has a node-runnable client
-# (node + dist/cli.js + node_modules). Non-fatal: the REPL works without it.
+# Build the TypeScript Ink TUI — the sole interactive UI (`clawcodex` and the
+# explicit `clawcodex tui`). Needs node + dist/cli.js + node_modules. Non-fatal:
+# the headless path (`clawcodex -p`) still works without it.
 build_tui() {
     local tui_dir="$CLAWCODEX_HOME/ui-tui"
     if [[ ! -f "$tui_dir/package.json" ]]; then
-        log_warn "ui-tui not found at $tui_dir — skipping TUI build (the REPL still works)."
+        log_warn "ui-tui not found at $tui_dir — interactive 'clawcodex' needs it; 'clawcodex -p' (headless) still works."
         return 0
     fi
     if [[ "${DRY_RUN:-0}" -ne 0 ]]; then
@@ -547,14 +548,14 @@ build_tui() {
         return 0
     fi
     if ! provision_node; then
-        log_warn "Skipping TUI build — Node unavailable. 'clawcodex' (REPL) works; 'clawcodex tui' needs Node 18+."
+        log_warn "Skipping TUI build — Node unavailable. Interactive 'clawcodex' needs Node 18+; 'clawcodex -p' (headless) works without it."
         return 0
     fi
     log_info "Building the Ink TUI client (npm install + build; first run ~30s)..."
     if ( cd "$tui_dir" && npm install --no-audit --no-fund >/dev/null 2>&1 && npm run build >/dev/null 2>&1 ); then
-        log_ok "TUI client built — run 'clawcodex tui'"
+        log_ok "Ink TUI built — run 'clawcodex'"
     else
-        log_warn "TUI build failed — 'clawcodex' (REPL) still works. Retry: (cd \"$tui_dir\" && npm install && npm run build)"
+        log_warn "Ink TUI build failed — interactive 'clawcodex' needs it ('clawcodex -p' headless still works). Retry: (cd \"$tui_dir\" && npm install && npm run build)"
     fi
 }
 

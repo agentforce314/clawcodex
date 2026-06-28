@@ -254,8 +254,8 @@ class LocalCommand(CommandBase):
 # TS interactive commands (``type: 'local-jsx'``) render an Ink element and
 # resolve via an ``onDone`` callback. The Python port replaces "render an
 # element" with "drive a surface-agnostic ``UIHost`` port", so one command
-# body works headless (REPL), in the Textual TUI, and (raising) under the
-# SDK / non-interactive null surface. See
+# body works over whatever surface supplies a UIHost (and raises under the
+# SDK / non-interactive null surface). See
 # my-docs/get-parity-by-folder/commands-phase2-interactive-bridge-plan.md.
 
 

@@ -11,8 +11,7 @@ surfaces (REPL/SDK/listings).
 
 Sections:
   * A — metadata + registration (INTERACTIVE, name, verbatim TS description, no hint).
-  * B — bridge-safety **by type** + the TUI dispatch **inversion** (the anti-regression
-    assertion: ``/theme`` stays intercepted, NOT fall-through).
+  * B — bridge-safety **by type**.
   * C — picker happy path: success → ``display="user"`` (TS no-options ``onDone`` →
     model-visible ``createUserMessage``), the pick is persisted, and ``select`` is
     seeded from config with the full theme list.
@@ -22,12 +21,10 @@ Sections:
     keystone); args are ignored (TS ignores ``_context``).
   * F — options shape: values == ``list_theme_names()``; the current option carries
     ``description="current"``; labels are the raw theme names.
-  * G — D2 wiring: ``_open_theme_picker`` passes ``on_persist=set_theme`` to the screen.
 """
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -48,7 +45,7 @@ from src.command_system.types import (
     InteractiveUnavailableError,
     NullUIHost,
 )
-from src.tui.theme import list_theme_names
+from src.utils.theme import list_theme_names
 
 
 # --------------------------------------------------------------------------- #
@@ -144,27 +141,13 @@ def test_theme_metadata_mirrors_ts():
 
 
 # --------------------------------------------------------------------------- #
-# B. Bridge-safety BY TYPE + TUI dispatch inversion
+# B. Bridge-safety BY TYPE
 # --------------------------------------------------------------------------- #
 def test_theme_blocked_from_bridge_by_type():
     # INTERACTIVE commands are never bridge-safe (mirrors TS local-jsx). Note this
     # is orthogonal to REMOTE_SAFE_COMMANDS (a name-based --remote filter that also
     # lists "theme"): the type gate still blocks the bridge.
     assert is_bridge_safe_command(THEME_COMMAND) is False
-
-
-def test_dispatch_local_command_intercepts_theme():
-    # THE INVERSION vs /export: the TUI's direct-dispatch table MUST claim /theme
-    # (handled=True, open_dialog="theme") so the rich live-preview ThemePickerScreen
-    # is preserved. Do NOT assert fall-through here — that was /export's rule. This
-    # is the explicit anti-regression guarantee for the TUI dialog.
-    from src.tui.commands import dispatch_local_command
-
-    res = dispatch_local_command(
-        "/theme", session=None, workspace_root=Path("."), tool_registry=None
-    )
-    assert res.handled is True
-    assert res.open_dialog == "theme"
 
 
 # --------------------------------------------------------------------------- #
@@ -278,37 +261,3 @@ async def test_options_shape_marks_current_and_uses_raw_labels(isolated_config):
     # Exactly the current option carries the "current" marker.
     for name, desc in zip(call["values"], call["descriptions"]):
         assert desc == ("current" if name == "light" else None)
-
-
-# --------------------------------------------------------------------------- #
-# G. D2 — _open_theme_picker wires on_persist=set_theme
-# --------------------------------------------------------------------------- #
-def test_open_theme_picker_wires_on_persist(monkeypatch):
-    # Assert the wiring (not a live Textual render): _open_theme_picker must pass
-    # on_persist=set_theme so the TUI persists like TS. The screen fires on_persist
-    # only on selection, not on cancel (theme_picker.py:76-93), so Esc won't persist.
-    from src.tui import app as app_mod
-    from src.config import set_theme
-
-    captured: dict = {}
-
-    class _FakeScreen:
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
-
-    monkeypatch.setattr(app_mod, "ThemePickerScreen", _FakeScreen)
-
-    fake_self = SimpleNamespace(
-        _theme_name="dark",
-        announcer=SimpleNamespace(announce=lambda *a, **k: None),
-        push_screen=lambda screen, callback=None: None,
-        apply_theme=lambda *a, **k: None,
-        _restore_prompt_focus=lambda: None,
-    )
-
-    app_mod.ClawCodexTUI._open_theme_picker(fake_self, transcript=None)
-
-    assert captured.get("on_persist") is set_theme
-    # And the picker is still seeded the same way (no regression of preview wiring).
-    assert callable(captured.get("on_preview"))
-    assert captured.get("current") == "dark"

@@ -72,23 +72,6 @@ def _isolate_user_permission_settings(tmp_path, monkeypatch):
         "GLOBAL_CONFIG_FILE",
         _isolated_global_dir / "config.json",
     )
-    # C8: skip the startup security gates (trust / external includes /
-    # bypass acceptance) in full-app tests — every app test would
-    # otherwise boot into the trust or bypass dialog and block on input.
-    # The chain jumps straight to its tail (C6 warnings + C7 MCP
-    # approvals), which is exactly the pre-C8 boot behavior.
-    # test_startup_gates_c8.py exercises the real chain via methods
-    # captured at import time, before this patch applies.
-    try:
-        from src.tui.app import ClawCodexTUI
-
-        monkeypatch.setattr(
-            ClawCodexTUI,
-            "_run_startup_chain",
-            lambda self: self._finish_startup_gates(),
-        )
-    except Exception:
-        pass  # textual not installed in this environment
     # ch03 round-3: the active-provider supplier is a module-level slot;
     # tests need it deterministically EMPTY (the "persists '' when
     # unregistered" case) and must not leak a registration across tests.

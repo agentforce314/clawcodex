@@ -38,8 +38,8 @@ The canonical permission handler is a **blocking, synchronous** callable
 (``PermissionAskHandler``). To turn a permission ask into a wire round-trip we
 must block *something* until the client answers — but never the asyncio loop
 that pumps the WebSocket (that would deadlock: the reply can't arrive). So we
-run the whole ``query()`` turn in a **worker thread** (the same pattern the
-Textual TUI's ``AgentBridge`` uses), and the permission handler blocks that
+run the whole ``query()`` turn in a **worker thread**, and the permission
+handler blocks that
 thread on a :class:`threading.Event`. Outbound messages are handed to the main
 loop with ``loop.call_soon_threadsafe`` (asyncio.Queue is not thread-safe).
 """

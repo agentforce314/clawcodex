@@ -224,8 +224,7 @@ class TestBuildAdvisorForwardedMessages(unittest.TestCase):
     def test_format_advisor_status_compact_label(self) -> None:
         """``format_advisor_status`` returns a single short segment with
         the canonical model (claude- prefix stripped) + the mode label.
-        Used by both the legacy REPL bottom_toolbar and the TUI
-        StatusLine widget."""
+        Used wherever a status surface renders the advisor segment."""
         from src.utils.advisor import format_advisor_status
         from unittest.mock import patch
         # Mock settings to return a configured advisor model.

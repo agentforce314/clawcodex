@@ -14,7 +14,7 @@ def run_doctor() -> int:
     """Print the basic environment + version sanity report.
 
     Imports only the modules needed for the diagnostic surface — does NOT
-    load ``src.tui.app``, ``src.repl.core``, or the full tool registry.
+    load the Ink-TUI launcher, the agent-server, or the full tool registry.
     MCP-side diagnostics are loaded lazily below only when ``--mcp`` is
     present.
     """

@@ -33,9 +33,10 @@ User input flows through the system in a fixed sequence. Each arrow is
 a function call (or `await`) you can find in the named file.
 
 ```text
-1. src/cli.py:main                       # console-script entry (pyproject.toml:68)
-2. src/cli.py:start_repl                 # selects REPL vs Textual TUI
-3. src/repl/core.py:ClawcodexREPL.run    # main user-input loop
+1. src/cli.py:main                       # console-script entry (pyproject.toml:81)
+2. src/cli.py:launch_ink_tui             # interactive entry — spawns the Ink client
+3. src/server/agent_server.py            # agent-server the Ink client drives (the
+                                         # -p path enters at src/entrypoints/headless.py)
 4. src/query/engine.py:QueryEngine       # session-scoped query orchestrator
 5. src/query/engine.py:QueryEngine.submit_message
 6. src/query/query.py:query              # async generator — the heartbeat
@@ -44,8 +45,8 @@ a function call (or `await`) you can find in the named file.
 9.    StreamingToolExecutor starts concurrency-safe tools BEFORE the
       model finishes (speculative execution; matches the book's
       §"Tool execution overlaps with model streaming")
-10. yields Message | StreamEvent back to ClawcodexREPL
-11. Terminal output via Rich + prompt-toolkit
+10. yields Message | StreamEvent back to the agent-server (src/server/agent_server.py)
+11. streamed over the protocol to the TypeScript Ink client for terminal rendering
 ```
 
 ### Terminal discriminated union (PEP 525 note)
