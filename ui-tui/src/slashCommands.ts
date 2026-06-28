@@ -173,6 +173,14 @@ export const SLASH_COMMANDS: SlashCommand[] = [
       'Run `git diff --staged` (fall back to `git diff`) and draft a concise Conventional Commits ' +
       'message for the changes. Output only the commit message.',
   },
+  {
+    name: '/summary',
+    description: 'Summarize the conversation so far',
+    kind: 'prompt',
+    promptText:
+      'Summarize our conversation so far, concisely: the key decisions made, the current state, ' +
+      'and any open items or next steps.',
+  },
   { name: '/memory', description: 'Show the loaded CLAUDE.md memory files', kind: 'memory' },
   { name: '/doctor', description: 'Show connection + session diagnostics', kind: 'doctor' },
   { name: '/quit', description: 'Exit the TUI', kind: 'quit' },
