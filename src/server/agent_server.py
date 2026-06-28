@@ -176,7 +176,10 @@ class _AgentSession:
         """Route one client → server message. Runs on the main asyncio loop."""
         msg_type = msg.get("type")
         if msg_type == "user":
-            self._inbox.put(_extract_prompt_content(msg))  # str, or blocks for multimodal
+            content = _extract_prompt_content(msg)  # str, or blocks for multimodal
+            mm = msg.get("message")
+            ephemeral = bool(msg.get("ephemeral") or (isinstance(mm, dict) and mm.get("ephemeral")))
+            self._inbox.put({"__btw__": True, "content": content} if ephemeral else content)
             return
         if msg_type == "control_response":
             self._resolve_permission(msg)
@@ -1064,12 +1067,17 @@ class _AgentSession:
             item = self._inbox.get()
             if item is _SHUTDOWN or self._stop.is_set():
                 break
+            if isinstance(item, dict) and item.get("__btw__"):  # side question (/btw)
+                self._run_turn(item.get("content"), btw=True)
+                continue
             if not isinstance(item, (str, list)):  # str prompt, or multimodal blocks
                 continue
             self._run_turn(item)
         self._close_stream()
 
-    def _run_turn(self, prompt) -> None:  # prompt: str | list[ContentBlock] (multimodal)
+    def _run_turn(self, prompt, btw: bool = False) -> None:  # prompt: str | list[ContentBlock]
+        # btw=True → a "side question" (the original's /btw): run with full context
+        # but DON'T persist the Q&A, so the main conversation isn't interrupted.
         from src.query.agent_loop_compat import run_query_as_agent_loop
 
         if self.init_error is not None:
@@ -1089,6 +1097,9 @@ class _AgentSession:
         if self.tool_context is not None:
             self.tool_context.abort_controller = abort
 
+        # Snapshot history for a side-question turn so we can restore it after
+        # (drops the ephemeral Q + A on every exit path via the finally below).
+        _btw_snapshot = list(self.session.conversation.messages) if btw else None
         self.session.conversation.add_user_message(prompt)
         start = time.monotonic()
 
@@ -1159,6 +1170,10 @@ class _AgentSession:
         finally:
             with self._lock:
                 self._current_abort = None
+            if btw and _btw_snapshot is not None:
+                msgs = self.session.conversation.messages
+                msgs.clear()
+                msgs.extend(_btw_snapshot)
 
         _usage = result.usage if result.num_turns > 0 else None
         _cost = 0.0
