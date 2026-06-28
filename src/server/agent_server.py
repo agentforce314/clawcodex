@@ -278,6 +278,30 @@ class _AgentSession:
                 logger.debug("[agent-server] list_agents failed", exc_info=True)
             self._reply(request_id, {"agents": agents})
             return
+        if subtype == "add_dir":
+            path = inner.get("path")
+            try:
+                if not isinstance(path, str) or not path:
+                    self._reply(request_id, {"ok": False, "error": "missing path"})
+                    return
+                p = Path(path)
+                abspath = str((p if p.is_absolute() else Path(self.cwd) / p).resolve())
+                if not Path(abspath).is_dir():
+                    self._reply(request_id, {"ok": False, "error": "not a directory"})
+                    return
+                ctx = self.tool_context.permission_context if self.tool_context else None
+                if ctx is None:
+                    self._reply(request_id, {"ok": False, "error": "no permission context"})
+                    return
+                from src.permissions.types import AdditionalWorkingDirectory
+
+                ctx.additional_working_directories[abspath] = AdditionalWorkingDirectory(
+                    path=abspath, source="session"
+                )
+                self._reply(request_id, {"ok": True, "path": abspath})
+            except Exception as exc:  # noqa: BLE001
+                self._reply(request_id, {"ok": False, "error": str(exc)})
+            return
         if subtype == "list_permissions":
             ctx = self.tool_context.permission_context if self.tool_context else None
             mode, allow, deny = "default", [], []
