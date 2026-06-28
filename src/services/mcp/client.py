@@ -128,6 +128,20 @@ class McpClient:
         # that want OAuth-protected MCP servers to work end-to-end;
         # legacy callers (stdio / open HTTP) pass None.
         self._auth_provider: Any = None
+        # MCP elicitation (server→client input requests, §6): optional async
+        # handler that presents the request to the user and returns the result
+        # ({"action": "accept"|"decline"|"cancel", "content": {...}}). Default
+        # (None) declines — a valid response, so elicitation-capable servers no
+        # longer hang on an ignored request.
+        self._elicitation_handler: Any = None
+
+    def set_elicitation_handler(self, handler: Any) -> None:
+        """Inject the async elicitation handler (params dict -> result dict).
+
+        Wired in by the runtime to bridge an MCP server's input request to the
+        TUI. When unset, elicitation requests are declined.
+        """
+        self._elicitation_handler = handler
 
     def set_auth_provider(self, provider: Any) -> None:
         """Inject the McpAuthProvider used for HTTP/SSE/WS auth flows.
@@ -196,7 +210,7 @@ class McpClient:
                 "initialize",
                 {
                     "protocolVersion": "2024-11-05",
-                    "capabilities": {"roots": {}},
+                    "capabilities": {"roots": {}, "elicitation": {}},
                     "clientInfo": {
                         "name": "claude-code",
                         "version": "1.0.0",
@@ -344,12 +358,60 @@ class McpClient:
                         )
                     else:
                         future.set_result(msg.result)
+                elif msg.method is not None and msg.id is not None:
+                    # Incoming server→client REQUEST (e.g. elicitation/create).
+                    # Handle out-of-band so the loop keeps draining, then reply.
+                    asyncio.get_event_loop().create_task(
+                        self._handle_incoming_request(msg)
+                    )
         except Exception as e:
             logger.debug("MCP receive loop error: %s", e)
             for future in self._pending_requests.values():
                 if not future.done():
                     future.set_exception(e)
             self._pending_requests.clear()
+
+    async def _handle_incoming_request(self, msg: JsonRpcMessage) -> None:
+        """Reply to a server→client request (elicitation/create, etc.)."""
+        try:
+            if msg.method == "elicitation/create":
+                result = await self._run_elicitation(msg.params or {})
+                await self._send_response(msg.id, result=result)
+            else:
+                await self._send_response(
+                    msg.id,
+                    error={"code": -32601, "message": f"Method not found: {msg.method}"},
+                )
+        except Exception as e:  # never let a handler crash the receive loop
+            try:
+                await self._send_response(
+                    msg.id, error={"code": -32603, "message": str(e)}
+                )
+            except Exception:
+                pass
+
+    async def _run_elicitation(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Run the injected elicitation handler, or decline if none is set."""
+        handler = self._elicitation_handler
+        if handler is None:
+            return {"action": "decline"}
+        try:
+            res = await handler(params)
+            return res if isinstance(res, dict) and res.get("action") else {"action": "decline"}
+        except Exception:
+            return {"action": "decline"}
+
+    async def _send_response(
+        self,
+        request_id: int | str | None,
+        result: Any = None,
+        error: dict[str, Any] | None = None,
+    ) -> None:
+        if self._transport is None or request_id is None:
+            return
+        await self._transport.send(
+            JsonRpcMessage(id=request_id, result=result, error=error)
+        )
 
     async def _send_request(
         self,
