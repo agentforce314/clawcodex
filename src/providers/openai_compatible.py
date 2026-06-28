@@ -775,6 +775,7 @@ class OpenAICompatibleProvider(BaseProvider):
         tools: Optional[list[dict[str, Any]]] = None,
         on_text_chunk: TextChunkCallback | None = None,
         abort_signal: Any = None,
+        on_thinking_chunk: TextChunkCallback | None = None,
         **kwargs
     ) -> ChatResponse:
         """Stream OpenAI-compatible chunks while rebuilding the final response.
@@ -942,6 +943,8 @@ class OpenAICompatibleProvider(BaseProvider):
                         reasoning_piece = getattr(delta, "reasoning_content", None)
                         if reasoning_piece:
                             reasoning_parts.append(str(reasoning_piece))
+                            if on_thinking_chunk is not None:
+                                on_thinking_chunk(str(reasoning_piece))
 
                         tool_call_deltas = getattr(delta, "tool_calls", None) or []
                         for tc in tool_call_deltas:

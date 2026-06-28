@@ -411,6 +411,7 @@ class AnthropicProvider(BaseProvider):
         tools: Optional[list[dict[str, Any]]] = None,
         on_text_chunk: TextChunkCallback | None = None,
         abort_signal: "AbortSignal | None" = None,
+        on_thinking_chunk: TextChunkCallback | None = None,
         **kwargs
     ) -> ChatResponse:
         """Stream Anthropic text chunks and return the final structured response.
@@ -531,6 +532,12 @@ class AnthropicProvider(BaseProvider):
                         # ``InputJSONDelta`` has ``partial_json`` (handled
                         # by the SDK's final-message accumulation, no
                         # need to track here).
+                        # Thinking deltas → a SEPARATE channel (not the visible
+                        # text output). Surfaced live for the TUI's thinking view,
+                        # mirroring how the final thinking block is already shown.
+                        thinking = getattr(delta, "thinking", None)
+                        if thinking and on_thinking_chunk is not None:
+                            on_thinking_chunk(thinking)
                         text = getattr(delta, "text", None)
                         if not text:
                             continue
