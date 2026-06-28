@@ -59,6 +59,7 @@ export interface SlashCommand {
     | 'open'
     | 'trust'
     | 'mcpTrust'
+    | 'rtl'
     | 'diff'
     | 'stats'
     | 'prompt'
@@ -96,6 +97,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/copy', description: "Copy the last response to the clipboard", kind: 'copy' },
   { name: '/mcp', description: 'List connected MCP servers and their tools', kind: 'mcp' },
   { name: '/mcp-trust', description: 'Approve the connected MCP servers', kind: 'mcpTrust' },
+  { name: '/rtl', description: 'Toggle right-to-left text shaping (Hebrew/Arabic)', kind: 'rtl' },
   { name: '/permissions', description: 'Show active permission mode and rules', kind: 'permissions' },
   { name: '/agents', description: 'List available subagent types', kind: 'agents' },
   { name: '/skills', description: 'List available skills', kind: 'skills' },
