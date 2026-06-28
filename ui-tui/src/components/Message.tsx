@@ -17,12 +17,21 @@ import type { TranscriptEntry } from '../sdkMessageAdapter.js'
 
 const RESULT_MAX_LINES = 8
 
-function ToolResult({ text, isError }: { text: string; isError?: boolean }): React.ReactElement {
+function ToolResult({
+  text,
+  isError,
+  expanded,
+}: {
+  text: string
+  isError?: boolean
+  expanded?: boolean
+}): React.ReactElement {
   const lines = text.replace(/\s+$/, '').split('\n')
+  const max = expanded ? lines.length : RESULT_MAX_LINES
   // Errors render in red (the original's error tool-result variant) and aren't
   // collapsed — the message is what the user needs to see.
   if (isError) {
-    const shown = lines.slice(0, RESULT_MAX_LINES)
+    const shown = lines.slice(0, max)
     const extra = lines.length - shown.length
     return (
       <Box flexDirection="column">
@@ -40,10 +49,10 @@ function ToolResult({ text, isError }: { text: string; isError?: boolean }): Rea
   // several Reads otherwise bury the transcript under hundreds of content lines.
   // The original keeps these collapsed (ctrl+o to expand).
   const numbered = lines.filter((l) => /^\s*\d+[\t |→]/.test(l)).length
-  if (lines.length > 6 && numbered >= lines.length * 0.6) {
-    return <Text color={theme.dim}>{`  ⎿ Read ${lines.length} lines`}</Text>
+  if (!expanded && lines.length > 6 && numbered >= lines.length * 0.6) {
+    return <Text color={theme.dim}>{`  ⎿ Read ${lines.length} lines (ctrl+o to expand)`}</Text>
   }
-  const shown = lines.slice(0, RESULT_MAX_LINES)
+  const shown = lines.slice(0, max)
   const extra = lines.length - shown.length
   return (
     <Box flexDirection="column">
@@ -128,7 +137,13 @@ function ContextView({ data }: { data: NonNullable<TranscriptEntry['contextData'
   )
 }
 
-export function Message({ entry }: { entry: TranscriptEntry }): React.ReactElement | null {
+export function Message({
+  entry,
+  expanded,
+}: {
+  entry: TranscriptEntry
+  expanded?: boolean
+}): React.ReactElement | null {
   switch (entry.kind) {
     case 'banner':
       return entry.bannerData ? <Banner {...entry.bannerData} /> : null
@@ -206,12 +221,12 @@ export function Message({ entry }: { entry: TranscriptEntry }): React.ReactEleme
       )
     }
     case 'toolResult':
-      return <ToolResult text={entry.text} isError={entry.isError} />
+      return <ToolResult text={entry.text} isError={entry.isError} expanded={expanded} />
     case 'thinking': {
       // ∴ Thinking (dim italic) + the reasoning, capped (the original's
       // AssistantThinkingMessage; full text lives in scrollback).
       const lines = entry.text.split('\n')
-      const MAX = 14
+      const MAX = expanded ? lines.length : 14
       const shown = lines.slice(0, MAX)
       const extra = lines.length - shown.length
       return (
