@@ -9,7 +9,7 @@
  *   Enter submit.  Insert: type · ←/→ · Backspace · Esc→normal · Enter submit.
  */
 import { Text, useInput } from 'ink'
-import React, { useState } from 'react'
+import React, { useRef, useState } from 'react'
 import { theme } from '../theme.js'
 
 interface Props {
@@ -50,20 +50,46 @@ export function VimInput({
   const clamp = (c: number, max = value.length): number => Math.max(0, Math.min(max, c))
 
   // readline kill-ring / line edits shared by both modes' insert state.
+  const killRing = useRef('')
   const killWordBack = (): void => {
     const left = value.slice(0, cursor).replace(/\s+$/, '')
     const cut = Math.max(left.lastIndexOf(' '), left.lastIndexOf('/'), left.lastIndexOf('\t')) + 1
-    const newLeft = left.slice(0, cut)
-    onChange(newLeft + value.slice(cursor))
-    setCursor(newLeft.length)
+    killRing.current = value.slice(cut, cursor)
+    onChange(value.slice(0, cut) + value.slice(cursor))
+    setCursor(cut)
   }
-  const readlineEdit = (input: string, key: { ctrl?: boolean }): boolean => {
+  const readlineEdit = (
+    input: string,
+    key: { ctrl?: boolean; meta?: boolean; leftArrow?: boolean; rightArrow?: boolean },
+  ): boolean => {
+    // word-wise cursor movement: Ctrl/Alt + ←/→, or Alt+b / Alt+f
+    if ((key.ctrl || key.meta) && key.leftArrow) return (setCursor(prevWord(value, cursor)), true)
+    if ((key.ctrl || key.meta) && key.rightArrow) return (setCursor(nextWord(value, cursor)), true)
+    if (key.meta && input === 'b') return (setCursor(prevWord(value, cursor)), true)
+    if (key.meta && input === 'f') return (setCursor(nextWord(value, cursor)), true)
     if (!key.ctrl) return false
     if (input === 'a') return (setCursor(0), true)
     if (input === 'e') return (setCursor(value.length), true)
     if (input === 'w') return (killWordBack(), true)
-    if (input === 'u') return (onChange(value.slice(cursor)), setCursor(0), true) // kill to start
-    if (input === 'k') return (onChange(value.slice(0, cursor)), true) // kill to end
+    if (input === 'u') {
+      killRing.current = value.slice(0, cursor)
+      onChange(value.slice(cursor))
+      setCursor(0)
+      return true
+    }
+    if (input === 'k') {
+      killRing.current = value.slice(cursor)
+      onChange(value.slice(0, cursor))
+      return true
+    }
+    if (input === 'y') {
+      // yank the last killed text at the cursor
+      if (killRing.current) {
+        onChange(value.slice(0, cursor) + killRing.current + value.slice(cursor))
+        setCursor(cursor + killRing.current.length)
+      }
+      return true
+    }
     return false
   }
 
