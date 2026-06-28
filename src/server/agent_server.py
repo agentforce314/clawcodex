@@ -231,7 +231,7 @@ class _AgentSession:
         if subtype == "wiki":
             self._do_wiki(request_id, inner.get("action"), inner.get("path"))
             return
-        if subtype in ("bg_run", "bg_list", "bg_kill"):
+        if subtype in ("bg_run", "bg_list", "bg_kill", "bg_agent"):
             self._do_bgtask(request_id, subtype, inner.get("command"), inner.get("id"))
             return
         if subtype == "set_effort":
@@ -592,6 +592,18 @@ class _AgentSession:
                     return
                 t = self._bgtasks.start(command.strip(), self.cwd, now=time.time())
                 self._reply(request_id, {"ok": True, "id": t.id, "command": t.command})
+                return
+            if subtype == "bg_agent":
+                # Background agent run: a detached `clawcodex -p <prompt>` subprocess
+                # (the §9 async-agent variant) — fully isolated, concurrent, tracked.
+                if not isinstance(command, str) or not command.strip():
+                    self._reply(request_id, {"ok": False, "error": "usage: /bg-agent <prompt>"})
+                    return
+                import shlex
+
+                cmd = f"clawcodex -p {shlex.quote(command.strip())}"
+                t = self._bgtasks.start(cmd, self.cwd, now=time.time())
+                self._reply(request_id, {"ok": True, "id": t.id, "command": cmd})
                 return
             if subtype == "bg_kill":
                 ok = self._bgtasks.kill(str(tid or ""))
