@@ -18,6 +18,7 @@ import { SlashMenu } from './components/SlashMenu.js'
 import { editInEditor } from './editor.js'
 import { isTrusted, trustFolder, untrustFolder, isMcpTrusted, trustMcp } from './trust.js'
 import { matchesBinding, bindingConflicts } from './keybindings.js'
+import { configErrors } from './configCheck.js'
 import { shapeRtl } from './bidi.js'
 import { exec } from 'node:child_process'
 import { readFileSync } from 'node:fs'
@@ -2123,6 +2124,11 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
       const conflicts = bindingConflicts()
       if (conflicts.length) {
         addEntry({ kind: 'system', text: `⚠ keybinding conflict(s): ${conflicts.join('; ')}` })
+      }
+      // Config validation (§6): surface malformed config files (else silently ignored).
+      const cfgErrs = configErrors()
+      if (cfgErrs.length) {
+        addEntry({ kind: 'error', text: `invalid config:\n  ${cfgErrs.join('\n  ')}` })
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
