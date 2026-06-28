@@ -583,6 +583,50 @@ async def test_control_wiki(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_control_background_task(tmp_path):
+    """bg_run starts a detached command; bg_list reports it completing."""
+    from src.tool_system.registry import ToolRegistry
+
+    with contextlib.ExitStack() as stack:
+        for p in _patches(_TextProvider, ToolRegistry([])):
+            stack.enter_context(p)
+        spawn = make_spawn_agent(AgentServerConfig(permission_mode="default"))
+        handle = await spawn("ds_test", str(tmp_path), None)
+        gen = handle.messages_from_agent()
+        try:
+            init = await asyncio.wait_for(gen.__anext__(), timeout=5)
+            assert init["subtype"] == "init"
+
+            async def _reply_for(rid, req):
+                await handle.send_to_agent({"type": "control_request", "request_id": rid, "request": req})
+                for _ in range(12):
+                    msg = await asyncio.wait_for(gen.__anext__(), timeout=5)
+                    if msg.get("type") == "control_response" and msg["response"].get("request_id") == rid:
+                        return msg["response"]["response"]
+                raise AssertionError(f"no reply for {rid}")
+
+            run = await _reply_for("b1", {"subtype": "bg_run", "command": "echo hi"})
+            assert run["ok"] is True and run["id"]
+            tid = run["id"]
+
+            # poll until the task completes
+            done = None
+            for i in range(20):
+                lst = await _reply_for(f"bl{i}", {"subtype": "bg_list"})
+                match = [t for t in lst["tasks"] if t["id"] == tid]
+                if match and match[0]["status"] != "running":
+                    done = match[0]
+                    break
+                await asyncio.sleep(0.1)
+            assert done is not None and done["status"] == "done"
+            assert "hi" in done["output"]
+        finally:
+            await handle.shutdown()
+            with contextlib.suppress(Exception):
+                await gen.aclose()
+
+
+@pytest.mark.asyncio
 async def test_interrupt_trips_abort(tmp_path):
     """An interrupt control_request must trip the in-flight turn's abort."""
     from src.permissions.types import PermissionPassthroughResult
