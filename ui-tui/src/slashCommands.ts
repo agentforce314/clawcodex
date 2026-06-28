@@ -50,6 +50,7 @@ export interface SlashCommand {
     | 'outputStyle'
     | 'knowledge'
     | 'wiki'
+    | 'bg'
     | 'diff'
     | 'stats'
     | 'prompt'
@@ -111,6 +112,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/output-style', description: 'Set the response output style', kind: 'outputStyle' },
   { name: '/knowledge', description: 'Knowledge graph: /knowledge [list|clear|enable|disable]', kind: 'knowledge' },
   { name: '/wiki', description: 'Project wiki: /wiki [init|status|ingest <path>]', kind: 'wiki' },
+  { name: '/bg', description: 'Run a shell command in the background: /bg <cmd> (or /bg kill <id>)', kind: 'bg' },
   { name: '/config', description: 'Show model, mode, and available models', kind: 'config' },
   { name: '/diff', description: 'Show the working-tree git diff', kind: 'diff' },
   { name: '/stats', description: 'Show session statistics', kind: 'stats' },
