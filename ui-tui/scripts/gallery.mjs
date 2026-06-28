@@ -60,5 +60,24 @@ await shot('09-rtl', async ({ type, key, cb }) => {
   cb().onData(JSON.stringify({ type:'assistant', message:{ role:'assistant', content:[{ type:'text', text:'Shalom — שלום עולם — means hello world' }] } }) + '\n')
   cb().onData(JSON.stringify({ type:'result', subtype:'success', session_id:'s', num_turns:1, usage:{} }) + '\n'); await wait(120)
 })
+// Sub-component functions (rendering primitives that live inside shipped features):
+const asst = (text) => JSON.stringify({ type:'assistant', message:{ role:'assistant', content:[{ type:'text', text }] } }) + '\n'
+const result = JSON.stringify({ type:'result', subtype:'success', session_id:'s', num_turns:1, usage:{} }) + '\n'
+// 10. MarkdownTable
+await shot('10-markdown-table', async ({ cb }) => {
+  cb().onData(asst('| Feature | Status |\n| --- | --- |\n| diffs | done |\n| mcp | done |')); cb().onData(result); await wait(120)
+})
+// 11. HighlightedCode (syntax-highlighted fenced block)
+await shot('11-syntax-code', async ({ cb }) => {
+  cb().onData(asst('```python\ndef greet(name: str) -> str:\n    return f"hello {name}"\n```')); cb().onData(result); await wait(120)
+})
+// 12. Thinking block render (tool rows are shown in 04 + 13 permission frames)
+await shot('12-thinking', async ({ cb }) => {
+  cb().onData(JSON.stringify({ type:'assistant', message:{ role:'assistant', content:[{ type:'thinking', thinking:'The diff subsystem is done; next is the MCP elicitation round-trip.' }, { type:'text', text:'Done.' }] } }) + '\n'); cb().onData(result); await wait(120)
+})
+// 13. StructuredDiff + tool row via an Edit permission prompt
+await shot('13-edit-diff', async ({ cb }) => {
+  cb().onData(JSON.stringify({ type:'control_request', request_id:'pe', request:{ subtype:'can_use_tool', tool_name:'Edit', input:{ file_path:'README.md', old_string:'old line', new_string:'new improved line' } } }) + '\n'); await wait(140)
+})
 log('GALLERY DONE')
 process.exit(0)

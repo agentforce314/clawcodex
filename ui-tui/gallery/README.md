@@ -23,6 +23,15 @@ the Ink renderer emits.
 | `07-queue-priorities.txt` | Queued prompts + spinner + folder-trust (§1/§7/§6) | busy spinner, a queued `⏎` prompt, first-run trust notice |
 | `08-model-picker.txt` | Interactive picker (§6) | `❯ deepseek-v4-pro` with selectable models |
 | `09-rtl.txt` | RTL text shaping (§8) | Hebrew `שלום עולם` rendered visually reversed (`םלוע םולש`) |
+| `10-markdown-table.txt` | MarkdownTable (§3) | box-drawn table from a markdown `\| … \|` table |
+| `11-syntax-code.txt` | HighlightedCode (§3) | syntax-highlighted fenced Python block |
+| `12-thinking.txt` | Thinking render (§3) | `∴ Thinking` block above the answer |
+| `13-edit-diff.txt` | StructuredDiff + tool row (§4/§5) | Edit permission prompt with a `-old / +new` diff |
+
+The 10–13 frames verify that rendering sub-components (tables, syntax highlighting,
+thinking, structured diffs, tool rows) are functionally present inside shipped
+features, even though clawcodex's module layout differs from the original's 1:1
+component files.
 
 All frames captured against a `deepseek-v4-pro` session over the Direct Connect
 protocol (FakeTransport injecting the same wire messages the Python agent-server
