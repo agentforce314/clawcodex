@@ -845,6 +845,29 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         }
         return true
       }
+      case 'keybindings': {
+        const keys = [
+          'Enter         submit',
+          'Ctrl+C        interrupt / exit',
+          'Ctrl+D        exit (empty input)',
+          'Ctrl+R        reverse history search',
+          '↑ / ↓         input history',
+          'Ctrl+W/U/K    kill word / to start / to end',
+          'Ctrl+A / E    line start / end',
+          'Ctrl+Y        yank (paste killed text)',
+          'Alt+← / →     word motion',
+          'Tab           accept completion',
+          '! …           bash mode',
+          '@             file mention',
+          '/             slash command',
+          'Esc           cancel (vim: normal mode)',
+          'PgUp / PgDn   scroll transcript (fullscreen)',
+          'Ctrl+F        find in transcript (fullscreen)',
+          '?             shortcuts overlay',
+        ]
+        addEntry({ kind: 'system', text: `Keybindings:\n${keys.map((k) => '  ' + k).join('\n')}` })
+        return true
+      }
       case 'files': {
         const files = searchFiles(process.cwd(), '', Date.now())
         if (!files.length) {
