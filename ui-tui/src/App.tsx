@@ -309,6 +309,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
       | 'settings'
       | 'difffile'
       | 'outputstyle'
+      | 'openfile'
     title: string
     options: string[]
     /** Optional value per option (e.g. session_id); falls back to the label. */
@@ -423,10 +424,16 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
       | 'historyrecall'
       | 'settings'
       | 'difffile'
-      | 'outputstyle',
+      | 'outputstyle'
+      | 'openfile',
     value: string,
   ): void => {
     if (!value) return
+    if (kind === 'openfile') {
+      // Insert the chosen file as an @-mention (the original's QuickOpen).
+      setInput((prev) => (prev ? `${prev}@${value} ` : `@${value} `))
+      return
+    }
     if (kind === 'outputstyle') {
       void client?.requestControl('set_output_style', { style: value }).then((r) => {
         if (r && r['ok']) {
@@ -1107,6 +1114,20 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
           const lines = ents.map((e) => `  ${e.type === 'file' ? '📄' : e.type === 'url' ? '🔗' : '◆'} ${e.name} ·${e.count}`)
           addEntry({ kind: 'system', text: lines.length ? `${head}\n${lines.join('\n')}` : head })
         })
+        return true
+      }
+      case 'open': {
+        const q = arg.trim()
+        if (!q) {
+          addEntry({ kind: 'system', text: 'usage: /open <query>' })
+          return true
+        }
+        const files = searchFiles(process.cwd(), q, Date.now())
+        if (!files.length) {
+          addEntry({ kind: 'system', text: `no files match "${q}"` })
+          return true
+        }
+        setPicker({ kind: 'openfile', title: `Open file (${files.length})`, options: files, sel: 0 })
         return true
       }
       case 'fast': {
