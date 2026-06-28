@@ -128,3 +128,19 @@ test('web search results collapse to a one-line summary (not a content dump)', a
   assert.match(f, /🔍 web search: obama achievements \(ctrl\+o to expand\)/)
   assert.ok(!f.includes('Lorem ipsum'), 'raw web-search content must not be dumped into the transcript')
 })
+
+test('slash menu is windowed (not a ~70-row dump) and closes after running a command', async () => {
+  const { type, stdin, lastFrame } = mount()
+  await wait(150)
+  await type('/')
+  await wait(60)
+  const open = strip(lastFrame())
+  assert.match(open, /\d+ more/, 'long command list should window with a "N more" indicator')
+  const rows = (open.match(/^\s*›?\s*\/[a-z-]+/gim) || []).length
+  assert.ok(rows > 0 && rows <= 12, `menu should cap visible rows, got ${rows}`)
+  // running a command must close the menu (the pinned-menu bug)
+  await type('vim')
+  stdin.write('\r')
+  await wait(60)
+  assert.ok(!/\d+ more/.test(strip(lastFrame())), 'menu must close after a command is run')
+})
