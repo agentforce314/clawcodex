@@ -111,6 +111,7 @@ class _AgentSession:
     session: Any = None
     system_prompt: Any = "You are a helpful assistant."
     _base_system_prompt: Any = None  # system prompt before the /plan section is composed in
+    _language: Any = None  # preferred response language (the original's LanguagePicker, §6)
     init_error: str | None = None
     _session_name: str | None = None  # user-set label (/rename) shown in /resume
     _mcp_runtime: Any = None  # McpRuntime (connected MCP servers) when configured
@@ -240,6 +241,9 @@ class _AgentSession:
             return
         if subtype == "plan":
             self._do_plan(request_id, inner.get("action"), inner.get("text"))
+            return
+        if subtype == "set_language":
+            self._do_set_language(request_id, inner.get("language"))
             return
         if subtype == "set_effort":
             effort = inner.get("effort")
@@ -593,10 +597,23 @@ class _AgentSession:
 
             plan = get_plan(self.cwd)
             if plan and isinstance(base, list):
-                return base + [{"type": "text", "text": f"# Current Plan\nFollow this plan set by the user:\n\n{plan}"}]
+                base = base + [{"type": "text", "text": f"# Current Plan\nFollow this plan set by the user:\n\n{plan}"}]
         except Exception:  # noqa: BLE001
             logger.debug("[agent-server] plan compose failed", exc_info=True)
+        # Response language (the original's LanguagePicker, §6).
+        lang = getattr(self, "_language", None)
+        if lang and isinstance(base, list):
+            base = base + [{"type": "text", "text": f"# Response Language\nRespond in {lang} unless the user writes in another language."}]
         return base
+
+    def _do_set_language(self, request_id: object, language: object) -> None:
+        """Set the preferred response language (LanguagePicker, §6) and recompose
+        the system prompt so the agent honors it. Empty clears it."""
+        lang = str(language or "").strip()
+        self._language = lang or None
+        if self._base_system_prompt is not None:
+            self.system_prompt = self._compose_with_plan(self._base_system_prompt)
+        self._reply(request_id, {"ok": True, "language": self._language or ""})
 
     def _do_plan(self, request_id: object, action: object, text: object) -> None:
         """/plan: view (default) | set <text> | clear. The plan is injected into

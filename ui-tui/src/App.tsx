@@ -1193,6 +1193,16 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         })
         return true
       }
+      case 'lang': {
+        const lang = arg.trim()
+        if (client) {
+          void client.requestControl('set_language', { language: lang === 'clear' ? '' : lang }).then((r) => {
+            const set = r && r['language'] ? String(r['language']) : ''
+            addEntry({ kind: 'system', text: set ? `responses will be in ${set}` : 'response language cleared' })
+          })
+        }
+        return true
+      }
       case 'rtl': {
         setRtlMode((on) => {
           const next = !on
