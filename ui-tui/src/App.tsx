@@ -1101,6 +1101,17 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         })
         return true
       }
+      case 'insights': {
+        addEntry({ kind: 'system', text: '∴ analyzing session…' })
+        void client?.requestControl('insights', {}, 120_000).then((r) => {
+          if (r && r['ok']) {
+            addEntry({ kind: 'assistant', text: `**Session insights**\n\n${String(r['insights'] || '(none)')}` })
+          } else {
+            addEntry({ kind: 'error', text: `insights failed: ${r && r['error'] ? String(r['error']) : 'no response'}` })
+          }
+        })
+        return true
+      }
       case 'image': {
         const p = arg.trim()
         if (!p) {
