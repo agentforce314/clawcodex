@@ -116,3 +116,15 @@ test('normal typing reaches the prompt', async () => {
   await wait(40)
   assert.match(strip(lastFrame()), /hello world/)
 })
+
+test('web search results collapse to a one-line summary (not a content dump)', async () => {
+  const { cb, lastFrame } = mount()
+  await wait(150)
+  const huge = 'Links: ' + JSON.stringify(Array.from({ length: 40 }, (_, i) => ({ title: 'R' + i, url: 'https://e.com/' + i, content: 'Lorem ipsum '.repeat(20) })))
+  const content = `Web search results for query: "obama achievements"\n\n${huge}\n\nREMINDER: include sources.`
+  cb().onData(JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content }] } }) + '\n')
+  await wait(100)
+  const f = strip(lastFrame())
+  assert.match(f, /🔍 web search: obama achievements \(ctrl\+o to expand\)/)
+  assert.ok(!f.includes('Lorem ipsum'), 'raw web-search content must not be dumped into the transcript')
+})
