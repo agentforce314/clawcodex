@@ -257,6 +257,8 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const [elicit, setElicit] = useState<{ requestId: string; message: string; field: string; value: string } | null>(null)
   // MCP server multiselect (§6 MCPServerMultiselectDialog) — toggle servers on/off.
   const [mcpToggle, setMcpToggle] = useState<{ servers: { name: string; enabled: boolean; tools: string[] }[]; sel: number } | null>(null)
+  // External CLAUDE.md imports confirm (§6 ClaudeMdExternalIncludesDialog).
+  const [externalIncludes, setExternalIncludes] = useState<string[] | null>(null)
   // RTL display shaping (§8) — opt-in (terminals with native bidi shouldn't use it).
   const [rtlMode, setRtlMode] = useState<boolean>(process.env['CLAWCODEX_RTL'] === '1')
   // Message timestamps (§3) — opt-in via /timestamps.
@@ -785,6 +787,17 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     if (ch === '[O') {
       focusedRef.current = false
       blurAtRef.current = Date.now()
+      return
+    }
+    // External CLAUDE.md imports (§6): y allows, anything else disables them.
+    if (externalIncludes) {
+      const approved = ch === 'y' || ch === 'Y'
+      client?.requestControl('set_external_includes', { approved })
+      addEntry({
+        kind: 'system',
+        text: approved ? 'external CLAUDE.md imports allowed' : 'external CLAUDE.md imports disabled',
+      })
+      setExternalIncludes(null)
       return
     }
     // MCP server multiselect (§6): ↑/↓ navigate, space toggles + persists, esc closes.
@@ -2154,6 +2167,12 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
       if (cfgErrs.length) {
         addEntry({ kind: 'error', text: `invalid config:\n  ${cfgErrs.join('\n  ')}` })
       }
+      // External CLAUDE.md imports (§6 ClaudeMdExternalIncludesDialog): if any are
+      // pending approval, prompt before they're loaded into the system prompt.
+      void client?.requestControl('external_includes').then((r) => {
+        const externals = Array.isArray(r?.['externals']) ? (r['externals'] as string[]) : []
+        if (r && r['state'] === 'unset' && externals.length) setExternalIncludes(externals)
+      })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready])
@@ -2413,7 +2432,18 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         </Box>
       ) : null}
 
-      {mcpToggle ? (
+      {externalIncludes ? (
+        <Box flexDirection="column" borderStyle="round" borderColor={theme.error} borderLeft={false} borderRight={false} paddingX={1} marginTop={1}>
+          <Text color={theme.error} bold>
+            {'⚠ Allow external CLAUDE.md file imports?'}
+          </Text>
+          <Text color={theme.dim}>{'Your CLAUDE.md @-imports files outside this project:'}</Text>
+          {externalIncludes.slice(0, 6).map((p) => (
+            <Text key={p} color={theme.dim}>{`  • ${p}`}</Text>
+          ))}
+          <Text color={theme.dim}>{'  y to allow · any other key to disable'}</Text>
+        </Box>
+      ) : mcpToggle ? (
         <Box flexDirection="column" borderStyle="round" borderColor={theme.suggestion} borderLeft={false} borderRight={false} paddingX={1} marginTop={1}>
           <Text color={theme.dim}>{'MCP servers — space to toggle, esc to close'}</Text>
           {mcpToggle.servers.map((s, i) => (
@@ -2551,7 +2581,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
               vimEnabled={vimMode}
               onChange={handleInputChange}
               onSubmit={onSubmit}
-              active={!elicit && !pendingMode && !mcpToggle}
+              active={!elicit && !pendingMode && !mcpToggle && !externalIncludes}
               placeholder={ready ? 'Type a message, or / for commands…' : 'starting agent-server…'}
             />
             {/* Inline ghost-text completion for slash commands (inventory §1):

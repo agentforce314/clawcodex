@@ -255,6 +255,26 @@ class _AgentSession:
         if subtype == "set_mcp_enabled":
             self._do_set_mcp_enabled(request_id, inner.get("server"), inner.get("enabled"))
             return
+        if subtype == "external_includes":
+            # External CLAUDE.md @-imports (ClaudeMdExternalIncludesDialog, §6).
+            try:
+                from src.services.startup_gates import get_external_includes_state, list_external_includes
+
+                externals = await list_external_includes(self.cwd)
+                state = get_external_includes_state(self.cwd)
+            except Exception:  # noqa: BLE001
+                externals, state = [], "unset"
+            self._reply(request_id, {"state": state, "externals": externals})
+            return
+        if subtype == "set_external_includes":
+            try:
+                from src.services.startup_gates import record_external_includes_choice
+
+                ok = record_external_includes_choice(bool(inner.get("approved")), self.cwd)
+            except Exception:  # noqa: BLE001
+                ok = False
+            self._reply(request_id, {"ok": ok})
+            return
         if subtype == "set_effort":
             effort = inner.get("effort")
             if isinstance(effort, str) and effort in ("minimal", "low", "medium", "high"):
