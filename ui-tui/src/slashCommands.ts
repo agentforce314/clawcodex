@@ -186,6 +186,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/memory', description: 'Show the loaded CLAUDE.md memory files', kind: 'memory' },
   { name: '/doctor', description: 'Show connection + session diagnostics', kind: 'doctor' },
   { name: '/quit', description: 'Exit the TUI', kind: 'quit' },
+  { name: '/exit', description: 'Exit the TUI (alias of /quit)', kind: 'quit' },
   // Aliases for inventory §2 command names that map to existing functionality.
   { name: '/color', description: 'Switch color theme (alias of /theme)', kind: 'theme' },
   { name: '/tag', description: 'Label the current session: /tag <name>', kind: 'rename' },
