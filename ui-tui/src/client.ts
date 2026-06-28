@@ -140,6 +140,17 @@ export class DirectConnectClient {
     });
   }
 
+  /** Send a user turn whose content is a block list (text + image blocks) for
+   *  multimodal input. The server preserves non-text blocks (image-paste, §1). */
+  sendPromptBlocks(content: Array<Record<string, unknown>>): void {
+    this.send({
+      type: 'user',
+      message: { role: 'user', content },
+      parent_tool_use_id: null,
+      session_id: '',
+    });
+  }
+
   respondPermission(
     requestId: string,
     behavior: 'allow' | 'deny',
