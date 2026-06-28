@@ -218,6 +218,9 @@ class _AgentSession:
         if subtype == "set_provider":
             self._do_set_provider(request_id, inner.get("provider"))
             return
+        if subtype == "set_output_style":
+            self._do_set_output_style(request_id, inner.get("style"))
+            return
         if subtype == "set_effort":
             effort = inner.get("effort")
             if isinstance(effort, str) and effort in ("minimal", "low", "medium", "high"):
@@ -513,6 +516,43 @@ class _AgentSession:
             self._reply(request_id, {"ok": True, "provider": name, "model": model or ""})
         except Exception as exc:  # noqa: BLE001
             logger.exception("[agent-server] set_provider failed")
+            self._reply(request_id, {"ok": False, "error": str(exc)})
+
+    def _do_set_output_style(self, request_id: object, style: object) -> None:
+        """Switch the output style mid-session (the original's /output-style).
+        Sets tool_context.output_style_name + rebuilds the system prompt so the
+        style's section is appended on the next turn. Idle-only."""
+        with self._lock:
+            active = self._current_abort is not None
+        if active:
+            self._reply(request_id, {"ok": False, "error": "cannot change output style during an active turn"})
+            return
+        try:
+            from src.settings.constants import VALID_OUTPUT_STYLES
+
+            if not isinstance(style, str) or style not in VALID_OUTPUT_STYLES:
+                self._reply(
+                    request_id,
+                    {"ok": False, "error": f"invalid style (valid: {', '.join(VALID_OUTPUT_STYLES)})"},
+                )
+                return
+            tc = self.tool_context
+            if tc is None:
+                self._reply(request_id, {"ok": False, "error": "session not ready"})
+                return
+            tc.output_style_name = style
+            # Rebuild the system prompt so the style section takes effect next turn.
+            try:
+                from src.outputStyles import resolve_output_style
+                from src.query.agent_loop_compat import build_effective_system_prompt
+
+                style_prompt = resolve_output_style(style, getattr(tc, "output_style_dir", None)).prompt
+                self.system_prompt = build_effective_system_prompt(style_prompt, tc, provider=self.provider)
+            except Exception:  # noqa: BLE001 - keep the style set even if rebuild is unavailable
+                logger.debug("[agent-server] system prompt rebuild after set_output_style failed", exc_info=True)
+            self._reply(request_id, {"ok": True, "style": style})
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[agent-server] set_output_style failed")
             self._reply(request_id, {"ok": False, "error": str(exc)})
 
     def _do_branch(self, request_id: object) -> None:
