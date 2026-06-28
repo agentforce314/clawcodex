@@ -862,6 +862,17 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         }
         return true
       }
+      case 'effort': {
+        if (client) {
+          void client.requestControl('set_effort', { effort: arg }).then((r) => {
+            addEntry({
+              kind: 'system',
+              text: `reasoning effort → ${r && r['effort'] ? String(r['effort']) : 'default'}`,
+            })
+          })
+        }
+        return true
+      }
       case 'provider': {
         if (!arg) {
           addEntry({ kind: 'system', text: 'usage: /provider <name>' })
