@@ -189,3 +189,24 @@ test('file index pre-warms async so file search never blocks input', async () =>
   assert.ok(files.length > 0, 'should find files after prewarm')
   assert.ok(dt < 50, `cached file search must be instant (no cold walk on the keystroke), took ${dt.toFixed(1)}ms`)
 })
+
+test('permission dialog supports arrow navigation + Enter to select', async () => {
+  const responses = []
+  let cbRef
+  const transport = {
+    async start(c) { cbRef = c; c.onOpen && c.onOpen(); c.onData(INIT) },
+    send(d) { try { const m = JSON.parse(d); if (m.type === 'control_response' && m.response?.response?.behavior) responses.push(m.response.response) } catch { /* ignore */ } },
+    close() {},
+  }
+  const r = render(React.createElement(App, { transport, serverLabel: 'test' }))
+  await wait(150)
+  cbRef.onData(JSON.stringify({ type: 'control_request', request_id: 'p1', request: { subtype: 'can_use_tool', tool_name: 'Bash', input: { command: 'ls -la' } } }) + '\n')
+  await wait(100)
+  assert.match(strip(r.lastFrame()), /❯\s*1\. Yes/, 'defaults to the Yes option')
+  const DOWN = String.fromCharCode(27) + '[B'
+  r.stdin.write(DOWN); await wait(25); r.stdin.write(DOWN); await wait(40)
+  assert.match(strip(r.lastFrame()), /❯\s*3\. No/, 'down-arrow moves the highlight to No')
+  r.stdin.write('\r'); await wait(120)
+  assert.equal(responses.at(-1)?.behavior, 'deny', 'Enter selects the highlighted option (No → deny)')
+  try { r.unmount() } catch { /* ignore */ }
+})
