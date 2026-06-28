@@ -259,8 +259,10 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const [rtlMode, setRtlMode] = useState<boolean>(process.env['CLAWCODEX_RTL'] === '1')
   // Message timestamps (§3) — opt-in via /timestamps.
   const [timestampsOn, setTimestampsOn] = useState<boolean>(false)
-  // Bypass-permissions confirm (§5 BypassPermissionsModeDialog).
-  const [bypassConfirm, setBypassConfirm] = useState<boolean>(false)
+  // Mode-confirm dialog (§5): bypassPermissions always confirms (BypassPermissions-
+  // ModeDialog); acceptEdits confirms once per session (AutoModeOptInDialog).
+  const [pendingMode, setPendingMode] = useState<string | null>(null)
+  const autoModeAckedRef = useRef(false)
   const alwaysAllowRef = useRef<Set<string>>(new Set()) // tools the user said "don't ask again"
   const bashAllowPrefixRef = useRef<Set<string>>(new Set()) // Bash command prefixes auto-allowed (granular)
   const pendingImageRef = useRef<{ data: string; media_type: string; name: string } | null>(null) // /image attachment
@@ -494,13 +496,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
       return
     }
     if (kind === 'mode') {
-      if (value === 'bypassPermissions') {
-        setBypassConfirm(true)
-        return
-      }
-      client?.sendControl('set_permission_mode', { mode: value })
-      setMode(value)
-      addEntry({ kind: 'system', text: `mode → ${value}` })
+      setPermMode(value) // confirms bypassPermissions / first-time acceptEdits
     } else if (kind === 'model') {
       client?.sendControl('set_model', { model: value })
       setModel(value)
@@ -523,14 +519,16 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const addEntry = (e: Omit<TranscriptEntry, 'id'>) =>
     setEntries((prev) => [...prev, { ts: Date.now(), ...e, id: `l${localSeq.current++}` }])
 
-  // Set the permission mode, but gate bypassPermissions behind a confirm
-  // (the original's BypassPermissionsModeDialog, §5).
+  // Set the permission mode, gating the risky ones behind a confirm:
+  // bypassPermissions always (§5 BypassPermissionsModeDialog), acceptEdits once
+  // per session (§5 AutoModeOptInDialog).
   const setPermMode = (mode: string): void => {
-    if (mode === 'bypassPermissions') {
-      setBypassConfirm(true)
+    if (mode === 'bypassPermissions' || (mode === 'acceptEdits' && !autoModeAckedRef.current)) {
+      setPendingMode(mode)
       return
     }
     client?.sendControl('set_permission_mode', { mode })
+    setMode(mode)
     addEntry({ kind: 'system', text: `mode → ${mode}` })
   }
 
@@ -787,16 +785,23 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
       blurAtRef.current = Date.now()
       return
     }
-    // Bypass-permissions confirm (§5): y enables it, anything else cancels.
-    if (bypassConfirm) {
+    // Mode confirm (§5): y enables the pending mode, anything else cancels.
+    if (pendingMode) {
       if (ch === 'y' || ch === 'Y') {
-        client?.sendControl('set_permission_mode', { mode: 'bypassPermissions' })
-        setMode('bypassPermissions')
-        addEntry({ kind: 'system', text: 'mode → bypassPermissions (all prompts disabled)' })
+        if (pendingMode === 'acceptEdits') autoModeAckedRef.current = true
+        client?.sendControl('set_permission_mode', { mode: pendingMode })
+        setMode(pendingMode)
+        addEntry({
+          kind: 'system',
+          text:
+            pendingMode === 'bypassPermissions'
+              ? 'mode → bypassPermissions (all prompts disabled)'
+              : 'mode → acceptEdits (edits auto-accepted)',
+        })
       } else {
-        addEntry({ kind: 'system', text: 'bypass cancelled' })
+        addEntry({ kind: 'system', text: `${pendingMode} cancelled` })
       }
-      setBypassConfirm(false)
+      setPendingMode(null)
       return
     }
     // MCP elicitation form: capture input → respond accept/decline (§6).
@@ -860,13 +865,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     if (key.tab && key.shift) {
       const modes = ['default', 'acceptEdits', 'plan', 'bypassPermissions']
       const next = modes[(modes.indexOf(mode) + 1) % modes.length] as string
-      if (next === 'bypassPermissions') {
-        setBypassConfirm(true) // confirm before disabling all prompts (§5)
-        return
-      }
-      client?.sendControl('set_permission_mode', { mode: next })
-      setMode(next)
-      addEntry({ kind: 'system', text: `mode → ${next}` })
+      setPermMode(next) // confirms bypassPermissions / first-time acceptEdits
       return
     }
     // Fullscreen Ctrl+F transcript find.
@@ -2007,12 +2006,8 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
           client?.sendControl('set_model', { model: arg })
           setModel(arg)
         } else if (cmd.control === 'set_permission_mode') {
-          if (arg === 'bypassPermissions') {
-            setBypassConfirm(true) // confirm before disabling all prompts (§5)
-            return true
-          }
-          client?.sendControl('set_permission_mode', { mode: arg })
-          setMode(arg)
+          setPermMode(arg) // confirms bypassPermissions / first-time acceptEdits
+          return true
         }
         addEntry({ kind: 'system', text: `${cmd.name} → ${arg}` })
         return true
@@ -2389,12 +2384,16 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         </Box>
       ) : null}
 
-      {bypassConfirm ? (
+      {pendingMode ? (
         <Box flexDirection="column" borderStyle="round" borderColor={theme.error} borderLeft={false} borderRight={false} paddingX={1} marginTop={1}>
           <Text color={theme.error} bold>
-            {'⚠ Enable bypass-permissions mode?'}
+            {pendingMode === 'bypassPermissions' ? '⚠ Enable bypass-permissions mode?' : '⚠ Enable auto-accept-edits mode?'}
           </Text>
-          <Text color={theme.dim}>{'This disables ALL permission prompts — every tool runs without asking.'}</Text>
+          <Text color={theme.dim}>
+            {pendingMode === 'bypassPermissions'
+              ? 'This disables ALL permission prompts — every tool runs without asking.'
+              : 'Edits will be applied without asking (Bash and other tools still prompt).'}
+          </Text>
           <Text color={theme.dim}>{'  y to enable · any other key to cancel'}</Text>
         </Box>
       ) : elicit ? (
@@ -2514,7 +2513,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
               vimEnabled={vimMode}
               onChange={handleInputChange}
               onSubmit={onSubmit}
-              active={!elicit && !bypassConfirm}
+              active={!elicit && !pendingMode}
               placeholder={ready ? 'Type a message, or / for commands…' : 'starting agent-server…'}
             />
             {/* Inline ghost-text completion for slash commands (inventory §1):
