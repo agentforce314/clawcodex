@@ -2072,6 +2072,20 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready])
 
+  // Cost-threshold warning (the original's CostThresholdDialog, §7): surface a
+  // notice once per threshold the cumulative session cost crosses.
+  const costWarnedRef = useRef(0)
+  useEffect(() => {
+    const thresholds = [5, 10, 25, 50, 100]
+    const crossed = thresholds.filter((t) => sessionCost >= t && t > costWarnedRef.current)
+    if (crossed.length) {
+      const top = Math.max(...crossed)
+      costWarnedRef.current = top
+      addEntry({ kind: 'system', text: `⚠ session cost crossed $${top} (now $${sessionCost.toFixed(2)})` })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionCost])
+
   // Auto-allow tools the user marked "don't ask again" (skip the prompt). Bash is
   // matched by command prefix (granular); other tools by name.
   useEffect(() => {
