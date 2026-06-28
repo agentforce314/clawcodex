@@ -235,6 +235,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const statusCmdRef = useRef<string | null>(null) // guards async output against a later clear
   const [, setThemeVersion] = useState(0) // bumped on /theme to repaint the dynamic UI
   const [scrollOffset, setScrollOffset] = useState(0) // fullscreen: entries hidden from the bottom
+  const [expanded, setExpanded] = useState(false) // Ctrl+O: expand collapsed tool results / thinking
   const [txFind, setTxFind] = useState<string | null>(null) // fullscreen Ctrl+F find query (null = closed)
   const [vimMode, setVimMode] = useState(false) // /vim modal editing
 
@@ -570,6 +571,12 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     if (key.ctrl && ch === 'c') {
       client?.close()
       exit()
+      return
+    }
+    // Ctrl+O: toggle expand of collapsed tool results / thinking (fully re-renders
+    // in fullscreen; affects subsequent entries in inline <Static> mode).
+    if (key.ctrl && ch === 'o') {
+      setExpanded((e) => !e)
       return
     }
     // Fullscreen Ctrl+F transcript find.
@@ -1443,7 +1450,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     : entries
   const renderEntry = (entry: TranscriptEntry): React.ReactElement => (
     <Box key={entry.id} marginTop={['tool', 'toolResult', 'banner'].includes(entry.kind) ? 0 : 1}>
-      <Message entry={entry} />
+      <Message entry={entry} expanded={expanded} />
     </Box>
   )
 
