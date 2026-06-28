@@ -248,6 +248,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const streamRef = useRef('') // source of truth for the live buffer (no stale closures)
   const [permissions, setPermissions] = useState<PendingPermission[]>([]) // FIFO queue
   const alwaysAllowRef = useRef<Set<string>>(new Set()) // tools the user said "don't ask again"
+  const bashAllowPrefixRef = useRef<Set<string>>(new Set()) // Bash command prefixes auto-allowed (granular)
   const pendingImageRef = useRef<{ data: string; media_type: string; name: string } | null>(null) // /image attachment
   const fastModeRef = useRef<string | null>(null) // /fast: prev model while fast mode is on
   const [permFeedback, setPermFeedback] = useState<string | null>(null) // Tab-to-amend feedback field
@@ -864,11 +865,19 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         client?.respondPermission(head.requestId, 'allow')
         setPermissions((q) => q.slice(1))
       } else if (c === 'a' || ch === '2') {
-        // "Yes, and don't ask again" — remember the tool + auto-allow future asks.
-        alwaysAllowRef.current.add(head.toolName)
+        // "Yes, and don't ask again". For Bash, remember the command's first word
+        // (granular: allow `git`, still prompt `rm`); for other tools, the whole
+        // tool — then auto-allow matching future asks.
+        if (head.toolName === 'Bash') {
+          const pfx = String((head.input as { command?: string }).command ?? '').trim().split(/\s+/)[0] || ''
+          if (pfx) bashAllowPrefixRef.current.add(pfx)
+          addEntry({ kind: 'system', text: `always allowing \`${pfx}\` commands this session` })
+        } else {
+          alwaysAllowRef.current.add(head.toolName)
+          addEntry({ kind: 'system', text: `always allowing ${head.toolName} this session` })
+        }
         client?.respondPermission(head.requestId, 'allow')
         setPermissions((q) => q.slice(1))
-        addEntry({ kind: 'system', text: `always allowing ${head.toolName} this session` })
       } else if (c === 'n' || c === 'd' || ch === '3') {
         client?.respondPermission(head.requestId, 'deny', { message: 'denied by user' })
         setPermissions((q) => q.slice(1))
@@ -1899,10 +1908,18 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready])
 
-  // Auto-allow tools the user marked "don't ask again" (skip the prompt).
+  // Auto-allow tools the user marked "don't ask again" (skip the prompt). Bash is
+  // matched by command prefix (granular); other tools by name.
   useEffect(() => {
     const head = permissions[0]
-    if (head && alwaysAllowRef.current.has(head.toolName)) {
+    if (!head) return
+    const bashPfx =
+      head.toolName === 'Bash'
+        ? String((head.input as { command?: string }).command ?? '').trim().split(/\s+/)[0] || ''
+        : ''
+    const auto =
+      alwaysAllowRef.current.has(head.toolName) || (bashPfx !== '' && bashAllowPrefixRef.current.has(bashPfx))
+    if (auto) {
       client?.respondPermission(head.requestId, 'allow')
       setPermissions((q) => q.slice(1))
     }
