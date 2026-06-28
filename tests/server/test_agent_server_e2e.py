@@ -674,6 +674,43 @@ async def test_control_insights(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_control_plan(tmp_path):
+    """plan set/view/clear round-trips and injects into the system prompt."""
+    from src.tool_system.registry import ToolRegistry
+
+    with contextlib.ExitStack() as stack:
+        for p in _patches(_TextProvider, ToolRegistry([])):
+            stack.enter_context(p)
+        spawn = make_spawn_agent(AgentServerConfig(permission_mode="default"))
+        handle = await spawn("ds_test", str(tmp_path), None)
+        gen = handle.messages_from_agent()
+        try:
+            init = await asyncio.wait_for(gen.__anext__(), timeout=5)
+            assert init["subtype"] == "init"
+
+            async def _reply_for(rid, req):
+                await handle.send_to_agent({"type": "control_request", "request_id": rid, "request": req})
+                for _ in range(12):
+                    msg = await asyncio.wait_for(gen.__anext__(), timeout=5)
+                    if msg.get("type") == "control_response" and msg["response"].get("request_id") == rid:
+                        return msg["response"]["response"]
+                raise AssertionError(f"no reply for {rid}")
+
+            empty = await _reply_for("p0", {"subtype": "plan", "action": "view"})
+            assert empty["plan"] == ""
+            setr = await _reply_for("p1", {"subtype": "plan", "action": "set", "text": "ship v2"})
+            assert setr["ok"] is True and "ship v2" in setr["plan"]
+            view = await _reply_for("p2", {"subtype": "plan", "action": "view"})
+            assert "ship v2" in view["plan"]
+            cleared = await _reply_for("p3", {"subtype": "plan", "action": "clear"})
+            assert cleared["plan"] == ""
+        finally:
+            await handle.shutdown()
+            with contextlib.suppress(Exception):
+                await gen.aclose()
+
+
+@pytest.mark.asyncio
 async def test_interrupt_trips_abort(tmp_path):
     """An interrupt control_request must trip the in-flight turn's abort."""
     from src.permissions.types import PermissionPassthroughResult
