@@ -234,6 +234,9 @@ class _AgentSession:
         if subtype in ("bg_run", "bg_list", "bg_kill", "bg_agent"):
             self._do_bgtask(request_id, subtype, inner.get("command"), inner.get("id"))
             return
+        if subtype == "insights":
+            self._do_insights(request_id)
+            return
         if subtype == "set_effort":
             effort = inner.get("effort")
             if isinstance(effort, str) and effort in ("minimal", "low", "medium", "high"):
@@ -577,6 +580,33 @@ class _AgentSession:
         except Exception as exc:  # noqa: BLE001
             logger.exception("[agent-server] set_provider failed")
             self._reply(request_id, {"ok": False, "error": str(exc)})
+
+    def _do_insights(self, request_id: object) -> None:
+        """/insights: a model-based analysis of the session (the original's
+        Insights). Runs the model call in a daemon thread (_emit is thread-safe)
+        so it never blocks the control loop; replies when the narrative is ready."""
+        if self.session is None or self.provider is None:
+            self._reply(request_id, {"ok": False, "error": "no active session"})
+            return
+        msgs = list(self.session.conversation.messages)
+        if not msgs:
+            self._reply(request_id, {"ok": False, "error": "no conversation yet"})
+            return
+        text = "\n".join(f"{getattr(m, 'role', '?')}: {self._message_text(m)[:400]}" for m in msgs[-12:])
+
+        def _work() -> None:
+            try:
+                prompt = (
+                    "Analyze this coding session and give 3-5 concise insights: what was "
+                    "accomplished, notable patterns, and one suggestion for next steps. "
+                    "Be brief — short bullet points.\n\nSESSION:\n" + text
+                )
+                resp = self.provider.chat([{"role": "user", "content": prompt}])
+                self._reply(request_id, {"ok": True, "insights": (getattr(resp, "content", "") or "").strip()})
+            except Exception as exc:  # noqa: BLE001
+                self._reply(request_id, {"ok": False, "error": str(exc)})
+
+        threading.Thread(target=_work, name=f"insights-{self.session_id}", daemon=True).start()
 
     def _do_bgtask(self, request_id: object, subtype: str, command: object, tid: object) -> None:
         """Background tasks (the original's Ctrl+B runs): bg_run starts a detached
