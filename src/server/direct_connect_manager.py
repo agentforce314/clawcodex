@@ -125,21 +125,24 @@ class DirectConnectSessionManager:
     def is_connected(self) -> bool:
         return self._ws is not None and not self._closed
 
-    async def send_message(self, content: object) -> bool:
+    async def send_message(self, content: object, ephemeral: bool = False) -> bool:
         """Send a user prompt over the WS.
 
         Mirrors ``directConnectManager.ts:125-142``. The wire shape
         matches what the agent's stream-json input format expects.
-        Returns False if the WS is not open.
+        ``ephemeral=True`` marks a /btw side question (answered with context but
+        not persisted to history). Returns False if the WS is not open.
         """
         if self._ws is None or self._closed:
             return False
-        envelope = {
+        envelope: dict = {
             'type': 'user',
             'message': {'role': 'user', 'content': content},
             'parent_tool_use_id': None,
             'session_id': '',
         }
+        if ephemeral:
+            envelope['ephemeral'] = True
         try:
             await self._ws.send(json.dumps(envelope))
         except (websockets.exceptions.ConnectionClosed, OSError):
