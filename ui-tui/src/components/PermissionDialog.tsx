@@ -17,6 +17,24 @@ import { buildToolDiff } from '../diff.js'
 import { theme } from '../theme.js'
 import { DiffView } from './DiffView.js'
 
+/** Patterns the original's Bash classifier flags as destructive (inventory §5). */
+const DESTRUCTIVE: RegExp[] = [
+  /\brm\s+-[a-z]*[rf]/i, // rm -r / -f / -rf
+  /\bgit\s+push\b[^\n]*(--force|-f)\b/i,
+  /\bdd\s+if=/i,
+  /\bmkfs\b/i,
+  />\s*\/dev\/(sd|nvme|disk|hd)/i,
+  /\b(chmod|chown)\s+-[a-z]*R/i,
+  /\bsudo\b/i,
+  /\b(curl|wget)\b[^\n|]*\|\s*(sh|bash|zsh)\b/i, // pipe-to-shell
+  /:\(\)\s*\{.*\|.*&\s*\}/, // fork bomb
+  /\b(shred|truncate)\b/i,
+  /\bgit\s+(reset\s+--hard|clean\s+-[a-z]*f)/i,
+]
+function isDestructive(cmd: string): boolean {
+  return DESTRUCTIVE.some((re) => re.test(cmd))
+}
+
 interface Props {
   toolName: string
   input: Record<string, unknown>
@@ -84,6 +102,11 @@ function Preview({ toolName, input }: Props): React.ReactElement | null {
         {rows.map((row, i) => (
           <Text key={i}>{row}</Text>
         ))}
+        {isDestructive(cmd) ? (
+          <Text color={theme.error} bold>
+            {'⚠ this command looks destructive — review carefully before allowing'}
+          </Text>
+        ) : null}
       </Box>
     )
   }
