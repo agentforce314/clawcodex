@@ -33,12 +33,18 @@ HIGH_DENSITY_THRESHOLD = 500
 # Six core abstractions, in the order the book enumerates them in §Closing
 # (line 127). The order is load-bearing for the test that pins the map; do
 # not reshuffle without updating ``test_six_abstractions_present``.
+#
+# The book's fifth abstraction was the in-process "Rendering engine"
+# (``src/tui``, the Textual app). That surface was removed when the UI moved
+# to the TypeScript Ink client (``ui-tui/``), which renders against the Python
+# **agent-server** (``src/server``). The agent-server is now the Python half of
+# the UI architecture, so the slot is repointed there.
 ABSTRACTION_MAP: tuple[tuple[str, str], ...] = (
     ("Generator loop", "src/query"),
     ("Tools", "src/tool_system"),
     ("Memory", "src/memdir"),
     ("Hooks", "src/hooks"),
-    ("Rendering engine", "src/tui"),
+    ("Agent server", "src/server"),
     ("MCP", "src/services/mcp"),
 )
 

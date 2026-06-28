@@ -13,19 +13,18 @@ MODULE_COUNT = _SNAPSHOT['module_count']
 SAMPLE_FILES = tuple(_SNAPSHOT['sample_files'])
 PORTING_NOTE = f"Python placeholder package for '{ARCHIVE_NAME}' with {MODULE_COUNT} archived module references."
 
-# WI-4.3: lazy-load the heavy entrypoints (headless + tui). Eagerly
-# importing them at package init pulls in Textual, prompt_toolkit, the
-# full tool registry, and ~150 transitive modules — defeating the
-# fast-path-dispatch acceptance contract for ``clawcodex mcp/doctor/daemon``.
-# PEP 562 ``__getattr__`` exposes the public names lazily so callers like
-# ``from src.entrypoints import run_tui`` keep working but pay the import
-# cost only when actually invoked.
+# WI-4.3: lazy-load the heavy entrypoints (headless + the Ink-TUI launcher).
+# Eagerly importing them at package init pulls in the full tool registry, the
+# agent-server, and ~150 transitive modules — defeating the fast-path-dispatch
+# acceptance contract for ``clawcodex mcp/doctor/daemon``. PEP 562
+# ``__getattr__`` exposes the public names lazily so callers like
+# ``from src.entrypoints import launch_ink_tui`` keep working but pay the
+# import cost only when actually invoked.
 _LAZY_NAMES = {
     'HeadlessOptions': ('headless', 'HeadlessOptions'),
     'run_headless': ('headless', 'run_headless'),
-    'TUIOptions': ('tui', 'TUIOptions'),
-    'run_tui': ('tui', 'run_tui'),
-    'should_use_tui': ('tui', 'should_use_tui'),
+    'launch_ink_tui': ('tui_launcher', 'launch_ink_tui'),
+    'run_tui_launcher': ('tui_launcher', 'run_tui_launcher'),
 }
 
 
@@ -48,7 +47,6 @@ __all__ = [
     'SAMPLE_FILES',
     'HeadlessOptions',
     'run_headless',
-    'TUIOptions',
-    'run_tui',
-    'should_use_tui',
+    'launch_ink_tui',
+    'run_tui_launcher',
 ]

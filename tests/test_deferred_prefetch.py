@@ -116,18 +116,6 @@ class TestEntrypointWiring(unittest.TestCase):
                 headless.run_headless(options)
             kick.assert_called_once()
 
-    def test_start_repl_kicks_prefetch(self) -> None:
-        from src import cli
-
-        with mock.patch(
-            "src.deferred_init.start_deferred_prefetches"
-        ) as kick, mock.patch(
-            "src.config.get_default_provider", side_effect=SystemExit(2)
-        ):
-            with self.assertRaises(SystemExit):
-                cli.start_repl()
-            kick.assert_called_once()
-
 
 if __name__ == "__main__":
     unittest.main()

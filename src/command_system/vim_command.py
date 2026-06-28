@@ -4,14 +4,11 @@ Port of ``typescript/src/commands/vim/``. Toggles ``editorMode`` between ``"vim"
 ``"normal"`` in the global config (the TS ``saveGlobalConfig`` channel; legacy
 ``"emacs"`` reads as ``"normal"``) and reports the new mode verbatim.
 
-**Functional half:** the TUI seeds ``PromptInput(vim_mode=...)`` from this config key at
-construction (``src/tui/screens/repl.py``) — so the persisted mode genuinely enables the
-existing vim subsystem (``VimState`` et al.) on the next TUI launch. Divergences:
-TS applies the toggle live (Ink re-reads config); the registry command has no widget
-handle and the TUI has no non-dialog intercept mechanism, so Python applies on the
-**next TUI launch** (``PromptInput.set_vim_mode`` exists for a future live intercept).
-The prompt-toolkit REPL has no vim editing implementation — the mode takes effect in
-the TUI.
+**Status (deferred):** with the in-process Textual TUI and Rich REPL removed, no
+surviving Python surface reads ``editorMode`` — the TypeScript Ink TUI owns its own
+editor mode. This command still persists the toggle to the global config faithfully,
+but it is inert on the Python side until/unless the Ink client consumes ``editorMode``
+over the protocol.
 """
 from __future__ import annotations
 

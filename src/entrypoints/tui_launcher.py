@@ -32,6 +32,7 @@ import shutil
 import signal
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 from src.entrypoints.agent_server_cli import run_agent_server_subcommand
 
@@ -58,6 +59,38 @@ def run_tui_launcher(argv: list[str]) -> int:
 
     if args.print_connect:
         return _print_connect(args)
+    return launch_ink_tui(
+        provider=args.provider,
+        model=args.model,
+        permission_mode=args.permission_mode,
+        workspace=args.workspace,
+        tui_dir=args.tui_dir,
+    )
+
+
+def launch_ink_tui(
+    *,
+    provider: str | None = None,
+    model: str | None = None,
+    permission_mode: str = "default",
+    workspace: str | None = None,
+    tui_dir: str | None = None,
+) -> int:
+    """Launch the Ink TUI as the interactive UI (it spawns + owns the agent-server).
+
+    Shared by the ``clawcodex tui`` subcommand and the **default** interactive
+    entry in :func:`src.cli.main`. Returns the Ink client's exit code, or a
+    non-zero code with a helpful message (printed to stderr by :func:`_launch`)
+    when the client or a JS runtime can't be found.
+    """
+    args = SimpleNamespace(
+        provider=provider,
+        model=model,
+        permission_mode=permission_mode,
+        workspace=workspace,
+        tui_dir=tui_dir,
+        print_connect=False,
+    )
     try:
         return asyncio.run(_launch(args))
     except KeyboardInterrupt:
@@ -184,4 +217,4 @@ async def _launch(args) -> int:
     return rc if rc is not None else 0
 
 
-__all__ = ["run_tui_launcher"]
+__all__ = ["launch_ink_tui", "run_tui_launcher"]

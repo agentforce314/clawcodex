@@ -9,12 +9,11 @@ It is **functional** — it sets the live ``provider.model`` (the channel infere
 
 Sections:
   * A — metadata + registration.
-  * B — bridge-safety by type + TUI dispatch inversion (``/model`` AND ``/models``).
+  * B — bridge-safety by type.
   * C — set-by-name (headless): alias-resolve + membership; not-found; honest-failure; empty-list.
   * D — picker: set / cancel ("Kept model as …") / no-models.
   * E — info / help / refresh (+ effort suffix from settings).
   * F — null surface: no-args picker raises; engine clean error; arg path works headless.
-  * G — D1: the REPL wires ``provider`` into its command context.
 """
 from __future__ import annotations
 
@@ -124,21 +123,10 @@ def test_model_metadata_mirrors_ts():
 
 
 # --------------------------------------------------------------------------- #
-# B. Bridge-safety + TUI dispatch inversion
+# B. Bridge-safety
 # --------------------------------------------------------------------------- #
 def test_model_blocked_from_bridge_by_type():
     assert is_bridge_safe_command(MODEL_COMMAND) is False
-
-
-@pytest.mark.parametrize("name", ["/model", "/models"])
-def test_dispatch_local_command_intercepts_model(name):
-    from src.tui.commands import dispatch_local_command
-
-    res = dispatch_local_command(
-        name, session=None, workspace_root=Path("."), tool_registry=None
-    )
-    assert res.handled is True
-    assert res.open_dialog == "model"
 
 
 # --------------------------------------------------------------------------- #
@@ -287,15 +275,3 @@ async def test_engine_arg_path_succeeds_headless(tmp_path):
 
     assert result.success is True
     assert prov.model == _OPUS
-
-
-# --------------------------------------------------------------------------- #
-# G. D1 — the REPL wires provider into its command context
-# --------------------------------------------------------------------------- #
-def test_repl_wires_provider_into_command_context():
-    import inspect
-
-    from src.repl.core import ClawcodexREPL
-
-    src_text = inspect.getsource(ClawcodexREPL._init_command_system)
-    assert "provider=self.provider" in src_text

@@ -236,9 +236,3 @@ def test_registered_metadata_safety_dispatch():
     assert MEMORY_COMMAND.description == "Edit Claude memory files"
     assert MEMORY_COMMAND.command_type == CommandType.INTERACTIVE
     assert is_bridge_safe_command(MEMORY_COMMAND) is False
-    from src.tui.commands import dispatch_local_command
-
-    res = dispatch_local_command(
-        "/memory", session=None, workspace_root=Path("."), tool_registry=None
-    )
-    assert res.handled is False

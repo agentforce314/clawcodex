@@ -96,8 +96,8 @@ Create `~/.clawcodex/config.json` (only the providers you actually use are requi
 ## 4. Run
 
 ```bash
-clawcodex                  # start the inline REPL (same as: python -m src.cli)
-clawcodex --help           # all flags: --tui, -p, --provider, --model, …
+clawcodex                  # start the interactive Ink TUI (same as: python -m src.cli)
+clawcodex --help           # all flags: -p, --provider, --model, …
 clawcodex --provider zai   # start this session with a specific provider
 ```
 

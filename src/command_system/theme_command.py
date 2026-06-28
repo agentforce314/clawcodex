@@ -40,17 +40,15 @@ Deliberate divergences (documented for parity review):
     Textual app), so "Theme set to {name}" means *persisted; applies on next launch*
     on non-TUI surfaces. The live hot-swap stays the TUI dialog's job (``apply_theme``).
 
-``list_theme_names`` is imported **lazily** inside :func:`_theme_options` (not at
-module top) so a bare ``import src.command_system`` does not pull the heavy
-``src.tui`` package — ``src/tui/__init__.py`` eagerly imports the Textual app. This
-mirrors the local-import discipline already used in ``builtins.py`` (buddy) and
-``app.py`` (config).
+``list_theme_names`` lives in :mod:`src.utils.theme` (framework-agnostic color
+palettes, stdlib-only) and is imported at module top.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 from src.config import load_config, set_theme
+from src.utils.theme import list_theme_names
 
 from .types import (
     CommandContext,
@@ -77,11 +75,7 @@ def _current_theme() -> str:
 def _theme_options(current: str) -> list[UIOption]:
     """Build picker options from :func:`list_theme_names`, marking the option equal to
     ``current`` with ``description="current"`` (the same marker the TUI
-    ``ThemePickerScreen`` shows). Labels are the raw theme names.
-
-    Imported lazily — see the module docstring."""
-    from src.tui.theme import list_theme_names
-
+    ``ThemePickerScreen`` shows). Labels are the raw theme names."""
     options: list[UIOption] = []
     for name in list_theme_names():
         desc = "current" if name == current else None

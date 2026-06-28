@@ -111,11 +111,11 @@ class TestFastPathSkipsInit(unittest.TestCase):
                 # that doesn't change behavior:
                 # ``--version`` alone, but force the pre-argparse
                 # fast-path to miss by adding a no-op extra flag.
-                # Easiest: use ``--version`` + ``--legacy-repl`` (both
+                # Easiest: use ``--version`` + ``--verbose`` (both
                 # parse, and ``args.version`` short-circuits first).
                 pass
             with mock.patch.object(
-                sys, "argv", ["clawcodex", "--version", "--legacy-repl"]
+                sys, "argv", ["clawcodex", "--version", "--verbose"]
             ):
                 from src import cli
                 cli.main()
@@ -126,7 +126,7 @@ class TestFastPathSkipsInit(unittest.TestCase):
         with mock.patch("src.init.run_pre_action") as mock_pre_action, \
                 mock.patch("src.cli.show_config", return_value=0):
             with mock.patch.object(
-                sys, "argv", ["clawcodex", "--config", "--legacy-repl"]
+                sys, "argv", ["clawcodex", "--config", "--verbose"]
             ):
                 from src import cli
                 cli.main()
@@ -139,23 +139,61 @@ class TestFastPathSkipsInit(unittest.TestCase):
 
 
 class TestPreActionRunsForDefaultInvocation(unittest.TestCase):
-    def test_pre_action_called_once_for_default_repl(self) -> None:
-        # We patch the actual REPL launcher so the test doesn't drag
-        # in the full provider/registry/etc. stack. _resolve_permission_state
-        # is allowed to run because cli.start_repl reads args._resolved_*.
-        # check_trust_accepted is patched True so the round-3 REPL trust
-        # gate (exercised in test_trust_wiring_round3.py) stays inert here.
+    def test_pre_action_called_once_for_default_tui(self) -> None:
+        # We patch the Ink TUI launcher so the test doesn't drag in the
+        # full provider/registry/etc. stack. _resolve_permission_state is
+        # allowed to run because the interactive dispatch reads args._resolved_*.
+        # check_trust_accepted is patched True so the folder-trust gate
+        # (exercised in test_trust_wiring_round3.py) stays inert here.
         with mock.patch("src.init.run_pre_action") as mock_pre, \
-                mock.patch("src.cli.start_repl", return_value=0), \
+                mock.patch(
+                    "src.entrypoints.tui_launcher.launch_ink_tui", return_value=0
+                ), \
                 mock.patch(
                     "src.services.startup_gates.check_trust_accepted",
                     return_value=True,
                 ), \
-                mock.patch("src.entrypoints.tui.should_use_tui", return_value=False), \
                 mock.patch.object(sys, "argv", ["clawcodex"]):
             from src import cli
             cli.main()
             mock_pre.assert_called_once()
+
+    def test_tui_subcommand_runs_bootstrap_and_trust_gate(self) -> None:
+        # ``clawcodex tui`` reaches the tool-executing agent-server, so (unlike
+        # the lean mcp/doctor/daemon fast-paths) it must run run_pre_action +
+        # the folder-trust gate before launching, mirroring the default entry.
+        with mock.patch("src.init.run_pre_action") as mock_pre, \
+                mock.patch(
+                    "src.services.startup_gates.check_trust_accepted",
+                    return_value=True,
+                ), \
+                mock.patch(
+                    "src.entrypoints.tui_launcher.run_tui_launcher", return_value=0
+                ) as mock_launch, \
+                mock.patch.object(sys, "argv", ["clawcodex", "tui"]):
+            from src import cli
+            self.assertEqual(cli.main(), 0)
+            mock_pre.assert_called_once()
+            mock_launch.assert_called_once()
+
+    def test_tui_subcommand_exits_when_interactive_trust_declined(self) -> None:
+        # Declining the folder-trust prompt must exit 1 WITHOUT launching the
+        # agent-server-spawning client.
+        with mock.patch("src.init.run_pre_action"), \
+                mock.patch(
+                    "src.services.startup_gates.check_trust_accepted",
+                    return_value=False,
+                ), \
+                mock.patch("src.cli._prompt_folder_trust", return_value=False), \
+                mock.patch(
+                    "src.entrypoints.tui_launcher.run_tui_launcher", return_value=0
+                ) as mock_launch, \
+                mock.patch("sys.stdin") as mock_stdin, \
+                mock.patch.object(sys, "argv", ["clawcodex", "tui"]):
+            mock_stdin.isatty.return_value = True
+            from src import cli
+            self.assertEqual(cli.main(), 1)
+            mock_launch.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

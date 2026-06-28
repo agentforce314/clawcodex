@@ -166,39 +166,3 @@ def test_no_ultracode_slash_command():
     assert get_command_registry().get("workflows") is not None
 
 
-# ── in-session pickup of a freshly-authored /<name> workflow ──────────────────
-
-
-def test_refresh_workflow_commands_picks_up_new_file(tmp_path, monkeypatch):
-    """A workflow saved into .claude/workflows/ mid-session becomes a /<name>
-    command without a restart (the ultracode-keyword → saved-/<name> handoff)."""
-    from src.command_system.registry import CommandRegistry, get_command_registry
-    from src.repl.core import ClawcodexREPL
-
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")  # empty personal dir
-
-    wfdir = tmp_path / ".claude" / "workflows"
-    wfdir.mkdir(parents=True)
-    (wfdir / "ultratest-scraper.py").write_text(
-        'meta = {"name": "ultratest-scraper", "description": "scrape something"}\n'
-        'return await agent("x")\n',
-        encoding="utf-8",
-    )
-
-    repl = ClawcodexREPL.__new__(ClawcodexREPL)
-    repl._wf_dirs_sig = None
-    repl.command_registry = CommandRegistry()
-    repl._original_built_ins = []
-    repl._built_in_commands = []
-
-    repl._refresh_workflow_commands()
-
-    # dispatchable via the global registry, and bare /<name> routes to execution
-    assert get_command_registry().get("ultratest-scraper") is not None
-    assert "/ultratest-scraper" in repl._built_in_commands
-
-    # mtime-gated: a second call with no dir change is a no-op (signature unchanged)
-    sig_after = repl._wf_dirs_sig
-    repl._refresh_workflow_commands()
-    assert repl._wf_dirs_sig == sig_after

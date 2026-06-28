@@ -45,10 +45,10 @@ def _print_usage() -> None:
 def _list_servers() -> int:
     """Print each configured MCP server's name on its own line.
 
-    Avoids importing the TUI/REPL/full tool registry — only loads what
-    the MCP config layer needs. The chapter's fast-path test (skip the
-    React REPL on ``claude mcp``) is verified by ensuring this handler
-    does NOT trigger ``src.tui.app`` or ``src.repl.core`` imports.
+    Avoids importing the interactive UI / full tool registry — only loads
+    what the MCP config layer needs. The chapter's fast-path test (skip the
+    interactive load on ``claude mcp``) is verified by ensuring this handler
+    does NOT trigger the Ink-TUI launcher or agent-server imports.
     """
     try:
         # Local imports keep the module-load cost off the hot cold-start

@@ -1,10 +1,10 @@
-"""Unit tests for :func:`src.tui.theme.resolve_auto_theme`."""
+"""Unit tests for :func:`src.utils.theme.resolve_auto_theme`."""
 
 from __future__ import annotations
 
 import pytest
 
-from src.tui.theme import get_palette, list_theme_names, resolve_auto_theme
+from src.utils.theme import get_palette, list_theme_names, resolve_auto_theme
 
 
 def test_list_theme_names_starts_with_auto():

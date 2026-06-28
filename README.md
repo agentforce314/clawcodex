@@ -210,31 +210,27 @@ env vars). API keys resolve from config **or** the provider's standard env var
 (e.g. `TOGETHER_API_KEY`, `MOONSHOT_API_KEY`), so most providers work without
 editing `config.json`.
 
-### Interactive REPL (default) and Textual TUI (opt-in)
+### Interactive UI (TypeScript Ink TUI)
 
-The **default** interactive UI is the inline **prompt_toolkit + Rich** REPL (transcript in scrollback, tool-aware status row). Use **`clawcodex --tui`** or the **`/tui`** slash command inside the REPL to launch the **Textual** in-app experience when you want it.
+The interactive UI is the **TypeScript Ink TUI** — a terminal client that spawns and owns a Python **agent-server** child and talks to it over a pipe (NDJSON). Running `clawcodex` with no mode flags launches it; `clawcodex tui` is the explicit form. (The former in-process Rich REPL and Textual TUI were removed in favor of this single, higher-fidelity client.)
 
 ```text
->>> Hello!
+> Hello!
 Assistant: Hi! I'm ClawCodex, a Python reimplementation...
 
->>> /help          # Show commands
->>> /tools         # List registered tools
->>> /tui           # Hand off to the Textual TUI
->>> /stream on     # Live response rendering
->>> /save          # Save session
->>> Tab            # Auto-complete
->>> /explain-code qsort.py   # Run a SKILL.md skill (or /skill …)
+> /help                       # Show commands
+> /theme dark                 # Switch color theme
+> @src/cli.py                 # @-mention a file (fuzzy file index)
+> /explain-code qsort.py      # Run a SKILL.md skill (or /skill …)
 
-# Multi-line input: Shift+Enter, Meta/Alt+Enter, or `\` then Enter for newline; plain Enter submits.
+# Needs Node 18+ and a built ui-tui/dist (the installer builds it); `clawcodex -p` is the no-Node headless path.
 ```
 
 ### Complete CLI
 
 ```bash
-clawcodex                       # Inline REPL (default)
-clawcodex --tui                 # Textual TUI
-clawcodex --stream              # REPL with live rendering
+clawcodex                       # Interactive Ink TUI (default)
+clawcodex tui                   # Interactive Ink TUI (explicit)
 clawcodex login                 # Configure API keys (interactive)
 clawcodex config                # Show ~/.clawcodex/config.json-backed settings
 clawcodex --version             # Version string
@@ -274,8 +270,8 @@ clawcodex --allow-dangerously-skip-permissions         # allow /permission-mode 
 
 | System | Status | Description |
 |--------|--------|-------------|
-| CLI Entry | ✅ | `clawcodex`, `login`, `config`, `-p` / `--print`, `--tui`, `--stream`, `--version` |
-| Interactive REPL | ✅ | Default inline REPL; optional Textual TUI; history, tab completion, multiline |
+| CLI Entry | ✅ | `clawcodex`, `clawcodex tui`, `login`, `config`, `-p` / `--print`, `--version` |
+| Interactive UI | ✅ | TypeScript Ink TUI (terminal client over a Python agent-server child); slash commands, @-file mentions, themes, permission dialog |
 | Multi-Provider | ✅ | 25 providers — Anthropic, OpenAI, Gemini, Z.ai GLM, Minimax, OpenRouter, DeepSeek, plus an OpenAI-compatible provider registry (NVIDIA NIM, Together, Novita, Fireworks, SiliconFlow, Moonshot/Kimi, DeepInfra, Hugging Face, Volcengine, StepFun, Arcee, AtlasCloud, Xiaomi MiMo, Wanjie Ark) and local servers (Ollama, vLLM, SGLang). Anthropic→OpenAI image / document block translation for vision-capable OpenAI-compat backends; per-provider API-key env-var fallback |
 | Session Persistence | ✅ | Save/load sessions locally |
 | Agent Loop | ✅ | Tool calling loop with streaming and headless mode |
@@ -408,7 +404,7 @@ The configuration file is saved in `~/.clawcodex/config.json`. Example structure
 
 ```bash
 clawcodex                  # Start inline REPL (same as python -m src.cli)
-clawcodex --help           # All flags: --tui, -p, --provider, --model, …
+clawcodex --help           # All flags: -p, --provider, --model, …
 ```
 
 **That's it!** Configure keys, then run the CLI or REPL.
@@ -429,7 +425,6 @@ clawcodex --help           # All flags: --tui, -p, --provider, --model, …
 | `/render-last` | Re-render last assistant reply as Markdown |
 | `/save` / `/load <id>` | Persist or restore a session |
 | `/clear` | Clear conversation (also `/reset`, `/new`) |
-| `/tui` | Switch to the Textual TUI |
 | `/skill` | Skill launcher flow |
 | `/context` | Workspace / prompt context (when available) |
 | `/compact` | Compact or clear conversation (fallback clears if compact unavailable) |
@@ -528,7 +523,7 @@ Want to see how it's done? Open ClawCodex in any empty directory and ask it to b
 
 - **3-step setup** — Clone, configure (`clawcodex login`), run (`clawcodex`)
 - **Interactive config** — Provider, base URL, and default model in one flow
-- **Inline or TUI** — Default terminal-native REPL; opt-in Textual UI
+- **Ink TUI** — TypeScript terminal client over a Python agent-server child
 - **Scriptable** — `-p` / JSON / NDJSON for automation
 - **Session persistence** — Save and reload conversations
 
@@ -555,9 +550,8 @@ chapter-by-chapter port gap analyses and refactoring plans live under
 clawcodex/
 ├── src/
 │   ├── cli.py              # CLI entry (console: clawcodex)
-│   ├── entrypoints/        # Headless (-p) and TUI bootstraps
-│   ├── repl/               # Inline REPL (prompt_toolkit + Rich)
-│   ├── tui/                # Textual UI (--tui, /tui)
+│   ├── entrypoints/        # Headless (-p), agent-server, and Ink-TUI launcher
+│   ├── server/             # Direct Connect agent-server (Ink TUI backend)
 │   ├── providers/          # Anthropic, OpenAI, Gemini, Z.ai GLM, Minimax, OpenRouter, DeepSeek + OpenAI-compatible registry (openai_compatible_specs.py)
 │   ├── agent/              # Conversation, session, prompts
 │   ├── tool_system/        # Agent loop, tools, schemas
