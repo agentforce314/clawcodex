@@ -274,6 +274,9 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const [queued, setQueued] = useState<string[]>([])
   const localSeq = useRef(0)
   const bannerAdded = useRef(false)
+  const bannerDataRef = useRef<{ model: string; mode: string; tools: number; cwd?: string } | null>(
+    null,
+  ) // for /logo re-show
   const [toolActivity, setToolActivity] = useState<string | null>(null)
   const turnToolCounts = useRef<Record<string, number>>({})
   // Live, in-place tool-progress block: Read-like calls collapse here (not into
@@ -508,16 +511,13 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
           void c.requestControl('get_context_usage').then(applyContextUsage) // seed the status bar
           if (!bannerAdded.current) {
             bannerAdded.current = true
-            addEntry({
-              kind: 'banner',
-              text: '',
-              bannerData: {
-                model: m.model ?? '?',
-                mode: m.permission_mode ?? '?',
-                tools: toolCount,
-                cwd: m.cwd,
-              },
-            })
+            bannerDataRef.current = {
+              model: m.model ?? '?',
+              mode: m.permission_mode ?? '?',
+              tools: toolCount,
+              cwd: m.cwd,
+            }
+            addEntry({ kind: 'banner', text: '', bannerData: bannerDataRef.current })
           }
           const major = parseProtocolMajor(m.protocol_version)
           if (major !== null && major !== SUPPORTED_PROTOCOL_MAJOR) {
@@ -860,6 +860,14 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
           runStatusline(arg)
           addEntry({ kind: 'system', text: `status line set: ${arg}` })
         }
+        return true
+      }
+      case 'logo': {
+        addEntry({
+          kind: 'banner',
+          text: '',
+          bannerData: bannerDataRef.current ?? { model, mode, tools: 0, cwd: process.cwd() },
+        })
         return true
       }
       case 'keybindings': {
