@@ -10,6 +10,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsc -p tsconfig.json && node --test test/features.test.mjs",
     "start": "node dist/cli.js",
     "dev": "bun run src/cli.tsx"
   },
