@@ -16,7 +16,7 @@ import { Message } from './components/Message.js'
 import { PermissionDialog } from './components/PermissionDialog.js'
 import { SlashMenu } from './components/SlashMenu.js'
 import { editInEditor } from './editor.js'
-import { isTrusted, trustFolder, untrustFolder } from './trust.js'
+import { isTrusted, trustFolder, untrustFolder, isMcpTrusted, trustMcp } from './trust.js'
 import { matchesBinding } from './keybindings.js'
 import { exec } from 'node:child_process'
 import { readFileSync } from 'node:fs'
@@ -1592,9 +1592,28 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
             }
             const lines = servers.map((s) => {
               const tools = Array.isArray(s['tools']) ? (s['tools'] as string[]) : []
-              return `● ${String(s['name'])} — ${tools.length} tool${tools.length === 1 ? '' : 's'}: ${tools.join(', ')}`
+              const nm = String(s['name'])
+              const mark = isMcpTrusted(nm) ? '✓' : '⚠'
+              return `${mark} ${nm} — ${tools.length} tool${tools.length === 1 ? '' : 's'}: ${tools.join(', ')}`
             })
-            addEntry({ kind: 'system', text: `MCP servers:\n${lines.join('\n')}` })
+            const anyUntrusted = servers.some((s) => !isMcpTrusted(String(s['name'])))
+            const hint = anyUntrusted ? '\n⚠ unapproved server(s) — /mcp-trust to approve' : ''
+            addEntry({ kind: 'system', text: `MCP servers:\n${lines.join('\n')}${hint}` })
+          })
+        }
+        return true
+      }
+      case 'mcpTrust': {
+        if (client) {
+          void client.requestControl('list_mcp').then((r) => {
+            const servers = Array.isArray(r?.['servers']) ? (r['servers'] as Record<string, unknown>[]) : []
+            if (!servers.length) {
+              addEntry({ kind: 'system', text: 'no MCP servers to approve' })
+              return
+            }
+            const names = servers.map((s) => String(s['name']))
+            names.forEach(trustMcp)
+            addEntry({ kind: 'system', text: `✓ approved MCP server(s): ${names.join(', ')}` })
           })
         }
         return true
