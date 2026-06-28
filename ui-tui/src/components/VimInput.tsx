@@ -53,6 +53,7 @@ export function VimInput({
 }: Props): React.ReactElement {
   const [normal, setNormal] = useState(false) // start in insert (like the original entering /vim)
   const [cursor, setCursor] = useState(value.length)
+  const [pendingOp, setPendingOp] = useState<string | null>(null) // operator-pending: d/c/y
   const clamp = (c: number, max = value.length): number => Math.max(0, Math.min(max, c))
 
   // readline undo (Ctrl+_): track each value change as an undo step. The effect
@@ -151,6 +152,46 @@ export function VimInput({
       if (!active) return
       if (readlineEdit(input, key)) return // Ctrl+A/E/W/U/K in either mode
       if (normal) {
+        // Operator-pending (d/c/y): the previous key was an operator; this key is
+        // its motion (or a repeat for the whole-line form dd/cc/yy).
+        if (pendingOp) {
+          const op = pendingOp
+          setPendingOp(null)
+          if (input === op) {
+            // dd / cc / yy → whole line
+            vimReg.current = value
+            if (op !== 'y') {
+              onChange('')
+              setCursor(0)
+            }
+            if (op === 'c') setNormal(false)
+            return
+          }
+          let target: number | null = null
+          if (input === 'w') target = nextWord(value, cursor)
+          else if (input === 'b') target = prevWord(value, cursor)
+          else if (input === 'e') target = endWord(value, cursor) + 1
+          else if (input === '$' || input === 'G') target = value.length
+          else if (input === '0') target = 0
+          else if (input === '^') {
+            const f = value.search(/\S/)
+            target = f >= 0 ? f : 0
+          } else if (input === 'l' || key.rightArrow) target = cursor + 1
+          else if (input === 'h' || key.leftArrow) target = cursor - 1
+          if (target === null) return // unknown motion → cancel the operator
+          const lo = Math.max(0, Math.min(cursor, target))
+          const hi = Math.min(value.length, Math.max(cursor, target))
+          vimReg.current = value.slice(lo, hi)
+          if (op !== 'y') {
+            onChange(value.slice(0, lo) + value.slice(hi))
+            setCursor(lo)
+          } else {
+            setCursor(lo)
+          }
+          if (op === 'c') setNormal(false)
+          return
+        }
+        if (input === 'd' || input === 'c' || input === 'y') return setPendingOp(input)
         if (input === 'i') return setNormal(false)
         if (input === 'a') {
           setCursor((c) => clamp(c + 1))
