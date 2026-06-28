@@ -1053,6 +1053,22 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         })
         return true
       }
+      case 'knowledge': {
+        const action = (arg || 'status').trim().toLowerCase()
+        void client?.requestControl('knowledge', { action }).then((r) => {
+          if (!r || !r['ok']) {
+            addEntry({ kind: 'error', text: `knowledge failed: ${r && r['error'] ? String(r['error']) : 'no response'}` })
+            return
+          }
+          const st = (r['stats'] as Record<string, number>) || {}
+          const en = r['enabled'] ? 'enabled' : 'disabled'
+          const head = `Knowledge graph: ${en} · ${st['total'] || 0} entities (${st['file'] || 0} files, ${st['symbol'] || 0} symbols, ${st['url'] || 0} urls)`
+          const ents = (r['entities'] as Array<{ name: string; type: string; count: number }>) || []
+          const lines = ents.map((e) => `  ${e.type === 'file' ? '📄' : e.type === 'url' ? '🔗' : '◆'} ${e.name} ·${e.count}`)
+          addEntry({ kind: 'system', text: lines.length ? `${head}\n${lines.join('\n')}` : head })
+        })
+        return true
+      }
       case 'tasks': {
         const lines: string[] = []
         if (busy) lines.push(`● running — ${toolActivity || 'agent turn in progress'}`)
