@@ -293,7 +293,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const pasteCounter = useRef(0)
   // Interactive select picker (the original's CustomSelect) for /mode, /theme.
   const [picker, setPicker] = useState<{
-    kind: 'mode' | 'theme' | 'model' | 'resume'
+    kind: 'mode' | 'theme' | 'model' | 'resume' | 'rewindpick'
     title: string
     options: string[]
     /** Optional value per option (e.g. session_id); falls back to the label. */
@@ -379,8 +379,34 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   }, [txFind])
 
   /** Apply an interactive-picker selection (/mode, /theme, /model, /resume). */
-  const applyPick = (kind: 'mode' | 'theme' | 'model' | 'resume', value: string): void => {
+  // Rewind the conversation by N prompt-turns (shared by /rewind <N> and the
+  // /rewind restore-point picker — the original's MessageSelector).
+  const requestRewind = (n: number): void => {
+    if (!client || n < 1) return
+    void client.requestControl('rewind', { turns: n }).then((r) => {
+      if (r && r['ok']) {
+        const removed = Number(r['removed']) || 0
+        const count = Number(r['count']) || 0
+        addEntry({
+          kind: 'system',
+          text: `↩ rewound — dropped ${removed} message${removed === 1 ? '' : 's'} (${count} remaining)`,
+        })
+        void client.requestControl('get_context_usage').then(applyContextUsage)
+      } else {
+        addEntry({ kind: 'error', text: `rewind failed: ${r && r['error'] ? String(r['error']) : 'no response'}` })
+      }
+    })
+  }
+
+  const applyPick = (
+    kind: 'mode' | 'theme' | 'model' | 'resume' | 'rewindpick',
+    value: string,
+  ): void => {
     if (!value) return
+    if (kind === 'rewindpick') {
+      requestRewind(Number(value) || 1)
+      return
+    }
     if (kind === 'mode') {
       client?.sendControl('set_permission_mode', { mode: value })
       setMode(value)
@@ -1190,25 +1216,24 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         return true
       }
       case 'rewind': {
-        const n = Math.max(1, parseInt(arg, 10) || 1)
-        if (client) {
-          void client.requestControl('rewind', { turns: n }).then((r) => {
-            if (r && r['ok']) {
-              const removed = Number(r['removed']) || 0
-              const count = Number(r['count']) || 0
-              addEntry({
-                kind: 'system',
-                text: `↩ rewound — dropped ${removed} message${removed === 1 ? '' : 's'} (${count} remaining)`,
-              })
-              void client.requestControl('get_context_usage').then(applyContextUsage)
-            } else {
-              addEntry({
-                kind: 'error',
-                text: `rewind failed: ${r && r['error'] ? String(r['error']) : 'no response'}`,
-              })
-            }
-          })
+        if (arg) {
+          requestRewind(Math.max(1, parseInt(arg, 10) || 1))
+          return true
         }
+        // No arg → MessageSelector-style picker of restore points (past prompts).
+        const prompts = entries.filter((e) => e.kind === 'user')
+        if (!prompts.length) {
+          addEntry({ kind: 'system', text: 'nothing to rewind' })
+          return true
+        }
+        const opts: string[] = []
+        const vals: string[] = []
+        for (let i = prompts.length - 1; i >= 0; i--) {
+          const preview = String(prompts[i]?.text || '').replace(/\s+/g, ' ').slice(0, 50)
+          opts.push(`before: ${preview}`)
+          vals.push(String(prompts.length - i)) // turns to drop to reach before prompt i
+        }
+        setPicker({ kind: 'rewindpick', title: 'Rewind to before…', options: opts, values: vals, sel: 0 })
         return true
       }
       case 'doctor': {
