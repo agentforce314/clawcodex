@@ -18,6 +18,7 @@ import { SlashMenu } from './components/SlashMenu.js'
 import { editInEditor } from './editor.js'
 import { isTrusted, trustFolder, untrustFolder, isMcpTrusted, trustMcp } from './trust.js'
 import { matchesBinding } from './keybindings.js'
+import { shapeRtl } from './bidi.js'
 import { exec } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -250,6 +251,8 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const [permissions, setPermissions] = useState<PendingPermission[]>([]) // FIFO queue
   // MCP elicitation form (a server requested user input, §6).
   const [elicit, setElicit] = useState<{ requestId: string; message: string; field: string; value: string } | null>(null)
+  // RTL display shaping (§8) — opt-in (terminals with native bidi shouldn't use it).
+  const [rtlMode, setRtlMode] = useState<boolean>(process.env['CLAWCODEX_RTL'] === '1')
   const alwaysAllowRef = useRef<Set<string>>(new Set()) // tools the user said "don't ask again"
   const bashAllowPrefixRef = useRef<Set<string>>(new Set()) // Bash command prefixes auto-allowed (granular)
   const pendingImageRef = useRef<{ data: string; media_type: string; name: string } | null>(null) // /image attachment
@@ -1190,6 +1193,17 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         })
         return true
       }
+      case 'rtl': {
+        setRtlMode((on) => {
+          const next = !on
+          addEntry({
+            kind: 'system',
+            text: `right-to-left shaping ${next ? 'on' : 'off'}${next ? ' (best in fullscreen / for new messages)' : ''}`,
+          })
+          return next
+        })
+        return true
+      }
       case 'trust': {
         const a = arg.trim().toLowerCase()
         const cwd = process.cwd()
@@ -2115,9 +2129,11 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const visibleEntries = FULLSCREEN
     ? windowFromBottom(fsEntries, process.stdout.columns ?? 80, Math.max(4, termRows - 4), scrollOffset)
     : entries
+  const shapeEntry = (e: TranscriptEntry): TranscriptEntry =>
+    rtlMode && e.text ? { ...e, text: e.text.split('\n').map(shapeRtl).join('\n') } : e
   const renderEntry = (entry: TranscriptEntry): React.ReactElement => (
     <Box key={entry.id} marginTop={['tool', 'toolResult', 'banner'].includes(entry.kind) ? 0 : 1}>
-      <Message entry={entry} expanded={expanded} />
+      <Message entry={shapeEntry(entry)} expanded={expanded} />
     </Box>
   )
 
