@@ -96,6 +96,17 @@ export function streamDeltaText(msg: ServerMessage): string | null {
   return null
 }
 
+/** Pull a live thinking delta out of a `stream_event`, if any (§3). */
+export function streamThinkingDelta(msg: ServerMessage): string | null {
+  const m = msg as { type?: string; event?: { delta?: { type?: string; thinking?: string } } }
+  if (m.type !== 'stream_event') return null
+  const delta = m.event?.delta
+  if (delta && delta.type === 'thinking_delta' && typeof delta.thinking === 'string') {
+    return delta.thinking
+  }
+  return null
+}
+
 /** Compact one-line preview of tool input (Claude-Code style: Bash(cmd)). */
 export function formatToolArgs(input: unknown): string {
   if (input == null) return ''

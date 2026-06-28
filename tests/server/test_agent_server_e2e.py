@@ -91,6 +91,34 @@ class _ToolThenTextProvider:
         raise NotImplementedError
 
 
+class _ThinkingProvider:
+    """One streaming turn that emits a live thinking delta then text."""
+
+    def __init__(self, api_key=None, base_url=None, model=None):
+        self.model = model or "fake"
+
+    def chat(self, messages, tools=None, **kw):
+        return ChatResponse(
+            content="answer", model=self.model,
+            usage={"input_tokens": 3, "output_tokens": 2},
+            finish_reason="stop", tool_uses=None,
+        )
+
+    def chat_stream_response(
+        self, messages, tools=None, on_text_chunk=None, abort_signal=None,
+        on_thinking_chunk=None, **kw,
+    ):
+        if on_thinking_chunk is not None:
+            on_thinking_chunk("let me think ")
+        if on_text_chunk is not None:
+            on_text_chunk("answer")
+        return ChatResponse(
+            content="answer", model=self.model,
+            usage={"input_tokens": 3, "output_tokens": 2},
+            finish_reason="stop", tool_uses=None,
+        )
+
+
 def _free_port() -> int:
     import socket
 
@@ -208,6 +236,38 @@ async def test_turn_streams_assistant_and_result(tmp_path):
             assert _assistant_text(assistant[0]) == "hi back"
             result = next(m for m in received if m.get("type") == "result")
             assert result["subtype"] == "success"
+        finally:
+            await client.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_turn_streams_thinking_delta(tmp_path):
+    """A provider that emits reasoning deltas → the server ships thinking_delta."""
+    from src.tool_system.registry import ToolRegistry
+
+    async with _running_server(tmp_path, _ThinkingProvider, ToolRegistry([])) as config:
+        cfg, _ = await create_direct_connect_session(
+            server_url=f"http://127.0.0.1:{config.port}", cwd=str(tmp_path)
+        )
+        received: list[dict] = []
+        callbacks = DirectConnectCallbacks(
+            on_message=lambda m: received.append(m),
+            on_permission_request=lambda req, rid: None,
+        )
+        client = DirectConnectSessionManager(cfg, callbacks)
+        await client.connect()
+        try:
+            await client.send_message("hello")
+            assert await _wait_for(
+                lambda: any(m.get("type") == "result" for m in received)
+            ), "no result received"
+            thinking = [
+                m for m in received
+                if m.get("type") == "stream_event"
+                and m.get("event", {}).get("delta", {}).get("type") == "thinking_delta"
+            ]
+            assert thinking, "no thinking_delta stream_event emitted"
+            assert thinking[0]["event"]["delta"]["thinking"] == "let me think "
         finally:
             await client.disconnect()
 
