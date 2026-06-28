@@ -633,6 +633,47 @@ async def test_control_background_task(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_control_insights(tmp_path):
+    """insights guards an empty session, then returns a model-based narrative."""
+    from src.tool_system.registry import ToolRegistry
+
+    with contextlib.ExitStack() as stack:
+        for p in _patches(_TextProvider, ToolRegistry([])):
+            stack.enter_context(p)
+        spawn = make_spawn_agent(AgentServerConfig(permission_mode="default"))
+        handle = await spawn("ds_test", str(tmp_path), None)
+        gen = handle.messages_from_agent()
+        try:
+            init = await asyncio.wait_for(gen.__anext__(), timeout=5)
+            assert init["subtype"] == "init"
+
+            async def _reply_for(rid, req):
+                await handle.send_to_agent({"type": "control_request", "request_id": rid, "request": req})
+                for _ in range(30):
+                    msg = await asyncio.wait_for(gen.__anext__(), timeout=5)
+                    if msg.get("type") == "control_response" and msg["response"].get("request_id") == rid:
+                        return msg["response"]["response"]
+                raise AssertionError(f"no reply for {rid}")
+
+            empty = await _reply_for("i0", {"subtype": "insights"})
+            assert empty["ok"] is False  # no conversation yet
+
+            # run a turn so there is conversation to analyze
+            await handle.send_to_agent({"type": "user", "message": {"role": "user", "content": "hello"}})
+            for _ in range(30):
+                msg = await asyncio.wait_for(gen.__anext__(), timeout=5)
+                if msg.get("type") == "result":
+                    break
+
+            ins = await _reply_for("i1", {"subtype": "insights"})
+            assert ins["ok"] is True and ins["insights"]  # _TextProvider returns a narrative
+        finally:
+            await handle.shutdown()
+            with contextlib.suppress(Exception):
+                await gen.aclose()
+
+
+@pytest.mark.asyncio
 async def test_interrupt_trips_abort(tmp_path):
     """An interrupt control_request must trip the in-flight turn's abort."""
     from src.permissions.types import PermissionPassthroughResult
