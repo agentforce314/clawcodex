@@ -270,6 +270,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const statusCmdRef = useRef<string | null>(null) // guards async output against a later clear
   const [, setThemeVersion] = useState(0) // bumped on /theme to repaint the dynamic UI
   const [scrollOffset, setScrollOffset] = useState(0) // fullscreen: entries hidden from the bottom
+  const lastLenRef = useRef(0) // entries.length at last render — to anchor the scroll on new arrivals
   const [expanded, setExpanded] = useState(false) // Ctrl+O: expand collapsed tool results / thinking
   const [buddy, setBuddy] = useState<string | null>(() => {
     const b = process.env['CLAWCODEX_BUDDY']
@@ -798,6 +799,12 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     if (FULLSCREEN && (key.pageUp || key.pageDown)) {
       if (key.pageUp) setScrollOffset((o) => Math.min(Math.max(0, entries.length - 1), o + 5))
       else setScrollOffset((o) => Math.max(0, o - 5))
+      return
+    }
+    // Ctrl+E: jump to the oldest message (show-previous, the original's §8); a
+    // second press (already at top) jumps back to the bottom.
+    if (FULLSCREEN && key.ctrl && ch === 'e') {
+      setScrollOffset((o) => (o >= Math.max(0, entries.length - 1) ? 0 : Math.max(0, entries.length - 1)))
       return
     }
     const head = permissions[0]
@@ -1787,6 +1794,19 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     if (statusCmd && !busy) runStatusline(statusCmd)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [busy, statusCmd])
+
+  // Fullscreen scroll anchoring: when messages arrive while the user is scrolled
+  // up, keep their view stable (bump the offset by the growth) instead of letting
+  // it jump; the "↑ N newer" header then reflects the new arrivals. At the bottom
+  // (offset 0) the view follows new messages as before.
+  useEffect(() => {
+    const growth = entries.length - lastLenRef.current
+    lastLenRef.current = entries.length
+    if (FULLSCREEN && growth > 0) {
+      setScrollOffset((o) => (o > 0 ? Math.min(Math.max(0, entries.length - 1), o + growth) : 0))
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entries.length])
 
   // Auto-allow tools the user marked "don't ask again" (skip the prompt).
   useEffect(() => {
