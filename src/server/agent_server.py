@@ -116,6 +116,7 @@ class _AgentSession:
     _effort: str | None = None  # /effort reasoning level, injected via extra_body when set
     _knowledge: Any = None  # KnowledgeGraph (lazy-loaded), populated at each turn end
     _knowledge_enabled: bool = True  # the original's knowledgeGraphEnabled (default on)
+    _knowledge_semantic: bool = False  # opt-in model-based extraction (vs heuristic)
 
     # Worker + cross-thread coordination.
     _inbox: _queue.Queue = field(default_factory=_queue.Queue)
@@ -510,7 +511,17 @@ class _AgentSession:
                 self._knowledge = KnowledgeGraph.load()
             msgs = self.session.conversation.messages
             text = "\n".join(self._message_text(m) for m in msgs[-2:])  # last user+assistant
-            if self._knowledge.record_from_text(text, now=time.time()):
+            recorded = False
+            if self._knowledge_semantic and self.provider is not None:
+                from src.knowledge import extract_entities_semantic
+
+                ents = extract_entities_semantic(text, self.provider)
+                for name, etype in ents:
+                    self._knowledge.add(name, etype, now=time.time())
+                recorded = bool(ents)
+            if not recorded:  # heuristic (default, and fallback if semantic yields nothing)
+                recorded = bool(self._knowledge.record_from_text(text, now=time.time()))
+            if recorded:
                 self._knowledge.save()
         except Exception:  # noqa: BLE001 — knowledge must never break a turn
             logger.debug("[agent-server] knowledge record failed", exc_info=True)
@@ -601,6 +612,13 @@ class _AgentSession:
                 self._knowledge_enabled = act == "enable"
                 self._reply(request_id, {"ok": True, "enabled": self._knowledge_enabled, "stats": self._knowledge.stats()})
                 return
+            if act in ("semantic", "heuristic"):
+                self._knowledge_semantic = act == "semantic"
+                self._reply(
+                    request_id,
+                    {"ok": True, "enabled": self._knowledge_enabled, "semantic": self._knowledge_semantic, "stats": self._knowledge.stats()},
+                )
+                return
             entities = (
                 [{"name": e.name, "type": e.type, "count": e.count} for e in self._knowledge.top(20)]
                 if act == "list"
@@ -608,7 +626,13 @@ class _AgentSession:
             )
             self._reply(
                 request_id,
-                {"ok": True, "enabled": self._knowledge_enabled, "stats": self._knowledge.stats(), "entities": entities},
+                {
+                    "ok": True,
+                    "enabled": self._knowledge_enabled,
+                    "semantic": self._knowledge_semantic,
+                    "stats": self._knowledge.stats(),
+                    "entities": entities,
+                },
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception("[agent-server] knowledge failed")

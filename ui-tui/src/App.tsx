@@ -1092,7 +1092,8 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
           }
           const st = (r['stats'] as Record<string, number>) || {}
           const en = r['enabled'] ? 'enabled' : 'disabled'
-          const head = `Knowledge graph: ${en} · ${st['total'] || 0} entities (${st['file'] || 0} files, ${st['symbol'] || 0} symbols, ${st['url'] || 0} urls)`
+          const mode = r['semantic'] ? ' · semantic' : ''
+          const head = `Knowledge graph: ${en}${mode} · ${st['total'] || 0} entities (${st['file'] || 0} files, ${st['symbol'] || 0} symbols, ${st['url'] || 0} urls)`
           const ents = (r['entities'] as Array<{ name: string; type: string; count: number }>) || []
           const lines = ents.map((e) => `  ${e.type === 'file' ? '📄' : e.type === 'url' ? '🔗' : '◆'} ${e.name} ·${e.count}`)
           addEntry({ kind: 'system', text: lines.length ? `${head}\n${lines.join('\n')}` : head })

@@ -7,6 +7,7 @@ model-based semantic extraction + @orama search, which is a follow-up. The store
 persistence, and /knowledge command surface are functional end-to-end.
 """
 
+from .extract import extract_entities_semantic
 from .graph import Entity, KnowledgeGraph, default_graph_path
 
-__all__ = ["Entity", "KnowledgeGraph", "default_graph_path"]
+__all__ = ["Entity", "KnowledgeGraph", "default_graph_path", "extract_entities_semantic"]
