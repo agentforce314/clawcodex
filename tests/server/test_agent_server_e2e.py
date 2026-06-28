@@ -475,6 +475,40 @@ async def test_control_ops_set_mode_and_get_settings(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_control_set_output_style(tmp_path):
+    """set_output_style validates the style and accepts a valid one."""
+    from src.tool_system.registry import ToolRegistry
+
+    with contextlib.ExitStack() as stack:
+        for p in _patches(_TextProvider, ToolRegistry([])):
+            stack.enter_context(p)
+        spawn = make_spawn_agent(AgentServerConfig(permission_mode="default"))
+        handle = await spawn("ds_test", str(tmp_path), None)
+        gen = handle.messages_from_agent()
+        try:
+            init = await asyncio.wait_for(gen.__anext__(), timeout=5)
+            assert init["subtype"] == "init"
+
+            async def _reply_for(rid, req):
+                await handle.send_to_agent({"type": "control_request", "request_id": rid, "request": req})
+                for _ in range(12):
+                    msg = await asyncio.wait_for(gen.__anext__(), timeout=5)
+                    if msg.get("type") == "control_response" and msg["response"].get("request_id") == rid:
+                        return msg["response"]["response"]
+                raise AssertionError(f"no reply for {rid}")
+
+            ok = await _reply_for("s1", {"subtype": "set_output_style", "style": "concise"})
+            assert ok["ok"] is True and ok["style"] == "concise"
+
+            bad = await _reply_for("s2", {"subtype": "set_output_style", "style": "bogus"})
+            assert bad["ok"] is False and "valid" in bad["error"]
+        finally:
+            await handle.shutdown()
+            with contextlib.suppress(Exception):
+                await gen.aclose()
+
+
+@pytest.mark.asyncio
 async def test_interrupt_trips_abort(tmp_path):
     """An interrupt control_request must trip the in-flight turn's abort."""
     from src.permissions.types import PermissionPassthroughResult

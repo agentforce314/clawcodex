@@ -47,6 +47,7 @@ export interface SlashCommand {
     | 'history'
     | 'settings'
     | 'tasks'
+    | 'outputStyle'
     | 'diff'
     | 'stats'
     | 'prompt'
@@ -105,6 +106,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/history', description: 'Pick a past prompt to recall', kind: 'history' },
   { name: '/settings', description: 'Open the settings menu', kind: 'settings' },
   { name: '/tasks', description: 'Show the current turn + queued prompts', kind: 'tasks' },
+  { name: '/output-style', description: 'Set the response output style', kind: 'outputStyle' },
   { name: '/config', description: 'Show model, mode, and available models', kind: 'config' },
   { name: '/diff', description: 'Show the working-tree git diff', kind: 'diff' },
   { name: '/stats', description: 'Show session statistics', kind: 'stats' },
