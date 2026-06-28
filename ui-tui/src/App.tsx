@@ -1053,6 +1053,36 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         })
         return true
       }
+      case 'wiki': {
+        const parts = arg.trim().split(/\s+/).filter(Boolean)
+        const action = (parts[0] || 'status').toLowerCase()
+        const path = parts.slice(1).join(' ')
+        void client?.requestControl('wiki', { action, path }).then((r) => {
+          if (!r || r['ok'] === false) {
+            addEntry({ kind: 'error', text: `wiki: ${r && r['error'] ? String(r['error']) : 'no response'}` })
+            return
+          }
+          if (action === 'init') {
+            const created = (r['created_files'] as string[]) || []
+            addEntry({
+              kind: 'system',
+              text: r['already_existed']
+                ? `wiki already exists at ${String(r['root'])}`
+                : `✓ wiki initialized at ${String(r['root'])} (${created.length} files)`,
+            })
+          } else if (action === 'ingest') {
+            addEntry({ kind: 'system', text: `✓ ingested → ${String(r['dest'])}` })
+          } else {
+            addEntry({
+              kind: 'system',
+              text: r['initialized']
+                ? `Wiki: initialized · ${Number(r['page_count']) || 0} pages, ${Number(r['source_count']) || 0} sources`
+                : `Wiki not initialized — run /wiki init (${String(r['root'])})`,
+            })
+          }
+        })
+        return true
+      }
       case 'knowledge': {
         const action = (arg || 'status').trim().toLowerCase()
         void client?.requestControl('knowledge', { action }).then((r) => {
