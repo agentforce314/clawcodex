@@ -40,6 +40,7 @@ export interface SlashCommand {
     | 'provider'
     | 'effort'
     | 'plugin'
+    | 'reloadPlugins'
     | 'diff'
     | 'stats'
     | 'prompt'
@@ -91,6 +92,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/provider', description: 'Switch LLM provider: /provider <name>', kind: 'provider' },
   { name: '/effort', description: 'Set reasoning effort: /effort <low|medium|high> (or clear)', kind: 'effort' },
   { name: '/plugin', description: 'List installed plugins', kind: 'plugin' },
+  { name: '/reload-plugins', description: 'Reload plugins from disk', kind: 'reloadPlugins' },
   { name: '/config', description: 'Show model, mode, and available models', kind: 'config' },
   { name: '/diff', description: 'Show the working-tree git diff', kind: 'diff' },
   { name: '/stats', description: 'Show session statistics', kind: 'stats' },
