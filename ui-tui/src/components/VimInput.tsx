@@ -42,6 +42,33 @@ function endWord(s: string, c: number): number {
   while (i < s.length - 1 && WORD.test(s[i + 1] ?? '')) i++ // to word end
   return Math.min(Math.max(0, s.length - 1), Math.max(c, i))
 }
+const PAIRS: Record<string, string> = { '(': ')', '[': ']', '{': '}', '<': '>' }
+/** Range [lo,hi) for a vim text object (iw/aw, i"/a", i(/a(, …). null if none. */
+function textObjectRange(s: string, cur: number, around: boolean, obj: string): [number, number] | null {
+  if (obj === 'w') {
+    let lo = cur
+    let hi = cur
+    while (lo > 0 && WORD.test(s[lo - 1] ?? '')) lo--
+    while (hi < s.length && WORD.test(s[hi] ?? '')) hi++
+    if (around) while (hi < s.length && /\s/.test(s[hi] ?? '')) hi++
+    return [lo, hi]
+  }
+  if (obj === '"' || obj === "'" || obj === '`') {
+    const onQuote = s[cur] === obj
+    const a = s.lastIndexOf(obj, onQuote ? cur - 1 : cur)
+    const b = s.indexOf(obj, onQuote ? cur + 1 : cur)
+    if (a >= 0 && b > a) return around ? [a, b + 1] : [a + 1, b]
+    return null
+  }
+  const open = obj in PAIRS ? obj : (Object.keys(PAIRS).find((k) => PAIRS[k] === obj) ?? '')
+  if (open) {
+    const close = PAIRS[open] as string
+    const a = s.lastIndexOf(open, cur)
+    const b = s.indexOf(close, cur)
+    if (a >= 0 && b > a) return around ? [a, b + 1] : [a + 1, b]
+  }
+  return null
+}
 
 export function VimInput({
   value,
@@ -55,6 +82,7 @@ export function VimInput({
   const [cursor, setCursor] = useState(value.length)
   const [pendingOp, setPendingOp] = useState<string | null>(null) // operator-pending: d/c/y
   const [pendingFind, setPendingFind] = useState<string | null>(null) // f/F/t/T/r awaiting a char
+  const [pendingTextObj, setPendingTextObj] = useState<{ op: string; around: boolean } | null>(null)
   const clamp = (c: number, max = value.length): number => Math.max(0, Math.min(max, c))
 
   // readline undo (Ctrl+_): track each value change as an undo step. The effect
@@ -153,6 +181,23 @@ export function VimInput({
       if (!active) return
       if (readlineEdit(input, key)) return // Ctrl+A/E/W/U/K in either mode
       if (normal) {
+        // Text-object pending (after d/c/y + i/a): this key is the object (w/"/(/…).
+        if (pendingTextObj) {
+          const { op, around } = pendingTextObj
+          setPendingTextObj(null)
+          const range = textObjectRange(value, cursor, around, input)
+          if (!range) return
+          const [lo, hi] = range
+          vimReg.current = value.slice(lo, hi)
+          if (op !== 'y') {
+            onChange(value.slice(0, lo) + value.slice(hi))
+            setCursor(lo)
+          } else {
+            setCursor(lo)
+          }
+          if (op === 'c') setNormal(false)
+          return
+        }
         // Find/replace-pending (f/F/t/T/r): this key is the target character.
         if (pendingFind) {
           const fop = pendingFind
@@ -185,6 +230,11 @@ export function VimInput({
         if (pendingOp) {
           const op = pendingOp
           setPendingOp(null)
+          // d/c/y + i/a → text object (diw, ci", ya(, …)
+          if (input === 'i' || input === 'a') {
+            setPendingTextObj({ op, around: input === 'a' })
+            return
+          }
           if (input === op) {
             // dd / cc / yy → whole line
             vimReg.current = value
