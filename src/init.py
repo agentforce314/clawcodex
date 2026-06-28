@@ -162,9 +162,9 @@ def run_pre_action(args: object) -> None:
     #   * interactive + previously accepted for this folder (parent-walk in
     #     check_trust_accepted): same.
     #   * interactive + not yet accepted: stay untrusted (bootstrap default
-    #     is False); the surface's gate decides — the TUI TrustFolderScreen
-    #     (C8) or the legacy REPL's text prompt (cli.py) — and its accept
-    #     path calls establish_session_trust().
+    #     is False); the parent's folder-trust gate decides — the plain-text
+    #     prompt in cli.py (_gate_folder_trust / _prompt_folder_trust) — and
+    #     its accept path calls establish_session_trust().
     from src.services.startup_gates import check_trust_accepted
 
     if not is_interactive or check_trust_accepted():

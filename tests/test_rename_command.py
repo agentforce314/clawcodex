@@ -6,7 +6,6 @@ unified (``Session.create`` reads bootstrap ``get_session_id()``).
 """
 from __future__ import annotations
 
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -171,9 +170,3 @@ def test_registered_metadata_safety_dispatch():
     assert RENAME_COMMAND.description == "Rename the current conversation"
     assert RENAME_COMMAND.command_type == CommandType.INTERACTIVE
     assert is_bridge_safe_command(RENAME_COMMAND) is False
-    from src.tui.commands import dispatch_local_command
-
-    res = dispatch_local_command(
-        "/rename", session=None, workspace_root=Path("."), tool_registry=None
-    )
-    assert res.handled is False

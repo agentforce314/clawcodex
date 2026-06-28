@@ -18,20 +18,16 @@ channel). It is read via ``get_settings()`` — which is **cache-backed**, unlik
 
 Sections:
   * A — metadata + registration (INTERACTIVE, name, verbatim TS description + arg hint).
-  * B — bridge-safety **by type** + the TUI dispatch **inversion** (anti-regression).
+  * B — bridge-safety **by type**.
   * C — headless arg paths: set level/auto/unset, invalid (no xhigh), help, current.
   * D — picker happy path (level + auto), display="user", persisted, select seeded.
   * E — picker cancel: "Cancelled" / display="user" (NOT skip), settings unchanged.
   * F — null surface: no-args picker raises → engine returns a clean error.
   * G — options shape: values == auto+levels; current option marked; raw labels.
-  * H — D2 wiring: ``_open_effort_picker`` passes ``on_persist=set_effort`` and the
-    broken ``setattr`` is gone (callback runs on a frozen app_state without raising).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -158,23 +154,11 @@ def test_effort_metadata_mirrors_ts():
 
 
 # --------------------------------------------------------------------------- #
-# B. Bridge-safety BY TYPE + TUI dispatch inversion
+# B. Bridge-safety BY TYPE
 # --------------------------------------------------------------------------- #
 def test_effort_blocked_from_bridge_by_type():
     # INTERACTIVE commands are never bridge-safe (mirrors TS local-jsx).
     assert is_bridge_safe_command(EFFORT_COMMAND) is False
-
-
-def test_dispatch_local_command_intercepts_effort():
-    # THE INVERSION vs /export: the TUI's dispatch table MUST claim /effort
-    # (handled=True, open_dialog="effort") so the rich EffortPickerScreen is preserved.
-    from src.tui.commands import dispatch_local_command
-
-    res = dispatch_local_command(
-        "/effort", session=None, workspace_root=Path("."), tool_registry=None
-    )
-    assert res.handled is True
-    assert res.open_dialog == "effort"
 
 
 # --------------------------------------------------------------------------- #
@@ -370,49 +354,3 @@ async def test_options_shape_marks_current_and_uses_raw_labels(isolated_settings
     assert call["labels"] == _EXPECTED_OPTION_VALUES  # raw values as labels
     for value, desc in zip(call["values"], call["descriptions"]):
         assert desc == ("current" if value == "high" else None)
-
-
-# --------------------------------------------------------------------------- #
-# H. D2 — _open_effort_picker wires on_persist=set_effort + drops the broken setattr
-# --------------------------------------------------------------------------- #
-def test_open_effort_picker_wires_on_persist_and_drops_setattr(monkeypatch):
-    from src.tui import app as app_mod
-    from src.config import set_effort
-
-    captured: dict = {}
-    pushed: dict = {}
-
-    class _FakeScreen:
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
-
-    @dataclass(frozen=True)
-    class _FrozenState:
-        """Stand-in for the frozen AppState — setattr would raise on it."""
-
-    monkeypatch.setattr(app_mod, "EffortPickerScreen", _FakeScreen)
-
-    transcript_lines: list[str] = []
-    fake_self = SimpleNamespace(
-        app_state=_FrozenState(),  # getattr(...,"effort",None) -> None; setattr would raise
-        announcer=SimpleNamespace(announce=lambda *a, **k: None),
-        push_screen=lambda screen, callback=None: pushed.update(
-            screen=screen, callback=callback
-        ),
-        _restore_prompt_focus=lambda: None,
-    )
-    fake_transcript = SimpleNamespace(
-        append_system=lambda msg, **k: transcript_lines.append(msg)
-    )
-
-    app_mod.ClawCodexTUI._open_effort_picker(fake_self, transcript=fake_transcript)
-
-    # The wiring: persistence goes through set_effort (the screen fires it on select).
-    assert captured.get("on_persist") is set_effort
-    # current seeds from app_state.effort (absent on the frozen stub) -> None.
-    assert captured.get("current") is None
-
-    # The bug fix: invoking the selection callback on a FROZEN app_state must NOT raise
-    # (the old setattr is gone; persistence is delegated to on_persist).
-    pushed["callback"](("high", True))
-    assert transcript_lines == ["Reasoning effort set to high."]

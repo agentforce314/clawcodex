@@ -24,7 +24,7 @@ def test_rarity_keys_match_across_dicts() -> None:
 
 def test_rarity_colors_values_are_palette_keys() -> None:
     """Every RARITY_COLORS value must be a valid Palette field name."""
-    from src.tui.theme import Palette
+    from src.utils.theme import Palette
     palette_fields = {f.name for f in dataclasses.fields(Palette)}
     for rarity, key in RARITY_COLORS.items():
         assert key in palette_fields, (

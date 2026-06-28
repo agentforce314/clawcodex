@@ -58,20 +58,10 @@ def test_diff_metadata_mirrors_ts():
 
 
 # --------------------------------------------------------------------------- #
-# B. Bridge-safety + dispatch inversion
+# B. Bridge-safety
 # --------------------------------------------------------------------------- #
 def test_diff_blocked_from_bridge_by_type():
     assert is_bridge_safe_command(DIFF_COMMAND) is False
-
-
-def test_dispatch_local_command_intercepts_diff():
-    from src.tui.commands import dispatch_local_command
-
-    res = dispatch_local_command(
-        "/diff", session=None, workspace_root=Path("."), tool_registry=None
-    )
-    assert res.handled is True
-    assert res.open_dialog == "diff"
 
 
 # --------------------------------------------------------------------------- #

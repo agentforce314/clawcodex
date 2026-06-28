@@ -244,8 +244,7 @@ def compute_session_cost(
     """Compute (worker_cost, advisor_cost, total_cost) for a session.
 
     Caller passes the running token accumulators from whichever surface
-    is rendering (REPL bottom_toolbar reads its ``_stats_*``, TUI
-    StatusLine reads ``state.usage``). The function does the per-model
+    is rendering. The function does the per-model
     pricing lookups and returns the three dollar amounts so the caller
     can format/display however it wants.
 

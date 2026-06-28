@@ -140,7 +140,8 @@ round-trip. The cross-language path (TS client ↔ Python server) is covered by
   (+ dynamic refresh on MCP/mode/model change).
 - **Phase 5 — packaging:** ship the TS client as a bundled binary alongside the
   pip package; cross-language conformance tests against the protocol schema.
-- **Phase 6 — cutover:** default to the TS TUI with the Textual UI as a fallback;
-  triage the Python-TUI bug backlog (R/L/P rubric) to confirm the payoff.
+- **Phase 6 — cutover (DONE):** the TS Ink TUI is now the sole interactive UI —
+  `clawcodex` and `clawcodex tui` both launch it, and the in-process Python Textual
+  TUI / Rich REPL were removed.
 - **Transport:** v1 is localhost WebSocket (reuses `src/server/server.py`); a
   stdio variant (no listener, better trust boundary) is an evaluated option.

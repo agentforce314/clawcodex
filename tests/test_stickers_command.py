@@ -65,9 +65,3 @@ def test_registered_metadata_safety_dispatch():
     assert STICKERS_COMMAND.supports_non_interactive is False
     assert "stickers" in REMOTE_SAFE_COMMANDS  # matches TS
     assert is_bridge_safe_command(STICKERS_COMMAND) is False  # LOCAL, not allowlisted
-    from src.tui.commands import dispatch_local_command
-
-    res = dispatch_local_command(
-        "/stickers", session=None, workspace_root=Path("."), tool_registry=None
-    )
-    assert res.handled is False

@@ -166,7 +166,7 @@ async def test_command_url_fallback_when_changelog_absent(tmp_path, monkeypatch)
 
 
 # --------------------------------------------------------------------------- #
-# E. Registration + type + bridge-safety + dispatch fall-through
+# E. Registration + type + bridge-safety
 # --------------------------------------------------------------------------- #
 def test_registered():
     assert "release-notes" in {c.name for c in get_builtin_commands()}
@@ -184,16 +184,6 @@ def test_bridge_safe_by_allowlist():
     # UNLIKE the interactive ports: release-notes is a LOCAL command listed in
     # BRIDGE_SAFE_COMMANDS (mirroring TS commands.ts) -> bridge-safe.
     assert is_bridge_safe_command(RELEASE_NOTES_COMMAND) is True
-
-
-def test_dispatch_falls_through():
-    from src.tui.commands import dispatch_local_command
-
-    res = dispatch_local_command(
-        "/release-notes", session=None, workspace_root=Path("."), tool_registry=None
-    )
-    assert res.handled is False
-    assert res.open_dialog is None
 
 
 # --------------------------------------------------------------------------- #

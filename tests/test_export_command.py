@@ -6,8 +6,7 @@ permissions/output-style test layout (``tests/test_interactive_bridge.py``,
 ``tests/test_output_style_command.py``):
 
   * Registration in builtins + aggregator; metadata (INTERACTIVE, name, desc).
-  * Bridge-safety **by type** (``is_bridge_safe_command`` False) + the TUI
-    direct-dispatch table falling through to the async registry arm.
+  * Bridge-safety **by type** (``is_bridge_safe_command`` False).
   * **Args path on ``NullUIHost``** — the headless keystone: ``/export out.json``
     renders + writes the file and returns success *without ever touching*
     ``ctx.ui`` (proven by using ``NullUIHost``, whose ``select``/``prompt_text``
@@ -134,22 +133,11 @@ def test_export_metadata_mirrors_ts():
 
 
 # --------------------------------------------------------------------------- #
-# B. Bridge-safety BY TYPE + TUI dispatch fall-through
+# B. Bridge-safety BY TYPE
 # --------------------------------------------------------------------------- #
 def test_export_blocked_from_remote_by_type():
     # INTERACTIVE commands are never bridge-safe (mirrors TS local-jsx).
     assert is_bridge_safe_command(EXPORT_COMMAND) is False
-
-
-def test_dispatch_local_command_falls_through_for_export():
-    # The TUI's direct-dispatch table must NOT claim /export; it has to fall
-    # through to the async registry path where the INTERACTIVE arm lives.
-    from src.tui.commands import dispatch_local_command
-
-    res = dispatch_local_command(
-        "/export", session=None, workspace_root=Path("."), tool_registry=None
-    )
-    assert res.handled is False
 
 
 # --------------------------------------------------------------------------- #

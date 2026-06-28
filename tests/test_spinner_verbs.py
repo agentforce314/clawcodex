@@ -1,11 +1,9 @@
-"""Tests for the spinner-verb pool and its wiring into the status verb.
+"""Tests for the spinner-verb pool.
 
 Covers the port of ``typescript/src/constants/spinnerVerbs.ts``:
 * the verbatim ``SPINNER_VERBS`` pool,
 * ``get_spinner_verbs`` settings-merge semantics (``append`` / ``replace``),
-* ``pick_spinner_verb`` (pool member + empty-pool fallback),
-* and the live wiring: ``AppState.set_thinking`` samples the pool when no
-  explicit verb is supplied (replacing the old hardcoded ``"Synthesizing"``).
+* ``pick_spinner_verb`` (pool member + empty-pool fallback).
 """
 
 from __future__ import annotations
@@ -111,38 +109,3 @@ def test_pick_empty_pool_falls_back_to_working(monkeypatch):
         "src.constants.spinner_verbs.get_spinner_verbs", lambda: []
     )
     assert pick_spinner_verb() == "Working"
-
-
-# --------------------------------------------------------------------------
-# Wiring: AppState.set_thinking samples the pool
-# --------------------------------------------------------------------------
-
-def test_set_thinking_samples_pool_when_no_verb(monkeypatch):
-    from src.tui.state import AppState
-
-    monkeypatch.setattr(
-        "src.tui.state.pick_spinner_verb", lambda: "Frolicking"
-    )
-    state = AppState()
-    state.set_thinking(True)
-    assert state.verb == "Frolicking"
-
-
-def test_set_thinking_explicit_verb_still_wins(monkeypatch):
-    from src.tui.state import AppState
-
-    monkeypatch.setattr(
-        "src.tui.state.pick_spinner_verb", lambda: "Frolicking"
-    )
-    state = AppState()
-    state.set_thinking(True, verb="Compiling")
-    assert state.verb == "Compiling"
-
-
-def test_set_thinking_false_resets_to_ready():
-    from src.tui.state import AppState
-
-    state = AppState()
-    state.set_thinking(True, verb="Compiling")
-    state.set_thinking(False)
-    assert state.verb == "Ready"

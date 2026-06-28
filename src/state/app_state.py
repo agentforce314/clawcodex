@@ -87,8 +87,8 @@ class AppState:
     # This field is the intended single source of truth for permission mode
     # (``/permissions`` writes it via the reactive store). When the wiring
     # chapter connects it to real tool gating, derive ``ToolPermissionContext``
-    # from here — do NOT fork a second ``permission_mode`` onto the TUI
-    # render-state ``src.tui.state.AppState``.
+    # from here — do NOT fork a second ``permission_mode`` onto any other
+    # render-state.
     permission_mode: str = "default"
 
     # ``initial_message`` — set by entrypoints to queue a prompt for the REPL

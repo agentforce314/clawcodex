@@ -8,8 +8,8 @@ type) whose :meth:`run` returns the notice *without* touching ``context.ui``.
 
 The keystone difference from the ``/permissions`` exemplar: because ``run`` never
 calls ``ui.select``, the command is **surface-independent** — it produces the
-same text on the REPL, the Textual TUI, and the headless ``NullUIHost`` (SDK)
-surface where ``select`` would raise. The engine test on a null surface is what
+same text on any surface, including the headless ``NullUIHost`` (SDK) surface
+where ``select`` would raise. The engine test on a null surface is what
 pins that guarantee.
 """
 from __future__ import annotations
@@ -143,20 +143,9 @@ async def test_engine_routes_to_text_result_on_null_surface(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# D. Bridge-safety BY TYPE + TUI dispatch fall-through
+# D. Bridge-safety BY TYPE
 # --------------------------------------------------------------------------- #
 def test_output_style_blocked_from_remote_by_type():
     # INTERACTIVE commands are never bridge-safe (mirrors TS, where local-jsx is
     # always remote-blocked) — even though this one renders no UI.
     assert is_bridge_safe_command(OUTPUT_STYLE_COMMAND) is False
-
-
-def test_dispatch_local_command_falls_through_for_output_style():
-    # The TUI's direct-dispatch table must NOT claim /output-style; it has to
-    # fall through to the async registry path where the INTERACTIVE arm lives.
-    from src.tui.commands import dispatch_local_command
-
-    res = dispatch_local_command(
-        "/output-style", session=None, workspace_root=Path("."), tool_registry=None
-    )
-    assert res.handled is False

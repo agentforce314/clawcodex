@@ -1,10 +1,10 @@
 """Tests for the interactive-command bridge slice (gap P0-3).
 
-Ports the TS ``local-jsx`` decision: one command body drives a numbered REPL
-menu *and* a Textual modal through the surface-agnostic ``UIHost`` port, and
-(raising) the SDK / non-interactive ``NullUIHost``. ``/permissions`` is the
-reference command — a single ``select`` over the user-facing permission modes,
-persisted via the reactive ``AppState`` store.
+Ports the TS ``local-jsx`` decision: one command body drives the
+surface-agnostic ``UIHost`` port, including the SDK / non-interactive
+(raising) ``NullUIHost``. ``/permissions`` is the reference command — a single
+``select`` over the user-facing permission modes, persisted via the reactive
+``AppState`` store.
 
 Plan: my-docs/get-parity-by-folder/commands-phase2-interactive-bridge-plan.md
 (§7 test plan). Covers, per surface and at the seams:
@@ -15,17 +15,11 @@ Plan: my-docs/get-parity-by-folder/commands-phase2-interactive-bridge-plan.md
     ``display`` / ``should_query`` / ``meta_messages`` (which the LOCAL arm
     hardcodes away), null-surface clean error, non-``InteractiveOutcome`` guard.
   * ``NullUIHost`` contract — ``select`` raises, ``display`` no-ops.
-  * ``ReplUIHost`` numbered-menu mapping — valid pick, and every cancel path
-    (empty / non-numeric / out-of-range / EOF / no options); menu rendering.
-  * ``TextualUIHost`` — relays the modal's value, serializes via the lock,
-    ``display`` → toast.
   * Registry discoverability + bridge-safety **by type** (an INTERACTIVE
-    command whose name IS allowlisted stays blocked) + ``dispatch_local_command``
-    falls through for ``/permissions``.
+    command whose name IS allowlisted stays blocked).
 """
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 
 import pytest
@@ -49,12 +43,10 @@ from src.command_system.types import (
     NullUIHost,
     UIOption,
 )
-from src.repl.ui_host import ReplUIHost
 from src.state.app_state import (
     create_app_state_store,
     set_permission_mode_listener,
 )
-from src.tui.ui_host import TextualUIHost
 
 
 # --------------------------------------------------------------------------- #
@@ -274,129 +266,6 @@ async def test_null_ui_display_is_noop():
 
 
 # --------------------------------------------------------------------------- #
-# D. ReplUIHost — numbered-menu mapping + every cancel path
-# --------------------------------------------------------------------------- #
-_OPTS = [
-    UIOption("default", "default", "Prompt before each tool's first use"),
-    UIOption("acceptEdits", "acceptEdits", "Auto-accept edits"),
-    UIOption("plan", "plan", "Plan only"),
-    UIOption("bypassPermissions", "bypassPermissions", "Skip prompts"),
-]
-
-
-async def test_repl_adapter_valid_pick_maps_to_value():
-    host = ReplUIHost(safe_input=lambda _p: "3", console=None)
-    assert await host.select("Permission mode", _OPTS, current="default") == "plan"
-
-
-@pytest.mark.parametrize("raw", ["", "   ", "abc", "0", "5", "-1", "2.5"])
-async def test_repl_adapter_cancel_paths_return_none(raw):
-    # empty / whitespace / non-numeric / out-of-range (low, high, negative) /
-    # float -> all collapse to cancel (None), never an accidental pick.
-    host = ReplUIHost(safe_input=lambda _p: raw, console=None)
-    assert await host.select("t", _OPTS) is None
-
-
-async def test_repl_adapter_eof_cancels():
-    def _raise(_p):
-        raise EOFError
-
-    host = ReplUIHost(safe_input=_raise, console=None)
-    assert await host.select("t", _OPTS) is None
-
-
-async def test_repl_adapter_keyboard_interrupt_cancels():
-    def _raise(_p):
-        raise KeyboardInterrupt
-
-    host = ReplUIHost(safe_input=_raise, console=None)
-    assert await host.select("t", _OPTS) is None
-
-
-async def test_repl_adapter_empty_options_returns_none():
-    host = ReplUIHost(safe_input=lambda _p: "1", console=None)
-    assert await host.select("t", []) is None
-
-
-async def test_repl_adapter_renders_numbered_menu_with_current_and_desc():
-    class _Console:
-        def __init__(self):
-            self.lines: list[str] = []
-
-        def print(self, text=""):
-            self.lines.append(text)
-
-    console = _Console()
-    host = ReplUIHost(safe_input=lambda _p: "", console=console)
-    await host.select("Permission mode", _OPTS, current="plan")
-
-    blob = "\n".join(console.lines)
-    assert "Permission mode" in blob
-    assert "1. default" in blob
-    assert "Prompt before each tool's first use" in blob  # description shown
-    assert "(current)" in blob
-    # The current marker sits on the selected row (plan), not on default.
-    plan_line = next(ln for ln in console.lines if "3. plan" in ln)
-    assert "(current)" in plan_line
-
-
-# --------------------------------------------------------------------------- #
-# E. TextualUIHost — relay, serialization, display
-# --------------------------------------------------------------------------- #
-async def test_tui_adapter_relays_modal_value():
-    captured = {}
-
-    class _App:
-        async def push_screen_wait(self, screen):
-            captured["title"] = screen.title_text
-            captured["values"] = [o.value for o in screen._options]
-            captured["current"] = screen._current
-            return "plan"
-
-    host = TextualUIHost(_App())
-    result = await host.select("Permission mode", _OPTS, current="default")
-
-    assert result == "plan"
-    assert captured["title"] == "Permission mode"
-    assert captured["values"] == [o.value for o in _OPTS]
-    assert captured["current"] == "default"
-
-
-async def test_tui_adapter_serializes_overlapping_selects():
-    # Plan §8.1: the slash-cmd worker is non-exclusive, so two interactive
-    # commands could overlap; the per-host lock must make the second queue
-    # rather than stack a nested modal.
-    state = {"in_flight": 0, "max": 0}
-
-    class _App:
-        async def push_screen_wait(self, screen):
-            state["in_flight"] += 1
-            state["max"] = max(state["max"], state["in_flight"])
-            await asyncio.sleep(0.01)  # hold the modal "open"
-            state["in_flight"] -= 1
-            return screen._current
-
-    host = TextualUIHost(_App())
-    await asyncio.gather(
-        host.select("t", _OPTS, current="a"),
-        host.select("t", _OPTS, current="b"),
-    )
-    assert state["max"] == 1  # never two modals open at once
-
-
-async def test_tui_adapter_display_notifies():
-    calls = []
-
-    class _App:
-        def notify(self, body, title=None):
-            calls.append((title, body))
-
-    host = TextualUIHost(_App())
-    await host.display("Title", "Body")
-    assert calls == [("Title", "Body")]
-
-
-# --------------------------------------------------------------------------- #
 # F. Registry discoverability + bridge-safety BY TYPE + dispatch fall-through
 # --------------------------------------------------------------------------- #
 def test_permissions_registered_in_builtins_and_aggregator():
@@ -426,13 +295,3 @@ def test_interactive_blocked_by_type_even_when_name_allowlisted():
     # And the real command is blocked too.
     assert is_bridge_safe_command(PERMISSIONS_COMMAND) is False
 
-
-def test_dispatch_local_command_falls_through_for_permissions():
-    # The TUI's direct-dispatch table must NOT claim /permissions; it has to
-    # fall through to the async registry path (where the interactive arm lives).
-    from src.tui.commands import dispatch_local_command
-
-    res = dispatch_local_command(
-        "/permissions", session=None, workspace_root=Path("."), tool_registry=None
-    )
-    assert res.handled is False
