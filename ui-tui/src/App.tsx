@@ -21,7 +21,7 @@ import { matchesBinding, bindingConflicts } from './keybindings.js'
 import { configErrors } from './configCheck.js'
 import { shapeRtl } from './bidi.js'
 import { exec } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { readFileSync, existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { BUDDY_SPECIES, CompanionSprite } from './components/CompanionSprite.js'
 import { FileMenu } from './components/FileMenu.js'
@@ -1258,6 +1258,35 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
             addEntry({ kind: 'system', text: `extended thinking ${on ? 'on' : 'off'}` })
           })
         }
+        return true
+      }
+      case 'diagnostics': {
+        // DiagnosticsDisplay (§3), adapted to no-LSP: run the project's typecheck/
+        // lint and show issues. Auto-detects the checker.
+        const cwd = process.cwd()
+        let cmd = ''
+        try {
+          if (existsSync(join(cwd, 'package.json'))) {
+            const pkg = JSON.parse(readFileSync(join(cwd, 'package.json'), 'utf8')) as { scripts?: Record<string, string> }
+            if (pkg.scripts?.['typecheck']) cmd = 'npm run typecheck'
+            else if (existsSync(join(cwd, 'tsconfig.json'))) cmd = 'npx tsc --noEmit'
+          } else if (existsSync(join(cwd, 'tsconfig.json'))) {
+            cmd = 'npx tsc --noEmit'
+          } else if (existsSync(join(cwd, 'pyproject.toml')) || existsSync(join(cwd, 'ruff.toml'))) {
+            cmd = 'ruff check .'
+          }
+        } catch {
+          /* detection best-effort */
+        }
+        if (!cmd) {
+          addEntry({ kind: 'system', text: 'no typecheck/lint detected (need a package.json "typecheck" script, tsconfig.json, or ruff)' })
+          return true
+        }
+        addEntry({ kind: 'system', text: `running diagnostics: ${cmd}…` })
+        exec(cmd, { cwd, timeout: 120_000, maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
+          const out = `${stdout || ''}${stderr || ''}`.trim()
+          addEntry({ kind: err ? 'error' : 'system', text: out || (err ? 'diagnostics failed' : 'no issues found ✓') })
+        })
         return true
       }
       case 'prComments': {
