@@ -276,6 +276,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const resumeFilterRef = useRef('') // LogSelector (§6): session search filter
   const [fastMode, setFastMode] = useState(false) // FastIcon (§7) — ⚡ in the footer
   const [effort, setEffort] = useState('') // EffortCallout (§7) — reasoning effort in the footer
+  const [prBadge, setPrBadge] = useState('') // PrBadge (§7) — current branch's PR, via gh
   const [permFeedback, setPermFeedback] = useState<string | null>(null) // Tab-to-amend feedback field
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
@@ -2220,6 +2221,16 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         const externals = Array.isArray(r?.['externals']) ? (r['externals'] as string[]) : []
         if (r && r['state'] === 'unset' && externals.length) setExternalIncludes(externals)
       })
+      // PrBadge (§7): show the current branch's PR in the footer, via gh.
+      exec('gh pr view --json number,state', { cwd: process.cwd(), timeout: 8000 }, (err, out) => {
+        if (err) return
+        try {
+          const pr = JSON.parse(`${out}`) as { number?: number; state?: string }
+          if (pr.number) setPrBadge(`#${pr.number}${pr.state && pr.state !== 'OPEN' ? ` ${pr.state.toLowerCase()}` : ''}`)
+        } catch {
+          /* no PR / bad json */
+        }
+      })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready])
@@ -2661,6 +2672,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         cost={sessionCost}
         fast={fastMode}
         effort={effort}
+        prBadge={prBadge}
       />
     </Box>
   )
