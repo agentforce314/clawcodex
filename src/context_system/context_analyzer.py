@@ -33,6 +33,9 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "glm-5.2": 1_000_000,
     "glm-5.1": 202_752,
     "glm-4": 128_000,  # legacy GLM-4.x fallback
+    # DeepSeek V4 ships a 1M context window, like glm-5.2 (legacy deepseek-chat/
+    # -reasoner are intentionally NOT matched here — see src/models/configs.py).
+    "deepseek-v4": 1_000_000,
     # Minimax defaults
     "minimax": 128_000,
     "abab": 128_000,
@@ -66,11 +69,31 @@ class ContextData:
 
 
 def get_context_window_for_model(model: str) -> int:
-    """Get the context window size for a model."""
+    """Get the context window size for a model.
+
+    Checks the local table first (back-compat), then defers to the canonical
+    per-model registry (``src/models/configs.py`` via ``src/models/context.py``)
+    so models registered there — e.g. DeepSeek V4's 1M window — are reflected in
+    the context display without maintaining a second table. This closes the drift
+    that made the agent-server status bar report 200K for deepseek-v4-pro: the
+    registry had 1M but this table didn't, and the display reads this function.
+    """
     model_lower = model.lower()
     for name, window in MODEL_CONTEXT_WINDOWS.items():
         if name in model_lower:
             return window
+    # Defer to the canonical model registry for ids not in the local table.
+    try:
+        from ..models.context import (
+            DEFAULT_CONTEXT_WINDOW as _REGISTRY_DEFAULT,
+            get_context_window_for_model as _registry_window,
+        )
+
+        win = _registry_window(model)
+        if win and win != _REGISTRY_DEFAULT:
+            return win
+    except Exception:
+        pass
     # Try to extract a numeric window from model name (e.g., "gpt-4-32k")
     match = re.search(r'(\d+)k', model_lower)
     if match:
