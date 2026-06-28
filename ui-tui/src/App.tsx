@@ -15,6 +15,7 @@ import type { Transport } from './transport.js'
 import { Message } from './components/Message.js'
 import { PermissionDialog } from './components/PermissionDialog.js'
 import { SlashMenu } from './components/SlashMenu.js'
+import { editInEditor } from './editor.js'
 import { exec } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -659,6 +660,21 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     if (key.ctrl && ch === 'l') {
       if (FULLSCREEN) process.stdout.write('\x1b[2J\x1b[3J\x1b[H')
       setThemeVersion((v) => v + 1) // force a re-render
+      return
+    }
+    // Ctrl+G: edit the current prompt in $EDITOR (the original's external editor).
+    if (key.ctrl && ch === 'g') {
+      const sin = process.stdin as unknown as { setRawMode?: (m: boolean) => void }
+      const canRaw = typeof sin.setRawMode === 'function'
+      try {
+        if (canRaw) sin.setRawMode?.(false)
+        setInput(editInEditor(input))
+      } catch (e) {
+        addEntry({ kind: 'error', text: `editor failed: ${(e as Error).message}` })
+      } finally {
+        if (canRaw) sin.setRawMode?.(true)
+        setThemeVersion((v) => v + 1) // repaint after the editor released the screen
+      }
       return
     }
     // Shift+Tab: cycle permission mode (the original's mode cycle, §5/§8).
