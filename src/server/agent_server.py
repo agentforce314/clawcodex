@@ -252,6 +252,9 @@ class _AgentSession:
         if subtype == "set_thinking":
             self._do_set_thinking(request_id, inner.get("action"))
             return
+        if subtype == "set_mcp_enabled":
+            self._do_set_mcp_enabled(request_id, inner.get("server"), inner.get("enabled"))
+            return
         if subtype == "set_effort":
             effort = inner.get("effort")
             if isinstance(effort, str) and effort in ("minimal", "low", "medium", "high"):
@@ -411,8 +414,10 @@ class _AgentSession:
             return
         if subtype == "list_mcp":
             rt = self._mcp_runtime
+            reg = self.tool_registry
+            disabled = reg.disabled_servers if reg is not None else set()
             servers = (
-                [{"name": n, "tools": tools} for n, tools in rt.servers.items()]
+                [{"name": n, "tools": tools, "enabled": n not in disabled} for n, tools in rt.servers.items()]
                 if rt is not None
                 else []
             )
@@ -612,6 +617,22 @@ class _AgentSession:
         if lang and isinstance(base, list):
             base = base + [{"type": "text", "text": f"# Response Language\nRespond in {lang} unless the user writes in another language."}]
         return base
+
+    def _do_set_mcp_enabled(self, request_id: object, server: object, enabled: object) -> None:
+        """Enable/disable an MCP server's tools (MCPServerMultiselectDialog). The
+        registry hides disabled servers' tools from the agent; persisted globally."""
+        reg = self.tool_registry
+        name = str(server or "")
+        if reg is not None and name:
+            if enabled:
+                reg.disabled_servers.discard(name)
+            else:
+                reg.disabled_servers.add(name)
+            _save_disabled_mcp(reg.disabled_servers)
+        self._reply(request_id, {
+            "ok": True,
+            "disabled": sorted(reg.disabled_servers) if reg is not None else [],
+        })
 
     def _do_set_thinking(self, request_id: object, action: object) -> None:
         """Toggle/set extended thinking (the original's ThinkingToggle). action:
@@ -1291,6 +1312,28 @@ def make_spawn_agent(config: AgentServerConfig | None = None):
 # ─── runtime construction (mirrors entrypoints/headless.py) ───────────────────
 
 
+def _mcp_disabled_path() -> Path:
+    return Path.home() / ".clawcodex" / "mcp-disabled.json"
+
+
+def _load_disabled_mcp() -> set[str]:
+    """Persisted set of MCP servers the user disabled (MCPServerMultiselectDialog)."""
+    try:
+        data = json.loads(_mcp_disabled_path().read_text())
+        return {str(x) for x in data} if isinstance(data, list) else set()
+    except Exception:  # noqa: BLE001
+        return set()
+
+
+def _save_disabled_mcp(disabled: set[str]) -> None:
+    try:
+        p = _mcp_disabled_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(sorted(disabled)))
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _make_elicitation_handler(sess: "_AgentSession") -> Any:
     """Async MCP elicitation handler that bridges a server's input request to the
     TUI via the session's control-request round-trip (reusing the permission
@@ -1433,6 +1476,7 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
         sess.provider = provider
         sess.provider_name = provider_name
         sess.tool_registry = registry
+        registry.disabled_servers = _load_disabled_mcp()  # honor persisted MCP toggles
         sess.tool_context = tool_context
         tool_context.agent_progress_emit = sess._emit_agent_progress  # stream subagent progress
         sess.session = Session.create(provider_name, getattr(provider, "model", model or ""))

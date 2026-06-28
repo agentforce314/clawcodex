@@ -255,6 +255,8 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const [permissions, setPermissions] = useState<PendingPermission[]>([]) // FIFO queue
   // MCP elicitation form (a server requested user input, §6).
   const [elicit, setElicit] = useState<{ requestId: string; message: string; field: string; value: string } | null>(null)
+  // MCP server multiselect (§6 MCPServerMultiselectDialog) — toggle servers on/off.
+  const [mcpToggle, setMcpToggle] = useState<{ servers: { name: string; enabled: boolean; tools: string[] }[]; sel: number } | null>(null)
   // RTL display shaping (§8) — opt-in (terminals with native bidi shouldn't use it).
   const [rtlMode, setRtlMode] = useState<boolean>(process.env['CLAWCODEX_RTL'] === '1')
   // Message timestamps (§3) — opt-in via /timestamps.
@@ -784,6 +786,33 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
       focusedRef.current = false
       blurAtRef.current = Date.now()
       return
+    }
+    // MCP server multiselect (§6): ↑/↓ navigate, space toggles + persists, esc closes.
+    if (mcpToggle) {
+      if (key.escape || key.return) {
+        setMcpToggle(null)
+        return
+      }
+      if (key.upArrow) {
+        setMcpToggle((p) => (p ? { ...p, sel: (p.sel - 1 + p.servers.length) % p.servers.length } : p))
+        return
+      }
+      if (key.downArrow) {
+        setMcpToggle((p) => (p ? { ...p, sel: (p.sel + 1) % p.servers.length } : p))
+        return
+      }
+      if (ch === ' ') {
+        const srv = mcpToggle.servers[mcpToggle.sel]
+        if (srv) {
+          const next = !srv.enabled
+          client?.requestControl('set_mcp_enabled', { server: srv.name, enabled: next })
+          setMcpToggle((p) =>
+            p ? { ...p, servers: p.servers.map((s, i) => (i === p.sel ? { ...s, enabled: next } : s)) } : p,
+          )
+        }
+        return
+      }
+      return // multiselect swallows other keys
     }
     // Mode confirm (§5): y enables the pending mode, anything else cancels.
     if (pendingMode) {
@@ -1768,15 +1797,15 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
               addEntry({ kind: 'system', text: 'no MCP servers connected (configure servers in .mcp.json / config.json)' })
               return
             }
-            const lines = servers.map((s) => {
-              const tools = Array.isArray(s['tools']) ? (s['tools'] as string[]) : []
-              const nm = String(s['name'])
-              const mark = isMcpTrusted(nm) ? '✓' : '⚠'
-              return `${mark} ${nm} — ${tools.length} tool${tools.length === 1 ? '' : 's'}: ${tools.join(', ')}`
+            // Open the multiselect (§6 MCPServerMultiselectDialog): toggle servers on/off.
+            setMcpToggle({
+              servers: servers.map((s) => ({
+                name: String(s['name']),
+                enabled: s['enabled'] !== false,
+                tools: Array.isArray(s['tools']) ? (s['tools'] as string[]) : [],
+              })),
+              sel: 0,
             })
-            const anyUntrusted = servers.some((s) => !isMcpTrusted(String(s['name'])))
-            const hint = anyUntrusted ? '\n⚠ unapproved server(s) — /mcp-trust to approve' : ''
-            addEntry({ kind: 'system', text: `MCP servers:\n${lines.join('\n')}${hint}` })
           })
         }
         return true
@@ -2384,7 +2413,16 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         </Box>
       ) : null}
 
-      {pendingMode ? (
+      {mcpToggle ? (
+        <Box flexDirection="column" borderStyle="round" borderColor={theme.suggestion} borderLeft={false} borderRight={false} paddingX={1} marginTop={1}>
+          <Text color={theme.dim}>{'MCP servers — space to toggle, esc to close'}</Text>
+          {mcpToggle.servers.map((s, i) => (
+            <Text key={s.name} color={i === mcpToggle.sel ? theme.suggestion : undefined} bold={i === mcpToggle.sel}>
+              {`${i === mcpToggle.sel ? '❯ ' : '  '}${s.enabled ? '✓' : '☐'} ${s.name}  (${s.tools.length} tool${s.tools.length === 1 ? '' : 's'})`}
+            </Text>
+          ))}
+        </Box>
+      ) : pendingMode ? (
         <Box flexDirection="column" borderStyle="round" borderColor={theme.error} borderLeft={false} borderRight={false} paddingX={1} marginTop={1}>
           <Text color={theme.error} bold>
             {pendingMode === 'bypassPermissions' ? '⚠ Enable bypass-permissions mode?' : '⚠ Enable auto-accept-edits mode?'}
@@ -2513,7 +2551,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
               vimEnabled={vimMode}
               onChange={handleInputChange}
               onSubmit={onSubmit}
-              active={!elicit && !pendingMode}
+              active={!elicit && !pendingMode && !mcpToggle}
               placeholder={ready ? 'Type a message, or / for commands…' : 'starting agent-server…'}
             />
             {/* Inline ghost-text completion for slash commands (inventory §1):
