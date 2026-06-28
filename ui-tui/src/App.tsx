@@ -255,6 +255,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const [busy, setBusy] = useState(false)
   const [turnStartedAt, setTurnStartedAt] = useState(0)
   const turnStartRef = useRef(0) // closure-safe turn-start time for the completion notification
+  const focusedRef = useRef(true) // terminal focus (DECSET 1004) — for notify-when-unfocused
   const [model, setModel] = useState('?')
   const [mode, setMode] = useState('?')
   const [tools, setTools] = useState(0)
@@ -604,7 +605,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
           // Completion notification (the original's terminal notifications, §8):
           // ring the bell + OSC 9 desktop notice for long turns the user may have
           // stepped away from. Quick turns stay silent (threshold 10s).
-          if (turnStartRef.current && Date.now() - turnStartRef.current > 10_000) {
+          if (turnStartRef.current && (!focusedRef.current || Date.now() - turnStartRef.current > 10_000)) {
             try {
               process.stdout.write('\x07') // bell — flags the tab/taskbar
               process.stdout.write('\x1b]9;clawcodex — response ready\x07') // OSC 9 (iTerm/Ghostty/kitty)
@@ -696,6 +697,15 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   }, [transport])
 
   useInput((ch, key) => {
+    // Terminal focus events (DECSET 1004) arrive as "[I" / "[O" — track + swallow.
+    if (ch === '[I') {
+      focusedRef.current = true
+      return
+    }
+    if (ch === '[O') {
+      focusedRef.current = false
+      return
+    }
     if (key.ctrl && ch === 'c') {
       client?.close()
       exit()
@@ -1857,6 +1867,23 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entries.length])
+
+  // Terminal focus tracking (DECSET 1004, §8): enable focus reporting so the
+  // completion notification can fire when the user is away (unfocused).
+  useEffect(() => {
+    try {
+      process.stdout.write('\x1b[?1004h')
+    } catch {
+      /* non-tty */
+    }
+    return () => {
+      try {
+        process.stdout.write('\x1b[?1004l')
+      } catch {
+        /* ignore */
+      }
+    }
+  }, [])
 
   // Folder-trust first-run notice (the original's TrustDialog, §6): once ready,
   // if this folder hasn't been acknowledged, surface a one-line notice. The
