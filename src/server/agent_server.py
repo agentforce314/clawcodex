@@ -113,6 +113,7 @@ class _AgentSession:
     init_error: str | None = None
     _session_name: str | None = None  # user-set label (/rename) shown in /resume
     _mcp_runtime: Any = None  # McpRuntime (connected MCP servers) when configured
+    _effort: str | None = None  # /effort reasoning level, injected via extra_body when set
 
     # Worker + cross-thread coordination.
     _inbox: _queue.Queue = field(default_factory=_queue.Queue)
@@ -216,6 +217,14 @@ class _AgentSession:
             return
         if subtype == "set_provider":
             self._do_set_provider(request_id, inner.get("provider"))
+            return
+        if subtype == "set_effort":
+            effort = inner.get("effort")
+            if isinstance(effort, str) and effort in ("minimal", "low", "medium", "high"):
+                self._effort = effort
+            else:
+                self._effort = None  # clear / invalid
+            self._reply(request_id, {"ok": True, "effort": self._effort or "default"})
             return
         if subtype == "get_settings":
             self._reply(request_id, {
@@ -774,10 +783,13 @@ class _AgentSession:
             if env is not None:
                 self._emit(env)
 
+        # /effort: wrap the provider to inject reasoning_effort (default off ⇒
+        # the real provider is used unchanged).
+        turn_provider = _EffortProvider(self.provider, self._effort) if self._effort else self.provider
         try:
             result = asyncio.run(run_query_as_agent_loop(
                 initial_messages=list(self.session.conversation.messages),
-                provider=self.provider,
+                provider=turn_provider,
                 tool_registry=self.tool_registry,
                 tool_context=self.tool_context,
                 system_prompt=self.system_prompt,
@@ -1085,6 +1097,37 @@ def _fmt_rule(rule: Any) -> str:
     tool = getattr(v, "tool_name", "") or "?"
     content = getattr(v, "rule_content", None)
     return f"{tool}({content})" if content else tool
+
+
+class _EffortProvider:
+    """Wraps a provider to inject ``reasoning_effort`` via ``extra_body`` on chat
+    calls (the original's /effort). Used only when /effort is set; delegates
+    everything else to the inner provider, so the default path is untouched."""
+
+    def __init__(self, inner: Any, effort: str) -> None:
+        self._inner = inner
+        self._effort = effort
+
+    def __getattr__(self, name: str) -> Any:  # model, get_available_models, …
+        return getattr(self._inner, name)
+
+    def _inject(self, kwargs: dict) -> dict:
+        eb = dict(kwargs.get("extra_body") or {})
+        eb.setdefault("reasoning_effort", self._effort)
+        kwargs["extra_body"] = eb
+        return kwargs
+
+    def chat_stream_response(self, *args: Any, **kwargs: Any) -> Any:
+        return self._inner.chat_stream_response(*args, **self._inject(kwargs))
+
+    def chat(self, *args: Any, **kwargs: Any) -> Any:
+        return self._inner.chat(*args, **self._inject(kwargs))
+
+    def chat_stream(self, *args: Any, **kwargs: Any) -> Any:
+        return self._inner.chat_stream(*args, **self._inject(kwargs))
+
+    async def chat_async(self, *args: Any, **kwargs: Any) -> Any:
+        return await self._inner.chat_async(*args, **self._inject(kwargs))
 
 
 def _sessions_dir() -> Path:
