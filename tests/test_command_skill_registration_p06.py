@@ -4,23 +4,17 @@ Pins the contract that user-invocable skills register into the GLOBAL command
 registry and execute through a ``SkillPromptCommand`` whose render is identical
 *by construction* to the model's Skill-tool path (``_run_markdown_skill``).
 
-Covers T1-T8 of
-``my-docs/get-parity-by-folder/commands-phase3.5-skill-registration-plan.md`` §6:
+Covers the surface-agnostic registration/render contracts of
+``my-docs/get-parity-by-folder/commands-phase3.5-skill-registration-plan.md`` §6.
+(The former REPL/TUI end-to-end dispatch cases T2–T5 and T8 were removed along
+with the in-process REPL and Textual surfaces; the Ink TUI dispatches slash
+commands through its own client + the agent-server.)
 
   T1  Gating parity — SkillPromptCommand render == Skill-tool render (+ R2
       namespaced re-resolution).
-  T2  END-TO-END REPL dispatch — ``/p06-gizmo widget`` routes through the
-      registry path, calls ``chat`` once, never ``_try_run_skill_slash``.
-  T3  Bare form preserved — ``/p06-gizmo`` opens the palette, no ``chat``.
-  T4  Error → no double-dispatch (D-5) — a registered skill whose render raises
-      surfaces the error and does NOT fall through to the Skill-tool fallback.
-  T5  Unregistered fallback — a disk skill not in the registry runs once via
-      ``_try_run_skill_slash``.
   T6  Shadowing — a skill named ``review`` does NOT replace the builtin.
   T7  Degradation — no ToolContext → headless render (arg + ${…} resolved,
       shell block left verbatim), no crash.
-  T8  TUI — ``dispatch_registry_command`` returns ``handled=True`` + the same
-      prompt text (was ``handled=False`` + literal-text forward).
 
 **Mandatory harness (§6).** The global ``_REGISTRY`` is process-global and never
 cleared between sessions; the D-4 guard is skip-if-present, so a name left over
@@ -33,10 +27,8 @@ builtins around each test) — the re-register step is what gives T6 a builtin
 from __future__ import annotations
 
 import asyncio
-import json
 from pathlib import Path
 from typing import Iterator
-from unittest.mock import Mock, patch
 
 import pytest
 
@@ -60,7 +52,6 @@ from src.skills.loader import (
 )
 from src.tool_system.context import ToolContext
 from src.tool_system.tools.skill import _run_markdown_skill
-from src.tui.commands import dispatch_registry_command
 
 
 # ----------------------------------------------------------------------
@@ -208,64 +199,6 @@ def _tc(ws: Path, session_id: str = "S-p06") -> ToolContext:
     return tc
 
 
-def _make_repl(ws: Path, monkeypatch: pytest.MonkeyPatch):
-    """Build a real ``ClawcodexREPL`` (the T2-T5 entrypoint owner) pointed at
-    ``ws``, then install a clean, controlled global registry: builtins plus the
-    on-disk fixtures, exactly as ``_init_command_system`` would but scoped to
-    ``ws`` (whose discovery we suppress during construction to keep it fast and
-    hermetic). Threads a fixed ToolContext onto both the REPL and its command
-    context so rendered prompts are byte-stable.
-    """
-    cfg_dir = ws / ".clawcodex"
-    cfg_dir.mkdir(parents=True, exist_ok=True)
-    cfg_file = cfg_dir / "config.json"
-    cfg_file.write_text(
-        json.dumps(
-            {
-                "default_provider": "glm",
-                "providers": {
-                    "glm": {
-                        "api_key": "test_api_key_12345678",
-                        "base_url": "https://open.bigmodel.cn/api/paas/v4",
-                        "default_model": "glm-4.5",
-                    }
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    monkeypatch.setattr(config_module, "GLOBAL_CONFIG_FILE", cfg_file)
-    config_module._default_manager = None
-
-    from src.repl import ClawcodexREPL
-
-    with patch("src.config.get_config_path", return_value=cfg_file), patch(
-        "src.repl.core.Session.create", return_value=Mock()
-    ), patch("src.repl.core.get_provider_class") as mock_pc, patch(
-        # Suppress the broad bootstrap skill-walk during construction: it would
-        # scan the real cwd and is slow. We register the ws fixtures ourselves
-        # below, which is what "as bootstrap does (global)" means here.
-        "src.repl.core.load_and_register_skills"
-    ), patch(
-        "src.repl.core.Path.cwd", return_value=ws
-    ):
-        prov = Mock()
-        prov.model = "glm-4.5"
-        mock_pc.return_value = prov
-        repl = ClawcodexREPL(provider_name="glm")
-
-    reg = get_command_registry()
-    reg.clear()
-    register_builtin_commands(None)
-    load_and_register_skills(registry=None, project_root=ws)
-
-    tc = _tc(ws)
-    repl.tool_context = tc
-    repl.command_context.tool_context = tc
-    return repl
-
-
 # ======================================================================
 # T1 — Gating parity (the test that makes Option B safe).
 # ======================================================================
@@ -314,113 +247,6 @@ def test_t1_gating_parity(gizmo_ws: Path) -> None:
 
 
 # ======================================================================
-# T2 — END-TO-END REPL dispatch (proves the wiring, not just fn equality).
-# ======================================================================
-
-
-def test_t2_repl_success_dispatch(gizmo_ws: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    ws = gizmo_ws
-    repl = _make_repl(ws, monkeypatch)
-    tc = repl.command_context.tool_context
-
-    repl.chat = Mock()
-    repl._try_run_skill_slash = Mock(wraps=repl._try_run_skill_slash)
-
-    repl.handle_command("/p06-gizmo widget")
-
-    expected = _run_markdown_skill("p06-gizmo", "widget", tc).output["prompt"]
-    repl.chat.assert_called_once()
-    assert repl.chat.call_args.args[0] == expected
-    repl._try_run_skill_slash.assert_not_called()
-
-
-# ======================================================================
-# T3 — Bare form preserved (`/p06-gizmo` → palette, not execution).
-# ======================================================================
-
-
-def test_t3_repl_bare_form_opens_palette(
-    gizmo_ws: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    repl = _make_repl(gizmo_ws, monkeypatch)
-    repl.chat = Mock()
-    repl._show_slash_palette = Mock()
-
-    repl.handle_command("/p06-gizmo")
-
-    repl._show_slash_palette.assert_called_once()
-    repl.chat.assert_not_called()
-
-
-# ======================================================================
-# T4 — Error → no double-dispatch (D-5 guard is load-bearing).
-# ======================================================================
-
-
-def test_t4_repl_error_no_double_dispatch(
-    gizmo_ws: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    ws = gizmo_ws
-    repl = _make_repl(ws, monkeypatch)
-
-    # A registered (global-only) skill whose render raises.
-    boom = SkillPromptCommand(
-        name="boom",
-        description="boom",
-        markdown_content="x",
-        skill_root=str(ws),
-        loaded_from="project",
-    )
-    get_command_registry().register(boom)
-
-    def _raise(*args, **kwargs):
-        raise RuntimeError("render boom")
-
-    monkeypatch.setattr("src.tool_system.tools.skill._run_markdown_skill", _raise)
-
-    repl.chat = Mock()
-    repl._try_run_skill_slash = Mock(wraps=repl._try_run_skill_slash)
-
-    repl.handle_command("/boom arg")
-
-    # The error surfaced via the registry path; the Skill-tool fallback (which
-    # would re-render and double-dispatch) was NOT reached. Without the D-5
-    # change (guard on the GLOBAL registry) this fails: boom is global-only, so
-    # a local-registry guard misses it and falls through to the fallback.
-    repl._try_run_skill_slash.assert_not_called()
-    repl.chat.assert_not_called()
-
-
-# ======================================================================
-# T5 — Unregistered fallback (disk skill not in the registry).
-# ======================================================================
-
-
-def test_t5_repl_unregistered_fallback(
-    gizmo_ws: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    ws = gizmo_ws
-    repl = _make_repl(ws, monkeypatch)
-
-    # Model "present on disk but not registered": drop the registry back to
-    # builtins-only, leaving ``late`` discoverable only via the Skill tool.
-    reg = get_command_registry()
-    reg.clear()
-    register_builtin_commands(None)
-
-    tc = repl.command_context.tool_context
-    repl.chat = Mock()
-    repl._try_run_skill_slash = Mock(wraps=repl._try_run_skill_slash)
-
-    repl.handle_command("/late arg")
-
-    repl._try_run_skill_slash.assert_called_once()
-    expected = _run_markdown_skill("late", "arg", tc).output["prompt"]
-    repl.chat.assert_called_once()
-    assert repl.chat.call_args.args[0] == expected
-
-
-# ======================================================================
 # T6 — Shadowing (a skill named `review` must not replace the builtin).
 # ======================================================================
 
@@ -461,21 +287,3 @@ def test_t7_headless_degradation(gizmo_ws: Path) -> None:
     assert "!`echo gizmo-shell-marker`" in text
 
 
-# ======================================================================
-# T8 — TUI dispatch (handled=True + same prompt text).
-# ======================================================================
-
-
-def test_t8_tui_dispatch(gizmo_ws: Path) -> None:
-    ws = gizmo_ws
-    tc = _tc(ws)
-    load_and_register_skills(registry=None, project_root=ws)
-
-    ctx = create_command_context(workspace_root=ws, tool_context=tc)
-    result = asyncio.run(
-        dispatch_registry_command("/p06-gizmo widget", command_context=ctx)
-    )
-
-    assert result.handled is True
-    expected = _run_markdown_skill("p06-gizmo", "widget", tc).output["prompt"]
-    assert result.prompt_text == expected

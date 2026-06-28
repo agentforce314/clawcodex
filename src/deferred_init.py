@@ -20,8 +20,8 @@ setters yet (ch12 follow-up).
 Two execution modes, because the port's entrypoints split by loop
 ownership:
 
-* **Running asyncio loop** (Textual TUI): tasks are scheduled on it.
-* **No loop** (headless / legacy REPL, which call ``asyncio.run`` per
+* **Running asyncio loop**: tasks are scheduled on it.
+* **No loop** (headless, which calls ``asyncio.run`` per
   query): a daemon thread drives its own short-lived loop. The memo
   caches in ``context_system.prompt_assembly`` are plain module-level
   dict assignments — atomic under the GIL; a race with the first query

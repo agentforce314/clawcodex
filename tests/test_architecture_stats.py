@@ -19,13 +19,16 @@ from scripts.audit.architecture_stats import (
 )
 
 
-# Pinned names + packages from the book's §Closing list (line 127).
+# Pinned names + packages from the book's §Closing list (line 127). The
+# fifth slot — the book's in-process "Rendering engine" (``src/tui``) — was
+# repointed to the Python ``src/server`` agent-server after the UI moved to the
+# TypeScript Ink client (``ui-tui/``). See ABSTRACTION_MAP for the rationale.
 EXPECTED_ABSTRACTIONS: tuple[tuple[str, str], ...] = (
     ("Generator loop", "src/query"),
     ("Tools", "src/tool_system"),
     ("Memory", "src/memdir"),
     ("Hooks", "src/hooks"),
-    ("Rendering engine", "src/tui"),
+    ("Agent server", "src/server"),
     ("MCP", "src/services/mcp"),
 )
 

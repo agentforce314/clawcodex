@@ -1,9 +1,8 @@
 """UI-neutral fuzzy scorer (components C5).
 
-Moved verbatim from ``src.tui.screens.history_search`` (which now
-re-exports it) so service-layer consumers — ``workspace_search`` and any
-headless surface — never import a Textual module for a pure function
-(the dependency-direction rule from the C2/C4 reviews).
+Lives in the service layer so consumers — ``workspace_search`` and any
+headless or agent-server surface — get a pure scoring function without a UI
+dependency (the dependency-direction rule from the C2/C4 reviews).
 """
 
 from __future__ import annotations

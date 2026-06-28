@@ -1,10 +1,10 @@
 """Spinner verbs for the busy/thinking status line.
 
-Mirrors ``typescript/src/constants/spinnerVerbs.ts``. The TUI status line
-shows one of these gerunds while the agent is working (e.g. ``Cogitating…``,
+Mirrors ``typescript/src/constants/spinnerVerbs.ts``. The status line shows
+one of these gerunds while the agent is working (e.g. ``Cogitating…``,
 ``Frolicking…``). TS picks a fresh verb per spinner mount via
-``sample(getSpinnerVerbs())``; the Python port samples once per thinking
-session in :meth:`src.tui.state.AppState.set_thinking`.
+``sample(getSpinnerVerbs())``; the Python port samples one per thinking
+session.
 
 The list is kept byte-identical to the TS source (including ``Beboppin'``
 and the accented ``Flambéing`` / ``Sautéing``) so the two implementations

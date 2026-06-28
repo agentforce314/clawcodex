@@ -2,12 +2,10 @@
 
 Mirrors the ``/theme`` test layout. ``/logo`` differs in ONE structural way: it has NO
 TUI dialog, so its dispatch **falls through** (the ``/export`` pattern) rather than
-being intercepted (the theme/effort/model inversion). Also includes lightweight
-banner-wiring assertions (both startup banners resolve+apply the palette).
+being intercepted (the theme/effort/model inversion).
 """
 from __future__ import annotations
 
-import inspect
 from pathlib import Path
 
 import pytest
@@ -33,7 +31,6 @@ from src.utils.logo_palettes import (
     DEFAULT_LOGO_PALETTE,
     LOGO_PALETTE_LABELS,
     LOGO_PALETTE_NAMES,
-    banner_palette,
 )
 
 
@@ -105,22 +102,10 @@ def test_logo_metadata_mirrors_ts():
 
 
 # --------------------------------------------------------------------------- #
-# B. Bridge-safety + dispatch FALL-THROUGH (the /export pattern)
+# B. Bridge-safety
 # --------------------------------------------------------------------------- #
 def test_logo_blocked_from_bridge_by_type():
     assert is_bridge_safe_command(LOGO_COMMAND) is False
-
-
-def test_dispatch_local_command_falls_through_for_logo():
-    # THE DIFFERENCE vs theme/effort/model: /logo has NO TUI dialog, so dispatch
-    # falls through (handled=False) and the registry command runs on every surface.
-    from src.tui.commands import dispatch_local_command
-
-    res = dispatch_local_command(
-        "/logo", session=None, workspace_root=Path("."), tool_registry=None
-    )
-    assert res.handled is False
-    assert res.open_dialog is None
 
 
 # --------------------------------------------------------------------------- #
@@ -208,48 +193,3 @@ async def test_picker_seeds_current_from_persisted(isolated_config):
     # Exactly the current option carries the "current" marker.
     for value, desc in zip(call["values"], call["descriptions"]):
         assert desc == ("current" if value == "ocean" else None)
-
-
-# --------------------------------------------------------------------------- #
-# G. Banner wiring (both startup banners resolve + apply the palette)
-# --------------------------------------------------------------------------- #
-def test_repl_banner_wires_palette():
-    from src.repl.core import ClawcodexREPL
-
-    src_text = inspect.getsource(ClawcodexREPL._print_startup_header)
-    assert "banner_palette" in src_text
-    assert "mascot_gradient_text" in src_text
-
-
-def test_tui_header_wires_palette_and_applies_border(isolated_config):
-    tmp_path = isolated_config
-    cfg.set_logo_color("forest")
-
-    from src.tui.widgets.header import StartupHeader
-
-    header = StartupHeader(
-        version="1.2.3",
-        model="claude-sonnet-4-6",
-        provider="anthropic",
-        workspace_root=tmp_path,
-    )
-    panel = header._render_banner()
-    # The Panel border is the forest palette's border hex (best-effort wiring applied).
-    assert panel.border_style == banner_palette("forest").border
-
-
-def test_tui_header_falls_back_on_bogus_logo(isolated_config, monkeypatch):
-    tmp_path = isolated_config
-    cfg.set_logo_color("not-a-real-palette")
-
-    from src.tui.widgets.header import StartupHeader
-
-    # Bogus name resolves to the default palette (no crash).
-    header = StartupHeader(
-        version="1.2.3",
-        model="m",
-        provider="anthropic",
-        workspace_root=tmp_path,
-    )
-    panel = header._render_banner()
-    assert panel.border_style == banner_palette(None).border  # default sunset

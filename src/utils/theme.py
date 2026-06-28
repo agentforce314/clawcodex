@@ -1,14 +1,14 @@
-"""Theme palette for the Claw Codex Textual TUI.
+"""Theme palettes for Claw Codex (framework-agnostic).
 
-Mirrors the palette keys defined in ``typescript/src/utils/theme.js`` so
-widgets port 1-for-1 (``theme.primary``, ``theme.success`` etc.). Three
-built-in palettes are exposed: ``dark``, ``light``, and ``claude`` — the
-dark variant is the default and is tuned to match the ink reference.
+Mirrors the palette keys defined in ``typescript/src/utils/theme.js``
+(``theme.primary``, ``theme.success`` etc.). Three built-in palettes are
+exposed: ``dark``, ``light``, and ``claude`` — the dark variant is the default
+and is tuned to match the ink reference.
 
-The palette is deliberately plain-dataclass so Textual CSS references
-like ``$primary`` continue to work via ``App.theme`` + ``ColorSystem``;
-we expose the raw hex constants so Rich renderables inside widgets
-(panels, markdown, etc.) can use the same colors as the CSS layer.
+Stdlib-only: a plain dataclass of raw hex constants plus ``list_theme_names`` /
+``resolve_auto_theme`` / ``get_palette``. Consumed by the ``/theme`` command and
+the buddy rarity-color mapping (it was relocated here from the removed Textual
+TUI package so non-UI code can use it without a UI dependency).
 """
 
 from __future__ import annotations

@@ -106,8 +106,8 @@ class ToolContext:
     _aggregate_lock: threading.Lock = field(default_factory=threading.Lock)
     # Session-cumulative tokens spent on client-side advisor calls.
     # ``src/tool_system/tools/advisor.py`` accumulates here on every
-    # consultation; the REPL bottom_toolbar + TUI StatusLine read
-    # them to display ``advisor: <in>/<out>`` next to the worker's
+    # consultation; the status surface reads them to display
+    # ``advisor: <in>/<out>`` next to the worker's
     # token counts. Distinct from ``tool_result_chars_so_far`` (which
     # is a per-message budget tied to API-result persistence) — these
     # are per-session totals for UI display.
