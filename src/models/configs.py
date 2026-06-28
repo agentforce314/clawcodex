@@ -162,6 +162,31 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
         max_output_tokens=8_192,
         supports_cache=True,
     ),
+    # Z.ai GLM Coding Plan. glm-5.2 ships a 1M context window (like DeepSeek V4);
+    # glm-5.1 is 202_752 and legacy glm-4.x is 128K. Registered here so the
+    # canonical window/threshold path agrees with the context display — both
+    # exact keys, so glm-4 never prefix-matches glm-5.2's 1M.
+    "glm-5.2": ModelConfig(
+        model_id="glm-5.2",
+        display_name="GLM-5.2",
+        context_window=1_000_000,
+        max_output_tokens=8_192,
+        supports_cache=True,
+    ),
+    "glm-5.1": ModelConfig(
+        model_id="glm-5.1",
+        display_name="GLM-5.1",
+        context_window=202_752,
+        max_output_tokens=8_192,
+        supports_cache=True,
+    ),
+    "glm-4": ModelConfig(
+        model_id="glm-4",
+        display_name="GLM-4",
+        context_window=128_000,
+        max_output_tokens=8_192,
+        supports_cache=True,
+    ),
 }
 
 
