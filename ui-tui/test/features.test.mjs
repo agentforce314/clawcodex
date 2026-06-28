@@ -144,3 +144,15 @@ test('slash menu is windowed (not a ~70-row dump) and closes after running a com
   await wait(60)
   assert.ok(!/\d+ more/.test(strip(lastFrame())), 'menu must close after a command is run')
 })
+
+test('/exit runs the quit handler (closes the connection and exits)', async () => {
+  let closed = false
+  const transport = { async start(c) { c.onOpen && c.onOpen(); c.onData(INIT) }, send() {}, close() { closed = true } }
+  const r = render(React.createElement(App, { transport, serverLabel: 'test' }))
+  await wait(150)
+  for (const ch of '/exit') { r.stdin.write(ch); await wait(5) }
+  r.stdin.write('\r')
+  await wait(120)
+  assert.ok(closed, '/exit should close the connection via the quit handler')
+  try { r.unmount() } catch { /* exit() may have already torn down */ }
+})
