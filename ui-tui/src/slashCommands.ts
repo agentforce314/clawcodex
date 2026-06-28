@@ -37,6 +37,7 @@ export interface SlashCommand {
     | 'addDir'
     | 'hooks'
     | 'upgrade'
+    | 'provider'
     | 'diff'
     | 'stats'
     | 'prompt'
@@ -85,6 +86,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/add-dir', description: 'Add a working directory: /add-dir <path>', kind: 'addDir' },
   { name: '/hooks', description: 'Show hook configuration', kind: 'hooks' },
   { name: '/upgrade', description: 'How to update clawcodex', kind: 'upgrade' },
+  { name: '/provider', description: 'Switch LLM provider: /provider <name>', kind: 'provider' },
   { name: '/config', description: 'Show model, mode, and available models', kind: 'config' },
   { name: '/diff', description: 'Show the working-tree git diff', kind: 'diff' },
   { name: '/stats', description: 'Show session statistics', kind: 'stats' },
