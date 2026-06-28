@@ -36,6 +36,12 @@ function prevWord(s: string, c: number): number {
   while (i > 0 && WORD.test(s[i - 1] ?? '')) i-- // to word start
   return Math.max(0, i)
 }
+function endWord(s: string, c: number): number {
+  let i = c + 1
+  while (i < s.length && !WORD.test(s[i] ?? '')) i++ // skip gap
+  while (i < s.length - 1 && WORD.test(s[i + 1] ?? '')) i++ // to word end
+  return Math.min(Math.max(0, s.length - 1), Math.max(c, i))
+}
 
 export function VimInput({
   value,
@@ -65,6 +71,8 @@ export function VimInput({
     prevValue.current = value
   }, [value])
 
+  // vim unnamed register (populated by x/D/s/C; pasted by p/P).
+  const vimReg = useRef('')
   // readline kill-ring / line edits shared by both modes' insert state.
   const killRing = useRef('')
   const killWordBack = (): void => {
@@ -162,14 +170,55 @@ export function VimInput({
         if (input === '$') return setCursor(Math.max(0, value.length - 1))
         if (input === 'w') return setCursor(nextWord(value, cursor))
         if (input === 'b') return setCursor(prevWord(value, cursor))
+        if (input === 'e') return setCursor(endWord(value, cursor))
+        if (input === '^') {
+          const fnb = value.search(/\S/)
+          return setCursor(fnb >= 0 ? fnb : 0)
+        }
+        if (input === 'G') return setCursor(Math.max(0, value.length - 1))
         if (input === 'x') {
           if (value) {
+            vimReg.current = value[cursor] ?? ''
             onChange(value.slice(0, cursor) + value.slice(cursor + 1))
             setCursor((c) => clamp(c, Math.max(0, value.length - 2)))
           }
           return
         }
-        if (input === 'D') return onChange(value.slice(0, cursor))
+        if (input === '~') {
+          if (value && cursor < value.length) {
+            const c0 = value[cursor] ?? ''
+            const tog = c0 === c0.toLowerCase() ? c0.toUpperCase() : c0.toLowerCase()
+            onChange(value.slice(0, cursor) + tog + value.slice(cursor + 1))
+            setCursor((c) => clamp(c + 1, Math.max(0, value.length - 1)))
+          }
+          return
+        }
+        if (input === 'D') {
+          vimReg.current = value.slice(cursor)
+          return onChange(value.slice(0, cursor))
+        }
+        if (input === 'C') {
+          // change to end of line: kill to end + enter insert
+          vimReg.current = value.slice(cursor)
+          onChange(value.slice(0, cursor))
+          return setNormal(false)
+        }
+        if (input === 's') {
+          // substitute char: delete char under cursor + enter insert
+          if (value) {
+            vimReg.current = value[cursor] ?? ''
+            onChange(value.slice(0, cursor) + value.slice(cursor + 1))
+          }
+          return setNormal(false)
+        }
+        if (input === 'p' || input === 'P') {
+          if (vimReg.current) {
+            const at = input === 'p' ? clamp(cursor + 1) : cursor
+            onChange(value.slice(0, at) + vimReg.current + value.slice(at))
+            setCursor(clamp(at + vimReg.current.length - 1, value.length + vimReg.current.length - 1))
+          }
+          return
+        }
         if (key.return) return onSubmit(value)
         return // normal mode swallows everything else
       }
