@@ -145,6 +145,18 @@ export class DirectConnectClient {
     });
   }
 
+  /** Send a side question (the original's /btw): answered with full context but
+   *  not persisted to the conversation history (ephemeral). */
+  sendEphemeralPrompt(content: string): void {
+    this.send({
+      type: 'user',
+      message: { role: 'user', content },
+      ephemeral: true,
+      parent_tool_use_id: null,
+      session_id: '',
+    });
+  }
+
   /** Send a user turn whose content is a block list (text + image blocks) for
    *  multimodal input. The server preserves non-text blocks (image-paste, §1). */
   sendPromptBlocks(content: Array<Record<string, unknown>>): void {

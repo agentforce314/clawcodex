@@ -119,6 +119,27 @@ class _ThinkingProvider:
         )
 
 
+_RECORDED_TURNS: list[str] = []
+
+
+class _RecordingProvider:
+    """Records the messages it receives per turn (to assert btw non-persistence)."""
+
+    def __init__(self, api_key=None, base_url=None, model=None):
+        self.model = model or "fake"
+
+    def chat(self, messages, tools=None, **kw):
+        _RECORDED_TURNS.append(" || ".join(str(m) for m in messages))
+        return ChatResponse(
+            content="ok", model=self.model,
+            usage={"input_tokens": 2, "output_tokens": 1},
+            finish_reason="stop", tool_uses=None,
+        )
+
+    def chat_stream_response(self, *a, **kw):
+        raise NotImplementedError
+
+
 def _free_port() -> int:
     import socket
 
@@ -268,6 +289,39 @@ async def test_turn_streams_thinking_delta(tmp_path):
             ]
             assert thinking, "no thinking_delta stream_event emitted"
             assert thinking[0]["event"]["delta"]["thinking"] == "let me think "
+        finally:
+            await client.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_btw_side_question_not_persisted(tmp_path):
+    """A /btw turn answers with context but is dropped from history afterward."""
+    from src.tool_system.registry import ToolRegistry
+
+    _RECORDED_TURNS.clear()
+    async with _running_server(tmp_path, _RecordingProvider, ToolRegistry([])) as config:
+        cfg, _ = await create_direct_connect_session(
+            server_url=f"http://127.0.0.1:{config.port}", cwd=str(tmp_path)
+        )
+        received: list[dict] = []
+        callbacks = DirectConnectCallbacks(
+            on_message=lambda m: received.append(m),
+            on_permission_request=lambda req, rid: None,
+        )
+        client = DirectConnectSessionManager(cfg, callbacks)
+        await client.connect()
+        try:
+            # 1) side question (ephemeral)
+            await client.send_message("SIDEQ_TANGENT", ephemeral=True)
+            assert await _wait_for(lambda: len([m for m in received if m.get("type") == "result"]) == 1)
+            # 2) normal question — its context must NOT include the btw Q&A
+            await client.send_message("NORMALQ_MAIN")
+            assert await _wait_for(lambda: len([m for m in received if m.get("type") == "result"]) == 2)
+
+            assert any("SIDEQ_TANGENT" in t for t in _RECORDED_TURNS), "btw turn never ran with its question"
+            normal_turn = _RECORDED_TURNS[-1]
+            assert "NORMALQ_MAIN" in normal_turn, "normal turn missing its own message"
+            assert "SIDEQ_TANGENT" not in normal_turn, "btw question leaked into the next turn's context"
         finally:
             await client.disconnect()
 
