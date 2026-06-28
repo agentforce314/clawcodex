@@ -1862,6 +1862,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
             `  tools       ${tools}`,
             `  protocol    v${SUPPORTED_PROTOCOL_MAJOR}.x`,
             `  theme       ${currentThemeName()}`,
+            `  memory      ${(process.memoryUsage().rss / 1048576).toFixed(0)} MB rss · uptime ${Math.floor(process.uptime())}s`,
             `  cwd         ${process.cwd()}`,
           ].join('\n'),
         })
