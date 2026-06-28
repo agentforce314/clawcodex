@@ -166,6 +166,35 @@ export function estimateRows(e: TranscriptEntry, cols: number): number {
   }
 }
 
+/** Collapse runs of consecutive Read (tool + result) pairs into a single
+ *  "Read N files" line (the original's grouped-read, inventory §3). Sequential
+ *  reads arrive as tool,result,tool,result, so adjacency detection suffices. */
+export function groupReads(entries: TranscriptEntry[]): TranscriptEntry[] {
+  const out: TranscriptEntry[] = []
+  let i = 0
+  while (i < entries.length) {
+    let j = i
+    let count = 0
+    while (
+      j + 1 < entries.length &&
+      entries[j]?.kind === 'tool' &&
+      entries[j]?.toolName === 'Read' &&
+      entries[j + 1]?.kind === 'toolResult'
+    ) {
+      count++
+      j += 2
+    }
+    if (count >= 2) {
+      out.push({ id: `${entries[i]?.id}-rg`, kind: 'system', text: `⎿ Read ${count} files` })
+      i = j
+    } else {
+      out.push(entries[i] as TranscriptEntry)
+      i++
+    }
+  }
+  return out
+}
+
 /** The tail window of entries that fits `viewportRows`, after hiding
  *  `scrollOffset` entries from the bottom. Pure — unit-tested. */
 export function windowFromBottom(
@@ -1443,10 +1472,12 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   }
 
   const termRows = process.stdout.rows ?? 24
-  // Fullscreen: render the height-aware tail window (newest at the bottom);
-  // overflow:hidden is just a safety clip since heights are over-estimated.
+  // Fullscreen: collapse consecutive reads (unless expanded), then render the
+  // height-aware tail window (newest at the bottom); overflow:hidden is just a
+  // safety clip since heights are over-estimated.
+  const fsEntries = FULLSCREEN && !expanded ? groupReads(entries) : entries
   const visibleEntries = FULLSCREEN
-    ? windowFromBottom(entries, process.stdout.columns ?? 80, Math.max(4, termRows - 4), scrollOffset)
+    ? windowFromBottom(fsEntries, process.stdout.columns ?? 80, Math.max(4, termRows - 4), scrollOffset)
     : entries
   const renderEntry = (entry: TranscriptEntry): React.ReactElement => (
     <Box key={entry.id} marginTop={['tool', 'toolResult', 'banner'].includes(entry.kind) ? 0 : 1}>
