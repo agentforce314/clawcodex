@@ -57,6 +57,20 @@ export function matchesBinding(action: string, ch: string, key: KeyState): boole
   return (ch || '').toLowerCase() === k
 }
 
+/**
+ * Conflicting bindings (the original's KeybindingWarnings, §8): combos bound to
+ * more than one action. Returns "combo → actionA, actionB" strings (empty = none).
+ */
+export function bindingConflicts(): string[] {
+  const byCombo: Record<string, string[]> = {}
+  for (const [action, combo] of Object.entries(load())) {
+    ;(byCombo[combo] ||= []).push(action)
+  }
+  return Object.entries(byCombo)
+    .filter(([, acts]) => acts.length > 1)
+    .map(([combo, acts]) => `${combo} → ${acts.join(', ')}`)
+}
+
 /** Test seam: reset the cached config (so a freshly-written file is re-read). */
 export function _resetBindingsCache(): void {
   _bindings = null
