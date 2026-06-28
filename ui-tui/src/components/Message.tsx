@@ -12,6 +12,7 @@ import { Markdown } from '../markdown.js'
 import { theme } from '../theme.js'
 import { Banner } from './Banner.js'
 import { DiffView } from './DiffView.js'
+import { hyperlink } from '../hyperlink.js'
 import { TOOL_VERB } from '../toolMeta.js'
 import type { TranscriptEntry } from '../sdkMessageAdapter.js'
 
@@ -207,13 +208,22 @@ export function Message({
       // File-edit tools display as Update/Create/Write (the original's
       // userFacingName), not the raw tool id.
       const name = diff ? diff.displayName : entry.toolName
+      // Clickable refs (OSC 8, inventory §8): web args are URLs; file-op args are
+      // paths → file:// links. No-op on terminals that don't support hyperlinks.
+      const args = entry.argsText ?? ''
+      const isFileOp = ['Read', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit'].includes(entry.toolName ?? '')
+      const linkedArgs = isWeb
+        ? hyperlink(args, args)
+        : isFileOp && args
+          ? hyperlink(args, `file://${args.startsWith('/') ? args : `${process.cwd()}/${args}`}`)
+          : args
       return (
         <Box flexDirection="column">
           <Text>
             <Text color={theme.success}>⏺ </Text>
             <Text bold>{name}</Text>
             <Text color={theme.dim}>(</Text>
-            <Text color={isWeb ? theme.link : theme.dim}>{entry.argsText}</Text>
+            <Text color={isWeb ? theme.link : theme.dim}>{linkedArgs}</Text>
             <Text color={theme.dim}>)</Text>
           </Text>
           {diff ? <DiffView diff={diff} /> : null}
