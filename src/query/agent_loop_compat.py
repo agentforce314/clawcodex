@@ -98,6 +98,7 @@ def run_query_as_agent_loop_sync(
     verbose: bool = False,  # kept for signature compat; ignored
     on_event: ToolEventHandler | None = None,
     on_text_chunk: TextChunkHandler | None = None,
+    on_thinking_chunk: TextChunkHandler | None = None,
     cancel_signal: AbortSignal | None = None,
 ) -> "AgentLoopResult":
     """Sync wrapper around :func:`run_query_as_agent_loop` with the
@@ -157,6 +158,7 @@ def run_query_as_agent_loop_sync(
         max_turns=max_turns,
         on_event=on_event,
         on_text_chunk=on_text_chunk,
+        on_thinking_chunk=on_thinking_chunk,
         on_message=_persist,
         cancel_signal=cancel_signal,
     ))
@@ -278,6 +280,7 @@ async def run_query_as_agent_loop(
     max_turns: int = 20,
     on_event: ToolEventHandler | None = None,
     on_text_chunk: TextChunkHandler | None = None,
+    on_thinking_chunk: TextChunkHandler | None = None,
     on_message: Callable[[Message], None] | None = None,
     cancel_signal: AbortSignal | None = None,
     abort_controller: AbortController | None = None,
@@ -351,6 +354,7 @@ async def run_query_as_agent_loop(
         # ESC-mid-stream-cancel path which relies on the chunk
         # callback raising AbortError from inside the SDK stream.
         on_text_chunk=on_text_chunk,
+        on_thinking_chunk=on_thinking_chunk,
     )
 
     holder = TerminalHolder()

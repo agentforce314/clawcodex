@@ -31,7 +31,7 @@ import { StatusBar } from './components/StatusBar.js'
 import { LiveTools, type LiveGroup } from './components/LiveTools.js'
 import { AgentProgressLine, type AgentLine } from './components/AgentProgressLine.js'
 import { READ_LIKE, TOOL_VERB, toolActivityLabel } from './toolMeta.js'
-import { messageToEntries, streamDeltaText, type TranscriptEntry } from './sdkMessageAdapter.js'
+import { messageToEntries, streamDeltaText, streamThinkingDelta, type TranscriptEntry } from './sdkMessageAdapter.js'
 import { matchSlash, resolveSlash } from './slashCommands.js'
 import { parseProtocolMajor, SUPPORTED_PROTOCOL_MAJOR } from './protocol.js'
 import { applyTheme, currentThemeName, theme } from './theme.js'
@@ -248,6 +248,8 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const [entries, setEntries] = useState<TranscriptEntry[]>([])
   const [streaming, setStreaming] = useState('')
   const streamRef = useRef('') // source of truth for the live buffer (no stale closures)
+  const [thinkingStream, setThinkingStream] = useState('') // live reasoning deltas (§3)
+  const thinkingRef = useRef('')
   const [permissions, setPermissions] = useState<PendingPermission[]>([]) // FIFO queue
   // MCP elicitation form (a server requested user input, §6).
   const [elicit, setElicit] = useState<{ requestId: string; message: string; field: string; value: string } | null>(null)
@@ -503,8 +505,23 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     setStreaming(s)
   }
   const appendStream = (delta: string) => {
+    // Text started → the model finished thinking; clear the live thinking buffer.
+    if (thinkingRef.current) {
+      thinkingRef.current = ''
+      setThinkingStream('')
+    }
     streamRef.current += delta
     setStreaming(streamRef.current)
+  }
+  const appendThinkingStream = (delta: string) => {
+    thinkingRef.current += delta
+    setThinkingStream(thinkingRef.current)
+  }
+  const clearThinkingStream = () => {
+    if (thinkingRef.current) {
+      thinkingRef.current = ''
+      setThinkingStream('')
+    }
   }
   /** Commit any leftover live buffer as a finished assistant entry, then clear. */
   const flushStream = () => {
@@ -578,6 +595,11 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         setElicit({ requestId, message, field, value: '' })
       },
       onMessage: (msg) => {
+        const think = streamThinkingDelta(msg)
+        if (think !== null) {
+          appendThinkingStream(think)
+          return
+        }
         const delta = streamDeltaText(msg)
         if (delta !== null) {
           appendStream(delta)
@@ -615,6 +637,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         if (type === 'result') {
           setBusy(false)
           setToolActivity(null)
+          clearThinkingStream() // drop any leftover live reasoning buffer
           setAgentLines([]) // subagents are done when the turn ends
           // Completion notification (the original's terminal notifications, §8):
           // ring the bell + OSC 9 desktop notice for long turns the user may have
@@ -2179,6 +2202,19 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
                 markdown commits to <Static> when the assistant message lands. */}
             <Text>
               {streamTail(streaming, (process.stdout.columns ?? 80) - 4, (process.stdout.rows ?? 24) - 10)}
+            </Text>
+          </Box>
+        </Box>
+      ) : null}
+
+      {thinkingStream && !streaming ? (
+        <Box>
+          <Box width={2}>
+            <Text color={theme.dim}>∴</Text>
+          </Box>
+          <Box flexGrow={1}>
+            <Text color={theme.dim} italic>
+              {streamTail(thinkingStream, (process.stdout.columns ?? 80) - 4, (process.stdout.rows ?? 24) - 10)}
             </Text>
           </Box>
         </Box>

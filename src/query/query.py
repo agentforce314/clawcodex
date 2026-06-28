@@ -116,6 +116,9 @@ class QueryParams:
     # raise AbortError from inside the SDK's stream context to tear
     # down the HTTP socket on ESC.
     on_text_chunk: Callable[[str], None] | None = None
+    # Live thinking deltas (separate channel from on_text_chunk) for the TUI's
+    # streaming thinking view. None → thinking isn't surfaced live.
+    on_thinking_chunk: Callable[[str], None] | None = None
 
     # Extended thinking ("adaptive" mode) — opt the model into a private
     # reasoning scratchpad before producing its visible answer. Defaults
@@ -498,6 +501,7 @@ async def _call_model_sync(
     max_output_tokens_override: int | None = None,
     abort_signal: Any = None,
     on_text_chunk: Callable[[str], None] | None = None,
+    on_thinking_chunk: Callable[[str], None] | None = None,
     extended_thinking: bool | None = None,
     thinking_effort: str = "medium",
     sdk_max_retries: int | None = None,
@@ -816,13 +820,24 @@ async def _call_model_sync(
                     return provider.chat_stream_response(
                         api_messages,
                         on_text_chunk=on_text_chunk,
+                        on_thinking_chunk=on_thinking_chunk,
                         abort_signal=abort_signal,
                         **call_kwargs,
                     )
                 except TypeError:
-                    return provider.chat_stream_response(
-                        api_messages, abort_signal=abort_signal, **call_kwargs,
-                    )
+                    # Provider doesn't accept on_thinking_chunk — retry text-only,
+                    # then kwargless, so text streaming never regresses.
+                    try:
+                        return provider.chat_stream_response(
+                            api_messages,
+                            on_text_chunk=on_text_chunk,
+                            abort_signal=abort_signal,
+                            **call_kwargs,
+                        )
+                    except TypeError:
+                        return provider.chat_stream_response(
+                            api_messages, abort_signal=abort_signal, **call_kwargs,
+                        )
             return provider.chat_stream_response(
                 api_messages, abort_signal=abort_signal, **call_kwargs,
             )
@@ -1244,6 +1259,7 @@ async def query(
                             _marking_chunk_cb if _outer_chunk_cb is not None
                             else None
                         ),
+                        on_thinking_chunk=params.on_thinking_chunk,
                         extended_thinking=params.extended_thinking,
                         thinking_effort=params.thinking_effort,
                         sdk_max_retries=0 if _is_foreground else None,
