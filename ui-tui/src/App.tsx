@@ -1114,6 +1114,18 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         })
         return true
       }
+      case 'prComments': {
+        // Show the current branch's PR + comments via gh (the original's pr_comments).
+        exec('gh pr view --comments', { cwd: process.cwd(), timeout: 15_000, maxBuffer: 512 * 1024 }, (err, stdout) => {
+          const out = `${stdout || ''}`.trim()
+          if (err || !out) {
+            addEntry({ kind: 'system', text: 'no open PR for this branch (or gh not installed / not authenticated)' })
+          } else {
+            addEntry({ kind: 'system', text: out })
+          }
+        })
+        return true
+      }
       case 'diff': {
         // DiffDialog (§4): with >1 changed file, pick one to view; else dump.
         exec('git diff --name-only', { cwd: process.cwd(), timeout: 10_000, maxBuffer: 256 * 1024 }, (err, stdout) => {
