@@ -620,6 +620,12 @@ async def test_control_background_task(tmp_path):
                 await asyncio.sleep(0.1)
             assert done is not None and done["status"] == "done"
             assert "hi" in done["output"]
+
+            # bg_agent builds a detached `clawcodex -p <prompt>` task.
+            ag = await _reply_for("a1", {"subtype": "bg_agent", "command": "hello"})
+            assert ag["ok"] is True and ag["id"]
+            assert ag["command"] == "clawcodex -p hello"
+            await _reply_for("ak", {"subtype": "bg_kill", "id": ag["id"]})  # clean up
         finally:
             await handle.shutdown()
             with contextlib.suppress(Exception):
