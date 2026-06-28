@@ -1853,6 +1853,22 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
               active
               placeholder={ready ? 'Type a message, or / for commands…' : 'starting agent-server…'}
             />
+            {/* Inline ghost-text completion for slash commands (inventory §1):
+                dim suffix of the top match; Tab/Enter accepts via the menu. */}
+            {(() => {
+              const top = slashMatches[0]
+              if (
+                !vimMode &&
+                top &&
+                input.startsWith('/') &&
+                !input.includes(' ') &&
+                top.name.startsWith(input) &&
+                top.name.length > input.length
+              ) {
+                return <Text color={theme.dim}>{top.name.slice(input.length)}</Text>
+              }
+              return null
+            })()}
           </Box>
         </>
       )}
