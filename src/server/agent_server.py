@@ -112,6 +112,7 @@ class _AgentSession:
     system_prompt: Any = "You are a helpful assistant."
     _base_system_prompt: Any = None  # system prompt before the /plan section is composed in
     _language: Any = None  # preferred response language (the original's LanguagePicker, §6)
+    _thinking: Any = None  # extended-thinking override (ThinkingToggle); None = model default
     init_error: str | None = None
     _session_name: str | None = None  # user-set label (/rename) shown in /resume
     _mcp_runtime: Any = None  # McpRuntime (connected MCP servers) when configured
@@ -247,6 +248,9 @@ class _AgentSession:
             return
         if subtype == "set_language":
             self._do_set_language(request_id, inner.get("language"))
+            return
+        if subtype == "set_thinking":
+            self._do_set_thinking(request_id, inner.get("action"))
             return
         if subtype == "set_effort":
             effort = inner.get("effort")
@@ -608,6 +612,18 @@ class _AgentSession:
         if lang and isinstance(base, list):
             base = base + [{"type": "text", "text": f"# Response Language\nRespond in {lang} unless the user writes in another language."}]
         return base
+
+    def _do_set_thinking(self, request_id: object, action: object) -> None:
+        """Toggle/set extended thinking (the original's ThinkingToggle). action:
+        'on'|'off' set explicitly; anything else toggles. Applies next turn."""
+        act = str(action or "").lower()
+        if act == "on":
+            self._thinking = True
+        elif act == "off":
+            self._thinking = False
+        else:
+            self._thinking = not bool(self._thinking)
+        self._reply(request_id, {"ok": True, "thinking": bool(self._thinking)})
 
     def _do_set_language(self, request_id: object, language: object) -> None:
         """Set the preferred response language (LanguagePicker, §6) and recompose
@@ -1151,6 +1167,7 @@ class _AgentSession:
                 on_thinking_chunk=on_thinking_chunk,
                 on_message=on_message,
                 abort_controller=abort,
+                extended_thinking=self._thinking,  # None = model default; True/False = ThinkingToggle
             ))
         except AbortError:
             self._emit(_result_message(
