@@ -256,6 +256,8 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const [elicit, setElicit] = useState<{ requestId: string; message: string; field: string; value: string } | null>(null)
   // RTL display shaping (§8) — opt-in (terminals with native bidi shouldn't use it).
   const [rtlMode, setRtlMode] = useState<boolean>(process.env['CLAWCODEX_RTL'] === '1')
+  // Message timestamps (§3) — opt-in via /timestamps.
+  const [timestampsOn, setTimestampsOn] = useState<boolean>(false)
   const alwaysAllowRef = useRef<Set<string>>(new Set()) // tools the user said "don't ask again"
   const bashAllowPrefixRef = useRef<Set<string>>(new Set()) // Bash command prefixes auto-allowed (granular)
   const pendingImageRef = useRef<{ data: string; media_type: string; name: string } | null>(null) // /image attachment
@@ -512,7 +514,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   }
 
   const addEntry = (e: Omit<TranscriptEntry, 'id'>) =>
-    setEntries((prev) => [...prev, { ...e, id: `l${localSeq.current++}` }])
+    setEntries((prev) => [...prev, { ts: Date.now(), ...e, id: `l${localSeq.current++}` }])
 
   const setStream = (s: string) => {
     streamRef.current = s
@@ -737,7 +739,10 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
               toCommit.push(...takeLive(), e)
             }
           }
-          if (toCommit.length) setEntries((prev) => [...prev, ...toCommit])
+          if (toCommit.length) {
+            const stamped = toCommit.map((e) => (e.ts ? e : { ...e, ts: Date.now() }))
+            setEntries((prev) => [...prev, ...stamped])
+          }
         }
       },
     })
@@ -1111,6 +1116,14 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         addEntry({
           kind: 'system',
           text: `Session: ${prompts} prompt${prompts === 1 ? '' : 's'} · ${cost}${ctxPart}`,
+        })
+        return true
+      }
+      case 'timestamps': {
+        setTimestampsOn((on) => {
+          const next = !on
+          addEntry({ kind: 'system', text: `message timestamps ${next ? 'on' : 'off'}` })
+          return next
         })
         return true
       }
@@ -2237,7 +2250,11 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     rtlMode && e.text ? { ...e, text: e.text.split('\n').map(shapeRtl).join('\n') } : e
   const renderEntry = (entry: TranscriptEntry): React.ReactElement => (
     <Box key={entry.id} marginTop={['tool', 'toolResult', 'banner'].includes(entry.kind) ? 0 : 1}>
-      <Message entry={shapeEntry(entry)} expanded={expanded} />
+      <Message
+        entry={shapeEntry(entry)}
+        expanded={expanded}
+        timestamp={timestampsOn && entry.ts ? new Date(entry.ts).toTimeString().slice(0, 5) : undefined}
+      />
     </Box>
   )
 
