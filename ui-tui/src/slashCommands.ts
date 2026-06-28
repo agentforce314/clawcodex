@@ -55,6 +55,7 @@ export interface SlashCommand {
     | 'image'
     | 'insights'
     | 'plan'
+    | 'fast'
     | 'diff'
     | 'stats'
     | 'prompt'
@@ -121,6 +122,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/image', description: 'Attach an image to your next message: /image <path>', kind: 'image' },
   { name: '/insights', description: 'Model-based analysis of this session', kind: 'insights' },
   { name: '/plan', description: 'Set a plan the agent follows: /plan [<text>|edit|clear]', kind: 'plan' },
+  { name: '/fast', description: 'Toggle fast mode (switch to a faster model)', kind: 'fast' },
   { name: '/config', description: 'Show model, mode, and available models', kind: 'config' },
   { name: '/diff', description: 'Show the working-tree git diff', kind: 'diff' },
   { name: '/stats', description: 'Show session statistics', kind: 'stats' },
