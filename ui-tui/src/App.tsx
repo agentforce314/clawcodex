@@ -910,6 +910,10 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         }
         return true
       }
+      case 'stickers': {
+        addEntry({ kind: 'system', text: 'Claude Code stickers: https://www.stickermule.com/claudecode' })
+        return true
+      }
       case 'buddy': {
         if (arg === 'off') {
           setBuddy(null)
