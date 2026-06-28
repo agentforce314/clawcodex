@@ -1402,9 +1402,11 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
                 const pre = Number(r['pre_compact_count']) || 0
                 const post = Number(r['post_compact_count']) || 0
                 const sv = saved >= 1000 ? `${(saved / 1000).toFixed(1)}k` : String(saved)
+                // CompactSummary boundary marker (the original's §3) — a divider
+                // showing the summarization point + count/direction.
                 addEntry({
                   kind: 'system',
-                  text: `Compacted ${pre} → ${post} messages · saved ${sv} tokens`,
+                  text: `── ✻ Summarized conversation · ${pre} → ${post} messages · saved ${sv} tokens ──`,
                 })
                 void client.requestControl('get_context_usage').then(applyContextUsage)
               } else {
