@@ -862,6 +862,14 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         }
         return true
       }
+      case 'reloadPlugins': {
+        if (client) {
+          void client.requestControl('reload_plugins').then((r) => {
+            addEntry({ kind: 'system', text: `reloaded ${Number(r?.['count']) || 0} plugin(s)` })
+          })
+        }
+        return true
+      }
       case 'plugin': {
         if (client) {
           void client.requestControl('list_plugins').then((r) => {

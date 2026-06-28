@@ -258,6 +258,20 @@ class _AgentSession:
         if subtype == "branch":
             self._do_branch(request_id)
             return
+        if subtype == "reload_plugins":
+            count = 0
+            try:
+                from src.plugins.loader import load_plugins_from_directories
+
+                dirs = [
+                    str(Path.home() / ".claude" / "plugins"),
+                    str(Path(self.cwd) / ".claude" / "plugins"),
+                ]
+                count = len(load_plugins_from_directories(dirs).plugins)
+            except Exception:  # noqa: BLE001
+                logger.debug("[agent-server] reload_plugins failed", exc_info=True)
+            self._reply(request_id, {"ok": True, "count": count})
+            return
         if subtype == "list_plugins":
             plugins: list[dict] = []
             try:
