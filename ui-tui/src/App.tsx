@@ -7,7 +7,6 @@
  * line, over the Direct Connect protocol.
  */
 import { Box, Static, Text, useApp, useInput } from 'ink'
-import TextInput from 'ink-text-input'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import React, { useEffect, useRef, useState } from 'react'
@@ -1171,6 +1170,24 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     }
   }
 
+  // Shared input onChange: collapse a large paste to a placeholder (the
+  // original's [Pasted text #N]) and reset menu/history selection.
+  const handleInputChange = (v: string): void => {
+    const { ins, p, s } = diffInsert(input, v)
+    const nLines = ins ? ins.split('\n').length : 0
+    if (ins && (ins.length > 200 || nLines >= 4)) {
+      const n = (pasteCounter.current += 1)
+      const token = `[Pasted text #${n}${nLines > 1 ? ` +${nLines} lines` : ''}]`
+      pasteStore.current.set(token, ins)
+      setInput(v.slice(0, p) + token + (s ? v.slice(v.length - s) : ''))
+    } else {
+      setInput(v)
+    }
+    setSlashSel(0)
+    setAtSel(0)
+    setHistIdx(-1)
+  }
+
   const onSubmit = (value: string): void => {
     const text = value.trim()
     if (!text) return
@@ -1368,53 +1385,23 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
             paddingX={1}
             width="100%"
           >
-            {vimMode ? (
-              <VimInput
-                value={input}
-                onChange={(v) => {
-                  setInput(v)
-                  setSlashSel(0)
-                  setAtSel(0)
-                  setHistIdx(-1)
-                }}
-                onSubmit={onSubmit}
-                // Stay active during slash/@ menus: VimInput ignores nav keys
-                // (App handles ↑/↓/Tab) and its Enter routes through onSubmit,
-                // which performs menu completion. Gating it off here would strand
-                // typing after the first "/" or "@".
-                active
-                placeholder={ready ? 'Type a message, or / for commands…' : 'starting agent-server…'}
-              />
-            ) : (
-              <>
-                <Text color={input.startsWith('!') ? theme.error : ready ? theme.accent : theme.dim}>
-                  {busy ? '… ' : input.startsWith('!') ? '! ' : '❯ '}
-                </Text>
-                <TextInput
-                  value={input}
-                  onChange={(v) => {
-                    // Collapse a large paste to a placeholder so it doesn't flood
-                    // the input (the original's [Pasted text #N]). Normal typing
-                    // inserts one char at a time, so this only fires on paste.
-                    const { ins, p, s } = diffInsert(input, v)
-                    const nLines = ins ? ins.split('\n').length : 0
-                    if (ins && (ins.length > 200 || nLines >= 4)) {
-                      const n = (pasteCounter.current += 1)
-                      const token = `[Pasted text #${n}${nLines > 1 ? ` +${nLines} lines` : ''}]`
-                      pasteStore.current.set(token, ins)
-                      setInput(v.slice(0, p) + token + (s ? v.slice(v.length - s) : ''))
-                    } else {
-                      setInput(v)
-                    }
-                    setSlashSel(0)
-                    setAtSel(0)
-                    setHistIdx(-1)
-                  }}
-                  onSubmit={onSubmit}
-                  placeholder={ready ? 'Type a message, or / for commands…' : 'starting agent-server…'}
-                />
-              </>
-            )}
+            {!vimMode ? (
+              <Text color={input.startsWith('!') ? theme.error : ready ? theme.accent : theme.dim}>
+                {busy ? '… ' : input.startsWith('!') ? '! ' : '❯ '}
+              </Text>
+            ) : null}
+            {/* One controlled input for both modes: readline editing (Ctrl+A/E/W/U/K,
+                arrows) always; /vim adds the normal/insert keymap. Stays active during
+                slash/@ menus (it ignores ↑/↓/Tab — App handles nav — and routes Enter
+                through onSubmit, which does menu completion). */}
+            <VimInput
+              value={input}
+              vimEnabled={vimMode}
+              onChange={handleInputChange}
+              onSubmit={onSubmit}
+              active
+              placeholder={ready ? 'Type a message, or / for commands…' : 'starting agent-server…'}
+            />
           </Box>
         </>
       )}
