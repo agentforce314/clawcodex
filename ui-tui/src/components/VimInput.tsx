@@ -93,6 +93,25 @@ export function VimInput({
       }
       return true
     }
+    // Alt+D — kill word forward (readline).
+    if (key.meta && input === 'd') {
+      const end = nextWord(value, cursor)
+      killRing.current = value.slice(cursor, end)
+      onChange(value.slice(0, cursor) + value.slice(end))
+      return true
+    }
+    // Ctrl+T (\x14) — transpose the two chars around the cursor (readline).
+    if (input === '\x14' || (key.ctrl && input === 't')) {
+      const n = value.length
+      if (n >= 2) {
+        const i = cursor >= n ? n - 1 : cursor
+        if (i >= 1) {
+          onChange(value.slice(0, i - 1) + value[i] + value[i - 1] + value.slice(i + 1))
+          setCursor(Math.min(n, i + 1))
+        }
+      }
+      return true
+    }
     if (!key.ctrl) return false
     if (input === 'a') return (setCursor(0), true)
     if (input === 'e') return (setCursor(value.length), true)
