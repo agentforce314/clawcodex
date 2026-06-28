@@ -2462,6 +2462,12 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
 
       {agentLines.length > 0 ? (
         <Box flexDirection="column">
+          {agentLines.length > 1 ? (
+            // CoordinatorAgentStatus (§9): summary over concurrently-running subagents.
+            <Text color={theme.accent}>
+              {`⛬ coordinating ${agentLines.length} agents · ${agentLines.reduce((a, l) => a + (l.toolUseCount || 0), 0)} tools`}
+            </Text>
+          ) : null}
           {agentLines.map((l) => (
             <AgentProgressLine key={l.agentId} line={l} />
           ))}
