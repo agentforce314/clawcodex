@@ -17,6 +17,7 @@ import { PermissionDialog } from './components/PermissionDialog.js'
 import { SlashMenu } from './components/SlashMenu.js'
 import { editInEditor } from './editor.js'
 import { isTrusted, trustFolder, untrustFolder } from './trust.js'
+import { matchesBinding } from './keybindings.js'
 import { exec } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -722,19 +723,19 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     }
     // Ctrl+O: toggle expand of collapsed tool results / thinking (fully re-renders
     // in fullscreen; affects subsequent entries in inline <Static> mode).
-    if (key.ctrl && ch === 'o') {
+    if (matchesBinding('expand', ch, key)) {
       setExpanded((e) => !e)
       return
     }
     // Ctrl+L: redraw. In fullscreen, clear the alt-screen and force a repaint;
     // in inline mode a repaint is harmless (Static stays in scrollback).
-    if (key.ctrl && ch === 'l') {
+    if (matchesBinding('redraw', ch, key)) {
       if (FULLSCREEN) process.stdout.write('\x1b[2J\x1b[3J\x1b[H')
       setThemeVersion((v) => v + 1) // force a re-render
       return
     }
     // Ctrl+G: edit the current prompt in $EDITOR (the original's external editor).
-    if (key.ctrl && ch === 'g') {
+    if (matchesBinding('external-editor', ch, key)) {
       const sin = process.stdin as unknown as { setRawMode?: (m: boolean) => void }
       const canRaw = typeof sin.setRawMode === 'function'
       try {
@@ -776,7 +777,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
       }
       return // find mode swallows other keys
     }
-    if (FULLSCREEN && key.ctrl && ch === 'f') {
+    if (FULLSCREEN && matchesBinding('transcript-find', ch, key)) {
       setTxFind('')
       return
     }
@@ -803,7 +804,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
       return // picker swallows all other keys
     }
     // Ctrl+R: open reverse history search, or cycle to the next older match.
-    if (key.ctrl && ch === 'r') {
+    if (matchesBinding('history-search', ch, key)) {
       if (!searchMode) {
         setSearchMode(true)
         setSearchQuery('')
@@ -843,7 +844,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     }
     // Ctrl+E: jump to the oldest message (show-previous, the original's §8); a
     // second press (already at top) jumps back to the bottom.
-    if (FULLSCREEN && key.ctrl && ch === 'e') {
+    if (FULLSCREEN && matchesBinding('jump-oldest', ch, key)) {
       setScrollOffset((o) => (o >= Math.max(0, entries.length - 1) ? 0 : Math.max(0, entries.length - 1)))
       return
     }
