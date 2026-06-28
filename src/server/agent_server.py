@@ -258,6 +258,24 @@ class _AgentSession:
         if subtype == "branch":
             self._do_branch(request_id)
             return
+        if subtype == "list_plugins":
+            plugins: list[dict] = []
+            try:
+                from src.plugins.loader import load_plugins_from_directories
+
+                dirs = [
+                    str(Path.home() / ".claude" / "plugins"),
+                    str(Path(self.cwd) / ".claude" / "plugins"),
+                ]
+                res = load_plugins_from_directories(dirs)
+                plugins = [
+                    {"name": p.name, "enabled": bool(p.enabled), "source": getattr(p, "source", "")}
+                    for p in res.plugins
+                ]
+            except Exception:  # noqa: BLE001
+                logger.debug("[agent-server] list_plugins failed", exc_info=True)
+            self._reply(request_id, {"plugins": plugins})
+            return
         if subtype == "list_skills":
             skills: list[dict] = []
             total = 0
