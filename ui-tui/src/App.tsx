@@ -16,6 +16,7 @@ import { Message } from './components/Message.js'
 import { PermissionDialog } from './components/PermissionDialog.js'
 import { SlashMenu } from './components/SlashMenu.js'
 import { editInEditor } from './editor.js'
+import { isTrusted, trustFolder, untrustFolder } from './trust.js'
 import { exec } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -1129,6 +1130,20 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         })
         return true
       }
+      case 'trust': {
+        const a = arg.trim().toLowerCase()
+        const cwd = process.cwd()
+        if (a === 'add' || a === 'yes' || a === '') {
+          trustFolder(cwd)
+          addEntry({ kind: 'system', text: `✓ folder trusted: ${cwd}` })
+        } else if (a === 'remove' || a === 'no') {
+          untrustFolder(cwd)
+          addEntry({ kind: 'system', text: `folder untrusted: ${cwd}` })
+        } else {
+          addEntry({ kind: 'system', text: `folder ${isTrusted(cwd) ? 'is trusted' : 'is NOT trusted'}: ${cwd}` })
+        }
+        return true
+      }
       case 'open': {
         const q = arg.trim()
         if (!q) {
@@ -1842,6 +1857,20 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entries.length])
+
+  // Folder-trust first-run notice (the original's TrustDialog, §6): once ready,
+  // if this folder hasn't been acknowledged, surface a one-line notice. The
+  // backend permission system still gates every action; /trust records consent.
+  const trustNotedRef = useRef(false)
+  useEffect(() => {
+    if (ready && !trustNotedRef.current) {
+      trustNotedRef.current = true
+      if (!isTrusted(process.cwd())) {
+        addEntry({ kind: 'system', text: '⚠ new folder — files/commands run here; /trust to acknowledge' })
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready])
 
   // Auto-allow tools the user marked "don't ask again" (skip the prompt).
   useEffect(() => {
