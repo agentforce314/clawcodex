@@ -17,7 +17,7 @@ import { PermissionDialog } from './components/PermissionDialog.js'
 import { SlashMenu } from './components/SlashMenu.js'
 import { editInEditor } from './editor.js'
 import { isTrusted, trustFolder, untrustFolder, isMcpTrusted, trustMcp } from './trust.js'
-import { matchesBinding } from './keybindings.js'
+import { matchesBinding, bindingConflicts } from './keybindings.js'
 import { shapeRtl } from './bidi.js'
 import { exec } from 'node:child_process'
 import { readFileSync } from 'node:fs'
@@ -2118,6 +2118,11 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
       trustNotedRef.current = true
       if (!isTrusted(process.cwd())) {
         addEntry({ kind: 'system', text: '⚠ new folder — files/commands run here; /trust to acknowledge' })
+      }
+      // KeybindingWarnings (§8): flag combos bound to more than one action.
+      const conflicts = bindingConflicts()
+      if (conflicts.length) {
+        addEntry({ kind: 'system', text: `⚠ keybinding conflict(s): ${conflicts.join('; ')}` })
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
