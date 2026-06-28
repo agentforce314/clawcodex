@@ -257,6 +257,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const [turnStartedAt, setTurnStartedAt] = useState(0)
   const turnStartRef = useRef(0) // closure-safe turn-start time for the completion notification
   const focusedRef = useRef(true) // terminal focus (DECSET 1004) — for notify-when-unfocused
+  const blurAtRef = useRef(0) // when the terminal lost focus — for the idle-return welcome-back
   const [model, setModel] = useState('?')
   const [mode, setMode] = useState('?')
   const [tools, setTools] = useState(0)
@@ -701,10 +702,17 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     // Terminal focus events (DECSET 1004) arrive as "[I" / "[O" — track + swallow.
     if (ch === '[I') {
       focusedRef.current = true
+      // Idle-return (the original's IdleReturnDialog, §9): returning after a long
+      // absence surfaces a one-line welcome-back with a fresh-start hint.
+      if (blurAtRef.current && Date.now() - blurAtRef.current > 600_000 && ready && !busy && permissions.length === 0) {
+        addEntry({ kind: 'system', text: '↩ welcome back — continuing this session (/clear to start fresh)' })
+      }
+      blurAtRef.current = 0
       return
     }
     if (ch === '[O') {
       focusedRef.current = false
+      blurAtRef.current = Date.now()
       return
     }
     if (key.ctrl && ch === 'c') {
