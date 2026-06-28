@@ -51,6 +51,7 @@ export interface SlashCommand {
     | 'knowledge'
     | 'wiki'
     | 'bg'
+    | 'bgAgent'
     | 'image'
     | 'diff'
     | 'stats'
@@ -114,6 +115,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/knowledge', description: 'Knowledge graph: /knowledge [list|clear|enable|disable]', kind: 'knowledge' },
   { name: '/wiki', description: 'Project wiki: /wiki [init|status|ingest <path>]', kind: 'wiki' },
   { name: '/bg', description: 'Run a shell command in the background: /bg <cmd> (or /bg kill <id>)', kind: 'bg' },
+  { name: '/bg-agent', description: 'Run an agent query in the background: /bg-agent <prompt>', kind: 'bgAgent' },
   { name: '/image', description: 'Attach an image to your next message: /image <path>', kind: 'image' },
   { name: '/config', description: 'Show model, mode, and available models', kind: 'config' },
   { name: '/diff', description: 'Show the working-tree git diff', kind: 'diff' },
