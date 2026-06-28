@@ -235,6 +235,7 @@ export function VimInput({
   useInput(
     (input, key) => {
       if (!active) return
+      if (input === '[I' || input === '[O') return // terminal focus events — ignore
       const wasYank = yankActive.current // was the previous key a yank? (for Meta+Y)
       yankActive.current = false
       if (readlineEdit(input, key, wasYank)) return // Ctrl+A/E/W/U/K/Y, Meta+Y in either mode
