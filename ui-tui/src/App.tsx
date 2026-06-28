@@ -29,6 +29,7 @@ import { VimInput } from './components/VimInput.js'
 import { searchFiles } from './fileIndex.js'
 import { Spinner } from './components/Spinner.js'
 import { StatusBar } from './components/StatusBar.js'
+import { DevBar } from './components/DevBar.js'
 import { LiveTools, type LiveGroup } from './components/LiveTools.js'
 import { AgentProgressLine, type AgentLine } from './components/AgentProgressLine.js'
 import { READ_LIKE, TOOL_VERB, toolActivityLabel } from './toolMeta.js'
@@ -2728,6 +2729,14 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
       )}
 
       {statusText ? <Text color={theme.dim}>{statusText}</Text> : null}
+      <DevBar
+        entries={entries.length}
+        agents={agentLines.length}
+        busy={busy}
+        stream={streaming.length}
+        scroll={scrollOffset}
+        fullscreen={FULLSCREEN}
+      />
       <StatusBar
         connected={connected}
         model={model}
