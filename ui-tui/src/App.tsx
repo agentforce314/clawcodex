@@ -1129,6 +1129,18 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         }
         return true
       }
+      case 'bgAgent': {
+        const p = arg.trim()
+        if (!p) {
+          addEntry({ kind: 'system', text: 'usage: /bg-agent <prompt>' })
+          return true
+        }
+        void client?.requestControl('bg_agent', { command: p }).then((r) => {
+          if (r && r['ok']) addEntry({ kind: 'system', text: `▶ background agent ${String(r['id'])}: ${p}` })
+          else addEntry({ kind: 'error', text: `bg-agent failed: ${r && r['error'] ? String(r['error']) : 'no response'}` })
+        })
+        return true
+      }
       case 'bg': {
         const a = arg.trim()
         if (a.toLowerCase().startsWith('kill ')) {
