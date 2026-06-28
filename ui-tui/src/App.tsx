@@ -310,6 +310,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   }) // /buddy companion sprite (opt-in)
   const [txFind, setTxFind] = useState<string | null>(null) // fullscreen Ctrl+F find query (null = closed)
   const [vimMode, setVimMode] = useState(false) // /vim modal editing
+  const [resizeKey, setResizeKey] = useState(0) // bumped on terminal resize to remount <Static> (inline)
 
   // Fullscreen uses the terminal's alternate screen so the bounded transcript
   // viewport renders in place (no scrollback spam). Enter on mount, restore on exit.
@@ -318,6 +319,30 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     process.stdout.write('\x1b[?1049h')
     return () => {
       process.stdout.write('\x1b[?1049l')
+    }
+  }, [])
+
+  // Terminal resize (inline mode): standard Ink's incremental erase miscounts a
+  // line's wrapped height after a width change, so the live region (the input
+  // box) leaves stacked copies in the scrollback on resize. Mirror the original's
+  // full-reset-on-resize — clear the screen + scrollback and remount <Static> so
+  // the transcript re-emits at the new width and the live region redraws clean.
+  // Debounced so dragging the window border triggers a single reset, not one per
+  // intermediate size.
+  useEffect(() => {
+    if (FULLSCREEN) return // alt-screen redraws cleanly; only inline stacks
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const onResize = (): void => {
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(() => {
+        process.stdout.write('\x1b[2J\x1b[3J\x1b[H')
+        setResizeKey((k) => k + 1)
+      }, 80)
+    }
+    process.stdout.on('resize', onResize)
+    return () => {
+      if (timer) clearTimeout(timer)
+      process.stdout.off('resize', onResize)
     }
   }, [])
   const [slashSel, setSlashSel] = useState(0)
@@ -2483,7 +2508,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
           {visibleEntries.map(renderEntry)}
         </Box>
       ) : (
-        <Static items={entries}>{renderEntry}</Static>
+        <Static key={resizeKey} items={entries}>{renderEntry}</Static>
       )}
 
       {streaming ? (
