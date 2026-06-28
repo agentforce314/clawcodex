@@ -27,6 +27,7 @@ export interface SlashCommand {
     | 'memory'
     | 'agents'
     | 'config'
+    | 'skills'
     | 'diff'
     | 'stats'
     | 'prompt'
@@ -65,6 +66,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/mcp', description: 'List connected MCP servers and their tools', kind: 'mcp' },
   { name: '/permissions', description: 'Show active permission mode and rules', kind: 'permissions' },
   { name: '/agents', description: 'List available subagent types', kind: 'agents' },
+  { name: '/skills', description: 'List available skills', kind: 'skills' },
   { name: '/config', description: 'Show model, mode, and available models', kind: 'config' },
   { name: '/diff', description: 'Show the working-tree git diff', kind: 'diff' },
   { name: '/stats', description: 'Show session statistics', kind: 'stats' },
