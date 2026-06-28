@@ -862,6 +862,20 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         }
         return true
       }
+      case 'releaseNotes': {
+        addEntry({
+          kind: 'system',
+          text: 'Release notes are published on the clawcodex GitHub releases page.',
+        })
+        return true
+      }
+      case 'feedback': {
+        addEntry({
+          kind: 'system',
+          text: 'Report bugs or share feedback on the clawcodex GitHub issues page.',
+        })
+        return true
+      }
       case 'logo': {
         addEntry({
           kind: 'banner',

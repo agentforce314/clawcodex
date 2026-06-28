@@ -32,6 +32,8 @@ export interface SlashCommand {
     | 'keybindings'
     | 'statusline'
     | 'logo'
+    | 'releaseNotes'
+    | 'feedback'
     | 'diff'
     | 'stats'
     | 'prompt'
@@ -75,6 +77,8 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/keybindings', description: 'Show keyboard shortcuts', kind: 'keybindings' },
   { name: '/statusline', description: 'Set a status-line shell command: /statusline <cmd> (or clear)', kind: 'statusline' },
   { name: '/logo', description: 'Re-show the startup banner', kind: 'logo' },
+  { name: '/release-notes', description: 'Where to find release notes', kind: 'releaseNotes' },
+  { name: '/feedback', description: 'How to report bugs or feedback', kind: 'feedback' },
   { name: '/config', description: 'Show model, mode, and available models', kind: 'config' },
   { name: '/diff', description: 'Show the working-tree git diff', kind: 'diff' },
   { name: '/stats', description: 'Show session statistics', kind: 'stats' },
