@@ -253,6 +253,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [turnStartedAt, setTurnStartedAt] = useState(0)
+  const turnStartRef = useRef(0) // closure-safe turn-start time for the completion notification
   const [model, setModel] = useState('?')
   const [mode, setMode] = useState('?')
   const [tools, setTools] = useState(0)
@@ -599,6 +600,18 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
           setBusy(false)
           setToolActivity(null)
           setAgentLines([]) // subagents are done when the turn ends
+          // Completion notification (the original's terminal notifications, §8):
+          // ring the bell + OSC 9 desktop notice for long turns the user may have
+          // stepped away from. Quick turns stay silent (threshold 10s).
+          if (turnStartRef.current && Date.now() - turnStartRef.current > 10_000) {
+            try {
+              process.stdout.write('\x07') // bell — flags the tab/taskbar
+              process.stdout.write('\x1b]9;clawcodex — response ready\x07') // OSC 9 (iTerm/Ghostty/kitty)
+            } catch {
+              /* non-tty — ignore */
+            }
+          }
+          turnStartRef.current = 0
           const turnCost = Number((msg as { total_cost_usd?: number }).total_cost_usd) || 0
           if (turnCost > 0) setSessionCost((c) => c + turnCost)
           flushStream() // commit a partial left over by interrupt/error (no-op on success)
@@ -1798,6 +1811,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     setAgentLines([])
     setScrollOffset(0) // follow the tail on a new turn
     setTurnStartedAt(Date.now())
+    turnStartRef.current = Date.now()
   }
 
   // Drain one queued prompt when the turn ends (busy → false).
