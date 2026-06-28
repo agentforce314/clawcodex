@@ -293,7 +293,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const pasteCounter = useRef(0)
   // Interactive select picker (the original's CustomSelect) for /mode, /theme.
   const [picker, setPicker] = useState<{
-    kind: 'mode' | 'theme' | 'model' | 'resume' | 'rewindpick'
+    kind: 'mode' | 'theme' | 'model' | 'resume' | 'rewindpick' | 'historyrecall'
     title: string
     options: string[]
     /** Optional value per option (e.g. session_id); falls back to the label. */
@@ -399,12 +399,17 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   }
 
   const applyPick = (
-    kind: 'mode' | 'theme' | 'model' | 'resume' | 'rewindpick',
+    kind: 'mode' | 'theme' | 'model' | 'resume' | 'rewindpick' | 'historyrecall',
     value: string,
   ): void => {
     if (!value) return
     if (kind === 'rewindpick') {
       requestRewind(Number(value) || 1)
+      return
+    }
+    if (kind === 'historyrecall') {
+      setInput(value)
+      setHistIdx(-1)
       return
     }
     if (kind === 'mode') {
@@ -938,6 +943,21 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
       }
       case 'stickers': {
         addEntry({ kind: 'system', text: 'Claude Code stickers: https://www.stickermule.com/claudecode' })
+        return true
+      }
+      case 'history': {
+        const h = historyRef.current
+        if (!h.length) {
+          addEntry({ kind: 'system', text: 'no history yet' })
+          return true
+        }
+        const opts: string[] = []
+        const vals: string[] = []
+        for (let i = h.length - 1; i >= 0; i--) {
+          opts.push((h[i] || '').replace(/\s+/g, ' ').slice(0, 60))
+          vals.push(h[i] as string)
+        }
+        setPicker({ kind: 'historyrecall', title: 'History (recall a prompt)', options: opts, values: vals, sel: 0 })
         return true
       }
       case 'search': {
