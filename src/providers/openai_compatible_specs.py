@@ -31,11 +31,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, ClassVar, Optional
 
-try:
-    from openai import OpenAI  # type: ignore
-except ModuleNotFoundError:  # pragma: no cover
-    OpenAI = None
-
+# NOTE: `openai` is imported lazily inside `_create_client` (not at module top).
+# The SDK pulls in hundreds of submodules (~370ms warm, and a lot of cold-cache
+# disk I/O on first launch); keeping it off the module-import path makes the
+# agent-server cold-start — and the first keystrokes after launch — noticeably
+# snappier. It's loaded on first client creation (the first turn), where it's
+# actually needed.
 from .openai_compatible import OpenAICompatibleProvider
 
 
@@ -338,7 +339,9 @@ class _SpecOpenAICompatibleProvider(OpenAICompatibleProvider):
         ``OpenAICompatibleProvider.client``; the optional ``CLAWCODEX_SSL_VERIFY``
         bypass is honoured here for corporate/self-hosted endpoints.
         """
-        if OpenAI is None:  # pragma: no cover
+        try:
+            from openai import OpenAI  # deferred — see module note above
+        except ModuleNotFoundError:  # pragma: no cover
             raise ModuleNotFoundError(
                 "openai package is not installed. Install optional dependencies "
                 f"to use {type(self).__name__}."
