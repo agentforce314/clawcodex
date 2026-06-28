@@ -296,7 +296,16 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const pasteCounter = useRef(0)
   // Interactive select picker (the original's CustomSelect) for /mode, /theme.
   const [picker, setPicker] = useState<{
-    kind: 'mode' | 'theme' | 'model' | 'resume' | 'rewindpick' | 'historyrecall' | 'settings' | 'difffile'
+    kind:
+      | 'mode'
+      | 'theme'
+      | 'model'
+      | 'resume'
+      | 'rewindpick'
+      | 'historyrecall'
+      | 'settings'
+      | 'difffile'
+      | 'outputstyle'
     title: string
     options: string[]
     /** Optional value per option (e.g. session_id); falls back to the label. */
@@ -402,10 +411,29 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   }
 
   const applyPick = (
-    kind: 'mode' | 'theme' | 'model' | 'resume' | 'rewindpick' | 'historyrecall' | 'settings' | 'difffile',
+    kind:
+      | 'mode'
+      | 'theme'
+      | 'model'
+      | 'resume'
+      | 'rewindpick'
+      | 'historyrecall'
+      | 'settings'
+      | 'difffile'
+      | 'outputstyle',
     value: string,
   ): void => {
     if (!value) return
+    if (kind === 'outputstyle') {
+      void client?.requestControl('set_output_style', { style: value }).then((r) => {
+        if (r && r['ok']) {
+          addEntry({ kind: 'system', text: `output style → ${value}` })
+        } else {
+          addEntry({ kind: 'error', text: `output style failed: ${r && r['error'] ? String(r['error']) : 'no response'}` })
+        }
+      })
+      return
+    }
     if (kind === 'rewindpick') {
       requestRewind(Number(value) || 1)
       return
@@ -1014,6 +1042,15 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
       }
       case 'stickers': {
         addEntry({ kind: 'system', text: 'Claude Code stickers: https://www.stickermule.com/claudecode' })
+        return true
+      }
+      case 'outputStyle': {
+        setPicker({
+          kind: 'outputstyle',
+          title: 'Output style',
+          options: ['default', 'concise', 'verbose', 'markdown'],
+          sel: 0,
+        })
         return true
       }
       case 'tasks': {
