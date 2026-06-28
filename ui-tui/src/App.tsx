@@ -246,6 +246,7 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const streamRef = useRef('') // source of truth for the live buffer (no stale closures)
   const [permissions, setPermissions] = useState<PendingPermission[]>([]) // FIFO queue
   const alwaysAllowRef = useRef<Set<string>>(new Set()) // tools the user said "don't ask again"
+  const [permFeedback, setPermFeedback] = useState<string | null>(null) // Tab-to-amend feedback field
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [turnStartedAt, setTurnStartedAt] = useState(0)
@@ -751,7 +752,26 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     }
     const head = permissions[0]
     if (head) {
+      // Tab-to-amend feedback field: type why/what-to-do, Enter denies with it.
+      if (permFeedback !== null) {
+        if (key.escape) {
+          setPermFeedback(null)
+        } else if (key.return) {
+          client?.respondPermission(head.requestId, 'deny', { message: permFeedback || 'denied by user' })
+          setPermissions((q) => q.slice(1))
+          setPermFeedback(null)
+        } else if (key.backspace || key.delete) {
+          setPermFeedback((f) => (f ?? '').slice(0, -1))
+        } else if (ch && !key.ctrl && !key.meta && ch.length === 1 && ch >= ' ') {
+          setPermFeedback((f) => (f ?? '') + ch)
+        }
+        return
+      }
       const c = ch.toLowerCase()
+      if (key.tab) {
+        setPermFeedback('') // open the feedback field (the original's Tab-to-amend)
+        return
+      }
       if (c === 'y' || ch === '1') {
         client?.respondPermission(head.requestId, 'allow')
         setPermissions((q) => q.slice(1))
@@ -1695,7 +1715,18 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
       ) : null}
 
       {permission ? (
-        <PermissionDialog toolName={permission.toolName} input={permission.input} />
+        <Box flexDirection="column">
+          <PermissionDialog toolName={permission.toolName} input={permission.input} />
+          {permFeedback !== null ? (
+            <Box paddingX={1}>
+              <Text color={theme.dim}>{'tell the agent: '}</Text>
+              <Text>{permFeedback}</Text>
+              <Text inverse> </Text>
+            </Box>
+          ) : (
+            <Text color={theme.dim}>{'  tab to amend · esc to cancel'}</Text>
+          )}
+        </Box>
       ) : picker ? (
         <Box
           flexDirection="column"
