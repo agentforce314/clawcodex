@@ -62,13 +62,13 @@ export const DEV_CREDITS_MODE = truthy(process.env.HERMES_DEV_CREDITS)
 
 const inlineOverride = parseToggle(process.env.HERMES_TUI_INLINE)
 
-// Skip AlternateScreen — TUI renders into the primary buffer so the host
-// terminal's native scrollback captures whatever scrolls off the top.
+// Skip AlternateScreen — render into the primary buffer so the host terminal's
+// native scrollback captures whatever scrolls off the top.
 //
-// On Termux we default this on: users often background/foreground the app,
-// and primary-buffer rendering makes long-thread review and copy/paste much
-// less fragile. Override explicitly with HERMES_TUI_INLINE=0/1.
-export const INLINE_MODE = inlineOverride ?? TERMUX_TUI_MODE
+// This is the DEFAULT, matching the original Claude Code's inline rendering (the
+// transcript stays in your terminal history rather than vanishing on exit).
+// Opt into the fullscreen/alternate-screen experience with HERMES_TUI_INLINE=0.
+export const INLINE_MODE = inlineOverride ?? true
 
 // Live FPS counter overlay, fed by ink's onFrame (real render rate, not a
 // synthetic timer).
