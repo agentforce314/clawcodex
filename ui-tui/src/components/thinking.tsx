@@ -671,6 +671,9 @@ interface Group {
   details: DetailRow[]
   key: string
   label: string
+  // Live (still-running) tool — its content carries the spinner, so the flat
+  // render omits the static ⏺ bullet for it.
+  live?: boolean
 }
 
 export const ToolTrail = memo(function ToolTrail({
@@ -843,16 +846,9 @@ export const ToolTrail = memo(function ToolTrail({
       color: t.color.text,
       key: tool.id,
       label,
-      details: tool.verboseArgs
-        ? [
-            {
-              color: t.color.muted,
-              content: `Args:\n${boundedLiveRenderText(tool.verboseArgs)}`,
-              dimColor: true,
-              key: `${tool.id}-args`
-            }
-          ]
-        : [],
+      live: true,
+      // Flat Claude render: args live in the label (Bash(ls)), so no Args row.
+      details: [],
       content: (
         <>
           <Spinner color={t.color.accent} variant="tool" /> {label}
@@ -1034,73 +1030,40 @@ export const ToolTrail = memo(function ToolTrail({
     })
   }
 
-  if (hasTools && visible.tools !== 'hidden') {
-    panels.push({
-      header: (
-        <Chevron
-          count={groups.length}
-          onClick={shift => {
-            if (shift) {
-              expandAll()
-            } else {
-              setOpenTools(v => !v)
-            }
-          }}
-          open={openTools}
-          suffix={toolTokensLabel}
-          t={t}
-          title="Tool calls"
-        />
-      ),
-      key: 'tools',
-      open: openTools,
-      render: rails => (
-        <Box flexDirection="column">
-          {groups.map((group, index) => {
-            const branch: TreeBranch = index === groups.length - 1 ? 'last' : 'mid'
-            const childRails = nextTreeRails(rails, branch)
-            const hasInlineSubagents = inlineDelegateKey === group.key
-            // Surface the /agents hint the moment a delegate group appears —
-            // while it's still in-flight and before any subagent has
-            // registered — so users can open the live monitor immediately.
-            const isDelegateGroup = group.label.startsWith('Delegate Task')
+  // Claude Code flat tool render: each call as `⏺ Tool(args)` with its result
+  // indented under `⎿` — no collapsible "Tool calls" wrapper, tree rails, or
+  // token tally. Live (running) tools keep their spinner bullet (group.live).
+  const toolsFlat =
+    hasTools && visible.tools !== 'hidden' ? (
+      <Box flexDirection="column">
+        {groups.map(group => {
+          const isDelegateGroup = group.label.startsWith('Delegate Task')
+          const bulletColor = group.color === t.color.error ? t.color.error : t.color.ok
 
-            return (
-              <Box flexDirection="column" key={group.key}>
-                <TreeTextRow
-                  branch={branch}
-                  color={group.color}
-                  content={
-                    <>
-                      <Text color={t.color.accent}>● </Text>
-                      {toolLabel(group)}
-                      {isDelegateGroup ? (
-                        <Text color={t.color.statusFg} dim>
-                          {'  (/agents to monitor)'}
-                        </Text>
-                      ) : null}
-                    </>
-                  }
-                  rails={rails}
-                  t={t}
-                />
-                {group.details.map((detail, detailIndex) => (
-                  <Detail
-                    {...detail}
-                    branch={detailIndex === group.details.length - 1 && !hasInlineSubagents ? 'last' : 'mid'}
-                    key={detail.key}
-                    rails={childRails}
-                    t={t}
-                  />
-                ))}
-                {hasInlineSubagents ? renderSubagentList(childRails) : null}
-              </Box>
-            )
-          })}
-        </Box>
-      )
-    })
-  }
+          return (
+            <Box flexDirection="column" key={group.key}>
+              <Text color={group.color}>
+                {group.live ? null : <Text color={bulletColor}>⏺ </Text>}
+                {toolLabel(group)}
+                {isDelegateGroup ? (
+                  <Text color={t.color.statusFg} dim>
+                    {'  (/agents to monitor)'}
+                  </Text>
+                ) : null}
+              </Text>
+              {group.details.map(detail => (
+                <Text color={detail.color} dimColor={detail.dimColor} key={detail.key}>
+                  {'  '}
+                  <Text color={t.color.muted}>⎿  </Text>
+                  {detail.content}
+                </Text>
+              ))}
+              {inlineDelegateKey === group.key ? renderSubagentList([]) : null}
+            </Box>
+          )
+        })}
+      </Box>
+    ) : null
 
   if (hasSubagents && !inlineDelegateKey && visible.subagents !== 'hidden') {
     // Spark + summary give a one-line read on the branch shape before
@@ -1185,6 +1148,7 @@ export const ToolTrail = memo(function ToolTrail({
           {panel.render}
         </TreeNode>
       ))}
+      {toolsFlat}
       {totalTokensLabel ? (
         <TreeTextRow
           branch="last"
