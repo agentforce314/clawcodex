@@ -3,7 +3,7 @@
  * original's @-typeahead: a borderless list, the selected row a full-width
  * highlighted bar. The basename is emphasized; the directory is dimmed.
  */
-import { Box, Text } from 'ink'
+import { Box, Text } from '../ink.js'
 import React from 'react'
 import { theme } from '../theme.js'
 

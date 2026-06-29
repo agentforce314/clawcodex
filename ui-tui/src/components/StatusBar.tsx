@@ -4,7 +4,7 @@
  * original's StatusLine context %), a connection dot, and model · mode (mode
  * colored when non-default, like getModeColor).
  */
-import { Box, Text } from 'ink'
+import { Box, Text } from '../ink.js'
 import React from 'react'
 import { theme } from '../theme.js'
 

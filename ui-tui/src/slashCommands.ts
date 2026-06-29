@@ -59,7 +59,6 @@ export interface SlashCommand {
     | 'open'
     | 'trust'
     | 'mcpTrust'
-    | 'rtl'
     | 'lang'
     | 'btw'
     | 'prComments'
@@ -105,7 +104,6 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/copy', description: "Copy the last response to the clipboard", kind: 'copy' },
   { name: '/mcp', description: 'List connected MCP servers and their tools', kind: 'mcp' },
   { name: '/mcp-trust', description: 'Approve the connected MCP servers', kind: 'mcpTrust' },
-  { name: '/rtl', description: 'Toggle right-to-left text shaping (Hebrew/Arabic)', kind: 'rtl' },
   { name: '/lang', description: 'Set preferred response language: /lang <language> (or clear)', kind: 'lang' },
   { name: '/btw', description: 'Ask a side question without saving it to history: /btw <question>', kind: 'btw' },
   { name: '/pr-comments', description: "Show the current branch's PR comments (via gh)", kind: 'prComments' },

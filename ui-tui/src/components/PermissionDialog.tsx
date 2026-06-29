@@ -10,7 +10,7 @@
  * is `/mode acceptEdits`.
  */
 import { highlight } from 'cli-highlight'
-import { Box, Text } from 'ink'
+import { Box, Text } from '../ink.js'
 import { readFileSync } from 'node:fs'
 import React from 'react'
 import { buildToolDiff } from '../diff.js'

@@ -4,7 +4,7 @@
  * tool's run_agent on_message hook. Shows the task, its current activity, and a
  * running tool/token count — in the subagent blue-purple.
  */
-import { Box, Text } from 'ink'
+import { Box, Text } from '../ink.js'
 import React from 'react'
 import { theme } from '../theme.js'
 
