@@ -27,8 +27,11 @@ export const padVerb = (verb: string) => `${verb}…`.padEnd(VERB_PAD_LEN, ' ')
 
 // Compact alternates for the `emoji` and `ascii` indicator styles.
 // Each entry is a fixed-width (display-width) glyph.
-const EMOJI_FRAMES = ['⚕ ', '🌀', '🤔', '✨', '🍵', '🔮']
+const EMOJI_FRAMES = ['✦ ', '🌀', '🤔', '✨', '🍵', '🔮']
 const ASCII_FRAMES = ['|', '/', '-', '\\']
+// Claude Code's breathing "star" spinner: ramps · → ✽ then back down so the
+// glyph appears to pulse/breathe while the agent works.
+const STAR_FRAMES = ['·', '✢', '✳', '✶', '✻', '✽', '✻', '✶', '✳', '✢']
 
 // Faster tick for spinner-style indicators — they read as motion only
 // at frame rates closer to their authored interval.
@@ -61,6 +64,14 @@ const renderIndicator = (style: IndicatorStyle, tick: number): IndicatorRender =
     return {
       frame: ASCII_FRAMES[tick % ASCII_FRAMES.length] ?? '|',
       intervalMs: SPINNER_TICK_MS,
+      showVerb: true
+    }
+  }
+
+  if (style === 'star') {
+    return {
+      frame: STAR_FRAMES[tick % STAR_FRAMES.length] ?? '✻',
+      intervalMs: 120,
       showVerb: true
     }
   }
@@ -116,7 +127,17 @@ export const busyIndicatorWidth = (style: IndicatorStyle, hasDuration: boolean):
   return indicatorFrameWidth(style) + verb + duration
 }
 
-function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: null | number; style: IndicatorStyle }) {
+function FaceTicker({
+  color,
+  glyphColor,
+  startedAt,
+  style
+}: {
+  color: string
+  glyphColor?: string
+  startedAt?: null | number
+  style: IndicatorStyle
+}) {
   const [tick, setTick] = useState(() => Math.floor(Math.random() * 1000))
   const [verbTick, setVerbTick] = useState(() => Math.floor(Math.random() * VERBS.length))
   const [now, setNow] = useState(() => Date.now())
@@ -155,7 +176,7 @@ function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: nu
 
   return (
     <Text color={color}>
-      {frame}
+      <Text color={glyphColor ?? color}>{frame}</Text>
       {verbSegment}
       {durationSegment}
     </Text>
@@ -555,7 +576,7 @@ export function StatusRule({
         <Box flexDirection="row" flexShrink={0}>
           <Text color={t.color.border}>{'─ '}</Text>
           {busy ? (
-            <FaceTicker color={statusColor} startedAt={turnStartedAt} style={indicatorStyle} />
+            <FaceTicker color={statusColor} glyphColor={t.color.accent} startedAt={turnStartedAt} style={indicatorStyle} />
           ) : showNotice ? null : (
             <Text color={statusColor} wrap="truncate-end">
               {status}
