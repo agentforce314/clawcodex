@@ -5,7 +5,7 @@ import './lib/forceTruecolor.js'
 
 import type { FrameEvent } from '@hermes/ink'
 
-import { DASHBOARD_TUI_MODE, TERMUX_TUI_MODE } from './config/env.js'
+import { DASHBOARD_TUI_MODE, INLINE_MODE, TERMUX_TUI_MODE } from './config/env.js'
 import { GatewayClient } from './gatewayClient.js'
 import { setupGracefulExit } from './lib/gracefulExit.js'
 import { formatBytes, type HeapDumpResult, performHeapDump } from './lib/memory.js'
@@ -39,10 +39,12 @@ process.on('exit', () => {
   resetTerminalModes()
 })
 
-// Desktop terminals benefit from a clean startup slate because the TUI usually
-// runs in AlternateScreen. On Termux we keep prior output intact so users can
-// review/copy earlier assistant replies after reopening the app.
-if (TERMUX_TUI_MODE) {
+// Only wipe the screen for a clean slate in fullscreen (alternate-screen) mode.
+// Inline mode (the default) and Termux keep prior terminal output intact so the
+// transcript flows into native scrollback — Claude Code-style. The erase
+// (2J + home + 3J scrollback) is exactly what made launch read as a vim-style
+// takeover, so it's gated to the fullscreen path only.
+if (TERMUX_TUI_MODE || INLINE_MODE) {
   process.stdout.write('\n')
 } else {
   process.stdout.write('\x1b[2J\x1b[H\x1b[3J')
