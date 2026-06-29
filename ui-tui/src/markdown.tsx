@@ -9,7 +9,7 @@
  * a focused port of the Claude-Code look, full control, zero deps.
  */
 import { highlight } from 'cli-highlight'
-import { Box, Text } from 'ink'
+import { Box, Text } from './ink.js'
 import React from 'react'
 import stringWidth from 'string-width'
 import wrapAnsi from 'wrap-ansi'

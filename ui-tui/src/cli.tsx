@@ -15,7 +15,7 @@
  *   clawcodex-tui <cc://host:port> [--token T] [--cwd DIR]   # attach
  */
 import './forceColor.js' // MUST be first — sets FORCE_COLOR before chalk/Ink load
-import { render } from 'ink'
+import { render } from './ink.js'
 import React from 'react'
 import { App } from './App.js'
 import { createSession } from './client.js'
@@ -103,7 +103,8 @@ async function main(): Promise<void> {
   }
 
   startStallDetector() // opt-in (CLAWCODEX_DEBUG_PERF=1): logs event-loop stalls
-  const { waitUntilExit } = render(<App transport={transport} serverLabel={serverLabel} />)
+  // The cell-diff renderer's render() is async (mounts after a microtask).
+  const { waitUntilExit } = await render(<App transport={transport} serverLabel={serverLabel} />)
   await waitUntilExit()
   dispose?.()
 }

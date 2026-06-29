@@ -4,7 +4,7 @@
  * Sprites are 5 lines × 12 wide with {E} eye slots (substituted per blink).
  * Opt-in (the original is feature-gated); rendered above the input when on.
  */
-import { Box, Text } from 'ink'
+import { Box, Text } from '../ink.js'
 import React, { useEffect, useState } from 'react'
 import { theme } from '../theme.js'
 

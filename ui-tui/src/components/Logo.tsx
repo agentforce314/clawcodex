@@ -4,7 +4,7 @@
  * original's LogoPicker, §6/§7). The palette is chosen via /logo and persisted
  * to ~/.clawcodex/logo.json.
  */
-import { Box, Text } from 'ink'
+import { Box, Text } from '../ink.js'
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, dirname } from 'node:path'

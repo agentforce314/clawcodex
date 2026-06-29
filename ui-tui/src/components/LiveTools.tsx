@@ -5,7 +5,7 @@
  * grows, showing only the current target; it freezes into the transcript when
  * the round ends (App commits a collapsed summary).
  */
-import { Box, Text } from 'ink'
+import { Box, Text } from '../ink.js'
 import React from 'react'
 import { theme } from '../theme.js'
 import { toolActivityLabel } from '../toolMeta.js'
