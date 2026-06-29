@@ -253,6 +253,13 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const [entries, setEntries] = useState<TranscriptEntry[]>([])
   const [streaming, setStreaming] = useState('')
   const streamRef = useRef('') // source of truth for the live buffer (no stale closures)
+  // Throttle live-stream renders: the backend emits one stream_event per token
+  // (very bursty — ~18 in 83ms observed), and one render+stdout-write per delta
+  // floods a slower terminal (Terminal.app), backing the render pipeline up for
+  // seconds and making subsequent keystrokes lag. Coalesce to ~20fps; a trailing
+  // timer guarantees the final delta is shown. (The original throttles too.)
+  const streamTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const streamLastRef = useRef(0)
   const [thinkingStream, setThinkingStream] = useState('') // live reasoning deltas (§3)
   const thinkingRef = useRef('')
   const [permissions, setPermissions] = useState<PendingPermission[]>([]) // FIFO queue
@@ -608,7 +615,14 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   }
 
   const setStream = (s: string) => {
+    // Any explicit set (incl. the turn-end commit to '') cancels a pending
+    // throttled render so a stale buffer can't paint after the commit.
+    if (streamTimerRef.current) {
+      clearTimeout(streamTimerRef.current)
+      streamTimerRef.current = null
+    }
     streamRef.current = s
+    streamLastRef.current = Date.now()
     setStreaming(s)
   }
   const appendStream = (delta: string) => {
@@ -618,7 +632,26 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
       setThinkingStream('')
     }
     streamRef.current += delta
-    setStreaming(streamRef.current)
+    // Throttle to ~20fps: render now if enough time has passed, else schedule a
+    // single trailing render. Collapses bursty per-token deltas into far fewer
+    // renders/writes so the terminal pipeline doesn't back up.
+    const MIN_MS = 50
+    const now = Date.now()
+    const elapsed = now - streamLastRef.current
+    if (elapsed >= MIN_MS) {
+      if (streamTimerRef.current) {
+        clearTimeout(streamTimerRef.current)
+        streamTimerRef.current = null
+      }
+      streamLastRef.current = now
+      setStreaming(streamRef.current)
+    } else if (!streamTimerRef.current) {
+      streamTimerRef.current = setTimeout(() => {
+        streamTimerRef.current = null
+        streamLastRef.current = Date.now()
+        setStreaming(streamRef.current)
+      }, MIN_MS - elapsed)
+    }
   }
   const appendThinkingStream = (delta: string) => {
     thinkingRef.current += delta
