@@ -11,6 +11,9 @@ downloads/
 eggs/
 .eggs/
 lib/
+# ui-tui/src/lib is TypeScript source, not Python build output — keep tracking it
+# (the bare `lib/` above is from the Python template and would otherwise drop it).
+!ui-tui/src/lib/
 lib64/
 parts/
 sdist/
