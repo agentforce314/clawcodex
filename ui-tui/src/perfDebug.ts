@@ -11,7 +11,10 @@ import { appendFileSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
-export const PERF_DEBUG = process.env['CLAWCODEX_DEBUG_PERF'] === '1'
+// =1 → log event-loop stalls only. =2 → also TRACE every keypress/render/message
+// with timestamps (to locate input/render-delivery delays that aren't loop stalls).
+export const PERF_DEBUG = process.env['CLAWCODEX_DEBUG_PERF'] === '1' || process.env['CLAWCODEX_DEBUG_PERF'] === '2'
+const PERF_TRACE = process.env['CLAWCODEX_DEBUG_PERF'] === '2'
 const LOG_PATH = join(homedir(), '.clawcodex', 'perf.log')
 
 let lastActivity = 'startup'
@@ -32,11 +35,14 @@ export function note(activity: string): void {
   if (!PERF_DEBUG) return
   lastActivity = activity
   activityAt = Date.now()
+  if (PERF_TRACE) write(`${new Date().toISOString()} · ${activity}`)
 }
 
 /** Count a React render (helps tell render-storms from single blocks). */
 export function bumpRender(): void {
-  if (PERF_DEBUG) renderCount++
+  if (!PERF_DEBUG) return
+  renderCount++
+  if (PERF_TRACE) write(`${new Date().toISOString()} · render#${renderCount}`)
 }
 
 /** Start the stall detector. Call once at startup. */
