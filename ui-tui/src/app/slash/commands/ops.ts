@@ -127,7 +127,7 @@ export const opsCommands: SlashCommand[] = [
   },
 
   {
-    help: 're-read ~/.hermes/.env into the running gateway (CLI parity)',
+    help: 're-read the .env into the running session',
     name: 'reload',
     run: (_arg, ctx) => {
       ctx.gateway

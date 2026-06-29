@@ -1,16 +1,15 @@
-import { billingCommands } from './commands/billing.js'
 import { coreCommands } from './commands/core.js'
-import { creditsCommands } from './commands/credits.js'
 import { debugCommands } from './commands/debug.js'
 import { opsCommands } from './commands/ops.js'
 import { sessionCommands } from './commands/session.js'
 import { setupCommands } from './commands/setup.js'
 import type { SlashCommand } from './types.js'
 
+// NOTE: billing/credits commands (Nous-portal paid features) are intentionally
+// not registered — clawcodex has no billing backend and they carry Nous
+// branding. The command files remain but are unreferenced.
 export const SLASH_COMMANDS: SlashCommand[] = [
   ...coreCommands,
-  ...billingCommands,
-  ...creditsCommands,
   ...sessionCommands,
   ...opsCommands,
   ...setupCommands,
