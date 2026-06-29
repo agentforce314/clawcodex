@@ -60,7 +60,16 @@ const CADUCEUS_ART = [
   '╰─────────────╯'
 ]
 
-const LOGO_GRADIENT = [0, 0, 1, 1, 2, 2] as const
+// Claude Code "sunset" logo gradient — warm peach down to deep terracotta,
+// independent of the active theme palette so the wordmark always reads as brand.
+const LOGO_SUNSET = [
+  'rgb(245,166,120)',
+  'rgb(233,147,107)',
+  'rgb(221,128,94)',
+  'rgb(208,113,84)',
+  'rgb(193,102,77)',
+  'rgb(178,90,70)'
+] as const
 const CADUC_GRADIENT = [2, 1, 0, 1, 2] as const
 
 const colorize = (art: string[], gradient: readonly number[], c: ThemeColors): Line[] => {
@@ -73,7 +82,7 @@ export const LOGO_WIDTH = Math.max(...LOGO_ART.map(line => line.length))
 export const CADUCEUS_WIDTH = Math.max(...CADUCEUS_ART.map(line => line.length))
 
 export const logo = (c: ThemeColors, customLogo?: string): Line[] =>
-  customLogo ? parseRichMarkup(customLogo) : colorize(LOGO_ART, LOGO_GRADIENT, c)
+  customLogo ? parseRichMarkup(customLogo) : LOGO_ART.map((text, i) => [LOGO_SUNSET[i] ?? c.primary, text])
 
 export const caduceus = (c: ThemeColors, customHero?: string): Line[] =>
   customHero ? parseRichMarkup(customHero) : colorize(CADUCEUS_ART, CADUC_GRADIENT, c)
