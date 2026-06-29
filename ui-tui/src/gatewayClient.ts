@@ -17,23 +17,12 @@
  */
 import { type ChildProcess, spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
-import { appendFileSync, readdirSync } from 'node:fs'
+import { readdirSync } from 'node:fs'
 import { resolve as pathResolve } from 'node:path'
 import { createInterface } from 'node:readline'
 
 import type { GatewayEvent } from './gatewayTypes.js'
 import type { SessionInfo } from './types.js'
-
-// Temporary adapter diagnostics (CLAWCODEX_ADAPTER_DEBUG=1 → /tmp/clawcodex-adapter.log).
-const ADAPTER_DBG = process.env.CLAWCODEX_ADAPTER_DEBUG === '1'
-function dbg(m: string): void {
-  if (!ADAPTER_DBG) return
-  try {
-    appendFileSync('/tmp/clawcodex-adapter.log', `${new Date().toISOString()} ${m}\n`)
-  } catch {
-    /* best effort */
-  }
-}
 
 const STARTUP_TIMEOUT_MS = 30_000
 const MAX_LOG_LINES = 500
@@ -137,7 +126,6 @@ export class GatewayClient extends EventEmitter {
       })
     }, STARTUP_TIMEOUT_MS)
 
-    dbg(`start: spawn ${cmd.join(' ')} --stdio --workspace ${cwd}`)
     try {
       this.proc = spawn(cmd[0]!, [...cmd.slice(1), '--stdio', '--workspace', cwd], {
         cwd,
@@ -145,18 +133,15 @@ export class GatewayClient extends EventEmitter {
         stdio: ['pipe', 'pipe', 'pipe']
       })
     } catch (err) {
-      dbg(`spawn threw ${String(err)}`)
       this.pushLog(`[spawn error] ${String(err)}`)
       this.handleExit(null, String(err))
       return
     }
-    dbg(`spawned pid=${this.proc.pid}`)
 
     const rl = createInterface({ input: this.proc.stdout! })
     rl.on('line', raw => {
       const line = raw.trim()
       if (!line) return
-      dbg(`rx ${line.slice(0, 60)}`)
       try {
         this.dispatch(JSON.parse(line))
       } catch {
@@ -178,7 +163,6 @@ export class GatewayClient extends EventEmitter {
   }
 
   drain(): void {
-    dbg(`drain: flushing ${this.buffered.length} buffered`)
     this.subscribed = true
     for (const ev of this.buffered) this.emit('event', ev)
     this.buffered = []
@@ -208,7 +192,6 @@ export class GatewayClient extends EventEmitter {
 
   // ── client → server RPCs ─────────────────────────────────────────────────
   request<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T> {
-    dbg(`request ${method} ${safeJson(params).slice(0, 100)}`)
     const p = (params ?? {}) as Record<string, unknown>
     switch (method) {
       // ── startup handshake ────────────────────────────────────────────────
@@ -610,7 +593,6 @@ export class GatewayClient extends EventEmitter {
   }
 
   private handleExit(code: null | number, reason?: string): void {
-    dbg(`handleExit code=${code} reason=${reason ?? ''}`)
     if (this.readyTimer) {
       clearTimeout(this.readyTimer)
       this.readyTimer = null
@@ -623,7 +605,6 @@ export class GatewayClient extends EventEmitter {
   }
 
   private publish(ev: GatewayEvent): void {
-    dbg(`publish ${ev.type} subscribed=${this.subscribed}`)
     if (ev.type === 'gateway.ready' && this.readyTimer) {
       clearTimeout(this.readyTimer)
       this.readyTimer = null
@@ -648,7 +629,6 @@ export class GatewayClient extends EventEmitter {
   }
 
   private send(obj: unknown): void {
-    dbg(`send ${safeJson(obj).slice(0, 100)}`)
     try {
       this.proc?.stdin?.write(JSON.stringify(obj) + '\n')
     } catch {
