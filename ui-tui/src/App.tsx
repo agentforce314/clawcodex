@@ -6,7 +6,7 @@
  * so concurrent tool asks aren't dropped), a slash-command menu, and an input
  * line, over the Direct Connect protocol.
  */
-import { Box, Static, Text, useApp, useInput } from 'ink'
+import { Box, Text, useApp, useInput } from './ink.js'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import React, { useEffect, useRef, useState } from 'react'
@@ -19,7 +19,6 @@ import { editInEditor } from './editor.js'
 import { isTrusted, trustFolder, untrustFolder, isMcpTrusted, trustMcp } from './trust.js'
 import { matchesBinding, bindingConflicts } from './keybindings.js'
 import { configErrors } from './configCheck.js'
-import { shapeRtl } from './bidi.js'
 import { exec } from 'node:child_process'
 import { readFileSync, existsSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -274,8 +273,6 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const [mcpToggle, setMcpToggle] = useState<{ servers: { name: string; enabled: boolean; tools: string[] }[]; sel: number } | null>(null)
   // External CLAUDE.md imports confirm (§6 ClaudeMdExternalIncludesDialog).
   const [externalIncludes, setExternalIncludes] = useState<string[] | null>(null)
-  // RTL display shaping (§8) — opt-in (terminals with native bidi shouldn't use it).
-  const [rtlMode, setRtlMode] = useState<boolean>(process.env['CLAWCODEX_RTL'] === '1')
   // Message timestamps (§3) — opt-in via /timestamps.
   const [timestampsOn, setTimestampsOn] = useState<boolean>(false)
   // Mode-confirm dialog (§5): bypassPermissions always confirms (BypassPermissions-
@@ -324,7 +321,6 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   }) // /buddy companion sprite (opt-in)
   const [txFind, setTxFind] = useState<string | null>(null) // fullscreen Ctrl+F find query (null = closed)
   const [vimMode, setVimMode] = useState(false) // /vim modal editing
-  const [resizeKey, setResizeKey] = useState(0) // bumped on terminal resize to remount <Static> (inline)
 
   // Warm the @-mention / file index off the render path so the first @, /open, or
   // /files doesn't freeze input on a cold synchronous filesystem walk.
@@ -342,29 +338,9 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     }
   }, [])
 
-  // Terminal resize (inline mode): standard Ink's incremental erase miscounts a
-  // line's wrapped height after a width change, so the live region (the input
-  // box) leaves stacked copies in the scrollback on resize. Mirror the original's
-  // full-reset-on-resize — clear the screen + scrollback and remount <Static> so
-  // the transcript re-emits at the new width and the live region redraws clean.
-  // Debounced so dragging the window border triggers a single reset, not one per
-  // intermediate size.
-  useEffect(() => {
-    if (FULLSCREEN) return // alt-screen redraws cleanly; only inline stacks
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const onResize = (): void => {
-      if (timer) clearTimeout(timer)
-      timer = setTimeout(() => {
-        process.stdout.write('\x1b[2J\x1b[3J\x1b[H')
-        setResizeKey((k) => k + 1)
-      }, 80)
-    }
-    process.stdout.on('resize', onResize)
-    return () => {
-      if (timer) clearTimeout(timer)
-      process.stdout.off('resize', onResize)
-    }
-  }, [])
+  // (Terminal-resize handling is owned by the cell-diff renderer — it reflows the
+  // live region at the new width without the stacked-scrollback workaround standard
+  // ink needed.)
   const [slashSel, setSlashSel] = useState(0)
   const [permSel, setPermSel] = useState(0) // permission dialog: highlighted option (↑/↓ + Enter)
   const [atSel, setAtSel] = useState(0)
@@ -1608,17 +1584,6 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         }
         return true
       }
-      case 'rtl': {
-        setRtlMode((on) => {
-          const next = !on
-          addEntry({
-            kind: 'system',
-            text: `right-to-left shaping ${next ? 'on' : 'off'}${next ? ' (best in fullscreen / for new messages)' : ''}`,
-          })
-          return next
-        })
-        return true
-      }
       case 'trust': {
         const a = arg.trim().toLowerCase()
         const cwd = process.cwd()
@@ -2598,12 +2563,12 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const visibleEntries = FULLSCREEN
     ? windowFromBottom(fsEntries, process.stdout.columns ?? 80, Math.max(4, termRows - 4), scrollOffset)
     : entries
-  const shapeEntry = (e: TranscriptEntry): TranscriptEntry =>
-    rtlMode && e.text ? { ...e, text: e.text.split('\n').map(shapeRtl).join('\n') } : e
+  // Bidi/RTL (Hebrew, Arabic) is handled natively by the cell-diff renderer, so no
+  // manual text shaping is needed here (it would double-reverse and cancel out).
   const renderEntry = (entry: TranscriptEntry): React.ReactElement => (
     <Box key={entry.id} marginTop={['tool', 'toolResult', 'banner'].includes(entry.kind) ? 0 : 1}>
       <Message
-        entry={shapeEntry(entry)}
+        entry={entry}
         expanded={expanded}
         timestamp={timestampsOn && entry.ts ? new Date(entry.ts).toTimeString().slice(0, 5) : undefined}
       />
@@ -2625,7 +2590,12 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
           {visibleEntries.map(renderEntry)}
         </Box>
       ) : (
-        <Static key={resizeKey} items={entries}>{renderEntry}</Static>
+        // Inline mode: the transcript is part of the live, cell-diffed tree (the
+        // renderer has no <Static>). Each row is a memoized <Message>, so unchanged
+        // entries bail reconciliation → the per-keystroke diff touches only the
+        // input, and rows that scroll off the top land in the terminal's native
+        // scrollback (same as <Static> gave us, without the whole-frame rewrite).
+        entries.map(renderEntry)
       )}
 
       {streaming ? (
@@ -2634,12 +2604,10 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
             <Text color={theme.accent}>⏺</Text>
           </Box>
           <Box flexGrow={1}>
-            {/* The live stream is the only UNBOUNDED part of the dynamic (non-
-                Static) region. If it overflows the viewport Ink can't erase the
-                scrolled-off rows, so each re-render (the spinner ticks ~10×/s)
-                leaves a stale copy in scrollback → the message appears dozens of
-                times. Cap it to a viewport-fitting tail (plain text); the full
-                markdown commits to <Static> when the assistant message lands. */}
+            {/* Cap the live stream to a viewport-fitting tail (plain text) so a
+                long in-progress response can't grow the live region without bound;
+                the full markdown is committed as an entry when the assistant
+                message lands. */}
             <Text>
               {streamTail(streaming, (process.stdout.columns ?? 80) - 4, (process.stdout.rows ?? 24) - 10)}
             </Text>

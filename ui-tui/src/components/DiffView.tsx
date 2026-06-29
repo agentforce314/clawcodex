@@ -13,7 +13,7 @@
  * word-level diff), so we just print each row in a <Text>. No dashed frame —
  * that belongs to the permission preview, not the result message.
  */
-import { Box, Text } from 'ink'
+import { Box, Text } from '../ink.js'
 import React from 'react'
 import { ColorDiff, ColorFile } from '../colorDiff.js'
 import { countPatchLines } from '../patch.js'
@@ -82,7 +82,7 @@ export function DiffView({ diff }: { diff: ToolDiff }): React.ReactElement | nul
         {summary ? <Text>{summary}</Text> : null}
         {bodyRows.map((r, i) =>
           r.sep ? (
-            <Text key={i} dimColor>
+            <Text key={i} dim>
               {'...'}
             </Text>
           ) : (

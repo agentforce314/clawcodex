@@ -8,7 +8,7 @@
  * Normal: h/l/0/$ move · w/b word · i/a/I/A insert · x delete · D kill-to-end ·
  *   Enter submit.  Insert: type · ←/→ · Backspace · Esc→normal · Enter submit.
  */
-import { Text, useInput } from 'ink'
+import { Text, useInput } from '../ink.js'
 import React, { useEffect, useRef, useState } from 'react'
 import { theme } from '../theme.js'
 
