@@ -9,7 +9,7 @@
  * rows that scrolled into permanent scrollback, leaving the menu "pinned" on
  * screen after a command is picked. Keeping the region small clears reliably.
  */
-import { Box, Text } from 'ink'
+import { Box, Text } from '../ink.js'
 import React from 'react'
 import { theme } from '../theme.js'
 import type { SlashCommand } from '../slashCommands.js'

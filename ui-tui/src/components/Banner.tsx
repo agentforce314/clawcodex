@@ -4,7 +4,7 @@
  * info box (dim padEnd labels + accent/default values), a `● Ready — type /help
  * to begin` line, and a dim+accent version line.
  */
-import { Box, Text } from 'ink'
+import { Box, Text } from '../ink.js'
 import React from 'react'
 import { theme } from '../theme.js'
 import { Logo } from './Logo.js'

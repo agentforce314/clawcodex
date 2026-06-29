@@ -4,7 +4,7 @@
 import { test, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import React from 'react'
-import { render } from 'ink-testing-library'
+import { render } from './ink-testing-shim.mjs'
 import { App } from '../dist/App.js'
 
 const INIT = JSON.stringify({ type: 'system', subtype: 'init', session_id: 's', protocol_version: '0.1.0', model: 'deepseek-v4-pro', permission_mode: 'default', tools: ['Bash', 'Edit'] }) + '\n'
@@ -121,11 +121,12 @@ test('queue priorities: next: jumps the queue', async () => {
   assert.ok(f.includes('YYfront') && f.includes('ZZlater') && f.indexOf('YYfront') < f.indexOf('ZZlater'))
 })
 
-test('RTL shaping reverses Hebrew runs', async () => {
+test('RTL: the renderer shapes Hebrew runs to visual order natively', async () => {
+  // The cell-diff renderer has built-in bidi, so RTL runs are reordered to visual
+  // (reversed) order automatically — no manual /rtl toggle / shapeRtl needed.
   const heb = 'שלום'
-  const { type, stdin, cb, lastFrame } = mount()
+  const { cb, lastFrame } = mount()
   await wait(150)
-  await type('/rtl'); stdin.write('\r'); await wait(60)
   cb().onData(JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'hi ' + heb + ' x' }] } }) + '\n')
   cb().onData(JSON.stringify({ type: 'result', subtype: 'success', session_id: 's', num_turns: 1, usage: {} }) + '\n')
   await wait(100)
@@ -201,27 +202,15 @@ test('/exit runs the quit handler (closes the connection and exits)', async () =
   try { r.unmount() } catch { /* exit() may have already torn down */ }
 })
 
-test('terminal resize triggers a full reset (no stacked input boxes)', async () => {
-  const writes = []
-  const orig = process.stdout.write.bind(process.stdout)
-  process.stdout.write = (chunk, ...rest) => {
-    const s = String(chunk)
-    writes.push(s)
-    if (s.includes('\x1b[2J')) return true // swallow the clear so this test run isn't wiped
-    return orig(chunk, ...rest)
-  }
-  try {
-    mount()
-    await wait(150)
-    process.stdout.emit('resize')
-    await wait(160) // > 80ms debounce
-  } finally {
-    process.stdout.write = orig
-  }
-  assert.ok(
-    writes.some((w) => w.includes('\x1b[2J') && w.includes('\x1b[3J') && w.includes('\x1b[H')),
-    'resize should clear screen + scrollback + home (full reset), not leave stacked frames',
-  )
+test('terminal resize is handled by the renderer (no crash, input still renders)', async () => {
+  // The cell-diff renderer owns resize reflow — clawcodex no longer needs the
+  // manual screen-clear workaround standard ink required (which left stacked input
+  // boxes). A resize must not crash and the live input must remain on screen.
+  const { stdout, lastFrame } = mount()
+  await wait(150)
+  stdout.emit('resize')
+  await wait(120)
+  assert.match(strip(lastFrame()), /Type a message|❯/)
 })
 
 test('file index pre-warms async so file search never blocks input', async () => {

@@ -10,7 +10,7 @@
  *  - a glimmer: a brighter highlight sweeps across the verb (GlimmerMessage);
  *  - a dim `(elapsed · esc to interrupt)` status.
  */
-import { Text } from 'ink'
+import { Text } from '../ink.js'
 import React, { useEffect, useState } from 'react'
 import { theme } from '../theme.js'
 import { SPINNER_VERBS } from '../spinnerVerbs.js'

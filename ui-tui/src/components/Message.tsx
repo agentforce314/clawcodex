@@ -6,7 +6,7 @@
  *     ⎿ output… (+N lines)      (tool result: indented, dim, line-capped)
  *   · system   ✓ result   ✗ error
  */
-import { Box, Text } from 'ink'
+import { Box, Text } from '../ink.js'
 import React from 'react'
 import { Markdown } from '../markdown.js'
 import { theme } from '../theme.js'
@@ -97,9 +97,17 @@ function TodoList({ todos }: { todos: NonNullable<TranscriptEntry['todos']> }): 
         return (
           <Box key={i}>
             <Text color={color}>{`  ${glyph} `}</Text>
-            <Text bold={t.status === 'in_progress'} strikethrough={done} dimColor={done}>
-              {t.content}
-            </Text>
+            {/* bold and dim are mutually exclusive in the renderer (and at runtime:
+                a todo is in-progress XOR done), so pick one per status. */}
+            {done ? (
+              <Text dim strikethrough>
+                {t.content}
+              </Text>
+            ) : t.status === 'in_progress' ? (
+              <Text bold>{t.content}</Text>
+            ) : (
+              <Text>{t.content}</Text>
+            )}
           </Box>
         )
       })}
@@ -146,7 +154,7 @@ function ContextView({ data }: { data: NonNullable<TranscriptEntry['contextData'
   )
 }
 
-export function Message({
+function MessageImpl({
   entry,
   expanded,
   timestamp,
@@ -250,21 +258,21 @@ export function Message({
       // (Ctrl+O) or in verbose/transcript mode. Expanded shows the full dim text.
       if (!expanded) {
         return (
-          <Text dimColor italic>
+          <Text dim italic>
             {'∴ Thinking '}
-            <Text dimColor>(ctrl+o to expand)</Text>
+            <Text dim>(ctrl+o to expand)</Text>
           </Text>
         )
       }
       const lines = entry.text.split('\n')
       return (
         <Box flexDirection="column">
-          <Text dimColor italic>
+          <Text dim italic>
             ∴ Thinking
           </Text>
           <Box flexDirection="column" paddingLeft={2}>
             {lines.map((l, i) => (
-              <Text key={i} dimColor italic>
+              <Text key={i} dim italic>
                 {l || ' '}
               </Text>
             ))}
@@ -283,3 +291,8 @@ export function Message({
       return <Text color={theme.system}>{`· ${entry.text}`}</Text>
   }
 }
+
+// Memoized: in inline mode every transcript row is in the live, cell-diffed tree
+// (no <Static>). Shallow-comparing props lets unchanged rows bail reconciliation,
+// so a keystroke only re-renders the input — the per-frame diff stays tiny.
+export const Message = React.memo(MessageImpl)

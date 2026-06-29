@@ -3,7 +3,7 @@
  * state line for debugging the TUI, shown only when CLAWCODEX_DEV=1 so it never
  * clutters normal use. Renders nothing otherwise.
  */
-import { Text } from 'ink'
+import { Text } from '../ink.js'
 import React from 'react'
 import { theme } from '../theme.js'
 
