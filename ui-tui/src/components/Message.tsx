@@ -245,26 +245,29 @@ export function Message({
     case 'toolResult':
       return <ToolResult text={entry.text} isError={entry.isError} expanded={expanded} />
     case 'thinking': {
-      // ∴ Thinking (dim italic) + the reasoning, capped (the original's
-      // AssistantThinkingMessage; full text lives in scrollback).
+      // Collapsed by default — just "∴ Thinking (ctrl+o to expand)" — matching the
+      // original's AssistantThinkingMessage, which hides reasoning unless expanded
+      // (Ctrl+O) or in verbose/transcript mode. Expanded shows the full dim text.
+      if (!expanded) {
+        return (
+          <Text dimColor italic>
+            {'∴ Thinking '}
+            <Text dimColor>(ctrl+o to expand)</Text>
+          </Text>
+        )
+      }
       const lines = entry.text.split('\n')
-      const MAX = expanded ? lines.length : 14
-      const shown = lines.slice(0, MAX)
-      const extra = lines.length - shown.length
       return (
         <Box flexDirection="column">
           <Text dimColor italic>
             ∴ Thinking
           </Text>
           <Box flexDirection="column" paddingLeft={2}>
-            {shown.map((l, i) => (
+            {lines.map((l, i) => (
               <Text key={i} dimColor italic>
                 {l || ' '}
               </Text>
             ))}
-            {extra > 0 ? (
-              <Text dimColor italic>{`… +${extra} more lines`}</Text>
-            ) : null}
           </Box>
         </Box>
       )
