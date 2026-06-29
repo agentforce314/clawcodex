@@ -13,12 +13,16 @@ import { Box, Text } from 'ink'
 import React from 'react'
 import stringWidth from 'string-width'
 import wrapAnsi from 'wrap-ansi'
+import { note as perfNote } from './perfDebug.js'
 import { theme } from './theme.js'
 
 /** Syntax-highlight a code block to an ANSI string (Ink Text passes ANSI through). */
 function highlightCode(code: string, lang?: string): string[] {
   try {
-    return highlight(code, { language: lang, ignoreIllegals: true }).split('\n')
+    perfNote('md-highlight(cli-highlight)')
+    const r = highlight(code, { language: lang, ignoreIllegals: true }).split('\n')
+    perfNote('md-highlight-done')
+    return r
   } catch {
     return code.split('\n')
   }
@@ -290,6 +294,7 @@ function TableBlock({ block }: { block: Extract<Block, { type: 'table' }> }): Re
 }
 
 export function Markdown({ text }: { text: string }): React.ReactElement {
+  perfNote(`md-render(${text.length}b)`)
   const blocks = parseBlocks(text)
   return (
     <Box flexDirection="column">
