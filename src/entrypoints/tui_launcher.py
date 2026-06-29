@@ -109,7 +109,7 @@ def _resolve_tui_dir(explicit: str | None) -> Path | None:
     here = Path(__file__).resolve()
     candidates.extend(parent / "ui-tui" for parent in here.parents)
     for cand in candidates:
-        if (cand / "src" / "cli.tsx").exists():
+        if (cand / "src" / "entry.tsx").exists():
             return cand.resolve()
     return None
 
@@ -129,12 +129,12 @@ def _resolve_tui_command(tui_dir: Path | None) -> list[str] | None:
     if tui_dir is None:
         return None
     node = shutil.which("node")
-    dist = tui_dir / "dist" / "cli.js"
+    dist = tui_dir / "dist" / "entry.js"
     if node and dist.exists():
         return [node, str(dist)]
     bun = shutil.which("bun")
     if bun:
-        return [bun, "run", str(tui_dir / "src" / "cli.tsx")]
+        return [bun, "run", str(tui_dir / "src" / "entry.tsx")]
     return None
 
 
@@ -209,10 +209,17 @@ async def _launch(args) -> int:
         return 1
 
     env = _child_env(args)
+    # The Ink entry (entry.tsx) reads the workspace from env, not argv; the
+    # adapter (gatewayClient) launches the agent-server with --workspace from
+    # CLAWCODEX_WORKSPACE. (--cwd is kept as a harmless hint; entry.tsx ignores
+    # argv.)
+    env["CLAWCODEX_WORKSPACE"] = workspace
     # No URL argument → the client spawns + owns the backend (hermes route).
     full = [*cmd, "--cwd", workspace]
     with _parent_ignores_sigint():
-        child = await asyncio.create_subprocess_exec(*full, env=env)  # inherits stdio/TTY
+        # cwd=workspace so the spawned node process (and the agent-server it
+        # owns) operate in the workspace root.
+        child = await asyncio.create_subprocess_exec(*full, env=env, cwd=workspace)  # inherits stdio/TTY
         rc = await child.wait()
     return rc if rc is not None else 0
 
