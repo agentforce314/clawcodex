@@ -54,6 +54,22 @@ function safeJson(v: unknown): string {
   }
 }
 
+/** Pick the salient arg for a tool so the trail label reads `Bash(ls)` /
+ *  `Read(path)` (Claude-style) instead of a bare tool name. */
+function toolContext(input: any): string {
+  if (!input || typeof input !== 'object') return ''
+  const v =
+    input.command ??
+    input.file_path ??
+    input.path ??
+    input.pattern ??
+    input.url ??
+    input.query ??
+    input.description ??
+    input.prompt
+  return v == null ? '' : String(v)
+}
+
 /** clawcodex-backed slash commands (handled via command.dispatch → dispatchSlash).
  *  Drives both the catalog (recognition) and the complete.slash menu. */
 const SLASHES: ReadonlyArray<{ desc: string; name: string }> = [
@@ -491,7 +507,7 @@ export class GatewayClient extends EventEmitter {
               this.ensureMsgStart()
               this.toolInputs.set(String(b.id), { input: b.input, name: String(b.name ?? '') })
               this.publish({
-                payload: { args_text: safeJson(b.input), name: b.name, tool_id: b.id },
+                payload: { args_text: safeJson(b.input), context: toolContext(b.input), name: b.name, tool_id: b.id },
                 type: 'tool.start'
               })
             }

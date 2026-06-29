@@ -762,23 +762,16 @@ class TurnController {
     const label = toolTrailLabel(name)
     const fallbackDuration = done?.startedAt ? (Date.now() - done.startedAt) / 1000 : undefined
 
-    const line =
-      done?.verboseArgs || resultText
-        ? buildVerboseToolTrailLine(
-            name,
-            done?.context || '',
-            Boolean(error),
-            duration ?? fallbackDuration,
-            done?.verboseArgs,
-            error || resultText || summary || ''
-          )
-        : buildToolTrailLine(
-            name,
-            done?.context || '',
-            Boolean(error),
-            error || summary || '',
-            duration ?? fallbackDuration
-          )
+    // Claude flat render: the call args already live in the label
+    // (formatToolCall → Bash("ls")), so the trail detail carries ONLY the
+    // result/error — no verbose Args block.
+    const line = buildToolTrailLine(
+      name,
+      done?.context || '',
+      Boolean(error),
+      error || resultText || summary || '',
+      duration ?? fallbackDuration
+    )
 
     this.activeTools = this.activeTools.filter(tool => tool.id !== toolId)
 
