@@ -253,15 +253,20 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
   const [entries, setEntries] = useState<TranscriptEntry[]>([])
   const [streaming, setStreaming] = useState('')
   const streamRef = useRef('') // source of truth for the live buffer (no stale closures)
-  // Throttle live-stream renders: the backend emits one stream_event per token
-  // (very bursty — ~18 in 83ms observed), and one render+stdout-write per delta
-  // floods a slower terminal (Terminal.app), backing the render pipeline up for
-  // seconds and making subsequent keystrokes lag. Coalesce to ~20fps; a trailing
-  // timer guarantees the final delta is shown. (The original throttles too.)
-  const streamTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const streamLastRef = useRef(0)
+  // Live-stream render cadence. The backend emits one stream_event per token
+  // (very bursty — ~100 for one short reply). Rendering per delta means one
+  // stdout write per token; on a slower terminal (Terminal.app) each write costs
+  // ~50-100ms, which (a) floods the render pipeline so it backs up and drains for
+  // seconds afterward — making the NEXT query's keystrokes lag — and (b) defeats a
+  // simple time-throttle, because the slow writes themselves pace deltas past the
+  // throttle window. So we DECOUPLE rendering from delta arrival: deltas only
+  // append to streamRef + mark dirty; a fixed-cadence interval paints the latest
+  // buffer at ~11fps regardless of how fast deltas arrive or how slow writes are.
+  const streamFlushTimer = useRef<ReturnType<typeof setInterval> | null>(null)
+  const streamDirty = useRef(false)
   const [thinkingStream, setThinkingStream] = useState('') // live reasoning deltas (§3)
   const thinkingRef = useRef('')
+  const thinkingCommittedRef = useRef(false) // committed live reasoning this turn (dedup vs message thinking blocks)
   const [permissions, setPermissions] = useState<PendingPermission[]>([]) // FIFO queue
   // MCP elicitation form (a server requested user input, §6).
   const [elicit, setElicit] = useState<{ requestId: string; message: string; field: string; value: string } | null>(null)
@@ -614,54 +619,73 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     })
   }
 
-  const setStream = (s: string) => {
-    // Any explicit set (incl. the turn-end commit to '') cancels a pending
-    // throttled render so a stale buffer can't paint after the commit.
-    if (streamTimerRef.current) {
-      clearTimeout(streamTimerRef.current)
-      streamTimerRef.current = null
+  // Stop the live-stream flush interval and clear pending-paint flags (turn end,
+  // commit, disconnect, or unmount).
+  const stopStreamFlush = () => {
+    if (streamFlushTimer.current) {
+      clearInterval(streamFlushTimer.current)
+      streamFlushTimer.current = null
     }
+    streamDirty.current = false
+  }
+  // Start the fixed-cadence flush if not already running. ~90ms (~11fps) keeps the
+  // streamed ANSWER readable while bounding renders/writes so the pipeline can't
+  // back up. (Reasoning deltas don't go through here — the live thinking view is a
+  // static indicator, so they never render per token.)
+  const startStreamFlush = () => {
+    if (streamFlushTimer.current) return
+    const t = setInterval(() => {
+      if (streamDirty.current) {
+        streamDirty.current = false
+        setStreaming(streamRef.current)
+      }
+    }, 90)
+    t.unref?.() // never keep the process alive on our account
+    streamFlushTimer.current = t
+  }
+  const setStream = (s: string) => {
+    // An explicit set (incl. the turn-end commit to '') stops the flush loop and
+    // paints immediately, so a stale buffer can't repaint after the commit.
+    stopStreamFlush()
     streamRef.current = s
-    streamLastRef.current = Date.now()
     setStreaming(s)
   }
   const appendStream = (delta: string) => {
-    // Text started → the model finished thinking; clear the live thinking buffer.
-    if (thinkingRef.current) {
-      thinkingRef.current = ''
-      setThinkingStream('')
-    }
+    // Text started → the model finished thinking; commit the reasoning as a
+    // collapsed entry (preserved + expandable) before the answer paints.
+    if (thinkingRef.current) commitThinking()
     streamRef.current += delta
-    // Throttle to ~20fps: render now if enough time has passed, else schedule a
-    // single trailing render. Collapses bursty per-token deltas into far fewer
-    // renders/writes so the terminal pipeline doesn't back up.
-    const MIN_MS = 50
-    const now = Date.now()
-    const elapsed = now - streamLastRef.current
-    if (elapsed >= MIN_MS) {
-      if (streamTimerRef.current) {
-        clearTimeout(streamTimerRef.current)
-        streamTimerRef.current = null
-      }
-      streamLastRef.current = now
+    // First token of a stream paints immediately (snappy); the rest are coalesced
+    // by the interval — decoupled from delta arrival and slow terminal writes.
+    if (streamFlushTimer.current) {
+      streamDirty.current = true
+    } else {
       setStreaming(streamRef.current)
-    } else if (!streamTimerRef.current) {
-      streamTimerRef.current = setTimeout(() => {
-        streamTimerRef.current = null
-        streamLastRef.current = Date.now()
-        setStreaming(streamRef.current)
-      }, MIN_MS - elapsed)
+      startStreamFlush()
     }
   }
   const appendThinkingStream = (delta: string) => {
+    // The live view is a static "∴ Thinking…" indicator (not the reasoning text),
+    // so flip it on ONCE and just accumulate the buffer for the collapsed commit.
+    // No per-delta render → reasoning streams can't lag input (the /thinking freeze).
+    const first = thinkingRef.current === ''
     thinkingRef.current += delta
-    setThinkingStream(thinkingRef.current)
+    if (first) setThinkingStream('…')
   }
-  const clearThinkingStream = () => {
-    if (thinkingRef.current) {
-      thinkingRef.current = ''
-      setThinkingStream('')
+  /** Commit the live reasoning buffer as a COLLAPSED 'thinking' entry, then clear.
+   *  Preserves the reasoning so it can be expanded with ctrl+o (matches the
+   *  original, and covers providers like deepseek that stream reasoning live but
+   *  omit it from the final message). Sets a per-turn flag used defensively to
+   *  skip a duplicate should a future backend ever serialize thinking into the
+   *  message envelope (this one strips it — see the messageToEntries guard). */
+  const commitThinking = () => {
+    const t = thinkingRef.current
+    if (t.trim()) {
+      addEntry({ kind: 'thinking', text: t })
+      thinkingCommittedRef.current = true
     }
+    thinkingRef.current = ''
+    setThinkingStream('')
   }
   /** Commit any leftover live buffer as a finished assistant entry, then clear. */
   const flushStream = () => {
@@ -716,9 +740,13 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         setConnected(false)
         setReady(false) // gate the input so submits don't vanish into a dead link
         setBusy(false)
+        flushStream() // commit any partial + stop the flush loop (no result is coming)
         addEntry({ kind: 'system', text: 'backend disconnected' })
       },
-      onError: (err) => addEntry({ kind: 'error', text: String(err.message) }),
+      onError: (err) => {
+        stopStreamFlush() // a turn-ending error may arrive without a result
+        addEntry({ kind: 'error', text: String(err.message) })
+      },
       onPermissionRequest: (req, requestId) =>
         setPermissions((q) => [
           ...q,
@@ -774,11 +802,18 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
           }
           return
         }
-        if (type === 'assistant') setStream('') // final assistant replaces the live stream
+        if (type === 'assistant') {
+          // Land any pending reasoning BEFORE this message's tool/text entries, so
+          // in multi-step turns (think → tool → … → text) the thinking renders in
+          // order and successive thinking phases stay separate (not merged). No-op
+          // when text already triggered the commit. Also clears the live indicator.
+          if (thinkingRef.current) commitThinking()
+          setStream('') // final assistant replaces the live stream
+        }
         if (type === 'result') {
           setBusy(false)
           setToolActivity(null)
-          clearThinkingStream() // drop any leftover live reasoning buffer
+          commitThinking() // preserve any leftover reasoning (thinking-only turn) as a collapsed entry
           setAgentLines([]) // subagents are done when the turn ends
           // Completion notification (the original's terminal notifications, §8):
           // ring the bell + OSC 9 desktop notice for long turns the user may have
@@ -839,6 +874,11 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
         if (newEntries.length) {
           const toCommit: TranscriptEntry[] = []
           for (const e of newEntries) {
+            // Defensive (currently inert): this backend strips reasoning from the
+            // message envelope, so messageToEntries never yields a 'thinking' entry.
+            // If a future backend serializes thinking-into-content, this skips the
+            // duplicate, since we already committed the live reasoning collapsed.
+            if (e.kind === 'thinking' && thinkingCommittedRef.current) continue
             if (e.kind === 'tool') {
               const verb = (e.toolName && TOOL_VERB[e.toolName]?.verb) || e.toolName || 'tool'
               const n = (turnToolCounts.current[verb] = (turnToolCounts.current[verb] ?? 0) + 1)
@@ -873,7 +913,10 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     })
     setClient(c)
     c.connect().catch(() => {}) // failures surface via onError / onDisconnected
-    return () => c.close()
+    return () => {
+      c.close()
+      stopStreamFlush() // don't leak the live-stream flush interval
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [transport])
 
@@ -2296,6 +2339,9 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
     setBusy(true)
     turnToolCounts.current = {}
     setToolActivity(null)
+    thinkingCommittedRef.current = false // fresh turn — allow committing this turn's reasoning
+    thinkingRef.current = '' // drop any reasoning orphaned by a prior error/disconnect
+    setThinkingStream('')
     liveRef.current = []
     collapsedIds.current.clear()
     setLiveTools([])
@@ -2602,13 +2648,17 @@ export function App({ transport, serverLabel }: Props): React.ReactElement {
       ) : null}
 
       {thinkingStream && !streaming ? (
+        // Compact live indicator only (the original shows a "thinking" spinner, not
+        // the reasoning text). The full reasoning commits as a collapsed entry at
+        // turn end — expand with ctrl+o. Keeping this static also means reasoning
+        // deltas never drive per-token writes, so they can't lag input.
         <Box>
           <Box width={2}>
             <Text color={theme.dim}>∴</Text>
           </Box>
           <Box flexGrow={1}>
             <Text color={theme.dim} italic>
-              {streamTail(thinkingStream, (process.stdout.columns ?? 80) - 4, (process.stdout.rows ?? 24) - 10)}
+              Thinking…
             </Text>
           </Box>
         </Box>

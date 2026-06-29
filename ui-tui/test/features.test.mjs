@@ -59,12 +59,56 @@ test('MCP elicitation shows a form and accepts input', async () => {
   assert.deepEqual(responses[0], { action: 'accept', content: { name: 'Ada' } })
 })
 
-test('live thinking streams a dim buffer', async () => {
+const thinkingDelta = (t) => JSON.stringify({ type: 'stream_event', session_id: 's', event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: t } } }) + '\n'
+const textDelta = (t) => JSON.stringify({ type: 'stream_event', session_id: 's', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: t } } }) + '\n'
+
+test('live thinking shows a compact indicator, not the reasoning text', async () => {
+  // The original shows a "thinking" status, not the live reasoning. We mirror that:
+  // a static "∴ Thinking…" indicator, with the text never dumped to the screen.
   const { cb, lastFrame } = mount()
   await wait(150)
-  cb().onData(JSON.stringify({ type: 'stream_event', session_id: 's', event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: 'reasoning here' } } }) + '\n')
-  await wait(100)
-  assert.match(strip(lastFrame()), /∴.*reasoning here/s)
+  cb().onData(thinkingDelta('secret reasoning steps'))
+  await wait(120)
+  const f = strip(lastFrame())
+  assert.match(f, /∴\s*Thinking…/s)
+  assert.doesNotMatch(f, /secret reasoning steps/)
+})
+
+test('reasoning commits collapsed (∴ Thinking, ctrl+o to expand)', async () => {
+  // When the answer starts, the reasoning is committed as a COLLAPSED entry —
+  // matching the original's AssistantThinkingMessage (hidden unless expanded).
+  const { cb, lastFrame } = mount()
+  await wait(150)
+  cb().onData(thinkingDelta('hidden chain of thought'))
+  await wait(60)
+  cb().onData(textDelta('the answer')) // text start → commit reasoning, collapsed
+  await wait(150)
+  const f = strip(lastFrame())
+  assert.match(f, /∴ Thinking \(ctrl\+o to expand\)/)
+  assert.doesNotMatch(f, /hidden chain of thought/)
+})
+
+test('thinking-only turn still commits the reasoning at result', async () => {
+  const { cb, lastFrame } = mount()
+  await wait(150)
+  cb().onData(thinkingDelta('lonely reasoning'))
+  await wait(60)
+  cb().onData(JSON.stringify({ type: 'result', subtype: 'success', session_id: 's', num_turns: 1, usage: {} }) + '\n')
+  await wait(140)
+  assert.match(strip(lastFrame()), /∴ Thinking \(ctrl\+o to expand\)/) // preserved, not discarded
+})
+
+test('multi-step turn: reasoning commits before the tool call (in order)', async () => {
+  const { cb, lastFrame } = mount()
+  await wait(150)
+  cb().onData(thinkingDelta('REASONMARK'))
+  await wait(60)
+  cb().onData(JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'echo TOOLMARK' } }] } }) + '\n')
+  await wait(160)
+  const f = strip(lastFrame())
+  const iThink = f.indexOf('∴ Thinking')
+  const iTool = f.indexOf('TOOLMARK')
+  assert.ok(iThink >= 0 && iTool >= 0 && iThink < iTool, `reasoning must precede the tool (think@${iThink} tool@${iTool})`)
 })
 
 test('queue priorities: next: jumps the queue', async () => {
