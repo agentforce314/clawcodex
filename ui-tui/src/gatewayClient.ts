@@ -27,6 +27,9 @@ import type { SessionInfo } from './types.js'
 const STARTUP_TIMEOUT_MS = 30_000
 const MAX_LOG_LINES = 500
 const RPC_TIMEOUT_MS = 5_000
+// clawcodex app version shown in the banner ("clawcodex v{version}"). Keep in
+// sync with the installer (install.sh INSTALLER_VERSION).
+const CLAWCODEX_VERSION = '0.6.0'
 
 /** Command that launches the clawcodex agent-server (set by the Python launcher). */
 function resolveAgentCmd(): string[] {
@@ -674,9 +677,10 @@ export class GatewayClient extends EventEmitter {
       profile_name: init.provider ? String(init.provider) : undefined,
       skills: {},
       tools: { '': toolNames },
-      // The app gates "ready" on info.version (useSessionLifecycle:227); without
-      // it the status is stuck on "starting agent…". Use the protocol version.
-      version: String(init.protocol_version ?? '0.1.0')
+      // The app gates "ready" on info.version (useSessionLifecycle:227) and the
+      // banner shows it as "clawcodex v{version}", so this is the app version,
+      // not the wire protocol_version.
+      version: CLAWCODEX_VERSION
     } as SessionInfo
   }
 }
