@@ -44,19 +44,39 @@ function safeJson(v: unknown): string {
 }
 
 /** Pick the salient arg for a tool so the trail label reads `Bash(ls)` /
- *  `Read(path)` (Claude-style) instead of a bare tool name. */
+ *  `Read(package.json)` / `Grep(TODO)` (Claude-style) instead of a bare tool
+ *  name. File paths are shown relative to the workspace so the label stays
+ *  short; search tools show their pattern rather than the search directory. */
 function toolContext(input: any): string {
   if (!input || typeof input !== 'object') return ''
-  const v =
-    input.command ??
-    input.file_path ??
-    input.path ??
-    input.pattern ??
-    input.url ??
-    input.query ??
-    input.description ??
-    input.prompt
+  if (input.pattern != null) return String(input.pattern)
+  const p = input.file_path ?? input.path ?? input.notebook_path
+  if (p != null) return relativizePath(String(p))
+  const v = input.command ?? input.url ?? input.query ?? input.description ?? input.prompt
   return v == null ? '' : String(v)
+}
+
+/** Shorten an absolute path to a workspace-relative path (or basename). */
+function relativizePath(p: string): string {
+  const ws = (process.env.CLAWCODEX_WORKSPACE || process.env.HERMES_CWD || process.cwd()).replace(/\/+$/, '')
+  if (ws && p.startsWith(ws + '/')) return p.slice(ws.length + 1)
+  const parts = p.split('/')
+  return parts[parts.length - 1] || p
+}
+
+/** Summarize a tool result for the trail. A successful Read returns
+ *  line-numbered file contents (cat -n: `N\t…`), which read as noise when
+ *  crammed onto one line, so collapse it to a line count (Claude-style). Only
+ *  genuine numbered output is collapsed — errors (is_error) and Read's other
+ *  acknowledgements (empty-file / file_unchanged warnings, PDF/image stubs)
+ *  aren't `N\t…` text and pass through, so nothing is mislabeled or hidden. */
+function formatToolResult(name: string | undefined, result: string, isError = false): string {
+  if (!result || isError) return result
+  if (name === 'Read' && /^\s*\d+\t/.test(result)) {
+    const n = result.split('\n').filter(l => l.length > 0).length
+    return `Read ${n} line${n === 1 ? '' : 's'}`
+  }
+  return result
 }
 
 /** clawcodex-backed slash commands (handled via command.dispatch → dispatchSlash).
@@ -553,7 +573,11 @@ export class GatewayClient extends EventEmitter {
                 payload: {
                   inline_diff: stored ? this.editDiff(stored.name, stored.input) : undefined,
                   name: stored?.name,
-                  result_text: typeof b.content === 'string' ? b.content : safeJson(b.content),
+                  result_text: formatToolResult(
+                    stored?.name,
+                    typeof b.content === 'string' ? b.content : safeJson(b.content),
+                    Boolean(b.is_error)
+                  ),
                   tool_id: b.tool_use_id
                 },
                 type: 'tool.complete'

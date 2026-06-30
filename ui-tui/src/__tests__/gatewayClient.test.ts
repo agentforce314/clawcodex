@@ -1,415 +1,167 @@
+import { EventEmitter } from 'node:events'
+import { PassThrough } from 'node:stream'
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-interface ListenerEntry {
-  callback: (event: any) => void
-  once: boolean
-}
+// The clawcodex GatewayClient is an adapter that spawns `clawcodex
+// agent-server --stdio` and maps its stdout NDJSON to hermes GatewayEvents.
+// We fake the child process so the test can feed protocol lines on stdout and
+// observe the emitted events. (The previous suite here tested an older
+// WebSocket attach-mode client that the NDJSON rewrite in #572 removed.)
+const harness = vi.hoisted(() => ({ proc: null as null | EventEmitter, spawnCalls: [] as unknown[][] }))
 
-const { FakeWebSocket } = vi.hoisted(() => {
-  class FakeWebSocket {
-    static CONNECTING = 0
-    static OPEN = 1
-    static CLOSING = 2
-    static CLOSED = 3
-    static instances: FakeWebSocket[] = []
-
-    readyState = FakeWebSocket.CONNECTING
-    sent: string[] = []
-    readonly url: string
-    private listeners = new Map<string, ListenerEntry[]>()
-
-    constructor(url: string) {
-      this.url = url
-      FakeWebSocket.instances.push(this)
-    }
-
-    static reset() {
-      FakeWebSocket.instances = []
-    }
-
-    addEventListener(type: string, callback: (event: any) => void, options?: unknown) {
-      const once =
-        typeof options === 'object' &&
-        options !== null &&
-        'once' in options &&
-        Boolean((options as { once?: unknown }).once)
-
-      const entries = this.listeners.get(type) ?? []
-
-      entries.push({ callback, once })
-      this.listeners.set(type, entries)
-    }
-
-    removeEventListener(type: string, callback: (event: any) => void) {
-      const entries = this.listeners.get(type)
-
-      if (!entries) {
-        return
-      }
-
-      this.listeners.set(
-        type,
-        entries.filter(entry => entry.callback !== callback)
-      )
-    }
-
-    send(payload: string) {
-      if (this.readyState !== FakeWebSocket.OPEN) {
-        throw new Error('socket not open')
-      }
-
-      this.sent.push(payload)
-    }
-
-    close(code = 1000) {
-      if (this.readyState === FakeWebSocket.CLOSED) {
-        return
-      }
-
-      this.readyState = FakeWebSocket.CLOSED
-      this.emit('close', { code })
-    }
-
-    open() {
-      this.readyState = FakeWebSocket.OPEN
-      this.emit('open', {})
-    }
-
-    message(data: string) {
-      this.emit('message', { data })
-    }
-
-    private emit(type: string, event: any) {
-      const entries = [...(this.listeners.get(type) ?? [])]
-
-      for (const entry of entries) {
-        entry.callback(event)
-
-        if (entry.once) {
-          this.removeEventListener(type, entry.callback)
-        }
-      }
-    }
+vi.mock('node:child_process', () => ({
+  spawn: (...args: unknown[]) => {
+    harness.spawnCalls.push(args)
+    return harness.proc
   }
-
-  return { FakeWebSocket }
-})
-
-vi.mock('undici', () => ({ WebSocket: FakeWebSocket }))
+}))
 
 import { GatewayClient } from '../gatewayClient.js'
 
-describe('GatewayClient websocket attach mode', () => {
-  const originalWebSocket = globalThis.WebSocket
-  let originalGatewayUrl: string | undefined
-  let originalSidecarUrl: string | undefined
+class FakeProc extends EventEmitter {
+  kill = vi.fn()
+  stderr = new PassThrough()
+  stdin = new PassThrough()
+  stdout = new PassThrough()
+
+  /** Feed one NDJSON protocol message to the client as a stdout line. */
+  line(obj: unknown): void {
+    this.stdout.write(JSON.stringify(obj) + '\n')
+  }
+}
+
+const toolUse = (id: string, name: string, input: unknown) => ({
+  message: { content: [{ id, input, name, type: 'tool_use' }] },
+  type: 'assistant'
+})
+const toolResult = (id: string, content: unknown, isError = false) => ({
+  message: { content: [{ content, is_error: isError, tool_use_id: id, type: 'tool_result' }] },
+  type: 'user'
+})
+
+const INIT = {
+  cwd: '/ws',
+  model: 'claude-test',
+  protocol_version: '0.1.0',
+  session_id: 's1',
+  subtype: 'init',
+  tools: [{ name: 'Read' }, { name: 'Bash' }],
+  type: 'system'
+}
+
+describe('GatewayClient NDJSON adapter', () => {
+  const prevWs = process.env.CLAWCODEX_WORKSPACE
+  let events: any[]
+  let gw: GatewayClient
+  let proc: FakeProc
 
   beforeEach(() => {
-    originalGatewayUrl = process.env.HERMES_TUI_GATEWAY_URL
-    originalSidecarUrl = process.env.HERMES_TUI_SIDECAR_URL
-    FakeWebSocket.reset()
-    ;(globalThis as { WebSocket?: unknown }).WebSocket = FakeWebSocket as unknown as typeof WebSocket
+    process.env.CLAWCODEX_WORKSPACE = '/ws'
+    proc = new FakeProc()
+    harness.proc = proc
+    harness.spawnCalls = []
+    events = []
+    gw = new GatewayClient()
+    gw.on('event', (e: any) => events.push(e))
+    gw.start()
+    gw.drain() // subscribe so publish() emits live instead of buffering
   })
 
   afterEach(() => {
-    if (originalGatewayUrl === undefined) {
-      delete process.env.HERMES_TUI_GATEWAY_URL
-    } else {
-      process.env.HERMES_TUI_GATEWAY_URL = originalGatewayUrl
-    }
-
-    if (originalSidecarUrl === undefined) {
-      delete process.env.HERMES_TUI_SIDECAR_URL
-    } else {
-      process.env.HERMES_TUI_SIDECAR_URL = originalSidecarUrl
-    }
-
-    FakeWebSocket.reset()
-
-    if (originalWebSocket) {
-      globalThis.WebSocket = originalWebSocket
-    } else {
-      delete (globalThis as { WebSocket?: unknown }).WebSocket
-    }
-  })
-
-  it('waits for websocket open and resolves RPC requests', async () => {
-    process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
-    const gw = new GatewayClient()
-
-    gw.start()
-    const gatewaySocket = FakeWebSocket.instances[0]!
-    const req = gw.request<{ ok: boolean }>('session.create', { cols: 80 })
-
-    expect(gatewaySocket.sent).toHaveLength(0)
-    gatewaySocket.open()
-    await vi.waitFor(() => expect(gatewaySocket.sent).toHaveLength(1))
-
-    const frame = JSON.parse(gatewaySocket.sent[0] ?? '{}') as { id: string; method: string }
-    expect(frame.method).toBe('session.create')
-
-    gatewaySocket.message(JSON.stringify({ id: frame.id, jsonrpc: '2.0', result: { ok: true } }))
-    await expect(req).resolves.toEqual({ ok: true })
-
     gw.kill()
+    if (prevWs === undefined) delete process.env.CLAWCODEX_WORKSPACE
+    else process.env.CLAWCODEX_WORKSPACE = prevWs
   })
 
-  it('mirrors event frames to sidecar websocket when configured', async () => {
-    process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
-    process.env.HERMES_TUI_SIDECAR_URL = 'ws://gateway.test/api/pub?token=abc&channel=demo'
+  const types = () => events.map(e => e.type)
+  const last = (t: string) => [...events].reverse().find(e => e.type === t)
+  // Emit a tool_use then await its tool.start (so toolInputs is populated),
+  // then emit the matching tool_result and await its tool.complete.
+  const runTool = async (id: string, name: string, input: unknown, result: unknown) => {
+    proc.line(toolUse(id, name, input))
+    await vi.waitFor(() => expect(last('tool.start')).toBeTruthy())
+    proc.line(toolResult(id, result))
+    await vi.waitFor(() => expect(last('tool.complete')).toBeTruthy())
+    return last('tool.complete').payload
+  }
 
-    const gw = new GatewayClient()
-    const seen: string[] = []
-
-    gw.on('event', ev => seen.push(ev.type))
-    gw.start()
-
-    const gatewaySocket = FakeWebSocket.instances[0]!
-    gatewaySocket.open()
-    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2))
-
-    const sidecarSocket = FakeWebSocket.instances[1]!
-
-    sidecarSocket.open()
-    gw.drain()
-
-    const eventFrame = JSON.stringify({
-      jsonrpc: '2.0',
-      method: 'event',
-      params: { type: 'tool.start', payload: { tool_id: 't1' } }
-    })
-
-    gatewaySocket.message(eventFrame)
-
-    expect(seen).toContain('tool.start')
-    expect(sidecarSocket.sent).toContain(eventFrame)
-
-    gw.kill()
+  it('spawns the agent-server and emits gateway.ready + session.info on init', async () => {
+    expect(harness.spawnCalls).toHaveLength(1)
+    proc.line(INIT)
+    await vi.waitFor(() => expect(types()).toContain('gateway.ready'))
+    expect(types()).toContain('session.info')
+    await expect(gw.request('session.create', {})).resolves.toMatchObject({ session_id: 's1' })
   })
 
-  it('publishes local dashboard-control events to the sidecar websocket', async () => {
-    process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
-    process.env.HERMES_TUI_SIDECAR_URL = 'ws://gateway.test/api/pub?token=abc&channel=demo'
-
-    const gw = new GatewayClient()
-    const seen: string[] = []
-
-    gw.on('event', ev => seen.push(ev.type))
-    gw.start()
-
-    const gatewaySocket = FakeWebSocket.instances[0]!
-
-    gatewaySocket.open()
-    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2))
-
-    const sidecarSocket = FakeWebSocket.instances[1]!
-
-    sidecarSocket.open()
-    gw.drain()
-
-    gw.publishLocalEvent({
-      payload: { reason: 'idle_exit_hotkey' },
-      session_id: 'sid-old',
-      type: 'dashboard.new_session_requested'
-    })
-
-    expect(seen).toContain('dashboard.new_session_requested')
-    expect(JSON.parse(sidecarSocket.sent.at(-1) ?? '{}')).toEqual({
-      jsonrpc: '2.0',
-      method: 'event',
-      params: {
-        payload: { reason: 'idle_exit_hotkey' },
-        session_id: 'sid-old',
-        type: 'dashboard.new_session_requested'
-      }
-    })
-
-    gw.kill()
+  it('labels file tools with a workspace-relative path', async () => {
+    proc.line(toolUse('t1', 'Read', { file_path: '/ws/src/foo.ts' }))
+    await vi.waitFor(() => expect(last('tool.start')).toBeTruthy())
+    expect(last('tool.start').payload).toMatchObject({ context: 'src/foo.ts', name: 'Read', tool_id: 't1' })
   })
 
-  it('emits exit when attached websocket closes', () => {
-    process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
-    const gw = new GatewayClient()
-    const exits: Array<null | number> = []
-
-    gw.on('exit', code => exits.push(code))
-    gw.start()
-
-    const gatewaySocket = FakeWebSocket.instances[0]!
-
-    gatewaySocket.open()
-    gw.drain()
-    gatewaySocket.close(1011)
-
-    expect(exits).toEqual([1011])
-    expect(gw.getLogTail(20)).toContain('[lifecycle] websocket close code=1011')
-    expect(gw.getLogTail(20)).toContain('[lifecycle] transport exit code=1011')
+  it('falls back to the basename for paths outside the workspace', async () => {
+    proc.line(toolUse('t1', 'Read', { file_path: '/etc/hosts' }))
+    await vi.waitFor(() => expect(last('tool.start')).toBeTruthy())
+    expect(last('tool.start').payload.context).toBe('hosts')
   })
 
-  it('rejects pending RPCs with websocket wording when the attached socket closes', async () => {
-    process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
-    const gw = new GatewayClient()
-
-    gw.start()
-    const gatewaySocket = FakeWebSocket.instances[0]!
-
-    gatewaySocket.open()
-    gw.drain()
-
-    const req = gw.request('session.create', {})
-    await vi.waitFor(() => expect(gatewaySocket.sent.length).toBeGreaterThan(0))
-
-    gatewaySocket.close(1011)
-
-    await expect(req).rejects.toThrow(/gateway websocket closed \(1011\)/)
+  it('labels Bash with its command (no path relativization)', async () => {
+    proc.line(toolUse('t1', 'Bash', { command: 'ls -la' }))
+    await vi.waitFor(() => expect(last('tool.start')).toBeTruthy())
+    expect(last('tool.start').payload.context).toBe('ls -la')
   })
 
-  it('rejects pending RPCs when kill() closes the attached websocket', async () => {
-    process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
-    const gw = new GatewayClient()
-
-    gw.start()
-    const gatewaySocket = FakeWebSocket.instances[0]!
-
-    gatewaySocket.open()
-    gw.drain()
-
-    const req = gw.request('session.create', {})
-    await vi.waitFor(() => expect(gatewaySocket.sent.length).toBeGreaterThan(0))
-
-    gw.kill('test.shutdown')
-
-    await expect(req).rejects.toThrow(/gateway closed/)
-    expect(gw.getLogTail(20)).toContain('[lifecycle] GatewayClient.kill reason=test.shutdown')
+  it('labels search tools with the pattern, not the search directory', async () => {
+    proc.line(toolUse('t1', 'Grep', { path: '/ws/src', pattern: 'TODO' }))
+    await vi.waitFor(() => expect(last('tool.start')).toBeTruthy())
+    expect(last('tool.start').payload.context).toBe('TODO')
   })
 
-  it('reattaches when HERMES_TUI_GATEWAY_URL rotates between requests', async () => {
-    process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway-old.test/api/ws?token=abc'
-    const gw = new GatewayClient()
-
-    gw.start()
-    const firstSocket = FakeWebSocket.instances[0]!
-
-    firstSocket.open()
-    gw.drain()
-
-    const stale = gw.request('session.create', {})
-    await vi.waitFor(() => expect(firstSocket.sent.length).toBeGreaterThan(0))
-
-    process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway-new.test/api/ws?token=xyz'
-    const next = gw.request('session.create', {})
-
-    await expect(stale).rejects.toThrow(/gateway attach url changed/)
-    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2))
-
-    const secondSocket = FakeWebSocket.instances[1]!
-    expect(secondSocket.url).toContain('gateway-new.test')
-
-    secondSocket.open()
-    await vi.waitFor(() => expect(secondSocket.sent.length).toBeGreaterThan(0))
-
-    const frame = JSON.parse(secondSocket.sent[0] ?? '{}') as { id: string }
-    secondSocket.message(JSON.stringify({ id: frame.id, jsonrpc: '2.0', result: { ok: true } }))
-
-    await expect(next).resolves.toEqual({ ok: true })
-    gw.kill()
+  // Read's numbered output is `f"{i}\t{line}"` joined by "\n" — no leading pad,
+  // no trailing newline (src/tool_system/tools/read.py).
+  it('collapses a Read result to a line count', async () => {
+    const p = await runTool('t1', 'Read', { file_path: '/ws/a.ts' }, '1\tconst a = 1\n2\tconst b = 2\n3\tconst c = 3')
+    expect(p.result_text).toBe('Read 3 lines')
   })
 
-  it('uses the undici WebSocket fallback when global WebSocket is unavailable', () => {
-    process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=hunter2&channel=secret'
-    delete (globalThis as { WebSocket?: unknown }).WebSocket
-
-    const gw = new GatewayClient()
-
-    gw.start()
-    expect(FakeWebSocket.instances).toHaveLength(1)
-    expect(FakeWebSocket.instances[0]?.url).toBe('ws://gateway.test/api/ws?token=hunter2&channel=secret')
-
-    gw.kill()
+  it('uses the singular for a one-line Read result', async () => {
+    const p = await runTool('t1', 'Read', { file_path: '/ws/a.ts' }, '1\tonly line')
+    expect(p.result_text).toBe('Read 1 line')
   })
 
-  it('redacts attach URL secrets when the WebSocket constructor throws', () => {
-    const secretUrl = 'ws://gateway.test/api/ws?token=hunter2&channel=secret'
-
-    process.env.HERMES_TUI_GATEWAY_URL = secretUrl
-    ;(globalThis as { WebSocket?: unknown }).WebSocket = class ThrowingWebSocket extends FakeWebSocket {
-      constructor(url: string) {
-        throw new TypeError(`Invalid URL: ${url}`)
-      }
-    } as unknown as typeof WebSocket
-
-    const gw = new GatewayClient()
-
-    gw.start()
-    gw.drain()
-
-    const tail = gw.getLogTail(20)
-    expect(tail).not.toContain('hunter2')
-    expect(tail).not.toContain('channel=secret')
-    expect(tail).not.toContain(secretUrl)
-    expect(tail).toContain('ws://gateway.test/api/ws?***')
-
-    gw.kill()
+  // Read's non-text acks aren't `N\t…` numbered output, so they must NOT be
+  // collapsed (the empty-file case would otherwise become a false "Read 1 line"
+  // and bury the warning).
+  it('does not collapse the empty-file warning', async () => {
+    const warning = '<system-reminder>Warning: the file exists but the contents are empty.</system-reminder>'
+    const p = await runTool('t1', 'Read', { file_path: '/ws/empty.ts' }, warning)
+    expect(p.result_text).toBe(warning)
   })
 
-  it('redacts sidecar URL secrets when the WebSocket constructor throws', async () => {
-    const sidecarUrl = 'ws://gateway.test/api/pub?token=hunter2&channel=secret'
-
-    process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
-    process.env.HERMES_TUI_SIDECAR_URL = sidecarUrl
-    ;(globalThis as { WebSocket?: unknown }).WebSocket = class ThrowingSidecarWebSocket extends FakeWebSocket {
-      constructor(url: string) {
-        if (url.includes('/api/pub')) {
-          throw new TypeError(`Invalid URL: ${url}`)
-        }
-
-        super(url)
-      }
-    } as unknown as typeof WebSocket
-
-    const gw = new GatewayClient()
-
-    gw.start()
-    const gatewaySocket = FakeWebSocket.instances[0]!
-    gatewaySocket.open()
-    await vi.waitFor(() => expect(gw.getLogTail(20)).toContain('[sidecar] failed to connect'))
-
-    const tail = gw.getLogTail(20)
-    expect(tail).not.toContain('hunter2')
-    expect(tail).not.toContain('channel=secret')
-    expect(tail).not.toContain(sidecarUrl)
-    expect(tail).toContain('ws://gateway.test/api/pub?***')
-
-    gw.kill()
+  it('does not collapse the file_unchanged dedup stub', async () => {
+    const stub = 'File unchanged since last read. The content from the earlier Read tool_result in this conversation is still current — refer to that instead of re-reading.'
+    const p = await runTool('t1', 'Read', { file_path: '/ws/a.ts' }, stub)
+    expect(p.result_text).toBe(stub)
   })
 
-  it('redacts user-info credentials even on URLs the WHATWG parser rejects', () => {
-    // Port 99999 is outside the WHATWG URL parser's valid 0–65535
-    // range and survives `.trim()`, so the fixture deterministically
-    // exercises `redactUrl()`'s fallback branch across Node versions.
-    // (An earlier `%zz` user-info fixture did NOT actually throw in
-    // recent Node — WHATWG accepts malformed percent escapes there —
-    // which silently routed the test through the structured-URL path.)
-    const fixture = 'ws://alice:hunter2@gateway.test:99999/api/ws?token=secret'
-    expect(() => new URL(fixture)).toThrow()
+  it('passes non-Read results through unchanged', async () => {
+    const p = await runTool('t1', 'Bash', { command: 'echo hi' }, 'hi\n')
+    expect(p.result_text).toBe('hi\n')
+  })
 
-    process.env.HERMES_TUI_GATEWAY_URL = fixture
-    ;(globalThis as { WebSocket?: unknown }).WebSocket = class ThrowingWebSocket extends FakeWebSocket {
-      constructor(url: string) {
-        throw new TypeError(`Invalid URL: ${url}`)
-      }
-    } as unknown as typeof WebSocket
+  it('keeps a failed Read result visible instead of collapsing it to a line count', async () => {
+    proc.line(toolUse('t1', 'Read', { file_path: '/ws/missing.ts' }))
+    await vi.waitFor(() => expect(last('tool.start')).toBeTruthy())
+    proc.line(toolResult('t1', 'File does not exist.', true))
+    await vi.waitFor(() => expect(last('tool.complete')).toBeTruthy())
+    expect(last('tool.complete').payload.result_text).toBe('File does not exist.')
+  })
 
-    const gw = new GatewayClient()
-
-    gw.start()
-    gw.drain()
-
-    const tail = gw.getLogTail(20)
-    expect(tail).not.toContain('alice')
-    expect(tail).not.toContain('hunter2')
-    expect(tail).not.toContain('token=secret')
-
-    gw.kill()
+  it('attaches an inline diff for Edit results', async () => {
+    const p = await runTool('t1', 'Edit', { file_path: '/ws/a.ts', new_string: 'b', old_string: 'a' }, 'ok')
+    expect(p.name).toBe('Edit')
+    expect(p.inline_diff).toContain('-a')
+    expect(p.inline_diff).toContain('+b')
   })
 })
