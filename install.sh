@@ -48,7 +48,7 @@ trap 'log_err "Installer crash at line $LINENO: $BASH_COMMAND"' ERR
 # ============================================================================
 #  Config (read-only defaults)
 # ============================================================================
-readonly INSTALLER_VERSION="0.6.0"
+readonly INSTALLER_VERSION="0.7.0"
 # REPO_REF is intentionally NOT readonly — it gets reassigned when the user
 # passes --ref. We have no version tags, so the default is the main branch;
 # --ref is the escape hatch for installing a specific commit/tag/branch.
