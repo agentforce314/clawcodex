@@ -158,8 +158,8 @@ function circularDistance(a: number, b: number): number {
   return Math.min(distance, 1 - distance)
 }
 
-// Mirrors @hermes/ink's colorize.ts. Keep local: app code compiles from
-// ui-tui/src, while @hermes/ink is bundled separately from packages/.
+// Mirrors @clawcodex/ink's colorize.ts. Keep local: app code compiles from
+// ui-tui/src, while @clawcodex/ink is bundled separately from packages/.
 function richEightBitColorNumber(red: number, green: number, blue: number): number {
   const [, saturation, lightness] = rgbToHsl(red, green, blue)
 
@@ -345,13 +345,13 @@ const FALSE_RE = /^(?:0|false|no|off)$/
 
 // TERM_PROGRAM fallback allow-list for terminals whose default profile is
 // light and which may not expose COLORFGBG. This currently includes Apple
-// Terminal. Explicit HERMES_TUI_THEME / COLORFGBG signals above still win,
+// Terminal. Explicit CLAWCODEX_TUI_THEME / COLORFGBG signals above still win,
 // so dark Apple Terminal profiles that advertise a dark background stay dark.
 const LIGHT_DEFAULT_TERM_PROGRAMS = new Set<string>(['Apple_Terminal'])
 
 // Best-effort RGB → luminance check.  Currently only accepts a 3- or
 // 6-digit hex value (with or without a leading `#`); the env var name
-// `HERMES_TUI_BACKGROUND` is intentionally generic so a future OSC11
+// `CLAWCODEX_TUI_BACKGROUND` is intentionally generic so a future OSC11
 // query helper can cache its answer there too, but additional formats
 // (rgb()/hsl()/named colours) would need explicit parsing here first.
 const LUMA_LIGHT_THRESHOLD = 0.6
@@ -388,12 +388,12 @@ function backgroundLuminance(raw: string): null | number {
 
 // Pick light vs dark with ordered, explainable signals (#11300):
 //
-//   1. `HERMES_TUI_LIGHT` boolean — `1`/`true`/`yes`/`on` → light;
+//   1. `CLAWCODEX_TUI_LIGHT` boolean — `1`/`true`/`yes`/`on` → light;
 //      `0`/`false`/`no`/`off` → dark.  Either explicit value wins
 //      regardless of any later signal.
-//   2. `HERMES_TUI_THEME` named override — `light` / `dark` win over
+//   2. `CLAWCODEX_TUI_THEME` named override — `light` / `dark` win over
 //      every signal below.
-//   3. `HERMES_TUI_BACKGROUND` hex hint (3- or 6-digit) — luminance
+//   3. `CLAWCODEX_TUI_BACKGROUND` hex hint (3- or 6-digit) — luminance
 //      ≥ LUMA_LIGHT_THRESHOLD → light.
 //   4. `COLORFGBG` last field — XFCE / rxvt / Terminal.app emit
 //      slot 7 or 15 on light profiles; 0–15 ranges are otherwise
@@ -401,7 +401,7 @@ function backgroundLuminance(raw: string): null | number {
 //      allow-list below cannot override an explicit dark profile.
 //   5. `TERM_PROGRAM` light-default allow-list.
 //
-// Anything we can't decide stays dark — the default Hermes palette
+// Anything we can't decide stays dark — the default Clawcodex palette
 // is the dark one.
 export function detectLightMode(
   env: NodeJS.ProcessEnv = process.env,
@@ -409,7 +409,7 @@ export function detectLightMode(
   // precedence rule even though the production allow-list is empty.
   lightDefaultTermPrograms: ReadonlySet<string> = LIGHT_DEFAULT_TERM_PROGRAMS
 ): boolean {
-  const lightFlag = (env.HERMES_TUI_LIGHT ?? '').trim().toLowerCase()
+  const lightFlag = (env.CLAWCODEX_TUI_LIGHT ?? '').trim().toLowerCase()
 
   if (TRUE_RE.test(lightFlag)) {
     return true
@@ -419,7 +419,7 @@ export function detectLightMode(
     return false
   }
 
-  const themeFlag = (env.HERMES_TUI_THEME ?? '').trim().toLowerCase()
+  const themeFlag = (env.CLAWCODEX_TUI_THEME ?? '').trim().toLowerCase()
 
   if (themeFlag === 'light') {
     return true
@@ -429,7 +429,7 @@ export function detectLightMode(
     return false
   }
 
-  const bgHint = backgroundLuminance(env.HERMES_TUI_BACKGROUND ?? '')
+  const bgHint = backgroundLuminance(env.CLAWCODEX_TUI_BACKGROUND ?? '')
 
   if (bgHint !== null) {
     return bgHint >= LUMA_LIGHT_THRESHOLD
@@ -505,19 +505,19 @@ export function normalizeThemeForAnsiLightTerminal(
  *  so the auto-detection defers to them. Mirrors detectLightMode()'s precedence
  *  for everything above the TERM_PROGRAM fallback. */
 export function hasExplicitBackgroundSignal(env: NodeJS.ProcessEnv = process.env): boolean {
-  const lightFlag = (env.HERMES_TUI_LIGHT ?? '').trim().toLowerCase()
+  const lightFlag = (env.CLAWCODEX_TUI_LIGHT ?? '').trim().toLowerCase()
 
   if (TRUE_RE.test(lightFlag) || FALSE_RE.test(lightFlag)) {
     return true
   }
 
-  const themeFlag = (env.HERMES_TUI_THEME ?? '').trim().toLowerCase()
+  const themeFlag = (env.CLAWCODEX_TUI_THEME ?? '').trim().toLowerCase()
 
   if (themeFlag === 'light' || themeFlag === 'dark') {
     return true
   }
 
-  if (backgroundLuminance(env.HERMES_TUI_BACKGROUND ?? '') !== null) {
+  if (backgroundLuminance(env.CLAWCODEX_TUI_BACKGROUND ?? '') !== null) {
     return true
   }
 

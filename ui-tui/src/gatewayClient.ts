@@ -1,14 +1,14 @@
 /**
- * clawcodex adapter — a drop-in replacement for hermes's GatewayClient.
+ * GatewayClient — the gateway adapter the TUI app talks to.
  *
- * The hermes TUI talks to a `tui_gateway` over JSON-RPC. clawcodex instead has
- * an agent-server that speaks its own NDJSON protocol over stdio. This class
- * keeps the EXACT public interface the app depends on (EventEmitter +
- * start/drain/kill/getLogTail/publishLocalEvent/request, emitting 'event' and
- * 'exit') but:
- *   - spawns `clawcodex agent-server --stdio` (the existing backend),
- *   - maps clawcodex NDJSON messages → hermes `GatewayEvent`s,
- *   - maps the app's RPCs (prompt.submit, session.interrupt, …) → clawcodex
+ * The app expects a GatewayClient: an EventEmitter speaking a JSON-RPC-style
+ * `tui_gateway` protocol. clawcodex instead has an agent-server that speaks its
+ * own NDJSON protocol over stdio, so this class keeps the EXACT public interface
+ * the app depends on (start/drain/kill/getLogTail/publishLocalEvent/request,
+ * emitting 'event' and 'exit') but:
+ *   - spawns `clawcodex agent-server --stdio` (the backend),
+ *   - maps clawcodex NDJSON messages → `GatewayEvent`s,
+ *   - maps the app's RPCs (prompt.submit, session.interrupt, …) → agent-server
  *     stdin (user messages + control_requests).
  *
  * Phase 1 covers the basic flow (prompt → streamed text response). Tools,
@@ -61,7 +61,7 @@ function toolContext(input: any): string {
 
 /** Shorten an absolute path to a workspace-relative path (or basename). */
 function relativizePath(p: string): string {
-  const ws = (process.env.CLAWCODEX_WORKSPACE || process.env.HERMES_CWD || process.cwd()).replace(/\/+$/, '')
+  const ws = (process.env.CLAWCODEX_WORKSPACE || process.env.CLAWCODEX_CWD || process.cwd()).replace(/\/+$/, '')
   if (ws && p.startsWith(ws + '/')) return p.slice(ws.length + 1)
   const parts = p.split('/')
   return parts[parts.length - 1] || p
@@ -139,7 +139,7 @@ export class GatewayClient extends EventEmitter {
   // ── lifecycle ────────────────────────────────────────────────────────────
   start(): void {
     const cmd = resolveAgentCmd()
-    const cwd = process.env.CLAWCODEX_WORKSPACE || process.env.HERMES_CWD || process.cwd()
+    const cwd = process.env.CLAWCODEX_WORKSPACE || process.env.CLAWCODEX_CWD || process.cwd()
     const env = { ...process.env, PYTHONUNBUFFERED: '1' }
 
     this.readyTimer = setTimeout(() => {
@@ -453,7 +453,7 @@ export class GatewayClient extends EventEmitter {
   // resolve the dir part of the typed word, list it, filter by the basename).
   private completePath(word: string): Array<{ display: string; meta: string; text: string }> {
     try {
-      const cwd = process.env.CLAWCODEX_WORKSPACE || process.env.HERMES_CWD || process.cwd()
+      const cwd = process.env.CLAWCODEX_WORKSPACE || process.env.CLAWCODEX_CWD || process.cwd()
       const stripped = word.startsWith('@') ? word.slice(1) : word
       const slash = stripped.lastIndexOf('/')
       const dirPart = slash === -1 ? '' : stripped.slice(0, slash + 1)
@@ -502,7 +502,7 @@ export class GatewayClient extends EventEmitter {
     return undefined
   }
 
-  // ── clawcodex NDJSON → hermes GatewayEvent ───────────────────────────────
+  // ── clawcodex NDJSON → clawcodex GatewayEvent ───────────────────────────────
   private dispatch(msg: any): void {
     switch (msg?.type) {
       case 'assistant': {

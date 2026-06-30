@@ -6,7 +6,7 @@ import type * as EnvModule from '../config/env.js'
 import { DEFAULT_THEME } from '../theme.js'
 
 // DEV_CREDITS_MODE is a module-load-time constant (config/env.ts reads
-// process.env.HERMES_DEV_CREDITS exactly once, at import). Mutating process.env
+// process.env.CLAWCODEX_DEV_CREDITS exactly once, at import). Mutating process.env
 // inside a test can't flip it after the module is loaded — so mock the module to
 // the dev-on value for this file. vitest hoists vi.mock above the imports, so
 // appChrome picks up the mocked flag. Lives in its own file so the override
@@ -55,7 +55,7 @@ const baseProps = {
   voiceLabel: ''
 }
 
-describe('StatusRule dev-credits banner (HERMES_DEV_CREDITS on)', () => {
+describe('StatusRule dev-credits banner (CLAWCODEX_DEV_CREDITS on)', () => {
   it('keeps the dev-credits banner visible alongside a notice', () => {
     const element = StatusRule({
       ...baseProps,

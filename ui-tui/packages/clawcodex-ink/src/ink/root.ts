@@ -55,7 +55,7 @@ export type RenderOptions = {
    * through cmd's tokenizer (`&` / `|` / `^` / `<` / `>` get split or
    * reinterpreted as command syntax), which both breaks plain URLs with
    * `&` in query strings and undermines any protocol allowlist on the
-   * caller side. Hermes wires this in `entry.tsx`; library users who
+   * caller side. Clawcodex wires this in `entry.tsx`; library users who
    * don't pass it will see clickable underline styling but no action on
    * click in any terminal where mouse tracking is on.
    */

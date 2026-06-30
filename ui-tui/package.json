@@ -1,10 +1,10 @@
 {
-  "name": "hermes-tui",
+  "name": "clawcodex-tui",
   "version": "0.0.1",
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "npm run build --prefix packages/hermes-ink && tsx --watch src/entry.tsx",
+    "dev": "npm run build --prefix packages/clawcodex-ink && tsx --watch src/entry.tsx",
     "start": "tsx src/entry.tsx",
     "build": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
@@ -16,7 +16,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@hermes/ink": "file:./packages/hermes-ink",
+    "@clawcodex/ink": "file:./packages/clawcodex-ink",
     "@nanostores/react": "^1.1.0",
     "ink": "^6.8.0",
     "ink-text-input": "^6.0.0",
