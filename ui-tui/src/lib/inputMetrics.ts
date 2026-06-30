@@ -1,4 +1,4 @@
-import { stringWidth, wrapAnsi } from '@hermes/ink'
+import { stringWidth, wrapAnsi } from '@clawcodex/ink'
 
 import type { Role } from '../types.js'
 

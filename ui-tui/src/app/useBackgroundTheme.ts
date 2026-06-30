@@ -1,4 +1,4 @@
-import { useStdin } from '@hermes/ink'
+import { useStdin } from '@clawcodex/ink'
 import { useEffect } from 'react'
 
 import { hasExplicitBackgroundSignal, oscBackgroundIsLight, themeForLightMode } from '../theme.js'
@@ -25,7 +25,7 @@ const OSC11_BG_QUERY = '\x1b]11;?\x1b\\'
  * on the dark background. When the user hasn't pinned a theme explicitly, ask
  * the terminal its background color and re-theme to match.
  *
- * Silent no-op when an explicit signal is set (HERMES_TUI_THEME / _LIGHT /
+ * Silent no-op when an explicit signal is set (CLAWCODEX_TUI_THEME / _LIGHT /
  * _BACKGROUND / COLORFGBG win) or the terminal doesn't answer (timeout → the
  * default theme stands, i.e. exactly today's behavior). Runs once on mount.
  */

@@ -1,4 +1,4 @@
-import { Box, Text } from '@hermes/ink'
+import { Box, Text } from '@clawcodex/ink'
 
 import { HOTKEYS } from '../content/hotkeys.js'
 import type { Theme } from '../theme.js'
@@ -9,7 +9,7 @@ const COMMON_COMMANDS: [string, string][] = [
   ['/resume', 'switch live or resume past sessions'],
   ['/details', 'control transcript detail level'],
   ['/copy', 'copy selection or last assistant message'],
-  ['/quit', 'exit hermes']
+  ['/quit', 'exit clawcodex']
 ]
 
 const HOTKEY_PREVIEW = HOTKEYS.slice(0, 8)

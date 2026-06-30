@@ -1,4 +1,4 @@
-import { AlternateScreen, Box, NoSelect, ScrollBox, Text } from '@hermes/ink'
+import { AlternateScreen, Box, NoSelect, ScrollBox, Text } from '@clawcodex/ink'
 import { useStore } from '@nanostores/react'
 import { Fragment, memo, useMemo, useRef } from 'react'
 
@@ -32,7 +32,7 @@ import { LiveTodoPanel, StreamingAssistant } from './streamingAssistant.js'
 import { TextInput, type TextInputMouseApi } from './textInput.js'
 
 // Petdex mascot — sits just above the composer, right-aligned. Renders
-// nothing unless a pet is installed + enabled (`hermes pets select <slug>`),
+// nothing unless a pet is installed + enabled (`clawcodex pets select <slug>`),
 // so it's a no-op for everyone else.
 const PetPane = memo(function PetPane() {
   const { enabled, grid, kitty } = usePet()
