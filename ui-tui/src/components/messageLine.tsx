@@ -1,4 +1,4 @@
-import { Ansi, Box, NoSelect, Text } from '@hermes/ink'
+import { Ansi, Box, NoSelect, Text } from '@clawcodex/ink'
 import { memo, useState } from 'react'
 
 import { TERMUX_TUI_MODE } from '../config/env.js'

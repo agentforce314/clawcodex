@@ -1,8 +1,8 @@
 /**
- * Phase 0 de-risk harness: hermes's TextInput on hermes's renderer, standalone.
+ * Phase 0 de-risk harness: clawcodex's TextInput on clawcodex's renderer, standalone.
  *
  * NO backend, NO gateway — just the input box + a local echo list. The whole
- * point is to validate, on a real Terminal.app, whether hermes's input
+ * point is to validate, on a real Terminal.app, whether clawcodex's input
  * subsystem is smooth (no backspace freeze) when running inside clawcodex's
  * build/launch. If this is smooth, the wholesale port is worth it.
  *
@@ -10,7 +10,7 @@
  *       type a line, Enter to submit, hold BACKSPACE to test latency,
  *       Ctrl+C or Esc to quit.
  */
-import { Box, render, Text, useApp, useInput } from '@hermes/ink'
+import { Box, render, Text, useApp, useInput } from '@clawcodex/ink'
 import { useState } from 'react'
 
 import { TextInput } from './components/textInput.js'

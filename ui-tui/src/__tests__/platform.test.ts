@@ -71,7 +71,7 @@ describe('isVoiceToggleKey', () => {
     const { isVoiceToggleKey } = await importPlatform('darwin')
 
     expect(isVoiceToggleKey({ ctrl: false, meta: false, super: true }, 'b')).toBe(true)
-    // ``key.meta`` is NOT accepted as Cmd — hermes-ink uses meta for
+    // ``key.meta`` is NOT accepted as Cmd — clawcodex-ink uses meta for
     // Alt too, so accepting it leaked Alt+B into the default binding
     // (Copilot round-6 review on #19835). Legacy-terminal mac users
     // get strict Ctrl+B.
@@ -120,7 +120,7 @@ describe('parseVoiceRecordKey (#18994)', () => {
     const { DEFAULT_VOICE_RECORD_KEY, parseVoiceRecordKey } = await importPlatform('linux')
 
     // ``meta`` / ``cmd`` / ``command`` are ambiguous on the wire:
-    // hermes-ink sets ``key.meta`` for plain Alt on every platform AND
+    // clawcodex-ink sets ``key.meta`` for plain Alt on every platform AND
     // for Cmd on legacy macOS terminals. Accepting any of them would
     // produce a display/binding mismatch (Copilot round-6 review on
     // #19835). Users on modern kitty-style terminals spell the
@@ -247,7 +247,7 @@ describe('parseVoiceRecordKey (#18994)', () => {
   it('rejects alt+{c,d,l} on macOS — meta-as-alt collides with isAction', async () => {
     const { DEFAULT_VOICE_RECORD_KEY, parseVoiceRecordKey } = await importPlatform('darwin')
 
-    // hermes-ink reports Alt as ``key.meta`` on many terminals, and
+    // clawcodex-ink reports Alt as ``key.meta`` on many terminals, and
     // ``isActionMod`` on darwin accepts ``key.meta`` as the action
     // modifier. So ``alt+c`` / ``alt+d`` / ``alt+l`` get claimed by
     // isCopyShortcut / isAction('d') / isAction('l') before voice
@@ -274,7 +274,7 @@ describe('parseVoiceRecordKey (#18994)', () => {
   it('super+<key> does NOT fire on key.meta-only events (Alt+X false-fire guard)', async () => {
     const { isVoiceToggleKey, parseVoiceRecordKey } = await importPlatform('darwin')
 
-    // hermes-ink sets ``key.meta`` for Alt/Option AND for bare Esc on
+    // clawcodex-ink sets ``key.meta`` for Alt/Option AND for bare Esc on
     // some macOS terminals. The super branch used to accept
     // ``isMac && key.meta`` as a Cmd fallback, which made super+<key>
     // bindings silently fire on Alt+<key> / bare Esc.
@@ -442,7 +442,7 @@ describe('isVoiceToggleKey honours configured record key (#18994)', () => {
 
   // Regressions from Copilot review on #19835: the previous implementation
   // accepted ``isActionMod(key)`` in the ``ctrl`` branch for every
-  // configured key, so bare Esc (which hermes-ink reports with
+  // configured key, so bare Esc (which clawcodex-ink reports with
   // ``key.meta`` on some macOS terminals) fired ``ctrl+escape``, and
   // Alt+Space / Alt+Tab fired ``ctrl+space`` / ``ctrl+tab``. The fallback
   // is now gated to the documented default (``ctrl+b``) only.
@@ -474,7 +474,7 @@ describe('isVoiceToggleKey honours configured record key (#18994)', () => {
     // Cmd+B via kitty-style ``key.super``: still works.
     expect(isVoiceToggleKey({ ctrl: false, meta: false, super: true }, 'b', DEFAULT_VOICE_RECORD_KEY)).toBe(true)
     // Cmd+B via legacy ``key.meta`` NO LONGER works — ``key.meta`` is
-    // hermes-ink's Alt signal, so accepting it leaked Alt+B into the
+    // clawcodex-ink's Alt signal, so accepting it leaked Alt+B into the
     // default binding (Copilot round-6 review on #19835).
     expect(isVoiceToggleKey({ ctrl: false, meta: true, super: false }, 'b', DEFAULT_VOICE_RECORD_KEY)).toBe(false)
   })
@@ -497,7 +497,7 @@ describe('isVoiceToggleKey honours configured record key (#18994)', () => {
     expect(formatVoiceRecordKey(superB)).toBe('Cmd+B')
     // Kitty-style: key.super fires the binding.
     expect(isVoiceToggleKey({ ctrl: false, meta: false, super: true }, 'b', superB)).toBe(true)
-    // ``key.meta`` is NOT accepted — hermes-ink uses meta for Alt too,
+    // ``key.meta`` is NOT accepted — clawcodex-ink uses meta for Alt too,
     // so accepting it here would make super+b silently fire on Alt+B
     // (Copilot round-5 review on #19835).
     expect(isVoiceToggleKey({ ctrl: false, meta: true, super: false }, 'b', superB)).toBe(false)
@@ -527,7 +527,7 @@ describe('isVoiceToggleKey honours configured record key (#18994)', () => {
 
     // Both parse to the documented default semantically; both must keep
     // the macOS Cmd+B muscle-memory fallback via kitty-style key.super.
-    // ``key.meta`` is NOT accepted — that's hermes-ink's Alt signal
+    // ``key.meta`` is NOT accepted — that's clawcodex-ink's Alt signal
     // (round-6 review), so legacy-terminal users get strict Ctrl+B.
     expect(isVoiceToggleKey({ ctrl: false, meta: true, super: false }, 'b', controlB)).toBe(false)
     expect(isVoiceToggleKey({ ctrl: false, meta: true, super: false }, 'b', spacedB)).toBe(false)

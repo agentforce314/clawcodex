@@ -1,4 +1,4 @@
-import { Box, Text, useInput } from '@hermes/ink'
+import { Box, Text, useInput } from '@clawcodex/ink'
 import { useState } from 'react'
 
 import type { BillingOverlayState } from '../app/interfaces.js'
