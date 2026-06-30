@@ -2398,6 +2398,20 @@ export default class Ink {
         // <AlternateScreen>'s unmount effect won't run during signal-exit.
         // Exit alt screen FIRST so other cleanup sequences go to the main screen.
         writeSync(1, EXIT_ALT_SCREEN)
+      } else {
+        // Inline (primary-screen) exit: the renderer parks the cursor on the
+        // frame's caret row (displayCursor), which can sit ABOVE rows like a
+        // bottom status rule. Drop onto a fresh line below the WHOLE frame so the
+        // returning shell prompt lands cleanly under the TUI regardless of
+        // layout, instead of overwriting its last row(s). When the caret is
+        // blurred (displayCursor null) the cursor already sits one past the last
+        // row, so nothing is emitted. (Alt-screen's rmcup restores the pre-TUI
+        // cursor, so this is inline-only.)
+        const parkedY = this.displayCursor?.y ?? this.frontFrame.screen.height
+        const below = Math.max(0, this.frontFrame.screen.height - parkedY)
+        if (below > 0) {
+          writeSync(1, '\r' + '\n'.repeat(below))
+        }
       }
 
       // Disable mouse tracking — unconditional because altScreenActive can be

@@ -19,8 +19,20 @@ if (!process.stdin.isTTY) {
   process.exit(0)
 }
 
-// Start from a clean slate. If a previous TUI crashed or was kill -9'd, the
-// terminal tab can still have mouse/focus/paste modes enabled.
+// Whether we run in the alternate screen — must match appLayout's
+// `INLINE_MODE ? Fragment : AlternateScreen`, which keys off INLINE_MODE alone
+// (so Termux + HERMES_TUI_INLINE=0 is fullscreen too). Only fullscreen should
+// leave the alt screen on cleanup: in inline mode emitting rmcup (?1049l) homes
+// the cursor on Apple Terminal, overlapping the banner onto scrollback at startup
+// and dropping the prompt onto the frame at exit — see terminalModes.ts.
+const FULLSCREEN = !INLINE_MODE
+
+// Reset leftover input modes (mouse/focus/paste) a crashed-or-killed prior
+// program may have armed. Never leave the alt screen here: at startup we haven't
+// entered it, and rmcup would home the cursor inline. (Tradeoff: an inline TUI
+// launched into a stale alt screen left by a hard-crashed fullscreen program
+// won't be pulled back to the primary buffer — rare, vs. the common-case overlap
+// this avoids.)
 resetTerminalModes()
 
 // Final backstop for terminal cleanup. setupGracefulExit() resets modes on
@@ -36,7 +48,7 @@ resetTerminalModes()
 // before the process is gone. Idempotent and cheap, so layering it under the
 // graceful-exit cleanups is safe.
 process.on('exit', () => {
-  resetTerminalModes()
+  resetTerminalModes(process.stdout, FULLSCREEN)
 })
 
 // Only wipe the screen for a clean slate in fullscreen (alternate-screen) mode.
@@ -60,7 +72,7 @@ const dumpNotice = (snap: MemorySnapshot, dump: HeapDumpResult | null) =>
 setupGracefulExit({
   cleanups: [
     () => {
-      resetTerminalModes()
+      resetTerminalModes(process.stdout, FULLSCREEN)
 
       return gw.kill('graceful-exit-cleanup')
     }
@@ -76,7 +88,7 @@ setupGracefulExit({
     // (gw.kill forwards SIGTERM regardless of which signal hit us) — this is
     // what tells SIGHUP (terminal/SSH dropped) apart from a real SIGTERM.
     recordParentLifecycle(`graceful-exit received signal=${signal} → killing gateway`)
-    resetTerminalModes()
+    resetTerminalModes(process.stdout, FULLSCREEN)
     process.stderr.write(`hermes-tui lifecycle: received ${signal}\n`)
   },
   // The dashboard chat tab has no in-page restart path after the PTY child
@@ -94,7 +106,7 @@ const stopMemoryMonitor = startMemoryMonitor({
     recordParentLifecycle(
       `memory-critical process.exit(137) heap=${formatBytes(snap.heapUsed)} rss=${formatBytes(snap.rss)} dump=${dump?.heapPath ?? 'failed'}`
     )
-    resetTerminalModes()
+    resetTerminalModes(process.stdout, FULLSCREEN)
     process.stderr.write(
       `hermes-tui lifecycle: memory critical exit heap=${formatBytes(snap.heapUsed)} rss=${formatBytes(snap.rss)}\n`
     )
