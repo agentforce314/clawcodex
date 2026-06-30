@@ -23,11 +23,28 @@ describe('terminal mode reset', () => {
     expect(TERMINAL_MODE_RESET).toContain('\x1b[>4m')
   })
 
-  it('writes reset sequence to TTY streams without fds', () => {
+  it('writes the inline reset (no alt-screen leave) to TTY streams without fds', () => {
     const write = vi.fn()
 
     expect(resetTerminalModes({ isTTY: true, write } as unknown as NodeJS.WriteStream)).toBe(true)
+    const written = write.mock.calls[0]?.[0] as string
+    // Input/display modes are still reset...
+    expect(written).toContain("\x1b[0'z")
+    expect(written).toContain('\x1b[?1000l')
+    expect(written).toContain('\x1b[?2004l')
+    expect(written).toContain('\x1b[?25h')
+    // ...but NOT the alt-screen leave: inline mode never entered the alt screen,
+    // and rmcup homes the cursor on Apple Terminal (overlapping startup/exit).
+    expect(written).not.toContain('\x1b[?1049l')
+  })
+
+  it('includes the alt-screen leave only when leaveAltScreen is set (fullscreen)', () => {
+    const write = vi.fn()
+
+    expect(resetTerminalModes({ isTTY: true, write } as unknown as NodeJS.WriteStream, true)).toBe(true)
+    // Fullscreen reset is the full canonical sequence, including rmcup.
     expect(write).toHaveBeenCalledWith(TERMINAL_MODE_RESET)
+    expect((write.mock.calls[0]?.[0] as string)).toContain('\x1b[?1049l')
   })
 
   it('skips non-TTY streams', () => {
@@ -48,7 +65,9 @@ describe('terminal mode reset', () => {
     const write = vi.fn()
     const stream = { isTTY: true, write } as unknown as NodeJS.WriteStream
 
-    // Mirror entry.tsx's process.on('exit') callback.
+    // entry.tsx's exit backstop calls resetTerminalModes(stdout, FULLSCREEN);
+    // the mouse-disarm bytes live in MODE_RESET_HEAD/TAIL and are emitted
+    // regardless of the alt-screen flag, so the default call exercises them.
     const onExit = () => resetTerminalModes(stream)
     onExit()
 
