@@ -32,7 +32,7 @@ await build({
   outfile: out,
   jsx: 'automatic',
   jsxImportSource: 'react',
-  alias: { '@hermes/ink': resolve(root, 'packages/hermes-ink/src/entry-exports.ts') },
+  alias: { '@clawcodex/ink': resolve(root, 'packages/clawcodex-ink/src/entry-exports.ts') },
   plugins: [stubDevtools],
   banner: {
     js: "import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);"

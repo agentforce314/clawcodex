@@ -50,7 +50,7 @@ const loadCommandRegistryNames = (): CommandRegistryLoad => {
         process.env.PYTHON ?? 'python3',
         [
           '-c',
-          'import json; from hermes_cli.commands import COMMAND_REGISTRY; print(json.dumps([c.name for c in COMMAND_REGISTRY]))'
+          'import json; from clawcodex_cli.commands import COMMAND_REGISTRY; print(json.dumps([c.name for c in COMMAND_REGISTRY]))'
         ],
         { cwd: resolve(here, '../../..'), encoding: 'utf8' }
       )

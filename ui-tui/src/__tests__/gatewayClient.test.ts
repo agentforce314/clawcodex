@@ -4,7 +4,7 @@ import { PassThrough } from 'node:stream'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // The clawcodex GatewayClient is an adapter that spawns `clawcodex
-// agent-server --stdio` and maps its stdout NDJSON to hermes GatewayEvents.
+// agent-server --stdio` and maps its stdout NDJSON to clawcodex GatewayEvents.
 // We fake the child process so the test can feed protocol lines on stdout and
 // observe the emitted events. (The previous suite here tested an older
 // WebSocket attach-mode client that the NDJSON rewrite in #572 removed.)
