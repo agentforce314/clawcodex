@@ -315,3 +315,87 @@ describe('fromSkin', () => {
     expect(color.statusGood).toBe('#008000')
   })
 })
+
+describe('oscBackgroundIsLight', () => {
+  it('classifies rgb: replies by luminance', async () => {
+    const { oscBackgroundIsLight } = await importThemeWithCleanEnv()
+
+    expect(oscBackgroundIsLight('rgb:ffff/ffff/ffff')).toBe(true)
+    expect(oscBackgroundIsLight('rgb:1a1a/1a1a/1a1a')).toBe(false)
+    expect(oscBackgroundIsLight('rgb:0000/0000/0000')).toBe(false)
+  })
+
+  it('handles 1–4 hex digits per channel and ignores rgba alpha', async () => {
+    const { oscBackgroundIsLight } = await importThemeWithCleanEnv()
+
+    expect(oscBackgroundIsLight('rgb:ff/ff/ff')).toBe(true) // 8-bit white
+    expect(oscBackgroundIsLight('rgb:1/1/1')).toBe(false) // 4-bit near-black
+    expect(oscBackgroundIsLight('rgba:ffff/ffff/ffff/8000')).toBe(true)
+  })
+
+  it('accepts #rrggbb / #rgb replies from minority terminals', async () => {
+    const { oscBackgroundIsLight } = await importThemeWithCleanEnv()
+
+    expect(oscBackgroundIsLight('#ffffff')).toBe(true)
+    expect(oscBackgroundIsLight('#000000')).toBe(false)
+    expect(oscBackgroundIsLight('#fff')).toBe(true)
+  })
+
+  it('returns null for empty / unparseable data', async () => {
+    const { oscBackgroundIsLight } = await importThemeWithCleanEnv()
+
+    expect(oscBackgroundIsLight('')).toBeNull()
+    expect(oscBackgroundIsLight('garbage')).toBeNull()
+    expect(oscBackgroundIsLight('rgb:zz/zz/zz')).toBeNull()
+  })
+})
+
+describe('hasExplicitBackgroundSignal', () => {
+  it('is true only for explicit env signals (NOT TERM_PROGRAM)', async () => {
+    const { hasExplicitBackgroundSignal } = await importThemeWithCleanEnv()
+
+    expect(hasExplicitBackgroundSignal({})).toBe(false)
+    expect(hasExplicitBackgroundSignal({ TERM_PROGRAM: 'Apple_Terminal' })).toBe(false)
+    expect(hasExplicitBackgroundSignal({ HERMES_TUI_THEME: 'dark' })).toBe(true)
+    expect(hasExplicitBackgroundSignal({ HERMES_TUI_THEME: 'light' })).toBe(true)
+    expect(hasExplicitBackgroundSignal({ HERMES_TUI_LIGHT: '1' })).toBe(true)
+    expect(hasExplicitBackgroundSignal({ HERMES_TUI_LIGHT: 'off' })).toBe(true)
+    expect(hasExplicitBackgroundSignal({ HERMES_TUI_BACKGROUND: '#1a1a1a' })).toBe(true)
+    expect(hasExplicitBackgroundSignal({ COLORFGBG: '0;15' })).toBe(true)
+    expect(hasExplicitBackgroundSignal({ COLORFGBG: '15;0' })).toBe(true)
+  })
+
+  it('mirrors detectLightMode: true exactly when it resolves before the TERM_PROGRAM fallback', async () => {
+    const { detectLightMode, hasExplicitBackgroundSignal } = await importThemeWithCleanEnv()
+
+    const cases: Record<string, string>[] = [
+      {},
+      { HERMES_TUI_THEME: 'dark' },
+      { HERMES_TUI_THEME: 'light' },
+      { HERMES_TUI_LIGHT: '1' },
+      { HERMES_TUI_LIGHT: '0' },
+      { HERMES_TUI_BACKGROUND: '#ffffff' },
+      { HERMES_TUI_BACKGROUND: '#000' },
+      { COLORFGBG: '0;15' },
+      { COLORFGBG: '0;7' },
+      { COLORFGBG: '15;0' },
+      { COLORFGBG: '0;8' }, // dark slot — authoritative
+      { COLORFGBG: '0;16' }, // out of 0–15 range — not explicit
+      { COLORFGBG: '15;' }, // empty last field — not explicit
+      { COLORFGBG: '0;default' } // non-numeric — not explicit
+    ]
+
+    for (const env of cases) {
+      const explicit = hasExplicitBackgroundSignal(env)
+
+      if (explicit) {
+        // The explicit signal decides; adding Apple_Terminal must not change it.
+        expect(detectLightMode(env)).toBe(detectLightMode({ ...env, TERM_PROGRAM: 'Apple_Terminal' }))
+      } else {
+        // No explicit signal → TERM_PROGRAM is the deciding fallback.
+        expect(detectLightMode({ ...env, TERM_PROGRAM: '' })).toBe(false)
+        expect(detectLightMode({ ...env, TERM_PROGRAM: 'Apple_Terminal' })).toBe(true)
+      }
+    }
+  })
+})

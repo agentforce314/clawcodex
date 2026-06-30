@@ -494,6 +494,64 @@ export function normalizeThemeForAnsiLightTerminal(
   return { ...theme, color }
 }
 
+// ── OSC 11 background auto-detection ──────────────────────────────────────
+// detectLightMode()'s last resort is the TERM_PROGRAM allow-list (Apple
+// Terminal → light), which is wrong for a dark-profile Apple Terminal: the
+// banner/labels then render in the light palette and wash out on a dark bg.
+// When the user gave no EXPLICIT signal we instead ask the terminal its real
+// background via OSC 11 (see useBackgroundTheme) and pick the theme to match.
+
+/** True if the user pinned light/dark explicitly (env). These win over OSC 11,
+ *  so the auto-detection defers to them. Mirrors detectLightMode()'s precedence
+ *  for everything above the TERM_PROGRAM fallback. */
+export function hasExplicitBackgroundSignal(env: NodeJS.ProcessEnv = process.env): boolean {
+  const lightFlag = (env.HERMES_TUI_LIGHT ?? '').trim().toLowerCase()
+
+  if (TRUE_RE.test(lightFlag) || FALSE_RE.test(lightFlag)) {
+    return true
+  }
+
+  const themeFlag = (env.HERMES_TUI_THEME ?? '').trim().toLowerCase()
+
+  if (themeFlag === 'light' || themeFlag === 'dark') {
+    return true
+  }
+
+  if (backgroundLuminance(env.HERMES_TUI_BACKGROUND ?? '') !== null) {
+    return true
+  }
+
+  const lastField = (env.COLORFGBG ?? '').trim().split(';').at(-1) ?? ''
+
+  return /^\d+$/.test(lastField) && Number(lastField) >= 0 && Number(lastField) < 16
+}
+
+/** Interpret an OSC 11 reply — "rgb:RRRR/GGGG/BBBB" (1–4 hex digits per channel,
+ *  also "rgba:"), or a `#rrggbb`/`#rgb` form some terminals use — as
+ *  true=light / false=dark, or null if unparseable. */
+export function oscBackgroundIsLight(data: string): boolean | null {
+  const trimmed = data.trim()
+  const m = /rgba?:([0-9a-f]+)\/([0-9a-f]+)\/([0-9a-f]+)/i.exec(trimmed)
+
+  if (m) {
+    const chan = (h: string) => parseInt(h, 16) / (16 ** h.length - 1)
+    const lum = 0.2126 * chan(m[1]!) + 0.7152 * chan(m[2]!) + 0.0722 * chan(m[3]!)
+
+    return lum >= LUMA_LIGHT_THRESHOLD
+  }
+
+  // Minority terminals answer with #rrggbb / #rgb instead of rgb:R/G/B.
+  const hexLum = backgroundLuminance(trimmed)
+
+  return hexLum === null ? null : hexLum >= LUMA_LIGHT_THRESHOLD
+}
+
+/** Build the theme for a detected light/dark mode — mirrors DEFAULT_THEME,
+ *  including the Apple-Terminal ANSI-light normalization. */
+export function themeForLightMode(isLight: boolean, env: NodeJS.ProcessEnv = process.env): Theme {
+  return normalizeThemeForAnsiLightTerminal(isLight ? LIGHT_THEME : DARK_THEME, env, isLight)
+}
+
 const DEFAULT_LIGHT_MODE = detectLightMode()
 
 export const DEFAULT_THEME: Theme = normalizeThemeForAnsiLightTerminal(
