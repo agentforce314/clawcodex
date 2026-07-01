@@ -738,7 +738,12 @@ async def _call_model_sync(
         # False for every other provider, so ``flattened`` keeps every
         # non-boundary block (byte-for-byte the prior behaviour) and
         # ``volatile_tail`` is "".
-        is_deepseek = bool(getattr(provider, "is_deepseek", False))
+        # ``is True`` (not ``bool(...)``): every real provider sets the flag to a
+        # literal ``True``/``False`` (see ``BaseProvider.is_deepseek``), so this
+        # is identical in production — but it also makes a bare test double (e.g.
+        # ``MagicMock()``, whose auto-attributes are truthy) fall through to the
+        # non-relocating path instead of silently exercising DeepSeek relocation.
+        is_deepseek = getattr(provider, "is_deepseek", False) is True
         volatile_tail = ""
         if isinstance(system_prompt, list):
             flattened, volatile_tail = _split_system_prompt_blocks(
