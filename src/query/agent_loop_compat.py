@@ -222,6 +222,7 @@ def build_effective_system_prompt(
     # callers need it, no need to drag it into agent_loop_compat's import time.
     from ..context_system import build_context_prompt
     from ..context_system.prompt_assembly import build_full_system_prompt_blocks
+    from ..context_system.system_prompt_cache import CacheScope
 
     cwd = str(tool_context.cwd or tool_context.workspace_root)
 
@@ -244,6 +245,18 @@ def build_effective_system_prompt(
 
     # Preserve the existing workspace + git + CLAUDE.md context verbatim as a
     # trailing uncached block (CLAUDE.md is NOT in the base blocks above).
+    #
+    # Tag it REQUEST-scope. This block is a *live workspace snapshot*: it embeds
+    # ``git status`` (and file counts / top-level entries) that mutate the moment
+    # the agent edits a file — which, for a coding agent, is essentially every
+    # turn. For DeepSeek, ``query._split_system_prompt_blocks`` relocates
+    # REQUEST-scope sections out of the byte-stable ``system + tools + history``
+    # prefix into the trailing tail; without the tag this snapshot would sit in
+    # the prefix and a single mid-session file edit would bust DeepSeek's
+    # automatic prefix cache for the entire prefix. The tag honours the block's
+    # already-intended "uncached" status while keeping the prefix stable. It is a
+    # strict no-op for every other provider: relocation only fires for DeepSeek,
+    # and the Anthropic path strips ``_cache_scope`` before the wire.
     try:
         context_prompt = build_context_prompt(
             tool_context.workspace_root,
@@ -252,7 +265,11 @@ def build_effective_system_prompt(
     except Exception:
         context_prompt = ""
     if context_prompt.strip():
-        blocks = blocks + [{"type": "text", "text": context_prompt}]
+        blocks = blocks + [{
+            "type": "text",
+            "text": context_prompt,
+            "_cache_scope": CacheScope.REQUEST.value,
+        }]
 
     return blocks
 

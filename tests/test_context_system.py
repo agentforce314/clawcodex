@@ -68,6 +68,13 @@ class TestContextSystem(unittest.TestCase):
             conversation.add_user_message("hello")
 
             provider = MagicMock()
+            # Model a real *generic* (non-DeepSeek) provider: is_deepseek is a
+            # real False, not a truthy auto-MagicMock. Otherwise the query layer
+            # treats this mock as DeepSeek and relocates the REQUEST-scope
+            # workspace/git/CLAUDE.md context out of the system message into the
+            # trailing prefix-cache tail — which is exactly what this test is
+            # asserting does NOT happen for a non-DeepSeek provider.
+            provider.is_deepseek = False
             # Force chat() fallback (new adapter tries chat_stream_response
             # first). Without this a plain MagicMock returns MagicMock
             # content that corrupts response_text.

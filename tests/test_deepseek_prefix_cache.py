@@ -352,6 +352,149 @@ def test_memory_section_is_request_scoped():
 
 
 # --------------------------------------------------------------------------- #
+# build_effective_system_prompt trailing context block (new-TUI cutover path)
+#
+# The live TUI + headless route through build_effective_system_prompt, which
+# appends a build_context_prompt block — a *live workspace snapshot* embedding
+# ``git status`` (+ file counts / top-level entries). Those mutate the moment the
+# agent edits a file, i.e. essentially every turn. The block MUST be REQUEST-
+# scoped so DeepSeek relocates it out of the byte-stable system prefix; otherwise
+# a single mid-session file edit busts the whole prefix cache. (Regression for
+# the gap where the block was appended untagged.)
+# --------------------------------------------------------------------------- #
+
+_CTX_HEAD = "## Runtime Context\n- Today's date: 2026-07-01\n- Workspace root: /repo\n\n"
+_CTX_CLAUDE = "\n\n## Project Instructions\nCLAUDE_MD_SENTINEL\n"
+# Turn 1 vs Turn 2: same session, but the agent created a file so git status changed.
+_CTX_GIT_T1 = _CTX_HEAD + "## Git Context\nCurrent branch: main\n\nStatus:\n M src/foo.py" + _CTX_CLAUDE
+_CTX_GIT_T2 = _CTX_HEAD + "## Git Context\nCurrent branch: main\n\nStatus:\n M src/foo.py\n?? src/new.py" + _CTX_CLAUDE
+
+
+def _effective_blocks(context_text, tmp_path):
+    """build_effective_system_prompt with build_context_prompt stubbed to a fixed
+    workspace snapshot, so the test pins the trailing-block scope deterministically."""
+    from unittest import mock
+
+    from src.query.agent_loop_compat import build_effective_system_prompt
+    from src.tool_system.context import ToolContext
+
+    ctx = ToolContext(workspace_root=tmp_path)
+    with mock.patch(
+        "src.context_system.build_context_prompt", return_value=context_text
+    ):
+        return build_effective_system_prompt(
+            "", ctx, provider=DeepSeekProvider(api_key=_KEY)
+        )
+
+
+def test_effective_prompt_tags_context_block_request_scope(tmp_path):
+    blocks = _effective_blocks(_CTX_GIT_T1, tmp_path)
+    ctx_block = next(b for b in blocks if "## Git Context" in b.get("text", ""))
+    assert ctx_block.get("_cache_scope") == "request"
+
+
+def test_deepseek_relocates_git_context_out_of_prefix(tmp_path):
+    """The volatile workspace snapshot rides the tail; CLAUDE.md is preserved
+    there (not dropped) and is NOT left in the prefix."""
+    blocks = _effective_blocks(_CTX_GIT_T1, tmp_path)
+    system, tail = _split_system_prompt_blocks(blocks, relocate_request_scope=True)
+    assert "## Git Context" not in system and "Status:" not in system
+    assert "## Git Context" in tail
+    assert "CLAUDE_MD_SENTINEL" in tail
+    assert "CLAUDE_MD_SENTINEL" not in system
+
+
+def test_deepseek_prefix_stable_across_mid_session_git_change(tmp_path):
+    """Core guarantee for the new-TUI path: a file edit that changes ``git
+    status`` must NOT perturb the DeepSeek system prefix — only the tail."""
+    sys1, tail1 = _split_system_prompt_blocks(
+        _effective_blocks(_CTX_GIT_T1, tmp_path), relocate_request_scope=True
+    )
+    sys2, tail2 = _split_system_prompt_blocks(
+        _effective_blocks(_CTX_GIT_T2, tmp_path), relocate_request_scope=True
+    )
+    assert sys1 == sys2, "a git-status change must not bust the DeepSeek prefix"
+    assert tail1 != tail2, "the changed snapshot rides the (uncached) tail"
+
+
+def test_non_deepseek_keeps_context_block_in_system(tmp_path):
+    """No regression: for non-DeepSeek providers the context block stays in the
+    flattened system string (byte-for-byte the prior behaviour), tail empty."""
+    system, tail = _split_system_prompt_blocks(
+        _effective_blocks(_CTX_GIT_T1, tmp_path), relocate_request_scope=False
+    )
+    assert "## Git Context" in system and "CLAUDE_MD_SENTINEL" in system
+    assert tail == ""
+
+
+def test_deepseek_end_to_end_relocates_context_after_history(tmp_path):
+    """End-to-end through the exact new-TUI adapter the agent-server uses:
+    build_effective_system_prompt -> run_query_as_agent_loop -> _call_model_sync
+    (DeepSeek). Pins the full wire composition: the live workspace/git/CLAUDE.md
+    context must be ABSENT from the system message and instead ride a trailing
+    user <system-reminder> that lands AFTER the conversation history."""
+    import asyncio
+    from unittest import mock
+
+    from src.providers.base import ChatResponse
+    from src.query.agent_loop_compat import (
+        build_effective_system_prompt,
+        run_query_as_agent_loop,
+    )
+    from src.tool_system.context import ToolContext
+    from src.tool_system.defaults import build_default_registry
+    from src.types.messages import UserMessage
+
+    captured: list = []
+
+    class _CapturingDeepSeek(DeepSeekProvider):
+        def chat_stream_response(self, messages, tools=None, on_text_chunk=None,
+                                 abort_signal=None, on_thinking_chunk=None, **kwargs):
+            captured.append(messages)
+            return ChatResponse(
+                content="ok", model=self.model,
+                usage={"input_tokens": 1, "output_tokens": 1},
+                finish_reason="end_turn", tool_uses=None,
+            )
+
+    provider = _CapturingDeepSeek(api_key=_KEY)
+    ctx = ToolContext(workspace_root=tmp_path)
+    registry = build_default_registry(provider=provider)
+
+    with mock.patch(
+        "src.context_system.build_context_prompt", return_value=_CTX_GIT_T1
+    ):
+        system_prompt = build_effective_system_prompt("", ctx, provider=provider)
+
+    asyncio.run(run_query_as_agent_loop(
+        initial_messages=[UserMessage(content="hello there")],
+        provider=provider,
+        tool_registry=registry,
+        tool_context=ctx,
+        system_prompt=system_prompt,
+        max_turns=1,
+        on_text_chunk=lambda _s: None,
+    ))
+
+    assert captured, "the DeepSeek provider was never called"
+    wire = captured[0]
+    # System message (index 0) is free of the volatile snapshot + CLAUDE.md.
+    assert wire[0]["role"] == "system"
+    assert "## Git Context" not in wire[0]["content"]
+    assert "CLAUDE_MD_SENTINEL" not in wire[0]["content"]
+    # The relocated snapshot rides the LAST message (after the history) as a
+    # user <system-reminder>.
+    last = wire[-1]
+    last_text = (
+        last["content"] if isinstance(last["content"], str) else str(last["content"])
+    )
+    assert last["role"] == "user"
+    assert "<system-reminder>" in last_text
+    assert "## Git Context" in last_text
+    assert "CLAUDE_MD_SENTINEL" in last_text
+
+
+# --------------------------------------------------------------------------- #
 # _append_session_context_tail (placement / alternation hardening)
 # --------------------------------------------------------------------------- #
 
