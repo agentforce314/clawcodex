@@ -153,7 +153,10 @@ class TestFormatGitStatus(unittest.TestCase):
             recent_commits="abc1234 Initial commit",
         )
         result = format_git_status(ctx)
-        self.assertIn("Git repository detected", result)
+        # ch03 round-4 GAP C: TS-exact model-facing text (context.ts:96-103).
+        self.assertIn("snapshot in time", result)
+        self.assertIn("Main branch (you will usually use this for PRs): main", result)
+        self.assertIn("Git user: Test User", result)
         self.assertIn("feature/ws-5", result)
         self.assertIn("main", result)
         self.assertIn("Test User", result)
@@ -166,17 +169,25 @@ class TestFormatGitStatus(unittest.TestCase):
             branch="main",
         )
         result = format_git_status(ctx)
-        self.assertIn("Working tree clean", result)
+        # TS renders an explicit "(clean)" status body, not a prose line.
+        self.assertIn("Status:\n(clean)", result)
 
     def test_truncated_status(self):
+        # ch03 round-4: the TS-exact truncation tail (context.ts:88) is
+        # embedded in the status body by collect_git_context; the formatter
+        # passes it through untouched.
+        tail = (
+            '... (truncated because it exceeds 2k characters. '
+            'If you need more information, run "git status" using BashTool)'
+        )
         ctx = GitContextSnapshot(
             available=True,
             branch="main",
-            status="M file.py",
+            status=f"M file.py\n{tail}",
             status_truncated=True,
         )
         result = format_git_status(ctx)
-        self.assertIn("truncated", result)
+        self.assertIn(tail, result)
 
 
 if __name__ == "__main__":
