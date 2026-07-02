@@ -258,7 +258,7 @@ def make_agent_tool(
         fork_context_messages: list[Any] | None = None
         fork_query_source: str | None = None
         fork_use_exact_tools = False
-        fork_parent_system_prompt: str | None = None
+        fork_parent_system_prompt: "str | list | None" = None
         fork_prompt = prompt
 
         if is_fork_path:
@@ -750,7 +750,7 @@ def make_agent_tool(
 def _resolve_parent_system_prompt(
     context: ToolContext,
     agent_definitions: list[AgentDefinition],
-) -> str | None:
+) -> "str | list | None":
     """Resolve the parent system prompt for fork children.
 
     Mirrors the layered fallback in
@@ -772,6 +772,12 @@ def _resolve_parent_system_prompt(
     Returns ``None`` when no candidate is available.
     """
     rendered = getattr(context, "rendered_system_prompt", None)
+    # ch09 round-4 WI-1 — accept the parent's actual prompt shape. On the
+    # live path this is a non-empty list[dict] of system blocks; on
+    # string-prompt callers it is a str. Both are threaded verbatim into
+    # the fork child's system_prompt for byte-identity.
+    if isinstance(rendered, list) and rendered:
+        return rendered
     if isinstance(rendered, str) and rendered.strip():
         return rendered
 
