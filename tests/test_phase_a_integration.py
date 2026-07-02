@@ -18,7 +18,6 @@ from src.services.api.errors import (
     categorize_retryable_api_error,
 )
 from src.services.api.logging import NonNullableUsage, accumulate_usage
-from src.services.api.retry import RetryOptions, _compute_backoff_ms
 from src.services.api.tool_normalization import normalize_tool_arguments
 from src.services.api.provider_config import resolve_agent_provider
 

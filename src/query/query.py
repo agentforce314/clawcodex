@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import math
+import random
 import os
 import re
 import sys
@@ -70,6 +71,9 @@ ESCALATED_MAX_TOKENS = 64_000
 # (withRetry.ts:62-90) -- background lanes (compact, session_memory)
 # bail immediately to avoid gateway amplification.
 MAX_529_RETRIES = 3
+# ch04 round-4 GAP B — general retryable budget (429/5xx/connection/
+# timeout), TS DEFAULT_MAX_RETRIES (withRetry.ts:52).
+DEFAULT_MAX_RETRIES = 10
 RETRY_BASE_DELAY_SECONDS = 0.5
 # Narrower than TS's FOREGROUND_529_RETRY_SOURCES (agents/sdk/compact/
 # side_question, withRetry.ts:62-90) -- minimal posture; widen to agent
@@ -104,6 +108,11 @@ class QueryParams:
     token_budget: int | None = None
     max_output_tokens_override: int | None = None
     max_turns: int | None = None
+    # ch04 round-4 GAP B — model to switch to after MAX_529_RETRIES
+    # consecutive overloaded errors (TS QueryParams.fallbackModel,
+    # query.ts:276; --fallback-model in headless). Session-sticky switch
+    # via provider.model; never persisted to settings.
+    fallback_model: str | None = None
     user_context: dict[str, str] | None = None
     system_context: dict[str, str] | None = None
     pipeline_config: PipelineConfig | None = None
@@ -461,17 +470,35 @@ async def _fire_stop_failure_hooks(last_message: Any, tool_use_context: Any) -> 
         logger.debug("StopFailure hook dispatch failed", exc_info=True)
 
 
+# ch04 round-4 GAP C.2 — required whenever a system block carries
+# cache_control.scope == "global" (TS constants/betas.ts:17-18).
+PROMPT_CACHING_SCOPE_BETA_HEADER = "prompt-caching-scope-2026-01-05"
+
+
 def _strip_block_metadata(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Return copies of ``blocks`` with the internal ``_cache_scope`` key
-    removed, so it never reaches a provider's wire payload.
+    """Return copies of ``blocks`` ready for the 1P Anthropic wire: the
+    internal ``_cache_scope`` key removed AND the dynamic-boundary marker
+    block dropped.
 
     The Anthropic provider forwards system blocks verbatim to its SDK
     (``call_kwargs["system"] = system_prompt``), so the inert ``_cache_scope``
     tag emitted by the prompt assembler must be stripped before it lands on a
-    1P request. Non-Anthropic providers flatten only ``text`` and never see it.
+    1P request. ch04 round-4 GAP C: the boundary is a SPLIT SIGNAL, never
+    wire content — TS's splitSysPromptPrefix skips it (utils/api.ts:388,424);
+    before this fix the literal ``__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__`` text
+    block went out on every 1P request. Non-Anthropic providers flatten via
+    ``_split_system_prompt_blocks``, which already drops it.
     """
+    from ..context_system.cache_boundary import SYSTEM_PROMPT_DYNAMIC_BOUNDARY
+
     cleaned: list[dict[str, Any]] = []
     for blk in blocks:
+        if (
+            isinstance(blk, dict)
+            and blk.get("type") == "text"
+            and blk.get("text") == SYSTEM_PROMPT_DYNAMIC_BOUNDARY
+        ):
+            continue
         if isinstance(blk, dict) and "_cache_scope" in blk:
             blk = {k: v for k, v in blk.items() if k != "_cache_scope"}
         cleaned.append(blk)
@@ -728,10 +755,9 @@ async def _call_model_sync(
         # Opt into the server-side advisor tool. ``betas`` lives outside
         # ``extra_headers`` because the SDK auto-converts it into the
         # ``anthropic-beta`` header AND filters out 3P-incompatible
-        # entries on Bedrock/Vertex transports. Currently we send only
-        # the advisor beta; if other betas are introduced, change this
-        # to ``call_kwargs.setdefault("betas", []).append(...)``.
-        call_kwargs["betas"] = [ADVISOR_BETA_HEADER]
+        # entries on Bedrock/Vertex transports. setdefault-append so it
+        # composes with the global-cache-scope beta (GAP C.2) below.
+        call_kwargs.setdefault("betas", []).append(ADVISOR_BETA_HEADER)
         # CLIENT_SIDE deliberately does NOT set betas — 3P endpoints
         # reject the advisor beta, and 1P-with-force-client doesn't
         # need it because the advisor schema is a regular tool here.
@@ -776,11 +802,26 @@ async def _call_model_sync(
                     "%s — ADVISOR_TOOL_INSTRUCTIONS NOT injected",
                     type(system_prompt).__name__,
                 )
-        # Strip the inert ``_cache_scope`` metadata the assembler tags onto
-        # blocks; Anthropic forwards the system list verbatim to its SDK, so
-        # the tag must not reach the 1P wire.
+        # Strip the inert ``_cache_scope`` metadata + the dynamic-boundary
+        # marker block; Anthropic forwards the system list verbatim to its
+        # SDK, so neither must reach the 1P wire (GAP C).
         if isinstance(system_prompt, list):
             system_prompt = _strip_block_metadata(system_prompt)
+            # ch04 round-4 GAP C.2 — scope:'global' requires the
+            # prompt-caching-scope beta (TS claude.ts:1231-1236 pushes
+            # PROMPT_CACHING_SCOPE_BETA_HEADER whenever global cache is
+            # active). The scope only appears when the operator enabled
+            # CLAUDE_CODE_ENABLE_GLOBAL_CACHE_SCOPE; without the header the
+            # API rejects/ignores the field.
+            if any(
+                isinstance(blk, dict)
+                and isinstance(blk.get("cache_control"), dict)
+                and blk["cache_control"].get("scope") == "global"
+                for blk in system_prompt
+            ):
+                call_kwargs.setdefault("betas", []).append(
+                    PROMPT_CACHING_SCOPE_BETA_HEADER
+                )
         call_kwargs["system"] = system_prompt
     else:
         # Non-Anthropic providers (OpenAI-compat, GLM, etc.) consume the
@@ -1103,11 +1144,14 @@ async def query(
     See :func:`run_query` for a convenience helper that consumes the
     generator and returns ``(messages, terminal)``.
 
-    Recovery integration, stop hooks, token budget, and the continuation
-    nudge are wired (ch05 rounds 2-3). Model fallback (TS
-    FallbackTriggeredError → sticky model switch + tombstones) is NOT yet
-    ported — tracked as ch04/ch05 round-4 scope; see
-    my-docs/ch01-architecture-round4-gap-analysis.md §3 GAP B.
+    Recovery integration, stop hooks, token budget, the continuation
+    nudge (ch05 rounds 2-3), and the retry lane with model fallback
+    (ch04 round-4) are all wired: after ``MAX_529_RETRIES`` consecutive
+    overloaded errors with ``params.fallback_model`` configured, the lane
+    switches ``provider.model`` session-sticky (never persisted) and
+    keeps going. No tombstones by design — the lane only retries when
+    nothing streamed, so no partial assistant message ever needs
+    retraction (TS retries wrap partial streams and must tombstone).
     """
     _diag = os.environ.get("CLAWCODEX_DEBUG", "").lower() in ("1", "true", "yes")
     holder = terminal_holder or TerminalHolder()
@@ -1301,13 +1345,26 @@ async def query(
         tool_use_blocks: list[ToolUseBlock] = []
         needs_follow_up = False
 
-        # ch04 round-3 G3: overloaded-retry lane. Yield-based like TS
-        # withRetry (status surfaces in the message stream, not a side
-        # channel). Constraints: foreground sources only; never after
-        # partial output (a mid-stream 529 with rendered text follows
-        # the normal error path -- no duplicate text); SDK auto-retry
-        # disabled underneath via sdk_max_retries=0 so "attempt k/3"
-        # tells the truth.
+        # ch04 round-3 G3, widened by round-4 GAP B: the retry lane.
+        # Yield-based like TS withRetry (status surfaces in the message
+        # stream, not a side channel). Constraints preserved from round-3:
+        # foreground sources only; never after partial output (a mid-stream
+        # failure with rendered text follows the normal error path — no
+        # duplicate text); SDK auto-retry disabled underneath via
+        # sdk_max_retries=0 so attempt counts tell the truth.
+        #
+        # Round-4 additions (TS withRetry.ts parity):
+        #   * general retryable classes — 429 / 5xx / connection / timeout —
+        #     retry under DEFAULT_MAX_RETRIES with exponential backoff +
+        #     0-25% jitter (TS getRetryDelay); quota-exhausted and
+        #     non-retryable errors bail immediately;
+        #   * model fallback — after MAX_529_RETRIES consecutive 529s with
+        #     params.fallback_model configured, switch provider.model
+        #     (session-sticky like TS's mainLoopModel switch; NOT persisted
+        #     to settings), announce it, reset the 529 counter, keep going.
+        #     No tombstones needed (deliberate divergence): this lane only
+        #     retries when NOTHING streamed; TS's retry wraps partial
+        #     streams and must tombstone the orphans (query.ts:795-824).
         _is_foreground = params.query_source in FOREGROUND_529_RETRY_SOURCES
         _streamed_any = [False]
         _outer_chunk_cb = params.on_text_chunk
@@ -1318,7 +1375,9 @@ async def query(
                 _outer_chunk_cb(text)
 
         try:
-            for _attempt in range(1, MAX_529_RETRIES + 2):
+            _general_attempts = 0
+            _consecutive_529s = 0
+            while True:
                 _streamed_any[0] = False
                 try:
                     returned_assistants, returned_tool_blocks = await _call_model_sync(
@@ -1342,45 +1401,107 @@ async def query(
                     raise
                 except Exception as retry_exc:
                     if (
-                        _is_foreground
-                        and _attempt <= MAX_529_RETRIES
-                        and not _streamed_any[0]
-                        and _is_overloaded_error(retry_exc)
-                        and not params.abort_controller.signal.aborted
+                        not _is_foreground
+                        or _streamed_any[0]
+                        or params.abort_controller.signal.aborted
                     ):
-                        delay = _retry_after_seconds(
-                            retry_exc,
-                            RETRY_BASE_DELAY_SECONDS * (2 ** (_attempt - 1)),
+                        raise
+
+                    from ..services.api.errors import (
+                        categorize_retryable_api_error,
+                        is_quota_exhausted,
+                    )
+
+                    is_529 = _is_overloaded_error(retry_exc)
+                    if not is_529:
+                        classification = categorize_retryable_api_error(retry_exc)
+                        if not classification.retryable or is_quota_exhausted(retry_exc):
+                            raise
+
+                    _general_attempts += 1
+                    if is_529:
+                        _consecutive_529s += 1
+                    else:
+                        _consecutive_529s = 0
+
+                    # Model fallback — TS withRetry.ts:345-369 →
+                    # query.ts:977-1032. Fires once; a 529 storm on the
+                    # fallback model then follows the normal exhaustion path
+                    # (the model equality check keeps it single-shot).
+                    if (
+                        is_529
+                        and _consecutive_529s >= MAX_529_RETRIES
+                        and params.fallback_model
+                        and params.fallback_model
+                        != getattr(params.provider, "model", None)
+                    ):
+                        _original_model = getattr(params.provider, "model", "?")
+                        try:
+                            params.provider.model = params.fallback_model
+                        except Exception:  # noqa: BLE001 — read-only provider stub
+                            raise retry_exc
+                        logger.warning(
+                            "model fallback: %s -> %s after %d consecutive "
+                            "overloaded errors",
+                            _original_model, params.fallback_model,
+                            _consecutive_529s,
                         )
                         yield SystemMessage(
                             content=(
-                                f"Server overloaded — retrying in {delay:.1f}s "
-                                f"(attempt {_attempt}/{MAX_529_RETRIES})"
+                                f"Switched to {params.fallback_model} due to "
+                                f"high demand for {_original_model}"
                             ),
                             level="warning",
-                            subtype="api_retry",
+                            subtype="model_fallback",
                         )
-                        # Abort-aware backoff (critic): TS sleeps WITH the
-                        # signal (withRetry sleep(delay, signal)); a
-                        # Retry-After can direct up to 60s — ESC must not
-                        # be stuck behind it. Sliced sleep, checked every
-                        # 250ms; an abort falls through to the existing
-                        # aborted_streaming handling on the next attempt.
-                        _remaining = delay
-                        while _remaining > 0:
-                            if params.abort_controller.signal.aborted:
-                                break
-                            _tick = min(0.25, _remaining)
-                            await asyncio.sleep(_tick)
-                            _remaining -= _tick
-                        if params.abort_controller.signal.aborted:
-                            # Land in the REAL abort lane (the outer
-                            # except AbortError + post-call abort block),
-                            # so the user sees the interruption message
-                            # rather than a 529 model_error.
-                            raise AbortError("interrupted during retry backoff") from retry_exc
+                        _consecutive_529s = 0
                         continue
-                    raise
+
+                    if is_529 and _consecutive_529s > MAX_529_RETRIES:
+                        raise
+                    if _general_attempts > DEFAULT_MAX_RETRIES:
+                        raise
+
+                    _base = RETRY_BASE_DELAY_SECONDS * (2 ** (_general_attempts - 1))
+                    # 0-25% jitter (TS getRetryDelay, withRetry.ts:561-566);
+                    # capped so a long exponential tail can't exceed the
+                    # Retry-After clamp either way.
+                    _base = min(_base, 60.0) * (1.0 + random.random() * 0.25)
+                    delay = _retry_after_seconds(retry_exc, _base)
+                    if is_529:
+                        _status = (
+                            f"Server overloaded — retrying in {delay:.1f}s "
+                            f"(attempt {_consecutive_529s}/{MAX_529_RETRIES})"
+                        )
+                    else:
+                        _status = (
+                            f"API error ({classification.error_type}) — "
+                            f"retrying in {delay:.1f}s "
+                            f"(attempt {_general_attempts}/{DEFAULT_MAX_RETRIES})"
+                        )
+                    yield SystemMessage(
+                        content=_status, level="warning", subtype="api_retry",
+                    )
+                    # Abort-aware backoff (critic): TS sleeps WITH the
+                    # signal (withRetry sleep(delay, signal)); a
+                    # Retry-After can direct up to 60s — ESC must not
+                    # be stuck behind it. Sliced sleep, checked every
+                    # 250ms; an abort falls through to the existing
+                    # aborted_streaming handling on the next attempt.
+                    _remaining = delay
+                    while _remaining > 0:
+                        if params.abort_controller.signal.aborted:
+                            break
+                        _tick = min(0.25, _remaining)
+                        await asyncio.sleep(_tick)
+                        _remaining -= _tick
+                    if params.abort_controller.signal.aborted:
+                        # Land in the REAL abort lane (the outer
+                        # except AbortError + post-call abort block),
+                        # so the user sees the interruption message
+                        # rather than a retry-lane model_error.
+                        raise AbortError("interrupted during retry backoff") from retry_exc
+                    continue
             assistant_messages = returned_assistants
             tool_use_blocks = returned_tool_blocks
             needs_follow_up = len(tool_use_blocks) > 0

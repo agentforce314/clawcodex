@@ -435,14 +435,16 @@ class TestEngineProducesCacheableSystemBlocks(unittest.TestCase):
             len(marked), 1,
             "Engine must emit at least one cache_control marker",
         )
-        # Boundary literal must be present.
+        # ch04 round-4 GAP C: the boundary is a SPLIT SIGNAL, never wire
+        # content (TS splitSysPromptPrefix skips it, utils/api.ts:388/424).
+        # The forwarded system arg must NOT contain the literal.
         from src.context_system.cache_boundary import SYSTEM_PROMPT_DYNAMIC_BOUNDARY
         boundary_blocks = [
             b for b in system_arg if b.get("text") == SYSTEM_PROMPT_DYNAMIC_BOUNDARY
         ]
         self.assertEqual(
-            len(boundary_blocks), 1,
-            "Engine must emit exactly one boundary-marker block",
+            len(boundary_blocks), 0,
+            "The boundary literal must never reach the wire",
         )
 
     def test_engine_wires_skill_listing_into_system_prompt(self):
