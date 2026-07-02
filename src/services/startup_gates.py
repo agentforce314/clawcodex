@@ -57,11 +57,41 @@ _session_trust_accepted = False
 def reset_session_trust_for_testing() -> None:
     global _session_trust_accepted
     _session_trust_accepted = False
+    _invalidate_trust_memo()
 
 
 # ---------------------------------------------------------------------------
 # Gate 1: folder trust
 # ---------------------------------------------------------------------------
+
+# ch02 round-4 WI-1 — per-cwd verdict memo. config.get_merged now gates its
+# untrusted-tier strip on check_trust_accepted(<manager cwd>) on EVERY merge,
+# so the parent-walk must not re-read config files each time. Invalidated by
+# grant_session_trust / record_trust_accepted (the only in-process writers of
+# the verdict). A grant made by ANOTHER process is observed at next process
+# start — fails safe (stale False, never stale True... a stale entry can only
+# be False→True, and False keeps the strict behavior).
+_trust_verdict_memo: dict[str, bool] = {}
+
+
+def _invalidate_trust_memo() -> None:
+    _trust_verdict_memo.clear()
+
+
+def _bootstrap_session_trust() -> bool:
+    """The bootstrap-state twin of ``_session_trust_accepted``.
+
+    ``grant_session_trust`` sets both flags and documents that they must
+    never desync; consulting both here makes the canonical gate robust to
+    callers (tests, embedders) that set only the bootstrap one.
+    """
+    try:
+        from src.bootstrap.state import get_session_trust_accepted
+
+        return get_session_trust_accepted()
+    except Exception:
+        return False
+
 
 def check_trust_accepted(cwd: str | Path | None = None) -> bool:
     """TS ``computeTrustDialogAccepted``: session trust, then cwd and
@@ -72,19 +102,30 @@ def check_trust_accepted(cwd: str | Path | None = None) -> bool:
     can yield a non-ancestor root; trust recorded there is then missed
     and the dialog re-asks — fails safe, never silently trusts.)"""
 
-    if _session_trust_accepted:
+    if _session_trust_accepted or _bootstrap_session_trust():
         return True
 
     from src import config as config_mod
 
-    current = Path(config_mod.normalize_path_for_config_key(cwd or Path.cwd()))
+    start = Path(config_mod.normalize_path_for_config_key(cwd or Path.cwd()))
+    memo_key = str(start)
+    cached = _trust_verdict_memo.get(memo_key)
+    if cached is not None:
+        return cached
+
+    current = start
+    result = False
     while True:
         if config_mod.get_project_entry(current).get(TRUST_KEY):
-            return True
+            result = True
+            break
         parent = current.parent
         if parent == current:
-            return False
+            break
         current = parent
+
+    _trust_verdict_memo[memo_key] = result
+    return result
 
 
 def grant_session_trust() -> None:
@@ -100,6 +141,7 @@ def grant_session_trust() -> None:
     """
     global _session_trust_accepted
     _session_trust_accepted = True
+    _invalidate_trust_memo()
     try:
         from src.bootstrap.state import set_session_trust_accepted
 

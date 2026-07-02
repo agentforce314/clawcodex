@@ -85,6 +85,13 @@ class AgentServerConfig:
     allowed_tools: tuple[str, ...] = ()
     disallowed_tools: tuple[str, ...] = ()
     permission_timeout_s: float = DEFAULT_PERMISSION_TIMEOUT_S
+    # ch02 round-4 (critic B1): True only on the --stdio transport, which
+    # serves exactly one session (the Ink client's spawned child). Gates
+    # the process-global side effects in _build_runtime (post-trust env
+    # apply, context-cache prefetch) that would bleed across sessions on
+    # the multi-session --http transport, where sessions carry
+    # client-supplied cwds and over-strict is the safe direction.
+    single_session: bool = False
 
 
 @dataclass
@@ -1639,6 +1646,63 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
         from src.agent import Session
         from src.tool_system.context import ToolContext
         from src.tool_system.defaults import build_default_registry
+        from src.utils.startup_profiler import profile_checkpoint
+
+        profile_checkpoint("agent_server_build_runtime_start")
+
+        # ch02 round-4 WI-1 — one persisted-trust verdict for this
+        # session's cwd, evaluated BEFORE any config read: get_merged's
+        # untrusted-tier strip now gates per-cwd on this same source, and
+        # the provider below is resolved through that merge. Never
+        # prompts; NEVER flips the process-global session flag — one
+        # server process can host sessions with different (even
+        # client-supplied, on --http) cwds, and the flag short-circuits
+        # check_trust_accepted for every later session (critic B1).
+        trusted = False
+        try:
+            from src.services.startup_gates import check_trust_accepted
+
+            trusted = check_trust_accepted(sess.cwd)
+        except Exception:  # noqa: BLE001 — unknown trust stays untrusted
+            logger.debug("[agent-server] trust check failed", exc_info=True)
+        if trusted and sess.config.single_session:
+            # Post-trust env repair for a standalone single-session server
+            # (`clawcodex agent-server --stdio` run by hand — no parent
+            # bootstrap applied any config env). For the Ink-spawned child
+            # this re-applies what the parent already applied — an
+            # idempotent no-op. Gated single_session (critic B1): on the
+            # multi-session --http transport a session must not mutate the
+            # process-global os.environ from its project config (bleed
+            # into other sessions + unlocked concurrent mutation).
+            # Standalone limitation, documented (critic M2): the MDM
+            # policy tier and keychain stash live in init()'s SAFE pass,
+            # which no agent-server lane runs — config-file env only here.
+            try:
+                from src.permissions.trust_boundary import (
+                    apply_full_config_environment_variables,
+                )
+
+                apply_full_config_environment_variables()
+            except Exception:  # noqa: BLE001 — env repair is best-effort
+                logger.debug("[agent-server] post-trust env apply failed",
+                             exc_info=True)
+        # ch02 round-4 WI-2 — warm the context caches (CLAUDE.md walk,
+        # git status when trusted) during the user's typing window; the
+        # first turn's build_context_prompt reads the same underlying
+        # caches. Fire-and-forget daemon thread; failures swallowed.
+        # Gated single_session: _git_context_cache is process-global and
+        # not cwd-keyed (pre-existing; ch03 follow-up), so warming it on a
+        # multi-session --http server would seed other sessions' prompts
+        # with this session's git status (critic M3).
+        if sess.config.single_session:
+            try:
+                from src.deferred_init import start_deferred_prefetches
+
+                start_deferred_prefetches(cwd=sess.cwd)
+            except Exception:  # noqa: BLE001 — prefetch is advisory
+                logger.debug("[agent-server] deferred prefetch kick failed",
+                             exc_info=True)
+        profile_checkpoint("agent_server_trust_prefetch_done")
 
         cfg = sess.config
         provider_name = cfg.provider_name or get_default_provider()
@@ -1657,8 +1721,10 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
         provider = provider_cls(
             api_key=api_key, base_url=provider_cfg.get("base_url"), model=model
         )
+        profile_checkpoint("agent_server_provider_ready")
 
         registry = build_default_registry(provider=provider)
+        profile_checkpoint("agent_server_registry_built")
         if cfg.allowed_tools:
             allow = {n.lower() for n in cfg.allowed_tools}
             _filter_registry(registry, keep=lambda n: n.lower() in allow)
@@ -1694,6 +1760,7 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
                 )
         except Exception:  # noqa: BLE001 — MCP must never break startup
             logger.debug("[agent-server] MCP bootstrap skipped", exc_info=True)
+        profile_checkpoint("agent_server_mcp_done")
 
         workspace_root = Path(sess.cwd)
         mode = perm_mode or cfg.permission_mode or "default"
@@ -1718,16 +1785,12 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
         tool_context.hook_config_manager = bootstrap_hook_config_manager(
             cwd=sess.cwd,
         )
-        # workspace_trusted feeds the hook trust gate (trust_gate WI-0.2);
-        # it defaulted False with no production setter, so even configured
-        # hooks were silently skipped. Same source of truth as the CLI's
-        # startup trust gate (TS computeTrustDialogAccepted parity).
-        try:
-            from src.services.startup_gates import check_trust_accepted
-
-            tool_context.workspace_trusted = check_trust_accepted(sess.cwd)
-        except Exception:  # noqa: BLE001 — unknown trust stays untrusted
-            logger.debug("[agent-server] trust check failed", exc_info=True)
+        # workspace_trusted feeds the hook trust gate (trust_gate WI-0.2) —
+        # the verdict hoisted at function entry (ch02 WI-1), same source of
+        # truth as the CLI's startup trust gate (computeTrustDialogAccepted
+        # parity).
+        tool_context.workspace_trusted = trusted
+        profile_checkpoint("agent_server_permissions_hooks_done")
         if sess._mcp_runtime is not None:
             tool_context.mcp_clients = sess._mcp_runtime.clients  # server-name catalog for the agent tool
 
@@ -1745,6 +1808,7 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
         except Exception:  # noqa: BLE001 - fall back to a plain prompt
             logger.debug("[agent-server] system prompt build failed", exc_info=True)
             system_prompt = "You are a helpful assistant."
+        profile_checkpoint("agent_server_prompt_built")
 
         sess.provider = provider
         sess.provider_name = provider_name
@@ -1755,6 +1819,7 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
         sess.session = Session.create(provider_name, getattr(provider, "model", model or ""))
         sess._base_system_prompt = system_prompt
         sess.system_prompt = sess._compose_with_plan(system_prompt)  # honor an existing /plan
+        profile_checkpoint("agent_server_build_runtime_end")
     except Exception as exc:  # noqa: BLE001
         logger.exception("[agent-server] runtime build failed")
         sess.init_error = f"agent-server failed to start: {exc}"
