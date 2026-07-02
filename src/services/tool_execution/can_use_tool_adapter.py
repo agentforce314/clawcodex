@@ -42,10 +42,81 @@ def build_can_use_tool(context: Any) -> Callable[..., dict[str, Any]]:
         _tool_use_context: Any,
         _assistant_message: Any,
         _tool_use_id: str,
+        force_decision: Any = None,
     ) -> dict[str, Any]:
+        # ch06 round-4 PR-A GAP A — the 6th ``force_decision`` param
+        # (TS CanUseToolFn / toolHooks.ts:482-499). The hook-"ask" branch
+        # of resolve_hook_permission_decision passes the hook result here
+        # positionally; before this param existed the call raised TypeError
+        # and fell through to a FAIL-OPEN allow. A PreToolUse hook that
+        # already decided allow/deny short-circuits to that behavior; an
+        # "ask" (or None) falls through to the normal prompt resolution.
         from src.permissions.check import has_permissions_to_use_tool
         from src.permissions.handler import handle_permission_ask
         from src.tool_system.registry import _apply_and_persist_updates
+
+        if isinstance(force_decision, dict):
+            forced = force_decision.get("behavior")
+            forced_updated = (
+                force_decision.get("updatedInput")
+                or force_decision.get("input")
+            )
+            if forced == "allow":
+                return {
+                    "behavior": "allow",
+                    "updatedInput": forced_updated,
+                    "userModified": bool(forced_updated),
+                }
+            if forced == "deny":
+                return {
+                    "behavior": "deny",
+                    "message": force_decision.get("message")
+                    or "permission denied by hook",
+                }
+            if forced == "ask":
+                # critic M2 — a hook that returns `ask` must reach the
+                # PROMPT, NOT rule resolution. TS routes forceDecision
+                # straight to `case "ask"` (useCanUseTool.tsx:37,93) and
+                # never consults rules — else a static allow-rule would
+                # silently bypass a hook explicitly demanding confirmation
+                # (defense-in-depth defeated). We synthesize the ask
+                # decision directly from the hook and prompt on it; NO
+                # has_permissions_to_use_tool call. Fail-closed to deny
+                # when there's no handler (mirrors the no-hook branch). m1
+                # — honor the hook's updatedInput for the prompt.
+                from src.permissions.types import (
+                    HookDecisionReason,
+                    PermissionAskDecision,
+                )
+
+                ask_input = forced_updated or tool_input
+                ask_decision = PermissionAskDecision(
+                    behavior="ask",
+                    message=force_decision.get("message")
+                    or f"Hook requires approval for {tool.name}",
+                    decision_reason=HookDecisionReason(
+                        reason="PreToolUse hook returned 'ask'",
+                    ),
+                )
+                final, chosen_updates = handle_permission_ask(
+                    tool.name, ask_decision, context.permission_handler,
+                    tool_input=ask_input,
+                )
+                if getattr(final, "behavior", "deny") != "allow":
+                    return {
+                        "behavior": "deny",
+                        "message": getattr(final, "message", None)
+                        or "permission denied by user",
+                    }
+                if chosen_updates:
+                    _apply_and_persist_updates(context, chosen_updates)
+                return {
+                    "behavior": "allow",
+                    "updatedInput": getattr(final, "updated_input", None)
+                    or forced_updated,
+                    "userModified": bool(chosen_updates)
+                    or forced_updated is not None,
+                }
 
         decision = has_permissions_to_use_tool(
             tool,

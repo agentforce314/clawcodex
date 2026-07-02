@@ -184,15 +184,24 @@ async def _check_permissions_and_call_tool(
             msg = str(schema_err)
             if getattr(tool, "should_defer", False):
                 msg = msg + build_schema_not_sent_hint(tool)
+            # ch06 round-4 PR-A GAP C — the ``InputValidationError:`` prefix
+            # (TS toolExecution.ts:726). Load-bearing: the tool-failure-loop
+            # guard categorizes on ``\bInputValidationError\b`` (ch01
+            # round-3 port), so without the prefix repeated schema failures
+            # are miscategorized as generic errors and the path-based /
+            # signature-based trip logic doesn't recognize them.
             resulting_messages.append(MessageUpdateLazy(
                 message=create_user_message(
                     content=[{
                         "type": "tool_result",
-                        "content": f"<tool_use_error>{msg}</tool_use_error>",
+                        "content": (
+                            f"<tool_use_error>InputValidationError: "
+                            f"{msg}</tool_use_error>"
+                        ),
                         "is_error": True,
                         "tool_use_id": tool_use_id,
                     }],
-                    toolUseResult=f"Error: {msg}",
+                    toolUseResult=f"InputValidationError: {msg}",
                 ),
             ))
             return resulting_messages
