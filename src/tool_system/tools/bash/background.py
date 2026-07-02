@@ -129,14 +129,33 @@ def spawn_background_bash(
                 # ``replace`` keeps every other field (incl. proc/handle)
                 # so a still-pending TaskStop call has the Popen reference.
                 from dataclasses import replace
+
+                from src.tasks.eviction import schedule_eviction
                 new_status = "completed" if rc == 0 else "failed"
-                return replace(
+                terminal = replace(
                     prev,
                     exit_code=rc,
                     finished_at=finished_at,
                     end_time=finished_at,
                     status=new_status,
+                    # ch10 round-4 WI-2 — a background bash task has no async
+                    # completion notification (it is polled via TaskOutput),
+                    # so mark it ``notified`` on the terminal transition;
+                    # otherwise the eviction sweeper's notify-before-evict
+                    # guard would keep it forever. The grace period
+                    # (PANEL_GRACE_SECONDS) still gives the model time to read
+                    # the output before the entry is reclaimed. Without this
+                    # (and the schedule_eviction below) terminal bash tasks
+                    # accumulated unbounded and lingered in /tasks.
+                    # FORWARD-TRAP (critic m1): this unconditionally marks
+                    # notified. If a bash completion notification is later
+                    # ported (TS enqueueShellNotification), REMOVE this line —
+                    # otherwise the check-and-set here pre-suppresses that
+                    # notification. Semantically analogous to TS
+                    # markTaskNotified today (marks notified WITHOUT sending).
+                    notified=True,
                 )
+                return schedule_eviction(terminal)
 
             context.runtime_tasks.update(task_id, _patch)
             # Mirror to the legacy dict in lockstep so old readers see the

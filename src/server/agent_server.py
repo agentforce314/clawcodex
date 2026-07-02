@@ -1635,6 +1635,16 @@ class _AgentSession:
 
     async def shutdown(self) -> None:
         self._stop.set()
+        # ch10 round-4 WI-2 — stop the eviction sweeper daemon (started in
+        # _build_runtime under single_session). Idempotent; safe if never
+        # started.
+        try:
+            from src.tasks.eviction import stop_eviction_sweeper
+
+            stop_eviction_sweeper()
+        except Exception:  # noqa: BLE001
+            logger.debug("[agent-server] eviction sweeper stop failed",
+                         exc_info=True)
         # Unblock any in-flight permission asks with a deny.
         with self._lock:
             pendings = list(self._pending.values())
@@ -1993,6 +2003,24 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
         sess.session = Session.create(provider_name, getattr(provider, "model", model or ""))
         sess._base_system_prompt = system_prompt
         sess.system_prompt = sess._compose_with_plan(system_prompt)  # honor an existing /plan
+
+        # ch10 round-4 WI-2 (critic B1) — start the terminal-task eviction
+        # sweeper HERE, after tool_context is constructed and stored (the
+        # earlier placement read sess.tool_context while it was still None,
+        # so the sweeper never started — reintroducing the very
+        # built-but-dead defect WI-2 exists to fix). The sweeper
+        # (src/tasks/eviction.py) reclaims terminal background tasks that
+        # otherwise pile up in runtime_tasks / /tasks unbounded. Gated
+        # single_session: bound to THIS session's runtime_tasks (a
+        # multi-session --http server would need one per session, deferred).
+        if sess.config.single_session:
+            try:
+                from src.tasks.eviction import start_eviction_sweeper
+
+                start_eviction_sweeper(tool_context.runtime_tasks)
+            except Exception:  # noqa: BLE001 — sweeper is advisory
+                logger.debug("[agent-server] eviction sweeper start failed",
+                             exc_info=True)
         profile_checkpoint("agent_server_build_runtime_end")
     except Exception as exc:  # noqa: BLE001
         logger.exception("[agent-server] runtime build failed")
