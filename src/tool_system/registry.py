@@ -98,6 +98,32 @@ class ToolRegistry:
                 raise ValueError(f"duplicate tool alias: {alias}")
             self._by_name[alias_key] = tool
 
+    def remove_tool(self, name: str) -> bool:
+        """ch15 round-4 — remove a tool (and its aliases) by name. Returns
+        True if a tool was removed. Needed so MCP tools can be SWAPPED live
+        when a server sends notifications/tools/list_changed — the registry
+        was otherwise append-only, so a re-fetch couldn't reach the agent.
+
+        NB: deliberately NOT named ``unregister`` — ``_filter_registry``
+        (--allowedTools/--disallowedTools, agent_server.py + headless.py)
+        already calls a non-existent ``registry.unregister`` inside a
+        try/except as a silent no-op, so its registry-level filtering has
+        never actually run (the live enforcement is the deny-rule path at
+        assembly). Adding an ``unregister`` here would silently ACTIVATE that
+        untested, security-relevant path; a distinct name keeps this MCP
+        change scoped. Activating that filtering is a separate follow-up."""
+        key = name.lower()
+        tool = self._by_name.pop(key, None)
+        if tool is None:
+            return False
+        self._tools = [t for t in self._tools if t is not tool]
+        for alias in getattr(tool, "aliases", ()) or ():
+            # Only drop the alias if it still points at THIS tool (another
+            # tool may have claimed it — don't clobber that).
+            if self._by_name.get(alias.lower()) is tool:
+                self._by_name.pop(alias.lower(), None)
+        return True
+
     def get(self, name: str) -> Tool | None:
         return self._by_name.get(name.lower())
 

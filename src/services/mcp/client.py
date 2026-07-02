@@ -134,6 +134,11 @@ class McpClient:
         # (None) declines — a valid response, so elicitation-capable servers no
         # longer hang on an ignored request.
         self._elicitation_handler: Any = None
+        # ch15 round-4 — server→client NOTIFICATION handler (method, no id):
+        # notifications/tools/list_changed etc. Sync callback taking
+        # (method: str, params: dict). Default (None) drops the notification
+        # (back-compat). Wired by the runtime to trigger a tool re-fetch.
+        self._notification_handler: Any = None
 
     def set_elicitation_handler(self, handler: Any) -> None:
         """Inject the async elicitation handler (params dict -> result dict).
@@ -142,6 +147,27 @@ class McpClient:
         TUI. When unset, elicitation requests are declined.
         """
         self._elicitation_handler = handler
+
+    def set_notification_handler(self, handler: Any) -> None:
+        """ch15 round-4 — inject the server-notification handler.
+
+        ``handler(method: str, params: dict) -> None``. Wired by the runtime
+        so ``notifications/tools/list_changed`` re-fetches the server's tools.
+        When unset, notifications are dropped (prior behavior).
+        """
+        self._notification_handler = handler
+
+    def _dispatch_notification(self, msg: Any) -> None:
+        """Route a server notification to the registered handler, guarded so a
+        bad handler never kills the receive loop."""
+        handler = self._notification_handler
+        if handler is None:
+            return
+        try:
+            handler(msg.method, getattr(msg, "params", None) or {})
+        except Exception:  # noqa: BLE001
+            logger.debug("MCP notification handler failed: %s",
+                         msg.method, exc_info=True)
 
     def set_auth_provider(self, provider: Any) -> None:
         """Inject the McpAuthProvider used for HTTP/SSE/WS auth flows.
@@ -220,10 +246,15 @@ class McpClient:
 
             if init_result and isinstance(init_result, dict):
                 caps = init_result.get("capabilities", {})
+                _tools_cap = caps.get("tools")
                 self._capabilities = ServerCapabilities(
-                    tools=bool(caps.get("tools")),
+                    tools=bool(_tools_cap),
                     prompts=bool(caps.get("prompts")),
                     resources=bool(caps.get("resources")),
+                    tools_list_changed=bool(
+                        isinstance(_tools_cap, dict)
+                        and _tools_cap.get("listChanged")
+                    ),
                 )
                 server_info_raw = init_result.get("serverInfo")
                 if server_info_raw and isinstance(server_info_raw, dict):
@@ -364,6 +395,14 @@ class McpClient:
                     asyncio.get_event_loop().create_task(
                         self._handle_incoming_request(msg)
                     )
+                elif msg.method is not None and msg.id is None:
+                    # ch15 round-4 — server→client NOTIFICATION (method set, no
+                    # id, per JSON-RPC 2.0): e.g. notifications/tools/list_changed.
+                    # Previously this matched NEITHER branch above and was
+                    # SILENTLY DROPPED, so a server that changed its tools
+                    # mid-session was invisible until a restart. Dispatch to the
+                    # registered handler (out-of-band so the loop keeps draining).
+                    self._dispatch_notification(msg)
         except Exception as e:
             logger.debug("MCP receive loop error: %s", e)
             for future in self._pending_requests.values():

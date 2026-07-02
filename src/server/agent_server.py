@@ -1921,6 +1921,45 @@ def _save_disabled_mcp(disabled: set[str]) -> None:
         pass
 
 
+def _make_mcp_notification_handler(mcp_rt: Any, sess: "_AgentSession", server: str) -> Any:
+    """ch15 round-4 — sync MCP notification handler (method, params).
+
+    On ``notifications/tools/list_changed`` schedule a tools re-fetch on the
+    connection loop; when it lands, SWAP the server's tools in the live agent
+    registry (remove the old ``mcp__{server}__*`` names, register the new) so
+    a mid-session tool change is visible without a restart. Runs on the
+    McpRuntime loop thread; the schedule is non-blocking (no self-deadlock).
+
+    Resolves ``sess.tool_registry`` at REFRESH time, not boot time (critic
+    M1): a provider/model switch builds a brand-new registry and rebinds
+    ``sess.tool_registry``, so a handler closing over the boot registry would
+    mutate an orphaned one and the agent would never see the refresh. The
+    elicitation handler closes over ``sess`` for the same reason.
+    """
+
+    def _on_change(removed_full: list, new_tools: list) -> None:
+        registry = getattr(sess, "tool_registry", None)
+        if registry is None:
+            return
+        for full in removed_full:
+            try:
+                registry.remove_tool(full)
+            except Exception:  # noqa: BLE001
+                logger.debug("[mcp] remove_tool failed: %s", full, exc_info=True)
+        for tool in new_tools:
+            try:
+                registry.register(tool)
+            except Exception:  # noqa: BLE001
+                logger.debug("[mcp] re-register failed: %s",
+                             getattr(tool, "name", "?"), exc_info=True)
+
+    def _handle(method: str, _params: Any) -> None:
+        if method == "notifications/tools/list_changed":
+            mcp_rt.schedule_tool_refresh(server, _on_change)
+
+    return _handle
+
+
 def _make_elicitation_handler(sess: "_AgentSession") -> Any:
     """Async MCP elicitation handler that bridges a server's input request to the
     TUI via the session's control-request round-trip (reusing the permission
@@ -2079,9 +2118,22 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
                 sess._mcp_runtime = mcp_rt
                 # Wire MCP elicitation → TUI form (servers can request user input).
                 _eh = _make_elicitation_handler(sess)
-                for _cl in mcp_rt.clients.values():
+                # ch15 round-4 — wire tools/list_changed → live tool refresh.
+                # A server that changes its tools mid-session pushes
+                # notifications/tools/list_changed; we re-fetch and SWAP the
+                # tools in the live registry so the agent sees them without a
+                # session restart. Previously the notification was dropped.
+                for _srv_name, _cl in mcp_rt.clients.items():
                     try:
                         _cl.set_elicitation_handler(_eh)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    try:
+                        _cl.set_notification_handler(
+                            _make_mcp_notification_handler(
+                                mcp_rt, sess, _srv_name
+                            )
+                        )
                     except Exception:  # noqa: BLE001
                         pass
                 logger.info(
