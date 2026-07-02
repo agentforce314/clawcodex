@@ -347,7 +347,10 @@ async def count_messages_tokens_with_api(
     try:
         import anthropic
 
-        client = anthropic.AsyncAnthropic()
+        from src.services.api.custom_headers import get_anthropic_custom_headers
+        client = anthropic.AsyncAnthropic(
+            default_headers=get_anthropic_custom_headers() or None
+        )
         response = await client.beta.messages.count_tokens(
             model="claude-sonnet-4-20250514",
             messages=messages,
