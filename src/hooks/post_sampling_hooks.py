@@ -15,10 +15,18 @@ async def run_post_sampling_hooks(
     model: str = "",
     usage: dict[str, int] | None = None,
     stop_reason: str | None = None,
-    response_content: Any = None,
+    untrusted_workspace: bool = False,
 ) -> list[dict[str, Any]]:
     reg = registry or get_global_hook_registry()
     hooks = await reg.get_hooks_for_event("PostSampling")
+
+    if untrusted_workspace:
+        # Same trust rule the snapshot-lane executor applies
+        # (hook_executor._run_hooks_for_event / trust_gate WI-0.2): in an
+        # untrusted workspace only enterprise policy hooks may run. Without
+        # this, the registry lane would execute user-settings shell hooks
+        # that the tool-hook lane correctly blocks.
+        hooks = [h for h in hooks if h.source.is_policy]
 
     if not hooks:
         return []
