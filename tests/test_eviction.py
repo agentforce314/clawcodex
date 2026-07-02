@@ -13,6 +13,22 @@ import threading
 import time
 from dataclasses import replace
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _reset_global_sweeper():
+    """ch10 round-4 — the eviction sweeper is a process-global singleton,
+    and the agent-server now starts it in _build_runtime. Server tests
+    elsewhere in the suite can therefore leave a sweeper running, which
+    would race these tests' global-thread-count assertions. Reset before
+    and after so the global-singleton tests are isolated."""
+    from src.tasks.eviction import stop_eviction_sweeper as _stop
+
+    _stop(timeout=1.0)
+    yield
+    _stop(timeout=1.0)
+
 from src.task_registry import RuntimeTaskRegistry
 from src.tasks.eviction import (
     PANEL_GRACE_SECONDS,
