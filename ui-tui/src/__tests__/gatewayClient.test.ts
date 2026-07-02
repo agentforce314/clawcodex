@@ -269,4 +269,80 @@ describe('GatewayClient NDJSON adapter', () => {
       text: '✔ deep-research completed · 12 agents · 45.2k tok'
     })
   })
+
+  // ch13 round-4 — agent_progress → subagent.* (item 2)
+  it('maps agent_progress to subagent.start + subagent.progress', async () => {
+    proc.line({
+      activity: 'reading src/', agent_id: 'a1', description: 'explore the repo',
+      name: 'Explore', status: 'running', subagent_type: 'Explore',
+      tokens: 120, tool_use_count: 2, type: 'agent_progress'
+    })
+    await vi.waitFor(() => expect(last('subagent.start')).toBeTruthy())
+    expect(last('subagent.start').payload.subagent_id).toBe('a1')
+    await vi.waitFor(() => expect(last('subagent.progress')).toBeTruthy())
+    expect(last('subagent.progress').payload.text).toBe('reading src/')
+  })
+
+  it('emits subagent.start only once, then progress + complete', async () => {
+    const base = { agent_id: 'a2', description: 'run tests', name: 'Test', subagent_type: 'general', type: 'agent_progress' }
+    proc.line({ ...base, activity: 'running pytest', status: 'running' })
+    await vi.waitFor(() => expect(last('subagent.progress')).toBeTruthy())
+    proc.line({ ...base, activity: 'done', status: 'completed' })
+    await vi.waitFor(() => expect(last('subagent.complete')).toBeTruthy())
+    const starts = events.filter(e => e.type === 'subagent.start' && e.payload.subagent_id === 'a2')
+    expect(starts.length).toBe(1)
+    expect(last('subagent.complete').payload.status).toBe('completed')
+  })
+
+  // ch13 round-4 — permission "always allow" persistence (item 1)
+  it('forwards a can_use_tool suggestion as a persistable approval option', async () => {
+    proc.line({
+      request: {
+        input: { command: 'ls' }, subtype: 'can_use_tool', tool_name: 'Bash',
+        suggestions: [{ type: 'addRules', destination: 'localSettings', behavior: 'allow', rules: [{ tool_name: 'Bash', rule_content: 'ls:*' }] }]
+      },
+      request_id: 'r1', type: 'control_request'
+    })
+    await vi.waitFor(() => expect(last('approval.request')).toBeTruthy())
+    const p = last('approval.request').payload
+    expect(p.allow_permanent).toBe(true)
+    expect(p.description).toBe('Bash(ls:*)')
+  })
+
+  it('sends chosen_updates when the user picks "always"; none for "once"', async () => {
+    const sent: any[] = []
+    ;(gw as any).send = (m: any) => sent.push(m)
+
+    proc.line({
+      request: {
+        input: { command: 'ls' }, subtype: 'can_use_tool', tool_name: 'Bash',
+        suggestions: [{ type: 'addRules', destination: 'localSettings', behavior: 'allow', rules: [{ tool_name: 'Bash', rule_content: 'ls:*' }] }]
+      },
+      request_id: 'r2', type: 'control_request'
+    })
+    await vi.waitFor(() => expect(last('approval.request')).toBeTruthy())
+
+    await gw.request('approval.respond', { choice: 'always' })
+    const resp = sent.find(m => m.type === 'control_response')?.response?.response
+    expect(resp.behavior).toBe('allow')
+    expect(resp.chosen_updates).toHaveLength(1)
+    expect(resp.chosen_updates[0].rules[0].rule_content).toBe('ls:*')
+    expect(resp.chosen_updates[0].destination).toBe('localSettings')
+  })
+
+  it('marks a "session" choice with session destination', async () => {
+    const sent: any[] = []
+    ;(gw as any).send = (m: any) => sent.push(m)
+    proc.line({
+      request: {
+        input: { command: 'ls' }, subtype: 'can_use_tool', tool_name: 'Bash',
+        suggestions: [{ type: 'addRules', destination: 'localSettings', behavior: 'allow', rules: [{ tool_name: 'Bash', rule_content: 'ls:*' }] }]
+      },
+      request_id: 'r3', type: 'control_request'
+    })
+    await vi.waitFor(() => expect(last('approval.request')).toBeTruthy())
+    await gw.request('approval.respond', { choice: 'session' })
+    const resp = sent.find(m => m.type === 'control_response')?.response?.response
+    expect(resp.chosen_updates[0].destination).toBe('session')
+  })
 })

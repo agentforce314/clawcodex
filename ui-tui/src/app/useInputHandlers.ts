@@ -566,27 +566,19 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       })
     }
 
-    // shift-tab flips yolo without spending a turn (claude-code parity)
+    // ch13 round-4 — shift+tab CYCLES the permission mode (claude-code
+    // parity). The SERVER computes the guarded next mode from the live
+    // mode (get_next_permission_mode: bypassPermissions only when
+    // available), so the keybinding can never step into "allow everything"
+    // in a session that didn't opt into bypass, and never desyncs after
+    // /mode. Previously it toggled an unwired `config.set{yolo}` → dead.
     if (key.shift && key.tab && !cState.completions.length) {
       if (!live.sid) {
-        return void actions.sys('yolo needs an active session')
+        return void actions.sys('mode needs an active session')
       }
-
-      // gateway.rpc swallows errors with its own sys() message and resolves to null,
-      // so we only speak when it came back with a real shape. null = rpc already spoke.
-      return void gateway.rpc<ConfigSetResponse>('config.set', { key: 'yolo', session_id: live.sid }).then(r => {
-        if (r?.value === '1') {
-          return actions.sys('yolo on')
-        }
-
-        if (r?.value === '0') {
-          return actions.sys('yolo off')
-        }
-
-        if (r) {
-          actions.sys('failed to toggle yolo')
-        }
-      })
+      return void gateway
+        .rpc<{ mode?: string }>('permission.cycle', {})
+        .then(r => { if (r?.mode) actions.sys(`permission mode: ${r.mode}`) })
     }
 
     if (key.tab && cState.completions.length) {

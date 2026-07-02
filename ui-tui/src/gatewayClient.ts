@@ -46,6 +46,14 @@ function safeJson(v: unknown): string {
   }
 }
 
+/** ch13 round-4 — a human label for a permission suggestion rule, e.g.
+ *  `Bash(ls:*)`, so the "Always allow" option shows what it will persist. */
+export function describeSuggestionRule(suggestion: any): string | null {
+  const rule = suggestion?.rules?.[0]
+  if (!rule || !rule.tool_name) return null
+  return rule.rule_content ? `${rule.tool_name}(${rule.rule_content})` : String(rule.tool_name)
+}
+
 /** Pick the salient arg for a tool so the trail label reads `Bash(ls)` /
  *  `Read(package.json)` / `Grep(TODO)` (Claude-style) instead of a bare tool
  *  name. File paths are shown relative to the workspace so the label stays
@@ -119,7 +127,10 @@ export class GatewayClient extends EventEmitter {
   private buffered: GatewayEvent[] = []
   private logs: string[] = []
   // The tool-permission request currently awaiting the user's choice.
-  private pendingApproval: { input: unknown; request_id: string } | null = null
+  private pendingApproval: { input: unknown; request_id: string; suggestions: any[] } | null = null
+  // ch13 round-4 — subagent ids already announced via subagent.start, so a
+  // second agent_progress emits subagent.progress (not a duplicate start).
+  private seenSubagents = new Set<string>()
   // Tool inputs by tool_use id, so tool_result can render an Edit/Write diff.
   private toolInputs = new Map<string, { input: any; name: string }>()
   private msgStarted = false
@@ -291,6 +302,12 @@ export class GatewayClient extends EventEmitter {
         else if (key === 'thinking') this.sendControl('set_thinking', { action: value })
         return Promise.resolve({ ok: true } as T)
       }
+      case 'permission.cycle':
+        // ch13 round-4 — shift+tab: the SERVER computes the guarded next
+        // mode (get_next_permission_mode; bypass only when available) from
+        // the live mode, so the client can't step into bypassPermissions
+        // unconditionally or desync a cursor after /mode.
+        return this.controlQuery('cycle_permission_mode', {}).then(r => (r ?? {}) as T)
       case 'session.activate':
       case 'session.create':
       case 'session.resume':
@@ -353,12 +370,26 @@ export class GatewayClient extends EventEmitter {
         this.pendingApproval = null
         if (ap) {
           const deny = p.choice === 'deny'
+          // ch13 round-4 — 'always' persists the rule (its backend
+          // destination, e.g. localSettings); 'session' persists it for
+          // the session only (destination overridden to 'session'); 'once'
+          // sends no rule. Previously always/session/once were byte-
+          // identical on the wire and nothing was ever persisted.
+          let chosenUpdates: any[] = []
+          const first = ap.suggestions?.[0]
+          if (!deny && first && (p.choice === 'always' || p.choice === 'session')) {
+            chosenUpdates = [
+              p.choice === 'session'
+                ? { ...first, destination: 'session' }
+                : first
+            ]
+          }
           this.send({
             response: {
               request_id: ap.request_id,
               response: deny
                 ? { behavior: 'deny', message: 'Denied by user' }
-                : { behavior: 'allow', updatedInput: ap.input }
+                : { behavior: 'allow', updatedInput: ap.input, chosen_updates: chosenUpdates }
             },
             type: 'control_response'
           })
@@ -673,7 +704,41 @@ export class GatewayClient extends EventEmitter {
         }
         break
       }
-      // keep_alive / agent_progress / streamlined_* → ignored for the basic port
+      case 'agent_progress': {
+        // ch13 round-4 — the backend emits rich subagent progress
+        // (agent.py ProgressTracker) but the bridge dropped it, so the
+        // subagent HUD stayed dark during Task/Agent delegation. Map it to
+        // the subagent.* events the app renderer already handles.
+        const aid = String(msg.agent_id ?? '')
+        if (aid) {
+          const payload: any = {
+            depth: msg.depth ?? 0,
+            goal: msg.description || msg.name || 'subagent',
+            subagent_id: aid,
+            subagent_type: msg.subagent_type
+          }
+          if (!this.seenSubagents.has(aid)) {
+            this.seenSubagents.add(aid)
+            this.publish({ payload: { ...payload, status: 'running' }, type: 'subagent.start' })
+          }
+          const activity = String(msg.activity ?? '').trim()
+          if (activity) {
+            // ch13 round-4 — map to the field names the HUD renderer reads
+            // (turnController: output_tokens / tool_count), not the backend's
+            // raw `tokens`/`tool_use_count` which the renderer ignores.
+            this.publish({
+              payload: { ...payload, text: activity, output_tokens: msg.tokens, tool_count: msg.tool_use_count },
+              type: 'subagent.progress'
+            })
+          }
+          const status = String(msg.status ?? '')
+          if (status === 'completed' || status === 'failed' || status === 'killed') {
+            this.publish({ payload: { ...payload, status }, type: 'subagent.complete' })
+          }
+        }
+        break
+      }
+      // keep_alive / streamlined_* → ignored for the basic port
     }
   }
 
@@ -688,9 +753,19 @@ export class GatewayClient extends EventEmitter {
   private handleServerControl(msg: any): void {
     const req = msg.request
     if (req?.subtype === 'can_use_tool') {
-      this.pendingApproval = { input: req.input, request_id: String(msg.request_id ?? '') }
+      // ch13 round-4 — carry the backend's permission SUGGESTIONS so the
+      // "Always allow" / "Allow this session" choices persist a real rule.
+      const suggestions: any[] = Array.isArray(req.suggestions) ? req.suggestions : []
+      this.pendingApproval = { input: req.input, request_id: String(msg.request_id ?? ''), suggestions }
+      // Only offer the persistable "always" option when the backend sent a
+      // rule for it (the server strips allow_permanent otherwise).
+      const rule = describeSuggestionRule(suggestions[0])
       this.publish({
-        payload: { allow_permanent: true, command: String(req.tool_name ?? 'tool'), description: safeJson(req.input) },
+        payload: {
+          allow_permanent: suggestions.length > 0,
+          command: String(req.tool_name ?? 'tool'),
+          description: rule ?? safeJson(req.input)
+        },
         type: 'approval.request'
       })
     } else if (req?.subtype === 'mcp_elicitation') {

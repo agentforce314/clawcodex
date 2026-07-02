@@ -415,6 +415,26 @@ def make_agent_tool(
         }
         result = finalize_agent_tool(agent_messages, agent_id, metadata)
 
+        # ch13 round-4 (critic M1) — emit a TERMINAL agent_progress so the
+        # TUI's subagent HUD marks this subagent complete instead of
+        # lingering as "running" until the end-of-turn flush. The per-message
+        # emits above always carry status:"running"; without this final
+        # emit the client's subagent.complete mapping was unreachable.
+        try:
+            _emit = getattr(run_params.parent_context, "agent_progress_emit", None)
+            if _emit is not None:
+                _emit({
+                    "agent_id": agent_id,
+                    "name": getattr(run_params.agent_definition, "agent_type", ""),
+                    "description": (run_params.prompt or "")[:80],
+                    "subagent_type": agent_type,
+                    "activity": None,
+                    "status": "completed",
+                })
+        except Exception:  # noqa: BLE001 — a progress emit must never fail a
+            # completed delegation (critic: keep the whole resolve+emit guarded).
+            logger.debug("terminal subagent progress emit failed", exc_info=True)
+
         return TR(
             name=AGENT_TOOL_NAME,
             output={

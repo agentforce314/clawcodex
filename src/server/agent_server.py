@@ -247,6 +247,25 @@ class _AgentSession:
                 _dispatch_app_state(self, permission_mode=mode)
             self._ack(request_id)
             return
+        if subtype == "cycle_permission_mode":
+            # ch13 round-4 (critic B1) — shift+tab cycling MUST be computed
+            # server-side from the LIVE mode via the guarded
+            # get_next_permission_mode (bypassPermissions only when
+            # is_bypass_permissions_mode_available). A client cursor
+            # hardcoding the cycle both desyncs after /mode (M2) and would
+            # step into bypass unconditionally, silently disabling the whole
+            # permission gate. The server owns the mode + the availability
+            # flag, so it owns the next-mode computation.
+            new_mode = None
+            if self.tool_context is not None:
+                from src.permissions.cycle import get_next_permission_mode
+
+                pc = self.tool_context.permission_context
+                new_mode = get_next_permission_mode(pc)
+                _set_mode(self.tool_context, new_mode)
+                _dispatch_app_state(self, permission_mode=new_mode)
+            self._reply(request_id, {"ok": True, "mode": new_mode})
+            return
         if subtype == "set_model":
             model = inner.get("model")
             if isinstance(model, str) and self.provider is not None:
@@ -1345,6 +1364,12 @@ class _AgentSession:
         with self._lock:
             self._pending[request_id] = pending
 
+        # ch13 round-4 — forward the permission SUGGESTIONS (the "always
+        # allow Bash(ls:*)" rule options) so the TUI can offer a persistable
+        # choice. Previously only tool_name/input crossed the wire, so the
+        # client hardcoded a generic "always allow" with no rule attached
+        # and the choice was dropped — the user re-approved every turn AND
+        # session while the UI falsely reported "approved (always)".
         self._emit({
             "type": "control_request",
             "request_id": request_id,
@@ -1353,6 +1378,10 @@ class _AgentSession:
                 "tool_name": getattr(request, "tool_name", ""),
                 "input": getattr(request, "tool_input", None) or {},
                 "tool_use_id": None,
+                "suggestions": [
+                    _serialize_permission_update(u)
+                    for u in (getattr(request, "suggestions", None) or ())
+                ],
             },
         })
 
@@ -1370,9 +1399,23 @@ class _AgentSession:
             updated = reply.get("updatedInput")
             if not isinstance(updated, dict):
                 updated = reply.get("updated_input")
+            # ch13 round-4 — read the user's chosen "don't ask again" rules
+            # back off the reply and return them so handle_permission_ask /
+            # the can_use_tool adapter PERSIST them (registry.py:169 →
+            # _apply_and_persist_updates → settings). This is what makes
+            # "always allow" actually stick.
+            chosen_raw = reply.get("chosen_updates") or reply.get("chosenUpdates")
+            chosen: tuple = ()
+            if isinstance(chosen_raw, list):
+                deserialized = [
+                    _deserialize_permission_update(u)
+                    for u in chosen_raw if isinstance(u, dict)
+                ]
+                chosen = tuple(u for u in deserialized if u is not None)
             return PermissionAskReply(
                 behavior="allow",
                 updated_input=updated if isinstance(updated, dict) else None,
+                chosen_updates=chosen,
             )
         return PermissionAskReply(
             behavior="deny", message=str(reply.get("message", "")) or "denied by user"
@@ -2280,6 +2323,78 @@ def _system_message(session_id: str, text: str, *, level: str = "info") -> dict:
         "level": level,
         "message": text,
     }
+
+
+def _serialize_permission_update(update: Any) -> dict:
+    """ch13 round-4 — wire shape for a PermissionUpdate (the persistable
+    "always allow" rule). The TUI renders the description and echoes the
+    chosen one back; _deserialize_permission_update reverses this."""
+    out: dict[str, Any] = {
+        "type": getattr(update, "type", "addRules"),
+        "destination": getattr(update, "destination", "session"),
+    }
+    behavior = getattr(update, "behavior", None)
+    if behavior is not None:
+        out["behavior"] = behavior
+    rules = getattr(update, "rules", None)
+    if rules:
+        out["rules"] = [
+            {"tool_name": getattr(r, "tool_name", ""),
+             "rule_content": getattr(r, "rule_content", None)}
+            for r in rules
+        ]
+    mode = getattr(update, "mode", None)
+    if mode is not None:
+        out["mode"] = mode
+    directories = getattr(update, "directories", None)
+    if directories:
+        out["directories"] = list(directories)
+    return out
+
+
+def _deserialize_permission_update(data: dict) -> Any:
+    """Reverse of _serialize_permission_update. Returns a PermissionUpdate
+    dataclass or None on an unrecognized/empty type."""
+    from src.permissions.types import (
+        PermissionRuleValue,
+        PermissionUpdateAddDirectories,
+        PermissionUpdateAddRules,
+        PermissionUpdateRemoveDirectories,
+        PermissionUpdateRemoveRules,
+        PermissionUpdateReplaceRules,
+        PermissionUpdateSetMode,
+    )
+
+    utype = data.get("type")
+    dest = data.get("destination", "session")
+    behavior = data.get("behavior", "allow")
+
+    def _rules() -> tuple:
+        return tuple(
+            PermissionRuleValue(
+                tool_name=str(r.get("tool_name", "")),
+                rule_content=r.get("rule_content"),
+            )
+            for r in (data.get("rules") or []) if isinstance(r, dict)
+        )
+
+    if utype == "addRules":
+        return PermissionUpdateAddRules(destination=dest, behavior=behavior, rules=_rules())
+    if utype == "replaceRules":
+        return PermissionUpdateReplaceRules(destination=dest, behavior=behavior, rules=_rules())
+    if utype == "removeRules":
+        return PermissionUpdateRemoveRules(destination=dest, behavior=behavior, rules=_rules())
+    if utype == "setMode":
+        return PermissionUpdateSetMode(destination=dest, mode=data.get("mode", "default"))
+    if utype == "addDirectories":
+        return PermissionUpdateAddDirectories(
+            destination=dest, directories=tuple(data.get("directories") or ()),
+        )
+    if utype == "removeDirectories":
+        return PermissionUpdateRemoveDirectories(
+            destination=dest, directories=tuple(data.get("directories") or ()),
+        )
+    return None
 
 
 def _extract_prompt_text(msg: dict) -> str:
