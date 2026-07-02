@@ -123,6 +123,11 @@ class _AgentSession:
     # --http, where the centralized on_change side effects (user-level
     # settings persistence) must not fire from client-supplied sessions.
     app_state_store: Any = None
+    # ch05 round-4 GAP A — SESSION-scoped auto-compact tracking: the
+    # 3-consecutive-failures circuit breaker counts across turns (the
+    # engine's engine.py:74-79 rationale); a per-turn instance would reset
+    # it every prompt. Created lazily on first turn.
+    _auto_compact_tracking: Any = None
     session: Any = None
     system_prompt: Any = "You are a helpful assistant."
     _base_system_prompt: Any = None  # system prompt before the /plan section is composed in
@@ -1446,6 +1451,40 @@ class _AgentSession:
         self._run_turn(build_notification_turn(envelopes), internal=True)
         return True
 
+    def _build_turn_pipeline_config(self, turn_provider: Any) -> Any:
+        """ch05 round-4 GAP A — per-turn PipelineConfig with the
+        SESSION-scoped AutoCompactTracking (lazy-created once; the
+        3-consecutive-failures circuit breaker must count across turns —
+        a per-turn instance would reset it every prompt). Never raises."""
+        try:
+            from src.services.compact.autocompact import AutoCompactTracking
+            from src.services.compact.pipeline import (
+                build_production_pipeline_config,
+            )
+
+            if self._auto_compact_tracking is None:
+                self._auto_compact_tracking = AutoCompactTracking()
+            return build_production_pipeline_config(
+                turn_provider, self.tool_context, self._auto_compact_tracking,
+            )
+        except Exception:  # noqa: BLE001 — pipeline wiring must not kill the turn
+            logger.debug("[agent-server] pipeline config build failed",
+                         exc_info=True)
+            return None
+
+    @staticmethod
+    def _parse_turn_budget(prompt: Any) -> int | None:
+        """ch05 round-4 GAP B — the '+500k' auto-continue budget from the
+        ORIGINAL user prompt (str or content-block list). Best-effort."""
+        try:
+            from src.query.token_budget import parse_token_budget
+
+            return parse_token_budget(_extract_prompt_text({"content": prompt}))
+        except Exception:  # noqa: BLE001 — budget parse is best-effort
+            logger.debug("[agent-server] token budget parse failed",
+                         exc_info=True)
+            return None
+
     def _run_turn(self, prompt, btw: bool = False, internal: bool = False) -> None:
         # prompt: str | list[ContentBlock]
         # btw=True → a "side question" (the original's /btw): run with full context
@@ -1460,6 +1499,12 @@ class _AgentSession:
                 result=self.init_error, is_error=True, error=self.init_error,
             ))
             return
+
+        # ch05 round-4 GAP B (critic m1) — parse the '+500k' budget from the
+        # ORIGINAL prompt BEFORE ultracode augmentation: the reminder is
+        # APPENDED, and the shorthand's end-anchored regex would no longer
+        # match a trailing "+500k" once a <system-reminder> follows it.
+        token_budget = self._parse_turn_budget(prompt) if not internal else None
 
         # ultracode (workflow-engine §4.1): the `ultracode` keyword in this
         # message, or the session-long `/effort ultracode` mode, appends a
@@ -1521,6 +1566,11 @@ class _AgentSession:
         # /effort: wrap the provider to inject reasoning_effort (default off ⇒
         # the real provider is used unchanged).
         turn_provider = _EffortProvider(self.provider, self._effort) if self._effort else self.provider
+        # ch05 round-4 GAP A — the production compaction pipeline. The
+        # tracking is session-scoped (circuit breaker survives turns); the
+        # config is rebuilt per turn so it always carries the CURRENT
+        # provider/model and read-file fingerprints.
+        pipeline_config = self._build_turn_pipeline_config(turn_provider)
         try:
             result = asyncio.run(run_query_as_agent_loop(
                 initial_messages=list(self.session.conversation.messages),
@@ -1535,6 +1585,9 @@ class _AgentSession:
                 abort_controller=abort,
                 extended_thinking=self._thinking,  # None = model default; True/False = ThinkingToggle
                 fallback_model=self.config.fallback_model,
+                pipeline_config=pipeline_config,
+                query_source="repl_main_thread",
+                token_budget=token_budget,
             ))
         except AbortError:
             self._emit(_result_message(

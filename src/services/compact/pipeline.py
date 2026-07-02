@@ -89,6 +89,35 @@ class PipelineConfig:
     early_exit_tokens: int = 20_000
 
 
+def build_production_pipeline_config(
+    provider: Any,
+    tool_context: Any,
+    autocompact_tracking: "AutoCompactTracking | None",
+) -> PipelineConfig:
+    """The minimal correct PipelineConfig for the live surfaces.
+
+    ch05 round-4 GAP A — mirrors the test-only ``QueryEngine``'s
+    construction (``query/engine.py:233-250``) exactly: provider + model +
+    the read-file fingerprints (so post-compact file restoration fires) +
+    the SESSION-scoped ``autocompact_tracking``. The tracking instance MUST
+    outlive single turns — the 3-consecutive-failures circuit breaker
+    counts across prompts; a per-turn instance would reset it every turn
+    (the exact reason the engine holds one at ``engine.py:74-79``).
+    """
+    fingerprints = getattr(tool_context, "read_file_fingerprints", None) or {}
+    read_file_state = {
+        str(path): {"timestamp": fp[0]}
+        for path, fp in fingerprints.items()
+        if isinstance(fp, (tuple, list)) and fp
+    }
+    return PipelineConfig(
+        provider=provider,
+        model=getattr(provider, "model", "") or "",
+        read_file_state=read_file_state or None,
+        autocompact_tracking=autocompact_tracking,
+    )
+
+
 class CompressionPipeline:
     """
     Orchestrates the 5-layer compression pipeline.
