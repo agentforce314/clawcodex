@@ -24,6 +24,20 @@ from .constants import (
 logger = logging.getLogger(__name__)
 
 
+def get_query_source_for_agent(agent_type: str, is_built_in: bool) -> str:
+    """ch08 round-4 WI-2 — the subagent query_source label.
+
+    Port of TS ``getQuerySourceForAgent`` (``utils/promptCategory.ts``):
+    ``agent:builtin:<type>`` for built-in agents, ``agent:custom`` for
+    user/project agents. (The fork path threads its own
+    ``agent:builtin:fork`` explicitly.) The ``agent:`` prefix keeps these
+    outside the ``("compact","session_memory")`` skip-set and inside the
+    foreground-retry family, matching TS."""
+    if is_built_in:
+        return f"agent:builtin:{agent_type}"
+    return "agent:custom"
+
+
 @dataclass
 class ResolvedAgentTools:
     """Result of resolving agent tools against available tools."""

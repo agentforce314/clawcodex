@@ -57,6 +57,14 @@ def run_tui_launcher(argv: list[str]) -> int:
                         help="Run the agent-server directly, print cc:// URL + token, and wait (no TUI).")
     args = parser.parse_args(argv)
 
+    # ch08 round-4 WI-3 — 'bubble' is a runtime-only sub-agent-escalation
+    # mode with no top-level meaning; reject it (auto stays valid).
+    if args.permission_mode == "bubble":
+        print("clawcodex tui: --permission-mode 'bubble' is a runtime-only "
+              "sub-agent mode; use default | plan | acceptEdits | "
+              "bypassPermissions | auto", file=sys.stderr)
+        return 2
+
     if args.print_connect:
         return _print_connect(args)
     return launch_ink_tui(
