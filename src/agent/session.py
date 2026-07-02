@@ -145,30 +145,12 @@ class Session:
 def _snapshot_cost_block() -> dict:
     """Build the cost block written by ``Session.save``.
 
-    Shape matches the reader at
-    ``src/services/cost_restore.py:restore_cost_state_for_session``.
-    Module-private; tests can call via the public ``Session.save``.
+    ch03 round-4 GAP B: the schema owner moved to
+    ``src/services/cost_restore.py:build_cost_block`` (colocated with the
+    reader so writer/reader can't drift; also used by the LIVE
+    agent-server persister). This delegation is kept for the existing
+    tests/callers of ``Session.save``.
     """
-    return {
-        "total_cost_usd": get_total_cost_usd(),
-        "total_api_duration": get_total_api_duration(),
-        "total_api_duration_without_retries":
-            get_total_api_duration_without_retries(),
-        "total_tool_duration": get_total_tool_duration(),
-        "total_lines_added": get_total_lines_added(),
-        "total_lines_removed": get_total_lines_removed(),
-        # last_duration = elapsed since start_time. cost_restore uses
-        # this to back-date the new session's start_time so post-resume
-        # duration accumulators continue from where they left off.
-        "last_duration": time.time() - get_start_time(),
-        "model_usage": {
-            model: {
-                "input_tokens": u.input_tokens,
-                "output_tokens": u.output_tokens,
-                "cache_creation_input_tokens": u.cache_creation_input_tokens,
-                "cache_read_input_tokens": u.cache_read_input_tokens,
-                "cost_usd": u.cost_usd,
-            }
-            for model, u in get_model_usage().items()
-        },
-    }
+    from src.services.cost_restore import build_cost_block
+
+    return build_cost_block()
