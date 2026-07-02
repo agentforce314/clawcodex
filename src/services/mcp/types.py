@@ -83,6 +83,11 @@ class ServerCapabilities:
     tools: bool = False
     prompts: bool = False
     resources: bool = False
+    # ch15 round-4 — the nested `tools.listChanged` sub-flag (a server that
+    # advertises it will push notifications/tools/list_changed on change).
+    # Previously the whole tools capability object was collapsed to a bool,
+    # losing this — so the client couldn't tell whether to expect refreshes.
+    tools_list_changed: bool = False
 
 
 @dataclass
