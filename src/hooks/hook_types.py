@@ -9,7 +9,7 @@ from typing import Any, Literal
 # Hook events — Chapter-12 / Phase-1 / WI-1.1
 # ---------------------------------------------------------------------------
 #
-# 25-event taxonomy promoted from the legacy 10-event Literal. Mirrors
+# 28-event taxonomy promoted from the legacy 10-event Literal. Mirrors
 # typescript/src/utils/hooks/hooksConfigManager.ts:26-267 plus the chapter's
 # reference table (``ch12-extensibility.md`` §"Five Most Important Lifecycle
 # Events" + §"Reference table — remaining events").

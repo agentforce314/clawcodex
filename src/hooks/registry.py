@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import asyncio
 import logging
+import threading
 from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator
 
@@ -41,7 +41,16 @@ class AsyncHookRegistry:
         self._hooks: dict[HookEvent, list[RegisteredHook]] = {
             event: [] for event in ALL_HOOK_EVENTS
         }
-        self._lock = asyncio.Lock()
+        # threading.Lock, not asyncio.Lock — deliberately (ch01 round-4).
+        # The registry is a process-global singleton touched from MULTIPLE
+        # event loops (the sync bootstrap's asyncio.run, each turn's
+        # asyncio.run on the agent-server worker thread) and from multiple
+        # session worker threads. An asyncio.Lock binds to whichever loop
+        # first awaits it and raises "bound to a different event loop" ever
+        # after; it also provides zero cross-thread safety. Every critical
+        # section below is pure in-memory dict/list work with no await, so a
+        # plain mutex is both correct and loop-agnostic.
+        self._lock = threading.Lock()
         self._counter = 0
 
     async def register(
@@ -50,7 +59,7 @@ class AsyncHookRegistry:
         config: HookConfig,
         source: HookSource | None = None,
     ) -> RegisteredHook:
-        async with self._lock:
+        with self._lock:
             effective_source = source or config.source
             self._counter += 1
             hook = RegisteredHook(
@@ -76,7 +85,7 @@ class AsyncHookRegistry:
         event: HookEvent,
         config: HookConfig,
     ) -> bool:
-        async with self._lock:
+        with self._lock:
             existing = self._hooks.get(event, [])
             temp_hook = RegisteredHook(event=event, config=config, source=config.source)
             dedup_key = temp_hook.dedup_key
@@ -90,7 +99,7 @@ class AsyncHookRegistry:
         event: HookEvent,
         tool_name: str | None = None,
     ) -> list[RegisteredHook]:
-        async with self._lock:
+        with self._lock:
             hooks = list(self._hooks.get(event, []))
 
         if tool_name is not None:
@@ -110,13 +119,13 @@ class AsyncHookRegistry:
         return len(hooks) > 0
 
     async def clear(self) -> None:
-        async with self._lock:
+        with self._lock:
             for event in ALL_HOOK_EVENTS:
                 self._hooks[event] = []
             self._counter = 0
 
     async def clear_source(self, source: HookSource) -> int:
-        async with self._lock:
+        with self._lock:
             removed = 0
             for event in ALL_HOOK_EVENTS:
                 before = len(self._hooks[event])

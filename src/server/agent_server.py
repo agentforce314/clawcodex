@@ -1710,6 +1710,24 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
             abort_controller=AbortController(),
         )
         tool_context.options.is_non_interactive_session = True
+        # ch01 round-4 WI-1 — load settings hooks into the executor-visible
+        # snapshot + global registry. Safe here: _build_runtime runs in an
+        # executor thread with no live event loop. Never raises.
+        from src.hooks.config_manager import bootstrap_hook_config_manager
+
+        tool_context.hook_config_manager = bootstrap_hook_config_manager(
+            cwd=sess.cwd,
+        )
+        # workspace_trusted feeds the hook trust gate (trust_gate WI-0.2);
+        # it defaulted False with no production setter, so even configured
+        # hooks were silently skipped. Same source of truth as the CLI's
+        # startup trust gate (TS computeTrustDialogAccepted parity).
+        try:
+            from src.services.startup_gates import check_trust_accepted
+
+            tool_context.workspace_trusted = check_trust_accepted(sess.cwd)
+        except Exception:  # noqa: BLE001 — unknown trust stays untrusted
+            logger.debug("[agent-server] trust check failed", exc_info=True)
         if sess._mcp_runtime is not None:
             tool_context.mcp_clients = sess._mcp_runtime.clients  # server-name catalog for the agent tool
 
