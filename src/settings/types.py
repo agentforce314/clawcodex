@@ -137,6 +137,15 @@ class SettingsSchema:
     # fail-open (return the original ask).
     auto_mode_iron_gate_open: bool = False
 
+    # ch11 round-4 — the LLM memory-relevance recall. Default OFF, faithful
+    # to TS (its recall is behind isAutoMemoryEnabled() &&
+    # feature('tengu_moth_copse'), off in OSS) and because firing an LLM
+    # side-query per user turn on the session provider is a real
+    # multi-provider cost. When True, the shared adapter recalls up to 5
+    # query-relevant memory files and injects their bodies as a
+    # <system-reminder>; the static MEMORY.md index injection is unaffected.
+    memory_relevance_prefetch_enabled: bool = False
+
     # Provider
     provider: str = "anthropic"
 

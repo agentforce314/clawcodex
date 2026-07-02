@@ -287,6 +287,62 @@ class AgentLoopRunResult:
     terminal: Terminal | None = None
 
 
+def _last_user_text(messages: list[Message]) -> str:
+    """The current user turn's text — the query for memory recall."""
+    for msg in reversed(messages):
+        if getattr(msg, "role", None) != "user":
+            continue
+        if getattr(msg, "isMeta", False):
+            continue  # skip injected system-reminders
+        content = getattr(msg, "content", None)
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = [
+                str(b.get("text", "")) for b in content
+                if isinstance(b, dict) and b.get("type") == "text"
+            ]
+            if parts:
+                return "\n".join(parts)
+    return ""
+
+
+async def _maybe_recall_memories(
+    messages: list[Message],
+    provider: Any,
+    tool_context: ToolContext,
+    memory_surfaced: set[str] | None,
+) -> Message | None:
+    """ch11 round-4 WI-1 — the gated memory-relevance recall. Returns a
+    <system-reminder> UserMessage to prepend, or None. Never raises."""
+    try:
+        from src.settings.settings import get_settings
+
+        if not getattr(get_settings(), "memory_relevance_prefetch_enabled", False):
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+
+    query_text = _last_user_text(messages)
+    if not query_text.strip():
+        return None
+    try:
+        from src.memdir import get_auto_mem_path
+        from src.memdir.surface_memories import get_relevant_memory_reminder
+        from src.types.messages import create_user_message
+
+        memdir = str(get_auto_mem_path())
+        surfaced = memory_surfaced if memory_surfaced is not None else set()
+        reminder = await get_relevant_memory_reminder(
+            query_text, memdir, provider=provider, already_surfaced=surfaced,
+        )
+        if not reminder:
+            return None
+        return create_user_message(content=reminder, isMeta=True)
+    except Exception:  # noqa: BLE001 — recall must never block a turn
+        return None
+
+
 async def run_query_as_agent_loop(
     *,
     initial_messages: list[Message],
@@ -303,6 +359,14 @@ async def run_query_as_agent_loop(
     abort_controller: AbortController | None = None,
     extended_thinking: bool | None = None,
     fallback_model: str | None = None,
+    # ch11 round-4 WI-1 — session-scoped set of already-surfaced memory
+    # file paths (de-dups the LLM recall across turns). The agent-server
+    # passes its per-session set; headless a per-run set. None disables
+    # de-dup (a fresh set is used per call).
+    memory_surfaced: set[str] | None = None,
+    # ch11 round-4 WI-1 (critic #8) — set False to skip the recall entirely
+    # (internal/notification turns). The settings gate still applies on top.
+    memory_recall_enabled: bool = True,
     # ch05 round-4 GAP A — the production compaction pipeline. When None
     # (the pre-round-4 default) Phase-0 (tool-result budget/snip/
     # microcompact/collapse/auto-compact) is inert and only the blocking
@@ -366,8 +430,31 @@ async def run_query_as_agent_loop(
         else:
             abort_controller = AbortController()
 
+    # ch11 round-4 WI-1 — LLM memory-relevance recall (gated, default off).
+    # Fire once at turn start on the current user message: select up to 5
+    # relevant memory files, read their bodies, and APPEND them as a
+    # <system-reminder> AFTER the user turn (TS also surfaces memory after
+    # the user message, never before — query.ts:1810-1831; do NOT move this
+    # before the user turn). The model then recalls the RIGHT memory content
+    # (not just the MEMORY.md index pointer). Never blocks the turn on
+    # failure. Ephemeral: appended to the query's working set only, never
+    # persisted to the conversation (matches TS attachments).
+    messages_for_query = list(initial_messages)
+    try:
+        recall_msg = (
+            await _maybe_recall_memories(
+                messages_for_query, provider, tool_context, memory_surfaced,
+            )
+            if memory_recall_enabled else None
+        )
+        if recall_msg is not None:
+            messages_for_query.append(recall_msg)
+    except Exception:  # noqa: BLE001 — recall must never block a turn
+        logging.getLogger(__name__).debug("memory recall wiring failed",
+                                          exc_info=True)
+
     params = QueryParams(
-        messages=list(initial_messages),
+        messages=messages_for_query,
         system_prompt=system_prompt,
         tools=tool_registry.list_tools(),
         tool_registry=tool_registry,
