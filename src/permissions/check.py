@@ -277,7 +277,27 @@ def has_permissions_to_use_tool(
                 )
             return result
 
-        decision = auto_mode_classify(tool.name, tool_input, context)
+        decision = auto_mode_classify(
+            tool.name, tool_input, context,
+            tool=tool, tool_use_context=tool_use_context,
+        )
+        if decision.unavailable:
+            # critic M1 — classifier outage + iron-gate-OPEN: TS returns the
+            # original ask (permissions.ts:871-876), which PROMPTS
+            # interactively and hits the headless-deny guard below.
+            # NEVER a silent auto-allow.
+            if context.should_avoid_permission_prompts:
+                return PermissionDenyDecision(
+                    behavior="deny",
+                    message=(
+                        f"Auto-mode classifier unavailable for {tool.name} "
+                        "and prompts are not available in this context"
+                    ),
+                    decision_reason=ClassifierDecisionReason(
+                        classifier="auto-mode", reason=decision.reason,
+                    ),
+                )
+            return result  # the original ask → prompt the user
         if decision.allow:
             return PermissionAllowDecision(
                 behavior="allow",
@@ -766,9 +786,121 @@ def prepare_permission_matcher(rule_content: str) -> Callable[[str], bool]:
 class AutoModeDecision:
     allow: bool
     reason: str = ""
+    # ch06 round-4 PR-B (critic M1): the classifier was UNAVAILABLE
+    # (error/timeout/abort) and the iron gate is OPEN. TS's fail-open
+    # returns the original ASK (prompts / headless-denies), it never
+    # auto-allows on a classifier outage. When this is True the auto
+    # branch surfaces the ask instead of trusting ``allow``.
+    unavailable: bool = False
 
 
 def auto_mode_classify(
+    tool_name: str,
+    tool_input: dict[str, Any],
+    context: ToolPermissionContext,
+    *,
+    tool: Any = None,
+    tool_use_context: Any = None,
+) -> AutoModeDecision:
+    """Auto-mode classification.
+
+    ch06 round-4: when the transcript-classifier flag is ON and the
+    caller supplies ``tool`` + ``tool_use_context`` (present on the live
+    query-loop path), the STATIC heuristic below is the fast-path
+    pre-filter — a heuristic ``allow`` short-circuits with ZERO LLM cost
+    (the static allow-set is a subset of what's safe). Only a heuristic
+    ``deny`` escalates to the LLM classifier, which sees the transcript +
+    the pending action and can override the deny (or confirm it). Flag OFF
+    → pure static behavior (today's zero-extra-cost path)."""
+    static = _auto_mode_classify_static(tool_name, tool_input, context)
+
+    if static.allow:
+        return static
+    # Residual (heuristic would deny): escalate to the LLM classifier when
+    # enabled and the live inputs are available.
+    if tool is not None and tool_use_context is not None:
+        try:
+            from .yolo_classifier import (
+                classify_action_llm,
+                is_transcript_classifier_enabled,
+            )
+
+            if is_transcript_classifier_enabled():
+                decision = classify_action_llm(tool, tool_input, tool_use_context)
+                # Record denial tracking around the verdict (critic M2).
+                _record_classifier_outcome(tool_use_context, decision.allow)
+                # Over-limit (3 consecutive / 20 total denials) → stop
+                # classifying and surface the ask so a human breaks the
+                # loop (interactive) or the headless agent aborts via the
+                # prompts-unavailable deny. TS handleDenialLimitExceeded
+                # (permissions.ts:985-1059).
+                if not decision.allow and _classifier_denial_fallback(
+                    tool_use_context
+                ):
+                    return AutoModeDecision(
+                        allow=False,
+                        reason=(
+                            "classifier denial limit reached — human "
+                            "confirmation required"
+                        ),
+                        unavailable=True,  # route through the ask/headless-deny path
+                    )
+                return AutoModeDecision(
+                    allow=decision.allow,
+                    reason=f"classifier: {decision.reason}",
+                    # unavailable+allow only happens on iron-gate-OPEN; the
+                    # auto branch surfaces the ask instead of allowing.
+                    unavailable=decision.unavailable and decision.allow,
+                )
+        except Exception:  # noqa: BLE001 — classifier failure keeps the static deny
+            import logging
+
+            logging.getLogger(__name__).debug(
+                "auto-mode classifier escalation failed; using static deny",
+                exc_info=True,
+            )
+    return static
+
+
+def _record_classifier_outcome(tool_use_context: Any, allowed: bool) -> None:
+    """ch06 round-4 PR-B (critic M2) — denial tracking on the session.
+
+    A DenialState lives on the tool_use_context (per session). On a block
+    we record a denial; on an allow we reset the consecutive streak. When
+    the limit trips (3 consecutive / 20 total) the NEXT block should fall
+    back to a manual prompt — surfaced via the DenialState the caller can
+    inspect. Best-effort; a tracking failure never affects the verdict."""
+    try:
+        from .yolo_classifier import DenialState
+
+        state = getattr(tool_use_context, "_classifier_denials", None)
+        if not isinstance(state, DenialState):
+            state = DenialState()
+            try:
+                tool_use_context._classifier_denials = state
+            except Exception:  # noqa: BLE001 — read-only stub context
+                return
+        if allowed:
+            state.record_success()
+        else:
+            state.record_denial()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _classifier_denial_fallback(tool_use_context: Any) -> bool:
+    """True when the denial limit has tripped — the caller should fall back
+    to a manual prompt (interactive) or deny (headless)."""
+    try:
+        from .yolo_classifier import DenialState
+
+        state = getattr(tool_use_context, "_classifier_denials", None)
+        return isinstance(state, DenialState) and state.should_fallback_to_prompt()
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _auto_mode_classify_static(
     tool_name: str,
     tool_input: dict[str, Any],
     context: ToolPermissionContext,
