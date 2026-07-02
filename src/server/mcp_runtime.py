@@ -143,6 +143,63 @@ class McpRuntime:
             is_mcp=True,
         )
 
+    def _apply_refreshed_tools(
+        self, name: str, new_raw: list, client: Any
+    ) -> tuple[list[str], list]:
+        """ch15 round-4 — swap in a server's freshly-fetched tools.
+
+        Pure w.r.t. the event loop (no I/O) so it's unit-testable: given the
+        new raw MCP tool list, rebuild the wrapped tools, replace this
+        server's slice of self.tools/self.servers, and return
+        ``(removed_full_names, new_wrapped_tools)`` so the caller can swap
+        them in the live agent registry. Returns the FULL
+        ``mcp__server__tool`` names removed (what registry.unregister keys on).
+        """
+        from src.services.mcp.mcp_string_utils import build_mcp_tool_name
+
+        prefix = build_mcp_tool_name(name, "")  # "mcp__{name}__"
+        removed_full = [t.name for t in self.tools
+                        if getattr(t, "name", "").startswith(prefix)]
+        self.tools = [t for t in self.tools
+                      if not getattr(t, "name", "").startswith(prefix)]
+        new_tools = [self._wrap(name, mt, client) for mt in new_raw]
+        self.tools.extend(new_tools)
+        self.servers[name] = [t.name for t in new_raw]
+        return removed_full, new_tools
+
+    async def _refresh_server_tools_async(self, name: str, on_change: Any) -> None:
+        """Re-fetch a server's tools (on the connection loop) and hand the
+        diff to ``on_change(removed_full_names, new_tools)``. Guarded."""
+        client = self.clients.get(name)
+        if client is None:
+            return
+        try:
+            new_raw = await client.list_tools()
+        except Exception:  # noqa: BLE001
+            logger.debug("[mcp] refresh list_tools failed: %s", name, exc_info=True)
+            return
+        removed_full, new_tools = self._apply_refreshed_tools(name, new_raw, client)
+        try:
+            on_change(removed_full, new_tools)
+        except Exception:  # noqa: BLE001
+            logger.debug("[mcp] refresh on_change failed: %s", name, exc_info=True)
+        logger.info("[mcp] %s tools refreshed (list_changed): %d tool(s)",
+                    name, len(new_tools))
+
+    def schedule_tool_refresh(self, name: str, on_change: Any) -> None:
+        """ch15 round-4 — schedule a tools/list_changed refresh on the
+        connection loop. Safe to call from the loop thread (the notification
+        dispatch path) — it schedules without blocking, so no self-deadlock."""
+        loop = self._loop
+        if loop is None:
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(
+                self._refresh_server_tools_async(name, on_change), loop
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("[mcp] schedule refresh failed: %s", name, exc_info=True)
+
     def shutdown(self) -> None:
         """Disconnect clients and stop the background loop. Idempotent."""
         loop = self._loop
