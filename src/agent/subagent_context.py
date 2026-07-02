@@ -209,6 +209,19 @@ def create_subagent_context(
         # treat sub-agent loops as untrusted in a trusted workspace.
         hook_config_manager=parent_context.hook_config_manager,
         workspace_trusted=parent_context.workspace_trusted,
+        # ch10 round-4 WI-1 — SHARE the parent's task + name registries
+        # (do NOT fall to fresh empty instances). TS keeps all task state
+        # in a single AppState.tasks threaded everywhere; the port made
+        # these per-ToolContext, so a background child ran with its OWN
+        # empty runtime_tasks. A parent SendMessage(to=name) queued the
+        # message into the PARENT's registry, but the child drained its
+        # own empty one → the message was SILENTLY DROPPED while the tool
+        # reported "queued for delivery." Sharing the same instances (both
+        # are RLock-guarded — safe under the ch07 parallel-agent fan-out)
+        # restores TS's single-shared-store semantics so the child drains
+        # the same store the parent queued into.
+        runtime_tasks=parent_context.runtime_tasks,
+        agent_name_registry=parent_context.agent_name_registry,
     )
 
 
