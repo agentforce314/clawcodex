@@ -22,6 +22,7 @@ from typing import Any
 from src.bootstrap.state import (
     ModelUsage,
     add_to_total_cost_state,
+    cost_state_lock,
     get_model_usage,
     get_total_cost_usd,
 )
@@ -56,22 +57,29 @@ def record_api_usage(model: str, usage: Any) -> float:
         ),
         cost_usd=cost,
     )
-    existing = get_model_usage().get(model)
-    if existing is not None:
-        bootstrap_usage = ModelUsage(
-            input_tokens=existing.input_tokens + bootstrap_usage.input_tokens,
-            output_tokens=existing.output_tokens + bootstrap_usage.output_tokens,
-            cache_creation_input_tokens=(
-                existing.cache_creation_input_tokens
-                + bootstrap_usage.cache_creation_input_tokens
-            ),
-            cache_read_input_tokens=(
-                existing.cache_read_input_tokens
-                + bootstrap_usage.cache_read_input_tokens
-            ),
-            cost_usd=existing.cost_usd + cost,
-        )
-    add_to_total_cost_state(cost, bootstrap_usage, model)
+    # ch07 round-4 (critic MAJOR) — hold the accumulator lock across the
+    # whole read-modify-write. N parallel subagent threads (Agent is now
+    # concurrency-safe; workflow parallel() pre-existing) would otherwise
+    # each read the same ``existing``, add their own delta, and clobber one
+    # another → lost updates → undercounted cost/tokens. RLock, so the
+    # nested add_to_total_cost_state re-acquire is fine.
+    with cost_state_lock():
+        existing = get_model_usage().get(model)
+        if existing is not None:
+            bootstrap_usage = ModelUsage(
+                input_tokens=existing.input_tokens + bootstrap_usage.input_tokens,
+                output_tokens=existing.output_tokens + bootstrap_usage.output_tokens,
+                cache_creation_input_tokens=(
+                    existing.cache_creation_input_tokens
+                    + bootstrap_usage.cache_creation_input_tokens
+                ),
+                cache_read_input_tokens=(
+                    existing.cache_read_input_tokens
+                    + bootstrap_usage.cache_read_input_tokens
+                ),
+                cost_usd=existing.cost_usd + cost,
+            )
+        add_to_total_cost_state(cost, bootstrap_usage, model)
     return cost
 
 

@@ -224,6 +224,27 @@ class _BootstrapState:
 
 _STATE: _BootstrapState = _BootstrapState()
 
+# ch07 round-4 (critic MAJOR) — the cost/duration/lines accumulators are
+# read-modify-write against the process-global _STATE. With Agent now
+# concurrency-safe (and pre-existing workflow parallel() fan-out), N
+# subagent OS threads call record_api_usage concurrently; the RMW is not
+# GIL-atomic (it spans many bytecodes with release points), so
+# unsynchronized writes lose updates → undercounted cost/tokens. This
+# reentrant lock makes the accumulator RMW atomic across threads. TS has
+# no analog (Node is single-threaded); this is a genuine port-only need.
+import threading as _threading
+
+_COST_STATE_LOCK = _threading.RLock()
+
+
+def cost_state_lock() -> "_threading.RLock":
+    """The lock guarding the cost/duration/lines accumulator RMW.
+
+    Callers whose read-modify-write spans multiple accessor calls (e.g.
+    ``cost_tracker.record_api_usage`` reads ``get_model_usage`` then calls
+    ``add_to_total_cost_state``) hold this across the whole sequence."""
+    return _COST_STATE_LOCK
+
 
 # ---------------------------------------------------------------------------
 # WI-4: Turn-output-token snapshot & budget continuation
@@ -537,8 +558,9 @@ def add_to_total_cost_state(
     model: str,
 ) -> None:
     """Record a cost event. Mirrors TS ``addToTotalCostState``."""
-    _STATE.model_usage[model] = model_usage
-    _STATE.total_cost_usd += cost
+    with _COST_STATE_LOCK:
+        _STATE.model_usage[model] = model_usage
+        _STATE.total_cost_usd += cost
 
 
 def get_total_api_duration() -> int:
@@ -550,8 +572,9 @@ def get_total_api_duration_without_retries() -> int:
 
 
 def add_to_total_duration_state(duration: int, duration_without_retries: int) -> None:
-    _STATE.total_api_duration += duration
-    _STATE.total_api_duration_without_retries += duration_without_retries
+    with _COST_STATE_LOCK:
+        _STATE.total_api_duration += duration
+        _STATE.total_api_duration_without_retries += duration_without_retries
 
 
 def get_total_tool_duration() -> int:
@@ -566,9 +589,10 @@ def add_to_tool_duration(duration: int) -> None:
     ``turn_tool_duration_ms`` AND the per-turn ``turn_tool_count``.
     All three update atomically.
     """
-    _STATE.total_tool_duration += duration
-    _STATE.turn_tool_duration_ms += duration
-    _STATE.turn_tool_count += 1
+    with _COST_STATE_LOCK:
+        _STATE.total_tool_duration += duration
+        _STATE.turn_tool_duration_ms += duration
+        _STATE.turn_tool_count += 1
 
 
 def get_total_lines_added() -> int:
@@ -580,8 +604,9 @@ def get_total_lines_removed() -> int:
 
 
 def add_to_total_lines_changed(added: int, removed: int) -> None:
-    _STATE.total_lines_added += added
-    _STATE.total_lines_removed += removed
+    with _COST_STATE_LOCK:
+        _STATE.total_lines_added += added
+        _STATE.total_lines_removed += removed
 
 
 def has_unknown_model_cost() -> bool:

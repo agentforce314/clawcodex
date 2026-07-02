@@ -727,6 +727,20 @@ def make_agent_tool(
         map_result_to_api=_map_result_to_api,
         max_result_size_chars=200_000,
         is_destructive=lambda _input: True,
+        # ch07 round-4 GAP A — the Agent tool is concurrency-safe (TS
+        # AgentTool.tsx:1288-1290, and the tool prompt tells the model to
+        # launch multiple agents concurrently). A run of consecutive Agent
+        # tool_use blocks now partitions into ONE parallel batch instead of
+        # N serial batches, so default foreground multi-agent fan-out runs
+        # concurrently (bounded by MAX_TOOL_USE_CONCURRENCY). Safe: sync
+        # tool calls run on worker threads (tool_execution.py:558
+        # asyncio.to_thread), sub-agents get fully isolated contexts +
+        # abort controllers, and the model is responsible for not spawning
+        # conflicting agents (same contract as TS). NOTE: is_read_only
+        # stays False (unset) — unlike TS's isReadOnly()=true — because the
+        # port's sub-agents run Edit/Write, so Agent is not read-only in
+        # effect; concurrency-safety != read-only.
+        is_concurrency_safe=lambda _input: True,
         search_hint="agent spawn subagent delegate task",
         to_auto_classifier_input=lambda input_data: (input_data or {}).get("prompt", "")[:200],
         get_activity_description=lambda input_data: (input_data or {}).get("description", "Running agent") if input_data else None,
