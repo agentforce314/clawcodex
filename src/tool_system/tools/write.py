@@ -46,11 +46,11 @@ def _expand_path(file_path: str) -> str:
 
 def _backfill_observable_input(tool_input: dict[str, Any]) -> None:
     """Expand *file_path* in-place so hook allowlists cannot be bypassed
-    via ``~`` or relative paths.
-    """
-    fp = tool_input.get("file_path")
-    if isinstance(fp, str):
-        tool_input["file_path"] = _expand_path(fp)
+    via ``~`` or relative paths. ch06 round-4 (critic m3): delegates to the
+    shared Read/Edit helper so the three file tools can't drift."""
+    from .read import _backfill_read_edit_path
+
+    _backfill_read_edit_path(tool_input)
 
 
 # ---------------------------------------------------------------------------

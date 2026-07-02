@@ -16,6 +16,16 @@ from ..utils.path_utils import suggest_path_under_cwd
 # Constants
 # ---------------------------------------------------------------------------
 
+
+def _backfill_read_edit_path(tool_input: dict[str, Any]) -> None:
+    """ch06 round-4 PR-A GAP B — expand ``file_path`` in-place so hook
+    allowlists / permission rules can't be bypassed via ``~`` or a
+    relative path (TS FileReadTool.ts:388 / FileEditTool.ts:115, both
+    overwrite-only). Shared by Read and Edit."""
+    fp = tool_input.get("file_path")
+    if isinstance(fp, str):
+        tool_input["file_path"] = str(Path(fp).expanduser().resolve())
+
 FILE_UNCHANGED_STUB = (
     "File unchanged since last read. The content from the earlier Read "
     "tool_result in this conversation is still current \u2014 refer to that "
@@ -754,6 +764,11 @@ ReadTool: Tool = build_tool(
     },
     call=_read_call,
     check_permissions=_read_check_permissions,
+    # ch06 round-4 PR-A GAP B — expand file_path before permission checks +
+    # PreToolUse hooks see it, so ~/relative paths can't dodge allowlists
+    # (TS FileReadTool.ts:388). Overwrite-only: the model-original path
+    # still reaches call() (call-input discipline) and the yielded message.
+    backfill_observable_input=_backfill_read_edit_path,
     prompt=_render_prompt(),
     description="Read a file from the local filesystem.",
     map_result_to_api=_read_map_result_to_api,

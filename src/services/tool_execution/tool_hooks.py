@@ -407,7 +407,19 @@ async def resolve_hook_permission_decision(
                 return decision
             if hasattr(decision, "behavior"):
                 return {"behavior": decision.behavior, "message": getattr(decision, "message", None)}
+            # critic M1 — unrecognized decision shape → fail CLOSED (deny),
+            # matching the no-hook branch's philosophy (:314-319). This
+            # branch used to fall through to allow.
+            logger.debug("can_use_tool returned unrecognized shape in ask path")
         except Exception as e:
             logger.debug("can_use_tool error in ask path: %s", e)
 
-    return {"behavior": "allow"}
+    # critic M1 — the hook-'ask' branch fails CLOSED on any adapter
+    # exception, a missing adapter, or an unrecognized shape. Previously
+    # this returned {"behavior": "allow"} — a fail-OPEN asymmetric with the
+    # no-hook branch (which denies on all three). TS also fails closed here
+    # (a throwing canUseTool propagates and aborts the tool call).
+    return {
+        "behavior": "deny",
+        "message": f"Permission resolution failed for {tool.name}",
+    }
