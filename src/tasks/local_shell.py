@@ -54,6 +54,13 @@ class LocalShellTaskState(TaskStateBase):
     output_path: str = ""
     exit_code: int | None = None
     finished_at: float | None = None
+    # ch10 round-4 WI-2 — eviction grace fields (mirror LocalAgentTaskState).
+    # Without these on the shell state, schedule_eviction's hasattr guard
+    # made it a no-op, so terminal background bash tasks could NEVER be
+    # reclaimed by the sweeper (they piled up in /tasks forever). ``retain``
+    # lets a UI pin the entry; ``evict_after`` is the grace deadline.
+    retain: bool = False
+    evict_after: float | None = None
     proc: subprocess.Popen | None = field(default=None, repr=False, compare=False)
     handle: IO[bytes] | None = field(default=None, repr=False, compare=False)
 
