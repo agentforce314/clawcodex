@@ -131,6 +131,10 @@ class _AgentSession:
     # ch11 round-4 WI-1 — SESSION-scoped set of already-surfaced memory
     # paths, so the LLM recall doesn't re-inject the same memory every turn.
     _memory_surfaced: set = field(default_factory=set)
+    # ch12 round-4 WI-3 — SessionStart fires once, lazily, before the first
+    # real turn (inside the async context; _build_runtime runs sync in an
+    # executor with no live loop). Guarded so it fires exactly once.
+    _session_start_fired: bool = False
     session: Any = None
     system_prompt: Any = "You are a helpful assistant."
     _base_system_prompt: Any = None  # system prompt before the /plan section is composed in
@@ -1281,6 +1285,19 @@ class _AgentSession:
         if active:
             self._reply(request_id, {"ok": False, "error": "cannot compact during an active turn"})
             return
+        # ch12 round-4 WI-3 — PreCompact hook fires BEFORE the summarize
+        # call (TS commands/compact/compact.ts:160). Configured PreCompact
+        # hooks (e.g. persist state before compaction) never ran because
+        # the router had no live caller.
+        try:
+            from src.hooks.session_hooks import run_compact_hooks
+
+            await run_compact_hooks(
+                session_id=self.session_id, trigger="manual",
+                tool_use_context=self.tool_context,
+            )
+        except Exception:  # noqa: BLE001 — a hook must not block compaction
+            logger.debug("[agent-server] PreCompact hooks failed", exc_info=True)
         try:
             from src.compact_service.service import compact_conversation
 
@@ -1475,6 +1492,26 @@ class _AgentSession:
                          exc_info=True)
             return None
 
+    def _fire_session_start_once(self) -> None:
+        """ch12 round-4 WI-3 — fire SessionStart hooks exactly once, before
+        the first real turn. Sync wrapper (a tiny asyncio.run) because
+        _run_turn is a sync worker; the session_hooks router is async."""
+        if self._session_start_fired:
+            return
+        self._session_start_fired = True
+        try:
+            import asyncio as _asyncio
+
+            from src.hooks.session_hooks import run_session_start_hooks
+
+            _asyncio.run(run_session_start_hooks(
+                session_id=self.session_id, cwd=self.cwd,
+                tool_use_context=self.tool_context,
+            ))
+        except Exception:  # noqa: BLE001 — a hook must not block the turn
+            logger.debug("[agent-server] SessionStart hooks failed",
+                         exc_info=True)
+
     @staticmethod
     def _parse_turn_budget(prompt: Any) -> int | None:
         """ch05 round-4 GAP B — the '+500k' auto-continue budget from the
@@ -1566,6 +1603,12 @@ class _AgentSession:
             if env is not None:
                 self._emit(env)
 
+        # ch12 round-4 WI-3 — SessionStart fires once, before the first real
+        # turn (skipped for internal/notification turns so a task
+        # notification can't count as the session's start).
+        if not internal:
+            self._fire_session_start_once()
+
         # /effort: wrap the provider to inject reasoning_effort (default off ⇒
         # the real provider is used unchanged).
         turn_provider = _EffortProvider(self.provider, self._effort) if self._effort else self.provider
@@ -1645,6 +1688,17 @@ class _AgentSession:
 
     async def shutdown(self) -> None:
         self._stop.set()
+        # ch12 round-4 WI-3 — SessionEnd hooks fire at shutdown (TS
+        # gracefulShutdown.ts:486). Configured cleanup hooks never ran.
+        try:
+            from src.hooks.session_hooks import run_session_end_hooks
+
+            await run_session_end_hooks(
+                session_id=self.session_id,
+                tool_use_context=self.tool_context,
+            )
+        except Exception:  # noqa: BLE001 — a hook must not block shutdown
+            logger.debug("[agent-server] SessionEnd hooks failed", exc_info=True)
         # ch10 round-4 WI-2 — stop the eviction sweeper daemon (started in
         # _build_runtime under single_session). Idempotent; safe if never
         # started.
