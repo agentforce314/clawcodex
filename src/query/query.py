@@ -178,6 +178,68 @@ def _create_max_turns_attachment(max_turns: int, turn_count: int) -> SystemMessa
     )
 
 
+async def _fire_post_sampling_hooks(
+    assistant_messages: list[AssistantMessage],
+    provider: Any,
+    tool_use_context: Any,
+) -> None:
+    """Run configured ``PostSampling`` hooks for a completed model stream.
+
+    ch01 round-4 WI-2 — restores the dependency-graph edge "Query Loop
+    fires Hooks" for the one event TS fires from query.ts itself
+    (``executePostSamplingHooks``, query.ts:1079-1089). Reads the global
+    ``AsyncHookRegistry`` (populated at startup by
+    ``bootstrap_hook_config_manager``); with no ``PostSampling`` hooks
+    configured this returns after one in-memory lookup.
+
+    Deviation from TS, deliberate: awaited inline instead of
+    fire-and-forget. The agent-server drives each turn with
+    ``asyncio.run(...)``, so a task created on the loop's final iteration
+    would be cancelled at teardown — losing the hook on exactly the
+    turn-final response. Inline await trades stream/hook overlap for a
+    completion guarantee.
+
+    Hook failures are logged and swallowed — a hook must never kill the
+    turn (TS parity: logError + continue). ``additional_contexts`` from
+    hook results are debug-logged and dropped: TS post-sampling hooks
+    return void, so there are no injection semantics to mirror; a uniform
+    injection lane across events is the ch12 round-4 subject.
+    """
+    if not assistant_messages:
+        return
+    try:
+        from ..hooks.post_sampling_hooks import run_post_sampling_hooks
+        from ..hooks.trust_gate import should_skip_hook_due_to_trust
+
+        last = assistant_messages[-1]
+        results = await run_post_sampling_hooks(
+            model=(
+                getattr(last, "model", None)
+                or getattr(provider, "model", None)
+                or ""
+            ),
+            usage=getattr(last, "usage", None) or {},
+            stop_reason=getattr(last, "stop_reason", None),
+            # Same trust rule as the tool-hook lane: untrusted workspace →
+            # policy hooks only (trust_gate WI-0.2).
+            untrusted_workspace=should_skip_hook_due_to_trust(tool_use_context),
+        )
+        for entry in results:
+            injected = entry.get("injected_messages")
+            if injected:
+                logger.debug(
+                    "PostSampling hook additional_contexts dropped "
+                    "(no injection lane yet — ch12): %d block(s)",
+                    len(injected),
+                )
+    except (asyncio.CancelledError, AbortError):
+        # User intent wins — AbortError subclasses Exception, so without the
+        # explicit re-raise the blanket handler below would swallow it.
+        raise
+    except Exception:  # noqa: BLE001 — hook failure must never kill the turn
+        logger.error("PostSampling hook execution failed", exc_info=True)
+
+
 def _drain_pending_user_messages(tool_use_context: Any) -> list[UserMessage]:
     """Drain the running agent's ``pending_messages`` inbox, if any.
 
@@ -1007,6 +1069,10 @@ async def _call_model_sync(
     assistant_msg = AssistantMessage(
         content=assistant_blocks if assistant_blocks else "",
         stop_reason=stop_reason,
+        # TS assistant messages carry the responding model (query.ts message
+        # assembly); consumers like the PostSampling hook payload and cost
+        # attribution read it. Same fallback chain as record_api_usage above.
+        model=getattr(response, "model", None) or getattr(provider, "model", None),
         usage=response.usage,
     )
     if response.reasoning_content:
@@ -1037,9 +1103,11 @@ async def query(
     See :func:`run_query` for a convenience helper that consumes the
     generator and returns ``(messages, terminal)``.
 
-    This PR (Phase A) introduces the typed Terminal infrastructure;
-    recovery integration, stop hooks, token budget, model fallback,
-    and continuation nudge land in subsequent PRs.
+    Recovery integration, stop hooks, token budget, and the continuation
+    nudge are wired (ch05 rounds 2-3). Model fallback (TS
+    FallbackTriggeredError → sticky model switch + tombstones) is NOT yet
+    ported — tracked as ch04/ch05 round-4 scope; see
+    my-docs/ch01-architecture-round4-gap-analysis.md §3 GAP B.
     """
     _diag = os.environ.get("CLAWCODEX_DEBUG", "").lower() in ("1", "true", "yes")
     holder = terminal_holder or TerminalHolder()
@@ -1362,6 +1430,16 @@ async def query(
                 yield _create_user_interruption_message(tool_use=False)
             set_terminal(holder, natural_termination, Terminal(reason="aborted_streaming"))
             return
+
+        # ch01 round-4 WI-2 — PostSampling hook wire (TS query.ts:1079-1089).
+        # Placed after the abort check: TS fires before it, but its call is
+        # non-blocking (`void …`) so pre-abort is free there; an inline await
+        # before the abort return would delay ESC responsiveness by the hook
+        # runtime. Consequence: hooks do not fire for user-aborted streams.
+        if assistant_messages:
+            await _fire_post_sampling_hooks(
+                assistant_messages, params.provider, tool_use_context,
+            )
 
         if not needs_follow_up:
             last_message = assistant_messages[-1] if assistant_messages else None

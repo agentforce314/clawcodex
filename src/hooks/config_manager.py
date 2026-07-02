@@ -290,7 +290,30 @@ def load_hooks_from_settings(
                 translated = _translate_legacy_notification_entry(hook_raw)
                 if translated is not None:
                     target_event = translated
-            hooks.setdefault(target_event, []).append(_parse_hook_config(hook_raw))
+            # ch01 round-4 WI-1 — canonical Claude Code settings nest hook
+            # definitions in matcher groups: {"matcher": ..., "hooks": [...]}
+            # (TS schemas/hooks.ts HookMatcherSchema). Expand each group,
+            # propagating the group matcher onto inner entries that don't
+            # set their own. The flat form (a bare hook dict) stays
+            # supported. Without the expansion a real-world settings.json
+            # parsed into empty-command junk hooks.
+            inner = hook_raw.get("hooks")
+            if isinstance(inner, list):
+                group_matcher = hook_raw.get("matcher")
+                for inner_raw in inner:
+                    if not isinstance(inner_raw, dict):
+                        continue
+                    if group_matcher is not None and "matcher" not in inner_raw:
+                        inner_raw = {**inner_raw, "matcher": group_matcher}
+                    config = _parse_hook_config(inner_raw)
+                    if config.type == "command" and not config.command:
+                        continue  # malformed entry — never execute ""
+                    hooks.setdefault(target_event, []).append(config)
+                continue
+            config = _parse_hook_config(hook_raw)
+            if config.type == "command" and not config.command:
+                continue  # malformed entry — never execute ""
+            hooks.setdefault(target_event, []).append(config)
 
     return HookConfigSnapshot(
         hooks=hooks,
@@ -372,3 +395,89 @@ class HookConfigManager:
             )]
 
         return validate_hook_configs(hooks_raw)
+
+
+def bootstrap_hook_config_manager(
+    *,
+    cwd: str | Path | None = None,
+    settings_path: str | Path | None = None,
+) -> HookConfigManager | None:
+    """Build + load the manager that makes settings hooks live.
+
+    ch01 round-4 WI-1. This is the missing root of the Hooks abstraction:
+    the executors all read hook configs through
+    ``tool_use_context.hook_config_manager.snapshot``
+    (``hook_executor._get_hooks_from_snapshot``), and the router lane
+    (post-sampling / session hooks) reads the global ``AsyncHookRegistry``
+    — but nothing constructed or loaded a manager in production, so
+    configured hooks never fired. Both production ``ToolContext``
+    construction sites (agent-server ``_build_runtime``, headless
+    ``run_headless``) call this and attach the result.
+
+    ``load()`` populates BOTH read paths at once: the frozen snapshot
+    (context lane) and the global registry (router lane), because every
+    parsed config is registered into the registry the manager was
+    constructed with.
+
+    Sync-only by contract: both call sites are plain sync functions running
+    on threads with no live event loop (the agent-server builds runtimes in
+    ``run_in_executor``; headless bootstraps before its own
+    ``asyncio.run``). If a running loop is detected, log and return None
+    rather than deadlock — an async call site needs an async variant, not
+    this one.
+
+    Never raises: hooks must not be able to break startup. Returns None
+    when ``settings.hooks.enabled`` is False (the framework off-switch;
+    unreadable settings fail open to the default of enabled).
+
+    ``cwd`` asymmetry, deliberate: ``cwd`` scopes only the
+    ``hooks.enabled`` knob lookup (settings hierarchy); the hook *entries*
+    always load from the single user-scope file
+    (``$CLAUDE_CONFIG_DIR``/``~/.claude/settings.json``) regardless of
+    cwd. Multi-scope (project/local/policy) entry merging is the ch12
+    round-4 subject.
+    """
+    try:
+        from ..settings.settings import load_settings
+
+        if not load_settings(cwd=cwd).hooks.enabled:
+            logger.info("hooks disabled via settings.hooks.enabled")
+            return None
+    except Exception:  # noqa: BLE001 — the knob is an off-switch, not a gate
+        logger.debug("could not read settings.hooks.enabled; assuming enabled",
+                     exc_info=True)
+
+    import asyncio
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass  # no running loop — the expected state at both call sites
+    else:
+        # Documented sync-only contract: asyncio.run() below would raise, and
+        # probing first avoids creating a never-awaited load() coroutine.
+        logger.warning(
+            "bootstrap_hook_config_manager called from a running event loop; "
+            "hooks not loaded (use an async variant at this call site)",
+        )
+        return None
+
+    try:
+        from .registry import get_global_hook_registry
+
+        manager = HookConfigManager(
+            get_global_hook_registry(), settings_path=settings_path,
+        )
+        asyncio.run(manager.load())
+        snapshot = manager.snapshot
+        if snapshot is not None and not snapshot.is_empty:
+            count = sum(len(v) for v in snapshot.hooks.values())
+            logger.info(
+                "loaded %d hook config(s) from %s",
+                count, snapshot.source_path,
+            )
+        return manager
+    except Exception:  # noqa: BLE001 — hooks must never break startup
+        logger.warning("hook config bootstrap failed; continuing without hooks",
+                       exc_info=True)
+        return None

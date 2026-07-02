@@ -329,3 +329,17 @@ class TestWorkspaceInheritance:
         child = create_subagent_context(parent)
 
         assert child.file_reading_limits is parent.file_reading_limits
+
+    def test_hook_config_manager_and_trust_inherited(self):
+        """ch01 round-4 WI-1 — hooks apply to sub-agents as to the parent:
+        same config snapshot, same workspace-trust verdict. Without the
+        inheritance, PreToolUse/PostToolUse (incl. enterprise policy hooks)
+        silently skip every sub-agent tool call."""
+        parent = _make_parent_context()
+        parent.hook_config_manager = object()
+        parent.workspace_trusted = True
+
+        child = create_subagent_context(parent)
+
+        assert child.hook_config_manager is parent.hook_config_manager
+        assert child.workspace_trusted is True
