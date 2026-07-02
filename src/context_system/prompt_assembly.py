@@ -349,7 +349,8 @@ def _compute_env_info(cwd: str) -> str:
     parts: list[str] = []
     parts.append(f"CWD: {cwd}")
     parts.append(f"OS: {platform.system()} {platform.release()}")
-    parts.append(f"Date: {_get_local_iso_date()}")
+    # ch17 round-4 — date-only for cache stability (see _build_env_section).
+    parts.append(f"Date: {_get_session_start_date_iso()}")
 
     return "\n".join(parts)
 
@@ -1080,7 +1081,15 @@ def _build_env_section(cwd: str | None, use_cache: bool) -> SystemPromptSection 
     parts.append("# Environment")
     parts.append(f"- CWD: {target}")
     parts.append(f"- OS: {platform.system()} {platform.release()}")
-    parts.append(f"- Date: {_get_local_iso_date()}")
+    # ch17 round-4 — memoized DATE-ONLY (not per-second wall clock). This
+    # block is REQUEST-scope, and the REQUEST group's last block carries a
+    # cache_control marker, so a per-second timestamp busts the REQUEST cache
+    # breakpoint (1 of only 4 the request is allowed) on EVERY turn — writing
+    # a +25% cache entry that's never read back. _get_session_start_date_iso
+    # is the in-file cache-safe helper built for exactly this (the older
+    # "safe after the DYNAMIC_BOUNDARY" rationale was invalidated when the
+    # REQUEST group gained its own marker).
+    parts.append(f"- Date: {_get_session_start_date_iso()}")
     shell = os.environ.get("SHELL", "unknown")
     parts.append(f"- Shell: {shell}")
     try:
