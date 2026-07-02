@@ -133,14 +133,26 @@ class TestAutoMode(unittest.TestCase):
 
 
 class TestBubbleMode(unittest.TestCase):
-    def test_bubble_denies_with_async_agent_reason(self) -> None:
+    def test_bubble_surfaces_ask_not_deny(self) -> None:
+        # ch08 round-4 WI-3 — bubble is NOT a resolver deny case (TS has no
+        # bubble branch in permissions.ts). An interactive bubble agent
+        # (should_avoid_permission_prompts=False) surfaces the ASK so it can
+        # bubble to the parent's handler — agreeing with run_agent's
+        # should_avoid=False cascade. The old deny-stub contradicted that.
         ctx = ToolPermissionContext(mode="bubble")
         tool = _MockTool(name="TestTool")
         decision = has_permissions_to_use_tool(tool, {}, ctx)
+        self.assertEqual(decision.behavior, "ask")
+
+    def test_bubble_headless_still_fails_closed(self) -> None:
+        # A headless bubble agent (no handler) still denies at the
+        # should_avoid guard below the removed stub.
+        ctx = ToolPermissionContext(
+            mode="bubble", should_avoid_permission_prompts=True,
+        )
+        tool = _MockTool(name="TestTool")
+        decision = has_permissions_to_use_tool(tool, {}, ctx)
         self.assertEqual(decision.behavior, "deny")
-        self.assertIsInstance(decision.decision_reason, AsyncAgentDecisionReason)
-        assert isinstance(decision.decision_reason, AsyncAgentDecisionReason)
-        self.assertIn("bubble", decision.decision_reason.reason.lower())
 
     def test_bubble_does_not_block_allow_decisions(self) -> None:
         # If the tool itself returns allow (via rule or its own check), bubble
@@ -168,7 +180,7 @@ class TestModeOrderingInOuterFlow(unittest.TestCase):
     """The outer ask-transformation order in has_permissions_to_use_tool:
     1. dontAsk → deny (highest priority)
     2. auto → classifier
-    3. bubble → escalation deny
+    3. bubble → falls through (no resolver case; ch08 round-4 WI-3)
     4. should_avoid_permission_prompts → headless deny
     """
 
