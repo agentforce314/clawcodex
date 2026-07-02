@@ -88,7 +88,10 @@ async def _generate_session_name(messages: Any) -> str | None:
     try:
         import anthropic
 
-        client = anthropic.Anthropic()
+        from src.services.api.custom_headers import get_anthropic_custom_headers
+        client = anthropic.Anthropic(
+            default_headers=get_anthropic_custom_headers() or None
+        )
         result = client.messages.create(
             model="claude-3-5-haiku-20241022",
             max_tokens=100,

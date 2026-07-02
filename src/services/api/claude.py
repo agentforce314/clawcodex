@@ -279,7 +279,16 @@ async def call_model(
         if client is None:
             try:
                 import anthropic
-                client = anthropic.AsyncAnthropic()
+
+                # ch16 round-4 — inject ANTHROPIC_CUSTOM_HEADERS (enterprise
+                # gateway/proxy auth) on the live streaming path.
+                from src.services.api.custom_headers import (
+                    get_anthropic_custom_headers,
+                )
+                _headers = get_anthropic_custom_headers()
+                client = anthropic.AsyncAnthropic(
+                    default_headers=_headers or None
+                )
             except ImportError:
                 yield ErrorEvent(error="anthropic package not installed")
                 return

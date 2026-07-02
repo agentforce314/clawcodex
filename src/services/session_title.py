@@ -67,7 +67,10 @@ async def generate_llm_title(
 
         summary = "\n".join(msg_summaries)
 
-        client = anthropic.AsyncAnthropic()
+        from src.services.api.custom_headers import get_anthropic_custom_headers
+        client = anthropic.AsyncAnthropic(
+            default_headers=get_anthropic_custom_headers() or None
+        )
         response = await client.messages.create(
             model=model,
             max_tokens=50,
