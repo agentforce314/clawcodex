@@ -120,6 +120,23 @@ class SettingsSchema:
     # ``decide_advisor_mode`` returns INACTIVE whenever this is False.
     advisor_enabled: bool = False
 
+    # Auto-mode transcript classifier (ch06 round-4 PR-B). The
+    # ``feature('TRANSCRIPT_CLASSIFIER')`` analog: default OFF, so `auto`
+    # mode keeps today's zero-extra-cost STATIC heuristic. When True, the
+    # static heuristic stays the fast-path pre-filter (safe reads/edits/
+    # bash resolve with no LLM call) and only the residual asks fire a
+    # per-ask LLM security classification on the session provider. Enable
+    # only where a classifier model + prompt caching are affordable.
+    auto_mode_classifier_enabled: bool = False
+    # Optional classifier model/provider (TS getClassifierModel default =
+    # the main-loop model). Empty → the session provider + its model.
+    auto_mode_classifier_model: str = ""
+    auto_mode_classifier_provider: str = ""
+    # Iron gate on classifier ERROR (timeout/parse/abort). False (default)
+    # = fail-CLOSED (deny) — TS tengu_iron_gate_closed default true. True =
+    # fail-open (return the original ask).
+    auto_mode_iron_gate_open: bool = False
+
     # Provider
     provider: str = "anthropic"
 
