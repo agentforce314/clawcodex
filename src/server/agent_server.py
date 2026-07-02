@@ -115,6 +115,11 @@ class _AgentSession:
     provider_name: str = ""
     tool_registry: Any = None
     tool_context: Any = None
+    # ch03 round-4 GAP A — per-session reactive AppState store (the book's
+    # §3.2 tier). Attached only on single-session transports; None on
+    # --http, where the centralized on_change side effects (user-level
+    # settings persistence) must not fire from client-supplied sessions.
+    app_state_store: Any = None
     session: Any = None
     system_prompt: Any = "You are a helpful assistant."
     _base_system_prompt: Any = None  # system prompt before the /plan section is composed in
@@ -221,6 +226,10 @@ class _AgentSession:
             mode = inner.get("mode")
             if isinstance(mode, str) and self.tool_context is not None:
                 _set_mode(self.tool_context, mode)
+                # ch03 round-4 GAP A: the live gate home stays
+                # tool_context.permission_context; the store dispatch runs
+                # the centralized seams (listeners; future persistence).
+                _dispatch_app_state(self, permission_mode=mode)
             self._ack(request_id)
             return
         if subtype == "set_model":
@@ -230,6 +239,10 @@ class _AgentSession:
                     self.provider.model = model
                 except Exception:  # noqa: BLE001
                     pass
+                # ch03 round-4 GAP A: on_change mirrors the choice into
+                # bootstrap and persists (model, model_provider) to user
+                # settings — /model survives restarts for the first time.
+                _dispatch_app_state(self, main_loop_model=model)
             self._ack(request_id)
             return
         if subtype == "set_provider":
@@ -526,6 +539,12 @@ class _AgentSession:
             payload = {
                 "session_id": self.session_id,
                 "model": getattr(self.provider, "model", None) or self.config.model or "",
+                # ch03 round-4 (critic B1): the provider the model belongs
+                # to — _do_resume's model restore is gated on it matching
+                # the current provider, the same cross-provider hazard the
+                # settings-seed guards (a stale model fired at the wrong
+                # endpoint 400s and would self-persist the bad pairing).
+                "provider": self.provider_name,
                 "cwd": self.cwd,
                 "updated_at": time.time(),
                 "message_count": len(msgs),
@@ -533,6 +552,20 @@ class _AgentSession:
                 "name": self._session_name,
                 "conversation": self.session.conversation.to_dict(),
             }
+            # ch03 round-4 GAP B — the live persister carries the cost
+            # block (schema owner: cost_restore.build_cost_block, matching
+            # the /resume reader) so accumulated cost survives restarts.
+            # single_session-gated for the same reason as the restore
+            # (critic m1): bootstrap totals are process-global, so on a
+            # multi-session --http server the block would record the SUM
+            # of all sessions' cost under one session's file.
+            if self.config.single_session:
+                try:
+                    from src.services.cost_restore import build_cost_block
+
+                    payload["cost"] = build_cost_block()
+                except Exception:  # noqa: BLE001 — cost snapshot is best-effort
+                    logger.debug("[agent-server] cost snapshot failed", exc_info=True)
             (d / f"{self.session_id}.json").write_text(json.dumps(payload), encoding="utf-8")
         except Exception:  # noqa: BLE001 — persistence must never break a turn
             logger.debug("[agent-server] session save failed", exc_info=True)
@@ -627,6 +660,11 @@ class _AgentSession:
             cfg.provider_name = name
             cfg.model = model
             self.tool_registry = registry
+            # ch03 round-4 GAP A: keep the persisted (model, model_provider)
+            # pair coherent across a provider switch — the supplier reads
+            # self.provider_name, updated above, so on_change persists the
+            # new pairing.
+            _dispatch_app_state(self, main_loop_model=model)
             self._reply(request_id, {"ok": True, "provider": name, "model": model or ""})
         except Exception as exc:  # noqa: BLE001
             logger.exception("[agent-server] set_provider failed")
@@ -1083,6 +1121,48 @@ class _AgentSession:
             data = json.loads(f.read_text(encoding="utf-8"))
             conv = Conversation.from_dict(data.get("conversation", {"messages": []}))
             self.session.conversation = conv
+            # ch03 round-4 GAP B — restore the accumulated cost counters
+            # (guarded: the reader refuses a file whose session_id header
+            # doesn't match). Gated single_session like every other
+            # process-global write: bootstrap cost totals are one set per
+            # process, and a multi-session --http server must not let one
+            # session's resume overwrite another's accounting.
+            if self.config.single_session:
+                try:
+                    from src.services.cost_restore import (
+                        restore_cost_state_for_session,
+                    )
+
+                    restore_cost_state_for_session(session_id)
+                except Exception:  # noqa: BLE001 — restore is best-effort
+                    logger.debug("[agent-server] cost restore failed",
+                                 exc_info=True)
+            # Restore the session's saved model choice under the same
+            # precedence as startup seeding: an explicit launch model
+            # (cfg.model) wins; otherwise the resumed session's model is
+            # what the user was using — put it back on the provider and
+            # through the store (persists the pairing via on_change).
+            # Provider-match guard (critic B1): the saved model applies
+            # ONLY when it was saved under the CURRENT provider — the
+            # same rule as seed_app_state_from_settings. Without it, a
+            # cross-provider resume fires a stale model at the wrong
+            # endpoint AND the store dispatch would persist the bad
+            # (model, provider) pairing, poisoning every later launch.
+            # Old session files without a "provider" field never match —
+            # fail-safe.
+            saved_model = data.get("model")
+            saved_provider = data.get("provider")
+            if (
+                isinstance(saved_model, str) and saved_model
+                and self.config.model is None
+                and self.provider is not None
+                and saved_provider == self.provider_name
+            ):
+                try:
+                    self.provider.model = saved_model
+                except Exception:  # noqa: BLE001
+                    pass
+                _dispatch_app_state(self, main_loop_model=saved_model)
             self._reply(request_id, {
                 "ok": True,
                 "count": len(conv.messages),
@@ -1723,6 +1803,11 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
         )
         profile_checkpoint("agent_server_provider_ready")
 
+        # (ch03 round-4 GAP A: the per-session AppState store is created
+        # below, once the session's launch permission mode is known, so
+        # the store's initial state doesn't misreport the mode — see the
+        # block after setup_permissions.)
+
         registry = build_default_registry(provider=provider)
         profile_checkpoint("agent_server_registry_built")
         if cfg.allowed_tools:
@@ -1764,6 +1849,38 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
 
         workspace_root = Path(sess.cwd)
         mode = perm_mode or cfg.permission_mode or "default"
+        # ch03 round-4 GAP A — re-home the two-tier bridge: a per-session
+        # AppState store whose on_change router runs the centralized side
+        # effects (bootstrap model mirror + user-settings persistence).
+        # The seed applies a persisted /model choice back to the provider
+        # under seed_app_state_from_settings' provider-match guard — an
+        # explicit model (CLI/client cfg.model) always wins. The initial
+        # state carries the session's real launch permission mode (critic
+        # n5: seeding the default then dispatching the true mode would
+        # fire a spurious first mode-change notification). Gated
+        # single_session (same rule as ch02's env apply): user-level
+        # settings writes must not fire from client-supplied --http
+        # sessions.
+        if cfg.single_session:
+            try:
+                from src.state.app_state import (
+                    create_app_state_store,
+                    replace_state,
+                    seed_app_state_from_settings,
+                    set_active_provider_supplier,
+                )
+
+                set_active_provider_supplier(lambda: sess.provider_name)
+                seeded_state = replace_state(
+                    seed_app_state_from_settings(provider_name),
+                    permission_mode=mode,
+                )
+                sess.app_state_store = create_app_state_store(seeded_state)
+                if cfg.model is None and seeded_state.main_loop_model:
+                    provider.model = seeded_state.main_loop_model
+            except Exception:  # noqa: BLE001 — store failure must not break startup
+                logger.debug("[agent-server] app-state store init failed",
+                             exc_info=True)
         bypass = mode == "bypassPermissions"
         perm_setup = setup_permissions(
             cwd=str(workspace_root),
@@ -2097,6 +2214,26 @@ def _json_safe(obj: Any) -> Any:
     if isinstance(obj, (list, tuple)):
         return [_json_safe(v) for v in obj]
     return str(obj)
+
+
+def _dispatch_app_state(sess: "_AgentSession", **changes: Any) -> None:
+    """Route a state change through the session's AppState store, if any.
+
+    ch03 round-4 GAP A — the store's on_change router owns the side
+    effects (bootstrap mirror, settings persistence, listener seams), so
+    control handlers dispatch instead of scattering those effects. No-op
+    when the session has no store (--http transports). A store failure
+    must never break the control channel.
+    """
+    store = getattr(sess, "app_state_store", None)
+    if store is None:
+        return
+    try:
+        from src.state.app_state import replace_state
+
+        store.set_state(lambda prev: replace_state(prev, **changes))
+    except Exception:  # noqa: BLE001
+        logger.debug("[agent-server] app-state dispatch failed", exc_info=True)
 
 
 def _current_mode(tool_context: Any, default: str) -> str:

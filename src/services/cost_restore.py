@@ -32,6 +32,52 @@ def _sessions_dir() -> Path:
     return Path.home() / ".clawcodex" / "sessions"
 
 
+def build_cost_block() -> dict[str, Any]:
+    """Snapshot the bootstrap cost counters as the persisted ``cost`` block.
+
+    ch03 round-4 GAP B — single schema owner, colocated with the reader
+    below so writer/reader can't drift. Writers: the live agent-server
+    persister (``_save_session``) and the legacy ``Session.save`` (which
+    delegates here).
+    """
+    import time
+
+    from src.bootstrap.state import (
+        get_model_usage,
+        get_start_time,
+        get_total_api_duration,
+        get_total_api_duration_without_retries,
+        get_total_cost_usd,
+        get_total_lines_added,
+        get_total_lines_removed,
+        get_total_tool_duration,
+    )
+
+    return {
+        "total_cost_usd": get_total_cost_usd(),
+        "total_api_duration": get_total_api_duration(),
+        "total_api_duration_without_retries":
+            get_total_api_duration_without_retries(),
+        "total_tool_duration": get_total_tool_duration(),
+        "total_lines_added": get_total_lines_added(),
+        "total_lines_removed": get_total_lines_removed(),
+        # last_duration = elapsed since start_time. The restore reader
+        # back-dates the new session's start_time so post-resume duration
+        # accumulators continue from where they left off.
+        "last_duration": time.time() - get_start_time(),
+        "model_usage": {
+            model: {
+                "input_tokens": u.input_tokens,
+                "output_tokens": u.output_tokens,
+                "cache_creation_input_tokens": u.cache_creation_input_tokens,
+                "cache_read_input_tokens": u.cache_read_input_tokens,
+                "cost_usd": u.cost_usd,
+            }
+            for model, u in get_model_usage().items()
+        },
+    }
+
+
 def restore_cost_state_for_session(session_id: SessionId | str) -> bool:
     """Restore cost accumulators from the persisted snapshot for
     ``session_id``.
