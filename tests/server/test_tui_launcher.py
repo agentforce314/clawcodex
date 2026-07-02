@@ -25,7 +25,9 @@ def test_resolve_tui_dir_finds_repo_client():
     found = _resolve_tui_dir(None)
     assert found is not None, "expected to find ui-tui by walking up from the package"
     assert found.name == "ui-tui"
-    assert (found / "src" / "cli.tsx").exists()
+    # entry.tsx is the client entrypoint (the hermes-port rename of cli.tsx) —
+    # the same marker _resolve_tui_dir itself probes for.
+    assert (found / "src" / "entry.tsx").exists()
 
 
 def test_agent_server_cmd_invokes_module():

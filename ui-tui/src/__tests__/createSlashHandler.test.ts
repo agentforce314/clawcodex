@@ -307,6 +307,27 @@ describe('createSlashHandler', () => {
     expect(ctx.gateway.gw.request).toHaveBeenCalledWith('slash.exec', expect.objectContaining({ command: 'pet boba' }))
   })
 
+  it('submits a send-dispatch payload without echoing it as a user bubble', async () => {
+    // Workflow commands (/deep-research, saved .claude/workflows) resolve to
+    // {type:'send'}: the notice is printed, the expanded directive is submitted
+    // silently — the typed slash line is already in the transcript.
+    const request = vi.fn((method: string) =>
+      method === 'slash.exec'
+        ? Promise.resolve({
+            message: 'Launch the dynamic workflow "deep-research"…',
+            notice: '⚡ launching workflow /deep-research',
+            type: 'send'
+          })
+        : Promise.resolve({})
+    )
+    const ctx = buildCtx({ gateway: { ...buildGateway(), gw: { getLogTail: vi.fn(() => ''), kill: vi.fn(), request } } })
+
+    expect(createSlashHandler(ctx)('/deep-research what is love')).toBe(true)
+    await vi.waitFor(() => expect(ctx.transcript.send).toHaveBeenCalled())
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('⚡ launching workflow /deep-research')
+    expect(ctx.transcript.send).toHaveBeenCalledWith('Launch the dynamic workflow "deep-research"…', false)
+  })
+
   it('routes /skills inspect <name> to skills.manage', () => {
     const ctx = buildCtx()
 
@@ -591,7 +612,7 @@ describe('createSlashHandler', () => {
 
     expect(createSlashHandler(ctx)('/indicator sparkle')).toBe(true)
     expect(rpc).not.toHaveBeenCalled()
-    expect(ctx.transcript.sys).toHaveBeenCalledWith('usage: /indicator [ascii|emoji|kaomoji|unicode]')
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('usage: /indicator [ascii|emoji|kaomoji|star|unicode]')
   })
 
   it('drops stale slash.exec output after a newer slash', async () => {
@@ -778,7 +799,9 @@ describe('createSlashHandler', () => {
         '⊙ Goal set (20-turn budget): complete all the steps and provide a final report'
       )
     })
-    expect(ctx.transcript.send).toHaveBeenCalledWith('complete all the steps and provide a final report')
+    // The payload is submitted without a user-bubble echo (showUserMessage:
+    // false) — the typed slash line is already in the transcript.
+    expect(ctx.transcript.send).toHaveBeenCalledWith('complete all the steps and provide a final report', false)
     expect(ctx.transcript.sys).not.toHaveBeenCalledWith('/goal: no output')
     expect(ctx.gateway.gw.request).not.toHaveBeenCalledWith('command.dispatch', expect.anything())
   })
