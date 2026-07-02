@@ -158,6 +158,11 @@ EXPLORE_AGENT = AgentDefinition(
     source="built-in",
     base_dir="built-in",
     omit_claude_md=True,
+    # ch08 round-4 (critic M1) — Explore is the fast/cheap read-only agent;
+    # TS exploreAgent.ts:77 runs it on Haiku. get_agent_model resolves this
+    # against the session provider and inherits on providers that don't
+    # serve haiku (e.g. DeepSeek), so it is cross-provider safe.
+    model="haiku",
     get_system_prompt=_explore_system_prompt,
 )
 

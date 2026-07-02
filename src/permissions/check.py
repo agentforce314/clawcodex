@@ -316,21 +316,19 @@ def has_permissions_to_use_tool(
             ),
         )
 
-    if context.mode == "bubble":
-        # Stub for the parent-escalation path described in
-        # book/ch01-architecture.md line 126 + ch06 lines 211-213. A future
-        # change replaces this with a real cross-process request to the
-        # parent agent; the structured reason makes that swap observable.
-        return PermissionDenyDecision(
-            behavior="deny",
-            message=(
-                f"Permission required for {tool.name} in bubble mode; "
-                "request must be escalated to the parent agent."
-            ),
-            decision_reason=AsyncAgentDecisionReason(
-                reason="bubble: sub-agent escalates permission to parent",
-            ),
-        )
+    # ch08 round-4 WI-3 — bubble mode is NOT a resolver case (TS has no
+    # 'bubble' branch in permissions.ts; facet Q4). Bubble is purely an
+    # upstream setting: run_agent._build_permission_context sets
+    # should_avoid_permission_prompts=False + await_automated=True for
+    # bubble, so the ask "bubbles" to the parent's handler by falling
+    # through here (return result). The previous deny-stub CONTRADICTED
+    # that cascade — it denied every ask in bubble mode, which would have
+    # made every subagent (and any --permission-mode bubble session)
+    # uniformly denied the moment bubble became reachable. A headless
+    # bubble agent (should_avoid=True, no handler) still fails closed at
+    # the guard just below. Removing the stub makes bubble ready for the
+    # deferred async-fork escalation without shipping the deny-everything
+    # trap.
 
     if context.should_avoid_permission_prompts:
         return PermissionDenyDecision(

@@ -111,6 +111,17 @@ def run_agent_server_subcommand(argv: list[str]) -> int:
     if args.exit_on_parent and not args.stdio:
         _exit_when_stdin_closes()
 
+    # ch08 round-4 WI-3 — 'bubble' is a runtime-only sub-agent-escalation
+    # mode; it has no meaning as a top-level session mode (there is no
+    # parent to escalate to). Reject it explicitly rather than start a
+    # session that behaves surprisingly. ('auto' IS a valid top-level mode
+    # — the ch06 classifier lane — so it stays allowed.)
+    if args.permission_mode == "bubble":
+        print("agent-server: --permission-mode 'bubble' is a runtime-only "
+              "sub-agent mode; use default | plan | acceptEdits | "
+              "bypassPermissions | auto", file=sys.stderr)
+        return 2
+
     workspace = str(Path(args.workspace).resolve()) if args.workspace else str(Path.cwd())
 
     if args.fallback_model and args.fallback_model == args.model:
