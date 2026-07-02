@@ -5,6 +5,7 @@ Provides the core run_agent() async generator and filter_incomplete_tool_calls()
 """
 from __future__ import annotations
 
+import copy
 import logging
 import time
 from dataclasses import dataclass, field
@@ -21,7 +22,11 @@ from ..types.messages import AssistantMessage, Message, UserMessage
 from ..utils.abort_controller import AbortController
 
 from .agent_definitions import AgentDefinition, is_built_in_agent
-from .agent_tool_utils import resolve_agent_tools, count_tool_uses
+from .agent_tool_utils import (
+    count_tool_uses,
+    get_query_source_for_agent,
+    resolve_agent_tools,
+)
 from .constants import AGENT_TOOL_NAME
 from .prompt import get_agent_system_prompt
 from .subagent_context import SubagentContextOverrides, create_subagent_context
@@ -349,18 +354,47 @@ async def run_agent(params: RunAgentParams) -> AsyncGenerator[Message, None]:
     # TS has no built-in fallback, but we keep a safety net to prevent runaway agents.
     max_turns = params.max_turns or agent_def.max_turns or SUBAGENT_DEFAULT_MAX_TURNS
 
+    # ch08 round-4 WI-1 — per-subagent model resolution (TS getAgentModel,
+    # runAgent.ts:340). Resolve the model from the tool param / agent-def /
+    # env, then apply it to a per-subagent provider CLONE. NEVER mutate the
+    # shared session provider: ch07 made Agent concurrency-safe, so N
+    # parallel subagents share params.provider — mutating provider.model
+    # would race across them. copy.copy shares the HTTP client (thread-safe,
+    # per-request model) and gives this subagent its own .model.
+    turn_provider = params.provider
+    try:
+        from .agent_model import get_agent_model
+
+        resolved_model = get_agent_model(
+            params.model, agent_def.model, params.provider,
+        )
+        if resolved_model and resolved_model != getattr(
+            params.provider, "model", None
+        ):
+            turn_provider = copy.copy(params.provider)
+            turn_provider.model = resolved_model
+    except Exception:  # noqa: BLE001 — model resolution never blocks a spawn
+        logger.debug("subagent model resolution failed; using session model",
+                     exc_info=True)
+        turn_provider = params.provider
+
     # --- Query loop ---
     # TS microcompact is a no-op for subagents (only fires for
     # repl_main_thread). Don't pass pipeline_config so we don't
     # aggressively clear tool results the model just read.
-    effective_query_source = params.query_source or f"agent_{agent_def.agent_type}"
+    # ch08 round-4 WI-2 — query_source labeling parity (agent:builtin:<type>
+    # / agent:custom), TS promptCategory.getQuerySourceForAgent. The fork
+    # path threads its own 'agent:builtin:fork' via params.query_source.
+    effective_query_source = params.query_source or get_query_source_for_agent(
+        agent_def.agent_type, is_built_in_agent(agent_def),
+    )
     query_params = QueryParams(
         messages=initial_messages,
         system_prompt=system_prompt,
         tools=agent_tools,
         tool_registry=params.tool_registry,
         tool_use_context=subagent_context,
-        provider=params.provider,
+        provider=turn_provider,
         abort_controller=abort_controller,
         query_source=effective_query_source,
         max_turns=max_turns,
