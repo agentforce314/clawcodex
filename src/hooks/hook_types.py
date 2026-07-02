@@ -336,8 +336,12 @@ class NotificationHookInput:
 
 @dataclass
 class UserPromptSubmitHookInput:
-    user_message: str = ""
+    # ch14 round-4 — the Claude Code hook contract's stdin field is
+    # ``prompt`` (matches the TS executor). ``user_message`` kept as a
+    # deprecated alias so any legacy reader still resolves.
+    prompt: str = ""
     session_id: str | None = None
+    user_message: str = ""
 
 
 @dataclass
