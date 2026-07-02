@@ -260,7 +260,13 @@ def _translate_legacy_notification_entry(
 
 def load_hooks_from_settings(
     settings_path: str | Path | None = None,
+    *,
+    source: HookSource = HookSource.USER_SETTINGS,
 ) -> HookConfigSnapshot:
+    # ch12 round-4 WI-2 — ``source`` tags every parsed HookConfig with the
+    # scope it came from (user/project/local/policy). The trust gate keys
+    # on ``HookConfig.source.is_policy`` (only policy hooks survive an
+    # untrusted workspace), so multi-scope loading MUST carry the source.
     path = Path(settings_path) if settings_path else _get_settings_path()
 
     if not path.exists():
@@ -308,11 +314,13 @@ def load_hooks_from_settings(
                     config = _parse_hook_config(inner_raw)
                     if config.type == "command" and not config.command:
                         continue  # malformed entry — never execute ""
+                    config.source = source
                     hooks.setdefault(target_event, []).append(config)
                 continue
             config = _parse_hook_config(hook_raw)
             if config.type == "command" and not config.command:
                 continue  # malformed entry — never execute ""
+            config.source = source
             hooks.setdefault(target_event, []).append(config)
 
     return HookConfigSnapshot(
@@ -327,9 +335,16 @@ class HookConfigManager:
         self,
         registry: AsyncHookRegistry,
         settings_path: str | Path | None = None,
+        *,
+        cwd: str | Path | None = None,
     ) -> None:
         self._registry = registry
         self._settings_path = Path(settings_path) if settings_path else _get_settings_path()
+        # ch12 round-4 WI-2 — cwd scopes the project/local settings files.
+        # When an explicit settings_path is given (tests / SDK), stay in
+        # single-scope mode for backward compatibility.
+        self._cwd = str(cwd) if cwd is not None else None
+        self._single_scope = settings_path is not None
         self._snapshot: HookConfigSnapshot | None = None
         self._last_mtime: float = 0.0
 
@@ -337,20 +352,69 @@ class HookConfigManager:
     def snapshot(self) -> HookConfigSnapshot | None:
         return self._snapshot
 
-    async def load(self) -> HookConfigSnapshot:
-        snapshot = load_hooks_from_settings(self._settings_path)
-        self._snapshot = snapshot
+    def _scope_files(self) -> list[tuple[Path, HookSource]]:
+        """ch12 round-4 WI-2 — the per-scope hook settings files, low→high
+        precedence (user < project < local < policy). Single-scope mode
+        (explicit settings_path) returns just that file as user-scope."""
+        if self._single_scope:
+            return [(self._settings_path, HookSource.USER_SETTINGS)]
+        from src.permissions.settings_paths import (
+            local_settings_path,
+            project_settings_path,
+            user_settings_path,
+        )
+        from src.settings.managed_path import resolve_managed_settings_path
 
+        files: list[tuple[Path, HookSource]] = [
+            (Path(user_settings_path()), HookSource.USER_SETTINGS),
+            (Path(project_settings_path(self._cwd)), HookSource.PROJECT_SETTINGS),
+            (Path(local_settings_path(self._cwd)), HookSource.LOCAL_SETTINGS),
+        ]
+        managed = resolve_managed_settings_path()
+        if managed is not None:
+            files.append((Path(managed), HookSource.POLICY_SETTINGS))
+        return files
+
+    async def load(self) -> HookConfigSnapshot:
+        # ch12 round-4 WI-2 — merge hooks from ALL scopes (was USER only, so
+        # a repo's .claude/settings.json hooks + enterprise policy hooks
+        # never fired). Each scope's configs are tagged with their source
+        # (for the trust gate's policy-survives-distrust rule) and both read
+        # lanes — the merged snapshot (context lane) + the registry (router
+        # lane) — are populated per source.
+        merged: dict[str, list[HookConfig]] = {}
+        scope_files = self._scope_files()
+        # ch12 round-4 (critic M1) — the process-GLOBAL registry holds only
+        # USER-scope hooks (cwd-INDEPENDENT). Project/local/policy hooks are
+        # cwd-specific, so registering them globally would let a second
+        # session's load() (different cwd) clear_source + overwrite this
+        # session's project hooks — cross-session contamination on the
+        # registry-backed lanes (PostSampling, session routers). They live
+        # in the per-context SNAPSHOT instead (per-session-safe), and the
+        # snapshot-first session routers + the snapshot-based tool lane read
+        # them there. Only USER is cleared+registered on the global registry.
         await self._registry.clear_source(HookSource.USER_SETTINGS)
 
-        for event_name, hook_configs in snapshot.hooks.items():
-            for config in hook_configs:
-                if event_name in ALL_HOOK_EVENTS:
-                    await self._registry.register(
-                        event_name,  # type: ignore[arg-type]
-                        config,
-                        HookSource.USER_SETTINGS,
-                    )
+        for path, src in scope_files:
+            snap = load_hooks_from_settings(path, source=src)
+            for event_name, hook_configs in snap.hooks.items():
+                for config in hook_configs:
+                    merged.setdefault(event_name, []).append(config)
+                    if (
+                        src is HookSource.USER_SETTINGS
+                        and event_name in ALL_HOOK_EVENTS
+                    ):
+                        await self._registry.register(
+                            event_name,  # type: ignore[arg-type]
+                            config,
+                            src,
+                        )
+
+        snapshot = HookConfigSnapshot(
+            hooks=merged, timestamp=time.time(),
+            source_path=str(self._settings_path),
+        )
+        self._snapshot = snapshot
 
         try:
             self._last_mtime = self._settings_path.stat().st_mtime
@@ -430,12 +494,12 @@ def bootstrap_hook_config_manager(
     when ``settings.hooks.enabled`` is False (the framework off-switch;
     unreadable settings fail open to the default of enabled).
 
-    ``cwd`` asymmetry, deliberate: ``cwd`` scopes only the
-    ``hooks.enabled`` knob lookup (settings hierarchy); the hook *entries*
-    always load from the single user-scope file
-    (``$CLAUDE_CONFIG_DIR``/``~/.claude/settings.json``) regardless of
-    cwd. Multi-scope (project/local/policy) entry merging is the ch12
-    round-4 subject.
+    ``cwd`` scopes both the ``hooks.enabled`` knob lookup AND (ch12
+    round-4 WI-2) the project/local hook-entry files: ``load()`` now merges
+    hooks from user + project (``<cwd>/.claude/settings.json``) + local
+    (``<cwd>/.claude/settings.local.json``) + policy (enterprise managed)
+    scopes, each tagged with its ``HookSource`` for the trust gate. An
+    explicit ``settings_path`` (tests / SDK) keeps single-scope behavior.
     """
     try:
         from ..settings.settings import load_settings
@@ -467,6 +531,7 @@ def bootstrap_hook_config_manager(
 
         manager = HookConfigManager(
             get_global_hook_registry(), settings_path=settings_path,
+            cwd=cwd,
         )
         asyncio.run(manager.load())
         snapshot = manager.snapshot
