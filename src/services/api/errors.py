@@ -71,13 +71,6 @@ class OverloadedError(Exception):
         self.status = status
 
 
-class FallbackTriggeredError(Exception):
-    def __init__(self, original_model: str, fallback_model: str):
-        super().__init__(f"Model fallback triggered: {original_model} -> {fallback_model}")
-        self.original_model = original_model
-        self.fallback_model = fallback_model
-
-
 class APIConnectionError(Exception):
     def __init__(self, message: str = "API connection error"):
         super().__init__(message)

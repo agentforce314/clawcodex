@@ -80,6 +80,9 @@ class AgentServerConfig:
 
     provider_name: str | None = None
     model: str | None = None
+    # ch04 round-4 GAP B — capacity-relief model after repeated 529s
+    # (`--fallback-model`; session-sticky, never persisted).
+    fallback_model: str | None = None
     permission_mode: str = "default"
     max_turns: int = 20
     allowed_tools: tuple[str, ...] = ()
@@ -1531,6 +1534,7 @@ class _AgentSession:
                 on_message=on_message,
                 abort_controller=abort,
                 extended_thinking=self._thinking,  # None = model default; True/False = ThinkingToggle
+                fallback_model=self.config.fallback_model,
             ))
         except AbortError:
             self._emit(_result_message(

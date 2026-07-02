@@ -26,7 +26,6 @@ from src.services.api.errors import (
     RateLimitError,
 )
 from src.services.api.logging import NonNullableUsage
-from src.services.api.retry import RetryOptions, with_retry
 
 
 class TestApiStreamingPipeline(unittest.TestCase):
@@ -59,51 +58,15 @@ class TestApiStreamingPipeline(unittest.TestCase):
 
 
 class TestApiRetryIntegration(unittest.TestCase):
-    """Retry logic integrates with error classification."""
+    """ch04 round-4 GAP B: the parallel services/api/retry.py engine was
+    deleted; retry + model-fallback live in the query loop's lane now.
+    Behavior coverage moved to tests/test_ch04_api_round4.py (loop-level:
+    429/5xx retry, 529 counter, fallback switch, quota bail)."""
 
-    def test_rate_limit_retried(self) -> None:
-        attempt_count = 0
+    def test_dead_module_removed(self) -> None:
+        with self.assertRaises(ModuleNotFoundError):
+            import src.services.api.retry  # noqa: F401
 
-        async def op(attempt, ctx):
-            nonlocal attempt_count
-            attempt_count += 1
-            if attempt_count <= 2:
-                raise RateLimitError("rate limited", status=429)
-            return "success"
-
-        async def run():
-            return await with_retry(op, RetryOptions(max_retries=5, model="test"))
-
-        result = asyncio.run(run())
-        self.assertEqual(result, "success")
-        self.assertEqual(attempt_count, 3)
-
-    def test_overloaded_retried(self) -> None:
-        attempt_count = 0
-
-        async def op(attempt, ctx):
-            nonlocal attempt_count
-            attempt_count += 1
-            if attempt_count <= 1:
-                raise OverloadedError("overloaded", status=529)
-            return "ok"
-
-        async def run():
-            return await with_retry(op, RetryOptions(max_retries=5, model="test"))
-
-        result = asyncio.run(run())
-        self.assertEqual(result, "ok")
-
-    def test_prompt_too_long_not_retried(self) -> None:
-        async def op(attempt, ctx):
-            raise PromptTooLongError("prompt too long")
-
-        async def run():
-            return await with_retry(op, RetryOptions(max_retries=5, model="test"))
-
-        from src.services.api.retry import CannotRetryError
-        with self.assertRaises(CannotRetryError):
-            asyncio.run(run())
 
 
 class TestApiErrorClassification(unittest.TestCase):

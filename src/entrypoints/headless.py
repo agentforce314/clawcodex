@@ -81,6 +81,9 @@ class HeadlessOptions:
     input_format: str = "text"
     provider_name: str | None = None
     model: str | None = None
+    # ch04 round-4 GAP B — `--fallback-model` (TS cli/print.ts:473):
+    # capacity-relief switch after repeated 529s; session-sticky.
+    fallback_model: str | None = None
     max_turns: int = 20
     # ``skip_permissions`` is a backward-compat alias for the boolean form
     # of ``--dangerously-skip-permissions``. ``permission_mode`` and
@@ -370,6 +373,7 @@ def run_headless(options: HeadlessOptions) -> int:
                             tool_context=tool_context,
                             system_prompt=effective_system_prompt,
                             max_turns=options.max_turns,
+                            fallback_model=options.fallback_model,
                             on_event=on_event,
                             on_text_chunk=on_text_chunk,
                             on_message=_persist,

@@ -446,6 +446,23 @@ class AnthropicProvider(BaseProvider):
         max_tokens = kwargs.get("max_tokens", _default_max_tokens(model))
         system = kwargs.pop("system", None)
         anthropic_messages = self._prepare_messages(messages)
+        # ch04 round-4 GAP A — one cache_control marker on the last message
+        # (TS addCacheBreakpoints, claude.ts:3078/1719). Without it the
+        # canonical prefix cache ends at the system blocks and every
+        # multi-turn request re-bills the full conversation history at
+        # input rate. Streaming (agentic) lane only: one-shot internal
+        # chat() calls (compaction summarize, watchdog fallback re-issue)
+        # stay unmarked — a cache WRITE on a never-reused prefix costs a
+        # 25% premium for nothing (TS queryHaiku ships
+        # enablePromptCaching:false for the same reason). Budget: ≤3
+        # system markers + this 1 = the API's 4-marker cap. Deliberate
+        # asymmetry (critic m2): MinimaxProvider is NOT a subclass, so its
+        # anthropic-compat endpoint gets system-block markers only (the
+        # pre-existing behavior) and no message marker — conservative
+        # until its cache_control-on-messages support is verified.
+        from src.services.api.claude import add_cache_breakpoints
+
+        anthropic_messages = add_cache_breakpoints(anthropic_messages)
 
         client = self._client_for_request(kwargs)
         extra_kwargs: dict[str, Any] = {}
@@ -495,7 +512,7 @@ class AnthropicProvider(BaseProvider):
                 # and the close-via-stream.response.close mechanism).
                 # The provider keeps the watchdog and fallback logic
                 # local: they aren't abort-related.
-                watchdog = StreamWatchdog(stream)
+                watchdog = StreamWatchdog(stream, request_id=request_id)
                 watchdog.arm()
                 try:
                     # Iterate the FULL event stream rather than the

@@ -116,27 +116,14 @@ class TestConversationFlowErrorRecovery(unittest.TestCase):
     """API error → retry → success."""
 
     def test_retry_recovers_from_transient_error(self) -> None:
-        from src.services.api.errors import OverloadedError
-        from src.services.api.retry import RetryOptions, with_retry
+        """ch04 round-4: retry lives in the query loop's lane now (the
+        parallel retry.py engine was deleted). The behavioral pin — a 529
+        then success recovers with a yielded api_retry status — is covered
+        at loop level in tests/test_ch04_api_round4.py."""
+        from src.query.query import MAX_529_RETRIES, DEFAULT_MAX_RETRIES
 
-        call_count = 0
-
-        async def transient_failing_op(attempt, ctx):
-            nonlocal call_count
-            call_count += 1
-            if call_count <= 2:
-                raise OverloadedError("API overloaded", status=529)
-            return {"status": "ok", "content": "Hello"}
-
-        async def run():
-            return await with_retry(
-                transient_failing_op,
-                RetryOptions(max_retries=5, model="claude-sonnet-4-6"),
-            )
-
-        result = asyncio.run(run())
-        self.assertEqual(result["status"], "ok")
-        self.assertEqual(call_count, 3)
+        self.assertEqual(MAX_529_RETRIES, 3)
+        self.assertEqual(DEFAULT_MAX_RETRIES, 10)
 
 
 # ---------------------------------------------------------------------------
