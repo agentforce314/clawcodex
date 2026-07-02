@@ -70,6 +70,119 @@ async def _resolve_event_configs(
     return [h.config for h in hooks]
 
 
+USER_PROMPT_SUBMIT_EVENT: HookEvent = "UserPromptSubmit"
+
+
+MAX_HOOK_OUTPUT_LENGTH = 10000  # TS processUserInput.ts:272-277 per-context cap
+
+
+class UserPromptSubmitOutcome:
+    """ch14 round-4 — the collected result of the UserPromptSubmit hooks.
+
+    Unlike the lifecycle routers (fire-and-forget), UserPromptSubmit's whole
+    value is the OUTCOME. Mirrors ``processUserInput.ts:194-262``, which
+    distinguishes two stop modes:
+
+    - ``blocked`` (a ``blockingError``) → ERASE the prompt + emit a system
+      warning; the model never sees the prompt.
+    - ``prevented`` (``preventContinuation``) → KEEP the prompt in context +
+      push an "Operation stopped by hook" note; no query runs this turn.
+
+    plus ``additional_contexts`` → extra model-visible context (each capped
+    at MAX_HOOK_OUTPUT_LENGTH).
+    """
+
+    __slots__ = ("blocked", "block_message", "prevented",
+                 "prevent_reason", "additional_contexts")
+
+    def __init__(self) -> None:
+        self.blocked: bool = False
+        self.block_message: str | None = None
+        self.prevented: bool = False
+        self.prevent_reason: str | None = None
+        self.additional_contexts: list[str] = []
+
+    @property
+    def stop(self) -> bool:
+        """True when either stop mode fired → skip the query this turn."""
+        return self.blocked or self.prevented
+
+
+async def run_user_prompt_submit_hooks(
+    prompt: str,
+    *,
+    registry: AsyncHookRegistry | None = None,
+    session_id: str | None = None,
+    cwd: str | None = None,
+    tool_use_context: Any = None,
+) -> UserPromptSubmitOutcome:
+    """ch14 round-4 — fire UserPromptSubmit hooks on a raw user prompt.
+
+    Trust-gated (via _resolve_event_configs → the per-context snapshot +
+    should_skip_hook_due_to_trust) exactly like the other snapshot-lane
+    hooks (ch12): an untrusted workspace runs only ``is_policy`` hooks.
+    Returns the collected block/inject outcome. Never raises.
+    """
+    outcome = UserPromptSubmitOutcome()
+    try:
+        configs = await _resolve_event_configs(
+            USER_PROMPT_SUBMIT_EVENT, registry, tool_use_context,
+        )
+    except Exception:  # noqa: BLE001 — hook resolution must not block a turn
+        return outcome
+
+    for config in configs:
+        stdin_data = {
+            "hook_event": USER_PROMPT_SUBMIT_EVENT,
+            "prompt": prompt,  # Claude Code contract field name (NOT user_message)
+            "session_id": session_id,
+            "cwd": cwd,
+        }
+        from .hook_executor import _execute_command_hook
+        from .exec_http_hook import execute_http_hook
+        from .exec_prompt_hook import execute_prompt_hook
+
+        try:
+            if config.type == "command":
+                result = await _execute_command_hook(config, stdin_data)
+            elif config.type == "http":
+                result = await execute_http_hook(config, stdin_data)
+            elif config.type == "prompt":
+                result = await execute_prompt_hook(config, stdin_data)
+            else:
+                continue
+        except Exception:  # noqa: BLE001 — one bad hook must not block the turn
+            logger.debug("UserPromptSubmit hook failed", exc_info=True)
+            continue
+
+        # blockingError (exit-2) → erase the prompt + warn. preventContinuation
+        # → keep the prompt + "Operation stopped by hook". blockingError wins
+        # over preventContinuation (TS checks it first). Either stop mode
+        # short-circuits: TS returns at the first blocker, so we stop running
+        # further hooks (their subprocesses would side-effect for nothing —
+        # agent_server discards anything collected past a stop).
+        block = getattr(result, "blocking_error", None)
+        if block:
+            outcome.blocked = True
+            outcome.block_message = str(block)
+            break
+        if getattr(result, "prevent_continuation", False):
+            outcome.prevented = True
+            outcome.prevent_reason = (
+                getattr(result, "stop_reason", None) or "blocked by hook"
+            )
+            break
+        # additionalContext → injected as extra model-visible context, each
+        # capped at MAX_HOOK_OUTPUT_LENGTH (TS processUserInput.ts:272-277).
+        extra = getattr(result, "additional_contexts", None)
+        if extra:
+            outcome.additional_contexts.extend(
+                str(c)[:MAX_HOOK_OUTPUT_LENGTH] for c in extra
+            )
+
+    return outcome
+
+
 async def run_session_start_hooks(
     registry: AsyncHookRegistry | None = None,
     *,
