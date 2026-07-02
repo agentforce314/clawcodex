@@ -276,12 +276,16 @@ class _AgentSession:
             self._reply(request_id, {"ok": ok})
             return
         if subtype == "set_effort":
-            effort = inner.get("effort")
-            if isinstance(effort, str) and effort in ("minimal", "low", "medium", "high"):
-                self._effort = effort
-            else:
-                self._effort = None  # clear / invalid
-            self._reply(request_id, {"ok": True, "effort": self._effort or "default"})
+            self._do_set_effort(request_id, inner.get("effort"))
+            return
+        if subtype == "workflows":
+            self._do_workflows(request_id)
+            return
+        if subtype == "list_workflow_commands":
+            self._do_list_workflow_commands(request_id)
+            return
+        if subtype == "workflow_command":
+            self._do_workflow_command(request_id, inner.get("name"), inner.get("args"))
             return
         if subtype == "get_settings":
             self._reply(request_id, {
@@ -770,6 +774,156 @@ class _AgentSession:
             logger.exception("[agent-server] bgtask failed")
             self._reply(request_id, {"ok": False, "error": str(exc)})
 
+    # ─── workflow surfaces (control plane) ─────────────────────────────────
+    # The dynamic-workflow UX used to be wired through the deleted Rich REPL /
+    # Textual TUI (removed in #566); these controls are the agent-server
+    # replacements the Ink TUI drives. All are gated on is_workflows_enabled()
+    # (workflow-engine §4.8: the surfaces disappear when workflows are off).
+
+    def _do_set_effort(self, request_id: object, effort: object) -> None:
+        """``/effort`` backend: reasoning levels plus the ``ultracode``
+        workflow auto-orchestration mode (mirrors ``effort_command.py``).
+
+        No/empty arg ⇒ read-only report (the old picker's Esc-is-a-no-op).
+        ``ultracode`` enables session mode and leaves the reasoning level
+        untouched; real levels and ``auto``/``unset`` exit ultracode mode
+        (spec: "reset with /effort high")."""
+        try:
+            from src.workflow.gating import is_workflows_enabled
+            from src.workflow.ultracode import is_ultracode_session, set_ultracode_session
+
+            if effort is None or (isinstance(effort, str) and not effort.strip()):
+                # No arg ⇒ read-only report (the old picker's Esc-is-a-no-op).
+                on = is_ultracode_session()
+                self._reply(request_id, {
+                    "ok": True,
+                    "effort": "ultracode" if on else (self._effort or "default"),
+                    "ultracode": on,
+                })
+                return
+            if not isinstance(effort, str):
+                self._reply(request_id, {
+                    "ok": False,
+                    "error": f"invalid effort '{effort}' (minimal|low|medium|high|auto|ultracode)",
+                })
+                return
+            a = effort.strip().lower()
+            if a == "ultracode":
+                if not is_workflows_enabled():
+                    self._reply(
+                        request_id, {"ok": False, "error": "dynamic workflows are disabled"}
+                    )
+                    return
+                set_ultracode_session(True)
+                self._reply(request_id, {"ok": True, "effort": "ultracode", "ultracode": True})
+                return
+            if a in ("auto", "unset"):
+                self._effort = None
+                set_ultracode_session(False)
+                self._reply(request_id, {"ok": True, "effort": "default", "ultracode": False})
+                return
+            if a in ("minimal", "low", "medium", "high"):
+                self._effort = a
+                set_ultracode_session(False)  # a real level exits ultracode mode
+                self._reply(request_id, {"ok": True, "effort": a, "ultracode": False})
+                return
+            self._reply(request_id, {
+                "ok": False,
+                "error": f"invalid effort '{effort.strip()}' (minimal|low|medium|high|auto|ultracode)",
+            })
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[agent-server] set_effort failed")
+            self._reply(request_id, {"ok": False, "error": str(exc)})
+
+    def _do_workflows(self, request_id: object) -> None:
+        """``/workflows``: text report of running/recent dynamic-workflow runs
+        (shared renderer with the registry command — see
+        ``render_workflows_report``)."""
+        try:
+            from src.command_system.workflows_command import (
+                NO_WORKFLOW_RUNS_MESSAGE,
+                render_workflows_report,
+            )
+            from src.workflow.gating import is_workflows_enabled
+
+            if not is_workflows_enabled():
+                self._reply(request_id, {"ok": False, "error": "dynamic workflows are disabled"})
+                return
+            registry = getattr(self.tool_context, "runtime_tasks", None)
+            if registry is None:
+                self._reply(
+                    request_id,
+                    {"ok": False, "error": "workflows are unavailable on this surface"},
+                )
+                return
+            report = render_workflows_report(registry)
+            self._reply(request_id, {"ok": True, "text": report or NO_WORKFLOW_RUNS_MESSAGE})
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[agent-server] workflows failed")
+            self._reply(request_id, {"ok": False, "error": str(exc)})
+
+    def _do_list_workflow_commands(self, request_id: object) -> None:
+        """Slash-menu catalog: bundled (/deep-research) + saved
+        ``.claude/workflows/*.py`` workflow commands, read fresh from disk each
+        call so a workflow authored mid-session (the ultracode keyword flow)
+        appears without a restart — replaces the old REPL's mtime-gated
+        ``_refresh_workflow_commands`` loop."""
+        try:
+            from src.workflow.gating import is_workflows_enabled
+
+            if not is_workflows_enabled():
+                self._reply(request_id, {"ok": True, "commands": []})
+                return
+            from src.command_system.types import PromptCommand
+            from src.command_system.workflows_integration import load_workflow_commands
+
+            commands = [
+                {
+                    "name": c.name,
+                    "description": c.description or "",
+                    "argument_hint": getattr(c, "argument_hint", "") or "",
+                }
+                for c in load_workflow_commands(self.cwd)
+                if isinstance(c, PromptCommand)
+            ]
+            self._reply(request_id, {"ok": True, "commands": commands})
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[agent-server] list_workflow_commands failed")
+            self._reply(request_id, {"ok": False, "error": str(exc), "commands": []})
+
+    def _do_workflow_command(self, request_id: object, name: object, args: object) -> None:
+        """Dispatch a workflow slash command (``/deep-research``, saved
+        ``/<name>``): expand its directive prompt for the client to submit as a
+        user turn — the model then launches the run via the Workflow tool."""
+        try:
+            from src.workflow.gating import is_workflows_enabled
+
+            if not is_workflows_enabled():
+                self._reply(request_id, {"ok": False, "error": "dynamic workflows are disabled"})
+                return
+            if not isinstance(name, str) or not name.strip():
+                self._reply(request_id, {"ok": False, "error": "missing workflow command name"})
+                return
+            from src.command_system.argument_substitution import substitute_arguments
+            from src.command_system.types import PromptCommand
+            from src.command_system.workflows_integration import load_workflow_commands
+
+            wanted = name.strip().lstrip("/").lower()
+            for c in load_workflow_commands(self.cwd):
+                if isinstance(c, PromptCommand) and c.name.lower() == wanted:
+                    arg_str = args if isinstance(args, str) else ""
+                    prompt = substitute_arguments(c.markdown_content, arg_str, c.arg_names)
+                    self._reply(request_id, {
+                        "ok": True,
+                        "prompt": prompt,
+                        "notice": f"⚡ launching workflow /{c.name}",
+                    })
+                    return
+            self._reply(request_id, {"ok": False, "error": f"unknown workflow command '{wanted}'"})
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[agent-server] workflow_command failed")
+            self._reply(request_id, {"ok": False, "error": str(exc)})
+
     def _do_wiki(self, request_id: object, action: object, path: object) -> None:
         """/wiki: init | status | ingest <path>. File-based project wiki under
         .clawcodex/wiki (the original's /wiki)."""
@@ -1121,7 +1275,15 @@ class _AgentSession:
 
     def _run_worker(self) -> None:
         while not self._stop.is_set():
-            item = self._inbox.get()
+            try:
+                item = self._inbox.get(timeout=0.5)
+            except _queue.Empty:
+                # Idle between turns: surface any background task (workflow /
+                # background agent) that finished since the last check — the
+                # old REPL's turn-boundary drain, on a poll instead of a
+                # blocking prompt.
+                self._deliver_task_notifications()
+                continue
             if item is _SHUTDOWN or self._stop.is_set():
                 break
             if isinstance(item, dict) and item.get("__btw__"):  # side question (/btw)
@@ -1130,11 +1292,76 @@ class _AgentSession:
             if not isinstance(item, (str, list)):  # str prompt, or multimodal blocks
                 continue
             self._run_turn(item)
+            # A task that finished while the turn ran is delivered right after.
+            self._deliver_task_notifications()
         self._close_stream()
 
-    def _run_turn(self, prompt, btw: bool = False) -> None:  # prompt: str | list[ContentBlock]
+    def _deliver_task_notifications(self) -> bool:
+        """Drain finished-task ``<task-notification>`` envelopes: emit one
+        completion-banner frame per task, then hand the envelopes to the agent
+        as ONE internal turn so it summarizes the results conversationally (the
+        "the research is done…" behavior the workflow directives promise).
+
+        The ``task-notification`` queue is shared by dynamic workflows AND
+        background agents (``enqueue_workflow_notification`` /
+        ``enqueue_agent_notification``) — this consumer intentionally delivers
+        both. Runs on the worker thread strictly between turns, so it can never
+        interleave with a user turn. Returns whether anything was delivered.
+
+        CAVEAT (single-session-per-process assumption): the queue is
+        process-global while sessions are per-connection, so in a
+        multi-session process (DirectConnectServer spawns one agent per WS
+        connection) whichever worker polls first would drain EVERY session's
+        envelopes into its own conversation. Fine for the shipped stdio
+        deployment (one session per process); per-session scoping is required
+        before multi-session ``cc://`` ships.
+        """
+        if self.init_error is not None or self._stop.is_set():
+            return False
+        try:
+            from src.utils.message_queue_manager import drain_pending_notifications
+
+            drained = drain_pending_notifications(mode="task-notification")
+        except Exception:  # noqa: BLE001 — delivery must never kill the worker
+            logger.debug("[agent-server] notification drain failed", exc_info=True)
+            return False
+        if not drained:
+            return False
+
+        from src.server.task_notifications import (
+            build_notification_turn,
+            parse_task_id,
+            render_banner,
+        )
+
+        registry = getattr(self.tool_context, "runtime_tasks", None)
+        envelopes = [n.value for n in drained]
+        for xml in envelopes:
+            task_id = parse_task_id(xml)
+            state = None
+            if registry is not None and task_id:
+                try:
+                    state = registry.get(task_id)
+                except Exception:  # noqa: BLE001
+                    state = None
+            self._emit({
+                "type": "system",
+                "subtype": "task_notification",
+                "session_id": self.session_id,
+                "task_id": task_id or "task",
+                "message": "\n".join(render_banner(xml, state)),
+            })
+
+        # Let the agent read the results and report conversationally.
+        self._run_turn(build_notification_turn(envelopes), internal=True)
+        return True
+
+    def _run_turn(self, prompt, btw: bool = False, internal: bool = False) -> None:
+        # prompt: str | list[ContentBlock]
         # btw=True → a "side question" (the original's /btw): run with full context
         # but DON'T persist the Q&A, so the main conversation isn't interrupted.
+        # internal=True → a system-generated turn (task-notification delivery):
+        # skip user-turn decorations like the ultracode reminder.
         from src.query.agent_loop_compat import run_query_as_agent_loop
 
         if self.init_error is not None:
@@ -1143,6 +1370,14 @@ class _AgentSession:
                 result=self.init_error, is_error=True, error=self.init_error,
             ))
             return
+
+        # ultracode (workflow-engine §4.1): the `ultracode` keyword in this
+        # message, or the session-long `/effort ultracode` mode, appends a
+        # <system-reminder> nudging the model to author a workflow rather than
+        # working turn by turn. No-op when workflows are disabled; skipped for
+        # internal turns so a notification envelope can never trigger it.
+        if not internal:
+            prompt = _with_ultracode_reminder(prompt)
 
         abort = AbortController()
         with self._lock:
@@ -1505,6 +1740,36 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
     except Exception as exc:  # noqa: BLE001
         logger.exception("[agent-server] runtime build failed")
         sess.init_error = f"agent-server failed to start: {exc}"
+
+
+def _with_ultracode_reminder(prompt):
+    """Append the ultracode ``<system-reminder>`` to a user turn when the
+    keyword / session mode calls for it (:mod:`src.workflow.ultracode` — the
+    seam the deleted REPL provided at ``core.py:3163``). Handles both prompt
+    shapes the inbox carries: a plain string, or a content-block list
+    (multimodal) — detection joins the text blocks and the reminder lands as an
+    extra text block. Returns the prompt unchanged when no reminder applies."""
+    try:
+        from src.workflow.ultracode import ultracode_reminder_for
+
+        if isinstance(prompt, str):
+            reminder = ultracode_reminder_for(prompt)
+            if reminder:
+                return f"{prompt}\n\n{reminder}" if prompt else reminder
+            return prompt
+        if isinstance(prompt, list):
+            text = "\n".join(
+                str(b.get("text", ""))
+                for b in prompt
+                if isinstance(b, dict) and b.get("type") == "text"
+            )
+            reminder = ultracode_reminder_for(text)
+            if reminder:
+                return [*prompt, {"type": "text", "text": reminder}]
+            return prompt
+    except Exception:  # noqa: BLE001 — the reminder must never break a turn
+        logger.debug("[agent-server] ultracode reminder failed", exc_info=True)
+    return prompt
 
 
 def _filter_registry(registry, *, keep) -> None:

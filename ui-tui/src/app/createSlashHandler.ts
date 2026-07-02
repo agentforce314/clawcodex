@@ -100,7 +100,10 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
           sys(d.notice)
         }
 
-        return d.message?.trim() ? send(d.message) : sys(`/${parsed.name}: empty message`)
+        // Submit without echoing the expanded payload as a user bubble — the
+        // typed slash line is already in the transcript (dispatchSubmission
+        // appends it as kind:'slash' before invoking this handler).
+        return d.message?.trim() ? send(d.message, false) : sys(`/${parsed.name}: empty message`)
       }
 
       if (d.type === 'prefill') {
