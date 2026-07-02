@@ -81,6 +81,11 @@ def run_agent_server_subcommand(argv: list[str]) -> int:
                         help="Optional bearer token required on POST /sessions.")
     parser.add_argument("--provider", default=None, help="Provider name override.")
     parser.add_argument("--model", default=None, help="Model override.")
+    parser.add_argument(
+        "--fallback-model", default=None, dest="fallback_model",
+        help="Model to switch to after repeated overloaded (529) errors "
+             "(session-sticky; never persisted).",
+    )
     parser.add_argument("--permission-mode", default="default",
                         dest="permission_mode",
                         help="default | acceptEdits | bypassPermissions | plan | auto")
@@ -108,9 +113,14 @@ def run_agent_server_subcommand(argv: list[str]) -> int:
 
     workspace = str(Path(args.workspace).resolve()) if args.workspace else str(Path.cwd())
 
+    if args.fallback_model and args.fallback_model == args.model:
+        print("agent-server: --fallback-model must differ from --model",
+              file=sys.stderr)
+        return 2
     agent_config = AgentServerConfig(
         provider_name=args.provider,
         model=args.model,
+        fallback_model=args.fallback_model,
         permission_mode=args.permission_mode,
         max_turns=args.max_turns,
     )

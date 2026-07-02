@@ -36,7 +36,6 @@ from src.services.api.claude import (
 )
 from src.services.api.errors import (
     ErrorClassification,
-    FallbackTriggeredError,
     MaxOutputTokensError,
     OverloadedError,
     PromptTooLongError,
@@ -47,13 +46,6 @@ from src.services.api.errors import (
     is_rate_limit_error,
 )
 from src.services.api.logging import NonNullableUsage, update_usage
-from src.services.api.retry import (
-    CannotRetryError,
-    RetryOptions,
-    RetryStatusMessage,
-    _compute_backoff_ms,
-    with_retry,
-)
 
 
 class TestApiClientStreamsEvents(unittest.TestCase):
@@ -100,68 +92,27 @@ class TestApiClientStreamsEvents(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# 2. Retry: exponential backoff
+# 2/3. Retry + fallback — ch04 round-4: the parallel retry.py engine was
+# deleted; retry/backoff-with-jitter/fallback are loop-internal now.
+# Structural pins live here; behavior pins in tests/test_ch04_api_round4.py.
 # ---------------------------------------------------------------------------
 
-class TestApiRetryExponentialBackoff(unittest.TestCase):
-    def test_backoff_doubles(self) -> None:
-        d1 = _compute_backoff_ms(1, base_delay_ms=1000)
-        d2 = _compute_backoff_ms(2, base_delay_ms=1000)
-        d3 = _compute_backoff_ms(3, base_delay_ms=1000)
-        # Without jitter, base pattern is 1000, 2000, 4000
-        # With jitter up to 25%, verify ordering
-        self.assertGreater(d2, d1 * 0.5)
-        self.assertGreater(d3, d2 * 0.5)
+class TestApiRetryStructure(unittest.TestCase):
+    def test_live_lane_constants(self) -> None:
+        from src.query.query import (
+            DEFAULT_MAX_RETRIES,
+            MAX_529_RETRIES,
+            RETRY_BASE_DELAY_SECONDS,
+        )
 
-    def test_backoff_includes_jitter(self) -> None:
-        values = set()
-        for _ in range(20):
-            values.add(_compute_backoff_ms(1, base_delay_ms=1000))
-        # With jitter, we should see multiple distinct values
-        self.assertGreater(len(values), 1)
+        self.assertEqual(MAX_529_RETRIES, 3)
+        self.assertEqual(DEFAULT_MAX_RETRIES, 10)
+        self.assertEqual(RETRY_BASE_DELAY_SECONDS, 0.5)
 
+    def test_fallback_model_is_a_query_param(self) -> None:
+        from src.query.query import QueryParams
 
-# ---------------------------------------------------------------------------
-# 3. Fallback model switch
-# ---------------------------------------------------------------------------
-
-class TestApiFallbackModelSwitch(unittest.TestCase):
-    def test_fallback_triggers_on_overloaded(self) -> None:
-        call_count = 0
-
-        async def failing_op(attempt, ctx):
-            nonlocal call_count
-            call_count += 1
-            if call_count <= 5:
-                raise OverloadedError("overloaded", status=529)
-            return "success"
-
-        async def run():
-            return await with_retry(
-                failing_op,
-                RetryOptions(
-                    max_retries=10,
-                    model="claude-sonnet-4-6",
-                    fallback_model="claude-haiku",
-                    initial_consecutive_529_errors=0,
-                ),
-            )
-
-        result = asyncio.run(run())
-        self.assertEqual(result, "success")
-
-    def test_cannot_retry_on_non_retryable(self) -> None:
-        async def failing_op(attempt, ctx):
-            raise ValueError("bad input")
-
-        async def run():
-            return await with_retry(
-                failing_op,
-                RetryOptions(max_retries=3, model="test"),
-            )
-
-        with self.assertRaises(CannotRetryError):
-            asyncio.run(run())
+        self.assertIn("fallback_model", QueryParams.__dataclass_fields__)
 
 
 # ---------------------------------------------------------------------------

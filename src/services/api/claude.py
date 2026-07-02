@@ -206,6 +206,16 @@ def add_cache_breakpoints(
         else:
             new_content = list(content[:-1])
             last_block = content[-1]
+            if isinstance(last_block, dict) and last_block.get("type") in (
+                "thinking",
+                "redacted_thinking",
+            ):
+                # ch04 round-4 critic NIT-1: thinking blocks don't accept
+                # cache_control — the API rejects the request. A trailing
+                # assistant-with-thinking marker message is theoretical on
+                # the current wire shape, but fail safe: skip the marker
+                # entirely rather than 400 the turn.
+                return list(messages)
             if isinstance(last_block, dict):
                 cloned_block = dict(last_block)
                 cloned_block["cache_control"] = cache_control
