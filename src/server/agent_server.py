@@ -128,6 +128,9 @@ class _AgentSession:
     # engine's engine.py:74-79 rationale); a per-turn instance would reset
     # it every prompt. Created lazily on first turn.
     _auto_compact_tracking: Any = None
+    # ch11 round-4 WI-1 — SESSION-scoped set of already-surfaced memory
+    # paths, so the LLM recall doesn't re-inject the same memory every turn.
+    _memory_surfaced: set = field(default_factory=set)
     session: Any = None
     system_prompt: Any = "You are a helpful assistant."
     _base_system_prompt: Any = None  # system prompt before the /plan section is composed in
@@ -1588,6 +1591,13 @@ class _AgentSession:
                 pipeline_config=pipeline_config,
                 query_source="repl_main_thread",
                 token_budget=token_budget,
+                # ch11 round-4 WI-1 — session-scoped memory-recall de-dup.
+                # Only enable the recall for REAL user turns: passing None on
+                # internal/notification turns (critic #8) means the adapter
+                # uses a throwaway set, but we ALSO want to skip the recall
+                # entirely there, so gate on `internal`.
+                memory_surfaced=None if internal else self._memory_surfaced,
+                memory_recall_enabled=not internal,
             ))
         except AbortError:
             self._emit(_result_message(
