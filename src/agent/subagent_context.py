@@ -184,6 +184,14 @@ def create_subagent_context(
         agent_id=agent_id,
         agent_type=agent_type,
         user_modified=parent_context.user_modified,
+        # ch01 round-4 WI-1 — hooks apply to sub-agents exactly as to the
+        # parent: same config snapshot, same workspace-trust verdict.
+        # Without this, PreToolUse/PostToolUse (incl. enterprise policy
+        # hooks) silently skip every sub-agent tool call — a policy bypass
+        # via the Agent tool — and the PostSampling trust filter would
+        # treat sub-agent loops as untrusted in a trusted workspace.
+        hook_config_manager=parent_context.hook_config_manager,
+        workspace_trusted=parent_context.workspace_trusted,
     )
 
 
