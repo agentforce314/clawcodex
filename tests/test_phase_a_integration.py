@@ -11,7 +11,6 @@ from src.permissions.check import auto_mode_classify, prepare_permission_matcher
 from src.permissions.setup import setup_permissions
 from src.permissions.types import ToolPermissionContext
 from src.query.config import FrozenQueryConfig, QueryConfig, build_query_config
-from src.query.streaming import QueryEvent, StreamingQueryState, streaming_query
 from src.services.api.errors import (
     PromptTooLongError,
     RateLimitError,
@@ -141,29 +140,16 @@ class TestProviderConfigIntegration(unittest.TestCase):
         self.assertEqual(result2.model, "default-model")
 
 
-class TestStreamingQueryAbortIntegration(unittest.TestCase):
-    def test_abort_signal_stops_query(self) -> None:
-        async def _run() -> None:
-            config = QueryConfig(max_turns=5)
-            context = MagicMock()
-            abort = MagicMock()
-            abort.aborted = True
+class TestStreamingQueryRetired(unittest.TestCase):
+    """ch07 round-4 WI-3 — the parallel `query/streaming.py` loop (the
+    named streaming-migration target, strictly less capable than
+    ``query()`` — no recovery ladder, no live consumer) is RETIRED. The
+    canonical ``query()`` is the sole loop; abort handling is covered by
+    tests/test_query_loop.py + test_query_terminal.py."""
 
-            events = []
-            async for event in streaming_query(
-                messages=[],
-                system_prompt="test",
-                tools=[],
-                context=context,
-                config=config,
-                abort_signal=abort,
-            ):
-                events.append(event)
-
-            event_types = [e.type for e in events]
-            self.assertIn("aborted", event_types)
-
-        asyncio.run(_run())
+    def test_streaming_module_is_gone(self) -> None:
+        with self.assertRaises(ModuleNotFoundError):
+            import src.query.streaming  # noqa: F401
 
 
 if __name__ == "__main__":
