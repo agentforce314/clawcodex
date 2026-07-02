@@ -86,13 +86,14 @@ def bundled_workflow_commands() -> list[Command]:
     ``/deep-research``).
 
     Surfaced via ``get_builtin_commands()`` so they register into the global
-    command registry that both command suggestions and dispatch read — the
-    aggregator's :func:`get_commands` that also lists them has no real consumers.
+    command registry that headless/test dispatch reads — the aggregator's
+    :func:`get_commands` that also lists them has no real consumers.
     Project/personal workflows are cwd-dependent and remain the aggregator's job.
 
-    Includes the ``/workflows`` viewer so the Rich REPL can dispatch it (the TUI
-    has its own ``open_dialog`` fast-path, which runs before registry dispatch,
-    so registering here doesn't disturb it).
+    The interactive surface (Ink TUI → agent-server) does NOT go through this
+    registry: it drives the ``workflows`` / ``list_workflow_commands`` /
+    ``workflow_command`` control requests in ``src/server/agent_server.py``,
+    which call :func:`load_workflow_commands` directly.
     """
     from .workflows_command import WORKFLOWS_COMMAND
 
@@ -150,8 +151,10 @@ def load_and_register_workflows(
     This is the workflow analogue of :func:`load_and_register_skills`, and exists
     for the same reason: the aggregator's ``get_commands()`` lists these but has
     no real consumers, so dispatch + suggestions (which read the GLOBAL registry)
-    never saw saved workflows. The REPL/TUI call this at startup, right after
-    ``load_and_register_skills``.
+    never saw saved workflows. The deleted Rich REPL / Textual TUI called this at
+    startup; the surviving interactive surface (agent-server) instead reads
+    :func:`load_workflow_commands` from disk per control request, so today this
+    helper serves registry-based (headless/test) dispatch only.
 
     Precedence, all via the shadowing guard (a name already in the target wins):
     builtins/bundled (registered first) beat saved workflows; **project beats

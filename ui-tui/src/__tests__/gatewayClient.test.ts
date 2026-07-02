@@ -164,4 +164,109 @@ describe('GatewayClient NDJSON adapter', () => {
     expect(p.inline_diff).toContain('-a')
     expect(p.inline_diff).toContain('+b')
   })
+
+  // ── workflow surfaces ──────────────────────────────────────────────────────
+
+  /** Requests the client wrote to the agent-server's stdin, parsed. */
+  const stdinFrames = (): any[] => {
+    const raw = (proc.stdin as any).read()?.toString() ?? ''
+    return raw
+      .split('\n')
+      .filter(Boolean)
+      .map((l: string) => JSON.parse(l))
+  }
+
+  /** Wait for the client to send a control_request of `subtype`, then feed the
+   *  matching control_response back on stdout. `seen` accumulates the stdin
+   *  frames of the CURRENT test only (fresh proc per test) — reset per test so
+   *  a stale frame from a prior client can never misroute a reply. */
+  let seen: any[] = []
+  beforeEach(() => {
+    seen = []
+  })
+  const replyToControl = async (subtype: string, response: unknown) => {
+    let req: any
+    await vi.waitFor(() => {
+      seen.push(...stdinFrames())
+      req = seen.find(f => f.type === 'control_request' && f.request?.subtype === subtype)
+      expect(req).toBeTruthy()
+    })
+    proc.line({ response: { request_id: req.request_id, response }, type: 'control_response' })
+  }
+
+  it('maps /workflows to the workflows control and prints its report', async () => {
+    const p = gw.request('slash.exec', { command: 'workflows' })
+    await replyToControl('workflows', { ok: true, text: 'deep-research  [running]  (run: wf_1)' })
+    await expect(p).resolves.toEqual({ output: 'deep-research  [running]  (run: wf_1)', type: 'exec' })
+  })
+
+  it('dispatches an unknown slash as a backend workflow command (send)', async () => {
+    const p = gw.request('slash.exec', { command: 'deep-research what is love' })
+    await replyToControl('workflow_command', {
+      notice: '⚡ launching workflow /deep-research',
+      ok: true,
+      prompt: 'Launch the dynamic workflow "deep-research" — args: what is love'
+    })
+    await expect(p).resolves.toEqual({
+      message: 'Launch the dynamic workflow "deep-research" — args: what is love',
+      notice: '⚡ launching workflow /deep-research',
+      type: 'send'
+    })
+    const req = seen.find(f => f.request?.subtype === 'workflow_command')
+    expect(req.request).toMatchObject({ args: 'what is love', name: 'deep-research' })
+  })
+
+  it('reports unknown commands as unwired when the backend does not own them', async () => {
+    const p = gw.request('slash.exec', { command: 'frobnicate now' })
+    await replyToControl('workflow_command', { error: "unknown workflow command 'frobnicate'", ok: false })
+    await expect(p).resolves.toEqual({ output: "/frobnicate isn't wired into the clawcodex backend yet.", type: 'exec' })
+  })
+
+  it('merges backend workflow commands into slash completion', async () => {
+    const p = gw.request<{ items: Array<{ text: string }> }>('complete.slash', { text: '/de' })
+    await replyToControl('list_workflow_commands', {
+      commands: [{ argument_hint: '<question>', description: 'Deep research', name: 'deep-research' }],
+      ok: true
+    })
+    const r = await p
+    expect(r.items.map(i => i.text)).toContain('/deep-research')
+  })
+
+  it('merges backend workflow commands into the command catalog after init', async () => {
+    proc.line(INIT) // resolves readyPromise, which the catalog awaits
+    const p = gw.request<{ canon: Record<string, string>; pairs: [string, string][] }>('commands.catalog', {})
+    await replyToControl('list_workflow_commands', {
+      commands: [{ description: 'Deep research', name: 'deep-research' }],
+      ok: true
+    })
+    const r = await p
+    expect(r.canon['/deep-research']).toBe('/deep-research')
+    expect(r.pairs).toContainEqual(['/deep-research', 'Deep research'])
+    // The static set is still present (workflow merge is additive).
+    expect(r.canon['/workflows']).toBe('/workflows')
+  })
+
+  it('degrades the catalog to the static set when the workflow list is unavailable', async () => {
+    proc.line(INIT)
+    const p = gw.request<{ canon: Record<string, string>; pairs: [string, string][] }>('commands.catalog', {})
+    await replyToControl('list_workflow_commands', { commands: [], ok: true })
+    const r = await p
+    expect(r.canon['/workflows']).toBe('/workflows')
+    expect(r.pairs.some(([name]) => name === '/deep-research')).toBe(false)
+  })
+
+  it('renders a task_notification frame as a background.complete banner', async () => {
+    proc.line({
+      message: '✔ deep-research completed · 12 agents · 45.2k tok',
+      session_id: 's1',
+      subtype: 'task_notification',
+      task_id: 'local_workflow_7',
+      type: 'system'
+    })
+    await vi.waitFor(() => expect(last('background.complete')).toBeTruthy())
+    expect(last('background.complete').payload).toEqual({
+      task_id: 'local_workflow_7',
+      text: '✔ deep-research completed · 12 agents · 45.2k tok'
+    })
+  })
 })
