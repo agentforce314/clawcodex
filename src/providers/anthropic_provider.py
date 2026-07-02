@@ -159,6 +159,12 @@ class AnthropicProvider(BaseProvider):
         self._client_kwargs = {"api_key": api_key}
         if base_url:
             self._client_kwargs["base_url"] = base_url
+        # ch16 round-4 — ANTHROPIC_CUSTOM_HEADERS (enterprise gateway/proxy
+        # auth) → default_headers on the Anthropic client.
+        from src.services.api.custom_headers import get_anthropic_custom_headers
+        _headers = get_anthropic_custom_headers()
+        if _headers:
+            self._client_kwargs["default_headers"] = _headers
         self.client = None
 
     def _ensure_client(self):
