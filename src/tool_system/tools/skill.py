@@ -285,6 +285,20 @@ def _run_markdown_skill(skill_name: str, args: str, context: ToolContext) -> Too
     # Build context modifier if skill specifies allowed_tools, model, or effort
     context_modifier = _build_context_modifier(skill)
 
+    # ch12 round-4 WI-1 — DELIVER the rendered skill body to the model. The
+    # skill tool_result content is only "Launching skill: {name}"
+    # (_skill_map_result_to_api); the actual instructions must ride as a
+    # separate meta user message. TS SkillTool.ts:1111-1117 does exactly
+    # this: newMessages: [createUserMessage({content: finalContent,
+    # isMeta:true})]. Without it the model was told a skill launched but
+    # never received its instructions — skills did nothing. The executor
+    # already consumes ToolResult.new_messages (tool_execution.py:449-451).
+    new_messages: list[Any] = []
+    if prompt and prompt.strip():
+        from src.types.messages import create_user_message
+
+        new_messages.append(create_user_message(content=prompt, isMeta=True))
+
     return ToolResult(
         name="Skill",
         output={
@@ -297,6 +311,7 @@ def _run_markdown_skill(skill_name: str, args: str, context: ToolContext) -> Too
             "model": skill.model,
         },
         context_modifier=context_modifier,
+        new_messages=new_messages or None,
     )
 
 
