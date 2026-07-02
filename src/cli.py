@@ -7,29 +7,22 @@ import os
 import sys
 from pathlib import Path
 
-from rich.console import Console
-from rich.prompt import Prompt
-from rich.table import Table
-
-# WI-4.1 (ch17 Phase 4): fire keychain + MDM child processes at
-# MODULE-IMPORT time so the OS schedules them in parallel with the rest
-# of the Python interpreter's module-loading work. The handles are
-# awaited later by the consumer (typically post-trust-gate when keychain
-# values are actually needed). subprocess.Popen returns in microseconds;
-# the actual subprocess work overlaps with the heavyweight imports the
-# CLI is about to do. On non-macOS platforms these are no-ops
-# (``process=None`` sentinels) so call sites don't need to special-case
-# the platform.
+# ch02 round-4 WI-3 — nothing heavy at module scope. This module IS the
+# process entry (`clawcodex = src.cli:main`), so anything fired here is
+# paid by EVERY invocation including the fast paths (--version, mcp,
+# doctor, agent-server-as-subcommand; the Ink client's spawned backend
+# does NOT route here — it runs `python -m src.entrypoints.agent_server_cli`
+# directly). TS's fast paths pay neither rich-equivalent imports nor
+# the keychain/MDM spawns because they run before main.tsx is imported
+# (cli.tsx:84-427 vs main.tsx:13-20). The keychain/MDM prefetch now fires
+# in main() once the invocation is known to need the full pipeline; rich
+# imports live in the functions that render with them. Consumers self-heal
+# regardless — init.py awaits the same get-or-start singletons, which
+# start the subprocess on first use if the early fire was skipped.
 from src.prefetch import (
     get_or_start_keychain_prefetch,
     get_or_start_mdm_raw_read,
 )
-
-# Fire ONCE per process via the singleton getter. ``setup.run_setup``
-# reads the same handles instead of re-spawning, so the cost is paid
-# exactly once even when both entrypoints run in the same interpreter.
-_keychain_handle = get_or_start_keychain_prefetch()
-_mdm_handle = get_or_start_mdm_raw_read()
 
 
 def main():
@@ -117,6 +110,15 @@ def main():
     # The API-preconnect call previously lived here at module level;
     # it now runs inside ``init()`` so it overlaps with any callers
     # of ``init()`` (REPL, headless, etc.), not just the cli.py path.
+    # WI-4.1 (ch17 Phase 4) as relocated by ch02 round-4 WI-3: fire the
+    # keychain + MDM child processes the moment the invocation is known to
+    # need the full pipeline (all fast paths have returned above). Popen
+    # returns in microseconds; the subprocess work overlaps run_pre_action
+    # → init(), whose consumer awaits these same singleton handles
+    # (init.py:84-88). Non-macOS: no-op sentinels.
+    get_or_start_keychain_prefetch()
+    get_or_start_mdm_raw_read()
+
     profile_checkpoint("phase0_end_phase2_start")
     from src.init import run_pre_action
     run_pre_action(args)
@@ -202,6 +204,12 @@ def _run_tui_subcommand(rest: list[str]) -> int:
     from types import SimpleNamespace
 
     from src.init import run_pre_action
+
+    # Full-pipeline path — fire the keychain/MDM prefetch here just like
+    # main()'s parsed path does (ch02 round-4 WI-3): the sieve dispatched
+    # before the post-sieve fire, and init() below awaits these handles.
+    get_or_start_keychain_prefetch()
+    get_or_start_mdm_raw_read()
 
     # ``print=False`` => treated as an interactive session by run_pre_action.
     run_pre_action(SimpleNamespace(print=False))
@@ -493,6 +501,9 @@ def _split_csv(value: str | None) -> list[str]:
 
 def _show_provider_defaults_table() -> None:
     """Print a table showing available providers and their defaults."""
+    from rich.console import Console
+    from rich.table import Table
+
     from src.providers import PROVIDER_INFO
 
     console = Console()
@@ -514,6 +525,9 @@ def _show_provider_defaults_table() -> None:
 
 def handle_login():
     """Interactive API configuration."""
+    from rich.console import Console
+    from rich.prompt import Prompt
+
     console = Console()
     console.print("\n[bold blue]ClawCodex - API Configuration[/bold blue]\n")
 
@@ -564,6 +578,8 @@ def handle_login():
 
 def show_config():
     """Show current configuration."""
+    from rich.console import Console
+
     console = Console()
 
     try:
