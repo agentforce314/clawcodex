@@ -11,6 +11,7 @@ from typing import Any
 from ..build_tool import Tool, build_tool
 from ..context import ToolContext
 from ..diff_utils import unified_diff_hunks
+from .read import _backfill_read_edit_path  # shared file_path expander
 from ..errors import ToolInputError, ToolPermissionError
 from ..protocol import ToolResult
 from src.permissions.types import (
@@ -391,6 +392,9 @@ EditTool: Tool = build_tool(
     is_destructive=lambda _input: True,
     is_concurrency_safe=lambda _input: False,
     check_permissions=_check_permissions,
+    # ch06 round-4 PR-A GAP B — expand file_path before permissions +
+    # PreToolUse hooks (TS FileEditTool.ts:115); shared with Read.
+    backfill_observable_input=_backfill_read_edit_path,
     get_path=lambda input_data: input_data.get("file_path", ""),
     user_facing_name=lambda input_data: f"Edit: {(input_data or {}).get('file_path', '')}" if input_data else "Edit",
     search_hint="edit modify replace change file",
