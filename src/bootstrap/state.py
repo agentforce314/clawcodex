@@ -695,7 +695,7 @@ def set_cost_state_for_restore(
 ) -> None:
     """Restore accumulators from a persisted session snapshot.
 
-    Called by the (deferred Phase 2) ``restore_cost_state_for_session``
+    Called by the ``restore_cost_state_for_session``
     orchestrator. Mirrors TS ``setCostStateForRestore``
     (``bootstrap/state.ts:955``).
     """

@@ -42,17 +42,31 @@ class GitContextSnapshot:
 
 # ---------------------------------------------------------------------------
 # Module-level cache (mirrors TS memoize on getGitStatus)
+#
+# ch03 round-4 GAP C (inbound ch02 commitment): keyed by resolved cwd.
+# The old single-snapshot cache returned whatever was cached regardless of
+# the cwd argument, so on a multi-session --http server session B's prompt
+# could carry session A's git status. TS gets per-process correctness for
+# free (one cwd per process); the port's multi-session server needs the
+# key. Dict item writes are GIL-atomic; a race recomputes the same value.
 # ---------------------------------------------------------------------------
 
-_git_context_cache: GitContextSnapshot | None = None
-_git_is_repo_cache: bool | None = None
+_git_context_cache: dict[str, GitContextSnapshot] = {}
+_git_is_repo_cache: dict[str, bool] = {}
+
+
+def _cache_key(cwd: str | None) -> str:
+    target = cwd or os.getcwd()
+    try:
+        return os.path.realpath(target)
+    except OSError:
+        return str(target)
 
 
 def clear_git_caches() -> None:
-    """Clear the memoized git context cache (call after compact)."""
-    global _git_context_cache, _git_is_repo_cache
-    _git_context_cache = None
-    _git_is_repo_cache = None
+    """Clear the memoized git context caches — all cwds (call after compact)."""
+    _git_context_cache.clear()
+    _git_is_repo_cache.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -106,15 +120,17 @@ def _get_default_branch(cwd: str) -> str:
 # ---------------------------------------------------------------------------
 
 def get_is_git(cwd: str | None = None) -> bool:
-    """Check if the CWD is inside a git repository. Memoized."""
-    global _git_is_repo_cache
-    if _git_is_repo_cache is not None:
-        return _git_is_repo_cache
+    """Check if the CWD is inside a git repository. Memoized per cwd."""
+    key = _cache_key(cwd)
+    cached = _git_is_repo_cache.get(key)
+    if cached is not None:
+        return cached
 
     target = cwd or os.getcwd()
     result = _git_cmd(["rev-parse", "--is-inside-work-tree"], target)
-    _git_is_repo_cache = result == "true"
-    return _git_is_repo_cache
+    verdict = result == "true"
+    _git_is_repo_cache[key] = verdict
+    return verdict
 
 
 # ---------------------------------------------------------------------------
@@ -129,17 +145,18 @@ async def collect_git_context(
 
     Mirrors TS getGitStatus() from context.ts.
     Runs multiple git commands in parallel for speed.
-    Results are memoized; call clear_git_caches() to invalidate.
+    Results are memoized per cwd; call clear_git_caches() to invalidate.
     """
-    global _git_context_cache
-    if _git_context_cache is not None:
-        return _git_context_cache
+    key = _cache_key(cwd)
+    cached = _git_context_cache.get(key)
+    if cached is not None:
+        return cached
 
     target = cwd or os.getcwd()
 
     if not get_is_git(target):
         snapshot = GitContextSnapshot(available=False, error="Not a git repository")
-        _git_context_cache = snapshot
+        _git_context_cache[key] = snapshot
         return snapshot
 
     loop = asyncio.get_event_loop()
@@ -173,7 +190,12 @@ async def collect_git_context(
 
     status_truncated = False
     if status and len(status) > MAX_STATUS_CHARS:
-        status = status[:MAX_STATUS_CHARS] + "\n... (truncated)"
+        # TS-exact truncation tail (context.ts:88) — tells the model how
+        # to get the full status instead of leaving a dead end.
+        status = status[:MAX_STATUS_CHARS] + (
+            '\n... (truncated because it exceeds 2k characters. '
+            'If you need more information, run "git status" using BashTool)'
+        )
         status_truncated = True
 
     snapshot = GitContextSnapshot(
@@ -186,7 +208,7 @@ async def collect_git_context(
         status_truncated=status_truncated,
         recent_commits=commits or None,
     )
-    _git_context_cache = snapshot
+    _git_context_cache[key] = snapshot
     return snapshot
 
 
@@ -198,29 +220,38 @@ def format_git_status(ctx: GitContextSnapshot) -> str:
     """
     Format git context as a string for the systemContext.gitStatus key.
 
-    Mirrors TS getGitStatus output format from context.ts.
+    ch03 round-4 GAP C: TS-exact model-facing text (context.ts:96-103).
+    The "snapshot in time" preamble is load-bearing prompt engineering —
+    it tells the model the status will NOT update during the conversation,
+    which stops it from treating the block as live output to refresh; and
+    "Main branch (you will usually use this for PRs)" carries an
+    instruction the neutral "Default branch" label lost. Blocks join with
+    blank lines, status falls back to "(clean)" — byte-shape parity with
+    the TS join('\\n\\n') list.
     """
     if not ctx.available:
         return ""
 
-    parts: list[str] = []
-    parts.append("Git repository detected.")
+    parts: list[str] = [
+        "This is the git status at the start of the conversation. Note that "
+        "this status is a snapshot in time, and will not update during the "
+        "conversation.",
+    ]
 
     if ctx.branch:
         parts.append(f"Current branch: {ctx.branch}")
     if ctx.default_branch:
-        parts.append(f"Default branch: {ctx.default_branch}")
+        parts.append(
+            f"Main branch (you will usually use this for PRs): {ctx.default_branch}"
+        )
     if ctx.user_name:
-        parts.append(f"User: {ctx.user_name}")
+        parts.append(f"Git user: {ctx.user_name}")
 
-    if ctx.status:
-        parts.append(f"\nStatus:\n{ctx.status}")
-        if ctx.status_truncated:
-            parts.append("(Status output was truncated)")
-    else:
-        parts.append("\nWorking tree clean.")
+    # The truncation notice (when any) is already embedded in ctx.status
+    # with the TS-exact wording by collect_git_context.
+    parts.append(f"Status:\n{ctx.status or '(clean)'}")
 
     if ctx.recent_commits:
-        parts.append(f"\nRecent commits:\n{ctx.recent_commits}")
+        parts.append(f"Recent commits:\n{ctx.recent_commits}")
 
-    return "\n".join(parts)
+    return "\n\n".join(parts)
