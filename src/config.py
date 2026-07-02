@@ -161,15 +161,34 @@ _UNTRUSTED_TIER_BLOCKED_KEYS: frozenset[str] = frozenset(
 )
 
 
-def _session_trusted() -> bool:
-    try:
-        from src.bootstrap.state import get_session_trust_accepted
+def _session_trusted(cwd: str | Path | None = None) -> bool:
+    """Is the workspace the given manager reads trusted?
 
-        return get_session_trust_accepted()
+    ch02 round-4 WI-1 — cwd-scoped. The old body read only the
+    process-global session flag, which the agent-server CHILD never sets
+    (the parent's ``establish_session_trust`` runs in the parent process),
+    so the interactive path stripped trusted-project provider config that
+    headless honored. Flipping the global flag in the child instead would
+    leak trust across sessions (one server process can host sessions with
+    different cwds — ``session_manager.py:59-80``).
+
+    ``check_trust_accepted`` gives both semantics in one read: the
+    session-flag short-circuit first (parent piped-stdin implicit trust),
+    else the PERSISTED per-project verdict for exactly the cwd whose
+    project/local tiers are being merged. Memoized per-cwd in
+    ``startup_gates``.
+
+    Fail-closed on exception (unknown trust strips the committable
+    tiers) — deliberately stricter than the round-3 body's fail-open,
+    whose rationale (bootstrap-state import unavailable) doesn't apply to
+    the persisted walk.
+    """
+    try:
+        from src.services.startup_gates import check_trust_accepted
+
+        return check_trust_accepted(cwd)
     except Exception:
-        # Bootstrap state unavailable (early import, standalone script):
-        # fail toward the pre-round-3 behavior rather than breaking reads.
-        return True
+        return False
 
 
 def _strip_untrusted_keys(tier: dict[str, Any]) -> dict[str, Any]:
@@ -235,7 +254,9 @@ class ConfigManager:
         merged = self.load_global()
         project = self.load_project()
         local = self.load_local()
-        if not _session_trusted():
+        # Gate on the SAME cwd the project/local tiers were resolved from
+        # (self.cwd None ⇒ process cwd on both sides).
+        if not _session_trusted(self.cwd):
             project = _strip_untrusted_keys(project)
             local = _strip_untrusted_keys(local)
         merged = _deep_merge(merged, project)
@@ -345,6 +366,15 @@ def update_project_entry(
     except OSError:
         return False
     _get_default_manager().invalidate()
+    # Project entries carry the folder-trust verdict; drop the per-cwd
+    # trust memo so a just-recorded acceptance is visible to the next
+    # get_merged strip decision (ch02 round-4 WI-1).
+    try:
+        from src.services.startup_gates import _invalidate_trust_memo
+
+        _invalidate_trust_memo()
+    except Exception:
+        pass
     return True
 
 

@@ -145,10 +145,12 @@ def start_keychain_prefetch() -> PrefetchHandle:
 def get_or_start_keychain_prefetch() -> PrefetchHandle:
     """Process-wide singleton: fire once per interpreter, return same handle.
 
-    Resolves the cli.py/setup.py double-fire: ``cli.py`` calls this at
-    module import time so the cost overlaps argparse; ``setup.run_setup``
-    later calls the same getter and gets the in-flight handle instead of
-    spawning a second subprocess.
+    Resolves the double-fire between call sites: ``cli.py`` fires this in
+    ``main()`` once the invocation is known to need the full pipeline
+    (ch02 round-4 WI-3 — fast paths like ``--version``/``mcp`` no longer
+    spawn it); ``init()`` later awaits the same getter and gets the
+    in-flight handle (or starts it, self-healing) instead of spawning a
+    second subprocess.
     """
     with _singleton_lock:
         cached = _singletons.get("keychain")

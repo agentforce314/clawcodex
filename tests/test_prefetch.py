@@ -114,29 +114,21 @@ class TestWaitAndRead(unittest.TestCase):
 
 
 class TestModuleLevelFireAndForget(unittest.TestCase):
-    """``src/cli.py`` fires the prefetch at module-import time.
-
-    Structural test (per critic M10): importing ``src.cli`` should result
-    in module-level handles being populated. We don't time the subprocess
-    work itself (that's OS-scheduling-dependent and would flake on CI);
-    we just verify the wiring is in place.
+    """ch02 round-4 WI-3 INVERTED the original contract: ``src/cli.py`` no
+    longer fires the prefetch at module-import time — fast paths like
+    ``--version``/``mcp`` must not spawn subprocesses. ``main()`` fires it
+    once the invocation is known to need the full pipeline; the
+    fire-before-init ordering and fast-path skips are pinned by
+    tests/test_ch02_bootstrap_round4.py::TestFastPathHygiene.
     """
 
-    def test_cli_module_import_populates_prefetch_handles(self):
+    def test_cli_module_import_fires_nothing(self):
         # Re-import to ensure module-level code re-runs in a clean way.
         import importlib
         import src.cli
         importlib.reload(src.cli)
-        self.assertIsInstance(src.cli._keychain_handle, PrefetchHandle)
-        self.assertIsInstance(src.cli._mdm_handle, PrefetchHandle)
-        # Drain children if spawned, so the test process exits cleanly.
-        for handle in (src.cli._keychain_handle, src.cli._mdm_handle):
-            if handle.process is not None:
-                try:
-                    handle.process.kill()
-                    handle.process.wait(timeout=2.0)
-                except Exception:
-                    pass
+        self.assertFalse(hasattr(src.cli, "_keychain_handle"))
+        self.assertFalse(hasattr(src.cli, "_mdm_handle"))
 
 
 class TestProjectScanStub(unittest.TestCase):

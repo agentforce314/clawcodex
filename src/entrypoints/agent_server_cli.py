@@ -26,10 +26,21 @@ import sys
 import threading
 from pathlib import Path
 
+# ch02 round-4 WI-4 — bracket the child's import cost. This module is the
+# spawned backend's entry (`python -m src.entrypoints.agent_server_cli`),
+# and the transitive agent_server/query/tool imports below dominate its
+# cold start. Zero cost unless CLAUDE_CODE_PROFILE_STARTUP is set (the
+# gate latches at startup_profiler import).
+from src.utils.startup_profiler import profile_checkpoint
+
+profile_checkpoint("agent_server_import_start")
+
 from src.server.agent_server import AgentServerConfig, PROTOCOL_VERSION, make_spawn_agent
 from src.server.server import DirectConnectServer
 from src.server.session_manager import SessionManager
 from src.server.types import ServerConfig
+
+profile_checkpoint("agent_server_import_end")
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +137,14 @@ async def _serve_stdio(workspace: str, agent_config: AgentServerConfig) -> int:
     RESERVED for JSON frames (diagnostics go to ``stderr``); ``stdin`` EOF — the
     parent TUI going away — ends the session.
     """
+    profile_checkpoint("agent_server_serve_start")
+    # This transport serves exactly ONE session (the Ink client's child, or
+    # a hand-run standalone). single_session unlocks the process-global
+    # side effects in _build_runtime (post-trust env apply, context-cache
+    # prefetch) that the multi-session --http transport must not perform.
+    import dataclasses as _dc
+
+    agent_config = _dc.replace(agent_config, single_session=True)
     index_path = Path.home() / ".clawcodex" / "server-sessions.json"
     index_path.parent.mkdir(parents=True, exist_ok=True)
     manager = SessionManager(workspace=workspace, index_path=index_path)
