@@ -29,28 +29,42 @@ if TYPE_CHECKING:
     from src.types.messages import AssistantMessage
 
 
+_DEFAULT_MAX_TOOL_USE_CONCURRENCY = 10
+
+
+def _coerce_concurrency(raw: str) -> int:
+    # ch07 round-4 GAP B — match TS `parseInt(v) || 10`
+    # (toolOrchestration.ts:8-12): any non-positive or non-numeric value
+    # falls back to the default. Previously `int("0")` returned 0 →
+    # Semaphore(0) → every acquire blocks forever (tools HANG); `int("-1")`
+    # → Semaphore(-1) → ValueError. Clamp <= 0 (and parse failures) to the
+    # default.
+    try:
+        parsed = int(raw)
+    except (ValueError, TypeError):
+        return _DEFAULT_MAX_TOOL_USE_CONCURRENCY
+    return parsed if parsed > 0 else _DEFAULT_MAX_TOOL_USE_CONCURRENCY
+
+
 def _get_max_tool_use_concurrency() -> int:
     # Reads CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY (chapter-7 name, used in
     # the TS reference) with the legacy CLAWCODEX_ alias + deprecation
     # warning (moved from query.py at ch07 unification).
-    try:
-        canonical = os.environ.get("CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY")
-        if canonical is not None:
-            return int(canonical)
-        legacy = os.environ.get("CLAWCODEX_MAX_TOOL_USE_CONCURRENCY")
-        if legacy is not None:
-            import warnings
+    canonical = os.environ.get("CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY")
+    if canonical is not None:
+        return _coerce_concurrency(canonical)
+    legacy = os.environ.get("CLAWCODEX_MAX_TOOL_USE_CONCURRENCY")
+    if legacy is not None:
+        import warnings
 
-            warnings.warn(
-                "CLAWCODEX_MAX_TOOL_USE_CONCURRENCY is deprecated; use "
-                "CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            return int(legacy)
-    except (ValueError, TypeError):
-        return 10
-    return 10
+        warnings.warn(
+            "CLAWCODEX_MAX_TOOL_USE_CONCURRENCY is deprecated; use "
+            "CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return _coerce_concurrency(legacy)
+    return _DEFAULT_MAX_TOOL_USE_CONCURRENCY
 
 
 @dataclass

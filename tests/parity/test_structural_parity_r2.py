@@ -120,37 +120,12 @@ class TestApiRetryStructure(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestQueryLoopStreamingFlow(unittest.TestCase):
-    def test_streaming_query_yields_events(self) -> None:
-        from src.query.streaming import QueryConfig, QueryEvent, streaming_query
-        from src.tool_system.context import ToolContext
-
-        async def mock_call_model(messages, options=None, client=None):
-            yield MessageStart(model="claude-sonnet-4-6")
-            yield TextDelta(text="Hello", index=0)
-            yield ContentBlockStop(index=0)
-            yield MessageDelta(stop_reason="end_turn")
-            yield MessageStop()
-
-        ctx = MagicMock(spec=ToolContext)
-        cfg = QueryConfig(max_turns=5)
-
-        async def run():
-            events = []
-            with patch("src.query.streaming.call_model", mock_call_model):
-                async for event in streaming_query(
-                    messages=[{"role": "user", "content": "hi"}],
-                    system_prompt="You are helpful.",
-                    tools=[],
-                    context=ctx,
-                    config=cfg,
-                ):
-                    events.append(event)
-            return events
-
-        events = asyncio.run(run())
-        event_types = [e.type for e in events]
-        self.assertIn("turn_start", event_types)
-        self.assertIn("query_complete", event_types)
+    def test_streaming_query_module_retired(self) -> None:
+        # ch07 round-4 WI-3 — the parallel `query/streaming.py` loop is
+        # retired (test-only, no live consumer, strictly less capable than
+        # `query()`). The canonical query() is the sole loop.
+        with self.assertRaises(ModuleNotFoundError):
+            import src.query.streaming  # noqa: F401
 
 
 # ---------------------------------------------------------------------------
@@ -182,35 +157,12 @@ class TestQueryReactiveCompact(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestQueryTokenBudget(unittest.TestCase):
-    def test_streaming_query_respects_max_turns(self) -> None:
-        from src.query.streaming import QueryConfig, streaming_query
-
-        async def mock_call_model(messages, options=None, client=None):
-            yield MessageStart(model="claude-sonnet-4-6")
-            yield TextDelta(text="tool call", index=0)
-            yield ContentBlockStop(index=0)
-            yield MessageDelta(stop_reason="end_turn")
-            yield MessageStop()
-
-        ctx = MagicMock()
-        cfg = QueryConfig(max_turns=1)
-
-        async def run():
-            events = []
-            with patch("src.query.streaming.call_model", mock_call_model):
-                async for event in streaming_query(
-                    messages=[{"role": "user", "content": "hi"}],
-                    system_prompt="test",
-                    tools=[],
-                    context=ctx,
-                    config=cfg,
-                ):
-                    events.append(event)
-            return events
-
-        events = asyncio.run(run())
-        turn_starts = [e for e in events if e.type == "turn_start"]
-        self.assertEqual(len(turn_starts), 1)
+    def test_max_turns_covered_by_canonical_loop(self) -> None:
+        # ch07 round-4 WI-3 — the streaming.py max-turns test is retired
+        # with the module; the canonical query() max-turns terminal is
+        # covered by tests/test_query_terminal.py + test_query_loop.py.
+        with self.assertRaises(ModuleNotFoundError):
+            import src.query.streaming  # noqa: F401
 
 
 # ---------------------------------------------------------------------------
@@ -218,39 +170,13 @@ class TestQueryTokenBudget(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestQueryStopHooks(unittest.TestCase):
-    def test_stop_hooks_fire_at_end_of_turn(self) -> None:
-        from src.query.streaming import QueryConfig, streaming_query
-
-        stop_hook_called = False
-
-        async def mock_call_model(messages, options=None, client=None):
-            yield MessageStart(model="claude-sonnet-4-6")
-            yield TextDelta(text="done", index=0)
-            yield ContentBlockStop(index=0)
-            yield MessageDelta(stop_reason="end_turn")
-            yield MessageStop()
-
-        async def mock_stop_hooks(msgs):
-            nonlocal stop_hook_called
-            stop_hook_called = True
-
-        ctx = MagicMock()
-        cfg = QueryConfig(max_turns=5, stop_hooks_enabled=True)
-
-        async def run():
-            with patch("src.query.streaming.call_model", mock_call_model):
-                async for _ in streaming_query(
-                    messages=[{"role": "user", "content": "hi"}],
-                    system_prompt="test",
-                    tools=[],
-                    context=ctx,
-                    config=cfg,
-                    on_stop_hooks=mock_stop_hooks,
-                ):
-                    pass
-
-        asyncio.run(run())
-        self.assertTrue(stop_hook_called)
+    def test_stop_hooks_covered_by_canonical_loop(self) -> None:
+        # ch07 round-4 WI-3 — the streaming.py stop-hooks test is retired
+        # with the module; the canonical query() stop-hook dispatch
+        # (handle_stop_hooks_streaming) is covered by
+        # tests/test_query_hook_stopped.py.
+        with self.assertRaises(ModuleNotFoundError):
+            import src.query.streaming  # noqa: F401
 
 
 # ---------------------------------------------------------------------------

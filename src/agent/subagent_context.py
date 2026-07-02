@@ -108,7 +108,24 @@ def create_subagent_context(
         read_file_fingerprints: dict[Any, Any] = {}
 
     # --- Options ---
-    options = overrides.options if overrides.options is not None else parent_context.options
+    # ch07 round-4 (critic MAJOR): SHALLOW-COPY the parent options even on
+    # the non-override path. The query loop does
+    # ``tool_use_context.options.tools = list(params.tools)`` per query
+    # (query.py:1207), and partition/lookup read it back. Without a copy,
+    # N parallel foreground subagents (now that Agent is concurrency-safe)
+    # — and pre-existing workflow parallel() fan-out — share ONE options
+    # object across OS threads and race on ``.tools`` (one thread's tool
+    # list clobbers another's partition/lookup). A shallow copy gives each
+    # subagent its own options object; the referenced sub-lists it will
+    # overwrite wholesale, not mutate in place, so shallow is sufficient.
+    if overrides.options is not None:
+        options = overrides.options
+    elif parent_context.options is not None:
+        import copy as _copy
+
+        options = _copy.copy(parent_context.options)
+    else:
+        options = None
 
     # --- Messages ---
     messages = overrides.messages if overrides.messages is not None else list(parent_context.messages)

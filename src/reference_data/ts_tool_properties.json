@@ -41,7 +41,7 @@
     "WebFetch": {"is_read_only": true, "is_concurrency_safe": true},
     "WebSearch": {"is_read_only": true, "is_concurrency_safe": true},
     "Write": {"is_read_only": false, "is_concurrency_safe": false},
-    "Agent": {"is_read_only": false, "is_concurrency_safe": false, "is_destructive": true}
+    "Agent": {"is_read_only": false, "_is_read_only_note": "ch07 round-4: TS AgentTool.isReadOnly()=true, but the port keeps false — sub-agents run Edit/Write so Agent is not read-only in effect (concurrency-safety != read-only); no live is_read_only consumer exists.", "is_concurrency_safe": true, "is_destructive": true}
   },
   "required_tool_attributes": [
     "name",
