@@ -28,9 +28,12 @@ and verifies the fallback fires. Re-audit the SDK version when bumping.
 
 from __future__ import annotations
 
+import logging
 import os
 import threading
 from typing import Any, Callable
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "DEFAULT_STREAM_IDLE_TIMEOUT_S",
@@ -87,12 +90,23 @@ class StreamWatchdog:
     the raise and decides whether to fall back.
     """
 
-    def __init__(self, stream: Any, *, timeout_s: float | None = None) -> None:
+    def __init__(
+        self,
+        stream: Any,
+        *,
+        timeout_s: float | None = None,
+        request_id: str | None = None,
+    ) -> None:
         self._stream = stream
         self._timeout_s = (
             timeout_s if timeout_s is not None else stream_idle_timeout_seconds()
         )
+        self._request_id = request_id
         self._timer: threading.Timer | None = None
+        # ch04 round-4 GAP D — half-time warning timer (TS claude.ts:1898,
+        # :1919-1929 warns at timeout/2). Log-only; same reset/cancel
+        # lifecycle and stale-timer race guards as the main deadline.
+        self._warn_timer: threading.Timer | None = None
         # Event raised when the timer fires — consumer can check
         # ``watchdog.fired`` to distinguish a timeout from an SDK-side
         # error in the fallback decision.
@@ -110,6 +124,9 @@ class StreamWatchdog:
             self._cancel_locked()
             self._timer = self._make_timer_locked()
             self._timer.start()
+            self._warn_timer = self._make_warn_timer_locked()
+            if self._warn_timer is not None:
+                self._warn_timer.start()
 
     def reset(self) -> None:
         """Push the deadline forward — called on every successful chunk."""
@@ -119,6 +136,9 @@ class StreamWatchdog:
             self._cancel_locked()
             self._timer = self._make_timer_locked()
             self._timer.start()
+            self._warn_timer = self._make_warn_timer_locked()
+            if self._warn_timer is not None:
+                self._warn_timer.start()
 
     def disarm(self) -> None:
         """Cancel the timer (call after the stream completes normally)."""
@@ -145,6 +165,29 @@ class StreamWatchdog:
         timer.daemon = True
         return timer
 
+    def _make_warn_timer_locked(self) -> threading.Timer | None:
+        """Half-time warning timer (GAP D). Same stale-fire closure guard
+        as the deadline timer; log-only, never touches the stream."""
+        if self._timeout_s <= 0:
+            return None
+        timer: threading.Timer | None = None
+
+        def _callback() -> None:
+            with self._lock:
+                if self._warn_timer is not timer or self._fired.is_set():
+                    return
+                self._warn_timer = None
+            logger.warning(
+                "stream idle for %.0fs (half of the %.0fs timeout)%s",
+                self._timeout_s / 2,
+                self._timeout_s,
+                f" — request_id={self._request_id}" if self._request_id else "",
+            )
+
+        timer = threading.Timer(self._timeout_s / 2, _callback)
+        timer.daemon = True
+        return timer
+
     def _cancel_locked(self) -> None:
         if self._timer is not None:
             try:
@@ -152,6 +195,12 @@ class StreamWatchdog:
             except Exception:
                 pass
             self._timer = None
+        if self._warn_timer is not None:
+            try:
+                self._warn_timer.cancel()
+            except Exception:
+                pass
+            self._warn_timer = None
 
     def _on_timeout(self, expected_timer: threading.Timer | None) -> None:
         """Timer callback: mark fired, then close the stream's response.

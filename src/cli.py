@@ -328,6 +328,14 @@ Examples:
         help='Override the model used for this run',
     )
     noninteractive.add_argument(
+        '--fallback-model',
+        type=str,
+        default=None,
+        dest='fallback_model',
+        help='Model to switch to after repeated overloaded (529) errors '
+             '(session-sticky; never persisted)',
+    )
+    noninteractive.add_argument(
         '--provider',
         type=str,
         default=None,
@@ -475,12 +483,19 @@ def _run_print_mode(args) -> int:
     allowed = _split_csv(args.allowed_tools)
     disallowed = _split_csv(args.disallowed_tools)
 
+    if args.fallback_model and args.fallback_model == args.model:
+        # TS validates the same way (main.tsx:1339): a fallback equal to the
+        # primary can never relieve capacity.
+        print("error: --fallback-model must differ from --model", file=sys.stderr)
+        return 2
+
     options = HeadlessOptions(
         prompt=args.prompt,
         output_format=args.output_format,
         input_format=args.input_format,
         provider_name=args.provider,
         model=args.model,
+        fallback_model=args.fallback_model,
         max_turns=args.max_turns,
         skip_permissions=bool(args.dangerously_skip_permissions),
         permission_mode=args._resolved_permission_mode,

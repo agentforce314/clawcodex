@@ -302,6 +302,7 @@ async def run_query_as_agent_loop(
     cancel_signal: AbortSignal | None = None,
     abort_controller: AbortController | None = None,
     extended_thinking: bool | None = None,
+    fallback_model: str | None = None,
 ) -> AgentLoopRunResult:
     """Drive the canonical query() loop and adapt to AgentLoopResult.
 
@@ -361,6 +362,9 @@ async def run_query_as_agent_loop(
         provider=provider,
         abort_controller=abort_controller,
         max_turns=max_turns,
+        # ch04 round-4 GAP B — capacity-relief model switch after repeated
+        # 529s (see QueryParams.fallback_model).
+        fallback_model=fallback_model,
         # C3b /thinking: None = auto (model-gated default), True/False =
         # explicit session override (TS ThinkingToggle semantics).
         extended_thinking=extended_thinking,
