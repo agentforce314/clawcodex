@@ -57,7 +57,7 @@ class RunAgentParams:
     is_async: bool = False
     max_turns: int | None = None
     system_prompt_override: str | None = None
-    parent_system_prompt: str | None = None
+    parent_system_prompt: "str | list | None" = None
     permission_mode_override: PermissionMode | None = None
     context_messages: list[Message] | None = None
     abort_controller: AbortController | None = None
