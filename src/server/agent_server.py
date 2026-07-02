@@ -1555,6 +1555,25 @@ class _AgentSession:
             logger.debug("[agent-server] SessionStart hooks failed",
                          exc_info=True)
 
+    def _run_user_prompt_submit_hooks(self, prompt: Any) -> Any:
+        """ch14 round-4 — sync wrapper around the async UserPromptSubmit
+        router (_run_turn is a sync worker). Returns the outcome or None on
+        failure. Never raises."""
+        try:
+            import asyncio as _asyncio
+
+            from src.hooks.session_hooks import run_user_prompt_submit_hooks
+
+            text = _extract_prompt_text({"content": prompt})
+            return _asyncio.run(run_user_prompt_submit_hooks(
+                text, session_id=self.session_id, cwd=self.cwd,
+                tool_use_context=self.tool_context,
+            ))
+        except Exception:  # noqa: BLE001 — a hook must not block the turn
+            logger.debug("[agent-server] UserPromptSubmit hooks failed",
+                         exc_info=True)
+            return None
+
     @staticmethod
     def _parse_turn_budget(prompt: Any) -> int | None:
         """ch05 round-4 GAP B — the '+500k' auto-continue budget from the
@@ -1589,6 +1608,52 @@ class _AgentSession:
         # match a trailing "+500k" once a <system-reminder> follows it.
         token_budget = self._parse_turn_budget(prompt) if not internal else None
 
+        # ch14 round-4 — UserPromptSubmit hooks (TS processUserInput.ts:182).
+        # Fire on the RAW prompt of a real user turn, BEFORE any ultracode
+        # augmentation (the hook contract sees exactly what the user typed;
+        # internal/notification turns skip). A hook can BLOCK (erase the
+        # prompt + warn, no query) or INJECT additionalContext the model
+        # sees. Trust-gated via the per-context snapshot (ch12). A hook
+        # failure never blocks the turn.
+        # Skip on `internal` (notification/side-generated) turns AND on `btw`
+        # side-questions: /btw is an ephemeral meta-turn whose Q&A is rolled
+        # back, and firing on it would (a) run a real-prompt validation hook
+        # on a meta-turn and (b) leak the prevent-path messages past the btw
+        # rollback (critic-2 MINOR). UserPromptSubmit fires only on real,
+        # persisted user prompts.
+        _ups_contexts: list[str] = []
+        if not internal and not btw:
+            ups = self._run_user_prompt_submit_hooks(prompt)
+            if ups is not None and ups.blocked:
+                # blockingError → ERASE the prompt + warn (TS
+                # processUserInput.ts:203-211): the model never sees it.
+                self._emit(_system_message(
+                    self.session_id,
+                    f"UserPromptSubmit operation blocked by hook:\n"
+                    f"{ups.block_message}\n\nOriginal prompt: "
+                    f"{_extract_prompt_text({'content': prompt})}",
+                    level="warning",
+                ))
+                self._emit(_result_message(
+                    self.session_id, subtype="success", num_turns=0,
+                    result="", is_error=False, duration_ms=0,
+                ))
+                return
+            if ups is not None and ups.prevented:
+                # preventContinuation → KEEP the prompt in context + push an
+                # "Operation stopped by hook" note; no query (TS :213-224).
+                self.session.conversation.add_user_message(prompt)
+                self.session.conversation.add_user_message(
+                    f"Operation stopped by hook: {ups.prevent_reason}"
+                )
+                self._emit(_result_message(
+                    self.session_id, subtype="success", num_turns=0,
+                    result="", is_error=False, duration_ms=0,
+                ))
+                return
+            if ups is not None:
+                _ups_contexts = list(ups.additional_contexts)
+
         # ultracode (workflow-engine §4.1): the `ultracode` keyword in this
         # message, or the session-long `/effort ultracode` mode, appends a
         # <system-reminder> nudging the model to author a workflow rather than
@@ -1611,6 +1676,12 @@ class _AgentSession:
         # (drops the ephemeral Q + A on every exit path via the finally below).
         _btw_snapshot = list(self.session.conversation.messages) if btw else None
         self.session.conversation.add_user_message(prompt)
+        # Inject any UserPromptSubmit additionalContext as a system-reminder
+        # user message right after the prompt (the model reads it as context).
+        for _ctx in _ups_contexts:
+            self.session.conversation.add_user_message(
+                f"<system-reminder>\n{_ctx}\n</system-reminder>"
+            )
         start = time.monotonic()
 
         def on_text_chunk(chunk: str) -> None:
