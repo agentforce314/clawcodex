@@ -75,10 +75,13 @@ MAX_529_RETRIES = 3
 # timeout), TS DEFAULT_MAX_RETRIES (withRetry.ts:52).
 DEFAULT_MAX_RETRIES = 10
 RETRY_BASE_DELAY_SECONDS = 0.5
-# Narrower than TS's FOREGROUND_529_RETRY_SOURCES (agents/sdk/compact/
-# side_question, withRetry.ts:62-90) -- minimal posture; widen to agent
-# sources when subagent traffic matters.
-FOREGROUND_529_RETRY_SOURCES = frozenset({"repl_main_thread"})
+# Narrower than TS's FOREGROUND_529_RETRY_SOURCES (agents/compact/
+# side_question etc., withRetry.ts:62-90) -- minimal posture; widen to
+# agent sources when subagent traffic matters. 'sdk' added in ch05
+# round-4 alongside the headless query_source relabel ('repl_main_thread'
+# -> 'sdk'): TS's set includes 'sdk' (withRetry.ts:67), so headless keeps
+# the yield-based retry lane after the relabel.
+FOREGROUND_529_RETRY_SOURCES = frozenset({"repl_main_thread", "sdk"})
 MAX_OUTPUT_TOKENS_RECOVERY_LIMIT = 3
 PROMPT_TOO_LONG_ERROR_MESSAGE = (
     "Your conversation is too long. Please use /compact to reduce context size, "
@@ -113,6 +116,12 @@ class QueryParams:
     # query.ts:276; --fallback-model in headless). Session-sticky switch
     # via provider.model; never persisted to settings.
     fallback_model: str | None = None
+    # ch05 round-4 note — N/A-by-architecture on the LIVE paths: the
+    # adapter's build_effective_system_prompt already injects CLAUDE.md
+    # ("## Project Instructions") and the date via the SYSTEM prompt, so
+    # wiring TS's prependUserContext there would double-inject. Only the
+    # test-only engine path uses the message-based mechanism
+    # (prepend_user_context at engine.py:221). One mechanism per surface.
     user_context: dict[str, str] | None = None
     system_context: dict[str, str] | None = None
     pipeline_config: PipelineConfig | None = None
@@ -2028,6 +2037,15 @@ async def query(
             # confirming it doesn't double-pair against that backstop.
             if params.abort_controller.signal.reason != "interrupt":
                 yield _create_user_interruption_message(tool_use=True)
+            # ch05 round-4 GAP C — TS query.ts:1621-1629: an abort that
+            # lands ON the max-turns boundary also announces the limit
+            # before the aborted_tools return (the terminal reason stays
+            # aborted_tools either way).
+            next_turn_count_on_abort = turn_count + 1
+            if params.max_turns and next_turn_count_on_abort > params.max_turns:
+                yield _create_max_turns_attachment(
+                    params.max_turns, next_turn_count_on_abort,
+                )
             set_terminal(holder, natural_termination, Terminal(reason="aborted_tools"))
             return
 
