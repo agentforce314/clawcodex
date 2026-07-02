@@ -1206,6 +1206,24 @@ async def query(
     # defaults. Sync once per query.
     params.tool_use_context.options.tools = list(params.tools)
 
+    # ch09 round-4 WI-1 — capture the parent's rendered system prompt onto
+    # its context so a fork spawned DURING this turn threads the parent's
+    # EXACT prompt (byte-identical), letting the fork child chain onto the
+    # parent's warm [system+tools+history] cache. Without this the field
+    # was dead scaffolding (permanently None) and fork children fell back
+    # to DEFAULT_AGENT_PROMPT — diverging at byte 0 and reprocessing the
+    # whole history at full price (fork's entire economic point, inert).
+    # TS: toolUseContext.renderedSystemPrompt (AgentTool.tsx:496). The
+    # captured value is the INPUT to _call_model_sync's assembly; the fork
+    # child threads the same input and goes through the same assembly, so
+    # the wire bytes match. Set unconditionally (cheap; only fork reads it;
+    # a fork-of-subagent is guarded regardless).
+    if params.system_prompt:
+        try:
+            params.tool_use_context.rendered_system_prompt = params.system_prompt
+        except Exception:  # noqa: BLE001 — read-only stub context
+            pass
+
     while True:
         messages = state.messages
         if _diag:

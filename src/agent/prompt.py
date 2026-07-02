@@ -189,8 +189,8 @@ def get_agent_prompt(
 
 def get_agent_system_prompt(
     agent_definition: AgentDefinition,
-    parent_system_prompt: str | None = None,
-) -> str:
+    parent_system_prompt: "str | list | None" = None,
+) -> "str | list":
     """Get the system prompt for an agent.
 
     Mirrors getAgentSystemPrompt() from typescript/src/tools/AgentTool/runAgent.ts.
