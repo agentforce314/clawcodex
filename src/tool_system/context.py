@@ -233,7 +233,15 @@ class ToolContext:
     # transitions (GrowthBook cold→warm) and bust the prompt cache; the
     # main loop should populate this field whenever it has the rendered
     # bytes on hand for the parent's last turn.
-    rendered_system_prompt: str | None = None
+    #
+    # ch09 round-4 WI-1 — now POPULATED by query() at turn entry
+    # (query.py, after the options.tools sync). Accepts the parent's actual
+    # ``system_prompt`` shape: a ``list[dict]`` on the live agent-server /
+    # headless path (build_effective_system_prompt) or a ``str`` on
+    # string-prompt callers. The fork threads it verbatim into the child's
+    # QueryParams.system_prompt so both sides run the identical
+    # _call_model_sync assembly → byte-identical wire prefix.
+    rendered_system_prompt: "str | list[dict[str, Any]] | None" = None
 
     def __post_init__(self) -> None:
         self.workspace_root = Path(self.workspace_root).resolve()
