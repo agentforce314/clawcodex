@@ -93,8 +93,9 @@ const SLASHES: ReadonlyArray<{ desc: string; name: string }> = [
   { desc: 'Show context-window usage', name: '/context' },
   { desc: 'Undo recent turns', name: '/rewind' },
   { desc: 'Toggle extended thinking', name: '/thinking' },
-  { desc: 'Set reasoning effort', name: '/effort' },
+  { desc: 'Set reasoning effort (or "ultracode" workflow mode)', name: '/effort' },
   { desc: 'Switch the provider', name: '/provider' },
+  { desc: 'List running and recent dynamic workflows', name: '/workflows' },
   { desc: 'Search / manage the knowledge base', name: '/knowledge' },
   { desc: 'View or set the plan', name: '/plan' },
   { desc: 'Generate session insights', name: '/insights' },
@@ -104,6 +105,15 @@ const SLASHES: ReadonlyArray<{ desc: string; name: string }> = [
 ]
 
 type Pending = { reject: (e: Error) => void; resolve: (v: unknown) => void }
+
+/** A workflow slash command reported by the backend (`list_workflow_commands`):
+ *  bundled /deep-research plus saved `.claude/workflows/*.py`. */
+type WorkflowCommand = { argument_hint?: string; description?: string; name: string }
+
+/** How long a fetched workflow-command list stays fresh. The slash menu
+ *  re-queries per keystroke; the TTL keeps that to ~1 RPC per burst while a
+ *  workflow authored mid-session (ultracode flow) still shows up promptly. */
+const WORKFLOW_CMDS_TTL_MS = 3_000
 
 export class GatewayClient extends EventEmitter {
   private buffered: GatewayEvent[] = []
@@ -123,6 +133,9 @@ export class GatewayClient extends EventEmitter {
   private sessionId = ''
   private sessionInfo: null | SessionInfo = null
   private subscribed = false
+  // Backend workflow commands (slash menu + dispatch), TTL-cached.
+  private wfCommands: WorkflowCommand[] = []
+  private wfFetchedAt = 0
 
   constructor() {
     super()
@@ -219,19 +232,40 @@ export class GatewayClient extends EventEmitter {
     switch (method) {
       // ── startup handshake ────────────────────────────────────────────────
       case 'commands.catalog': {
-        const pairs = SLASHES.map(s => [s.name, s.desc] as [string, string])
-        const canon: Record<string, string> = {}
-        for (const s of SLASHES) canon[s.name] = s.name
-        return Promise.resolve({ canon, categories: [], pairs, skill_count: 0, sub: {} } as T)
+        // Await the backend so the catalog can include its workflow commands
+        // (/deep-research + saved .claude/workflows) alongside the static set.
+        return this.readyPromise
+          .then(() => this.fetchWorkflowCommands())
+          .catch(() => [] as WorkflowCommand[])
+          .then(wf => {
+            const pairs = SLASHES.map(s => [s.name, s.desc] as [string, string])
+            const canon: Record<string, string> = {}
+            for (const s of SLASHES) canon[s.name] = s.name
+            for (const w of wf) {
+              const name = `/${w.name}`
+              if (canon[name]) continue
+              canon[name] = name
+              pairs.push([name, w.description ?? 'Run a dynamic workflow'])
+            }
+            return { canon, categories: [], pairs, skill_count: 0, sub: {} } as T
+          })
       }
       case 'complete.slash': {
         const text = String(p.text ?? '').toLowerCase() || '/'
-        const items = SLASHES.filter(s => s.name.toLowerCase().startsWith(text)).map(s => ({
-          display: s.name,
-          meta: s.desc,
-          text: s.name
-        }))
-        return Promise.resolve({ items, replace_from: 1 } as T)
+        return this.fetchWorkflowCommands()
+          .catch(() => [] as WorkflowCommand[])
+          .then(wf => {
+            const entries = [
+              ...SLASHES,
+              ...wf
+                .filter(w => !SLASHES.some(s => s.name === `/${w.name}`))
+                .map(w => ({ desc: w.description ?? 'Run a dynamic workflow', name: `/${w.name}` }))
+            ]
+            const items = entries
+              .filter(s => s.name.toLowerCase().startsWith(text))
+              .map(s => ({ display: s.name, meta: s.desc, text: s.name }))
+            return { items, replace_from: 1 } as T
+          })
       }
       case 'complete.path':
         // @-file mentions: serve workspace file completions from disk (the hook
@@ -347,6 +381,20 @@ export class GatewayClient extends EventEmitter {
     }
   }
 
+  // Fetch the backend's workflow slash commands, TTL-cached (see
+  // WORKFLOW_CMDS_TTL_MS). Degrades to the last-known list on RPC failure.
+  private fetchWorkflowCommands(): Promise<WorkflowCommand[]> {
+    const now = Date.now()
+    if (now - this.wfFetchedAt < WORKFLOW_CMDS_TTL_MS) return Promise.resolve(this.wfCommands)
+    this.wfFetchedAt = now
+    return this.controlQuery('list_workflow_commands', {}).then((r: any) => {
+      if (Array.isArray(r?.commands)) {
+        this.wfCommands = r.commands.filter((c: any) => typeof c?.name === 'string' && c.name)
+      }
+      return this.wfCommands
+    })
+  }
+
   // ── event plumbing ───────────────────────────────────────────────────────
   private controlQuery(subtype: string, params: Record<string, unknown>): Promise<unknown> {
     const requestId = `q${++this.reqId}`
@@ -363,9 +411,15 @@ export class GatewayClient extends EventEmitter {
   }
 
   // Map a slash command (name + optional arg) to a clawcodex control_request
-  // and return a CommandDispatchResponse (`type:'exec'` + human-readable output
-  // the app prints). Unknown commands report that they aren't wired yet.
-  private async dispatchSlash(name: string, arg?: string): Promise<{ output: string; type: string }> {
+  // and return a CommandDispatchResponse — `type:'exec'` + human-readable output
+  // the app prints, or `type:'send'` for workflow commands whose expanded
+  // directive the app submits as a prompt. Unknown commands are offered to the
+  // backend as workflow commands (/deep-research, saved .claude/workflows)
+  // before reporting they aren't wired.
+  private async dispatchSlash(
+    name: string,
+    arg?: string
+  ): Promise<{ output: string; type: string } | { message: string; notice?: string; type: 'send' }> {
     const out = (output: string) => ({ output, type: 'exec' })
     switch (name) {
       case 'clear':
@@ -382,6 +436,10 @@ export class GatewayClient extends EventEmitter {
       }
       case 'effort': {
         const r = (await this.controlQuery('set_effort', { effort: arg ?? null })) as any
+        if (r && r.ok === false) return out(`effort: ${r.error ?? 'invalid value'}`)
+        if (r?.effort === 'ultracode') {
+          return out('Ultracode on: workflow auto-orchestration for this session (reset with /effort high).')
+        }
         return out(`Effort: ${r?.effort ?? arg ?? '(unchanged)'}.`)
       }
       case 'mode':
@@ -444,8 +502,25 @@ export class GatewayClient extends EventEmitter {
             : 'No saved sessions.'
         )
       }
-      default:
+      case 'workflows': {
+        const r = (await this.controlQuery('workflows', {})) as any
+        if (r && r.ok === false) return out(`workflows: ${r.error ?? 'unavailable'}`)
+        return out(String(r?.text ?? 'No workflow runs.'))
+      }
+      default: {
+        // Workflow commands (/deep-research + saved .claude/workflows/*.py):
+        // the backend expands the directive; the app submits it as a prompt so
+        // the model launches the run via the Workflow tool.
+        const r = (await this.controlQuery('workflow_command', { args: arg ?? '', name })) as any
+        if (r?.ok && typeof r.prompt === 'string' && r.prompt) {
+          return {
+            message: r.prompt,
+            notice: typeof r.notice === 'string' ? r.notice : undefined,
+            type: 'send'
+          }
+        }
         return out(`/${name} isn't wired into the clawcodex backend yet.`)
+      }
     }
   }
 
@@ -564,6 +639,13 @@ export class GatewayClient extends EventEmitter {
           } else {
             this.publish({ payload: { kind: 'status', text: String(msg.message ?? '') }, type: 'status.update' })
           }
+        } else if (msg.subtype === 'task_notification') {
+          // A background workflow/agent finished: render the completion banner
+          // as a persistent system transcript line ("[bg <id>] ✔ … completed").
+          this.publish({
+            payload: { task_id: String(msg.task_id ?? 'task'), text: String(msg.message ?? '') },
+            type: 'background.complete'
+          })
         }
         break
       case 'user': {

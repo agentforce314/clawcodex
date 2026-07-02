@@ -137,7 +137,7 @@ process.on('beforeExit', () => stopMemoryMonitor())
 
 const [ink, { App }, { logFrameEvent }, { trackFrame }] = await Promise.all([
   import('@clawcodex/ink'),
-  import('./app.js'),
+  import('./App.js'),
   import('./lib/perfPane.js'),
   import('./lib/fpsStore.js')
 ])
