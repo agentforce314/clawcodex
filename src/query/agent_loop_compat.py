@@ -303,6 +303,19 @@ async def run_query_as_agent_loop(
     abort_controller: AbortController | None = None,
     extended_thinking: bool | None = None,
     fallback_model: str | None = None,
+    # ch05 round-4 GAP A — the production compaction pipeline. When None
+    # (the pre-round-4 default) Phase-0 (tool-result budget/snip/
+    # microcompact/collapse/auto-compact) is inert and only the blocking
+    # guards + reactive recovery run. Callers build it via
+    # services.compact.pipeline.build_production_pipeline_config with a
+    # SESSION-scoped AutoCompactTracking.
+    pipeline_config: Any | None = None,
+    # TS querySource per surface: 'repl_main_thread' (interactive turns),
+    # 'sdk' (headless/print), 'agent:*' (subagents — ch08).
+    query_source: str = "repl_main_thread",
+    # ch05 round-4 GAP B — the '+500k' auto-continue budget parsed from
+    # the user's prompt (query/token_budget.parse_token_budget).
+    token_budget: int | None = None,
 ) -> AgentLoopRunResult:
     """Drive the canonical query() loop and adapt to AgentLoopResult.
 
@@ -365,6 +378,11 @@ async def run_query_as_agent_loop(
         # ch04 round-4 GAP B — capacity-relief model switch after repeated
         # 529s (see QueryParams.fallback_model).
         fallback_model=fallback_model,
+        # ch05 round-4 GAP A/B — production pipeline + surface label +
+        # +500k budget.
+        pipeline_config=pipeline_config,
+        query_source=query_source,
+        token_budget=token_budget,
         # C3b /thinking: None = auto (model-gated default), True/False =
         # explicit session override (TS ThinkingToggle semantics).
         extended_thinking=extended_thinking,

@@ -237,6 +237,29 @@ def run_headless(options: HeadlessOptions) -> int:
         logging.getLogger(__name__).debug(
             "headless trust check failed", exc_info=True,
         )
+    try:
+        from src.services.compact.autocompact import AutoCompactTracking
+
+        _run_compact_tracking = AutoCompactTracking()
+    except Exception:  # noqa: BLE001 — pipeline wiring must not block startup
+        _run_compact_tracking = None
+
+    def _build_turn_pipeline_config():
+        """ch05 round-4 GAP A — per-turn config (fresh fingerprints),
+        run-scoped tracking (the 3-consecutive-failures breaker)."""
+        if _run_compact_tracking is None:
+            return None
+        try:
+            from src.services.compact.pipeline import (
+                build_production_pipeline_config,
+            )
+
+            return build_production_pipeline_config(
+                provider, tool_context, _run_compact_tracking,
+            )
+        except Exception:  # noqa: BLE001 — pipeline is best-effort
+            return None
+
     if options.skip_permissions or effective_mode == "bypassPermissions":
         tool_context.allow_docs = True
         tool_context.permission_handler = None
@@ -374,6 +397,13 @@ def run_headless(options: HeadlessOptions) -> int:
                             system_prompt=effective_system_prompt,
                             max_turns=options.max_turns,
                             fallback_model=options.fallback_model,
+                            # ch05 round-4 GAP A — the production pipeline:
+                            # config rebuilt per turn (fresh read-file
+                            # fingerprints), tracking RUN-scoped (breaker
+                            # persists across stream-json turns); TS 'sdk'
+                            # label for the print path.
+                            pipeline_config=_build_turn_pipeline_config(),
+                            query_source="sdk",
                             on_event=on_event,
                             on_text_chunk=on_text_chunk,
                             on_message=_persist,
