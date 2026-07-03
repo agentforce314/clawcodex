@@ -271,6 +271,59 @@ describe('GatewayClient NDJSON adapter', () => {
     await expect(p).resolves.toEqual({ ok: false })
   })
 
+  // ── config.set model (the /model picker + typed /model) ───────────────────
+
+  it('parses the picker model grammar and answers with the switched value', async () => {
+    // The picker emits "<model> --provider <slug> [--global|--tui-session]";
+    // the gateway owns parsing it (hermes contract). The flags must never
+    // reach the backend as part of the model id.
+    const p = gw.request('config.set', { key: 'model', value: 'deepseek-v4-pro --provider deepseek --global' })
+    await replyToControl('set_model', { model: 'deepseek-v4-pro', ok: true })
+    await expect(p).resolves.toEqual({ value: 'deepseek-v4-pro' })
+
+    const req = seen.find(f => f.request?.subtype === 'set_model')!.request
+    expect(req.model).toBe('deepseek-v4-pro')
+    expect(req.provider).toBe('deepseek')
+  })
+
+  it('sends a bare typed /model value without a provider param', async () => {
+    const p = gw.request('config.set', { key: 'model', value: 'x-model --tui-session' })
+    await replyToControl('set_model', { model: 'x-model', ok: true })
+    await expect(p).resolves.toEqual({ value: 'x-model' })
+
+    const req = seen.find(f => f.request?.subtype === 'set_model')!.request
+    expect(req.model).toBe('x-model')
+    expect('provider' in req).toBe(false)
+  })
+
+  it('passes the backend model-switch warning through to the caller', async () => {
+    const p = gw.request('config.set', { key: 'model', value: 'mystery-model' })
+    await replyToControl('set_model', {
+      model: 'mystery-model',
+      ok: true,
+      warning: "'mystery-model' is not in deepseek's model list — the API may reject it"
+    })
+    await expect(p).resolves.toEqual({
+      value: 'mystery-model',
+      warning: "'mystery-model' is not in deepseek's model list — the API may reject it"
+    })
+  })
+
+  it('falls back to the requested model when an older backend acks without echoing it', async () => {
+    const p = gw.request('config.set', { key: 'model', value: 'x-model' })
+    await replyToControl('set_model', { ok: true })
+    await expect(p).resolves.toEqual({ value: 'x-model' })
+  })
+
+  it('rejects with the backend error when the model switch is refused', async () => {
+    const p = gw.request('config.set', { key: 'model', value: 'm --provider other' })
+    await replyToControl('set_model', {
+      error: "model 'm' expects provider 'other' but this session is on 'deepseek'",
+      ok: false
+    })
+    await expect(p).rejects.toThrow("model 'm' expects provider 'other' but this session is on 'deepseek'")
+  })
+
   it('surfaces the server rejection when /mode bypassPermissions is unavailable', async () => {
     // The server gates bypassPermissions on availability (same guard as the
     // Shift+Tab cycle) — the client must show the refusal, not pretend the

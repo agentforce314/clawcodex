@@ -119,7 +119,13 @@ export async function startPromptLiveSession({
   if (requestedModel) {
     const result = await rpc<ConfigSetResponse>('config.set', { key: 'model', session_id: sid, value: requestedModel })
 
-    if (!result?.value) {
+    // Null means rpc() already printed the backend's error — only a truthy
+    // reply that still lacks `value` is a malformed response worth reporting.
+    if (!result) {
+      return sid
+    }
+
+    if (!result.value) {
       sys('error: invalid response: model switch')
 
       return sid
