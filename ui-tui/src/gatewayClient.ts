@@ -108,13 +108,72 @@ function relativizePath(p: string): string {
  *  genuine numbered output is collapsed — errors (is_error) and Read's other
  *  acknowledgements (empty-file / file_unchanged warnings, PDF/image stubs)
  *  aren't `N\t…` text and pass through, so nothing is mislabeled or hidden. */
-function formatToolResult(name: string | undefined, result: string, isError = false): string {
-  if (!result || isError) {return result}
+// Per-tool result summaries, matching the original Claude Code transcript
+// (tools/*/UI.tsx): Read → "Read N lines", Grep/Glob → "Found N …", Bash →
+// first 3 stdout lines + overflow hint, errors → red "Error: …" capped at 10
+// lines. No "(… to expand)" hints: this TUI has no expand binding and the
+// raw result is not retained client-side — promising one would lie. A real
+// expand affordance (raw retention + binding) is a documented follow-up.
+const ERROR_RESULT_MAX_LINES = 10
+const BASH_RESULT_MAX_LINES = 3
 
-  if (name === 'Read' && /^\s*\d+\t/.test(result)) {
+export function formatToolResult(name: string | undefined, result: string, isError = false): string {
+  if (isError) {
+    let msg = (result ?? '').trim() || 'Tool execution failed'
+
+    if (!/^(Error|Cancelled): /.test(msg)) {
+      msg = `Error: ${msg}`
+    }
+
+    const lines = msg.split('\n')
+
+    if (lines.length > ERROR_RESULT_MAX_LINES) {
+      return [
+        ...lines.slice(0, ERROR_RESULT_MAX_LINES),
+        `… +${lines.length - ERROR_RESULT_MAX_LINES} lines`
+      ].join('\n')
+    }
+
+    return msg
+  }
+
+  if (!result) {return result}
+
+  if (name === 'Read' && /^\s*\d+[\t→ ]/.test(result)) {
     const n = result.split('\n').filter(l => l.length > 0).length
 
     return `Read ${n} line${n === 1 ? '' : 's'}`
+  }
+
+  if (name === 'Grep' || name === 'Glob') {
+    if (/^No (files|matches|content)/i.test(result.trim())) {
+      return `Found 0 ${name === 'Glob' ? 'files' : 'lines'}`
+    }
+
+    const n = result.split('\n').filter(l => l.length > 0).length
+    const noun = name === 'Glob' ? (n === 1 ? 'file' : 'files') : n === 1 ? 'line' : 'lines'
+
+    return `Found ${n} ${noun}`
+  }
+
+  if (name === 'Bash') {
+    const trimmed = result.replace(/\s+$/, '')
+
+    if (!trimmed) {
+      return '(No output)'
+    }
+
+    const lines = trimmed.split('\n')
+
+    // CC parity: when exactly one line overflows, show it instead of a hint.
+    if (lines.length <= BASH_RESULT_MAX_LINES + 1) {
+      return trimmed
+    }
+
+    return [
+      ...lines.slice(0, BASH_RESULT_MAX_LINES),
+      `… +${lines.length - BASH_RESULT_MAX_LINES} lines`
+    ].join('\n')
   }
 
   return result
@@ -867,16 +926,20 @@ export class GatewayClient extends EventEmitter {
               // A failed edit must not render a diff at all — neither the
               // real patch nor a fabricated one for an edit that never ran.
               const isError = Boolean(b.is_error)
+              const resultText = formatToolResult(
+                stored?.name,
+                typeof b.content === 'string' ? b.content : safeJson(b.content),
+                isError
+              )
               this.publish({
                 payload: {
+                  // error drives the ✗ mark (red bullet + red result rows);
+                  // without it a real failure renders as a green success.
+                  error: isError ? resultText : undefined,
                   inline_diff:
                     isError || structured || !stored ? undefined : this.editDiff(stored.name, stored.input),
                   name: stored?.name,
-                  result_text: formatToolResult(
-                    stored?.name,
-                    typeof b.content === 'string' ? b.content : safeJson(b.content),
-                    isError
-                  ),
+                  result_text: resultText,
                   structured_diff: isError ? undefined : structured,
                   tool_id: b.tool_use_id
                 },

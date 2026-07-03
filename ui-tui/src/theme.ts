@@ -26,6 +26,16 @@ export interface ThemeColors {
   statusCritical: string
   selectionBg: string
 
+  // Original Claude Code tokens (utils/theme.ts) consumed by the ported
+  // surfaces: busy-line shimmer, composer rules, permission-mode badges.
+  claudeShimmer: string
+  subtle: string
+  planMode: string
+  autoAccept: string
+  permission: string
+  bashBorder: string
+  promptBorder: string
+
   diffAdded: string
   diffRemoved: string
   diffAddedWord: string
@@ -261,8 +271,8 @@ export const DARK_THEME: Theme = {
     primary: '#D77757',
     accent: '#D77757',
     border: '#505050',
-    text: '#E6E6E6',
-    muted: '#BBBBBB',
+    text: '#FFFFFF',
+    muted: 'rgb(153,153,153)',
     completionBg: '#1f1f1f',
     completionCurrentBg: '#383838',
     completionMetaBg: '#1f1f1f',
@@ -274,7 +284,7 @@ export const DARK_THEME: Theme = {
     warn: '#FFC107',
 
     prompt: '#E6E6E6',
-    sessionLabel: '#BBBBBB',
+    sessionLabel: 'rgb(153,153,153)',
     sessionBorder: '#505050',
 
     statusBg: '#1a1a1a',
@@ -284,6 +294,14 @@ export const DARK_THEME: Theme = {
     statusBad: '#FF8C5A',
     statusCritical: '#FF6B80',
     selectionBg: '#373737',
+
+    claudeShimmer: 'rgb(235,159,127)',
+    subtle: 'rgb(80,80,80)',
+    planMode: 'rgb(72,150,140)',
+    autoAccept: 'rgb(175,135,255)',
+    permission: 'rgb(177,185,249)',
+    bashBorder: 'rgb(253,93,177)',
+    promptBorder: 'rgb(136,136,136)',
 
     // Original Claude Code dark-theme diff tokens (utils/theme.ts darkTheme):
     // dark green/red backgrounds, brighter word-level highlights.
@@ -309,7 +327,7 @@ export const LIGHT_THEME: Theme = {
     primary: '#D77757',
     accent: '#D77757',
     border: '#AFAFAF',
-    text: '#2B2B2B',
+    text: '#000000',
     muted: '#666666',
     completionBg: '#F5F5F5',
     completionCurrentBg: mix('#F5F5F5', '#D77757', 0.25),
@@ -332,6 +350,14 @@ export const LIGHT_THEME: Theme = {
     statusBad: '#C25A3A',
     statusCritical: '#AB2B3F',
     selectionBg: '#E0E0E0',
+
+    claudeShimmer: 'rgb(245,149,117)',
+    subtle: 'rgb(175,175,175)',
+    planMode: 'rgb(0,102,102)',
+    autoAccept: 'rgb(135,0,255)',
+    permission: 'rgb(87,105,247)',
+    bashBorder: 'rgb(255,0,135)',
+    promptBorder: 'rgb(153,153,153)',
 
     // Original Claude Code light-theme diff tokens (utils/theme.ts lightTheme).
     diffAdded: 'rgb(105,219,124)',
@@ -613,8 +639,8 @@ export function fromSkin(
         warn: c('ui_warn') ?? d.color.warn,
 
         prompt: c('prompt') ?? c('banner_text') ?? d.color.prompt,
-        sessionLabel: c('session_label') ?? muted,
-        sessionBorder: c('session_border') ?? muted,
+        sessionLabel: c('session_label') ?? (hasSkinColors ? muted : d.color.sessionLabel),
+        sessionBorder: c('session_border') ?? (hasSkinColors ? muted : d.color.sessionBorder),
 
         statusBg: d.color.statusBg,
         statusFg: d.color.statusFg,
@@ -626,6 +652,14 @@ export function fromSkin(
           c('selection_bg') ??
           c('completion_menu_current_bg') ??
           (hasSkinColors ? completionCurrentBg : d.color.selectionBg),
+
+        claudeShimmer: d.color.claudeShimmer,
+        subtle: d.color.subtle,
+        planMode: d.color.planMode,
+        autoAccept: d.color.autoAccept,
+        permission: d.color.permission,
+        bashBorder: d.color.bashBorder,
+        promptBorder: d.color.promptBorder,
 
         diffAdded: d.color.diffAdded,
         diffRemoved: d.color.diffRemoved,

@@ -122,9 +122,14 @@ export const estimatedMsgHeight = (
     const hasVisibleDetails = hasVisibleTools || hasVisibleThinking
 
     if (hasVisibleDetails) {
-      h +=
-        (hasVisibleTools ? (msg.tools?.length ?? 0) : 0) +
-        (hasVisibleThinking ? wrappedLines(msg.thinking ?? '', bodyWidth) : 0)
+      // Tool entries can carry multi-line details (Bash 3-line summaries,
+      // 10-line error caps) — count rendered rows, not entries, or off-screen
+      // estimates under-count and the scrollbar/topSpacer math jumps.
+      const toolRows = hasVisibleTools
+        ? (msg.tools ?? []).reduce((sum, line) => sum + line.split('\n').length, 0)
+        : 0
+
+      h += toolRows + (hasVisibleThinking ? wrappedLines(msg.thinking ?? '', bodyWidth) : 0)
 
       if (msg.role === 'assistant' && /\S/.test(msg.text)) {
         h += 2
