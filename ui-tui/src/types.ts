@@ -125,6 +125,10 @@ export interface ClarifyReq {
 }
 
 export interface Msg {
+  // Structured Edit/Write patch for kind:'diff' segments — rendered by
+  // DiffView (line numbers, word diff, ColorDiff). Text-only diff segments
+  // (legacy backends) fall back to the markdown ```diff path.
+  diffData?: MsgDiffData
   info?: SessionInfo
   kind?: 'diff' | 'intro' | 'panel' | 'slash' | 'trail'
   panelData?: PanelData
@@ -137,6 +141,22 @@ export interface Msg {
   todos?: TodoItem[]
   todoIncomplete?: boolean
   todoCollapsedByDefault?: boolean
+}
+
+/**
+ * Display data for a structured diff segment. Same shape as the gateway's
+ * StructuredDiffPayload plus the ingestion-time truncation bookkeeping
+ * (hunks are capped once when the segment is built so the render cache can
+ * key on stable hunk objects).
+ */
+export interface MsgDiffData {
+  content?: string
+  filePath: string
+  firstLine?: null | string
+  hunks: Array<{ lines: string[]; newLines: number; newStart: number; oldLines: number; oldStart: number }>
+  kind: 'create' | 'update'
+  /** Hunk lines dropped by the ingestion cap (renders as "… +N lines"). */
+  truncatedLines?: number
 }
 
 export type Role = 'assistant' | 'system' | 'tool' | 'user'

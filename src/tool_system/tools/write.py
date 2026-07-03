@@ -8,7 +8,7 @@ from ..build_tool import Tool, ValidationResult, build_tool
 from ..context import ToolContext
 from ..errors import ToolInputError, ToolPermissionError
 from ..protocol import ToolResult
-from ..diff_utils import unified_diff_hunks
+from ..diff_utils import convert_leading_tabs_to_spaces, unified_diff_hunks
 from src.permissions.types import (
     PermissionAllowDecision,
     PermissionAskDecision,
@@ -246,8 +246,8 @@ def _write_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
     context.mark_file_read(path)
-    before_lines = (original_file or "").splitlines(keepends=True)
-    after_lines = content.splitlines(keepends=True)
+    before_lines = convert_leading_tabs_to_spaces(original_file or "").splitlines(keepends=True)
+    after_lines = convert_leading_tabs_to_spaces(content).splitlines(keepends=True)
     diff_lines = list(
         difflib.unified_diff(
             before_lines,

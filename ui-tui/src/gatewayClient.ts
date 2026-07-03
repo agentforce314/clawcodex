@@ -21,7 +21,7 @@ import { readdirSync } from 'node:fs'
 import { resolve as pathResolve } from 'node:path'
 import { createInterface } from 'node:readline'
 
-import type { GatewayEvent } from './gatewayTypes.js'
+import type { GatewayEvent, PatchHunk, StructuredDiffPayload } from './gatewayTypes.js'
 import type { SessionInfo } from './types.js'
 
 const STARTUP_TIMEOUT_MS = 30_000
@@ -697,9 +697,43 @@ export class GatewayClient extends EventEmitter {
     }
   }
 
-  // Build a unified diff for Edit/Write tool results so the app renders a colored
-  // ```diff block (turnController.pushInlineDiffSegment). Other tools → undefined
-  // (just the result text shows).
+  // Rich Edit/Write result forwarded by the agent-server (`tool_use_result`
+  // on the user envelope, trimmed to the display shape). Shape-detected from
+  // the value itself — self-describing type/filePath/structuredPatch — so it
+  // works even when the tool_use bookkeeping is empty (mid-turn attach).
+  private structuredDiff(value: any): StructuredDiffPayload | undefined {
+    if (!value || typeof value !== 'object') {return undefined}
+    const kind = value.type
+
+    if (kind !== 'create' && kind !== 'update') {return undefined}
+
+    if (typeof value.filePath !== 'string' || !Array.isArray(value.structuredPatch)) {return undefined}
+    const hunks: PatchHunk[] = []
+
+    for (const h of value.structuredPatch) {
+      if (!h || typeof h !== 'object' || !Array.isArray(h.lines)) {return undefined}
+      hunks.push({
+        lines: h.lines.map(String),
+        newLines: Number(h.newLines ?? 0),
+        newStart: Number(h.newStart ?? 1),
+        oldLines: Number(h.oldLines ?? 0),
+        oldStart: Number(h.oldStart ?? 1)
+      })
+    }
+
+    return {
+      ...(typeof value.content === 'string' && { content: value.content }),
+      filePath: value.filePath,
+      ...(typeof value.firstLine === 'string' && { firstLine: value.firstLine }),
+      hunks,
+      kind
+    }
+  }
+
+  // Legacy fallback (agent-server predating tool_use_result): a fake unified
+  // diff from the Edit/Write tool *input* so the app can render at least a
+  // colored ```diff block. No line numbers/context — superseded by
+  // structuredDiff whenever the backend forwards the real patch.
   private editDiff(name: string, input: any): string | undefined {
     try {
       const file = String(input?.file_path ?? input?.path ?? '')
@@ -821,22 +855,34 @@ export class GatewayClient extends EventEmitter {
         const content = msg.message?.content
 
         if (Array.isArray(content)) {
+          // The backend builds one user message per tool result, so a
+          // message-level tool_use_result belongs to the lone block. Consume
+          // it on first attach so a hypothetical multi-block message can't
+          // pin the same patch onto every result.
+          let structured = this.structuredDiff(msg.tool_use_result)
+
           for (const b of content) {
             if (b?.type === 'tool_result') {
               const stored = this.toolInputs.get(String(b.tool_use_id))
+              // A failed edit must not render a diff at all — neither the
+              // real patch nor a fabricated one for an edit that never ran.
+              const isError = Boolean(b.is_error)
               this.publish({
                 payload: {
-                  inline_diff: stored ? this.editDiff(stored.name, stored.input) : undefined,
+                  inline_diff:
+                    isError || structured || !stored ? undefined : this.editDiff(stored.name, stored.input),
                   name: stored?.name,
                   result_text: formatToolResult(
                     stored?.name,
                     typeof b.content === 'string' ? b.content : safeJson(b.content),
-                    Boolean(b.is_error)
+                    isError
                   ),
+                  structured_diff: isError ? undefined : structured,
                   tool_id: b.tool_use_id
                 },
                 type: 'tool.complete'
               })
+              structured = undefined
               this.toolInputs.delete(String(b.tool_use_id))
             }
           }
