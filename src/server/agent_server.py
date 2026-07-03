@@ -2393,21 +2393,45 @@ def _filter_registry(registry, *, keep) -> None:
 
 
 def _display_tool_result(value: Any) -> dict | None:
-    """Trim a rich Edit/Write tool output for the wire (display data only).
+    """Trim a rich Edit/Write or WebSearch tool output for the wire (display
+    data only).
 
-    Recognizes the self-describing shape (``type``/``filePath``/
-    ``structuredPatch``) rather than a tool name so mid-turn clients can
-    render it without tool_use bookkeeping. Deliberate delta from real CC's
-    full-parity ``tool_use_result``: ``originalFile`` is dropped (the display
-    renderer never reads it) and update-type ``content`` (the full post-edit
-    file) is reduced to ``firstLine`` (language/shebang detection only; the
-    original uses the pre-edit first line — differs only when line 1 itself
-    changed); create-type keeps ``content`` for the file preview. Always
-    builds a new dict — ``value`` is shared with the in-memory message and
-    the persisted transcript.
+    Recognizes self-describing shapes rather than a tool name so mid-turn
+    clients can render without tool_use bookkeeping:
+
+    * Edit/Write (``type``/``filePath``/``structuredPatch``) — deliberate
+      delta from real CC's full-parity ``tool_use_result``: ``originalFile``
+      is dropped (the display renderer never reads it) and update-type
+      ``content`` (the full post-edit file) is reduced to ``firstLine``
+      (language/shebang detection only; the original uses the pre-edit first
+      line — differs only when line 1 itself changed); create-type keeps
+      ``content`` for the file preview.
+    * WebSearch (``query``/``results``/``duration_seconds``) — reduced to the
+      two numbers the original's one-line render needs (UI.tsx
+      renderToolResultMessage: "Did N searches in Xs"): ``searchCount`` per
+      getSearchSummary (non-string entries in ``results``) and
+      ``durationSeconds``. The result blob itself already travels as the
+      tool_result content.
+
+    Always builds a new dict — ``value`` is shared with the in-memory message
+    and the persisted transcript.
     """
     if not isinstance(value, dict):
         return None
+    if (
+        "type" not in value
+        and isinstance(value.get("query"), str)
+        and isinstance(value.get("results"), list)
+        and isinstance(value.get("duration_seconds"), (int, float))
+        and not isinstance(value.get("duration_seconds"), bool)
+    ):
+        return {
+            "type": "web_search",
+            "durationSeconds": float(value["duration_seconds"]),
+            "searchCount": sum(
+                1 for r in value["results"] if r is not None and not isinstance(r, str)
+            ),
+        }
     if value.get("type") not in ("create", "update"):
         return None
     if not isinstance(value.get("filePath"), str) or not isinstance(value.get("structuredPatch"), list):

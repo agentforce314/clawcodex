@@ -55,6 +55,39 @@ describe('formatToolResult', () => {
     expect(formatToolResult('Bash', '   \n')).toBe('(No output)')
   })
 
+  // Original CC (WebSearchTool/UI.tsx renderToolResultMessage) renders the
+  // whole result as ONE line — never the snippet blob.
+  it('summarizes WebSearch results as the original one-liner', () => {
+    const blob =
+      'Web search results for query: "obama news"\n\n' +
+      '**Title A** -- long snippet A (https://a.example)\n' +
+      '**Title B** -- long snippet B (https://b.example)\n\n' +
+      'Links: [{"title": "Title A", "url": "https://a.example"}]\n\n' +
+      'REMINDER: You MUST include the sources above in your response to the user using markdown hyperlinks.'
+
+    // Envelope present (agent-server tool_use_result): exact CC string.
+    expect(formatToolResult('WebSearch', blob, false, { durationSeconds: 24.4, searchCount: 1 })).toBe(
+      'Did 1 search in 24s'
+    )
+    expect(formatToolResult('WebSearch', blob, false, { durationSeconds: 0.532, searchCount: 2 })).toBe(
+      'Did 2 searches in 532ms'
+    )
+
+    // No envelope (older backend): count recovered from the blob, no time.
+    expect(formatToolResult('WebSearch', blob)).toBe('Did 1 search')
+    expect(formatToolResult('WebSearch', 'Web search results for query: "x"\n\nNo results found.')).toBe(
+      'Did 0 searches'
+    )
+
+    // Envelope without a matching stored tool name (mid-turn attach).
+    expect(formatToolResult(undefined, blob, false, { durationSeconds: 2, searchCount: 1 })).toBe(
+      'Did 1 search in 2s'
+    )
+
+    // Errors keep the error path — never a fake "Did N searches".
+    expect(formatToolResult('WebSearch', 'rate limited', true)).toBe('Error: rate limited')
+  })
+
   it('prefixes errors and caps them at 10 lines', () => {
     expect(formatToolResult('Bash', 'boom', true)).toBe('Error: boom')
     expect(formatToolResult('Bash', 'Error: already prefixed', true)).toBe('Error: already prefixed')
