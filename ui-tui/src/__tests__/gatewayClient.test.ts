@@ -222,6 +222,45 @@ describe('GatewayClient NDJSON adapter', () => {
     await expect(p).resolves.toEqual({ output: 'deep-research  [running]  (run: wf_1)', type: 'exec' })
   })
 
+  it('confirms the applied mode from the server reply on /mode', async () => {
+    const p = gw.request('slash.exec', { command: 'mode acceptEdits' })
+    await replyToControl('set_permission_mode', { mode: 'acceptEdits', ok: true })
+    await expect(p).resolves.toEqual({ output: 'Permission mode: acceptEdits.', type: 'exec' })
+  })
+
+  it('treats bare /mode as a no-op query, not an empty set', async () => {
+    // No arg → must NOT send an empty mode the server would reject; report
+    // unchanged instead (the pre-hardening behavior).
+    const p = gw.request('slash.exec', { command: 'mode' })
+    const r: any = await p
+    expect(r).toEqual({ output: 'Permission mode: (unchanged).', type: 'exec' })
+    // And it must not have hit the backend at all.
+    expect(stdinFrames().some(f => f.request?.subtype === 'set_permission_mode')).toBe(false)
+  })
+
+  it('reflects the server rejection through config.set permission_mode', async () => {
+    // The settings-panel write path must not report success when the server
+    // refuses (bypassPermissions gated on availability).
+    const p = gw.request('config.set', { key: 'permission_mode', value: 'bypassPermissions' })
+    await replyToControl('set_permission_mode', { error: 'not available', ok: false })
+    await expect(p).resolves.toEqual({ ok: false })
+  })
+
+  it('surfaces the server rejection when /mode bypassPermissions is unavailable', async () => {
+    // The server gates bypassPermissions on availability (same guard as the
+    // Shift+Tab cycle) — the client must show the refusal, not pretend the
+    // mode changed.
+    const p = gw.request('slash.exec', { command: 'mode bypassPermissions' })
+    await replyToControl('set_permission_mode', {
+      error: 'bypassPermissions is not available in this session',
+      ok: false
+    })
+    const r: any = await p
+    expect(r.type).toBe('exec')
+    expect(r.output).toContain('not available')
+    expect(r.output).not.toContain('Permission mode:')
+  })
+
   it('dispatches an unknown slash as a backend workflow command (send)', async () => {
     const p = gw.request('slash.exec', { command: 'deep-research what is love' })
     await replyToControl('workflow_command', {
