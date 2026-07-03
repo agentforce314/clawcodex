@@ -6,6 +6,8 @@ import type { ActiveTool, ActivityItem, Msg, SubagentProgress, TodoItem } from '
 
 const buildTurnState = (): TurnState => ({
   activity: [],
+  lastDeltaAt: null,
+  streamedChars: 0,
   outcome: '',
   reasoning: '',
   reasoningActive: false,
@@ -68,6 +70,10 @@ export const resetTurnState = () => $turnState.set(buildTurnState())
 
 export interface TurnState {
   activity: ActivityItem[]
+  // Busy-line telemetry: total streamed response chars this turn (token
+  // estimate = chars/4) and the last delta timestamp (stall detection).
+  lastDeltaAt: null | number
+  streamedChars: number
   outcome: string
   reasoning: string
   reasoningActive: boolean
