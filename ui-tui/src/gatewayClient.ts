@@ -228,7 +228,8 @@ const SLASHES: ReadonlyArray<{ desc: string; name: string }> = [
   { desc: 'Generate session insights', name: '/insights' },
   { desc: 'List or start background agents', name: '/bg' },
   { desc: 'Resume a past session', name: '/resume' },
-  { desc: 'Rename this session', name: '/rename' }
+  { desc: 'Rename this session', name: '/rename' },
+  { desc: 'Exit clawcodex', name: '/exit' }
 ]
 
 type Pending = { reject: (e: Error) => void; resolve: (v: unknown) => void }
