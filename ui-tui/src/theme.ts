@@ -49,6 +49,9 @@ export interface Theme {
   brand: ThemeBrand
   bannerLogo: string
   bannerHero: string
+  // Palette identity for renderers that pick their own colors by theme
+  // (ColorDiff's diff backgrounds + Monokai/GitHub syntax scopes).
+  mode: 'dark' | 'light'
 }
 
 // ── Color math ───────────────────────────────────────────────────────
@@ -282,17 +285,20 @@ export const DARK_THEME: Theme = {
     statusCritical: '#FF6B80',
     selectionBg: '#373737',
 
-    diffAdded: 'rgb(220,255,220)',
-    diffRemoved: 'rgb(255,220,220)',
-    diffAddedWord: 'rgb(36,138,61)',
-    diffRemovedWord: 'rgb(207,34,46)',
+    // Original Claude Code dark-theme diff tokens (utils/theme.ts darkTheme):
+    // dark green/red backgrounds, brighter word-level highlights.
+    diffAdded: 'rgb(34,92,43)',
+    diffRemoved: 'rgb(122,41,54)',
+    diffAddedWord: 'rgb(56,166,96)',
+    diffRemovedWord: 'rgb(179,89,107)',
     shellDollar: '#B1B9F9'
   },
 
   brand: BRAND,
 
   bannerLogo: '',
-  bannerHero: ''
+  bannerHero: '',
+  mode: 'dark'
 }
 
 // Light-terminal palette: darker golds/ambers that stay legible on white
@@ -327,17 +333,19 @@ export const LIGHT_THEME: Theme = {
     statusCritical: '#AB2B3F',
     selectionBg: '#E0E0E0',
 
-    diffAdded: 'rgb(200,240,200)',
-    diffRemoved: 'rgb(240,200,200)',
-    diffAddedWord: 'rgb(27,94,32)',
-    diffRemovedWord: 'rgb(183,28,28)',
+    // Original Claude Code light-theme diff tokens (utils/theme.ts lightTheme).
+    diffAdded: 'rgb(105,219,124)',
+    diffRemoved: 'rgb(255,168,180)',
+    diffAddedWord: 'rgb(47,157,68)',
+    diffRemovedWord: 'rgb(209,69,75)',
     shellDollar: '#5769F7'
   },
 
   brand: BRAND,
 
   bannerLogo: '',
-  bannerHero: ''
+  bannerHero: '',
+  mode: 'light'
 }
 
 const TRUE_RE = /^(?:1|true|yes|on)$/
@@ -637,7 +645,8 @@ export function fromSkin(
       },
 
       bannerLogo,
-      bannerHero
+      bannerHero,
+      mode: d.mode
     },
     process.env,
     DEFAULT_LIGHT_MODE

@@ -817,15 +817,18 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
                 )
               }
 
-              const add = isDiff && l.startsWith('+')
-              const del = isDiff && l.startsWith('-')
-              const hunk = isDiff && l.startsWith('@@')
+              // ---/+++/@@ are patch metadata, not removed/added code — dim
+              // them instead of painting a background (the original's diff
+              // rendering never shows them as content rows).
+              const meta = isDiff && (l.startsWith('@@') || l.startsWith('---') || l.startsWith('+++'))
+              const add = isDiff && !meta && l.startsWith('+')
+              const del = isDiff && !meta && l.startsWith('-')
 
               return (
                 <Text
                   backgroundColor={add ? t.color.diffAdded : del ? t.color.diffRemoved : undefined}
-                  color={add ? t.color.diffAddedWord : del ? t.color.diffRemovedWord : hunk ? t.color.muted : undefined}
-                  dimColor={isDiff && !add && !del && !hunk && l.startsWith(' ')}
+                  color={meta ? t.color.muted : undefined}
+                  dimColor={isDiff && !add && !del && (meta || l.startsWith(' '))}
                   key={j}
                 >
                   {l}

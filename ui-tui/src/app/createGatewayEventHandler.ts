@@ -721,12 +721,26 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           flushAbandonedClarify()
         }
 
+        // Both diff flavors honor the same user setting; disabled → the tool
+        // completes as a plain trail line.
+        const inlineDiffsEnabled = getUiState().inlineDiffs
+
+        const structuredDiff = inlineDiffsEnabled ? ev.payload.structured_diff : undefined
+
         const inlineDiffText =
-          ev.payload.inline_diff && getUiState().inlineDiffs ? stripAnsi(String(ev.payload.inline_diff)).trim() : ''
+          ev.payload.inline_diff && inlineDiffsEnabled ? stripAnsi(String(ev.payload.inline_diff)).trim() : ''
 
         const resultText = ev.payload.result_text ? stripAnsi(String(ev.payload.result_text)) : undefined
 
-        if (inlineDiffText) {
+        if (structuredDiff) {
+          turnController.recordStructuredDiffToolComplete(
+            structuredDiff,
+            ev.payload.tool_id,
+            ev.payload.name,
+            ev.payload.error,
+            ev.payload.duration_s
+          )
+        } else if (inlineDiffText) {
           turnController.recordInlineDiffToolComplete(
             inlineDiffText,
             ev.payload.tool_id,
