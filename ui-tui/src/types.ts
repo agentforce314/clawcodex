@@ -141,6 +141,10 @@ export interface Msg {
   thinkingTokens?: number
   toolTokens?: number
   tools?: string[]
+  // Verbose siblings for `tools`, lockstep by index ('' = no verbose form).
+  // Rendered instead of the compact line when tool details are expanded
+  // (ctrl+o / /details expanded). Absent on resumed/legacy messages.
+  toolsVerbose?: string[]
   todos?: TodoItem[]
   todoIncomplete?: boolean
   todoCollapsedByDefault?: boolean

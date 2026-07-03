@@ -32,19 +32,19 @@ describe('formatToolResult', () => {
     expect(formatToolResult('Read', '1\tfoo\n')).toBe('Read 1 line')
   })
 
-  it('summarizes Grep results as found-lines', () => {
-    expect(formatToolResult('Grep', 'a.ts:1: x\na.ts:9: y')).toBe('Found 2 lines')
+  it('summarizes Grep results as found-lines with the expand hint', () => {
+    expect(formatToolResult('Grep', 'a.ts:1: x\na.ts:9: y')).toBe('Found 2 lines (ctrl+o to expand)')
     expect(formatToolResult('Grep', 'No matches found')).toBe('Found 0 lines')
   })
 
   it('summarizes Glob results as found-files', () => {
-    expect(formatToolResult('Glob', '/ws/a.ts')).toBe('Found 1 file')
+    expect(formatToolResult('Glob', '/ws/a.ts')).toBe('Found 1 file (ctrl+o to expand)')
   })
 
   it('caps Bash output at 3 lines with an overflow hint', () => {
     const out = formatToolResult('Bash', 'l1\nl2\nl3\nl4\nl5')
 
-    expect(out).toBe('l1\nl2\nl3\n… +2 lines')
+    expect(out).toBe('l1\nl2\nl3\n… +2 lines (ctrl+o to expand)')
   })
 
   it('shows the 4th Bash line instead of a one-line hint (CC parity)', () => {
@@ -65,7 +65,7 @@ describe('formatToolResult', () => {
 
     expect(lines).toHaveLength(11)
     expect(lines[0]).toBe('Error: e0')
-    expect(lines[10]).toBe('… +4 lines')
+    expect(lines[10]).toBe('… +4 lines (ctrl+o to see all)')
   })
 })
 

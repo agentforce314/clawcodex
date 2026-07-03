@@ -26,7 +26,17 @@ export const messageHeightKey = (msg: Msg) => {
   return [
     msg.role,
     msg.kind ?? '',
-    hashText([msg.text, msg.thinking ?? '', msg.tools?.join('\n') ?? '', todoSig, panelSig, introSig].join('\0'))
+    hashText(
+      [
+        msg.text,
+        msg.thinking ?? '',
+        msg.tools?.join('\n') ?? '',
+        msg.toolsVerbose?.join('\n') ?? '',
+        todoSig,
+        panelSig,
+        introSig
+      ].join('\0')
+    )
   ].join(':')
 }
 
@@ -74,6 +84,7 @@ export const estimatedMsgHeight = (
     details,
     leadGap = false,
     thinkingVisible = details,
+    toolsExpanded = false,
     toolsVisible = details,
     userPrompt = '',
     withSeparator = false
@@ -82,6 +93,7 @@ export const estimatedMsgHeight = (
     details: boolean
     leadGap?: boolean
     thinkingVisible?: boolean
+    toolsExpanded?: boolean
     toolsVisible?: boolean
     userPrompt?: string
     withSeparator?: boolean
@@ -126,7 +138,12 @@ export const estimatedMsgHeight = (
       // 10-line error caps) — count rendered rows, not entries, or off-screen
       // estimates under-count and the scrollbar/topSpacer math jumps.
       const toolRows = hasVisibleTools
-        ? (msg.tools ?? []).reduce((sum, line) => sum + line.split('\n').length, 0)
+        ? (msg.tools ?? []).reduce((sum, line, i) => {
+            // Expanded details render the verbose sibling when present.
+            const rendered = toolsExpanded && msg.toolsVerbose?.[i] ? msg.toolsVerbose[i]! : line
+
+            return sum + rendered.split('\n').length
+          }, 0)
         : 0
 
       h += toolRows + (hasVisibleThinking ? wrappedLines(msg.thinking ?? '', bodyWidth) : 0)

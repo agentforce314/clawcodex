@@ -155,7 +155,7 @@ describe('GatewayClient NDJSON adapter', () => {
     expect(p.result_text).toBe('hi')
 
     const long = await runTool('t2', 'Bash', { command: 'seq 9' }, '1\n2\n3\n4\n5\n6')
-    expect(long.result_text).toBe('1\n2\n3\n… +3 lines')
+    expect(long.result_text).toBe('1\n2\n3\n… +3 lines (ctrl+o to expand)')
   })
 
   it('carries error on tool.complete for failed tools (drives the red ✗ path)', async () => {
