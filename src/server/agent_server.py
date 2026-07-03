@@ -1610,7 +1610,8 @@ class _AgentSession:
 
         if self.init_error is not None:
             self._emit(_result_message(
-                self.session_id, subtype="error", num_turns=0,
+                self.session_id,
+                permission_mode=_current_mode(self.tool_context, self.config.permission_mode), subtype="error", num_turns=0,
                 result=self.init_error, is_error=True, error=self.init_error,
             ))
             return
@@ -1648,7 +1649,8 @@ class _AgentSession:
                     level="warning",
                 ))
                 self._emit(_result_message(
-                    self.session_id, subtype="success", num_turns=0,
+                    self.session_id,
+                    permission_mode=_current_mode(self.tool_context, self.config.permission_mode), subtype="success", num_turns=0,
                     result="", is_error=False, duration_ms=0,
                 ))
                 return
@@ -1660,7 +1662,8 @@ class _AgentSession:
                     f"Operation stopped by hook: {ups.prevent_reason}"
                 )
                 self._emit(_result_message(
-                    self.session_id, subtype="success", num_turns=0,
+                    self.session_id,
+                    permission_mode=_current_mode(self.tool_context, self.config.permission_mode), subtype="success", num_turns=0,
                     result="", is_error=False, duration_ms=0,
                 ))
                 return
@@ -1771,7 +1774,8 @@ class _AgentSession:
             ))
         except AbortError:
             self._emit(_result_message(
-                self.session_id, subtype="cancelled", num_turns=0,
+                self.session_id,
+                permission_mode=_current_mode(self.tool_context, self.config.permission_mode), subtype="cancelled", num_turns=0,
                 result="", is_error=False,
                 duration_ms=int((time.monotonic() - start) * 1000),
             ))
@@ -1779,7 +1783,8 @@ class _AgentSession:
         except Exception as exc:  # noqa: BLE001 - one bad turn must not kill the session
             logger.exception("[agent-server] turn failed")
             self._emit(_result_message(
-                self.session_id, subtype="error", num_turns=0,
+                self.session_id,
+                permission_mode=_current_mode(self.tool_context, self.config.permission_mode), subtype="error", num_turns=0,
                 result=str(exc), is_error=True, error=str(exc),
                 duration_ms=int((time.monotonic() - start) * 1000),
             ))
@@ -1803,6 +1808,7 @@ class _AgentSession:
                 _cost = 0.0
         self._emit(_result_message(
             self.session_id,
+            permission_mode=_current_mode(self.tool_context, self.config.permission_mode),
             subtype="success",
             num_turns=result.num_turns,
             result=result.response_text,
@@ -2395,6 +2401,7 @@ def _result_message(
     error: str | None = None,
     duration_ms: int = 0,
     total_cost_usd: float = 0.0,
+    permission_mode: str | None = None,
 ) -> dict:
     payload: dict[str, Any] = {
         "type": "result",
@@ -2409,6 +2416,12 @@ def _result_message(
     }
     if error is not None:
         payload["error"] = error
+    # Server-side mode flips (plan approval, "accept edits for this session")
+    # emit no dedicated event — the end-of-turn result refreshes the client's
+    # permission-mode badge instead (at most one turn stale, and mode changes
+    # only bind next turn anyway).
+    if permission_mode is not None:
+        payload["permission_mode"] = permission_mode
     return payload
 
 

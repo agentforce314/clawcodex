@@ -724,6 +724,7 @@ export type GatewayEvent =
     }
   | { payload: { request_id: string }; session_id?: string; type: 'sudo.request' }
   | { payload: { env_var: string; prompt: string; request_id: string }; session_id?: string; type: 'secret.request' }
+  | { payload: { mode: string }; session_id?: string; type: 'permission.mode' }
   | { payload: { task_id: string; text: string }; session_id?: string; type: 'background.complete' }
   | { payload?: { text?: string }; session_id?: string; type: 'review.summary' }
   | { payload: SubagentEventPayload; session_id?: string; type: 'subagent.spawn_requested' }
@@ -734,7 +735,7 @@ export type GatewayEvent =
   | { payload: SubagentEventPayload; session_id?: string; type: 'subagent.complete' }
   | { payload: { rendered?: string; text?: string }; session_id?: string; type: 'message.delta' }
   | {
-      payload?: { reasoning?: string; rendered?: string; text?: string; usage?: Usage }
+      payload?: { permission_mode?: string; reasoning?: string; rendered?: string; text?: string; usage?: Usage }
       session_id?: string
       type: 'message.complete'
     }
