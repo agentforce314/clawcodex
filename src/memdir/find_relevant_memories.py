@@ -27,6 +27,40 @@ from .memory_scan import MemoryHeader, format_memory_manifest, scan_memory_files
 
 logger = logging.getLogger(__name__)
 
+
+def _resolve_recall_model(provider: Any) -> str | None:
+    """R5 round-5 (ch11 #2) — the model for the memory-selector side-query.
+
+    TS pins the selector to a small default (``getDefaultSonnetModel``) so a
+    turn on an expensive session model doesn't pay full price for the recall
+    call. The multi-provider port wires the ``small_fast_model`` setting —
+    BUT its shipped default is an Anthropic id (``claude-3-5-haiku-…``,
+    settings/constants.py), which is only valid on the first-party Anthropic
+    endpoint. Passing it to a DeepSeek/OpenAI/Minimax session would 400 and
+    (since recall swallows errors) silently kill recall every turn (critic
+    M1). So the pin applies ONLY when the SESSION provider is a first-party
+    ``AnthropicProvider``; every other provider (incl. Minimax, which runs
+    the Anthropic SDK against a different endpoint) falls back to the session
+    model. Returns None to signal that fallback. Never raises.
+
+    (A future ``small_fast_model_provider`` pairing — mirroring
+    ``advisor_model``/``advisor_provider`` — would let non-Anthropic sessions
+    pin their own cheap recall model; deferred.)"""
+    try:
+        from src.providers.anthropic_provider import AnthropicProvider
+
+        # Minimax subclasses BaseProvider (not AnthropicProvider) and targets
+        # its own endpoint, so isinstance correctly excludes it.
+        if not isinstance(provider, AnthropicProvider):
+            return None
+        from src.settings.settings import get_settings
+
+        model = (getattr(get_settings(), "small_fast_model", "") or "").strip()
+        return model or None
+    except Exception:  # noqa: BLE001 — a settings/import failure must not block recall
+        return None
+
+
 __all__ = [
     "RelevantMemory",
     "MAX_RELEVANT_MEMORIES",
@@ -114,16 +148,22 @@ async def _select_with_provider(
             "memdir selector: provider lacks chat_async; skipping selection"
         )
         return []
+    # R5 (ch11 #2) — run the selector on the cheap small_fast_model when
+    # configured, so recall doesn't pay the (Opus/DeepSeek) session-model
+    # price every turn. Omit `model` entirely when unset → session model.
+    recall_kwargs: dict[str, Any] = {
+        "system": _SELECT_SYSTEM_PROMPT,
+        "max_tokens": 256,
+        "output_format": {
+            "type": "json_schema",
+            "schema": _SELECTOR_JSON_SCHEMA,
+        },
+    }
+    recall_model = _resolve_recall_model(provider)
+    if recall_model:
+        recall_kwargs["model"] = recall_model
     try:
-        response = await provider.chat_async(
-            messages,
-            system=_SELECT_SYSTEM_PROMPT,
-            max_tokens=256,
-            output_format={
-                "type": "json_schema",
-                "schema": _SELECTOR_JSON_SCHEMA,
-            },
-        )
+        response = await provider.chat_async(messages, **recall_kwargs)
     except Exception as exc:
         logger.debug("memdir selector failed: %s", exc)
         return []
