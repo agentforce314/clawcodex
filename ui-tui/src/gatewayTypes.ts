@@ -22,6 +22,31 @@ export interface GatewayTranscriptMessage {
   text?: string
 }
 
+// ── Structured tool diffs ────────────────────────────────────────────
+
+/** jsdiff StructuredPatchHunk: lines keep their +/-/space marker, no terminators. */
+export interface PatchHunk {
+  lines: string[]
+  newLines: number
+  newStart: number
+  oldLines: number
+  oldStart: number
+}
+
+/**
+ * Rich Edit/Write result forwarded by the agent-server as `tool_use_result`
+ * on the user envelope (trimmed display shape — see _display_tool_result).
+ * `content` is present for create-type results (file preview); `firstLine`
+ * for update-type (language/shebang detection).
+ */
+export interface StructuredDiffPayload {
+  content?: string
+  filePath: string
+  firstLine?: null | string
+  hunks: PatchHunk[]
+  kind: 'create' | 'update'
+}
+
 // ── Commands / completion ────────────────────────────────────────────
 
 export interface CommandsCatalogResponse {
@@ -672,6 +697,7 @@ export type GatewayEvent =
         inline_diff?: string
         name?: string
         result_text?: string
+        structured_diff?: StructuredDiffPayload
         summary?: string
         tool_id: string
         todos?: unknown[]

@@ -10,7 +10,7 @@ from typing import Any
 
 from ..build_tool import Tool, build_tool
 from ..context import ToolContext
-from ..diff_utils import unified_diff_hunks
+from ..diff_utils import convert_leading_tabs_to_spaces, unified_diff_hunks
 from .read import _backfill_read_edit_path  # shared file_path expander
 from ..errors import ToolInputError, ToolPermissionError
 from ..protocol import ToolResult
@@ -311,8 +311,8 @@ def _edit_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
     path.write_text(updated, encoding="utf-8")
     context.mark_file_read(path)
 
-    before_lines = original.splitlines(keepends=True)
-    after_lines = updated.splitlines(keepends=True)
+    before_lines = convert_leading_tabs_to_spaces(original).splitlines(keepends=True)
+    after_lines = convert_leading_tabs_to_spaces(updated).splitlines(keepends=True)
     diff_lines = list(
         difflib.unified_diff(
             before_lines,
