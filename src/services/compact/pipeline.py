@@ -250,7 +250,31 @@ class CompressionPipeline:
                     total_saved += result.tokens_saved
                     layers_applied.append("autocompact")
                     autocompact_result = result
-                    logger.debug("Layer 5 (autocompact): saved %d tokens", result.tokens_saved)
+                    # R6 — APPLY the compaction to the working messages. This
+                    # was the bug: the pipeline computed the summary (an LLM
+                    # call, cost incurred) but returned the UNCOMPACTED
+                    # current_messages, so query() kept the full conversation
+                    # and auto-compact re-fired every turn without ever
+                    # shrinking the context — the exact opposite of what a
+                    # long task needs. Assemble the compacted conversation the
+                    # way the manual /compact path does (compact_service/
+                    # service.py:101-104): the summary (a USER message — safe
+                    # as the first message) + kept recent messages + the
+                    # post-compact attachments (file-state a coding agent needs
+                    # after compaction). The system boundary_marker is
+                    # bookkeeping for the persisted conversation and is omitted
+                    # from the working set (as the reactive path does), so the
+                    # working messages stay API-clean.
+                    n_before = len(current_messages)
+                    current_messages = (
+                        list(result.summary_messages)
+                        + list(result.messages_to_keep)
+                        + list(result.attachments)
+                    )
+                    logger.debug(
+                        "Layer 5 (autocompact): saved %d tokens, %d -> %d msgs",
+                        result.tokens_saved, n_before, len(current_messages),
+                    )
             except Exception:
                 logger.warning("Layer 5 (autocompact) failed", exc_info=True)
 
