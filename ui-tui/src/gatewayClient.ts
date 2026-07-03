@@ -46,8 +46,9 @@ function safeJson(v: unknown): string {
   }
 }
 
-/** ch13 round-4 — a human label for a permission suggestion rule, e.g.
- *  `Bash(ls:*)`, so the "Always allow" option shows what it will persist. */
+/** A human label for a permission suggestion rule, e.g. `Bash(ls:*)` (or just
+ *  the tool name for a content-less rule), shown on the "don't ask again"
+ *  option so the user sees what it will persist. */
 export function describeSuggestionRule(suggestion: any): string | null {
   const rule = suggestion?.rules?.[0]
   if (!rule || !rule.tool_name) return null
@@ -786,6 +787,10 @@ export class GatewayClient extends EventEmitter {
           command: approvalCommandText(req.input),
           rule: ruleContent,
           rule_label: describeSuggestionRule(suggestions[0]),
+          // Authoritative per-tool wording for the persist option (e.g. "allow
+          // all edits during this session"); the box uses it verbatim for
+          // non-Bash tools instead of a generic "don't ask again for <tool>".
+          session_label: typeof req.session_label === 'string' ? req.session_label : null,
           tool_name: String(req.tool_name ?? 'tool')
         },
         type: 'approval.request'

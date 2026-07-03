@@ -690,6 +690,7 @@ export type GatewayEvent =
         command: string
         rule?: null | string
         rule_label?: null | string
+        session_label?: null | string
         tool_name: string
       }
       session_id?: string

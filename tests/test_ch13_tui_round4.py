@@ -14,7 +14,40 @@ from unittest.mock import MagicMock
 from src.server.agent_server import (
     _deserialize_permission_update,
     _serialize_permission_update,
+    _session_option_label_safe,
 )
+
+
+class TestSessionOptionLabel(unittest.TestCase):
+    """R6 — the can_use_tool request carries the authoritative per-tool label
+    so the box states the real grant scope (not a generic "for <tool>")."""
+
+    def test_file_edit_label(self):
+        from src.permissions.updates import default_session_suggestions
+
+        req = MagicMock()
+        req.suggestions = default_session_suggestions("Write", {"file_path": "/a/b"})
+        req.tool_name = "Write"
+        req.tool_input = {"file_path": "/a/b"}
+        # A file edit grants session accept-edits mode, not a per-Write rule.
+        self.assertEqual(
+            _session_option_label_safe(req), "allow all edits during this session"
+        )
+
+    def test_bash_label_and_safe_on_garbage(self):
+        from src.permissions.bash_suggestions import suggestions_for_bash_command
+
+        req = MagicMock()
+        req.suggestions = suggestions_for_bash_command("git status")
+        req.tool_name = "Bash"
+        req.tool_input = {"command": "git status"}
+        label = _session_option_label_safe(req)
+        self.assertIsNotNone(label)
+        self.assertIn("git status", label)
+        # Never raises — a malformed request yields None, not an exception.
+        broken = MagicMock()
+        broken.suggestions = object()  # not iterable
+        self.assertIsNone(_session_option_label_safe(broken))
 
 
 class TestPermissionUpdateWire(unittest.TestCase):
