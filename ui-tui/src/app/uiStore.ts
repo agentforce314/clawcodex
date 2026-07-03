@@ -27,7 +27,7 @@ const buildUiState = (): UiState => ({
   showReasoning: false,
   sid: null,
   status: 'starting clawcodex…',
-  statusBar: 'top',
+  statusBar: 'off',
   streaming: true,
   theme: DEFAULT_THEME,
   usage: ZERO
