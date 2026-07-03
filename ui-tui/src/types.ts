@@ -103,6 +103,10 @@ export interface ApprovalReq {
   rule?: string
   // Display form of the rule for the option label, e.g. "Bash(git status:*)".
   ruleLabel?: string
+  // Authoritative per-tool wording for the persist option, rendered as
+  // "Yes, <sessionLabel>" (e.g. "Yes, allow all edits during this session").
+  // Used for non-Bash tools; Bash uses the editable rule instead.
+  sessionLabel?: string
 }
 
 export interface ConfirmReq {

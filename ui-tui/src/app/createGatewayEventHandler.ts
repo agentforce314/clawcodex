@@ -762,6 +762,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         const allowPermanent = ev.payload.allow_permanent !== false
         const rule = ev.payload.rule
         const ruleLabel = ev.payload.rule_label
+        const sessionLabel = ev.payload.session_label
 
         patchOverlayState({
           approval: {
@@ -769,6 +770,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
             command: String(ev.payload.command ?? ''),
             rule: rule ? String(rule) : undefined,
             ruleLabel: ruleLabel ? String(ruleLabel) : undefined,
+            sessionLabel: sessionLabel ? String(sessionLabel) : undefined,
             toolName: String(ev.payload.tool_name ?? 'tool')
           }
         })
