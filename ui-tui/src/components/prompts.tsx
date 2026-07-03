@@ -10,10 +10,11 @@ import { TextInput } from './textInput.js'
 type ApprovalChoice = 'always' | 'deny' | 'once'
 
 // Original Claude Code's 3-option model: Yes / Yes-and-don't-ask-again / No.
-// "always" persists the (editable) rule to disk so it survives across sessions.
+// "always" sends the backend's suggestion, which persists at its own intended
+// scope (Bash → localSettings/disk; file edits → session acceptEdits; etc.).
 const APPROVAL_OPTS: readonly ApprovalChoice[] = ['once', 'always', 'deny']
-// No persistable rule (tirith warning, or backend sent no suggestion) → drop
-// the "don't ask again" option.
+// No suggestion at all (tirith warning, allowPermanent=false) → drop the
+// "don't ask again" option.
 const APPROVAL_OPTS_NO_ALWAYS: readonly ApprovalChoice[] = ['once', 'deny']
 const LABELS: Record<ApprovalChoice, string> = {
   always: "Yes, and don't ask again for",
@@ -74,7 +75,12 @@ export function approvalAction(
 }
 
 export function ApprovalPrompt({ cols = 80, onChoice, req, t }: ApprovalPromptProps) {
-  const opts = req.allowPermanent === false || !req.rule ? APPROVAL_OPTS_NO_ALWAYS : APPROVAL_OPTS
+  // Offer the persist ("don't ask again") option whenever the backend sent a
+  // suggestion (allowPermanent) — that includes non-Bash tools (Write→accept
+  // edits this session, Read/WebFetch→content-less allow), not just Bash. Only
+  // Bash carries an editable rule (req.rule); the others show a static label.
+  const opts = req.allowPermanent === false ? APPROVAL_OPTS_NO_ALWAYS : APPROVAL_OPTS
+  const editable = !!req.rule
   const [sel, setSel] = useState(0)
   // The editable grant rule (e.g. "git status:*"), which the user can widen to
   // "git:*" so one grant covers the family. Seeded from the backend suggestion.
@@ -88,8 +94,9 @@ export function ApprovalPrompt({ cols = 80, onChoice, req, t }: ApprovalPromptPr
   // Navigation — disabled while the rule field is focused (TextInput owns input).
   useInput(
     (ch, key) => {
-      // On the "don't ask again" row, open the editable rule field.
-      if (opts[sel] === 'always' && (key.tab || key.rightArrow || ch === 'e')) {
+      // On the "don't ask again" row, open the editable rule field (Bash only —
+      // other tools have no editable rule).
+      if (editable && opts[sel] === 'always' && (key.tab || key.rightArrow || ch === 'e')) {
         setEditing(true)
         return
       }
@@ -102,8 +109,8 @@ export function ApprovalPrompt({ cols = 80, onChoice, req, t }: ApprovalPromptPr
   // While editing, Esc cancels the edit (back to the option list), not deny.
   useInput((_ch, key) => { if (key.escape) setEditing(false) }, { isActive: editing })
 
-  // Border + paddingX ≈ 4 cols. Show the real command, wrapped, not clipped.
-  const innerWidth = Math.max(20, cols - 4)
+  // Border (2) + paddingX (2) + the command box's paddingLeft (1) = 5 cols.
+  const innerWidth = Math.max(20, cols - 5)
   const rawLines = req.command
     .split('\n')
     .flatMap(line => wrapAnsi(line, innerWidth, { hard: true, trim: false }).split('\n'))
@@ -129,13 +136,17 @@ export function ApprovalPrompt({ cols = 80, onChoice, req, t }: ApprovalPromptPr
         const isSel = sel === i
         const head = `${isSel ? '❯ ' : '  '}${i + 1}. `
         if (o === 'always') {
+          const label = `${head}${LABELS.always} `
+          // Bash edits the rule inline; other tools show a static scope label
+          // (rule label, else the tool name — "…don't ask again for Write").
+          const staticRule = ruleText || req.ruleLabel || req.toolName
           return (
             <Box key={o}>
-              <Text bold={isSel} color={isSel ? t.color.warn : t.color.muted}>{head}{LABELS.always} </Text>
-              {editing ? (
-                <TextInput columns={innerWidth} focus onChange={setRuleText} onSubmit={() => confirm('always')} value={ruleText} />
+              <Text bold={isSel} color={isSel ? t.color.warn : t.color.muted}>{label}</Text>
+              {editing && editable ? (
+                <TextInput columns={Math.max(12, innerWidth - label.length)} focus onChange={setRuleText} onSubmit={() => confirm('always')} value={ruleText} />
               ) : (
-                <Text bold={isSel} color={isSel ? t.color.text : t.color.muted}>{ruleText || req.ruleLabel || ''}</Text>
+                <Text bold={isSel} color={isSel ? t.color.text : t.color.muted}>{staticRule}</Text>
               )}
             </Box>
           )
@@ -148,7 +159,7 @@ export function ApprovalPrompt({ cols = 80, onChoice, req, t }: ApprovalPromptPr
       <Text color={t.color.muted}>
         {editing
           ? 'Enter to allow · Esc to cancel edit'
-          : `↑/↓ select · Enter confirm${alwaysIdx >= 0 ? ' · e edit rule' : ''} · Esc deny`}
+          : `↑/↓ select · Enter confirm${alwaysIdx >= 0 && editable ? ' · e edit rule' : ''} · Esc deny`}
       </Text>
     </Box>
   )

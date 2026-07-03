@@ -60,7 +60,9 @@ export function describeSuggestionRule(suggestion: any): string | null {
 export function approvalCommandText(input: unknown): string {
   if (input && typeof input === 'object') {
     const o = input as Record<string, unknown>
-    for (const key of ['command', 'file_path', 'path', 'url', 'pattern', 'prompt']) {
+    // pattern before path so a Grep/Glob box shows the search pattern (matching
+    // the tool trail label), not the directory it searched.
+    for (const key of ['command', 'file_path', 'url', 'pattern', 'path']) {
       if (typeof o[key] === 'string' && o[key]) return o[key] as string
     }
   }
@@ -383,18 +385,21 @@ export class GatewayClient extends EventEmitter {
         this.pendingApproval = null
         if (ap) {
           const deny = p.choice === 'deny'
-          // 'always' = "don't ask again": persist the (possibly user-edited)
-          // rule to localSettings so it survives across sessions, like the
-          // original. The box lets the user widen the rule (git status:* →
-          // git:*); p.rule carries that edit. 'once' sends no rule.
+          // 'always' = "don't ask again": send the backend's suggestion AS-IS so
+          // its intended SCOPE is preserved — Bash's is a localSettings rule
+          // (survives sessions); a file-edit's is a session-scoped acceptEdits
+          // setMode; a read's is a content-less allow. The ONLY mutation is the
+          // user's optional edit of a Bash rule (git status:* → git:*), which
+          // rewrites just that rule's content and nothing else. 'once' → no rule.
           let chosenUpdates: any[] = []
           const first = ap.suggestions?.[0]
           if (!deny && first && p.choice === 'always') {
-            const baseRule = first.rules?.[0] ?? {}
-            const editedContent =
-              typeof p.rule === 'string' && p.rule.trim() ? p.rule.trim() : baseRule.rule_content
+            const edited = typeof p.rule === 'string' ? p.rule.trim() : ''
+            const baseRule = Array.isArray(first.rules) ? first.rules[0] : undefined
             chosenUpdates = [
-              { ...first, destination: 'localSettings', rules: [{ ...baseRule, rule_content: editedContent }] }
+              edited && baseRule?.rule_content
+                ? { ...first, rules: [{ ...baseRule, rule_content: edited }, ...first.rules.slice(1)] }
+                : first
             ]
           }
           this.send({
