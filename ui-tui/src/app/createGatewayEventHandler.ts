@@ -426,6 +426,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         patchUiState(state => ({
           ...state,
           info,
+          ...(info.permission_mode && { permissionMode: info.permission_mode }),
           status: state.status === 'starting agent…' ? 'ready' : state.status,
           usage: info.usage ? { ...state.usage, ...info.usage } : state.usage
         }))
@@ -807,6 +808,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         return
 
+      case 'permission.mode':
+        patchUiState({ permissionMode: ev.payload.mode })
+
+        return
       case 'background.complete':
         dropBgTask(ev.payload.task_id)
         sys(`[bg ${ev.payload.task_id}] ${ev.payload.text}`)
@@ -931,6 +936,9 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         return
       case 'message.complete': {
+        if (ev.payload?.permission_mode) {
+          patchUiState({ permissionMode: ev.payload.permission_mode })
+        }
         const { finalMessages, finalText, wasInterrupted } = turnController.recordMessageComplete(ev.payload ?? {})
 
         if (!wasInterrupted) {
