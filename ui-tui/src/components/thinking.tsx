@@ -669,6 +669,8 @@ interface Group {
   color: string
   content: ReactNode
   details: DetailRow[]
+  // Failed tool — paints the bullet error-red (name row stays text-colored).
+  error?: boolean
   key: string
   label: string
   // Live (still-running) tool — its content carries the spinner, so the flat
@@ -734,14 +736,16 @@ export const ToolTrail = memo(function ToolTrail({
   const [openMeta, setOpenMeta] = useState(visible.activity === 'expanded')
 
   useEffect(() => {
-    if (!tools.length || (visible.tools !== 'expanded' && !openTools)) {
+    // The running-tool bullet blinks on this clock, so it must tick whenever
+    // a live tool exists — not only while the tools panel is expanded.
+    if (!tools.length) {
       return
     }
 
     const id = setInterval(() => setNow(Date.now()), 500)
 
     return () => clearInterval(id)
-  }, [openTools, tools.length, visible.tools])
+  }, [tools.length])
 
   useEffect(() => {
     setOpenThinking(visible.thinking === 'expanded')
@@ -786,9 +790,12 @@ export const ToolTrail = memo(function ToolTrail({
 
     if (parsed) {
       groups.push({
-        color: parsed.mark === '✗' ? t.color.error : t.color.text,
+        // CC parity: the tool NAME row stays text-colored even on failure —
+        // the error shows on the bullet and the result rows.
+        color: t.color.text,
         content: parsed.call,
         details: [],
+        error: parsed.mark === '✗',
         key: `tr-${i}`,
         label: parsed.call
       })
@@ -847,14 +854,10 @@ export const ToolTrail = memo(function ToolTrail({
       key: tool.id,
       label,
       live: true,
-      // Flat Claude render: args live in the label (Bash(ls)), so no Args row.
-      details: [],
-      content: (
-        <>
-          <Spinner color={t.color.accent} variant="tool" /> {label}
-          {tool.startedAt ? ` (${fmtElapsed(now - tool.startedAt)})` : ''}
-        </>
-      )
+      // CC parity: a running tool shows a dim "Running…" result row; the
+      // bullet itself blinks (rendered in the flat pass below).
+      details: [{ color: t.color.muted, content: 'Running…', dimColor: true, key: `${tool.id}-run` }],
+      content: label
     })
   }
 
@@ -886,17 +889,25 @@ export const ToolTrail = memo(function ToolTrail({
   const inlineDelegateKey = hasSubagents && delegateGroups.length === 1 ? delegateGroups[0]!.key : null
 
   const toolLabel = (group: Group) => {
-    const { duration, label } = splitToolDuration(String(group.content))
+    // CC parity: bold tool name, plain (args). Durations are no longer
+    // emitted on trail lines; strip any legacy `(N.Ns)` from resumed
+    // sessions via splitToolDuration.
+    if (typeof group.content !== 'string') {
+      return group.content
+    }
 
-    return duration ? (
+    const { label } = splitToolDuration(group.content)
+    const paren = label.indexOf('(')
+
+    if (paren <= 0) {
+      return <Text bold>{label}</Text>
+    }
+
+    return (
       <>
-        {label}
-        <Text color={t.color.statusFg} dim>
-          {duration}
-        </Text>
+        <Text bold>{label.slice(0, paren)}</Text>
+        {label.slice(paren)}
       </>
-    ) : (
-      group.content
     )
   }
 
@@ -995,16 +1006,9 @@ export const ToolTrail = memo(function ToolTrail({
           }}
         >
           <Text color={t.color.muted} dim={!thinkingLive}>
-            <Text color={t.color.accent}>{openThinking ? '▾ ' : '▸ '}</Text>
-            {thinkingLive ? (
-              <Text bold color={t.color.text}>
-                Thinking
-              </Text>
-            ) : (
-              <Text color={t.color.muted} dim>
-                Thinking
-              </Text>
-            )}
+            <Text color={t.color.muted} dim italic>
+              {'∴ Thinking…'}
+            </Text>
             {thinkingTokensLabel ? (
               <Text color={t.color.statusFg} dim>
                 {'  '}
@@ -1033,17 +1037,28 @@ export const ToolTrail = memo(function ToolTrail({
   // Claude Code flat tool render: each call as `⏺ Tool(args)` with its result
   // indented under `⎿` — no collapsible "Tool calls" wrapper, tree rails, or
   // token tally. Live (running) tools keep their spinner bullet (group.live).
+  // CC blink cadence for a running tool's bullet: the shared 500ms ticker
+  // alternates glyph/space (original useBlink is 600ms — same read).
+  const blinkOn = Math.floor(now / 500) % 2 === 0
+
   const toolsFlat =
     hasTools && visible.tools !== 'hidden' ? (
       <Box flexDirection="column">
         {groups.map(group => {
           const isDelegateGroup = group.label.startsWith('Delegate Task')
-          const bulletColor = group.color === t.color.error ? t.color.error : t.color.ok
+          const bulletColor = group.error ? t.color.error : t.color.ok
 
           return (
             <Box flexDirection="column" key={group.key}>
               <Text color={group.color}>
-                {group.live ? null : <Text color={bulletColor}>⏺ </Text>}
+                {group.live ? (
+                  // Running: dim blinking ⏺ — the off-frame renders two
+                  // spaces matching the glyph+space width so the row never
+                  // reflows mid-blink.
+                  <Text dimColor>{blinkOn ? '⏺ ' : '  '}</Text>
+                ) : (
+                  <Text color={bulletColor}>⏺ </Text>
+                )}
                 {toolLabel(group)}
                 {isDelegateGroup ? (
                   <Text color={t.color.statusFg} dim>
@@ -1051,13 +1066,34 @@ export const ToolTrail = memo(function ToolTrail({
                   </Text>
                 ) : null}
               </Text>
-              {group.details.map(detail => (
-                <Text color={detail.color} dimColor={detail.dimColor} key={detail.key}>
-                  {'  '}
-                  <Text color={t.color.muted}>⎿  </Text>
-                  {detail.content}
-                </Text>
-              ))}
+              {group.details.map(detail => {
+                // Multi-line details (Bash 3-line summaries, error caps):
+                // first row carries the ⎿ connector, continuations align
+                // under the content column.
+                if (typeof detail.content === 'string' && detail.content.includes('\n')) {
+                  return detail.content.split('\n').map((row, rowIdx) => (
+                    <Text color={detail.color} dimColor={detail.dimColor} key={`${detail.key}-${rowIdx}`}>
+                      {rowIdx === 0 ? (
+                        <>
+                          {'  '}
+                          <Text color={t.color.muted}>⎿  </Text>
+                        </>
+                      ) : (
+                        '     '
+                      )}
+                      {row || ' '}
+                    </Text>
+                  ))
+                }
+
+                return (
+                  <Text color={detail.color} dimColor={detail.dimColor} key={detail.key}>
+                    {'  '}
+                    <Text color={t.color.muted}>⎿  </Text>
+                    {detail.content}
+                  </Text>
+                )
+              })}
               {inlineDelegateKey === group.key ? renderSubagentList([]) : null}
             </Box>
           )
