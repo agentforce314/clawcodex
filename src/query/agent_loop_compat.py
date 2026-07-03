@@ -314,7 +314,10 @@ async def _maybe_recall_memories(
     memory_surfaced: set[str] | None,
 ) -> Message | None:
     """ch11 round-4 WI-1 — the gated memory-relevance recall. Returns a
-    <system-reminder> UserMessage to prepend, or None. Never raises."""
+    <system-reminder> UserMessage to APPEND after the user turn (not prepend
+    — TS surfaces memory after the user message, and normalize_messages
+    merges consecutive user messages so there is no 400), or None. Never
+    raises."""
     try:
         from src.settings.settings import get_settings
 

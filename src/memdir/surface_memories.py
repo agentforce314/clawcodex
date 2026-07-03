@@ -19,6 +19,11 @@ logger = logging.getLogger(__name__)
 # Per-file surfacing caps (TS readMemoriesForSurfacing: 200 lines / 4 KB).
 MAX_SURFACE_LINES = 200
 MAX_SURFACE_CHARS = 4096
+# R5 round-5 (ch11 #4) — total cap across ALL files surfaced in one turn.
+# find_relevant_memories selects up to 5, each capped at 4 KB, so a single
+# turn could inject ~20 KB of memory bodies; TS bounds the aggregate. Cap
+# the combined reminder so one turn can't bloat the request.
+MAX_TOTAL_SURFACE_CHARS = 12288  # 12 KB (≈3× the per-file cap)
 
 
 def _read_capped(path: str) -> str | None:
@@ -40,12 +45,20 @@ def _read_capped(path: str) -> str | None:
     return body
 
 
-def build_relevant_memory_reminder(memories: list[Any]) -> str | None:
+def build_relevant_memory_reminder_with_paths(
+    memories: list[Any],
+) -> tuple[str | None, list[str]]:
     """Wrap the surfaced memory bodies in a single ``<system-reminder>``.
 
-    ``memories`` is a list of ``RelevantMemory`` (``.path``). Returns None
-    when nothing readable was surfaced."""
+    ``memories`` is a list of ``RelevantMemory`` (``.path``). Returns
+    ``(reminder, surfaced_paths)`` — ``reminder`` is None when nothing
+    readable was surfaced, and ``surfaced_paths`` is EXACTLY the files that
+    made it into the reminder (fewer than ``memories`` when the R5 #4
+    aggregate cap trims the tail). The caller de-dups on ``surfaced_paths``,
+    NOT the full selection, so a capped-out memory can still surface later."""
     blocks: list[str] = []
+    surfaced: list[str] = []
+    total = 0
     for mem in memories:
         path = getattr(mem, "path", None) or (
             mem.get("path") if isinstance(mem, dict) else None
@@ -55,11 +68,22 @@ def build_relevant_memory_reminder(memories: list[Any]) -> str | None:
         body = _read_capped(str(path))
         if not body:
             continue
-        blocks.append(f"### {path}\n{body}")
+        block = f"### {path}\n{body}"
+        # R5 (ch11 #4) — stop once the aggregate turn cap is reached rather
+        # than injecting every selected file unbounded.
+        if total + len(block) > MAX_TOTAL_SURFACE_CHARS and blocks:
+            blocks.append(
+                "… (additional relevant memories omitted; Read the memory "
+                "directory for more)"
+            )
+            break
+        blocks.append(block)
+        surfaced.append(str(path))
+        total += len(block)
     if not blocks:
-        return None
+        return None, []
     joined = "\n\n".join(blocks)
-    return (
+    reminder = (
         "<system-reminder>\n"
         "The following saved memories were selected as relevant to the "
         "current request (recalled automatically from your memory "
@@ -69,6 +93,15 @@ def build_relevant_memory_reminder(memories: list[Any]) -> str | None:
         f"{joined}\n"
         "</system-reminder>"
     )
+    return reminder, surfaced
+
+
+def build_relevant_memory_reminder(memories: list[Any]) -> str | None:
+    """Back-compat wrapper: the reminder string only (drops the
+    surfaced-paths list). Prefer ``build_relevant_memory_reminder_with_paths``
+    so de-dup tracks exactly what was surfaced."""
+    reminder, _ = build_relevant_memory_reminder_with_paths(memories)
+    return reminder
 
 
 async def get_relevant_memory_reminder(
@@ -103,11 +136,11 @@ async def get_relevant_memory_reminder(
         return None
     if not memories:
         return None
-    reminder = build_relevant_memory_reminder(memories)
+    reminder, surfaced_paths = build_relevant_memory_reminder_with_paths(memories)
     if reminder is None:
         return None
-    for mem in memories:
-        path = getattr(mem, "path", None)
-        if path:
-            already_surfaced.add(str(path))
+    # R5 (ch11 #4) — de-dup ONLY the paths that actually made it into the
+    # reminder; a memory trimmed by the aggregate cap stays eligible.
+    for path in surfaced_paths:
+        already_surfaced.add(path)
     return reminder
