@@ -317,12 +317,16 @@ export function useMainApp(gw: GatewayClient) {
     const thinking = sectionMode('thinking', ui.detailsMode, ui.sections, ui.detailsModeCommandOverride)
     const tools = sectionMode('tools', ui.detailsMode, ui.sections, ui.detailsModeCommandOverride)
 
-    return `${thinking}:${tools}`
+    // The global expanded toggle (ctrl+o) swaps which tool variant renders,
+    // so it must bucket the height cache too — section modes alone default
+    // to 'expanded' and would serve stale collapsed heights across toggles.
+    return `${thinking}:${tools}:${ui.detailsMode === 'expanded' ? 'x' : '-'}`
   }, [ui.detailsMode, ui.detailsModeCommandOverride, ui.sections])
 
   const [thinkingDetailsMode, toolsDetailsMode] = detailsLayoutKey.split(':')
   const thinkingDetailsVisible = thinkingDetailsMode !== 'hidden'
   const toolsDetailsVisible = toolsDetailsMode !== 'hidden'
+  const toolsDetailsExpanded = ui.detailsMode === 'expanded'
   const detailsVisible = thinkingDetailsVisible || toolsDetailsVisible
   const userPromptWidth = composerPromptWidth(ui.theme.brand.prompt)
   const heightCacheKey = `${ui.sid ?? 'draft'}:${cols}:${userPromptWidth}:${ui.compact ? '1' : '0'}:${detailsLayoutKey}`
@@ -361,6 +365,7 @@ export function useMainApp(gw: GatewayClient) {
           virtualRows[index]!.msg
         ),
         thinkingVisible: thinkingDetailsVisible,
+        toolsExpanded: toolsDetailsExpanded,
         toolsVisible: toolsDetailsVisible,
         userPrompt: ui.theme.brand.prompt,
         withSeparator: virtualRows[index]!.msg.role === 'user' && firstUserIdx >= 0 && index > firstUserIdx
@@ -370,6 +375,7 @@ export function useMainApp(gw: GatewayClient) {
       detailsVisible,
       firstUserIdx,
       thinkingDetailsVisible,
+      toolsDetailsExpanded,
       toolsDetailsVisible,
       ui.compact,
       ui.detailsMode,

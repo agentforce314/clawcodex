@@ -571,6 +571,20 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     // available), so the keybinding can never step into "allow everything"
     // in a session that didn't opt into bypass, and never desyncs after
     // /mode. Previously it toggled an unwired `config.set{yolo}` → dead.
+    // ctrl+o — the original's "verbose output" toggle. Like the original it is
+    // GLOBAL: it drives the same detailsMode /details patches, so expanded also
+    // opens thinking/subagent sections. This coupling is intentional (matches
+    // CC's single verbose axis); a dedicated tool-only flag was considered and
+    // rejected to keep one obvious "show me everything" control.
+    if (key.ctrl && ch === 'o') {
+      const next = live.detailsMode === 'expanded' ? 'collapsed' : 'expanded'
+
+      patchUiState({ detailsMode: next, detailsModeCommandOverride: false })
+      actions.sys(`details: ${next}`)
+
+      return
+    }
+
     if (key.shift && key.tab && !cState.completions.length) {
       if (!live.sid) {
         return void actions.sys('mode needs an active session')
