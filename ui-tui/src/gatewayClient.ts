@@ -108,6 +108,19 @@ function relativizePath(p: string): string {
  *  genuine numbered output is collapsed — errors (is_error) and Read's other
  *  acknowledgements (empty-file / file_unchanged warnings, PDF/image stubs)
  *  aren't `N\t…` text and pass through, so nothing is mislabeled or hidden. */
+// TodoWrite's input IS the todo list — surface it on tool events so the task
+// HUD renders (the original never shows todo tool calls inline; the checklist
+// under the busy line is the whole UI).
+function todosFromInput(name: string | undefined, input: unknown): undefined | unknown[] {
+  if (name !== 'TodoWrite' || !input || typeof input !== 'object') {
+    return undefined
+  }
+
+  const todos = (input as { todos?: unknown }).todos
+
+  return Array.isArray(todos) ? todos : undefined
+}
+
 // Per-tool result summaries, matching the original Claude Code transcript
 // (tools/*/UI.tsx): Read → "Read N lines", Grep/Glob → "Found N …", Bash →
 // first 3 stdout lines + overflow hint, errors → red "Error: …" capped at 10
@@ -838,7 +851,13 @@ export class GatewayClient extends EventEmitter {
               this.ensureMsgStart()
               this.toolInputs.set(String(b.id), { input: b.input, name: String(b.name ?? '') })
               this.publish({
-                payload: { args_text: safeJson(b.input), context: toolContext(b.input), name: b.name, tool_id: b.id },
+                payload: {
+                  args_text: safeJson(b.input),
+                  context: toolContext(b.input),
+                  name: b.name,
+                  todos: todosFromInput(b.name, b.input),
+                  tool_id: b.id
+                },
                 type: 'tool.start'
               })
             }
@@ -941,6 +960,7 @@ export class GatewayClient extends EventEmitter {
                   name: stored?.name,
                   result_text: resultText,
                   structured_diff: isError ? undefined : structured,
+                  todos: isError ? undefined : todosFromInput(stored?.name, stored?.input),
                   tool_id: b.tool_use_id
                 },
                 type: 'tool.complete'

@@ -141,7 +141,10 @@ const parseTodos = (value: unknown): null | TodoItem[] => {
         return null
       }
 
+      const activeForm = String(row.activeForm ?? '').trim()
+
       return {
+        ...(activeForm && { activeForm }),
         content: String(row.content ?? '').trim(),
         id: String(row.id ?? '').trim(),
         status
@@ -834,10 +837,17 @@ class TurnController {
     }
 
     this.recordTodos(todos)
+    const name = this.activeTools.find(tool => tool.id === toolId)?.name ?? fallbackName
     const line = this.completeTool(toolId, fallbackName, error, summary, duration, resultText)
 
-    this.pendingSegmentTools = [...this.pendingSegmentTools, line]
-    this.flushPendingToolsIntoLastSegment()
+    // The original renders NOTHING inline for todo tools — the checklist HUD
+    // is the whole UI. completeTool still ran above (clears activeTools +
+    // bookkeeping), only the trail-line append is suppressed.
+    if (name !== 'TodoWrite' || error) {
+      this.pendingSegmentTools = [...this.pendingSegmentTools, line]
+      this.flushPendingToolsIntoLastSegment()
+    }
+
     this.publishToolState()
   }
 
