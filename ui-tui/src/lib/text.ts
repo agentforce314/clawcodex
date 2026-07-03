@@ -230,19 +230,47 @@ export const buildToolTrailLine = (
   return `${formatToolCall(name, context)}${detail ? ` :: ${detail}` : ''} ${error ? '✗' : '✓'}`
 }
 
+// Head-truncate an expandable tool block: keep the FIRST maxLines/maxChars —
+// the start of Grep matches, Bash output, or an error is what the reader wants
+// when they hit ctrl+o — with a trailing "… +N lines/chars omitted" marker.
+// (boundedLiveRenderText keeps the *tail* with a "showing live tail" label,
+// which is right for the live stream but wrong and misleading here.)
+const headTruncate = (body: string): string => {
+  const lines = body.split('\n')
+  const overLines = lines.length > VERBOSE_TRAIL_MAX_LINES
+  let head = overLines ? lines.slice(0, VERBOSE_TRAIL_MAX_LINES).join('\n') : body
+  let omittedChars = body.length - head.length
+
+  if (head.length > VERBOSE_TRAIL_MAX_CHARS) {
+    omittedChars = body.length - VERBOSE_TRAIL_MAX_CHARS
+    head = head.slice(0, VERBOSE_TRAIL_MAX_CHARS)
+  }
+
+  if (!overLines && omittedChars <= 0) {
+    return body
+  }
+
+  // Count newlines in the OMITTED suffix (total − kept), not the kept head —
+  // body.length - omittedChars === head.length, so counting to there would
+  // report the head's line count (a constant ~cap) instead of what was dropped.
+  const omittedLines = countNewlines(body, body.length) - countNewlines(body, body.length - omittedChars)
+
+  const marker =
+    omittedLines > 0
+      ? `\n… +${fmtK(omittedLines)} lines omitted`
+      : `\n… +${fmtK(omittedChars)} chars omitted`
+
+  return head.replace(/\n+$/, '') + marker
+}
+
 const verboseToolBlock = (label: string, text?: string) => {
   const body = (text ?? '').trim()
 
-  // Persisted trail blocks are kept all session and rendered expanded by
-  // default — cap to a small readable preview (NOT the 16KB live-render
-  // budget) so a large tool output can't balloon the Ink render tree and
-  // silently OOM-kill the TUI. See VERBOSE_TRAIL_MAX_CHARS (#34095).
-  return body
-    ? `${label}:\n${boundedLiveRenderText(body, {
-        maxChars: VERBOSE_TRAIL_MAX_CHARS,
-        maxLines: VERBOSE_TRAIL_MAX_LINES
-      })}`
-    : ''
+  // Expandable blocks render only behind ctrl+o (not expanded-by-default), so
+  // the cap is a real expansion (VERBOSE_TRAIL_MAX_CHARS = 16k) that still
+  // bounds the worst case — a burst of huge results can't rebuild the #34095
+  // OOM. Head-truncated: the start of the output is what the reader wants.
+  return body ? `${label}:\n${headTruncate(body)}` : ''
 }
 
 export const buildVerboseToolTrailLine = (
