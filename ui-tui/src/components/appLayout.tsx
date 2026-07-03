@@ -18,11 +18,14 @@ import {
 } from '../lib/inputMetrics.js'
 import { PerfPane } from '../lib/perfPane.js'
 import { composerPromptText } from '../lib/prompt.js'
+import type { Theme } from '../theme.js'
 
 import { AgentsOverlay } from './agentsOverlay.js'
 import { GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
 import { FloatingOverlays, PromptZone } from './appOverlays.js'
 import { Banner, Panel, SessionPanel } from './branding.js'
+import { BusyLine } from './busyLine.js'
+import { ComposerFooter } from './composerFooter.js'
 import { FpsOverlay } from './fpsOverlay.js'
 import { HelpHint } from './helpHint.js'
 import { MessageLine } from './messageLine.js'
@@ -81,21 +84,6 @@ const TranscriptPane = memo(function TranscriptPane({
   transcript
 }: Pick<AppLayoutProps, 'actions' | 'composer' | 'progress' | 'transcript'>) {
   const ui = useStore($uiState)
-
-  // LiveTodoPanel rides as a child of the latest user-message row so it
-  // visually belongs to the prompt and follows it during scroll. -1 when
-  // empty → row.index === -1 is always false → no render.
-  const lastUserIdx = useMemo(() => {
-    const items = transcript.historyItems
-
-    for (let i = items.length - 1; i >= 0; i--) {
-      if (items[i].role === 'user') {
-        return i
-      }
-    }
-
-    return -1
-  }, [transcript.historyItems])
 
   // Index of the first user-role message; every later user message gets a
   // small dash above it so multi-turn transcripts visually segment by
@@ -162,8 +150,6 @@ const TranscriptPane = memo(function TranscriptPane({
                   t={ui.theme}
                 />
               )}
-
-              {row.index === lastUserIdx && <LiveTodoPanel />}
             </Box>
           ))}
 
@@ -202,7 +188,7 @@ const ComposerPane = memo(function ComposerPane({
 }: Pick<AppLayoutProps, 'actions' | 'composer' | 'status'>) {
   const ui = useStore($uiState)
   const isBlocked = useStore($isBlocked)
-  const sh = (composer.inputBuf[0] ?? composer.input).startsWith('!')
+  const sh = composer.input.startsWith('!')
 
   const promptText = composerPromptText(
     ui.theme.brand.prompt,
@@ -213,7 +199,6 @@ const ComposerPane = memo(function ComposerPane({
   )
 
   const promptWidth = composerPromptWidth(promptText)
-  const promptBlank = ' '.repeat(promptWidth)
   const inputColumns = stableComposerColumns(composer.cols, promptWidth, TERMUX_TUI_MODE)
   const inputHeight = inputVisualHeight(composer.input, inputColumns)
   const inputMouseRef = useRef<null | TextInputMouseApi>(null)
@@ -289,7 +274,26 @@ const ComposerPane = memo(function ComposerPane({
 
       <StatusRulePane at="top" composer={composer} status={status} />
 
-      <Box flexDirection="column" marginTop={ui.statusBar === 'top' ? 0 : 1} position="relative">
+      {ui.statusBar === 'off' && (
+        <>
+          <IdleChromeNotes t={ui.theme} />
+          <BusyLine t={ui.theme} turnStartedAt={status.turnStartedAt} />
+        </>
+      )}
+
+      <LiveTodoPanel />
+
+      <Box
+        borderBottom
+        borderColor={sh ? ui.theme.color.bashBorder : ui.theme.color.promptBorder}
+        borderLeft={false}
+        borderRight={false}
+        borderStyle="round"
+        borderTop
+        flexDirection="column"
+        marginTop={ui.statusBar === 'top' ? 0 : 1}
+        position="relative"
+      >
         <FloatingOverlays
           cols={composer.cols}
           compIdx={composer.compIdx}
@@ -303,24 +307,10 @@ const ComposerPane = memo(function ComposerPane({
           pagerPageSize={composer.pagerPageSize}
         />
 
-        {composer.input === '?' && !composer.inputBuf.length && <HelpHint t={ui.theme} />}
+        {composer.input === '?' && <HelpHint t={ui.theme} />}
 
         {!isBlocked && (
           <>
-            {composer.inputBuf.map((line, i) => (
-              <Box key={i}>
-                <Box width={promptWidth}>
-                  {i === 0 ? (
-                    <PromptPrefix color={ui.theme.color.muted} promptText={promptText} width={promptWidth} />
-                  ) : (
-                    <Text color={ui.theme.color.muted}>{promptBlank}</Text>
-                  )}
-                </Box>
-
-                <Text color={ui.theme.color.text}>{line || ' '}</Text>
-              </Box>
-            ))}
-
             <Box
               onMouseDown={captureInputDrag}
               onMouseDrag={dragFromPromptRow}
@@ -331,10 +321,13 @@ const ComposerPane = memo(function ComposerPane({
               <Box width={promptWidth}>
                 {sh ? (
                   <PromptPrefix color={ui.theme.color.shellDollar} promptText={promptText} width={promptWidth} />
-                ) : composer.inputBuf.length ? (
-                  <Text color={ui.theme.color.prompt}>{promptBlank}</Text>
                 ) : (
-                  <PromptPrefix bold color={ui.theme.color.prompt} promptText={promptText} width={promptWidth} />
+                  <PromptPrefix
+                    bold
+                    color={ui.busy ? ui.theme.color.muted : ui.theme.color.prompt}
+                    promptText={promptText}
+                    width={promptWidth}
+                  />
                 )}
               </Box>
 
@@ -343,10 +336,11 @@ const ComposerPane = memo(function ComposerPane({
                 <TextInput
                   columns={inputColumns}
                   mouseApiRef={inputMouseRef}
+                  multiline
                   onChange={composer.updateInput}
                   onPaste={composer.handleTextPaste}
                   onSubmit={composer.submit}
-                  placeholder={composer.empty ? PLACEHOLDER : ui.busy ? 'Ctrl+C to interrupt…' : ''}
+                  placeholder={composer.empty && !ui.busy ? PLACEHOLDER : ''}
                   value={composer.input}
                   voiceRecordKey={composer.voiceRecordKey}
                 />
@@ -362,8 +356,53 @@ const ComposerPane = memo(function ComposerPane({
 
       {!composer.empty && !ui.sid && <Text color={ui.theme.color.muted}>⚕ {ui.status}</Text>}
 
+      <ComposerFooter
+        busy={ui.busy}
+        inputEmpty={!composer.input}
+        mode={ui.permissionMode}
+        sh={sh}
+        t={ui.theme}
+        voiceLabel={status.voiceLabel}
+      />
+
       <StatusRulePane at="bottom" composer={composer} status={status} />
     </NoSelect>
+  )
+})
+
+// Idle-only signals that previously lived on the StatusRule: a live credits/
+// status notice, and the parked-background reassurance while a top-level
+// delegate keeps running after the turn ended. Rendered only when the bar is
+// off (its 'top'/'bottom' modes still own them).
+const IdleChromeNotes = memo(function IdleChromeNotes({ t }: { t: Theme }) {
+  const ui = useStore($uiState)
+
+  if (ui.busy) {
+    return null
+  }
+
+  // usage.active_subagents persists past turn end (turnState.subagents is
+  // cleared by idle()) — it's the same source the StatusRule used.
+  const running = typeof ui.usage?.active_subagents === 'number' ? ui.usage.active_subagents : 0
+  const notice = ui.notice?.text
+
+  if (!notice && running === 0) {
+    return null
+  }
+
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      {notice ? (
+        <Text color={t.color.muted} wrap="truncate-end">
+          {notice}
+        </Text>
+      ) : null}
+      {running > 0 ? (
+        <Text color={t.color.muted} dim>
+          {running === 1 ? '↩ resumes when subagent finishes' : `↩ resumes when ${running} subagents finish`}
+        </Text>
+      ) : null}
+    </Box>
   )
 })
 

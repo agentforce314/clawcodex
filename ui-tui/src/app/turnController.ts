@@ -5,19 +5,19 @@ import {
   STREAM_SCROLL_BATCH_MS,
   STREAM_TYPING_BATCH_MS
 } from '../config/timing.js'
-import type { SessionInterruptResponse, SubagentEventPayload } from '../gatewayTypes.js'
+import type { SessionInterruptResponse, StructuredDiffPayload, SubagentEventPayload } from '../gatewayTypes.js'
+import { ensureHighlighter } from '../lib/colorDiff.js'
 import { appendToolShelfMessage, isToolShelfMessage } from '../lib/liveProgress.js'
 import { hasReasoningTag, splitReasoning } from '../lib/reasoning.js'
 import {
   boundedLiveRenderText,
   buildToolTrailLine,
-  buildVerboseToolTrailLine,
   estimateTokensRough,
   isTransientTrailLine,
   sameToolTrailGroup,
   toolTrailLabel
 } from '../lib/text.js'
-import type { ActiveTool, ActivityItem, Msg, SubagentProgress, TodoItem } from '../types.js'
+import type { ActiveTool, ActivityItem, Msg, MsgDiffData, SubagentProgress, TodoItem } from '../types.js'
 
 import type { Notice } from './interfaces.js'
 import { resetFlowOverlays } from './overlayStore.js'
@@ -28,6 +28,81 @@ import { getUiState, patchUiState } from './uiStore.js'
 const INTERRUPT_COOLDOWN_MS = 1500
 const ACTIVITY_LIMIT = 8
 const TRAIL_LIMIT = 8
+
+// Safety caps for structured diff segments, applied once at ingestion so the
+// DiffView render cache keys on stable hunk objects. EDIT cap keeps a giant
+// edit from flooding the live viewport; WRITE cap mirrors the original's
+// created-file preview (first 10 lines).
+const DIFF_SEGMENT_MAX_LINES = 240
+const CREATE_PREVIEW_LINES = 10
+
+/**
+ * Build the Msg fields for a structured diff segment: hunks capped to
+ * DIFF_SEGMENT_MAX_LINES (dropped count recorded for the "… +N lines" hint)
+ * and a ```diff fence derived from the same lines. The fence keeps the
+ * existing text-based machinery working unchanged — message.complete dedupe
+ * (diffSegmentBody), the consecutive-duplicate check, selection copy, and
+ * virtual height estimates.
+ */
+const buildDiffSegment = (diff: StructuredDiffPayload): null | { diffData: MsgDiffData; text: string } => {
+  // Branch on kind ALONE, matching the original's renderToolResultMessage
+  // switch (FileWriteTool/UI.tsx): a Write-created file arrives with an
+  // all-additions hunk from difflib, but renders as the 10-line content
+  // preview — never as a wall of green diff rows.
+  if (diff.kind === 'update') {
+    let budget = DIFF_SEGMENT_MAX_LINES
+    let dropped = 0
+    const hunks: MsgDiffData['hunks'] = []
+
+    for (const hunk of diff.hunks) {
+      if (budget <= 0) {
+        dropped += hunk.lines.length
+
+        continue
+      }
+
+      if (hunk.lines.length <= budget) {
+        hunks.push(hunk)
+        budget -= hunk.lines.length
+      } else {
+        dropped += hunk.lines.length - budget
+        hunks.push({ ...hunk, lines: hunk.lines.slice(0, budget) })
+        budget = 0
+      }
+    }
+
+    if (!hunks.length) {
+      return null
+    }
+
+    const body = hunks.flatMap(hunk => hunk.lines).join('\n')
+
+    return {
+      diffData: { ...diff, hunks, ...(dropped > 0 && { truncatedLines: dropped }) },
+      text: `\`\`\`diff\n${body}\n\`\`\``
+    }
+  }
+
+  // create: preview the new content (hunks, if any, are ignored — see above).
+  // The fence only needs the preview lines — heights/dedupe track what
+  // actually renders.
+  const lines = (diff.content ?? '').split('\n')
+
+  if (lines.length > 0 && lines.at(-1) === '') {
+    lines.pop()
+  }
+
+  if (!lines.length) {
+    return null
+  }
+
+  const preview = lines.slice(0, CREATE_PREVIEW_LINES)
+
+  return {
+    diffData: { ...diff },
+    text: `\`\`\`diff\n${preview.map(line => '+' + line).join('\n')}\n\`\`\``
+  }
+}
 
 // Extracts the raw patch from a diff-only segment produced by
 // pushInlineDiffSegment. Used at message.complete to dedupe against final
@@ -66,7 +141,10 @@ const parseTodos = (value: unknown): null | TodoItem[] => {
         return null
       }
 
+      const activeForm = String(row.activeForm ?? '').trim()
+
       return {
+        ...(activeForm && { activeForm }),
         content: String(row.content ?? '').trim(),
         id: String(row.id ?? '').trim(),
         status
@@ -292,7 +370,7 @@ class TurnController {
   // drains on the gateway's real settle edge (message.complete, suppressed
   // while `interrupted`) instead of racing the still-unwinding turn — the race
   // duplicated the user bubble, leaked a "queued: …" note, and surfaced the
-  // cancelled turn's "[interrupted]" reply.
+  // cancelled turn's "Interrupted · …" reply.
   interruptTurn({ appendMessage, gw, sid, sys }: InterruptDeps, opts: { keepBusy?: boolean } = {}) {
     this.interrupted = true
     gw.request<SessionInterruptResponse>('session.interrupt', { session_id: sid }).catch(() => {})
@@ -319,14 +397,18 @@ class TurnController {
     // `partial` or pending tools, fold them into a single assistant message;
     // otherwise emit a sys note so the transcript always records that the
     // turn was cancelled, even when only prior `segments` were preserved.
+    // CC parity string (InterruptedByUser.tsx): a dim one-liner that invites
+    // the redirect instead of a bare "[interrupted]" tag.
+    const interruptNote = 'Interrupted · What should clawcodex do instead?'
+
     if (partial || tools.length) {
       appendMessage({
         role: 'assistant',
-        text: partial ? `${partial}\n\n*[interrupted]*` : '*[interrupted]*',
+        text: partial ? `${partial}\n\n*${interruptNote}*` : `*${interruptNote}*`,
         ...(tools.length && { tools })
       })
     } else {
-      sys('interrupted')
+      sys(interruptNote)
     }
 
     this.clearStatusTimer()
@@ -507,6 +589,36 @@ class TurnController {
     patchTurnState({ streamSegments: this.segmentMessages })
   }
 
+  pushStructuredDiffSegment(diff: StructuredDiffPayload, tools: string[] = []): 'duplicate' | 'empty' | 'pushed' {
+    const built = buildDiffSegment(diff)
+
+    if (!built) {
+      // Nothing renderable (no-op update, empty created file) — the caller
+      // must surface the tool completion some other way.
+      return 'empty'
+    }
+
+    // Warm the syntax highlighter while the segment is still upstream of the
+    // viewport — by first paint the grammars are usually registered.
+    void ensureHighlighter()
+
+    // Same flow as pushInlineDiffSegment: land the diff BETWEEN the narration
+    // that preceded the edit and whatever streams afterwards.
+    this.flushStreamingSegment()
+
+    if (this.segmentMessages.at(-1)?.text === built.text) {
+      return 'duplicate'
+    }
+
+    this.segmentMessages = [
+      ...this.segmentMessages,
+      { diffData: built.diffData, kind: 'diff', role: 'assistant', text: built.text, ...(tools.length && { tools }) }
+    ]
+    patchTurnState({ streamSegments: this.segmentMessages })
+
+    return 'pushed'
+  }
+
   pushActivity(text: string, tone: ActivityItem['tone'] = 'info', replaceLabel?: string) {
     patchTurnState(state => {
       const base = replaceLabel
@@ -666,6 +778,11 @@ class TurnController {
     // — visible as overlapping coloured text and lost prose under
     // `display.final_response_markdown: render`.
     this.bufRef += text
+    patchTurnState(state => ({
+      ...state,
+      lastDeltaAt: Date.now(),
+      streamedChars: state.streamedChars + text.length
+    }))
 
     if (getUiState().streaming) {
       this.scheduleStreaming()
@@ -701,6 +818,11 @@ class TurnController {
 
     this.reasoningText += text
     this.activeReasoningText += text
+    patchTurnState(state => ({
+      ...state,
+      lastDeltaAt: Date.now(),
+      streamedChars: state.streamedChars + text.length
+    }))
 
     if (this.reasoningText.length > 80_000) {
       this.reasoningText = this.reasoningText.slice(-60_000)
@@ -725,10 +847,18 @@ class TurnController {
     }
 
     this.recordTodos(todos)
+    patchTurnState({ lastDeltaAt: Date.now() })
+    const name = this.activeTools.find(tool => tool.id === toolId)?.name ?? fallbackName
     const line = this.completeTool(toolId, fallbackName, error, summary, duration, resultText)
 
-    this.pendingSegmentTools = [...this.pendingSegmentTools, line]
-    this.flushPendingToolsIntoLastSegment()
+    // The original renders NOTHING inline for todo tools — the checklist HUD
+    // is the whole UI. completeTool still ran above (clears activeTools +
+    // bookkeeping), only the trail-line append is suppressed.
+    if (name !== 'TodoWrite' || error) {
+      this.pendingSegmentTools = [...this.pendingSegmentTools, line]
+      this.flushPendingToolsIntoLastSegment()
+    }
+
     this.publishToolState()
   }
 
@@ -746,6 +876,33 @@ class TurnController {
 
     this.flushStreamingSegment()
     this.pushInlineDiffSegment(diffText, [this.completeTool(toolId, fallbackName, error, '', duration, resultText)])
+    this.publishToolState()
+  }
+
+  recordStructuredDiffToolComplete(
+    diff: StructuredDiffPayload,
+    toolId: string,
+    fallbackName?: string,
+    error?: string,
+    duration?: number
+  ) {
+    if (this.interrupted) {
+      return
+    }
+
+    this.flushStreamingSegment()
+    // No result text on the trail line: the structured diff below IS the
+    // result (the original shows only "⎿ Added N…" — not the model-facing
+    // "file has been updated successfully" boilerplate).
+    const line = this.completeTool(toolId, fallbackName, error, '', duration)
+
+    if (this.pushStructuredDiffSegment(diff, [line]) === 'empty') {
+      // Nothing renderable (no-op update, empty created file): keep the tool
+      // completion visible on the plain trail instead of dropping it.
+      this.pendingSegmentTools = [...this.pendingSegmentTools, line]
+      this.flushPendingToolsIntoLastSegment()
+    }
+
     this.publishToolState()
   }
 
@@ -818,6 +975,10 @@ class TurnController {
   }
 
   recordToolStart(toolId: string, name: string, context: string, verboseArgs?: string) {
+    // Tool activity is liveness for the busy line's stall detector — a
+    // tool-only turn produces no text deltas for long stretches.
+    patchTurnState({ lastDeltaAt: Date.now() })
+
     if (this.interrupted) {
       return
     }
@@ -920,7 +1081,16 @@ class TurnController {
     }
 
     patchUiState({ busy: true })
-    patchTurnState({ activity: [], outcome: '', subagents: [], toolTokens: 0, tools: [], turnTrail: [] })
+    patchTurnState({
+      activity: [],
+      lastDeltaAt: Date.now(),
+      outcome: '',
+      streamedChars: 0,
+      subagents: [],
+      toolTokens: 0,
+      tools: [],
+      turnTrail: []
+    })
   }
 
   upsertSubagent(

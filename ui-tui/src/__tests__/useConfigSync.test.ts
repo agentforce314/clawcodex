@@ -64,7 +64,7 @@ describe('applyDisplay', () => {
     expect(setBell).toHaveBeenCalledWith(false)
     expect(s.inlineDiffs).toBe(true)
     expect(s.showReasoning).toBe(false)
-    expect(s.statusBar).toBe('top')
+    expect(s.statusBar).toBe('off')
     expect(s.streaming).toBe(true)
     expect(s.sections).toEqual({})
   })
@@ -176,11 +176,11 @@ describe('normalizeStatusBar', () => {
     expect(normalizeStatusBar('bottom')).toBe('bottom')
   })
 
-  it('defaults missing/unknown values to top', () => {
-    expect(normalizeStatusBar(undefined)).toBe('top')
-    expect(normalizeStatusBar(null)).toBe('top')
-    expect(normalizeStatusBar('sideways')).toBe('top')
-    expect(normalizeStatusBar(42)).toBe('top')
+  it('defaults missing/unknown values to off (CC-clean chrome)', () => {
+    expect(normalizeStatusBar(undefined)).toBe('off')
+    expect(normalizeStatusBar(null)).toBe('off')
+    expect(normalizeStatusBar('sideways')).toBe('off')
+    expect(normalizeStatusBar(42)).toBe('off')
   })
 
   it('trims whitespace and folds case', () => {

@@ -21,7 +21,7 @@ import { readdirSync } from 'node:fs'
 import { resolve as pathResolve } from 'node:path'
 import { createInterface } from 'node:readline'
 
-import type { GatewayEvent } from './gatewayTypes.js'
+import type { GatewayEvent, PatchHunk, StructuredDiffPayload } from './gatewayTypes.js'
 import type { SessionInfo } from './types.js'
 
 const STARTUP_TIMEOUT_MS = 30_000
@@ -34,11 +34,13 @@ const CLAWCODEX_VERSION = '0.7.0'
 /** Command that launches the clawcodex agent-server (set by the Python launcher). */
 function resolveAgentCmd(): string[] {
   const raw = process.env.CLAWCODEX_AGENT_SERVER_CMD?.trim()
+
   return raw ? raw.split(/\s+/) : ['clawcodex', 'agent-server']
 }
 
 function safeJson(v: unknown): string {
-  if (typeof v === 'string') return v
+  if (typeof v === 'string') {return v}
+
   try {
     return JSON.stringify(v)
   } catch {
@@ -55,7 +57,7 @@ export function describeSuggestionRule(suggestion: any): string | null {
   const labels = rules
     .filter((r: any) => r && r.tool_name)
     .map((r: any) => (r.rule_content ? `${r.tool_name}(${r.rule_content})` : String(r.tool_name)))
-  if (labels.length === 0) return null
+  if (labels.length === 0) {return null}
   return labels.length > 3 ? `${labels.slice(0, 3).join(', ')}, …` : labels.join(', ')
 }
 
@@ -65,12 +67,14 @@ export function describeSuggestionRule(suggestion: any): string | null {
 export function approvalCommandText(input: unknown): string {
   if (input && typeof input === 'object') {
     const o = input as Record<string, unknown>
+
     // pattern before path so a Grep/Glob box shows the search pattern (matching
     // the tool trail label), not the directory it searched.
     for (const key of ['command', 'file_path', 'url', 'pattern', 'path']) {
-      if (typeof o[key] === 'string' && o[key]) return o[key] as string
+      if (typeof o[key] === 'string' && o[key]) {return o[key] as string}
     }
   }
+
   return safeJson(input)
 }
 
@@ -79,19 +83,24 @@ export function approvalCommandText(input: unknown): string {
  *  name. File paths are shown relative to the workspace so the label stays
  *  short; search tools show their pattern rather than the search directory. */
 function toolContext(input: any): string {
-  if (!input || typeof input !== 'object') return ''
-  if (input.pattern != null) return String(input.pattern)
+  if (!input || typeof input !== 'object') {return ''}
+
+  if (input.pattern != null) {return String(input.pattern)}
   const p = input.file_path ?? input.path ?? input.notebook_path
-  if (p != null) return relativizePath(String(p))
+
+  if (p != null) {return relativizePath(String(p))}
   const v = input.command ?? input.url ?? input.query ?? input.description ?? input.prompt
+
   return v == null ? '' : String(v)
 }
 
 /** Shorten an absolute path to a workspace-relative path (or basename). */
 function relativizePath(p: string): string {
   const ws = (process.env.CLAWCODEX_WORKSPACE || process.env.CLAWCODEX_CWD || process.cwd()).replace(/\/+$/, '')
-  if (ws && p.startsWith(ws + '/')) return p.slice(ws.length + 1)
+
+  if (ws && p.startsWith(ws + '/')) {return p.slice(ws.length + 1)}
   const parts = p.split('/')
+
   return parts[parts.length - 1] || p
 }
 
@@ -101,12 +110,87 @@ function relativizePath(p: string): string {
  *  genuine numbered output is collapsed — errors (is_error) and Read's other
  *  acknowledgements (empty-file / file_unchanged warnings, PDF/image stubs)
  *  aren't `N\t…` text and pass through, so nothing is mislabeled or hidden. */
-function formatToolResult(name: string | undefined, result: string, isError = false): string {
-  if (!result || isError) return result
-  if (name === 'Read' && /^\s*\d+\t/.test(result)) {
+// TodoWrite's input IS the todo list — surface it on tool events so the task
+// HUD renders (the original never shows todo tool calls inline; the checklist
+// under the busy line is the whole UI).
+function todosFromInput(name: string | undefined, input: unknown): undefined | unknown[] {
+  if (name !== 'TodoWrite' || !input || typeof input !== 'object') {
+    return undefined
+  }
+
+  const todos = (input as { todos?: unknown }).todos
+
+  return Array.isArray(todos) ? todos : undefined
+}
+
+// Per-tool result summaries, matching the original Claude Code transcript
+// (tools/*/UI.tsx): Read → "Read N lines", Grep/Glob → "Found N …", Bash →
+// first 3 stdout lines + overflow hint, errors → red "Error: …" capped at 10
+// lines. No "(… to expand)" hints: this TUI has no expand binding and the
+// raw result is not retained client-side — promising one would lie. A real
+// expand affordance (raw retention + binding) is a documented follow-up.
+const ERROR_RESULT_MAX_LINES = 10
+const BASH_RESULT_MAX_LINES = 3
+
+export function formatToolResult(name: string | undefined, result: string, isError = false): string {
+  if (isError) {
+    let msg = (result ?? '').trim() || 'Tool execution failed'
+
+    if (!/^(Error|Cancelled): /.test(msg)) {
+      msg = `Error: ${msg}`
+    }
+
+    const lines = msg.split('\n')
+
+    if (lines.length > ERROR_RESULT_MAX_LINES) {
+      return [
+        ...lines.slice(0, ERROR_RESULT_MAX_LINES),
+        `… +${lines.length - ERROR_RESULT_MAX_LINES} lines`
+      ].join('\n')
+    }
+
+    return msg
+  }
+
+  if (!result) {return result}
+
+  if (name === 'Read' && /^\s*\d+[\t→ ]/.test(result)) {
     const n = result.split('\n').filter(l => l.length > 0).length
+
     return `Read ${n} line${n === 1 ? '' : 's'}`
   }
+
+  if (name === 'Grep' || name === 'Glob') {
+    if (/^No (files|matches|content)/i.test(result.trim())) {
+      return `Found 0 ${name === 'Glob' ? 'files' : 'lines'}`
+    }
+
+    const n = result.split('\n').filter(l => l.length > 0).length
+    const noun = name === 'Glob' ? (n === 1 ? 'file' : 'files') : n === 1 ? 'line' : 'lines'
+
+    return `Found ${n} ${noun}`
+  }
+
+  if (name === 'Bash') {
+    const trimmed = result.replace(/\s+$/, '')
+
+    if (!trimmed) {
+      return '(No output)'
+    }
+
+    const lines = trimmed.split('\n')
+
+    // CC parity: when exactly one line overflows, show it instead of a hint.
+    if (lines.length <= BASH_RESULT_MAX_LINES + 1) {
+      return trimmed
+    }
+
+    return [
+      ...lines.slice(0, BASH_RESULT_MAX_LINES),
+      `… +${lines.length - BASH_RESULT_MAX_LINES} lines`
+    ].join('\n')
+  }
+
   return result
 }
 
@@ -202,13 +286,16 @@ export class GatewayClient extends EventEmitter {
     } catch (err) {
       this.pushLog(`[spawn error] ${String(err)}`)
       this.handleExit(null, String(err))
+
       return
     }
 
     const rl = createInterface({ input: this.proc.stdout! })
     rl.on('line', raw => {
       const line = raw.trim()
-      if (!line) return
+
+      if (!line) {return}
+
       try {
         this.dispatch(JSON.parse(line))
       } catch {
@@ -231,9 +318,11 @@ export class GatewayClient extends EventEmitter {
 
   drain(): void {
     this.subscribed = true
-    for (const ev of this.buffered) this.emit('event', ev)
+
+    for (const ev of this.buffered) {this.emit('event', ev)}
     this.buffered = []
-    if (this.pendingExit !== undefined) this.emit('exit', this.pendingExit)
+
+    if (this.pendingExit !== undefined) {this.emit('exit', this.pendingExit)}
   }
 
   getLogTail(limit = 20): string {
@@ -245,11 +334,13 @@ export class GatewayClient extends EventEmitter {
       clearTimeout(this.readyTimer)
       this.readyTimer = null
     }
+
     try {
       this.proc?.kill('SIGTERM')
     } catch {
       // best effort
     }
+
     this.proc = null
   }
 
@@ -260,6 +351,7 @@ export class GatewayClient extends EventEmitter {
   // ── client → server RPCs ─────────────────────────────────────────────────
   request<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T> {
     const p = (params ?? {}) as Record<string, unknown>
+
     switch (method) {
       // ── startup handshake ────────────────────────────────────────────────
       case 'commands.catalog': {
@@ -271,18 +363,24 @@ export class GatewayClient extends EventEmitter {
           .then(wf => {
             const pairs = SLASHES.map(s => [s.name, s.desc] as [string, string])
             const canon: Record<string, string> = {}
-            for (const s of SLASHES) canon[s.name] = s.name
+
+            for (const s of SLASHES) {canon[s.name] = s.name}
+
             for (const w of wf) {
               const name = `/${w.name}`
-              if (canon[name]) continue
+
+              if (canon[name]) {continue}
               canon[name] = name
               pairs.push([name, w.description ?? 'Run a dynamic workflow'])
             }
+
             return { canon, categories: [], pairs, skill_count: 0, sub: {} } as T
           })
       }
+
       case 'complete.slash': {
         const text = String(p.text ?? '').toLowerCase() || '/'
+
         return this.fetchWorkflowCommands()
           .catch(() => [] as WorkflowCommand[])
           .then(wf => {
@@ -292,12 +390,15 @@ export class GatewayClient extends EventEmitter {
                 .filter(w => !SLASHES.some(s => s.name === `/${w.name}`))
                 .map(w => ({ desc: w.description ?? 'Run a dynamic workflow', name: `/${w.name}` }))
             ]
+
             const items = entries
               .filter(s => s.name.toLowerCase().startsWith(text))
               .map(s => ({ display: s.name, meta: s.desc, text: s.name }))
+
             return { items, replace_from: 1 } as T
           })
       }
+
       case 'complete.path':
         // @-file mentions: serve workspace file completions from disk (the hook
         // computes the replace offset; we just return matching entries).
@@ -307,33 +408,49 @@ export class GatewayClient extends EventEmitter {
         if (String(p.key ?? '') === 'full') {
           return this.controlQuery('get_settings', {}).then(s => (s ?? {}) as T)
         }
+
         return Promise.resolve({} as T)
       }
+
       case 'config.set': {
         // Route clawcodex-backed settings to control_requests; display-only prefs
         // (mouse/details/statusbar/skin/…) have no backend and apply locally, so
         // accept them silently.
         const key = String(p.key ?? '')
         const value = p.value
-        if (key === 'model') this.sendControl('set_model', { model: value })
-        else if (key === 'permission_mode') this.sendControl('set_permission_mode', { mode: value })
-        else if (key === 'effort' || key === 'reasoning') this.sendControl('set_effort', { effort: value })
-        else if (key === 'provider') this.sendControl('set_provider', { provider: value })
-        else if (key === 'thinking') this.sendControl('set_thinking', { action: value })
+
+        if (key === 'permission_mode') {
+          // The server can reject this (bypassPermissions is gated on
+          // availability); reflect its verdict so a settings-panel write
+          // doesn't falsely report success while the server refused.
+          return this.controlQuery('set_permission_mode', { mode: value })
+            .then(r => ({ ok: (r as any)?.ok !== false } as T))
+        }
+
+        if (key === 'model') {this.sendControl('set_model', { model: value })}
+        else if (key === 'effort' || key === 'reasoning') {this.sendControl('set_effort', { effort: value })}
+        else if (key === 'provider') {this.sendControl('set_provider', { provider: value })}
+        else if (key === 'thinking') {this.sendControl('set_thinking', { action: value })}
+
         return Promise.resolve({ ok: true } as T)
       }
+
       case 'permission.cycle':
         // ch13 round-4 — shift+tab: the SERVER computes the guarded next
         // mode (get_next_permission_mode; bypass only when available) from
         // the live mode, so the client can't step into bypassPermissions
         // unconditionally or desync a cursor after /mode.
         return this.controlQuery('cycle_permission_mode', {}).then(r => (r ?? {}) as T)
+
       case 'session.activate':
+
       case 'session.create':
+
       case 'session.resume':
         // clawcodex runs a single agent-server session; hand back its id once
         // system/init has set it. The app then enables the composer.
         return this.readyPromise.then(() => ({ info: this.sessionInfo ?? undefined, session_id: this.sessionId }) as T)
+
       case 'setup.status':
         return Promise.resolve({ provider_configured: true } as T)
 
@@ -342,6 +459,7 @@ export class GatewayClient extends EventEmitter {
         return this.controlQuery('get_settings', {}).then((r: any) => {
           const models: string[] = Array.isArray(r?.available_models) ? r.available_models : []
           const provider = String(r?.provider ?? 'clawcodex')
+
           return {
             model: r?.model,
             provider,
@@ -361,16 +479,21 @@ export class GatewayClient extends EventEmitter {
         const text = String(p.text ?? '')
         this.msgStarted = false
         this.send({ message: { content: text, role: 'user' }, type: 'user' })
+
         return Promise.resolve({ ok: true } as T)
       }
+
       case 'session.active_list':
+
       case 'session.list':
         // Single agent-server session in the basic port; the switcher/resume
         // list is Phase 2. Resolve locally so the 1.5s poll doesn't spam the
         // backend with list_sessions.
         return Promise.resolve({ sessions: [] } as T)
+
       case 'session.interrupt':
         this.sendControl('interrupt', {})
+
         return Promise.resolve({ ok: true } as T)
 
       // ── slash commands → clawcodex control_requests ──────────────────────
@@ -381,6 +504,7 @@ export class GatewayClient extends EventEmitter {
         const sp = raw.indexOf(' ')
         const name = sp === -1 ? raw : raw.slice(0, sp)
         const arg = sp === -1 ? undefined : raw.slice(sp + 1)
+
         return this.dispatchSlash(name, arg) as Promise<T>
       }
 
@@ -388,6 +512,7 @@ export class GatewayClient extends EventEmitter {
       case 'approval.respond': {
         const ap = this.pendingApproval
         this.pendingApproval = null
+
         if (ap) {
           const deny = p.choice === 'deny'
           // 'always' = "don't ask again": send the backend's suggestion AS-IS so
@@ -398,6 +523,7 @@ export class GatewayClient extends EventEmitter {
           // rewrites just that rule's content and nothing else. 'once' → no rule.
           let chosenUpdates: any[] = []
           const first = ap.suggestions?.[0]
+
           if (!deny && first && p.choice === 'always') {
             const edited = typeof p.rule === 'string' ? p.rule.trim() : ''
             const baseRule = Array.isArray(first.rules) ? first.rules[0] : undefined
@@ -407,6 +533,7 @@ export class GatewayClient extends EventEmitter {
                 : first
             ]
           }
+
           this.send({
             response: {
               request_id: ap.request_id,
@@ -417,8 +544,10 @@ export class GatewayClient extends EventEmitter {
             type: 'control_response'
           })
         }
+
         return Promise.resolve({ ok: true } as T)
       }
+
       case 'clarify.respond':
         this.send({
           response: {
@@ -427,6 +556,7 @@ export class GatewayClient extends EventEmitter {
           },
           type: 'control_response'
         })
+
         return Promise.resolve({ ok: true } as T)
 
       default:
@@ -439,12 +569,15 @@ export class GatewayClient extends EventEmitter {
   // WORKFLOW_CMDS_TTL_MS). Degrades to the last-known list on RPC failure.
   private fetchWorkflowCommands(): Promise<WorkflowCommand[]> {
     const now = Date.now()
-    if (now - this.wfFetchedAt < WORKFLOW_CMDS_TTL_MS) return Promise.resolve(this.wfCommands)
+
+    if (now - this.wfFetchedAt < WORKFLOW_CMDS_TTL_MS) {return Promise.resolve(this.wfCommands)}
     this.wfFetchedAt = now
+
     return this.controlQuery('list_workflow_commands', {}).then((r: any) => {
       if (Array.isArray(r?.commands)) {
         this.wfCommands = r.commands.filter((c: any) => typeof c?.name === 'string' && c.name)
       }
+
       return this.wfCommands
     })
   }
@@ -452,6 +585,7 @@ export class GatewayClient extends EventEmitter {
   // ── event plumbing ───────────────────────────────────────────────────────
   private controlQuery(subtype: string, params: Record<string, unknown>): Promise<unknown> {
     const requestId = `q${++this.reqId}`
+
     return new Promise(resolve => {
       this.pending.set(requestId, { reject: () => resolve(null), resolve })
       this.send({ request: { subtype, ...params }, request_id: requestId, type: 'control_request' })
@@ -475,97 +609,155 @@ export class GatewayClient extends EventEmitter {
     arg?: string
   ): Promise<{ output: string; type: string } | { message: string; notice?: string; type: 'send' }> {
     const out = (output: string) => ({ output, type: 'exec' })
+
     switch (name) {
       case 'clear':
         await this.controlQuery('clear', {})
+
         return out('Conversation cleared.')
       case 'compact': {
         const r = (await this.controlQuery('compact', { instructions: arg ?? null })) as any
+
         return out(`Compacted${r?.tokens_saved ? ` (saved ~${r.tokens_saved} tokens)` : ''}.`)
       }
+
       case 'context': {
         const r = (await this.controlQuery('get_context_usage', {})) as any
         const pct = r?.percentage == null ? '?' : Math.round(r.percentage)
+
         return out(`Context: ${r?.total_tokens ?? '?'}/${r?.max_tokens ?? '?'} tokens (${pct}%).`)
       }
+
       case 'effort': {
         const r = (await this.controlQuery('set_effort', { effort: arg ?? null })) as any
-        if (r && r.ok === false) return out(`effort: ${r.error ?? 'invalid value'}`)
+
+        if (r && r.ok === false) {return out(`effort: ${r.error ?? 'invalid value'}`)}
+
         if (r?.effort === 'ultracode') {
           return out('Ultracode on: workflow auto-orchestration for this session (reset with /effort high).')
         }
+
         return out(`Effort: ${r?.effort ?? arg ?? '(unchanged)'}.`)
       }
-      case 'mode':
-        await this.controlQuery('set_permission_mode', { mode: arg })
-        return out(`Permission mode: ${arg ?? '(unchanged)'}.`)
+
+      case 'mode': {
+        // Bare `/mode` is a no-op query, not a set — don't send an empty mode
+        // (the server would reject it as invalid). Matches the prior behavior.
+        if (arg == null || arg.trim() === '') {return out('Permission mode: (unchanged).')}
+
+        // The server validates the mode and gates bypassPermissions on
+        // availability (same guard as the Shift+Tab cycle) — surface its
+        // verdict instead of echoing the arg as if it took effect.
+        const r = (await this.controlQuery('set_permission_mode', { mode: arg.trim() })) as any
+
+        if (r && r.ok === false) {return out(`mode: ${r.error ?? 'invalid mode'}`)}
+
+        // Only badge the mode the server actually confirmed — a rejected set
+        // must not flip the composer's permission-mode indicator.
+        const mode = typeof r?.mode === 'string' ? r.mode : arg.trim()
+
+        if (mode) {
+          this.publish({ payload: { mode: String(mode) }, type: 'permission.mode' })
+        }
+
+        return out(`Permission mode: ${mode}.`)
+      }
+
       case 'model':
         await this.controlQuery('set_model', { model: arg })
+
         return out(`Model set to ${arg ?? '(unchanged)'}.`)
       case 'provider': {
         const r = (await this.controlQuery('set_provider', { provider: arg })) as any
+
         return out(`Provider: ${r?.provider ?? arg ?? '(unchanged)'}${r?.model ? ` (model ${r.model})` : ''}.`)
       }
+
       case 'rewind': {
         const r = (await this.controlQuery('rewind', { turns: arg ? Number(arg) || 1 : 1 })) as any
+
         return out(`Rewound ${r?.removed ?? 0} turn(s).`)
       }
+
       case 'thinking': {
         const r = (await this.controlQuery('set_thinking', { action: arg ?? 'toggle' })) as any
+
         return out(`Thinking ${r?.thinking ? 'on' : 'off'}.`)
       }
+
       case 'bg': {
         if (arg) {
           const r = (await this.controlQuery('bg_agent', { command: arg })) as any
+
           return out(`Started background agent ${r?.id ?? ''}.`)
         }
+
         const r = (await this.controlQuery('bg_list', {})) as any
         const tasks = Array.isArray(r?.tasks) ? r.tasks : []
+
         return out(tasks.length ? tasks.map((t: any) => `${t.id} [${t.status}] ${t.command}`).join('\n') : 'No background tasks.')
       }
+
       case 'insights': {
         const r = (await this.controlQuery('insights', {})) as any
+
         return out(r?.insights ? String(r.insights) : 'No insights available.')
       }
+
       case 'knowledge': {
         const r = (await this.controlQuery('knowledge', { action: arg || 'status' })) as any
+
         const bits = [
           r?.enabled != null ? `enabled=${r.enabled}` : '',
           r?.semantic != null ? `semantic=${r.semantic}` : ''
         ].filter(Boolean)
+
         return out(`Knowledge ${bits.join(' ') || safeJson(r ?? {})}`)
       }
+
       case 'plan': {
         const r = (await this.controlQuery('plan', { action: arg ? 'set' : 'view', text: arg })) as any
+
         return out(r?.plan ? `Plan:\n${r.plan}` : 'No plan set.')
       }
+
       case 'rename': {
         const r = (await this.controlQuery('rename', { name: arg })) as any
+
         return out(`Renamed to ${r?.name ?? arg ?? '(unchanged)'}.`)
       }
+
       case 'resume': {
         if (arg) {
           const r = (await this.controlQuery('resume', { session_id: arg })) as any
+
           return out(`Resumed ${arg} (${r?.count ?? 0} messages).`)
         }
+
         const r = (await this.controlQuery('list_sessions', {})) as any
         const ss = Array.isArray(r?.sessions) ? r.sessions : []
+
         return out(
           ss.length
             ? `Sessions:\n${ss.slice(0, 10).map((s: any) => `${s.session_id} — ${s.preview ?? ''}`).join('\n')}\nUse /resume <id>`
             : 'No saved sessions.'
         )
       }
+
       case 'workflows': {
         const r = (await this.controlQuery('workflows', {})) as any
-        if (r && r.ok === false) return out(`workflows: ${r.error ?? 'unavailable'}`)
+
+        if (r && r.ok === false) {return out(`workflows: ${r.error ?? 'unavailable'}`)}
+
         return out(String(r?.text ?? 'No workflow runs.'))
       }
+
       default: {
         // Workflow commands (/deep-research + saved .claude/workflows/*.py):
         // the backend expands the directive; the app submits it as a prompt so
         // the model launches the run via the Workflow tool.
         const r = (await this.controlQuery('workflow_command', { args: arg ?? '', name })) as any
+
         if (r?.ok && typeof r.prompt === 'string' && r.prompt) {
           return {
             message: r.prompt,
@@ -573,6 +765,7 @@ export class GatewayClient extends EventEmitter {
             type: 'send'
           }
         }
+
         return out(`/${name} isn't wired into the clawcodex backend yet.`)
       }
     }
@@ -588,12 +781,14 @@ export class GatewayClient extends EventEmitter {
       const dirPart = slash === -1 ? '' : stripped.slice(0, slash + 1)
       const base = (slash === -1 ? stripped : stripped.slice(slash + 1)).toLowerCase()
       const absDir = pathResolve(cwd, dirPart || '.')
+
       return readdirSync(absDir, { withFileTypes: true })
         .filter(e => !e.name.startsWith('.') && e.name.toLowerCase().startsWith(base))
         .slice(0, 50)
         .map(e => {
           const isDir = e.isDirectory()
           const rel = dirPart + e.name + (isDir ? '/' : '')
+
           return { display: rel, meta: isDir ? 'dir' : 'file', text: rel }
         })
     } catch {
@@ -601,33 +796,73 @@ export class GatewayClient extends EventEmitter {
     }
   }
 
-  // Build a unified diff for Edit/Write tool results so the app renders a colored
-  // ```diff block (turnController.pushInlineDiffSegment). Other tools → undefined
-  // (just the result text shows).
+  // Rich Edit/Write result forwarded by the agent-server (`tool_use_result`
+  // on the user envelope, trimmed to the display shape). Shape-detected from
+  // the value itself — self-describing type/filePath/structuredPatch — so it
+  // works even when the tool_use bookkeeping is empty (mid-turn attach).
+  private structuredDiff(value: any): StructuredDiffPayload | undefined {
+    if (!value || typeof value !== 'object') {return undefined}
+    const kind = value.type
+
+    if (kind !== 'create' && kind !== 'update') {return undefined}
+
+    if (typeof value.filePath !== 'string' || !Array.isArray(value.structuredPatch)) {return undefined}
+    const hunks: PatchHunk[] = []
+
+    for (const h of value.structuredPatch) {
+      if (!h || typeof h !== 'object' || !Array.isArray(h.lines)) {return undefined}
+      hunks.push({
+        lines: h.lines.map(String),
+        newLines: Number(h.newLines ?? 0),
+        newStart: Number(h.newStart ?? 1),
+        oldLines: Number(h.oldLines ?? 0),
+        oldStart: Number(h.oldStart ?? 1)
+      })
+    }
+
+    return {
+      ...(typeof value.content === 'string' && { content: value.content }),
+      filePath: value.filePath,
+      ...(typeof value.firstLine === 'string' && { firstLine: value.firstLine }),
+      hunks,
+      kind
+    }
+  }
+
+  // Legacy fallback (agent-server predating tool_use_result): a fake unified
+  // diff from the Edit/Write tool *input* so the app can render at least a
+  // colored ```diff block. No line numbers/context — superseded by
+  // structuredDiff whenever the backend forwards the real patch.
   private editDiff(name: string, input: any): string | undefined {
     try {
       const file = String(input?.file_path ?? input?.path ?? '')
+
       if (name === 'Write') {
         const body = String(input?.content ?? '')
           .split('\n')
           .map(l => '+' + l)
           .join('\n')
+
         return body ? `+++ ${file}\n${body}` : undefined
       }
+
       if (name === 'Edit') {
         const oldB = String(input?.old_string ?? '')
           .split('\n')
           .map(l => '-' + l)
           .join('\n')
+
         const newB = String(input?.new_string ?? '')
           .split('\n')
           .map(l => '+' + l)
           .join('\n')
+
         return `--- ${file}\n+++ ${file}\n${oldB}\n${newB}`
       }
     } catch {
       /* ignore */
     }
+
     return undefined
   }
 
@@ -636,41 +871,58 @@ export class GatewayClient extends EventEmitter {
     switch (msg?.type) {
       case 'assistant': {
         const content = msg.message?.content
+
         if (Array.isArray(content)) {
           for (const b of content) {
             if (b?.type === 'tool_use') {
               this.ensureMsgStart()
               this.toolInputs.set(String(b.id), { input: b.input, name: String(b.name ?? '') })
               this.publish({
-                payload: { args_text: safeJson(b.input), context: toolContext(b.input), name: b.name, tool_id: b.id },
+                payload: {
+                  args_text: safeJson(b.input),
+                  context: toolContext(b.input),
+                  name: b.name,
+                  todos: todosFromInput(b.name, b.input),
+                  tool_id: b.id
+                },
                 type: 'tool.start'
               })
             }
           }
         }
+
         break
       }
+
       case 'control_request':
         this.handleServerControl(msg)
+
         break
+
       case 'control_response':
         this.resolvePending(msg)
+
         break
+
       case 'result':
         this.publish({
           payload: {
+            permission_mode: typeof msg.permission_mode === 'string' ? msg.permission_mode : undefined,
             text: typeof msg.result === 'string' ? msg.result : undefined,
             usage: msg.usage
           },
           type: 'message.complete'
         })
         this.msgStarted = false
+
         if (msg.is_error || msg.subtype === 'error') {
           this.publish({ payload: { message: String(msg.error ?? msg.result ?? 'error') }, type: 'error' })
         }
+
         break
       case 'stream_event': {
         const d = msg.event?.delta
+
         if (d?.type === 'text_delta' && d.text) {
           this.ensureMsgStart()
           this.publish({ payload: { text: d.text }, type: 'message.delta' })
@@ -678,8 +930,10 @@ export class GatewayClient extends EventEmitter {
           this.ensureMsgStart()
           this.publish({ payload: { text: d.thinking }, type: 'thinking.delta' })
         }
+
         break
       }
+
       case 'system':
         if (msg.subtype === 'init') {
           this.sessionId = String(msg.session_id ?? '')
@@ -701,38 +955,60 @@ export class GatewayClient extends EventEmitter {
             type: 'background.complete'
           })
         }
+
         break
       case 'user': {
         const content = msg.message?.content
+
         if (Array.isArray(content)) {
+          // The backend builds one user message per tool result, so a
+          // message-level tool_use_result belongs to the lone block. Consume
+          // it on first attach so a hypothetical multi-block message can't
+          // pin the same patch onto every result.
+          let structured = this.structuredDiff(msg.tool_use_result)
+
           for (const b of content) {
             if (b?.type === 'tool_result') {
               const stored = this.toolInputs.get(String(b.tool_use_id))
+              // A failed edit must not render a diff at all — neither the
+              // real patch nor a fabricated one for an edit that never ran.
+              const isError = Boolean(b.is_error)
+              const resultText = formatToolResult(
+                stored?.name,
+                typeof b.content === 'string' ? b.content : safeJson(b.content),
+                isError
+              )
               this.publish({
                 payload: {
-                  inline_diff: stored ? this.editDiff(stored.name, stored.input) : undefined,
+                  // error drives the ✗ mark (red bullet + red result rows);
+                  // without it a real failure renders as a green success.
+                  error: isError ? resultText : undefined,
+                  inline_diff:
+                    isError || structured || !stored ? undefined : this.editDiff(stored.name, stored.input),
                   name: stored?.name,
-                  result_text: formatToolResult(
-                    stored?.name,
-                    typeof b.content === 'string' ? b.content : safeJson(b.content),
-                    Boolean(b.is_error)
-                  ),
+                  result_text: resultText,
+                  structured_diff: isError ? undefined : structured,
+                  todos: isError ? undefined : todosFromInput(stored?.name, stored?.input),
                   tool_id: b.tool_use_id
                 },
                 type: 'tool.complete'
               })
+              structured = undefined
               this.toolInputs.delete(String(b.tool_use_id))
             }
           }
         }
+
         break
       }
+
       case 'agent_progress': {
         // ch13 round-4 — the backend emits rich subagent progress
         // (agent.py ProgressTracker) but the bridge dropped it, so the
         // subagent HUD stayed dark during Task/Agent delegation. Map it to
         // the subagent.* events the app renderer already handles.
         const aid = String(msg.agent_id ?? '')
+
         if (aid) {
           const payload: any = {
             depth: msg.depth ?? 0,
@@ -740,11 +1016,14 @@ export class GatewayClient extends EventEmitter {
             subagent_id: aid,
             subagent_type: msg.subagent_type
           }
+
           if (!this.seenSubagents.has(aid)) {
             this.seenSubagents.add(aid)
             this.publish({ payload: { ...payload, status: 'running' }, type: 'subagent.start' })
           }
+
           const activity = String(msg.activity ?? '').trim()
+
           if (activity) {
             // ch13 round-4 — map to the field names the HUD renderer reads
             // (turnController: output_tokens / tool_count), not the backend's
@@ -754,11 +1033,14 @@ export class GatewayClient extends EventEmitter {
               type: 'subagent.progress'
             })
           }
+
           const status = String(msg.status ?? '')
+
           if (status === 'completed' || status === 'failed' || status === 'killed') {
             this.publish({ payload: { ...payload, status }, type: 'subagent.complete' })
           }
         }
+
         break
       }
       // keep_alive / streamlined_* → ignored for the basic port
@@ -775,6 +1057,7 @@ export class GatewayClient extends EventEmitter {
   // Server-initiated control requests (tool permission / elicitation).
   private handleServerControl(msg: any): void {
     const req = msg.request
+
     if (req?.subtype === 'can_use_tool') {
       // ch13 round-4 — carry the backend's permission SUGGESTIONS so the
       // "don't ask again" choice persists a real rule.
@@ -816,11 +1099,14 @@ export class GatewayClient extends EventEmitter {
       clearTimeout(this.readyTimer)
       this.readyTimer = null
     }
+
     const err = new Error(reason || `agent-server exited${code === null ? '' : ` (${code})`}`)
-    for (const p of this.pending.values()) p.reject(err)
+
+    for (const p of this.pending.values()) {p.reject(err)}
     this.pending.clear()
-    if (this.subscribed) this.emit('exit', code)
-    else this.pendingExit = code
+
+    if (this.subscribed) {this.emit('exit', code)}
+    else {this.pendingExit = code}
   }
 
   private publish(ev: GatewayEvent): void {
@@ -828,23 +1114,27 @@ export class GatewayClient extends EventEmitter {
       clearTimeout(this.readyTimer)
       this.readyTimer = null
     }
-    if (this.subscribed) this.emit('event', ev)
-    else this.buffered.push(ev)
+
+    if (this.subscribed) {this.emit('event', ev)}
+    else {this.buffered.push(ev)}
   }
 
   private pushLog(line: string): void {
     this.logs.push(line)
-    if (this.logs.length > MAX_LOG_LINES) this.logs.shift()
+
+    if (this.logs.length > MAX_LOG_LINES) {this.logs.shift()}
   }
 
   private resolvePending(msg: any): void {
     const r = msg.response
     const id = r?.request_id
     const p = id ? this.pending.get(id) : undefined
-    if (!p) return
+
+    if (!p) {return}
     this.pending.delete(id)
-    if (r.subtype === 'error') p.reject(new Error(String(r.error ?? 'error')))
-    else p.resolve(r.response)
+
+    if (r.subtype === 'error') {p.reject(new Error(String(r.error ?? 'error')))}
+    else {p.resolve(r.response)}
   }
 
   private send(obj: unknown): void {
@@ -863,9 +1153,11 @@ export class GatewayClient extends EventEmitter {
     const toolNames: string[] = Array.isArray(init.tools)
       ? init.tools.map((t: any) => t?.name).filter(Boolean)
       : []
+
     return {
       cwd: init.cwd,
       model: String(init.model ?? ''),
+      permission_mode: typeof init.permission_mode === 'string' ? init.permission_mode : undefined,
       profile_name: init.provider ? String(init.provider) : undefined,
       skills: {},
       tools: { '': toolNames },

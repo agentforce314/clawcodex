@@ -19,6 +19,7 @@ import {
 import type { Theme } from '../theme.js'
 import type { ActiveTool, DetailsMode, Msg, SectionVisibility } from '../types.js'
 
+import { DiffView, structuredDiffSupported } from './diffView.js'
 import { Md } from './markdown.js'
 import { StreamingMd } from './streamingMarkdown.js'
 import { ToolTrail } from './thinking.js'
@@ -117,6 +118,41 @@ export const MessageLine = memo(function MessageLine({
             {preview}
           </Text>
         )}
+      </Box>
+    )
+  }
+
+  // Structured tool diff — render like the original's transcript: the tool
+  // line (⏺ Edit(...)) with the patch indented under a ⎿ gutter. No role
+  // glyph, no "Response" separator; those belong to prose segments. Legacy
+  // text-only diff segments (or NO_COLOR terminals) fall through to the
+  // markdown ```diff path below.
+  if (msg.kind === 'diff' && msg.diffData && structuredDiffSupported()) {
+    // Recreated per render, which defeats DiffView's memo — fine: the
+    // expensive work (highlight + word diff) sits behind its module-level
+    // render cache, so a re-render is a WeakMap hit.
+    const mdFallback = (
+      <Md
+        cols={transcriptBodyWidth(cols, msg.role, t.brand.prompt, TERMUX_TUI_MODE)}
+        compact={compact}
+        t={t}
+        text={msg.text}
+      />
+    )
+
+    return (
+      <Box flexDirection="column" marginBottom={1} marginTop={1}>
+        {toolsMode !== 'hidden' && Boolean(msg.tools?.length) && (
+          <ToolTrail
+            commandOverride={detailsModeCommandOverride}
+            detailsMode={detailsMode}
+            reasoning=""
+            sections={sections}
+            t={t}
+            trail={msg.tools}
+          />
+        )}
+        <DiffView cols={cols} diff={msg.diffData} fallback={mdFallback} t={t} />
       </Box>
     )
   }
@@ -239,8 +275,10 @@ export const MessageLine = memo(function MessageLine({
   )
 })
 
+// Diff segments are a tool patch, not prose — a "Response" label above them
+// is chrome noise (and the structured branch above never reaches here).
 export const shouldShowResponseSeparator = (msg: Msg, showDetails: boolean): boolean =>
-  msg.role === 'assistant' && showDetails && /\S/.test(msg.text)
+  msg.role === 'assistant' && msg.kind !== 'diff' && showDetails && /\S/.test(msg.text)
 
 interface MessageLineProps {
   cols: number

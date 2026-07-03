@@ -6,7 +6,6 @@ import { DASHBOARD_TUI_MODE } from '../config/env.js'
 import { TYPING_IDLE_MS } from '../config/timing.js'
 import type {
   ApprovalRespondResponse,
-  ConfigSetResponse,
   SecretRespondResponse,
   SudoRespondResponse,
   VoiceRecordResponse
@@ -20,7 +19,7 @@ import type { InputHandlerActions, InputHandlerContext, InputHandlerResult } fro
 import { $isBlocked, $overlayState, patchOverlayState } from './overlayStore.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
-import { getUiState } from './uiStore.js'
+import { getUiState, patchUiState } from './uiStore.js'
 
 const isCtrl = (key: { ctrl: boolean }, ch: string, target: string) => key.ctrl && ch.toLowerCase() === target
 const DASHBOARD_NEW_SESSION_MESSAGE = 'starting a fresh dashboard chat...'
@@ -457,7 +456,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return clearSelection()
     }
 
-    if (key.upArrow && !cState.inputBuf.length) {
+    if (key.upArrow) {
       const inputSel = getInputSelection()
       const cursor = inputSel && inputSel.start === inputSel.end ? inputSel.start : null
 
@@ -471,7 +470,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       }
     }
 
-    if (key.downArrow && !cState.inputBuf.length) {
+    if (key.downArrow) {
       const inputSel = getInputSelection()
       const cursor = inputSel && inputSel.start === inputSel.end ? inputSel.start : null
       const noLineBelow = !cState.input || (cursor !== null && cState.input.indexOf('\n', cursor) < 0)
@@ -523,7 +522,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         })
       }
 
-      if (cState.input || cState.inputBuf.length) {
+      if (cState.input) {
         return cActions.clearIn()
       }
 
@@ -576,9 +575,15 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       if (!live.sid) {
         return void actions.sys('mode needs an active session')
       }
+
       return void gateway
         .rpc<{ mode?: string }>('permission.cycle', {})
-        .then(r => { if (r?.mode) actions.sys(`permission mode: ${r.mode}`) })
+        .then(r => {
+          if (r?.mode) {
+            patchUiState({ permissionMode: r.mode })
+            actions.sys(`permission mode: ${r.mode}`)
+          }
+        })
     }
 
     if (key.tab && cState.completions.length) {

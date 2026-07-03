@@ -84,6 +84,14 @@ class AgentServerConfig:
     # (`--fallback-model`; session-sticky, never persisted).
     fallback_model: str | None = None
     permission_mode: str = "default"
+    # bypassPermissions AVAILABILITY, decoupled from the launch mode: True when
+    # the user passed --dangerously-skip-permissions / --allow-dangerously-
+    # skip-permissions to the launcher. Availability is what lets Shift+Tab
+    # cycling and set_permission_mode reach bypassPermissions at runtime;
+    # launching IN bypass mode implies it (see _build_runtime). Mirrors
+    # isBypassPermissionsModeAvailable in
+    # typescript/src/utils/permissions/permissionSetup.ts:941.
+    is_bypass_available: bool = False
     max_turns: int = 20
     allowed_tools: tuple[str, ...] = ()
     disallowed_tools: tuple[str, ...] = ()
@@ -239,13 +247,51 @@ class _AgentSession:
             return
         if subtype == "set_permission_mode":
             mode = inner.get("mode")
-            if isinstance(mode, str) and self.tool_context is not None:
-                _set_mode(self.tool_context, mode)
-                # ch03 round-4 GAP A: the live gate home stays
-                # tool_context.permission_context; the store dispatch runs
-                # the centralized seams (listeners; future persistence).
-                _dispatch_app_state(self, permission_mode=mode)
-            self._ack(request_id)
+            # Validate BEFORE setting: an unknown string would land verbatim in
+            # permission_context.mode and silently behave like a mode it isn't.
+            # 'bubble' is runtime-only sub-agent escalation (rejected as a
+            # top-level mode everywhere else, e.g. agent_server_cli).
+            from src.permissions.types import PERMISSION_MODES
+
+            if (
+                not isinstance(mode, str)
+                or mode not in PERMISSION_MODES
+                or mode == "bubble"
+            ):
+                self._reply(request_id, {
+                    "ok": False,
+                    "error": f"invalid permission mode: {mode!r} "
+                             "(default | plan | acceptEdits | bypassPermissions "
+                             "| dontAsk | auto)",
+                })
+                return
+            if self.tool_context is None:
+                self._reply(request_id, {"ok": False, "error": "session not ready"})
+                return
+            # bypassPermissions is only settable when the session made it
+            # available (--dangerously-skip-permissions / --allow-…). Same
+            # guard the Shift+Tab cycle enforces (get_next_permission_mode) —
+            # without it, /mode bypassPermissions silently disabled the whole
+            # permission gate in any session. Mirrors the onSetPermissionMode
+            # contract in typescript/src/bridge/replBridge.ts:182-193.
+            pc = self.tool_context.permission_context
+            if mode == "bypassPermissions" and not getattr(
+                pc, "is_bypass_permissions_mode_available", False
+            ):
+                self._reply(request_id, {
+                    "ok": False,
+                    "error": "bypassPermissions is not available in this "
+                             "session — launch with "
+                             "--dangerously-skip-permissions or "
+                             "--allow-dangerously-skip-permissions",
+                })
+                return
+            _set_mode(self.tool_context, mode)
+            # ch03 round-4 GAP A: the live gate home stays
+            # tool_context.permission_context; the store dispatch runs
+            # the centralized seams (listeners; future persistence).
+            _dispatch_app_state(self, permission_mode=mode)
+            self._reply(request_id, {"ok": True, "mode": mode})
             return
         if subtype == "cycle_permission_mode":
             # ch13 round-4 (critic B1) — shift+tab cycling MUST be computed
@@ -256,14 +302,15 @@ class _AgentSession:
             # step into bypass unconditionally, silently disabling the whole
             # permission gate. The server owns the mode + the availability
             # flag, so it owns the next-mode computation.
-            new_mode = None
-            if self.tool_context is not None:
-                from src.permissions.cycle import get_next_permission_mode
+            if self.tool_context is None:
+                self._reply(request_id, {"ok": False, "error": "session not ready"})
+                return
+            from src.permissions.cycle import get_next_permission_mode
 
-                pc = self.tool_context.permission_context
-                new_mode = get_next_permission_mode(pc)
-                _set_mode(self.tool_context, new_mode)
-                _dispatch_app_state(self, permission_mode=new_mode)
+            pc = self.tool_context.permission_context
+            new_mode = get_next_permission_mode(pc)
+            _set_mode(self.tool_context, new_mode)
+            _dispatch_app_state(self, permission_mode=new_mode)
             self._reply(request_id, {"ok": True, "mode": new_mode})
             return
         if subtype == "set_model":
@@ -1610,7 +1657,8 @@ class _AgentSession:
 
         if self.init_error is not None:
             self._emit(_result_message(
-                self.session_id, subtype="error", num_turns=0,
+                self.session_id,
+                permission_mode=_current_mode(self.tool_context, self.config.permission_mode), subtype="error", num_turns=0,
                 result=self.init_error, is_error=True, error=self.init_error,
             ))
             return
@@ -1648,7 +1696,8 @@ class _AgentSession:
                     level="warning",
                 ))
                 self._emit(_result_message(
-                    self.session_id, subtype="success", num_turns=0,
+                    self.session_id,
+                    permission_mode=_current_mode(self.tool_context, self.config.permission_mode), subtype="success", num_turns=0,
                     result="", is_error=False, duration_ms=0,
                 ))
                 return
@@ -1660,7 +1709,8 @@ class _AgentSession:
                     f"Operation stopped by hook: {ups.prevent_reason}"
                 )
                 self._emit(_result_message(
-                    self.session_id, subtype="success", num_turns=0,
+                    self.session_id,
+                    permission_mode=_current_mode(self.tool_context, self.config.permission_mode), subtype="success", num_turns=0,
                     result="", is_error=False, duration_ms=0,
                 ))
                 return
@@ -1771,7 +1821,8 @@ class _AgentSession:
             ))
         except AbortError:
             self._emit(_result_message(
-                self.session_id, subtype="cancelled", num_turns=0,
+                self.session_id,
+                permission_mode=_current_mode(self.tool_context, self.config.permission_mode), subtype="cancelled", num_turns=0,
                 result="", is_error=False,
                 duration_ms=int((time.monotonic() - start) * 1000),
             ))
@@ -1779,7 +1830,8 @@ class _AgentSession:
         except Exception as exc:  # noqa: BLE001 - one bad turn must not kill the session
             logger.exception("[agent-server] turn failed")
             self._emit(_result_message(
-                self.session_id, subtype="error", num_turns=0,
+                self.session_id,
+                permission_mode=_current_mode(self.tool_context, self.config.permission_mode), subtype="error", num_turns=0,
                 result=str(exc), is_error=True, error=str(exc),
                 duration_ms=int((time.monotonic() - start) * 1000),
             ))
@@ -1803,6 +1855,7 @@ class _AgentSession:
                 _cost = 0.0
         self._emit(_result_message(
             self.session_id,
+            permission_mode=_current_mode(self.tool_context, self.config.permission_mode),
             subtype="success",
             num_turns=result.num_turns,
             result=result.response_text,
@@ -2199,7 +2252,18 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
             except Exception:  # noqa: BLE001 — store failure must not break startup
                 logger.debug("[agent-server] app-state store init failed",
                              exc_info=True)
-        bypass = mode == "bypassPermissions"
+        # Availability = launched IN bypass mode, OR the launch boundary
+        # resolved it available (flags and/or trusted settings) and forwarded
+        # it via cfg.is_bypass_available. We do NOT read settings ambiently
+        # here: on the multi-session --http transport that would let the server
+        # host's own settings unlock bypass for every client session,
+        # regardless of the client's cwd. Availability is decided once per
+        # launch (src/cli.py _resolve_permission_state,
+        # tui_launcher.run_tui_launcher, and agent_server_cli for the
+        # single-session stdio case) and carried in. Availability alone does
+        # NOT enter bypass; it only unlocks it for Shift+Tab /
+        # set_permission_mode. Mirrors permissionSetup.ts:941-945.
+        bypass = mode == "bypassPermissions" or cfg.is_bypass_available
         perm_setup = setup_permissions(
             cwd=str(workspace_root),
             mode=mode,  # type: ignore[arg-type]
@@ -2325,6 +2389,40 @@ def _filter_registry(registry, *, keep) -> None:
 # ─── message shaping ─────────────────────────────────────────────────────────
 
 
+def _display_tool_result(value: Any) -> dict | None:
+    """Trim a rich Edit/Write tool output for the wire (display data only).
+
+    Recognizes the self-describing shape (``type``/``filePath``/
+    ``structuredPatch``) rather than a tool name so mid-turn clients can
+    render it without tool_use bookkeeping. Deliberate delta from real CC's
+    full-parity ``tool_use_result``: ``originalFile`` is dropped (the display
+    renderer never reads it) and update-type ``content`` (the full post-edit
+    file) is reduced to ``firstLine`` (language/shebang detection only; the
+    original uses the pre-edit first line — differs only when line 1 itself
+    changed); create-type keeps ``content`` for the file preview. Always
+    builds a new dict — ``value`` is shared with the in-memory message and
+    the persisted transcript.
+    """
+    if not isinstance(value, dict):
+        return None
+    if value.get("type") not in ("create", "update"):
+        return None
+    if not isinstance(value.get("filePath"), str) or not isinstance(value.get("structuredPatch"), list):
+        return None
+    trimmed: dict[str, Any] = {
+        "type": value["type"],
+        "filePath": value["filePath"],
+        "structuredPatch": value["structuredPatch"],
+    }
+    content = value.get("content")
+    if isinstance(content, str):
+        if value["type"] == "create":
+            trimmed["content"] = content
+        else:
+            trimmed["firstLine"] = content.split("\n", 1)[0]
+    return trimmed
+
+
 def _sdk_envelope(message: Any, session_id: str) -> dict | None:
     """Wrap a :class:`Message` into the SDK envelope the client renders."""
     from src.types.messages import message_to_dict
@@ -2335,12 +2433,19 @@ def _sdk_envelope(message: Any, session_id: str) -> dict | None:
         return None
     role = d.get("role", getattr(message, "role", "assistant"))
     msg_type = "assistant" if role == "assistant" else "user"
-    return {
+    env: dict[str, Any] = {
         "type": msg_type,
         "uuid": d.get("uuid"),
         "session_id": session_id,
         "message": {"role": role, "content": d.get("content")},
     }
+    # Rich Edit/Write result → snake_case per the SDK stream convention
+    # (SDKUserMessage.tool_use_result); the TUI renders the structured patch
+    # from it instead of fabricating a diff from tool input.
+    tool_use_result = _display_tool_result(d.get("toolUseResult"))
+    if tool_use_result is not None:
+        env["tool_use_result"] = tool_use_result
+    return env
 
 
 def _result_message(
@@ -2354,6 +2459,7 @@ def _result_message(
     error: str | None = None,
     duration_ms: int = 0,
     total_cost_usd: float = 0.0,
+    permission_mode: str | None = None,
 ) -> dict:
     payload: dict[str, Any] = {
         "type": "result",
@@ -2368,6 +2474,12 @@ def _result_message(
     }
     if error is not None:
         payload["error"] = error
+    # Server-side mode flips (plan approval, "accept edits for this session")
+    # emit no dedicated event — the end-of-turn result refreshes the client's
+    # permission-mode badge instead (at most one turn stale, and mode changes
+    # only bind next turn anyway).
+    if permission_mode is not None:
+        payload["permission_mode"] = permission_mode
     return payload
 
 

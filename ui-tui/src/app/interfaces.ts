@@ -160,6 +160,10 @@ export interface TranscriptRow {
 export interface UiState {
   bgTasks: Set<string>
   busy: boolean
+  // Live permission mode (default | plan | acceptEdits | bypassPermissions |
+  // auto) — seeded from system/init, refreshed by shift+tab cycling, /mode,
+  // and the end-of-turn result (covers server-side flips like plan approval).
+  permissionMode: string
   busyInputMode: BusyInputMode
   compact: boolean
   detailsMode: DetailsMode
@@ -212,7 +216,6 @@ export interface ComposerActions {
   setCompIdx: StateSetter<number>
   setHistoryIdx: StateSetter<null | number>
   setInput: StateSetter<string>
-  setInputBuf: StateSetter<string[]>
   setPasteSnips: StateSetter<PasteSnippet[]>
   setQueueEdit: (index: null | number) => void
   syncQueue: () => void
@@ -232,7 +235,6 @@ export interface ComposerState {
   completions: CompletionItem[]
   historyIdx: null | number
   input: string
-  inputBuf: string[]
   pasteSnips: PasteSnippet[]
   queueEditIdx: null | number
   queuedDisplay: string[]
@@ -397,7 +399,6 @@ export interface AppLayoutComposerProps {
   empty: boolean
   handleTextPaste: (event: PasteEvent) => MaybePromise<ComposerPasteResult | null>
   input: string
-  inputBuf: string[]
   pagerPageSize: number
   queueEditIdx: null | number
   queuedDisplay: string[]

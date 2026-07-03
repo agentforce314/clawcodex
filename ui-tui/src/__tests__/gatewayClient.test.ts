@@ -13,6 +13,7 @@ const harness = vi.hoisted(() => ({ proc: null as null | EventEmitter, spawnCall
 vi.mock('node:child_process', () => ({
   spawn: (...args: unknown[]) => {
     harness.spawnCalls.push(args)
+
     return harness.proc
   }
 }))
@@ -35,6 +36,7 @@ const toolUse = (id: string, name: string, input: unknown) => ({
   message: { content: [{ id, input, name, type: 'tool_use' }] },
   type: 'assistant'
 })
+
 const toolResult = (id: string, content: unknown, isError = false) => ({
   message: { content: [{ content, is_error: isError, tool_use_id: id, type: 'tool_result' }] },
   type: 'user'
@@ -70,12 +72,14 @@ describe('GatewayClient NDJSON adapter', () => {
 
   afterEach(() => {
     gw.kill()
-    if (prevWs === undefined) delete process.env.CLAWCODEX_WORKSPACE
-    else process.env.CLAWCODEX_WORKSPACE = prevWs
+
+    if (prevWs === undefined) {delete process.env.CLAWCODEX_WORKSPACE}
+    else {process.env.CLAWCODEX_WORKSPACE = prevWs}
   })
 
   const types = () => events.map(e => e.type)
   const last = (t: string) => [...events].reverse().find(e => e.type === t)
+
   // Emit a tool_use then await its tool.start (so toolInputs is populated),
   // then emit the matching tool_result and await its tool.complete.
   const runTool = async (id: string, name: string, input: unknown, result: unknown) => {
@@ -83,6 +87,7 @@ describe('GatewayClient NDJSON adapter', () => {
     await vi.waitFor(() => expect(last('tool.start')).toBeTruthy())
     proc.line(toolResult(id, result))
     await vi.waitFor(() => expect(last('tool.complete')).toBeTruthy())
+
     return last('tool.complete').payload
   }
 
@@ -145,17 +150,32 @@ describe('GatewayClient NDJSON adapter', () => {
     expect(p.result_text).toBe(stub)
   })
 
-  it('passes non-Read results through unchanged', async () => {
+  it('passes short Bash results through and caps long ones (CC parity)', async () => {
     const p = await runTool('t1', 'Bash', { command: 'echo hi' }, 'hi\n')
-    expect(p.result_text).toBe('hi\n')
+    expect(p.result_text).toBe('hi')
+
+    const long = await runTool('t2', 'Bash', { command: 'seq 9' }, '1\n2\n3\n4\n5\n6')
+    expect(long.result_text).toBe('1\n2\n3\n… +3 lines')
   })
 
-  it('keeps a failed Read result visible instead of collapsing it to a line count', async () => {
+  it('carries error on tool.complete for failed tools (drives the red ✗ path)', async () => {
+    proc.line(toolUse('t1', 'Bash', { command: 'false' }))
+    await vi.waitFor(() => expect(last('tool.start')).toBeTruthy())
+    proc.line(toolResult('t1', 'exit 1', true))
+    await vi.waitFor(() => expect(last('tool.complete')).toBeTruthy())
+
+    const p = last('tool.complete').payload
+    expect(p.error).toBe('Error: exit 1')
+    expect(p.result_text).toBe('Error: exit 1')
+  })
+
+  it('keeps a failed Read result visible (Error-prefixed), not collapsed to a line count', async () => {
     proc.line(toolUse('t1', 'Read', { file_path: '/ws/missing.ts' }))
     await vi.waitFor(() => expect(last('tool.start')).toBeTruthy())
     proc.line(toolResult('t1', 'File does not exist.', true))
     await vi.waitFor(() => expect(last('tool.complete')).toBeTruthy())
-    expect(last('tool.complete').payload.result_text).toBe('File does not exist.')
+    expect(last('tool.complete').payload.result_text).toBe('Error: File does not exist.')
+    expect(last('tool.complete').payload.error).toBe('Error: File does not exist.')
   })
 
   it('attaches an inline diff for Edit results', async () => {
@@ -170,6 +190,7 @@ describe('GatewayClient NDJSON adapter', () => {
   /** Requests the client wrote to the agent-server's stdin, parsed. */
   const stdinFrames = (): any[] => {
     const raw = (proc.stdin as any).read()?.toString() ?? ''
+
     return raw
       .split('\n')
       .filter(Boolean)
@@ -184,6 +205,7 @@ describe('GatewayClient NDJSON adapter', () => {
   beforeEach(() => {
     seen = []
   })
+
   const replyToControl = async (subtype: string, response: unknown) => {
     let req: any
     await vi.waitFor(() => {
@@ -198,6 +220,45 @@ describe('GatewayClient NDJSON adapter', () => {
     const p = gw.request('slash.exec', { command: 'workflows' })
     await replyToControl('workflows', { ok: true, text: 'deep-research  [running]  (run: wf_1)' })
     await expect(p).resolves.toEqual({ output: 'deep-research  [running]  (run: wf_1)', type: 'exec' })
+  })
+
+  it('confirms the applied mode from the server reply on /mode', async () => {
+    const p = gw.request('slash.exec', { command: 'mode acceptEdits' })
+    await replyToControl('set_permission_mode', { mode: 'acceptEdits', ok: true })
+    await expect(p).resolves.toEqual({ output: 'Permission mode: acceptEdits.', type: 'exec' })
+  })
+
+  it('treats bare /mode as a no-op query, not an empty set', async () => {
+    // No arg → must NOT send an empty mode the server would reject; report
+    // unchanged instead (the pre-hardening behavior).
+    const p = gw.request('slash.exec', { command: 'mode' })
+    const r: any = await p
+    expect(r).toEqual({ output: 'Permission mode: (unchanged).', type: 'exec' })
+    // And it must not have hit the backend at all.
+    expect(stdinFrames().some(f => f.request?.subtype === 'set_permission_mode')).toBe(false)
+  })
+
+  it('reflects the server rejection through config.set permission_mode', async () => {
+    // The settings-panel write path must not report success when the server
+    // refuses (bypassPermissions gated on availability).
+    const p = gw.request('config.set', { key: 'permission_mode', value: 'bypassPermissions' })
+    await replyToControl('set_permission_mode', { error: 'not available', ok: false })
+    await expect(p).resolves.toEqual({ ok: false })
+  })
+
+  it('surfaces the server rejection when /mode bypassPermissions is unavailable', async () => {
+    // The server gates bypassPermissions on availability (same guard as the
+    // Shift+Tab cycle) — the client must show the refusal, not pretend the
+    // mode changed.
+    const p = gw.request('slash.exec', { command: 'mode bypassPermissions' })
+    await replyToControl('set_permission_mode', {
+      error: 'bypassPermissions is not available in this session',
+      ok: false
+    })
+    const r: any = await p
+    expect(r.type).toBe('exec')
+    expect(r.output).toContain('not available')
+    expect(r.output).not.toContain('Permission mode:')
   })
 
   it('dispatches an unknown slash as a backend workflow command (send)', async () => {
@@ -315,6 +376,7 @@ describe('GatewayClient NDJSON adapter', () => {
 
   it('sends chosen_updates when the user picks "always"; none for "once"', async () => {
     const sent: any[] = []
+
     ;(gw as any).send = (m: any) => sent.push(m)
 
     proc.line({
@@ -338,6 +400,7 @@ describe('GatewayClient NDJSON adapter', () => {
     // The box lets the user widen the suggested rule (git status:* → git:*);
     // the edited value is carried as `rule` and must become the persisted rule.
     const sent: any[] = []
+
     ;(gw as any).send = (m: any) => sent.push(m)
     proc.line({
       request: {
@@ -359,6 +422,7 @@ describe('GatewayClient NDJSON adapter', () => {
     // (allow_permanent=true) and the suggestion must not be mangled into a
     // localSettings rule.
     const sent: any[] = []
+
     ;(gw as any).send = (m: any) => sent.push(m)
     const setModeSuggestion = { type: 'setMode', destination: 'session', mode: 'acceptEdits' }
     proc.line({

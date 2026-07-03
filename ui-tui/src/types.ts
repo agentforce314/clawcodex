@@ -7,6 +7,9 @@ export interface ActiveTool {
 }
 
 export interface TodoItem {
+  // Present-continuous label ("Fixing the parser…") — the busy line shows the
+  // in-progress todo's activeForm as its verb (original Spinner.tsx).
+  activeForm?: string
   content: string
   id: string
   status: 'cancelled' | 'completed' | 'in_progress' | 'pending'
@@ -125,6 +128,10 @@ export interface ClarifyReq {
 }
 
 export interface Msg {
+  // Structured Edit/Write patch for kind:'diff' segments — rendered by
+  // DiffView (line numbers, word diff, ColorDiff). Text-only diff segments
+  // (legacy backends) fall back to the markdown ```diff path.
+  diffData?: MsgDiffData
   info?: SessionInfo
   kind?: 'diff' | 'intro' | 'panel' | 'slash' | 'trail'
   panelData?: PanelData
@@ -137,6 +144,22 @@ export interface Msg {
   todos?: TodoItem[]
   todoIncomplete?: boolean
   todoCollapsedByDefault?: boolean
+}
+
+/**
+ * Display data for a structured diff segment. Same shape as the gateway's
+ * StructuredDiffPayload plus the ingestion-time truncation bookkeeping
+ * (hunks are capped once when the segment is built so the render cache can
+ * key on stable hunk objects).
+ */
+export interface MsgDiffData {
+  content?: string
+  filePath: string
+  firstLine?: null | string
+  hunks: Array<{ lines: string[]; newLines: number; newStart: number; oldLines: number; oldStart: number }>
+  kind: 'create' | 'update'
+  /** Hunk lines dropped by the ingestion cap (renders as "… +N lines"). */
+  truncatedLines?: number
 }
 
 export type Role = 'assistant' | 'system' | 'tool' | 'user'
@@ -166,6 +189,7 @@ export interface SessionInfo {
   lazy?: boolean
   mcp_servers?: McpServerStatus[]
   model: string
+  permission_mode?: string
   profile_name?: string
   reasoning_effort?: string
   release_date?: string

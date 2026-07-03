@@ -104,7 +104,6 @@ export function useComposerState({
   submitRef
 }: UseComposerStateOptions): UseComposerStateResult {
   const [input, setInput] = useState('')
-  const [inputBuf, setInputBuf] = useState<string[]>([])
   const [pasteSnips, setPasteSnips] = useState<PasteSnippet[]>([])
   const isBlocked = useStore($isBlocked)
   const { querier } = useStdin() as { querier: Parameters<typeof readOsc52Clipboard>[0] }
@@ -127,7 +126,6 @@ export function useComposerState({
 
   const clearIn = useCallback(() => {
     setInput('')
-    setInputBuf([])
     setPasteSnips([])
     setQueueEdit(null)
     setHistoryIdx(null)
@@ -272,7 +270,7 @@ export function useComposerState({
     const file = join(dir, 'prompt.md')
     const [cmd, ...args] = resolveEditor()
 
-    writeFileSync(file, [...inputBuf, input].join('\n'))
+    writeFileSync(file, input)
 
     let exitCode: null | number = null
 
@@ -292,12 +290,11 @@ export function useComposerState({
       }
 
       setInput('')
-      setInputBuf([])
       submitRef.current(text)
     } finally {
       rmSync(dir, { force: true, recursive: true })
     }
-  }, [input, inputBuf, submitRef])
+  }, [input, submitRef])
 
   const actions = useMemo(
     () => ({
@@ -312,7 +309,6 @@ export function useComposerState({
       setCompIdx,
       setHistoryIdx,
       setInput,
-      setInputBuf,
       setPasteSnips,
       setQueueEdit,
       syncQueue
@@ -351,12 +347,11 @@ export function useComposerState({
       completions,
       historyIdx,
       input,
-      inputBuf,
       pasteSnips,
       queueEditIdx,
       queuedDisplay
     }),
-    [compIdx, compReplace, completions, historyIdx, input, inputBuf, pasteSnips, queueEditIdx, queuedDisplay]
+    [compIdx, compReplace, completions, historyIdx, input, pasteSnips, queueEditIdx, queuedDisplay]
   )
 
   return {

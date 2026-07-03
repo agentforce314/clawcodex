@@ -29,12 +29,35 @@ describe('isToolTrailResultLine', () => {
 })
 
 describe('buildToolTrailLine', () => {
-  it('puts completion duration inline before the result marker', () => {
+  it('omits durations on the tool line (CC parity)', () => {
     const line = buildToolTrailLine('read_file', 'x', false, '', 0.94)
 
-    expect(line).toBe('Read File("x") (0.9s) ✓')
-    expect(parseToolTrailResultLine(line)).toEqual({ call: 'Read File("x") (0.9s)', detail: '', mark: '✓' })
-    expect(splitToolDuration('Read File("x") (0.9s)')).toEqual({ label: 'Read File("x")', duration: ' (0.9s)' })
+    expect(line).toBe('Read File(x) ✓')
+    expect(parseToolTrailResultLine(line)).toEqual({ call: 'Read File(x)', detail: '', mark: '✓' })
+    // legacy resumed-session lines still split cleanly
+    expect(splitToolDuration('Read File(x) (0.9s)')).toEqual({ label: 'Read File(x)', duration: ' (0.9s)' })
+  })
+
+  it('keeps multi-line details intact for the shelf', () => {
+    const line = buildToolTrailLine('Bash', 'ls', false, 'a\nb\nc')
+
+    expect(line).toBe('Bash(ls) :: a\nb\nc ✓')
+    expect(parseToolTrailResultLine(line)).toEqual({ call: 'Bash(ls)', detail: 'a\nb\nc', mark: '✓' })
+  })
+
+  it('caps runaway details at the safety limit', () => {
+    const big = Array.from({ length: 40 }, (_, i) => `l${i}`).join('\n')
+    const line = buildToolTrailLine('Bash', 'x', false, big)
+    const detail = parseToolTrailResultLine(line)!.detail
+
+    expect(detail.split('\n')).toHaveLength(13) // 12 + trailing …
+    expect(detail.endsWith('…')).toBe(true)
+  })
+
+  it('anchors the call/detail split so args containing :: cannot mis-split', () => {
+    const line = buildToolTrailLine('Bash', 'echo a :: b', false, 'out')
+
+    expect(parseToolTrailResultLine(line)).toEqual({ call: 'Bash(echo a :: b)', detail: 'out', mark: '✓' })
   })
 })
 
@@ -52,7 +75,7 @@ describe('buildVerboseToolTrailLine', () => {
     expect(line).toContain('Args:\n{')
     expect(line).toContain('Result:\nfirst line\nsecond :: line')
     expect(parseToolTrailResultLine(line)).toEqual({
-      call: 'Terminal("npm test") (1.3s)',
+      call: 'Terminal(npm test) (1.3s)',
       detail: 'Args:\n{\n  "cmd": "npm test"\n}\nResult:\nfirst line\nsecond :: line',
       mark: '✓'
     })
@@ -64,7 +87,7 @@ describe('buildVerboseToolTrailLine', () => {
     expect(line).toContain('Error:\ncommand failed')
     expect(line).not.toContain('Result:\ncommand failed')
     expect(parseToolTrailResultLine(line)).toEqual({
-      call: 'Terminal("npm test") (0.5s)',
+      call: 'Terminal(npm test) (0.5s)',
       detail: 'Error:\ncommand failed',
       mark: '✗'
     })

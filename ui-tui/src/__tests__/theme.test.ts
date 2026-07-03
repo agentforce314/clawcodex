@@ -48,11 +48,21 @@ describe('DEFAULT_THEME', () => {
     expect(DEFAULT_THEME.brand.tool).toBe('┊')
   })
 
-  it('has color palette', async () => {
+  it('has the original Claude Code dark palette', async () => {
     const { DEFAULT_THEME } = await importThemeWithCleanEnv()
 
-    expect(DEFAULT_THEME.color.primary).toBe('#FFD700')
-    expect(DEFAULT_THEME.color.error).toBe('#ef5350')
+    expect(DEFAULT_THEME.color.primary).toBe('#D77757') // claude orange
+    expect(DEFAULT_THEME.color.error).toBe('#FF6B80')
+    expect(DEFAULT_THEME.color.text).toBe('#FFFFFF')
+    expect(DEFAULT_THEME.color.muted).toBe('rgb(153,153,153)')
+    // original-CC tokens consumed by the ported surfaces
+    expect(DEFAULT_THEME.color.subtle).toBe('rgb(80,80,80)')
+    expect(DEFAULT_THEME.color.claudeShimmer).toBe('rgb(235,159,127)')
+    expect(DEFAULT_THEME.color.planMode).toBe('rgb(72,150,140)')
+    expect(DEFAULT_THEME.color.autoAccept).toBe('rgb(175,135,255)')
+    expect(DEFAULT_THEME.color.permission).toBe('rgb(177,185,249)')
+    expect(DEFAULT_THEME.color.bashBorder).toBe('rgb(253,93,177)')
+    expect(DEFAULT_THEME.color.promptBorder).toBe('rgb(136,136,136)')
   })
 })
 

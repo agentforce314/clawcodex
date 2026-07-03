@@ -9,6 +9,7 @@ import { DEFAULT_INDICATOR_STYLE, type UiState } from './interfaces.js'
 const buildUiState = (): UiState => ({
   bgTasks: new Set(),
   busy: false,
+  permissionMode: 'default',
   busyInputMode: 'queue',
   compact: false,
   detailsMode: 'collapsed',
@@ -26,7 +27,7 @@ const buildUiState = (): UiState => ({
   showReasoning: false,
   sid: null,
   status: 'starting clawcodex…',
-  statusBar: 'top',
+  statusBar: 'off',
   streaming: true,
   theme: DEFAULT_THEME,
   usage: ZERO
