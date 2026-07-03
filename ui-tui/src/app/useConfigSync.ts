@@ -24,8 +24,16 @@ const STATUSBAR_ALIAS: Record<string, StatusBarMode> = {
   top: 'top'
 }
 
+// Unset defaults to 'off' — CC-clean chrome (the original has no persistent
+// status bar; set tui_statusbar: top|bottom to restore the legacy rule).
 export const normalizeStatusBar = (raw: unknown): StatusBarMode =>
-  raw === false ? 'off' : typeof raw === 'string' ? (STATUSBAR_ALIAS[raw.trim().toLowerCase()] ?? 'top') : 'top'
+  raw === false
+    ? 'off'
+    : raw === true
+      ? 'top'
+      : typeof raw === 'string'
+        ? (STATUSBAR_ALIAS[raw.trim().toLowerCase()] ?? 'off')
+        : 'off'
 
 const BUSY_MODES = new Set<BusyInputMode>(['interrupt', 'queue', 'steer'])
 
