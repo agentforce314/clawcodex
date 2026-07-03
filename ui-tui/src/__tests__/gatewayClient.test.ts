@@ -364,14 +364,17 @@ describe('GatewayClient NDJSON adapter', () => {
     proc.line({
       request: {
         input: { file_path: '/a/b.ts' }, subtype: 'can_use_tool', tool_name: 'Write',
+        session_label: 'allow all edits during this session',
         suggestions: [setModeSuggestion]
       },
       request_id: 'r4', type: 'control_request'
     })
     await vi.waitFor(() => expect(last('approval.request')).toBeTruthy())
-    // The box still offers a persistable option for non-Bash tools.
+    // The box still offers a persistable option for non-Bash tools, with the
+    // backend's authoritative per-tool wording (not "don't ask again for Write").
     expect(last('approval.request').payload.allow_permanent).toBe(true)
     expect(last('approval.request').payload.rule).toBeNull()
+    expect(last('approval.request').payload.session_label).toBe('allow all edits during this session')
 
     await gw.request('approval.respond', { choice: 'always' })
     const resp = sent.find(m => m.type === 'control_response')?.response?.response

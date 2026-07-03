@@ -1389,6 +1389,12 @@ class _AgentSession:
                     _serialize_permission_update(u)
                     for u in (getattr(request, "suggestions", None) or ())
                 ],
+                # Authoritative per-tool wording for the persist option, e.g.
+                # "allow all edits during this session" for a file edit vs.
+                # "and don't ask again for <rule>" for Bash — so the box states
+                # the real grant scope instead of a generic "don't ask again for
+                # <tool>". Mirrors the original's tool-specific option text.
+                "session_label": _session_option_label_safe(request),
             },
         })
 
@@ -2461,6 +2467,22 @@ def _system_message(session_id: str, text: str, *, level: str = "info") -> dict:
         "level": level,
         "message": text,
     }
+
+
+def _session_option_label_safe(request: Any) -> str | None:
+    """Authoritative per-tool label for the persist option (see
+    ``session_option_label``). Best-effort — never break a permission prompt
+    over label wording."""
+    try:
+        from src.permissions.updates import session_option_label
+
+        return session_option_label(
+            getattr(request, "suggestions", None) or (),
+            getattr(request, "tool_name", "") or None,
+            getattr(request, "tool_input", None),
+        )
+    except Exception:  # noqa: BLE001 — label is cosmetic
+        return None
 
 
 def _serialize_permission_update(update: Any) -> dict:
