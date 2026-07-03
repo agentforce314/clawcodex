@@ -399,6 +399,9 @@ class _AgentSession:
         if subtype == "get_context_usage":
             self._reply(request_id, self._context_usage())
             return
+        if subtype == "cost":
+            self._reply(request_id, _cost_snapshot())
+            return
         if subtype == "compact":
             await self._do_compact(request_id, inner.get("instructions"))
             return
@@ -2448,6 +2451,54 @@ def _sdk_envelope(message: Any, session_id: str) -> dict | None:
     return env
 
 
+def _cost_snapshot() -> dict:
+    """Session cost/duration totals for the client's /cost command and
+    exit summary (the original's formatTotalCost inputs, cost-tracker.ts:249).
+
+    Reads the bootstrap accumulators — the same counters the /resume cost
+    restore repopulates — so the numbers survive restarts. Best-effort:
+    a failure returns an empty snapshot rather than breaking the caller.
+    """
+    try:
+        from src.bootstrap.state import (
+            cost_state_lock,
+            get_model_usage,
+            get_total_api_duration,
+            get_total_cost_usd,
+            get_total_duration,
+            get_total_lines_added,
+            get_total_lines_removed,
+            has_unknown_model_cost,
+        )
+
+        # Hold the accumulator lock across the multi-accessor read —
+        # concurrent subagent threads insert into model_usage mid-turn, and
+        # an unguarded dict iteration can raise (state.py:240 contract).
+        with cost_state_lock():
+            return {
+                "total_cost_usd": get_total_cost_usd(),
+                "total_api_duration_ms": int(get_total_api_duration()),
+                "total_duration_ms": get_total_duration(),
+                "total_lines_added": get_total_lines_added(),
+                "total_lines_removed": get_total_lines_removed(),
+                "has_unknown_model_cost": has_unknown_model_cost(),
+                "model_usage": {
+                    model: {
+                        "input_tokens": u.input_tokens,
+                        "output_tokens": u.output_tokens,
+                        "cache_read_input_tokens": u.cache_read_input_tokens,
+                        "cache_creation_input_tokens": u.cache_creation_input_tokens,
+                        "web_search_requests": u.web_search_requests,
+                        "cost_usd": u.cost_usd,
+                    }
+                    for model, u in get_model_usage().items()
+                },
+            }
+    except Exception:  # noqa: BLE001 — cost display is best-effort
+        logger.debug("[agent-server] cost snapshot failed", exc_info=True)
+        return {}
+
+
 def _result_message(
     session_id: str,
     *,
@@ -2471,6 +2522,10 @@ def _result_message(
         "is_error": is_error,
         "usage": usage or None,
         "total_cost_usd": total_cost_usd,
+        # Running session totals, refreshed every turn so the client can
+        # print the exit cost summary synchronously (the original registers
+        # process.on('exit') over live cost-tracker state, costHook.ts:12).
+        "cost": _cost_snapshot(),
     }
     if error is not None:
         payload["error"] = error

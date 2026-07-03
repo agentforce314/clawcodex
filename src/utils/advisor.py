@@ -31,6 +31,7 @@ Anthropic advisors on Anthropic main loops, or for transparency).
 from __future__ import annotations
 
 import os
+import time
 from typing import Any, Mapping, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -783,6 +784,7 @@ def execute_client_advisor(
     # Anthropic (line 239 of anthropic_provider.py forwards unknown
     # kwargs straight to ``messages.create``). Streaming under the hood
     # but no ``on_text_chunk`` callback — we only need the final text.
+    _t0 = time.monotonic()
     try:
         try:
             response = provider.chat_stream_response(
@@ -810,8 +812,10 @@ def execute_client_advisor(
 
     # ch04 round-3 G1: the client-side advisor is its own API call -- it
     # must self-record into the bootstrap cost totals (the query loop's
-    # head only sees main-loop responses).
+    # head only sees main-loop responses). Duration rides along so /cost's
+    # "Total duration (API)" covers the same calls its cost total does.
     try:
+        from src.bootstrap.state import add_to_total_duration_state
         from src.cost_tracker import record_api_usage
 
         record_api_usage(
@@ -820,6 +824,8 @@ def execute_client_advisor(
             or getattr(provider, "model", "unknown"),
             raw_usage,
         )
+        _api_ms = int((time.monotonic() - _t0) * 1000)
+        add_to_total_duration_state(_api_ms, _api_ms)
     except Exception:
         import logging
 

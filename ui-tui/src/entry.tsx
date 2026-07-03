@@ -7,6 +7,7 @@ import type { FrameEvent } from '@clawcodex/ink'
 
 import { DASHBOARD_TUI_MODE, INLINE_MODE, TERMUX_TUI_MODE } from './config/env.js'
 import { GatewayClient } from './gatewayClient.js'
+import { registerCostSummaryOnExit } from './lib/costSummary.js'
 import { setupGracefulExit } from './lib/gracefulExit.js'
 import { formatBytes, type HeapDumpResult, performHeapDump } from './lib/memory.js'
 import { type MemorySnapshot, startMemoryMonitor } from './lib/memoryMonitor.js'
@@ -50,6 +51,11 @@ resetTerminalModes()
 process.on('exit', () => {
   resetTerminalModes(process.stdout, FULLSCREEN)
 })
+
+// Session cost summary under the final frame — the original's useCostSummary
+// process-exit hook (costHook.ts:12). Registered AFTER the reset backstop
+// ('exit' listeners run in order) so the block prints onto a sane terminal.
+registerCostSummaryOnExit()
 
 // Only wipe the screen for a clean slate in fullscreen (alternate-screen) mode.
 // Inline mode (the default) and Termux keep prior terminal output intact so the

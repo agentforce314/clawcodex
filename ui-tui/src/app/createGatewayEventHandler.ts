@@ -9,6 +9,7 @@ import type {
   GatewaySkin,
   SessionMostRecentResponse
 } from '../gatewayTypes.js'
+import { setLastCostSnapshot } from '../lib/costSummary.js'
 import { isTodoDone } from '../lib/liveProgress.js'
 import { openExternalUrl } from '../lib/openExternalUrl.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
@@ -962,6 +963,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         if (ev.payload?.usage) {
           patchUiState(state => ({ ...state, usage: { ...state.usage, ...ev.payload!.usage } }))
         }
+
+        // Session totals rider — /cost's baseline and the exit summary's
+        // data source (printed by registerCostSummaryOnExit, entry.tsx).
+        setLastCostSnapshot(ev.payload?.cost)
 
         return
       }
