@@ -145,6 +145,136 @@ def contains_unquoted_chaining(command: str) -> bool:
     return False
 
 
+# TS parity (bashPermissions.ts:98-103 MAX_SUBCOMMANDS_FOR_SECURITY_CHECK):
+# above this we refuse to split — per-sub work must stay bounded, and "refuse"
+# degrades to today's ask-every-time, never to a wider allow.
+MAX_SUBCOMMANDS: int = 50
+
+# GH#11380 parity (bashPermissions.ts:105-110): cap the per-subcommand rules
+# suggested for one compound prompt; beyond this the label degrades and saving
+# 10+ rules from a single prompt is more likely noise than intent.
+MAX_SUGGESTED_RULES_FOR_COMPOUND: int = 5
+
+
+def split_chained_command(command: str) -> list[str] | None:
+    """Split ``command`` on unquoted chaining operators (``&&``, ``||``,
+    ``;``, ``|``, ``|&``, ``&``, newline) into its sub-commands.
+
+    Port of the ESSENTIAL semantics of TS ``splitCommand``
+    (utils/bash/commands.ts:85-265) for the permission layer: the original is
+    a shell-quote-based module hardened against heredoc/continuation/comment
+    parser differentials; this port instead REFUSES (returns ``None``) on any
+    construct it cannot split with certainty:
+
+    - command substitution (``$(`` or backticks) and ANSI-C quoting (``$'`` —
+      an escaped quote inside it inverts a naive quote scanner, the same blind
+      spot :func:`contains_unquoted_chaining` documents),
+    - process substitution / subshells / grouping (any unquoted paren),
+    - heredocs (``<<``) and backslash-newline continuations (TS commands.ts:96
+      documents the odd/even-backslash join attack),
+    - unterminated quotes, or more than :data:`MAX_SUBCOMMANDS` pieces.
+
+    Refusal is always SAFE: callers fall back to today's behavior (the
+    whole-command matcher refuses chained commands → prompt). The scanner is
+    the same traversal as :func:`contains_unquoted_chaining` so the two agree
+    on what counts as chaining; redirections (``2>&1``, ``&>``, ``>``) are NOT
+    operators and stay inside their sub-command's text (the port's matcher
+    treats redirects as plain arguments — the documented pre-existing
+    limitation shared with simple commands; splitting does not widen it).
+    """
+
+    in_single = False
+    in_double = False
+    parts: list[str] = []
+    buf: list[str] = []
+    i = 0
+    n = len(command)
+
+    def _flush() -> None:
+        piece = "".join(buf).strip()
+        if piece:
+            parts.append(piece)
+        buf.clear()
+
+    while i < n:
+        ch = command[i]
+        if ch == "\\" and not in_single:
+            if i + 1 < n and command[i + 1] == "\n":
+                return None  # continuation-join attack surface (TS commands.ts:96)
+            # Escaped char (outside single quotes): literal, never an operator —
+            # and, in double quotes, `\$`/`\`` are literal (no substitution),
+            # so consuming the pair here also stops the substitution check below
+            # from firing on an escaped dollar/backtick.
+            buf.append(command[i : i + 2])
+            i += 2
+            continue
+        # Command substitution EXECUTES inside double quotes too (only single
+        # quotes make it literal), so refuse `$(`/backtick whenever NOT inside
+        # single quotes — else `echo "$(rm -rf /)" | cat` would split into
+        # [echo "$(rm -rf /)", cat] and get auto-allowed by echo:*/cat:* while
+        # bash runs the rm. This is the per-sub-command injection guard TS gets
+        # from bashCommandIsSafeAsync (bashPermissions.ts:2360-2380).
+        if not in_single:
+            if ch == "`":
+                return None
+            if ch == "$" and i + 1 < n and command[i + 1] == "(":
+                return None
+            # bash 5.3 value substitution `${ cmd; }` / `${| cmd; }` EXECUTES
+            # cmd; plain `${VAR}` / `${VAR:-x}` does not. Distinguish by the
+            # sigil right after `{` (whitespace or `|`).
+            if ch == "$" and i + 1 < n and command[i + 1] == "{":
+                after = command[i + 2] if i + 2 < n else ""
+                if after == "" or after.isspace() or after == "|":
+                    return None
+        if ch == "'" and not in_double:
+            # ANSI-C quoting $'…' has escape semantics this scanner does not
+            # model — refuse rather than mis-split.
+            if not in_single and i > 0 and command[i - 1] == "$":
+                return None
+            in_single = not in_single
+            buf.append(ch)
+        elif ch == '"' and not in_single:
+            in_double = not in_double
+            buf.append(ch)
+        elif not in_single and not in_double:
+            # ($(…) / backtick already refused above, in or out of double quotes)
+            if ch in "()":
+                return None  # subshell / grouping / process substitution
+            if ch == "<" and i + 1 < n and command[i + 1] == "<":
+                return None  # heredoc
+            if ch in (";", "\n"):
+                _flush()
+            elif ch == "|":
+                if i > 0 and command[i - 1] == ">":
+                    buf.append(ch)  # `>|` force-clobber redirect, not a pipe
+                else:
+                    _flush()
+                    if i + 1 < n and command[i + 1] in "|&":
+                        i += 1  # `||` / `|&` are single operators
+            elif ch == "&":
+                if i + 1 < n and command[i + 1] == "&":
+                    _flush()
+                    i += 1
+                elif i > 0 and command[i - 1] in "<>":
+                    buf.append(ch)  # 2>&1-style redirection
+                elif i + 1 < n and command[i + 1] == ">":
+                    buf.append(ch)  # &> redirection
+                else:
+                    _flush()  # lone & — separator/background
+            else:
+                buf.append(ch)
+        else:
+            buf.append(ch)
+        i += 1
+
+    if in_single or in_double:
+        return None  # unterminated quote — do not guess
+    _flush()
+    if not parts or len(parts) > MAX_SUBCOMMANDS:
+        return None
+    return parts
+
+
 def _skip_safe_env_assignments(tokens: list[str]) -> list[str] | None:
     """Drop leading VAR=value tokens; ``None`` if a non-safe var appears.
 
@@ -310,6 +440,63 @@ def suggestion_for_exact_command(command: str) -> list[PermissionUpdate]:
     ]
 
 
+def _rule_value_for_subcommand(sub: str) -> PermissionRuleValue | None:
+    """Best rule VALUE for one sub-command of a compound: 2-word prefix →
+    safe first-word prefix → exact string (same ladder as the simple-command
+    path below, but yielding a value so the caller can aggregate several into
+    ONE ``addRules`` update — TS bashPermissions.ts:2487-2547 collectedRules).
+
+    Bare shells yield nothing (D1 guard): an "exact" rule is exact-OR-word-
+    prefix at match time (check.py — TS parity), so ``Bash(bash)`` would match
+    ``bash anything`` ≈ ``Bash(*)``. The sub then simply never matches and the
+    compound keeps prompting — conservative, mirroring the existing heredoc/
+    multiline bare-shell suppression."""
+
+    sub = sub.strip()
+    if not sub:
+        return None
+    prefix = get_simple_command_prefix(sub) or get_safe_first_word_prefix(sub)
+    if prefix:
+        return PermissionRuleValue(
+            tool_name=BASH_TOOL_NAME, rule_content=f"{prefix}:*"
+        )
+    tokens = [t for t in sub.split() if t]
+    remaining = _skip_safe_env_assignments(tokens)
+    first = (remaining or tokens)[0] if (remaining or tokens) else ""
+    if first in BARE_SHELL_PREFIXES:
+        return None
+    return PermissionRuleValue(tool_name=BASH_TOOL_NAME, rule_content=sub)
+
+
+def suggestions_for_compound_command(command: str) -> list[PermissionUpdate] | None:
+    """Per-sub-command "don't ask again" rules for a compound command,
+    aggregated into a SINGLE ``addRules`` update (TS builds exactly one:
+    bashPermissions.ts:2540-2547), deduped in sub-command order and capped at
+    :data:`MAX_SUGGESTED_RULES_FOR_COMPOUND` (GH#11380).
+
+    ``None`` when the command cannot be split with certainty — callers fall
+    back to the legacy single-suggestion ladder.
+    """
+
+    subs = split_chained_command(command)
+    if subs is None:
+        return None
+    seen: dict[str, PermissionRuleValue] = {}
+    for sub in subs:
+        value = _rule_value_for_subcommand(sub)
+        if value is None or value.rule_content in seen:
+            continue
+        seen[str(value.rule_content)] = value
+    if not seen:
+        return None
+    rules = tuple(list(seen.values())[:MAX_SUGGESTED_RULES_FOR_COMPOUND])
+    return [
+        PermissionUpdateAddRules(
+            destination="localSettings", behavior="allow", rules=rules
+        )
+    ]
+
+
 def suggestions_for_bash_command(command: str) -> list[PermissionUpdate]:
     """Best "don't ask again" rule for ``command``
     (TS suggestionForExactCommand :245-273).
@@ -339,30 +526,31 @@ def suggestions_for_bash_command(command: str) -> list[PermissionUpdate]:
             return suggestion_for_prefix(heredoc_prefix)
         return []
 
-    if "\n" in command:
-        # TS takes the first line verbatim as a prefix rule. Two Python
-        # adjustments (both consequences of the D3 whole-string matcher):
-        # a compound first line would mint a rule the chaining guard can
-        # never match (the user would be re-prompted forever), so derive
-        # the first sub-command's 2-word prefix instead; and a bare-shell
-        # first line is suppressed for the same reason as the heredoc D1
-        # guard.
-        first_line = command.split("\n", 1)[0].strip()
-        if contains_unquoted_chaining(first_line):
-            prefix = get_simple_command_prefix(first_line)
-            return suggestion_for_prefix(prefix) if prefix else []
-        tokens = first_line.split()
-        if len(tokens) == 1 and tokens[0] in BARE_SHELL_PREFIXES:
-            return []
-        return suggestion_for_prefix(first_line)
-
     if contains_unquoted_chaining(command):
-        # Single-line compound: the first sub-command's 2-word prefix (a
-        # SUBSET of TS's per-sub-command suggestions) — safe because the
-        # match-time guard refuses to auto-allow chained commands, so the
-        # rule only ever skips prompts for SIMPLE commands. No derivable
-        # prefix → no suggestion (an exact rule containing chaining would
-        # be unmatchable: dead).
+        # Compound (incl. multiline): per-sub-command rules aggregated into
+        # one addRules update (TS parity — bashPermissions.ts merge flow).
+        # Accepting it lets the match-time per-sub check auto-allow the whole
+        # pipeline next time (every sub must match). Splitter refusal falls
+        # back to the legacy conservative ladders below.
+        compound = suggestions_for_compound_command(command)
+        if compound is not None:
+            return compound
+        if "\n" in command:
+            # Legacy multiline fallback: first line as a prefix rule (TS took
+            # the first line verbatim); compound/bare-shell first lines are
+            # suppressed for the same reasons as the heredoc D1 guard.
+            first_line = command.split("\n", 1)[0].strip()
+            if contains_unquoted_chaining(first_line):
+                prefix = get_simple_command_prefix(first_line)
+                return suggestion_for_prefix(prefix) if prefix else []
+            tokens = first_line.split()
+            if len(tokens) == 1 and tokens[0] in BARE_SHELL_PREFIXES:
+                return []
+            return suggestion_for_prefix(first_line)
+        # Legacy single-line-compound fallback: the first sub-command's
+        # 2-word prefix; no derivable prefix → no suggestion (an exact rule
+        # containing chaining would be unmatchable by the whole-command
+        # matcher: dead).
         prefix = get_simple_command_prefix(command)
         return suggestion_for_prefix(prefix) if prefix else []
 
@@ -384,12 +572,16 @@ def suggestions_for_bash_command(command: str) -> list[PermissionUpdate]:
 __all__ = [
     "BARE_SHELL_PREFIXES",
     "BASH_TOOL_NAME",
+    "MAX_SUBCOMMANDS",
+    "MAX_SUGGESTED_RULES_FOR_COMPOUND",
     "SAFE_ENV_VARS",
     "SAFE_PREFIX_COMMANDS",
     "contains_unquoted_chaining",
     "get_safe_first_word_prefix",
     "get_simple_command_prefix",
+    "split_chained_command",
     "suggestion_for_prefix",
     "suggestion_for_exact_command",
     "suggestions_for_bash_command",
+    "suggestions_for_compound_command",
 ]
