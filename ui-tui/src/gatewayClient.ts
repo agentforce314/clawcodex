@@ -631,10 +631,16 @@ export class GatewayClient extends EventEmitter {
         return out(`Effort: ${r?.effort ?? arg ?? '(unchanged)'}.`)
       }
 
-      case 'mode':
-        await this.controlQuery('set_permission_mode', { mode: arg })
+      case 'mode': {
+        const r = (await this.controlQuery('set_permission_mode', { mode: arg })) as any
+        const mode = typeof r?.mode === 'string' ? r.mode : arg
 
-        return out(`Permission mode: ${arg ?? '(unchanged)'}.`)
+        if (mode) {
+          this.publish({ payload: { mode: String(mode) }, type: 'permission.mode' })
+        }
+
+        return out(`Permission mode: ${mode ?? '(unchanged)'}.`)
+      }
 
       case 'model':
         await this.controlQuery('set_model', { model: arg })
@@ -880,6 +886,7 @@ export class GatewayClient extends EventEmitter {
       case 'result':
         this.publish({
           payload: {
+            permission_mode: typeof msg.permission_mode === 'string' ? msg.permission_mode : undefined,
             text: typeof msg.result === 'string' ? msg.result : undefined,
             usage: msg.usage
           },
@@ -1125,6 +1132,7 @@ export class GatewayClient extends EventEmitter {
     return {
       cwd: init.cwd,
       model: String(init.model ?? ''),
+      permission_mode: typeof init.permission_mode === 'string' ? init.permission_mode : undefined,
       profile_name: init.provider ? String(init.provider) : undefined,
       skills: {},
       tools: { '': toolNames },
