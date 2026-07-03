@@ -77,32 +77,43 @@ class TestSuggestionsForBashCommand(unittest.TestCase):
         # Deliberate divergence from TS: Bash(bash:*) ≈ Bash(*).
         self.assertEqual(suggestions_for_bash_command("bash <<EOF\nevil\nEOF"), [])
 
-    def test_multiline_uses_first_line_prefix(self) -> None:
+    def test_multiline_gets_per_sub_rules(self) -> None:
+        # R6 compound parity: each line contributes a rule (was: first line only).
         cmd = "git status\ngit diff"
-        rule = _only_rule(suggestions_for_bash_command(cmd))
-        self.assertEqual(rule.rule_content, "git status:*")
+        updates = suggestions_for_bash_command(cmd)
+        self.assertEqual(len(updates), 1)
+        self.assertEqual([r.rule_content for r in updates[0].rules],
+                         ["git status:*", "git diff:*"])
 
     def test_empty_command_yields_nothing(self) -> None:
         self.assertEqual(suggestions_for_bash_command("   "), [])
 
-    def test_compound_command_still_gets_first_prefix(self) -> None:
-        # Safe because the matcher refuses chained commands at match time.
-        rule = _only_rule(suggestions_for_bash_command("git diff && echo hi"))
-        self.assertEqual(rule.rule_content, "git diff:*")
+    def test_compound_command_gets_per_sub_rules(self) -> None:
+        # R6 compound parity: one bundled addRules update covering every sub
+        # (was: first sub's prefix only). Match-time requires ALL subs to
+        # match, so the bundle is what stops the re-prompt.
+        updates = suggestions_for_bash_command("git diff && echo hi")
+        self.assertEqual(len(updates), 1)
+        self.assertEqual([r.rule_content for r in updates[0].rules],
+                         ["git diff:*", "echo hi:*"])
 
-    def test_compound_without_derivable_prefix_yields_nothing(self) -> None:
-        # An exact rule containing chaining would be unmatchable (dead).
-        self.assertEqual(suggestions_for_bash_command("ls && pwd"), [])
+    def test_compound_of_safe_words_gets_per_sub_rules(self) -> None:
+        # R6 compound parity: was [] (nothing suggestible for "ls && pwd").
+        updates = suggestions_for_bash_command("ls && pwd")
+        self.assertEqual([r.rule_content for r in updates[0].rules],
+                         ["ls:*", "pwd:*"])
 
-    def test_multiline_compound_first_line_derives_prefix(self) -> None:
-        # A verbatim compound first line would mint a dead rule.
-        rule = _only_rule(
-            suggestions_for_bash_command("git fetch && git rebase\ngit push")
-        )
-        self.assertEqual(rule.rule_content, "git fetch:*")
+    def test_multiline_compound_gets_per_sub_rules(self) -> None:
+        # R6 compound parity: all three subs contribute (was: first only).
+        updates = suggestions_for_bash_command("git fetch && git rebase\ngit push")
+        self.assertEqual([r.rule_content for r in updates[0].rules],
+                         ["git fetch:*", "git rebase:*", "git push:*"])
 
-    def test_multiline_bare_shell_first_line_yields_nothing(self) -> None:
-        self.assertEqual(suggestions_for_bash_command("bash\necho hi"), [])
+    def test_multiline_bare_shell_sub_contributes_nothing(self) -> None:
+        # D1 guard survives the R6 rework: the bare-shell sub yields no rule
+        # (an exact "bash" rule would word-prefix-match "bash anything").
+        updates = suggestions_for_bash_command("bash\necho hi")
+        self.assertEqual([r.rule_content for r in updates[0].rules], ["echo hi:*"])
 
     def test_heredoc_at_index_zero_yields_nothing(self) -> None:
         self.assertEqual(suggestions_for_bash_command("<<EOF\nhi\nEOF"), [])
@@ -113,10 +124,11 @@ class TestSuggestionsForBashCommand(unittest.TestCase):
         )
 
     def test_env_assignment_then_compound(self) -> None:
-        rule = _only_rule(
-            suggestions_for_bash_command("NODE_ENV=test npm run lint && npm test")
-        )
-        self.assertEqual(rule.rule_content, "npm run:*")
+        # R6 compound parity: both subs contribute; the safe env assignment
+        # is still skipped for prefix derivation.
+        updates = suggestions_for_bash_command("NODE_ENV=test npm run lint && npm test")
+        self.assertEqual([r.rule_content for r in updates[0].rules],
+                         ["npm run:*", "npm test:*"])
 
 
 class TestContainsUnquotedChaining(unittest.TestCase):

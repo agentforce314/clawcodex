@@ -8,7 +8,11 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
 
 from .bash_security import analyze_bash_command
-from .bash_suggestions import contains_unquoted_chaining
+from .bash_suggestions import (
+    SAFE_ENV_VARS,
+    contains_unquoted_chaining,
+    split_chained_command,
+)
 from .rules import (
     get_ask_rule_for_tool,
     get_deny_rule_for_tool,
@@ -355,6 +359,11 @@ def has_permissions_to_use_tool_inner(
             message=f"Permission to use {tool.name} has been denied.",
         )
 
+    # Bash content deny rules (compound-aware) — see _bash_content_rule_decision.
+    deny_content = _bash_content_rule_decision(tool, tool_input, context, "deny")
+    if deny_content is not None:
+        return deny_content
+
     ask_rule = get_ask_rule_for_tool(context, tool)
     if ask_rule:
         return PermissionAskDecision(
@@ -362,6 +371,11 @@ def has_permissions_to_use_tool_inner(
             decision_reason=RuleDecisionReason(rule=ask_rule),
             message=create_permission_request_message(tool.name),
         )
+
+    # Bash content ask rules (after all deny sources; before anything allows).
+    ask_content = _bash_content_rule_decision(tool, tool_input, context, "ask")
+    if ask_content is not None:
+        return ask_content
 
     tool_permission_result: PermissionResult = PermissionPassthroughResult(
         behavior="passthrough",
@@ -493,14 +507,39 @@ def has_permissions_to_use_tool_inner(
     if content_rules and tool.name == "Bash":
         command = tool_input.get("command", "")
         if command:
-            for rule_content, rule in content_rules.items():
-                matcher = prepare_permission_matcher(rule_content)
-                if matcher(command):
-                    return PermissionAllowDecision(
-                        behavior="allow",
-                        updated_input=tool_input,
-                        decision_reason=RuleDecisionReason(rule=rule),
-                    )
+            # Try the command AND — like the suggestion ladder, which skips
+            # SAFE_ENV_VARS — a copy with those safe assignments stripped, so
+            # `NODE_ENV=test npm run lint` matches the `npm run:*` rule it was
+            # suggested for (TS stripSafeWrappers strips safe env for allow).
+            # Only the curated safe-list is stripped; an unsafe env prefix still
+            # prompts.
+            allow_candidates = [command]
+            safe_stripped = _strip_env_assignments(command, safe_only=True)
+            if safe_stripped and safe_stripped != command:
+                allow_candidates.append(safe_stripped)
+            for cand in allow_candidates:
+                for rule_content, rule in content_rules.items():
+                    matcher = prepare_permission_matcher(rule_content)
+                    if matcher(cand):
+                        return PermissionAllowDecision(
+                            behavior="allow",
+                            updated_input=tool_input,
+                            decision_reason=RuleDecisionReason(rule=rule),
+                        )
+            # Compound command: allow iff EVERY sub-command matches some
+            # allow content rule (TS bashPermissions.ts:2383/2470). Runs
+            # after the whole-command loop (which refuses chained commands
+            # by design) and after the tool safety screen above — a
+            # safety-flagged compound never reaches here. Each sub faces
+            # the SAME matcher a simple command would, so this never widens
+            # what one rule can match; it only lets several rules agree.
+            witness = _all_subcommands_allowed_by_content_rules(context, command)
+            if witness is not None:
+                return PermissionAllowDecision(
+                    behavior="allow",
+                    updated_input=tool_input,
+                    decision_reason=RuleDecisionReason(rule=witness),
+                )
 
     if tool_permission_result.behavior == "passthrough":
         return _with_default_suggestions(
@@ -625,6 +664,40 @@ def _with_default_suggestions(
     return ask
 
 
+def _bash_content_rule_decision(
+    tool: CheckPermissionsTool,
+    tool_input: dict[str, Any],
+    context: ToolPermissionContext,
+    behavior: str,
+) -> PermissionAskDecision | PermissionDenyDecision | None:
+    """Bash CONTENT deny/ask rules — e.g. ``Bash(rm:*)`` — matched against
+    the whole command AND every sub-command of a compound (TS
+    bashPermissions.ts:842: deny/ask rules must match compound commands so
+    they can't be bypassed by wrapping). Previously content deny/ask rules
+    were consulted NOWHERE — only content-less rules (rules.py
+    ``_tool_matches_rule`` rejects ``rule_content``) — so a configured
+    ``Bash(rm:*)`` deny was silently unenforced."""
+
+    if tool.name != "Bash":
+        return None
+    rule = _match_bash_content_rules(
+        context, str(tool_input.get("command", "") or ""), behavior
+    )
+    if rule is None:
+        return None
+    if behavior == "deny":
+        return PermissionDenyDecision(
+            behavior="deny",
+            decision_reason=RuleDecisionReason(rule=rule),
+            message=f"Permission to use {tool.name} has been denied.",
+        )
+    return PermissionAskDecision(
+        behavior="ask",
+        decision_reason=RuleDecisionReason(rule=rule),
+        message=create_permission_request_message(tool.name),
+    )
+
+
 def check_rule_based_permissions(
     tool: CheckPermissionsTool,
     tool_input: dict[str, Any],
@@ -640,6 +713,10 @@ def check_rule_based_permissions(
             message=f"Permission to use {tool.name} has been denied.",
         )
 
+    deny_content = _bash_content_rule_decision(tool, tool_input, context, "deny")
+    if deny_content is not None:
+        return deny_content
+
     ask_rule = get_ask_rule_for_tool(context, tool)
     if ask_rule:
         return PermissionAskDecision(
@@ -647,6 +724,10 @@ def check_rule_based_permissions(
             decision_reason=RuleDecisionReason(rule=ask_rule),
             message=create_permission_request_message(tool.name),
         )
+
+    ask_content = _bash_content_rule_decision(tool, tool_input, context, "ask")
+    if ask_content is not None:
+        return ask_content
 
     tool_permission_result: PermissionResult = PermissionPassthroughResult(
         behavior="passthrough",
@@ -695,6 +776,160 @@ def check_rule_based_permissions(
         )
 
     return None
+
+
+# A leading ``NAME=value`` assignment where value may be single-quoted,
+# double-quoted (both may contain spaces), or a bare word. Matching the quote
+# form is what stops ``FOO="a b" rm x`` from splitting mid-value and leaving the
+# ``rm`` unstripped — which would let a quoted-space env prefix bypass a
+# ``Bash(rm:*)`` deny/ask rule.
+_ENV_ASSIGNMENT_RE = re.compile(
+    r"[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|\"[^\"]*\"|[^\s'\"]*)"
+)
+
+
+def _strip_env_assignments(command: str, *, safe_only: bool) -> str:
+    """Drop leading ``NAME=value`` assignments (values may be single/double
+    quoted or bare). ``safe_only`` limits stripping to the curated
+    :data:`SAFE_ENV_VARS` allow-list; otherwise ALL assignments are dropped.
+    The remainder is returned as its original substring (no re-tokenization)."""
+
+    rest = command.lstrip()
+    while rest:
+        m = _ENV_ASSIGNMENT_RE.match(rest)
+        # Must consume a whole shell word: the char after the assignment has to
+        # be whitespace or end-of-string, else this is part of a larger token.
+        if not m or (m.end() < len(rest) and not rest[m.end()].isspace()):
+            break
+        if safe_only and m.group(0).split("=", 1)[0] not in SAFE_ENV_VARS:
+            break
+        rest = rest[m.end():].lstrip()
+    return rest
+
+
+def _strip_all_env_assignments(command: str) -> str:
+    """ALL leading ``NAME=value`` (TS ``stripAllEnvVars`` for deny/ask —
+    bashPermissions.ts:942-947) so ``FOO=1 rm x`` / ``FOO="a b" rm x`` cannot
+    slip past a ``Bash(rm:*)`` deny/ask rule."""
+
+    return _strip_env_assignments(command, safe_only=False)
+
+
+def _match_bash_content_rules(
+    context: ToolPermissionContext,
+    command: str,
+    behavior: str,
+) -> "PermissionRule | None":
+    """First Bash content rule of ``behavior`` matching ``command``, checking
+    the whole command AND — for a chained command — every sub-command.
+
+    TS parity (bashPermissions.ts:842-843): deny/ask rules MUST be able to
+    match compound commands so ``echo hi && rm -rf /`` can't bypass a
+    ``Bash(rm:*)`` deny by wrapping. Three layers, most-certain first:
+
+    1. exact string equality against the raw command (TS matchMode 'exact'
+       bypasses the compound guard — the only way an exact rule naming a
+       compound can ever match, since the generic matcher refuses chaining);
+    2. the standard whole-command matcher (refuses chained commands);
+    3. per-sub-command matching via :func:`split_chained_command` — a rule
+       matching ANY sub-command matches the compound. Deny/ask matching also
+       tries each sub with ALL env assignments stripped (TS stripAllEnvVars).
+
+    Splitter refusal (exotic syntax) degrades to layers 1-2 — i.e. today's
+    behavior — never to a wider match.
+    """
+
+    content_rules = get_rule_by_contents_for_tool(context, "Bash", behavior)
+    if not content_rules or not command:
+        return None
+
+    stripped = command.strip()
+    matchers: list[tuple[Callable[[str], bool], Any]] = []
+    for rule_content, rule in content_rules.items():
+        if stripped and stripped == str(rule_content).strip():
+            return rule  # exact match bypasses the compound guard (TS 'exact')
+        matchers.append((prepare_permission_matcher(rule_content), rule))
+
+    # For deny/ask, ALSO try the command with all leading NAME=value prefixes
+    # stripped, so `FOO=1 rm x` / `FOO="a b" rm x` can't slip past Bash(rm:*)
+    # (TS stripAllEnvVars). Allow matching deliberately does NOT strip — an
+    # env-prefixed command is a different command and should re-prompt.
+    strip_env = behavior in ("deny", "ask")
+
+    def _match_one(cmd: str) -> "PermissionRule | None":
+        variants = [cmd]
+        if strip_env:
+            no_env = _strip_all_env_assignments(cmd)
+            if no_env and no_env != cmd:
+                variants.append(no_env)
+        for cand in variants:
+            for matcher, rule in matchers:
+                if matcher(cand):
+                    return rule
+        return None
+
+    whole = _match_one(command)
+    if whole is not None:
+        return whole
+
+    if contains_unquoted_chaining(command):
+        subs = split_chained_command(command)
+        if subs:
+            for sub in subs:
+                sub_match = _match_one(sub)
+                if sub_match is not None:
+                    return sub_match
+    return None
+
+
+def _all_subcommands_allowed_by_content_rules(
+    context: ToolPermissionContext,
+    command: str,
+) -> "PermissionRule | None":
+    """When EVERY sub-command of a chained ``command`` matches some allow
+    content rule, return a witness rule (the last sub's match); else None.
+
+    TS parity (bashPermissions.ts:2383/2470): a compound command is allowed
+    iff all of its sub-commands are individually allowed. The whole-command
+    matcher (chaining guard) stays authoritative for simple commands; this
+    runs only for chained ones, each sub matched by the SAME matcher a simple
+    command would face — so splitting never widens what a single rule can
+    match, it only requires more rules to agree. Splitter refusal → None
+    (today's behavior: prompt).
+    """
+
+    if not contains_unquoted_chaining(command):
+        return None
+    content_rules = get_rule_by_contents_for_tool(context, "Bash", "allow")
+    if not content_rules:
+        return None
+    subs = split_chained_command(command)
+    if not subs:
+        return None
+
+    matchers = [
+        (prepare_permission_matcher(rule_content), rule)
+        for rule_content, rule in content_rules.items()
+    ]
+    witness = None
+    for sub in subs:
+        # Strip SAFE_ENV_VARS only (as the suggestion ladder does) so an
+        # accepted rule actually matches the sub it came from.
+        candidates = [sub]
+        safe_stripped = _strip_env_assignments(sub, safe_only=True)
+        if safe_stripped and safe_stripped != sub:
+            candidates.append(safe_stripped)
+        for cand in candidates:
+            for matcher, rule in matchers:
+                if matcher(cand):
+                    witness = rule
+                    break
+            else:
+                continue
+            break
+        else:
+            return None
+    return witness
 
 
 def prepare_permission_matcher(rule_content: str) -> Callable[[str], bool]:
