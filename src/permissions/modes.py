@@ -111,30 +111,32 @@ def initial_permission_mode_from_cli(
 
 
 def has_allow_bypass_permissions_mode() -> bool:
-    """Return True if any trusted settings source enables bypass mode availability.
+    """Return True if a trusted settings source enables bypass availability.
 
     Mirrors ``hasAllowBypassPermissionsMode`` in
-    ``typescript/src/utils/settings/settings.ts:897``.
+    ``typescript/src/utils/settings/settings.ts:897``: reads
+    ``permissions.allowBypassPermissionsMode`` from the user (global) and local
+    tiers, and INTENTIONALLY EXCLUDES the project tier
+    (``<git-root>/.claude/config.json``) — that file is committable, so a
+    cloned repo must not be able to auto-enable bypass (the TS comment: "a
+    malicious project could otherwise enable bypass mode (security risk)").
 
-    The TS reference reads ``permissions.allowBypassPermissionsMode`` from
-    user, local, flag, and policy settings — projectSettings is intentionally
-    excluded because a malicious project could otherwise auto-enable bypass.
-
-    Python today merges all settings sources into a single ``SettingsSchema``
-    (see ``src/settings/settings.py``). We read the merged ``extra`` dict for
-    the same key. When source-segmented settings land we can tighten this.
+    We read the RAW per-tier config dicts rather than the merged
+    ``SettingsSchema`` for two reasons: the schema has no structured slot for
+    this scalar (``permissions`` is modeled as a flat rule *list*), and the
+    merged view can't tell the project tier apart from the trusted tiers, which
+    is exactly the distinction the security exclusion turns on.
     """
     try:
-        from src.settings.settings import get_settings
+        from src.config import ConfigManager
+
+        cm = ConfigManager()
+        # Global (user) + local (gitignored, operator-owned) only — never the
+        # committable project tier.
+        for loader in (cm.load_global, cm.load_local):
+            perms = loader().get("settings", {}).get("permissions")
+            if isinstance(perms, dict) and perms.get("allowBypassPermissionsMode"):
+                return True
     except Exception:
         return False
-
-    try:
-        settings = get_settings()
-    except Exception:
-        return False
-
-    perms = settings.extra.get("permissions") if hasattr(settings, "extra") else None
-    if isinstance(perms, dict):
-        return bool(perms.get("allowBypassPermissionsMode"))
     return False
