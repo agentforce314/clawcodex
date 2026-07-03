@@ -2135,12 +2135,20 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
                         _cl.set_elicitation_handler(_eh)
                     except Exception:  # noqa: BLE001
                         pass
+                    # R5 (ch15 m3) — only wire the tools/list_changed refresh
+                    # for servers that ADVERTISE tools.listChanged, mirroring
+                    # TS (useManageMCPConnections registers the handler only
+                    # when client.capabilities.tools.listChanged). This makes
+                    # the parsed capability load-bearing; a server that never
+                    # advertised it can't trigger a refresh.
                     try:
-                        _cl.set_notification_handler(
-                            _make_mcp_notification_handler(
-                                mcp_rt, sess, _srv_name
+                        _caps = getattr(_cl, "capabilities", None)
+                        if getattr(_caps, "tools_list_changed", False):
+                            _cl.set_notification_handler(
+                                _make_mcp_notification_handler(
+                                    mcp_rt, sess, _srv_name
+                                )
                             )
-                        )
                     except Exception:  # noqa: BLE001
                         pass
                 logger.info(
