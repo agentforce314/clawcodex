@@ -623,6 +623,64 @@ async def test_control_set_output_style(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_control_set_model(tmp_path):
+    """set_model round-trips {ok, model}: the TUI's /model needs the resulting
+    model echoed back (a bare ack reads as failure), refusal on cross-provider
+    switches, and a warning for models outside the provider's list."""
+    from src.tool_system.registry import ToolRegistry
+
+    class _ListingProvider(_TextProvider):
+        def get_available_models(self):
+            return ["fake", "fake-pro"]
+
+    with contextlib.ExitStack() as stack:
+        for p in _patches(_ListingProvider, ToolRegistry([])):
+            stack.enter_context(p)
+        spawn = make_spawn_agent(AgentServerConfig(permission_mode="default"))
+        handle = await spawn("ds_test", str(tmp_path), None)
+        gen = handle.messages_from_agent()
+        try:
+            init = await asyncio.wait_for(gen.__anext__(), timeout=5)
+            assert init["subtype"] == "init"
+
+            async def _reply_for(rid, req):
+                await handle.send_to_agent({"type": "control_request", "request_id": rid, "request": req})
+                for _ in range(12):
+                    msg = await asyncio.wait_for(gen.__anext__(), timeout=5)
+                    if msg.get("type") == "control_response" and msg["response"].get("request_id") == rid:
+                        return msg["response"]["response"]
+                raise AssertionError(f"no reply for {rid}")
+
+            # Same-provider switch echoes the new model, no warning.
+            ok = await _reply_for("m1", {"subtype": "set_model", "model": "fake-pro", "provider": "anthropic"})
+            assert ok["ok"] is True and ok["model"] == "fake-pro"
+            assert "warning" not in ok
+
+            # get_settings reflects the switch (the picker's Current: line).
+            settings = await _reply_for("m2", {"subtype": "get_settings"})
+            assert settings["model"] == "fake-pro"
+
+            # A model outside the provider's list still switches but warns.
+            warned = await _reply_for("m3", {"subtype": "set_model", "model": "mystery"})
+            assert warned["ok"] is True and warned["model"] == "mystery"
+            assert "not in anthropic's model list" in warned["warning"]
+
+            # Cross-provider switch is refused and leaves the model untouched.
+            bad = await _reply_for("m4", {"subtype": "set_model", "model": "gpt-x", "provider": "openai"})
+            assert bad["ok"] is False and "openai" in bad["error"]
+            settings = await _reply_for("m5", {"subtype": "get_settings"})
+            assert settings["model"] == "mystery"
+
+            # Missing/blank model is refused.
+            missing = await _reply_for("m6", {"subtype": "set_model", "model": "  "})
+            assert missing["ok"] is False and "missing model" in missing["error"]
+        finally:
+            await handle.shutdown()
+            with contextlib.suppress(Exception):
+                await gen.aclose()
+
+
+@pytest.mark.asyncio
 async def test_control_knowledge(tmp_path):
     """knowledge control returns stats and toggles enable/disable."""
     from src.tool_system.registry import ToolRegistry
