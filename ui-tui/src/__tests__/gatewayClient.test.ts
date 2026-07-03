@@ -352,6 +352,34 @@ describe('GatewayClient NDJSON adapter', () => {
     expect(resp.chosen_updates[0].rules[0].rule_content).toBe('git:*')
     expect(resp.chosen_updates[0].destination).toBe('localSettings')
   })
+
+  it('offers "always" for a NON-Bash tool and passes its setMode suggestion through UNCHANGED', async () => {
+    // Regression: Write/Edit send a session-scoped acceptEdits setMode (no
+    // rules, no rule_content). The persist option must still be offered
+    // (allow_permanent=true) and the suggestion must not be mangled into a
+    // localSettings rule.
+    const sent: any[] = []
+    ;(gw as any).send = (m: any) => sent.push(m)
+    const setModeSuggestion = { type: 'setMode', destination: 'session', mode: 'acceptEdits' }
+    proc.line({
+      request: {
+        input: { file_path: '/a/b.ts' }, subtype: 'can_use_tool', tool_name: 'Write',
+        suggestions: [setModeSuggestion]
+      },
+      request_id: 'r4', type: 'control_request'
+    })
+    await vi.waitFor(() => expect(last('approval.request')).toBeTruthy())
+    // The box still offers a persistable option for non-Bash tools.
+    expect(last('approval.request').payload.allow_permanent).toBe(true)
+    expect(last('approval.request').payload.rule).toBeNull()
+
+    await gw.request('approval.respond', { choice: 'always' })
+    const resp = sent.find(m => m.type === 'control_response')?.response?.response
+    // Suggestion passes through AS-IS: session scope kept, no rules injected.
+    expect(resp.chosen_updates[0]).toEqual(setModeSuggestion)
+    expect(resp.chosen_updates[0].destination).toBe('session')
+    expect(resp.chosen_updates[0].rules).toBeUndefined()
+  })
 })
 
 describe('approvalCommandText — the human-reviewable action, not a JSON dump', () => {
