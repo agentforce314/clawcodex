@@ -54,6 +54,19 @@ export function describeSuggestionRule(suggestion: any): string | null {
   return rule.rule_content ? `${rule.tool_name}(${rule.rule_content})` : String(rule.tool_name)
 }
 
+// The human-reviewable action for a permission prompt: the actual Bash command,
+// file path, or URL under review — NOT the full tool-input JSON blob (which the
+// box previously dumped verbatim and made the prompt unreadable).
+export function approvalCommandText(input: unknown): string {
+  if (input && typeof input === 'object') {
+    const o = input as Record<string, unknown>
+    for (const key of ['command', 'file_path', 'path', 'url', 'pattern', 'prompt']) {
+      if (typeof o[key] === 'string' && o[key]) return o[key] as string
+    }
+  }
+  return safeJson(input)
+}
+
 /** Pick the salient arg for a tool so the trail label reads `Bash(ls)` /
  *  `Read(package.json)` / `Grep(TODO)` (Claude-style) instead of a bare tool
  *  name. File paths are shown relative to the workspace so the label stays
@@ -370,18 +383,18 @@ export class GatewayClient extends EventEmitter {
         this.pendingApproval = null
         if (ap) {
           const deny = p.choice === 'deny'
-          // ch13 round-4 — 'always' persists the rule (its backend
-          // destination, e.g. localSettings); 'session' persists it for
-          // the session only (destination overridden to 'session'); 'once'
-          // sends no rule. Previously always/session/once were byte-
-          // identical on the wire and nothing was ever persisted.
+          // 'always' = "don't ask again": persist the (possibly user-edited)
+          // rule to localSettings so it survives across sessions, like the
+          // original. The box lets the user widen the rule (git status:* →
+          // git:*); p.rule carries that edit. 'once' sends no rule.
           let chosenUpdates: any[] = []
           const first = ap.suggestions?.[0]
-          if (!deny && first && (p.choice === 'always' || p.choice === 'session')) {
+          if (!deny && first && p.choice === 'always') {
+            const baseRule = first.rules?.[0] ?? {}
+            const editedContent =
+              typeof p.rule === 'string' && p.rule.trim() ? p.rule.trim() : baseRule.rule_content
             chosenUpdates = [
-              p.choice === 'session'
-                ? { ...first, destination: 'session' }
-                : first
+              { ...first, destination: 'localSettings', rules: [{ ...baseRule, rule_content: editedContent }] }
             ]
           }
           this.send({
@@ -754,17 +767,21 @@ export class GatewayClient extends EventEmitter {
     const req = msg.request
     if (req?.subtype === 'can_use_tool') {
       // ch13 round-4 — carry the backend's permission SUGGESTIONS so the
-      // "Always allow" / "Allow this session" choices persist a real rule.
+      // "don't ask again" choice persists a real rule.
       const suggestions: any[] = Array.isArray(req.suggestions) ? req.suggestions : []
       this.pendingApproval = { input: req.input, request_id: String(msg.request_id ?? ''), suggestions }
-      // Only offer the persistable "always" option when the backend sent a
-      // rule for it (the server strips allow_permanent otherwise).
-      const rule = describeSuggestionRule(suggestions[0])
+      // Show the ACTUAL command/action under review, not the tool name or a raw
+      // JSON dump — and carry the editable grant rule separately so the box can
+      // offer a broadenable "don't ask again for <rule>" option. Only offer the
+      // persistable option when the backend sent a rule.
+      const ruleContent = suggestions[0]?.rules?.[0]?.rule_content ?? null
       this.publish({
         payload: {
           allow_permanent: suggestions.length > 0,
-          command: String(req.tool_name ?? 'tool'),
-          description: rule ?? safeJson(req.input)
+          command: approvalCommandText(req.input),
+          rule: ruleContent,
+          rule_label: describeSuggestionRule(suggestions[0]),
+          tool_name: String(req.tool_name ?? 'tool')
         },
         type: 'approval.request'
       })

@@ -890,8 +890,10 @@ export function useMainApp(gw: GatewayClient) {
   )
 
   const answerApproval = useCallback(
-    (choice: string) =>
-      respondWith('approval.respond', { choice, session_id: ui.sid }, () => {
+    // `rule` carries the (possibly user-edited) grant prefix for the "don't ask
+    // again" choice so the box can widen git status:* → git:*.
+    (choice: string, rule?: string) =>
+      respondWith('approval.respond', { choice, rule, session_id: ui.sid }, () => {
         patchOverlayState({ approval: null })
         patchTurnState({ outcome: choice === 'deny' ? 'denied' : `approved (${choice})` })
         patchUiState({ status: 'running…' })
