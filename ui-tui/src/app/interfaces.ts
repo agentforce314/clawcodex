@@ -207,6 +207,7 @@ export type MaybePromise<T> = Promise<T> | T
 export interface ComposerActions {
   clearIn: () => void
   dequeue: () => string | undefined
+  dismissCompletions: () => void
   enqueue: (text: string) => void
   handleTextPaste: (event: PasteEvent) => MaybePromise<ComposerPasteResult | null>
   openEditor: () => Promise<void>

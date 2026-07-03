@@ -64,7 +64,7 @@ describe('ComposerFooter', () => {
   it('swaps the hint for the interrupt hint while busy', () => {
     const plain = stripAnsi(footer({ busy: true }))
 
-    expect(plain).toContain('ctrl+c to interrupt')
+    expect(plain).toContain('esc to interrupt')
     expect(plain).not.toContain('? for shortcuts')
   })
 

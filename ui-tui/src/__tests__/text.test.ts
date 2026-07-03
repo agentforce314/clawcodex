@@ -93,19 +93,45 @@ describe('buildVerboseToolTrailLine', () => {
     })
   })
 
-  it('caps a large result to a small persisted preview (#34095)', () => {
-    // A 40KB browser-snapshot-sized result must NOT be embedded whole — the
-    // persisted, expanded-by-default trail block is what blew up the Ink
-    // render tree and silently OOM-killed the TUI. The block stays small.
+  it('bounds a huge result while still expanding meaningfully (#34095 guard)', () => {
+    // A huge result must NOT embed whole — the render block stays bounded
+    // (VERBOSE_TRAIL_MAX_*) so a burst can't rebuild the #34095 OOM. Verbose
+    // renders only behind ctrl+o, so the budget is a real expansion (~16KB),
+    // not the old 800-char glance.
     const huge = 'A'.repeat(40_000)
     const line = buildVerboseToolTrailLine('browser_snapshot', 'https://x.example', false, 2, undefined, huge)
 
     expect(line).toContain('Result:\n')
-    // Far below the old 16KB live-render budget; the whole line (call + label +
-    // omitted marker + preview) must stay on the order of ~1KB, not ~40KB.
-    expect(line.length).toBeLessThan(2_000)
+    expect(line.length).toBeLessThan(17_000)
     expect(line).toContain('omitted')
     expect(line.endsWith(' ✓')).toBe(true)
+  })
+
+  it('keeps the HEAD of a multi-line result, not the tail (#34095 Finding B)', () => {
+    // A 500-line result: the reader hitting ctrl+o wants the START of the
+    // output (first matches / first error lines), with the rest marked
+    // omitted — not the live-stream tail.
+    const body = Array.from({ length: 500 }, (_, i) => `line ${i}`).join('\n')
+    const line = buildVerboseToolTrailLine('Grep', 'pattern', false, 0.1, undefined, body)
+
+    expect(line).toContain('Result:\nline 0\nline 1')
+    expect(line).toContain('line 199') // within the 200-line cap
+    expect(line).not.toContain('line 200') // beyond it, dropped
+    expect(line).not.toContain('line 499') // tail is NOT what we keep
+    // The omitted count reflects the DROPPED suffix (500 − 200 = 300), not the
+    // kept head — a constant here would be a lying status line.
+    expect(line).toContain('+300 lines omitted')
+    expect(line).not.toContain('showing live tail') // the misleading label is gone
+  })
+
+  it('reports the true omitted-line count near the cap boundary', () => {
+    // 201 lines: exactly one dropped past the 200-line cap.
+    const body = Array.from({ length: 201 }, (_, i) => `r${i}`).join('\n')
+    const line = buildVerboseToolTrailLine('Bash', 'seq', false, 0.1, undefined, body)
+
+    expect(line).toContain('r199')
+    expect(line).not.toContain('r200')
+    expect(line).toContain('+1 lines omitted')
   })
 
   it('does not truncate a result that already fits the preview budget', () => {

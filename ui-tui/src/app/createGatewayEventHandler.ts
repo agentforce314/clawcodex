@@ -732,6 +732,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           ev.payload.inline_diff && inlineDiffsEnabled ? stripAnsi(String(ev.payload.inline_diff)).trim() : ''
 
         const resultText = ev.payload.result_text ? stripAnsi(String(ev.payload.result_text)) : undefined
+        const rawText = ev.payload.result_raw ? stripAnsi(String(ev.payload.result_raw)) : undefined
 
         if (structuredDiff) {
           turnController.recordStructuredDiffToolComplete(
@@ -758,7 +759,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
             ev.payload.summary,
             ev.payload.duration_s,
             ev.payload.todos,
-            resultText
+            resultText,
+            rawText
           )
         }
 
@@ -812,6 +814,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         patchUiState({ permissionMode: ev.payload.mode })
 
         return
+
       case 'background.complete':
         dropBgTask(ev.payload.task_id)
         sys(`[bg ${ev.payload.task_id}] ${ev.payload.text}`)
@@ -939,6 +942,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         if (ev.payload?.permission_mode) {
           patchUiState({ permissionMode: ev.payload.permission_mode })
         }
+
         const { finalMessages, finalText, wasInterrupted } = turnController.recordMessageComplete(ev.payload ?? {})
 
         if (!wasInterrupted) {
