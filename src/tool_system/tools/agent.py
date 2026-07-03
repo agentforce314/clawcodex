@@ -644,10 +644,24 @@ def make_agent_tool(
                     # Round-4 wired terminal progress for SYNC only; async
                     # finished via enqueue_agent_notification alone, so the
                     # HUD lingered "running" until the end-of-turn flush.
+                    # Report the AUTHORITATIVE runtime status, not a hardcoded
+                    # "completed". A concurrent kill marks the task terminal
+                    # "killed" in the registry; when this success branch runs
+                    # (on natural completion — local async agents don't yet
+                    # wire abort_event, so the run finishes normally — or a
+                    # cooperative stop where wired), complete_agent_task
+                    # no-ops on that terminal state (local_agent.py:287), so
+                    # the registry status stays "killed" and the HUD should
+                    # say so (the ui-tui mapping handles killed).
+                    _st = context.runtime_tasks.get(agent_id)
+                    _final_status = (
+                        str(getattr(_st, "status", "completed"))
+                        if _st is not None else "completed"
+                    )
                     _emit_terminal_agent_progress(
                         context, agent_id=agent_id, name=agent_name,
                         description=description, subagent_type=agent_type,
-                        status="completed",
+                        status=_final_status,
                     )
                     # Chunk D / WI-3.1 + WI-3.2 — enqueue a single
                     # ``<task-notification>`` envelope. Atomic check-and-

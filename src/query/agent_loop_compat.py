@@ -329,6 +329,14 @@ async def _maybe_recall_memories(
     query_text = _last_user_text(messages)
     if not query_text.strip():
         return None
+    # R5 (ch11 N1) — unwrap /effort's _EffortProvider so the recall SELECTOR
+    # runs on the raw provider: (a) _resolve_recall_model's
+    # isinstance(AnthropicProvider) check sees through the wrapper → the
+    # small_fast_model cost pin applies in effort mode too (it was bypassed —
+    # a bare wrapper class isn't an AnthropicProvider); (b) the wrapper's
+    # reasoning_effort injection doesn't leak into the cheap selector call.
+    # Safe: _inner is _EffortProvider-exclusive, so this is a no-op otherwise.
+    provider = getattr(provider, "_inner", provider)
     try:
         from src.memdir import get_auto_mem_path
         from src.memdir.surface_memories import get_relevant_memory_reminder
