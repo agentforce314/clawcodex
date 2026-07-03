@@ -66,6 +66,52 @@ class TestDisplayToolResult:
         assert source == snapshot
 
 
+def _web_search_output(**overrides):
+    out = {
+        "query": "obama news",
+        "results": [
+            "**Title A** -- snippet (https://a.example)",
+            {"tool_use_id": "tavily-search", "content": [{"title": "A", "url": "https://a.example"}]},
+        ],
+        "duration_seconds": 2.4,
+    }
+    out.update(overrides)
+    return out
+
+
+class TestDisplayWebSearchResult:
+    """WebSearch output is trimmed to the numbers the TUI one-liner needs
+    (original renders "Did N searches in Xs" — UI.tsx getSearchSummary counts
+    non-string results)."""
+
+    def test_trims_to_search_count_and_duration(self):
+        assert _display_tool_result(_web_search_output()) == {
+            "type": "web_search",
+            "durationSeconds": 2.4,
+            "searchCount": 1,
+        }
+
+    def test_counts_only_non_string_results(self):
+        trimmed = _display_tool_result(_web_search_output(results=["No results found."]))
+        assert trimmed is not None
+        assert trimmed["searchCount"] == 0
+
+    def test_rejects_lookalike_shapes(self):
+        # bool is an int subclass — a True duration is not a duration
+        assert _display_tool_result(_web_search_output(duration_seconds=True)) is None
+        assert _display_tool_result(_web_search_output(duration_seconds="2.4")) is None
+        assert _display_tool_result(_web_search_output(results="not-a-list")) is None
+        assert _display_tool_result(_web_search_output(query=7)) is None
+        # an explicit type field routes to the Edit/Write branch, not this one
+        assert _display_tool_result(_web_search_output(type="rename")) is None
+
+    def test_source_dict_is_not_mutated(self):
+        source = _web_search_output()
+        snapshot = copy.deepcopy(source)
+        _display_tool_result(source)
+        assert source == snapshot
+
+
 class TestSdkEnvelope:
     def test_user_envelope_carries_trimmed_tool_use_result(self):
         msg = create_user_message(
