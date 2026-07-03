@@ -12,10 +12,25 @@ export const isToolShelfMessage = (msg: Msg | undefined) =>
 export const canHoldToolShelf = (msg: Msg | undefined) =>
   Boolean(msg?.kind === 'trail' && !msg.text && (msg.thinking?.trim() || msg.tools?.length))
 
-export const mergeToolShelfInto = (target: Msg, source: Msg): Msg => ({
-  ...target,
-  tools: [...(target.tools ?? []), ...(source.tools ?? [])]
-})
+// toolsVerbose stays lockstep with tools (pad with '' when either side
+// predates verbose siblings) so index-pairing survives every shelf merge.
+const padVerbose = (msg: Msg): string[] => {
+  const tools = msg.tools ?? []
+  const verbose = msg.toolsVerbose ?? []
+
+  return tools.map((_, i) => verbose[i] ?? '')
+}
+
+export const mergeToolShelfInto = (target: Msg, source: Msg): Msg => {
+  const toolsVerbose = [...padVerbose(target), ...padVerbose(source)]
+
+  return {
+    ...target,
+    tools: [...(target.tools ?? []), ...(source.tools ?? [])],
+    // Keep legacy message shape when nothing has a verbose form.
+    ...(toolsVerbose.some(Boolean) && { toolsVerbose })
+  }
+}
 
 const isBarrierMessage = (msg: Msg | undefined) => {
   if (!msg) {

@@ -93,17 +93,17 @@ describe('buildVerboseToolTrailLine', () => {
     })
   })
 
-  it('caps a large result to a small persisted preview (#34095)', () => {
+  it('bounds a huge result while still expanding meaningfully (#34095 guard)', () => {
     // A 40KB browser-snapshot-sized result must NOT be embedded whole — the
-    // persisted, expanded-by-default trail block is what blew up the Ink
-    // render tree and silently OOM-killed the TUI. The block stays small.
+    // render block stays bounded (VERBOSE_TRAIL_MAX_*) so a burst of huge
+    // results can't rebuild the #34095 OOM. But verbose now renders only
+    // behind the explicit ctrl+o toggle, so the budget is a real expansion
+    // (~16KB), not the old 800-char glance.
     const huge = 'A'.repeat(40_000)
     const line = buildVerboseToolTrailLine('browser_snapshot', 'https://x.example', false, 2, undefined, huge)
 
     expect(line).toContain('Result:\n')
-    // Far below the old 16KB live-render budget; the whole line (call + label +
-    // omitted marker + preview) must stay on the order of ~1KB, not ~40KB.
-    expect(line.length).toBeLessThan(2_000)
+    expect(line.length).toBeLessThan(17_000)
     expect(line).toContain('omitted')
     expect(line.endsWith(' ✓')).toBe(true)
   })
