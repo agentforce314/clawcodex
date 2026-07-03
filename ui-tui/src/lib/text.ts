@@ -202,17 +202,32 @@ export const formatToolCall = (name: string, context = '') => {
   return preview ? `${label}(${preview})` : label
 }
 
+// Hard safety cap on shelf details — per-tool formatting upstream already
+// trims to CC's limits (Bash 3 + hint, errors 10 + hint); this only guards a
+// runaway caller from ballooning the render tree.
+const TRAIL_DETAIL_MAX_LINES = 12
+
 export const buildToolTrailLine = (
   name: string,
   context: string,
   error?: boolean,
   note?: string,
-  duration?: number
+  // Kept for call-site compatibility; the original Claude Code transcript
+  // never shows durations on the tool line, so neither do we (verbose rows
+  // still carry them via buildVerboseToolTrailLine).
+  _duration?: number
 ) => {
-  const detail = compactPreview(note ?? '', 72)
-  const took = duration !== undefined ? ` (${duration.toFixed(1)}s)` : ''
+  const raw = (note ?? '').trim()
+  const lines = raw.split('\n')
 
-  return `${formatToolCall(name, context)}${took}${detail ? ` :: ${detail}` : ''} ${error ? '✗' : '✓'}`
+  const detail = (lines.length > TRAIL_DETAIL_MAX_LINES
+    ? [...lines.slice(0, TRAIL_DETAIL_MAX_LINES), '…']
+    : lines
+  )
+    .join('\n')
+    .trim()
+
+  return `${formatToolCall(name, context)}${detail ? ` :: ${detail}` : ''} ${error ? '✗' : '✓'}`
 }
 
 const verboseToolBlock = (label: string, text?: string) => {
@@ -256,7 +271,12 @@ export const parseToolTrailResultLine = (line: string) => {
 
   const mark = line.endsWith(' ✗') ? '✗' : '✓'
   const body = line.slice(0, -2)
-  const sep = body.indexOf(' :: ')
+  // The call part is always single-line (`Label(args…)` with compacted args);
+  // details may span lines. Prefer the `) :: ` boundary so a command that
+  // itself contains ` :: ` can't mis-split; otherwise search the first line.
+  const parenSep = body.indexOf(') :: ')
+  const firstLine = body.indexOf('\n') === -1 ? body : body.slice(0, body.indexOf('\n'))
+  const sep = parenSep >= 0 ? parenSep + 1 : firstLine.indexOf(' :: ')
 
   if (sep >= 0) {
     return { call: body.slice(0, sep), detail: body.slice(sep + 4), mark }
