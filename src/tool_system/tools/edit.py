@@ -10,7 +10,11 @@ from typing import Any
 
 from ..build_tool import Tool, build_tool
 from ..context import ToolContext
-from ..diff_utils import convert_leading_tabs_to_spaces, unified_diff_hunks
+from ..diff_utils import (
+    convert_leading_tabs_to_spaces,
+    record_patch_line_totals,
+    unified_diff_hunks,
+)
 from .read import _backfill_read_edit_path  # shared file_path expander
 from ..errors import ToolInputError, ToolPermissionError
 from ..protocol import ToolResult
@@ -243,6 +247,14 @@ def _edit_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(new_string, encoding="utf-8")
         context.mark_file_read(path)
+        # The original's edit-create counts the real '' -> content patch
+        # (FileEditTool.ts:534 -> getPatchForEdit -> countLinesChanged),
+        # whose hunk is one "+" line per content line — NOT Write's
+        # empty-patch split special case (which also counts a trailing-
+        # newline empty segment). Synthesize that hunk.
+        record_patch_line_totals(
+            [{"lines": ["+" + ln for ln in new_string.splitlines()]}]
+        )
         return ToolResult(
             name="Edit",
             output={
@@ -324,6 +336,7 @@ def _edit_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
         )
     )
     hunks = unified_diff_hunks(diff_lines)
+    record_patch_line_totals(hunks)
 
     return ToolResult(
         name="Edit",

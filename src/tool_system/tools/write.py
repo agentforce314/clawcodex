@@ -8,7 +8,11 @@ from ..build_tool import Tool, ValidationResult, build_tool
 from ..context import ToolContext
 from ..errors import ToolInputError, ToolPermissionError
 from ..protocol import ToolResult
-from ..diff_utils import convert_leading_tabs_to_spaces, unified_diff_hunks
+from ..diff_utils import (
+    convert_leading_tabs_to_spaces,
+    record_patch_line_totals,
+    unified_diff_hunks,
+)
 from src.permissions.types import (
     PermissionAllowDecision,
     PermissionAskDecision,
@@ -259,6 +263,15 @@ def _write_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
         )
     )
     hunks = unified_diff_hunks(diff_lines)
+    # New file: the original's write-create path passes an EXPLICITLY empty
+    # patch (FileWriteTool.ts:408, countLinesChanged([], content)), so the
+    # split(/\r?\n/) special case runs and a trailing newline counts one
+    # extra (empty) segment. Passing the difflib hunks here instead would
+    # undercount by that segment.
+    record_patch_line_totals(
+        [] if original_file is None else hunks,
+        content if original_file is None else None,
+    )
     return ToolResult(
         name="Write",
         output={
