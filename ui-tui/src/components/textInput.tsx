@@ -125,6 +125,22 @@ export function applyPrintableInsert(
 
 export const shouldRouteMultiCharInputAsPaste = (text: string): boolean => text.includes('\n')
 
+/**
+ * Backslash line continuation: when Enter is pressed with `\` immediately
+ * before the caret, the backslash is replaced by a real newline in the same
+ * buffer — the value stays one editable multi-line string, so cursor keys
+ * and backspace cross the line boundary. Mirrors the original
+ * useTextInput.handleEnter (cursor.backspace().insert('\n')).
+ * Returns null when the rule does not apply (caller submits instead).
+ */
+export function applyBackslashReturn(value: string, cursor: number): null | TextInsertResult {
+  if (cursor <= 0 || value[cursor - 1] !== '\\') {
+    return null
+  }
+
+  return { cursor, value: value.slice(0, cursor - 1) + '\n' + value.slice(cursor) }
+}
+
 export function shouldPreserveCtrlJNewline(env: MinimalEnv = process.env): boolean {
   if (env.WT_SESSION) {
     return true
@@ -463,6 +479,7 @@ export function TextInput({
   onSubmit,
   mask,
   mouseApiRef,
+  multiline = false,
   voiceRecordKey = DEFAULT_VOICE_RECORD_KEY,
   placeholder = '',
   focus = true
@@ -990,13 +1007,25 @@ export function TextInput({
       if (k.return) {
         flushKeyBurst()
 
+        // Checked before the modifier chords, mirroring the original
+        // useTextInput.handleEnter order.
+        const vNow = vRef.current
+        const cNow = curRef.current
+        const continuation = multiline ? applyBackslashReturn(vNow, cNow) : null
+
+        if (continuation) {
+          commit(continuation.value, continuation.cursor)
+
+          return
+        }
+
         const sequence = (event.keypress as { sequence?: string }).sequence
         const preserveBareLineFeed = shouldPreserveCtrlJNewline() && sequence === '\n'
 
         if (k.shift || k.ctrl || preserveBareLineFeed || (isMac ? isActionMod(k) : k.meta)) {
-          commit(ins(vRef.current, curRef.current, '\n'), curRef.current + 1)
+          commit(ins(vNow, cNow, '\n'), cNow + 1)
         } else {
-          cbSubmit.current?.(vRef.current)
+          cbSubmit.current?.(vNow)
         }
 
         return
@@ -1303,6 +1332,8 @@ interface TextInputProps {
   focus?: boolean
   mask?: string
   mouseApiRef?: MutableRefObject<null | TextInputMouseApi>
+  /** Allow multi-line editing: `\` + Enter inserts a newline instead of submitting. */
+  multiline?: boolean
   onChange: (v: string) => void
   onPaste?: (
     e: PasteEvent
