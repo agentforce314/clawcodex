@@ -160,6 +160,10 @@ export interface TranscriptRow {
 export interface UiState {
   bgTasks: Set<string>
   busy: boolean
+  // Live permission mode (default | plan | acceptEdits | bypassPermissions |
+  // auto) — seeded from system/init, refreshed by shift+tab cycling, /mode,
+  // and the end-of-turn result (covers server-side flips like plan approval).
+  permissionMode: string
   busyInputMode: BusyInputMode
   compact: boolean
   detailsMode: DetailsMode

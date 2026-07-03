@@ -24,7 +24,7 @@ export function QueuedMessages({ cols, queueEditIdx, queued, t }: QueuedMessages
   return (
     <Box flexDirection="column" marginTop={1}>
       <Text color={t.color.muted} dimColor>
-        {`queued (${queued.length})${
+        {`${queued.length} ${queued.length === 1 ? 'message' : 'messages'} queued for next turn${
           queueEditIdx !== null ? ` · editing ${queueEditIdx + 1} · Ctrl+X delete · Esc cancel` : ''
         }`}
       </Text>
