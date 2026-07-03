@@ -8,11 +8,11 @@ describe('approvalAction — pure key dispatch for ApprovalPrompt', () => {
     expect(approvalAction('', { escape: true }, 2)).toEqual({ kind: 'choose', choice: 'deny' })
   })
 
-  it('maps number keys 1..4 to once/session/always/deny in registration order', () => {
+  it('maps number keys 1..3 to once/always/deny in registration order', () => {
     expect(approvalAction('1', {}, 0)).toEqual({ kind: 'choose', choice: 'once' })
-    expect(approvalAction('2', {}, 0)).toEqual({ kind: 'choose', choice: 'session' })
-    expect(approvalAction('3', {}, 0)).toEqual({ kind: 'choose', choice: 'always' })
-    expect(approvalAction('4', {}, 0)).toEqual({ kind: 'choose', choice: 'deny' })
+    expect(approvalAction('2', {}, 0)).toEqual({ kind: 'choose', choice: 'always' })
+    expect(approvalAction('3', {}, 0)).toEqual({ kind: 'choose', choice: 'deny' })
+    expect(approvalAction('4', {}, 0)).toEqual({ kind: 'noop' })
   })
 
   it('ignores out-of-range numbers', () => {
@@ -23,7 +23,7 @@ describe('approvalAction — pure key dispatch for ApprovalPrompt', () => {
 
   it('confirms the current selection on Enter', () => {
     expect(approvalAction('', { return: true }, 0)).toEqual({ kind: 'choose', choice: 'once' })
-    expect(approvalAction('', { return: true }, 3)).toEqual({ kind: 'choose', choice: 'deny' })
+    expect(approvalAction('', { return: true }, 2)).toEqual({ kind: 'choose', choice: 'deny' })
   })
 
   it('moves selection up/down within bounds', () => {
@@ -33,7 +33,7 @@ describe('approvalAction — pure key dispatch for ApprovalPrompt', () => {
 
   it('clamps selection movement at the edges', () => {
     expect(approvalAction('', { upArrow: true }, 0)).toEqual({ kind: 'noop' })
-    expect(approvalAction('', { downArrow: true }, 3)).toEqual({ kind: 'noop' })
+    expect(approvalAction('', { downArrow: true }, 2)).toEqual({ kind: 'noop' })
   })
 
   it('Esc beats numeric/return — denying is always the first interpretation', () => {
@@ -49,13 +49,13 @@ describe('approvalAction — pure key dispatch for ApprovalPrompt', () => {
   })
 
   it('respects a reduced option set when permanent allow is disabled', () => {
-    // tirith content-security warning present → no "always"; the 3-item set is
-    // once/session/deny, so 3 maps to deny and 4 is out of range.
-    const opts = ['once', 'session', 'deny'] as const
+    // tirith content-security warning (or no suggestion) → no "don't ask again";
+    // the 2-item set is once/deny, so 2 maps to deny and 3 is out of range.
+    const opts = ['once', 'deny'] as const
 
-    expect(approvalAction('3', {}, 0, opts)).toEqual({ kind: 'choose', choice: 'deny' })
-    expect(approvalAction('4', {}, 0, opts)).toEqual({ kind: 'noop' })
-    expect(approvalAction('', { downArrow: true }, 2, opts)).toEqual({ kind: 'noop' })
-    expect(approvalAction('', { return: true }, 2, opts)).toEqual({ kind: 'choose', choice: 'deny' })
+    expect(approvalAction('2', {}, 0, opts)).toEqual({ kind: 'choose', choice: 'deny' })
+    expect(approvalAction('3', {}, 0, opts)).toEqual({ kind: 'noop' })
+    expect(approvalAction('', { downArrow: true }, 1, opts)).toEqual({ kind: 'noop' })
+    expect(approvalAction('', { return: true }, 1, opts)).toEqual({ kind: 'choose', choice: 'deny' })
   })
 })

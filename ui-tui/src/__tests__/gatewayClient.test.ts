@@ -17,7 +17,7 @@ vi.mock('node:child_process', () => ({
   }
 }))
 
-import { GatewayClient } from '../gatewayClient.js'
+import { approvalCommandText, GatewayClient } from '../gatewayClient.js'
 
 class FakeProc extends EventEmitter {
   kill = vi.fn()
@@ -306,7 +306,11 @@ describe('GatewayClient NDJSON adapter', () => {
     await vi.waitFor(() => expect(last('approval.request')).toBeTruthy())
     const p = last('approval.request').payload
     expect(p.allow_permanent).toBe(true)
-    expect(p.description).toBe('Bash(ls:*)')
+    // The box shows the ACTUAL command + carries the editable grant rule.
+    expect(p.command).toBe('ls')
+    expect(p.tool_name).toBe('Bash')
+    expect(p.rule).toBe('ls:*')
+    expect(p.rule_label).toBe('Bash(ls:*)')
   })
 
   it('sends chosen_updates when the user picks "always"; none for "once"', async () => {
@@ -330,19 +334,34 @@ describe('GatewayClient NDJSON adapter', () => {
     expect(resp.chosen_updates[0].destination).toBe('localSettings')
   })
 
-  it('marks a "session" choice with session destination', async () => {
+  it('persists the user-EDITED (widened) rule for "always"', async () => {
+    // The box lets the user widen the suggested rule (git status:* → git:*);
+    // the edited value is carried as `rule` and must become the persisted rule.
     const sent: any[] = []
     ;(gw as any).send = (m: any) => sent.push(m)
     proc.line({
       request: {
-        input: { command: 'ls' }, subtype: 'can_use_tool', tool_name: 'Bash',
-        suggestions: [{ type: 'addRules', destination: 'localSettings', behavior: 'allow', rules: [{ tool_name: 'Bash', rule_content: 'ls:*' }] }]
+        input: { command: 'git status' }, subtype: 'can_use_tool', tool_name: 'Bash',
+        suggestions: [{ type: 'addRules', destination: 'localSettings', behavior: 'allow', rules: [{ tool_name: 'Bash', rule_content: 'git status:*' }] }]
       },
       request_id: 'r3', type: 'control_request'
     })
     await vi.waitFor(() => expect(last('approval.request')).toBeTruthy())
-    await gw.request('approval.respond', { choice: 'session' })
+    await gw.request('approval.respond', { choice: 'always', rule: 'git:*' })
     const resp = sent.find(m => m.type === 'control_response')?.response?.response
-    expect(resp.chosen_updates[0].destination).toBe('session')
+    expect(resp.chosen_updates[0].rules[0].rule_content).toBe('git:*')
+    expect(resp.chosen_updates[0].destination).toBe('localSettings')
+  })
+})
+
+describe('approvalCommandText — the human-reviewable action, not a JSON dump', () => {
+  it('shows the Bash command / file path / url, not the whole input blob', () => {
+    expect(approvalCommandText({ command: 'git status --short' })).toBe('git status --short')
+    expect(approvalCommandText({ description: 'x', file_path: '/a/b.ts' })).toBe('/a/b.ts')
+    expect(approvalCommandText({ url: 'https://example.com' })).toBe('https://example.com')
+  })
+
+  it('falls back to compact JSON for inputs with no obvious action field', () => {
+    expect(approvalCommandText({ foo: 1 })).toBe('{"foo":1}')
   })
 })

@@ -758,12 +758,19 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         return
       case 'approval.request': {
-        const description = String(ev.payload.description ?? 'dangerous command')
         // Only an explicit false (tirith warning) drops the permanent-allow option.
         const allowPermanent = ev.payload.allow_permanent !== false
+        const rule = ev.payload.rule
+        const ruleLabel = ev.payload.rule_label
 
         patchOverlayState({
-          approval: { allowPermanent, command: String(ev.payload.command ?? ''), description }
+          approval: {
+            allowPermanent,
+            command: String(ev.payload.command ?? ''),
+            rule: rule ? String(rule) : undefined,
+            ruleLabel: ruleLabel ? String(ruleLabel) : undefined,
+            toolName: String(ev.payload.tool_name ?? 'tool')
+          }
         })
         setStatus('approval needed')
 
