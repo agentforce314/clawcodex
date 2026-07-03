@@ -478,8 +478,9 @@ export class GatewayClient extends EventEmitter {
             .then(r => ({ ok: (r as any)?.ok !== false } as T))
         }
 
-        if (key === 'model') {this.sendControl('set_model', { model: value })}
-        else if (key === 'effort' || key === 'reasoning') {this.sendControl('set_effort', { effort: value })}
+        if (key === 'model') {return this.setModel(String(value ?? '')) as Promise<T>}
+
+        if (key === 'effort' || key === 'reasoning') {this.sendControl('set_effort', { effort: value })}
         else if (key === 'provider') {this.sendControl('set_provider', { provider: value })}
         else if (key === 'thinking') {this.sendControl('set_thinking', { action: value })}
 
@@ -630,6 +631,53 @@ export class GatewayClient extends EventEmitter {
       }
 
       return this.wfCommands
+    })
+  }
+
+  // config.set{model} carries the hermes /model grammar —
+  // "<model> [--provider <slug>] [--global|--tui-session]" — verbatim from the
+  // picker/slash layer; parsing it is the gateway's job. The callers require a
+  // ConfigSetResponse `value` on success (its absence is what "error: invalid
+  // response: model switch" reports), so this must round-trip the control
+  // rather than fire-and-forget. Scope flags are dropped: the backend persists
+  // every switch (agent_server set_model → app-state on_change).
+  private setModel(raw: string): Promise<{ value: string; warning?: string }> {
+    const tokens = raw.trim().split(/\s+/).filter(Boolean)
+    const modelParts: string[] = []
+    let provider: string | undefined
+
+    for (let i = 0; i < tokens.length; i++) {
+      const tok = tokens[i]!
+
+      if (tok === '--provider') {
+        provider = tokens[++i]
+
+        continue
+      }
+
+      if (tok === '--global' || tok === '--tui-session') {
+        continue
+      }
+
+      modelParts.push(tok)
+    }
+
+    const model = modelParts.join(' ')
+
+    return this.controlQuery('set_model', { model, ...(provider ? { provider } : {}) }).then((r: any) => {
+      if (r == null) {
+        throw new Error('model switch: no response from backend')
+      }
+
+      if (r.ok === false) {
+        throw new Error(typeof r.error === 'string' && r.error ? r.error : 'model switch failed')
+      }
+
+      // Older backends ack {ok:true} without echoing the model.
+      return {
+        value: typeof r.model === 'string' && r.model ? r.model : model,
+        ...(typeof r.warning === 'string' && r.warning ? { warning: r.warning } : {})
+      }
     })
   }
 
