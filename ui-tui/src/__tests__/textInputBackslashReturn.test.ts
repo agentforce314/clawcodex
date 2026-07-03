@@ -1,3 +1,7 @@
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
 import { describe, expect, it } from 'vitest'
 
 import { applyBackslashReturn, lineNav } from '../components/textInput.js'
@@ -46,5 +50,32 @@ describe('multi-line value produced by backslash+Enter stays editable', () => {
 
     expect(value[startOfLine2 - 1]).toBe('\n')
     expect(merged).toBe('line1line2')
+  })
+})
+
+// The Enter handler's dispatch order lives inside useInput and cannot be
+// exercised without mounting the renderer + stdin, so — same convention as
+// textInputCursorSourceOfTruth.test.ts — pin the contract at the source
+// level instead.
+const TEXT_INPUT_PATH = join(dirname(fileURLToPath(import.meta.url)), '..', 'components', 'textInput.tsx')
+const source = readFileSync(TEXT_INPUT_PATH, 'utf8')
+
+describe('k.return handler contract (source pin)', () => {
+  it('gates the continuation on the multiline prop, so plain TextInputs still submit trailing backslashes', () => {
+    expect(source).toMatch(/multiline\s*\?\s*applyBackslashReturn\(/)
+  })
+
+  it('checks continuation BEFORE the modifier-chord newline branch, mirroring original useTextInput.handleEnter', () => {
+    const returnHandler = source.slice(source.indexOf('if (k.return)'))
+    const continuationAt = returnHandler.indexOf('applyBackslashReturn(')
+    const chordBranchAt = returnHandler.indexOf('k.shift || k.ctrl')
+
+    expect(continuationAt).toBeGreaterThan(-1)
+    expect(chordBranchAt).toBeGreaterThan(-1)
+    expect(continuationAt).toBeLessThan(chordBranchAt)
+  })
+
+  it('consumes the continuation (early return) instead of falling through to submit', () => {
+    expect(source).toMatch(/if\s*\(continuation\)\s*\{\s*commit\(continuation\.value,\s*continuation\.cursor\)\s*return\s*\}/)
   })
 })
