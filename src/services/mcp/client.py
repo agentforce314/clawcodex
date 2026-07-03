@@ -41,6 +41,28 @@ from .types import (
 
 logger = logging.getLogger(__name__)
 
+
+def _parse_server_capabilities(caps: Any) -> ServerCapabilities:
+    """Parse the ``capabilities`` object from an MCP ``initialize`` result.
+
+    Factored out of ``connect()`` so the nested ``tools.listChanged`` parse —
+    which the ch15 list_changed refresh wiring gates on — is directly
+    testable. ``tools``/``prompts``/``resources`` collapse to a bool
+    (present-or-not); ``tools_list_changed`` is the nested
+    ``{tools: {listChanged: true}}`` sub-flag."""
+    if not isinstance(caps, dict):
+        caps = {}
+    tools_cap = caps.get("tools")
+    return ServerCapabilities(
+        tools=bool(tools_cap),
+        prompts=bool(caps.get("prompts")),
+        resources=bool(caps.get("resources")),
+        tools_list_changed=bool(
+            isinstance(tools_cap, dict) and tools_cap.get("listChanged")
+        ),
+    )
+
+
 # Tool-call timeout: 5 minutes default, mirrors TS canonical
 # (typescript/src/services/mcp/client.ts:DEFAULT_MCP_TOOL_TIMEOUT_MS = 300_000).
 # Operators raise via the MCP_TOOL_TIMEOUT env override when a long-running
@@ -245,16 +267,8 @@ class McpClient:
             )
 
             if init_result and isinstance(init_result, dict):
-                caps = init_result.get("capabilities", {})
-                _tools_cap = caps.get("tools")
-                self._capabilities = ServerCapabilities(
-                    tools=bool(_tools_cap),
-                    prompts=bool(caps.get("prompts")),
-                    resources=bool(caps.get("resources")),
-                    tools_list_changed=bool(
-                        isinstance(_tools_cap, dict)
-                        and _tools_cap.get("listChanged")
-                    ),
+                self._capabilities = _parse_server_capabilities(
+                    init_result.get("capabilities", {})
                 )
                 server_info_raw = init_result.get("serverInfo")
                 if server_info_raw and isinstance(server_info_raw, dict):

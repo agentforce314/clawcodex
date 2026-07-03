@@ -157,12 +157,24 @@ class McpRuntime:
         """
         from src.services.mcp.mcp_string_utils import build_mcp_tool_name
 
-        prefix = build_mcp_tool_name(name, "")  # "mcp__{name}__"
-        removed_full = [t.name for t in self.tools
-                        if getattr(t, "name", "").startswith(prefix)]
-        self.tools = [t for t in self.tools
-                      if not getattr(t, "name", "").startswith(prefix)]
+        # R5 (ch15 m2) — derive the removed set from THIS server's KNOWN tool
+        # names, not a ``startswith("mcp__{name}__")`` prefix. A sibling
+        # server whose name normalizes to share the prefix (e.g. "foo, bar"
+        # → mcp__foo__bar__…, which startswith mcp__foo__) would be wrongly
+        # captured and nuked when refreshing "foo".
+        removed_full = [
+            build_mcp_tool_name(name, t) for t in self.servers.get(name, [])
+        ]
+        # R5 (ch15 m1) — build the new wrapped tools BEFORE mutating
+        # self.tools, so a _wrap failure leaves the current tool list intact.
+        # (Was remove-then-build: a mid-build failure truncated self.tools AND
+        # was swallowed on the discarded future, leaving the server's tools
+        # gone with no refresh.)
         new_tools = [self._wrap(name, mt, client) for mt in new_raw]
+        removed_set = set(removed_full)
+        self.tools = [
+            t for t in self.tools if getattr(t, "name", "") not in removed_set
+        ]
         self.tools.extend(new_tools)
         self.servers[name] = [t.name for t in new_raw]
         return removed_full, new_tools
