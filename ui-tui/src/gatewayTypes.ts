@@ -696,6 +696,7 @@ export type GatewayEvent =
         error?: string
         inline_diff?: string
         name?: string
+        result_raw?: string
         result_text?: string
         structured_diff?: StructuredDiffPayload
         summary?: string
