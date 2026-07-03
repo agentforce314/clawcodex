@@ -1,11 +1,13 @@
 import type { Theme } from '../theme.js'
 import type { Role } from '../types.js'
 
-// Claude Code glyphs: › user, ⏺ assistant/tool bullet, · system. The orange ⏺
-// marks the assistant; a green ⏺ marks a tool call (Claude's status coloring).
+// Original Claude Code glyphs/colors (messages/*.tsx): assistant prose gets a
+// plain text-white ⏺ (AssistantTextMessage), the user echo is a near-invisible
+// `❯` in `subtle` with white text (HighlightedThinkingText figures.pointer +
+// pointerColor "subtle"), tools keep the green ⏺ result coloring.
 export const ROLE: Record<Role, (t: Theme) => { body: string; glyph: string; prefix: string }> = {
-  assistant: t => ({ body: t.color.text, glyph: '⏺', prefix: t.color.accent }),
+  assistant: t => ({ body: t.color.text, glyph: '⏺', prefix: t.color.text }),
   system: t => ({ body: '', glyph: '·', prefix: t.color.muted }),
   tool: t => ({ body: t.color.muted, glyph: '⏺', prefix: t.color.ok }),
-  user: t => ({ body: t.color.label, glyph: '›', prefix: t.color.muted })
+  user: t => ({ body: t.color.text, glyph: '❯', prefix: t.color.subtle })
 }

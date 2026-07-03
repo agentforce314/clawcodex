@@ -367,7 +367,7 @@ class TurnController {
   // drains on the gateway's real settle edge (message.complete, suppressed
   // while `interrupted`) instead of racing the still-unwinding turn — the race
   // duplicated the user bubble, leaked a "queued: …" note, and surfaced the
-  // cancelled turn's "[interrupted]" reply.
+  // cancelled turn's "Interrupted · …" reply.
   interruptTurn({ appendMessage, gw, sid, sys }: InterruptDeps, opts: { keepBusy?: boolean } = {}) {
     this.interrupted = true
     gw.request<SessionInterruptResponse>('session.interrupt', { session_id: sid }).catch(() => {})
@@ -394,14 +394,18 @@ class TurnController {
     // `partial` or pending tools, fold them into a single assistant message;
     // otherwise emit a sys note so the transcript always records that the
     // turn was cancelled, even when only prior `segments` were preserved.
+    // CC parity string (InterruptedByUser.tsx): a dim one-liner that invites
+    // the redirect instead of a bare "[interrupted]" tag.
+    const interruptNote = 'Interrupted · What should clawcodex do instead?'
+
     if (partial || tools.length) {
       appendMessage({
         role: 'assistant',
-        text: partial ? `${partial}\n\n*[interrupted]*` : '*[interrupted]*',
+        text: partial ? `${partial}\n\n*${interruptNote}*` : `*${interruptNote}*`,
         ...(tools.length && { tools })
       })
     } else {
-      sys('interrupted')
+      sys(interruptNote)
     }
 
     this.clearStatusTimer()
