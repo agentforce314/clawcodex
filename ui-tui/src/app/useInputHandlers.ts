@@ -456,7 +456,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return clearSelection()
     }
 
-    if (key.upArrow && !cState.inputBuf.length) {
+    if (key.upArrow) {
       const inputSel = getInputSelection()
       const cursor = inputSel && inputSel.start === inputSel.end ? inputSel.start : null
 
@@ -470,7 +470,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       }
     }
 
-    if (key.downArrow && !cState.inputBuf.length) {
+    if (key.downArrow) {
       const inputSel = getInputSelection()
       const cursor = inputSel && inputSel.start === inputSel.end ? inputSel.start : null
       const noLineBelow = !cState.input || (cursor !== null && cState.input.indexOf('\n', cursor) < 0)
@@ -522,7 +522,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         })
       }
 
-      if (cState.input || cState.inputBuf.length) {
+      if (cState.input) {
         return cActions.clearIn()
       }
 

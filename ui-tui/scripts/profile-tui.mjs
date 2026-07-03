@@ -72,7 +72,7 @@ const scrollRef = { current: {
 
 const baseProps = streamingText => ({
   actions: { answerApproval: noop, answerClarify: noop, answerSecret: noop, answerSudo: noop, onModelSelect: noop, resumeById: noop, setStickyPrompt: noop },
-  composer: { cols: 120, compIdx: 0, completions: [], empty: false, handleTextPaste: () => null, input: '', inputBuf: [], pagerPageSize: 10, queueEditIdx: null, queuedDisplay: [], submit: noop, updateInput: noop },
+  composer: { cols: 120, compIdx: 0, completions: [], empty: false, handleTextPaste: () => null, input: '', pagerPageSize: 10, queueEditIdx: null, queuedDisplay: [], submit: noop, updateInput: noop },
   mouseTracking: false,
   progress: {
     activity: [], outcome: '', reasoning: streamingText, reasoningActive: true, reasoningStreaming: true,

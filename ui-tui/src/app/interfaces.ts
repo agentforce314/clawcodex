@@ -216,7 +216,6 @@ export interface ComposerActions {
   setCompIdx: StateSetter<number>
   setHistoryIdx: StateSetter<null | number>
   setInput: StateSetter<string>
-  setInputBuf: StateSetter<string[]>
   setPasteSnips: StateSetter<PasteSnippet[]>
   setQueueEdit: (index: null | number) => void
   syncQueue: () => void
@@ -236,7 +235,6 @@ export interface ComposerState {
   completions: CompletionItem[]
   historyIdx: null | number
   input: string
-  inputBuf: string[]
   pasteSnips: PasteSnippet[]
   queueEditIdx: null | number
   queuedDisplay: string[]
@@ -401,7 +399,6 @@ export interface AppLayoutComposerProps {
   empty: boolean
   handleTextPaste: (event: PasteEvent) => MaybePromise<ComposerPasteResult | null>
   input: string
-  inputBuf: string[]
   pagerPageSize: number
   queueEditIdx: null | number
   queuedDisplay: string[]
