@@ -65,3 +65,32 @@ def unified_diff_hunks(diff_lines: Iterable[str]) -> list[dict]:
         hunks.append(current)
     return hunks
 
+
+def record_patch_line_totals(hunks: list[dict], new_file_content: str | None = None) -> None:
+    """Accumulate this patch's +/- line counts into the session totals.
+
+    Mirrors TS ``utils/diff.ts:50-69``: counts hunk lines by their marker,
+    with the new-file special case (empty patch + content → every line is
+    an addition). Feeds /cost's "Total code changes". Best-effort — an
+    accounting failure must never fail the edit itself.
+    """
+    try:
+        if not hunks and new_file_content:
+            # TS: newFileContent.split(/\r?\n/).length — trailing newline
+            # yields a final empty segment that IS counted; keep that.
+            added = len(re.split(r"\r?\n", new_file_content))
+            removed = 0
+        else:
+            added = sum(
+                1 for h in hunks for ln in h.get("lines", []) if ln.startswith("+")
+            )
+            removed = sum(
+                1 for h in hunks for ln in h.get("lines", []) if ln.startswith("-")
+            )
+        if added or removed:
+            from src.bootstrap.state import add_to_total_lines_changed
+
+            add_to_total_lines_changed(added, removed)
+    except Exception:  # noqa: BLE001 — cost accounting is best-effort
+        pass
+
