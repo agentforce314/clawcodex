@@ -847,6 +847,12 @@ export const ToolTrail = memo(function ToolTrail({
   }
 
   for (const tool of tools) {
+    // Todo tools never render inline (original CC) — the checklist HUD is
+    // their entire UI; a blinking "TodoWrite" row would just be noise.
+    if (tool.name === 'TodoWrite') {
+      continue
+    }
+
     const label = formatToolCall(tool.name, tool.context || '')
 
     groups.push({
