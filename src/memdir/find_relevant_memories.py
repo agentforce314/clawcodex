@@ -38,14 +38,17 @@ def _resolve_recall_model(provider: Any) -> str | None:
     settings/constants.py), which is only valid on the first-party Anthropic
     endpoint. Passing it to a DeepSeek/OpenAI/Minimax session would 400 and
     (since recall swallows errors) silently kill recall every turn (critic
-    M1). So the pin applies ONLY when the SESSION provider is a first-party
+    M1). So the pin applies ONLY when the SESSION provider is an
     ``AnthropicProvider``; every other provider (incl. Minimax, which runs
     the Anthropic SDK against a different endpoint) falls back to the session
     model. Returns None to signal that fallback. Never raises.
 
-    (A future ``small_fast_model_provider`` pairing — mirroring
-    ``advisor_model``/``advisor_provider`` — would let non-Anthropic sessions
-    pin their own cheap recall model; deferred.)"""
+    Note: ``AnthropicProvider`` also covers a custom ``ANTHROPIC_BASE_URL`` /
+    Bedrock-shim / proxy endpoint that might itself reject the Haiku id — in
+    that case the selector 400s and recall safe-degrades to no-recall (same
+    swallow-to-None path), narrower than the cross-provider M1. The real fix
+    for both is a future ``small_fast_model_provider`` pairing (mirroring
+    ``advisor_model``/``advisor_provider``); deferred."""
     try:
         from src.providers.anthropic_provider import AnthropicProvider
 
