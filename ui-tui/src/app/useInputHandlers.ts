@@ -456,6 +456,29 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return clearSelection()
     }
 
+    // Esc dismisses an open completion menu before anything else — the
+    // original registers autocomplete as an overlay so its chat:cancel
+    // handler defers to the menu (useTypeahead.tsx); a second Esc then
+    // interrupts. Without this, Esc would kill the turn out from under a
+    // user who is mid-command (or mid-path) in the composer.
+    if (key.escape && cState.completions.length) {
+      return cActions.dismissCompletions()
+    }
+
+    // Esc interrupts the running turn, matching the original's
+    // `escape → chat:cancel` binding (defaultBindings.ts / useCancelRequest).
+    // NOTE deliberate deviation: the original ALSO binds `ctrl+c →
+    // app:interrupt`; Ctrl+C's interrupt/exit roles were removed here per
+    // explicit user request (Esc interrupts, /exit exits).
+    if (key.escape && live.busy && live.sid) {
+      return turnController.interruptTurn({
+        appendMessage: actions.appendMessage,
+        gw: gateway.gw,
+        sid: live.sid,
+        sys: actions.sys
+      })
+    }
+
     if (key.upArrow) {
       const inputSel = getInputSelection()
       const cursor = inputSel && inputSel.start === inputSel.end ? inputSel.start : null
@@ -495,8 +518,9 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         return
       }
 
-      // On macOS, Cmd+C with no selection is a no-op (Ctrl+C below handles interrupt).
-      // On non-macOS, isAction uses Ctrl, so fall through to interrupt/clear/exit.
+      // On macOS, Cmd+C with no selection is a no-op (Ctrl+C below clears the
+      // draft). On non-macOS, isAction uses Ctrl, so fall through to the
+      // clear-draft / hint handler.
       if (isMac) {
         return
       }
@@ -513,26 +537,18 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     }
 
     if (key.ctrl && ch.toLowerCase() === 'c') {
-      if (live.busy && live.sid) {
-        return turnController.interruptTurn({
-          appendMessage: actions.appendMessage,
-          gw: gateway.gw,
-          sid: live.sid,
-          sys: actions.sys
-        })
-      }
-
       if (cState.input) {
         return cActions.clearIn()
       }
 
-      return handleIdleHotkeyExit(actions, DASHBOARD_TUI_MODE, () => {
-        gateway.gw.publishLocalEvent({
-          payload: { reason: 'idle_exit_hotkey' },
-          session_id: live.sid ?? undefined,
-          type: 'dashboard.new_session_requested'
-        })
-      })
+      // Ctrl+C neither interrupts (Esc does) nor exits (/exit does) — a bare
+      // press stays harmless so terminal muscle-memory can't kill a live turn
+      // or the whole app. Point at the real bindings instead. Dashboard chat
+      // gates /exit (core.ts DASHBOARD_EXIT_DISABLED_MESSAGE), so hint /new
+      // there.
+      const exitHint = DASHBOARD_TUI_MODE ? '/new to start a fresh chat' : '/exit to quit clawcodex'
+
+      return actions.sys(live.busy ? `esc to interrupt · ${exitHint}` : exitHint)
     }
 
     if (isAction(key, ch, 'd')) {
