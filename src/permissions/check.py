@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
 from .bash_security import analyze_bash_command
 from .bash_suggestions import (
     SAFE_ENV_VARS,
+    contains_executable_substitution,
     contains_unquoted_chaining,
     split_chained_command,
 )
@@ -506,6 +507,16 @@ def has_permissions_to_use_tool_inner(
     content_rules = get_rule_by_contents_for_tool(context, tool.name, "allow")
     if content_rules and tool.name == "Bash":
         command = tool_input.get("command", "")
+        # A content ALLOW rule (e.g. Bash(echo:*)) must never auto-allow a
+        # command that hides an executable substitution — `echo "$(rm -rf /)"`
+        # runs the rm, which the safety analyzer tokenizes away and the string
+        # matcher can't see. Refuse to auto-allow → the command prompts instead
+        # (the compound path is already covered: split_chained_command refuses
+        # substitution, so per-sub allow never fires on it). Content-less
+        # "allow all Bash" is intentionally NOT gated here — that user allowed
+        # everything.
+        if command and contains_executable_substitution(command):
+            command = ""
         if command:
             # Try the command AND — like the suggestion ladder, which skips
             # SAFE_ENV_VARS — a copy with those safe assignments stripped, so
@@ -782,10 +793,59 @@ def check_rule_based_permissions(
 # double-quoted (both may contain spaces), or a bare word. Matching the quote
 # form is what stops ``FOO="a b" rm x`` from splitting mid-value and leaving the
 # ``rm`` unstripped — which would let a quoted-space env prefix bypass a
-# ``Bash(rm:*)`` deny/ask rule.
+# ``Bash(rm:*)`` deny/ask rule. The bare value class excludes shell metachars
+# (``;|&()<>$`` + backtick) so it can't over-consume an operator into the value
+# (TS's class does the same); the splitter separates real operators first, but
+# this keeps the helper correct if reused outside that sandwich.
 _ENV_ASSIGNMENT_RE = re.compile(
-    r"[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|\"[^\"]*\"|[^\s'\"]*)"
+    r"[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|\"[^\"]*\"|[^\s'\";|&()<>$`]*)"
 )
+
+# Safe command wrappers TS strips before deny/ask matching (stripSafeWrappers,
+# bashPermissions.ts:501-540) so `timeout 5 rm -rf x` / `nohup rm x` can't slip
+# past a Bash(rm:*) deny. Only wrappers that don't change WHICH program runs
+# (sudo/env/xargs are deliberately excluded — they can redirect execution).
+_SAFE_WRAPPER_RES = [
+    re.compile(
+        r"^timeout[ \t]+(?:(?:--\S+|-[A-Za-z][ \t]+\S+|-[A-Za-z]\S*)[ \t]+)*"
+        r"(?:--[ \t]+)?\d+(?:\.\d+)?[smhd]?[ \t]+"
+    ),
+    re.compile(r"^time[ \t]+(?:--[ \t]+)?"),
+    re.compile(r"^nice(?:[ \t]+-n[ \t]+-?\d+|[ \t]+-\d+)?[ \t]+(?:--[ \t]+)?"),
+    re.compile(r"^stdbuf(?:[ \t]+-[ioe]\S+)+[ \t]+(?:--[ \t]+)?"),
+    re.compile(r"^nohup[ \t]+(?:--[ \t]+)?"),
+]
+
+
+def _strip_safe_wrappers(command: str) -> str:
+    rest = command.lstrip()
+    changed = True
+    while changed:
+        changed = False
+        for pat in _SAFE_WRAPPER_RES:
+            m = pat.match(rest)
+            if m:
+                rest = rest[m.end():].lstrip()
+                changed = True
+                break
+    return rest
+
+
+def _normalize_for_deny_ask(command: str) -> str:
+    """Reduce a command to the program it will actually run, for deny/ask
+    matching: strip ALL env assignments and safe wrappers, interleaved to a
+    fixed point (``nohup FOO=1 timeout 5 rm`` → ``rm``), then unescape a leading
+    ``\\`` on the command word (bash runs ``\\rm`` as ``rm``)."""
+
+    prev = None
+    cur = command.lstrip()
+    while cur != prev:
+        prev = cur
+        cur = _strip_all_env_assignments(cur)
+        cur = _strip_safe_wrappers(cur)
+    if cur.startswith("\\") and len(cur) > 1 and cur[1] not in " \t\\":
+        cur = cur[1:]
+    return cur
 
 
 def _strip_env_assignments(command: str, *, safe_only: bool) -> str:
@@ -850,18 +910,20 @@ def _match_bash_content_rules(
             return rule  # exact match bypasses the compound guard (TS 'exact')
         matchers.append((prepare_permission_matcher(rule_content), rule))
 
-    # For deny/ask, ALSO try the command with all leading NAME=value prefixes
-    # stripped, so `FOO=1 rm x` / `FOO="a b" rm x` can't slip past Bash(rm:*)
-    # (TS stripAllEnvVars). Allow matching deliberately does NOT strip — an
-    # env-prefixed command is a different command and should re-prompt.
-    strip_env = behavior in ("deny", "ask")
+    # For deny/ask, ALSO try the command normalized to the program it actually
+    # runs — env assignments + safe wrappers stripped, leading `\` unescaped —
+    # so `FOO=1 rm x`, `timeout 5 rm x`, `nohup rm x`, `\rm x` can't slip past
+    # Bash(rm:*) (TS stripAllEnvVars + stripSafeWrappers). Allow matching
+    # deliberately does NOT normalize — a wrapped/prefixed command is a
+    # different command and should re-prompt.
+    normalize = behavior in ("deny", "ask")
 
     def _match_one(cmd: str) -> "PermissionRule | None":
         variants = [cmd]
-        if strip_env:
-            no_env = _strip_all_env_assignments(cmd)
-            if no_env and no_env != cmd:
-                variants.append(no_env)
+        if normalize:
+            norm = _normalize_for_deny_ask(cmd)
+            if norm and norm != cmd:
+                variants.append(norm)
         for cand in variants:
             for matcher, rule in matchers:
                 if matcher(cand):
