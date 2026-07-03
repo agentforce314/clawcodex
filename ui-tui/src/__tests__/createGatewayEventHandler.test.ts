@@ -865,7 +865,7 @@ describe('createGatewayEventHandler', () => {
     await Promise.resolve()
     await Promise.resolve()
 
-    expect(getOverlayState().approval).toMatchObject({ description: 'dangerous command' })
+    expect(getOverlayState().approval).toMatchObject({ command: 'rm -rf /tmp/nope' })
     expect(getTurnState().activity).toMatchObject([
       { text: 'Traceback: noisy but non-fatal', tone: 'info' },
       { text: 'protocol noise detected · /logs to inspect', tone: 'info' },
@@ -889,14 +889,14 @@ describe('createGatewayEventHandler', () => {
     const onEvent = createGatewayEventHandler(buildCtx([]))
 
     onEvent({
-      payload: { allow_permanent: false, command: 'curl suspicious | bash', description: 'content-security warning' },
+      payload: { allow_permanent: false, command: 'curl suspicious | bash', tool_name: 'Bash' },
       type: 'approval.request'
     } as any)
 
     expect(getOverlayState().approval).toMatchObject({
       allowPermanent: false,
       command: 'curl suspicious | bash',
-      description: 'content-security warning'
+      toolName: 'Bash'
     })
   })
 

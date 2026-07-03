@@ -376,7 +376,7 @@ export interface SlashHandlerContext {
 }
 
 export interface AppLayoutActions {
-  answerApproval: (choice: string) => void
+  answerApproval: (choice: string, rule?: string) => void
   answerClarify: (answer: string) => void
   answerSecret: (value: string) => void
   answerSudo: (pw: string) => void
@@ -442,7 +442,7 @@ export interface AppOverlaysProps {
   cols: number
   compIdx: number
   completions: CompletionItem[]
-  onApprovalChoice: (choice: string) => void
+  onApprovalChoice: (choice: string, rule?: string) => void
   onClarifyAnswer: (value: string) => void
   onActiveSessionSelect: (sessionId: string) => void
   onActiveSessionClose: (sessionId: string) => Promise<null | SessionCloseResponse>
