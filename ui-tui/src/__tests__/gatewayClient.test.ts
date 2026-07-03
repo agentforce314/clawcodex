@@ -293,6 +293,13 @@ describe('GatewayClient NDJSON adapter', () => {
     expect(r.items.map(i => i.text)).toContain('/deep-research')
   })
 
+  it('lists /exit in the slash-completion menu (user-reported: /exit executed but never showed as a command)', async () => {
+    const p = gw.request<{ items: Array<{ text: string }> }>('complete.slash', { text: '/ex' })
+    await replyToControl('list_workflow_commands', { commands: [], ok: true })
+    const r = await p
+    expect(r.items.map(i => i.text)).toContain('/exit')
+  })
+
   it('merges backend workflow commands into the command catalog after init', async () => {
     proc.line(INIT) // resolves readyPromise, which the catalog awaits
     const p = gw.request<{ canon: Record<string, string>; pairs: [string, string][] }>('commands.catalog', {})
