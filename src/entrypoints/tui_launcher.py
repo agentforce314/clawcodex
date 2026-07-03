@@ -13,6 +13,8 @@ exit:
 Usage::
 
     clawcodex tui [--provider P] [--model M] [--permission-mode MODE]
+                  [--dangerously-skip-permissions]
+                  [--allow-dangerously-skip-permissions]
                   [--workspace DIR] [--tui-dir DIR] [--print-connect]
 
 ``--print-connect`` instead runs the agent-server directly and prints its
@@ -49,6 +51,18 @@ def run_tui_launcher(argv: list[str]) -> int:
     parser.add_argument("--provider", default=None)
     parser.add_argument("--model", default=None)
     parser.add_argument("--permission-mode", default="default", dest="permission_mode")
+    parser.add_argument(
+        "--dangerously-skip-permissions", action="store_true",
+        dest="dangerously_skip_permissions",
+        help="Bypass all permission checks. Recommended only for sandboxes "
+             "with no internet access.",
+    )
+    parser.add_argument(
+        "--allow-dangerously-skip-permissions", action="store_true",
+        dest="allow_dangerously_skip_permissions",
+        help="Make bypassPermissions available (Shift+Tab / /mode) without "
+             "starting in it.",
+    )
     parser.add_argument("--workspace", default=None,
                         help="Workspace root the agent operates in (default: cwd).")
     parser.add_argument("--tui-dir", default=None,
@@ -65,12 +79,39 @@ def run_tui_launcher(argv: list[str]) -> int:
               "bypassPermissions | auto", file=sys.stderr)
         return 2
 
+    # Same resolution the default `clawcodex` entry runs in
+    # src/cli.py::_resolve_permission_state — safety gate first, then
+    # flag > --permission-mode priority, then availability.
+    from src.permissions.dangerous_safety import (
+        enforce_dangerous_skip_permissions_safety,
+    )
+    from src.permissions.modes import (
+        has_allow_bypass_permissions_mode,
+        initial_permission_mode_from_cli,
+    )
+
+    dangerously = bool(args.dangerously_skip_permissions)
+    allow_dangerously = bool(args.allow_dangerously_skip_permissions)
+    enforce_dangerous_skip_permissions_safety(
+        bypass_requested=dangerously or allow_dangerously,
+    )
+    mode = initial_permission_mode_from_cli(
+        permission_mode_cli=args.permission_mode,
+        dangerously_skip_permissions=dangerously,
+    )
+    is_bypass_available = (
+        dangerously or allow_dangerously or has_allow_bypass_permissions_mode()
+    )
+
     if args.print_connect:
+        args.permission_mode = mode
+        args.is_bypass_available = is_bypass_available
         return _print_connect(args)
     return launch_ink_tui(
         provider=args.provider,
         model=args.model,
-        permission_mode=args.permission_mode,
+        permission_mode=mode,
+        is_bypass_available=is_bypass_available,
         workspace=args.workspace,
         tui_dir=args.tui_dir,
     )
@@ -81,6 +122,7 @@ def launch_ink_tui(
     provider: str | None = None,
     model: str | None = None,
     permission_mode: str = "default",
+    is_bypass_available: bool = False,
     workspace: str | None = None,
     tui_dir: str | None = None,
 ) -> int:
@@ -90,11 +132,19 @@ def launch_ink_tui(
     entry in :func:`src.cli.main`. Returns the Ink client's exit code, or a
     non-zero code with a helpful message (printed to stderr by :func:`_launch`)
     when the client or a JS runtime can't be found.
+
+    ``is_bypass_available`` carries the caller-resolved bypassPermissions
+    availability (``--dangerously-skip-permissions`` /
+    ``--allow-dangerously-skip-permissions`` / settings) to the spawned
+    agent-server, which owns the Shift+Tab cycle and set_permission_mode
+    guards. Without it, availability resolved by the CLI was silently dropped
+    and bypass could never be reached at runtime.
     """
     args = SimpleNamespace(
         provider=provider,
         model=model,
         permission_mode=permission_mode,
+        is_bypass_available=is_bypass_available,
         workspace=workspace,
         tui_dir=tui_dir,
         print_connect=False,
@@ -153,6 +203,11 @@ def _agent_server_cmd(args) -> list[str]:
     """
     cmd = [sys.executable, "-m", "src.entrypoints.agent_server_cli",
            "--permission-mode", args.permission_mode]
+    if getattr(args, "is_bypass_available", False):
+        # Availability only — the launch mode above decides whether the
+        # session STARTS in bypass; this keeps bypass reachable via
+        # Shift+Tab / /mode either way.
+        cmd += ["--allow-dangerously-skip-permissions"]
     if args.provider:
         cmd += ["--provider", args.provider]
     if args.model:
@@ -197,6 +252,8 @@ def _print_connect(args) -> int:
     return run_agent_server_subcommand([
         "--host", "127.0.0.1", "--port", "0", "--token", token,
         "--permission-mode", args.permission_mode,
+        *(["--allow-dangerously-skip-permissions"]
+          if getattr(args, "is_bypass_available", False) else []),
         *(["--provider", args.provider] if args.provider else []),
         *(["--model", args.model] if args.model else []),
         "--workspace", workspace,

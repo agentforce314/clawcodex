@@ -417,8 +417,15 @@ export class GatewayClient extends EventEmitter {
         const key = String(p.key ?? '')
         const value = p.value
 
+        if (key === 'permission_mode') {
+          // The server can reject this (bypassPermissions is gated on
+          // availability); reflect its verdict so a settings-panel write
+          // doesn't falsely report success while the server refused.
+          return this.controlQuery('set_permission_mode', { mode: value })
+            .then(r => ({ ok: (r as any)?.ok !== false } as T))
+        }
+
         if (key === 'model') {this.sendControl('set_model', { model: value })}
-        else if (key === 'permission_mode') {this.sendControl('set_permission_mode', { mode: value })}
         else if (key === 'effort' || key === 'reasoning') {this.sendControl('set_effort', { effort: value })}
         else if (key === 'provider') {this.sendControl('set_provider', { provider: value })}
         else if (key === 'thinking') {this.sendControl('set_thinking', { action: value })}
@@ -632,14 +639,26 @@ export class GatewayClient extends EventEmitter {
       }
 
       case 'mode': {
-        const r = (await this.controlQuery('set_permission_mode', { mode: arg })) as any
-        const mode = typeof r?.mode === 'string' ? r.mode : arg
+        // Bare `/mode` is a no-op query, not a set — don't send an empty mode
+        // (the server would reject it as invalid). Matches the prior behavior.
+        if (arg == null || arg.trim() === '') {return out('Permission mode: (unchanged).')}
+
+        // The server validates the mode and gates bypassPermissions on
+        // availability (same guard as the Shift+Tab cycle) — surface its
+        // verdict instead of echoing the arg as if it took effect.
+        const r = (await this.controlQuery('set_permission_mode', { mode: arg.trim() })) as any
+
+        if (r && r.ok === false) {return out(`mode: ${r.error ?? 'invalid mode'}`)}
+
+        // Only badge the mode the server actually confirmed — a rejected set
+        // must not flip the composer's permission-mode indicator.
+        const mode = typeof r?.mode === 'string' ? r.mode : arg.trim()
 
         if (mode) {
           this.publish({ payload: { mode: String(mode) }, type: 'permission.mode' })
         }
 
-        return out(`Permission mode: ${mode ?? '(unchanged)'}.`)
+        return out(`Permission mode: ${mode}.`)
       }
 
       case 'model':
