@@ -7,6 +7,9 @@ export interface ActiveTool {
 }
 
 export interface TodoItem {
+  // Present-continuous label ("Fixing the parser…") — the busy line shows the
+  // in-progress todo's activeForm as its verb (original Spinner.tsx).
+  activeForm?: string
   content: string
   id: string
   status: 'cancelled' | 'completed' | 'in_progress' | 'pending'
