@@ -685,7 +685,13 @@ export type GatewayEvent =
       type: 'clarify.request'
     }
   | {
-      payload: { allow_permanent?: boolean; command: string; description: string }
+      payload: {
+        allow_permanent?: boolean
+        command: string
+        rule?: null | string
+        rule_label?: null | string
+        tool_name: string
+      }
       session_id?: string
       type: 'approval.request'
     }

@@ -90,10 +90,19 @@ export interface DelegationStatus {
 }
 
 export interface ApprovalReq {
-  // false when the backend won't honor a permanent allow (tirith warning) → hide "Always allow".
+  // false when the backend won't honor a permanent allow (tirith warning) → hide "don't ask again".
   allowPermanent?: boolean
+  // The actual command / action under review (e.g. the Bash command line), NOT
+  // the tool name or a JSON dump — this is what the box shows.
   command: string
-  description: string
+  // Tool name for the box title ("Bash", "Write", …).
+  toolName: string
+  // The grant rule content the "don't ask again" option would persist, e.g.
+  // "git status:*". Editable in the box so the user can widen it (git:*).
+  // undefined when the backend sent no suggestion (→ no persist option).
+  rule?: string
+  // Display form of the rule for the option label, e.g. "Bash(git status:*)".
+  ruleLabel?: string
 }
 
 export interface ConfirmReq {
