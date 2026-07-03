@@ -1329,6 +1329,13 @@ class _AgentSession:
                 custom_instructions=instr,
                 trigger="manual",
             )
+            # R5 round-5 (ch11 #3) — compaction drops the earlier conversation
+            # (and with it any memory the model had seen), so reset the
+            # recall de-dup set: memories surfaced pre-compaction become
+            # eligible again. Without this the monotonic set silently
+            # degrades recall on long sessions (a memory recalled once is
+            # never re-surfaced even after its context is compacted away).
+            self._memory_surfaced.clear()
             self._reply(request_id, {
                 "ok": True,
                 "tokens_saved": res.tokens_saved,
