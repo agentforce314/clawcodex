@@ -456,6 +456,25 @@ async def run_query_as_agent_loop(
         logging.getLogger(__name__).debug("memory recall wiring failed",
                                           exc_info=True)
 
+    # R5 round-5 (ch17) — date-change (midnight-rollover) companion to the
+    # memoized env date. On a real turn where the date has rolled over since
+    # the last, append a <system-reminder> with today's date at the tail (the
+    # cached prefix keeps the memoized start date, so this doesn't bust it).
+    # Reuses the "real user turn" gate (memory_recall_enabled == not internal).
+    if memory_recall_enabled:
+        try:
+            from src.context_system.date_change import get_date_change_reminder
+            from src.types.messages import create_user_message
+
+            dc = get_date_change_reminder()
+            if dc:
+                messages_for_query.append(
+                    create_user_message(content=dc, isMeta=True)
+                )
+        except Exception:  # noqa: BLE001 — must never block a turn
+            logging.getLogger(__name__).debug("date-change wiring failed",
+                                              exc_info=True)
+
     params = QueryParams(
         messages=messages_for_query,
         system_prompt=system_prompt,
