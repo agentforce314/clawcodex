@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { approvalAction } from '../components/prompts.js'
+import { approvalAction, approvalOptions } from '../components/prompts.js'
 
 describe('approvalAction — pure key dispatch for ApprovalPrompt', () => {
   it('maps Esc to deny — parity with global Ctrl+C cancellation', () => {
@@ -46,6 +46,25 @@ describe('approvalAction — pure key dispatch for ApprovalPrompt', () => {
   it('returns noop for unrelated keystrokes (printable letters etc.)', () => {
     expect(approvalAction('a', {}, 0)).toEqual({ kind: 'noop' })
     expect(approvalAction(' ', {}, 0)).toEqual({ kind: 'noop' })
+  })
+
+  it('offers the persist option for EVERY tool with a suggestion, editable only for Bash', () => {
+    // Bash: suggestion with an editable rule → 3 options, editable.
+    expect(approvalOptions({ allowPermanent: true, rule: 'git status:*' })).toEqual({
+      editable: true,
+      opts: ['once', 'always', 'deny']
+    })
+    // Non-Bash (Write/Read/WebFetch): suggestion but no rule → 3 options, NOT
+    // editable (this is the regression that was fixed — the option must appear).
+    expect(approvalOptions({ allowPermanent: true, rule: undefined })).toEqual({
+      editable: false,
+      opts: ['once', 'always', 'deny']
+    })
+    // No suggestion / tirith warning → 2 options, not editable.
+    expect(approvalOptions({ allowPermanent: false, rule: undefined })).toEqual({
+      editable: false,
+      opts: ['once', 'deny']
+    })
   })
 
   it('respects a reduced option set when permanent allow is disabled', () => {

@@ -74,13 +74,28 @@ export function approvalAction(
   return { kind: 'noop' }
 }
 
+/**
+ * Which options to show, and whether the grant rule is editable. Exported +
+ * pure so the gating is testable without mounting Ink (this is the exact site
+ * of a fixed regression: the persist option must appear for EVERY tool the
+ * backend sent a suggestion for, not only Bash).
+ *
+ * - `allowPermanent` is the backend's "a suggestion exists" signal
+ *   (`suggestions.length > 0`), false only for a tirith warning / no suggestion
+ *   → no persist option.
+ * - `editable` is Bash-only: only a Bash suggestion carries a `rule` to widen.
+ */
+export function approvalOptions(
+  req: Pick<ApprovalReq, 'allowPermanent' | 'rule'>
+): { editable: boolean; opts: readonly ApprovalChoice[] } {
+  return {
+    editable: !!req.rule,
+    opts: req.allowPermanent === false ? APPROVAL_OPTS_NO_ALWAYS : APPROVAL_OPTS
+  }
+}
+
 export function ApprovalPrompt({ cols = 80, onChoice, req, t }: ApprovalPromptProps) {
-  // Offer the persist ("don't ask again") option whenever the backend sent a
-  // suggestion (allowPermanent) — that includes non-Bash tools (Write→accept
-  // edits this session, Read/WebFetch→content-less allow), not just Bash. Only
-  // Bash carries an editable rule (req.rule); the others show a static label.
-  const opts = req.allowPermanent === false ? APPROVAL_OPTS_NO_ALWAYS : APPROVAL_OPTS
-  const editable = !!req.rule
+  const { editable, opts } = approvalOptions(req)
   const [sel, setSel] = useState(0)
   // The editable grant rule (e.g. "git status:*"), which the user can widen to
   // "git:*" so one grant covers the family. Seeded from the backend suggestion.
