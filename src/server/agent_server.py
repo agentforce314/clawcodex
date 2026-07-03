@@ -84,6 +84,14 @@ class AgentServerConfig:
     # (`--fallback-model`; session-sticky, never persisted).
     fallback_model: str | None = None
     permission_mode: str = "default"
+    # bypassPermissions AVAILABILITY, decoupled from the launch mode: True when
+    # the user passed --dangerously-skip-permissions / --allow-dangerously-
+    # skip-permissions to the launcher. Availability is what lets Shift+Tab
+    # cycling and set_permission_mode reach bypassPermissions at runtime;
+    # launching IN bypass mode implies it (see _build_runtime). Mirrors
+    # isBypassPermissionsModeAvailable in
+    # typescript/src/utils/permissions/permissionSetup.ts:941.
+    is_bypass_available: bool = False
     max_turns: int = 20
     allowed_tools: tuple[str, ...] = ()
     disallowed_tools: tuple[str, ...] = ()
@@ -239,13 +247,51 @@ class _AgentSession:
             return
         if subtype == "set_permission_mode":
             mode = inner.get("mode")
-            if isinstance(mode, str) and self.tool_context is not None:
-                _set_mode(self.tool_context, mode)
-                # ch03 round-4 GAP A: the live gate home stays
-                # tool_context.permission_context; the store dispatch runs
-                # the centralized seams (listeners; future persistence).
-                _dispatch_app_state(self, permission_mode=mode)
-            self._ack(request_id)
+            # Validate BEFORE setting: an unknown string would land verbatim in
+            # permission_context.mode and silently behave like a mode it isn't.
+            # 'bubble' is runtime-only sub-agent escalation (rejected as a
+            # top-level mode everywhere else, e.g. agent_server_cli).
+            from src.permissions.types import PERMISSION_MODES
+
+            if (
+                not isinstance(mode, str)
+                or mode not in PERMISSION_MODES
+                or mode == "bubble"
+            ):
+                self._reply(request_id, {
+                    "ok": False,
+                    "error": f"invalid permission mode: {mode!r} "
+                             "(default | plan | acceptEdits | bypassPermissions "
+                             "| dontAsk | auto)",
+                })
+                return
+            if self.tool_context is None:
+                self._reply(request_id, {"ok": False, "error": "session not ready"})
+                return
+            # bypassPermissions is only settable when the session made it
+            # available (--dangerously-skip-permissions / --allow-…). Same
+            # guard the Shift+Tab cycle enforces (get_next_permission_mode) —
+            # without it, /mode bypassPermissions silently disabled the whole
+            # permission gate in any session. Mirrors the onSetPermissionMode
+            # contract in typescript/src/bridge/replBridge.ts:182-193.
+            pc = self.tool_context.permission_context
+            if mode == "bypassPermissions" and not getattr(
+                pc, "is_bypass_permissions_mode_available", False
+            ):
+                self._reply(request_id, {
+                    "ok": False,
+                    "error": "bypassPermissions is not available in this "
+                             "session — launch with "
+                             "--dangerously-skip-permissions or "
+                             "--allow-dangerously-skip-permissions",
+                })
+                return
+            _set_mode(self.tool_context, mode)
+            # ch03 round-4 GAP A: the live gate home stays
+            # tool_context.permission_context; the store dispatch runs
+            # the centralized seams (listeners; future persistence).
+            _dispatch_app_state(self, permission_mode=mode)
+            self._reply(request_id, {"ok": True, "mode": mode})
             return
         if subtype == "cycle_permission_mode":
             # ch13 round-4 (critic B1) — shift+tab cycling MUST be computed
@@ -256,14 +302,15 @@ class _AgentSession:
             # step into bypass unconditionally, silently disabling the whole
             # permission gate. The server owns the mode + the availability
             # flag, so it owns the next-mode computation.
-            new_mode = None
-            if self.tool_context is not None:
-                from src.permissions.cycle import get_next_permission_mode
+            if self.tool_context is None:
+                self._reply(request_id, {"ok": False, "error": "session not ready"})
+                return
+            from src.permissions.cycle import get_next_permission_mode
 
-                pc = self.tool_context.permission_context
-                new_mode = get_next_permission_mode(pc)
-                _set_mode(self.tool_context, new_mode)
-                _dispatch_app_state(self, permission_mode=new_mode)
+            pc = self.tool_context.permission_context
+            new_mode = get_next_permission_mode(pc)
+            _set_mode(self.tool_context, new_mode)
+            _dispatch_app_state(self, permission_mode=new_mode)
             self._reply(request_id, {"ok": True, "mode": new_mode})
             return
         if subtype == "set_model":
@@ -2205,7 +2252,18 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
             except Exception:  # noqa: BLE001 — store failure must not break startup
                 logger.debug("[agent-server] app-state store init failed",
                              exc_info=True)
-        bypass = mode == "bypassPermissions"
+        # Availability = launched IN bypass mode, OR the launch boundary
+        # resolved it available (flags and/or trusted settings) and forwarded
+        # it via cfg.is_bypass_available. We do NOT read settings ambiently
+        # here: on the multi-session --http transport that would let the server
+        # host's own settings unlock bypass for every client session,
+        # regardless of the client's cwd. Availability is decided once per
+        # launch (src/cli.py _resolve_permission_state,
+        # tui_launcher.run_tui_launcher, and agent_server_cli for the
+        # single-session stdio case) and carried in. Availability alone does
+        # NOT enter bypass; it only unlocks it for Shift+Tab /
+        # set_permission_mode. Mirrors permissionSetup.ts:941-945.
+        bypass = mode == "bypassPermissions" or cfg.is_bypass_available
         perm_setup = setup_permissions(
             cwd=str(workspace_root),
             mode=mode,  # type: ignore[arg-type]

@@ -164,6 +164,7 @@ def main():
         provider=args.provider,
         model=args.model,
         permission_mode=args._resolved_permission_mode,
+        is_bypass_available=args._resolved_is_bypass_available,
     )
 
 

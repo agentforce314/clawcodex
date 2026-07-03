@@ -12,6 +12,8 @@ Usage::
     clawcodex agent-server [--host H] [--port P] [--token T]
                            [--provider NAME] [--model M]
                            [--permission-mode MODE] [--workspace DIR]
+                           [--dangerously-skip-permissions]
+                           [--allow-dangerously-skip-permissions]
 
 On start it prints the ``cc://`` and ``http://`` URLs to connect to.
 """
@@ -89,6 +91,18 @@ def run_agent_server_subcommand(argv: list[str]) -> int:
     parser.add_argument("--permission-mode", default="default",
                         dest="permission_mode",
                         help="default | acceptEdits | bypassPermissions | plan | auto")
+    parser.add_argument(
+        "--dangerously-skip-permissions", action="store_true",
+        dest="dangerously_skip_permissions",
+        help="Bypass all permission checks (start in bypassPermissions mode). "
+             "Recommended only for sandboxes with no internet access.",
+    )
+    parser.add_argument(
+        "--allow-dangerously-skip-permissions", action="store_true",
+        dest="allow_dangerously_skip_permissions",
+        help="Make bypassPermissions AVAILABLE (Shift+Tab / /mode) without "
+             "starting in it.",
+    )
     parser.add_argument("--workspace", default=None,
                         help="Workspace root the agent operates in (default: cwd).")
     parser.add_argument("--max-turns", type=int, default=20, dest="max_turns")
@@ -122,6 +136,36 @@ def run_agent_server_subcommand(argv: list[str]) -> int:
               "bypassPermissions | auto", file=sys.stderr)
         return 2
 
+    # Same root-outside-sandbox refusal the top-level CLI runs for these
+    # flags (src/cli.py _resolve_permission_state); a hand-launched
+    # agent-server must not be a way around it.
+    dangerously = bool(args.dangerously_skip_permissions)
+    allow_dangerously = bool(args.allow_dangerously_skip_permissions)
+    from src.permissions.dangerous_safety import (
+        enforce_dangerous_skip_permissions_safety,
+    )
+
+    enforce_dangerous_skip_permissions_safety(
+        bypass_requested=dangerously or allow_dangerously,
+    )
+    if dangerously:
+        # Flag wins over --permission-mode, same priority as
+        # initial_permission_mode_from_cli (src/permissions/modes.py).
+        args.permission_mode = "bypassPermissions"
+
+    # bypass AVAILABILITY. Flags always count. Trusted settings
+    # (permissions.allowBypassPermissionsMode) count only on the
+    # single-session --stdio transport: this server serves exactly the
+    # operator who launched it, so their own user/local settings apply. On
+    # the multi-session --http transport, folding host settings in would
+    # unlock bypass for every remote client — resolve that per-launch
+    # upstream and pass a flag instead.
+    is_bypass_available = dangerously or allow_dangerously
+    if not is_bypass_available and args.stdio:
+        from src.permissions.modes import has_allow_bypass_permissions_mode
+
+        is_bypass_available = has_allow_bypass_permissions_mode()
+
     workspace = str(Path(args.workspace).resolve()) if args.workspace else str(Path.cwd())
 
     if args.fallback_model and args.fallback_model == args.model:
@@ -133,6 +177,7 @@ def run_agent_server_subcommand(argv: list[str]) -> int:
         model=args.model,
         fallback_model=args.fallback_model,
         permission_mode=args.permission_mode,
+        is_bypass_available=is_bypass_available,
         max_turns=args.max_turns,
     )
 

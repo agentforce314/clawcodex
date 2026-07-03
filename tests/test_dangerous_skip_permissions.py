@@ -138,6 +138,61 @@ def test_has_allow_bypass_permissions_mode_default_false():
     assert isinstance(result, bool)
 
 
+def _write_perms_config(path: Path, enabled: bool) -> None:
+    import json
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"settings": {"permissions": {"allowBypassPermissionsMode": enabled}}}),
+        encoding="utf-8",
+    )
+
+
+@pytest.fixture
+def _tiered_configs(tmp_path, monkeypatch):
+    """Patch the three config-tier paths to hermetic temp files and return them.
+
+    Sidesteps git-root resolution + the real user config so the reader's tier
+    selection is observable in isolation.
+    """
+    global_path = tmp_path / "global.json"
+    project_path = tmp_path / "project.json"
+    local_path = tmp_path / "local.json"
+    monkeypatch.setattr("src.config.get_global_config_path", lambda: global_path)
+    monkeypatch.setattr(
+        "src.config.get_project_config_path", lambda cwd=None: project_path,
+    )
+    monkeypatch.setattr(
+        "src.config.get_local_config_path", lambda cwd=None: local_path,
+    )
+    return global_path, project_path, local_path
+
+
+def test_has_allow_bypass_reads_global_tier(_tiered_configs):
+    global_path, _, _ = _tiered_configs
+    _write_perms_config(global_path, True)
+    assert has_allow_bypass_permissions_mode() is True
+
+
+def test_has_allow_bypass_reads_local_tier(_tiered_configs):
+    _, _, local_path = _tiered_configs
+    _write_perms_config(local_path, True)
+    assert has_allow_bypass_permissions_mode() is True
+
+
+def test_has_allow_bypass_ignores_project_tier(_tiered_configs):
+    # SECURITY: the committable <git-root>/.claude/config.json must NOT be able
+    # to auto-enable bypass availability (parity with the TS projectSettings
+    # exclusion). Only the project tier is set here.
+    _, project_path, _ = _tiered_configs
+    _write_perms_config(project_path, True)
+    assert has_allow_bypass_permissions_mode() is False
+
+
+def test_has_allow_bypass_false_when_all_tiers_absent(_tiered_configs):
+    assert has_allow_bypass_permissions_mode() is False
+
+
 # ---------------------------------------------------------------------------
 # Headless wiring
 
