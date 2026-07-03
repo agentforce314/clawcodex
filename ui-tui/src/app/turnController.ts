@@ -5,19 +5,19 @@ import {
   STREAM_SCROLL_BATCH_MS,
   STREAM_TYPING_BATCH_MS
 } from '../config/timing.js'
-import type { SessionInterruptResponse, SubagentEventPayload } from '../gatewayTypes.js'
+import type { SessionInterruptResponse, StructuredDiffPayload, SubagentEventPayload } from '../gatewayTypes.js'
+import { ensureHighlighter } from '../lib/colorDiff.js'
 import { appendToolShelfMessage, isToolShelfMessage } from '../lib/liveProgress.js'
 import { hasReasoningTag, splitReasoning } from '../lib/reasoning.js'
 import {
   boundedLiveRenderText,
   buildToolTrailLine,
-  buildVerboseToolTrailLine,
   estimateTokensRough,
   isTransientTrailLine,
   sameToolTrailGroup,
   toolTrailLabel
 } from '../lib/text.js'
-import type { ActiveTool, ActivityItem, Msg, SubagentProgress, TodoItem } from '../types.js'
+import type { ActiveTool, ActivityItem, Msg, MsgDiffData, SubagentProgress, TodoItem } from '../types.js'
 
 import type { Notice } from './interfaces.js'
 import { resetFlowOverlays } from './overlayStore.js'
@@ -28,6 +28,81 @@ import { getUiState, patchUiState } from './uiStore.js'
 const INTERRUPT_COOLDOWN_MS = 1500
 const ACTIVITY_LIMIT = 8
 const TRAIL_LIMIT = 8
+
+// Safety caps for structured diff segments, applied once at ingestion so the
+// DiffView render cache keys on stable hunk objects. EDIT cap keeps a giant
+// edit from flooding the live viewport; WRITE cap mirrors the original's
+// created-file preview (first 10 lines).
+const DIFF_SEGMENT_MAX_LINES = 240
+const CREATE_PREVIEW_LINES = 10
+
+/**
+ * Build the Msg fields for a structured diff segment: hunks capped to
+ * DIFF_SEGMENT_MAX_LINES (dropped count recorded for the "… +N lines" hint)
+ * and a ```diff fence derived from the same lines. The fence keeps the
+ * existing text-based machinery working unchanged — message.complete dedupe
+ * (diffSegmentBody), the consecutive-duplicate check, selection copy, and
+ * virtual height estimates.
+ */
+const buildDiffSegment = (diff: StructuredDiffPayload): null | { diffData: MsgDiffData; text: string } => {
+  // Branch on kind ALONE, matching the original's renderToolResultMessage
+  // switch (FileWriteTool/UI.tsx): a Write-created file arrives with an
+  // all-additions hunk from difflib, but renders as the 10-line content
+  // preview — never as a wall of green diff rows.
+  if (diff.kind === 'update') {
+    let budget = DIFF_SEGMENT_MAX_LINES
+    let dropped = 0
+    const hunks: MsgDiffData['hunks'] = []
+
+    for (const hunk of diff.hunks) {
+      if (budget <= 0) {
+        dropped += hunk.lines.length
+
+        continue
+      }
+
+      if (hunk.lines.length <= budget) {
+        hunks.push(hunk)
+        budget -= hunk.lines.length
+      } else {
+        dropped += hunk.lines.length - budget
+        hunks.push({ ...hunk, lines: hunk.lines.slice(0, budget) })
+        budget = 0
+      }
+    }
+
+    if (!hunks.length) {
+      return null
+    }
+
+    const body = hunks.flatMap(hunk => hunk.lines).join('\n')
+
+    return {
+      diffData: { ...diff, hunks, ...(dropped > 0 && { truncatedLines: dropped }) },
+      text: `\`\`\`diff\n${body}\n\`\`\``
+    }
+  }
+
+  // create: preview the new content (hunks, if any, are ignored — see above).
+  // The fence only needs the preview lines — heights/dedupe track what
+  // actually renders.
+  const lines = (diff.content ?? '').split('\n')
+
+  if (lines.length > 0 && lines.at(-1) === '') {
+    lines.pop()
+  }
+
+  if (!lines.length) {
+    return null
+  }
+
+  const preview = lines.slice(0, CREATE_PREVIEW_LINES)
+
+  return {
+    diffData: { ...diff },
+    text: `\`\`\`diff\n${preview.map(line => '+' + line).join('\n')}\n\`\`\``
+  }
+}
 
 // Extracts the raw patch from a diff-only segment produced by
 // pushInlineDiffSegment. Used at message.complete to dedupe against final
@@ -507,6 +582,36 @@ class TurnController {
     patchTurnState({ streamSegments: this.segmentMessages })
   }
 
+  pushStructuredDiffSegment(diff: StructuredDiffPayload, tools: string[] = []): 'duplicate' | 'empty' | 'pushed' {
+    const built = buildDiffSegment(diff)
+
+    if (!built) {
+      // Nothing renderable (no-op update, empty created file) — the caller
+      // must surface the tool completion some other way.
+      return 'empty'
+    }
+
+    // Warm the syntax highlighter while the segment is still upstream of the
+    // viewport — by first paint the grammars are usually registered.
+    void ensureHighlighter()
+
+    // Same flow as pushInlineDiffSegment: land the diff BETWEEN the narration
+    // that preceded the edit and whatever streams afterwards.
+    this.flushStreamingSegment()
+
+    if (this.segmentMessages.at(-1)?.text === built.text) {
+      return 'duplicate'
+    }
+
+    this.segmentMessages = [
+      ...this.segmentMessages,
+      { diffData: built.diffData, kind: 'diff', role: 'assistant', text: built.text, ...(tools.length && { tools }) }
+    ]
+    patchTurnState({ streamSegments: this.segmentMessages })
+
+    return 'pushed'
+  }
+
   pushActivity(text: string, tone: ActivityItem['tone'] = 'info', replaceLabel?: string) {
     patchTurnState(state => {
       const base = replaceLabel
@@ -746,6 +851,33 @@ class TurnController {
 
     this.flushStreamingSegment()
     this.pushInlineDiffSegment(diffText, [this.completeTool(toolId, fallbackName, error, '', duration, resultText)])
+    this.publishToolState()
+  }
+
+  recordStructuredDiffToolComplete(
+    diff: StructuredDiffPayload,
+    toolId: string,
+    fallbackName?: string,
+    error?: string,
+    duration?: number
+  ) {
+    if (this.interrupted) {
+      return
+    }
+
+    this.flushStreamingSegment()
+    // No result text on the trail line: the structured diff below IS the
+    // result (the original shows only "⎿ Added N…" — not the model-facing
+    // "file has been updated successfully" boilerplate).
+    const line = this.completeTool(toolId, fallbackName, error, '', duration)
+
+    if (this.pushStructuredDiffSegment(diff, [line]) === 'empty') {
+      // Nothing renderable (no-op update, empty created file): keep the tool
+      // completion visible on the plain trail instead of dropping it.
+      this.pendingSegmentTools = [...this.pendingSegmentTools, line]
+      this.flushPendingToolsIntoLastSegment()
+    }
+
     this.publishToolState()
   }
 

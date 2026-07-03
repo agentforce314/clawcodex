@@ -2325,6 +2325,40 @@ def _filter_registry(registry, *, keep) -> None:
 # ─── message shaping ─────────────────────────────────────────────────────────
 
 
+def _display_tool_result(value: Any) -> dict | None:
+    """Trim a rich Edit/Write tool output for the wire (display data only).
+
+    Recognizes the self-describing shape (``type``/``filePath``/
+    ``structuredPatch``) rather than a tool name so mid-turn clients can
+    render it without tool_use bookkeeping. Deliberate delta from real CC's
+    full-parity ``tool_use_result``: ``originalFile`` is dropped (the display
+    renderer never reads it) and update-type ``content`` (the full post-edit
+    file) is reduced to ``firstLine`` (language/shebang detection only; the
+    original uses the pre-edit first line — differs only when line 1 itself
+    changed); create-type keeps ``content`` for the file preview. Always
+    builds a new dict — ``value`` is shared with the in-memory message and
+    the persisted transcript.
+    """
+    if not isinstance(value, dict):
+        return None
+    if value.get("type") not in ("create", "update"):
+        return None
+    if not isinstance(value.get("filePath"), str) or not isinstance(value.get("structuredPatch"), list):
+        return None
+    trimmed: dict[str, Any] = {
+        "type": value["type"],
+        "filePath": value["filePath"],
+        "structuredPatch": value["structuredPatch"],
+    }
+    content = value.get("content")
+    if isinstance(content, str):
+        if value["type"] == "create":
+            trimmed["content"] = content
+        else:
+            trimmed["firstLine"] = content.split("\n", 1)[0]
+    return trimmed
+
+
 def _sdk_envelope(message: Any, session_id: str) -> dict | None:
     """Wrap a :class:`Message` into the SDK envelope the client renders."""
     from src.types.messages import message_to_dict
@@ -2335,12 +2369,19 @@ def _sdk_envelope(message: Any, session_id: str) -> dict | None:
         return None
     role = d.get("role", getattr(message, "role", "assistant"))
     msg_type = "assistant" if role == "assistant" else "user"
-    return {
+    env: dict[str, Any] = {
         "type": msg_type,
         "uuid": d.get("uuid"),
         "session_id": session_id,
         "message": {"role": role, "content": d.get("content")},
     }
+    # Rich Edit/Write result → snake_case per the SDK stream convention
+    # (SDKUserMessage.tool_use_result); the TUI renders the structured patch
+    # from it instead of fabricating a diff from tool input.
+    tool_use_result = _display_tool_result(d.get("toolUseResult"))
+    if tool_use_result is not None:
+        env["tool_use_result"] = tool_use_result
+    return env
 
 
 def _result_message(
