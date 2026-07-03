@@ -136,19 +136,29 @@ export function ApprovalPrompt({ cols = 80, onChoice, req, t }: ApprovalPromptPr
         const isSel = sel === i
         const head = `${isSel ? '❯ ' : '  '}${i + 1}. `
         if (o === 'always') {
-          const label = `${head}${LABELS.always} `
-          // Bash edits the rule inline; other tools show a static scope label
-          // (rule label, else the tool name — "…don't ask again for Write").
-          const staticRule = ruleText || req.ruleLabel || req.toolName
+          // Bash edits the rule inline: "Yes, and don't ask again for [git:*]".
+          if (editable) {
+            const label = `${head}${LABELS.always} `
+            const staticRule = ruleText || req.ruleLabel || req.toolName
+            return (
+              <Box key={o}>
+                <Text bold={isSel} color={isSel ? t.color.warn : t.color.muted}>{label}</Text>
+                {editing ? (
+                  <TextInput columns={Math.max(12, innerWidth - label.length)} focus onChange={setRuleText} onSubmit={() => confirm('always')} value={ruleText} />
+                ) : (
+                  <Text bold={isSel} color={isSel ? t.color.text : t.color.muted}>{staticRule}</Text>
+                )}
+              </Box>
+            )
+          }
+          // Other tools: the backend's authoritative per-tool wording, which
+          // states the real scope ("Yes, allow all edits during this session"),
+          // not a generic "don't ask again for <tool>".
+          const text = req.sessionLabel
+            ? `Yes, ${req.sessionLabel}`
+            : `${LABELS.always} ${req.ruleLabel || req.toolName}`
           return (
-            <Box key={o}>
-              <Text bold={isSel} color={isSel ? t.color.warn : t.color.muted}>{label}</Text>
-              {editing && editable ? (
-                <TextInput columns={Math.max(12, innerWidth - label.length)} focus onChange={setRuleText} onSubmit={() => confirm('always')} value={ruleText} />
-              ) : (
-                <Text bold={isSel} color={isSel ? t.color.text : t.color.muted}>{staticRule}</Text>
-              )}
-            </Box>
+            <Text bold={isSel} color={isSel ? t.color.warn : t.color.muted} key={o}>{head}{text}</Text>
           )
         }
         return (
