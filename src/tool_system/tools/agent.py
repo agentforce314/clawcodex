@@ -53,6 +53,39 @@ from src.agent.run_agent import RunAgentParams, run_agent
 
 logger = logging.getLogger(__name__)
 
+
+def _emit_terminal_agent_progress(
+    parent_context: Any,
+    *,
+    agent_id: str,
+    name: Any,
+    description: Any,
+    subagent_type: Any,
+    status: str,
+) -> None:
+    """R5 round-5 (ch13) — emit a TERMINAL ``agent_progress`` so the TUI
+    subagent HUD marks the subagent done instead of lingering "running"
+    until the end-of-turn flush. Round-4 emitted this only on the SYNC
+    SUCCESS path; async subagents (which finish via
+    ``enqueue_agent_notification``, never ``agent_progress``) and failed sync
+    subagents were never marked terminal. Uses the SAME ``name`` +
+    ``description`` the running emits use so the HUD goal label doesn't flip
+    to the truncated prompt at completion (critic residual). Guarded — a
+    progress emit must never fail a completed/failed delegation."""
+    try:
+        emit = getattr(parent_context, "agent_progress_emit", None)
+        if emit is not None:
+            emit({
+                "agent_id": agent_id,
+                "name": name,
+                "description": description,
+                "subagent_type": subagent_type,
+                "activity": None,
+                "status": status,
+            })
+    except Exception:  # noqa: BLE001
+        logger.debug("terminal subagent progress emit failed", exc_info=True)
+
 # Input schema matching typescript/src/tools/AgentTool/AgentTool.tsx
 AGENT_INPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -374,6 +407,8 @@ def make_agent_tool(
                 start_time=start_time,
                 prompt=prompt,
                 agent_type=agent_def.agent_type,
+                description=description,
+                agent_name=agent_name,
             )
 
     def _run_sync_agent(
@@ -383,57 +418,64 @@ def make_agent_tool(
         start_time: float,
         prompt: str,
         agent_type: str,
+        description: Any = None,
+        agent_name: Any = None,
     ) -> ToolResult:
         """Run an agent synchronously and return the result."""
         from ..protocol import ToolResult as TR
         from src.types.messages import Message
 
         agent_messages: list[Message] = []
+        # R5 (ch13) — the HUD goal label: use the SAME name/description the
+        # running emits use, not the truncated prompt (critic residual).
+        _hud_name = agent_name if agent_name is not None else \
+            getattr(run_params.agent_definition, "agent_type", "")
+        _hud_desc = description if description is not None else \
+            (run_params.prompt or "")[:80]
 
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # We're inside an async context — use a nested run
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    future = pool.submit(_sync_collect_agent_messages, run_params)
-                    agent_messages = future.result()
-            else:
-                agent_messages = loop.run_until_complete(
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # We're inside an async context — use a nested run
+                    import concurrent.futures
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                        future = pool.submit(_sync_collect_agent_messages, run_params)
+                        agent_messages = future.result()
+                else:
+                    agent_messages = loop.run_until_complete(
+                        _collect_agent_messages(run_params)
+                    )
+            except RuntimeError:
+                # No event loop — create one
+                agent_messages = asyncio.run(
                     _collect_agent_messages(run_params)
                 )
-        except RuntimeError:
-            # No event loop — create one
-            agent_messages = asyncio.run(
-                _collect_agent_messages(run_params)
-            )
 
-        # Finalize result
-        metadata = {
-            "start_time": start_time,
-            "agent_type": agent_type,
-        }
-        result = finalize_agent_tool(agent_messages, agent_id, metadata)
+            # Finalize result
+            metadata = {
+                "start_time": start_time,
+                "agent_type": agent_type,
+            }
+            result = finalize_agent_tool(agent_messages, agent_id, metadata)
+        except Exception:
+            # R5 (ch13) — a FAILED sync subagent must also leave the HUD;
+            # round-4 emitted terminal only on success, so a failed sync
+            # delegation lingered "running". Emit failed, then re-raise so
+            # the existing error flow is unchanged.
+            _emit_terminal_agent_progress(
+                run_params.parent_context, agent_id=agent_id, name=_hud_name,
+                description=_hud_desc, subagent_type=agent_type, status="failed",
+            )
+            raise
 
         # ch13 round-4 (critic M1) — emit a TERMINAL agent_progress so the
         # TUI's subagent HUD marks this subagent complete instead of
-        # lingering as "running" until the end-of-turn flush. The per-message
-        # emits above always carry status:"running"; without this final
-        # emit the client's subagent.complete mapping was unreachable.
-        try:
-            _emit = getattr(run_params.parent_context, "agent_progress_emit", None)
-            if _emit is not None:
-                _emit({
-                    "agent_id": agent_id,
-                    "name": getattr(run_params.agent_definition, "agent_type", ""),
-                    "description": (run_params.prompt or "")[:80],
-                    "subagent_type": agent_type,
-                    "activity": None,
-                    "status": "completed",
-                })
-        except Exception:  # noqa: BLE001 — a progress emit must never fail a
-            # completed delegation (critic: keep the whole resolve+emit guarded).
-            logger.debug("terminal subagent progress emit failed", exc_info=True)
+        # lingering "running". The per-message emits carry status:"running".
+        _emit_terminal_agent_progress(
+            run_params.parent_context, agent_id=agent_id, name=_hud_name,
+            description=_hud_desc, subagent_type=agent_type, status="completed",
+        )
 
         return TR(
             name=AGENT_TOOL_NAME,
@@ -598,6 +640,15 @@ def make_agent_tool(
                         result_text=result_text,
                         registry=context.runtime_tasks,
                     )
+                    # R5 (ch13) — mark the async subagent terminal in the HUD.
+                    # Round-4 wired terminal progress for SYNC only; async
+                    # finished via enqueue_agent_notification alone, so the
+                    # HUD lingered "running" until the end-of-turn flush.
+                    _emit_terminal_agent_progress(
+                        context, agent_id=agent_id, name=agent_name,
+                        description=description, subagent_type=agent_type,
+                        status="completed",
+                    )
                     # Chunk D / WI-3.1 + WI-3.2 — enqueue a single
                     # ``<task-notification>`` envelope. Atomic check-and-
                     # set on ``state.notified`` inside the helper means
@@ -636,6 +687,12 @@ def make_agent_tool(
                         error=str(exc),
                         final_message=partial,
                         registry=context.runtime_tasks,
+                    )
+                    # R5 (ch13) — mark the failed async subagent terminal too.
+                    _emit_terminal_agent_progress(
+                        context, agent_id=agent_id, name=agent_name,
+                        description=description, subagent_type=agent_type,
+                        status="failed",
                     )
                     logger.exception(
                         "Async agent %s (%s) failed",
