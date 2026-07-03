@@ -23,6 +23,7 @@ import { AgentsOverlay } from './agentsOverlay.js'
 import { GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
 import { FloatingOverlays, PromptZone } from './appOverlays.js'
 import { Banner, Panel, SessionPanel } from './branding.js'
+import { ComposerFooter } from './composerFooter.js'
 import { FpsOverlay } from './fpsOverlay.js'
 import { HelpHint } from './helpHint.js'
 import { MessageLine } from './messageLine.js'
@@ -274,7 +275,17 @@ const ComposerPane = memo(function ComposerPane({
 
       <LiveTodoPanel />
 
-      <Box flexDirection="column" marginTop={ui.statusBar === 'top' ? 0 : 1} position="relative">
+      <Box
+        borderBottom
+        borderColor={sh ? ui.theme.color.bashBorder : ui.theme.color.promptBorder}
+        borderLeft={false}
+        borderRight={false}
+        borderStyle="round"
+        borderTop
+        flexDirection="column"
+        marginTop={ui.statusBar === 'top' ? 0 : 1}
+        position="relative"
+      >
         <FloatingOverlays
           cols={composer.cols}
           compIdx={composer.compIdx}
@@ -319,7 +330,12 @@ const ComposerPane = memo(function ComposerPane({
                 ) : composer.inputBuf.length ? (
                   <Text color={ui.theme.color.prompt}>{promptBlank}</Text>
                 ) : (
-                  <PromptPrefix bold color={ui.theme.color.prompt} promptText={promptText} width={promptWidth} />
+                  <PromptPrefix
+                    bold
+                    color={ui.busy ? ui.theme.color.muted : ui.theme.color.prompt}
+                    promptText={promptText}
+                    width={promptWidth}
+                  />
                 )}
               </Box>
 
@@ -331,7 +347,7 @@ const ComposerPane = memo(function ComposerPane({
                   onChange={composer.updateInput}
                   onPaste={composer.handleTextPaste}
                   onSubmit={composer.submit}
-                  placeholder={composer.empty ? PLACEHOLDER : ui.busy ? 'Ctrl+C to interrupt…' : ''}
+                  placeholder={composer.empty && !ui.busy ? PLACEHOLDER : ''}
                   value={composer.input}
                   voiceRecordKey={composer.voiceRecordKey}
                 />
@@ -346,6 +362,15 @@ const ComposerPane = memo(function ComposerPane({
       </Box>
 
       {!composer.empty && !ui.sid && <Text color={ui.theme.color.muted}>⚕ {ui.status}</Text>}
+
+      <ComposerFooter
+        busy={ui.busy}
+        inputEmpty={!composer.input && !composer.inputBuf.length}
+        mode={ui.permissionMode}
+        sh={sh}
+        t={ui.theme}
+        voiceLabel={status.voiceLabel}
+      />
 
       <StatusRulePane at="bottom" composer={composer} status={status} />
     </NoSelect>
