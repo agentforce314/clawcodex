@@ -21,7 +21,8 @@ import { readdirSync } from 'node:fs'
 import { resolve as pathResolve } from 'node:path'
 import { createInterface } from 'node:readline'
 
-import type { GatewayEvent, PatchHunk, StructuredDiffPayload } from './gatewayTypes.js'
+import type { CostSnapshot, GatewayEvent, PatchHunk, StructuredDiffPayload } from './gatewayTypes.js'
+import { formatTotalCost, setLastCostSnapshot } from './lib/costSummary.js'
 import type { SessionInfo } from './types.js'
 
 const STARTUP_TIMEOUT_MS = 30_000
@@ -218,6 +219,7 @@ const SLASHES: ReadonlyArray<{ desc: string; name: string }> = [
   { desc: 'Set the permission mode', name: '/mode' },
   { desc: 'Compact the conversation to save context', name: '/compact' },
   { desc: 'Show context-window usage', name: '/context' },
+  { desc: 'Show the total cost and duration of the current session', name: '/cost' },
   { desc: 'Undo recent turns', name: '/rewind' },
   { desc: 'Toggle extended thinking', name: '/thinking' },
   { desc: 'Set reasoning effort (or "ultracode" workflow mode)', name: '/effort' },
@@ -644,6 +646,21 @@ export class GatewayClient extends EventEmitter {
         return out(`Context: ${r?.total_tokens ?? '?'}/${r?.max_tokens ?? '?'} tokens (${pct}%).`)
       }
 
+      case 'cost': {
+        // The original /cost prints formatTotalCost over live cost-tracker
+        // state (commands/cost/cost.ts:23); clawcodex's accounting lives in
+        // the backend bootstrap singleton, so pull a fresh snapshot.
+        const r = (await this.controlQuery('cost', {})) as CostSnapshot | null
+
+        if (!r || Object.keys(r).length === 0) {
+          return out('Cost totals unavailable (backend not ready).')
+        }
+
+        setLastCostSnapshot(r)
+
+        return out(formatTotalCost(r))
+      }
+
       case 'effort': {
         const r = (await this.controlQuery('set_effort', { effort: arg ?? null })) as any
 
@@ -923,6 +940,8 @@ export class GatewayClient extends EventEmitter {
       case 'result':
         this.publish({
           payload: {
+            // Running session totals for /cost + the exit summary.
+            cost: msg.cost && typeof msg.cost === 'object' ? msg.cost : undefined,
             permission_mode: typeof msg.permission_mode === 'string' ? msg.permission_mode : undefined,
             text: typeof msg.result === 'string' ? msg.result : undefined,
             usage: msg.usage

@@ -1107,12 +1107,22 @@ async def _call_model_sync(
     # converge here, so every main-loop response is counted exactly once.
     # Empty usage (a stream whose final-message read failed) records zeros.
     try:
+        from ..bootstrap.state import add_to_total_duration_state
         from ..cost_tracker import record_api_usage
 
         record_api_usage(
             getattr(response, "model", None) or getattr(provider, "model", "unknown"),
             response.usage,
         )
+        # The original records per-request API duration alongside cost
+        # (addToTotalDuration beside addToTotalSessionCost); this feeds
+        # /cost's "Total duration (API)". This layer can't split retries:
+        # provider-internal ones are inside the span (so both counters get
+        # the same value), while a raise-then-retry by our caller records
+        # nothing for the failed attempt (the original's including-retries
+        # counter would) — a slight undercount, accepted.
+        _api_ms = int((time.monotonic() - _t0) * 1000)
+        add_to_total_duration_state(_api_ms, _api_ms)
     except Exception:
         logger.debug("cost recording failed", exc_info=True)
 

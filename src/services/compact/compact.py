@@ -195,7 +195,12 @@ def _record_compaction_usage(context: "CompactContext", usage: Any) -> None:
     (ch04 round-3 G1 — TS counts every API call via addToTotalSessionCost
     in the API layer; the port's direct provider calls must self-record).
     Records under the summarize model (``context.model``), falling back
-    to the provider's. Never raises."""
+    to the provider's. Never raises.
+
+    Known gap: unlike the main loop and the advisor, summarize calls feed
+    no ``add_to_total_duration_state`` (this helper runs after the call,
+    with no start time in scope), so /cost's "Total duration (API)"
+    excludes compaction while its cost total includes it."""
     try:
         from src.cost_tracker import record_api_usage
 

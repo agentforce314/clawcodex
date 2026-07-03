@@ -339,6 +339,29 @@ export interface SessionUndoResponse {
   removed?: number
 }
 
+/** Per-model accumulator inside a CostSnapshot (the original's ModelUsage). */
+export interface CostModelUsage {
+  cache_creation_input_tokens?: number
+  cache_read_input_tokens?: number
+  cost_usd?: number
+  input_tokens?: number
+  output_tokens?: number
+  web_search_requests?: number
+}
+
+/** Session totals from the backend's `cost` control — the inputs of the
+ *  original's formatTotalCost (cost-tracker.ts:249). Also piggybacked on
+ *  every end-of-turn result message for the exit summary. */
+export interface CostSnapshot {
+  has_unknown_model_cost?: boolean
+  model_usage?: Record<string, CostModelUsage>
+  total_api_duration_ms?: number
+  total_cost_usd?: number
+  total_duration_ms?: number
+  total_lines_added?: number
+  total_lines_removed?: number
+}
+
 export interface SessionUsageResponse {
   active_subagents?: number
   cache_read?: number
@@ -736,7 +759,14 @@ export type GatewayEvent =
   | { payload: SubagentEventPayload; session_id?: string; type: 'subagent.complete' }
   | { payload: { rendered?: string; text?: string }; session_id?: string; type: 'message.delta' }
   | {
-      payload?: { permission_mode?: string; reasoning?: string; rendered?: string; text?: string; usage?: Usage }
+      payload?: {
+        cost?: CostSnapshot
+        permission_mode?: string
+        reasoning?: string
+        rendered?: string
+        text?: string
+        usage?: Usage
+      }
       session_id?: string
       type: 'message.complete'
     }
