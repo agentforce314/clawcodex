@@ -778,6 +778,11 @@ class TurnController {
     // — visible as overlapping coloured text and lost prose under
     // `display.final_response_markdown: render`.
     this.bufRef += text
+    patchTurnState(state => ({
+      ...state,
+      lastDeltaAt: Date.now(),
+      streamedChars: state.streamedChars + text.length
+    }))
 
     if (getUiState().streaming) {
       this.scheduleStreaming()
@@ -813,6 +818,11 @@ class TurnController {
 
     this.reasoningText += text
     this.activeReasoningText += text
+    patchTurnState(state => ({
+      ...state,
+      lastDeltaAt: Date.now(),
+      streamedChars: state.streamedChars + text.length
+    }))
 
     if (this.reasoningText.length > 80_000) {
       this.reasoningText = this.reasoningText.slice(-60_000)
@@ -837,6 +847,7 @@ class TurnController {
     }
 
     this.recordTodos(todos)
+    patchTurnState({ lastDeltaAt: Date.now() })
     const name = this.activeTools.find(tool => tool.id === toolId)?.name ?? fallbackName
     const line = this.completeTool(toolId, fallbackName, error, summary, duration, resultText)
 
@@ -964,6 +975,10 @@ class TurnController {
   }
 
   recordToolStart(toolId: string, name: string, context: string, verboseArgs?: string) {
+    // Tool activity is liveness for the busy line's stall detector — a
+    // tool-only turn produces no text deltas for long stretches.
+    patchTurnState({ lastDeltaAt: Date.now() })
+
     if (this.interrupted) {
       return
     }
@@ -1066,7 +1081,16 @@ class TurnController {
     }
 
     patchUiState({ busy: true })
-    patchTurnState({ activity: [], outcome: '', subagents: [], toolTokens: 0, tools: [], turnTrail: [] })
+    patchTurnState({
+      activity: [],
+      lastDeltaAt: Date.now(),
+      outcome: '',
+      streamedChars: 0,
+      subagents: [],
+      toolTokens: 0,
+      tools: [],
+      turnTrail: []
+    })
   }
 
   upsertSubagent(

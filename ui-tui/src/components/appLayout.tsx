@@ -18,11 +18,13 @@ import {
 } from '../lib/inputMetrics.js'
 import { PerfPane } from '../lib/perfPane.js'
 import { composerPromptText } from '../lib/prompt.js'
+import type { Theme } from '../theme.js'
 
 import { AgentsOverlay } from './agentsOverlay.js'
 import { GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
 import { FloatingOverlays, PromptZone } from './appOverlays.js'
 import { Banner, Panel, SessionPanel } from './branding.js'
+import { BusyLine } from './busyLine.js'
 import { ComposerFooter } from './composerFooter.js'
 import { FpsOverlay } from './fpsOverlay.js'
 import { HelpHint } from './helpHint.js'
@@ -273,6 +275,13 @@ const ComposerPane = memo(function ComposerPane({
 
       <StatusRulePane at="top" composer={composer} status={status} />
 
+      {ui.statusBar === 'off' && (
+        <>
+          <IdleChromeNotes t={ui.theme} />
+          <BusyLine t={ui.theme} turnStartedAt={status.turnStartedAt} />
+        </>
+      )}
+
       <LiveTodoPanel />
 
       <Box
@@ -374,6 +383,42 @@ const ComposerPane = memo(function ComposerPane({
 
       <StatusRulePane at="bottom" composer={composer} status={status} />
     </NoSelect>
+  )
+})
+
+// Idle-only signals that previously lived on the StatusRule: a live credits/
+// status notice, and the parked-background reassurance while a top-level
+// delegate keeps running after the turn ended. Rendered only when the bar is
+// off (its 'top'/'bottom' modes still own them).
+const IdleChromeNotes = memo(function IdleChromeNotes({ t }: { t: Theme }) {
+  const ui = useStore($uiState)
+
+  if (ui.busy) {
+    return null
+  }
+
+  // usage.active_subagents persists past turn end (turnState.subagents is
+  // cleared by idle()) — it's the same source the StatusRule used.
+  const running = typeof ui.usage?.active_subagents === 'number' ? ui.usage.active_subagents : 0
+  const notice = ui.notice?.text
+
+  if (!notice && running === 0) {
+    return null
+  }
+
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      {notice ? (
+        <Text color={t.color.muted} wrap="truncate-end">
+          {notice}
+        </Text>
+      ) : null}
+      {running > 0 ? (
+        <Text color={t.color.muted} dim>
+          {running === 1 ? '↩ resumes when subagent finishes' : `↩ resumes when ${running} subagents finish`}
+        </Text>
+      ) : null}
+    </Box>
   )
 })
 
