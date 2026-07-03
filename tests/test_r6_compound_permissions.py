@@ -242,5 +242,114 @@ class TestContentDenyAskEnforced(unittest.TestCase):
         self.assertEqual(_decide("git status && git log", ctx).behavior, "ask")
 
 
+class TestSubstitutionAllowGuard(unittest.TestCase):
+    """A content ALLOW rule must never auto-allow a command hiding an
+    executable construct. The guard is SELF-SUFFICIENT — it catches every
+    execution form directly, not relying on the safety analyzer's tokenizer
+    (see TestSafetyScreenBackstop for the independent belt-and-suspenders)."""
+
+    def test_echo_grant_does_not_run_hidden_execution(self):
+        ctx = _ctx(allow=("echo:*", "cat:*", "tee:*"))
+        for cmd in (
+            'echo "$(rm -rf /)"',        # cmd-sub in double quotes
+            'echo "`rm -rf /`"',         # backtick in double quotes
+            'echo "${ rm -rf /; }"',     # bash-5.3 value substitution
+            'echo $(rm -rf /)',          # cmd-sub unquoted
+            'echo \\$(rm -rf /)',        # \$ literal but (rm) is a SUBSHELL
+            'cat <(rm -rf /)',           # process substitution
+            'tee >(rm -rf /) f',         # process substitution
+            "echo $'x'$(rm -rf /)",      # ANSI-C quoting (scanner desync)
+            'echo hi; (rm -rf /)',       # bare subshell in a compound
+        ):
+            self.assertEqual(_decide(cmd, ctx).behavior, "ask", cmd)
+
+    def test_legit_commands_under_the_grant_still_allow(self):
+        ctx = _ctx(allow=("echo:*",))
+        self.assertEqual(_decide("echo hello world", ctx).behavior, "allow")
+        # Single quotes make $() literal — no execution, so allow is fine.
+        self.assertEqual(_decide("echo '$(x)'", ctx).behavior, "allow")
+        # Arithmetic runs no command; parameter expansion / quoted parens too.
+        self.assertEqual(_decide("echo $((1 + 1))", ctx).behavior, "allow")
+        self.assertEqual(_decide('echo "${HOME}"', ctx).behavior, "allow")
+        self.assertEqual(_decide('echo "(literal paren)"', ctx).behavior, "allow")
+
+    def test_deny_still_wins_over_substitution_command(self):
+        # Even though the guard makes it ask, an explicit echo deny still denies.
+        ctx = _ctx(allow=("echo:*",), deny=("echo:*",))
+        self.assertEqual(_decide('echo "$(rm -rf /)"', ctx).behavior, "deny")
+
+
+class TestSafetyScreenBackstop(unittest.TestCase):
+    """Belt-and-suspenders: with the REAL bash safety screen wired in (not the
+    passthrough stub the other tests use), genuinely-dangerous commands are
+    caught even without any rule — and the substitution forms stay ask whether
+    the guard or the analyzer fires. Pins that the two layers agree."""
+
+    def _decide_faithful(self, command, allow=()):
+        from src.tool_system.tools.bash.bash_tool import check_bash_command_safety
+
+        class _FaithfulBash:
+            name = "Bash"
+
+            def check_permissions(self, tool_input, context):
+                r = check_bash_command_safety(tool_input.get("command", ""), cwd=None)
+                return r if r is not None else PermissionPassthroughResult()
+
+        ctx = ToolPermissionContext(
+            always_allow_rules={"session": [f"Bash({r})" for r in allow]}
+        )
+        return has_permissions_to_use_tool_inner(
+            _FaithfulBash(), {"command": command}, ctx
+        ).behavior
+
+    def test_dangerous_command_asks_without_a_rule(self):
+        self.assertEqual(self._decide_faithful("rm -rf /tmp/x"), "ask")
+
+    def test_substitution_forms_ask_even_with_a_grant(self):
+        # The guard fires first; the safety screen would also catch these — both
+        # layers point the same way, so this can never silently over-allow.
+        for cmd in (
+            'echo "$(rm -rf /)"',
+            'cat <(rm -rf /)',
+            'echo \\$(rm -rf /)',
+            "echo $'x'$(rm -rf /)",
+        ):
+            self.assertEqual(self._decide_faithful(cmd, allow=("echo:*", "cat:*")),
+                             "ask", cmd)
+
+    def test_plain_safe_command_still_allows_under_grant(self):
+        self.assertEqual(self._decide_faithful("echo hello", allow=("echo:*",)),
+                         "allow")
+
+
+class TestDenyNormalization(unittest.TestCase):
+    """deny/ask reduce to the program that actually runs (env + safe wrappers +
+    leading-backslash) so wrapping can't bypass a Bash(rm:*) deny."""
+
+    def test_safe_wrappers_cannot_bypass_deny(self):
+        ctx = _ctx(deny=("rm:*",))
+        for cmd in (
+            "timeout 5 rm -rf x",
+            "timeout --preserve-status 5s rm -rf x",
+            "nohup rm -rf x",
+            "nice -n 5 rm -rf x",
+            "time rm -rf x",
+            "nohup FOO=1 timeout 5 rm -rf x",  # interleaved wrapper + env
+            "echo hi && timeout 5 rm -rf x",   # inside a compound sub
+        ):
+            self.assertEqual(_decide(cmd, ctx).behavior, "deny", cmd)
+
+    def test_leading_backslash_cannot_bypass_deny(self):
+        ctx = _ctx(deny=("rm:*",))
+        self.assertEqual(_decide("\\rm -rf x", ctx).behavior, "deny")
+        self.assertEqual(_decide("echo a && \\rm -rf x", ctx).behavior, "deny")
+
+    def test_wrapper_stripping_does_not_false_allow(self):
+        # timeout-wrapped command is NOT auto-allowed just because a sub-word
+        # matches (allow does not normalize wrappers).
+        ctx = _ctx(allow=("rm:*",))
+        self.assertEqual(_decide("timeout 5 rm -rf x", ctx).behavior, "ask")
+
+
 if __name__ == "__main__":
     unittest.main()
