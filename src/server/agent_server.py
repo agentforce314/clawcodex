@@ -28,8 +28,9 @@ client → server (``send_to_agent``)::
     {type:'user', message:{role:'user', content:<str|blocks>}}            # a prompt
     {type:'control_response', response:{request_id, response:{behavior,…}}} # perm reply
     {type:'control_request', request:{subtype:'interrupt'}}               # cancel turn
-    {type:'control_request', request:{subtype:'set_permission_mode', mode}}
-    {type:'control_request', request:{subtype:'set_model', model}}
+    {type:'control_request', request_id, request:{subtype:'set_permission_mode', mode}}
+    {type:'control_request', request_id, request:{subtype:'set_model', model, provider?}}
+                                             # replies {ok, model, warning?} | {ok:false, error}
     {type:'control_request', request_id, request:{subtype:'get_settings'|'get_context_usage'}}
 
 Concurrency model
@@ -314,17 +315,7 @@ class _AgentSession:
             self._reply(request_id, {"ok": True, "mode": new_mode})
             return
         if subtype == "set_model":
-            model = inner.get("model")
-            if isinstance(model, str) and self.provider is not None:
-                try:
-                    self.provider.model = model
-                except Exception:  # noqa: BLE001
-                    pass
-                # ch03 round-4 GAP A: on_change mirrors the choice into
-                # bootstrap and persists (model, model_provider) to user
-                # settings — /model survives restarts for the first time.
-                _dispatch_app_state(self, main_loop_model=model)
-            self._ack(request_id)
+            self._do_set_model(request_id, inner.get("model"), inner.get("provider"))
             return
         if subtype == "set_provider":
             self._do_set_provider(request_id, inner.get("provider"))
@@ -700,6 +691,46 @@ class _AgentSession:
                 self._knowledge.save()
         except Exception:  # noqa: BLE001 — knowledge must never break a turn
             logger.debug("[agent-server] knowledge record failed", exc_info=True)
+
+    def _do_set_model(self, request_id: object, model: object, provider: object = None) -> None:
+        """Switch the active model (the /model picker + typed /model). Replies
+        {ok, model, warning?} — the TUI's ConfigSetResponse contract needs the
+        resulting model echoed back as proof the switch happened; a bare ack
+        reads as failure client-side. ``provider`` (when sent) must match the
+        session's provider: cross-provider switches need the full registry
+        rebuild that set_provider does, so refusing here beats silently
+        pointing the current provider at a foreign model id."""
+        if not isinstance(model, str) or not model.strip():
+            self._reply(request_id, {"ok": False, "error": "missing model"})
+            return
+        model = model.strip()
+        if self.provider is None:
+            self._reply(request_id, {"ok": False, "error": "session not ready"})
+            return
+        if isinstance(provider, str) and provider and provider != self.provider_name:
+            self._reply(request_id, {
+                "ok": False,
+                "error": f"model '{model}' expects provider '{provider}' but this "
+                         f"session is on '{self.provider_name}'",
+            })
+            return
+        try:
+            self.provider.model = model
+        except Exception as exc:  # noqa: BLE001
+            self._reply(request_id, {"ok": False, "error": f"model switch failed: {exc}"})
+            return
+        # ch03 round-4 GAP A: on_change mirrors the choice into bootstrap and
+        # persists (model, model_provider) to user settings — /model survives
+        # restarts.
+        _dispatch_app_state(self, main_loop_model=model)
+        response: dict = {"ok": True, "model": getattr(self.provider, "model", model)}
+        known = self._available_models()
+        if known and model not in known:
+            response["warning"] = (
+                f"'{model}' is not in {self.provider_name}'s model list — "
+                "the API may reject it"
+            )
+        self._reply(request_id, response)
 
     def _do_set_provider(self, request_id: object, name: object) -> None:
         """Switch the LLM provider mid-session (the original's /provider). Rebuilds
