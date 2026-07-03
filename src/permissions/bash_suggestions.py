@@ -156,6 +156,61 @@ MAX_SUBCOMMANDS: int = 50
 MAX_SUGGESTED_RULES_FOR_COMPOUND: int = 5
 
 
+def contains_executable_substitution(command: str) -> bool:
+    """True if ``command`` contains command substitution that EXECUTES —
+    ``$(…)``, backticks, or bash-5.3 value substitution ``${ …}`` / ``${| …}`` —
+    anywhere NOT inside single quotes (single quotes make them literal; a
+    backslash-escaped ``\\$``/``\\```` in double quotes is literal too).
+
+    The safety analyzer (``analyze_bash_command``) tokenizes ``$(…)`` into an
+    opaque placeholder and never rates the inner command, and the content
+    matcher compares raw substrings — so ``echo "$(rm -rf /)"`` with an
+    ``echo:*`` allow rule would run the ``rm`` unseen. Callers use this to
+    REFUSE to auto-allow such a command (it prompts instead), converting a
+    silent over-allow into a review. It does NOT make a ``rm:*`` deny fire on
+    the hidden command — that needs the analyzer to recurse (a larger change).
+    """
+
+    in_single = False
+    in_double = False
+    i = 0
+    n = len(command)
+    while i < n:
+        ch = command[i]
+        if ch == "\\" and not in_single:
+            i += 2  # escaped char (incl. \$ / \` in double quotes) — literal
+            continue
+        if ch == "'" and not in_double:
+            # `$'…'` ANSI-C quoting desyncs this scanner (escaped quotes inside)
+            # — refuse defensively rather than risk missing a trailing $().
+            if not in_single and i > 0 and command[i - 1] == "$":
+                return True
+            in_single = not in_single
+        elif ch == '"' and not in_single:
+            in_double = not in_double
+        elif not in_single:
+            if ch == "`":
+                return True
+            if ch == "$" and i + 1 < n and command[i + 1] == "{":
+                after = command[i + 2] if i + 2 < n else ""
+                if after == "" or after.isspace() or after == "|":
+                    return True
+            if ch == "$" and i + 1 < n and command[i + 1] == "(":
+                if i + 2 < n and command[i + 2] == "(":
+                    i += 3  # `$((` arithmetic — evaluates, runs no command
+                    continue
+                return True  # `$(` command substitution
+            # A bare `(` outside quotes is a subshell / group / the paren of
+            # process substitution `<(`/`>(` — all execute. (Inside double
+            # quotes `(` is literal; `$(`'s own paren is handled above.) This
+            # is what catches `\$(rm)` — the `\$` is literal but `(rm)` is a
+            # subshell — plus `cat <(rm)` / `tee >(rm) f`.
+            if not in_double and ch == "(":
+                return True
+        i += 1
+    return False
+
+
 def split_chained_command(command: str) -> list[str] | None:
     """Split ``command`` on unquoted chaining operators (``&&``, ``||``,
     ``;``, ``|``, ``|&``, ``&``, newline) into its sub-commands.
@@ -576,6 +631,7 @@ __all__ = [
     "MAX_SUGGESTED_RULES_FOR_COMPOUND",
     "SAFE_ENV_VARS",
     "SAFE_PREFIX_COMMANDS",
+    "contains_executable_substitution",
     "contains_unquoted_chaining",
     "get_safe_first_word_prefix",
     "get_simple_command_prefix",
