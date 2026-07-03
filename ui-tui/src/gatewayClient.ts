@@ -147,7 +147,32 @@ function todosFromInput(name: string | undefined, input: unknown): undefined | u
 const ERROR_RESULT_MAX_LINES = 10
 const BASH_RESULT_MAX_LINES = 3
 
-export function formatToolResult(name: string | undefined, result: string, isError = false): string {
+/** WebSearch display data forwarded by the agent-server (`tool_use_result`
+ *  trimmed to the two numbers the original's one-liner needs). */
+export type WebSearchDisplay = { durationSeconds?: number; searchCount?: number }
+
+// One marker line per performed search in the model-facing blob
+// (web_search.py _map_result_to_api emits `Links: […]` / `No links found.`
+// per structured result block). Fallback only — the envelope is authoritative.
+const WEB_SEARCH_BLOCK_RE = /^(?:Links: \[|No links found\.$)/gm
+
+// Exact port of WebSearchTool/UI.tsx renderToolResultMessage: "Did N
+// search(es) in Xs" (whole seconds at >=1s, else ms). Without the envelope
+// (older backend) the duration is unknown and omitted.
+function webSearchSummary(result: string, webSearch?: WebSearchDisplay): string {
+  const searchCount = webSearch?.searchCount ?? (result.match(WEB_SEARCH_BLOCK_RE)?.length ?? 0)
+  const line = `Did ${searchCount} search${searchCount !== 1 ? 'es' : ''}`
+  const s = webSearch?.durationSeconds
+
+  return s === undefined ? line : `${line} in ${s >= 1 ? `${Math.round(s)}s` : `${Math.round(s * 1000)}ms`}`
+}
+
+export function formatToolResult(
+  name: string | undefined,
+  result: string,
+  isError = false,
+  webSearch?: WebSearchDisplay
+): string {
   if (isError) {
     let msg = (result ?? '').trim() || 'Tool execution failed'
 
@@ -168,6 +193,14 @@ export function formatToolResult(name: string | undefined, result: string, isErr
   }
 
   if (!result) {return result}
+
+  // The original renders the whole result as ONE line (never the blob —
+  // that's tens of wrapped rows of snippets); the full text stays reachable
+  // behind ctrl+o via result_raw. Shape-keyed on the envelope too so a
+  // mid-turn attach without tool_use bookkeeping still summarizes.
+  if (name === 'WebSearch' || webSearch) {
+    return webSearchSummary(result, webSearch)
+  }
 
   if (name === 'Read' && /^\s*\d+[\t→ ]/.test(result)) {
     const n = result.split('\n').filter(l => l.length > 0).length
@@ -844,6 +877,16 @@ export class GatewayClient extends EventEmitter {
     }
   }
 
+  // WebSearch display data on the same envelope (agent_server trims the
+  // structured output to searchCount/durationSeconds). Shape-detected like
+  // structuredDiff so it renders without tool_use bookkeeping.
+  private webSearchDisplay(value: any): undefined | WebSearchDisplay {
+    if (!value || typeof value !== 'object' || value.type !== 'web_search') {return undefined}
+    const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined)
+
+    return { durationSeconds: num(value.durationSeconds), searchCount: num(value.searchCount) }
+  }
+
   // Legacy fallback (agent-server predating tool_use_result): a fake unified
   // diff from the Edit/Write tool *input* so the app can render at least a
   // colored ```diff block. No line numbers/context — superseded by
@@ -981,6 +1024,7 @@ export class GatewayClient extends EventEmitter {
           // it on first attach so a hypothetical multi-block message can't
           // pin the same patch onto every result.
           let structured = this.structuredDiff(msg.tool_use_result)
+          let webSearch = this.webSearchDisplay(msg.tool_use_result)
 
           for (const b of content) {
             if (b?.type === 'tool_result') {
@@ -989,7 +1033,7 @@ export class GatewayClient extends EventEmitter {
               // real patch nor a fabricated one for an edit that never ran.
               const isError = Boolean(b.is_error)
               const fullText = typeof b.content === 'string' ? b.content : safeJson(b.content)
-              const resultText = formatToolResult(stored?.name, fullText, isError)
+              const resultText = formatToolResult(stored?.name, fullText, isError, webSearch)
               // Read shows no expand hint (the summary loses nothing the user
               // needs — the file is in context), so retain nothing for it.
               const expandable = stored?.name !== 'Read'
@@ -1010,6 +1054,7 @@ export class GatewayClient extends EventEmitter {
                 type: 'tool.complete'
               })
               structured = undefined
+              webSearch = undefined
               this.toolInputs.delete(String(b.tool_use_id))
             }
           }

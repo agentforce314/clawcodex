@@ -158,6 +158,31 @@ describe('GatewayClient NDJSON adapter', () => {
     expect(long.result_text).toBe('1\n2\n3\n… +3 lines (ctrl+o to expand)')
   })
 
+  // WebSearch renders as the original's one-liner (WebSearchTool/UI.tsx);
+  // the agent-server forwards searchCount/durationSeconds on tool_use_result
+  // and the raw blob stays reachable behind ctrl+o via result_raw.
+  it('collapses a WebSearch result to "Did N searches in Xs" from the envelope', async () => {
+    const blob = 'Web search results for query: "q"\n\n**A** -- snippet (https://a.example)\n\nLinks: [{"title": "A", "url": "https://a.example"}]'
+
+    proc.line(toolUse('t1', 'WebSearch', { query: 'q' }))
+    await vi.waitFor(() => expect(last('tool.start')).toBeTruthy())
+    proc.line({
+      ...toolResult('t1', blob),
+      tool_use_result: { durationSeconds: 2.4, searchCount: 1, type: 'web_search' }
+    })
+    await vi.waitFor(() => expect(last('tool.complete')).toBeTruthy())
+
+    const p = last('tool.complete').payload
+    expect(p.result_text).toBe('Did 1 search in 2s')
+    expect(p.result_raw).toContain('Links:')
+  })
+
+  it('falls back to a durationless WebSearch summary without the envelope', async () => {
+    const blob = 'Web search results for query: "q"\n\nLinks: [{"title": "A", "url": "https://a.example"}]'
+    const p = await runTool('t1', 'WebSearch', { query: 'q' }, blob)
+    expect(p.result_text).toBe('Did 1 search')
+  })
+
   it('carries error on tool.complete for failed tools (drives the red ✗ path)', async () => {
     proc.line(toolUse('t1', 'Bash', { command: 'false' }))
     await vi.waitFor(() => expect(last('tool.start')).toBeTruthy())
