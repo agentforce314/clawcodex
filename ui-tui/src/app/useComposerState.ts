@@ -122,7 +122,7 @@ export function useComposerState({
   } = useQueue()
 
   const { historyRef, historyIdx, setHistoryIdx, historyDraftRef, pushHistory } = useInputHistory()
-  const { completions, compIdx, setCompIdx, compReplace } = useCompletion(input, isBlocked, gw)
+  const { completions, compIdx, setCompIdx, compReplace, dismissCompletions } = useCompletion(input, isBlocked, gw)
 
   const clearIn = useCallback(() => {
     setInput('')
@@ -300,6 +300,7 @@ export function useComposerState({
     () => ({
       clearIn,
       dequeue,
+      dismissCompletions,
       enqueue,
       handleTextPaste,
       openEditor,
@@ -316,6 +317,7 @@ export function useComposerState({
     [
       clearIn,
       dequeue,
+      dismissCompletions,
       enqueue,
       handleTextPaste,
       openEditor,

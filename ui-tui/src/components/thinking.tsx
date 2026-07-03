@@ -693,6 +693,7 @@ export const ToolTrail = memo(function ToolTrail({
   tools = [],
   toolTokens,
   trail = [],
+  verboseTrail = [],
   activity = []
 }: {
   busy?: boolean
@@ -709,6 +710,9 @@ export const ToolTrail = memo(function ToolTrail({
   tools?: ActiveTool[]
   toolTokens?: number
   trail?: string[]
+  /** Lockstep verbose siblings for `trail` ('' = none) — rendered instead of
+   *  the compact line when tool details are expanded (ctrl+o). */
+  verboseTrail?: string[]
   activity?: ActivityItem[]
 }) {
   const visible = useMemo(
@@ -785,7 +789,16 @@ export const ToolTrail = memo(function ToolTrail({
   const meta: DetailRow[] = []
   const pushDetail = (row: DetailRow) => (groups.at(-1)?.details ?? meta).push(row)
 
-  for (const [i, line] of trail.entries()) {
+  // Verbose swap keys on the GLOBAL details mode (ctrl+o / /details) — the
+  // tools *section* mode defaults to 'expanded' merely to make the flat
+  // trail visible, and must not force verbose output.
+  const toolsExpanded = detailsMode === 'expanded'
+
+  for (const [i, compactLine] of trail.entries()) {
+    // Expanded details render the verbose sibling (full Args/Result blocks)
+    // when the gateway retained raw output; '' means the compact line is
+    // already complete.
+    const line = toolsExpanded && verboseTrail[i] ? verboseTrail[i]! : compactLine
     const parsed = parseToolTrailResultLine(line)
 
     if (parsed) {

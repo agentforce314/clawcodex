@@ -110,6 +110,21 @@ function relativizePath(p: string): string {
  *  genuine numbered output is collapsed — errors (is_error) and Read's other
  *  acknowledgements (empty-file / file_unchanged warnings, PDF/image stubs)
  *  aren't `N\t…` text and pass through, so nothing is mislabeled or hidden. */
+// Memory bound for retained raw results — render caps (VERBOSE_TRAIL_MAX_*)
+// apply separately at display time.
+const RESULT_RAW_MAX_CHARS = 48_000
+
+// Full result retained only when the compact summary lost information.
+function rawToolResult(formatted: string, full: string): string | undefined {
+  const raw = (full ?? '').trim()
+
+  if (!raw || raw === formatted.trim()) {
+    return undefined
+  }
+
+  return raw.length > RESULT_RAW_MAX_CHARS ? raw.slice(0, RESULT_RAW_MAX_CHARS) + '\n…' : raw
+}
+
 // TodoWrite's input IS the todo list — surface it on tool events so the task
 // HUD renders (the original never shows todo tool calls inline; the checklist
 // under the busy line is the whole UI).
@@ -126,9 +141,9 @@ function todosFromInput(name: string | undefined, input: unknown): undefined | u
 // Per-tool result summaries, matching the original Claude Code transcript
 // (tools/*/UI.tsx): Read → "Read N lines", Grep/Glob → "Found N …", Bash →
 // first 3 stdout lines + overflow hint, errors → red "Error: …" capped at 10
-// lines. No "(… to expand)" hints: this TUI has no expand binding and the
-// raw result is not retained client-side — promising one would lie. A real
-// expand affordance (raw retention + binding) is a documented follow-up.
+// lines. Hints reference ctrl+o — the real expand binding (toggles
+// /details expanded); the raw output rides tool.complete as result_raw so
+// the expanded view can actually show it.
 const ERROR_RESULT_MAX_LINES = 10
 const BASH_RESULT_MAX_LINES = 3
 
@@ -145,7 +160,7 @@ export function formatToolResult(name: string | undefined, result: string, isErr
     if (lines.length > ERROR_RESULT_MAX_LINES) {
       return [
         ...lines.slice(0, ERROR_RESULT_MAX_LINES),
-        `… +${lines.length - ERROR_RESULT_MAX_LINES} lines`
+        `… +${lines.length - ERROR_RESULT_MAX_LINES} lines (ctrl+o to see all)`
       ].join('\n')
     }
 
@@ -168,7 +183,7 @@ export function formatToolResult(name: string | undefined, result: string, isErr
     const n = result.split('\n').filter(l => l.length > 0).length
     const noun = name === 'Glob' ? (n === 1 ? 'file' : 'files') : n === 1 ? 'line' : 'lines'
 
-    return `Found ${n} ${noun}`
+    return `Found ${n} ${noun}${n > 0 ? ' (ctrl+o to expand)' : ''}`
   }
 
   if (name === 'Bash') {
@@ -187,7 +202,7 @@ export function formatToolResult(name: string | undefined, result: string, isErr
 
     return [
       ...lines.slice(0, BASH_RESULT_MAX_LINES),
-      `… +${lines.length - BASH_RESULT_MAX_LINES} lines`
+      `… +${lines.length - BASH_RESULT_MAX_LINES} lines (ctrl+o to expand)`
     ].join('\n')
   }
 
@@ -213,7 +228,8 @@ const SLASHES: ReadonlyArray<{ desc: string; name: string }> = [
   { desc: 'Generate session insights', name: '/insights' },
   { desc: 'List or start background agents', name: '/bg' },
   { desc: 'Resume a past session', name: '/resume' },
-  { desc: 'Rename this session', name: '/rename' }
+  { desc: 'Rename this session', name: '/rename' },
+  { desc: 'Exit clawcodex', name: '/exit' }
 ]
 
 type Pending = { reject: (e: Error) => void; resolve: (v: unknown) => void }
@@ -973,11 +989,11 @@ export class GatewayClient extends EventEmitter {
               // A failed edit must not render a diff at all — neither the
               // real patch nor a fabricated one for an edit that never ran.
               const isError = Boolean(b.is_error)
-              const resultText = formatToolResult(
-                stored?.name,
-                typeof b.content === 'string' ? b.content : safeJson(b.content),
-                isError
-              )
+              const fullText = typeof b.content === 'string' ? b.content : safeJson(b.content)
+              const resultText = formatToolResult(stored?.name, fullText, isError)
+              // Read shows no expand hint (the summary loses nothing the user
+              // needs — the file is in context), so retain nothing for it.
+              const expandable = stored?.name !== 'Read'
               this.publish({
                 payload: {
                   // error drives the ✗ mark (red bullet + red result rows);
@@ -986,6 +1002,7 @@ export class GatewayClient extends EventEmitter {
                   inline_diff:
                     isError || structured || !stored ? undefined : this.editDiff(stored.name, stored.input),
                   name: stored?.name,
+                  result_raw: expandable ? rawToolResult(resultText, fullText) : undefined,
                   result_text: resultText,
                   structured_diff: isError ? undefined : structured,
                   todos: isError ? undefined : todosFromInput(stored?.name, stored?.input),

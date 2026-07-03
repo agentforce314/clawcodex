@@ -54,7 +54,7 @@ export const ComposerFooter = memo(function ComposerFooter({
     <Text color={t.color.bashBorder}>! for bash mode</Text>
   ) : busy ? (
     <Text color={t.color.muted} dim>
-      ctrl+c to interrupt
+      esc to interrupt
     </Text>
   ) : (
     <Text color={t.color.muted} dim>

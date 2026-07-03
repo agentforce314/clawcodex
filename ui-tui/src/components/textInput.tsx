@@ -1161,6 +1161,12 @@ export function TextInput({
         } else {
           v = v.slice(0, c)
         }
+      } else if (!event.keypress.isPasted && k.ctrl && inp.length === 1) {
+        // Unhandled ctrl+<letter> chord (e.g. ctrl+o toggling details in the
+        // app-level handler): terminals deliver it as a control byte the
+        // parser maps back to the bare letter — inserting that letter into
+        // the composer would leak the chord. Editor chords (ctrl+k/u/w/…)
+        // matched earlier in this chain; anything left is not typed text.
       } else if (event.keypress.isPasted || inp.length > 0) {
         const bracketed = event.keypress.isPasted || inp.includes('[200~')
         const text = inp.replace(BRACKET_PASTE, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
@@ -1379,6 +1385,7 @@ export const shouldPassThroughToGlobalHandler = (
 ): boolean =>
   (key.ctrl && input === 'c') ||
   (key.ctrl && input === 'x') ||
+  (key.ctrl && input === 'o') || // ctrl+o toggles expanded tool details
   key.tab ||
   (key.shift && key.tab) ||
   key.pageUp ||

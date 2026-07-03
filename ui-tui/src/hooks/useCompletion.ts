@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import type { CompletionItem } from '../app/interfaces.js'
 import { looksLikeSlashCommand } from '../domain/slash.js'
@@ -43,6 +43,15 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
   const [compIdx, setCompIdx] = useState(0)
   const [compReplace, setCompReplace] = useState(0)
   const ref = useRef('')
+
+  // Esc closes the menu without touching the input. The clear sticks because
+  // the fetch effect below only re-runs when the input text changes
+  // (ref.current guard) — the menu reappears on the next keystroke.
+  const dismissCompletions = useCallback(() => {
+    setCompletions([])
+    setCompIdx(0)
+    setCompReplace(0)
+  }, [])
 
   useEffect(() => {
     const clear = () => {
@@ -109,5 +118,5 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
     return () => clearTimeout(t)
   }, [blocked, gw, input])
 
-  return { completions, compIdx, setCompIdx, compReplace }
+  return { completions, compIdx, setCompIdx, compReplace, dismissCompletions }
 }

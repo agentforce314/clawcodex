@@ -88,6 +88,7 @@ export const MessageLine = memo(function MessageLine({
           tools={tools}
           toolTokens={msg.toolTokens}
           trail={msg.tools ?? []}
+          verboseTrail={msg.toolsVerbose}
         />
       </Box>
     ) : null
@@ -150,6 +151,7 @@ export const MessageLine = memo(function MessageLine({
             sections={sections}
             t={t}
             trail={msg.tools}
+            verboseTrail={msg.toolsVerbose}
           />
         )}
         <DiffView cols={cols} diff={msg.diffData} fallback={mdFallback} t={t} />
@@ -247,6 +249,7 @@ export const MessageLine = memo(function MessageLine({
             t={t}
             toolTokens={msg.toolTokens}
             trail={msg.tools}
+            verboseTrail={msg.toolsVerbose}
           />
         </Box>
       )}

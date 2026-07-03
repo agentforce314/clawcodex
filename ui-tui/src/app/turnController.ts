@@ -12,6 +12,7 @@ import { hasReasoningTag, splitReasoning } from '../lib/reasoning.js'
 import {
   boundedLiveRenderText,
   buildToolTrailLine,
+  buildVerboseToolTrailLine,
   estimateTokensRough,
   isTransientTrailLine,
   sameToolTrailGroup,
@@ -197,6 +198,11 @@ class TurnController {
   reasoningText = ''
   segmentMessages: Msg[] = []
   pendingSegmentTools: string[] = []
+  // Lockstep verbose siblings for pendingSegmentTools ('' = none).
+  pendingSegmentToolsVerbose: string[] = []
+  // Verbose sibling of the line completeTool just built ('' when none) —
+  // read by the caller right after, never stored longer.
+  private lastVerboseLine = ''
   statusTimer: Timer = null
   toolTokenAcc = 0
   turnTools: string[] = []
@@ -352,6 +358,7 @@ class TurnController {
     this.streamTimer = clear(this.streamTimer)
     this.bufRef = ''
     this.pendingSegmentTools = []
+    this.pendingSegmentToolsVerbose = []
     this.segmentMessages = []
 
     patchTurnState({
@@ -380,6 +387,7 @@ class TurnController {
     const segments = this.segmentMessages
     const partial = this.bufRef.trimStart()
     const tools = this.pendingSegmentTools
+    const toolsVerbose = this.pendingSegmentToolsVerbose
 
     // Drain streaming/segment state off the nanostore before writing the
     // preserved snapshot to the transcript — otherwise each flushed segment
@@ -405,7 +413,7 @@ class TurnController {
       appendMessage({
         role: 'assistant',
         text: partial ? `${partial}\n\n*${interruptNote}*` : `*${interruptNote}*`,
-        ...(tools.length && { tools })
+        ...(tools.length && { tools, ...(toolsVerbose.some(Boolean) && { toolsVerbose }) })
       })
     } else {
       sys(interruptNote)
@@ -496,7 +504,12 @@ class TurnController {
       role: split.text ? 'assistant' : 'system',
       text: split.text,
       ...(!split.text && { kind: 'trail' as const }),
-      ...(this.pendingSegmentTools.length && { tools: this.pendingSegmentTools })
+      ...(this.pendingSegmentTools.length && {
+        tools: this.pendingSegmentTools,
+        ...(this.pendingSegmentToolsVerbose.some(Boolean) && {
+          toolsVerbose: this.pendingSegmentToolsVerbose
+        })
+      })
     }
 
     this.streamTimer = clear(this.streamTimer)
@@ -506,6 +519,7 @@ class TurnController {
     }
 
     this.pendingSegmentTools = []
+    this.pendingSegmentToolsVerbose = []
     this.bufRef = ''
     patchTurnState({ streamPendingTools: [], streamSegments: this.segmentMessages, streaming: '' })
   }
@@ -541,7 +555,10 @@ class TurnController {
       kind: 'trail',
       role: 'system',
       text: '',
-      tools: this.pendingSegmentTools
+      tools: this.pendingSegmentTools,
+      ...(this.pendingSegmentToolsVerbose.some(Boolean) && {
+        toolsVerbose: this.pendingSegmentToolsVerbose
+      })
     })
 
     if (next.length === this.segmentMessages.length + 1) {
@@ -550,6 +567,7 @@ class TurnController {
 
     this.segmentMessages = next
     this.pendingSegmentTools = []
+    this.pendingSegmentToolsVerbose = []
     patchTurnState({ streamPendingTools: [], streamSegments: this.segmentMessages })
 
     return true
@@ -658,6 +676,7 @@ class TurnController {
     this.clearReasoning()
     this.clearStatusTimer()
     this.pendingSegmentTools = []
+    this.pendingSegmentToolsVerbose = []
     this.segmentMessages = []
     this.turnTools = []
     this.persistedToolLabels.clear()
@@ -682,15 +701,27 @@ class TurnController {
     const savedReasoning = [existingReasoning, existingReasoning ? '' : split.reasoning].filter(Boolean).join('\n\n')
     const savedToolTokens = this.toolTokenAcc
     let tools = this.pendingSegmentTools
+    let toolsVerbose = this.pendingSegmentToolsVerbose
     const last = this.segmentMessages[this.segmentMessages.length - 1]
 
     if (tools.length && isToolShelfMessage(last)) {
+      const lastTools = last.tools ?? []
+      const lastVerbose = lastTools.map((_, i) => last.toolsVerbose?.[i] ?? '')
+
       this.segmentMessages = [
         ...this.segmentMessages.slice(0, -1),
-        { ...last, tools: [...(last.tools ?? []), ...tools] }
+        {
+          ...last,
+          tools: [...lastTools, ...tools],
+          ...([...lastVerbose, ...toolsVerbose].some(Boolean) && {
+            toolsVerbose: [...lastVerbose, ...toolsVerbose]
+          })
+        }
       ]
       this.pendingSegmentTools = []
+      this.pendingSegmentToolsVerbose = []
       tools = []
+      toolsVerbose = []
     }
 
     // Drop diff-only segments the agent is about to narrate in the final
@@ -718,7 +749,7 @@ class TurnController {
       thinking: finalThinking || undefined,
       thinkingTokens: finalThinking ? estimateTokensRough(finalThinking) : undefined,
       toolTokens: savedToolTokens || undefined,
-      ...(tools.length && { tools })
+      ...(tools.length && { tools, ...(toolsVerbose.some(Boolean) && { toolsVerbose }) })
     }
 
     // Archive prepended so the trail msg anchors under the user prompt,
@@ -840,7 +871,8 @@ class TurnController {
     summary?: string,
     duration?: number,
     todos?: unknown,
-    resultText?: string
+    resultText?: string,
+    rawText?: string
   ) {
     if (this.interrupted) {
       return
@@ -849,13 +881,14 @@ class TurnController {
     this.recordTodos(todos)
     patchTurnState({ lastDeltaAt: Date.now() })
     const name = this.activeTools.find(tool => tool.id === toolId)?.name ?? fallbackName
-    const line = this.completeTool(toolId, fallbackName, error, summary, duration, resultText)
+    const line = this.completeTool(toolId, fallbackName, error, summary, duration, resultText, rawText)
 
     // The original renders NOTHING inline for todo tools — the checklist HUD
     // is the whole UI. completeTool still ran above (clears activeTools +
     // bookkeeping), only the trail-line append is suppressed.
     if (name !== 'TodoWrite' || error) {
       this.pendingSegmentTools = [...this.pendingSegmentTools, line]
+      this.pendingSegmentToolsVerbose = [...this.pendingSegmentToolsVerbose, this.lastVerboseLine]
       this.flushPendingToolsIntoLastSegment()
     }
 
@@ -898,8 +931,11 @@ class TurnController {
 
     if (this.pushStructuredDiffSegment(diff, [line]) === 'empty') {
       // Nothing renderable (no-op update, empty created file): keep the tool
-      // completion visible on the plain trail instead of dropping it.
+      // completion visible on the plain trail instead of dropping it. Push
+      // the verbose sibling in lockstep (Edit/Write carry no raw, so '') or
+      // later siblings misalign by one index.
       this.pendingSegmentTools = [...this.pendingSegmentTools, line]
+      this.pendingSegmentToolsVerbose = [...this.pendingSegmentToolsVerbose, this.lastVerboseLine]
       this.flushPendingToolsIntoLastSegment()
     }
 
@@ -912,12 +948,26 @@ class TurnController {
     error?: string,
     summary?: string,
     duration?: number,
-    resultText?: string
+    resultText?: string,
+    rawText?: string
   ) {
     const done = this.activeTools.find(tool => tool.id === toolId)
     const name = done?.name ?? fallbackName ?? 'tool'
     const label = toolTrailLabel(name)
     const fallbackDuration = done?.startedAt ? (Date.now() - done.startedAt) / 1000 : undefined
+
+    // Expanded-details sibling: full Args/Result blocks whenever the gateway
+    // retained raw output the compact summary lost ('' = nothing to expand).
+    this.lastVerboseLine = rawText
+      ? buildVerboseToolTrailLine(
+          name,
+          done?.context || '',
+          Boolean(error),
+          duration ?? fallbackDuration,
+          done?.verboseArgs,
+          rawText
+        )
+      : ''
 
     // Claude flat render: the call args already live in the label
     // (formatToolCall → Bash("ls")), so the trail detail carries ONLY the

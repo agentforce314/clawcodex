@@ -9,7 +9,7 @@ const COMMON_COMMANDS: [string, string][] = [
   ['/resume', 'switch live or resume past sessions'],
   ['/details', 'control transcript detail level'],
   ['/copy', 'copy selection or last assistant message'],
-  ['/quit', 'exit clawcodex']
+  ['/exit', 'exit clawcodex']
 ]
 
 const HOTKEY_PREVIEW = HOTKEYS.slice(0, 8)
