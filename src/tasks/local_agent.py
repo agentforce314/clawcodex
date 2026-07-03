@@ -75,6 +75,13 @@ class LocalAgentTaskState(TaskStateBase):
     selected_agent: Any = None  # AgentDefinition; loose to avoid cycles.
     model: str | None = None
     abort_event: asyncio.Event | None = field(default=None, repr=False, compare=False)
+    # R6 — the async run's AbortController (query() polls
+    # ``signal.aborted``). ``kill_async_agent`` calls ``.abort()`` on it so a
+    # killed background agent actually STOPS the live run instead of running
+    # to natural completion. Flag-based abort is GIL-atomic → safe to fire
+    # from the kill thread while the run polls on the background loop (the
+    # same cross-thread pattern the turn-interrupt path already uses).
+    abort_controller: Any = field(default=None, repr=False, compare=False)
     pending_messages: list[str] = field(default_factory=list)
     is_backgrounded: bool = True
     retain: bool = False
@@ -116,6 +123,7 @@ def register_async_agent(
     selected_agent: Any = None,
     model: str | None = None,
     tool_use_id: str | None = None,
+    abort_controller: Any = None,
     registry: "RuntimeTaskRegistry",
 ) -> LocalAgentTaskState:
     """Register a brand-new background agent on the runtime registry.
@@ -154,6 +162,7 @@ def register_async_agent(
         selected_agent=selected_agent,
         model=model,
         tool_use_id=tool_use_id,
+        abort_controller=abort_controller,
         is_backgrounded=True,
     )
     registry.upsert(state)
@@ -335,27 +344,43 @@ def kill_async_agent(
     emits its own SDK event — pass False.
     """
     aborted_event: asyncio.Event | None = None
+    aborted_controller: Any = None
     captured_description: str | None = None
     captured_output_file: str = ""
     fired = False
 
     def _kill(prev: TaskStateBase) -> TaskStateBase:
-        nonlocal aborted_event, captured_description, captured_output_file, fired
+        nonlocal aborted_event, aborted_controller, captured_description
+        nonlocal captured_output_file, fired
         if not isinstance(prev, LocalAgentTaskState):
             return prev
         if is_terminal_task_status(prev.status):
             return prev
         aborted_event = prev.abort_event
+        aborted_controller = prev.abort_controller
         captured_description = prev.description
         captured_output_file = prev.output_file
         fired = True
         return _terminal_replace(prev, status="killed")
 
     registry.update(task_id, _kill)
-    # Set the event OUTSIDE the registry lock so a misbehaving Event
-    # subclass that schedules a callback can't deadlock against the
-    # registry. (Default ``asyncio.Event`` is a thin flag; this is
-    # defense-in-depth for the A6/C5 contract.)
+    # R6 — abort the live run OUTSIDE the registry lock. This is the wire
+    # that makes a kill actually STOP a background agent: the async run's
+    # query() loop polls ``abort_controller.signal.aborted`` at every yield
+    # point (query.py:1433/1520/1571/2046), so ``.abort()`` here halts the
+    # run at the next check instead of letting it finish naturally and keep
+    # burning tokens. Flag set is GIL-atomic → safe from this (kill) thread
+    # while the run polls on the background loop.
+    if aborted_controller is not None:
+        try:
+            aborted_controller.abort("killed by user")
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception(
+                "failed to abort run for killed agent %s", task_id
+            )
+    # Legacy abort_event too (defensive; the cooperative-event path was the
+    # original design but was never wired — abort_controller is the live one).
     if aborted_event is not None:
         try:
             aborted_event.set()

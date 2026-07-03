@@ -557,11 +557,24 @@ def make_agent_tool(
             except AgentNameAlreadyClaimedError as exc:
                 raise ToolInputError(str(exc)) from exc
 
+        # R6 — a dedicated AbortController for this background run, stored on
+        # the task state so kill_async_agent can .abort() it (→ the run's
+        # query() loop halts). It is FRESH (not the parent turn's), so it
+        # preserves async isolation (killing the parent turn doesn't kill the
+        # bg agent) — the same isolation run_agent would otherwise get from
+        # its own internal controller (run_agent.py:291), but now reachable.
+        # Setting run_params.abort_controller makes run_agent use THIS one
+        # (run_agent.py:286-287) instead of an unreachable internal one.
+        from src.utils.abort_controller import AbortController as _AbortController
+        _async_abort = _AbortController()
+        run_params.abort_controller = _async_abort
+
         register_async_agent(
             agent_id=agent_id,
             description=description,
             prompt=prompt,
             agent_type=agent_type,
+            abort_controller=_async_abort,
             registry=context.runtime_tasks,
         )
         # ``register_async_agent`` populated ``output_file`` with the
