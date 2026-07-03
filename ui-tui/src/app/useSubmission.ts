@@ -61,7 +61,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
       typingIdleTimer.current = null
     }
 
-    if (!composerState.input && !composerState.inputBuf.length) {
+    if (!composerState.input) {
       turnController.relaxStreaming()
 
       return
@@ -82,7 +82,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
         typingIdleTimer.current = null
       }
     }
-  }, [composerState.input, composerState.inputBuf])
+  }, [composerState.input])
 
   const send = useCallback(
     (text: string, showUserMessage = true) => {
@@ -361,7 +361,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
         }
       }
 
-      if (!value.trim() && !composerState.inputBuf.length) {
+      if (!value.trim()) {
         const live = getUiState()
         const now = Date.now()
         const doubleTap = now - lastEmptyAt.current < DOUBLE_ENTER_MS
@@ -391,13 +391,10 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
       lastEmptyAt.current = 0
 
-      if (value.endsWith('\\')) {
-        composerActions.setInputBuf(prev => [...prev, value.slice(0, -1)])
-
-        return composerActions.setInput('')
-      }
-
-      dispatchSubmission([...composerState.inputBuf, value].join('\n'))
+      // Backslash line continuation is handled inside TextInput (multiline
+      // prop): `\` + Enter becomes a real newline in the editable buffer, so
+      // the value that reaches submit is already the full multi-line text.
+      dispatchSubmission(value)
     },
     [appendMessage, composerActions, composerRefs, composerState, dispatchSubmission, gw, sys]
   )

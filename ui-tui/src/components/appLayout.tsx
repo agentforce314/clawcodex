@@ -188,7 +188,7 @@ const ComposerPane = memo(function ComposerPane({
 }: Pick<AppLayoutProps, 'actions' | 'composer' | 'status'>) {
   const ui = useStore($uiState)
   const isBlocked = useStore($isBlocked)
-  const sh = (composer.inputBuf[0] ?? composer.input).startsWith('!')
+  const sh = composer.input.startsWith('!')
 
   const promptText = composerPromptText(
     ui.theme.brand.prompt,
@@ -199,7 +199,6 @@ const ComposerPane = memo(function ComposerPane({
   )
 
   const promptWidth = composerPromptWidth(promptText)
-  const promptBlank = ' '.repeat(promptWidth)
   const inputColumns = stableComposerColumns(composer.cols, promptWidth, TERMUX_TUI_MODE)
   const inputHeight = inputVisualHeight(composer.input, inputColumns)
   const inputMouseRef = useRef<null | TextInputMouseApi>(null)
@@ -308,24 +307,10 @@ const ComposerPane = memo(function ComposerPane({
           pagerPageSize={composer.pagerPageSize}
         />
 
-        {composer.input === '?' && !composer.inputBuf.length && <HelpHint t={ui.theme} />}
+        {composer.input === '?' && <HelpHint t={ui.theme} />}
 
         {!isBlocked && (
           <>
-            {composer.inputBuf.map((line, i) => (
-              <Box key={i}>
-                <Box width={promptWidth}>
-                  {i === 0 ? (
-                    <PromptPrefix color={ui.theme.color.muted} promptText={promptText} width={promptWidth} />
-                  ) : (
-                    <Text color={ui.theme.color.muted}>{promptBlank}</Text>
-                  )}
-                </Box>
-
-                <Text color={ui.theme.color.text}>{line || ' '}</Text>
-              </Box>
-            ))}
-
             <Box
               onMouseDown={captureInputDrag}
               onMouseDrag={dragFromPromptRow}
@@ -336,8 +321,6 @@ const ComposerPane = memo(function ComposerPane({
               <Box width={promptWidth}>
                 {sh ? (
                   <PromptPrefix color={ui.theme.color.shellDollar} promptText={promptText} width={promptWidth} />
-                ) : composer.inputBuf.length ? (
-                  <Text color={ui.theme.color.prompt}>{promptBlank}</Text>
                 ) : (
                   <PromptPrefix
                     bold
@@ -353,6 +336,7 @@ const ComposerPane = memo(function ComposerPane({
                 <TextInput
                   columns={inputColumns}
                   mouseApiRef={inputMouseRef}
+                  multiline
                   onChange={composer.updateInput}
                   onPaste={composer.handleTextPaste}
                   onSubmit={composer.submit}
@@ -374,7 +358,7 @@ const ComposerPane = memo(function ComposerPane({
 
       <ComposerFooter
         busy={ui.busy}
-        inputEmpty={!composer.input && !composer.inputBuf.length}
+        inputEmpty={!composer.input}
         mode={ui.permissionMode}
         sh={sh}
         t={ui.theme}

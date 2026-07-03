@@ -1071,7 +1071,6 @@ export function useMainApp(gw: GatewayClient) {
       empty,
       handleTextPaste: composerActions.handleTextPaste,
       input: composerState.input,
-      inputBuf: composerState.inputBuf,
       pagerPageSize,
       queueEditIdx: composerState.queueEditIdx,
       queuedDisplay: composerState.queuedDisplay,
