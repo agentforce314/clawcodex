@@ -46,13 +46,17 @@ function safeJson(v: unknown): string {
   }
 }
 
-/** A human label for a permission suggestion rule, e.g. `Bash(ls:*)` (or just
- *  the tool name for a content-less rule), shown on the "don't ask again"
+/** A human label for a permission suggestion's rule(s), e.g. `Bash(ls:*)` or
+ *  `Bash(grep:*), Bash(tr:*), …` for a compound command's bundled rules (just
+ *  the tool name for a content-less rule). Shown on the "don't ask again"
  *  option so the user sees what it will persist. */
 export function describeSuggestionRule(suggestion: any): string | null {
-  const rule = suggestion?.rules?.[0]
-  if (!rule || !rule.tool_name) return null
-  return rule.rule_content ? `${rule.tool_name}(${rule.rule_content})` : String(rule.tool_name)
+  const rules = Array.isArray(suggestion?.rules) ? suggestion.rules : []
+  const labels = rules
+    .filter((r: any) => r && r.tool_name)
+    .map((r: any) => (r.rule_content ? `${r.tool_name}(${r.rule_content})` : String(r.tool_name)))
+  if (labels.length === 0) return null
+  return labels.length > 3 ? `${labels.slice(0, 3).join(', ')}, …` : labels.join(', ')
 }
 
 // The human-reviewable action for a permission prompt: the actual Bash command,
@@ -780,7 +784,11 @@ export class GatewayClient extends EventEmitter {
       // JSON dump — and carry the editable grant rule separately so the box can
       // offer a broadenable "don't ask again for <rule>" option. Only offer the
       // persistable option when the backend sent a rule.
-      const ruleContent = suggestions[0]?.rules?.[0]?.rule_content ?? null
+      // Editable rule only when the suggestion carries exactly ONE rule — a
+      // compound command's suggestion bundles several (grep:*, tr:*, …) and
+      // is accepted/declined as a set (static label via session_label).
+      const suggestionRules = Array.isArray(suggestions[0]?.rules) ? suggestions[0].rules : []
+      const ruleContent = suggestionRules.length === 1 ? (suggestionRules[0]?.rule_content ?? null) : null
       this.publish({
         payload: {
           allow_permanent: suggestions.length > 0,

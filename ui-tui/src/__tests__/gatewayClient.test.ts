@@ -383,6 +383,38 @@ describe('GatewayClient NDJSON adapter', () => {
     expect(resp.chosen_updates[0].destination).toBe('session')
     expect(resp.chosen_updates[0].rules).toBeUndefined()
   })
+
+  it('compound-command suggestion (multiple rules): no editable rule, ALL rules sent on always', async () => {
+    // R6 compound parity: a pipeline's suggestion bundles several rules in ONE
+    // addRules update. The box must not offer per-rule editing (rule=null) and
+    // accepting must persist the WHOLE bundle unchanged.
+    const sent: any[] = []
+    ;(gw as any).send = (m: any) => sent.push(m)
+    const bundle = {
+      type: 'addRules', destination: 'localSettings', behavior: 'allow',
+      rules: [
+        { tool_name: 'Bash', rule_content: 'grep:*' },
+        { tool_name: 'Bash', rule_content: 'tr:*' },
+        { tool_name: 'Bash', rule_content: 'sort -u' }
+      ]
+    }
+    proc.line({
+      request: {
+        input: { command: "grep x f | tr a b | sort -u" }, subtype: 'can_use_tool', tool_name: 'Bash',
+        suggestions: [bundle]
+      },
+      request_id: 'r5', type: 'control_request'
+    })
+    await vi.waitFor(() => expect(last('approval.request')).toBeTruthy())
+    const p = last('approval.request').payload
+    expect(p.allow_permanent).toBe(true)
+    expect(p.rule).toBeNull() // multi-rule → not editable
+    expect(p.rule_label).toBe('Bash(grep:*), Bash(tr:*), Bash(sort -u)')
+
+    await gw.request('approval.respond', { choice: 'always' })
+    const resp = sent.find(m => m.type === 'control_response')?.response?.response
+    expect(resp.chosen_updates[0]).toEqual(bundle) // whole bundle, untouched
+  })
 })
 
 describe('approvalCommandText — the human-reviewable action, not a JSON dump', () => {
