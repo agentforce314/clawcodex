@@ -41,10 +41,47 @@ const NEWLINE = { type: 'stdout', content: '\n' } as const
 export class LogUpdate {
   private state: State
 
+  /**
+   * Physical viewport row (0-based) where the frame-end cursor physically
+   * sits, carried frame to frame (main screen only — alt screen re-anchors
+   * with CSI H every frame).
+   *
+   * Inline sessions start BELOW pre-existing shell output, so the frame's
+   * top row is NOT at the viewport top and content scrolls into scrollback
+   * EARLIER than frame-height arithmetic alone can predict. Reachability
+   * of a row therefore cannot be derived from screen height — it must come
+   * from where the cursor physically is: rows more than `physCursorRow`
+   * above the frame-end cursor are in scrollback and cannot be addressed
+   * (CSI cursor-up clamps at the viewport top; a clamped move desyncs
+   * every later relative move AND the parked-cursor basis of all future
+   * frames — the classic "typing lands one row below the input box" bug).
+   *
+   * Seeded at 0 — an UNDER-estimate whenever shell output sits above the
+   * frame. Under-estimation is safe: the scrolled-off guard becomes
+   * conservative (skips repainting a few more top rows that are actually
+   * visible until the estimate converges), and it converges to the exact
+   * value the first time an LF pins at the bottom margin, which any
+   * viewport-filling frame guarantees.
+   */
+  private physCursorRow = 0
+
   constructor(private readonly options: Options) {
     this.state = {
       previousOutput: ''
     }
+  }
+
+  /** Re-anchor the physical cursor tracker (e.g. after ERASE_SCREEN +
+   *  CURSOR_HOME in forceRedraw, when the cursor is known to be at a
+   *  specific viewport row). */
+  resetAnchor(row: number): void {
+    this.physCursorRow = row
+  }
+
+  /** Physical viewport row of the frame-end cursor — the basis ink.tsx
+   *  uses to keep its own cursor-park moves inside the viewport. */
+  physicalCursorRow(): number {
+    return this.physCursorRow
   }
 
   renderPreviousOutput_DEPRECATED(prevFrame: Frame): Diff {
@@ -59,6 +96,9 @@ export class LogUpdate {
   // Called when process resumes from suspension (SIGCONT) to prevent clobbering terminal content
   reset(): void {
     this.state.previousOutput = ''
+    // Physical position is unknown after suspension — fall back to the
+    // conservative under-estimate (see physCursorRow docs).
+    this.physCursorRow = 0
   }
 
   private renderFullFrame(frame: Frame): Diff {
@@ -149,7 +189,7 @@ export class LogUpdate {
       next.viewport.height !== prev.viewport.height ||
       (prev.viewport.width !== 0 && next.viewport.width !== prev.viewport.width)
     ) {
-      return fullResetSequence_CAUSES_FLICKER(next, 'resize', stylePool)
+      return this.fullReset(next, 'resize', altScreen)
     }
 
     // DECSTBM scroll optimization: when a ScrollBox's scrollTop changed,
@@ -206,10 +246,17 @@ export class LogUpdate {
     const cursorAtBottom = prev.cursor.y >= prev.screen.height
     const isGrowing = next.screen.height > prev.screen.height
 
-    // When content fills the viewport exactly (height == viewport) and the
-    // cursor is at the bottom, the cursor-restore LF at the end of the
-    // previous frame scrolled 1 row into scrollback. Use >= to catch this.
-    const prevHadScrollback = cursorAtBottom && prev.screen.height >= prev.viewport.height
+    // Main screen: rows more than physCursorRow above the frame-end cursor
+    // have scrolled into scrollback and cannot be addressed with relative
+    // moves (CSI cursor-up clamps at the viewport top). This is EXACT —
+    // unlike frame-height arithmetic, it stays correct when the frame
+    // started below pre-existing shell output (inline mode), where content
+    // scrolls earlier than height-vs-viewport comparison predicts.
+    const scrolledOffRows = Math.max(0, prev.cursor.y - this.physCursorRow)
+
+    const prevHadScrollback = altScreen
+      ? cursorAtBottom && prev.screen.height >= prev.viewport.height
+      : scrolledOffRows > 0
 
     const isShrinking = next.screen.height < prev.screen.height
     const nextFitsViewport = next.screen.height <= prev.viewport.height
@@ -224,7 +271,7 @@ export class LogUpdate {
         `Full reset (shrink->below): prevHeight=${prev.screen.height}, nextHeight=${next.screen.height}, viewport=${prev.viewport.height}`
       )
 
-      return fullResetSequence_CAUSES_FLICKER(next, 'offscreen', stylePool)
+      return this.fullReset(next, 'offscreen', altScreen)
     }
 
     if (
@@ -252,7 +299,7 @@ export class LogUpdate {
         const prevLine = readLine(prev.screen, scrollbackChangeY)
         const nextLine = readLine(next.screen, scrollbackChangeY)
 
-        return fullResetSequence_CAUSES_FLICKER(next, 'offscreen', stylePool, {
+        return this.fullReset(next, 'offscreen', altScreen, {
           triggerY: scrollbackChangeY,
           prevLine,
           nextLine
@@ -260,7 +307,12 @@ export class LogUpdate {
       }
     }
 
-    const screen = new VirtualScreen(prev.cursor, next.viewport.width)
+    const screen = new VirtualScreen(
+      prev.cursor,
+      next.viewport.width,
+      next.viewport.height,
+      altScreen ? 0 : this.physCursorRow
+    )
 
     // Treat empty screen as height 1 to avoid spurious adjustments on first render
     const heightDelta = Math.max(next.screen.height, 1) - Math.max(prev.screen.height, 1)
@@ -272,11 +324,14 @@ export class LogUpdate {
     if (shrinking) {
       const linesToClear = prev.screen.height - next.screen.height
 
-      // eraseLines only works within the viewport - it can't clear scrollback.
-      // If we need to clear more lines than fit in the viewport, some are in
-      // scrollback, so we need a full reset.
-      if (linesToClear > prev.viewport.height) {
-        return fullResetSequence_CAUSES_FLICKER(next, 'offscreen', this.options.stylePool)
+      // eraseLines walks upward from the cursor row and can only erase rows
+      // that are physically on screen — above the viewport top the walk
+      // clamps. Main screen: the cursor sits at physCursorRow, so at most
+      // physCursorRow + 1 rows are reachable. If more must go, full reset.
+      const eraseReach = altScreen ? prev.viewport.height : this.physCursorRow + 1
+
+      if (linesToClear > eraseReach) {
+        return this.fullReset(next, 'offscreen', altScreen)
       }
 
       // clear(N) moves cursor UP by N-1 lines and to column 0
@@ -292,17 +347,27 @@ export class LogUpdate {
     }
 
     // viewportY = number of rows in scrollback (not visible on terminal).
-    // For shrinking: use max(prev, next) because terminal clears don't scroll.
-    // For growing: use prev state because new rows haven't scrolled old ones yet.
-    // When prevHadScrollback, add 1 for the cursor-restore LF that scrolled
-    // an additional row out of view at the end of the previous frame. Without
-    // this, the diff loop treats that row as reachable — but the cursor clamps
-    // at viewport top, causing writes to land 1 row off and garbling the output.
+    //
+    // Main screen: exactly scrolledOffRows — derived from the tracked
+    // physical cursor row, which absorbs BOTH content overflow and any
+    // start offset below pre-existing shell output. The old height-based
+    // heuristic under-counted in inline sessions, letting the diff loop
+    // address rows that had physically scrolled away; the resulting
+    // clamped cursor-up desynced every later write by the clamped amount
+    // (typing landed one row below the input box).
+    //
+    // Alt screen keeps the height arithmetic: its buffer never scrolls and
+    // prev.cursor is anchored to (0,0), so scrolledOffRows is meaningless
+    // there. For shrinking: use max(prev, next) because terminal clears
+    // don't scroll. For growing: use prev state because new rows haven't
+    // scrolled old ones yet.
     const cursorRestoreScroll = prevHadScrollback ? 1 : 0
 
-    const viewportY = growing
-      ? Math.max(0, prev.screen.height - prev.viewport.height + cursorRestoreScroll)
-      : Math.max(prev.screen.height, next.screen.height) - next.viewport.height + cursorRestoreScroll
+    const viewportY = altScreen
+      ? growing
+        ? Math.max(0, prev.screen.height - prev.viewport.height + cursorRestoreScroll)
+        : Math.max(prev.screen.height, next.screen.height) - next.viewport.height + cursorRestoreScroll
+      : scrolledOffRows
 
     let currentStyleId = stylePool.none
     let currentHyperlink: Hyperlink = undefined
@@ -383,7 +448,7 @@ export class LogUpdate {
     })
 
     if (needsFullReset) {
-      return fullResetSequence_CAUSES_FLICKER(next, 'offscreen', stylePool, {
+      return this.fullReset(next, 'offscreen', altScreen, {
         triggerY: resetTriggerY,
         prevLine: readLine(prev.screen, resetTriggerY),
         nextLine: readLine(next.screen, resetTriggerY)
@@ -425,7 +490,7 @@ export class LogUpdate {
             patches[1 + i] = NEWLINE
           }
 
-          return [patches, { dx: -prev.x, dy: rowsToCreate }]
+          return [patches, { dx: -prev.x, dy: rowsToCreate, lf: rowsToCreate }]
         }
 
         // At or past target row - need to move cursor to correct position
@@ -445,6 +510,14 @@ export class LogUpdate {
       moveCursorTo(screen, next.cursor.x, next.cursor.y)
     }
 
+    // Persist the tracked physical row for the next frame's reachability
+    // guard. Alt screen skips this: its frames are CSI H-anchored and the
+    // main-screen anchor must survive alt-screen excursions unchanged
+    // (DECSET 1049 saves/restores the main-screen cursor).
+    if (!altScreen) {
+      this.physCursorRow = screen.phys
+    }
+
     const elapsed = performance.now() - startTime
 
     if (elapsed > 50) {
@@ -458,6 +531,29 @@ export class LogUpdate {
     }
 
     return scrollPatch.length > 0 ? [...scrollPatch, ...screen.diff] : screen.diff
+  }
+
+  /**
+   * Full clear + repaint. clearTerminal homes the cursor to the viewport
+   * top, so the repaint's physical tracking re-anchors from row 0 — this is
+   * what makes resize/offscreen resets self-healing for the main-screen
+   * anchor as well.
+   */
+  private fullReset(
+    frame: Frame,
+    reason: FlickerReason,
+    altScreen: boolean,
+    debug?: { triggerY: number; prevLine: string; nextLine: string }
+  ): Diff {
+    // After clearTerminal, cursor is at (0, 0)
+    const screen = new VirtualScreen({ x: 0, y: 0 }, frame.viewport.width, frame.viewport.height, 0)
+    renderFrame(screen, frame, this.options.stylePool)
+
+    if (!altScreen) {
+      this.physCursorRow = screen.phys
+    }
+
+    return [{ type: 'clearTerminal', reason, debug }, ...screen.diff]
   }
 }
 
@@ -489,19 +585,6 @@ function readLine(screen: Screen, y: number): string {
   }
 
   return line.trimEnd()
-}
-
-function fullResetSequence_CAUSES_FLICKER(
-  frame: Frame,
-  reason: FlickerReason,
-  stylePool: StylePool,
-  debug?: { triggerY: number; prevLine: string; nextLine: string }
-): Diff {
-  // After clearTerminal, cursor is at (0, 0)
-  const screen = new VirtualScreen({ x: 0, y: 0 }, frame.viewport.width)
-  renderFrame(screen, frame, stylePool)
-
-  return [{ type: 'clearTerminal', reason, debug }, ...screen.diff]
 }
 
 function renderFrame(screen: VirtualScreen, frame: Frame, stylePool: StylePool): void {
@@ -546,7 +629,7 @@ function renderFrameSlice(
           patches[1 + i] = NEWLINE
         }
 
-        return [patches, { dx: -prev.x, dy: rowsToAdvance }]
+        return [patches, { dx: -prev.x, dy: rowsToAdvance, lf: rowsToAdvance }]
       })
     }
 
@@ -588,7 +671,7 @@ function renderFrameSlice(
     // CR+LF at end of row — \r resets to column 0, \n moves to next line.
     // Without \r, the terminal cursor stays at whatever column content ended
     // (since we skip trailing spaces, this can be mid-row).
-    screen.txn(prev => [[CARRIAGE_RETURN, NEWLINE], { dx: -prev.x, dy: 1 }])
+    screen.txn(prev => [[CARRIAGE_RETURN, NEWLINE], { dx: -prev.x, dy: 1, lf: 1 }])
   }
 
   // Reset any open style/hyperlink at end of slice
@@ -598,7 +681,15 @@ function renderFrameSlice(
   return screen
 }
 
-type Delta = { dx: number; dy: number }
+type Delta = {
+  dx: number
+  dy: number
+  /** How many of `dy`'s rows are LF-driven ('\n' bytes). LFs differ from
+   *  CSI cursor-down at the bottom margin: the terminal scrolls instead of
+   *  moving the cursor, so the physical row pins at viewport bottom while
+   *  the virtual (content) row keeps counting. */
+  lf?: number
+}
 
 /**
  * Write a cell with a pre-serialized style transition string (from
@@ -658,6 +749,9 @@ function writeCellWithStyleStr(screen: VirtualScreen, cell: Cell, styleStr: stri
   if (px >= vw) {
     screen.cursor.x = cellWidth
     screen.cursor.y++
+    // Auto-wrap behaves like an LF: at the bottom margin the terminal
+    // scrolls and the physical row pins instead of advancing.
+    screen.physLinefeed()
   } else {
     screen.cursor.x = px + cellWidth
   }
@@ -731,12 +825,28 @@ class VirtualScreen {
   // File-private class — not exposed outside log-update.ts.
   cursor: Point
   diff: Diff = []
+  /** Physical viewport row (0-based) of the cursor, tracked with terminal
+   *  semantics: LF-driven advances pin at the bottom margin (the terminal
+   *  scrolls instead of moving the cursor down). Relative cursor moves
+   *  translate 1:1 — the reachability guard in render() must keep them
+   *  inside the viewport, so they never clamp. */
+  phys: number
 
   constructor(
     origin: Point,
-    readonly viewportWidth: number
+    readonly viewportWidth: number,
+    readonly viewportHeight: number,
+    physStart: number
   ) {
     this.cursor = { ...origin }
+    this.phys = physStart
+  }
+
+  /** Advance the physical row by an LF-driven step (pins at the bottom). */
+  physLinefeed(): void {
+    if (this.phys < this.viewportHeight - 1) {
+      this.phys++
+    }
   }
 
   txn(fn: (prev: Point) => [patches: Diff, next: Delta]): void {
@@ -748,5 +858,21 @@ class VirtualScreen {
 
     this.cursor.x += next.dx
     this.cursor.y += next.dy
+
+    const lf = next.lf ?? 0
+
+    for (let i = 0; i < lf; i++) {
+      this.physLinefeed()
+    }
+
+    // Non-LF vertical movement (CSI cursor up/down) moves the physical
+    // cursor exactly dy rows. The scrolled-off-row guard keeps targets
+    // inside the viewport; clamp defensively so a slipped-through move
+    // can't corrupt the tracker beyond the frame it happened in.
+    const moveDy = next.dy - lf
+
+    if (moveDy !== 0) {
+      this.phys = Math.min(Math.max(this.phys + moveDy, 0), this.viewportHeight - 1)
+    }
   }
 }
