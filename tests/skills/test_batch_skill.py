@@ -89,3 +89,32 @@ class TestPrompt:
     def test_instruction_interpolated(self):
         out = _build_prompt("REPLACE_ME_TOKEN")
         assert "## User Instruction\n\nREPLACE_ME_TOKEN" in out
+
+    def test_golden_length_and_anchors(self):
+        # Golden pin (critic NIT): a length + boundary snapshot guards against
+        # silent whitespace/section drift on future edits (byte-identity to TS
+        # was verified externally by the critic).
+        out = _build_prompt("X")
+        assert out.startswith("# Batch: Parallel Work Orchestration\n\n")
+        assert out.rstrip().endswith('"22/24 units landed as PRs").')
+        assert out.count("## Phase") == 3  # Research/Plan, Spawn, Track
+        # stable size modulo the 1-char instruction (regression canary)
+        assert 4830 <= len(out) <= 4860, len(out)
+
+
+class TestGuardOrder:
+    def test_missing_instruction_wins_over_git_check(self, monkeypatch):
+        # critic NIT: empty args must short-circuit to MISSING_INSTRUCTION
+        # BEFORE the git check runs (order parity with TS 112→116). If git were
+        # checked first, a non-git dir + empty args would wrongly return the
+        # git message.
+        called = {"git": False}
+
+        def _spy(cwd=None):
+            called["git"] = True
+            return False
+
+        monkeypatch.setattr(gc, "get_is_git", _spy)
+        out = _get_prompt_for_command("   ")
+        assert "Provide an instruction" in out
+        assert called["git"] is False  # git-check never reached
