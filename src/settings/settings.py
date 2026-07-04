@@ -91,3 +91,62 @@ def apply_persisted_model(provider: Any, provider_name: str) -> bool:
         provider.model = s.model
         return True
     return False
+
+def update_local_settings(
+    updates: dict[str, Any], *, cwd: str | Path | None = None,
+) -> bool:
+    """Merge ``updates`` into the LOCAL settings tier and persist.
+
+    OS-1 G3 — the ``updateSettingsForSource('localSettings', ...)`` analog
+    (Settings/Config.tsx:1600): writes the ``settings`` sub-key of the
+    project-local config file (``.claude/config.local.json``), creating the
+    file/dir as needed, atomically (tempfile + replace), then invalidates
+    the settings cache. Returns False (logged) on any failure — persistence
+    is best-effort; callers' in-memory state still applies.
+    """
+    import json as _json
+    import logging as _logging
+    import os as _os
+    import tempfile as _tempfile
+
+    from src.config import get_local_config_path
+
+    logger = _logging.getLogger(__name__)
+    try:
+        path = get_local_config_path(cwd)
+        if path is None:
+            # Outside a git root there is no local tier — persist to the
+            # GLOBAL config's settings block instead (also merged by
+            # load_settings), so the choice survives everywhere.
+            from src.config import GLOBAL_CONFIG_FILE
+
+            path = Path(GLOBAL_CONFIG_FILE)
+        cfg_dir = path.parent
+        cfg_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            data = _json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                data = {}
+        except Exception:  # noqa: BLE001 — missing/corrupt starts fresh
+            data = {}
+        settings_block = data.get("settings")
+        if not isinstance(settings_block, dict):
+            settings_block = {}
+        data["settings"] = _deep_merge(settings_block, updates)
+        fd, tmp = _tempfile.mkstemp(dir=str(cfg_dir), prefix=".settings-")
+        try:
+            with _os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(_json.dumps(data, indent=2) + "\n")
+            _os.replace(tmp, path)
+        finally:
+            if _os.path.exists(tmp):
+                try:
+                    _os.unlink(tmp)
+                except OSError:
+                    pass
+        invalidate_settings_cache()
+        return True
+    except Exception:  # noqa: BLE001
+        logger.debug("update_local_settings failed", exc_info=True)
+        return False
+

@@ -611,8 +611,12 @@ async def test_control_set_output_style(tmp_path):
                         return msg["response"]["response"]
                 raise AssertionError(f"no reply for {rid}")
 
-            ok = await _reply_for("s1", {"subtype": "set_output_style", "style": "concise"})
-            assert ok["ok"] is True and ok["style"] == "concise"
+            # OS-1: validation now follows the loader's truth — "explanatory"
+            # is the real builtin (the old fixed list wrongly accepted
+            # "concise", which never existed as a style).
+            ok = await _reply_for("s1", {"subtype": "set_output_style", "style": "explanatory"})
+            assert ok["ok"] is True and ok["style"] == "explanatory"
+            assert "explanatory" in ok.get("available_styles", [])
 
             bad = await _reply_for("s2", {"subtype": "set_output_style", "style": "bogus"})
             assert bad["ok"] is False and "valid" in bad["error"]

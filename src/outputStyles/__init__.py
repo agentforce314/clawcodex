@@ -5,7 +5,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from .loader import load_output_styles_dir, resolve_output_style
+from .loader import (
+    available_output_styles,
+    load_output_styles_dir,
+    output_style_from_settings,
+    resolve_output_style,
+)
 from .styles import BUILTIN_OUTPUT_STYLES, OutputStyle
 
 SNAPSHOT_PATH = Path(__file__).resolve().parent.parent / 'reference_data' / 'subsystems' / 'outputStyles.json'
