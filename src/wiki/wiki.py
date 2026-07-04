@@ -45,11 +45,16 @@ def _schema_template(project: str) -> str:
 
 
 def _index_template(project: str) -> str:
+    # Matches rebuild_wiki_index's structure for a just-initialized wiki
+    # (only architecture.md present) so the first ingest's rebuild does not
+    # flip the headers user-visibly (critic MINOR-1).
     return (
         f"# {project} Wiki\n\n"
-        "## Pages\n\n- [Architecture](./pages/architecture.md)\n\n"
-        "## Sources\n\nSource notes live in [sources/](./sources/)\n\n"
-        "## Log\n\nSee [log.md](./log.md)\n"
+        "This wiki is maintained by clawcodex as a durable project "
+        "knowledge layer.\n\n"
+        "## Core Pages\n\n- [Architecture](./pages/architecture.md)\n\n"
+        "## Sources\n\n- No sources yet\n\n"
+        "## Recent Updates\n\n- See [log.md](./log.md)\n"
     )
 
 
@@ -90,7 +95,37 @@ def wiki_status(cwd: str | Path) -> dict:
     return {"initialized": True, "root": str(paths.root), "page_count": pages, "source_count": sources}
 
 
+def _build_source_note(
+    *, title: str, source_path: str, ingested_at: str, summary: str, excerpt: str
+) -> str:
+    """Verbatim template from ingest.ts:13-46 (buildSourceNote)."""
+    return (
+        f"# {title}\n\n"
+        "## Source\n\n"
+        f"- Path: `{source_path}`\n"
+        f"- Ingested at: {ingested_at}\n\n"
+        "## Summary\n\n"
+        f"{summary}\n\n"
+        "## Excerpt\n\n"
+        "```\n"
+        f"{excerpt}\n"
+        "```\n\n"
+        "## Linked Pages\n\n"
+        "- [Architecture](../pages/architecture.md)\n"
+    )
+
+
 def ingest_source(cwd: str | Path, src: str) -> dict:
+    """Port of ``ingestLocalWikiSource`` (SERVICES-4): write a STRUCTURED
+    source note (title/summary/excerpt) + a log entry + rebuild the index —
+    replacing the prior copy-only behavior."""
+    import datetime as _dt
+    import os as _os
+    import time as _time
+
+    from .index_builder import rebuild_wiki_index
+    from .utils import extract_title_from_text, sanitize_wiki_slug, summarize_text
+
     paths = get_wiki_paths(cwd)
     if not paths.index_file.exists():
         return {"ok": False, "error": "wiki not initialized — run /wiki init first"}
@@ -99,14 +134,46 @@ def ingest_source(cwd: str | Path, src: str) -> dict:
         src_path = Path(cwd) / src
     if not src_path.is_file():
         return {"ok": False, "error": f"not a file: {src}"}
-    dest = paths.sources_dir / src_path.name
     try:
-        shutil.copyfile(src_path, dest)
+        content = src_path.read_text(encoding="utf-8", errors="replace")
+        # Lexical relative path (TS path.relative), so out-of-cwd sources get a
+        # ``../``-style path rather than a bare basename (critic MINOR-4).
+        rel_source = _os.path.relpath(
+            _os.path.abspath(str(src_path)), _os.path.abspath(str(cwd))
+        ).replace(_os.sep, "/")
+        # ISO-8601 with milliseconds + Z, matching TS Date.toISOString()
+        # (critic MINOR-2).
+        _now = _dt.datetime.now(_dt.timezone.utc)
+        ingested_at = _now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{_now.microsecond // 1000:03d}Z"
+        base_name = src_path.stem
+        title = extract_title_from_text(base_name, content)
+        summary = summarize_text(content)
+        excerpt = "\n".join(content.split("\n")[:20]).strip()
+        ms = _time.time_ns() // 1_000_000
+        slug = sanitize_wiki_slug(f"{base_name}-{ms}") or f"source-{ms}"
+
+        note_path = paths.sources_dir / f"{slug}.md"
+        note_path.write_text(
+            _build_source_note(
+                title=title, source_path=rel_source, ingested_at=ingested_at,
+                summary=summary, excerpt=excerpt,
+            ),
+            encoding="utf-8",
+        )
+        with paths.log_file.open("a", encoding="utf-8") as f:
+            f.write(
+                f'- {ingested_at}: Ingested `{rel_source}` into source '
+                f'note "{title}"\n'
+            )
+        rebuild_wiki_index(cwd)
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
-    try:  # append to the log (best-effort)
-        with paths.log_file.open("a", encoding="utf-8") as f:
-            f.write(f"- ingested source: {src_path.name}\n")
-    except Exception:  # noqa: BLE001
-        pass
-    return {"ok": True, "dest": str(dest)}
+    return {
+        "ok": True,
+        "dest": str(note_path),
+        "source_note": note_path.relative_to(Path(cwd)).as_posix()
+        if note_path.is_relative_to(Path(cwd))
+        else str(note_path),
+        "summary": summary,
+        "title": title,
+    }
