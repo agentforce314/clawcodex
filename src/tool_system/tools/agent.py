@@ -739,6 +739,15 @@ def make_agent_tool(
                         agent_id, agent_type,
                     )
             finally:
+                # Reap any run_in_background bash this agent spawned, so a
+                # shell loop doesn't outlive the agent as a PPID=1 zombie
+                # (port of runAgent.ts's killShellTasksForAgent, agent-exit).
+                try:
+                    from src.tasks.local_shell import kill_shell_tasks_for_agent
+
+                    await kill_shell_tasks_for_agent(agent_id, context.runtime_tasks)
+                except Exception:  # noqa: BLE001 — cleanup must not break exit
+                    logger.debug("kill_shell_tasks_for_agent failed", exc_info=True)
                 if transcript is not None:
                     transcript.close()
 
