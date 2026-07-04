@@ -45,11 +45,16 @@ def _schema_template(project: str) -> str:
 
 
 def _index_template(project: str) -> str:
+    # Matches rebuild_wiki_index's structure for a just-initialized wiki
+    # (only architecture.md present) so the first ingest's rebuild does not
+    # flip the headers user-visibly (critic MINOR-1).
     return (
         f"# {project} Wiki\n\n"
-        "## Pages\n\n- [Architecture](./pages/architecture.md)\n\n"
-        "## Sources\n\nSource notes live in [sources/](./sources/)\n\n"
-        "## Log\n\nSee [log.md](./log.md)\n"
+        "This wiki is maintained by clawcodex as a durable project "
+        "knowledge layer.\n\n"
+        "## Core Pages\n\n- [Architecture](./pages/architecture.md)\n\n"
+        "## Sources\n\n- No sources yet\n\n"
+        "## Recent Updates\n\n- See [log.md](./log.md)\n"
     )
 
 
@@ -114,6 +119,8 @@ def ingest_source(cwd: str | Path, src: str) -> dict:
     """Port of ``ingestLocalWikiSource`` (SERVICES-4): write a STRUCTURED
     source note (title/summary/excerpt) + a log entry + rebuild the index —
     replacing the prior copy-only behavior."""
+    import datetime as _dt
+    import os as _os
     import time as _time
 
     from .index_builder import rebuild_wiki_index
@@ -129,11 +136,15 @@ def ingest_source(cwd: str | Path, src: str) -> dict:
         return {"ok": False, "error": f"not a file: {src}"}
     try:
         content = src_path.read_text(encoding="utf-8", errors="replace")
-        try:
-            rel_source = src_path.resolve().relative_to(Path(cwd).resolve()).as_posix()
-        except ValueError:
-            rel_source = src_path.name
-        ingested_at = _time.strftime("%Y-%m-%dT%H:%M:%S", _time.gmtime()) + "Z"
+        # Lexical relative path (TS path.relative), so out-of-cwd sources get a
+        # ``../``-style path rather than a bare basename (critic MINOR-4).
+        rel_source = _os.path.relpath(
+            _os.path.abspath(str(src_path)), _os.path.abspath(str(cwd))
+        ).replace(_os.sep, "/")
+        # ISO-8601 with milliseconds + Z, matching TS Date.toISOString()
+        # (critic MINOR-2).
+        _now = _dt.datetime.now(_dt.timezone.utc)
+        ingested_at = _now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{_now.microsecond // 1000:03d}Z"
         base_name = src_path.stem
         title = extract_title_from_text(base_name, content)
         summary = summarize_text(content)

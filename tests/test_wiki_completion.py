@@ -98,6 +98,48 @@ class TestIngest:
         assert r1["ok"] and r2["ok"]
 
 
+class TestByteFidelity:
+    """critic MINOR-3 — pin the exact artifacts (highest-risk #2), not just
+    substrings."""
+
+    def test_build_source_note_byte_exact(self):
+        from src.wiki.wiki import _build_source_note
+
+        note = _build_source_note(
+            title="My Title",
+            source_path="docs/readme.md",
+            ingested_at="2026-07-04T12:00:00.000Z",
+            summary="A short summary.",
+            excerpt="line one\nline two",
+        )
+        expected = (
+            "# My Title\n\n"
+            "## Source\n\n"
+            "- Path: `docs/readme.md`\n"
+            "- Ingested at: 2026-07-04T12:00:00.000Z\n\n"
+            "## Summary\n\n"
+            "A short summary.\n\n"
+            "## Excerpt\n\n"
+            "```\n"
+            "line one\nline two\n"
+            "```\n\n"
+            "## Linked Pages\n\n"
+            "- [Architecture](../pages/architecture.md)\n"
+        )
+        assert note == expected
+
+    def test_log_line_format(self, tmp_path):
+        init_wiki(str(tmp_path))
+        src = tmp_path / "doc.md"
+        src.write_text("# Doc Title\nbody")
+        ingest_source(str(tmp_path), str(src))
+        log_lines = get_wiki_paths(str(tmp_path)).log_file.read_text().splitlines()
+        entry = [ln for ln in log_lines if "Ingested" in ln][-1]
+        # verbatim: - {ts}: Ingested `{path}` into source note "{title}"
+        assert entry.endswith('Ingested `doc.md` into source note "Doc Title"')
+        assert entry.startswith("- 20")  # ISO timestamp prefix
+
+
 class TestIndexRebuild:
     def test_lists_pages_and_sources_with_titles(self, tmp_path):
         init_wiki(str(tmp_path))
