@@ -385,6 +385,40 @@ describe('GatewayClient NDJSON adapter', () => {
     expect(r.items.map(i => i.text)).toContain('/skills')
   })
 
+  it('carries argument hints on completion items (user-reported: no value suggestions)', async () => {
+    const p = gw.request<{ items: Array<{ hint?: string; text: string }> }>('complete.slash', { text: '/ef' })
+    await replyToControl('list_workflow_commands', { commands: [], ok: true })
+    const r = await p
+    const effort = r.items.find(i => i.text === '/effort')
+    expect(effort?.hint).toBe('[minimal|low|medium|high|auto|ultracode]')
+  })
+
+  it('passes workflow argument_hint through to completion items', async () => {
+    const p = gw.request<{ items: Array<{ hint?: string; text: string }> }>('complete.slash', { text: '/de' })
+    await replyToControl('list_workflow_commands', {
+      commands: [{ argument_hint: '<question>', description: 'Deep research', name: 'deep-research' }],
+      ok: true
+    })
+    const r = await p
+    expect(r.items.find(i => i.text === '/deep-research')?.hint).toBe('<question>')
+  })
+
+  it('exposes argument hints in the command catalog (ghost-text lookup source)', async () => {
+    proc.line(INIT)
+    const p = gw.request<{ hints: Record<string, string> }>('commands.catalog', {})
+    await replyToControl('list_workflow_commands', {
+      commands: [{ argument_hint: '<question>', description: 'Deep research', name: 'deep-research' }],
+      ok: true
+    })
+    const r = await p
+    expect(r.hints['/mode']).toBe('[default|plan|acceptEdits|dontAsk|bypassPermissions]')
+    expect(r.hints['/deep-research']).toBe('<question>')
+    // Names shadowed by TUI-local commands carry no gateway hint — the local
+    // registry's argumentHint is the truthful one (dispatch order).
+    expect(r.hints['/compact']).toBeUndefined()
+    expect(r.hints['/model']).toBeUndefined()
+  })
+
   it('skills.manage list groups backend skills by category', async () => {
     const p = gw.request('skills.manage', { action: 'list' })
     await replyToControl('list_skills', {

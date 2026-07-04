@@ -14,6 +14,10 @@ export interface SlashRunCtx extends SlashHandlerContext {
 
 export interface SlashCommand {
   aliases?: string[]
+  /** Allowed values / argument grammar, e.g. `[on|off|toggle]` — shown dim in
+   *  the completion menu and as ghost text after `/name ` (original CC's
+   *  Command.argumentHint). */
+  argumentHint?: string
   help?: string
   name: string
   run: (arg: string, ctx: SlashRunCtx, cmd: string) => void

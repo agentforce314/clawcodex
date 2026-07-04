@@ -41,6 +41,7 @@ const modelValueForConfigSet = (arg: string) => {
 export const sessionCommands: SlashCommand[] = [
   {
     aliases: ['bg', 'btw'],
+    argumentHint: '<prompt>',
     help: 'launch a background prompt',
     name: 'background',
     run: (arg, ctx) => {
@@ -62,6 +63,7 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
+    argumentHint: '[<model> [--provider <slug>]]',
     help: 'change or show model',
     name: 'model',
     run: (arg, ctx) => {
@@ -118,6 +120,7 @@ export const sessionCommands: SlashCommand[] = [
 
   {
     aliases: ['switch', 'session', 'resume'],
+    argumentHint: '[new | <id or title>]',
     help: 'browse, switch, or resume sessions',
     name: 'sessions',
     run: (arg, ctx) => {
@@ -146,6 +149,7 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
+    argumentHint: '<path>',
     help: 'attach an image',
     name: 'image',
     run: (arg, ctx) => {
@@ -162,6 +166,7 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
+    argumentHint: '[<name>]',
     help: 'switch personality for this session',
     name: 'personality',
     run: (arg, ctx) => {
@@ -183,6 +188,7 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
+    argumentHint: '[<focus-topic>]',
     help: 'compress transcript',
     name: 'compress',
     run: (arg, ctx) => {
@@ -238,6 +244,7 @@ export const sessionCommands: SlashCommand[] = [
 
   {
     aliases: ['fork'],
+    argumentHint: '[<name>]',
     help: 'branch the session',
     name: 'branch',
     run: (arg, ctx) => {
@@ -259,6 +266,7 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
+    argumentHint: '[on|off|tts|status]',
     help: 'voice mode: [on|off|tts|status]',
     name: 'voice',
     run: (arg, ctx) => {
@@ -348,6 +356,7 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
+    argumentHint: '[toggle | list | scale <n> | <slug>]',
     help: 'toggle / adopt / resize an animated pet',
     name: 'pet',
     usage: '/pet [toggle | list | scale <n> | <slug>]',
@@ -373,6 +382,7 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
+    argumentHint: '[<name>]',
     help: 'switch theme skin (fires skin.changed)',
     name: 'skin',
     run: (arg, ctx) => {
@@ -389,6 +399,7 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
+    argumentHint: '[kaomoji|emoji|unicode|ascii]',
     help: 'pick the busy indicator: kaomoji (default), emoji, unicode (braille), or ascii',
     name: 'indicator',
     usage: `/indicator [${INDICATOR_STYLES.join('|')}]`,
@@ -436,6 +447,7 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
+    argumentHint: '[<level>|show|hide]',
     help: 'inspect or set reasoning effort (updates live agent)',
     name: 'reasoning',
     run: (arg, ctx) => {
@@ -476,6 +488,7 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
+    argumentHint: '[normal|fast|status|on|off|toggle]',
     help: 'toggle fast mode [normal|fast|status|on|off|toggle]',
     name: 'fast',
     run: (arg, ctx) => {
@@ -520,6 +533,7 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
+    argumentHint: '[queue|steer|interrupt|status]',
     help: 'control busy enter mode [queue|steer|interrupt|status]',
     name: 'busy',
     run: (arg, ctx) => {

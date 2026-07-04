@@ -68,6 +68,8 @@ export interface SelectionApi {
 
 export interface CompletionItem {
   display: string
+  /** Argument hint shown dim after the name, e.g. `[on|off|toggle]`. */
+  hint?: string
   meta?: string
   text: string
 }
@@ -394,6 +396,8 @@ export interface AppLayoutActions {
 }
 
 export interface AppLayoutComposerProps {
+  /** Ghost argument hint for the exactly-typed `/command ` in the input. */
+  argumentHint?: string
   cols: number
   compIdx: number
   completions: CompletionItem[]
