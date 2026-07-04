@@ -61,14 +61,34 @@ def _build_serve_context(cwd: Path) -> Any:
     pins ``mode="default"`` + empty rules +
     ``is_bypass_permissions_mode_available=False`` (the
     ``getEmptyToolPermissionContext`` analog; see module docstring).
+
+    Settings-level DENY rules are grafted on (critic follow-up): a user who
+    approved a server (C7) but added ``deny: mcp__x__dangerous`` in settings
+    must have that deny honored — deny rules precede allow rules in the
+    pipeline, so this also beats the re-exposure grant. ONLY deny rules are
+    taken: importing the settings ALLOW rules (or mode) would widen the
+    serve surface beyond the pinned posture. Best-effort — a broken settings
+    file leaves the pinned fail-closed posture intact.
     """
     from src.permissions.types import ToolPermissionContext
     from src.tool_system.context import ToolContext
 
+    permission_context = ToolPermissionContext()
+    try:
+        from src.permissions.settings_paths import default_setup_paths
+        from src.permissions.setup import setup_permissions
+
+        setup = setup_permissions(cwd=str(cwd), **default_setup_paths(str(cwd)))
+        for source, rules in setup.context.always_deny_rules.items():
+            if rules:
+                permission_context.always_deny_rules.setdefault(source, []).extend(rules)
+    except Exception:  # noqa: BLE001 — serve must come up; posture stays fail-closed
+        logger.exception("mcp serve: loading settings deny rules failed; continuing without")
+
     return ToolContext(
         workspace_root=cwd,
         cwd=cwd,
-        permission_context=ToolPermissionContext(),
+        permission_context=permission_context,
     )
 
 
@@ -217,6 +237,14 @@ async def build_server(
 
     server: Server = Server("clawcodex", version=__version__)
 
+    # Tool calls execute sequentially (critic follow-up): the shared
+    # ToolContext is mutable (read_file_fingerprints, task registries) and
+    # not thread-safe, so a pipelining client must not run two dispatches
+    # concurrently. The asyncio.Lock preserves the sequential profile while
+    # to_thread keeps the event loop free for pings/cancellation — the two
+    # concerns M1 separated.
+    dispatch_lock = asyncio.Lock()
+
     def _is_mcp_tool(tool: Any) -> bool:
         # Same predicate as agent_tool_utils.filter_tools_for_agent.
         return tool.name.startswith("mcp__") or bool(getattr(tool, "is_mcp", False))
@@ -265,9 +293,10 @@ async def build_server(
             # running loop, so async tools take _invoke_tool_call's clean
             # asyncio.run path. TS's `await tool.call(...)` is cooperative —
             # this is the Python equivalent.
-            result = await asyncio.to_thread(
-                registry.dispatch, ToolCall(name=name, input=arguments or {}), context
-            )
+            async with dispatch_lock:
+                result = await asyncio.to_thread(
+                    registry.dispatch, ToolCall(name=name, input=arguments or {}), context
+                )
             if result.is_error:
                 error_text = (
                     result.output.get("error") if isinstance(result.output, dict) else None

@@ -335,3 +335,62 @@ def test_reexposed_mcp_tools_integration(
             assert not (tmp_path / "n").exists()
 
     asyncio.run(run())
+
+
+def test_settings_deny_rule_beats_reexposure_grant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A user who approved a server (C7) but denied one of its tools in
+    settings must have the deny honored — deny rules precede allow rules,
+    so the settings deny beats the re-exposure grant (critic follow-up)."""
+    import src.entrypoints.mcp_serve as sm
+    from src.tool_system.build_tool import build_tool
+    from src.tool_system.protocol import ToolResult
+
+    dangerous = build_tool(
+        name="mcp__fake__dangerous",
+        input_schema={"type": "object", "properties": {}, "additionalProperties": True},
+        call=lambda i, c: ToolResult(name="mcp__fake__dangerous", output="RAN"),
+        prompt="Should never run.",
+        description="d",
+    )
+    benign = build_tool(
+        name="mcp__fake__benign",
+        input_schema={"type": "object", "properties": {}, "additionalProperties": True},
+        call=lambda i, c: ToolResult(name="mcp__fake__benign", output="OK"),
+        prompt="Fine to run.",
+        description="b",
+    )
+
+    async def fake_loader():
+        return [], [dangerous, benign]
+
+    monkeypatch.setattr(sm, "load_reexposed_mcp_tools", fake_loader)
+
+    local_settings = tmp_path / "settings.local.json"
+    local_settings.write_text(
+        json.dumps({"permissions": {"deny": ["mcp__fake__dangerous"]}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "src.permissions.settings_paths.default_setup_paths",
+        lambda cwd=None: {
+            "user_settings_path": None,
+            "project_settings_path": None,
+            "local_settings_path": str(local_settings),
+            "managed_settings_path": None,
+        },
+    )
+
+    async def run() -> None:
+        from mcp.shared.memory import create_connected_server_and_client_session
+
+        server = await sm.build_server(tmp_path)
+        async with create_connected_server_and_client_session(server) as s:
+            r_deny = await s.call_tool("mcp__fake__dangerous", {})
+            assert r_deny.isError is True
+            assert "RAN" not in (r_deny.content[0].text if r_deny.content else "")
+            r_ok = await s.call_tool("mcp__fake__benign", {})
+            assert r_ok.isError is False and r_ok.content[0].text == "OK"
+
+    asyncio.run(run())
