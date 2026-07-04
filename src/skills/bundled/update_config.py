@@ -89,7 +89,7 @@ Hooks run commands in response to lifecycle EVENTS. If the user wants something 
       {
         "matcher": "Edit",
         "hooks": [
-          { "type": "command", "command": "jq -r '.tool_input.file_path // empty' | xargs -r eslint --fix" }
+          { "type": "command", "command": "jq -r '.tool_input.file_path // empty' | xargs -r eslint --fix 2>/dev/null || true" }
         ]
       }
     ]
