@@ -49,6 +49,22 @@ logger = logging.getLogger(__name__)
 SKILLS_DIR_BUCKET: frozenset[str] = frozenset({"skills", "user", "project"})
 
 
+def _builtin_plugin_skill_commands() -> tuple[Command, ...]:
+    """PLUGINS-1 — the commands.ts:401 analog: enabled builtin-plugin skills
+    become slash commands. NOT cached: the enabled gate (settings overlay +
+    default_enabled) must stay fresh, and the registry lookup is cheap.
+    Failures degrade to () — plugins are non-critical."""
+    try:
+        from src.plugins.builtin_plugins import get_builtin_plugin_skill_commands
+
+        return tuple(
+            skill_to_prompt_command(s) for s in get_builtin_plugin_skill_commands()
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("builtin plugin skill loading failed: %s", exc)
+        return ()
+
+
 @lru_cache(maxsize=32)
 def _load_skill_commands_cached(cwd: str) -> tuple[Command, ...]:
     """
@@ -105,6 +121,7 @@ def get_commands(
         *get_builtin_commands(),
         *_load_workflow_commands_cached(cwd_key),
         *_load_skill_commands_cached(cwd_key),
+        *_builtin_plugin_skill_commands(),
     ]
 
     seen: set[str] = set()

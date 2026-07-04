@@ -9,6 +9,8 @@ the user enables it.
 
 from __future__ import annotations
 
+from src.skills.model import Skill
+
 from .builtin_plugins import register_builtin_plugin
 from .types import BuiltinPluginDefinition
 
@@ -26,30 +28,24 @@ def register_karpathy_guidelines_plugin() -> None:
         version="1.0.0",
         default_enabled=False,
         skills=[
-            {
-                "name": "karpathy-guidelines",
-                "description": (
+            # A real Skill instance — get_builtin_plugin_skill_commands
+            # filters with isinstance(skill, Skill); dict defs are skipped.
+            Skill(
+                name="karpathy-guidelines",
+                description=(
                     "Apply coding guidelines that reduce common LLM "
                     "implementation mistakes."
                 ),
-                "when_to_use": (
+                content=KARPATHY_GUIDELINES_PROMPT,
+                source="karpathy-guidelines@builtin",
+                loaded_from="plugin",
+                user_invocable=True,
+                when_to_use=(
                     "Use when writing, reviewing, or refactoring code, "
                     "especially when a task could become overcomplicated or "
                     "needs careful verification."
                 ),
-                "user_invocable": True,
-                "get_prompt_for_command": _prompt_for_command,
-            }
+                version="1.0.0",
+            )
         ],
     ))
-
-
-def _prompt_for_command(args: str) -> list[dict]:
-    """getPromptForCommand analog: optional user focus appended."""
-    focus = (args or "").strip()
-    text = (
-        f"{KARPATHY_GUIDELINES_PROMPT}\n\n## User Focus\n\n{focus}\n"
-        if focus
-        else KARPATHY_GUIDELINES_PROMPT
-    )
-    return [{"type": "text", "text": text}]
