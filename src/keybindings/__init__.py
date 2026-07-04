@@ -1,12 +1,16 @@
 """Placeholder for parity with ``typescript/src/keybindings/``.
 
-The real Python implementation of TUI keybindings lives at
-``src/tui/keybindings.py`` (chord-tracker dispatcher). The configurable
-loader / schema / resolver layer (mirroring chapter 13's ``loadUserBindings``,
-``parser``, ``resolver``, ``schema``, ``validate``) is planned in phase 2 of
-``my-docs/ch13-terminal-ui-refactoring-plan.md``. This module exists so the
-``reference_data`` subsystem snapshots resolve and so the namespace is
-reserved; do not add behavior here.
+Current truth (get-parity-by-folder keybindings close, 2026-07): the
+DEFAULT chord surface lives in the kept TS client
+(``ui-tui/src/app/useInputHandlers.ts`` — the sole interactive UI since the
+UI-consolidation, PR #566, deleted the Python TUIs this docstring used to
+point at). The configurable loader/schema/resolver layer is OFF in open
+builds (``loadUserBindings.ts:259-267`` gates on a key absent from the
+GrowthBook stub's ``_openBuildDefaults``), so there is nothing to port
+unless upstream un-gates it — and the port target would then be the
+CLIENT, not this package. This module exists so the ``reference_data``
+subsystem snapshots resolve and so the namespace is reserved; do not add
+behavior here.
 """
 
 from __future__ import annotations

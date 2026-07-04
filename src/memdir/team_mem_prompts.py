@@ -202,4 +202,12 @@ def build_combined_memory_prompt(
         for guideline in extra_guidelines:
             if guideline:
                 lines.append(guideline)
+    # teamMemPrompts.ts:95-96 — a blank separator, then the combined prompt
+    # closes with the searching-past-context guidance (private dir is the
+    # search root).
+    from .memdir import build_searching_past_context_section
+
+    lines.append("")
+    lines.extend(build_searching_past_context_section(auto_dir))
+
     return "\n".join(lines)
