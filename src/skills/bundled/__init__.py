@@ -20,6 +20,7 @@ from .debug import register_debug_skill
 from .loop import register_loop_skill
 from .simplify import register_simplify_skill
 from .stuck import register_stuck_skill
+from .update_config import register_update_config_skill
 from .verify_content import register_verify_content_skill
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,7 @@ def init_bundled_skills() -> None:
     register_debug_skill()
     register_loop_skill()
     register_batch_skill()
+    register_update_config_skill()
     register_stuck_skill()
     register_verify_content_skill()
     _INITIALIZED = True
@@ -71,6 +73,7 @@ __all__ = [
     "register_debug_skill",
     "register_loop_skill",
     "register_batch_skill",
+    "register_update_config_skill",
     "register_stuck_skill",
     "register_verify_content_skill",
 ]
