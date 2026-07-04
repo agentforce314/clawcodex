@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+import os
 from pathlib import Path
 from typing import Iterable
 
@@ -200,6 +201,43 @@ def _how_to_save_section(skip_index: bool) -> list[str]:
     ]
 
 
+def build_searching_past_context_section(auto_mem_dir: str) -> list[str]:
+    """The "Searching past context" guidance (memdir.ts:375-407).
+
+    MEMDIR-1: upstream gates this on ``tengu_coral_fern``, which the vendored
+    GrowthBook stub's ``_openBuildDefaults`` sets to TRUE — so the reference
+    build emits it for every user, and this port emits it unconditionally
+    (no flag system here). TS picks shell-grep forms when the dedicated Grep
+    tool is hidden (ant-native embedded search / REPL script mode); this
+    port always ships the Grep tool, so the tool-invocation forms are used
+    unconditionally. The transcript target is this port's saved-session
+    store (``~/.clawcodex/sessions/``, ``*.json``) rather than the reference
+    project-transcript dir.
+    """
+    sessions_dir = os.path.join(os.path.expanduser("~"), ".clawcodex", "sessions")
+    mem_search = (
+        f'Grep with pattern="<search term>" path="{auto_mem_dir}" glob="*.md"'
+    )
+    transcript_search = (
+        f'Grep with pattern="<search term>" path="{sessions_dir}/" glob="*.json"'
+    )
+    return [
+        "## Searching past context",
+        "",
+        "When looking for past context:",
+        "1. Search topic files in your memory directory:",
+        "```",
+        mem_search,
+        "```",
+        "2. Session transcript logs (last resort — large files, slow):",
+        "```",
+        transcript_search,
+        "```",
+        "Use narrow search terms (error messages, file paths, function names) rather than broad keywords.",
+        "",
+    ]
+
+
 def build_memory_lines(
     *,
     display_name: str,
@@ -243,6 +281,9 @@ def build_memory_lines(
             if guideline:
                 lines.append(guideline)
         lines.append("")
+
+    # memdir.ts:263 — the searching-past-context guidance closes the section.
+    lines.extend(build_searching_past_context_section(memory_dir))
 
     return lines
 

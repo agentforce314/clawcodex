@@ -166,3 +166,57 @@ class BuildMemoryPromptTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSearchingPastContextSection:
+    """MEMDIR-1 — the "Searching past context" guidance (memdir.ts:375-407).
+
+    Upstream gates it on tengu_coral_fern, which the vendored GrowthBook
+    stub's _openBuildDefaults sets TRUE — the reference build emits it for
+    every user, so this port emits it unconditionally (critic-caught: the
+    original close misread the flag by stopping at the call-site default).
+    """
+
+    def test_section_content(self):
+        from src.memdir.memdir import build_searching_past_context_section
+
+        lines = build_searching_past_context_section("/tmp/memdir-x")
+        joined = "\n".join(lines)
+        assert lines[0] == "## Searching past context"
+        assert 'Grep with pattern="<search term>" path="/tmp/memdir-x" glob="*.md"' in joined
+        assert '/sessions/" glob="*.json"' in joined  # the port's transcript store
+        assert "narrow search terms" in joined
+        assert "last resort" in joined
+
+    def test_build_memory_lines_ends_with_section(self):
+        from src.memdir.memdir import build_memory_lines
+
+        lines = build_memory_lines(display_name="Memory", memory_dir="/tmp/m")
+        joined = "\n".join(lines)
+        assert joined.count("## Searching past context") == 1
+        # TS memdir.ts:263 — the section closes buildMemoryLines.
+        assert "## Searching past context" in "\n".join(lines[-15:])
+
+    def test_build_memory_prompt_section_precedes_entrypoint_block(self, tmp_path):
+        from src.memdir.memdir import ENTRYPOINT_NAME, build_memory_prompt
+
+        (tmp_path / ENTRYPOINT_NAME).write_text("- indexed fact", encoding="utf-8")
+        prompt = build_memory_prompt(
+            display_name="Memory", memory_dir=str(tmp_path)
+        )
+        # TS buildMemoryPrompt (:293) reuses buildMemoryLines (section at its
+        # tail) then appends the MEMORY.md block — section BEFORE the block.
+        assert prompt.count("## Searching past context") == 1
+        assert prompt.index("## Searching past context") < prompt.index(f"## {ENTRYPOINT_NAME}")
+
+    def test_combined_prompt_ends_with_section_once(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("CLAUDE_CODE_TEAM_MEMORY", "1")
+        monkeypatch.setenv("CLAUDE_CODE_AUTO_MEMORY_PATH", str(tmp_path))
+        from src.memdir.team_mem_prompts import build_combined_memory_prompt
+
+        prompt = build_combined_memory_prompt()
+        # TS teamMemPrompts.ts:95-96 — blank separator, then the section,
+        # closing the prompt.
+        assert prompt.count("## Searching past context") == 1
+        assert "\n\n## Searching past context" in prompt
+        assert prompt.rstrip().endswith("rather than broad keywords.")
