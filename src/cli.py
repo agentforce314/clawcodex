@@ -35,6 +35,16 @@ def main():
     profile_checkpoint("cli_main_entry")
 
     import os
+
+    # OpenClaude default: experimental API betas off unless the user opts in
+    # (mirrors typescript/src/entrypoints/cli.tsx:44 — tool search
+    # defer_loading / global cache scope / context management need internal
+    # API support external accounts lack → 500). Per-process entry:
+    # everything cli.main() spawns inherits this via the environment
+    # (tui_launcher passes env=dict(os.environ)); the standalone
+    # agent-server entry sets its own (agent_server_cli).
+    os.environ.setdefault("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS", "true")
+
     if os.environ.get("CLAWCODEX_DEBUG", "").lower() in ("1", "true", "yes"):
         import logging
         logging.basicConfig(

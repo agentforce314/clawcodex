@@ -30,6 +30,22 @@ def run_mcp_subcommand(rest: list[str]) -> int:
     verb = rest[0]
     if verb == "list":
         return _list_servers()
+    if verb == "serve":
+        # Engine imported only inside this branch — the ``list`` fast path
+        # keeps its lean-import contract; ``serve`` inherently loads the
+        # tool registry. Mirrors typescript/src/entrypoints/mcp.ts
+        # (startMCPServer); the TS verb router lives in cli/handlers/mcp.tsx.
+        import os
+
+        # OpenClaude default: experimental API betas off unless the user
+        # opts in (mcp.ts:6 sets this in TS's separate mcp bundle; here the
+        # value normally arrives inherited from cli.main(), and this covers
+        # any direct invocation of the handler).
+        os.environ.setdefault("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS", "true")
+        from src.entrypoints.mcp_serve import run_serve
+
+        args = rest[1:]
+        return run_serve(debug="--debug" in args, verbose="--verbose" in args)
     print(f"clawcodex mcp: unknown verb {verb!r}", file=sys.stderr)
     _print_usage()
     return 2
@@ -40,6 +56,7 @@ def _print_usage() -> None:
     print("")
     print("Verbs:")
     print("  list    List configured MCP servers")
+    print("  serve   Re-expose clawcodex's tools as an MCP stdio server")
 
 
 def _list_servers() -> int:
