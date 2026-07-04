@@ -41,7 +41,7 @@ def build_can_use_tool(context: Any) -> Callable[..., dict[str, Any]]:
         tool_input: dict[str, Any],
         _tool_use_context: Any,
         _assistant_message: Any,
-        _tool_use_id: str,
+        tool_use_id: str,
         force_decision: Any = None,
     ) -> dict[str, Any]:
         # ch06 round-4 PR-A GAP A — the 6th ``force_decision`` param
@@ -101,6 +101,7 @@ def build_can_use_tool(context: Any) -> Callable[..., dict[str, Any]]:
                 final, chosen_updates = handle_permission_ask(
                     tool.name, ask_decision, context.permission_handler,
                     tool_input=ask_input,
+                    context=context, tool_use_id=tool_use_id,
                 )
                 if getattr(final, "behavior", "deny") != "allow":
                     return {
@@ -138,6 +139,8 @@ def build_can_use_tool(context: Any) -> Callable[..., dict[str, Any]]:
                 decision,
                 context.permission_handler,
                 tool_input=tool_input,
+                context=context,
+                tool_use_id=tool_use_id,
             )
             if final.behavior == "deny":
                 return {

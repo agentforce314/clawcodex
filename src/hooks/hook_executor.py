@@ -341,6 +341,29 @@ async def _execute_command_hook(
                     result.hook_permission_decision_reason = parsed.reason
                 if parsed.updatedInput:
                     result.updated_input = parsed.updatedInput
+                if parsed.updatedPermissions:
+                    result.updated_permissions = parsed.updatedPermissions
+                if parsed.interrupt:
+                    result.interrupt = True
+                # TS wire-envelope compat (utils/hooks.ts:833-840): a hook
+                # written for the reference CLI emits
+                # ``hookSpecificOutput.decision`` — normalize onto the same
+                # fields; the flat form (above) wins on conflict.
+                hso = parsed.hookSpecificOutput or {}
+                hso_decision = hso.get("decision") if isinstance(hso, dict) else None
+                if isinstance(hso_decision, dict):
+                    behavior = hso_decision.get("behavior")
+                    if result.permission_behavior is None and behavior in ("allow", "deny", "ask"):
+                        result.permission_behavior = behavior
+                        result.hook_permission_decision_reason = (
+                            hso_decision.get("message") or result.hook_permission_decision_reason
+                        )
+                    if result.updated_input is None and isinstance(hso_decision.get("updatedInput"), dict):
+                        result.updated_input = hso_decision["updatedInput"]
+                    if result.updated_permissions is None and isinstance(hso_decision.get("updatedPermissions"), list):
+                        result.updated_permissions = hso_decision["updatedPermissions"]
+                    if hso_decision.get("interrupt"):
+                        result.interrupt = True
                 if parsed.preventContinuation:
                     result.prevent_continuation = True
                     result.stop_reason = parsed.stopReason
@@ -420,6 +443,8 @@ async def _run_hooks_for_event(
                 "permission_behavior": result.permission_behavior,
                 "hook_permission_decision_reason": result.hook_permission_decision_reason,
                 "updated_input": result.updated_input,
+                "updated_permissions": result.updated_permissions,
+                "interrupt": result.interrupt,
             }
 
         if result.prevent_continuation:
@@ -481,6 +506,45 @@ async def execute_pre_tool_hooks(
 
     async for result in _run_hooks_for_event(
         "PreToolUse",
+        tool_name,
+        stdin_data,
+        tool_use_context,
+        abort_signal=abort_signal,
+    ):
+        yield result
+
+
+async def execute_permission_request_hooks(
+    tool_name: str,
+    tool_use_id: str,
+    tool_input: dict[str, Any],
+    tool_use_context: Any,
+    permission_suggestions: list[Any] | None = None,
+) -> AsyncGenerator[dict[str, Any], None]:
+    """Run PermissionRequest hooks for a pending permission ask.
+
+    HOOKS-1 (my-docs/get-parity-by-folder/hooks-refactoring-plan.md W1) —
+    the port of ``executePermissionRequestHooks`` (utils/hooks.ts:4392-4427):
+    fired at the ask seam BEFORE any interactive prompt, matcher-scoped by
+    tool name like PreToolUse. A hook may resolve the ask (allow with
+    optional updatedInput/updatedPermissions; deny with message + optional
+    interrupt) or stay silent (normal prompt flow continues).
+    """
+    stdin_data: dict[str, Any] = {
+        "tool_name": tool_name,
+        "tool_use_id": tool_use_id,
+        "tool_input": tool_input,
+    }
+    if permission_suggestions:
+        stdin_data["permission_suggestions"] = permission_suggestions
+
+    abort_signal = None
+    abort_ctrl = getattr(tool_use_context, "abort_controller", None)
+    if abort_ctrl:
+        abort_signal = abort_ctrl.signal
+
+    async for result in _run_hooks_for_event(
+        "PermissionRequest",
         tool_name,
         stdin_data,
         tool_use_context,

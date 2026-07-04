@@ -47,6 +47,15 @@ class HookOutput(BaseModel):
     preventContinuation: bool | None = None
     stopReason: str | None = None
     updatedMCPToolOutput: Any | None = None
+    # PermissionRequest-event extras (HOOKS-1). Flat form follows this
+    # schema's existing convention; ``hookSpecificOutput`` accepts the TS
+    # wire envelope (``{hookEventName, decision: {behavior, message,
+    # updatedInput, updatedPermissions, interrupt}}`` — utils/hooks.ts:833-840)
+    # so hooks written for the reference CLI work unchanged. The executor
+    # normalizes both forms onto the same HookResult fields.
+    updatedPermissions: list[dict[str, Any]] | None = None
+    interrupt: bool | None = None
+    hookSpecificOutput: dict[str, Any] | None = None
 
 
 def parse_hook_output(stdout: str) -> tuple[HookOutput | None, str | None]:
