@@ -378,6 +378,66 @@ describe('GatewayClient NDJSON adapter', () => {
     expect(r.items.map(i => i.text)).toContain('/exit')
   })
 
+  it('lists /skills in the slash-completion menu (user-reported: /skills missing)', async () => {
+    const p = gw.request<{ items: Array<{ text: string }> }>('complete.slash', { text: '/sk' })
+    await replyToControl('list_workflow_commands', { commands: [], ok: true })
+    const r = await p
+    expect(r.items.map(i => i.text)).toContain('/skills')
+  })
+
+  it('skills.manage list groups backend skills by category', async () => {
+    const p = gw.request('skills.manage', { action: 'list' })
+    await replyToControl('list_skills', {
+      skills: [
+        { category: 'bundled', description: 'Deep research', name: 'deep-research', path: '/b/dr' },
+        { category: 'user', description: 'Ship it', name: 'ship', path: '/u/ship' },
+        { category: 'user', description: 'QA a web app', name: 'qa', path: '/u/qa' }
+      ],
+      total: 3
+    })
+    await expect(p).resolves.toEqual({
+      skills: { bundled: ['deep-research'], user: ['qa', 'ship'] },
+      total: 3
+    })
+  })
+
+  it('skills.manage inspect matches case-insensitively and rides the TTL cache (one list_skills per burst)', async () => {
+    const p = gw.request('skills.manage', { action: 'list' })
+    await replyToControl('list_skills', {
+      skills: [{ category: 'user', description: 'QA a web app', name: 'qa', path: '/u/qa' }],
+      total: 1
+    })
+    await p
+
+    // Within the TTL the inspect is served from the cached list — no second
+    // control round-trip (the hub inspects per selection).
+    const r = await gw.request<{ info?: { name?: string; path?: string } }>('skills.manage', {
+      action: 'inspect',
+      query: 'QA'
+    })
+    expect(r.info).toMatchObject({ name: 'qa', path: '/u/qa' })
+    expect(stdinFrames().filter(f => f.request?.subtype === 'list_skills')).toHaveLength(0)
+  })
+
+  it('skills.manage install/browse reject as unsupported instead of faking success', async () => {
+    await expect(gw.request('skills.manage', { action: 'install', query: 'foo' })).rejects.toThrow(/not supported/)
+    await expect(gw.request('skills.manage', { action: 'browse', page: 1 })).rejects.toThrow(/not supported/)
+  })
+
+  it('skills.reload busts the cache, re-scans, and reports the count', async () => {
+    const p = gw.request<{ output?: string }>('skills.reload', {})
+    await replyToControl('list_skills', { skills: [{ category: 'user', name: 'qa' }], total: 41 })
+    const r = await p
+    expect(r.output).toContain('41')
+  })
+
+  it('routes /skills <unknown-sub> to a usage hint, not the workflow fallback', async () => {
+    await expect(gw.request('slash.exec', { command: 'skills frobnicate' })).resolves.toMatchObject({
+      output: expect.stringContaining('usage: /skills'),
+      type: 'exec'
+    })
+  })
+
   it('merges backend workflow commands into the command catalog after init', async () => {
     proc.line(INIT) // resolves readyPromise, which the catalog awaits
     const p = gw.request<{ canon: Record<string, string>; pairs: [string, string][] }>('commands.catalog', {})

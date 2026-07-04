@@ -454,10 +454,24 @@ class _AgentSession:
 
                 all_s = list(get_all_skills(project_root=self.cwd))
                 total = len(all_s)
-                for s in all_s[:120]:
+                # Settings scope beats the loader bucket so disk skills split
+                # into user/project/managed; everything else keeps its
+                # loaded_from bucket (bundled/plugin/mcp/…).
+                scope_names = {
+                    "userSettings": "user",
+                    "projectSettings": "project",
+                    "policySettings": "managed",
+                }
+                # Cap raised 120 → 1000: the TUI skills hub groups the full
+                # set by category, so a tight cap would skew its counts.
+                for s in all_s[:1000]:
+                    source = str(getattr(s, "source", "") or "")
+                    loaded_from = str(getattr(s, "loaded_from", "") or "")
                     skills.append({
                         "name": getattr(s, "name", "") or "",
-                        "description": str(getattr(s, "description", "") or "")[:80],
+                        "description": str(getattr(s, "description", "") or "")[:400],
+                        "category": scope_names.get(source) or loaded_from or source or "other",
+                        "path": str(getattr(s, "skill_root", None) or getattr(s, "base_dir", None) or ""),
                     })
             except Exception:  # noqa: BLE001
                 logger.debug("[agent-server] list_skills failed", exc_info=True)
