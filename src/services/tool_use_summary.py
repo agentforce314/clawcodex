@@ -50,11 +50,16 @@ TOOL_USE_SUMMARY_SYSTEM_PROMPT = (
 
 def _truncate_json(value: Any, max_len: int) -> str:
     """Port of ``truncateJson``: JSON-stringify then slice. BYTE-EXACT to TS
-    (critic B3): ``str.slice(0, maxLength - 3) + '...'`` — three ASCII dots,
-    and the slice stops 3 short so the result length == ``max_len``. None-safe;
-    non-serializable values fall back to ``str()``."""
+    (critic B3 + the follow-up): ``str.slice(0, maxLength - 3) + '...'`` —
+    three ASCII dots, slice stops 3 short so the result length == ``max_len``;
+    AND ``separators=(",", ":")`` so the serialization matches
+    ``JSON.stringify``'s no-space form (Python ``json.dumps`` defaults to
+    spaced separators). None-safe; non-serializable values fall back to
+    ``str()``."""
     try:
-        text = json.dumps(value, ensure_ascii=False, default=str)
+        text = json.dumps(
+            value, ensure_ascii=False, separators=(",", ":"), default=str
+        )
     except (TypeError, ValueError):
         text = str(value)
     if len(text) > max_len:

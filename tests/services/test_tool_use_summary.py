@@ -62,7 +62,8 @@ class TestTruncateJson:
         assert "…" not in r  # NOT the unicode ellipsis
 
     def test_small_and_none(self):
-        assert _truncate_json({"a": 1}, 300) == '{"a": 1}'
+        assert _truncate_json({"a": 1}, 300) == '{"a":1}'  # JSON.stringify no-space form
+        assert _truncate_json({"a": 1, "b": 2}, 300) == '{"a":1,"b":2}'
         assert _truncate_json(None, 300) == "null"
 
     def test_non_serializable_falls_back(self):
