@@ -122,6 +122,198 @@ def has_hook_for_event(event: str, tool_use_context: Any) -> bool:
     return bool(hooks.get(event))
 
 
+_IF_CONDITION_EVENTS = frozenset(
+    {"PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionRequest"}
+)
+# The seven tools whose TS analogs implement preparePermissionMatcher
+# (each matches its rule pattern with matchWildcardPattern):
+#   file-path tools → file_path / notebook_path;
+#   pattern tools (Glob/Grep/Monitor) → pattern;
+#   Bash → command (with any-subcommand semantics).
+_IF_FILE_PATH_TOOLS = frozenset(
+    {"Read", "Edit", "MultiEdit", "Write", "NotebookEdit"}
+)
+_IF_PATTERN_TOOLS = frozenset({"Glob", "Grep"})
+# Bash + Monitor match on the COMMAND with prefix-or-wildcard semantics
+# (TS MonitorTool.preparePermissionMatcher also uses `command`, Bash-style).
+# Monitor is unreachable today (the port has no Monitor tool) but the
+# categorization is kept faithful for when it lands.
+_IF_COMMAND_TOOLS = frozenset({"Bash", "Monitor"})
+
+_ESCAPED_STAR = "\x00ESC_STAR\x00"
+_ESCAPED_BACKSLASH = "\x00ESC_BSL\x00"
+
+
+def _match_wildcard_pattern(pattern: str, value: str) -> bool:
+    """Port of `matchWildcardPattern`
+    (utils/permissions/shellRuleMatching.ts:90) — the SAME matcher every
+    TS tool's preparePermissionMatcher uses for `if`, so it is faithful for
+    both Bash commands and file/pattern values (and, unlike the Bash-only
+    permission matcher, carries no command-chaining strictness)."""
+    import re
+
+    trimmed = pattern.strip()
+    # Escape-sequence handling: \* → literal star, \\ → literal backslash.
+    processed_chars: list[str] = []
+    i = 0
+    while i < len(trimmed):
+        ch = trimmed[i]
+        if ch == "\\" and i + 1 < len(trimmed):
+            nxt = trimmed[i + 1]
+            if nxt == "*":
+                processed_chars.append(_ESCAPED_STAR)
+                i += 2
+                continue
+            if nxt == "\\":
+                processed_chars.append(_ESCAPED_BACKSLASH)
+                i += 2
+                continue
+        processed_chars.append(ch)
+        i += 1
+    processed = "".join(processed_chars)
+
+    escaped = re.sub(r"""[.+?^${}()|\[\]\\'"]""", lambda m: "\\" + m.group(0), processed)
+    with_wildcards = escaped.replace("*", ".*")
+    regex_pattern = (
+        with_wildcards.replace(_ESCAPED_STAR, "\\*").replace(_ESCAPED_BACKSLASH, "\\\\")
+    )
+    # Trailing ' *' (the only unescaped wildcard) → optional, so 'git *'
+    # matches bare 'git' too (prefix-rule alignment).
+    unescaped_star_count = processed.count("*")
+    if regex_pattern.endswith(" .*") and unescaped_star_count == 1:
+        regex_pattern = regex_pattern[:-3] + "( .*)?"
+    return re.match(f"^{regex_pattern}$", value, re.DOTALL) is not None
+
+
+def _extract_rule_prefix(rule_content: str) -> str | None:
+    """Port of `permissionRuleExtractPrefix` (shellRuleMatching.ts:43-48):
+    the legacy colon form ``git:*`` → prefix ``git``; anything else → None."""
+    import re
+
+    m = re.match(r"^(.+):\*$", rule_content)
+    return m.group(1) if m else None
+
+
+def _strip_env_prefix(command: str) -> str:
+    """Strip leading ``VAR=val`` assignments so ``FOO=bar git push`` matches
+    ``Bash(git *)`` (TS matches on argv, BashTool preparePermissionMatcher)."""
+    import re
+
+    prev = None
+    cur = command.strip()
+    while cur != prev:
+        prev = cur
+        cur = re.sub(r"^[A-Za-z_][A-Za-z0-9_]*=\S*\s+", "", cur)
+    return cur
+
+
+def _command_rule_matches(rule_content: str, command: str) -> bool:
+    """The Bash/Monitor command matcher (BashTool.preparePermissionMatcher):
+    the colon-prefix branch (``git:*`` → exact or prefix+space), else the
+    wildcard matcher — applied to the env-stripped command."""
+    cmd = _strip_env_prefix(command)
+    prefix = _extract_rule_prefix(rule_content)
+    if prefix is not None:
+        return cmd == prefix or cmd.startswith(prefix + " ")
+    return _match_wildcard_pattern(rule_content, cmd)
+
+
+def _matchable_values_for_tool(
+    tool_name: str, tool_input: dict[str, Any]
+) -> list[str] | None:
+    """The value(s) a tool's `if` rule content matches against, or None
+    when the tool has no matcher analog (→ fail-OPEN, run + warn). Bash
+    returns the command plus each chained sub-command (any-subcommand
+    match, BashTool preparePermissionMatcher), so `if:"Bash(git *)"` fires
+    on `git push && npm test`."""
+    if tool_name in _IF_COMMAND_TOOLS:
+        cmd = tool_input.get("command")
+        if not isinstance(cmd, str):
+            return None
+        cands = [cmd]
+        try:
+            from src.permissions.bash_suggestions import (
+                contains_unquoted_chaining,
+                split_chained_command,
+            )
+
+            if contains_unquoted_chaining(cmd):
+                cands.extend(split_chained_command(cmd) or [])
+        except Exception:  # noqa: BLE001
+            pass
+        return cands
+    if tool_name in _IF_FILE_PATH_TOOLS:
+        val = tool_input.get("file_path") or tool_input.get("notebook_path")
+        return [val] if isinstance(val, str) else None
+    if tool_name in _IF_PATTERN_TOOLS:
+        val = tool_input.get("pattern")
+        return [val] if isinstance(val, str) else None
+    return None
+
+
+def _matches_if_condition(
+    if_condition: str | None, event: str, tool_name: str | None,
+    tool_input: dict[str, Any] | None,
+) -> bool:
+    """SCHEMAS-1 — the port of `prepareIfConditionMatcher`
+    (utils/hooks.ts:1571-1610): a hook's `if` permission-rule pre-filter.
+
+    Returns True (run the hook) or False (skip). Semantics match TS:
+    * no condition → run;
+    * present condition on a NON-tool event → SKIP (TS's caller sees an
+      undefined matcher and returns false — hooks.ts:2023-2027);
+    * rule tool-name ≠ current tool → skip;
+    * no rule-content → run;
+    * rule-content → matched with matchWildcardPattern against the tool's
+      value(s); a tool WITHOUT a matcher analog fails OPEN (run + warn) so
+      a configured hook is never silently disabled.
+    """
+    if not if_condition:
+        return True
+
+    from src.permissions.rule_parser import (
+        normalize_legacy_tool_name,
+        permission_rule_value_from_string,
+    )
+
+    if event not in _IF_CONDITION_EVENTS or not tool_name:
+        # A tool-syntax `if` cannot be evaluated for a non-tool event → skip
+        # (TS parity, hooks.ts:2023-2027). Not "ignore and run".
+        logger.debug(
+            "hook `if` condition %r cannot be evaluated for non-tool event %s; skipping",
+            if_condition, event,
+        )
+        return False
+
+    current = normalize_legacy_tool_name(tool_name)
+    parsed = permission_rule_value_from_string(if_condition)
+    if normalize_legacy_tool_name(parsed.tool_name or "") != current:
+        return False
+    if not parsed.rule_content:
+        return True  # tool-name-only condition → run
+
+    values = _matchable_values_for_tool(current, tool_input or {})
+    if values is None:
+        # No matcher analog for this tool — fail OPEN (run) with a visible
+        # warning rather than silently disabling a configured hook.
+        logger.warning(
+            "hook `if` condition %r on tool %s has no matcher; running the "
+            "hook unconditionally (no per-tool matcher for %s)",
+            if_condition, current, current,
+        )
+        return True
+
+    # Command-class tools (Bash/Monitor) use the prefix-or-wildcard matcher
+    # (so colon rules like `Bash(rm:*)` work — the canonical rule form);
+    # file/pattern tools use the plain wildcard matcher.
+    matcher = (
+        _command_rule_matches
+        if current in _IF_COMMAND_TOOLS
+        else _match_wildcard_pattern
+    )
+    return any(matcher(parsed.rule_content, v) for v in values)
+
+
 def _matches_tool(matcher: str | None, tool_name: str) -> bool:
     if matcher is None:
         return True
@@ -415,8 +607,16 @@ async def _run_hooks_for_event(
     tool_use_id = stdin_data.get("tool_use_id", str(uuid4()))
     parent_tool_use_id = ""
 
+    tool_input = stdin_data.get("tool_input") if isinstance(stdin_data.get("tool_input"), dict) else None
+
     for hook in event_hooks:
         if tool_name and not _matches_tool(hook.matcher, tool_name):
+            continue
+        # SCHEMAS-1 — the `if` permission-rule pre-filter (was inert: the
+        # field parsed but never evaluated, so `if` hooks ran unconditionally).
+        if not _matches_if_condition(
+            getattr(hook, "if_condition", None), event, tool_name, tool_input
+        ):
             continue
 
         yield {

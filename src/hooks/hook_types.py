@@ -238,10 +238,13 @@ class HookConfig:
     # Phase-1 / WI-1.3 — schema additions:
     #
     # ``if_condition`` — permission-rule grammar string (e.g.,
-    # ``"Bash(git commit*)"``). Evaluated by ``matches_hook_condition``
-    # (Phase 4 / WI-4.2) against the active tool call. ``None`` means "no
-    # extra filter beyond ``matcher``." Mirrors TS ``schemas/hooks.ts:19-27``
-    # ``if`` field.
+    # ``"Bash(git commit*)"``). Evaluated by
+    # ``hook_executor._matches_if_condition`` (SCHEMAS-1 — the port of TS
+    # ``prepareIfConditionMatcher``) against the active tool call before the
+    # hook spawns. ``None`` means "no extra filter beyond ``matcher``."
+    # Mirrors TS ``schemas/hooks.ts:19-27`` ``if`` field. (Prior to
+    # SCHEMAS-1 this comment named ``matches_hook_condition``, an evaluator
+    # that was never built — the field parsed but was inert.)
     if_condition: str | None = None
 
     # ``once`` — if True, the hook is removed from the session registry after
