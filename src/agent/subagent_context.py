@@ -34,6 +34,9 @@ class SubagentContextOverrides:
     options: ToolUseOptions | None = None
     agent_id: str | None = None
     agent_type: str | None = None
+    # QUERY-1 — teammate identity (the Agent tool's `name`); None for
+    # anonymous subagents.
+    teammate_name: str | None = None
     messages: list[Any] | None = None
     read_file_state: dict[Any, Any] | None = None
     abort_controller: AbortController | None = None
@@ -200,6 +203,16 @@ def create_subagent_context(
         content_replacement_state=content_replacement_state,
         agent_id=agent_id,
         agent_type=agent_type,
+        # QUERY-1 — teammate identity: name from the spawn; team from the
+        # parent's team file (both required by the stop-hook gate, matching
+        # TS teammate.ts:125-131 — a named agent OUTSIDE a team is not a
+        # teammate).
+        teammate_name=overrides.teammate_name,
+        team_name=(
+            (parent_context.team or {}).get("team_name")
+            if isinstance(parent_context.team, dict)
+            else None
+        ),
         user_modified=parent_context.user_modified,
         # ch01 round-4 WI-1 — hooks apply to sub-agents exactly as to the
         # parent: same config snapshot, same workspace-trust verdict.

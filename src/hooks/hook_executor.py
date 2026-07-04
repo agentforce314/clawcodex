@@ -687,3 +687,65 @@ def _flatten_text(content: Any) -> str:
                 parts.append(text)
         return " ".join(parts)
     return str(content or "")
+
+async def execute_teammate_idle_hooks(
+    teammate_name: str,
+    team_name: str,
+    tool_use_context: Any,
+) -> AsyncGenerator[dict[str, Any], None]:
+    """QUERY-1 — port of ``executeTeammateIdleHooks`` (utils/hooks.ts:3920):
+    fired from the teammate's stop path after the core Stop/SubagentStop
+    loop. Matcher-less (no tool scoping); hook stdin carries the teammate
+    identity."""
+    stdin_data: dict[str, Any] = {
+        "teammate_name": teammate_name,
+        "team_name": team_name,
+    }
+    abort_signal = None
+    abort_ctrl = getattr(tool_use_context, "abort_controller", None)
+    if abort_ctrl:
+        abort_signal = abort_ctrl.signal
+
+    async for result in _run_hooks_for_event(
+        "TeammateIdle",
+        None,
+        stdin_data,
+        tool_use_context,
+        abort_signal,
+    ):
+        yield result
+
+
+async def execute_task_completed_hooks(
+    task_id: str,
+    task_subject: str,
+    task_description: str | None,
+    teammate_name: str,
+    team_name: str,
+    tool_use_context: Any,
+) -> AsyncGenerator[dict[str, Any], None]:
+    """QUERY-1 — port of ``executeTaskCompletedHooks`` (utils/hooks.ts:4000):
+    fired once per in-progress task OWNED by the stopping teammate. Hook
+    stdin carries the task fields + teammate identity
+    (TaskCompletedHookInput)."""
+    stdin_data: dict[str, Any] = {
+        "task_id": task_id,
+        "task_subject": task_subject,
+        "task_description": task_description,
+        "teammate_name": teammate_name,
+        "team_name": team_name,
+    }
+    abort_signal = None
+    abort_ctrl = getattr(tool_use_context, "abort_controller", None)
+    if abort_ctrl:
+        abort_signal = abort_ctrl.signal
+
+    async for result in _run_hooks_for_event(
+        "TaskCompleted",
+        None,
+        stdin_data,
+        tool_use_context,
+        abort_signal,
+    ):
+        yield result
+

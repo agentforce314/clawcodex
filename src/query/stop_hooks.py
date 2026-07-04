@@ -109,9 +109,21 @@ async def _handle_stop_hooks_generator(
         # Gate on the SAME event the executor will dispatch (SubagentStop
         # when agent_id is set, hook_executor.py:561) — gating on "Stop"
         # alone silently disables SubagentStop-only configurations.
-        if not has_hook_for_event(
+        core_gate = has_hook_for_event(
             "SubagentStop" if agent_id else "Stop", tool_use_context
-        ):
+        )
+        # QUERY-1 — teammate identity gate (stopHooks.ts:335): both fields
+        # required (teammate.ts:125-131). The teammate block must run even
+        # when NO Stop/SubagentStop hooks are configured, so the early
+        # return considers all three events.
+        teammate_name = getattr(tool_use_context, "teammate_name", None)
+        team_name = getattr(tool_use_context, "team_name", None)
+        is_teammate = bool(teammate_name and team_name)
+        teammate_gate = is_teammate and (
+            has_hook_for_event("TaskCompleted", tool_use_context)
+            or has_hook_for_event("TeammateIdle", tool_use_context)
+        )
+        if not core_gate and not teammate_gate:
             return
 
         blocking_errors: list[Message] = []
@@ -125,108 +137,216 @@ async def _handle_stop_hooks_generator(
 
         all_messages = [*messages_for_query, *assistant_messages]
 
-        async for hook_result in execute_stop_hooks(
-            permission_mode=permission_mode,
-            abort_signal=abort_ctrl.signal if abort_ctrl else None,
-            stop_hook_active=stop_hook_active or False,
-            subagent_id=agent_id,
-            tool_use_context=tool_use_context,
-            messages=all_messages,
-            agent_type=agent_type,
-        ):
-            if hook_result.get("message"):
-                msg = hook_result["message"]
-                yield msg
+        if core_gate:
+            async for hook_result in execute_stop_hooks(
+                permission_mode=permission_mode,
+                abort_signal=abort_ctrl.signal if abort_ctrl else None,
+                stop_hook_active=stop_hook_active or False,
+                subagent_id=agent_id,
+                tool_use_context=tool_use_context,
+                messages=all_messages,
+                agent_type=agent_type,
+            ):
+                if hook_result.get("message"):
+                    msg = hook_result["message"]
+                    yield msg
 
-                if hasattr(msg, "type") and msg.type == "progress":
-                    if hasattr(msg, "toolUseID") and msg.toolUseID:
-                        stop_hook_tool_use_id = msg.toolUseID
-                        hook_count += 1
-                    progress_data = getattr(msg, "data", None)
-                    if isinstance(progress_data, dict) and progress_data.get("command"):
-                        hook_infos.append(StopHookInfo(
-                            command=progress_data["command"],
-                            prompt_text=progress_data.get("prompt_text"),
-                        ))
+                    if hasattr(msg, "type") and msg.type == "progress":
+                        if hasattr(msg, "toolUseID") and msg.toolUseID:
+                            stop_hook_tool_use_id = msg.toolUseID
+                            hook_count += 1
+                        progress_data = getattr(msg, "data", None)
+                        if isinstance(progress_data, dict) and progress_data.get("command"):
+                            hook_infos.append(StopHookInfo(
+                                command=progress_data["command"],
+                                prompt_text=progress_data.get("prompt_text"),
+                            ))
 
-                if hasattr(msg, "type") and msg.type == "attachment":
-                    attachments = getattr(msg, "attachments", [])
-                    for attachment in attachments:
-                        hook_event = attachment.get("hook_event", "")
-                        if hook_event in ("Stop", "SubagentStop"):
-                            att_type = attachment.get("type", "")
-                            if att_type == "hook_non_blocking_error":
-                                hook_errors.append(
-                                    attachment.get("stderr") or f"Exit code {attachment.get('exit_code')}"
-                                )
-                                has_output = True
-                            elif att_type == "hook_error_during_execution":
-                                hook_errors.append(attachment.get("content", ""))
-                                has_output = True
-                            elif att_type == "hook_success":
-                                if (
-                                    (attachment.get("stdout") or "").strip()
-                                    or (attachment.get("stderr") or "").strip()
-                                ):
+                    if hasattr(msg, "type") and msg.type == "attachment":
+                        attachments = getattr(msg, "attachments", [])
+                        for attachment in attachments:
+                            hook_event = attachment.get("hook_event", "")
+                            if hook_event in ("Stop", "SubagentStop"):
+                                att_type = attachment.get("type", "")
+                                if att_type == "hook_non_blocking_error":
+                                    hook_errors.append(
+                                        attachment.get("stderr") or f"Exit code {attachment.get('exit_code')}"
+                                    )
                                     has_output = True
+                                elif att_type == "hook_error_during_execution":
+                                    hook_errors.append(attachment.get("content", ""))
+                                    has_output = True
+                                elif att_type == "hook_success":
+                                    if (
+                                        (attachment.get("stdout") or "").strip()
+                                        or (attachment.get("stderr") or "").strip()
+                                    ):
+                                        has_output = True
 
-            if hook_result.get("blocking_error"):
-                error_info = hook_result["blocking_error"]
-                error_message = _get_stop_hook_message(error_info)
-                user_msg = create_user_message(
-                    content=error_message,
-                    isMeta=True,
+                if hook_result.get("blocking_error"):
+                    error_info = hook_result["blocking_error"]
+                    error_message = _get_stop_hook_message(error_info)
+                    user_msg = create_user_message(
+                        content=error_message,
+                        isMeta=True,
+                    )
+                    blocking_errors.append(user_msg)
+                    yield user_msg
+                    has_output = True
+                    hook_errors.append(
+                        error_info.get("blocking_error", "")
+                        if isinstance(error_info, dict)
+                        else str(error_info)
+                    )
+
+                if hook_result.get("prevent_continuation"):
+                    prevented_continuation = True
+                    stop_reason = hook_result.get("stop_reason") or "Stop hook prevented continuation"
+                    yield create_attachment_message({
+                        "type": "hook_stopped_continuation",
+                        "message": stop_reason,
+                        "hook_name": "Stop",
+                        "tool_use_id": stop_hook_tool_use_id,
+                        "hook_event": "Stop",
+                    })
+
+                if abort_ctrl and abort_ctrl.signal.aborted:
+                    yield create_user_interruption_message(tool_use=False)
+                    result_out.blocking_errors = []
+                    result_out.prevent_continuation = True
+                    return
+
+            if hook_count > 0:
+                yield create_stop_hook_summary_message(
+                    hook_count=hook_count,
+                    hook_infos=[
+                        {"command": h.command, "prompt_text": h.prompt_text, "duration_ms": h.duration_ms}
+                        for h in hook_infos
+                    ],
+                    hook_errors=hook_errors,
+                    prevented_continuation=prevented_continuation,
+                    stop_reason=stop_reason,
+                    has_output=has_output,
+                    suggestion_type="suggestion",
+                    tool_use_id=stop_hook_tool_use_id,
                 )
-                blocking_errors.append(user_msg)
-                yield user_msg
-                has_output = True
-                hook_errors.append(
-                    error_info.get("blocking_error", "")
-                    if isinstance(error_info, dict)
-                    else str(error_info)
-                )
 
-            if hook_result.get("prevent_continuation"):
-                prevented_continuation = True
-                stop_reason = hook_result.get("stop_reason") or "Stop hook prevented continuation"
-                yield create_attachment_message({
-                    "type": "hook_stopped_continuation",
-                    "message": stop_reason,
-                    "hook_name": "Stop",
-                    "tool_use_id": stop_hook_tool_use_id,
-                    "hook_event": "Stop",
-                })
-
-            if abort_ctrl and abort_ctrl.signal.aborted:
-                yield create_user_interruption_message(tool_use=False)
+            if prevented_continuation:
                 result_out.blocking_errors = []
                 result_out.prevent_continuation = True
                 return
 
-        if hook_count > 0:
-            yield create_stop_hook_summary_message(
-                hook_count=hook_count,
-                hook_infos=[
-                    {"command": h.command, "prompt_text": h.prompt_text, "duration_ms": h.duration_ms}
-                    for h in hook_infos
-                ],
-                hook_errors=hook_errors,
-                prevented_continuation=prevented_continuation,
-                stop_reason=stop_reason,
-                has_output=has_output,
-                suggestion_type="suggestion",
-                tool_use_id=stop_hook_tool_use_id,
+            if blocking_errors:
+                result_out.blocking_errors = blocking_errors
+                result_out.prevent_continuation = False
+                return
+
+        # ── QUERY-1: teammate TaskCompleted + TeammateIdle hooks ──────────
+        # Port of stopHooks.ts:335-453 — runs AFTER the core loop (TS
+        # ordering: core prevent-continuation returns before this block).
+        if is_teammate:
+            from src.hooks.hook_executor import (
+                execute_task_completed_hooks,
+                execute_teammate_idle_hooks,
             )
 
-        if prevented_continuation:
-            result_out.blocking_errors = []
-            result_out.prevent_continuation = True
-            return
+            teammate_blocking_errors: list[Message] = []
+            teammate_prevented = False
+            teammate_stop_reason = ""
+            teammate_tool_use_id = ""
 
-        if blocking_errors:
-            result_out.blocking_errors = blocking_errors
-            result_out.prevent_continuation = False
-            return
+            async def _drive(generator, event_name: str, message_prefix: str):
+                nonlocal teammate_prevented, teammate_stop_reason, teammate_tool_use_id
+                async for result in generator:
+                    msg = result.get("message")
+                    if msg is not None:
+                        if getattr(msg, "type", "") == "progress" and getattr(msg, "toolUseID", ""):
+                            teammate_tool_use_id = msg.toolUseID
+                        yield msg
+                    if result.get("blocking_error"):
+                        error_info = result["blocking_error"]
+                        text = (
+                            error_info.get("blocking_error", "")
+                            if isinstance(error_info, dict)
+                            else str(error_info)
+                        )
+                        user_msg = create_user_message(
+                            content=f"{message_prefix}\n{text}",
+                            isMeta=True,
+                        )
+                        teammate_blocking_errors.append(user_msg)
+                        yield user_msg
+                    if result.get("prevent_continuation"):
+                        teammate_prevented = True
+                        teammate_stop_reason = (
+                            result.get("stop_reason")
+                            or f"{event_name} hook prevented continuation"
+                        )
+                        yield create_attachment_message({
+                            "type": "hook_stopped_continuation",
+                            "message": teammate_stop_reason,
+                            "hook_name": event_name,
+                            "tool_use_id": teammate_tool_use_id,
+                            "hook_event": event_name,
+                        })
+                    if abort_ctrl and abort_ctrl.signal.aborted:
+                        result_out.blocking_errors = []
+                        result_out.prevent_continuation = True
+                        return
+
+            # (a) TaskCompleted per in-progress task OWNED by this teammate.
+            if has_hook_for_event("TaskCompleted", tool_use_context):
+                try:
+                    # The shared task store lives on the context
+                    # (tasks_v2's source of truth: context.tasks — dicts
+                    # keyed by id with status/owner/subject fields).
+                    task_map = getattr(tool_use_context, "tasks", {}) or {}
+                    owned = [
+                        t for t in task_map.values()
+                        if isinstance(t, dict)
+                        and t.get("status") == "in_progress"
+                        and t.get("owner") == teammate_name
+                    ]
+                except Exception:  # noqa: BLE001 — tasks are non-critical
+                    owned = []
+                for task in owned:
+                    async for msg in _drive(
+                        execute_task_completed_hooks(
+                            str(task.get("id", "")),
+                            str(task.get("subject", "")),
+                            task.get("description"),
+                            teammate_name,
+                            team_name,
+                            tool_use_context,
+                        ),
+                        "TaskCompleted",
+                        "TaskCompleted hook feedback:",
+                    ):
+                        yield msg
+                    if result_out.prevent_continuation:
+                        return
+
+            # (b) TeammateIdle, always (when configured).
+            if has_hook_for_event("TeammateIdle", tool_use_context):
+                async for msg in _drive(
+                    execute_teammate_idle_hooks(
+                        teammate_name, team_name, tool_use_context,
+                    ),
+                    "TeammateIdle",
+                    "TeammateIdle hook feedback:",
+                ):
+                    yield msg
+                if result_out.prevent_continuation:
+                    return
+
+            if teammate_prevented:
+                result_out.blocking_errors = []
+                result_out.prevent_continuation = True
+                return
+            if teammate_blocking_errors:
+                result_out.blocking_errors = teammate_blocking_errors
+                result_out.prevent_continuation = False
+                return
 
     except Exception as error:
         duration_ms = int((time.time() - hook_start_time) * 1000)
