@@ -62,15 +62,35 @@ class TestMatcherUnit:
     def test_no_rule_content_runs(self):
         assert _matches_if_condition("Bash", "PreToolUse", "Bash", {"command": "anything"}) is True
 
-    def test_non_tool_event_ignores_if(self):
-        assert _matches_if_condition("Bash(git *)", "Stop", None, None) is True
+    def test_non_tool_event_with_if_skips(self):
+        # TS parity (hooks.ts:2023-2027): a tool-syntax `if` cannot be
+        # evaluated for a non-tool event → SKIP (not ignore-and-run).
+        assert _matches_if_condition("Bash(git *)", "Stop", None, None) is False
 
     def test_no_condition_runs(self):
         assert _matches_if_condition(None, "PreToolUse", "Bash", {"command": "x"}) is True
 
-    def test_unmatchable_tool_with_rule_content_skips(self):
-        # Read has no matchable extractor yet → conservative skip (logged).
-        assert _matches_if_condition("Read(*.py)", "PreToolUse", "Read", {"file_path": "a.py"}) is False
+    def test_file_tool_if_evaluated(self):
+        # MAJOR-1 fix: Read/Edit/Write/Glob/Grep are evaluated (were
+        # fail-closed). The `if` schema's own example is Read(*.ts).
+        assert _matches_if_condition("Read(*.ts)", "PreToolUse", "Read", {"file_path": "a.ts"}) is True
+        assert _matches_if_condition("Read(*.ts)", "PreToolUse", "Read", {"file_path": "a.py"}) is False
+
+    def test_edit_env_guard_fires(self):
+        # The safety case: an `if:"Edit(*.env)"` PreToolUse guard must FIRE
+        # on a .env write (pre-fix it silently never did).
+        assert _matches_if_condition("Edit(*.env)", "PreToolUse", "Edit", {"file_path": ".env"}) is True
+
+    def test_bash_chaining_any_subcommand(self):
+        # MINOR-2 fix: `Bash(git *)` fires on a chained command if ANY
+        # sub-command matches (matchWildcardPattern per sub-command, not the
+        # chaining-strict permission matcher).
+        assert _matches_if_condition("Bash(git *)", "PreToolUse", "Bash", {"command": "git push && npm test"}) is True
+
+    def test_unsupported_tool_fails_open(self):
+        # A tool with no matcher analog runs the hook (fail-OPEN + warn) —
+        # never silently disabled.
+        assert _matches_if_condition("CustomTool(x)", "PreToolUse", "CustomTool", {"y": 1}) is True
 
 
 class TestExecutionEnforcement:
@@ -100,3 +120,21 @@ class TestExecutionEnforcement:
         ctx = _ctx(self._hook(f"touch {marker}", None))
         _run(ctx, "Bash", {"command": "anything"})
         assert marker.exists(), "no `if` → unconditional (unchanged behavior)"
+
+    def test_file_if_excludes_nonmatching_path(self, tmp_path):
+        marker = tmp_path / "ran"
+        ctx = _ctx([HookConfig(
+            type="command", command=f"touch {marker}", if_condition="Read(*.ts)",
+            source=HookSource.PROJECT_SETTINGS,
+        )])
+        _run(ctx, "Read", {"file_path": "notes.md"})
+        assert not marker.exists(), "Read(*.ts) must skip a .md read"
+
+    def test_file_if_allows_matching_path(self, tmp_path):
+        marker = tmp_path / "ran"
+        ctx = _ctx([HookConfig(
+            type="command", command=f"touch {marker}", if_condition="Read(*.ts)",
+            source=HookSource.PROJECT_SETTINGS,
+        )])
+        _run(ctx, "Read", {"file_path": "app.ts"})
+        assert marker.exists(), "Read(*.ts) must run on a .ts read"
