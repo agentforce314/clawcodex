@@ -248,6 +248,8 @@ export interface PanelSection {
 export interface SlashCatalog {
   canon: Record<string, string>
   categories: SlashCategory[]
+  /** Argument hints by canonical `/name` (gateway + workflow commands). */
+  hints: Record<string, string>
   pairs: [string, string][]
   skillCount: number
   sub: Record<string, string[]>
