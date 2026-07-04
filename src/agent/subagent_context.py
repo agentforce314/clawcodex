@@ -34,6 +34,9 @@ class SubagentContextOverrides:
     options: ToolUseOptions | None = None
     agent_id: str | None = None
     agent_type: str | None = None
+    # QUERY-1 — teammate identity (the Agent tool's `name`); None for
+    # anonymous subagents.
+    teammate_name: str | None = None
     messages: list[Any] | None = None
     read_file_state: dict[Any, Any] | None = None
     abort_controller: AbortController | None = None
@@ -178,7 +181,24 @@ def create_subagent_context(
         lsp_client=parent_context.lsp_client,
         # Fresh isolated collections
         todos=[],
-        tasks={},
+        # QUERY-1 — the task BOARD is shared for TEAMMATE spawns (named
+        # agent + parent team): TS keeps one board (AppState.tasks; the
+        # team file), so a teammate's TaskCompleted stop hooks can see the
+        # tasks the leader assigned it. Anonymous subagents keep the ch10
+        # fresh-isolation semantics. INVARIANT (critic M1): this is a plain
+        # dict shared by reference — NOT RLock-guarded like runtime_tasks.
+        # Readers snapshot (list()) before filtering; if teammate fan-out
+        # ever mutates the board from worker threads, guard it like the
+        # sibling stores.
+        tasks=(
+            parent_context.tasks
+            if (
+                overrides.teammate_name
+                and isinstance(parent_context.team, dict)
+                and parent_context.team.get("team_name")
+            )
+            else {}
+        ),
         outbox=[],
         crons={},
         # No-op / None for UI callbacks
@@ -200,6 +220,16 @@ def create_subagent_context(
         content_replacement_state=content_replacement_state,
         agent_id=agent_id,
         agent_type=agent_type,
+        # QUERY-1 — teammate identity: name from the spawn; team from the
+        # parent's team file (both required by the stop-hook gate, matching
+        # TS teammate.ts:125-131 — a named agent OUTSIDE a team is not a
+        # teammate).
+        teammate_name=overrides.teammate_name,
+        team_name=(
+            (parent_context.team or {}).get("team_name")
+            if isinstance(parent_context.team, dict)
+            else None
+        ),
         user_modified=parent_context.user_modified,
         # ch01 round-4 WI-1 — hooks apply to sub-agents exactly as to the
         # parent: same config snapshot, same workspace-trust verdict.

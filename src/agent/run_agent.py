@@ -54,6 +54,10 @@ class RunAgentParams:
     # Optional overrides
     model: str | None = None
     agent_id: str | None = None
+    # QUERY-1 — the spawn's addressable name (Agent tool `name` param).
+    # A NAMED agent inside a team is this port's teammate: the identity is
+    # threaded to the subagent context so teammate stop hooks can gate.
+    agent_name: str | None = None
     is_async: bool = False
     max_turns: int | None = None
     system_prompt_override: str | None = None
@@ -323,6 +327,7 @@ async def run_agent(params: RunAgentParams) -> AsyncGenerator[Message, None]:
     overrides = SubagentContextOverrides(
         agent_id=agent_id,
         agent_type=agent_def.agent_type,
+        teammate_name=params.agent_name,
         messages=sanitized_context_messages,
         abort_controller=abort_controller,
         permission_context=perm_context,

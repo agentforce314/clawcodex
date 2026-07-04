@@ -191,6 +191,13 @@ class ToolContext:
     glob_limits: GlobLimits | None = None
     content_replacement_state: Any | None = None
     agent_id: str | None = None
+    # QUERY-1 — teammate identity (TS teammate.ts:125: a teammate requires
+    # BOTH). Threaded by the Agent tool's NAMED spawn (run_agent →
+    # create_subagent_context) when the parent carries a TeamCreate'd team;
+    # None for plain subagents, so the teammate stop-hook block never fires
+    # for them.
+    teammate_name: str | None = None
+    team_name: str | None = None
     agent_type: str | None = None
     tool_use_id: str | None = None
     user_modified: bool = False
