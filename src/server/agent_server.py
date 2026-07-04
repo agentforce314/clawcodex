@@ -190,8 +190,16 @@ class _AgentSession:
     # ─── init ──────────────────────────────────────────────────────────────
 
     def emit_init(self) -> None:
-        """Emit ``system/init`` — the first message the client sees on connect."""
-        tools = _tool_schemas(self.tool_registry)
+        """Emit ``system/init`` — the first message the client sees on connect.
+
+        Re-emitted after a resume-driven coordinator-mode flip (_do_resume) so
+        the client's cached tool list tracks the mode."""
+        # Coordinator mode narrows the MAIN loop's advertised tools to the
+        # orchestration set; workers keep the full captured registry. Fresh
+        # per call — see coordinator_main_loop_registry.
+        from src.coordinator.mode import coordinator_main_loop_registry
+
+        tools = _tool_schemas(coordinator_main_loop_registry(self.tool_registry))
         self._emit({
             "type": "system",
             "subtype": "init",
@@ -625,6 +633,17 @@ class _AgentSession:
                 return
             d = _sessions_dir()
             d.mkdir(parents=True, exist_ok=True)
+            # Scoped so a (theoretical) import failure costs only the mode
+            # stamp, never the whole best-effort save.
+            mode_value = "normal"
+            try:
+                from src.coordinator.mode import is_coordinator_mode
+
+                if is_coordinator_mode():
+                    mode_value = "coordinator"
+            except Exception:  # noqa: BLE001
+                pass
+
             payload = {
                 "session_id": self.session_id,
                 "model": getattr(self.provider, "model", None) or self.config.model or "",
@@ -639,6 +658,11 @@ class _AgentSession:
                 "message_count": len(msgs),
                 "preview": _first_prompt_preview(msgs),
                 "name": self._session_name,
+                # Coordinator-mode stamp so _do_resume can re-enter/exit the
+                # mode (TS saveMode, sessionStorage.ts:3126). Stamped at every
+                # turn-end save — subsumes TS's materialize/exit//clear
+                # re-stamp sites.
+                "mode": mode_value,
                 "conversation": self.session.conversation.to_dict(),
             }
             # ch03 round-4 GAP B — the live persister carries the cost
@@ -1292,10 +1316,66 @@ class _AgentSession:
                 except Exception:  # noqa: BLE001
                     pass
                 _dispatch_app_state(self, main_loop_model=saved_model)
+            # Coordinator-mode sync (TS matchSessionMode at every resume
+            # surface — sessionRestore.ts:429, print.ts:4909/5114). Absent
+            # field (old session files) or junk value → None → no-op.
+            #
+            # single_session-gated like cost-restore above and for the same
+            # reason: match_session_mode flips the process-global env var
+            # (coordinator mode is inherently process-scoped — TS runs one
+            # process per session via bridge/sessionRunner, so the env-var
+            # design never meets a multi-session process there). On a
+            # multi-session --http server, one session's resume must not
+            # flip the mode — and thereby the prompt + tool set — of every
+            # sibling session. Fail-safe: --http never enters/exits
+            # coordinator mode via resume; the launch env decides for the
+            # whole process.
+            saved_mode = data.get("mode")
+            mode_banner = None
+            if self.config.single_session:
+                try:
+                    from src.coordinator.mode import match_session_mode
+
+                    mode_banner = match_session_mode(
+                        saved_mode if saved_mode in ("coordinator", "normal") else None
+                    )
+                except Exception:  # noqa: BLE001 — mode sync must not break resume
+                    logger.debug("[agent-server] session-mode sync failed", exc_info=True)
+            if mode_banner:
+                # The flip changes the system prompt and the advertised tool
+                # set. The prompt is CACHED (_base_system_prompt, built at
+                # startup and by set_output_style) — rebuild it with the same
+                # idiom; the tool list was sent once in system/init — re-emit
+                # so the client's cached list tracks the mode (the client's
+                # init handler re-sets session info idempotently).
+                try:
+                    from src.outputStyles import resolve_output_style
+                    from src.query.agent_loop_compat import build_effective_system_prompt
+
+                    tc = self.tool_context
+                    if tc is not None:
+                        style_prompt = resolve_output_style(
+                            getattr(tc, "output_style_name", None),
+                            getattr(tc, "output_style_dir", None),
+                        ).prompt
+                        self._base_system_prompt = build_effective_system_prompt(
+                            style_prompt, tc, provider=self.provider
+                        )
+                        self.system_prompt = self._compose_with_plan(self._base_system_prompt)
+                except Exception:  # noqa: BLE001 - keep the resume even if rebuild fails
+                    logger.debug(
+                        "[agent-server] system prompt rebuild after mode flip failed",
+                        exc_info=True,
+                    )
+                try:
+                    self.emit_init()
+                except Exception:  # noqa: BLE001
+                    logger.debug("[agent-server] init re-emit after mode flip failed", exc_info=True)
             self._reply(request_id, {
                 "ok": True,
                 "count": len(conv.messages),
                 "preview": data.get("preview", ""),
+                **({"mode_banner": mode_banner} if mode_banner else {}),
             })
         except Exception as exc:  # noqa: BLE001
             logger.exception("[agent-server] resume failed")
@@ -1369,11 +1449,15 @@ class _AgentSession:
             messages = (
                 self.session.conversation.get_messages() if self.session is not None else []
             )
+            from src.coordinator.mode import coordinator_main_loop_registry
+
             data = analyze_context(
                 conversation_api_messages=messages,
                 model=model,
                 system_prompt=self._system_prompt_text(),
-                tool_schemas=_tool_schemas(self.tool_registry),
+                # Coordinator-filtered view: token accounting must reflect
+                # the tool schemas actually sent on the wire.
+                tool_schemas=_tool_schemas(coordinator_main_loop_registry(self.tool_registry)),
                 claude_md_content="",
             )
             out.update({
@@ -1843,10 +1927,15 @@ class _AgentSession:
         # provider/model and read-file fingerprints.
         pipeline_config = self._build_turn_pipeline_config(turn_provider)
         try:
+            # Coordinator mode: the MAIN loop runs on the filtered view
+            # (Agent/SendMessage/TaskStop/StructuredOutput + PR-activity MCP);
+            # subagents spawn from the Agent tool's captured FULL registry.
+            from src.coordinator.mode import coordinator_main_loop_registry
+
             result = asyncio.run(run_query_as_agent_loop(
                 initial_messages=list(self.session.conversation.messages),
                 provider=turn_provider,
-                tool_registry=self.tool_registry,
+                tool_registry=coordinator_main_loop_registry(self.tool_registry),
                 tool_context=self.tool_context,
                 system_prompt=self.system_prompt,
                 max_turns=self.config.max_turns,

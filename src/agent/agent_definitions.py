@@ -254,7 +254,22 @@ def get_built_in_agents() -> list[AgentDefinition]:
     """Return the list of active built-in agent definitions.
 
     Mirrors getBuiltInAgents() from typescript/src/tools/AgentTool/builtInAgents.ts.
+
+    Coordinator mode swaps in the coordinator agent list (worker /
+    general-purpose / explore / plan) so the coordinator system prompt's
+    ``subagent_type: "worker"`` calls resolve — mirrors
+    ``builtInAgents.ts:35-43``. Imports are function-local for the same
+    reason TS lazy-requires there: ``coordinator.worker_agent`` imports
+    this module (hard cycle at import time), and the env gate is read
+    live per call.
     """
+    from src.coordinator.mode import is_coordinator_mode
+
+    if is_coordinator_mode():
+        from src.coordinator.worker_agent import get_coordinator_agents
+
+        return get_coordinator_agents()
+
     return [
         GENERAL_PURPOSE_AGENT,
         EXPLORE_AGENT,

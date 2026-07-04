@@ -284,7 +284,15 @@ def run_headless(options: HeadlessOptions) -> int:
     writer: StreamJsonWriter | None = None
     if options.output_format == "stream-json":
         writer = StreamJsonWriter(stdout)
-        tools = [tool.name for tool in tool_registry.list_tools()]
+        # Coordinator-filtered view (identity when the mode is off) — the
+        # init event must list what the main loop actually gets. Mirrors the
+        # headless filter application at main.tsx:1871-1879.
+        from src.coordinator.mode import coordinator_main_loop_registry
+
+        tools = [
+            tool.name
+            for tool in coordinator_main_loop_registry(tool_registry).list_tools()
+        ]
         writer.write(
             SystemEvent(
                 subtype="init",
@@ -389,10 +397,17 @@ def run_headless(options: HeadlessOptions) -> int:
                                 )
                                 raise
 
+                        # Coordinator mode: main loop on the filtered view;
+                        # subagents keep the Agent tool's captured full
+                        # registry (see coordinator_main_loop_registry).
+                        from src.coordinator.mode import (
+                            coordinator_main_loop_registry,
+                        )
+
                         compat_result = _asyncio.run(run_query_as_agent_loop(
                             initial_messages=list(session.conversation.messages),
                             provider=provider,
-                            tool_registry=tool_registry,
+                            tool_registry=coordinator_main_loop_registry(tool_registry),
                             tool_context=tool_context,
                             system_prompt=effective_system_prompt,
                             max_turns=options.max_turns,

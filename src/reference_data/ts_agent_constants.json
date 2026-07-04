@@ -1,5 +1,5 @@
 {
-  "_comment": "Agent system constants from TS tools/AgentTool/constants.ts",
+  "_comment": "Agent system constants from TS tools/AgentTool/constants.ts; async_agent_allowed_tools mirrors constants/tools.ts:53-69 (NotebookEdit + ToolSearch added in the coordinator/ parity phase; PowerShell deliberately absent \u2014 no Python tool).",
   "agent_tool_name": "Agent",
   "legacy_agent_tool_name": "Task",
   "all_agent_disallowed_tools": [
@@ -25,17 +25,31 @@
     "Skill",
     "StructuredOutput",
     "EnterWorktree",
-    "ExitWorktree"
+    "ExitWorktree",
+    "NotebookEdit",
+    "ToolSearch"
   ],
   "one_shot_builtin_agent_types": [
     "Explore",
     "Plan"
   ],
   "built_in_agents": [
-    {"type": "GeneralPurpose", "name": "General Purpose Agent"},
-    {"type": "Explore", "name": "Explore Agent"},
-    {"type": "Plan", "name": "Plan Agent"},
-    {"type": "fork", "name": "Fork Agent"}
+    {
+      "type": "GeneralPurpose",
+      "name": "General Purpose Agent"
+    },
+    {
+      "type": "Explore",
+      "name": "Explore Agent"
+    },
+    {
+      "type": "Plan",
+      "name": "Plan Agent"
+    },
+    {
+      "type": "fork",
+      "name": "Fork Agent"
+    }
   ],
   "permission_mode_inheritance": {
     "bypassPermissions": "parent_takes_precedence",
