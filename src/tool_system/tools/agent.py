@@ -739,6 +739,10 @@ def make_agent_tool(
                         agent_id, agent_type,
                     )
             finally:
+                # Background-bash reaping now lives in the CORE run_agent
+                # generator's finally (src/agent/run_agent.py) so it covers
+                # async + sync + workflow agents on the single shared path —
+                # not just this backgrounded wrapper.
                 if transcript is not None:
                     transcript.close()
 

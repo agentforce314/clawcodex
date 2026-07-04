@@ -422,6 +422,19 @@ async def run_agent(params: RunAgentParams) -> AsyncGenerator[Message, None]:
         logger.error("Agent %s (%s) failed: %s", agent_id, agent_def.agent_type, exc)
         raise
     finally:
+        # Reap any run_in_background bash this agent spawned, so a shell loop
+        # doesn't outlive the agent as a PPID=1 zombie. Placed in the CORE
+        # generator's finally (the single path every agent — async, sync, and
+        # workflow — traverses), matching TS's killShellTasksForAgent at
+        # runAgent.ts:849. Never raises.
+        try:
+            from src.tasks.local_shell import kill_shell_tasks_for_agent
+
+            registry = getattr(subagent_context, "runtime_tasks", None)
+            if registry is not None:
+                await kill_shell_tasks_for_agent(agent_id, registry)
+        except Exception:  # noqa: BLE001 — cleanup must not break agent exit
+            logger.debug("kill_shell_tasks_for_agent failed", exc_info=True)
         # Cleanup: release cloned file state cache memory
         subagent_context.read_file_fingerprints.clear()
         # Release initial messages
