@@ -185,7 +185,11 @@ def create_subagent_context(
         # agent + parent team): TS keeps one board (AppState.tasks; the
         # team file), so a teammate's TaskCompleted stop hooks can see the
         # tasks the leader assigned it. Anonymous subagents keep the ch10
-        # fresh-isolation semantics.
+        # fresh-isolation semantics. INVARIANT (critic M1): this is a plain
+        # dict shared by reference — NOT RLock-guarded like runtime_tasks.
+        # Readers snapshot (list()) before filtering; if teammate fan-out
+        # ever mutates the board from worker threads, guard it like the
+        # sibling stores.
         tasks=(
             parent_context.tasks
             if (

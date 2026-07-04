@@ -692,6 +692,7 @@ async def execute_teammate_idle_hooks(
     teammate_name: str,
     team_name: str,
     tool_use_context: Any,
+    permission_mode: str | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     """QUERY-1 — port of ``executeTeammateIdleHooks`` (utils/hooks.ts:3920):
     fired from the teammate's stop path after the core Stop/SubagentStop
@@ -701,6 +702,8 @@ async def execute_teammate_idle_hooks(
         "teammate_name": teammate_name,
         "team_name": team_name,
     }
+    if permission_mode:
+        stdin_data["permission_mode"] = permission_mode
     abort_signal = None
     abort_ctrl = getattr(tool_use_context, "abort_controller", None)
     if abort_ctrl:
@@ -723,6 +726,7 @@ async def execute_task_completed_hooks(
     teammate_name: str,
     team_name: str,
     tool_use_context: Any,
+    permission_mode: str | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     """QUERY-1 — port of ``executeTaskCompletedHooks`` (utils/hooks.ts:4000):
     fired once per in-progress task OWNED by the stopping teammate. Hook
@@ -735,6 +739,8 @@ async def execute_task_completed_hooks(
         "teammate_name": teammate_name,
         "team_name": team_name,
     }
+    if permission_mode:
+        stdin_data["permission_mode"] = permission_mode
     abort_signal = None
     abort_ctrl = getattr(tool_use_context, "abort_controller", None)
     if abort_ctrl:

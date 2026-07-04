@@ -250,3 +250,61 @@ class TestRealPathLiveness:
         leader.tasks["1"] = {"id": "1", "status": "in_progress", "owner": "x"}
         anon = create_subagent_context(leader, SubagentContextOverrides())
         assert anon.tasks == {} and anon.tasks is not leader.tasks
+
+
+def test_task_completed_runs_before_teammate_idle(tmp_path):
+    """Ordering pin (critic 6b): TaskCompleted precedes TeammateIdle
+    (stopHooks.ts:352 loop before :402)."""
+    log = tmp_path / "order"
+    ctx = _ctx(
+        hooks={
+            "TaskCompleted": _hook(f"echo tc >> {log}"),
+            "TeammateIdle": _hook(f"echo ti >> {log}"),
+        },
+        tasks=dict(OWNED_TASK),
+    )
+    _drive(ctx)
+    assert log.read_text().split() == ["tc", "ti"]
+
+
+def test_core_stop_prevent_returns_before_teammate_block(tmp_path):
+    """Core-precedence pin (critic 6c — the indent refactor's key
+    invariant): a core Stop/SubagentStop preventContinuation returns
+    BEFORE the teammate block (stopHooks.ts:325-332 precede :335)."""
+    marker = tmp_path / "ti"
+    payload = '{"preventContinuation": true, "stopReason": "core stops"}'
+    ctx = _ctx(
+        hooks={
+            "SubagentStop": _hook(f"echo '{payload}'"),
+            "TeammateIdle": _hook(f"touch {marker}"),
+        },
+    )
+    _, result = _drive(ctx)
+    assert result.prevent_continuation is True
+    assert not marker.exists(), "core prevent must return before the teammate block"
+
+
+def test_task_completed_verbatim_prefix(tmp_path):
+    """Symmetry pin (critic 6a): the TaskCompleted feedback prefix,
+    verbatim (utils/hooks.ts:2113)."""
+    ctx = _ctx(
+        hooks={"TaskCompleted": _hook("echo 'redo it' >&2; exit 2")},
+        tasks=dict(OWNED_TASK),
+    )
+    messages, _ = _drive(ctx)
+    metas = [m for m in messages
+             if getattr(m, "type", "") == "user" and getattr(m, "isMeta", False)]
+    assert metas
+    assert str(metas[-1].content).startswith("TaskCompleted hook feedback:\n")
+
+
+def test_permission_mode_threaded_to_stdin(tmp_path):
+    """M2 pin: the executors carry permission_mode (TS createBaseHookInput)."""
+    import json as _json
+
+    out = tmp_path / "stdin.json"
+    ctx = _ctx(hooks={"TeammateIdle": _hook(f"cat > {out}")})
+    ctx.permission_context.mode = "acceptEdits"
+    _drive(ctx)
+    data = _json.loads(out.read_text())
+    assert data.get("permission_mode") == "acceptEdits"

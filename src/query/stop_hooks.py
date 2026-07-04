@@ -301,8 +301,15 @@ async def _handle_stop_hooks_generator(
                     # (tasks_v2's source of truth: context.tasks — dicts
                     # keyed by id with status/owner/subject fields).
                     task_map = getattr(tool_use_context, "tasks", {}) or {}
+                    # M1 (critic): the board is a plain dict shared BY
+                    # REFERENCE for teammate spawns (unlike the RLock-guarded
+                    # runtime_tasks). Snapshot before filtering so a leader
+                    # mutating concurrently can at worst race the snapshot
+                    # (contained by this try) rather than the whole sweep;
+                    # the sync-only invariant for teammate boards is
+                    # documented at the sharing site (subagent_context).
                     owned = [
-                        t for t in task_map.values()
+                        t for t in list(task_map.values())
                         if isinstance(t, dict)
                         and t.get("status") == "in_progress"
                         and t.get("owner") == teammate_name
@@ -318,6 +325,7 @@ async def _handle_stop_hooks_generator(
                             teammate_name,
                             team_name,
                             tool_use_context,
+                            permission_mode=permission_mode,
                         ),
                         "TaskCompleted",
                         "TaskCompleted hook feedback:",
@@ -331,6 +339,7 @@ async def _handle_stop_hooks_generator(
                 async for msg in _drive(
                     execute_teammate_idle_hooks(
                         teammate_name, team_name, tool_use_context,
+                        permission_mode=permission_mode,
                     ),
                     "TeammateIdle",
                     "TeammateIdle hook feedback:",
