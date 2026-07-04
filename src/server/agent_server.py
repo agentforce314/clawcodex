@@ -2811,75 +2811,21 @@ def _session_option_label_safe(request: Any) -> str | None:
 
 
 def _serialize_permission_update(update: Any) -> dict:
-    """ch13 round-4 — wire shape for a PermissionUpdate (the persistable
-    "always allow" rule). The TUI renders the description and echoes the
-    chosen one back; _deserialize_permission_update reverses this."""
-    out: dict[str, Any] = {
-        "type": getattr(update, "type", "addRules"),
-        "destination": getattr(update, "destination", "session"),
-    }
-    behavior = getattr(update, "behavior", None)
-    if behavior is not None:
-        out["behavior"] = behavior
-    rules = getattr(update, "rules", None)
-    if rules:
-        out["rules"] = [
-            {"tool_name": getattr(r, "tool_name", ""),
-             "rule_content": getattr(r, "rule_content", None)}
-            for r in rules
-        ]
-    mode = getattr(update, "mode", None)
-    if mode is not None:
-        out["mode"] = mode
-    directories = getattr(update, "directories", None)
-    if directories:
-        out["directories"] = list(directories)
-    return out
+    """ch13 round-4 — wire shape for a PermissionUpdate. Delegates to the
+    canonical serializer (promoted to src/permissions/updates.py in HOOKS-1,
+    paired with deserialize_permission_update)."""
+    from src.permissions.updates import serialize_permission_update
+
+    return serialize_permission_update(update)
 
 
 def _deserialize_permission_update(data: dict) -> Any:
-    """Reverse of _serialize_permission_update. Returns a PermissionUpdate
-    dataclass or None on an unrecognized/empty type."""
-    from src.permissions.types import (
-        PermissionRuleValue,
-        PermissionUpdateAddDirectories,
-        PermissionUpdateAddRules,
-        PermissionUpdateRemoveDirectories,
-        PermissionUpdateRemoveRules,
-        PermissionUpdateReplaceRules,
-        PermissionUpdateSetMode,
-    )
+    """Reverse of _serialize_permission_update. Delegates to the canonical
+    parser (promoted to src/permissions/updates.py in HOOKS-1 so the
+    PermissionRequest-hook path shares it)."""
+    from src.permissions.updates import deserialize_permission_update
 
-    utype = data.get("type")
-    dest = data.get("destination", "session")
-    behavior = data.get("behavior", "allow")
-
-    def _rules() -> tuple:
-        return tuple(
-            PermissionRuleValue(
-                tool_name=str(r.get("tool_name", "")),
-                rule_content=r.get("rule_content"),
-            )
-            for r in (data.get("rules") or []) if isinstance(r, dict)
-        )
-
-    if utype == "addRules":
-        return PermissionUpdateAddRules(destination=dest, behavior=behavior, rules=_rules())
-    if utype == "replaceRules":
-        return PermissionUpdateReplaceRules(destination=dest, behavior=behavior, rules=_rules())
-    if utype == "removeRules":
-        return PermissionUpdateRemoveRules(destination=dest, behavior=behavior, rules=_rules())
-    if utype == "setMode":
-        return PermissionUpdateSetMode(destination=dest, mode=data.get("mode", "default"))
-    if utype == "addDirectories":
-        return PermissionUpdateAddDirectories(
-            destination=dest, directories=tuple(data.get("directories") or ()),
-        )
-    if utype == "removeDirectories":
-        return PermissionUpdateRemoveDirectories(
-            destination=dest, directories=tuple(data.get("directories") or ()),
-        )
-    return None
+    return deserialize_permission_update(data)
 
 
 def _extract_prompt_text(msg: dict) -> str:

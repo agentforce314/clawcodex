@@ -650,3 +650,84 @@ def session_option_label(
     if base:
         return f"and {base}"
     return None
+
+
+def deserialize_permission_update(data: dict) -> "Any":
+    """Wire dict → PermissionUpdate dataclass (None on unrecognized type).
+
+    Promoted from the agent-server (HOOKS-1): the can_use_tool reply AND
+    PermissionRequest-hook ``updatedPermissions`` both arrive in the same
+    wire shape, so the one parser lives here with the update types.
+    """
+    from .types import (
+        PermissionRuleValue,
+        PermissionUpdateAddDirectories,
+        PermissionUpdateAddRules,
+        PermissionUpdateRemoveDirectories,
+        PermissionUpdateRemoveRules,
+        PermissionUpdateReplaceRules,
+        PermissionUpdateSetMode,
+    )
+
+    utype = data.get("type")
+    dest = data.get("destination", "session")
+    behavior = data.get("behavior", "allow")
+
+    def _rules() -> tuple:
+        return tuple(
+            PermissionRuleValue(
+                tool_name=str(r.get("tool_name", "")),
+                rule_content=r.get("rule_content"),
+            )
+            for r in (data.get("rules") or []) if isinstance(r, dict)
+        )
+
+    if utype == "addRules":
+        return PermissionUpdateAddRules(destination=dest, behavior=behavior, rules=_rules())
+    if utype == "replaceRules":
+        return PermissionUpdateReplaceRules(destination=dest, behavior=behavior, rules=_rules())
+    if utype == "removeRules":
+        return PermissionUpdateRemoveRules(destination=dest, behavior=behavior, rules=_rules())
+    if utype == "setMode":
+        return PermissionUpdateSetMode(destination=dest, mode=data.get("mode", "default"))
+    if utype == "addDirectories":
+        return PermissionUpdateAddDirectories(
+            destination=dest, directories=tuple(data.get("directories") or ()),
+        )
+    if utype == "removeDirectories":
+        return PermissionUpdateRemoveDirectories(
+            destination=dest, directories=tuple(data.get("directories") or ()),
+        )
+    return None
+
+
+def serialize_permission_update(update: "Any") -> dict:
+    """PermissionUpdate dataclass → wire dict (the shape hooks and the TUI
+    see; ``deserialize_permission_update`` reverses it).
+
+    Promoted from the agent-server (HOOKS-1 critic round): the can_use_tool
+    round-trip and PermissionRequest-hook stdin both need the SAME canonical
+    JSON — nested rules as ``{"tool_name", "rule_content"}`` dicts, never
+    Python reprs.
+    """
+    out: dict = {
+        "type": getattr(update, "type", "addRules"),
+        "destination": getattr(update, "destination", "session"),
+    }
+    behavior = getattr(update, "behavior", None)
+    if behavior is not None:
+        out["behavior"] = behavior
+    rules = getattr(update, "rules", None)
+    if rules:
+        out["rules"] = [
+            {"tool_name": getattr(r, "tool_name", ""),
+             "rule_content": getattr(r, "rule_content", None)}
+            for r in rules
+        ]
+    mode = getattr(update, "mode", None)
+    if mode is not None:
+        out["mode"] = mode
+    directories = getattr(update, "directories", None)
+    if directories:
+        out["directories"] = list(directories)
+    return out

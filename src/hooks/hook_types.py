@@ -281,6 +281,11 @@ class HookResult:
     hook_permission_decision_reason: str | None = None
     hook_source: str | None = None
     updated_input: dict[str, Any] | None = None
+    # PermissionRequest-event extras (HOOKS-1): permission updates a hook may
+    # attach to an allow, and the deny-time turn-abort flag. Mirrors the TS
+    # PermissionRequest decision shape (utils/hooks.ts:833-840).
+    updated_permissions: list[dict[str, Any]] | None = None
+    interrupt: bool = False
     prevent_continuation: bool = False
     stop_reason: str | None = None
     additional_contexts: list[str] | None = None
