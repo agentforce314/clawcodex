@@ -15,6 +15,7 @@ for ``stop_task`` (Phase 5).
 from __future__ import annotations
 
 import os
+import logging
 import subprocess
 from dataclasses import dataclass, field
 from typing import IO, Any, Literal, TYPE_CHECKING
@@ -23,6 +24,8 @@ from src.tasks_core import TaskStateBase
 
 if TYPE_CHECKING:
     from src.task_registry import RuntimeTaskRegistry
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(kw_only=True)
@@ -54,6 +57,12 @@ class LocalShellTaskState(TaskStateBase):
     output_path: str = ""
     exit_code: int | None = None
     finished_at: float | None = None
+    # The agent that spawned this background bash (``None`` = the main
+    # session). Set at spawn from ``ToolContext.agent_id`` so a completing
+    # sub-agent can reap the shells it started — the port analog of TS's
+    # ``LocalShellTaskState.agentId`` + ``killShellTasksForAgent``, preventing
+    # a ``run_in_background`` loop outliving its agent as a PPID=1 zombie.
+    agent_id: str | None = None
     # ch10 round-4 WI-2 — eviction grace fields (mirror LocalAgentTaskState).
     # Without these on the shell state, schedule_eviction's hasattr guard
     # made it a no-op, so terminal background bash tasks could NEVER be
@@ -135,6 +144,28 @@ class LocalShellTask:
             return
 
 
+async def kill_shell_tasks_for_agent(
+    agent_id: str, registry: "RuntimeTaskRegistry"
+) -> None:
+    """Kill every running background-bash task spawned by ``agent_id``.
+
+    Port of ``killShellTasksForAgent`` (typescript/src/tasks/LocalShellTask/
+    killShellTasks.ts:53), called from the sub-agent lifecycle's ``finally``
+    so a ``run_in_background`` shell doesn't outlive the agent that started it
+    (the "10-day fake-logs.sh zombie" case). Never raises."""
+    killer = LocalShellTask()
+    for task in list(registry.by_type("local_bash")):
+        if (
+            is_local_shell_task(task)
+            and getattr(task, "agent_id", None) == agent_id
+            and task.status == "running"
+        ):
+            try:
+                await killer.kill(task.id, registry)
+            except Exception:  # noqa: BLE001 — one bad task must not block the rest
+                logger.debug("kill_shell_tasks_for_agent: failed on %s", task.id, exc_info=True)
+
+
 # Per Chunk-C N1 fold-in: registration moved to
 # ``src/tasks/__init__.py`` so a single ``import src.tasks`` triggers
 # every type's registration. This module only declares the type +
@@ -144,4 +175,5 @@ __all__ = [
     "LocalShellTaskState",
     "LocalShellTask",
     "is_local_shell_task",
+    "kill_shell_tasks_for_agent",
 ]

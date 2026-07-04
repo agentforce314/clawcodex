@@ -179,10 +179,11 @@ class RuntimeTaskRegistry:
 # Per-type Task registration — analogous to TS getAllTasks() / getTaskByType
 # ---------------------------------------------------------------------------
 
-# Tasks register themselves into this list at module-import time. Phases 2-9
-# add LocalShellTask / LocalAgentTask / InProcessTeammateTask. Feature-gated
-# types (RemoteAgent / Workflow / Monitor / Dream) are explicitly out of
-# scope for this port (refactoring plan §3) and never register here.
+# Tasks register themselves into this list at module-import time:
+# LocalShellTask / LocalAgentTask / InProcessTeammateTask / LocalWorkflowTask
+# (the last IS ported — see tasks/__init__.py). Still out of scope: the
+# feature-gated / remote types — RemoteAgent (no remote-cloud dispatch),
+# Monitor/monitor_mcp (MONITOR_TOOL-gated OFF even in TS), Dream (KAIROS OFF).
 _REGISTERED_TASKS: list[Task] = []
 
 

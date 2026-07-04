@@ -101,6 +101,10 @@ def spawn_background_bash(
         output_path=str(output_path),
         proc=proc,
         handle=output_handle,
+        # Owner = the spawning (sub-)agent, so a completing sub-agent reaps
+        # the shells it started (None for the main session — never reaped by
+        # an agent exit).
+        agent_id=getattr(context, "agent_id", None),
     )
     context.runtime_tasks.upsert(state)
     # Chunk-B compat view: keep the legacy dict-of-dicts alive in lockstep
