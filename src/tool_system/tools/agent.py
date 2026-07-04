@@ -357,6 +357,7 @@ def make_agent_tool(
             provider=provider,
             model=model,
             agent_id=agent_id,
+            agent_name=agent_name,
             is_async=is_async,
             max_turns=agent_def.max_turns,
             context_messages=fork_context_messages,
