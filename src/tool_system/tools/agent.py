@@ -191,7 +191,14 @@ def make_agent_tool(
 
         description = tool_input.get("description", prompt[:50])
         subagent_type = tool_input.get("subagent_type")
-        model = tool_input.get("model")
+        # Coordinator mode ignores the model param — the coordinator prompt
+        # says "Do not set the model parameter. Workers need the default
+        # model"; this enforces it. Mirrors AgentTool.tsx:252. Function-local
+        # import: src.coordinator's package init imports worker_agent →
+        # agent_definitions (cycle at import time, safe at call time).
+        from src.coordinator.mode import is_coordinator_mode
+
+        model = None if is_coordinator_mode() else tool_input.get("model")
         run_in_background = bool(tool_input.get("run_in_background", False))
         # Chapter-10 / WI-6.1 — optional human-readable name. We
         # validate / register it AFTER agent_id is generated so the
@@ -255,7 +262,12 @@ def make_agent_tool(
         from src.tasks_core import generate_task_id  # local import — see _launch_async_agent
         agent_id = generate_task_id("local_agent")
         start_time = time.time()
-        is_async = run_in_background
+        # Coordinator spawns are ALWAYS async so results arrive as
+        # <task-notification> user messages — the interaction model the
+        # coordinator system prompt teaches. Mirrors AgentTool.tsx:562's
+        # ``|| isCoordinator`` term (the selectedAgent.background / fork /
+        # kairos terms there belong to their own unported features).
+        is_async = run_in_background or is_coordinator_mode()
 
         if provider is None:
             return ToolResult(
@@ -779,7 +791,11 @@ def make_agent_tool(
                 )
                 available = []
             agents = filter_agents_by_mcp_requirements(agents, available)
-        return get_agent_prompt(agents)
+        # Env read live at prompt-build time, mirroring AgentTool.tsx:223-224's
+        # inline check (function-local import — see _agent_call).
+        from src.coordinator.mode import is_coordinator_mode
+
+        return get_agent_prompt(agents, is_coordinator=is_coordinator_mode())
 
     def _map_result_to_api(result: Any, tool_use_id: str) -> dict[str, Any]:
         if not isinstance(result, dict):

@@ -958,7 +958,11 @@ export class GatewayClient extends EventEmitter {
         if (arg) {
           const r = (await this.controlQuery('resume', { session_id: arg })) as any
 
-          return out(`Resumed ${arg} (${r?.count ?? 0} messages).`)
+          // mode_banner: coordinator-mode flip notice (matchSessionMode) —
+          // e.g. "Entered coordinator mode to match resumed session."
+          const banner = typeof r?.mode_banner === 'string' && r.mode_banner ? `\n${r.mode_banner}` : ''
+
+          return out(`Resumed ${arg} (${r?.count ?? 0} messages).${banner}`)
         }
 
         const r = (await this.controlQuery('list_sessions', {})) as any

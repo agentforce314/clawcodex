@@ -43,7 +43,11 @@ CUSTOM_AGENT_DISALLOWED_TOOLS: frozenset[str] = frozenset([
 ])
 
 # Whitelist of tools allowed for async (background) agents.
-# Mirrors ASYNC_AGENT_ALLOWED_TOOLS from typescript/src/constants/tools.ts.
+# Mirrors ASYNC_AGENT_ALLOWED_TOOLS from typescript/src/constants/tools.ts
+# (:53-69). "PowerShell" (via TS SHELL_TOOL_NAMES) is deliberately absent —
+# this port has no PowerShell tool. This set is BOTH the async-agent runtime
+# whitelist (agent_tool_utils.filter_tools_for_agent) and the source of the
+# coordinator's rendered worker-tools list (coordinator/mode.py).
 ASYNC_AGENT_ALLOWED_TOOLS: frozenset[str] = frozenset([
     "Read",
     "WebSearch",
@@ -54,8 +58,10 @@ ASYNC_AGENT_ALLOWED_TOOLS: frozenset[str] = frozenset([
     "Bash",
     "Edit",
     "Write",
+    "NotebookEdit",
     "Skill",
     "StructuredOutput",
+    "ToolSearch",
     "EnterWorktree",
     "ExitWorktree",
 ])
