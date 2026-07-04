@@ -84,7 +84,11 @@ def _enabled_override(plugin_id: str, default_enabled: bool) -> bool:
 
         overrides = load_settings().extra.get("enabledPlugins")
         if isinstance(overrides, dict) and plugin_id in overrides:
-            return bool(overrides[plugin_id])
+            # TS parity: `userSetting === true` (builtinPlugins.ts:71) —
+            # enabledPlugins values may be boolean | string[]; only literal
+            # True enables. (Writer contract: the future /plugin UI must
+            # write extra["enabledPlugins"] camelCase to match this reader.)
+            return overrides[plugin_id] is True
     except Exception:  # noqa: BLE001
         pass
     return default_enabled

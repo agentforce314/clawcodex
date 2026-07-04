@@ -37,6 +37,11 @@ def register_karpathy_guidelines_plugin() -> None:
                     "implementation mistakes."
                 ),
                 content=KARPATHY_GUIDELINES_PROMPT,
+                # B1 (critic): the render paths read markdown_content
+                # (skill_to_prompt_command copies it; _run_markdown_skill
+                # falls back content-wise) — the canonical loader contract
+                # sets BOTH (loader.py:433,:455).
+                markdown_content=KARPATHY_GUIDELINES_PROMPT,
                 source="karpathy-guidelines@builtin",
                 loaded_from="plugin",
                 user_invocable=True,

@@ -78,3 +78,56 @@ def test_skill_command_exposed_only_when_enabled(monkeypatch, tmp_path):
     monkeypatch.setattr(settings_mod, "load_settings", lambda **kw: _S())
     names_enabled = {c.name for c in get_commands(cwd=str(d2))}
     assert "karpathy-guidelines" in names_enabled
+
+
+def test_enabled_command_renders_guidelines(monkeypatch, tmp_path):
+    """B1 execution pin (critic): the enabled command must RENDER the
+    guidelines — both the headless fallback and the skill-runner path."""
+    import src.settings.settings as settings_mod
+
+    class _S:
+        extra = {"enabledPlugins": {"karpathy-guidelines@builtin": True}}
+    monkeypatch.setattr(settings_mod, "load_settings", lambda **kw: _S())
+    init_builtin_plugins()
+    from src.command_system.aggregator import get_commands
+
+    import asyncio
+
+    cmd = next(c for c in get_commands(cwd=str(tmp_path)) if c.name == "karpathy-guidelines")
+    rendered = asyncio.run(cmd.get_prompt_for_command("", None))
+    # Content-block list (the canonical prompt-command shape).
+    text = "".join(
+        b.get("text", "") for b in rendered if isinstance(b, dict)
+    ) if isinstance(rendered, list) else str(rendered)
+    assert "## 1. Think Before Coding" in text
+    assert len(text) >= 2351
+
+
+def test_skill_tool_resolves_enabled_plugin_skill(monkeypatch):
+    """B2 pin: get_registered_skill (the Skill tool's resolution path) finds
+    the ENABLED plugin skill; a disabled plugin's skill never leaks."""
+    import src.settings.settings as settings_mod
+    from src.skills.loader import get_registered_skill
+
+    init_builtin_plugins()
+    assert get_registered_skill("karpathy-guidelines") is None  # default off
+
+    class _S:
+        extra = {"enabledPlugins": {"karpathy-guidelines@builtin": True}}
+    monkeypatch.setattr(settings_mod, "load_settings", lambda **kw: _S())
+    skill = get_registered_skill("karpathy-guidelines")
+    assert skill is not None
+    assert "## 1. Think Before Coding" in (skill.markdown_content or skill.content)
+
+
+def test_string_list_override_is_disabled(monkeypatch):
+    """TS parity: enabledPlugins values are boolean|string[]; only literal
+    True enables (userSetting === true)."""
+    import src.settings.settings as settings_mod
+
+    class _S:
+        extra = {"enabledPlugins": {"karpathy-guidelines@builtin": ["1.0.0"]}}
+    monkeypatch.setattr(settings_mod, "load_settings", lambda **kw: _S())
+    init_builtin_plugins()
+    ps = get_builtin_plugins()
+    assert [p.name for p in ps["disabled"]] == ["karpathy-guidelines"]
