@@ -36,6 +36,7 @@ import { getInputSelection } from './inputSelectionStore.js'
 import { type GatewayRpc, type TranscriptRow } from './interfaces.js'
 import { $overlayState, patchOverlayState } from './overlayStore.js'
 import { scrollWithSelectionBy } from './scroll.js'
+import { ghostArgumentHint } from './slash/argumentHints.js'
 import { turnController } from './turnController.js'
 import { patchTurnState, useTurnSelector } from './turnStore.js'
 import { $uiState, getUiState, patchUiState } from './uiStore.js'
@@ -1077,6 +1078,9 @@ export function useMainApp(gw: GatewayClient) {
 
   const appComposer = useMemo(
     () => ({
+      // Ghost grammar hint once the input is exactly `/command ` (original
+      // CC's argumentHint); catalog hints cover gateway/workflow commands.
+      argumentHint: ghostArgumentHint(composerState.input, catalog?.hints),
       cols,
       compIdx: composerState.compIdx,
       completions: composerState.completions,
@@ -1090,7 +1094,7 @@ export function useMainApp(gw: GatewayClient) {
       updateInput: composerActions.setInput,
       voiceRecordKey
     }),
-    [cols, composerActions, composerState, empty, pagerPageSize, submit, voiceRecordKey]
+    [catalog, cols, composerActions, composerState, empty, pagerPageSize, submit, voiceRecordKey]
   )
 
   // Pass current progress through unfrozen — streaming update throttling

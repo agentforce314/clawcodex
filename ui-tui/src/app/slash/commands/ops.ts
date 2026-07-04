@@ -81,6 +81,7 @@ export const opsCommands: SlashCommand[] = [
 
   {
     aliases: ['reload_mcp'],
+    argumentHint: '[now|always]',
     help: 'reload MCP servers in the live session (warns about prompt cache invalidation)',
     name: 'reload-mcp',
     run: (arg, ctx) => {
@@ -145,6 +146,7 @@ export const opsCommands: SlashCommand[] = [
   },
 
   {
+    argumentHint: '[connect [<url>]|disconnect|status]',
     help: 'manage browser CDP connection [connect|disconnect|status]',
     name: 'browser',
     run: (arg, ctx) => {
@@ -198,6 +200,7 @@ export const opsCommands: SlashCommand[] = [
   },
 
   {
+    argumentHint: '[list | diff <n> | restore <n>]',
     help: 'list, diff, or restore checkpoints',
     name: 'rollback',
     run: (arg, ctx) => {
@@ -326,6 +329,7 @@ export const opsCommands: SlashCommand[] = [
   },
 
   {
+    argumentHint: '[<n>|last|list|load <path>]',
     help: 'replay a completed spawn tree · `/replay [N|last|list|load <path>]`',
     name: 'replay',
     run: (arg, ctx) => {
@@ -412,6 +416,7 @@ export const opsCommands: SlashCommand[] = [
   },
 
   {
+    argumentHint: '<baseline> <candidate>',
     help: 'diff two completed spawn trees · `/replay-diff <baseline> <candidate>` (indexes from /replay list or history N)',
     name: 'replay-diff',
     run: (arg, ctx) => {
@@ -467,6 +472,7 @@ export const opsCommands: SlashCommand[] = [
                   ctx.local.setCatalog({
                     canon: (catalog.canon ?? {}) as Record<string, string>,
                     categories: catalog.categories ?? [],
+                    hints: (catalog.hints ?? {}) as Record<string, string>,
                     pairs: catalog.pairs as [string, string][],
                     skillCount: (catalog.skill_count ?? 0) as number,
                     sub: (catalog.sub ?? {}) as Record<string, string[]>
@@ -481,6 +487,7 @@ export const opsCommands: SlashCommand[] = [
   },
 
   {
+    argumentHint: '[list | inspect <name> | search <query>]',
     help: 'browse, inspect, install skills',
     name: 'skills',
     run: (arg, ctx, cmd) => {
@@ -660,6 +667,7 @@ export const opsCommands: SlashCommand[] = [
   },
 
   {
+    argumentHint: '[enable|disable <name>]',
     help: 'view & toggle plugins (no arg opens the hub; enable/disable <name> for direct toggle)',
     name: 'plugins',
     run: (arg, ctx, cmd) => {
@@ -688,6 +696,7 @@ export const opsCommands: SlashCommand[] = [
   },
 
   {
+    argumentHint: '[enable|disable <name> [name ...]]',
     help: 'enable or disable tools (client-side history reset on change)',
     name: 'tools',
     run: (arg, ctx, cmd) => {

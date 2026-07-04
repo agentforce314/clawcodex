@@ -4,6 +4,7 @@ import { useStore } from '@nanostores/react'
 import { useGateway } from '../app/gatewayContext.js'
 import type { AppOverlaysProps } from '../app/interfaces.js'
 import { $overlayState, patchOverlayState } from '../app/overlayStore.js'
+import { argumentHintFor } from '../app/slash/argumentHints.js'
 import { $uiSessionId, $uiTheme } from '../app/uiStore.js'
 
 import { ActiveSessionSwitcher } from './activeSessionSwitcher.js'
@@ -238,6 +239,14 @@ export function FloatingOverlays({
             {completions.slice(start, start + viewportSize).map((item, i) => {
               const active = start + i === compIdx
 
+              // Slash rows show the command's argument grammar dim after the
+              // name (original CC's argumentHint). Local registry wins over
+              // the gateway item's hint — dispatch consults it first, so a
+              // shadowing local command's grammar is the truthful one.
+              const hint = item.text.startsWith('/')
+                ? (argumentHintFor(item.text.slice(1)) ?? item.hint)
+                : item.hint
+
               return (
                 <Box
                   backgroundColor={active ? theme.color.completionCurrentBg : theme.color.completionBg}
@@ -254,6 +263,14 @@ export function FloatingOverlays({
                       {item.display}
                     </Text>
                   </Box>
+                  {hint ? (
+                    <Box flexShrink={0}>
+                      <Text color={theme.color.muted}>
+                        {' '}
+                        {hint}
+                      </Text>
+                    </Box>
+                  ) : null}
                   {item.meta ? (
                     <Text
                       backgroundColor={active ? theme.color.completionMetaCurrentBg : theme.color.completionMetaBg}

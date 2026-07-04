@@ -334,6 +334,7 @@ const ComposerPane = memo(function ComposerPane({
               <Box flexGrow={0} flexShrink={0} height={inputHeight} width={inputColumns}>
                 {/* Reserve the transcript scrollbar gutter too so typing never rewraps when the scrollbar column repaints. */}
                 <TextInput
+                  argumentHint={composer.argumentHint}
                   columns={inputColumns}
                   mouseApiRef={inputMouseRef}
                   multiline
