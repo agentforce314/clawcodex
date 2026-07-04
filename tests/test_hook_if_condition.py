@@ -92,6 +92,18 @@ class TestMatcherUnit:
         # never silently disabled.
         assert _matches_if_condition("CustomTool(x)", "PreToolUse", "CustomTool", {"y": 1}) is True
 
+    def test_colon_prefix_bash_rule(self):
+        # The gating safety MAJOR: colon is the canonical rule form. A
+        # `Bash(rm:*)` guard must FIRE on `rm -rf /` (was fail-closed).
+        assert _matches_if_condition("Bash(rm:*)", "PreToolUse", "Bash", {"command": "rm -rf /"}) is True
+        assert _matches_if_condition("Bash(git:*)", "PreToolUse", "Bash", {"command": "git push"}) is True
+        assert _matches_if_condition("Bash(git:*)", "PreToolUse", "Bash", {"command": "git"}) is True  # bare
+        assert _matches_if_condition("Bash(git:*)", "PreToolUse", "Bash", {"command": "ls"}) is False
+
+    def test_env_prefix_stripped(self):
+        # TS matches on argv (strips leading VAR=val).
+        assert _matches_if_condition("Bash(git *)", "PreToolUse", "Bash", {"command": "FOO=bar git push"}) is True
+
 
 class TestExecutionEnforcement:
     """The gap this closes: the hook must actually NOT spawn when `if`

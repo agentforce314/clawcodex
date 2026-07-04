@@ -133,7 +133,12 @@ _IF_CONDITION_EVENTS = frozenset(
 _IF_FILE_PATH_TOOLS = frozenset(
     {"Read", "Edit", "MultiEdit", "Write", "NotebookEdit"}
 )
-_IF_PATTERN_TOOLS = frozenset({"Glob", "Grep", "Monitor"})
+_IF_PATTERN_TOOLS = frozenset({"Glob", "Grep"})
+# Bash + Monitor match on the COMMAND with prefix-or-wildcard semantics
+# (TS MonitorTool.preparePermissionMatcher also uses `command`, Bash-style).
+# Monitor is unreachable today (the port has no Monitor tool) but the
+# categorization is kept faithful for when it lands.
+_IF_COMMAND_TOOLS = frozenset({"Bash", "Monitor"})
 
 _ESCAPED_STAR = "\x00ESC_STAR\x00"
 _ESCAPED_BACKSLASH = "\x00ESC_BSL\x00"
@@ -180,6 +185,39 @@ def _match_wildcard_pattern(pattern: str, value: str) -> bool:
     return re.match(f"^{regex_pattern}$", value, re.DOTALL) is not None
 
 
+def _extract_rule_prefix(rule_content: str) -> str | None:
+    """Port of `permissionRuleExtractPrefix` (shellRuleMatching.ts:43-48):
+    the legacy colon form ``git:*`` → prefix ``git``; anything else → None."""
+    import re
+
+    m = re.match(r"^(.+):\*$", rule_content)
+    return m.group(1) if m else None
+
+
+def _strip_env_prefix(command: str) -> str:
+    """Strip leading ``VAR=val`` assignments so ``FOO=bar git push`` matches
+    ``Bash(git *)`` (TS matches on argv, BashTool preparePermissionMatcher)."""
+    import re
+
+    prev = None
+    cur = command.strip()
+    while cur != prev:
+        prev = cur
+        cur = re.sub(r"^[A-Za-z_][A-Za-z0-9_]*=\S*\s+", "", cur)
+    return cur
+
+
+def _command_rule_matches(rule_content: str, command: str) -> bool:
+    """The Bash/Monitor command matcher (BashTool.preparePermissionMatcher):
+    the colon-prefix branch (``git:*`` → exact or prefix+space), else the
+    wildcard matcher — applied to the env-stripped command."""
+    cmd = _strip_env_prefix(command)
+    prefix = _extract_rule_prefix(rule_content)
+    if prefix is not None:
+        return cmd == prefix or cmd.startswith(prefix + " ")
+    return _match_wildcard_pattern(rule_content, cmd)
+
+
 def _matchable_values_for_tool(
     tool_name: str, tool_input: dict[str, Any]
 ) -> list[str] | None:
@@ -188,7 +226,7 @@ def _matchable_values_for_tool(
     returns the command plus each chained sub-command (any-subcommand
     match, BashTool preparePermissionMatcher), so `if:"Bash(git *)"` fires
     on `git push && npm test`."""
-    if tool_name == "Bash":
+    if tool_name in _IF_COMMAND_TOOLS:
         cmd = tool_input.get("command")
         if not isinstance(cmd, str):
             return None
@@ -265,7 +303,15 @@ def _matches_if_condition(
         )
         return True
 
-    return any(_match_wildcard_pattern(parsed.rule_content, v) for v in values)
+    # Command-class tools (Bash/Monitor) use the prefix-or-wildcard matcher
+    # (so colon rules like `Bash(rm:*)` work — the canonical rule form);
+    # file/pattern tools use the plain wildcard matcher.
+    matcher = (
+        _command_rule_matches
+        if current in _IF_COMMAND_TOOLS
+        else _match_wildcard_pattern
+    )
+    return any(matcher(parsed.rule_content, v) for v in values)
 
 
 def _matches_tool(matcher: str | None, tool_name: str) -> bool:
