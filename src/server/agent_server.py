@@ -2838,48 +2838,12 @@ def _serialize_permission_update(update: Any) -> dict:
 
 
 def _deserialize_permission_update(data: dict) -> Any:
-    """Reverse of _serialize_permission_update. Returns a PermissionUpdate
-    dataclass or None on an unrecognized/empty type."""
-    from src.permissions.types import (
-        PermissionRuleValue,
-        PermissionUpdateAddDirectories,
-        PermissionUpdateAddRules,
-        PermissionUpdateRemoveDirectories,
-        PermissionUpdateRemoveRules,
-        PermissionUpdateReplaceRules,
-        PermissionUpdateSetMode,
-    )
+    """Reverse of _serialize_permission_update. Delegates to the canonical
+    parser (promoted to src/permissions/updates.py in HOOKS-1 so the
+    PermissionRequest-hook path shares it)."""
+    from src.permissions.updates import deserialize_permission_update
 
-    utype = data.get("type")
-    dest = data.get("destination", "session")
-    behavior = data.get("behavior", "allow")
-
-    def _rules() -> tuple:
-        return tuple(
-            PermissionRuleValue(
-                tool_name=str(r.get("tool_name", "")),
-                rule_content=r.get("rule_content"),
-            )
-            for r in (data.get("rules") or []) if isinstance(r, dict)
-        )
-
-    if utype == "addRules":
-        return PermissionUpdateAddRules(destination=dest, behavior=behavior, rules=_rules())
-    if utype == "replaceRules":
-        return PermissionUpdateReplaceRules(destination=dest, behavior=behavior, rules=_rules())
-    if utype == "removeRules":
-        return PermissionUpdateRemoveRules(destination=dest, behavior=behavior, rules=_rules())
-    if utype == "setMode":
-        return PermissionUpdateSetMode(destination=dest, mode=data.get("mode", "default"))
-    if utype == "addDirectories":
-        return PermissionUpdateAddDirectories(
-            destination=dest, directories=tuple(data.get("directories") or ()),
-        )
-    if utype == "removeDirectories":
-        return PermissionUpdateRemoveDirectories(
-            destination=dest, directories=tuple(data.get("directories") or ()),
-        )
-    return None
+    return deserialize_permission_update(data)
 
 
 def _extract_prompt_text(msg: dict) -> str:

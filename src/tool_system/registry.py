@@ -182,6 +182,8 @@ class ToolRegistry:
                 decision,
                 context.permission_handler,
                 tool_input=call.input,
+                context=context,
+                tool_use_id=call.tool_use_id,
             )
 
             if final.behavior == "deny":
@@ -241,44 +243,19 @@ def _invoke_tool_call(tool: Any, input: dict, context: ToolContext) -> ToolResul
     if not inspect.iscoroutinefunction(fn):
         return fn(input, context)
 
-    # Async tool — drive the coroutine to completion.
-    try:
-        running = asyncio.get_running_loop()
-    except RuntimeError:
-        running = None
+    # Async tool — drive the coroutine to completion via the shared bridge
+    # (extracted to utils/async_bridge in HOOKS-1 so the permission-ask
+    # seam reuses the exact same run-or-thread semantics). No timeout on
+    # the wait — async tools are expected to self-bound (TaskOutput uses
+    # its own ``timeout`` knob; TaskStop uses ``asyncio.wait_for`` inside
+    # its body). A hang here is a tool bug, not something the dispatcher
+    # papers over with a global cap.
+    from src.utils.async_bridge import run_coroutine_blocking
 
-    if running is None:
-        return asyncio.run(fn(input, context))
-
-    # Already inside a loop — schedule on a worker thread to avoid
-    # nesting (Python disallows ``run_until_complete`` on a running
-    # loop). Same pattern as ``task_stop.py``'s async-kill bridge.
-    holder: dict[str, Any] = {}
-    done = threading.Event()
-
-    def _runner() -> None:
-        try:
-            holder["result"] = asyncio.run(fn(input, context))
-        except BaseException as exc:  # noqa: BLE001 — re-raise
-            holder["error"] = exc
-        finally:
-            done.set()
-
-    threading.Thread(
-        target=_runner,
-        daemon=True,
-        name=f"tool-async-bridge:{getattr(tool, 'name', '?')}",
-    ).start()
-    # No timeout on this wait — async tools are expected to self-bound
-    # (TaskOutput uses its own ``timeout`` knob; TaskStop uses
-    # ``asyncio.wait_for(timeout=5.0)`` inside its body). A hung
-    # ``done.wait()`` here is a tool bug, not something the dispatcher
-    # tries to paper over with a global cap. If a future tool grows a
-    # naturally-unbounded await, give it an internal deadline first.
-    done.wait()
-    if "error" in holder:
-        raise holder["error"]  # type: ignore[misc]
-    return holder["result"]  # type: ignore[no-any-return]
+    return run_coroutine_blocking(
+        fn(input, context),
+        thread_name=f"tool-async-bridge:{getattr(tool, 'name', '?')}",
+    )
 
 
 def get_all_base_tools(registry: ToolRegistry) -> Tools:

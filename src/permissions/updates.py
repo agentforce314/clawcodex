@@ -650,3 +650,52 @@ def session_option_label(
     if base:
         return f"and {base}"
     return None
+
+
+def deserialize_permission_update(data: dict) -> "Any":
+    """Wire dict → PermissionUpdate dataclass (None on unrecognized type).
+
+    Promoted from the agent-server (HOOKS-1): the can_use_tool reply AND
+    PermissionRequest-hook ``updatedPermissions`` both arrive in the same
+    wire shape, so the one parser lives here with the update types.
+    """
+    from .types import (
+        PermissionRuleValue,
+        PermissionUpdateAddDirectories,
+        PermissionUpdateAddRules,
+        PermissionUpdateRemoveDirectories,
+        PermissionUpdateRemoveRules,
+        PermissionUpdateReplaceRules,
+        PermissionUpdateSetMode,
+    )
+
+    utype = data.get("type")
+    dest = data.get("destination", "session")
+    behavior = data.get("behavior", "allow")
+
+    def _rules() -> tuple:
+        return tuple(
+            PermissionRuleValue(
+                tool_name=str(r.get("tool_name", "")),
+                rule_content=r.get("rule_content"),
+            )
+            for r in (data.get("rules") or []) if isinstance(r, dict)
+        )
+
+    if utype == "addRules":
+        return PermissionUpdateAddRules(destination=dest, behavior=behavior, rules=_rules())
+    if utype == "replaceRules":
+        return PermissionUpdateReplaceRules(destination=dest, behavior=behavior, rules=_rules())
+    if utype == "removeRules":
+        return PermissionUpdateRemoveRules(destination=dest, behavior=behavior, rules=_rules())
+    if utype == "setMode":
+        return PermissionUpdateSetMode(destination=dest, mode=data.get("mode", "default"))
+    if utype == "addDirectories":
+        return PermissionUpdateAddDirectories(
+            destination=dest, directories=tuple(data.get("directories") or ()),
+        )
+    if utype == "removeDirectories":
+        return PermissionUpdateRemoveDirectories(
+            destination=dest, directories=tuple(data.get("directories") or ()),
+        )
+    return None
