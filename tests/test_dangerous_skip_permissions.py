@@ -254,6 +254,13 @@ def test_headless_run_skip_permissions_sets_bypass_mode(tmp_path, monkeypatch):
         lambda n: {"api_key": "x", "default_model": "fake"},
     )
     monkeypatch.setattr(headless_mod, "get_default_provider", lambda: "anthropic")
+    # ENTRY-2: startup validation reads the REAL provider registry (the
+    # shared helper, not the module aliases faked here) — stub it out;
+    # it has its own dedicated tests (test_startup_validation.py).
+    monkeypatch.setattr(
+        "src.entrypoints.provider_validation.get_provider_validation_error",
+        lambda name: None,
+    )
     monkeypatch.setattr(
         headless_mod, "build_default_registry", lambda provider=None: _FakeRegistry()
     )
@@ -319,6 +326,13 @@ def test_headless_run_default_mode_keeps_auto_deny_handler(tmp_path, monkeypatch
         lambda n: {"api_key": "x", "default_model": "fake"},
     )
     monkeypatch.setattr(headless_mod, "get_default_provider", lambda: "anthropic")
+    # ENTRY-2: startup validation reads the REAL provider registry (the
+    # shared helper, not the module aliases faked here) — stub it out;
+    # it has its own dedicated tests (test_startup_validation.py).
+    monkeypatch.setattr(
+        "src.entrypoints.provider_validation.get_provider_validation_error",
+        lambda name: None,
+    )
     monkeypatch.setattr(
         headless_mod, "build_default_registry", lambda provider=None: _FakeRegistry()
     )

@@ -51,7 +51,6 @@ from src.cli_core import (
 from src.config import get_default_provider, get_provider_config
 from src.providers import (
     get_provider_class,
-    provider_requires_api_key,
     resolve_api_key,
 )
 from src.tool_system.renderers import AgentLoopResult, ToolEvent
@@ -143,20 +142,18 @@ def run_headless(options: HeadlessOptions) -> int:
     start_deferred_prefetches(cwd=str(workspace_root))
 
     provider_name = options.provider_name or get_default_provider()
-    try:
-        provider_cfg = get_provider_config(provider_name)
-    except Exception as exc:
-        cli_error(f"error: unable to load provider config: {exc}", 2)
-    # Config api_key wins; fall back to the provider's known env vars (e.g.
-    # ``DEEPSEEK_API_KEY``) so a freshly-added provider works without ``login``.
-    # Local providers (Ollama / vLLM / SGLang) need no key.
+    # ENTRY-2: the config-load + key checks moved into the SHARED startup
+    # validator (src/entrypoints/provider_validation.py) so this path, the
+    # bare-interactive path, and `clawcodex tui` can never drift on message
+    # or behavior. Headless is non-interactive → the helper exits(2) on
+    # failure with the exact messages this block used to print inline.
+    # (cli.main already validated for the `-p` route — this repeat is
+    # idempotent defense-in-depth for direct run_headless callers.)
+    from src.entrypoints.provider_validation import validate_provider_at_startup
+
+    validate_provider_at_startup(options.provider_name, interactive=False, exit_code=2)
+    provider_cfg = get_provider_config(provider_name)  # validated above
     api_key = resolve_api_key(provider_name, provider_cfg)
-    if not api_key and provider_requires_api_key(provider_name):
-        cli_error(
-            f"error: API key for provider '{provider_name}' is not configured. "
-            "Run `clawcodex login` to set it up.",
-            2,
-        )
 
     provider_cls = get_provider_class(provider_name)
     model = options.model or provider_cfg.get("default_model")

@@ -139,6 +139,20 @@ def main():
     # ``typescript/src/main.tsx:1383-1389``.
     _resolve_permission_state(args)
     profile_checkpoint("permissions_resolved")
+
+    # Startup provider validation (ENTRY-2, port of cli.tsx:149 /
+    # providerValidation.ts:479-528): surface a broken provider config NOW
+    # instead of deep inside the first API call. TS split: non-interactive
+    # exits, an interactive TTY warns and continues (the TUI can repair).
+    # Fast paths returned above, so their cold-start cost is untouched. The
+    # headless path re-runs the same shared helper internally — idempotent
+    # defense-in-depth for direct run_headless callers, not an accident.
+    from src.entrypoints.provider_validation import validate_provider_at_startup
+
+    validate_provider_at_startup(
+        args.provider,
+        interactive=not args.print and sys.stdout.isatty(),
+    )
     profile_checkpoint("phase3_end_phase4_start")
 
     if args.print:
@@ -224,6 +238,22 @@ def _run_tui_subcommand(rest: list[str]) -> int:
 
     # ``print=False`` => treated as an interactive session by run_pre_action.
     run_pre_action(SimpleNamespace(print=False))
+
+    # Startup provider validation — this path never reaches main()'s
+    # dispatch-region call site (the sieve returned before argparse), so it
+    # runs the same shared helper itself (critic P3). ``rest`` is parsed by
+    # run_tui_launcher, so eager-parse --provider here (the TS
+    # eagerParseCliFlag idiom, cli.tsx:159-160).
+    from src.entrypoints.provider_validation import validate_provider_at_startup
+
+    provider_flag = None
+    for i, token in enumerate(rest):
+        if token == "--provider" and i + 1 < len(rest):
+            provider_flag = rest[i + 1]
+        elif token.startswith("--provider="):
+            provider_flag = token.split("=", 1)[1]
+    validate_provider_at_startup(provider_flag, interactive=sys.stdout.isatty())
+
     if not _gate_folder_trust():
         return 1
     from src.entrypoints.tui_launcher import run_tui_launcher
