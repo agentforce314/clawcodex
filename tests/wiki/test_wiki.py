@@ -1,5 +1,7 @@
 """Project wiki init/status/ingest tests."""
 
+from pathlib import Path
+
 from src.wiki import get_wiki_paths, ingest_source, init_wiki, wiki_status
 
 
@@ -28,13 +30,19 @@ def test_status_before_and_after(tmp_path):
     assert st["page_count"] == 1  # architecture.md
 
 
-def test_ingest_copies_into_sources(tmp_path):
+def test_ingest_writes_structured_source_note(tmp_path):
+    # SERVICES-4: ingest now writes a STRUCTURED note (title/summary/excerpt)
+    # at sources/{slug}.md, not a raw copy of README.md.
     (tmp_path / "README.md").write_text("# Readme", encoding="utf-8")
     assert ingest_source(tmp_path, "README.md")["ok"] is False  # not initialized yet
     init_wiki(tmp_path)
     res = ingest_source(tmp_path, "README.md")
-    assert res["ok"] is True
-    assert (get_wiki_paths(tmp_path).sources_dir / "README.md").exists()
+    assert res["ok"] is True and res["title"] == "Readme"
+    note = get_wiki_paths(tmp_path).sources_dir / "README.md"
+    assert not note.exists()  # NOT a raw copy of the original name
+    dest = Path(res["dest"])
+    assert dest.exists() and dest.parent.name == "sources"
+    assert "## Summary" in dest.read_text(encoding="utf-8")
     assert wiki_status(tmp_path)["source_count"] == 1
 
 
