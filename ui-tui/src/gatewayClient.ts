@@ -17,11 +17,12 @@
  */
 import { type ChildProcess, spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
+import { readdirSync } from 'node:fs'
+import { resolve as pathResolve } from 'node:path'
 import { createInterface } from 'node:readline'
 
 import type { CostSnapshot, GatewayEvent, PatchHunk, StructuredDiffPayload } from './gatewayTypes.js'
 import { formatTotalCost, setLastCostSnapshot } from './lib/costSummary.js'
-import { completeFileMention } from './lib/fileSuggestions.js'
 import type { SessionInfo } from './types.js'
 
 const STARTUP_TIMEOUT_MS = 30_000
@@ -487,17 +488,10 @@ export class GatewayClient extends EventEmitter {
           })
       }
 
-      case 'complete.path': {
-        // @-file mentions (the hook computes the replace offset; we return
-        // matching entries): path-like words traverse the real filesystem so
-        // any path completes (~/, /abs, ../), others fuzzy-search the project
-        // file index — same split as original CC's useTypeahead.
-        const cwd = process.env.CLAWCODEX_WORKSPACE || process.env.CLAWCODEX_CWD || process.cwd()
-
-        return completeFileMention(String(p.word ?? ''), cwd)
-          .catch(() => [])
-          .then(items => ({ items }) as T)
-      }
+      case 'complete.path':
+        // @-file mentions: serve workspace file completions from disk (the hook
+        // computes the replace offset; we just return matching entries).
+        return Promise.resolve({ items: this.completePath(String(p.word ?? '')) } as T)
       case 'config.get': {
         // Settings slashes read config; only 'full' maps to clawcodex settings.
         if (String(p.key ?? '') === 'full') {
@@ -1008,6 +1002,30 @@ export class GatewayClient extends EventEmitter {
     }
   }
 
+  // @-file mention completion, served from the workspace filesystem (shell-style:
+  // resolve the dir part of the typed word, list it, filter by the basename).
+  private completePath(word: string): Array<{ display: string; meta: string; text: string }> {
+    try {
+      const cwd = process.env.CLAWCODEX_WORKSPACE || process.env.CLAWCODEX_CWD || process.cwd()
+      const stripped = word.startsWith('@') ? word.slice(1) : word
+      const slash = stripped.lastIndexOf('/')
+      const dirPart = slash === -1 ? '' : stripped.slice(0, slash + 1)
+      const base = (slash === -1 ? stripped : stripped.slice(slash + 1)).toLowerCase()
+      const absDir = pathResolve(cwd, dirPart || '.')
+
+      return readdirSync(absDir, { withFileTypes: true })
+        .filter(e => !e.name.startsWith('.') && e.name.toLowerCase().startsWith(base))
+        .slice(0, 50)
+        .map(e => {
+          const isDir = e.isDirectory()
+          const rel = dirPart + e.name + (isDir ? '/' : '')
+
+          return { display: rel, meta: isDir ? 'dir' : 'file', text: rel }
+        })
+    } catch {
+      return []
+    }
+  }
   // Rich Edit/Write result forwarded by the agent-server (`tool_use_result`
   // on the user envelope, trimmed to the display shape). Shape-detected from
   // the value itself — self-describing type/filePath/structuredPatch — so it
