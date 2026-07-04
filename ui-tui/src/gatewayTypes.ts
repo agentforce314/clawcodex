@@ -11,6 +11,8 @@ export interface GatewaySkin {
 
 export interface GatewayCompletionItem {
   display: string
+  /** Argument hint shown dim after the name, e.g. `[on|off|toggle]`. */
+  hint?: string
   meta?: string
   text: string
 }
@@ -52,6 +54,8 @@ export interface StructuredDiffPayload {
 export interface CommandsCatalogResponse {
   canon?: Record<string, string>
   categories?: SlashCategory[]
+  /** Argument hints by canonical `/name` (gateway + workflow commands). */
+  hints?: Record<string, string>
   pairs?: [string, string][]
   skill_count?: number
   sub?: Record<string, string[]>

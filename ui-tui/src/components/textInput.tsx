@@ -472,6 +472,7 @@ const isPasteResultPromise = (
 ): value is Promise<PasteResult> => !!value && typeof (value as PromiseLike<PasteResult>).then === 'function'
 
 export function TextInput({
+  argumentHint,
   columns = 80,
   value,
   onChange,
@@ -567,8 +568,13 @@ export function TextInput({
   // 0 and visually marks the input start. Non-TTY surfaces still need the
   // synthetic inverse first-char to draw a cursor at all.
   const rendered = useMemo(() => {
+    // Ghost argument hint appended after the typed command (original CC's
+    // BaseTextInput): dim, after the cursor, never part of the value. The
+    // separator space is skipped when the value already ends with one.
+    const hint = argumentHint && display ? dim((display.endsWith(' ') ? '' : ' ') + argumentHint) : ''
+
     if (!focus) {
-      return display || dim(placeholder)
+      return display ? display + hint : dim(placeholder)
     }
 
     if (!display && placeholder) {
@@ -576,11 +582,11 @@ export function TextInput({
     }
 
     if (selected) {
-      return renderWithSelection(display, selected.start, selected.end)
+      return renderWithSelection(display, selected.start, selected.end) + hint
     }
 
-    return nativeCursor ? display || ' ' : renderWithCursor(display, cur)
-  }, [cur, display, focus, nativeCursor, placeholder, selected])
+    return (nativeCursor ? display || ' ' : renderWithCursor(display, cur)) + hint
+  }, [argumentHint, cur, display, focus, nativeCursor, placeholder, selected])
 
   useEffect(() => {
     if (self.current) {
@@ -1334,6 +1340,10 @@ export interface PasteEvent {
 }
 
 interface TextInputProps {
+  /** Ghost text appended dim after the value — the slash command's argument
+   *  grammar once `/name ` is typed (original CC's BaseTextInput argumentHint).
+   *  Purely visual: never part of `value`, never submitted. */
+  argumentHint?: string
   columns?: number
   focus?: boolean
   mask?: string
