@@ -24,8 +24,17 @@ import argparse
 import asyncio
 import json
 import logging
+import os
 import sys
 import threading
+
+# OpenClaude default: experimental API betas off unless the user opts in
+# (mirrors typescript/src/entrypoints/cli.tsx:44's MODULE-scope placement —
+# beats any import-time env capture in the heavy imports below). Per-process
+# entry: this is the standalone backend where API calls happen; a direct
+# ``clawcodex agent-server`` / ``python -m`` run inherits nothing from
+# cli.main(), and Ink-spawned children get it by env inheritance too.
+os.environ.setdefault("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS", "true")
 from pathlib import Path
 
 # ch02 round-4 WI-4 — bracket the child's import cost. This module is the
