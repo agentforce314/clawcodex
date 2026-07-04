@@ -66,11 +66,26 @@ class OpenRouterProvider(OpenAICompatibleProvider):
         return OpenAI(**kwargs)
 
     def get_available_models(self) -> list[str]:
-        """Return a curated list of popular OpenRouter model IDs.
+        """Curated popular OpenRouter model IDs ∪ the endpoint's live list.
 
-        OpenRouter supports hundreds of models; this list is a starting point —
-        any valid ``vendor/model`` ID accepted by OpenRouter can be used.
+        OpenRouter's hosted catalog churns weekly (INTEG-1): the live list is
+        discovered via the non-blocking TTL cache and merged over this
+        curated starting point; any valid ``vendor/model`` ID is accepted
+        regardless.
         """
+        from src.providers.model_discovery import discovered_models
+
+        return discovered_models(
+            "openrouter",
+            getattr(self, "base_url", None) or "https://openrouter.ai/api/v1",
+            getattr(self, "api_key", None) or None,
+            "openai-compatible",
+            self._curated_models(),
+            mode="hybrid",  # gateways/openrouter.ts source:'hybrid' — curation first
+        )
+
+    @staticmethod
+    def _curated_models() -> list[str]:
         return [
             # DeepSeek V4 (latest, strongest — top of the list)
             "deepseek/deepseek-v4-pro",
