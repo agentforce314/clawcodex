@@ -181,7 +181,20 @@ def create_subagent_context(
         lsp_client=parent_context.lsp_client,
         # Fresh isolated collections
         todos=[],
-        tasks={},
+        # QUERY-1 — the task BOARD is shared for TEAMMATE spawns (named
+        # agent + parent team): TS keeps one board (AppState.tasks; the
+        # team file), so a teammate's TaskCompleted stop hooks can see the
+        # tasks the leader assigned it. Anonymous subagents keep the ch10
+        # fresh-isolation semantics.
+        tasks=(
+            parent_context.tasks
+            if (
+                overrides.teammate_name
+                and isinstance(parent_context.team, dict)
+                and parent_context.team.get("team_name")
+            )
+            else {}
+        ),
         outbox=[],
         crons={},
         # No-op / None for UI callbacks

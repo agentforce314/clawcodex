@@ -190,3 +190,63 @@ class TestExecutors:
         assert data["hook_event"] == "TeammateIdle"
         assert data["teammate_name"] == "researcher"
         assert data["team_name"] == "my-team"
+
+
+class TestRealPathLiveness:
+    """The critic's liveness demand: fire the block through REAL context
+    construction (TeamCreate-populated team + named spawn via
+    create_subagent_context), not a hand-built context."""
+
+    def test_teammate_context_from_real_spawn_fires_hooks(self, tmp_path):
+        import json as _json
+
+        from src.agent.subagent_context import (
+            SubagentContextOverrides,
+            create_subagent_context,
+        )
+        from src.tool_system.context import ToolContext
+        from src.tool_system.tools.team import TeamCreateTool
+
+        # Leader context; TeamCreate tool populates context.team (team.py:40)
+        leader = ToolContext(workspace_root=tmp_path)
+        leader.workspace_trusted = True
+        TeamCreateTool.call({"team_name": "sweep-team"}, leader)
+        assert leader.team and leader.team["team_name"] == "sweep-team"
+
+        # Leader assigns a task on the shared board
+        leader.tasks["7"] = {"id": "7", "subject": "port query folder",
+                             "status": "in_progress", "owner": "researcher"}
+
+        # Named spawn — the REAL seam (run_agent → create_subagent_context)
+        tm_ctx = create_subagent_context(
+            leader, SubagentContextOverrides(teammate_name="researcher"),
+        )
+        assert tm_ctx.teammate_name == "researcher"
+        assert tm_ctx.team_name == "sweep-team"
+        # The board is SHARED for teammates (TS single-board semantics)
+        assert tm_ctx.tasks is leader.tasks
+
+        marker_tc = tmp_path / "tc"
+        marker_ti = tmp_path / "ti"
+        mgr = MagicMock()
+        mgr.snapshot = _Snapshot({
+            "TaskCompleted": _hook(f"touch {marker_tc}"),
+            "TeammateIdle": _hook(f"touch {marker_ti}"),
+        })
+        tm_ctx.hook_config_manager = mgr
+
+        _, result = _drive(tm_ctx)
+        assert marker_tc.exists(), "TaskCompleted fires on the SHARED board's owned task"
+        assert marker_ti.exists()
+
+    def test_anonymous_subagent_keeps_isolated_board(self, tmp_path):
+        from src.agent.subagent_context import (
+            SubagentContextOverrides,
+            create_subagent_context,
+        )
+        from src.tool_system.context import ToolContext
+
+        leader = ToolContext(workspace_root=tmp_path)
+        leader.tasks["1"] = {"id": "1", "status": "in_progress", "owner": "x"}
+        anon = create_subagent_context(leader, SubagentContextOverrides())
+        assert anon.tasks == {} and anon.tasks is not leader.tasks
