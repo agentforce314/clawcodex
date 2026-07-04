@@ -17,12 +17,11 @@
  */
 import { type ChildProcess, spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
-import { readdirSync } from 'node:fs'
-import { resolve as pathResolve } from 'node:path'
 import { createInterface } from 'node:readline'
 
 import type { CostSnapshot, GatewayEvent, PatchHunk, StructuredDiffPayload } from './gatewayTypes.js'
 import { formatTotalCost, setLastCostSnapshot } from './lib/costSummary.js'
+import { completeFileMention } from './lib/fileSuggestions.js'
 import type { SessionInfo } from './types.js'
 
 const STARTUP_TIMEOUT_MS = 30_000
@@ -55,10 +54,13 @@ function safeJson(v: unknown): string {
  *  option so the user sees what it will persist. */
 export function describeSuggestionRule(suggestion: any): string | null {
   const rules = Array.isArray(suggestion?.rules) ? suggestion.rules : []
+
   const labels = rules
     .filter((r: any) => r && r.tool_name)
     .map((r: any) => (r.rule_content ? `${r.tool_name}(${r.rule_content})` : String(r.tool_name)))
+
   if (labels.length === 0) {return null}
+
   return labels.length > 3 ? `${labels.slice(0, 3).join(', ')}, …` : labels.join(', ')
 }
 
@@ -244,27 +246,37 @@ export function formatToolResult(
 }
 
 /** clawcodex-backed slash commands (handled via command.dispatch → dispatchSlash).
- *  Drives both the catalog (recognition) and the complete.slash menu. */
-const SLASHES: ReadonlyArray<{ desc: string; name: string }> = [
+ *  Drives both the catalog (recognition) and the complete.slash menu.
+ *
+ *  `hint` is the argument grammar shown dim in the menu and as ghost text
+ *  after `/name ` (original CC's Command.argumentHint). Names shadowed by a
+ *  TUI-local command (/model, /compact, /bg, /resume, /clear, /exit — the
+ *  local registry dispatches first) deliberately carry NO hint here: the
+ *  local command's argumentHint is the one that matches actual behavior. */
+const SLASHES: ReadonlyArray<{ desc: string; hint?: string; name: string }> = [
   { desc: 'Show available commands', name: '/help' },
   { desc: 'Clear the conversation', name: '/clear' },
   { desc: 'Switch the model', name: '/model' },
-  { desc: 'Set the permission mode', name: '/mode' },
+  { desc: 'Set the permission mode', hint: '[default|plan|acceptEdits|dontAsk|bypassPermissions]', name: '/mode' },
   { desc: 'Compact the conversation to save context', name: '/compact' },
   { desc: 'Show context-window usage', name: '/context' },
   { desc: 'Show the total cost and duration of the current session', name: '/cost' },
-  { desc: 'Undo recent turns', name: '/rewind' },
-  { desc: 'Toggle extended thinking', name: '/thinking' },
-  { desc: 'Set reasoning effort (or "ultracode" workflow mode)', name: '/effort' },
-  { desc: 'Switch the provider', name: '/provider' },
+  { desc: 'Undo recent turns', hint: '[<turns>]', name: '/rewind' },
+  { desc: 'Toggle extended thinking', hint: '[on|off|toggle]', name: '/thinking' },
+  {
+    desc: 'Set reasoning effort (or "ultracode" workflow mode)',
+    hint: '[minimal|low|medium|high|auto|ultracode]',
+    name: '/effort'
+  },
+  { desc: 'Switch the provider', hint: '[<provider>]', name: '/provider' },
   { desc: 'List running and recent dynamic workflows', name: '/workflows' },
-  { desc: 'Search / manage the knowledge base', name: '/knowledge' },
-  { desc: 'Browse and inspect available skills', name: '/skills' },
-  { desc: 'View or set the plan', name: '/plan' },
+  { desc: 'Search / manage the knowledge base', hint: '[status|list|clear|enable|disable]', name: '/knowledge' },
+  { desc: 'Browse and inspect available skills', hint: '[list | inspect <name> | search <query>]', name: '/skills' },
+  { desc: 'View or set the plan', hint: '[<text>]', name: '/plan' },
   { desc: 'Generate session insights', name: '/insights' },
   { desc: 'List or start background agents', name: '/bg' },
   { desc: 'Resume a past session', name: '/resume' },
-  { desc: 'Rename this session', name: '/rename' },
+  { desc: 'Rename this session', hint: '<name>', name: '/rename' },
   { desc: 'Exit clawcodex', name: '/exit' }
 ]
 
@@ -426,8 +438,13 @@ export class GatewayClient extends EventEmitter {
           .then(wf => {
             const pairs = SLASHES.map(s => [s.name, s.desc] as [string, string])
             const canon: Record<string, string> = {}
+            const hints: Record<string, string> = {}
 
-            for (const s of SLASHES) {canon[s.name] = s.name}
+            for (const s of SLASHES) {
+              canon[s.name] = s.name
+
+              if (s.hint) {hints[s.name] = s.hint}
+            }
 
             for (const w of wf) {
               const name = `/${w.name}`
@@ -435,11 +452,13 @@ export class GatewayClient extends EventEmitter {
               if (canon[name]) {continue}
               canon[name] = name
               pairs.push([name, w.description ?? 'Run a dynamic workflow'])
+
+              if (w.argument_hint) {hints[name] = w.argument_hint}
             }
 
             // skill_count is served lazily from the skills cache (warmed by any
             // /skills use) so the startup catalog doesn't pay a full disk scan.
-            return { canon, categories: [], pairs, skill_count: this.skillsTotal, sub: {} } as T
+            return { canon, categories: [], hints, pairs, skill_count: this.skillsTotal, sub: {} } as T
           })
       }
 
@@ -453,21 +472,32 @@ export class GatewayClient extends EventEmitter {
               ...SLASHES,
               ...wf
                 .filter(w => !SLASHES.some(s => s.name === `/${w.name}`))
-                .map(w => ({ desc: w.description ?? 'Run a dynamic workflow', name: `/${w.name}` }))
+                .map(w => ({
+                  desc: w.description ?? 'Run a dynamic workflow',
+                  hint: w.argument_hint,
+                  name: `/${w.name}`
+                }))
             ]
 
             const items = entries
               .filter(s => s.name.toLowerCase().startsWith(text))
-              .map(s => ({ display: s.name, meta: s.desc, text: s.name }))
+              .map(s => ({ display: s.name, hint: s.hint, meta: s.desc, text: s.name }))
 
             return { items, replace_from: 1 } as T
           })
       }
 
-      case 'complete.path':
-        // @-file mentions: serve workspace file completions from disk (the hook
-        // computes the replace offset; we just return matching entries).
-        return Promise.resolve({ items: this.completePath(String(p.word ?? '')) } as T)
+      case 'complete.path': {
+        // @-file mentions (the hook computes the replace offset; we return
+        // matching entries): path-like words traverse the real filesystem so
+        // any path completes (~/, /abs, ../), others fuzzy-search the project
+        // file index — same split as original CC's useTypeahead.
+        const cwd = process.env.CLAWCODEX_WORKSPACE || process.env.CLAWCODEX_CWD || process.cwd()
+
+        return completeFileMention(String(p.word ?? ''), cwd)
+          .catch(() => [])
+          .then(items => ({ items }) as T)
+      }
       case 'config.get': {
         // Settings slashes read config; only 'full' maps to clawcodex settings.
         if (String(p.key ?? '') === 'full') {
@@ -561,7 +591,6 @@ export class GatewayClient extends EventEmitter {
         this.sendControl('interrupt', {})
 
         return Promise.resolve({ ok: true } as T)
-
       // ── skills hub + /skills subcommands ─────────────────────────────────
       case 'skills.manage': {
         const action = String(p.action ?? 'list')
@@ -952,7 +981,6 @@ export class GatewayClient extends EventEmitter {
         // Reached only via the slash-worker fallback for unknown subcommands —
         // the TUI-local /skills (ops.ts) owns the hub + list/inspect/search.
         return out('usage: /skills [list | inspect <name> | search <query>] — bare /skills opens the hub')
-
       case 'workflows': {
         const r = (await this.controlQuery('workflows', {})) as any
 
@@ -977,31 +1005,6 @@ export class GatewayClient extends EventEmitter {
 
         return out(`/${name} isn't wired into the clawcodex backend yet.`)
       }
-    }
-  }
-
-  // @-file mention completion, served from the workspace filesystem (shell-style:
-  // resolve the dir part of the typed word, list it, filter by the basename).
-  private completePath(word: string): Array<{ display: string; meta: string; text: string }> {
-    try {
-      const cwd = process.env.CLAWCODEX_WORKSPACE || process.env.CLAWCODEX_CWD || process.cwd()
-      const stripped = word.startsWith('@') ? word.slice(1) : word
-      const slash = stripped.lastIndexOf('/')
-      const dirPart = slash === -1 ? '' : stripped.slice(0, slash + 1)
-      const base = (slash === -1 ? stripped : stripped.slice(slash + 1)).toLowerCase()
-      const absDir = pathResolve(cwd, dirPart || '.')
-
-      return readdirSync(absDir, { withFileTypes: true })
-        .filter(e => !e.name.startsWith('.') && e.name.toLowerCase().startsWith(base))
-        .slice(0, 50)
-        .map(e => {
-          const isDir = e.isDirectory()
-          const rel = dirPart + e.name + (isDir ? '/' : '')
-
-          return { display: rel, meta: isDir ? 'dir' : 'file', text: rel }
-        })
-    } catch {
-      return []
     }
   }
 

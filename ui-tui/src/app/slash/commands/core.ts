@@ -158,6 +158,7 @@ export const coreCommands: SlashCommand[] = [
 
   {
     aliases: ['scroll'],
+    argumentHint: '[on|off|toggle|wheel|buttons|all]',
     help: 'set mouse tracking preset [on|off|toggle|wheel|buttons|all]',
     name: 'mouse',
     run: (arg, ctx) => {
@@ -234,6 +235,7 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
+    argumentHint: '[<title>]',
     help: 'set or show current session title',
     name: 'title',
     run: (arg, ctx) => {
@@ -275,6 +277,7 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
+    argumentHint: '[on|off|toggle]',
     help: 'toggle compact transcript',
     name: 'compact',
     run: (arg, ctx) => {
@@ -293,6 +296,7 @@ export const coreCommands: SlashCommand[] = [
 
   {
     aliases: ['detail'],
+    argumentHint: '[hidden|collapsed|expanded|cycle]',
     help: 'control agent detail visibility (global or per-section)',
     name: 'details',
     run: (arg, ctx) => {
@@ -356,6 +360,7 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
+    argumentHint: '[random|daily]',
     help: 'local fortune',
     name: 'fortune',
     run: (arg, ctx) => {
@@ -374,6 +379,7 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
+    argumentHint: '[<number>]',
     help: 'copy selection or assistant message',
     name: 'copy',
     run: async (arg, ctx) => {
@@ -446,6 +452,7 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
+    argumentHint: '[auto|vscode|cursor|windsurf]',
     help: 'configure IDE terminal keybindings for multiline + undo/redo',
     name: 'terminal-setup',
     run: (arg, ctx) => {
@@ -481,6 +488,7 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
+    argumentHint: '[<lines>]',
     help: 'view gateway logs',
     name: 'logs',
     run: (arg, ctx) => {
@@ -491,6 +499,7 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
+    argumentHint: '[<preview-chars>]',
     help: 'view current transcript (user + assistant messages)',
     name: 'history',
     run: (arg, ctx) => {
@@ -553,6 +562,7 @@ export const coreCommands: SlashCommand[] = [
 
   {
     aliases: ['sb'],
+    argumentHint: '[on|off|top|bottom|toggle]',
     help: 'status bar position (on|off|top|bottom)',
     name: 'statusbar',
     run: (arg, ctx) => {
@@ -581,6 +591,7 @@ export const coreCommands: SlashCommand[] = [
 
   {
     aliases: ['q'],
+    argumentHint: '[<message>]',
     help: 'inspect or enqueue a message',
     name: 'queue',
     run: (arg, ctx) => {
@@ -594,6 +605,7 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
+    argumentHint: '<prompt>',
     help: 'inject a message after the next tool call (no interrupt)',
     name: 'steer',
     run: (arg, ctx) => {
