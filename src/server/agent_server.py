@@ -2478,6 +2478,15 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
         if sess._mcp_runtime is not None:
             tool_context.mcp_clients = sess._mcp_runtime.clients  # server-name catalog for the agent tool
 
+        # PLUGINS-1 — initBuiltinPlugins (main.tsx:1926 analog): register
+        # bundled built-in plugins before commands/prompt assemble. Idempotent.
+        try:
+            from src.plugins.init_builtin import init_builtin_plugins
+
+            init_builtin_plugins()
+        except Exception:  # noqa: BLE001 — plugins must not block startup
+            logger.debug("[agent-server] init_builtin_plugins failed", exc_info=True)
+
         # OS-1 G1 — the startup producer: a settings-configured output style
         # applies from the FIRST prompt (before this, output_style_name was
         # only ever set by the set_output_style control).
