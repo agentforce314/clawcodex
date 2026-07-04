@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 
+from .batch import register_batch_skill
 from .debug import register_debug_skill
 from .loop import register_loop_skill
 from .simplify import register_simplify_skill
@@ -48,6 +49,7 @@ def init_bundled_skills() -> None:
     register_simplify_skill()
     register_debug_skill()
     register_loop_skill()
+    register_batch_skill()
     register_stuck_skill()
     register_verify_content_skill()
     _INITIALIZED = True
@@ -68,6 +70,7 @@ __all__ = [
     "register_simplify_skill",
     "register_debug_skill",
     "register_loop_skill",
+    "register_batch_skill",
     "register_stuck_skill",
     "register_verify_content_skill",
 ]
