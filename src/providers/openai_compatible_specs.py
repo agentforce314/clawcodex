@@ -65,6 +65,11 @@ class ProviderSpec:
     #: Whether a key is mandatory. ``False`` for local servers (Ollama, vLLM,
     #: SGLang) that accept any/no token — these stay usable without ``login``.
     requires_api_key: bool = True
+    #: INTEG-1 — dynamic-catalog kind ("ollama" | "openai-compatible") for
+    #: providers whose real model list lives on the endpoint (local servers,
+    #: churning hosted catalogs). None = static list only. See
+    #: src/providers/model_discovery.py (the discoveryService port).
+    dynamic_catalog: str | None = None
     #: Generated subclass name (for repr / debugging). Derived from ``id`` when
     #: omitted.
     class_name: str = ""
@@ -224,6 +229,7 @@ _SPECS: tuple[ProviderSpec, ...] = (
     ),
     ProviderSpec(
         id="sglang",
+        dynamic_catalog="openai-compatible",
         label="SGLang (local)",
         default_base_url="http://localhost:30000/v1",
         default_model="deepseek-ai/DeepSeek-V4-Pro",
@@ -237,6 +243,7 @@ _SPECS: tuple[ProviderSpec, ...] = (
     ),
     ProviderSpec(
         id="vllm",
+        dynamic_catalog="openai-compatible",
         label="vLLM (local)",
         default_base_url="http://localhost:8000/v1",
         default_model="deepseek-ai/DeepSeek-V4-Pro",
@@ -250,6 +257,7 @@ _SPECS: tuple[ProviderSpec, ...] = (
     ),
     ProviderSpec(
         id="ollama",
+        dynamic_catalog="ollama",
         label="Ollama (local)",
         default_base_url="http://localhost:11434/v1",
         default_model="deepseek-coder:1.3b",
@@ -363,7 +371,21 @@ class _SpecOpenAICompatibleProvider(OpenAICompatibleProvider):
         return OpenAI(**kwargs)
 
     def get_available_models(self) -> list[str]:
-        return list(self.SPEC.available_models)
+        spec = self.SPEC
+        if spec.dynamic_catalog is None:
+            return list(spec.available_models)
+        # Dynamic catalog (INTEG-1): endpoint-discovered ∪ static, via the
+        # non-blocking TTL cache — never blocks the caller, never returns
+        # empty when the static list has entries.
+        from src.providers.model_discovery import discovered_models
+
+        return discovered_models(
+            spec.id,
+            getattr(self, "base_url", None) or spec.default_base_url,
+            getattr(self, "api_key", None) or None,
+            spec.dynamic_catalog,
+            spec.available_models,
+        )
 
 
 # Generated subclasses are cached so repeated lookups return the same class
