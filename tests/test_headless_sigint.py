@@ -121,6 +121,13 @@ def _patch_provider_only(monkeypatch, *, on_chat=None):
         lambda name: {"api_key": "test-key", "default_model": "fake-model"},
     )
     monkeypatch.setattr(headless_mod, "get_default_provider", lambda: "anthropic")
+    # ENTRY-2: startup validation reads the REAL provider registry (the
+    # shared helper, not headless's module aliases faked above) — stub it
+    # out here; it has its own dedicated tests (test_startup_validation.py).
+    monkeypatch.setattr(
+        "src.entrypoints.provider_validation.get_provider_validation_error",
+        lambda name: None,
+    )
     monkeypatch.setattr(
         headless_mod, "build_default_registry", lambda provider=None: _Registry()
     )
