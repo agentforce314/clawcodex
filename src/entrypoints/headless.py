@@ -213,6 +213,14 @@ def run_headless(options: HeadlessOptions) -> int:
         abort_controller=abort_controller,
     )
     tool_context.options.is_non_interactive_session = True
+    # PLUGINS-1 — initBuiltinPlugins (main.tsx:1926 analog), idempotent.
+    try:
+        from src.plugins.init_builtin import init_builtin_plugins
+
+        init_builtin_plugins()
+    except Exception:  # noqa: BLE001
+        pass
+
     # OS-1 G1 — settings-configured output style applies headless too.
     from src.outputStyles import output_style_from_settings
 

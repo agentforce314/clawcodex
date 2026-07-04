@@ -1221,7 +1221,24 @@ def get_registered_skill(name: str) -> Skill | None:
     found = _skill_registry.get(name)
     if found is not None:
         return found
-    return get_bundled_skill_by_name(name)
+    bundled = get_bundled_skill_by_name(name)
+    if bundled is not None:
+        return bundled
+    # PLUGINS-1 — plugin-aware resolution (the TS SkillTool.ts:91 analog:
+    # TS resolves model invocations through the plugin-aware getCommands();
+    # this registry was plugin-blind, so an ENABLED builtin-plugin skill was
+    # advertised to the model but failed "Unknown skill"). Enable-gated by
+    # construction: get_builtin_plugin_skill_commands only yields skills of
+    # ENABLED plugins, so a disabled plugin's skill never leaks here.
+    try:
+        from src.plugins.builtin_plugins import get_builtin_plugin_skill_commands
+
+        for skill in get_builtin_plugin_skill_commands():
+            if skill.name == name or name in getattr(skill, "aliases", ()):
+                return skill
+    except Exception:  # noqa: BLE001 — plugins are non-critical
+        pass
+    return None
 
 
 # Back-compat shim for the old PromptSkill-producing loader. Some callers
