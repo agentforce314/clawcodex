@@ -201,7 +201,11 @@ class TestToolRegistryDispatchPermissions(unittest.TestCase):
         )
 
         self.assertTrue(result.is_error)
-        self.assertIn("denied", result.output.get("error", "").lower())
+        # HOOKS-1 G2: bare user denial now carries the TS-verbatim
+        # instructive REJECT_MESSAGE (utils/messages.ts:214).
+        from src.permissions.handler import REJECT_MESSAGE
+
+        self.assertEqual(result.output.get("error"), REJECT_MESSAGE)
 
     def test_dispatch_deny_feedback_reaches_error(self) -> None:
         from src.permissions.types import PermissionAskReply

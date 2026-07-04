@@ -174,7 +174,11 @@ class TestRegistryDispatch(unittest.TestCase):
         ctx.permission_handler = lambda request: PermissionAskReply(behavior="deny")
         result = reg.dispatch(ToolCall(name="NeedApproval", input={}), ctx)
         self.assertTrue(result.is_error)
-        self.assertIn("denied", result.output["error"])
+        # HOOKS-1 G2: the TS-verbatim REJECT_MESSAGE replaced the generic
+        # "denied" text (utils/messages.ts:214).
+        from src.permissions.handler import REJECT_MESSAGE
+
+        self.assertEqual(result.output["error"], REJECT_MESSAGE)
 
 
 class TestPipelineFunctions(unittest.TestCase):
