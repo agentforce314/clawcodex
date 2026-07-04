@@ -1028,6 +1028,15 @@ export default class Ink {
             type: 'stdout',
             content: cursorPosition(row, col)
           })
+
+          this.displayCursor = target
+        } else if (frame.cursor.y - target.y > this.log.physicalCursorRow()) {
+          // The declared target sits above the physical viewport top (its
+          // row scrolled off, e.g. a composer taller than the terminal).
+          // A relative move there would clamp and desync displayCursor
+          // from the real cursor, poisoning every later frame's relative
+          // moves. Leave the cursor where it is instead.
+          this.displayCursor = !hasDiff && parked !== null ? parked : null
         } else {
           // After the diff (or preamble), cursor is at frame.cursor. If no
           // diff AND previously parked, it's still at the old park position
@@ -1049,9 +1058,9 @@ export default class Ink {
               content: cursorMove(dx, dy)
             })
           }
-        }
 
-        this.displayCursor = target
+          this.displayCursor = target
+        }
       } else {
         // Declaration cleared (input blur, unmount). Restore physical cursor
         // to frame.cursor before forgetting the park position — otherwise
@@ -2409,6 +2418,7 @@ export default class Ink {
         // cursor, so this is inline-only.)
         const parkedY = this.displayCursor?.y ?? this.frontFrame.screen.height
         const below = Math.max(0, this.frontFrame.screen.height - parkedY)
+
         if (below > 0) {
           writeSync(1, '\r' + '\n'.repeat(below))
         }
