@@ -49,7 +49,10 @@ DEFAULT_SETTINGS = SettingsSchema(
 VALID_EFFORT_VALUES = ("", "low", "medium", "high", "max")
 
 # Known valid output styles
-VALID_OUTPUT_STYLES = ("default", "concise", "verbose", "markdown")
+# OS-1: the VALID_OUTPUT_STYLES enum was removed — it was invented (rejected
+# the real builtin "explanatory", accepted three nonexistent styles). Style
+# names are free-form (TS z.string()); the loader's available_output_styles()
+# is the runtime truth where a listing is needed.
 
 # Known valid spinner-verb merge modes (TS settings/types.ts:696)
 VALID_SPINNER_VERB_MODES = ("append", "replace")

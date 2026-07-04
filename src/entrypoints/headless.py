@@ -213,6 +213,12 @@ def run_headless(options: HeadlessOptions) -> int:
         abort_controller=abort_controller,
     )
     tool_context.options.is_non_interactive_session = True
+    # OS-1 G1 — settings-configured output style applies headless too.
+    from src.outputStyles import output_style_from_settings
+
+    _settings_style = output_style_from_settings(cwd=str(workspace_root))
+    if _settings_style:
+        tool_context.output_style_name = _settings_style
     # ch01 round-4 WI-1 — load settings hooks into the executor-visible
     # snapshot + global registry. Safe here: run_headless is sync and its
     # asyncio.run happens later. Never raises.

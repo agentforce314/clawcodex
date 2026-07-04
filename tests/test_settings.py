@@ -82,10 +82,15 @@ class TestValidation:
         errors = validate_settings(s)
         assert any(e.field == "permission_mode" for e in errors)
 
-    def test_invalid_output_style(self):
-        s = SettingsSchema(output_style=OutputStyleSettings(style="nonexistent"))
-        errors = validate_settings(s)
-        assert any(e.field == "output_style.style" for e in errors)
+    def test_output_style_is_free_form(self):
+        """OS-1: style names are free-form (TS z.string() — custom user
+        styles exist); unknown names fall back to default at resolve time
+        instead of failing validation. The old enum check rejected the
+        real builtin "explanatory"."""
+        s = SettingsSchema(output_style=OutputStyleSettings(style="explanatory"))
+        assert not any(e.field == "output_style.style" for e in validate_settings(s))
+        s2 = SettingsSchema(output_style=OutputStyleSettings(style="my-custom-style"))
+        assert not any(e.field == "output_style.style" for e in validate_settings(s2))
 
     def test_max_width_too_small(self):
         s = SettingsSchema(output_style=OutputStyleSettings(max_width=10))

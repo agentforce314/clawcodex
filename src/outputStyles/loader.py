@@ -29,14 +29,32 @@ from .styles import BUILTIN_OUTPUT_STYLES, OutputStyle
 _logger = logging.getLogger(__name__)
 
 
-def _default_user_dir() -> Path:
-    """Resolve the default user output-styles directory lazily.
+def _user_style_dirs() -> list[Path]:
+    """User output-style directories, canon first (OS-1 G4).
 
-    Lazy so test environments that monkeypatch ``HOME`` after import see
-    the override. Mirrors the keybindings-loader pattern.
+    Primary: ``GLOBAL_CONFIG_DIR/outputStyles`` (this port's config home —
+    the INTEG-1 canon rule; lazy import so test re-points are honored).
+    Legacy fallback: ``~/.claude/outputStyles`` — the TS config home this
+    loader originally copied; kept readable for continuity, canon wins on
+    name collisions. Lazy so tests that monkeypatch ``HOME`` /
+    ``GLOBAL_CONFIG_DIR`` after import see the override.
     """
+    from src.config import GLOBAL_CONFIG_DIR
 
-    return Path("~/.claude/outputStyles").expanduser()
+    return [
+        Path(GLOBAL_CONFIG_DIR) / "outputStyles",
+        Path("~/.claude/outputStyles").expanduser(),
+    ]
+
+
+def _load_default_user_styles() -> dict[str, OutputStyle]:
+    """Merged builtins + legacy-dir + canon-dir styles (canon wins)."""
+    canon, legacy = _user_style_dirs()
+    styles: dict[str, OutputStyle] = dict(BUILTIN_OUTPUT_STYLES)
+    for directory in (legacy, canon):  # canon merged LAST → wins collisions
+        if directory.is_dir():
+            styles.update(load_output_styles_dir(directory))
+    return styles
 
 
 def load_output_styles_dir(path: str | Path) -> dict[str, OutputStyle]:
@@ -105,11 +123,7 @@ def resolve_output_style(
     if search_dir is not None:
         styles = load_output_styles_dir(search_dir)
     else:
-        default_dir = _default_user_dir()
-        if default_dir.is_dir():
-            styles = load_output_styles_dir(default_dir)
-        else:
-            styles = dict(BUILTIN_OUTPUT_STYLES)
+        styles = _load_default_user_styles()
 
     key = (name or "default").strip() or "default"
     return styles.get(key, styles["default"])
@@ -128,3 +142,39 @@ __all__ = [
     "load_output_styles_dir",
     "resolve_output_style",
 ]
+
+def output_style_from_settings(cwd: str | None = None) -> str | None:
+    """The startup producer (OS-1 G1): ``settings.output_style.style`` →
+    the style name the live context should carry, or ``None`` for default.
+
+    TS reads ``settings?.outputStyle`` at prompt-build time
+    (constants/outputStyles.ts:207); this port carries the style on the
+    tool context, so entrypoints call this once at context construction.
+    Never raises (a broken settings file must not block startup).
+    """
+    try:
+        from src.settings.settings import load_settings
+
+        style = load_settings(cwd=cwd).output_style.style
+        if style and style != "default":
+            return str(style)
+    except Exception:  # noqa: BLE001
+        _logger.debug("output_style_from_settings failed", exc_info=True)
+    return None
+
+def available_output_styles(search_dir: str | Path | None = None) -> list[str]:
+    """Names of all resolvable styles — builtins ∪ user files. OS-1 W3:
+    feeds the set_output_style validation/reply and the client
+    /output-style listing. Mirrors resolve_output_style's directory
+    resolution exactly (same styles resolvable = same names listed)."""
+    try:
+        styles = (
+            load_output_styles_dir(search_dir)
+            if search_dir is not None
+            else _load_default_user_styles()
+        )
+        return list(styles)
+    except Exception:  # noqa: BLE001 — listing is best-effort
+        _logger.debug("available_output_styles: scan failed", exc_info=True)
+        return list(BUILTIN_OUTPUT_STYLES)
+

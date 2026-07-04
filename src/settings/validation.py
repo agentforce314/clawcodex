@@ -7,7 +7,6 @@ from typing import Any
 
 from .constants import (
     VALID_EFFORT_VALUES,
-    VALID_OUTPUT_STYLES,
     VALID_PERMISSION_MODES,
     VALID_SPINNER_VERB_MODES,
 )
@@ -42,13 +41,11 @@ def validate_settings(settings: SettingsSchema) -> list[ValidationError]:
             value=settings.permission_mode,
         ))
 
-    # Output style
-    if settings.output_style.style not in VALID_OUTPUT_STYLES:
-        errors.append(ValidationError(
-            field="output_style.style",
-            message=f"Invalid output style: {settings.output_style.style!r}",
-            value=settings.output_style.style,
-        ))
+    # Output style: a free-form name (TS settings schema is z.string() —
+    # custom user styles make a fixed enum impossible to validate here;
+    # unknown names fall back to "default" at resolve time). OS-1 removed
+    # the invented VALID_OUTPUT_STYLES enum check, which rejected the real
+    # builtin "explanatory" and accepted three styles that never existed.
 
     # Max width
     if settings.output_style.max_width < 40:

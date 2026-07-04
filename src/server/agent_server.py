@@ -393,6 +393,9 @@ class _AgentSession:
                 "model": getattr(self.provider, "model", None),
                 "provider": self.provider_name,
                 "available_models": self._available_models(),
+                # OS-1 W3 — the /output-style no-arg display.
+                "output_style": getattr(self.tool_context, "output_style_name", None) or "default",
+                "available_output_styles": self._available_output_styles(),
             })
             return
         if subtype == "get_context_usage":
@@ -605,6 +608,19 @@ class _AgentSession:
                 "response": response,
             },
         })
+
+    def _available_output_styles(self) -> list[str]:
+        """OS-1 W3 — builtins ∪ user styles for the /output-style listing."""
+        try:
+            from src.outputStyles import available_output_styles
+
+            return available_output_styles(
+                getattr(self.tool_context, "output_style_dir", None)
+                if self.tool_context is not None
+                else None
+            )
+        except Exception:  # noqa: BLE001
+            return ["default", "explanatory"]
 
     def _available_models(self) -> list[str]:
         """Provider's selectable models (for the /model picker). Best-effort."""
@@ -1209,15 +1225,23 @@ class _AgentSession:
             self._reply(request_id, {"ok": False, "error": "cannot change output style during an active turn"})
             return
         try:
-            from src.settings.constants import VALID_OUTPUT_STYLES
+            from src.outputStyles import available_output_styles
 
-            if not isinstance(style, str) or style not in VALID_OUTPUT_STYLES:
+            tc = self.tool_context
+            valid = available_output_styles(
+                getattr(tc, "output_style_dir", None) if tc is not None else None
+            )
+            # OS-1: validate against the loader's truth (builtins ∪ user
+            # styles). The old fixed VALID_OUTPUT_STYLES list rejected the
+            # real builtin "explanatory" and accepted three styles that
+            # never existed.
+            if not isinstance(style, str) or style not in valid:
                 self._reply(
                     request_id,
-                    {"ok": False, "error": f"invalid style (valid: {', '.join(VALID_OUTPUT_STYLES)})"},
+                    {"ok": False, "error": f"invalid style (valid: {', '.join(valid)})",
+                     "available_styles": valid},
                 )
                 return
-            tc = self.tool_context
             if tc is None:
                 self._reply(request_id, {"ok": False, "error": "session not ready"})
                 return
@@ -1232,7 +1256,18 @@ class _AgentSession:
                 self.system_prompt = self._compose_with_plan(self._base_system_prompt)
             except Exception:  # noqa: BLE001 - keep the style set even if rebuild is unavailable
                 logger.debug("[agent-server] system prompt rebuild after set_output_style failed", exc_info=True)
-            self._reply(request_id, {"ok": True, "style": style})
+            # OS-1 G3 — persist the choice (localSettings analog,
+            # Settings/Config.tsx:1600). Best-effort: the in-memory switch
+            # above already applies.
+            try:
+                from src.settings.settings import update_local_settings
+
+                update_local_settings(
+                    {"output_style": {"style": style}}, cwd=self.cwd,
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug("[agent-server] output style persist failed", exc_info=True)
+            self._reply(request_id, {"ok": True, "style": style, "available_styles": valid})
         except Exception as exc:  # noqa: BLE001
             logger.exception("[agent-server] set_output_style failed")
             self._reply(request_id, {"ok": False, "error": str(exc)})
@@ -2442,6 +2477,18 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
         profile_checkpoint("agent_server_permissions_hooks_done")
         if sess._mcp_runtime is not None:
             tool_context.mcp_clients = sess._mcp_runtime.clients  # server-name catalog for the agent tool
+
+        # OS-1 G1 — the startup producer: a settings-configured output style
+        # applies from the FIRST prompt (before this, output_style_name was
+        # only ever set by the set_output_style control).
+        try:
+            from src.outputStyles import output_style_from_settings
+
+            settings_style = output_style_from_settings(cwd=sess.cwd)
+            if settings_style and getattr(tool_context, "output_style_name", None) is None:
+                tool_context.output_style_name = settings_style
+        except Exception:  # noqa: BLE001 — style must not block startup
+            logger.debug("[agent-server] output style from settings failed", exc_info=True)
 
         try:
             from src.outputStyles import resolve_output_style
