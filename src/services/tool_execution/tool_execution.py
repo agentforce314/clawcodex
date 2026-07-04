@@ -446,6 +446,20 @@ async def _check_permissions_and_call_tool(
         except Exception as e:
             logger.debug("Post-tool hook error: %s", e)
 
+        # SERVICES-2 autoFix — a SIBLING of the PostToolUse hooks (run_post_tool_use_hooks
+        # early-returns when no user hook is configured; autoFix must run
+        # regardless, gated only on the settings.autoFix opt-in).
+        try:
+            from src.services.autofix.step import run_auto_fix_step
+
+            async for af_result in run_auto_fix_step(
+                tool_use_context, tool.name, tool_use_id,
+            ):
+                if isinstance(af_result, dict) and "message" in af_result:
+                    resulting_messages.append(MessageUpdateLazy(message=af_result["message"]))
+        except Exception as e:  # noqa: BLE001
+            logger.debug("autoFix step error: %s", e)
+
         if result.new_messages:
             for msg in result.new_messages:
                 resulting_messages.append(MessageUpdateLazy(message=msg))

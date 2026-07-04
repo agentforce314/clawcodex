@@ -10,9 +10,13 @@ from __future__ import annotations
 from .config import AutoFixConfig
 from .runner import AutoFixResult
 
-# The port's file-mutation tools (registry names), the analog of TS's
-# {file_edit, file_write}. Kept in sync with permissions._FILE_EDIT_TOOLS.
-AUTO_FIX_TOOLS = frozenset({"Write", "Edit", "MultiEdit", "NotebookEdit"})
+# The author's INTENT (critic M4): TS's dead `{file_edit, file_write}` was
+# meant to match FileEditTool (`Edit`) + FileWriteTool (`Write`). NOT the
+# 4-element _FILE_EDIT_TOOLS — TS deliberately excluded NotebookEdit and has
+# no MultiEdit tool; over-broadening would diverge past the intent. See the
+# plan's D1: this port ACTIVATES a feature TS never fires (a documented,
+# opt-in-gated divergence that fixes the reference's dead tool-name set).
+AUTO_FIX_TOOLS = frozenset({"Edit", "Write"})
 
 
 def should_run_auto_fix(tool_name: str, config: AutoFixConfig | None) -> bool:
