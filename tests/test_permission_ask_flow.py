@@ -249,6 +249,11 @@ class TestHeadlessStartupLoadsPersistedRules(unittest.TestCase):
                 lambda n: {"api_key": "x", "default_model": "fake"},
             ), patch.object(
                 headless_mod, "get_default_provider", lambda: "anthropic"
+            ), patch(
+                # ENTRY-2: startup validation reads the REAL provider
+                # registry — stub it; it has its own dedicated tests.
+                "src.entrypoints.provider_validation.get_provider_validation_error",
+                lambda name: None,
             ), patch.object(
                 headless_mod,
                 "build_default_registry",

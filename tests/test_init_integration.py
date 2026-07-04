@@ -147,6 +147,12 @@ class TestPreActionRunsForDefaultInvocation(unittest.TestCase):
         # (exercised in test_trust_wiring_round3.py) stays inert here.
         with mock.patch("src.init.run_pre_action") as mock_pre, \
                 mock.patch(
+                    # ENTRY-2: startup validation reads the real provider
+                    # registry — stub it; it has its own dedicated tests.
+                    "src.entrypoints.provider_validation.get_provider_validation_error",
+                    return_value=None,
+                ), \
+                mock.patch(
                     "src.entrypoints.tui_launcher.launch_ink_tui", return_value=0
                 ), \
                 mock.patch(
@@ -164,6 +170,12 @@ class TestPreActionRunsForDefaultInvocation(unittest.TestCase):
         # the folder-trust gate before launching, mirroring the default entry.
         with mock.patch("src.init.run_pre_action") as mock_pre, \
                 mock.patch(
+                    # ENTRY-2: startup validation reads the real provider
+                    # registry — stub it; it has its own dedicated tests.
+                    "src.entrypoints.provider_validation.get_provider_validation_error",
+                    return_value=None,
+                ), \
+                mock.patch(
                     "src.services.startup_gates.check_trust_accepted",
                     return_value=True,
                 ), \
@@ -180,6 +192,10 @@ class TestPreActionRunsForDefaultInvocation(unittest.TestCase):
         # Declining the folder-trust prompt must exit 1 WITHOUT launching the
         # agent-server-spawning client.
         with mock.patch("src.init.run_pre_action"), \
+                mock.patch(
+                    "src.entrypoints.provider_validation.get_provider_validation_error",
+                    return_value=None,
+                ), \
                 mock.patch(
                     "src.services.startup_gates.check_trust_accepted",
                     return_value=False,
