@@ -699,3 +699,35 @@ def deserialize_permission_update(data: dict) -> "Any":
             destination=dest, directories=tuple(data.get("directories") or ()),
         )
     return None
+
+
+def serialize_permission_update(update: "Any") -> dict:
+    """PermissionUpdate dataclass → wire dict (the shape hooks and the TUI
+    see; ``deserialize_permission_update`` reverses it).
+
+    Promoted from the agent-server (HOOKS-1 critic round): the can_use_tool
+    round-trip and PermissionRequest-hook stdin both need the SAME canonical
+    JSON — nested rules as ``{"tool_name", "rule_content"}`` dicts, never
+    Python reprs.
+    """
+    out: dict = {
+        "type": getattr(update, "type", "addRules"),
+        "destination": getattr(update, "destination", "session"),
+    }
+    behavior = getattr(update, "behavior", None)
+    if behavior is not None:
+        out["behavior"] = behavior
+    rules = getattr(update, "rules", None)
+    if rules:
+        out["rules"] = [
+            {"tool_name": getattr(r, "tool_name", ""),
+             "rule_content": getattr(r, "rule_content", None)}
+            for r in rules
+        ]
+    mode = getattr(update, "mode", None)
+    if mode is not None:
+        out["mode"] = mode
+    directories = getattr(update, "directories", None)
+    if directories:
+        out["directories"] = list(directories)
+    return out

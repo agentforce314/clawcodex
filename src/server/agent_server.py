@@ -2811,30 +2811,12 @@ def _session_option_label_safe(request: Any) -> str | None:
 
 
 def _serialize_permission_update(update: Any) -> dict:
-    """ch13 round-4 — wire shape for a PermissionUpdate (the persistable
-    "always allow" rule). The TUI renders the description and echoes the
-    chosen one back; _deserialize_permission_update reverses this."""
-    out: dict[str, Any] = {
-        "type": getattr(update, "type", "addRules"),
-        "destination": getattr(update, "destination", "session"),
-    }
-    behavior = getattr(update, "behavior", None)
-    if behavior is not None:
-        out["behavior"] = behavior
-    rules = getattr(update, "rules", None)
-    if rules:
-        out["rules"] = [
-            {"tool_name": getattr(r, "tool_name", ""),
-             "rule_content": getattr(r, "rule_content", None)}
-            for r in rules
-        ]
-    mode = getattr(update, "mode", None)
-    if mode is not None:
-        out["mode"] = mode
-    directories = getattr(update, "directories", None)
-    if directories:
-        out["directories"] = list(directories)
-    return out
+    """ch13 round-4 — wire shape for a PermissionUpdate. Delegates to the
+    canonical serializer (promoted to src/permissions/updates.py in HOOKS-1,
+    paired with deserialize_permission_update)."""
+    from src.permissions.updates import serialize_permission_update
+
+    return serialize_permission_update(update)
 
 
 def _deserialize_permission_update(data: dict) -> Any:

@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import asyncio
 import inspect
 import logging
-import threading
 from typing import Any, Iterable
 
 from .build_tool import Tool, Tools, tool_matches_name

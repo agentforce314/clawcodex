@@ -88,7 +88,7 @@ class TestPermissionRequestHookDecisions(unittest.TestCase):
         self.assertEqual(final.behavior, "allow")
         self.assertEqual(updates, ())
         self.assertEqual(handler.calls, [], "handler must not be consulted")
-        self.assertEqual(final.decision_reason.get("hookName"), "PermissionRequest")
+        self.assertEqual(final.decision_reason.hook_name, "PermissionRequest")
 
     def test_hook_allow_updated_input_and_permissions(self):
         payload = {
@@ -120,7 +120,7 @@ class TestPermissionRequestHookDecisions(unittest.TestCase):
         self.assertEqual(final.behavior, "deny")
         self.assertEqual(final.message, "policy says no")
         self.assertEqual(handler.calls, [])
-        self.assertEqual(final.decision_reason.get("type"), "hook")
+        self.assertEqual(final.decision_reason.type, "hook")
 
     def test_hook_deny_interrupt_aborts(self):
         from types import SimpleNamespace
@@ -337,8 +337,6 @@ class TestRejectionTexts(unittest.TestCase):
         self.assertNotIn("STOP what you are doing", final.message)
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class TestConfigLoaderEndToEnd(unittest.TestCase):
@@ -391,3 +389,66 @@ class TestConfigLoaderEndToEnd(unittest.TestCase):
             context=ctx, tool_use_id="tu-e2e2",
         )
         self.assertNotEqual(final2.message, "settings hook says no")
+
+class TestSuggestionSerializationReadBack(unittest.TestCase):
+    """The MAJOR's proof: hooks receive suggestions as canonical wire JSON
+    (nested rules as {"tool_name","rule_content"} dicts), never Python
+    reprs. The hook echoes its stdin back through the deny reason."""
+
+    def test_hook_sees_canonical_suggestion_json(self):
+        from src.permissions.types import (
+            PermissionRuleValue,
+            PermissionUpdateAddRules,
+        )
+
+        suggestion = PermissionUpdateAddRules(
+            destination="session",
+            behavior="allow",
+            rules=(PermissionRuleValue(tool_name="Bash", rule_content="ls:*"),),
+        )
+        echo_stdin = (
+            "python3 -c 'import sys, json; d = json.load(sys.stdin); "
+            "print(json.dumps({\"decision\": \"deny\", "
+            "\"reason\": json.dumps(d.get(\"permission_suggestions\"))}))'"
+        )
+        ctx = _ctx(configs=[_hook(echo_stdin)])
+        ask = PermissionAskDecision(
+            behavior="ask", message="approve?", suggestions=(suggestion,),
+        )
+        final, _ = handle_permission_ask(
+            "Bash", ask, None, tool_input={"command": "ls"},
+            context=ctx, tool_use_id="tu-sj",
+        )
+        self.assertEqual(final.behavior, "deny")
+        received = json.loads(final.message)
+        self.assertEqual(received, [{
+            "type": "addRules",
+            "destination": "session",
+            "behavior": "allow",
+            "rules": [{"tool_name": "Bash", "rule_content": "ls:*"}],
+        }])
+        self.assertNotIn("PermissionRuleValue", final.message)
+
+
+class TestMultiHookFirstDecisiveWins(unittest.TestCase):
+    """TS runHooks returns on the first decisive result, abandoning later
+    hooks — they must NOT execute (side-effect proof)."""
+
+    def test_second_hook_never_executes(self):
+        import tempfile
+
+        marker = Path(tempfile.mkdtemp()) / "second-ran"
+        first = _hook(_echo_json({"decision": "deny", "reason": "first wins"}))
+        second = _hook(f"touch {marker} && " + _echo_json({"decision": "allow"}))
+        ctx = _ctx(configs=[first, second])
+        final, _ = handle_permission_ask(
+            "Write", _ask(), None, tool_input={},
+            context=ctx, tool_use_id="tu-mh",
+        )
+        self.assertEqual(final.behavior, "deny")
+        self.assertEqual(final.message, "first wins")
+        self.assertFalse(marker.exists(), "later hooks must be abandoned")
+
+
+if __name__ == "__main__":
+    unittest.main()

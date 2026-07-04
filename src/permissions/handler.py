@@ -35,6 +35,7 @@ import logging
 from typing import Any
 
 from .types import (
+    HookDecisionReason,
     PermissionAllowDecision,
     PermissionAskDecision,
     PermissionAskHandler,
@@ -110,6 +111,16 @@ def _run_permission_request_hooks(
 
         from src.utils.async_bridge import run_coroutine_blocking
 
+        from .updates import serialize_permission_update
+
+        # Canonical wire JSON for hook stdin (critic MAJOR: __dict__ left
+        # nested PermissionRuleValue objects to be repr-stringified —
+        # unusable for hook authors and divergent from TS's
+        # PermissionUpdate JSON).
+        suggestions_json = [
+            serialize_permission_update(s) for s in (decision.suggestions or ())
+        ] or None
+
         async def _collect() -> list[dict[str, Any]]:
             results: list[dict[str, Any]] = []
             async for item in execute_permission_request_hooks(
@@ -117,12 +128,15 @@ def _run_permission_request_hooks(
                 tool_use_id or "",
                 tool_input or {},
                 context,
-                permission_suggestions=[
-                    getattr(s, "__dict__", s) for s in (decision.suggestions or ())
-                ]
-                or None,
+                permission_suggestions=suggestions_json,
             ):
                 results.append(item)
+                # First decisive hook wins AND later hooks never execute —
+                # exact TS runHooks parity (returns mid-generator,
+                # abandoning the rest). Progress/attachment items carry no
+                # permission_behavior and keep streaming until then.
+                if item.get("permission_behavior") in ("allow", "deny"):
+                    break
             return results
 
         results = run_coroutine_blocking(
@@ -158,10 +172,9 @@ def _run_permission_request_hooks(
                     behavior="allow",
                     updated_input=item.get("updated_input")
                     or decision.updated_input,
-                    decision_reason={
-                        "type": "hook",
-                        "hookName": "PermissionRequest",
-                    },
+                    decision_reason=HookDecisionReason(
+                        hook_name="PermissionRequest",
+                    ),
                 ),
                 chosen,
             )
@@ -183,11 +196,10 @@ def _run_permission_request_hooks(
                 PermissionDenyDecision(
                     behavior="deny",
                     message=message,
-                    decision_reason={
-                        "type": "hook",
-                        "hookName": "PermissionRequest",
-                        "reason": message,
-                    },
+                    decision_reason=HookDecisionReason(
+                        hook_name="PermissionRequest",
+                        reason=message,
+                    ),
                 ),
                 (),
             )
