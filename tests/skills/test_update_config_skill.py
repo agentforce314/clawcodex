@@ -74,10 +74,21 @@ class TestPortCorrectShapes:
         p = UPDATE_CONFIG_PROMPT
         assert '"allow"' in p and '"deny"' in p and '"ask"' in p
         assert "Bash(npm:*)" in p  # a real, parseable rule string
-        assert "additionalDirectories" in p
+        # the CORRECT working-dirs key (top-level); the TS shape only appears in
+        # the explicit "NOT this key" caveat, never as a taught JSON key.
+        assert "additionalWorkingDirectories" in p
+        assert '"additionalDirectories"' not in p  # never as a JSON key
 
-    def test_permission_example_rules_actually_parse(self):
-        # the rule strings in the prompt must parse in the port's real loader
+    def test_default_mode_caveated_as_write_only(self):
+        # critic MA3: defaultMode is not read back at startup — must be caveated,
+        # not taught as a functional settings.json key.
+        p = UPDATE_CONFIG_PROMPT
+        assert "--permission-mode" in p and "/mode" in p
+        assert "not yet read back at startup" in p
+
+    def test_permission_example_rules_parse_with_semantics(self):
+        # critic N1: assert the SEMANTICS (the parser never returns None, so the
+        # old `is not None` check was vacuous).
         from src.permissions.loader import settings_to_rules
 
         rules = settings_to_rules(
@@ -86,7 +97,10 @@ class TestPortCorrectShapes:
             source="user_settings",
         )
         assert len(rules) == 5
-        assert all(r.rule_value is not None for r in rules)
+        by_content = {(r.rule_value.tool_name, r.rule_value.rule_content) for r in rules}
+        assert ("Bash", "npm:*") in by_content
+        assert ("Read", None) in by_content  # tool-only rule
+        assert ("Bash", "rm -rf:*") in by_content
 
     def test_env_and_hooks(self):
         p = UPDATE_CONFIG_PROMPT
@@ -95,6 +109,18 @@ class TestPortCorrectShapes:
         # hook types
         for t in ("command", "agent", "http", "prompt"):
             assert t in p
+
+    def test_hook_examples_use_port_runtime_contract(self):
+        # critic MA1/MA2: the EXAMPLE command uses the stdin/jq contract, not
+        # the TS $CLAUDE_FILE_PATHS env var (which the port never sets — it may
+        # still be NAMED in the explanatory "don't rely on this" caveat).
+        p = UPDATE_CONFIG_PROMPT
+        assert '"command": "jq -r' in p  # example uses stdin/jq, not an env var
+        assert "$CLAUDE_FILE_PATHS" not in p.split("```")[3]  # not inside the hooks JSON block
+        assert "on STDIN" in p  # the real stdin-JSON contract documented
+        assert "agentInstructions" in p and "promptText" in p  # port's real keys
+        # the agent hook example must not use the un-parsed "prompt" key
+        assert '"type": "agent", "prompt"' not in p
 
     def test_mcp_points_to_mcp_json_not_settings_key(self):
         p = UPDATE_CONFIG_PROMPT
