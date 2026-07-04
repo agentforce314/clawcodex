@@ -90,7 +90,35 @@ def wiki_status(cwd: str | Path) -> dict:
     return {"initialized": True, "root": str(paths.root), "page_count": pages, "source_count": sources}
 
 
+def _build_source_note(
+    *, title: str, source_path: str, ingested_at: str, summary: str, excerpt: str
+) -> str:
+    """Verbatim template from ingest.ts:13-46 (buildSourceNote)."""
+    return (
+        f"# {title}\n\n"
+        "## Source\n\n"
+        f"- Path: `{source_path}`\n"
+        f"- Ingested at: {ingested_at}\n\n"
+        "## Summary\n\n"
+        f"{summary}\n\n"
+        "## Excerpt\n\n"
+        "```\n"
+        f"{excerpt}\n"
+        "```\n\n"
+        "## Linked Pages\n\n"
+        "- [Architecture](../pages/architecture.md)\n"
+    )
+
+
 def ingest_source(cwd: str | Path, src: str) -> dict:
+    """Port of ``ingestLocalWikiSource`` (SERVICES-4): write a STRUCTURED
+    source note (title/summary/excerpt) + a log entry + rebuild the index —
+    replacing the prior copy-only behavior."""
+    import time as _time
+
+    from .index_builder import rebuild_wiki_index
+    from .utils import extract_title_from_text, sanitize_wiki_slug, summarize_text
+
     paths = get_wiki_paths(cwd)
     if not paths.index_file.exists():
         return {"ok": False, "error": "wiki not initialized — run /wiki init first"}
@@ -99,14 +127,42 @@ def ingest_source(cwd: str | Path, src: str) -> dict:
         src_path = Path(cwd) / src
     if not src_path.is_file():
         return {"ok": False, "error": f"not a file: {src}"}
-    dest = paths.sources_dir / src_path.name
     try:
-        shutil.copyfile(src_path, dest)
+        content = src_path.read_text(encoding="utf-8", errors="replace")
+        try:
+            rel_source = src_path.resolve().relative_to(Path(cwd).resolve()).as_posix()
+        except ValueError:
+            rel_source = src_path.name
+        ingested_at = _time.strftime("%Y-%m-%dT%H:%M:%S", _time.gmtime()) + "Z"
+        base_name = src_path.stem
+        title = extract_title_from_text(base_name, content)
+        summary = summarize_text(content)
+        excerpt = "\n".join(content.split("\n")[:20]).strip()
+        ms = _time.time_ns() // 1_000_000
+        slug = sanitize_wiki_slug(f"{base_name}-{ms}") or f"source-{ms}"
+
+        note_path = paths.sources_dir / f"{slug}.md"
+        note_path.write_text(
+            _build_source_note(
+                title=title, source_path=rel_source, ingested_at=ingested_at,
+                summary=summary, excerpt=excerpt,
+            ),
+            encoding="utf-8",
+        )
+        with paths.log_file.open("a", encoding="utf-8") as f:
+            f.write(
+                f'- {ingested_at}: Ingested `{rel_source}` into source '
+                f'note "{title}"\n'
+            )
+        rebuild_wiki_index(cwd)
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
-    try:  # append to the log (best-effort)
-        with paths.log_file.open("a", encoding="utf-8") as f:
-            f.write(f"- ingested source: {src_path.name}\n")
-    except Exception:  # noqa: BLE001
-        pass
-    return {"ok": True, "dest": str(dest)}
+    return {
+        "ok": True,
+        "dest": str(note_path),
+        "source_note": note_path.relative_to(Path(cwd)).as_posix()
+        if note_path.is_relative_to(Path(cwd))
+        else str(note_path),
+        "summary": summary,
+        "title": title,
+    }
