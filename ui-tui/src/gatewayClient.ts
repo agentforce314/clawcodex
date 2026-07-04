@@ -259,6 +259,7 @@ const SLASHES: ReadonlyArray<{ desc: string; name: string }> = [
   { desc: 'Switch the provider', name: '/provider' },
   { desc: 'List running and recent dynamic workflows', name: '/workflows' },
   { desc: 'Search / manage the knowledge base', name: '/knowledge' },
+  { desc: 'Browse and inspect available skills', name: '/skills' },
   { desc: 'View or set the plan', name: '/plan' },
   { desc: 'Generate session insights', name: '/insights' },
   { desc: 'List or start background agents', name: '/bg' },
@@ -273,10 +274,17 @@ type Pending = { reject: (e: Error) => void; resolve: (v: unknown) => void }
  *  bundled /deep-research plus saved `.claude/workflows/*.py`. */
 type WorkflowCommand = { argument_hint?: string; description?: string; name: string }
 
+/** A skill reported by the backend (`list_skills` control). */
+type BackendSkill = { category?: string; description?: string; name: string; path?: string }
+
 /** How long a fetched workflow-command list stays fresh. The slash menu
  *  re-queries per keystroke; the TTL keeps that to ~1 RPC per burst while a
  *  workflow authored mid-session (ultracode flow) still shows up promptly. */
 const WORKFLOW_CMDS_TTL_MS = 3_000
+
+/** How long a fetched skill list stays fresh. The skills hub inspects per
+ *  selection, so a burst of skills.manage RPCs rides one backend disk scan. */
+const SKILLS_TTL_MS = 3_000
 
 export class GatewayClient extends EventEmitter {
   private buffered: GatewayEvent[] = []
@@ -299,6 +307,10 @@ export class GatewayClient extends EventEmitter {
   private sessionId = ''
   private sessionInfo: null | SessionInfo = null
   private subscribed = false
+  // Backend skills (skills hub + /skills subcommands), TTL-cached.
+  private skills: BackendSkill[] = []
+  private skillsFetchedAt = 0
+  private skillsTotal = 0
   // Backend workflow commands (slash menu + dispatch), TTL-cached.
   private wfCommands: WorkflowCommand[] = []
   private wfFetchedAt = 0
@@ -425,7 +437,9 @@ export class GatewayClient extends EventEmitter {
               pairs.push([name, w.description ?? 'Run a dynamic workflow'])
             }
 
-            return { canon, categories: [], pairs, skill_count: 0, sub: {} } as T
+            // skill_count is served lazily from the skills cache (warmed by any
+            // /skills use) so the startup catalog doesn't pay a full disk scan.
+            return { canon, categories: [], pairs, skill_count: this.skillsTotal, sub: {} } as T
           })
       }
 
@@ -548,6 +562,64 @@ export class GatewayClient extends EventEmitter {
 
         return Promise.resolve({ ok: true } as T)
 
+      // ── skills hub + /skills subcommands ─────────────────────────────────
+      case 'skills.manage': {
+        const action = String(p.action ?? 'list')
+        const query = String(p.query ?? '').trim().toLowerCase()
+
+        // Community install/browse are Nous-portal features with no clawcodex
+        // backend; reject so the hub/command surfaces a real error, not a fake
+        // success.
+        if (action === 'install' || action === 'browse') {
+          return Promise.reject(
+            new Error(`/skills ${action}: not supported in clawcodex — add skills under ~/.claude/skills or .claude/skills`)
+          )
+        }
+
+        return this.fetchSkills().then(skills => {
+          if (action === 'inspect') {
+            const found = skills.find(s => s.name.toLowerCase() === query)
+
+            return (
+              found
+                ? { info: { category: found.category, description: found.description, name: found.name, path: found.path } }
+                : {}
+            ) as T
+          }
+
+          if (action === 'search') {
+            const results = skills
+              .filter(s => s.name.toLowerCase().includes(query) || (s.description ?? '').toLowerCase().includes(query))
+              .slice(0, 30)
+              .map(s => ({ description: s.description, name: s.name }))
+
+            return { results } as T
+          }
+
+          // 'list' (default): group by category for the hub / /skills panel.
+          const byCat: Record<string, string[]> = {}
+
+          for (const s of skills) {
+            ;(byCat[s.category || 'other'] ??= []).push(s.name)
+          }
+
+          for (const names of Object.values(byCat)) {
+            names.sort()
+          }
+
+          return { skills: byCat, total: this.skillsTotal } as T
+        })
+      }
+
+      case 'skills.reload':
+        // get_all_skills re-scans disk on every call; "reload" just busts the
+        // client TTL cache and fetches fresh.
+        this.skillsFetchedAt = 0
+
+        return this.fetchSkills().then(
+          skills => ({ output: `Re-scanned skills: ${this.skillsTotal || skills.length} available.` }) as T
+        )
+
       // ── slash commands → clawcodex control_requests ──────────────────────
       case 'command.dispatch':
         return this.dispatchSlash(String(p.name ?? ''), p.arg == null ? undefined : String(p.arg)) as Promise<T>
@@ -631,6 +703,24 @@ export class GatewayClient extends EventEmitter {
       }
 
       return this.wfCommands
+    })
+  }
+
+  // Fetch the backend's unified skill set (`list_skills` control), TTL-cached
+  // (see SKILLS_TTL_MS). Degrades to the last-known list on RPC failure.
+  private fetchSkills(): Promise<BackendSkill[]> {
+    const now = Date.now()
+
+    if (now - this.skillsFetchedAt < SKILLS_TTL_MS) {return Promise.resolve(this.skills)}
+    this.skillsFetchedAt = now
+
+    return this.controlQuery('list_skills', {}).then((r: any) => {
+      if (Array.isArray(r?.skills)) {
+        this.skills = r.skills.filter((s: any) => typeof s?.name === 'string' && s.name)
+        this.skillsTotal = Number(r.total) || this.skills.length
+      }
+
+      return this.skills
     })
   }
 
@@ -857,6 +947,11 @@ export class GatewayClient extends EventEmitter {
             : 'No saved sessions.'
         )
       }
+
+      case 'skills':
+        // Reached only via the slash-worker fallback for unknown subcommands —
+        // the TUI-local /skills (ops.ts) owns the hub + list/inspect/search.
+        return out('usage: /skills [list | inspect <name> | search <query>] — bare /skills opens the hub')
 
       case 'workflows': {
         const r = (await this.controlQuery('workflows', {})) as any
