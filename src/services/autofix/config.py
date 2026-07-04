@@ -27,8 +27,19 @@ class AutoFixConfig:
     timeout_ms: int = _TIMEOUT_DEFAULT
 
 
+class _Reject(Exception):
+    """A field failed zod validation → the whole config is None (safeParse)."""
+
+
 def _opt_str(value: Any) -> str | None:
-    return value if isinstance(value, str) else None
+    """Zod ``z.string().optional()``: absent → None; a string → itself; a
+    present non-string → REJECT the whole config (matching safeParse, not a
+    silent drop — critic minor)."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise _Reject
+    return value
 
 
 def _bounded_int(value: Any, default: int, lo: int, hi: int) -> int | None:
@@ -47,10 +58,19 @@ def get_auto_fix_config(raw: Any) -> AutoFixConfig | None:
     """``settings.autoFix`` → :class:`AutoFixConfig` or ``None``."""
     if not isinstance(raw, dict):
         return None
-    if not raw.get("enabled"):
+    # ``enabled: z.boolean()`` is REQUIRED and strict — a string "false" (or
+    # any non-bool) rejects the whole config, so it can't turn autoFix ON
+    # against apparent intent (critic minor #1).
+    enabled = raw.get("enabled")
+    if not isinstance(enabled, bool):
         return None
-    lint = _opt_str(raw.get("lint"))
-    test = _opt_str(raw.get("test"))
+    if not enabled:
+        return None
+    try:
+        lint = _opt_str(raw.get("lint"))
+        test = _opt_str(raw.get("test"))
+    except _Reject:
+        return None
     # The schema's .refine: enabled requires at least one of lint/test.
     if lint is None and test is None:
         return None

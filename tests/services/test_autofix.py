@@ -223,3 +223,22 @@ class TestStep:
         ctx = SimpleNamespace(query_tracking=None, abort_controller=None, cwd="/tmp")
         out = self._collect(ctx)
         assert len(out) == 1 and "default" in stepmod._auto_fix_retry_count
+
+
+class TestConfigStrictness:
+    """critic minor #1 — zod z.boolean()/z.string() reject the whole config
+    on a bad type (safeParse null), not a silent coerce/drop."""
+
+    def test_string_enabled_rejected(self):
+        # "false" is truthy in Python — must NOT turn autoFix on.
+        assert get_auto_fix_config({"enabled": "false", "lint": "x"}) is None
+        assert get_auto_fix_config({"enabled": "true", "lint": "x"}) is None
+        assert get_auto_fix_config({"enabled": 1, "lint": "x"}) is None
+
+    def test_bad_type_lint_rejects_whole_config(self):
+        assert get_auto_fix_config({"enabled": True, "lint": 123, "test": "y"}) is None
+        assert get_auto_fix_config({"enabled": True, "test": ["not", "a", "string"]}) is None
+
+    def test_real_bool_enabled_still_works(self):
+        assert get_auto_fix_config({"enabled": True, "lint": "x"}) is not None
+        assert get_auto_fix_config({"enabled": False, "lint": "x"}) is None
