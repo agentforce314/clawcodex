@@ -89,3 +89,59 @@ def test_spawn_stamps_agent_id_from_context():
 
     src = inspect.getsource(background.spawn_background_bash)
     assert 'agent_id=getattr(context, "agent_id", None)' in src
+
+
+class _FakeProvider:
+    def __init__(self, model="claude-sonnet-4-20250514"):
+        self.model = model
+
+    def get_available_models(self):
+        return [self.model]
+
+
+def test_core_run_agent_finally_reaps_all_paths(monkeypatch):
+    """Relocation regression: the reap lives in the CORE run_agent generator's
+    finally, so SYNC (inline) + workflow sub-agents — which bypass the async
+    wrapper — are covered too (critic MAJOR). Verify the finally calls the reap
+    with the sub-agent's own agent_id on a plain run_agent invocation."""
+    from pathlib import Path
+
+    from src.agent.run_agent import RunAgentParams, run_agent
+    from src.agent.agent_definitions import EXPLORE_AGENT
+    from src.tool_system.context import ToolContext, ToolUseOptions
+    from src.tool_system.defaults import build_default_registry
+
+    called = {}
+
+    async def _spy(agent_id, registry):
+        called["agent_id"] = agent_id
+
+    # function-level import in run_agent's finally re-reads this attribute
+    monkeypatch.setattr("src.tasks.local_shell.kill_shell_tasks_for_agent", _spy)
+
+    async def _fake_query(qp):
+        return
+        yield  # empty async generator → run_agent falls straight to finally
+
+    ctx = ToolContext(workspace_root=Path("/tmp"))
+    ctx.options = ToolUseOptions(tools=[])
+    params = RunAgentParams(
+        parent_context=ctx,
+        agent_definition=EXPLORE_AGENT,
+        prompt="x",
+        available_tools=[],
+        tool_registry=build_default_registry(),
+        provider=_FakeProvider(),
+        agent_id="sync-agent-1",
+    )
+
+    async def _drain():
+        async for _ in run_agent(params):
+            pass
+
+    with __import__("unittest.mock", fromlist=["patch"]).patch(
+        "src.query.query.query", _fake_query
+    ):
+        asyncio.run(_drain())
+
+    assert called.get("agent_id") == "sync-agent-1"
