@@ -41,11 +41,21 @@ FETCH_TIMEOUT_S = 2.0
 
 _refresh_locks_guard = threading.Lock()
 _refresh_in_flight: set[str] = set()
+# Serializes the cache read-modify-write in _refresh (critic round: the
+# in-flight guard alone left a cross-KEY lost-update window — two providers
+# refreshing concurrently could clobber each other's entry; TS serializes
+# via withDiscoveryCacheLock). In-process only; a cross-process race
+# self-heals (one refetch).
+_cache_write_lock = threading.Lock()
 
 
 def _cache_path() -> Path:
-    # This port's config home (settings-paths canon uses ~/.clawcodex).
-    return Path(os.path.expanduser("~/.clawcodex")) / "model-discovery-cache.json"
+    """Under the canonical config home (critic round: reuse
+    config.GLOBAL_CONFIG_DIR — test fixtures re-point it — instead of a
+    hardcoded ~/.clawcodex)."""
+    from src.config import GLOBAL_CONFIG_DIR
+
+    return Path(GLOBAL_CONFIG_DIR) / "model-discovery-cache.json"
 
 
 def _cache_key(provider_id: str, base_url: str) -> str:
@@ -153,14 +163,29 @@ def _fetch_for_kind(
     return None
 
 
-def _merge(discovered: list[str] | None, static_models: list[str]) -> list[str]:
-    """discovered ∪ static, discovered first, deduped — and NEVER empty when
-    the static list has entries (the no-empty-picker guarantee)."""
-    seen: set[str] = set()
-    merged: list[str] = []
-    for name in (discovered or []) + list(static_models):
-        if name not in seen:
-            seen.add(name)
+def _merge(
+    discovered: list[str] | None, static_models: list[str], mode: str,
+) -> list[str]:
+    """The two TS catalog-source semantics (critic MAJOR — a single
+    discovered-first union defeated both target providers):
+
+    * ``dynamic`` (ollama/vllm/sglang; gateways/ollama.ts source:'dynamic'):
+      the endpoint is the truth — discovered REPLACES static when non-empty;
+      static is only the no-discovery fallback. This is what actually kills
+      the bogus ``deepseek-coder:1.3b`` stub once a real list arrives.
+    * ``hybrid`` (openrouter; gateways/openrouter.ts source:'hybrid'):
+      STATIC-first merge, discovered appended case-insensitively deduped
+      (discoveryService.ts:194-212 mergeCatalogEntries) — curation keeps its
+      order; the live tail extends it.
+    """
+    discovered_list = discovered or []
+    if mode == "dynamic":
+        return list(discovered_list) if discovered_list else list(static_models)
+    merged = list(static_models)
+    seen = {name.lower() for name in merged}
+    for name in discovered_list:
+        if name.lower() not in seen:
+            seen.add(name.lower())
             merged.append(name)
     return merged
 
@@ -171,9 +196,10 @@ def _refresh(
     try:
         discovered = _fetch_for_kind(kind, base_url, api_key, timeout)
         if discovered:
-            entries = _read_cache()
-            entries[key] = {"models": discovered, "fetched_at": time.time()}
-            _write_cache(entries)
+            with _cache_write_lock:
+                entries = _read_cache()
+                entries[key] = {"models": discovered, "fetched_at": time.time()}
+                _write_cache(entries)
     finally:
         with _refresh_locks_guard:
             _refresh_in_flight.discard(key)
@@ -186,12 +212,16 @@ def discovered_models(
     kind: str,
     static_models: tuple[str, ...] | list[str],
     *,
+    mode: str = "dynamic",
     ttl_s: float = DISCOVERY_TTL_S,
     timeout: float = FETCH_TIMEOUT_S,
     background: bool = True,
 ) -> list[str]:
-    """The non-blocking entry point (module docstring). ``background=False``
-    forces a synchronous refresh — for tests and explicit-refresh callers."""
+    """The non-blocking entry point (module docstring). ``mode`` selects the
+    catalog-source semantics (see ``_merge``): "dynamic" (default —
+    endpoint-authoritative) or "hybrid" (curated-static-first).
+    ``background=False`` forces a synchronous refresh — for tests and
+    explicit-refresh callers."""
     static_list = list(static_models)
     if not base_url:
         return static_list
@@ -224,4 +254,4 @@ def discovered_models(
                 entry = entries.get(key)
 
     cached = entry.get("models") if isinstance(entry, dict) else None
-    return _merge(cached if isinstance(cached, list) else None, static_list)
+    return _merge(cached if isinstance(cached, list) else None, static_list, mode)

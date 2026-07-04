@@ -81,6 +81,7 @@ class OpenRouterProvider(OpenAICompatibleProvider):
             getattr(self, "api_key", None) or None,
             "openai-compatible",
             self._curated_models(),
+            mode="hybrid",  # gateways/openrouter.ts source:'hybrid' — curation first
         )
 
     @staticmethod

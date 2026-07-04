@@ -818,6 +818,19 @@ class _AgentSession:
             # self.provider_name, updated above, so on_change persists the
             # new pairing.
             _dispatch_app_state(self, main_loop_model=model)
+            # INTEG-1 warm-on-activation (the refreshStartupDiscoveryForActiveRoute
+            # analog, discoveryService.ts:415): one non-blocking
+            # get_available_models call kicks the single-flight background
+            # refresh at SWITCH time, so the picker's later read sees the
+            # discovered list instead of the static stub. (Server init warms
+            # the initial provider the same way via get_settings →
+            # _available_models.)
+            try:
+                warm = getattr(provider, "get_available_models", None)
+                if callable(warm):
+                    warm()
+            except Exception:  # noqa: BLE001 — warm is best-effort
+                logger.debug("[agent-server] discovery warm failed", exc_info=True)
             self._reply(request_id, {"ok": True, "provider": name, "model": model or ""})
         except Exception as exc:  # noqa: BLE001
             logger.exception("[agent-server] set_provider failed")

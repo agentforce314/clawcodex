@@ -78,7 +78,8 @@ def test_fresh_cache_is_served_without_fetch(monkeypatch: pytest.MonkeyPatch) ->
     fetches: list = []
     monkeypatch.setattr(md, "_fetch_for_kind", lambda *a: fetches.append(a) or ["live"])
     out = md.discovered_models("ollama", "http://x/v1", None, "ollama", ("static:1",))
-    assert out == ["cached:1", "static:1"]
+    # dynamic mode: the endpoint is authoritative — discovered REPLACES static.
+    assert out == ["cached:1"]
     assert fetches == [], "fresh cache must not trigger a fetch"
 
 
@@ -91,10 +92,11 @@ def test_stale_cache_refreshes_and_next_call_is_fresh(
     first = md.discovered_models(
         "ollama", "http://x/v1", None, "ollama", ("static:1",), background=False,
     )
-    # background=False → synchronous refresh → already fresh.
-    assert first == ["new:1", "static:1"]
+    # background=False → synchronous refresh → already fresh; dynamic mode
+    # replaces the static stub outright.
+    assert first == ["new:1"]
     second = md.discovered_models("ollama", "http://x/v1", None, "ollama", ("static:1",))
-    assert second == ["new:1", "static:1"]
+    assert second == ["new:1"]
 
 
 def test_corrupt_cache_treated_empty(tmp_path: Path) -> None:
@@ -119,10 +121,15 @@ def test_atomic_write_leaves_valid_json() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_merge_discovered_first_dedup_and_never_empty() -> None:
-    assert md._merge(["b", "a"], ["a", "c"]) == ["b", "a", "c"]
-    assert md._merge(None, ["s1"]) == ["s1"]
-    assert md._merge([], ["s1"]) == ["s1"]
+def test_merge_dynamic_replaces_hybrid_curates() -> None:
+    # dynamic: endpoint-authoritative; static only as the no-discovery fallback.
+    assert md._merge(["b", "a"], ["a", "c"], "dynamic") == ["b", "a"]
+    assert md._merge(None, ["s1"], "dynamic") == ["s1"]
+    assert md._merge([], ["s1"], "dynamic") == ["s1"]
+    # hybrid: STATIC-first (curation order kept), discovered appended with
+    # case-insensitive dedup (mergeCatalogEntries, discoveryService.ts:194-212).
+    assert md._merge(["b", "A", "d"], ["a", "c"], "hybrid") == ["a", "c", "b", "d"]
+    assert md._merge(None, ["s1"], "hybrid") == ["s1"]
 
 
 def test_fetch_failure_falls_back_to_static(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -181,8 +188,10 @@ def test_ollama_spec_provider_uses_discovery(monkeypatch: pytest.MonkeyPatch) ->
     key = md._cache_key("ollama", provider.base_url or cls.SPEC.default_base_url)
     md._write_cache({key: {"models": ["local-model:7b"], "fetched_at": time.time()}})
     models = provider.get_available_models()
-    assert "local-model:7b" in models
-    assert "deepseek-coder:1.3b" in models  # static stub still merged
+    # THE headline behavior: once real local models are discovered, the
+    # bogus static stub is GONE (dynamic mode replaces).
+    assert models == ["local-model:7b"]
+    assert "deepseek-coder:1.3b" not in models
 
 
 def test_static_spec_provider_never_touches_discovery(
@@ -200,14 +209,51 @@ def test_static_spec_provider_never_touches_discovery(
     assert marker == [], "static-catalog specs must not consult discovery"
 
 
-def test_openrouter_override_merges_discovery(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_openrouter_override_hybrid_keeps_curation_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from src.providers.openrouter_provider import OpenRouterProvider
 
     key = md._cache_key("openrouter", "https://openrouter.ai/api/v1")
-    md._write_cache({key: {"models": ["brand-new/model"], "fetched_at": time.time()}})
-    provider = OpenRouterProvider.__new__(OpenRouterProvider)  # skip network-y __init__
-    provider.base_url = None
-    provider.api_key = None
+    md._write_cache({key: {"models": ["brand-new/model", "deepseek/deepseek-v4-pro"], "fetched_at": time.time()}})
+    provider = OpenRouterProvider(api_key="")  # __init__ is lazy (no network)
     models = provider.get_available_models()
-    assert models[0] == "brand-new/model"
-    assert any("deepseek" in m for m in models)  # curated list still present
+    curated = OpenRouterProvider._curated_models()
+    # hybrid: curated order intact at the head; discovered tail deduped in.
+    assert models[: len(curated)] == curated
+    assert "brand-new/model" in models
+    assert models.count("deepseek/deepseek-v4-pro") == 1
+
+
+def test_cache_path_honors_config_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import src.config as config
+
+    monkeypatch.setattr(config, "GLOBAL_CONFIG_DIR", tmp_path / "home")
+    # bypass the autouse fixture's patch for this assertion
+    monkeypatch.undo()  # undo BOTH patches; re-apply config one only
+    monkeypatch.setattr(config, "GLOBAL_CONFIG_DIR", tmp_path / "home")
+    assert md._cache_path() == tmp_path / "home" / "model-discovery-cache.json"
+
+
+def test_concurrent_refreshes_for_different_keys_both_persist() -> None:
+    barrier = threading.Barrier(2, timeout=5)
+    real_fetch = md._fetch_for_kind
+
+    def _sync_refresh(key: str, models: list[str]) -> None:
+        md._refresh_in_flight.add(key)
+        barrier.wait()
+        md._refresh(key, "test", "http://x", None, 1.0)
+
+    import unittest.mock as mock
+
+    with mock.patch.object(
+        md, "_fetch_for_kind",
+        side_effect=lambda kind, *a: {"k": None}.get(kind) or ["m-" + kind],
+    ):
+        t1 = threading.Thread(target=_sync_refresh, args=(md._cache_key("p1", "u"), ["a"]))
+        t2 = threading.Thread(target=_sync_refresh, args=(md._cache_key("p2", "u"), ["b"]))
+        t1.start(); t2.start(); t1.join(5); t2.join(5)
+    entries = md._read_cache()
+    # The RMW lock prevents the cross-key lost update: both entries persist.
+    assert md._cache_key("p1", "u") in entries
+    assert md._cache_key("p2", "u") in entries
