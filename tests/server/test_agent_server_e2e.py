@@ -611,8 +611,12 @@ async def test_control_set_output_style(tmp_path):
                         return msg["response"]["response"]
                 raise AssertionError(f"no reply for {rid}")
 
-            ok = await _reply_for("s1", {"subtype": "set_output_style", "style": "concise"})
-            assert ok["ok"] is True and ok["style"] == "concise"
+            # OS-1: validation now follows the loader's truth — "explanatory"
+            # is the real builtin (the old fixed list wrongly accepted
+            # "concise", which never existed as a style).
+            ok = await _reply_for("s1", {"subtype": "set_output_style", "style": "explanatory"})
+            assert ok["ok"] is True and ok["style"] == "explanatory"
+            assert "explanatory" in ok.get("available_styles", [])
 
             bad = await _reply_for("s2", {"subtype": "set_output_style", "style": "bogus"})
             assert bad["ok"] is False and "valid" in bad["error"]
@@ -973,3 +977,50 @@ class _SpinProvider:
 async def spawn_for(stack, agent_config, tmp_path):
     spawn = make_spawn_agent(agent_config)
     return await spawn("ds_test", str(tmp_path), None)
+
+@pytest.mark.asyncio
+async def test_settings_output_style_applies_at_startup(tmp_path):
+    """OS-1 G1 seam (critic MAJOR): a settings-configured output style must
+    reach tool_context.output_style_name during _build_runtime — asserted
+    through the get_settings reply, which reads that exact field. Regression
+    guard for reordering the producer after the prompt build or breaking
+    the assignment (the leaf/unit tests alone would stay green)."""
+    import json as _json
+    import subprocess
+    from src.tool_system.registry import ToolRegistry
+
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    cfg_dir = tmp_path / ".claude"
+    cfg_dir.mkdir()
+    (cfg_dir / "config.local.json").write_text(
+        _json.dumps({"settings": {"output_style": {"style": "explanatory"}}}),
+        encoding="utf-8",
+    )
+
+    with contextlib.ExitStack() as stack:
+        for p in _patches(_TextProvider, ToolRegistry([])):
+            stack.enter_context(p)
+        spawn = make_spawn_agent(AgentServerConfig(permission_mode="default"))
+        handle = await spawn("os1_seam", str(tmp_path), None)
+        gen = handle.messages_from_agent()
+        try:
+            init = await asyncio.wait_for(gen.__anext__(), timeout=5)
+            assert init["subtype"] == "init"
+
+            await handle.send_to_agent({
+                "type": "control_request", "request_id": "gs1",
+                "request": {"subtype": "get_settings"},
+            })
+            for _ in range(12):
+                msg = await asyncio.wait_for(gen.__anext__(), timeout=5)
+                if msg.get("type") == "control_response" and msg["response"].get("request_id") == "gs1":
+                    payload = msg["response"]["response"]
+                    break
+            else:
+                raise AssertionError("no get_settings reply")
+            assert payload["output_style"] == "explanatory", payload
+        finally:
+            with contextlib.suppress(Exception):
+                await handle.shutdown()
+            with contextlib.suppress(Exception):
+                await gen.aclose()

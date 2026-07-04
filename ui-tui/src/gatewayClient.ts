@@ -258,6 +258,7 @@ const SLASHES: ReadonlyArray<{ desc: string; hint?: string; name: string }> = [
   { desc: 'Show available commands', name: '/help' },
   { desc: 'Clear the conversation', name: '/clear' },
   { desc: 'Switch the model', name: '/model' },
+  { desc: 'Set the output style', hint: '[<name>]', name: '/output-style' },
   { desc: 'Set the permission mode', hint: '[default|plan|acceptEdits|dontAsk|bypassPermissions]', name: '/mode' },
   { desc: 'Compact the conversation to save context', name: '/compact' },
   { desc: 'Show context-window usage', name: '/context' },
@@ -894,6 +895,29 @@ export class GatewayClient extends EventEmitter {
         await this.controlQuery('set_model', { model: arg })
 
         return out(`Model set to ${arg ?? '(unchanged)'}.`)
+      case 'output-style': {
+        if (arg) {
+          const r = (await this.controlQuery('set_output_style', { style: arg })) as any
+
+          if (r?.ok === false) {
+            const avail = Array.isArray(r?.available_styles) ? ` Available: ${r.available_styles.join(', ')}.` : ''
+
+            return out(`${r?.error ?? 'Failed to set output style.'}${avail}`)
+          }
+
+          return out(`Output style: ${r?.style ?? arg}.`)
+        }
+
+        const st = (await this.controlQuery('get_settings', {})) as any
+        const avail = Array.isArray(st?.available_output_styles) ? st.available_output_styles : []
+        const current = st?.output_style ?? 'default'
+
+        return out(
+          avail.length
+            ? `Output style: ${current}. Available: ${avail.map((n: string) => (n === current ? `${n} (current)` : n)).join(', ')}.`
+            : `Output style: ${current}.`
+        )
+      }
       case 'provider': {
         const r = (await this.controlQuery('set_provider', { provider: arg })) as any
 
