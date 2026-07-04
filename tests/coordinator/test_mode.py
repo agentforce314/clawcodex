@@ -131,18 +131,41 @@ class _StubTool:
         self.name = name
 
 
-def test_filter_coordinator_tools_returns_exactly_three() -> None:
-    """The chapter calls this out as core: the coordinator gets
-    EXACTLY {Agent, SendMessage, TaskStop} — no Read, no Edit, no
-    Bash."""
+def test_filter_coordinator_tools_returns_exactly_the_allowed_set() -> None:
+    """The coordinator gets EXACTLY the TS ``COORDINATOR_MODE_ALLOWED_TOOLS``
+    set (``constants/tools.ts:105-110``): {Agent, SendMessage, TaskStop,
+    StructuredOutput} — StructuredOutput is ``SYNTHETIC_OUTPUT_TOOL_NAME``'s
+    model-facing literal. No Read, no Edit, no Bash."""
     tools = [
         _StubTool("Agent"), _StubTool("SendMessage"), _StubTool("TaskStop"),
+        _StubTool("StructuredOutput"),
         _StubTool("Read"), _StubTool("Edit"), _StubTool("Bash"),
         _StubTool("WebSearch"), _StubTool("Grep"),
     ]
     coord = filter_coordinator_tools(tools)
-    assert {t.name for t in coord} == {"Agent", "SendMessage", "TaskStop"}
-    assert len(coord) == 3
+    assert {t.name for t in coord} == {
+        "Agent", "SendMessage", "TaskStop", "StructuredOutput",
+    }
+    assert len(coord) == 4
+
+
+def test_filter_coordinator_tools_exempts_pr_activity_mcp_tools() -> None:
+    """PR-activity subscription MCP tools are always allowed — subscription
+    management is orchestration (``utils/toolPool.ts:11-18, 35-41``); every
+    other MCP tool is dropped from the coordinator's own set."""
+    tools = [
+        _StubTool("Agent"),
+        _StubTool("mcp__github__subscribe_pr_activity"),
+        _StubTool("mcp__github__unsubscribe_pr_activity"),
+        _StubTool("mcp__github__create_pr"),
+        _StubTool("mcp__sentry__search_issues"),
+    ]
+    coord = filter_coordinator_tools(tools)
+    assert {t.name for t in coord} == {
+        "Agent",
+        "mcp__github__subscribe_pr_activity",
+        "mcp__github__unsubscribe_pr_activity",
+    }
 
 
 def test_filter_worker_tools_excludes_internal_set() -> None:
@@ -193,7 +216,7 @@ def test_user_context_returns_worker_tools_block(
     monkeypatch.setenv("CLAUDE_CODE_COORDINATOR_MODE", "1")
     ctx = get_coordinator_user_context()
     assert "workerToolsContext" in ctx
-    assert "Workers spawned via Agent" in ctx["workerToolsContext"]
+    assert "Workers spawned via the Agent tool" in ctx["workerToolsContext"]
 
 
 def test_user_context_includes_mcp_servers(

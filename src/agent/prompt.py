@@ -53,12 +53,17 @@ def get_agent_prompt(
     *,
     allow_async: bool = True,
     allow_fork: bool = False,
+    is_coordinator: bool = False,
 ) -> str:
     """Build the full prompt for the Agent tool.
 
     Mirrors getPrompt() from typescript/src/tools/AgentTool/prompt.ts.
     This text is fed to the model as the Agent tool's description, instructing
     the parent agent on how and when to spawn sub-agents.
+
+    ``is_coordinator``: return only the shared header — the coordinator
+    system prompt already carries usage notes, examples, and
+    when-not-to-use guidance (mirrors ``prompt.ts:206-211``).
     """
     # --- Shared core prompt (used by both coordinator and non-coordinator) ---
     agent_list = "\n".join(format_agent_line(a) for a in agent_definitions)
@@ -73,6 +78,11 @@ def get_agent_prompt(
         f"When using the {_AGENT_TOOL_NAME} tool, specify a subagent_type parameter "
         f"to select which agent type to use. If omitted, the general-purpose agent is used."
     )
+
+    # Coordinator mode gets the slim prompt — the coordinator system prompt
+    # already covers usage notes, examples, and when-not-to-use guidance.
+    if is_coordinator:
+        return shared
 
     # --- "When NOT to use" section ---
     when_not_to_use = (

@@ -9,7 +9,9 @@ the ~370-line system prompt body which lives in
 * ``INTERNAL_WORKER_TOOLS`` — frozenset of tool names workers cannot
   use (TeamCreate / TeamDelete / SendMessage / StructuredOutput).
 * ``filter_coordinator_tools`` — produce the coordinator's restricted
-  tool list (``Agent`` / ``SendMessage`` / ``TaskStop`` only).
+  tool list (``Agent`` / ``SendMessage`` / ``TaskStop`` /
+  ``StructuredOutput`` + PR-activity subscription MCP tools; mirrors
+  ``COORDINATOR_MODE_ALLOWED_TOOLS`` + ``applyCoordinatorToolFilter``).
 * ``filter_worker_tools`` — produce a worker's tool list (everything
   the parent has, minus ``INTERNAL_WORKER_TOOLS``).
 * ``get_coordinator_user_context`` — produce the
@@ -27,6 +29,7 @@ from src.utils.env import is_env_truthy
 
 if TYPE_CHECKING:
     from src.tool_system.build_tool import Tool
+    from src.tool_system.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +90,8 @@ def match_session_mode(session_mode: SessionMode | None) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Tool-set filters — coordinator gets 3 tools; workers lose 4
+# Tool-set filters — coordinator keeps 4 tools (+ PR-activity MCP); workers
+# lose the swarm-internal 4
 # ---------------------------------------------------------------------------
 
 # Tools workers cannot use. ``"StructuredOutput"`` is the literal
@@ -101,19 +105,81 @@ INTERNAL_WORKER_TOOLS: Final[frozenset[str]] = frozenset({
     "StructuredOutput",
 })
 
-# The coordinator gets EXACTLY these three tools. The chapter calls
-# this out as core: "the coordinator's power comes not from having
-# more tools, but from having fewer." No Read, no Edit, no Bash.
+# The coordinator's allowed tool set. Mirrors TS
+# ``COORDINATOR_MODE_ALLOWED_TOOLS`` (``constants/tools.ts:105-110``):
+# Agent + TaskStop + SendMessage + SyntheticOutput — whose model-facing
+# name is the literal ``"StructuredOutput"`` (``SyntheticOutputTool.ts:20``),
+# needed so structured-output-constrained headless runs still work in
+# coordinator mode. The chapter's "exactly three tools" phrasing predates
+# the TS snapshot's fourth entry. No Read, no Edit, no Bash — "the
+# coordinator's power comes not from having more tools, but from having
+# fewer."
 _COORDINATOR_ALLOWED_TOOLS: Final[frozenset[str]] = frozenset({
     "Agent",
     "SendMessage",
     "TaskStop",
+    "StructuredOutput",
 })
+
+# MCP tool-name suffixes for GitHub PR-activity subscription. These are
+# lightweight orchestration actions the coordinator calls directly rather
+# than delegating to workers; matched by suffix since the MCP server-name
+# prefix may vary. Mirrors ``utils/toolPool.ts:11-18``.
+PR_ACTIVITY_TOOL_SUFFIXES: Final[tuple[str, ...]] = (
+    "subscribe_pr_activity",
+    "unsubscribe_pr_activity",
+)
+
+
+def is_pr_activity_subscription_tool(name: str) -> bool:
+    """True for MCP PR-activity subscription tools (suffix match).
+
+    Mirrors ``isPrActivitySubscriptionTool`` (``utils/toolPool.ts:16-18``).
+    """
+    return any(name.endswith(suffix) for suffix in PR_ACTIVITY_TOOL_SUFFIXES)
 
 
 def filter_coordinator_tools(all_tools: Iterable["Tool"]) -> list["Tool"]:
-    """Return only the three tools the coordinator may use."""
-    return [t for t in all_tools if t.name in _COORDINATOR_ALLOWED_TOOLS]
+    """Filter a tool pool to the set allowed in coordinator mode.
+
+    Mirrors ``applyCoordinatorToolFilter`` (``utils/toolPool.ts:35-41``):
+    the four allowed tools plus PR-activity subscription MCP tools, which
+    are always allowed since subscription management is orchestration.
+    """
+    return [
+        t for t in all_tools
+        if t.name in _COORDINATOR_ALLOWED_TOOLS
+        or is_pr_activity_subscription_tool(t.name)
+    ]
+
+
+def coordinator_main_loop_registry(registry: "ToolRegistry") -> "ToolRegistry":
+    """Main-loop view of ``registry`` under the coordinator gate.
+
+    Identity when not in coordinator mode. In coordinator mode, returns a
+    NEW registry holding only the coordinator-allowed tools (+ PR-activity
+    MCP tools) — the port of applying ``applyCoordinatorToolFilter`` on the
+    main-loop tool assembly (``toolPool.ts:35-41`` interactive,
+    ``main.tsx:1871-1879`` headless).
+
+    Non-mutating by design: ``make_agent_tool`` captures the FULL registry
+    (``tool_system/defaults.py:18-24``) and subagent spawns list tools from
+    that captured object (``tool_system/tools/agent.py``), so workers keep
+    their full pool — the same separation TS documents at
+    ``AgentTool.tsx:568-575`` ("Workers always get their tools from
+    assembleToolPool … so they aren't affected by the parent's tool
+    restrictions"). Tool objects are shared between the two registries.
+
+    Call this FRESH at each main-loop consumption point (it is cheap):
+    building from ``list_tools()`` bakes in the disabled-MCP-server
+    exclusion at compute time, and a fresh view also picks up late MCP
+    registration and live MCP tool refresh.
+    """
+    if not is_coordinator_mode():
+        return registry
+    from src.tool_system.registry import ToolRegistry
+
+    return ToolRegistry(filter_coordinator_tools(registry.list_tools()))
 
 
 def filter_worker_tools(all_tools: Iterable["Tool"]) -> list["Tool"]:
@@ -122,6 +188,14 @@ def filter_worker_tools(all_tools: Iterable["Tool"]) -> list["Tool"]:
     Workers receive standard tools (Read / Edit / Bash / etc.) plus
     any MCP tools the parent has registered; only the swarm-internal
     coordination tools are excluded.
+
+    NB (chapter-derived, deliberately UNWIRED): TS has no runtime filter
+    at this seam — ``INTERNAL_WORKER_TOOLS`` shapes only the *rendered
+    string* in the coordinator's user context, while actual worker tool
+    filtering is the async-agent whitelist
+    (``src/agent/agent_tool_utils.py:filter_tools_for_agent``, mirror of
+    ``agentToolUtils.ts``). Do not wire this as a runtime filter; that
+    would diverge from TS.
     """
     return [t for t in all_tools if t.name not in INTERNAL_WORKER_TOOLS]
 
@@ -190,7 +264,11 @@ def get_coordinator_user_context(
 
     worker_tools = _build_worker_tools_string()
 
-    parts = [f"Workers spawned via Agent have access to these tools: {worker_tools}"]
+    # Byte-parity with ``coordinatorMode.ts:97`` (``via the ${AGENT_TOOL_NAME}
+    # tool``) — the model-facing tool reference must name the tool exactly.
+    parts = [
+        f"Workers spawned via the Agent tool have access to these tools: {worker_tools}"
+    ]
 
     mcp_server_names = sorted(
         {getattr(c, "name", "") for c in (mcp_clients or [])} - {""}
@@ -216,6 +294,9 @@ __all__ = [
     "is_coordinator_mode",
     "match_session_mode",
     "INTERNAL_WORKER_TOOLS",
+    "PR_ACTIVITY_TOOL_SUFFIXES",
+    "is_pr_activity_subscription_tool",
+    "coordinator_main_loop_registry",
     "filter_coordinator_tools",
     "filter_worker_tools",
     "get_coordinator_user_context",

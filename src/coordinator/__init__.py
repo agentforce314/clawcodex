@@ -21,6 +21,7 @@ from pathlib import Path
 
 from src.coordinator.mode import (
     INTERNAL_WORKER_TOOLS,
+    coordinator_main_loop_registry,
     filter_coordinator_tools,
     filter_worker_tools,
     get_coordinator_user_context,
@@ -50,6 +51,7 @@ __all__ = [
     "SAMPLE_FILES",
     "INTERNAL_WORKER_TOOLS",
     "WORKER_AGENT",
+    "coordinator_main_loop_registry",
     "filter_coordinator_tools",
     "filter_worker_tools",
     "get_coordinator_agents",

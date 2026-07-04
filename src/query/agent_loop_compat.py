@@ -217,31 +217,74 @@ def build_effective_system_prompt(
     tool-docs section here would double-send them. ``provider``/``mcp_servers``
     feed only the global cache-scope gate; ``None`` is safe (disables the
     cross-user global scope, which TUI/headless should not use).
+
+    Coordinator mode (``CLAUDE_CODE_COORDINATOR_MODE`` truthy): the
+    coordinator orchestration prompt REPLACES the base blocks entirely,
+    ``style_prompt`` still appends, and the trailing context block is kept
+    and extended with the ``workerToolsContext`` entry — mirrors
+    ``utils/systemPrompt.ts:63-75`` + ``QueryEngine.ts:300-306``. This
+    builder only ever serves the MAIN loop (subagents build their prompts
+    via ``get_agent_system_prompt``), so the branch cannot leak into worker
+    prompts — the structural equivalent of TS's
+    ``!mainThreadAgentDefinition`` guard.
     """
     # Local imports — context_system is a heavier dep; only the cutover
     # callers need it, no need to drag it into agent_loop_compat's import time.
     from ..context_system import build_context_prompt
     from ..context_system.prompt_assembly import build_full_system_prompt_blocks
     from ..context_system.system_prompt_cache import CacheScope
+    from ..coordinator.mode import is_coordinator_mode
 
     cwd = str(tool_context.cwd or tool_context.workspace_root)
 
-    # Skills listing (best-effort; mirrors engine.py:183).
-    try:
-        from ..command_system import get_skill_tool_commands
-        skills = get_skill_tool_commands(cwd)
-    except Exception:
-        skills = None
+    coordinator = is_coordinator_mode()
+    if coordinator:
+        # Coordinator mode: the orchestration prompt REPLACES the entire base
+        # block set — no # Doing tasks, no tool guidance, no tone (mirrors
+        # ``utils/systemPrompt.ts:63-75``, where the coordinator prompt swaps
+        # in for defaultSystemPrompt while appendSystemPrompt is preserved).
+        # ``style_prompt`` is this builder's append-channel, so it survives;
+        # the trailing workspace/git/CLAUDE.md context block below is also
+        # kept — TS coordinator sessions keep userContext/systemContext
+        # (``QueryEngine.ts:300-306`` replaces only the default prompt).
+        from ..coordinator import get_coordinator_system_prompt
+        from ..state.cache_state import should_1h_cache_ttl
 
-    blocks = build_full_system_prompt_blocks(
-        cwd=cwd,
-        output_style="default",          # style is appended below (mirror engine.py:169)
-        append_system_prompt=style_prompt,
-        query_source=query_source,
-        provider=provider,
-        mcp_servers=mcp_servers,
-        skills=skills,
-    )
+        blocks: list[dict[str, Any]] = [{
+            "type": "text",
+            "text": get_coordinator_system_prompt(),
+            "_cache_scope": CacheScope.SESSION.value,
+        }]
+        if style_prompt:
+            blocks.append({
+                "type": "text",
+                "text": style_prompt,
+                "_cache_scope": CacheScope.SESSION.value,
+            })
+        # One cache marker on the LAST stable block — the same convention
+        # build_full_system_prompt_blocks applies to each scope-group's
+        # final block (prompt_assembly.py:699-761), reusing its TTL selector.
+        blocks[-1]["cache_control"] = {
+            "type": "ephemeral",
+            "ttl": "1h" if should_1h_cache_ttl(query_source) else "5m",
+        }
+    else:
+        # Skills listing (best-effort; mirrors engine.py:183).
+        try:
+            from ..command_system import get_skill_tool_commands
+            skills = get_skill_tool_commands(cwd)
+        except Exception:
+            skills = None
+
+        blocks = build_full_system_prompt_blocks(
+            cwd=cwd,
+            output_style="default",          # style is appended below (mirror engine.py:169)
+            append_system_prompt=style_prompt,
+            query_source=query_source,
+            provider=provider,
+            mcp_servers=mcp_servers,
+            skills=skills,
+        )
 
     # Preserve the existing workspace + git + CLAUDE.md context verbatim as a
     # trailing uncached block (CLAUDE.md is NOT in the base blocks above).
@@ -264,6 +307,35 @@ def build_effective_system_prompt(
         )
     except Exception:
         context_prompt = ""
+
+    if coordinator:
+        # workerToolsContext — TS merges this into the per-session userContext
+        # (``QueryEngine.ts:300-306``); this port's userContext channel on the
+        # live path is the trailing context block (same route CLAUDE.md / git
+        # status already take), rendered with the ``# {key}\n{value}`` entry
+        # idiom of prepend_user_context (prompt_assembly.py:255-256). MCP
+        # server names come from the ToolContext's connected-client catalog
+        # (agent_server.py publishes ``tool_context.mcp_clients``); the
+        # scratchpad line is surfaced whenever the dir resolves — TS gates it
+        # on Statsig ``tengu_scratch``, which this port does not have (the
+        # module-documented divergence).
+        from ..coordinator.mode import get_coordinator_user_context
+
+        try:
+            from ..permissions.filesystem import get_scratchpad_dir
+            scratchpad_dir: str | None = get_scratchpad_dir()
+        except Exception:
+            scratchpad_dir = None
+        worker_ctx = get_coordinator_user_context(
+            getattr(tool_context, "mcp_clients", None),
+            scratchpad_dir=scratchpad_dir,
+        ).get("workerToolsContext", "")
+        if worker_ctx:
+            entry = f"# workerToolsContext\n{worker_ctx}"
+            context_prompt = (
+                f"{context_prompt}\n\n{entry}" if context_prompt.strip() else entry
+            )
+
     if context_prompt.strip():
         blocks = blocks + [{
             "type": "text",
