@@ -122,6 +122,63 @@ def has_hook_for_event(event: str, tool_use_context: Any) -> bool:
     return bool(hooks.get(event))
 
 
+_IF_CONDITION_EVENTS = frozenset(
+    {"PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionRequest"}
+)
+
+
+def _matchable_value_for_tool(tool_name: str, tool_input: dict[str, Any]) -> str | None:
+    """The string the `if` rule content matches against, per tool. Bash =
+    the command (the documented `if: "Bash(git *)"` case). Extend here as
+    other tools grow permission-rule matchers (kept minimal on purpose —
+    SCHEMAS-1)."""
+    if tool_name == "Bash":
+        cmd = tool_input.get("command")
+        return cmd if isinstance(cmd, str) else None
+    return None
+
+
+def _matches_if_condition(
+    if_condition: str | None, event: str, tool_name: str | None,
+    tool_input: dict[str, Any] | None,
+) -> bool:
+    """SCHEMAS-1 — the port of `prepareIfConditionMatcher`
+    (utils/hooks.ts:1571-1610): a hook's `if` permission-rule pre-filter.
+
+    Returns True (run the hook) when there is no condition, the event is
+    not a tool event (TS builds no matcher then), or the condition matches;
+    False (skip) when the condition names a different tool or its rule
+    content does not match the actual tool input.
+    """
+    if not if_condition:
+        return True
+    if event not in _IF_CONDITION_EVENTS or not tool_name:
+        return True  # non-tool events ignore `if` (TS returns undefined)
+
+    from src.permissions.rule_parser import permission_rule_value_from_string
+
+    parsed = permission_rule_value_from_string(if_condition)
+    if (parsed.tool_name or "") != tool_name:
+        return False
+    if not parsed.rule_content:
+        return True  # tool-name-only condition → run
+
+    value = _matchable_value_for_tool(tool_name, tool_input or {})
+    if value is None:
+        # Rule content present but this tool has no matchable extractor —
+        # TS skips (patternMatcher undefined → false). Log so it is not a
+        # silent drop (the general per-tool matcher is a bounded follow-up).
+        logger.debug(
+            "hook `if` condition %r on tool %s has no matchable value; skipping hook",
+            if_condition, tool_name,
+        )
+        return False
+
+    from src.permissions.check import prepare_permission_matcher
+
+    return prepare_permission_matcher(parsed.rule_content)(value)
+
+
 def _matches_tool(matcher: str | None, tool_name: str) -> bool:
     if matcher is None:
         return True
@@ -415,8 +472,16 @@ async def _run_hooks_for_event(
     tool_use_id = stdin_data.get("tool_use_id", str(uuid4()))
     parent_tool_use_id = ""
 
+    tool_input = stdin_data.get("tool_input") if isinstance(stdin_data.get("tool_input"), dict) else None
+
     for hook in event_hooks:
         if tool_name and not _matches_tool(hook.matcher, tool_name):
+            continue
+        # SCHEMAS-1 — the `if` permission-rule pre-filter (was inert: the
+        # field parsed but never evaluated, so `if` hooks ran unconditionally).
+        if not _matches_if_condition(
+            getattr(hook, "if_condition", None), event, tool_name, tool_input
+        ):
             continue
 
         yield {
