@@ -38,6 +38,7 @@ Design decisions (mirroring the TS engine unless noted):
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import sys
@@ -125,6 +126,8 @@ def _result_to_content(result: Any) -> list[mcp_types.ContentBlock]:
     Mirrors mcp.ts:199-227: str → text; list of blocks → text/image
     (``source.data``/``media_type`` → data/mimeType), unknown block types
     json-stringified with a warning; anything else → json-stringified text.
+    (A plain non-block list would json-stringify per element via the unknown
+    branch — same as TS, whose list branch assumes content blocks too.)
     """
     data = result.output if not isinstance(result, (str, list)) else result
     if isinstance(data, str):
@@ -180,6 +183,20 @@ async def build_server(
         mcp_clients, reexposed_tools = await load_reexposed_mcp_tools()
     else:
         mcp_clients, reexposed_tools = [], []
+
+    if reexposed_tools:
+        # Re-exposed MCP tools are ask-gated in this port (PR #347 kept all
+        # mcp__* gated), so under the fail-closed serve posture they would
+        # deny — dead on arrival. TS's serve executes them ungated
+        # (mcp.ts calls tool.call directly). The coherent middle: the user's
+        # CONFIGURED servers are already their grant (and the C7 .mcp.json
+        # approval gate filtered unapproved project servers inside
+        # get_all_mcp_configs), so grant content-less session allow rules
+        # (bare tool-name rule strings — the PR #342 mechanism) for exactly
+        # the re-exposed tool names — builtins stay fail-closed.
+        context.permission_context.always_allow_rules.setdefault(
+            "session", []
+        ).extend(t.name for t in reexposed_tools)
     context.mcp_clients = {getattr(c, "name", str(i)): c for i, c in enumerate(mcp_clients)}
     for t in reexposed_tools:
         try:
@@ -187,7 +204,9 @@ async def build_server(
         except ValueError:
             # Name collision: TS's getCombinedTools gives the MCP tool the
             # win (mcp.ts:46-54 drops the shadowed builtin) — mirror that by
-            # evicting the builtin and registering the MCP tool.
+            # evicting the builtin and registering the MCP tool. (An ALIAS
+            # collision would re-raise into the drop-and-log branch below —
+            # acceptable: mcp__-namespaced tools can't realistically alias.)
             registry.remove_tool(t.name)
             try:
                 registry.register(t)
@@ -205,6 +224,10 @@ async def build_server(
     def _current_tools() -> list[Any]:
         # get_tools = deny-rule + is_enabled filtered view; partition it and
         # recombine MCP-first (TS's [...mcpTools, ...dedupedBuiltins] order).
+        # Intentional divergence: disabled tools are HIDDEN from ListTools
+        # here (TS lists them and only CallTool rejects, mcp.ts:174) — the
+        # filtered view is the honest advertisement; CallTool still rejects
+        # disabled tools by name for parity.
         visible = get_tools(registry, context.permission_context)
         builtins = [t for t in visible if not _is_mcp_tool(t)]
         reexposed = [t for t in visible if _is_mcp_tool(t)]
@@ -234,7 +257,17 @@ async def build_server(
             # The full pipeline: schema validation → validate_input →
             # has_permissions_to_use_tool (ask fails closed — no handler on
             # the serve context) → call. See module docstring.
-            result = registry.dispatch(ToolCall(name=name, input=arguments or {}), context)
+            #
+            # to_thread: dispatch is sync (and its async-tool bridge blocks
+            # the calling thread), so running it inline would freeze the MCP
+            # server's event loop for the tool's whole duration (a 30s Bash
+            # would stall pings/cancellation). The worker thread has no
+            # running loop, so async tools take _invoke_tool_call's clean
+            # asyncio.run path. TS's `await tool.call(...)` is cooperative —
+            # this is the Python equivalent.
+            result = await asyncio.to_thread(
+                registry.dispatch, ToolCall(name=name, input=arguments or {}), context
+            )
             if result.is_error:
                 error_text = (
                     result.output.get("error") if isinstance(result.output, dict) else None

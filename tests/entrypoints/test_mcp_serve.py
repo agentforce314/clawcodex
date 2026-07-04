@@ -223,21 +223,31 @@ def test_betas_default_at_cli_entry(monkeypatch: pytest.MonkeyPatch) -> None:
     assert os.environ["CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"] == "false"
 
 
-def test_betas_default_at_agent_server_entry(monkeypatch: pytest.MonkeyPatch) -> None:
-    """agent_server_cli is its own process entry (standalone backend) — it
-    must set the default itself, not rely on cli.main() inheritance."""
-    from src.entrypoints.agent_server_cli import run_agent_server_subcommand
+def test_betas_default_at_agent_server_entry() -> None:
+    """agent_server_cli is its own process entry (standalone backend) — the
+    default is set at MODULE scope (mirroring cli.tsx:44's placement, before
+    the heavy imports can capture env), so it must hold on a bare import
+    with the var absent, and an explicit user value must survive."""
+    repo_root = str(Path(__file__).resolve().parents[2])
+    code = (
+        "import os; import src.entrypoints.agent_server_cli; "
+        "print(os.environ.get('CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS'))"
+    )
+    base_env = {k: v for k, v in os.environ.items()
+                if k != "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"}
 
-    monkeypatch.delenv("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS", raising=False)
-    # ``--help`` exits via argparse SystemExit AFTER the setdefault runs.
-    with pytest.raises(SystemExit):
-        run_agent_server_subcommand(["--help"])
-    assert os.environ["CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"] == "true"
+    p1 = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                        text=True, timeout=120, cwd=repo_root, env=base_env)
+    assert p1.returncode == 0, p1.stderr
+    assert p1.stdout.strip() == "true"
 
-    monkeypatch.setenv("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS", "false")
-    with pytest.raises(SystemExit):
-        run_agent_server_subcommand(["--help"])
-    assert os.environ["CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"] == "false"
+    p2 = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True,
+        timeout=120, cwd=repo_root,
+        env={**base_env, "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "false"},
+    )
+    assert p2.returncode == 0, p2.stderr
+    assert p2.stdout.strip() == "false"
 
 
 def test_call_tool_out_of_workspace_read_denied(tmp_path: Path) -> None:
@@ -255,5 +265,73 @@ def test_call_tool_out_of_workspace_read_denied(tmp_path: Path) -> None:
         async with cm as s:
             r = await s.call_tool("Glob", {"pattern": "*.txt", "path": str(outside)})
             assert r.isError is True
+
+    asyncio.run(run())
+
+
+def test_reexposed_mcp_tools_integration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The full re-exposure chain (critic MAJOR-2): loader → registry
+    registration incl. the evict-and-replace MCP-wins collision recovery →
+    list_tools surfacing → dispatch. Re-exposed tools carry a content-less
+    session allow rule (the user's configured servers are already their
+    grant; the C7 approval gate filtered unapproved ones) — builtins stay
+    fail-closed."""
+    import src.entrypoints.mcp_serve as sm
+    from src.tool_system.build_tool import build_tool
+    from src.tool_system.protocol import ToolResult
+
+    echo = build_tool(
+        name="mcp__fake__echo",
+        input_schema={
+            "type": "object",
+            "properties": {"msg": {"type": "string"}},
+            "required": ["msg"],
+            "additionalProperties": False,
+        },
+        call=lambda i, c: ToolResult(name="mcp__fake__echo", output=f"echo:{i['msg']}"),
+        prompt="Echo from the fake MCP server.",
+        description="Echo tool.",
+    )
+    colliding = build_tool(
+        name="Read",
+        input_schema={"type": "object", "properties": {}, "additionalProperties": True},
+        call=lambda i, c: ToolResult(name="Read", output="MCP-READ"),
+        prompt="MCP Read replacement.",
+        description="Shadowing Read.",
+    )
+
+    async def fake_loader():
+        return [], [echo, colliding]
+
+    monkeypatch.setattr(sm, "load_reexposed_mcp_tools", fake_loader)
+
+    async def run() -> None:
+        from mcp.shared.memory import create_connected_server_and_client_session
+
+        server = await sm.build_server(tmp_path)  # default: uses the (fake) loader
+        async with create_connected_server_and_client_session(server) as s:
+            listing = await s.list_tools()
+            names = [t.name for t in listing.tools]
+            by_name = {t.name: t for t in listing.tools}
+            # Surfaced, MCP-first ordering.
+            assert "mcp__fake__echo" in names
+            assert names.index("mcp__fake__echo") < names.index("Glob")
+            # Evict-and-replace happened in the REAL registry: the builtin
+            # Read's slot now serves the MCP tool's description and body.
+            assert by_name["Read"].description.startswith("MCP Read replacement")
+
+            r = await s.call_tool("mcp__fake__echo", {"msg": "hi"})
+            assert r.isError is False and r.content[0].text == "echo:hi"
+
+            r2 = await s.call_tool("Read", {"anything": 1})
+            assert r2.isError is False and r2.content[0].text == "MCP-READ"
+
+            # The grant covers ONLY re-exposed names — builtin asks still
+            # fail closed.
+            r3 = await s.call_tool("Write", {"file_path": str(tmp_path / "n"), "content": "x"})
+            assert r3.isError is True
+            assert not (tmp_path / "n").exists()
 
     asyncio.run(run())
