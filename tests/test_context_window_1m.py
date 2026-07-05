@@ -1,4 +1,4 @@
-"""Context-window sizes for 1M-context models (deepseek-v4, glm-5.2).
+"""Context-window sizes for 1M-context models (deepseek-v4, glm-5.2, MiniMax-M3).
 
 Regression guard for the agent-server status bar reporting 200K for models that
 ship a 1M window. The display reads ``context_analyzer``; autocompact reads the
@@ -25,6 +25,20 @@ def test_glm_4_legacy_not_promoted_to_1m():
     # glm-4 must not prefix-match glm-5.2's 1M window (both are exact keys).
     assert display_window("glm-4") == 128_000
     assert canonical_window("glm-4") == 128_000
+
+
+def test_minimax_m3_is_1m_in_display_and_canonical():
+    assert display_window("MiniMax-M3") == 1_000_000
+    assert canonical_window("MiniMax-M3") == 1_000_000
+
+
+def test_minimax_m2_line_not_promoted_to_1m():
+    # The M2.x line keeps its default window; only MiniMax-M3 is 1M. The
+    # ``MiniMax-M2`` anchor key stops M3's rsplit("-", 1) prefix base
+    # (``MiniMax``) from capturing the M2 family in the canonical table.
+    assert canonical_window("MiniMax-M2.7") != 1_000_000
+    assert canonical_window("MiniMax-M2") != 1_000_000
+    assert display_window("MiniMax-M2.7") != 1_000_000
 
 
 def test_legacy_deepseek_chat_not_promoted_to_1m():

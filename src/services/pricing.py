@@ -78,6 +78,15 @@ _TIER_DEEPSEEK_PRO = {
     "cache_creation": 0.435 / 1_000_000,
     "cache_read": 0.003625 / 1_000_000,
 }
+# Minimax M3 (USD per million tokens; Anthropic-compatible endpoint). Standard
+# tier at ≤512K input. Like DeepSeek, there is no separate cache-write charge —
+# a non-cached token is just input — so ``cache_creation`` mirrors ``input``.
+_TIER_MINIMAX_M3 = {
+    "input": 0.6 / 1_000_000,
+    "output": 2.4 / 1_000_000,
+    "cache_creation": 0.6 / 1_000_000,
+    "cache_read": 0.12 / 1_000_000,
+}
 
 
 # Exact-match table — keyed by canonical model name. Order DOESN'T matter
@@ -106,6 +115,9 @@ PRICING: dict[str, dict[str, float]] = {
     # every proxied model is priced at its upstream rate.
     "deepseek-v4-flash": _TIER_DEEPSEEK_FLASH,
     "deepseek-v4-pro": _TIER_DEEPSEEK_PRO,
+    # Minimax M3 (api.minimaxi.com/anthropic). Exact key only — the M2.x line
+    # has no published USD tier here, so it stays priced-as-unknown (None).
+    "MiniMax-M3": _TIER_MINIMAX_M3,
 }
 
 

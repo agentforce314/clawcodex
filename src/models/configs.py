@@ -187,6 +187,29 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
         max_output_tokens=8_192,
         supports_cache=True,
     ),
+    # Minimax (Anthropic-compatible; api.minimaxi.com/anthropic). MiniMax-M3
+    # ships a 1M context window (like DeepSeek V4 / glm-5.2); the earlier
+    # M2.x line is 200K. Both registered as EXACT keys so the M2 line never
+    # prefix-matches M3's 1M window: ``get_model_config``'s fallback bases a
+    # key on ``rsplit("-", 1)[0]``, so ``MiniMax-M3`` alone would base on the
+    # bare ``MiniMax`` and capture every ``MiniMax-M2*`` id — the ``MiniMax-M2``
+    # anchor below (listed first) keeps the M2 family on 200K. Cost lives in
+    # ``services/pricing.py`` (the single source the cost path reads), so the
+    # ``cost_*`` defaults here are intentionally left unset, as for DeepSeek/GLM.
+    "MiniMax-M2": ModelConfig(
+        model_id="MiniMax-M2",
+        display_name="Minimax M2",
+        context_window=200_000,
+        max_output_tokens=8_192,
+        supports_cache=True,
+    ),
+    "MiniMax-M3": ModelConfig(
+        model_id="MiniMax-M3",
+        display_name="Minimax M3",
+        context_window=1_000_000,
+        max_output_tokens=8_192,
+        supports_cache=True,
+    ),
 }
 
 

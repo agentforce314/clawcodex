@@ -35,6 +35,13 @@ class TestGetPricing(unittest.TestCase):
         self.assertEqual(p["input"], 3.0 / 1_000_000)
         self.assertEqual(p["output"], 15.0 / 1_000_000)
 
+    def test_exact_match_minimax_m3(self) -> None:
+        # MiniMax-M3 standard tier: $0.60 in / $2.40 out / $0.12 cache read.
+        p = get_pricing("MiniMax-M3")
+        self.assertEqual(p["input"], 0.6 / 1_000_000)
+        self.assertEqual(p["output"], 2.4 / 1_000_000)
+        self.assertEqual(p["cache_read"], 0.12 / 1_000_000)
+
     def test_family_prefix_falls_back_for_future_opus_variant(self) -> None:
         # A model name not in the exact table but matching the
         # ``claude-opus-4-7`` family prefix → 5/25 tier.
@@ -109,6 +116,18 @@ class TestComputeCost(unittest.TestCase):
     def test_missing_keys_default_to_zero(self) -> None:
         # No tokens at all → free.
         self.assertEqual(compute_cost("claude-opus-4-7", {}), 0.0)
+
+    def test_minimax_m3_input_output_and_cache(self) -> None:
+        # MiniMax-M3: no separate cache-write charge, so cache_creation
+        # mirrors input ($0.60/M); cache_read is the low $0.12/M rate.
+        cost = compute_cost("MiniMax-M3", {
+            "input_tokens": 1_000_000,
+            "output_tokens": 1_000_000,
+            "cache_creation_input_tokens": 1_000_000,
+            "cache_read_input_tokens": 1_000_000,
+        })
+        # $0.60 input + $2.40 output + $0.60 cache_creation + $0.12 cache_read
+        self.assertAlmostEqual(cost, 0.6 + 2.4 + 0.6 + 0.12, places=6)
 
     def test_none_values_treated_as_zero(self) -> None:
         # Defensive: usage dict might have explicit None from a
