@@ -76,9 +76,15 @@ def spawn_background_bash(
     # ``stdin=DEVNULL`` mirrors the foreground bash path: prevents background
     # commands that read fd 0 from blocking on a TTY inherited from clawcodex's
     # REPL (see bash_tool.py:_run_bash_with_abort for the same reasoning).
+    from src.utils.subprocess_env import subprocess_env
+
     proc = subprocess.Popen(
         ["bash", "-lc", wrapped],
         cwd=str(cwd),
+        # Scrub secret env vars when CLAUDE_CODE_SUBPROCESS_ENV_SCRUB is set,
+        # so a prompt-injected background command can't exfiltrate a credential
+        # via ${ANTHROPIC_API_KEY} (parity with TS subprocessEnv).
+        env=subprocess_env(),
         stdin=subprocess.DEVNULL,
         stdout=output_handle,
         stderr=subprocess.STDOUT,

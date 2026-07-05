@@ -1144,6 +1144,28 @@ def _build_mcp_section(
         name = getattr(server, "name", str(server))
         parts.append(f"- {name}")
 
+    # Surface server-authored `instructions` (from the MCP InitializeResult
+    # handshake) — port of getMcpInstructions (constants/prompts.ts:572-596).
+    # RENDERING ONLY: the LIVE wiring is DEFERRED (McpRuntime discards the
+    # connect() instructions at mcp_runtime.py:101 and every live prompt-build
+    # site passes mcp_servers=None). See the "MCP-instructions-live-wiring"
+    # chapter: retain {name,instructions} in McpRuntime + thread here + make
+    # this a REQUEST-scoped per-turn section (TS uses an UNCACHED section so
+    # late/OAuth-gated connects aren't missed). This block renders correctly
+    # once fed.
+    instruction_blocks = [
+        f"## {getattr(server, 'name', str(server))}\n{instr}"
+        for server in mcp_servers
+        if (instr := (getattr(server, "instructions", None) or "").strip())
+    ]
+    if instruction_blocks:
+        parts.append(
+            "\n# MCP Server Instructions\n\n"
+            "The following MCP servers have provided instructions for how to "
+            "use their tools and resources:\n\n"
+            + "\n\n".join(instruction_blocks)
+        )
+
     content = "\n".join(parts)
     if use_cache:
         _prompt_cache.set("mcp", content, scope=CacheScope.SESSION)
