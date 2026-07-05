@@ -72,6 +72,11 @@ PROTOCOL_VERSION = "0.1.0"
 #: not wedge a tool forever, so we default-deny after this (proposal §7).
 DEFAULT_PERMISSION_TIMEOUT_S = 300.0
 
+#: Default agent-loop turn ceiling for an interactive session. Shared by the
+#: dataclass default below and the ``--max-turns`` CLI flag (agent_server_cli.py)
+#: so the two can't drift apart from independently hand-edited literals.
+DEFAULT_MAX_TURNS = 50
+
 _SHUTDOWN = object()  # sentinel pushed onto the worker inbox to stop it
 
 
@@ -93,7 +98,7 @@ class AgentServerConfig:
     # isBypassPermissionsModeAvailable in
     # typescript/src/utils/permissions/permissionSetup.ts:941.
     is_bypass_available: bool = False
-    max_turns: int = 20
+    max_turns: int = DEFAULT_MAX_TURNS
     allowed_tools: tuple[str, ...] = ()
     disallowed_tools: tuple[str, ...] = ()
     permission_timeout_s: float = DEFAULT_PERMISSION_TIMEOUT_S
