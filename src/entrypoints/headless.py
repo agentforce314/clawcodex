@@ -83,7 +83,7 @@ class HeadlessOptions:
     # ch04 round-4 GAP B — `--fallback-model` (TS cli/print.ts:473):
     # capacity-relief switch after repeated 529s; session-sticky.
     fallback_model: str | None = None
-    max_turns: int = 20
+    max_turns: int = 50
     # ``skip_permissions`` is a backward-compat alias for the boolean form
     # of ``--dangerously-skip-permissions``. ``permission_mode`` and
     # ``is_bypass_permissions_mode_available`` were added in round 5 to
