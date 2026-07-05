@@ -59,3 +59,17 @@ def test_explicit_base(monkeypatch):
     monkeypatch.setenv("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB", "1")
     e = subprocess_env({"CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "1", "ANTHROPIC_API_KEY": "x", "KEEP": "y"})
     assert "ANTHROPIC_API_KEY" not in e and e["KEEP"] == "y"
+
+
+def test_all_23_scrub_vars_stripped(monkeypatch):
+    from src.utils.subprocess_env import _GHA_SUBPROCESS_SCRUB
+    assert len(_GHA_SUBPROCESS_SCRUB) == 23
+    monkeypatch.setenv("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB", "1")
+    for v in _GHA_SUBPROCESS_SCRUB:
+        monkeypatch.setenv(v, "secret")
+        monkeypatch.setenv(f"INPUT_{v}", "twin")
+    e = subprocess_env()
+    for v in _GHA_SUBPROCESS_SCRUB:
+        assert v not in e and f"INPUT_{v}" not in e, v
+    # the flag itself is preserved for the child (TS keeps it)
+    assert e.get("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB") == "1"
