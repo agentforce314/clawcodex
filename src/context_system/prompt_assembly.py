@@ -1144,6 +1144,24 @@ def _build_mcp_section(
         name = getattr(server, "name", str(server))
         parts.append(f"- {name}")
 
+    # Surface server-authored `instructions` (from the MCP InitializeResult
+    # handshake) — port of getMcpInstructions (constants/prompts.ts:572-596).
+    # The client captures + truncates them onto the server object; without
+    # this the guidance ("authenticate before calling tools", usage
+    # conventions, …) is silently dropped and the model sees only schemas.
+    instruction_blocks = [
+        f"## {getattr(server, 'name', str(server))}\n{instr}"
+        for server in mcp_servers
+        if (instr := (getattr(server, "instructions", None) or "").strip())
+    ]
+    if instruction_blocks:
+        parts.append(
+            "\n# MCP Server Instructions\n\n"
+            "The following MCP servers have provided instructions for how to "
+            "use their tools and resources:\n\n"
+            + "\n\n".join(instruction_blocks)
+        )
+
     content = "\n".join(parts)
     if use_cache:
         _prompt_cache.set("mcp", content, scope=CacheScope.SESSION)
