@@ -46,7 +46,12 @@ from src.utils.startup_profiler import profile_checkpoint
 
 profile_checkpoint("agent_server_import_start")
 
-from src.server.agent_server import AgentServerConfig, PROTOCOL_VERSION, make_spawn_agent
+from src.server.agent_server import (
+    DEFAULT_MAX_TURNS,
+    AgentServerConfig,
+    PROTOCOL_VERSION,
+    make_spawn_agent,
+)
 from src.server.server import DirectConnectServer
 from src.server.session_manager import SessionManager
 from src.server.types import ServerConfig
@@ -114,7 +119,7 @@ def run_agent_server_subcommand(argv: list[str]) -> int:
     )
     parser.add_argument("--workspace", default=None,
                         help="Workspace root the agent operates in (default: cwd).")
-    parser.add_argument("--max-turns", type=int, default=20, dest="max_turns")
+    parser.add_argument("--max-turns", type=int, default=DEFAULT_MAX_TURNS, dest="max_turns")
     parser.add_argument(
         "--exit-on-parent", action="store_true", dest="exit_on_parent",
         help="Exit when stdin reaches EOF — used when a parent TUI spawns this "
