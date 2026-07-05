@@ -243,6 +243,16 @@ class TestAgentServerCliFlags(unittest.TestCase):
         self.assertEqual(cfg.permission_mode, "default")
         self.assertFalse(cfg.is_bypass_available)
 
+    def test_no_flags_defaults_max_turns_to_shared_constant(self) -> None:
+        # Pins the --max-turns CLI default to the same DEFAULT_MAX_TURNS the
+        # AgentServerConfig dataclass field uses, so the two can't silently
+        # drift apart again (they used to be two independently hand-edited
+        # literals with nothing to catch a partial edit).
+        from src.server.agent_server import DEFAULT_MAX_TURNS
+
+        cfg = self._run([])
+        self.assertEqual(cfg.max_turns, DEFAULT_MAX_TURNS)
+
     def test_stdio_folds_in_settings_availability(self) -> None:
         # A hand-launched single-session stdio server honors the operator's
         # own user/local settings.allowBypassPermissionsMode.

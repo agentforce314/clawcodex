@@ -359,8 +359,8 @@ Examples:
     noninteractive.add_argument(
         '--max-turns',
         type=int,
-        default=20,
-        help='Maximum number of agent tool turns (default: 20)',
+        default=50,
+        help='Maximum number of agent tool turns (default: 50)',
     )
     noninteractive.add_argument(
         '--model',
