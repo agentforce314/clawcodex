@@ -95,6 +95,13 @@ def _run_bash_with_abort(
     else:
         popen_kwargs["start_new_session"] = True
 
+    if "env" not in popen_kwargs:
+        # Scrub secret env vars when CLAUDE_CODE_SUBPROCESS_ENV_SCRUB is set
+        # (anti-exfiltration; parity with TS subprocessEnv at the Bash site).
+        from src.utils.subprocess_env import subprocess_env
+
+        popen_kwargs["env"] = subprocess_env()
+
     proc = subprocess.Popen(argv, **popen_kwargs)
 
     deadline = _time_mod.monotonic() + timeout_s

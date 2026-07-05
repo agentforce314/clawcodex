@@ -360,8 +360,13 @@ def _build_hook_env(
 
     env_file = _env_file_for_event(event_name)
 
+    from src.utils.subprocess_env import subprocess_env
+
     return {
-        **os.environ,
+        # subprocess_env() scrubs secret vars when CLAUDE_CODE_SUBPROCESS_ENV_SCRUB
+        # is set (anti-exfiltration; parity with TS subprocessEnv at the hook
+        # spawn site) — otherwise a pass-through copy of os.environ.
+        **subprocess_env(),
         "CLAUDE_HOOK_EVENT": event_name,
         "CLAUDE_PROJECT_DIR": workspace_root,
         "CLAUDE_PLUGIN_ROOT": hook.skill_root or "",
