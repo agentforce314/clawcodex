@@ -263,6 +263,20 @@ describe('GatewayClient NDJSON adapter', () => {
     await expect(p).resolves.toEqual({ output: 'deep-research  [running]  (run: wf_1)', type: 'exec' })
   })
 
+  it('publishes a session.stats event from the session.clear reply rider', async () => {
+    const p = gw.request('session.clear', {})
+    await replyToControl('clear', { cost: { total_cost_usd: 0.5 }, count: 0, ok: true, session_turns: 0 })
+    await expect(p).resolves.toEqual({ ok: true })
+    expect(last('session.stats').payload).toMatchObject({ cost: { total_cost_usd: 0.5 }, session_turns: 0 })
+  })
+
+  it('stays silent on a session.clear reply without the rider (old backend)', async () => {
+    const p = gw.request('session.clear', {})
+    await replyToControl('clear', { count: 0, ok: true })
+    await expect(p).resolves.toEqual({ ok: true })
+    expect(last('session.stats')).toBeUndefined()
+  })
+
   it('confirms the applied mode from the server reply on /mode', async () => {
     const p = gw.request('slash.exec', { command: 'mode acceptEdits' })
     await replyToControl('set_permission_mode', { mode: 'acceptEdits', ok: true })
