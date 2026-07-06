@@ -275,6 +275,12 @@ const SLASHES: ReadonlyArray<{ desc: string; hint?: string; name: string }> = [
   { desc: 'Search / manage the knowledge base', hint: '[status|list|clear|enable|disable]', name: '/knowledge' },
   { desc: 'Browse and inspect available skills', hint: '[list | inspect <name> | search <query>]', name: '/skills' },
   { desc: 'View or set the plan', hint: '[<text>]', name: '/plan' },
+  {
+    desc: 'Set a completion condition Claude keeps working toward',
+    hint: '[<condition> | status | clear | pause | resume]',
+    name: '/goal'
+  },
+  { desc: 'Add or manage extra criteria on the active goal', hint: '[<text> | remove <n> | clear]', name: '/subgoal' },
   { desc: 'Generate session insights', name: '/insights' },
   { desc: 'List or start background agents', name: '/bg' },
   { desc: 'Resume a past session', name: '/resume' },
@@ -984,6 +990,30 @@ export class GatewayClient extends EventEmitter {
         return out(r?.plan ? `Plan:\n${r.plan}` : 'No plan set.')
       }
 
+      case 'goal': {
+        // Hermes /goal contract: SET replies carry a kickoff — the app
+        // renders the notice as a system line and submits the condition as
+        // the first goal turn ({type:'send'} in createSlashHandler). Every
+        // other subcommand (status/clear/pause/resume) is plain exec text.
+        const r = (await this.controlQuery('goal', { arg: arg ?? '' })) as any
+
+        if (!r || Object.keys(r).length === 0) {return out('goal: backend not ready')}
+
+        if (r.ok && typeof r.kickoff === 'string' && r.kickoff) {
+          return { message: r.kickoff, notice: typeof r.notice === 'string' ? r.notice : undefined, type: 'send' }
+        }
+
+        return out(String(r.text ?? r.error ?? 'goal: no response'))
+      }
+
+      case 'subgoal': {
+        const r = (await this.controlQuery('subgoal', { arg: arg ?? '' })) as any
+
+        if (!r || Object.keys(r).length === 0) {return out('subgoal: backend not ready')}
+
+        return out(String(r.text ?? r.error ?? 'subgoal: no response'))
+      }
+
       case 'rename': {
         const r = (await this.controlQuery('rename', { name: arg })) as any
 
@@ -1237,6 +1267,14 @@ export class GatewayClient extends EventEmitter {
           this.publish({
             payload: { task_id: String(msg.task_id ?? 'task'), text: String(msg.message ?? '') },
             type: 'background.complete'
+          })
+        } else if (msg.subtype === 'goal_status') {
+          // /goal verdict line ("✓ Goal achieved" / "↻ Continuing" / "⏸ …").
+          // kind:'goal' routes to the hermes-ported handler in
+          // createGatewayEventHandler (sys transcript line + brief status).
+          this.publish({
+            payload: { kind: 'goal', text: String(msg.message ?? '') },
+            type: 'status.update'
           })
         }
 
