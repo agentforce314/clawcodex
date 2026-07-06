@@ -542,11 +542,35 @@ async def _execute_command_hook(
                     result.updated_permissions = parsed.updatedPermissions
                 if parsed.interrupt:
                     result.interrupt = True
+                hso = parsed.hookSpecificOutput or {}
+                # EVENT-NAME GATE (critic C1-M1/M3): TS validates the emitted
+                # hookEventName against the RUNNING event at the TOP of the
+                # `if (json.hookSpecificOutput)` block (hooks.ts:757-765,
+                # "Hook returned incorrect event name") — BEFORE the switch
+                # that maps the envelope/permissionDecision forms — and rejects
+                # the WHOLE output on mismatch. Placed here (above the envelope
+                # block below) so it covers ALL hso extraction, not just the
+                # permissionDecision path: otherwise a hook registered under
+                # the wrong event emitting EITHER form leaks a decision into
+                # the permission grant (fail-OPEN). Port posture is warn+drop
+                # (the WI-1.4 analog of TS's throw); mirroring TS's
+                # `if (expectedHookEvent && …)`, the check is SKIPPED when the
+                # running event is absent (direct/test calls pass no
+                # ``hook_event``). Also closes m1 (additionalContext
+                # over-extraction on wrong-event forms).
+                _running_event = stdin_data.get("hook_event")
+                _hso_event = hso.get("hookEventName") if isinstance(hso, dict) else None
+                if _running_event and _hso_event and _hso_event != _running_event:
+                    logger.warning(
+                        "Hook %r hookSpecificOutput.hookEventName=%r != running "
+                        "event %r; dropping the hookSpecificOutput payload.",
+                        command, _hso_event, _running_event,
+                    )
+                    hso = {}
                 # TS wire-envelope compat (utils/hooks.ts:833-840): a hook
                 # written for the reference CLI emits
                 # ``hookSpecificOutput.decision`` — normalize onto the same
                 # fields; the flat form (above) wins on conflict.
-                hso = parsed.hookSpecificOutput or {}
                 hso_decision = hso.get("decision") if isinstance(hso, dict) else None
                 if isinstance(hso_decision, dict):
                     behavior = hso_decision.get("behavior")
@@ -561,11 +585,56 @@ async def _execute_command_hook(
                         result.updated_permissions = hso_decision["updatedPermissions"]
                     if hso_decision.get("interrupt"):
                         result.interrupt = True
+                # PreToolUse structured form (types/hooks.ts:73-78, mapped at
+                # utils/hooks.ts:726-800): ``hookSpecificOutput.permissionDecision``
+                # is the DOCUMENTED way a PreToolUse hook allows/denies/asks.
+                # TS treats it as the MORE SPECIFIC decision — it OVERRIDES the
+                # flat ``decision`` (unlike the PermissionRequest envelope
+                # above, which only fills when unset). A deny's message rides
+                # hook_permission_decision_reason (the port's single-path deny
+                # convention — TS also sets a separate blockingError, which
+                # here would double-yield a denial). The event-name gate above
+                # has already dropped this whole payload on a wrong-event emit.
+                if isinstance(hso, dict) and hso.get("hookEventName") == "PreToolUse":
+                    pd = hso.get("permissionDecision")
+                    if pd is not None:
+                        if pd in ("allow", "deny", "ask"):
+                            result.permission_behavior = pd
+                            if pd == "deny":
+                                result.hook_permission_decision_reason = (
+                                    hso.get("permissionDecisionReason")
+                                    or parsed.reason
+                                    or "Blocked by hook"
+                                )
+                        else:
+                            # TS throws "Unknown hook permissionDecision
+                            # type"; the port's WI-1.4 posture is warn + drop.
+                            logger.warning(
+                                "Hook %r emitted unknown permissionDecision %r;"
+                                " valid types are: allow, deny, ask. Dropping.",
+                                command, pd,
+                            )
+                    pdr = hso.get("permissionDecisionReason")
+                    if isinstance(pdr, str) and pdr:
+                        result.hook_permission_decision_reason = pdr
+                    if isinstance(hso.get("updatedInput"), dict):
+                        result.updated_input = hso["updatedInput"]
                 if parsed.preventContinuation:
                     result.prevent_continuation = True
                     result.stop_reason = parsed.stopReason
                 if parsed.additionalContexts:
                     result.additional_contexts = parsed.additionalContexts
+                # ``hookSpecificOutput.additionalContext`` (singular string —
+                # the PreToolUse/PostToolUse/UserPromptSubmit/SessionStart
+                # forms all carry it, utils/hooks.ts:793-800): APPEND onto the
+                # additional_contexts list (after the flat assignment above,
+                # so both survive) → the hook_additional_context attachment.
+                if isinstance(hso, dict):
+                    _hso_ac = hso.get("additionalContext")
+                    if isinstance(_hso_ac, str) and _hso_ac:
+                        result.additional_contexts = (
+                            list(result.additional_contexts or []) + [_hso_ac]
+                        )
                 if parsed.updatedMCPToolOutput is not None:
                     result.updated_mcp_tool_output = parsed.updatedMCPToolOutput
 
