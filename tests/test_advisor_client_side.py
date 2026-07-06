@@ -592,6 +592,26 @@ class TestClientAdvisorToolSchema(unittest.TestCase):
             schema["input_schema"].get("additionalProperties"), False
         )
 
+    def test_dispatch_schema_tolerates_junk_input_fields(self) -> None:
+        """The ADVERTISED schema is strict (models are told: no params),
+        but the DISPATCH schema must tolerate junk — observed live:
+        deepseek-v4-pro emitting ``{"parameters": ...}`` on the no-arg
+        call. Registry validation runs the dispatch schema against the
+        model's actual input; a hard failure there kills the whole
+        consultation over a field the handler never reads."""
+        from src.tool_system.schema_validation import validate_json_schema
+        from src.tool_system.tools.advisor import AdvisorTool
+
+        # Must not raise for the shapes models actually emit.
+        validate_json_schema({}, AdvisorTool.input_schema, root_name="advisor")
+        validate_json_schema(
+            {"parameters": {}}, AdvisorTool.input_schema, root_name="advisor"
+        )
+        validate_json_schema(
+            {"query": "review my plan"}, AdvisorTool.input_schema,
+            root_name="advisor",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

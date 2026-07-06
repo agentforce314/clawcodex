@@ -95,15 +95,21 @@ def _advisor_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResul
 
 # The schema sent to the API is built in ``src/utils/advisor.py`` via
 # ``build_client_advisor_tool_schema`` — kept there alongside the
-# server-side schema so both wire formats live in one place. The
-# ``input_schema`` here mirrors that exactly so registry validation
-# (``validate_json_schema``) accepts the empty-args call.
+# server-side schema so both wire formats live in one place. That
+# ADVERTISED schema stays strict (additionalProperties: False) so the
+# model is told the tool takes no parameters. The DISPATCH schema here
+# is deliberately tolerant: registry validation (registry.py:152) runs
+# it against whatever the model actually emitted, some workers put junk
+# fields on no-arg calls (observed live: deepseek-v4-pro sending
+# ``{"parameters": ...}``), and ``_advisor_call`` ignores its input
+# entirely — failing the whole consultation over an ignored field
+# trades a working advisor for schema pedantry.
 AdvisorTool: Tool = build_tool(
     name="advisor",
     input_schema={
         "type": "object",
         "properties": {},
-        "additionalProperties": False,
+        "additionalProperties": True,
     },
     call=_advisor_call,
     prompt="",

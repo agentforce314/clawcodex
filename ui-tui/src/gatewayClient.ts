@@ -271,6 +271,11 @@ const SLASHES: ReadonlyArray<{ desc: string; hint?: string; name: string }> = [
     name: '/effort'
   },
   { desc: 'Switch the provider', hint: '[<provider>]', name: '/provider' },
+  {
+    desc: 'Configure the advisor reviewer model (consulted mid-task by the worker)',
+    hint: '[<provider>:<model> [--client] | --no-client | off|unset]',
+    name: '/advisor'
+  },
   { desc: 'List running and recent dynamic workflows', name: '/workflows' },
   { desc: 'Search / manage the knowledge base', hint: '[status|list|clear|enable|disable]', name: '/knowledge' },
   { desc: 'Browse and inspect available skills', hint: '[list | inspect <name> | search <query>]', name: '/skills' },
@@ -840,6 +845,14 @@ export class GatewayClient extends EventEmitter {
     const out = (output: string) => ({ output, type: 'exec' })
 
     switch (name) {
+      case 'advisor': {
+        const r = (await this.controlQuery('advisor', { arg: arg ?? '' })) as any
+
+        if (!r || Object.keys(r).length === 0) {return out('advisor: backend not ready')}
+
+        return out(String(r.text ?? r.error ?? 'advisor: no response'))
+      }
+
       case 'clear': {
         const r = await this.controlQuery('clear', {})
         this.publishSessionStats(r)
