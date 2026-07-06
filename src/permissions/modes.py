@@ -140,3 +140,48 @@ def has_allow_bypass_permissions_mode() -> bool:
     except Exception:
         return False
     return False
+
+
+def is_bypass_permissions_mode_disabled() -> bool:
+    """Return True if a settings source DISABLES bypass availability.
+
+    Mirrors TS ``settings.permissions?.disableBypassPermissionsMode ===
+    'disable'`` (``permissionSetup.ts:939``), the negative guard on
+    ``isBypassPermissionsModeAvailable`` that the port previously dropped — so
+    an operator locking bypass down (managed MDM policy, or a user/local
+    ``settings.json``) was SILENTLY IGNORED and bypass stayed available
+    (a live fail-open; critic C12).
+
+    Unlike the POSITIVE ``allowBypassPermissionsMode`` (which excludes the
+    committable project tier so a malicious repo can't ENABLE bypass), a
+    ``disable`` only ever REMOVES capability, so honoring it from ANY tier —
+    including the managed/policy tier (the org-admin lockdown) and the project
+    tier — is always safe. Reads the raw per-tier dicts (the SettingsSchema
+    models ``permissions`` as a flat rule list, no scalar slot)."""
+    try:
+        from src.config import ConfigManager
+
+        cm = ConfigManager()
+        for loader in (cm.load_global, cm.load_local, cm.load_project):
+            perms = loader().get("settings", {}).get("permissions")
+            if isinstance(perms, dict) and perms.get("disableBypassPermissionsMode") == "disable":
+                return True
+        # Managed/policy tier (root-owned MDM preferences) — the primary
+        # lockdown source. Read directly (setup.py:57 pattern).
+        try:
+            import json
+
+            from src.settings.managed_path import resolve_managed_settings_path
+
+            mp = resolve_managed_settings_path()
+            if mp is not None and mp.exists():
+                with mp.open() as f:
+                    managed = json.load(f)
+                perms = (managed or {}).get("permissions")
+                if isinstance(perms, dict) and perms.get("disableBypassPermissionsMode") == "disable":
+                    return True
+        except Exception:
+            pass
+    except Exception:
+        return False
+    return False

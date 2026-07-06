@@ -99,9 +99,12 @@ def run_tui_launcher(argv: list[str]) -> int:
         permission_mode_cli=args.permission_mode,
         dangerously_skip_permissions=dangerously,
     )
+    # ... AND NOT disabled (critic C12 — the dropped negative guard;
+    # an operator lockdown must override even --dangerously-skip-permissions).
+    from src.permissions.modes import is_bypass_permissions_mode_disabled
     is_bypass_available = (
         dangerously or allow_dangerously or has_allow_bypass_permissions_mode()
-    )
+    ) and not is_bypass_permissions_mode_disabled()
 
     if args.print_connect:
         args.permission_mode = mode

@@ -179,6 +179,12 @@ def run_agent_server_subcommand(argv: list[str]) -> int:
         from src.permissions.modes import has_allow_bypass_permissions_mode
 
         is_bypass_available = has_allow_bypass_permissions_mode()
+    # ... AND NOT disabled (critic C12 — the dropped negative guard; a lockdown
+    # overrides even an explicit bypass request).
+    if is_bypass_available:
+        from src.permissions.modes import is_bypass_permissions_mode_disabled
+        if is_bypass_permissions_mode_disabled():
+            is_bypass_available = False
 
     workspace = str(Path(args.workspace).resolve()) if args.workspace else str(Path.cwd())
 
