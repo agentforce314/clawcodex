@@ -162,10 +162,16 @@ def run_agent_server_subcommand(argv: list[str]) -> int:
     enforce_dangerous_skip_permissions_safety(
         bypass_requested=dangerously or allow_dangerously,
     )
-    if dangerously:
+    from src.permissions.modes import is_bypass_permissions_mode_disabled
+    _bypass_disabled = is_bypass_permissions_mode_disabled()
+    if dangerously and not _bypass_disabled:
         # Flag wins over --permission-mode, same priority as
         # initial_permission_mode_from_cli (src/permissions/modes.py).
         args.permission_mode = "bypassPermissions"
+    elif dangerously and _bypass_disabled:
+        # C12: a disableBypassPermissionsMode lockdown overrides the flag —
+        # do NOT set bypass mode (TS skips the candidate → default).
+        log.warning("Bypass permissions mode disabled by settings/policy; ignoring --dangerously-skip-permissions for mode")
 
     # bypass AVAILABILITY. Flags always count. Trusted settings
     # (permissions.allowBypassPermissionsMode) count only on the

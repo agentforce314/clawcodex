@@ -82,6 +82,7 @@ def initial_permission_mode_from_cli(
     permission_mode_cli: str | None = None,
     dangerously_skip_permissions: bool = False,
     settings_default_mode: str | None = None,
+    disable_bypass_permissions_mode: bool | None = None,
 ) -> PermissionMode:
     """Resolve the effective :class:`PermissionMode` from CLI flags + settings.
 
@@ -97,7 +98,17 @@ def initial_permission_mode_from_cli(
 
     Unknown / mistyped mode strings degrade to ``default`` via
     :func:`permission_mode_from_string`.
-    """
+
+    ``disable_bypass_permissions_mode`` (critic C12): when a bypass lockdown is
+    in effect, the ``bypassPermissions`` candidate is SKIPPED (TS
+    permissionSetup.ts:778-793 ``continue``s past it) so the resolved mode
+    falls through to the next candidate / ``default``. This is the ONLY
+    faithful way to enforce the lockdown, because the port's permission check
+    (``check.py:456``) bypasses on ``mode == "bypassPermissions"`` ALONE — the
+    availability boolean is consulted only for ``plan`` mode. ``None`` →
+    resolve the lockdown here (so every caller is covered by default)."""
+    if disable_bypass_permissions_mode is None:
+        disable_bypass_permissions_mode = is_bypass_permissions_mode_disabled()
     candidates: list[PermissionMode] = []
     if dangerously_skip_permissions:
         candidates.append("bypassPermissions")
@@ -105,8 +116,14 @@ def initial_permission_mode_from_cli(
         candidates.append(permission_mode_from_string(permission_mode_cli))
     if settings_default_mode:
         candidates.append(permission_mode_from_string(settings_default_mode))
-    if candidates:
-        return candidates[0]
+    for candidate in candidates:
+        if candidate == "bypassPermissions" and disable_bypass_permissions_mode:
+            log.warning(
+                "Bypass permissions mode was disabled by settings/policy "
+                "(permissions.disableBypassPermissionsMode); falling back."
+            )
+            continue  # TS: skip this mode if it's disabled
+        return candidate
     return "default"
 
 

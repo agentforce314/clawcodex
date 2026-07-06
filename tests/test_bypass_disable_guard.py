@@ -61,53 +61,83 @@ class TestDisableGuard:
         assert is_bypass_permissions_mode_disabled() is True
 
 
-class TestBypassAvailabilityWiring:
-    """The guard must actually flip is_bypass_available OFF — even under an
-    explicit --dangerously-skip-permissions (TS's unconditional
-    `&& !settingsDisableBypassPermissionsMode`)."""
+class TestModeResolution:
+    """The FAITHFUL fix (critic C12 re-review): the disable must reset the
+    MODE, not just the availability boolean — the port's check.py:456 bypasses
+    on mode=="bypassPermissions" ALONE, so a lockdown that only flips the
+    boolean is defeated at runtime."""
 
-    def test_disable_overrides_dangerously(self, monkeypatch):
-        import types
+    def test_disable_skips_bypass_mode(self, monkeypatch):
+        from src.permissions.modes import initial_permission_mode_from_cli
 
-        import src.cli as cli
-
-        monkeypatch.setattr(
-            "src.permissions.modes.has_allow_bypass_permissions_mode", lambda: False
-        )
         monkeypatch.setattr(
             "src.permissions.modes.is_bypass_permissions_mode_disabled", lambda: True
         )
-        monkeypatch.setattr(
-            "src.permissions.enforce_dangerous_skip_permissions_safety",
-            lambda **k: None, raising=False,
-        )
-        args = types.SimpleNamespace(
-            dangerously_skip_permissions=True,
-            allow_dangerously_skip_permissions=False,
-            permission_mode=None,
-        )
-        cli._resolve_permission_state(args)
-        assert args._resolved_is_bypass_available is False  # disabled wins
+        # --dangerously-skip-permissions under a lockdown → NOT bypass
+        assert initial_permission_mode_from_cli(dangerously_skip_permissions=True) == "default"
 
-    def test_available_when_not_disabled(self, monkeypatch):
-        import types
+    def test_no_disable_keeps_bypass_mode(self, monkeypatch):
+        from src.permissions.modes import initial_permission_mode_from_cli
 
-        import src.cli as cli
-
-        monkeypatch.setattr(
-            "src.permissions.modes.has_allow_bypass_permissions_mode", lambda: False
-        )
         monkeypatch.setattr(
             "src.permissions.modes.is_bypass_permissions_mode_disabled", lambda: False
         )
+        assert initial_permission_mode_from_cli(dangerously_skip_permissions=True) == "bypassPermissions"
+
+    def test_disable_falls_through_to_explicit_mode(self, monkeypatch):
+        from src.permissions.modes import initial_permission_mode_from_cli
+
         monkeypatch.setattr(
-            "src.permissions.enforce_dangerous_skip_permissions_safety",
-            lambda **k: None, raising=False,
+            "src.permissions.modes.is_bypass_permissions_mode_disabled", lambda: True
         )
-        args = types.SimpleNamespace(
-            dangerously_skip_permissions=True,
-            allow_dangerously_skip_permissions=False,
-            permission_mode=None,
+        # bypass skipped → the next candidate (--permission-mode) wins
+        assert initial_permission_mode_from_cli(
+            dangerously_skip_permissions=True, permission_mode_cli="plan"
+        ) == "plan"
+
+
+class TestEndToEndEnforcement:
+    """Drive the REAL enforcement (has_permissions_to_use_tool) — the critic's
+    demand: prove a tool is NOT auto-allowed under --dangerously + a lockdown,
+    not just that an intermediate boolean flipped."""
+
+    def _mock_tool(self):
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            name="Bash",
+            check_permissions=lambda *a, **k: SimpleNamespace(
+                behavior="ask", decision_reason=None, rule_suggestions=None,
+                updated_input=None, message=None,
+            ),
+            is_read_only=lambda *a, **k: False,
         )
-        cli._resolve_permission_state(args)
-        assert args._resolved_is_bypass_available is True
+
+    def test_dangerously_plus_disable_does_not_auto_allow(self, monkeypatch):
+        from src.permissions.check import has_permissions_to_use_tool
+        from src.permissions.modes import initial_permission_mode_from_cli
+        from src.permissions.types import ToolPermissionContext
+
+        monkeypatch.setattr(
+            "src.permissions.modes.is_bypass_permissions_mode_disabled", lambda: True
+        )
+        # the resolved mode under --dangerously + lockdown must be default
+        mode = initial_permission_mode_from_cli(dangerously_skip_permissions=True)
+        assert mode == "default"
+        # and default mode does NOT bypass — the tool's own ask stands
+        ctx = ToolPermissionContext(mode=mode)
+        result = has_permissions_to_use_tool(self._mock_tool(), {}, ctx)
+        assert result.behavior != "allow", "lockdown defeated — tool auto-allowed!"
+
+    def test_dangerously_without_disable_still_bypasses(self, monkeypatch):
+        from src.permissions.check import has_permissions_to_use_tool
+        from src.permissions.modes import initial_permission_mode_from_cli
+        from src.permissions.types import ToolPermissionContext
+
+        monkeypatch.setattr(
+            "src.permissions.modes.is_bypass_permissions_mode_disabled", lambda: False
+        )
+        mode = initial_permission_mode_from_cli(dangerously_skip_permissions=True)
+        assert mode == "bypassPermissions"
+        ctx = ToolPermissionContext(mode=mode)
+        result = has_permissions_to_use_tool(self._mock_tool(), {}, ctx)
+        assert result.behavior == "allow"  # bypass still works when not disabled
