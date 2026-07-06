@@ -1029,3 +1029,182 @@ async def execute_task_completed_hooks(
     ):
         yield result
 
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MCP elicitation hooks (C3) — the 3-event UNIT.
+#
+# Port of executeElicitationHooks / executeElicitationResultHooks /
+# executeNotificationHooks (utils/hooks.ts:4623-4810) + the
+# elicitationHandler.ts:220-313 wrapping. These fire around an MCP server's
+# elicitation request: an Elicitation hook BEFORE (may provide a response or
+# block), an ElicitationResult hook AFTER (may OVERRIDE the user's response or
+# block — shipping only the notification would be a correctness trap), and a
+# Notification hook for observability. Matched on the server name.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _parse_elicitation_hook_output(
+    result: "HookResult", expected_event: str
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Mirror ``parseElicitationHookOutput`` (utils/hooks.ts:4623): return
+    ``(response, blocking_error)`` from one hook's result.
+
+    exit 2 → blocking; JSON ``decision:'block'`` → blocking; otherwise
+    ``hookSpecificOutput.{hookEventName==expected, action, content}`` → response
+    (and ``action=='decline'`` ALSO yields a blocking_error, matching TS)."""
+    # exit code 2 = blocking (same convention as the tool-hook path)
+    if result.exit_code == 2:
+        return None, {
+            "blockingError": (result.stdout or "").strip() or "Elicitation blocked by hook",
+            "command": result.command,
+        }
+    out = (result.stdout or "").strip()
+    if not out or not out.startswith("{"):
+        return None, None
+    try:
+        parsed = json.loads(out)
+    except (json.JSONDecodeError, ValueError):
+        return None, None
+    if not isinstance(parsed, dict):
+        return None, None
+    if parsed.get("decision") == "block":
+        return None, {
+            "blockingError": parsed.get("reason") or "Elicitation blocked by hook",
+            "command": result.command,
+        }
+    hso = parsed.get("hookSpecificOutput")
+    if not isinstance(hso, dict) or hso.get("hookEventName") != expected_event:
+        return None, None
+    action = hso.get("action")
+    if not action:
+        return None, None
+    response = {"action": action, "content": hso.get("content")}
+    blocking = None
+    if action == "decline":
+        default = (
+            "Elicitation denied by hook"
+            if expected_event == "Elicitation"
+            else "Elicitation result blocked by hook"
+        )
+        blocking = {"blockingError": parsed.get("reason") or default, "command": result.command}
+    return response, blocking
+
+
+async def _run_elicitation_event_hooks(
+    event: str,
+    server_name: str,
+    stdin_data: dict[str, Any],
+    tool_use_context: Any,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Run all hooks matching ``event`` + ``server_name`` (trust-gated,
+    snapshot-sourced — same machinery as the tool-hook path) and fold their
+    parsed outputs: the LAST non-empty response wins and any blocking error is
+    retained (TS loops with ``response`` overwrite + ``blockingError`` keep)."""
+    trust_skip = should_skip_hook_due_to_trust(tool_use_context)
+    hooks = _get_hooks_from_snapshot(tool_use_context)
+    event_hooks = hooks.get(event, [])
+    if trust_skip:
+        event_hooks = [h for h in event_hooks if h.source.is_policy]
+    abort_signal = None
+    abort_ctrl = getattr(tool_use_context, "abort_controller", None)
+    if abort_ctrl:
+        abort_signal = abort_ctrl.signal
+
+    response: dict[str, Any] | None = None
+    blocking: dict[str, Any] | None = None
+    for hook in event_hooks:
+        # matcher matches the SERVER NAME (TS matchQuery: serverName)
+        if server_name and not _matches_tool(hook.matcher, server_name):
+            continue
+        result = await _execute_command_hook(
+            hook, {**stdin_data, "hook_event": event},
+            abort_signal=abort_signal, tool_use_context=tool_use_context,
+        )
+        r, b = _parse_elicitation_hook_output(result, event)
+        if b is not None:
+            blocking = b
+        if r is not None:
+            response = r
+    return response, blocking
+
+
+async def execute_elicitation_hooks(
+    server_name: str,
+    message: str,
+    tool_use_context: Any,
+    *,
+    requested_schema: dict[str, Any] | None = None,
+    mode: str | None = None,
+    url: str | None = None,
+    elicitation_id: str | None = None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """BEFORE the user prompt (executeElicitationHooks). Returns
+    ``(response, blocking_error)``: blocking → decline; response →
+    short-circuit the prompt with ``{action, content}``."""
+    stdin_data = {
+        "mcp_server_name": server_name,
+        "message": message,
+        "mode": mode,
+        "url": url,
+        "elicitation_id": elicitation_id,
+        "requested_schema": requested_schema,
+    }
+    return await _run_elicitation_event_hooks(
+        "Elicitation", server_name, stdin_data, tool_use_context
+    )
+
+
+async def execute_elicitation_result_hooks(
+    server_name: str,
+    action: str,
+    content: dict[str, Any] | None,
+    tool_use_context: Any,
+    *,
+    mode: str | None = None,
+    elicitation_id: str | None = None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """AFTER the user responds (executeElicitationResultHooks). The response
+    may OVERRIDE the user's ``action``/``content``; blocking → decline."""
+    stdin_data = {
+        "mcp_server_name": server_name,
+        "action": action,
+        "content": content,
+        "mode": mode,
+        "elicitation_id": elicitation_id,
+    }
+    return await _run_elicitation_event_hooks(
+        "ElicitationResult", server_name, stdin_data, tool_use_context
+    )
+
+
+async def execute_notification_hooks(
+    message: str,
+    notification_type: str,
+    tool_use_context: Any,
+    *,
+    title: str | None = None,
+) -> None:
+    """Fire-and-forget Notification hooks (observability) matched on
+    ``notification_type`` (TS matchQuery: notificationType). Output is
+    ignored — a notification hook cannot change control flow."""
+    trust_skip = should_skip_hook_due_to_trust(tool_use_context)
+    hooks = _get_hooks_from_snapshot(tool_use_context)
+    event_hooks = hooks.get("Notification", [])
+    if trust_skip:
+        event_hooks = [h for h in event_hooks if h.source.is_policy]
+    abort_signal = None
+    abort_ctrl = getattr(tool_use_context, "abort_controller", None)
+    if abort_ctrl:
+        abort_signal = abort_ctrl.signal
+    stdin_data = {"message": message, "notification_type": notification_type, "title": title}
+    for hook in event_hooks:
+        if notification_type and not _matches_tool(hook.matcher, notification_type):
+            continue
+        try:
+            await _execute_command_hook(
+                hook, {**stdin_data, "hook_event": "Notification"},
+                abort_signal=abort_signal, tool_use_context=tool_use_context,
+            )
+        except Exception:  # noqa: BLE001 — observability must not break the flow
+            logger.debug("[hooks] notification hook failed", exc_info=True)
