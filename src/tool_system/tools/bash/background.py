@@ -141,33 +141,70 @@ def spawn_background_bash(
                 from dataclasses import replace
 
                 from src.tasks.eviction import schedule_eviction
-                new_status = "completed" if rc == 0 else "failed"
+                # Preserve a 'killed' status set by stop_background_bash (a
+                # user kill) — don't reclassify it as 'failed' from the SIGTERM
+                # exit code (critic C5-P1 #3). Its notified=True (set at kill)
+                # also makes the enqueue below a no-op.
+                new_status = (
+                    "killed" if getattr(prev, "status", None) == "killed"
+                    else ("completed" if rc == 0 else "failed")
+                )
+                # C5 Part 1: terminal state is left ``notified=False`` — the
+                # forward-trap ``notified=True`` (which pre-suppressed any
+                # completion notification, per the ch10 WI-2 comment) is
+                # REMOVED. enqueue_shell_notification below atomically sets
+                # notified=True AND sends (TS framework.ts:289 +
+                # BashTool/prompt.ts:285-287 "you will be notified when it
+                # completes"). The eviction sweeper's notify-before-evict guard
+                # (eviction.py:97) now correctly keeps the entry until the
+                # notification is delivered, then reclaims it.
                 terminal = replace(
                     prev,
                     exit_code=rc,
                     finished_at=finished_at,
                     end_time=finished_at,
                     status=new_status,
-                    # ch10 round-4 WI-2 — a background bash task has no async
-                    # completion notification (it is polled via TaskOutput),
-                    # so mark it ``notified`` on the terminal transition;
-                    # otherwise the eviction sweeper's notify-before-evict
-                    # guard would keep it forever. The grace period
-                    # (PANEL_GRACE_SECONDS) still gives the model time to read
-                    # the output before the entry is reclaimed. Without this
-                    # (and the schedule_eviction below) terminal bash tasks
-                    # accumulated unbounded and lingered in /tasks.
-                    # FORWARD-TRAP (critic m1): this unconditionally marks
-                    # notified. If a bash completion notification is later
-                    # ported (TS enqueueShellNotification), REMOVE this line —
-                    # otherwise the check-and-set here pre-suppresses that
-                    # notification. Semantically analogous to TS
-                    # markTaskNotified today (marks notified WITHOUT sending).
-                    notified=True,
                 )
                 return schedule_eviction(terminal)
 
             context.runtime_tasks.update(task_id, _patch)
+            # Deliver the completion notification (C5 Part 1): atomically
+            # check-and-set notified + enqueue. A no-op if already notified
+            # (e.g. a TaskStop already delivered), so it's duplicate-safe.
+            try:
+                from src.utils.task_notification import enqueue_shell_notification
+
+                enqueue_shell_notification(
+                    task_id=task_id,
+                    description=description or command,
+                    status="completed" if rc == 0 else "failed",
+                    output_file=str(output_path),
+                    registry=context.runtime_tasks,
+                    exit_code=rc,
+                    tool_use_id=getattr(context, "tool_use_id", None),
+                )
+            except Exception:  # noqa: BLE001 — notification must not break reaping
+                # FALLBACK: if the enqueue raised, the terminal state is still
+                # notified=False and the eviction sweeper (which keeps
+                # un-notified terminal tasks) would leak it forever. Mark it
+                # notified so it stays evictable — degrading to the OLD
+                # behavior (evictable, unsent) rather than a leak. This is
+                # strictly better than the pre-C5 silent-drop.
+                import logging as _logging
+                _logging.getLogger(__name__).debug(
+                    "[bg] shell completion notification failed", exc_info=True
+                )
+                try:
+                    from dataclasses import replace as _replace
+
+                    def _force_notified(prev: Any) -> Any:
+                        if isinstance(prev, LocalShellTaskState) and not prev.notified:
+                            return _replace(prev, notified=True)
+                        return prev
+
+                    context.runtime_tasks.update(task_id, _force_notified)
+                except Exception:  # noqa: BLE001
+                    pass
             # Mirror to the legacy dict in lockstep so old readers see the
             # exit code without round-tripping through runtime_tasks. The
             # legacy dict carries the chapter-10 status string too — older
@@ -304,6 +341,21 @@ def stop_background_bash(context: ToolContext, task_id: str) -> bool:
     proc: subprocess.Popen | None = entry.get("_proc")
     if proc is None or proc.poll() is not None:
         return False
+    # Mark status='killed' + notified=True BEFORE the signal (defense-in-depth;
+    # the PRIMARY mark is in LocalShellTask.kill, the production path). Marking
+    # first suppresses the reaper's spurious "failed" notification and closes
+    # the reaper-vs-killer race (critic C5-P1 #3).
+    try:
+        from dataclasses import replace as _replace
+
+        def _mark_killed(prev: Any) -> Any:
+            if isinstance(prev, LocalShellTaskState):
+                return _replace(prev, status="killed", notified=True)
+            return prev
+
+        context.runtime_tasks.update(task_id, _mark_killed)
+    except Exception:  # noqa: BLE001
+        pass
     try:
         # Kill the whole process group started with ``start_new_session=True``
         # so that ``bash -lc "cmd"`` and any children terminate together.
