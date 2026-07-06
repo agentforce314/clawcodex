@@ -78,22 +78,38 @@ class TestHalfRegisteredSafety:
     only AFTER init succeeds; and even the provider itself returns {} when the
     proxy state is DISABLED (with a clean env)."""
 
-    def test_failed_init_leaves_no_registration(self, monkeypatch):
+    def test_failed_init_is_safe_disabled_state_injects_nothing(self, monkeypatch):
+        # Register-first (TS parity): a failed init CAN leave the provider
+        # registered, but that's safe — the disabled _state returns {} on a
+        # clean env, so subprocess_env injects nothing.
         import src.entrypoints.agent_server_cli as cli
+        from src.upstreamproxy.upstream_proxy import reset_for_tests
         from src.utils import subprocess_env as se
 
         monkeypatch.setenv("CLAUDE_CODE_REMOTE", "1")
+        monkeypatch.delenv("HTTPS_PROXY", raising=False)
+        monkeypatch.delenv("SSL_CERT_FILE", raising=False)
         se.register_upstream_proxy_env_fn(None)
+        reset_for_tests()  # DISABLED
 
         async def _boom():
             raise RuntimeError("relay bind failed")
-        # patch the imported init to fail
         monkeypatch.setattr(
             "src.upstreamproxy.upstream_proxy.init_upstream_proxy", _boom)
         asyncio.run(cli._maybe_init_upstream_proxy())
-        # fail-open AND no provider registered → subprocess_env stays a no-op
-        assert se._upstream_proxy_env_fn is None
+        # fail-open; even if the provider registered, subprocess_env is a no-op
+        assert subprocess_env({"PATH": "/usr/bin"}) == {"PATH": "/usr/bin"}
         se.register_upstream_proxy_env_fn(None)
+
+    def test_scrub_is_authoritative_over_a_misbehaving_provider(self):
+        # MAJOR-A / TS parity: the scrub runs LAST, so even a provider that
+        # (wrongly) returns a scrubbed secret can't leak it into the child.
+        register_upstream_proxy_env_fn(lambda: {"ANTHROPIC_API_KEY": "leaked",
+                                                 "HTTPS_PROXY": "http://127.0.0.1:9"})
+        out = subprocess_env({"CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "1"})
+        assert "ANTHROPIC_API_KEY" not in out       # scrub wins over the provider
+        assert out["HTTPS_PROXY"] == "http://127.0.0.1:9"  # proxy var survives
+        register_upstream_proxy_env_fn(None)
 
     def test_disabled_state_returns_empty_recipe(self, monkeypatch):
         from src.upstreamproxy.upstream_proxy import (

@@ -244,6 +244,11 @@ async def _serve_stdio(workspace: str, agent_config: AgentServerConfig) -> int:
     RESERVED for JSON frames (diagnostics go to ``stderr``); ``stdin`` EOF — the
     parent TUI going away — ends the session.
     """
+    # TS wires the proxy in the shared init.ts (ALL sessions), so both the HTTP
+    # (_serve) and stdio transports init it — else a CCR-remote stdio container's
+    # tool subprocesses would miss the proxy (critic C9 open-Q). No-op unless
+    # CLAUDE_CODE_REMOTE is set.
+    await _maybe_init_upstream_proxy()
     profile_checkpoint("agent_server_serve_start")
     # This transport serves exactly ONE session (the Ink client's child, or
     # a hand-run standalone). single_session unlocks the process-global
@@ -335,13 +340,13 @@ async def _maybe_init_upstream_proxy() -> None:
         )
         from src.utils.subprocess_env import register_upstream_proxy_env_fn
 
-        # Init FIRST, register the env provider only on success — so a failed
-        # init can't leave a provider registered that injects proxy vars for a
-        # relay that never started (critic C9 #3). init_upstream_proxy is the
-        # authority on _state; get_upstream_proxy_env reads it, so ordering is
-        # safe either way, but register-after-success removes the window.
-        await init_upstream_proxy()
+        # Register BEFORE init — exact TS order (init.ts:148-149). Safe in either
+        # order: get_upstream_proxy_env reads _state at CALL time and returns {}
+        # while DISABLED on a clean env, so a registered provider over a
+        # failed/pending init injects nothing (verified). The whole block is
+        # fail-open below.
         register_upstream_proxy_env_fn(get_upstream_proxy_env)
+        await init_upstream_proxy()
     except Exception:  # noqa: BLE001 — fail-open, mirror TS
         import logging
 

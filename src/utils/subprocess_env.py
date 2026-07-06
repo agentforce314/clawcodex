@@ -81,26 +81,34 @@ def subprocess_env(base: dict[str, str] | None = None) -> dict[str, str]:
     ``CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`` is truthy, the scrub set (+ ``INPUT_``
     twins) is removed; otherwise ``base`` is returned unchanged (parity with
     TS's non-gated pass-through). Always returns a fresh dict."""
-    env = dict(os.environ if base is None else base)
-    if _is_env_truthy(env.get("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB")):
-        for key in _GHA_SUBPROCESS_SCRUB:
-            env.pop(key, None)
-            env.pop(f"INPUT_{key}", None)  # the GitHub-Action input twin
-    # Merge the upstream-proxy recipe AFTER the scrub (TS subprocessEnv order),
-    # so an injected HTTPS_PROXY / *_CA_BUNDLE isn't stripped. No-op unless the
-    # CCR-remote entrypoint registered a provider. Best-effort: a proxy-env
-    # failure must never break child-process spawning.
+    # Upstream-proxy recipe first (no-op unless a provider is registered); the
+    # SCRUB runs LAST so it stays authoritative — a provider can never
+    # re-introduce a scrubbed secret. Mirrors TS subprocessEnv.ts:85-98 exactly
+    # ({...env, ...proxyEnv} THEN the delete loop). Best-effort: a proxy-env
+    # failure can't break child spawning.
+    proxy_env: dict[str, str] = {}
     if _upstream_proxy_env_fn is not None:
         try:
-            proxy_env = _upstream_proxy_env_fn()
-            if proxy_env:
-                env.update(proxy_env)
+            proxy_env = _upstream_proxy_env_fn() or {}
         except Exception:  # noqa: BLE001 — proxy env must not break spawning
             import logging
 
             logging.getLogger(__name__).debug(
                 "[upstreamproxy] env provider failed", exc_info=True
             )
+            proxy_env = {}
+
+    env = dict(os.environ if base is None else base)
+    if not _is_env_truthy(env.get("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB")):
+        if proxy_env:
+            env.update(proxy_env)  # non-gated pass-through + proxy merge
+        return env
+    # Scrub gate ON: merge proxy, THEN strip the secret set (+ INPUT_ twins) —
+    # so even a misbehaving provider can't leak a scrubbed key into the child.
+    env.update(proxy_env)
+    for key in _GHA_SUBPROCESS_SCRUB:
+        env.pop(key, None)
+        env.pop(f"INPUT_{key}", None)  # the GitHub-Action input twin
     return env
 
 
