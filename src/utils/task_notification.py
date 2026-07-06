@@ -164,8 +164,59 @@ def enqueue_agent_notification(
     return True
 
 
+def enqueue_shell_notification(
+    *,
+    task_id: str,
+    description: str,
+    status: NotificationStatus,
+    output_file: str,
+    registry: "RuntimeTaskRegistry",
+    error: str | None = None,
+) -> bool:
+    """Atomically check-and-set ``notified`` on a background BASH task, then
+    enqueue its completion notification.
+
+    Port of the TS task-framework notification for background shell tasks
+    (``utils/task/framework.ts:280-289`` enqueues a ``task-notification`` when a
+    task reaches a terminal state; ``BashTool/prompt.ts:285-287`` promises "you
+    will be notified when it completes — do not poll"). The port previously
+    marked the terminal state ``notified=True`` WITHOUT sending (the forward
+    trap in ``background.py``), so a ``run_in_background`` bash finishing while
+    the model was away went unannounced. The check-and-set here is the single
+    duplicate-delivery guard, exactly as ``enqueue_agent_notification`` — but
+    gated on ``LocalShellTaskState`` (the bash task type) instead of
+    ``LocalAgentTaskState``."""
+    from src.tasks.local_shell import LocalShellTaskState
+
+    should_enqueue = False
+
+    def _mark_notified(prev: Any) -> Any:
+        nonlocal should_enqueue
+        if not isinstance(prev, LocalShellTaskState):
+            return prev
+        if prev.notified:
+            return prev
+        should_enqueue = True
+        return replace(prev, notified=True)
+
+    registry.update(task_id, _mark_notified)
+    if not should_enqueue:
+        return False
+
+    xml = build_task_notification_xml(
+        task_id=task_id,
+        description=description,
+        status=status,
+        output_file=output_file,
+        error=error,
+    )
+    enqueue_pending_notification(value=xml, mode="task-notification")
+    return True
+
+
 __all__ = [
     "NotificationStatus",
     "build_task_notification_xml",
     "enqueue_agent_notification",
+    "enqueue_shell_notification",
 ]

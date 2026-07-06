@@ -142,32 +142,40 @@ def spawn_background_bash(
 
                 from src.tasks.eviction import schedule_eviction
                 new_status = "completed" if rc == 0 else "failed"
+                # C5 Part 1: terminal state is left ``notified=False`` — the
+                # forward-trap ``notified=True`` (which pre-suppressed any
+                # completion notification, per the ch10 WI-2 comment) is
+                # REMOVED. enqueue_shell_notification below atomically sets
+                # notified=True AND sends (TS framework.ts:289 +
+                # BashTool/prompt.ts:285-287 "you will be notified when it
+                # completes"). The eviction sweeper's notify-before-evict guard
+                # (eviction.py:97) now correctly keeps the entry until the
+                # notification is delivered, then reclaims it.
                 terminal = replace(
                     prev,
                     exit_code=rc,
                     finished_at=finished_at,
                     end_time=finished_at,
                     status=new_status,
-                    # ch10 round-4 WI-2 — a background bash task has no async
-                    # completion notification (it is polled via TaskOutput),
-                    # so mark it ``notified`` on the terminal transition;
-                    # otherwise the eviction sweeper's notify-before-evict
-                    # guard would keep it forever. The grace period
-                    # (PANEL_GRACE_SECONDS) still gives the model time to read
-                    # the output before the entry is reclaimed. Without this
-                    # (and the schedule_eviction below) terminal bash tasks
-                    # accumulated unbounded and lingered in /tasks.
-                    # FORWARD-TRAP (critic m1): this unconditionally marks
-                    # notified. If a bash completion notification is later
-                    # ported (TS enqueueShellNotification), REMOVE this line —
-                    # otherwise the check-and-set here pre-suppresses that
-                    # notification. Semantically analogous to TS
-                    # markTaskNotified today (marks notified WITHOUT sending).
-                    notified=True,
                 )
                 return schedule_eviction(terminal)
 
             context.runtime_tasks.update(task_id, _patch)
+            # Deliver the completion notification (C5 Part 1): atomically
+            # check-and-set notified + enqueue. A no-op if already notified
+            # (e.g. a TaskStop already delivered), so it's duplicate-safe.
+            try:
+                from src.utils.task_notification import enqueue_shell_notification
+
+                enqueue_shell_notification(
+                    task_id=task_id,
+                    description=description or command,
+                    status="completed" if rc == 0 else "failed",
+                    output_file=str(output_path),
+                    registry=context.runtime_tasks,
+                )
+            except Exception:  # noqa: BLE001 — notification must not break reaping
+                pass
             # Mirror to the legacy dict in lockstep so old readers see the
             # exit code without round-tripping through runtime_tasks. The
             # legacy dict carries the chapter-10 status string too — older
