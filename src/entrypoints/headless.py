@@ -289,6 +289,7 @@ def run_headless(options: HeadlessOptions) -> int:
     tool_context.ask_user = _noop_ask_user
 
     # Build the input iterator.
+    goal_mgr = None  # /goal loop state (single-prompt mode only)
     if options.input_format == "stream-json":
         inputs: Iterable[UserInputMessage] = StreamJsonReader(stdin)
     else:
@@ -298,7 +299,85 @@ def run_headless(options: HeadlessOptions) -> int:
         prompt_text = (prompt_text or "").strip()
         if not prompt_text:
             cli_error("error: no prompt provided (pass an argument or pipe stdin)", 2)
+
+        # /goal in -p mode (CC docs/en/goal §Run non-interactively): setting
+        # a goal runs the evaluate-continue loop to completion in this one
+        # invocation. Bare "/goal" and "/goal clear" print and exit —
+        # there's no persisted goal in a fresh -p process to inspect, but
+        # the forms must not be misread as conversation prompts.
+        if prompt_text.startswith("/goal"):
+            goal_arg = prompt_text[len("/goal"):].strip()
+            from src.goals import GoalManager, build_judge_callable
+            from src.goals.command import run_goal_command
+            from src.settings.settings import get_settings, load_settings
+
+            def _goal_set_gate() -> str | None:
+                # CC §Requirements: trusted workspace + hooks enabled, with
+                # the reason stated. Same gates as the agent-server.
+                if not getattr(tool_context, "workspace_trusted", False):
+                    return (
+                        "/goal requires a trusted workspace (the evaluator "
+                        "is part of the hooks system). Run clawcodex "
+                        "interactively once to accept the trust dialog."
+                    )
+                try:
+                    if not load_settings(cwd=str(workspace_root)).hooks.enabled:
+                        return (
+                            "/goal is unavailable because hooks are disabled "
+                            "(settings hooks.enabled=false)."
+                        )
+                except Exception:  # noqa: BLE001 — unreadable settings fail open
+                    pass
+                return None
+
+            try:
+                goal_max_turns = int(
+                    getattr(get_settings(), "goal_max_turns", 0) or 0
+                )
+            except Exception:  # noqa: BLE001
+                goal_max_turns = 0
+            _mgr = GoalManager(
+                session.session_id,
+                **({"default_max_turns": goal_max_turns} if goal_max_turns > 0 else {}),
+                judge=build_judge_callable(provider),
+            )
+            goal_result = run_goal_command(
+                _mgr, goal_arg, set_gate=_goal_set_gate,
+            )
+            if goal_result.kickoff:
+                if goal_result.notice:
+                    print(goal_result.notice, file=stderr)
+                goal_mgr = _mgr
+                prompt_text = goal_result.kickoff
+            else:
+                # status / clear / pause / resume / gate-refusal — print and
+                # exit without running a conversation turn.
+                out = goal_result.text or ""
+                print(out, file=stdout if goal_result.ok else stderr)
+                return 0 if goal_result.ok else 1
+
         inputs = [UserInputMessage(text=prompt_text, raw={"prompt": prompt_text})]
+
+    # /goal continuations are interleaved after the input that spawned them:
+    # the generator drains ``goal_continuations`` before pulling the next
+    # stdin item, so the loop below stays a single linear ``for``.
+    from collections import deque
+
+    goal_continuations: deque[str] = deque()
+
+    def _with_goal_continuations(
+        source: Iterable[UserInputMessage],
+    ) -> Iterable[UserInputMessage]:
+        for item in source:
+            yield item
+            while goal_continuations:
+                yield UserInputMessage(
+                    text=goal_continuations.popleft(),
+                    raw={"goal_continuation": True},
+                )
+
+    if goal_mgr is not None:
+        inputs = _with_goal_continuations(inputs)
 
     writer: StreamJsonWriter | None = None
     if options.output_format == "stream-json":
@@ -501,6 +580,32 @@ def run_headless(options: HeadlessOptions) -> int:
                 if writer is not None:
                     writer.write(AssistantEvent(text=result.response_text))
                 aggregate_text.append(result.response_text)
+
+                # ── /goal post-turn evaluation (single-prompt mode) ──────
+                # Single-threaded here, so the composed evaluate_after_turn
+                # is safe (no locking split needed). Progress goes to stderr
+                # so stdout stays the final answer.
+                if goal_mgr is not None and goal_mgr.is_active():
+                    from src.goals import collect_turn_evidence
+
+                    evidence = collect_turn_evidence(
+                        list(session.conversation.messages)
+                    ) or (result.response_text or "")
+                    tokens_now = int(
+                        usage_total.get("input_tokens", 0)
+                        + usage_total.get("output_tokens", 0)
+                    )
+                    decision = goal_mgr.evaluate_after_turn(
+                        evidence, tokens_now=tokens_now,
+                    )
+                    if decision.get("message"):
+                        print(f"[goal] {decision['message']}", file=stderr)
+                    if decision.get("should_continue") and decision.get(
+                        "continuation_prompt"
+                    ):
+                        goal_continuations.append(
+                            decision["continuation_prompt"]
+                        )
         except (AbortError, KeyboardInterrupt):
             # Cancellation from ANY point in the loop body lands here:
             # * ``AbortError`` from a cooperative unwind inside
@@ -526,6 +631,15 @@ def run_headless(options: HeadlessOptions) -> int:
                 )
     finally:
         restore_sigint()
+
+    # A -p goal run that ends without achieving the condition (budget pause,
+    # evaluator-timeout park, interrupt) exits non-zero so scripts can tell
+    # "loop finished" from "condition met". Achieved goals keep exit 0.
+    if goal_mgr is not None and exit_code == 0:
+        _goal_state = goal_mgr.state
+        if _goal_state is not None and _goal_state.status != "done":
+            print(f"[goal] not achieved: {goal_mgr.status_line()}", file=stderr)
+            exit_code = 1
 
     duration_ms = int((time.monotonic() - start) * 1000)
     final_text = "\n\n".join(t for t in aggregate_text if t).strip()

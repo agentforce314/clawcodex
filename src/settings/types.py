@@ -117,6 +117,11 @@ class SettingsSchema:
     # vacuous and let /model mutate provider selection.
     model_provider: str = ""
     small_fast_model: str = ""
+    # /goal turn-budget backstop (src/goals). Claude Code ships the goal
+    # loop unbounded; the port pauses the goal after this many evaluated
+    # turns so a mis-judging evaluator can't spend unbounded tokens —
+    # ``/goal resume`` continues with a fresh budget. 0/negative → default.
+    goal_max_turns: int = 20
     # Advisor — reviewer tool. Empty string = unset (no /advisor).
     # Persisted analogue of TS appState.advisorModel; the /advisor slash
     # command writes here, and _call_model_sync reads from here at request

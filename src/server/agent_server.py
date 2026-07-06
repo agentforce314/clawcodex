@@ -167,6 +167,10 @@ class _AgentSession:
     _knowledge_enabled: bool = True  # the original's knowledgeGraphEnabled (default on)
     _knowledge_semantic: bool = False  # opt-in model-based extraction (vs heuristic)
     _bgtasks: Any = None  # BackgroundTasks registry (lazy), the original's Ctrl+B runs
+    # /goal — session-scoped completion-condition loop (src/goals). Built
+    # lazily by _goal_manager(); the worker's post-turn hook evaluates it and
+    # enqueues continuation turns. Persisted in the session file for /resume.
+    _goal_mgr: Any = None
 
     # Worker + cross-thread coordination.
     _inbox: _queue.Queue = field(default_factory=_queue.Queue)
@@ -266,6 +270,20 @@ class _AgentSession:
             with self._lock:
                 abort = self._current_abort
                 pendings = list(self._pending.values())
+                # ESC during a goal run auto-pauses the goal (donor
+                # semantics, critic R4): without this, the interrupted turn
+                # skips its continuation but the goal stays armed and the
+                # loop silently resurrects at the end of the user's next
+                # turn. /goal resume re-arms deliberately. Deviation from
+                # CC (which keeps the goal active) — documented.
+                goal_paused = False
+                if self._goal_mgr is not None and self._goal_mgr.is_active():
+                    try:
+                        self._goal_mgr.pause(reason="interrupted (ESC)")
+                        goal_paused = True
+                    except Exception:  # noqa: BLE001
+                        logger.debug("[agent-server] goal pause on interrupt failed",
+                                     exc_info=True)
             # Release any in-flight permission ask NOW so the worker unblocks
             # immediately rather than at permission_timeout_s (proposal §7: ESC
             # during a permission prompt must both deny the pending ask AND
@@ -275,6 +293,16 @@ class _AgentSession:
                 pending.event.set()
             if abort is not None:
                 abort.abort("user_interrupt")
+            if goal_paused:
+                self._save_session()
+                self._emit({
+                    "type": "system",
+                    "subtype": "goal_status",
+                    "session_id": self.session_id,
+                    "message": ("⏸ Goal paused — turn interrupted. Use "
+                                "/goal resume to continue, or /goal clear to stop."),
+                    "goal_active": False,
+                })
             return
         if subtype == "set_permission_mode":
             mode = inner.get("mode")
@@ -589,6 +617,12 @@ class _AgentSession:
             )
             self._reply(request_id, {"servers": servers})
             return
+        if subtype == "goal":
+            self._do_goal_command(request_id, inner.get("arg"))
+            return
+        if subtype == "subgoal":
+            self._do_subgoal_command(request_id, inner.get("arg"))
+            return
         if subtype == "clear":
             # Reset the conversation so /clear actually starts a fresh context
             # (not just the client screen). Idle-only.
@@ -600,6 +634,26 @@ class _AgentSession:
             try:
                 if self.session is not None:
                     self.session.conversation.clear()
+                # /clear removes an active goal (CC docs/en/goal §Clear a
+                # goal: "Running /clear to start a new conversation also
+                # removes any active goal"). Under _lock — the worker's
+                # post-turn hook shares this state. The on-disk strip makes
+                # the clear DURABLE: /clear + immediate quit must not leave
+                # an active goal in the session file for --resume to
+                # restore (critic suggestion 2; _save_session can't do it —
+                # it early-returns on the now-empty conversation).
+                if self._goal_mgr is not None:
+                    try:
+                        with self._lock:
+                            self._goal_mgr.clear()
+                        f = _sessions_dir() / f"{self.session_id}.json"
+                        if f.exists():
+                            data = json.loads(f.read_text(encoding="utf-8"))
+                            if data.pop("goal", None) is not None:
+                                f.write_text(json.dumps(data), encoding="utf-8")
+                    except Exception:  # noqa: BLE001 — never break /clear
+                        logger.debug("[agent-server] goal clear on /clear failed",
+                                     exc_info=True)
                 # Fresh conversation, fresh odometer (token/cost totals are
                 # process-wide spend and deliberately survive /clear).
                 self._stats_turns = 0
@@ -717,6 +771,19 @@ class _AgentSession:
                 # from a persisted notification/hook-context message).
                 "turns": self._stats_turns,
             }
+            # /goal state rides the session file so --resume restores an
+            # ACTIVE goal (CC docs/en/goal §Resume). Snapshot under _lock —
+            # the worker's post-turn hook mutates the same state.
+            if self._goal_mgr is not None:
+                try:
+                    with self._lock:
+                        goal_state = self._goal_mgr.state
+                        goal_dict = goal_state.to_dict() if goal_state else None
+                    if goal_dict:
+                        payload["goal"] = goal_dict
+                except Exception:  # noqa: BLE001 — goal snapshot is best-effort
+                    logger.debug("[agent-server] goal snapshot failed",
+                                 exc_info=True)
             # ch03 round-4 GAP B — the live persister carries the cost
             # block (schema owner: cost_restore.build_cost_block, matching
             # the /resume reader) so accumulated cost survives restarts.
@@ -1510,6 +1577,40 @@ class _AgentSession:
                     self.emit_init()
                 except Exception:  # noqa: BLE001
                     logger.debug("[agent-server] init re-emit after mode flip failed", exc_info=True)
+            # /goal restore (CC docs/en/goal §Resume with an active goal):
+            # only an ACTIVE goal carries over; turn count, timer, and the
+            # token-spend baseline reset. Achieved/cleared goals stay gone.
+            goal_notice = None
+            saved_goal = data.get("goal")
+            if isinstance(saved_goal, dict):
+                try:
+                    mgr = self._goal_manager()
+                    snapshot_now = _cost_snapshot()
+                    with self._lock:
+                        restored = mgr.restore(saved_goal)
+                        if restored is not None:
+                            mgr.rebaseline(
+                                tokens=self._usage_token_total(snapshot_now),
+                                cost_usd=float(
+                                    snapshot_now.get("total_cost_usd", 0.0) or 0.0
+                                ),
+                            )
+                    if restored is not None:
+                        goal_notice = (
+                            f"◎ Goal restored (counters reset): {restored.goal}\n"
+                            "I'll keep working toward it after your next "
+                            "message. /goal clear to stop."
+                        )
+                        self._emit({
+                            "type": "system",
+                            "subtype": "goal_status",
+                            "session_id": self.session_id,
+                            "message": goal_notice,
+                            "goal_active": True,
+                        })
+                except Exception:  # noqa: BLE001 — a bad goal record must not break resume
+                    logger.debug("[agent-server] goal restore failed",
+                                 exc_info=True)
             self._reply(request_id, {
                 "ok": True,
                 "count": len(conv.messages),
@@ -1520,6 +1621,7 @@ class _AgentSession:
                 "session_turns": self._stats_turns,
                 "cost": _cost_snapshot(),
                 **({"mode_banner": mode_banner} if mode_banner else {}),
+                **({"goal_notice": goal_notice} if goal_notice else {}),
             })
         except Exception as exc:  # noqa: BLE001
             logger.exception("[agent-server] resume failed")
@@ -1763,6 +1865,229 @@ class _AgentSession:
             behavior="deny", message=str(reply.get("message", "")) or "denied by user"
         )
 
+    # ─── /goal — completion-condition loop (src/goals) ─────────────────────
+
+    def _goal_manager(self) -> Any:
+        """The session's GoalManager, built lazily. Never raises."""
+        if self._goal_mgr is None:
+            from src.goals import DEFAULT_GOAL_MAX_TURNS, GoalManager
+
+            max_turns = DEFAULT_GOAL_MAX_TURNS
+            try:
+                from src.settings.settings import get_settings
+
+                configured = int(getattr(get_settings(), "goal_max_turns", 0) or 0)
+                if configured > 0:
+                    max_turns = configured
+            except Exception:  # noqa: BLE001 — settings must not block /goal
+                logger.debug("[agent-server] goal_max_turns read failed",
+                             exc_info=True)
+            self._goal_mgr = GoalManager(
+                self.session_id, default_max_turns=max_turns,
+            )
+        # Judge rebound on every call so a mid-goal /model or /provider
+        # switch is picked up (the callable closes over the provider object).
+        try:
+            from src.goals import build_judge_callable
+
+            self._goal_mgr.judge = build_judge_callable(self.provider)
+        except Exception:  # noqa: BLE001
+            logger.debug("[agent-server] goal judge bind failed", exc_info=True)
+        return self._goal_mgr
+
+    def _goal_set_gate(self) -> str | None:
+        """CC docs/en/goal §Requirements: /goal needs an accepted trust
+        dialog and the hooks framework enabled — "the command tells you why
+        instead of silently doing nothing". Returns the reason, or None."""
+        if not getattr(self.tool_context, "workspace_trusted", False):
+            return (
+                "/goal requires a trusted workspace (the evaluator is part "
+                "of the hooks system). Accept the trust dialog for this "
+                "workspace, then set the goal again."
+            )
+        try:
+            from src.settings.settings import load_settings
+
+            if not load_settings(cwd=self.cwd).hooks.enabled:
+                return (
+                    "/goal is unavailable because hooks are disabled "
+                    "(settings hooks.enabled=false — the evaluator is part "
+                    "of the hooks system)."
+                )
+        except Exception:  # noqa: BLE001 — unreadable settings fail open (enabled)
+            logger.debug("[agent-server] hooks.enabled read failed",
+                         exc_info=True)
+        return None
+
+    @staticmethod
+    def _usage_token_total(snapshot: dict) -> int:
+        """Total input+output tokens across the cost snapshot's model_usage."""
+        total = 0
+        try:
+            for usage in (snapshot.get("model_usage") or {}).values():
+                total += int(usage.get("input_tokens", 0) or 0)
+                total += int(usage.get("output_tokens", 0) or 0)
+        except Exception:  # noqa: BLE001
+            return 0
+        return total
+
+    def _do_goal_command(self, request_id: object, arg: object) -> None:
+        """Control handler for /goal. Allowed while a turn is RUNNING —
+        /goal clear must be able to stop a runaway loop (the /clear control
+        is idle-only, so it can't)."""
+        try:
+            from src.goals.command import run_goal_command
+
+            mgr = self._goal_manager()
+            snapshot = _cost_snapshot()
+            # Under _lock: the worker's post-turn hook reads/mutates the
+            # same state (critic R1). run_goal_command is pure state ops —
+            # no I/O — so the critical section is short.
+            with self._lock:
+                result = run_goal_command(
+                    mgr,
+                    str(arg or ""),
+                    set_gate=self._goal_set_gate,
+                    baseline_tokens=self._usage_token_total(snapshot),
+                    baseline_cost_usd=float(snapshot.get("total_cost_usd", 0.0) or 0.0),
+                )
+            self._save_session()
+            reply: dict[str, Any] = {
+                "ok": result.ok,
+                "text": result.text,
+                "active": result.active,
+            }
+            if result.kickoff:
+                reply["notice"] = result.notice
+                reply["kickoff"] = result.kickoff
+            if not result.ok:
+                reply["error"] = result.text
+            self._reply(request_id, reply)
+        except Exception as exc:  # noqa: BLE001 — a goal bug must not kill the control channel
+            logger.exception("[agent-server] goal command failed")
+            self._reply(request_id, {"ok": False, "error": str(exc)})
+
+    def _do_subgoal_command(self, request_id: object, arg: object) -> None:
+        try:
+            from src.goals.command import run_subgoal_command
+
+            mgr = self._goal_manager()
+            with self._lock:
+                result = run_subgoal_command(mgr, str(arg or ""))
+            self._save_session()
+            reply: dict[str, Any] = {
+                "ok": result.ok,
+                "text": result.text,
+                "active": result.active,
+            }
+            if not result.ok:
+                reply["error"] = result.text
+            self._reply(request_id, reply)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[agent-server] subgoal command failed")
+            self._reply(request_id, {"ok": False, "error": str(exc)})
+
+    def _maybe_continue_goal(self, outcome: dict | None) -> None:
+        """Post-turn goal hook (worker thread) — the port of hermes
+        tui_gateway's "/goal continuation" block and the observable behavior
+        of CC's session-scoped Stop-hook evaluator (docs/en/goal §How
+        evaluation works).
+
+        Runs after real user turns and __goal__ continuation turns (NOT
+        after btw side-questions or internal notification turns — judging a
+        goal against a background-task recap would entangle two self-driving
+        loops). Skips when: no active goal, the turn was cancelled/errored
+        (CC's no-Stop-hooks-on-error guard), the response is empty, or user
+        input is already queued (preemption — the judge re-runs after their
+        turn anyway; slash commands ride the control channel and never
+        queue here, matching hermes's "slash commands don't preempt" rule).
+
+        Concurrency (critic R1): goal state is shared with the control
+        plane (/goal set|clear|pause on the asyncio loop), so this uses
+        double-checked locking — snapshot + preflight under ``_lock``, the
+        judge network call OUTSIDE the lock, verdict application +
+        continuation enqueue back under the lock with an ``expected_state``
+        identity check so a mid-judge clear/replace discards the stale
+        verdict. Never raises.
+        """
+        try:
+            if not outcome or outcome.get("subtype") != "success":
+                return
+            response_text = str(outcome.get("response_text") or "")
+            if not response_text.strip():
+                return
+
+            # ── preflight under the lock ──────────────────────────────
+            with self._lock:
+                mgr = self._goal_mgr
+                if mgr is None or not mgr.is_active():
+                    return
+                # Best-effort preemption, not a hard barrier: send_to_agent
+                # puts user messages into _inbox WITHOUT _lock, so one can
+                # land between the apply-block's empty() re-check and its
+                # put() — order [user, __goal__], and one stale continuation
+                # runs after the user's turn. Self-correcting: a queued
+                # __goal__ item keeps this preflight returning early (at
+                # most one ever queued), and the worker's staleness drop
+                # kills it outright if the goal was cleared meanwhile.
+                if not self._inbox.empty():
+                    return  # user input pending — their turn wins
+                state_snapshot = mgr.state
+                goal_text = state_snapshot.goal
+                subgoals = list(state_snapshot.subgoals)
+            # Rebind the judge to the CURRENT provider (mid-goal /model
+            # switches). Outside the lock: touches settings/imports only.
+            mgr = self._goal_manager()
+
+            from src.goals import collect_turn_evidence, judge_goal
+
+            evidence = ""
+            try:
+                evidence = collect_turn_evidence(
+                    list(self.session.conversation.messages)
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug("[agent-server] goal evidence failed", exc_info=True)
+            if not evidence:
+                evidence = response_text
+
+            # ── judge OUTSIDE the lock (bounded network call) ─────────
+            verdict, reason, parse_failed = judge_goal(
+                goal_text, evidence, judge=mgr.judge,
+                subgoals=subgoals or None,
+            )
+
+            snapshot = _cost_snapshot()
+            # ── apply + enqueue back under the lock ───────────────────
+            with self._lock:
+                decision = mgr.apply_verdict(
+                    verdict, reason, parse_failed,
+                    tokens_now=self._usage_token_total(snapshot),
+                    cost_now_usd=float(snapshot.get("total_cost_usd", 0.0) or 0.0),
+                    expected_state=state_snapshot,
+                )
+                should_continue = bool(decision.get("should_continue"))
+                continuation = decision.get("continuation_prompt") or ""
+                if should_continue and continuation and self._inbox.empty():
+                    # Internal-turn semantics downstream: no UserPromptSubmit
+                    # hooks, no ultracode reminder, no memory recall, no
+                    # stats-odometer tick — loop machinery, not a user prompt.
+                    self._inbox.put({"__goal__": True, "content": continuation})
+            self._save_session()  # persist turns_used/verdict/achieved state
+
+            message = decision.get("message") or ""
+            if message:
+                self._emit({
+                    "type": "system",
+                    "subtype": "goal_status",
+                    "session_id": self.session_id,
+                    "message": message,
+                    "goal_active": bool(mgr.is_active()),
+                })
+        except Exception:  # noqa: BLE001 — the goal loop must never kill the worker
+            logger.debug("[agent-server] goal continuation hook failed",
+                         exc_info=True)
+
     # ─── worker thread (runs query() turns) ────────────────────────────────
 
     def start(self) -> None:
@@ -1789,9 +2114,29 @@ class _AgentSession:
             if isinstance(item, dict) and item.get("__btw__"):  # side question (/btw)
                 self._run_turn(item.get("content"), btw=True)
                 continue
+            if isinstance(item, dict) and item.get("__goal__"):
+                # /goal continuation — internal-turn semantics (no UPS hooks,
+                # no ultracode reminder, no recall, no odometer tick), but
+                # the post-turn goal hook still evaluates it so the loop
+                # keeps going until the evaluator says done.
+                # Staleness drop: a /goal clear|pause that landed while this
+                # continuation sat queued must win — running it would spend
+                # a full model turn on a dead goal (hermes clears pending
+                # synthetic continuations from its FIFO for the same race).
+                with self._lock:
+                    goal_live = (
+                        self._goal_mgr is not None and self._goal_mgr.is_active()
+                    )
+                if not goal_live:
+                    continue
+                outcome = self._run_turn(item.get("content"), internal=True)
+                self._maybe_continue_goal(outcome)
+                self._deliver_task_notifications()
+                continue
             if not isinstance(item, (str, list)):  # str prompt, or multimodal blocks
                 continue
-            self._run_turn(item)
+            outcome = self._run_turn(item)
+            self._maybe_continue_goal(outcome)
             # A task that finished while the turn ran is delivered right after.
             self._deliver_task_notifications()
         self._close_stream()
@@ -1929,8 +2274,11 @@ class _AgentSession:
                          exc_info=True)
             return None
 
-    def _run_turn(self, prompt, btw: bool = False, internal: bool = False) -> None:
+    def _run_turn(self, prompt, btw: bool = False, internal: bool = False) -> dict | None:
         # prompt: str | list[ContentBlock]
+        # Returns a small outcome dict {"subtype", "response_text"} for the
+        # worker's post-turn goal hook (None-safe there: a missed path
+        # degrades to "no continuation", never an error).
         # btw=True → a "side question" (the original's /btw): run with full context
         # but DON'T persist the Q&A, so the main conversation isn't interrupted.
         # internal=True → a system-generated turn (task-notification delivery):
@@ -1944,7 +2292,7 @@ class _AgentSession:
                 result=self.init_error, is_error=True, error=self.init_error,
                 session_turns=self._stats_turns,
             ))
-            return
+            return {"subtype": "error", "response_text": ""}
 
         # ch05 round-4 GAP B (critic m1) — parse the '+500k' budget from the
         # ORIGINAL prompt BEFORE ultracode augmentation: the reminder is
@@ -1984,7 +2332,7 @@ class _AgentSession:
                     result="", is_error=False, duration_ms=0,
                     session_turns=self._stats_turns,
                 ))
-                return
+                return {"subtype": "success", "response_text": ""}
             if ups is not None and ups.prevented:
                 # preventContinuation → KEEP the prompt in context + push an
                 # "Operation stopped by hook" note; no query (TS :213-224).
@@ -1998,7 +2346,7 @@ class _AgentSession:
                     result="", is_error=False, duration_ms=0,
                     session_turns=self._stats_turns,
                 ))
-                return
+                return {"subtype": "success", "response_text": ""}
             if ups is not None:
                 _ups_contexts = list(ups.additional_contexts)
 
@@ -2117,7 +2465,7 @@ class _AgentSession:
                 duration_ms=int((time.monotonic() - start) * 1000),
                 session_turns=self._stats_turns,
             ))
-            return
+            return {"subtype": "cancelled", "response_text": ""}
         except Exception as exc:  # noqa: BLE001 - one bad turn must not kill the session
             logger.exception("[agent-server] turn failed")
             self._emit(_result_message(
@@ -2127,7 +2475,7 @@ class _AgentSession:
                 duration_ms=int((time.monotonic() - start) * 1000),
                 session_turns=self._stats_turns,
             ))
-            return
+            return {"subtype": "error", "response_text": ""}
         finally:
             with self._lock:
                 self._current_abort = None
@@ -2163,6 +2511,7 @@ class _AgentSession:
             session_turns=self._stats_turns,
         ))
         self._save_session()  # persist for /resume
+        return {"subtype": "success", "response_text": result.response_text or ""}
 
     async def shutdown(self) -> None:
         self._stop.set()
