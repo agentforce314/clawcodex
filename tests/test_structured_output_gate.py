@@ -48,12 +48,18 @@ def test_schema_path_injection_still_validates():
     assert ctx.outbox and ctx.outbox[-1]["structured_output"] == {"x": 7}
 
 
-def test_text_workflow_agent_gets_no_structured_output():
-    # the no-collector (text) path must NOT receive StructuredOutput — matches
-    # TS (no jsonSchema ⇒ no SyntheticOutputTool). A pin so a future re-add of
-    # the static tool to the default registry is caught.
+def test_resolved_worker_tools_exclude_structured_output():
+    # A workflow TEXT agent (no collector) resolves its worker tools from the
+    # default registry and gets no StructuredOutput — matches TS (no jsonSchema
+    # ⇒ no SyntheticOutputTool). Drive the actual resolution path (not just
+    # registry contents) so a re-add that slips through resolve_agent_tools is
+    # caught.
+    from src.agent.agent_tool_utils import filter_tools_for_agent
     from src.tool_system.defaults import build_default_registry
 
-    reg = build_default_registry()
-    names = {t.name for t in reg.list_tools()}
-    assert "StructuredOutput" not in names
+    base = build_default_registry().list_tools()
+    # the worker allow-set filter over the default pool (keep-if-in-set): with
+    # StructuredOutput no longer static, it cannot appear in the resolved
+    # worker toolset for a text agent.
+    resolved = filter_tools_for_agent(tools=base, is_built_in=True)
+    assert "StructuredOutput" not in {t.name for t in resolved}
