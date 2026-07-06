@@ -244,6 +244,11 @@ async def _serve_stdio(workspace: str, agent_config: AgentServerConfig) -> int:
     RESERVED for JSON frames (diagnostics go to ``stderr``); ``stdin`` EOF — the
     parent TUI going away — ends the session.
     """
+    # TS wires the proxy in the shared init.ts (ALL sessions), so both the HTTP
+    # (_serve) and stdio transports init it — else a CCR-remote stdio container's
+    # tool subprocesses would miss the proxy (critic C9 open-Q). No-op unless
+    # CLAUDE_CODE_REMOTE is set.
+    await _maybe_init_upstream_proxy()
     profile_checkpoint("agent_server_serve_start")
     # This transport serves exactly ONE session (the Ink client's child, or
     # a hand-run standalone). single_session unlocks the process-global
@@ -312,7 +317,46 @@ async def _serve_stdio(workspace: str, agent_config: AgentServerConfig) -> int:
     return 0
 
 
+async def _maybe_init_upstream_proxy() -> None:
+    """C9: when ``CLAUDE_CODE_REMOTE`` is set (a CCR remote deployment), start
+    the upstream CONNECT proxy and register its env provider so ``subprocess_env``
+    injects the proxy recipe into every spawned child.
+
+    Mirrors the TS remote bootstrap (``registerUpstreamProxyEnvFn`` +
+    ``initUpstreamProxy``, gated on ``CLAUDE_CODE_REMOTE``). The open TS build
+    strips this path, and ``init_upstream_proxy`` itself re-checks the env gate,
+    so with ``CLAUDE_CODE_REMOTE`` unset this is a pure no-op — default local
+    behaviour is unchanged. FAIL-OPEN: a proxy failure must not stop the server
+    from starting (a remote session degrades to direct rather than dying)."""
+    from src.utils.subprocess_env import _is_env_truthy
+
+    if not _is_env_truthy(os.environ.get("CLAUDE_CODE_REMOTE")):
+        return
+    try:
+        # Lazy import: keep asyncio/ssl/relay off the default startup path.
+        from src.upstreamproxy.upstream_proxy import (
+            get_upstream_proxy_env,
+            init_upstream_proxy,
+        )
+        from src.utils.subprocess_env import register_upstream_proxy_env_fn
+
+        # Register BEFORE init — exact TS order (init.ts:148-149). Safe in either
+        # order: get_upstream_proxy_env reads _state at CALL time and returns {}
+        # while DISABLED on a clean env, so a registered provider over a
+        # failed/pending init injects nothing (verified). The whole block is
+        # fail-open below.
+        register_upstream_proxy_env_fn(get_upstream_proxy_env)
+        await init_upstream_proxy()
+    except Exception:  # noqa: BLE001 — fail-open, mirror TS
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "[upstreamproxy] init failed; continuing without proxy", exc_info=True
+        )
+
+
 async def _serve(args, workspace: str, agent_config: AgentServerConfig) -> int:
+    await _maybe_init_upstream_proxy()
     index_path = Path.home() / ".clawcodex" / "server-sessions.json"
     index_path.parent.mkdir(parents=True, exist_ok=True)
 
