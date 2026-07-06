@@ -141,7 +141,14 @@ def spawn_background_bash(
                 from dataclasses import replace
 
                 from src.tasks.eviction import schedule_eviction
-                new_status = "completed" if rc == 0 else "failed"
+                # Preserve a 'killed' status set by stop_background_bash (a
+                # user kill) — don't reclassify it as 'failed' from the SIGTERM
+                # exit code (critic C5-P1 #3). Its notified=True (set at kill)
+                # also makes the enqueue below a no-op.
+                new_status = (
+                    "killed" if getattr(prev, "status", None) == "killed"
+                    else ("completed" if rc == 0 else "failed")
+                )
                 # C5 Part 1: terminal state is left ``notified=False`` — the
                 # forward-trap ``notified=True`` (which pre-suppressed any
                 # completion notification, per the ch10 WI-2 comment) is
@@ -173,6 +180,8 @@ def spawn_background_bash(
                     status="completed" if rc == 0 else "failed",
                     output_file=str(output_path),
                     registry=context.runtime_tasks,
+                    exit_code=rc,
+                    tool_use_id=getattr(context, "tool_use_id", None),
                 )
             except Exception:  # noqa: BLE001 — notification must not break reaping
                 # FALLBACK: if the enqueue raised, the terminal state is still
@@ -338,4 +347,21 @@ def stop_background_bash(context: ToolContext, task_id: str) -> bool:
         os.killpg(os.getpgid(proc.pid), 15)
     except (ProcessLookupError, PermissionError):
         return False
+    # Atomically mark status='killed' + notified=True (TS killTask,
+    # killShellTasks.ts:38-44). Setting notified=True SUPPRESSES the reaper's
+    # later enqueue_shell_notification (it no-ops on notified=True), so a
+    # user-killed bg bash produces NO completion notification — instead of the
+    # spurious "failed with exit code N" the reaper would otherwise send
+    # (critic C5-P1 #3). _patch preserves an existing 'killed' status.
+    try:
+        from dataclasses import replace as _replace
+
+        def _mark_killed(prev: Any) -> Any:
+            if isinstance(prev, LocalShellTaskState):
+                return _replace(prev, status="killed", notified=True)
+            return prev
+
+        context.runtime_tasks.update(task_id, _mark_killed)
+    except Exception:  # noqa: BLE001 — the SIGTERM already succeeded
+        pass
     return True

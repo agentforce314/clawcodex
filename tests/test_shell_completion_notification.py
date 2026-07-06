@@ -83,3 +83,102 @@ def test_wrong_task_type_not_notified():
     )
     assert sent is False  # not a LocalShellTaskState → no-op
     assert reg.state.notified is False
+
+
+class TestSummaryContent:
+    """critic C5-P1 #1/#2: the model-facing summary must be shell-specific
+    ("Background command"), carry the exit code, and be XML-escaped."""
+
+    def test_completed_summary_has_prefix_and_exit_code(self):
+        from src.utils.task_notification import build_shell_notification_xml
+        x = build_shell_notification_xml(
+            task_id="b1", description="run tests", status="completed",
+            output_file="/tmp/b1.log", exit_code=0)
+        assert '<summary>Background command "run tests" completed (exit code 0)</summary>' in x
+        assert "Agent" not in x  # not the agent builder
+
+    def test_failed_summary_has_exit_code_not_unknown_error(self):
+        from src.utils.task_notification import build_shell_notification_xml
+        x = build_shell_notification_xml(
+            task_id="b2", description="build", status="failed",
+            output_file="/tmp/b2.log", exit_code=1)
+        assert '"build" failed with exit code 1' in x
+        assert "Unknown error" not in x
+
+    def test_killed_summary(self):
+        from src.utils.task_notification import build_shell_notification_xml
+        x = build_shell_notification_xml(
+            task_id="b3", description="server", status="killed",
+            output_file="/tmp/b3.log")
+        assert '"server" was stopped' in x
+
+    def test_metachars_escaped(self):
+        # #2: a bg command with < > & must not produce a malformed envelope
+        from src.utils.task_notification import build_shell_notification_xml
+        x = build_shell_notification_xml(
+            task_id="b4", description="cat <in >out && echo hi", status="completed",
+            output_file="/tmp/b4.log", exit_code=0)
+        assert "&lt;in &gt;out &amp;&amp;" in x
+        assert "<in >out" not in x  # raw metachars would break the XML
+
+
+class TestSpawnReapIntegration:
+    """critic #4: a REAL spawn_background_bash → reap → notification, not just
+    the unit builder."""
+
+    def test_bg_bash_completion_notifies_the_model(self, tmp_path):
+        import time
+        from pathlib import Path
+
+        from src.tool_system.context import ToolContext, ToolUseOptions
+        from src.tool_system.tools.bash.background import spawn_background_bash
+
+        clear_pending_notifications()
+        ctx = ToolContext(workspace_root=tmp_path)
+        ctx.options = ToolUseOptions(tools=[])
+        out = spawn_background_bash(
+            command="exit 3", cwd=Path(str(tmp_path)),
+            description="quick fail", context=ctx,
+        )
+        task_id = out["backgroundTaskId"]
+        # wait for the reap thread to deliver
+        for _ in range(100):
+            if peek_pending_notifications():
+                break
+            time.sleep(0.05)
+        q = peek_pending_notifications()
+        assert q, "no completion notification delivered"
+        joined = "\n".join(str(n) for n in q)
+        assert 'Background command "quick fail" failed with exit code 3' in joined
+        clear_pending_notifications()
+
+
+class TestKillSuppressesNotification:
+    """critic #3: a user kill (stop_background_bash) sets notified=True, so the
+    reaper sends NO notification — matching TS killTask."""
+
+    def test_kill_marks_killed_and_notified(self, tmp_path):
+        import time
+        from pathlib import Path
+
+        from src.tool_system.context import ToolContext, ToolUseOptions
+        from src.tool_system.tools.bash.background import (
+            spawn_background_bash,
+            stop_background_bash,
+        )
+
+        clear_pending_notifications()
+        ctx = ToolContext(workspace_root=tmp_path)
+        ctx.options = ToolUseOptions(tools=[])
+        out = spawn_background_bash(
+            command="sleep 30", cwd=Path(str(tmp_path)),
+            description="long job", context=ctx,
+        )
+        task_id = out["backgroundTaskId"]
+        assert stop_background_bash(ctx, task_id) is True
+        st = ctx.runtime_tasks.get(task_id)
+        assert st is not None and st.status == "killed" and st.notified is True
+        # give the reaper a moment; it must NOT send a notification (notified=True)
+        time.sleep(0.3)
+        assert peek_pending_notifications() == [], "kill produced a spurious notification"
+        clear_pending_notifications()
