@@ -137,7 +137,28 @@ class LocalShellTask:
         if proc is None:
             return
         if proc.poll() is not None:
+            # Already dead → let the reaper deliver a natural completion
+            # notification (TS killTask gates on status === 'running',
+            # killShellTasks.ts:38-44).
             return
+        # Mark status='killed' + notified=True BEFORE the signal (TS killTask).
+        # This is the PRODUCTION kill path (TaskStop → stop_task → this), so the
+        # mark must live here — not in stop_background_bash, which stop_task
+        # only reaches AFTER the first SIGTERM has often already killed the
+        # process (its proc.poll() gate then bails before marking). Marking
+        # BEFORE os.killpg also closes the reaper-vs-killer race: the reaper is
+        # blocked in proc.wait() and cannot wake until the signal is delivered,
+        # by which point notified=True is committed — so the reaper's
+        # enqueue_shell_notification no-ops instead of sending a spurious
+        # "failed with exit code -15" (critic C5-P1 #3, reproduced 8/8).
+        from dataclasses import replace as _replace
+
+        def _mark_killed(prev: Any) -> Any:
+            if isinstance(prev, LocalShellTaskState):
+                return _replace(prev, status="killed", notified=True)
+            return prev
+
+        registry.update(task_id, _mark_killed)
         try:
             os.killpg(os.getpgid(proc.pid), 15)
         except (ProcessLookupError, PermissionError):
