@@ -82,6 +82,20 @@ def validate_settings(settings: SettingsSchema) -> list[ValidationError]:
             value=settings.max_cost_usd,
         ))
 
+    # Sandbox (C8): a hard gate — enabled + failIfUnavailable but no
+    # enforcement engine in this build → invalid (TS "exit with error at
+    # startup", sandboxTypes.ts:96-103). The warning-only case (enabled,
+    # not failIfUnavailable) is NOT an error here — it's surfaced as a
+    # runtime warning at the bash path so settings still load.
+    from src.permissions.sandbox_guard import sandbox_hard_gate_error
+    _gate = sandbox_hard_gate_error(settings)
+    if _gate:
+        errors.append(ValidationError(
+            field="sandbox",
+            message=_gate,
+            value=True,
+        ))
+
     # Session retention
     if settings.session_retention_days < 1:
         errors.append(ValidationError(

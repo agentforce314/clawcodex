@@ -251,6 +251,32 @@ def _bash_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
         if pat.search(command):
             raise ToolPermissionError("refusing to run potentially dangerous command")
 
+    # Sandbox guard (C8): the port has no sandbox ENFORCEMENT, so a
+    # ``sandbox.enabled`` setting maps onto TS's documented sandbox-unavailable
+    # path (sandboxTypes.ts:96-103). failIfUnavailable → REFUSE (the
+    # managed-settings hard gate: never silently run unsandboxed); otherwise
+    # warn once and proceed unsandboxed. Best-effort: a settings problem must
+    # not crash a plain bash call.
+    try:
+        from src.permissions.sandbox_guard import (
+            sandbox_hard_gate_error,
+            warn_if_unsandboxed_once,
+        )
+        from src.settings.settings import get_settings
+
+        _settings = get_settings()
+        _gate = sandbox_hard_gate_error(_settings)
+        if _gate:
+            raise ToolPermissionError(_gate)
+        warn_if_unsandboxed_once(_settings)
+    except ToolPermissionError:
+        raise
+    except Exception:  # noqa: BLE001 — the guard must never break bash
+        import logging as _logging
+        _logging.getLogger(__name__).debug(
+            "[sandbox] guard check failed", exc_info=True
+        )
+
     explicit_cwd = tool_input.get("cwd")
     if explicit_cwd is not None:
         if not isinstance(explicit_cwd, str) or not explicit_cwd.startswith("/"):
