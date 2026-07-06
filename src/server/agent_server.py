@@ -250,6 +250,18 @@ class _AgentSession:
             return
         subtype = inner.get("subtype")
         request_id = msg.get("request_id")
+        # A session that refused to start (``init_error`` — e.g. the sandbox
+        # HARD GATE) must not service control requests that actually DO work.
+        # ``bg_run``/``bg_agent`` (/bg, /bg-agent) spawn subprocesses via
+        # ``_do_bgtask`` → ``subprocess.Popen(shell=True)`` OUTSIDE
+        # ``_build_runtime`` and the turn path — so without this guard they'd
+        # run UNSANDBOXED under a hard-gate config the session was supposed to
+        # refuse (critic C8). ``interrupt`` is exempt (a benign abort of a
+        # non-existent turn). Mirrors the ``session not ready`` pattern the
+        # permission-mode handlers already use.
+        if self.init_error is not None and subtype != "interrupt":
+            self._reply(request_id, {"ok": False, "error": self.init_error})
+            return
         if subtype == "interrupt":
             with self._lock:
                 abort = self._current_abort
@@ -2421,6 +2433,25 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
         profile_checkpoint("agent_server_trust_prefetch_done")
 
         cfg = sess.config
+
+        # Sandbox HARD GATE (C8): TS's failIfUnavailable is a REFUSE-TO-START
+        # at the entrypoints (print.ts:600 / REPL.tsx:2362 "refusing to start
+        # without a working sandbox"), NOT a per-command refusal. The port has
+        # no sandbox enforcement, so under sandbox.enabled+failIfUnavailable the
+        # SESSION must refuse to start — otherwise /bg, MCP servers, and hooks
+        # (which run OUTSIDE _bash_call) would execute unsandboxed while the
+        # per-_bash_call guard only stops foreground/bg BashTool commands.
+        try:
+            from src.permissions.sandbox_guard import sandbox_hard_gate_error
+            from src.settings.settings import get_settings
+
+            _gate = sandbox_hard_gate_error(get_settings(cwd=sess.cwd))
+            if _gate:
+                sess.init_error = _gate
+                return
+        except Exception:  # noqa: BLE001 — the guard must never crash startup
+            logger.debug("[agent-server] sandbox hard-gate check failed", exc_info=True)
+
         provider_name = cfg.provider_name or get_default_provider()
         provider_cfg = get_provider_config(provider_name)
         api_key = resolve_api_key(provider_name, provider_cfg)

@@ -50,6 +50,31 @@ class SpinnerVerbsSettings:
 
 
 @dataclass
+class SandboxSettings:
+    """Sandbox configuration — mirrors TS ``SandboxSettingsSchema``
+    (entrypoints/sandboxTypes.ts:91).
+
+    The port does NOT implement sandbox ENFORCEMENT (TS wraps the external
+    ``@anthropic-ai/sandbox-runtime`` — a deferred sub-chapter). So the port's
+    sandbox is permanently "unavailable", which maps onto TS's OWN documented
+    fallback (sandboxTypes.ts:96-103): when ``enabled`` is true but the sandbox
+    cannot start, ``failIfUnavailable`` decides between a hard startup error
+    (managed-settings hard gate) and "a warning is shown and commands run
+    unsandboxed". Parsing these fields (rather than dropping the whole
+    ``sandbox`` key) is what makes that guard possible — an unparsed key would
+    silently vanish, giving a false sense of security."""
+    enabled: bool = False
+    fail_if_unavailable: bool = False  # TS failIfUnavailable (default false)
+    auto_allow_bash_if_sandboxed: bool = True
+    allow_unsandboxed_commands: bool = True
+    excluded_commands: list[str] = field(default_factory=list)
+    # TS enabledPlatforms (sandboxTypes.ts:104): restrict sandboxing to
+    # specific platforms; on a platform NOT listed, TS treats sandbox as
+    # disabled (no gate, no warning). Empty = all platforms.
+    enabled_platforms: list[str] = field(default_factory=list)
+
+
+@dataclass
 class CompactSettings:
     """Compaction settings."""
     auto_compact: bool = True
@@ -161,6 +186,9 @@ class SettingsSchema:
     # Output
     output_style: OutputStyleSettings = field(default_factory=OutputStyleSettings)
 
+    # Sandbox (parsed but enforcement deferred — see SandboxSettings + C8)
+    sandbox: SandboxSettings | None = None
+
     # Spinner verbs (None = built-in defaults)
     spinner_verbs: SpinnerVerbsSettings | None = None
 
@@ -242,6 +270,19 @@ class SettingsSchema:
             ]
         if "output_style" in known and isinstance(known["output_style"], dict):
             known["output_style"] = OutputStyleSettings(**known["output_style"])
+        # ``sandbox`` — TS's SandboxSettingsSchema uses camelCase + .passthrough();
+        # accept both cases and IGNORE unknown keys (the enforcement-only fields
+        # the port doesn't act on) so a valid settings.json never fails to load.
+        if "sandbox" in known and isinstance(known["sandbox"], dict):
+            _sb = known["sandbox"]
+            known["sandbox"] = SandboxSettings(
+                enabled=bool(_sb.get("enabled", False)),
+                fail_if_unavailable=bool(_sb.get("failIfUnavailable", _sb.get("fail_if_unavailable", False))),
+                auto_allow_bash_if_sandboxed=bool(_sb.get("autoAllowBashIfSandboxed", _sb.get("auto_allow_bash_if_sandboxed", True))),
+                allow_unsandboxed_commands=bool(_sb.get("allowUnsandboxedCommands", _sb.get("allow_unsandboxed_commands", True))),
+                excluded_commands=list(_sb.get("excludedCommands", _sb.get("excluded_commands", [])) or []),
+                enabled_platforms=list(_sb.get("enabledPlatforms", _sb.get("enabled_platforms", [])) or []),
+            )
         if "spinner_verbs" in known and isinstance(known["spinner_verbs"], dict):
             known["spinner_verbs"] = SpinnerVerbsSettings(**known["spinner_verbs"])
         if "compact" in known and isinstance(known["compact"], dict):
