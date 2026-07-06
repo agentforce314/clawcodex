@@ -570,6 +570,27 @@ async def _execute_command_hook(
                 # hook_permission_decision_reason (the port's single-path deny
                 # convention — TS also sets a separate blockingError, which
                 # here would double-yield a denial).
+                #
+                # EVENT-NAME GATE (critic C1-M1): TS rejects the WHOLE output
+                # when the emitted hookEventName ≠ the running event
+                # (hooks.ts:757-765, "Hook returned incorrect event name") —
+                # otherwise a hook registered under PermissionRequest emitting
+                # the PreToolUse form would leak an `allow` into the permission
+                # grant (fail-OPEN). Port posture is warn+drop (the WI-1.4
+                # analog of TS's throw), and — mirroring TS's
+                # `if (expectedHookEvent && …)` — the check is SKIPPED when the
+                # running event is absent (direct/test calls pass no
+                # ``hook_event``). Gates ALL hso extraction below (also closes
+                # m1: additionalContext over-extraction on wrong-event forms).
+                _running_event = stdin_data.get("hook_event")
+                _hso_event = hso.get("hookEventName") if isinstance(hso, dict) else None
+                if _running_event and _hso_event and _hso_event != _running_event:
+                    logger.warning(
+                        "Hook %r hookSpecificOutput.hookEventName=%r != running "
+                        "event %r; dropping the hookSpecificOutput payload.",
+                        command, _hso_event, _running_event,
+                    )
+                    hso = {}
                 if isinstance(hso, dict) and hso.get("hookEventName") == "PreToolUse":
                     pd = hso.get("permissionDecision")
                     if pd is not None:
