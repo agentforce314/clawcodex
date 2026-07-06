@@ -857,6 +857,20 @@ class _AgentSession:
             logger.exception("[agent-server] set_provider failed")
             self._reply(request_id, {"ok": False, "error": str(exc)})
 
+    def _mcp_server_infos(self) -> list[Any] | None:
+        """The connected MCP servers' info objects (name + instructions) for
+        the system-prompt build, filtered by the registry's disabled set —
+        a disabled server's tools are hidden, so its instructions hide too.
+        ``None`` when no MCP runtime (C2 — MCP-instructions live wiring)."""
+        rt = getattr(self, "_mcp_runtime", None)
+        if rt is None:
+            return None
+        infos = list(getattr(rt, "server_infos", None) or [])
+        reg = self.tool_registry
+        disabled = set(getattr(reg, "disabled_servers", None) or ()) if reg is not None else set()
+        live = [s for s in infos if getattr(s, "name", None) not in disabled]
+        return live or None
+
     def _compose_with_plan(self, base: Any) -> Any:
         """Append the active /plan as a system-prompt section so the agent follows
         it. No plan → returns base unchanged (regression-safe)."""
@@ -885,6 +899,29 @@ class _AgentSession:
             else:
                 reg.disabled_servers.add(name)
             _save_disabled_mcp(reg.disabled_servers)
+            # Re-render the MCP-instructions section for the new server set
+            # (C2 — the port-idiomatic analog of TS's per-call UNCACHED
+            # mcp_instructions section, given the memoized base prompt).
+            if self._base_system_prompt is not None and self.tool_context is not None:
+                try:
+                    from src.outputStyles import resolve_output_style
+                    from src.query.agent_loop_compat import build_effective_system_prompt
+
+                    tc = self.tool_context
+                    style_prompt = resolve_output_style(
+                        getattr(tc, "output_style_name", None),
+                        getattr(tc, "output_style_dir", None),
+                    ).prompt
+                    self._base_system_prompt = build_effective_system_prompt(
+                        style_prompt, tc, provider=self.provider,
+                        mcp_servers=self._mcp_server_infos(),
+                    )
+                    self.system_prompt = self._compose_with_plan(self._base_system_prompt)
+                except Exception:  # noqa: BLE001 — keep the toggle even if rebuild fails
+                    logger.debug(
+                        "[agent-server] prompt rebuild after set_mcp_enabled failed",
+                        exc_info=True,
+                    )
         self._reply(request_id, {
             "ok": True,
             "disabled": sorted(reg.disabled_servers) if reg is not None else [],
@@ -1257,7 +1294,10 @@ class _AgentSession:
                 from src.query.agent_loop_compat import build_effective_system_prompt
 
                 style_prompt = resolve_output_style(style, getattr(tc, "output_style_dir", None)).prompt
-                self._base_system_prompt = build_effective_system_prompt(style_prompt, tc, provider=self.provider)
+                self._base_system_prompt = build_effective_system_prompt(
+                    style_prompt, tc, provider=self.provider,
+                    mcp_servers=self._mcp_server_infos(),
+                )
                 self.system_prompt = self._compose_with_plan(self._base_system_prompt)
             except Exception:  # noqa: BLE001 - keep the style set even if rebuild is unavailable
                 logger.debug("[agent-server] system prompt rebuild after set_output_style failed", exc_info=True)
@@ -1412,7 +1452,8 @@ class _AgentSession:
                             getattr(tc, "output_style_dir", None),
                         ).prompt
                         self._base_system_prompt = build_effective_system_prompt(
-                            style_prompt, tc, provider=self.provider
+                            style_prompt, tc, provider=self.provider,
+                            mcp_servers=self._mcp_server_infos(),
                         )
                         self.system_prompt = self._compose_with_plan(self._base_system_prompt)
                 except Exception:  # noqa: BLE001 - keep the resume even if rebuild fails
@@ -2513,7 +2554,8 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
                 getattr(tool_context, "output_style_dir", None),
             ).prompt
             system_prompt = build_effective_system_prompt(
-                style_prompt, tool_context, provider=provider
+                style_prompt, tool_context, provider=provider,
+                mcp_servers=sess._mcp_server_infos(),
             )
         except Exception:  # noqa: BLE001 - fall back to a plain prompt
             logger.debug("[agent-server] system prompt build failed", exc_info=True)

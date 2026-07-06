@@ -60,6 +60,12 @@ class McpRuntime:
         self.clients: dict[str, Any] = {}
         self.servers: dict[str, list[str]] = {}  # server name -> tool names
         self.tools: list[Any] = []  # wrapped sync Tool objects (mcp__server__tool)
+        # ConnectedMCPServer objects (name + server-authored ``instructions``
+        # from the InitializeResult handshake). The connect() return used to
+        # be DISCARDED here, so instructions never reached the system prompt
+        # (the UTILS-1 inert-wiring gap) — retained so the prompt build can
+        # render the "# MCP Server Instructions" section (C2).
+        self.server_infos: list[Any] = []
 
     def _run(self, coro: Any, timeout: float) -> Any:
         assert self._loop is not None
@@ -98,10 +104,14 @@ class McpRuntime:
         for name, scoped in enabled.items():
             try:
                 client = McpClient()
-                self._run(client.connect(name, scoped), _CONNECT_TIMEOUT_S)
+                connected = self._run(client.connect(name, scoped), _CONNECT_TIMEOUT_S)
                 mcp_tools = self._run(client.list_tools(), _CONNECT_TIMEOUT_S)
                 self.clients[name] = client
                 self.servers[name] = [t.name for t in mcp_tools]
+                # Keep the server info (name + instructions) for the prompt —
+                # only truly-connected servers carry instructions.
+                if getattr(connected, "type", "") == "connected":
+                    self.server_infos.append(connected)
                 for mt in mcp_tools:
                     self.tools.append(self._wrap(name, mt, client))
                 logger.info("[mcp] connected %s (%d tools)", name, len(mcp_tools))
