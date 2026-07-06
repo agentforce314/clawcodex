@@ -449,7 +449,11 @@ class McpClient:
         if handler is None:
             return {"action": "decline"}
         try:
-            res = await handler(params)
+            # Thread the server name to the handler (C3): the MCP elicitation
+            # params don't carry it, but the elicitation hooks match on and
+            # report the server name (TS matchQuery: serverName).
+            handler_params = {**params, "serverName": self._name} if self._name else params
+            res = await handler(handler_params)
             return res if isinstance(res, dict) and res.get("action") else {"action": "decline"}
         except Exception:
             return {"action": "decline"}
