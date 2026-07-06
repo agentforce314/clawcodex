@@ -70,3 +70,37 @@ class TestEntrypointGuard:
         asyncio.run(_maybe_init_upstream_proxy())
         # no provider was registered (the gate short-circuited before import)
         assert se._upstream_proxy_env_fn is None
+
+
+class TestHalfRegisteredSafety:
+    """critic C9 #3: a FAILED init must not leave a provider registered that
+    injects proxy vars for a relay that never started. The entrypoint registers
+    only AFTER init succeeds; and even the provider itself returns {} when the
+    proxy state is DISABLED (with a clean env)."""
+
+    def test_failed_init_leaves_no_registration(self, monkeypatch):
+        import src.entrypoints.agent_server_cli as cli
+        from src.utils import subprocess_env as se
+
+        monkeypatch.setenv("CLAUDE_CODE_REMOTE", "1")
+        se.register_upstream_proxy_env_fn(None)
+
+        async def _boom():
+            raise RuntimeError("relay bind failed")
+        # patch the imported init to fail
+        monkeypatch.setattr(
+            "src.upstreamproxy.upstream_proxy.init_upstream_proxy", _boom)
+        asyncio.run(cli._maybe_init_upstream_proxy())
+        # fail-open AND no provider registered → subprocess_env stays a no-op
+        assert se._upstream_proxy_env_fn is None
+        se.register_upstream_proxy_env_fn(None)
+
+    def test_disabled_state_returns_empty_recipe(self, monkeypatch):
+        from src.upstreamproxy.upstream_proxy import (
+            get_upstream_proxy_env,
+            reset_for_tests,
+        )
+        monkeypatch.delenv("HTTPS_PROXY", raising=False)
+        monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+        reset_for_tests()  # DISABLED
+        assert get_upstream_proxy_env() == {}

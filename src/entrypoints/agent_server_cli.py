@@ -335,8 +335,13 @@ async def _maybe_init_upstream_proxy() -> None:
         )
         from src.utils.subprocess_env import register_upstream_proxy_env_fn
 
-        register_upstream_proxy_env_fn(get_upstream_proxy_env)
+        # Init FIRST, register the env provider only on success — so a failed
+        # init can't leave a provider registered that injects proxy vars for a
+        # relay that never started (critic C9 #3). init_upstream_proxy is the
+        # authority on _state; get_upstream_proxy_env reads it, so ordering is
+        # safe either way, but register-after-success removes the window.
         await init_upstream_proxy()
+        register_upstream_proxy_env_fn(get_upstream_proxy_env)
     except Exception:  # noqa: BLE001 — fail-open, mirror TS
         import logging
 
