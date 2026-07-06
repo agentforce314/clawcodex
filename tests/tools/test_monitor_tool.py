@@ -152,3 +152,54 @@ class TestLifecycle:
         ctx = SimpleNamespace(runtime_tasks=_GoneReg())
         _stream_output(task_id="b", output_path=str(log), context=ctx, description="d")
         # returns without hanging; the first drain may have emitted the line
+
+
+class TestMonitorSafetyGuards:
+    """critic C5-P2 #5: Monitor spawns via spawn_background_bash directly, so it
+    must NOT be a way around the bash safety guards (hardcoded-dangerous + the
+    C8 sandbox hard-gate) that live in _bash_call."""
+
+    def _ctx(self, tmp_path):
+        from src.tool_system.context import ToolContext, ToolUseOptions
+        ctx = ToolContext(workspace_root=tmp_path)
+        ctx.options = ToolUseOptions(tools=[])
+        return ctx
+
+    def test_dangerous_command_refused(self, tmp_path):
+        from src.tool_system.errors import ToolPermissionError
+        from src.tool_system.tools.monitor import _monitor_call
+        # a command matching _HARDCODED_DANGEROUS_PATTERNS must be refused
+        with pytest.raises(ToolPermissionError, match="dangerous"):
+            _monitor_call({"command": "rm -rf /", "description": "boom"},
+                          self._ctx(tmp_path))
+
+    def test_sandbox_hard_gate_refused(self, tmp_path, monkeypatch):
+        from src.settings.types import SettingsSchema
+        from src.tool_system.errors import ToolPermissionError
+        from src.tool_system.tools.monitor import _monitor_call
+
+        hard = SettingsSchema.from_dict({"sandbox": {"enabled": True, "failIfUnavailable": True}})
+        monkeypatch.setattr("src.settings.settings.get_settings", lambda *a, **k: hard)
+        with pytest.raises(ToolPermissionError):
+            _monitor_call({"command": "tail -f log", "description": "watch"},
+                          self._ctx(tmp_path))
+
+
+class TestSizeBound:
+    """critic C5-P2 #1: a single poll batches all new lines into one
+    notification, so the count cap doesn't bound a firehose — each notification
+    is size-capped (tail kept + truncation marker)."""
+
+    def test_huge_burst_truncated(self, tmp_path, monkeypatch):
+        import src.tool_system.tools.monitor as mod
+        monkeypatch.setattr(mod, "_MONITOR_MAX_NOTIFICATION_BYTES", 200)
+        log = tmp_path / "b.log"
+        log.write_text("X" * 5000 + "\nlast-line\n")  # one huge burst
+        reg = _Reg(status="completed")
+        ctx = SimpleNamespace(runtime_tasks=reg)
+        _stream_output(task_id="b", output_path=str(log), context=ctx, description="firehose")
+        joined = "\n".join(str(n) for n in peek_pending_notifications())
+        assert "truncated" in joined            # the marker
+        assert "last-line" in joined            # the tail is kept
+        # the emitted body is bounded (not the full 5000 X's)
+        assert joined.count("X") < 500

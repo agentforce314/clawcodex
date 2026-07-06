@@ -238,15 +238,16 @@ def _bash_validate_input(
     return ValidationResult.ok()
 
 
-def _bash_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
-    command = tool_input["command"]
-    if not isinstance(command, str) or not command.strip():
-        raise ToolInputError("command must be a non-empty string")
-    if "\x00" in command:
-        raise ToolInputError("command contains NUL byte")
+def bash_command_safety_guard(command: str) -> None:
+    """Pre-spawn safety for any shell command run through the bash machinery:
+    the hardcoded-dangerous-pattern block + the C8 sandbox hard-gate.
 
-    # Defense-in-depth: block obviously dangerous commands even when called
-    # directly (bypassing the registry's check_permissions flow).
+    Shared by ``_bash_call`` (foreground + run_in_background) AND the Monitor
+    tool, which spawns via ``spawn_background_bash`` directly — so Monitor
+    can't be a way around these guards (critic C5-P2). Raises
+    ``ToolPermissionError`` to refuse; the sandbox check is best-effort (a
+    settings problem must not crash the tool), but a hard-gate refusal always
+    propagates."""
     for pat in _HARDCODED_DANGEROUS_PATTERNS:
         if pat.search(command):
             raise ToolPermissionError("refusing to run potentially dangerous command")
@@ -255,8 +256,7 @@ def _bash_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
     # ``sandbox.enabled`` setting maps onto TS's documented sandbox-unavailable
     # path (sandboxTypes.ts:96-103). failIfUnavailable → REFUSE (the
     # managed-settings hard gate: never silently run unsandboxed); otherwise
-    # warn once and proceed unsandboxed. Best-effort: a settings problem must
-    # not crash a plain bash call.
+    # warn once and proceed unsandboxed.
     try:
         from src.permissions.sandbox_guard import (
             sandbox_hard_gate_error,
@@ -271,11 +271,25 @@ def _bash_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
         warn_if_unsandboxed_once(_settings)
     except ToolPermissionError:
         raise
-    except Exception:  # noqa: BLE001 — the guard must never break bash
+    except Exception:  # noqa: BLE001 — the guard must never break the tool
         import logging as _logging
         _logging.getLogger(__name__).debug(
             "[sandbox] guard check failed", exc_info=True
         )
+
+
+def _bash_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
+    command = tool_input["command"]
+    if not isinstance(command, str) or not command.strip():
+        raise ToolInputError("command must be a non-empty string")
+    if "\x00" in command:
+        raise ToolInputError("command contains NUL byte")
+
+    # Defense-in-depth: block obviously dangerous commands + apply the C8
+    # sandbox hard-gate. Shared with the Monitor tool (which spawns via
+    # spawn_background_bash directly, bypassing this function) — so the guards
+    # can't drift and Monitor can't be a hole around them.
+    bash_command_safety_guard(command)
 
     explicit_cwd = tool_input.get("cwd")
     if explicit_cwd is not None:

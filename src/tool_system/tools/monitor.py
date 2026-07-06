@@ -34,6 +34,12 @@ _POLL_INTERVAL_S = 1.0
 #: auto-stops (kills the shell + sends a final notice). Bounds a chatty
 #: monitor's conversation footprint (tools-critic: an unbounded poller floods).
 _MONITOR_MAX_NOTIFICATIONS = 100
+#: Per-notification SIZE cap (bytes of streamed body). The count cap alone
+#: doesn't bound a FIREHOSE — one poll batches all new lines into one
+#: notification, so a command dumping megabytes/second sends few-but-huge
+#: notifications. Truncate each to the tail so a single notification can't
+#: blow the conversation (critic C5-P2 #1: bound bytes, not just count).
+_MONITOR_MAX_NOTIFICATION_BYTES = 8 * 1024
 
 
 def _kill_monitor_task(task_id: str, context: ToolContext) -> None:
@@ -83,6 +89,14 @@ def _stream_output(
             lines = body.strip("\n")
             if not lines:
                 return 0
+            # Per-notification size bound (critic C5-P2 #1): keep the TAIL (the
+            # newest output is what a watcher cares about) + a truncation
+            # marker, so a firehose can't emit one giant notification.
+            encoded = lines.encode("utf-8")
+            if len(encoded) > _MONITOR_MAX_NOTIFICATION_BYTES:
+                kept = encoded[-_MONITOR_MAX_NOTIFICATION_BYTES:].decode("utf-8", "replace")
+                dropped = len(encoded) - _MONITOR_MAX_NOTIFICATION_BYTES
+                lines = f"…[{dropped} earlier bytes truncated]…\n{kept}"
             from xml.sax.saxutils import escape as _esc
 
             enqueue_pending_notification(
@@ -131,6 +145,15 @@ def _monitor_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResul
     description = tool_input.get("description") or "Monitor shell command"
     if not isinstance(command, str) or not command.strip():
         raise ToolInputError("command must be a non-empty string")
+
+    # Monitor spawns via spawn_background_bash DIRECTLY (not _bash_call), so it
+    # must apply the same pre-spawn safety — the hardcoded-dangerous-pattern
+    # block + the C8 sandbox hard-gate — or it's a way around them (critic
+    # C5-P2). check_permissions covers the permission RULES; this covers the
+    # hard safety gates that live below the permission layer.
+    from .bash.bash_tool import bash_command_safety_guard
+
+    bash_command_safety_guard(command)
 
     from .bash.background import spawn_background_bash
 
