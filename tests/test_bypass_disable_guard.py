@@ -141,3 +141,45 @@ class TestEndToEndEnforcement:
         ctx = ToolPermissionContext(mode=mode)
         result = has_permissions_to_use_tool(self._mock_tool(), {}, ctx)
         assert result.behavior == "allow"  # bypass still works when not disabled
+
+
+class TestAgentServerModeSanitization:
+    """critic C12 re-review: the agent-server subcommand sets mode straight into
+    config (not via initial_permission_mode_from_cli), so BOTH --dangerously and
+    a direct --permission-mode bypassPermissions must be sanitized under a
+    lockdown — else `clawcodex agent-server --permission-mode bypassPermissions`
+    defeats it."""
+
+    def _args(self, permission_mode=None):
+        import types
+        return types.SimpleNamespace(permission_mode=permission_mode)
+
+    def test_direct_bypass_mode_downgraded_under_lockdown(self, monkeypatch):
+        from src.entrypoints.agent_server_cli import _sanitize_agent_server_mode
+
+        monkeypatch.setattr(
+            "src.permissions.modes.is_bypass_permissions_mode_disabled", lambda: True
+        )
+        args = self._args(permission_mode="bypassPermissions")
+        _sanitize_agent_server_mode(args, dangerously=False)
+        assert args.permission_mode == "default"  # the hole is closed
+
+    def test_direct_bypass_mode_kept_without_lockdown(self, monkeypatch):
+        from src.entrypoints.agent_server_cli import _sanitize_agent_server_mode
+
+        monkeypatch.setattr(
+            "src.permissions.modes.is_bypass_permissions_mode_disabled", lambda: False
+        )
+        args = self._args(permission_mode="bypassPermissions")
+        _sanitize_agent_server_mode(args, dangerously=False)
+        assert args.permission_mode == "bypassPermissions"
+
+    def test_dangerously_downgraded_under_lockdown(self, monkeypatch):
+        from src.entrypoints.agent_server_cli import _sanitize_agent_server_mode
+
+        monkeypatch.setattr(
+            "src.permissions.modes.is_bypass_permissions_mode_disabled", lambda: True
+        )
+        args = self._args(permission_mode=None)
+        _sanitize_agent_server_mode(args, dangerously=True)
+        assert args.permission_mode != "bypassPermissions"  # not force-set

@@ -83,6 +83,30 @@ def _exit_when_stdin_closes() -> None:
     _threading.Thread(target=_watch, name="agent-server-parent-watch", daemon=True).start()
 
 
+def _sanitize_agent_server_mode(args: Any, dangerously: bool) -> None:
+    """Resolve the agent-server session mode honoring a bypass lockdown (C12).
+
+    The agent-server subcommand sets the mode STRAIGHT into AgentServerConfig
+    (it does NOT route through ``initial_permission_mode_from_cli``, so that
+    function's candidate-skip doesn't apply). ``check.py:456`` bypasses on the
+    mode ALONE, so BOTH ``--dangerously-skip-permissions`` and a directly-passed
+    ``--permission-mode bypassPermissions`` must be sanitized here or they defeat
+    a managed ``disableBypassPermissionsMode: "disable"`` lockdown. Downgrade
+    -and-warn (TS ``continue`` semantics), never a hard error."""
+    from src.permissions.modes import is_bypass_permissions_mode_disabled
+
+    disabled = is_bypass_permissions_mode_disabled()
+    if dangerously and not disabled:
+        # Flag wins over --permission-mode, same priority as
+        # initial_permission_mode_from_cli (src/permissions/modes.py).
+        args.permission_mode = "bypassPermissions"
+    elif dangerously and disabled:
+        logger.warning("Bypass permissions mode disabled by settings/policy; ignoring --dangerously-skip-permissions for mode")
+    if args.permission_mode == "bypassPermissions" and disabled:
+        logger.warning("Bypass permissions mode disabled by settings/policy; ignoring --permission-mode bypassPermissions")
+        args.permission_mode = "default"
+
+
 def run_agent_server_subcommand(argv: list[str]) -> int:
     """Entry point for ``clawcodex agent-server`` (fast-path subcommand)."""
     parser = argparse.ArgumentParser(
@@ -162,16 +186,7 @@ def run_agent_server_subcommand(argv: list[str]) -> int:
     enforce_dangerous_skip_permissions_safety(
         bypass_requested=dangerously or allow_dangerously,
     )
-    from src.permissions.modes import is_bypass_permissions_mode_disabled
-    _bypass_disabled = is_bypass_permissions_mode_disabled()
-    if dangerously and not _bypass_disabled:
-        # Flag wins over --permission-mode, same priority as
-        # initial_permission_mode_from_cli (src/permissions/modes.py).
-        args.permission_mode = "bypassPermissions"
-    elif dangerously and _bypass_disabled:
-        # C12: a disableBypassPermissionsMode lockdown overrides the flag —
-        # do NOT set bypass mode (TS skips the candidate → default).
-        log.warning("Bypass permissions mode disabled by settings/policy; ignoring --dangerously-skip-permissions for mode")
+    _sanitize_agent_server_mode(args, dangerously)
 
     # bypass AVAILABILITY. Flags always count. Trusted settings
     # (permissions.allowBypassPermissionsMode) count only on the

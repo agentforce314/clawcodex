@@ -198,7 +198,11 @@ def is_bypass_permissions_mode_disabled() -> bool:
                 if isinstance(perms, dict) and perms.get("disableBypassPermissionsMode") == "disable":
                     return True
         except Exception:
-            pass
+            # A managed policy file that fails to parse/read would silently
+            # fail-OPEN the lockdown (parity with TS dropping a malformed
+            # source); log it so an admin can diagnose why their policy isn't
+            # taking effect (critic C12).
+            log.debug("managed settings unreadable for bypass-disable check", exc_info=True)
     except Exception:
         return False
     return False
