@@ -298,3 +298,45 @@ class TestFinishElicitationThroughHandler:
         # the override must SURVIVE the malformed notification matcher
         assert res == {"action": "accept", "content": {"overridden": 1}}, \
             "notification failure discarded the override!"
+
+
+class TestMalformedMatcherOnDecisionPath:
+    """critic C3 re-review: a non-string matcher on the DECISION path
+    (Elicitation/ElicitationResult) must not abort the hook loop — else a valid
+    blocking/overriding sibling never runs and the raw user response leaks
+    (the guardrail bypass, worse blast radius than the notification path)."""
+
+    def test_matches_tool_non_string_is_non_matching(self):
+        from src.hooks.hook_executor import _matches_tool
+        assert _matches_tool(123, "srv") is False  # not a crash, not match-all
+        assert _matches_tool([], "srv") is False
+        assert _matches_tool(None, "srv") is True   # unchanged
+
+    def test_malformed_matcher_before_blocking_sibling_still_blocks(self):
+        import threading
+        import types
+
+        from src.server.agent_server import _make_elicitation_handler
+
+        # a malformed-matcher ElicitationResult hook FIRST, then a valid
+        # blocking sibling (matcher=None → matches). Old code: the malformed
+        # one crashes _matches_tool → loop aborts → sibling never runs → raw
+        # accept leaks. Fixed: malformed one is skipped, sibling blocks.
+        bad = HookConfig(type="command", command="true",
+                         source=HookSource.USER_SETTINGS, matcher=0)  # non-string
+        blocker = _exit2_hook()  # matcher=None → matches srv
+        sess = types.SimpleNamespace()
+        sess.tool_context = _Ctx({"ElicitationResult": [bad, blocker]})
+        sess._lock = threading.Lock()
+        sess._pending = {}
+        sess.config = types.SimpleNamespace(permission_timeout_s=5.0)
+
+        def _emit(msg):
+            p = sess._pending.get(msg.get("request_id"))
+            if p is not None:
+                p.reply = {"action": "accept", "content": {"leak": True}}
+                p.event.set()
+        sess._emit = _emit
+
+        res = asyncio.run(_make_elicitation_handler(sess)({"serverName": "srv", "message": "m"}))
+        assert res == {"action": "decline"}, "malformed matcher aborted the loop — block lost!"

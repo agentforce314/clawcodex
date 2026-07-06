@@ -317,6 +317,15 @@ def _matches_if_condition(
 def _matches_tool(matcher: str | None, tool_name: str) -> bool:
     if matcher is None:
         return True
+    # A non-string matcher (e.g. a hand-edited settings.json with
+    # ``"matcher": 0`` — the parser stores it verbatim, config_manager.py:63)
+    # must not crash the match loop: the .endswith/.startswith calls below
+    # would raise AttributeError, aborting ALL hooks for the event and
+    # (on the elicitation decision path) silently dropping a block/override —
+    # a guardrail fail-open (critic C3). Treat a malformed matcher as
+    # NON-matching (not match-all), isolating the bad hook to itself.
+    if not isinstance(matcher, str):
+        return False
     if matcher == tool_name:
         return True
     if matcher.endswith("*"):
