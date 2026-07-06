@@ -102,9 +102,14 @@ describe('operators', () => {
     expect(r.buffer.value).toBe('world')
     expect(r.state.mode).toBe('normal')
   })
-  it('cw deletes the word and enters insert', () => {
+  it('cw acts like ce (changes to word END, keeps trailing space) — :help cw', () => {
     const r = run('hello world', 0, ['c', 'w'])
-    expect(r.buffer.value).toBe('world')
+    expect(r.buffer.value).toBe(' world') // NOT 'world' — cw ≠ dw
+    expect(r.state.mode).toBe('insert')
+  })
+  it('cw on whitespace behaves like dw (no special case)', () => {
+    // cursor on the space between words → cw deletes the blank run + next word start
+    const r = run('a  b', 1, ['c', 'w'])
     expect(r.state.mode).toBe('insert')
   })
   it('de deletes to end of word (inclusive)', () => {
@@ -136,5 +141,78 @@ describe('count prefix', () => {
   })
   it('0 is a motion when no count is in progress', () => {
     expect(run('hello', 3, ['0']).buffer.cursor).toBe(0)
+  })
+})
+
+describe('linewise operators (critic MAJOR-2/-3)', () => {
+  const v = 'L1\nL2\nL3\nL4'
+  it('dj deletes the current AND next line', () => {
+    // cursor on L2 (offset 3), dj → delete L2+L3
+    expect(run(v, 3, ['d', 'j']).buffer.value).toBe('L1\nL4')
+  })
+  it('dk deletes the current AND previous line', () => {
+    expect(run(v, 6, ['d', 'k']).buffer.value).toBe('L1\nL4') // on L3, dk → L2+L3
+  })
+  it('dG deletes from the current line to the last', () => {
+    expect(run(v, 3, ['d', 'G']).buffer.value).toBe('L1') // L2..L4 gone
+  })
+  it('dgg deletes from the first line to the current', () => {
+    expect(run(v, 6, ['d', 'g', 'g']).buffer.value).toBe('L4') // L1..L3 gone
+  })
+  it('dd on the LAST line removes the preceding newline (no trailing empty line)', () => {
+    expect(run('abc\ndef', 4, ['d', 'd']).buffer.value).toBe('abc') // not 'abc\n'
+  })
+  it('2dd deleting the last two lines leaves no trailing newline', () => {
+    expect(run('L1\nL2\nL3', 3, ['2', 'd', 'd']).buffer.value).toBe('L1')
+  })
+  it('dd on a single-line buffer empties it', () => {
+    expect(run('only', 0, ['d', 'd']).buffer.value).toBe('')
+  })
+})
+
+describe('gg / G through the dispatcher', () => {
+  it('gg moves to the top', () => {
+    expect(run('a\nb\nc', 4, ['g', 'g']).buffer.cursor).toBe(0)
+  })
+  it('G moves to the last line', () => {
+    expect(run('a\nb\nc', 0, ['G']).buffer.cursor).toBe(4)
+  })
+  it('g + non-g cancels the prefix', () => {
+    const r = run('abc', 0, ['g', 'z'])
+    expect(r.state.pendingG).toBe(false)
+    expect(r.buffer.value).toBe('abc')
+  })
+})
+
+describe('WORD motions (E/B) and inclusive change', () => {
+  it('E jumps to end of WORD (whitespace-delimited)', () => {
+    expect(resolveMotion('E', 'a.b cd', 0)).toBe(2) // 'a.b' end
+  })
+  it('B jumps to start of previous WORD', () => {
+    expect(resolveMotion('B', 'a.b cd', 4)).toBe(0)
+  })
+  it('cW changes to end of WORD', () => {
+    expect(run('a.b cd', 0, ['c', 'W']).buffer.value).toBe(' cd')
+  })
+})
+
+describe('edge cases', () => {
+  it('empty buffer: motions and x are no-ops', () => {
+    expect(run('', 0, ['w']).buffer).toEqual({ value: '', cursor: 0 })
+    expect(run('', 0, ['x']).buffer.value).toBe('')
+  })
+  it('x never splits a surrogate pair (emoji)', () => {
+    const r = run('😀b', 0, ['x'])
+    expect(r.buffer.value).toBe('b') // whole emoji removed, no lone surrogate
+    expect(r.buffer.value.length).toBe(1)
+  })
+  it('l over an emoji advances a whole code point', () => {
+    // '😀b' — from 0, l lands on 'b' (offset 2), not mid-surrogate (offset 1)
+    expect(run('😀b', 0, ['l']).buffer.cursor).toBe(2)
+  })
+  it('combining mark stays with its base letter (word class)', () => {
+    // 'á' as base + combining acute: still one word, w moves past both to ' '/end
+    const s = 'áb c'
+    expect(resolveMotion('w', s, 0)).toBe(4) // past 'áb' to 'c'
   })
 })

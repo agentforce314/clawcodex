@@ -26,10 +26,12 @@ export interface VimState {
   pendingOperator: Operator | null
   /** The numeric count prefix being typed (e.g. `3` in `3w`), or 0 if none. */
   count: number
+  /** True after a lone `g` is pressed, awaiting the second key (`gg`). */
+  pendingG: boolean
 }
 
 export function initialVimState(): VimState {
-  return { mode: 'normal', pendingOperator: null, count: 0 }
+  return { mode: 'normal', pendingOperator: null, count: 0, pendingG: false }
 }
 
 // ── character classes (vim word semantics) ───────────────────────────────────
@@ -38,12 +40,21 @@ type CharClass = 'blank' | 'word' | 'punct'
 
 function classOf(ch: string): CharClass {
   if (ch === '' || /\s/.test(ch)) return 'blank'
-  // vim "word" chars: letters, digits, underscore. Everything else is punct.
-  if (/[\p{L}\p{N}_]/u.test(ch)) return 'word'
+  // vim "word" chars: letters, marks, digits, underscore (matches the
+  // reference VIM_WORD_CHAR_REGEX — \p{M} keeps combining marks with their
+  // base letter). Everything else is punct.
+  if (/[\p{L}\p{M}\p{N}_]/u.test(ch)) return 'word'
   return 'punct'
 }
 
 const isBlank = (ch: string): boolean => classOf(ch) === 'blank'
+
+/** Advance one CODE POINT right from `i` (never splits a surrogate pair). */
+function nextCodePoint(value: string, i: number): number {
+  if (i >= value.length) return value.length
+  const cp = value.codePointAt(i)
+  return i + (cp !== undefined && cp > 0xffff ? 2 : 1)
+}
 
 // ── line helpers (cursor is an offset into a possibly-multiline value) ────────
 
@@ -66,11 +77,26 @@ function left(value: string, cursor: number): number {
 
 /**
  * Move one char right. In NORMAL mode the cursor rests ON a character, so the
- * rightmost valid resting position is the last char (end-1), not the newline.
+ * rightmost valid resting position is the last char of the line (`end - 1`),
+ * not the newline. On an empty line the only position is the line start.
  */
 function right(value: string, cursor: number): number {
+  const start = lineStart(value, cursor)
   const end = lineEnd(value, cursor)
-  return Math.min(end === cursor ? end : end - 1 + 0, Math.min(cursor + 1, end))
+  // rest position of the LAST char = start of its code point (so `l` never
+  // lands between a surrogate pair)
+  const maxRest = end > start ? prevCodePointStart(value, end) : start
+  return Math.min(nextCodePoint(value, cursor), maxRest)
+}
+
+/** Start offset of the code point ENDING at `end` (i.e. the last char's start). */
+function prevCodePointStart(value: string, end: number): number {
+  if (end <= 0) return 0
+  const prev = end - 1
+  // if value[prev] is a low surrogate, step back one more to its high surrogate
+  const code = value.charCodeAt(prev)
+  if (code >= 0xdc00 && code <= 0xdfff && prev > 0) return prev - 1
+  return prev
 }
 
 function startOfLine(value: string, cursor: number): number {
@@ -136,6 +162,24 @@ function endOfWord(value: string, cursor: number): number {
   return i
 }
 
+/** `B` — start of the current/previous WORD (whitespace-delimited). */
+function prevWORD(value: string, cursor: number): number {
+  let i = cursor - 1
+  while (i > 0 && isBlank(value[i]!)) i--
+  while (i > 0 && !isBlank(value[i - 1]!)) i--
+  return Math.max(0, i)
+}
+
+/** `E` — end of the current/next WORD (inclusive, whitespace-delimited). */
+function endOfWORD(value: string, cursor: number): number {
+  const n = value.length
+  let i = cursor + 1
+  while (i < n && isBlank(value[i]!)) i++
+  if (i >= n) return Math.max(cursor, n - 1)
+  while (i + 1 < n && !isBlank(value[i + 1]!)) i++
+  return i
+}
+
 function downLine(value: string, cursor: number): number {
   const end = lineEnd(value, cursor)
   if (end >= value.length) return cursor // no line below
@@ -156,6 +200,8 @@ function upLine(value: string, cursor: number): number {
 
 const INCLUSIVE = new Set(['e', 'E', '$'])
 const LINEWISE = new Set(['j', 'k', 'G', 'gg'])
+// gg is NOT in this set: it's resolvable but reached via the two-key `g` prefix
+// in dispatchNormal, not a single MOTION_KEYS entry.
 
 export function isInclusiveMotion(key: string): boolean {
   return INCLUSIVE.has(key)
@@ -174,7 +220,9 @@ export function resolveMotion(key: string, value: string, cursor: number): numbe
     case 'w': return nextWord(value, cursor)
     case 'W': return nextWORD(value, cursor)
     case 'b': return prevWord(value, cursor)
+    case 'B': return prevWORD(value, cursor)
     case 'e': return endOfWord(value, cursor)
+    case 'E': return endOfWORD(value, cursor)
     case '0': return startOfLine(value, cursor)
     case '^': return firstNonBlank(value, cursor)
     case '$': return endOfLine(value, cursor)
@@ -202,10 +250,14 @@ export function operatorSpan(
   key: string, value: string, cursor: number, count: number,
 ): { start: number; end: number } {
   if (isLinewiseMotion(key)) {
-    // linewise: whole current line(s) including trailing newline
-    const start = lineStart(value, cursor)
-    let end = lineEnd(value, cursor)
-    end = end < value.length ? end + 1 : end
+    // linewise: from the current line's start THROUGH the line the motion
+    // lands on (dj = 2 lines, dG = to last line), inclusive, plus the trailing
+    // newline. Ignoring the target was the bug — dj/dk/dG only ate one line.
+    const target = applyMotion(key, value, cursor, count)
+    let start = Math.min(lineStart(value, cursor), lineStart(value, target))
+    let end = Math.max(lineEnd(value, cursor), lineEnd(value, target))
+    if (end < value.length) end += 1 // eat the trailing newline
+    else if (start > 0 && value[start - 1] === '\n') start -= 1 // at EOF, eat the preceding one
     return { start, end }
   }
   const target = applyMotion(key, value, cursor, count)
@@ -224,6 +276,10 @@ export function deleteLine(value: string, cursor: number, count: number): Buffer
     if (end < value.length) end += 1
     else break
   }
+  // If the deletion runs to EOF, also eat the PRECEDING newline so the last
+  // line's removal doesn't leave a trailing empty line ("abc\ndef" -dd-> "abc",
+  // not "abc\n"). Mirrors the reference executeLineOp guard.
+  if (end >= value.length && start > 0 && value[start - 1] === '\n') start -= 1
   const newValue = value.slice(0, start) + value.slice(end)
   // cursor lands at the first non-blank of the line now at `start` (clamped)
   const cur = Math.min(start, Math.max(0, newValue.length - 1))
@@ -243,7 +299,7 @@ export function clampNormal(value: string, cursor: number): number {
   return c
 }
 
-const MOTION_KEYS = new Set(['h', 'l', 'j', 'k', 'w', 'W', 'b', 'e', '0', '^', '$', 'G'])
+const MOTION_KEYS = new Set(['h', 'l', 'j', 'k', 'w', 'W', 'b', 'B', 'e', 'E', '0', '^', '$', 'G'])
 
 export interface DispatchResult {
   state: VimState
@@ -257,9 +313,45 @@ export interface DispatchResult {
  * Returns the new state+buffer and whether the key was handled. INSERT-mode
  * keys are NOT handled here (the composer edits directly); only `Escape`
  * returns to NORMAL.
+ *
+ * CONTRACT: the caller must only invoke this when `state.mode === 'normal'`
+ * (Part-2 wiring gates on mode). It does not re-check the mode itself.
+ *
+ * LIMITATION (documented, acceptable for "minimal"): a stacked count like
+ * `2d3w` is not multiplied (vim = 6 words); the digits after the operator
+ * concatenate with the pre-operator count. Both single-count forms (`2dw`,
+ * `d3w`) are correct — only the doubled form is off.
  */
 export function dispatchNormal(state: VimState, buffer: Buffer, key: string): DispatchResult {
-  const unhandled = { state, buffer, handled: false }
+  // `g` prefix: a lone `g` arms pendingG; the next `g` is the `gg` motion
+  // (top of buffer), honoring a pending operator (dgg = delete to top,
+  // linewise). Any other key after `g` cancels the prefix.
+  if (state.pendingG) {
+    const cleared = { ...state, pendingG: false }
+    if (key === 'g') {
+      if (state.pendingOperator) {
+        const op = state.pendingOperator
+        const span = operatorSpan('gg', buffer.value, buffer.cursor, state.count || 1)
+        const newValue = buffer.value.slice(0, span.start) + buffer.value.slice(span.end)
+        return {
+          state: { mode: op === 'c' ? 'insert' : 'normal', pendingOperator: null, count: 0, pendingG: false },
+          buffer: op === 'c' ? { value: newValue, cursor: span.start }
+            : { value: newValue, cursor: clampNormal(newValue, span.start) },
+          handled: true,
+        }
+      }
+      return {
+        state: { ...cleared, count: 0 },
+        buffer: { ...buffer, cursor: 0 },
+        handled: true,
+      }
+    }
+    // `g` + other → cancel the prefix and swallow (minimal: no other g-commands)
+    return { state: { ...cleared, count: 0, pendingOperator: null }, buffer, handled: true }
+  }
+  if (key === 'g') {
+    return { state: { ...state, pendingG: true }, buffer, handled: true }
+  }
 
   // digit count prefix (1-9, or 0 only when a count is in progress)
   if (/^[1-9]$/.test(key) || (key === '0' && state.count > 0)) {
@@ -278,23 +370,31 @@ export function dispatchNormal(state: VimState, buffer: Buffer, key: string): Di
     if (key === op || (op === 'c' && key === 'c') || (op === 'd' && key === 'd')) {
       const nb = deleteLine(buffer.value, buffer.cursor, count)
       return {
-        state: { mode: op === 'c' ? 'insert' : 'normal', pendingOperator: null, count: 0 },
+        state: { mode: op === 'c' ? 'insert' : 'normal', pendingOperator: null, count: 0, pendingG: false },
         buffer: nb,
         handled: true,
       }
     }
     if (MOTION_KEYS.has(key)) {
-      const span = operatorSpan(key, buffer.value, buffer.cursor, count)
+      // vim special case (:help cw): `cw`/`cW` on a word acts like `ce`/`cE` —
+      // change to the END of the word, NOT the start of the next word (so it
+      // doesn't swallow the trailing whitespace). Only when the cursor is on a
+      // non-blank char; on whitespace, cw behaves like dw.
+      let motionKey = key
+      if (op === 'c' && (key === 'w' || key === 'W') && !isBlank(buffer.value[buffer.cursor] ?? '')) {
+        motionKey = key === 'w' ? 'e' : 'E'
+      }
+      const span = operatorSpan(motionKey, buffer.value, buffer.cursor, count)
       const newValue = buffer.value.slice(0, span.start) + buffer.value.slice(span.end)
       const nb = { value: newValue, cursor: span.start }
       return {
-        state: { mode: op === 'c' ? 'insert' : 'normal', pendingOperator: null, count: 0 },
+        state: { mode: op === 'c' ? 'insert' : 'normal', pendingOperator: null, count: 0, pendingG: false },
         buffer: op === 'c' ? nb : { ...nb, cursor: clampNormal(newValue, nb.cursor) },
         handled: true,
       }
     }
     // invalid motion after operator → cancel the operator
-    return { state: { ...state, pendingOperator: null, count: 0 }, buffer, handled: true }
+    return { state: { ...state, pendingOperator: null, count: 0, pendingG: false }, buffer, handled: true }
   }
 
   // plain motion
@@ -309,22 +409,22 @@ export function dispatchNormal(state: VimState, buffer: Buffer, key: string): Di
 
   switch (key) {
     case 'i': // insert before cursor
-      return { state: { mode: 'insert', pendingOperator: null, count: 0 }, buffer, handled: true }
+      return { state: { mode: 'insert', pendingOperator: null, count: 0, pendingG: false }, buffer, handled: true }
     case 'a': // insert after cursor
       return {
-        state: { mode: 'insert', pendingOperator: null, count: 0 },
+        state: { mode: 'insert', pendingOperator: null, count: 0, pendingG: false },
         buffer: { ...buffer, cursor: Math.min(buffer.cursor + 1, buffer.value.length) },
         handled: true,
       }
     case 'I': // insert at first non-blank
       return {
-        state: { mode: 'insert', pendingOperator: null, count: 0 },
+        state: { mode: 'insert', pendingOperator: null, count: 0, pendingG: false },
         buffer: { ...buffer, cursor: firstNonBlank(buffer.value, buffer.cursor) },
         handled: true,
       }
     case 'A': // insert at end of line
       return {
-        state: { mode: 'insert', pendingOperator: null, count: 0 },
+        state: { mode: 'insert', pendingOperator: null, count: 0, pendingG: false },
         buffer: { ...buffer, cursor: lineEnd(buffer.value, buffer.cursor) },
         handled: true,
       }
@@ -332,7 +432,7 @@ export function dispatchNormal(state: VimState, buffer: Buffer, key: string): Di
       const le = lineEnd(buffer.value, buffer.cursor)
       const nv = buffer.value.slice(0, le) + '\n' + buffer.value.slice(le)
       return {
-        state: { mode: 'insert', pendingOperator: null, count: 0 },
+        state: { mode: 'insert', pendingOperator: null, count: 0, pendingG: false },
         buffer: { value: nv, cursor: le + 1 },
         handled: true,
       }
@@ -341,15 +441,17 @@ export function dispatchNormal(state: VimState, buffer: Buffer, key: string): Di
       const ls = lineStart(buffer.value, buffer.cursor)
       const nv = buffer.value.slice(0, ls) + '\n' + buffer.value.slice(ls)
       return {
-        state: { mode: 'insert', pendingOperator: null, count: 0 },
+        state: { mode: 'insert', pendingOperator: null, count: 0, pendingG: false },
         buffer: { value: nv, cursor: ls },
         handled: true,
       }
     }
-    case 'x': { // delete char under cursor
+    case 'x': { // delete char under cursor (by CODE POINT — never split a pair)
       if (buffer.cursor >= buffer.value.length) return { state: { ...state, count: 0 }, buffer, handled: true }
       let end = buffer.cursor
-      for (let i = 0; i < count && end < buffer.value.length && buffer.value[end] !== '\n'; i++) end++
+      for (let i = 0; i < count && end < buffer.value.length && buffer.value[end] !== '\n'; i++) {
+        end = nextCodePoint(buffer.value, end)
+      }
       const nv = buffer.value.slice(0, buffer.cursor) + buffer.value.slice(end)
       return {
         state: { ...state, count: 0 },
@@ -370,7 +472,7 @@ export function dispatchNormal(state: VimState, buffer: Buffer, key: string): Di
     case 'C': { // change to end of line
       const le = lineEnd(buffer.value, buffer.cursor)
       const nv = buffer.value.slice(0, buffer.cursor) + buffer.value.slice(le)
-      return { state: { mode: 'insert', pendingOperator: null, count: 0 }, buffer: { value: nv, cursor: buffer.cursor }, handled: true }
+      return { state: { mode: 'insert', pendingOperator: null, count: 0, pendingG: false }, buffer: { value: nv, cursor: buffer.cursor }, handled: true }
     }
     default:
       // unknown key in NORMAL: consume it (vim swallows unmapped keys), reset count
