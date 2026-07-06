@@ -196,11 +196,10 @@ async def init_upstream_proxy(
 def get_upstream_proxy_env() -> dict[str, str]:
     """Env-var dict for child subprocesses (Bash/MCP/LSP/hooks).
 
-    When the proxy is enabled: returns the 9-var recipe
+    When the proxy is enabled: returns the 8-var recipe
     (``HTTPS_PROXY``/``https_proxy``/``NO_PROXY``/``no_proxy``/
     ``SSL_CERT_FILE``/``NODE_EXTRA_CA_CERTS``/``REQUESTS_CA_BUNDLE``/
-    ``CURL_CA_BUNDLE``). The TS recipe also sets ``proxy`` in lowercase
-    via ``HTTPS_PROXY`` lowercase variant; we follow the same pattern.
+    ``CURL_CA_BUNDLE``) — matching the TS 8-key recipe exactly.
 
     When the proxy is disabled: if the parent already has both
     ``HTTPS_PROXY`` and ``SSL_CERT_FILE`` set, we inherit those
