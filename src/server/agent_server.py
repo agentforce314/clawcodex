@@ -2545,6 +2545,14 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
         except Exception:  # noqa: BLE001 — style must not block startup
             logger.debug("[agent-server] output style from settings failed", exc_info=True)
 
+        # Assign the registry + load the persisted MCP toggles BEFORE the
+        # prompt build — _mcp_server_infos() filters by
+        # registry.disabled_servers, so a disabled server's instructions must
+        # be excludable at this init build (critic C2-MAJOR: the filter was
+        # non-functional here because these ran AFTER the build).
+        sess.tool_registry = registry
+        registry.disabled_servers = _load_disabled_mcp()  # honor persisted MCP toggles
+
         try:
             from src.outputStyles import resolve_output_style
             from src.query.agent_loop_compat import build_effective_system_prompt
@@ -2564,8 +2572,6 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
 
         sess.provider = provider
         sess.provider_name = provider_name
-        sess.tool_registry = registry
-        registry.disabled_servers = _load_disabled_mcp()  # honor persisted MCP toggles
         sess.tool_context = tool_context
         tool_context.agent_progress_emit = sess._emit_agent_progress  # stream subagent progress
         sess.session = Session.create(provider_name, getattr(provider, "model", model or ""))

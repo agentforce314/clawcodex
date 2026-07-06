@@ -239,3 +239,5 @@ class McpRuntime:
         self._loop = None
         self.clients = {}
         self.tools = []
+        self.servers = {}
+        self.server_infos = []  # consistency: a re-start() would double-append otherwise
