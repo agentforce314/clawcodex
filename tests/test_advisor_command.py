@@ -101,7 +101,7 @@ class _IsolatedEnv:
         cfg_mod.GLOBAL_CONFIG_DIR = self._tmp / ".clawcodex"
         cfg_mod._default_manager = None
 
-        os.environ.pop("CLAUDE_CODE_DISABLE_ADVISOR_TOOL", None)
+        self._saved_env = os.environ.pop("CLAUDE_CODE_DISABLE_ADVISOR_TOOL", None)
         from src.settings.settings import invalidate_settings_cache
         invalidate_settings_cache()
         return self
@@ -112,6 +112,8 @@ class _IsolatedEnv:
         cfg_mod.HISTORY_FILE = self._saved_history_path
         cfg_mod.GLOBAL_CONFIG_DIR = self._saved_global_path.parent
         cfg_mod._default_manager = None
+        if self._saved_env is not None:
+            os.environ["CLAUDE_CODE_DISABLE_ADVISOR_TOOL"] = self._saved_env
         from src.settings.settings import invalidate_settings_cache
         invalidate_settings_cache()
 
