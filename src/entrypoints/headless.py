@@ -181,9 +181,17 @@ def run_headless(options: HeadlessOptions) -> int:
     # round-5 fields. When skip_permissions wins, force bypass mode + bypass
     # availability so the registry's ``has_permissions_to_use_tool`` check
     # short-circuits to ``allow``.
-    if options.skip_permissions:
+    from src.permissions.modes import is_bypass_permissions_mode_disabled
+
+    if options.skip_permissions and not is_bypass_permissions_mode_disabled():
         effective_mode: str = "bypassPermissions"
         bypass_available = True
+    elif options.skip_permissions:
+        # C12: a disableBypassPermissionsMode lockdown overrides
+        # --dangerously-skip-permissions — do NOT force bypass mode/availability
+        # (TS refuses/skips), fall through to the configured mode + no bypass.
+        effective_mode = options.permission_mode or "default"
+        bypass_available = False
     else:
         effective_mode = options.permission_mode or "default"
         bypass_available = bool(options.is_bypass_permissions_mode_available)
