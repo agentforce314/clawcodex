@@ -125,6 +125,9 @@
     },
     "Write": {
       "python_name": "Write"
+    },
+    "Monitor": {
+      "python_name": "Monitor"
     }
   },
   "not_yet_implemented": [
