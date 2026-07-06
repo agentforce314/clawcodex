@@ -377,6 +377,9 @@ class _AgentSession:
         if subtype == "set_mcp_enabled":
             self._do_set_mcp_enabled(request_id, inner.get("server"), inner.get("enabled"))
             return
+        if subtype == "mcp_auth":
+            self._do_mcp_auth(request_id, inner.get("server"))
+            return
         if subtype == "external_includes":
             # External CLAUDE.md @-imports (ClaudeMdExternalIncludesDialog, §6).
             try:
@@ -933,29 +936,58 @@ class _AgentSession:
             # Re-render the MCP-instructions section for the new server set
             # (C2 — the port-idiomatic analog of TS's per-call UNCACHED
             # mcp_instructions section, given the memoized base prompt).
-            if self._base_system_prompt is not None and self.tool_context is not None:
-                try:
-                    from src.outputStyles import resolve_output_style
-                    from src.query.agent_loop_compat import build_effective_system_prompt
-
-                    tc = self.tool_context
-                    style_prompt = resolve_output_style(
-                        getattr(tc, "output_style_name", None),
-                        getattr(tc, "output_style_dir", None),
-                    ).prompt
-                    self._base_system_prompt = build_effective_system_prompt(
-                        style_prompt, tc, provider=self.provider,
-                        mcp_servers=self._mcp_server_infos(),
-                    )
-                    self.system_prompt = self._compose_with_plan(self._base_system_prompt)
-                except Exception:  # noqa: BLE001 — keep the toggle even if rebuild fails
-                    logger.debug(
-                        "[agent-server] prompt rebuild after set_mcp_enabled failed",
-                        exc_info=True,
-                    )
+            self._rebuild_base_prompt_for_mcp()
         self._reply(request_id, {
             "ok": True,
             "disabled": sorted(reg.disabled_servers) if reg is not None else [],
+        })
+
+    def _rebuild_base_prompt_for_mcp(self) -> None:
+        """Rebuild the memoized base prompt so a change to the live MCP server
+        set (toggle, or a /mcp-auth late connect) re-renders the REQUEST-scoped
+        mcp_instructions section (C2 uncached-section analog; C4 late-connect)."""
+        if self._base_system_prompt is None or self.tool_context is None:
+            return
+        try:
+            from src.outputStyles import resolve_output_style
+            from src.query.agent_loop_compat import build_effective_system_prompt
+
+            tc = self.tool_context
+            style_prompt = resolve_output_style(
+                getattr(tc, "output_style_name", None),
+                getattr(tc, "output_style_dir", None),
+            ).prompt
+            self._base_system_prompt = build_effective_system_prompt(
+                style_prompt, tc, provider=self.provider,
+                mcp_servers=self._mcp_server_infos(),
+            )
+            self.system_prompt = self._compose_with_plan(self._base_system_prompt)
+        except Exception:  # noqa: BLE001 — keep the change even if rebuild fails
+            logger.debug("[agent-server] MCP prompt rebuild failed", exc_info=True)
+
+    def _do_mcp_auth(self, request_id: object, server: object) -> None:
+        """/mcp auth <server> (C4): run the OAuth flow for a needs-auth MCP
+        server, then register its now-available tools + rebuild the prompt so
+        its instructions enter the system prompt (the C2 late-connect note)."""
+        name = str(server or "")
+        rt = getattr(self, "_mcp_runtime", None)
+        if rt is None or not name:
+            self._reply(request_id, {"ok": False, "error": "no MCP runtime or server name"})
+            return
+        result = rt.trigger_oauth(name)
+        if result.get("ok"):
+            reg = self.tool_registry
+            if reg is not None:
+                for mtool in result.get("tools", []):
+                    try:
+                        reg.register(mtool)
+                    except Exception:  # noqa: BLE001
+                        logger.debug("[agent-server] register MCP tool failed", exc_info=True)
+            self._rebuild_base_prompt_for_mcp()  # late-connect → surface instructions
+        self._reply(request_id, {
+            "ok": bool(result.get("ok")),
+            "error": result.get("error"),
+            "pending_auth": rt.pending_auth(),
         })
 
     def _do_set_thinking(self, request_id: object, action: object) -> None:
@@ -2612,6 +2644,18 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
                     "[agent-server] MCP: %d tool(s) from %d server(s)",
                     len(mcp_rt.tools), len(mcp_rt.servers),
                 )
+                # Surface OAuth servers awaiting auth (C4): a needs-auth server
+                # used to fail to connect silently. Tell the user how to act —
+                # /mcp auth <server> triggers the flow.
+                _pending = mcp_rt.pending_auth()
+                if _pending:
+                    _names = ", ".join(_pending)
+                    sess._emit(_system_message(
+                        sess.session_id,
+                        f"MCP server(s) need authentication: {_names}. "
+                        f"Run `/mcp auth <server>` to sign in.",
+                        level="info",
+                    ))
         except Exception:  # noqa: BLE001 — MCP must never break startup
             logger.debug("[agent-server] MCP bootstrap skipped", exc_info=True)
         profile_checkpoint("agent_server_mcp_done")

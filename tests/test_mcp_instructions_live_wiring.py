@@ -102,6 +102,9 @@ class TestRuntimeRetention:
         )
 
         class _FakeClient:
+            def set_auth_provider(self, provider):  # C4: runtime now injects one
+                pass
+
             async def connect(self, name, scoped):
                 return info
 
@@ -131,6 +134,9 @@ class TestRuntimeRetention:
         )
 
         class _FakeClient:
+            def set_auth_provider(self, provider):  # C4: runtime now injects one
+                pass
+
             async def connect(self, name, scoped):
                 return needs_auth
 

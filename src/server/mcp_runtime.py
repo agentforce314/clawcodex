@@ -31,6 +31,9 @@ logger = logging.getLogger(__name__)
 
 _CALL_TIMEOUT_S = 60.0
 _CONNECT_TIMEOUT_S = 30.0
+# OAuth needs a longer budget: the user opens a browser, authenticates, and the
+# local callback completes before the token exchange returns.
+_OAUTH_TIMEOUT_S = 300.0
 
 
 def _render_content(content: Any) -> str:
@@ -66,6 +69,14 @@ class McpRuntime:
         # (the UTILS-1 inert-wiring gap) — retained so the prompt build can
         # render the "# MCP Server Instructions" section (C2).
         self.server_infos: list[Any] = []
+        # Servers that returned needs-auth (OAuth) from connect() — retained
+        # (name, auth_url, scoped-config) so the runtime can surface a
+        # "run /mcp auth <server>" prompt and later trigger the flow (C4).
+        # Without an injected auth_provider the live path could never even
+        # detect needs-auth; now it can, and the server stays reachable for
+        # the auth trigger instead of silently failing to connect.
+        self.needs_auth: list[dict[str, Any]] = []
+        self._auth_provider: Any = None
 
     def _run(self, coro: Any, timeout: float) -> Any:
         assert self._loop is not None
@@ -101,12 +112,40 @@ class McpRuntime:
 
         from src.services.mcp.client import McpClient
 
+        # One shared auth provider for the whole runtime — so an OAuth server's
+        # connect() can detect + cache needs-auth (client.py consults
+        # self._auth_provider), and the /mcp auth trigger can later run the flow
+        # against the same token store (C4).
+        try:
+            from src.services.mcp.auth_provider import McpAuthProvider
+
+            self._auth_provider = McpAuthProvider()
+        except Exception:  # noqa: BLE001 — no auth provider ⇒ no OAuth, still works
+            logger.debug("[mcp] auth provider unavailable", exc_info=True)
+            self._auth_provider = None
+
         for name, scoped in enabled.items():
             try:
                 client = McpClient()
+                if self._auth_provider is not None:
+                    client.set_auth_provider(self._auth_provider)
                 connected = self._run(client.connect(name, scoped), _CONNECT_TIMEOUT_S)
-                mcp_tools = self._run(client.list_tools(), _CONNECT_TIMEOUT_S)
                 self.clients[name] = client
+                # An OAuth server returns needs-auth instead of connected:
+                # retain it (with its auth_url) + surface a prompt, and do NOT
+                # list_tools (there are none until the user authenticates).
+                if getattr(connected, "type", "") == "needs-auth":
+                    self.needs_auth.append({
+                        "name": name,
+                        "auth_url": getattr(connected, "auth_url", None),
+                        "scoped": scoped,
+                    })
+                    logger.info(
+                        "[mcp] %s needs authentication — run `/mcp auth %s`",
+                        name, name,
+                    )
+                    continue
+                mcp_tools = self._run(client.list_tools(), _CONNECT_TIMEOUT_S)
                 self.servers[name] = [t.name for t in mcp_tools]
                 # Keep the server info (name + instructions) for the prompt —
                 # only truly-connected servers carry instructions.
@@ -118,10 +157,77 @@ class McpRuntime:
             except Exception:  # noqa: BLE001 — one bad server must not sink the rest
                 logger.exception("[mcp] connect failed: %s", name)
 
-        if not self.tools:
+        # Keep the runtime alive if ANY server connected OR needs auth — a
+        # needs-auth-only runtime must survive so `/mcp auth` can trigger the
+        # flow (previously a tool-less runtime was torn down immediately).
+        if not self.tools and not self.needs_auth:
             self.shutdown()
             return False
         return True
+
+    def pending_auth(self) -> list[str]:
+        """Names of servers awaiting authentication (for the /mcp UI)."""
+        return [e["name"] for e in self.needs_auth]
+
+    def trigger_oauth(self, name: str, *, open_browser: bool = True) -> dict[str, Any]:
+        """Run the OAuth flow for a needs-auth server, then reconnect + register
+        its tools (C4). Returns ``{ok, error?, tools?}``. Runs on the runtime's
+        dedicated loop so the reconnected client's streams stay loop-bound."""
+        if self._loop is None or self._auth_provider is None:
+            return {"ok": False, "error": "MCP runtime has no auth provider"}
+        entry = next((e for e in self.needs_auth if e["name"] == name), None)
+        if entry is None:
+            return {"ok": False, "error": f"{name!r} is not awaiting authentication"}
+        scoped = entry["scoped"]
+        inner = getattr(scoped, "config", None)
+        server_url = getattr(inner, "url", None)
+        if not server_url:
+            return {"ok": False, "error": "OAuth requires an HTTP/SSE/WS server URL"}
+        try:
+            result = self._run(
+                self._auth_provider.acquire_token(
+                    server_name=name,
+                    server_url=server_url,
+                    auth_server_metadata_url=getattr(inner, "auth_server_metadata_url", None),
+                    config_scope=getattr(scoped, "scope", None),
+                    open_browser=open_browser,
+                ),
+                _OAUTH_TIMEOUT_S,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[mcp] OAuth flow failed for %s", name)
+            return {"ok": False, "error": f"OAuth flow failed: {exc}"}
+        if not getattr(result, "success", False):
+            return {"ok": False, "error": getattr(result, "error", None) or "authentication failed"}
+
+        # Authenticated — reconnect with the now-cached token + register tools.
+        try:
+            from src.services.mcp.client import McpClient
+
+            client = McpClient()
+            client.set_auth_provider(self._auth_provider)
+            connected = self._run(client.connect(name, scoped), _CONNECT_TIMEOUT_S)
+            if getattr(connected, "type", "") != "connected":
+                return {"ok": False, "error": "reconnect did not complete after auth"}
+            mcp_tools = self._run(client.list_tools(), _CONNECT_TIMEOUT_S)
+            # promote: drop the old client, register the connected one
+            old = self.clients.get(name)
+            if old is not None and old is not client:
+                try:
+                    self._run(old.close(), 5.0)
+                except Exception:  # noqa: BLE001
+                    pass
+            self.clients[name] = client
+            self.servers[name] = [t.name for t in mcp_tools]
+            self.server_infos.append(connected)
+            new_tools = [self._wrap(name, mt, client) for mt in mcp_tools]
+            self.tools.extend(new_tools)
+            self.needs_auth = [e for e in self.needs_auth if e["name"] != name]
+            logger.info("[mcp] %s authenticated (%d tools)", name, len(new_tools))
+            return {"ok": True, "tools": new_tools}
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[mcp] reconnect after auth failed for %s", name)
+            return {"ok": False, "error": f"reconnect failed: {exc}"}
 
     def _wrap(self, server: str, mcp_tool: Any, client: Any) -> Any:
         """Build a loop-correct sync Tool that dispatches to the connection loop."""
