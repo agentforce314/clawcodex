@@ -102,6 +102,9 @@ class TestRuntimeRetention:
         )
 
         class _FakeClient:
+            def set_auth_provider(self, provider):  # C4: runtime now injects one
+                pass
+
             async def connect(self, name, scoped):
                 return info
 
@@ -113,6 +116,12 @@ class TestRuntimeRetention:
             "src.services.mcp.config.get_all_mcp_configs", lambda: {"srv": scoped}
         )
         monkeypatch.setattr("src.services.mcp.client.McpClient", _FakeClient)
+        # C4: start() now constructs a real McpAuthProvider (which touches the
+        # token-store file) unless patched — keep these retention tests hermetic.
+        monkeypatch.setattr(
+            "src.services.mcp.auth_provider.McpAuthProvider",
+            lambda: SimpleNamespace(get_needs_auth_state=lambda n: None),
+        )
 
         rt = mod.McpRuntime()
         try:
@@ -131,6 +140,9 @@ class TestRuntimeRetention:
         )
 
         class _FakeClient:
+            def set_auth_provider(self, provider):  # C4: runtime now injects one
+                pass
+
             async def connect(self, name, scoped):
                 return needs_auth
 
@@ -142,6 +154,12 @@ class TestRuntimeRetention:
             "src.services.mcp.config.get_all_mcp_configs", lambda: {"srv": scoped}
         )
         monkeypatch.setattr("src.services.mcp.client.McpClient", _FakeClient)
+        # C4: start() now constructs a real McpAuthProvider (which touches the
+        # token-store file) unless patched — keep these retention tests hermetic.
+        monkeypatch.setattr(
+            "src.services.mcp.auth_provider.McpAuthProvider",
+            lambda: SimpleNamespace(get_needs_auth_state=lambda n: None),
+        )
 
         rt = mod.McpRuntime()
         try:
