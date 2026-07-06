@@ -376,7 +376,9 @@ describe('createSlashHandler', () => {
     getOverlayState().confirm?.onConfirm()
 
     expect(ctx.session.newSession).toHaveBeenCalledWith('new session started', 'sprint planning')
-    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+    // The commit's server half: reset the backend conversation + turn
+    // odometer (session.create alone reattaches to the same session).
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('session.clear', {})
   })
 
   it('keeps visible scrollback when branching a TUI session', async () => {
