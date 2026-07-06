@@ -216,3 +216,29 @@ describe('edge cases', () => {
     expect(resolveMotion('w', s, 0)).toBe(4) // past 'áb' to 'c'
   })
 })
+
+describe('failed vertical motion aborts the operator (critic re-review MAJOR)', () => {
+  it('dj on a single-line buffer is a NO-OP (does not wipe the input)', () => {
+    const r = run('hello', 2, ['d', 'j'])
+    expect(r.buffer.value).toBe('hello') // not ''
+    expect(r.state.mode).toBe('normal')
+    expect(r.state.pendingOperator).toBeNull()
+  })
+  it('dk on a single-line buffer is a NO-OP', () => {
+    expect(run('hello', 2, ['d', 'k']).buffer.value).toBe('hello')
+  })
+  it('dj on the LAST line is a no-op', () => {
+    expect(run('a\nb\nc', 4, ['d', 'j']).buffer.value).toBe('a\nb\nc')
+  })
+  it('dk on the FIRST line is a no-op', () => {
+    expect(run('a\nb\nc', 0, ['d', 'k']).buffer.value).toBe('a\nb\nc')
+  })
+  it('cj on a single-line buffer aborts WITHOUT entering insert', () => {
+    const r = run('hello', 2, ['c', 'j'])
+    expect(r.buffer.value).toBe('hello')
+    expect(r.state.mode).toBe('normal') // not insert
+  })
+  it('dj still works mid-buffer (not over-guarded)', () => {
+    expect(run('a\nb\nc', 0, ['d', 'j']).buffer.value).toBe('c')
+  })
+})

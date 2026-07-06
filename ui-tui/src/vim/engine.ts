@@ -376,6 +376,15 @@ export function dispatchNormal(state: VimState, buffer: Buffer, key: string): Di
       }
     }
     if (MOTION_KEYS.has(key)) {
+      // A FAILED vertical motion aborts the whole operator (vim no-op): `dj` on
+      // the last line / `dk` on the first line (incl. a single-line buffer)
+      // must NOT delete the current line — otherwise `dj` in a one-line chat
+      // composer wipes the entire input. Mirrors executeOperatorMotion's
+      // `if (target.equals(cursor)) return`. Scoped to j/k (dd/cc are the
+      // doubled-operator path; dG/dgg are real jumps). Critic C13 re-review.
+      if ((key === 'j' || key === 'k') && applyMotion(key, buffer.value, buffer.cursor, count) === buffer.cursor) {
+        return { state: { ...state, pendingOperator: null, count: 0 }, buffer, handled: true }
+      }
       // vim special case (:help cw): `cw`/`cW` on a word acts like `ce`/`cE` —
       // change to the END of the word, NOT the start of the next word (so it
       // doesn't swallow the trailing whitespace). Only when the cursor is on a
