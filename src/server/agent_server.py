@@ -2360,7 +2360,7 @@ def _make_elicitation_handler(sess: "_AgentSession") -> Any:
                     # `if (hookResponse) return hookResponse`), WITHOUT running
                     # the result hooks or the notification (those run only on
                     # the real user-prompt path below). Return as-is.
-                    return {"action": resp["action"], "content": resp.get("content")}
+                    return _elicit_result(resp["action"], resp.get("content"))
             except Exception:  # noqa: BLE001 — a hook failure must not brick elicitation
                 logger.debug("[hooks] elicitation pre-hook failed", exc_info=True)
 
@@ -2386,40 +2386,53 @@ def _make_elicitation_handler(sess: "_AgentSession") -> Any:
             return await _finish_elicitation(raw, ctx, server_name, mode, elicitation_id)
         return raw
 
+    def _elicit_result(action: str, content: Any) -> dict[str, Any]:
+        # Omit ``content`` when None (TS emits ``undefined``, which
+        # JSON.stringify drops — a strict MCP server validating ElicitResult
+        # against "object or absent" could reject an explicit ``null``).
+        return {"action": action} if content is None else {"action": action, "content": content}
+
     async def _finish_elicitation(
         raw: dict[str, Any], ctx: Any, server_name: str,
         mode: str | None, elicitation_id: str | None,
     ) -> dict[str, Any]:
-        """Run ElicitationResult hooks (may override/block) + fire the
-        elicitation_response Notification (port of runElicitationResultHooks)."""
-        try:
-            from src.hooks.hook_executor import (
-                execute_elicitation_result_hooks,
-                execute_notification_hooks,
-            )
+        """Run ElicitationResult hooks (may override/block), then fire the
+        elicitation_response Notification (port of runElicitationResultHooks).
 
+        The return value is computed inside the try (a result-hook raise leaves
+        ``final = raw``) but the notification fires OUTSIDE it: TS fires it
+        fire-and-forget (``void``) so it can NEVER alter the ElicitResult
+        (critic C3-MAJOR). It fires on every path — block, override,
+        passthrough, and the result-hook error path (TS "even on error",
+        elicitationHandler.ts:304-310 → MINOR-1). ``execute_notification_hooks``
+        itself never raises."""
+        from src.hooks.hook_executor import (
+            execute_elicitation_result_hooks,
+            execute_notification_hooks,
+        )
+
+        final = raw
+        try:
             resp, block = await execute_elicitation_result_hooks(
                 server_name, raw.get("action", "decline"), raw.get("content"),
                 ctx, mode=mode, elicitation_id=elicitation_id,
             )
             if block is not None:
-                await execute_notification_hooks(
-                    f'Elicitation response for server "{server_name}": decline',
-                    "elicitation_response", ctx,
+                final = {"action": "decline"}
+            elif resp is not None:
+                _c = resp.get("content")
+                final = _elicit_result(
+                    resp["action"], _c if _c is not None else raw.get("content")
                 )
-                return {"action": "decline"}
-            final = (
-                {"action": resp["action"], "content": resp.get("content") if resp.get("content") is not None else raw.get("content")}
-                if resp is not None else raw
-            )
-            await execute_notification_hooks(
-                f'Elicitation response for server "{server_name}": {final.get("action")}',
-                "elicitation_response", ctx,
-            )
-            return final
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 — a result-hook failure falls back to raw
             logger.debug("[hooks] elicitation result-hook failed", exc_info=True)
-            return raw
+            final = raw
+        # Fire-and-forget observability — never alters ``final``.
+        await execute_notification_hooks(
+            f'Elicitation response for server "{server_name}": {final.get("action")}',
+            "elicitation_response", ctx,
+        )
+        return final
 
     return _elicit
 

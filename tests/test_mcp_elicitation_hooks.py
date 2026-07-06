@@ -212,3 +212,89 @@ class TestElicitHandlerIntegration:
         handler = _make_elicitation_handler(sess)
         res = asyncio.run(handler({"serverName": "srv", "message": "m"}))
         assert res == {"action": "accept", "content": {"u": 9}}
+
+
+class TestParseEdgeCases:
+    def test_decision_block_json_path(self):
+        from src.hooks.hook_executor import HookResult
+        r = HookResult(exit_code=0, stdout='{"decision": "block", "reason": "nope"}', command="c")
+        resp, block = _parse_elicitation_hook_output(r, "Elicitation")
+        assert resp is None and block and block["blockingError"] == "nope"
+
+    def test_async_output_ignored(self):
+        # MINOR-2: isAsyncHookJSONOutput — an async payload with an inline
+        # action is honored by neither TS nor the port.
+        from src.hooks.hook_executor import HookResult
+        r = HookResult(exit_code=0,
+                       stdout='{"async": true, "hookSpecificOutput": {"hookEventName": "Elicitation", "action": "accept"}}',
+                       command="c")
+        resp, block = _parse_elicitation_hook_output(r, "Elicitation")
+        assert resp is None and block is None
+
+
+class TestFinishElicitationThroughHandler:
+    """MINOR-3: the safety-critical paths through the REAL _elicit +
+    _finish_elicitation — block wins, content-fallback, and (the MAJOR) a
+    notification failure must NOT discard the block/override."""
+
+    def _sess(self, hooks, *, user_reply):
+        import threading
+        import types
+
+        sess = types.SimpleNamespace()
+        sess.tool_context = _Ctx(hooks)
+        sess._lock = threading.Lock()
+        sess._pending = {}
+        sess.config = types.SimpleNamespace(permission_timeout_s=5.0)
+
+        def _emit(msg):
+            p = sess._pending.get(msg.get("request_id"))
+            if p is not None:
+                p.reply = user_reply
+                p.event.set()
+
+        sess._emit = _emit
+        return sess
+
+    def test_result_hook_block_declines_through_handler(self):
+        from src.server.agent_server import _make_elicitation_handler
+
+        # user accepts; an ElicitationResult hook BLOCKS → decline must win
+        sess = self._sess(
+            {"ElicitationResult": [_exit2_hook()]},
+            user_reply={"action": "accept", "content": {"u": 1}},
+        )
+        res = asyncio.run(_make_elicitation_handler(sess)({"serverName": "srv", "message": "m"}))
+        assert res == {"action": "decline"}  # block wins, no content
+
+    def test_override_action_only_falls_back_to_user_content(self):
+        from src.server.agent_server import _make_elicitation_handler
+
+        # result-hook overrides ACTION only (no content) → content falls back
+        # to the user's raw content (None-coalesce)
+        sess = self._sess(
+            {"ElicitationResult": [_hook(_result("accept"))]},  # no content
+            user_reply={"action": "cancel", "content": {"raw": 7}},
+        )
+        res = asyncio.run(_make_elicitation_handler(sess)({"serverName": "srv", "message": "m"}))
+        assert res == {"action": "accept", "content": {"raw": 7}}
+
+    def test_notification_failure_does_not_discard_override(self):
+        from src.server.agent_server import _make_elicitation_handler
+
+        # THE MAJOR (critic C3): a result-hook OVERRIDES the user reply, then a
+        # malformed non-string Notification matcher raises AttributeError in
+        # _matches_tool. The OVERRIDE is the discriminating case — without
+        # execute_notification_hooks' outer guard the raise would propagate and
+        # the handler would fall back to {action: decline}, LOSING the override.
+        bad_notif = HookConfig(type="command", command="true",
+                               source=HookSource.USER_SETTINGS, matcher=123)  # non-string
+        sess = self._sess(
+            {"ElicitationResult": [_hook(_result("accept", {"overridden": 1}))],
+             "Notification": [bad_notif]},
+            user_reply={"action": "cancel"},
+        )
+        res = asyncio.run(_make_elicitation_handler(sess)({"serverName": "srv", "message": "m"}))
+        # the override must SURVIVE the malformed notification matcher
+        assert res == {"action": "accept", "content": {"overridden": 1}}, \
+            "notification failure discarded the override!"

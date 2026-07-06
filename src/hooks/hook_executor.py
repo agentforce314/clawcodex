@@ -1068,6 +1068,11 @@ def _parse_elicitation_hook_output(
         return None, None
     if not isinstance(parsed, dict):
         return None, None
+    # Async hook output (TS isAsyncHookJSONOutput, utils/hooks.ts:4652-4654) is
+    # ignored for elicitation — an {"async": true, ...} payload carries no
+    # synchronous decision.
+    if parsed.get("async") is True:
+        return None, None
     if parsed.get("decision") == "block":
         return None, {
             "blockingError": parsed.get("reason") or "Elicitation blocked by hook",
@@ -1187,24 +1192,35 @@ async def execute_notification_hooks(
 ) -> None:
     """Fire-and-forget Notification hooks (observability) matched on
     ``notification_type`` (TS matchQuery: notificationType). Output is
-    ignored — a notification hook cannot change control flow."""
-    trust_skip = should_skip_hook_due_to_trust(tool_use_context)
-    hooks = _get_hooks_from_snapshot(tool_use_context)
-    event_hooks = hooks.get("Notification", [])
-    if trust_skip:
-        event_hooks = [h for h in event_hooks if h.source.is_policy]
-    abort_signal = None
-    abort_ctrl = getattr(tool_use_context, "abort_controller", None)
-    if abort_ctrl:
-        abort_signal = abort_ctrl.signal
-    stdin_data = {"message": message, "notification_type": notification_type, "title": title}
-    for hook in event_hooks:
-        if notification_type and not _matches_tool(hook.matcher, notification_type):
-            continue
-        try:
-            await _execute_command_hook(
-                hook, {**stdin_data, "hook_event": "Notification"},
-                abort_signal=abort_signal, tool_use_context=tool_use_context,
-            )
-        except Exception:  # noqa: BLE001 — observability must not break the flow
-            logger.debug("[hooks] notification hook failed", exc_info=True)
+    ignored — a notification hook cannot change control flow.
+
+    This is ``-> None`` fire-and-forget (TS ``void executeNotificationHooks``,
+    elicitationHandler.ts:283/298/307): the ENTIRE body is guarded so it can
+    NEVER raise. Callers ``await`` it while computing a return value (e.g.
+    ``_finish_elicitation``); if a raise here propagated, it would discard a
+    block/override decision — the exact guardrail bypass SERVICES-3 flagged
+    (critic C3-MAJOR: a malformed non-string Notification matcher would raise
+    AttributeError in ``_matches_tool``)."""
+    try:
+        trust_skip = should_skip_hook_due_to_trust(tool_use_context)
+        hooks = _get_hooks_from_snapshot(tool_use_context)
+        event_hooks = hooks.get("Notification", [])
+        if trust_skip:
+            event_hooks = [h for h in event_hooks if h.source.is_policy]
+        abort_signal = None
+        abort_ctrl = getattr(tool_use_context, "abort_controller", None)
+        if abort_ctrl:
+            abort_signal = abort_ctrl.signal
+        stdin_data = {"message": message, "notification_type": notification_type, "title": title}
+        for hook in event_hooks:
+            try:
+                if notification_type and not _matches_tool(hook.matcher, notification_type):
+                    continue
+                await _execute_command_hook(
+                    hook, {**stdin_data, "hook_event": "Notification"},
+                    abort_signal=abort_signal, tool_use_context=tool_use_context,
+                )
+            except Exception:  # noqa: BLE001 — one bad hook must not stop the rest
+                logger.debug("[hooks] notification hook failed", exc_info=True)
+    except Exception:  # noqa: BLE001 — observability must NEVER break the flow
+        logger.debug("[hooks] notification dispatch failed", exc_info=True)
