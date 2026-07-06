@@ -82,6 +82,7 @@ def initial_permission_mode_from_cli(
     permission_mode_cli: str | None = None,
     dangerously_skip_permissions: bool = False,
     settings_default_mode: str | None = None,
+    disable_bypass_permissions_mode: bool | None = None,
 ) -> PermissionMode:
     """Resolve the effective :class:`PermissionMode` from CLI flags + settings.
 
@@ -97,7 +98,17 @@ def initial_permission_mode_from_cli(
 
     Unknown / mistyped mode strings degrade to ``default`` via
     :func:`permission_mode_from_string`.
-    """
+
+    ``disable_bypass_permissions_mode`` (critic C12): when a bypass lockdown is
+    in effect, the ``bypassPermissions`` candidate is SKIPPED (TS
+    permissionSetup.ts:778-793 ``continue``s past it) so the resolved mode
+    falls through to the next candidate / ``default``. This is the ONLY
+    faithful way to enforce the lockdown, because the port's permission check
+    (``check.py:456``) bypasses on ``mode == "bypassPermissions"`` ALONE — the
+    availability boolean is consulted only for ``plan`` mode. ``None`` →
+    resolve the lockdown here (so every caller is covered by default)."""
+    if disable_bypass_permissions_mode is None:
+        disable_bypass_permissions_mode = is_bypass_permissions_mode_disabled()
     candidates: list[PermissionMode] = []
     if dangerously_skip_permissions:
         candidates.append("bypassPermissions")
@@ -105,8 +116,14 @@ def initial_permission_mode_from_cli(
         candidates.append(permission_mode_from_string(permission_mode_cli))
     if settings_default_mode:
         candidates.append(permission_mode_from_string(settings_default_mode))
-    if candidates:
-        return candidates[0]
+    for candidate in candidates:
+        if candidate == "bypassPermissions" and disable_bypass_permissions_mode:
+            log.warning(
+                "Bypass permissions mode was disabled by settings/policy "
+                "(permissions.disableBypassPermissionsMode); falling back."
+            )
+            continue  # TS: skip this mode if it's disabled
+        return candidate
     return "default"
 
 
@@ -137,6 +154,55 @@ def has_allow_bypass_permissions_mode() -> bool:
             perms = loader().get("settings", {}).get("permissions")
             if isinstance(perms, dict) and perms.get("allowBypassPermissionsMode"):
                 return True
+    except Exception:
+        return False
+    return False
+
+
+def is_bypass_permissions_mode_disabled() -> bool:
+    """Return True if a settings source DISABLES bypass availability.
+
+    Mirrors TS ``settings.permissions?.disableBypassPermissionsMode ===
+    'disable'`` (``permissionSetup.ts:939``), the negative guard on
+    ``isBypassPermissionsModeAvailable`` that the port previously dropped — so
+    an operator locking bypass down (managed MDM policy, or a user/local
+    ``settings.json``) was SILENTLY IGNORED and bypass stayed available
+    (a live fail-open; critic C12).
+
+    Unlike the POSITIVE ``allowBypassPermissionsMode`` (which excludes the
+    committable project tier so a malicious repo can't ENABLE bypass), a
+    ``disable`` only ever REMOVES capability, so honoring it from ANY tier —
+    including the managed/policy tier (the org-admin lockdown) and the project
+    tier — is always safe. Reads the raw per-tier dicts (the SettingsSchema
+    models ``permissions`` as a flat rule list, no scalar slot)."""
+    try:
+        from src.config import ConfigManager
+
+        cm = ConfigManager()
+        for loader in (cm.load_global, cm.load_local, cm.load_project):
+            perms = loader().get("settings", {}).get("permissions")
+            if isinstance(perms, dict) and perms.get("disableBypassPermissionsMode") == "disable":
+                return True
+        # Managed/policy tier (root-owned MDM preferences) — the primary
+        # lockdown source. Read directly (setup.py:57 pattern).
+        try:
+            import json
+
+            from src.settings.managed_path import resolve_managed_settings_path
+
+            mp = resolve_managed_settings_path()
+            if mp is not None and mp.exists():
+                with mp.open() as f:
+                    managed = json.load(f)
+                perms = (managed or {}).get("permissions")
+                if isinstance(perms, dict) and perms.get("disableBypassPermissionsMode") == "disable":
+                    return True
+        except Exception:
+            # A managed policy file that fails to parse/read would silently
+            # fail-OPEN the lockdown (parity with TS dropping a malformed
+            # source); log it so an admin can diagnose why their policy isn't
+            # taking effect (critic C12).
+            log.debug("managed settings unreadable for bypass-disable check", exc_info=True)
     except Exception:
         return False
     return False
