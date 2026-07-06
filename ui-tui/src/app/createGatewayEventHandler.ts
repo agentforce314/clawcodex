@@ -4,6 +4,7 @@ import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/set
 import type {
   CommandsCatalogResponse,
   ConfigFullResponse,
+  CostSnapshot,
   DelegationStatusResponse,
   GatewayEvent,
   GatewaySkin,
@@ -13,6 +14,7 @@ import { setLastCostSnapshot } from '../lib/costSummary.js'
 import { isTodoDone } from '../lib/liveProgress.js'
 import { openExternalUrl } from '../lib/openExternalUrl.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
+import { statsFromCostSnapshot } from '../lib/sessionStats.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
 import { formatAbandonedClarify, formatToolCall, stripAnsi } from '../lib/text.js'
 import { fromSkin } from '../theme.js'
@@ -77,6 +79,25 @@ const normalizeSubagentStatus = (status: unknown, fallback: SubagentStatus): Sub
   const normalized = status.toLowerCase() as SubagentStatus
 
   return KNOWN_SUBAGENT_STATUSES.has(normalized) ? normalized : fallback
+}
+
+// Stats line under the composer: token/cost totals fold out of the backend's
+// cumulative CostSnapshot; the turn odometer is server-authoritative. Each
+// piece updates independently so an empty best-effort snapshot ({}) can't
+// zero the totals and a snapshot-only payload can't stall the odometer.
+const foldSessionStats = (snap: CostSnapshot | undefined, turns: number | undefined): void => {
+  const hasSnap = !!snap && Object.keys(snap).length > 0
+
+  if (!hasSnap && typeof turns !== 'number') {
+    return
+  }
+
+  patchUiState(state => ({
+    ...state,
+    sessionStats: hasSnap
+      ? statsFromCostSnapshot(snap!, turns ?? state.sessionStats.turns)
+      : { ...state.sessionStats, turns: turns! }
+  }))
 }
 
 export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev: GatewayEvent) => void {
@@ -969,8 +990,17 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         // data source (printed by registerCostSummaryOnExit, entry.tsx).
         setLastCostSnapshot(ev.payload?.cost)
 
+        foldSessionStats(ev.payload?.cost, ev.payload?.session_turns)
+
         return
       }
+
+      case 'session.stats':
+        // Out-of-band refresh from a /clear or /resume reply — the next
+        // end-of-turn result may be a whole turn away.
+        foldSessionStats(ev.payload?.cost, ev.payload?.session_turns)
+
+        return
 
       case 'error':
         turnController.recordError()

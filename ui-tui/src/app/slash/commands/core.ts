@@ -190,6 +190,11 @@ export const coreCommands: SlashCommand[] = [
 
       const commit = () => {
         patchUiState({ status: 'forging session…' })
+        // Server half first: reset the backend conversation + turn odometer
+        // (single-session adapter — session.create alone reattaches to the
+        // same session, silently keeping the old context). Best-effort: the
+        // client-side reset proceeds either way.
+        void ctx.gateway.rpc('session.clear', {}).catch(() => undefined)
         ctx.session.newSession(isNew ? 'new session started' : undefined, requestedTitle || undefined)
       }
 
