@@ -33,21 +33,42 @@ def get_wiki_paths(cwd: str | Path) -> WikiPaths:
 
 
 def _schema_template(project: str) -> str:
+    """Verbatim port of init.ts buildSchemaTemplate (C7 — wiki-init-fidelity;
+    OpenClaude→clawcodex per the wiki round's approved rename)."""
     return (
-        f"# {project} Wiki — Schema\n\n"
-        "How this wiki is organized:\n\n"
+        "# clawcodex Wiki Schema\n\n"
+        "This wiki stores durable, human-readable project knowledge for "
+        f"{project}.\n\n"
+        "## Goals\n\n"
+        "- Keep useful project knowledge in markdown, not only in chat history\n"
+        "- Prefer synthesized facts over raw copy-paste\n"
+        "- Keep source attribution explicit\n"
+        "- Make pages easy for both humans and agents to update\n\n"
+        "## Structure\n\n"
         "- `index.md`: top-level navigation and major topics\n"
         "- `log.md`: append-only update log\n"
         "- `pages/`: durable topic and architecture pages\n"
-        "- `sources/`: ingested source notes and summaries\n\n"
-        "Keep pages focused on one topic.\n"
+        "- `sources/`: source ingestion notes and summaries\n\n"
+        "## Page Rules\n\n"
+        "- Keep pages focused on one topic\n"
+        "- Use stable headings such as:\n"
+        "  - `## Summary`\n"
+        "  - `## Key Facts`\n"
+        "  - `## Relationships`\n"
+        "  - `## Open Questions`\n"
+        "  - `## Sources`\n"
+        "- Add or update facts only when they are grounded in project files "
+        "or explicit source notes\n"
+        "- Prefer editing an existing page over creating duplicates\n"
     )
 
 
 def _index_template(project: str) -> str:
-    # Matches rebuild_wiki_index's structure for a just-initialized wiki
-    # (only architecture.md present) so the first ingest's rebuild does not
-    # flip the headers user-visibly (critic MINOR-1).
+    # DELIBERATE divergence from TS buildIndexTemplate: matches
+    # rebuild_wiki_index's structure for a just-initialized wiki (only
+    # architecture.md present) so the first ingest's rebuild does not flip
+    # the headers user-visibly (SERVICES-4 critic MINOR-1 — TS itself has
+    # the init≠rebuild inconsistency; the port fixed it).
     return (
         f"# {project} Wiki\n\n"
         "This wiki is maintained by clawcodex as a durable project "
@@ -58,32 +79,79 @@ def _index_template(project: str) -> str:
     )
 
 
-def _log_template() -> str:
-    return "# Update Log\n\n- wiki initialized\n"
+def _log_template(timestamp: str) -> str:
+    """Port of init.ts buildLogTemplate — the ISO timestamp + attribution."""
+    return f"# Wiki Update Log\n\n- {timestamp}: Wiki initialized by clawcodex\n"
 
 
 def _architecture_template(project: str) -> str:
-    return f"# Architecture\n\n_Describe {project}'s architecture here._\n"
+    """Verbatim port of init.ts buildArchitectureTemplate."""
+    return (
+        "# Architecture\n\n"
+        "## Summary\n\n"
+        f"High-level architecture notes for {project}.\n\n"
+        "## Key Facts\n\n"
+        "- This page is the starting point for durable architecture knowledge.\n\n"
+        "## Relationships\n\n"
+        "- Link this page to major subsystems as the wiki grows.\n\n"
+        "## Open Questions\n\n"
+        "- What are the most important runtime subsystems?\n"
+        "- Which files best represent the system architecture?\n\n"
+        "## Sources\n\n"
+        "- Wiki bootstrap\n"
+    )
 
 
 def _ensure_file(path: Path, content: str, created: list[str]) -> None:
-    if not path.exists():
-        path.write_text(content, encoding="utf-8")
+    """Create-if-absent, atomically (the TS ``wx`` flag — open(..., "x")
+    raises FileExistsError instead of the racy exists()-then-write)."""
+    try:
+        with path.open("x", encoding="utf-8") as f:
+            f.write(content)
         created.append(str(path))
+    except FileExistsError:
+        return
+
+
+def _init_timestamp() -> str:
+    """ISO-8601 with milliseconds + Z (Date.toISOString parity — the same
+    format ingest uses)."""
+    import datetime as _dt
+
+    now = _dt.datetime.now(_dt.timezone.utc)
+    return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
 
 
 def init_wiki(cwd: str | Path) -> dict:
+    """Port of ``initializeWiki`` (init.ts): create-if-absent the wiki seed
+    files; ``already_existed`` = nothing was created (TS
+    ``createdFiles.length === 0``, replacing the prior index-precheck);
+    created paths are cwd-relative (TS ``relative(cwd, …)``)."""
     paths = get_wiki_paths(cwd)
-    already = paths.index_file.exists()
     created: list[str] = []
+    created_dirs: list[str] = []
     for d in (paths.root, paths.pages_dir, paths.sources_dir):
         d.mkdir(parents=True, exist_ok=True)
+        created_dirs.append(str(d))
     project = Path(cwd).name or "project"
+    timestamp = _init_timestamp()
     _ensure_file(paths.schema_file, _schema_template(project), created)
     _ensure_file(paths.index_file, _index_template(project), created)
-    _ensure_file(paths.log_file, _log_template(), created)
+    _ensure_file(paths.log_file, _log_template(timestamp), created)
     _ensure_file(paths.pages_dir / "architecture.md", _architecture_template(project), created)
-    return {"root": str(paths.root), "created_files": created, "already_existed": already}
+
+    def _rel(p: str) -> str:
+        try:
+            return str(Path(p).relative_to(Path(cwd)))
+        except ValueError:
+            return p
+
+    return {
+        "root": str(paths.root),
+        "created_files": [_rel(p) for p in created],
+        "created_directories": [_rel(d) for d in created_dirs],
+        "already_existed": len(created) == 0,
+    }
 
 
 def wiki_status(cwd: str | Path) -> dict:
