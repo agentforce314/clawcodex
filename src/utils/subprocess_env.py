@@ -8,15 +8,37 @@ cannot read a credential via shell expansion (``${ANTHROPIC_API_KEY}``) in a
 subprocess. Gated because ``claude-code-action`` sets the flag; a plain local
 CLI leaves the env untouched (parity with TS).
 
-NOTE: TS's ``subprocessEnv`` also merges the upstream-proxy env
-(``registerUpstreamProxyEnvFn``). That half is intentionally NOT wired here —
-the port's upstreamproxy is unwired (the deferred CCR-remote-proxy chapter);
-when it lands, merge ``get_upstream_proxy_env()`` into the base below.
+TS's ``subprocessEnv`` also merges the upstream-proxy env via
+``registerUpstreamProxyEnvFn`` (subprocessEnv.ts) — an indirection so this
+module doesn't statically import ``upstreamproxy`` (which pulls asyncio/ssl/the
+relay). C9 wires that: the CCR-remote entrypoint registers
+``get_upstream_proxy_env`` when ``CLAUDE_CODE_REMOTE`` is set, and
+``subprocess_env`` merges its result AFTER the scrub (so the injected
+``HTTPS_PROXY``/``*_CA_BUNDLE`` recipe survives the anti-exfiltration strip).
+Default (no registration) → the merge is a no-op and behaviour is unchanged.
 """
 
 from __future__ import annotations
 
 import os
+from typing import Callable
+
+#: Registered by the CCR-remote entrypoint (register_upstream_proxy_env_fn).
+#: ``None`` in every non-remote build — the merge below is then a no-op, so the
+#: default subprocess environment is byte-for-byte unchanged.
+_upstream_proxy_env_fn: Callable[[], dict[str, str]] | None = None
+
+
+def register_upstream_proxy_env_fn(fn: Callable[[], dict[str, str]] | None) -> None:
+    """Register (or clear with ``None``) the upstream-proxy env provider.
+
+    Port of ``registerUpstreamProxyEnvFn`` (subprocessEnv.ts): the CCR-remote
+    entrypoint passes ``get_upstream_proxy_env`` so ``subprocess_env`` can inject
+    the proxy recipe into every spawned child WITHOUT this module statically
+    importing the upstreamproxy package. Idempotent; test-only callers clear it
+    with ``None``."""
+    global _upstream_proxy_env_fn
+    _upstream_proxy_env_fn = fn
 
 # Verbatim from subprocessEnv.ts GHA_SUBPROCESS_SCRUB (23 vars).
 _GHA_SUBPROCESS_SCRUB: tuple[str, ...] = (
@@ -60,12 +82,26 @@ def subprocess_env(base: dict[str, str] | None = None) -> dict[str, str]:
     twins) is removed; otherwise ``base`` is returned unchanged (parity with
     TS's non-gated pass-through). Always returns a fresh dict."""
     env = dict(os.environ if base is None else base)
-    if not _is_env_truthy(env.get("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB")):
-        return env
-    for key in _GHA_SUBPROCESS_SCRUB:
-        env.pop(key, None)
-        env.pop(f"INPUT_{key}", None)  # the GitHub-Action input twin
+    if _is_env_truthy(env.get("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB")):
+        for key in _GHA_SUBPROCESS_SCRUB:
+            env.pop(key, None)
+            env.pop(f"INPUT_{key}", None)  # the GitHub-Action input twin
+    # Merge the upstream-proxy recipe AFTER the scrub (TS subprocessEnv order),
+    # so an injected HTTPS_PROXY / *_CA_BUNDLE isn't stripped. No-op unless the
+    # CCR-remote entrypoint registered a provider. Best-effort: a proxy-env
+    # failure must never break child-process spawning.
+    if _upstream_proxy_env_fn is not None:
+        try:
+            proxy_env = _upstream_proxy_env_fn()
+            if proxy_env:
+                env.update(proxy_env)
+        except Exception:  # noqa: BLE001 — proxy env must not break spawning
+            import logging
+
+            logging.getLogger(__name__).debug(
+                "[upstreamproxy] env provider failed", exc_info=True
+            )
     return env
 
 
-__all__ = ["subprocess_env"]
+__all__ = ["subprocess_env", "register_upstream_proxy_env_fn"]

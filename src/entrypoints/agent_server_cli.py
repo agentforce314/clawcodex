@@ -312,7 +312,41 @@ async def _serve_stdio(workspace: str, agent_config: AgentServerConfig) -> int:
     return 0
 
 
+async def _maybe_init_upstream_proxy() -> None:
+    """C9: when ``CLAUDE_CODE_REMOTE`` is set (a CCR remote deployment), start
+    the upstream CONNECT proxy and register its env provider so ``subprocess_env``
+    injects the proxy recipe into every spawned child.
+
+    Mirrors the TS remote bootstrap (``registerUpstreamProxyEnvFn`` +
+    ``initUpstreamProxy``, gated on ``CLAUDE_CODE_REMOTE``). The open TS build
+    strips this path, and ``init_upstream_proxy`` itself re-checks the env gate,
+    so with ``CLAUDE_CODE_REMOTE`` unset this is a pure no-op — default local
+    behaviour is unchanged. FAIL-OPEN: a proxy failure must not stop the server
+    from starting (a remote session degrades to direct rather than dying)."""
+    from src.utils.subprocess_env import _is_env_truthy
+
+    if not _is_env_truthy(os.environ.get("CLAUDE_CODE_REMOTE")):
+        return
+    try:
+        # Lazy import: keep asyncio/ssl/relay off the default startup path.
+        from src.upstreamproxy.upstream_proxy import (
+            get_upstream_proxy_env,
+            init_upstream_proxy,
+        )
+        from src.utils.subprocess_env import register_upstream_proxy_env_fn
+
+        register_upstream_proxy_env_fn(get_upstream_proxy_env)
+        await init_upstream_proxy()
+    except Exception:  # noqa: BLE001 — fail-open, mirror TS
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "[upstreamproxy] init failed; continuing without proxy", exc_info=True
+        )
+
+
 async def _serve(args, workspace: str, agent_config: AgentServerConfig) -> int:
+    await _maybe_init_upstream_proxy()
     index_path = Path.home() / ".clawcodex" / "server-sessions.json"
     index_path.parent.mkdir(parents=True, exist_ok=True)
 
