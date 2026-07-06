@@ -45,7 +45,7 @@ class _Reg:
 def test_registered_and_named():
     assert MonitorTool.name == "Monitor" == MONITOR_TOOL_NAME
     assert MonitorTool.is_read_only({}) is False
-    assert MonitorTool.is_concurrency_safe({}) is False
+    assert MonitorTool.is_concurrency_safe({}) is True  # TS: fire-and-forget spawn
 
 
 class TestStreaming:
@@ -58,7 +58,10 @@ class TestStreaming:
                        description="tail log")
         q = peek_pending_notifications()
         joined = "\n".join(str(n) for n in q)
-        assert "monitor-output" in joined
+        # a render-path-compatible <task-notification> with status=running
+        assert "<task-notification>" in joined
+        assert "<status>running</status>" in joined
+        assert "<task-id>b1</task-id>" in joined  # parse_task_id can correlate
         assert "line1" in joined and "line2" in joined
 
     def test_partial_line_held_until_complete(self, tmp_path):
@@ -203,3 +206,40 @@ class TestSizeBound:
         assert "last-line" in joined            # the tail is kept
         # the emitted body is bounded (not the full 5000 X's)
         assert joined.count("X") < 500
+
+
+class TestRenderPathCompat:
+    """critic C5-P2 major: the streamed envelope must be understood by the
+    port's drain/render path — parse_task_id correlates, render_banner renders,
+    and a pure-running batch is framed as streaming (not 'finished')."""
+
+    def test_envelope_parses_and_renders(self, tmp_path):
+        from src.server.task_notifications import (
+            build_notification_turn,
+            parse_task_id,
+            render_banner,
+        )
+        log = tmp_path / "b.log"
+        log.write_text("hello from monitor\n")
+        reg = _Reg(status="completed")
+        ctx = SimpleNamespace(runtime_tasks=reg)
+        _stream_output(task_id="mon1", output_path=str(log), context=ctx, description="d")
+        env = str(peek_pending_notifications()[0])
+        # parse_task_id correlates (was None with the <monitor-output> tag)
+        assert parse_task_id(env) == "mon1"
+        # render_banner surfaces the streamed line (not "Background task finished")
+        banner = "\n".join(render_banner(env, None))
+        assert "hello from monitor" in banner
+        # a pure-running batch → streaming preamble, NOT "finished"
+        turn = build_notification_turn([env])
+        assert "STILL RUNNING" in turn and "have finished" not in turn
+
+    def test_finished_batch_keeps_completion_preamble(self):
+        # a real completion envelope still gets the finished framing
+        from src.server.task_notifications import build_notification_turn
+        from src.utils.task_notification import build_shell_notification_xml
+        done = build_shell_notification_xml(
+            task_id="b", description="build", status="completed",
+            output_file="/tmp/b.log", exit_code=0)
+        turn = build_notification_turn([done])
+        assert "have finished" in turn and "STILL RUNNING" not in turn

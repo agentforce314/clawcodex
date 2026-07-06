@@ -1,5 +1,5 @@
 """The ``Monitor`` tool (C5 Part 2) — stream a shell command's stdout to the
-model as ``<monitor-output>`` notifications (~1s polling), rather than the
+model as render-path <task-notification> envelopes (~1s polling), rather than the
 single completion notification the Bash ``run_in_background`` path delivers.
 
 Port of ``typescript/src/tools/MonitorTool/MonitorTool.ts`` (MONITOR_TOOL flag
@@ -40,6 +40,39 @@ _MONITOR_MAX_NOTIFICATIONS = 100
 #: notifications. Truncate each to the tail so a single notification can't
 #: blow the conversation (critic C5-P2 #1: bound bytes, not just count).
 _MONITOR_MAX_NOTIFICATION_BYTES = 8 * 1024
+#: Max bytes read from the output file PER poll (TS diskOutput.ts:23
+#: DEFAULT_MAX_READ_BYTES = 8 MiB). ``read_bytes()`` on the whole file is an
+#: OOM vector for a firehose command; seek to the offset and read a bounded
+#: chunk instead (critic C5-P2 #1).
+_MONITOR_MAX_READ_BYTES = 8 * 1024 * 1024
+
+
+def _monitor_notification_xml(task_id: str, output_file: str, lines: str) -> str:
+    """A ``<task-notification>`` envelope with ``status=running`` carrying a
+    streamed batch (critic C5-P2 major: the invented ``<monitor-output>`` tag
+    was incompatible with the render path — parse_task_id found no ``<task-id>``
+    child and the banner mis-rendered). Uses the real envelope structure the
+    drain path parses (``<task-id>/<output-file>/<status>/<summary>``); the
+    ``running`` status makes ``build_notification_turn`` frame it as a live
+    update, not a completion."""
+    from xml.sax.saxutils import escape as _esc
+
+    from src.constants.xml import (
+        OUTPUT_FILE_TAG,
+        STATUS_TAG,
+        SUMMARY_TAG,
+        TASK_ID_TAG,
+        TASK_NOTIFICATION_TAG,
+    )
+
+    return (
+        f"<{TASK_NOTIFICATION_TAG}>\n"
+        f"<{TASK_ID_TAG}>{_esc(task_id)}</{TASK_ID_TAG}>\n"
+        f"<{OUTPUT_FILE_TAG}>{_esc(output_file)}</{OUTPUT_FILE_TAG}>\n"
+        f"<{STATUS_TAG}>running</{STATUS_TAG}>\n"
+        f"<{SUMMARY_TAG}>{_esc(lines)}</{SUMMARY_TAG}>\n"
+        f"</{TASK_NOTIFICATION_TAG}>"
+    )
 
 
 def _kill_monitor_task(task_id: str, context: ToolContext) -> None:
@@ -58,7 +91,7 @@ def _stream_output(
     *, task_id: str, output_path: str, context: ToolContext, description: str
 ) -> None:
     """Tail ``output_path`` and enqueue each new batch of whole lines as a
-    ``<monitor-output>`` notification. Stops when the task leaves ``running``
+    <task-notification> envelope (status=running). Stops when the task leaves ``running``
     (after a final drain), the 30-minute deadline passes, OR the notification
     cap is hit (auto-stop backpressure). Never raises."""
     try:
@@ -70,19 +103,26 @@ def _stream_output(
         path = Path(output_path)
 
         def _drain() -> int:
-            """Enqueue the new whole lines (if any); return 1 if it enqueued."""
+            """Enqueue the new whole lines (if any); return 1 if it enqueued.
+
+            Reads at most ``_MONITOR_MAX_READ_BYTES`` from the current offset —
+            never the whole file — so a firehose command can't OOM the agent
+            (TS getTaskOutputDelta bounds each read the same way)."""
             nonlocal pos
             try:
-                data = path.read_bytes()
+                with open(path, "rb") as fh:
+                    fh.seek(pos)
+                    raw = fh.read(_MONITOR_MAX_READ_BYTES)  # bounded read
             except OSError:
                 return 0
-            if len(data) <= pos:
+            if not raw:
                 return 0
-            chunk = data[pos:].decode("utf-8", "replace")
-            pos = len(data)
+            read_n = len(raw)  # advance the offset by BYTES read (offset arithmetic
+            pos += read_n      # stays in bytes; decode replacement can't drift it)
+            chunk = raw.decode("utf-8", "replace")
             if "\n" not in chunk:
                 # No complete line yet — rewind so the partial is re-read next poll.
-                pos -= len(chunk.encode("utf-8"))
+                pos -= read_n
                 return 0
             body, _, tail = chunk.rpartition("\n")
             pos -= len(tail.encode("utf-8"))
@@ -97,13 +137,8 @@ def _stream_output(
                 kept = encoded[-_MONITOR_MAX_NOTIFICATION_BYTES:].decode("utf-8", "replace")
                 dropped = len(encoded) - _MONITOR_MAX_NOTIFICATION_BYTES
                 lines = f"…[{dropped} earlier bytes truncated]…\n{kept}"
-            from xml.sax.saxutils import escape as _esc
-
             enqueue_pending_notification(
-                value=(
-                    f'<monitor-output task="{_esc(task_id)}" '
-                    f'description="{_esc(description)}">\n{_esc(lines)}\n</monitor-output>'
-                ),
+                value=_monitor_notification_xml(task_id, output_path, lines),
                 mode="task-notification",
             )
             return 1
@@ -115,13 +150,11 @@ def _stream_output(
                 _drain()
                 _kill_monitor_task(task_id, context)
                 enqueue_pending_notification(
-                    value=(
-                        f'<monitor-output task="{task_id}" description="{description}">\n'
+                    value=_monitor_notification_xml(
+                        task_id, output_path,
                         f"Monitor auto-stopped after {sent} notifications "
                         f"(too many events). Re-run with a tighter filter "
-                        f"(e.g. grep) if you still need to watch this.\n"
-                        f"</monitor-output>"
-                    ),
+                        f"(e.g. grep) if you still need to watch this."),
                     mode="task-notification",
                 )
                 return
@@ -226,9 +259,9 @@ MonitorTool: Tool = build_tool(
         "automatically stopped — restart with a tighter filter if that happens."
     ),
     description="Stream a shell command's output as notifications.",
-    max_result_size_chars=2000,
+    max_result_size_chars=10_000,  # TS MonitorTool.ts:51
     is_read_only=lambda _input: False,
-    is_concurrency_safe=lambda _input: False,
+    is_concurrency_safe=lambda _input: True,  # TS MonitorTool.ts:54 (fire-and-forget spawn)
     to_auto_classifier_input=lambda input_data: (input_data or {}).get("command", ""),
     # Monitor runs an arbitrary shell command — gate it exactly like Bash
     # (TS MonitorTool.checkPermissions delegates to bashToolHasPermission).

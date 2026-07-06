@@ -157,11 +157,40 @@ _TURN_PREAMBLE = (
 )
 
 
+_STREAMING_PREAMBLE = (
+    "<system-reminder>\n"
+    "One or more background tasks you are monitoring produced new output "
+    "(delivered below as <task-notification> envelopes with "
+    "<status>running</status>). These are STILL RUNNING — do not report them as "
+    "finished. They are system events, not a new request the user typed. Note "
+    "anything important in the streamed <summary>; if nothing needs action, you "
+    "may simply continue. Use TaskStop to end a monitor you no longer need.\n"
+    "</system-reminder>"
+)
+
+
+def _is_running_envelope(xml: str) -> bool:
+    return (_field(xml, STATUS_TAG) or "").strip().lower() == "running"
+
+
 def build_notification_turn(notifications: list[str]) -> str:
     """Assemble drained ``<task-notification>`` envelopes into a single agent
-    turn: a guiding preamble followed by the raw envelopes."""
-    body = "\n\n".join(n.strip() for n in notifications if n and n.strip())
-    return f"{_TURN_PREAMBLE}\n\n{body}"
+    turn: a guiding preamble followed by the raw envelopes.
+
+    The preamble is status-aware (critic C5-P2 major): a batch that is ENTIRELY
+    live monitor updates (status=running) must NOT be framed as "finished" — a
+    running monitor streamed through the completion path would otherwise drive
+    the model to declare it done every drain. A pure-running batch gets the
+    streaming preamble; any finished task in the batch keeps the completion
+    preamble (its framing is what those tasks need)."""
+    items = [n.strip() for n in notifications if n and n.strip()]
+    body = "\n\n".join(items)
+    preamble = (
+        _STREAMING_PREAMBLE
+        if items and all(_is_running_envelope(n) for n in items)
+        else _TURN_PREAMBLE
+    )
+    return f"{preamble}\n\n{body}"
 
 
 __all__ = [
