@@ -23,6 +23,7 @@ from .send_message import SendMessageTool
 from .send_user_message import SendUserMessageTool
 from .skill import SkillTool
 from .sleep import SleepTool
+from .monitor import MonitorTool
 from .structured_output import StructuredOutputTool
 from .task_stop import TaskStopTool
 from .tasks_v2 import (
@@ -44,6 +45,7 @@ ALL_STATIC_TOOLS: list[Tool] = [
     AdvisorTool,
     AskUserQuestionTool,
     BashTool,
+    MonitorTool,
     BriefTool,
     ClipboardReadTool,
     ClipboardWriteTool,
@@ -120,6 +122,7 @@ __all__ = [
     "SkillTool",
     "SleepTool",
     "StatusTool",
+    "MonitorTool",
     "StructuredOutputTool",
     "TaskCreateTool",
     "TaskGetTool",
