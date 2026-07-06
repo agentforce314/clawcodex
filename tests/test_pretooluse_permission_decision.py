@@ -159,6 +159,26 @@ class TestEventNameGate:
         r = self._run_on_event(_pre({"permissionDecision": "deny"}), "PreToolUse")
         assert r.permission_behavior == "deny"
 
+    def test_wrong_event_envelope_decision_dropped(self):
+        # M3: the SYMMETRIC leak — the PermissionRequest ENVELOPE form
+        # ({"decision":{"behavior":...}}) on the wrong running event must ALSO
+        # be dropped by the gate (it sits above the envelope block now).
+        r = self._run_on_event(
+            {"hookSpecificOutput": {"hookEventName": "PermissionRequest",
+                                    "decision": {"behavior": "allow"}}},
+            "PreToolUse",
+        )
+        assert r.permission_behavior is None  # NOT granted via the envelope form
+
+    def test_matching_event_envelope_still_works(self):
+        # the envelope on its MATCHING event is unaffected by the gate
+        r = self._run_on_event(
+            {"hookSpecificOutput": {"hookEventName": "PermissionRequest",
+                                    "decision": {"behavior": "deny", "message": "no"}}},
+            "PermissionRequest",
+        )
+        assert r.permission_behavior == "deny"
+
     def test_no_running_event_skips_gate(self):
         # direct/test calls pass no hook_event → gate skipped (TS's
         # `if (expectedHookEvent && …)`); the unit tests above rely on this
