@@ -69,7 +69,13 @@ ALL_STATIC_TOOLS: list[Tool] = [
     SkillTool,
     SleepTool,
     StatusTool,
-    StructuredOutputTool,
+    # StructuredOutputTool is deliberately NOT registered: it is a
+    # "special" tool (TS tools.ts:293-299 specialTools excludes
+    # SyntheticOutputTool from getAllBaseTools). The genuine schema
+    # path injects a per-call VALIDATING instance
+    # (workflow/structured.py make_structured_output_tool); the static
+    # unvalidated one exposed interactively was a footgun — its output
+    # dead-ends in outbox with no consumer (tools-round critic, C6).
     TaskCreateTool,
     TaskGetTool,
     TaskListTool,
