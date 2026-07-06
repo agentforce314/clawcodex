@@ -34,6 +34,10 @@ class _FakeAuthProvider:
         self.acquire_calls = []
 
     async def acquire_token(self, *, server_name, server_url, **kw):
+        import asyncio
+        await asyncio.sleep(0)  # yield inside the critical section so a
+        # concurrent trigger actually races for the per-server lock (so the
+        # concurrency test PROVES the lock, not just the re-check — c4-critic nit)
         self.acquire_calls.append(server_name)
         if self._succeed:
             return SimpleNamespace(success=True, token="tok", error=None)
