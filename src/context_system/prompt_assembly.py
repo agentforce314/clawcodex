@@ -490,10 +490,15 @@ def build_full_system_prompt(
     if memory_section:
         sections.append(memory_section)
 
-    # 30. MCP instructions
+    # 30. MCP servers (session-cached name list)
     mcp_section = _build_mcp_section(mcp_servers, use_cache)
     if mcp_section:
         sections.append(mcp_section)
+
+    # 31. MCP server instructions (REQUEST-scoped, uncached — C2)
+    mcp_instructions = _build_mcp_instructions_section(mcp_servers)
+    if mcp_instructions:
+        sections.append(mcp_instructions)
 
     # 40. Agent instructions
     agent_section = _build_agent_section(agents, use_cache)
@@ -661,6 +666,9 @@ def build_full_system_prompt_blocks(
     mcp_section = _build_mcp_section(mcp_servers, use_cache)
     if mcp_section:
         sections.append(mcp_section)
+    mcp_instructions = _build_mcp_instructions_section(mcp_servers)
+    if mcp_instructions:
+        sections.append(mcp_instructions)
     agent_section = _build_agent_section(agents, use_cache)
     if agent_section:
         sections.append(agent_section)
@@ -1144,32 +1152,47 @@ def _build_mcp_section(
         name = getattr(server, "name", str(server))
         parts.append(f"- {name}")
 
-    # Surface server-authored `instructions` (from the MCP InitializeResult
-    # handshake) — port of getMcpInstructions (constants/prompts.ts:572-596).
-    # RENDERING ONLY: the LIVE wiring is DEFERRED (McpRuntime discards the
-    # connect() instructions at mcp_runtime.py:101 and every live prompt-build
-    # site passes mcp_servers=None). See the "MCP-instructions-live-wiring"
-    # chapter: retain {name,instructions} in McpRuntime + thread here + make
-    # this a REQUEST-scoped per-turn section (TS uses an UNCACHED section so
-    # late/OAuth-gated connects aren't missed). This block renders correctly
-    # once fed.
+    content = "\n".join(parts)
+    if use_cache:
+        _prompt_cache.set("mcp", content, scope=CacheScope.SESSION)
+    return SystemPromptSection(id="mcp", content=content, cache_scope=CacheScope.SESSION, order=30)
+
+
+def _build_mcp_instructions_section(
+    mcp_servers: list[Any] | None,
+) -> SystemPromptSection | None:
+    """Server-authored ``instructions`` (MCP InitializeResult handshake) —
+    port of ``getMcpInstructions`` (constants/prompts.ts:572-596).
+
+    REQUEST-scoped and NEVER ``_prompt_cache``d, mirroring TS's
+    ``DANGEROUS_uncachedSystemPromptSection('mcp_instructions', …, reason:
+    "MCP servers connect/disconnect between turns")`` (prompts.ts:506-513):
+    a late/OAuth-gated connect or a ``/mcp`` toggle must re-render on the
+    next prompt build without serving a stale session-cached copy, and
+    REQUEST scope keeps the volatile block out of the cached prefix. (The
+    render previously lived inside the SESSION-cached ``mcp`` section — the
+    utils-critic's M1; moved out here as part of the C2 live wiring.)"""
+    if not mcp_servers:
+        return None
     instruction_blocks = [
         f"## {getattr(server, 'name', str(server))}\n{instr}"
         for server in mcp_servers
         if (instr := (getattr(server, "instructions", None) or "").strip())
     ]
-    if instruction_blocks:
-        parts.append(
-            "\n# MCP Server Instructions\n\n"
-            "The following MCP servers have provided instructions for how to "
-            "use their tools and resources:\n\n"
-            + "\n\n".join(instruction_blocks)
-        )
-
-    content = "\n".join(parts)
-    if use_cache:
-        _prompt_cache.set("mcp", content, scope=CacheScope.SESSION)
-    return SystemPromptSection(id="mcp", content=content, cache_scope=CacheScope.SESSION, order=30)
+    if not instruction_blocks:
+        return None
+    content = (
+        "# MCP Server Instructions\n\n"
+        "The following MCP servers have provided instructions for how to "
+        "use their tools and resources:\n\n"
+        + "\n\n".join(instruction_blocks)
+    )
+    return SystemPromptSection(
+        id="mcp_instructions",
+        content=content,
+        cache_scope=CacheScope.REQUEST,
+        order=31,
+    )
 
 
 def _build_agent_section(

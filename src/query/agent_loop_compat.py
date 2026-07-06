@@ -214,9 +214,11 @@ def build_effective_system_prompt(
     ``tools``/``tool_registry`` are deliberately NOT passed to
     ``build_full_system_prompt_blocks`` (matching ``engine.py:167``): tool
     schemas reach the model via the API ``tools=`` param, so emitting a prose
-    tool-docs section here would double-send them. ``provider``/``mcp_servers``
-    feed only the global cache-scope gate; ``None`` is safe (disables the
-    cross-user global scope, which TUI/headless should not use).
+    tool-docs section here would double-send them. ``provider`` feeds the
+    global cache-scope gate; ``mcp_servers`` ALSO feeds the REQUEST-scoped
+    ``_build_mcp_instructions_section`` (C2 — server-authored instructions),
+    so it is no longer inert here; ``None`` is safe (no instructions section
+    + disables the cross-user global scope, which TUI/headless should not use).
 
     Coordinator mode (``CLAUDE_CODE_COORDINATOR_MODE`` truthy): the
     coordinator orchestration prompt REPLACES the base blocks entirely,
