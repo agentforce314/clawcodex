@@ -378,7 +378,7 @@ class _AgentSession:
             self._do_set_mcp_enabled(request_id, inner.get("server"), inner.get("enabled"))
             return
         if subtype == "mcp_auth":
-            self._do_mcp_auth(request_id, inner.get("server"))
+            await self._do_mcp_auth(request_id, inner.get("server"))
             return
         if subtype == "external_includes":
             # External CLAUDE.md @-imports (ClaudeMdExternalIncludesDialog, §6).
@@ -965,16 +965,27 @@ class _AgentSession:
         except Exception:  # noqa: BLE001 — keep the change even if rebuild fails
             logger.debug("[agent-server] MCP prompt rebuild failed", exc_info=True)
 
-    def _do_mcp_auth(self, request_id: object, server: object) -> None:
+    async def _do_mcp_auth(self, request_id: object, server: object) -> None:
         """/mcp auth <server> (C4): run the OAuth flow for a needs-auth MCP
         server, then register its now-available tools + rebuild the prompt so
-        its instructions enter the system prompt (the C2 late-connect note)."""
+        its instructions enter the system prompt (the C2 late-connect note).
+
+        The blocking OAuth flow runs on the MCP runtime loop and is AWAITED via
+        a wrapped future, so the agent-server MAIN loop stays responsive during
+        the (up to 300s) browser round-trip — the user can still interrupt
+        (B1). The registry/prompt mutations happen back on the main loop
+        (single-threaded, no race with an in-flight turn)."""
         name = str(server or "")
         rt = getattr(self, "_mcp_runtime", None)
         if rt is None or not name:
             self._reply(request_id, {"ok": False, "error": "no MCP runtime or server name"})
             return
-        result = rt.trigger_oauth(name)
+        try:
+            fut = rt.submit(rt.trigger_oauth_async(name))
+            result = await asyncio.wrap_future(fut)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[agent-server] /mcp auth failed for %s", name)
+            result = {"ok": False, "error": f"auth failed: {exc}"}
         if result.get("ok"):
             reg = self.tool_registry
             if reg is not None:
@@ -983,12 +994,35 @@ class _AgentSession:
                         reg.register(mtool)
                     except Exception:  # noqa: BLE001
                         logger.debug("[agent-server] register MCP tool failed", exc_info=True)
+            # M1: a late-authed server needs the SAME elicitation +
+            # tools/list_changed wiring boot-time servers get (agent_server
+            # boot path) — else it silently can't elicit or push tool refreshes.
+            client = result.get("client")
+            if client is not None:
+                self._wire_mcp_client_handlers(rt, client, name)
             self._rebuild_base_prompt_for_mcp()  # late-connect → surface instructions
         self._reply(request_id, {
             "ok": bool(result.get("ok")),
             "error": result.get("error"),
             "pending_auth": rt.pending_auth(),
         })
+
+    def _wire_mcp_client_handlers(self, rt: Any, client: Any, name: str) -> None:
+        """Wire elicitation + (capability-gated) tools/list_changed handlers on
+        an MCP client — the same wiring the boot path applies, reused for a
+        late-authenticated server (M1)."""
+        try:
+            client.set_elicitation_handler(_make_elicitation_handler(self))
+        except Exception:  # noqa: BLE001
+            logger.debug("[agent-server] elicitation wiring failed for %s", name, exc_info=True)
+        try:
+            caps = getattr(client, "capabilities", None)
+            if getattr(caps, "tools_list_changed", False):
+                client.set_notification_handler(
+                    _make_mcp_notification_handler(rt, self, name)
+                )
+        except Exception:  # noqa: BLE001
+            logger.debug("[agent-server] list_changed wiring failed for %s", name, exc_info=True)
 
     def _do_set_thinking(self, request_id: object, action: object) -> None:
         """Toggle/set extended thinking (the original's ThinkingToggle). action:

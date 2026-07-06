@@ -77,6 +77,10 @@ class McpRuntime:
         # the auth trigger instead of silently failing to connect.
         self.needs_auth: list[dict[str, Any]] = []
         self._auth_provider: Any = None
+        # Per-server locks serializing concurrent /mcp auth triggers so they
+        # can't double-register tools / duplicate server_infos / leak a client
+        # (m1). Created lazily on the runtime loop.
+        self._auth_locks: dict[str, Any] = {}
 
     def _run(self, coro: Any, timeout: float) -> Any:
         assert self._loop is not None
@@ -169,65 +173,90 @@ class McpRuntime:
         """Names of servers awaiting authentication (for the /mcp UI)."""
         return [e["name"] for e in self.needs_auth]
 
-    def trigger_oauth(self, name: str, *, open_browser: bool = True) -> dict[str, Any]:
-        """Run the OAuth flow for a needs-auth server, then reconnect + register
-        its tools (C4). Returns ``{ok, error?, tools?}``. Runs on the runtime's
-        dedicated loop so the reconnected client's streams stay loop-bound."""
-        if self._loop is None or self._auth_provider is None:
+    def submit(self, coro: Any) -> Any:
+        """Submit a coroutine to the runtime loop, returning a
+        ``concurrent.futures.Future`` the caller can ``await`` (via
+        ``asyncio.wrap_future``) WITHOUT blocking its own loop. This is how the
+        agent-server main loop runs the OAuth flow off-thread yet stays
+        responsive (B1)."""
+        assert self._loop is not None
+        return asyncio.run_coroutine_threadsafe(coro, self._loop)
+
+    async def trigger_oauth_async(
+        self, name: str, *, open_browser: bool = True
+    ) -> dict[str, Any]:
+        """Async OAuth flow for a needs-auth server → reconnect (C4). Runs ON
+        the runtime loop (all awaits, no blocking ``.result()``). Serialized
+        per-server (m1) so concurrent triggers can't double-register. Returns
+        ``{ok, error?, tools?, client?}`` (client for handler re-wiring, M1)."""
+        if self._auth_provider is None:
             return {"ok": False, "error": "MCP runtime has no auth provider"}
-        entry = next((e for e in self.needs_auth if e["name"] == name), None)
-        if entry is None:
-            return {"ok": False, "error": f"{name!r} is not awaiting authentication"}
-        scoped = entry["scoped"]
-        inner = getattr(scoped, "config", None)
-        server_url = getattr(inner, "url", None)
-        if not server_url:
-            return {"ok": False, "error": "OAuth requires an HTTP/SSE/WS server URL"}
-        try:
-            result = self._run(
-                self._auth_provider.acquire_token(
+        lock = self._auth_locks.get(name)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._auth_locks[name] = lock
+        async with lock:
+            entry = next((e for e in self.needs_auth if e["name"] == name), None)
+            if entry is None:
+                # a concurrent trigger already promoted it — treat as success-noop
+                if name in self.clients and name not in self.pending_auth():
+                    return {"ok": True, "tools": [], "client": self.clients.get(name)}
+                return {"ok": False, "error": f"{name!r} is not awaiting authentication"}
+            scoped = entry["scoped"]
+            inner = getattr(scoped, "config", None)
+            server_url = getattr(inner, "url", None)
+            if not server_url:
+                return {"ok": False, "error": "OAuth requires an HTTP/SSE/WS server URL"}
+            try:
+                result = await self._auth_provider.acquire_token(
                     server_name=name,
                     server_url=server_url,
                     auth_server_metadata_url=getattr(inner, "auth_server_metadata_url", None),
                     config_scope=getattr(scoped, "scope", None),
                     open_browser=open_browser,
-                ),
-                _OAUTH_TIMEOUT_S,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("[mcp] OAuth flow failed for %s", name)
-            return {"ok": False, "error": f"OAuth flow failed: {exc}"}
-        if not getattr(result, "success", False):
-            return {"ok": False, "error": getattr(result, "error", None) or "authentication failed"}
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("[mcp] OAuth flow failed for %s", name)
+                return {"ok": False, "error": f"OAuth flow failed: {exc}"}
+            if not getattr(result, "success", False):
+                return {"ok": False, "error": getattr(result, "error", None) or "authentication failed"}
 
-        # Authenticated — reconnect with the now-cached token + register tools.
-        try:
-            from src.services.mcp.client import McpClient
+            # Authenticated — reconnect with the now-cached token.
+            try:
+                from src.services.mcp.client import McpClient
 
-            client = McpClient()
-            client.set_auth_provider(self._auth_provider)
-            connected = self._run(client.connect(name, scoped), _CONNECT_TIMEOUT_S)
-            if getattr(connected, "type", "") != "connected":
-                return {"ok": False, "error": "reconnect did not complete after auth"}
-            mcp_tools = self._run(client.list_tools(), _CONNECT_TIMEOUT_S)
-            # promote: drop the old client, register the connected one
-            old = self.clients.get(name)
-            if old is not None and old is not client:
-                try:
-                    self._run(old.close(), 5.0)
-                except Exception:  # noqa: BLE001
-                    pass
-            self.clients[name] = client
-            self.servers[name] = [t.name for t in mcp_tools]
-            self.server_infos.append(connected)
-            new_tools = [self._wrap(name, mt, client) for mt in mcp_tools]
-            self.tools.extend(new_tools)
-            self.needs_auth = [e for e in self.needs_auth if e["name"] != name]
-            logger.info("[mcp] %s authenticated (%d tools)", name, len(new_tools))
-            return {"ok": True, "tools": new_tools}
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("[mcp] reconnect after auth failed for %s", name)
-            return {"ok": False, "error": f"reconnect failed: {exc}"}
+                client = McpClient()
+                client.set_auth_provider(self._auth_provider)
+                connected = await client.connect(name, scoped)
+                if getattr(connected, "type", "") != "connected":
+                    return {"ok": False, "error": "reconnect did not complete after auth"}
+                mcp_tools = await client.list_tools()
+                old = self.clients.get(name)
+                if old is not None and old is not client:
+                    try:
+                        await old.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                self.clients[name] = client
+                self.servers[name] = [t.name for t in mcp_tools]
+                self.server_infos.append(connected)
+                new_tools = [self._wrap(name, mt, client) for mt in mcp_tools]
+                self.tools.extend(new_tools)
+                self.needs_auth = [e for e in self.needs_auth if e["name"] != name]
+                logger.info("[mcp] %s authenticated (%d tools)", name, len(new_tools))
+                return {"ok": True, "tools": new_tools, "client": client}
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("[mcp] reconnect after auth failed for %s", name)
+                return {"ok": False, "error": f"reconnect failed: {exc}"}
+
+    def trigger_oauth(self, name: str, *, open_browser: bool = True) -> dict[str, Any]:
+        """Synchronous wrapper (tests / non-async callers) — blocks the caller's
+        thread on the runtime loop. The interactive agent-server path uses
+        ``trigger_oauth_async`` via ``submit`` instead, so it never freezes its
+        own loop (B1)."""
+        if self._loop is None:
+            return {"ok": False, "error": "MCP runtime not started"}
+        return self._run(self.trigger_oauth_async(name, open_browser=open_browser), _OAUTH_TIMEOUT_S)
 
     def _wrap(self, server: str, mcp_tool: Any, client: Any) -> Any:
         """Build a loop-correct sync Tool that dispatches to the connection loop."""
