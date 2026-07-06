@@ -22,13 +22,20 @@ silently given an unsandboxed shell. Actual enforcement (a native
 ``sandbox-exec``/``bwrap`` engine) is the deferred
 **sandbox-native-enforcement** sub-chapter.
 
-SCOPE: like TS (``shouldUseSandbox`` is BashTool-scoped — called only from
-``bashPermissions.ts``), this guards the **Bash tool** — both foreground and
-background commands, which share the ``_bash_call`` entry (the guard runs
-before the ``run_in_background`` branch). Hook subprocesses and MCP stdio
-servers are user-authored config that TS's sandbox does not wrap either, so
-they are intentionally out of scope — the hard gate is an honest "no
-unsandboxed BASH", not a false "nothing runs unsandboxed".
+SCOPE — two distinct mechanisms (critic C8):
+
+* The WARNING path (``enabled`` and not ``failIfUnavailable``) is
+  BashTool-scoped, like TS ``shouldUseSandbox`` (called only from
+  ``bashPermissions.ts``): it warns once and runs the command unsandboxed.
+  Hooks/MCP/`/bg` running unsandboxed here is faithful — TS doesn't sandbox
+  those either.
+* The HARD GATE (``enabled`` + ``failIfUnavailable``) is a REFUSE-TO-START, not
+  a per-command refusal — TS exits at the entrypoints (print.ts:600 /
+  REPL.tsx:2362, "refusing to start without a working sandbox"). The port
+  enforces it in ``agent_server._build_runtime`` (``sess.init_error`` →
+  the session refuses to start, so /bg + MCP + hooks never run) AND at
+  ``_bash_call`` as a CLI-path backstop. So the "hard gate" is truthful:
+  nothing runs, not just Bash.
 """
 from __future__ import annotations
 
@@ -53,8 +60,26 @@ _HARD_GATE_ERROR = (
 )
 
 
+def _current_platform() -> str:
+    """Map sys.platform to TS's platform tokens (macos/linux/windows)."""
+    import sys
+
+    return {"darwin": "macos", "win32": "windows"}.get(
+        sys.platform, "linux" if sys.platform.startswith("linux") else sys.platform
+    )
+
+
 def _sandbox(settings: Any) -> Any | None:
-    return getattr(settings, "sandbox", None)
+    """The sandbox settings, or None when sandbox does not apply on this
+    platform (TS enabledPlatforms: on a platform not listed, sandbox is
+    treated as disabled — no gate, no warning)."""
+    sb = getattr(settings, "sandbox", None)
+    if sb is None:
+        return None
+    platforms = getattr(sb, "enabled_platforms", None) or []
+    if platforms and _current_platform() not in platforms:
+        return None
+    return sb
 
 
 def is_sandbox_requested(settings: Any) -> bool:

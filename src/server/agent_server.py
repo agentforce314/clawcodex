@@ -2325,6 +2325,25 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
         profile_checkpoint("agent_server_trust_prefetch_done")
 
         cfg = sess.config
+
+        # Sandbox HARD GATE (C8): TS's failIfUnavailable is a REFUSE-TO-START
+        # at the entrypoints (print.ts:600 / REPL.tsx:2362 "refusing to start
+        # without a working sandbox"), NOT a per-command refusal. The port has
+        # no sandbox enforcement, so under sandbox.enabled+failIfUnavailable the
+        # SESSION must refuse to start — otherwise /bg, MCP servers, and hooks
+        # (which run OUTSIDE _bash_call) would execute unsandboxed while the
+        # per-_bash_call guard only stops foreground/bg BashTool commands.
+        try:
+            from src.permissions.sandbox_guard import sandbox_hard_gate_error
+            from src.settings.settings import get_settings
+
+            _gate = sandbox_hard_gate_error(get_settings(cwd=sess.cwd))
+            if _gate:
+                sess.init_error = _gate
+                return
+        except Exception:  # noqa: BLE001 — the guard must never crash startup
+            logger.debug("[agent-server] sandbox hard-gate check failed", exc_info=True)
+
         provider_name = cfg.provider_name or get_default_provider()
         provider_cfg = get_provider_config(provider_name)
         api_key = resolve_api_key(provider_name, provider_cfg)

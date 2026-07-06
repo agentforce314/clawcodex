@@ -151,3 +151,111 @@ class TestBackgroundBashAlsoGuarded:
         ctx.options = ToolUseOptions(tools=[])
         with pytest.raises(ToolPermissionError):
             _bash_call({"command": "sleep 100", "run_in_background": True}, ctx)
+
+
+class TestHardGateRefusesToStart:
+    """critic C8-MAJOR: failIfUnavailable is a REFUSE-TO-START, not a per-bash
+    refusal — so /bg + MCP + hooks (which run OUTSIDE _bash_call) don't leak.
+    Drive the REAL _build_runtime under a hard-gate config → sess.init_error
+    is set (the session refuses to start)."""
+
+    def test_build_runtime_refuses_under_hard_gate(self, monkeypatch, tmp_path):
+        from unittest.mock import MagicMock
+
+        from src.server.agent_server import (
+            AgentServerConfig,
+            _AgentSession,
+            _build_runtime,
+        )
+        from src.settings.types import SettingsSchema
+
+        hard = SettingsSchema.from_dict({"sandbox": {"enabled": True, "failIfUnavailable": True}})
+        monkeypatch.setattr("src.settings.settings.get_settings", lambda *a, **k: hard)
+
+        sess = _AgentSession(
+            session_id="s1", cwd=str(tmp_path),
+            config=AgentServerConfig(provider_name="anthropic", single_session=True),
+            loop=MagicMock(), out_queue=MagicMock(),
+        )
+        _build_runtime(sess, None)
+        assert sess.init_error is not None
+        assert "sandbox" in sess.init_error.lower()
+        # refused BEFORE building tools/provider — no runtime to leak /bg through
+        assert sess.tool_registry is None
+
+    def test_build_runtime_starts_normally_without_hard_gate(self, monkeypatch, tmp_path):
+        from unittest.mock import MagicMock
+
+        from src.server.agent_server import (
+            AgentServerConfig,
+            _AgentSession,
+            _build_runtime,
+        )
+        from src.settings.types import SettingsSchema
+
+        # warning-only (enabled, not failIfUnavailable) must NOT refuse to start
+        warn = SettingsSchema.from_dict({"sandbox": {"enabled": True}})
+        monkeypatch.setattr("src.settings.settings.get_settings", lambda *a, **k: warn)
+
+        sess = _AgentSession(
+            session_id="s2", cwd=str(tmp_path),
+            config=AgentServerConfig(provider_name="definitely-not-a-provider", single_session=True),
+            loop=MagicMock(), out_queue=MagicMock(),
+        )
+        _build_runtime(sess, None)
+        # it may fail for the unknown provider, but NOT with a sandbox gate
+        assert sess.init_error is None or "sandbox" not in sess.init_error.lower()
+
+
+class TestSkillShellFailsClosed:
+    """minor #4: a skill/slash `!`-embedded shell runs through _bash_call, so
+    the hard gate refuses it too (fail-closed)."""
+
+    def test_skill_shell_refused_under_hard_gate(self, monkeypatch, tmp_path):
+        from src.settings.types import SettingsSchema
+        from src.tool_system.context import ToolContext, ToolUseOptions
+        from src.tool_system.errors import ToolPermissionError
+        from src.tool_system.tools.bash.bash_tool import _bash_call
+
+        hard = SettingsSchema.from_dict({"sandbox": {"enabled": True, "failIfUnavailable": True}})
+        monkeypatch.setattr("src.settings.settings.get_settings", lambda *a, **k: hard)
+        ctx = ToolContext(workspace_root=tmp_path)
+        ctx.options = ToolUseOptions(tools=[])
+        # the skill !-shell path is just _bash_call with a command — must refuse
+        with pytest.raises(ToolPermissionError):
+            _bash_call({"command": "echo from-skill-shell"}, ctx)
+
+
+class TestEnabledPlatforms:
+    """minor #3: TS enabledPlatforms — sandbox is disabled (no gate/warning)
+    on a platform not in the list. The port was more aggressive; now faithful."""
+
+    def test_other_platform_disables_hard_gate(self, monkeypatch):
+        from src.permissions import sandbox_guard
+        from src.settings.types import SettingsSchema
+
+        # a hard-gate config restricted to a platform we're NOT on → no gate
+        monkeypatch.setattr(sandbox_guard, "_current_platform", lambda: "linux")
+        s = SettingsSchema.from_dict({"sandbox": {
+            "enabled": True, "failIfUnavailable": True, "enabledPlatforms": ["macos"],
+        }})
+        assert sandbox_guard.sandbox_hard_gate_error(s) is None
+        assert sandbox_guard.sandbox_unsandboxed_warning(s) is None
+
+    def test_current_platform_listed_still_gates(self, monkeypatch):
+        from src.permissions import sandbox_guard
+        from src.settings.types import SettingsSchema
+
+        monkeypatch.setattr(sandbox_guard, "_current_platform", lambda: "macos")
+        s = SettingsSchema.from_dict({"sandbox": {
+            "enabled": True, "failIfUnavailable": True, "enabledPlatforms": ["macos"],
+        }})
+        assert sandbox_guard.sandbox_hard_gate_error(s) is not None
+
+    def test_empty_platforms_means_all(self, monkeypatch):
+        from src.permissions import sandbox_guard
+        from src.settings.types import SettingsSchema
+
+        monkeypatch.setattr(sandbox_guard, "_current_platform", lambda: "windows")
+        s = SettingsSchema.from_dict({"sandbox": {"enabled": True, "failIfUnavailable": True}})
+        assert sandbox_guard.sandbox_hard_gate_error(s) is not None

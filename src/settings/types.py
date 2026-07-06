@@ -68,6 +68,10 @@ class SandboxSettings:
     auto_allow_bash_if_sandboxed: bool = True
     allow_unsandboxed_commands: bool = True
     excluded_commands: list[str] = field(default_factory=list)
+    # TS enabledPlatforms (sandboxTypes.ts:104): restrict sandboxing to
+    # specific platforms; on a platform NOT listed, TS treats sandbox as
+    # disabled (no gate, no warning). Empty = all platforms.
+    enabled_platforms: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -277,6 +281,7 @@ class SettingsSchema:
                 auto_allow_bash_if_sandboxed=bool(_sb.get("autoAllowBashIfSandboxed", _sb.get("auto_allow_bash_if_sandboxed", True))),
                 allow_unsandboxed_commands=bool(_sb.get("allowUnsandboxedCommands", _sb.get("allow_unsandboxed_commands", True))),
                 excluded_commands=list(_sb.get("excludedCommands", _sb.get("excluded_commands", [])) or []),
+                enabled_platforms=list(_sb.get("enabledPlatforms", _sb.get("enabled_platforms", [])) or []),
             )
         if "spinner_verbs" in known and isinstance(known["spinner_verbs"], dict):
             known["spinner_verbs"] = SpinnerVerbsSettings(**known["spinner_verbs"])
