@@ -2,6 +2,7 @@ import { atom, computed } from 'nanostores'
 
 import { MOUSE_TRACKING } from '../config/env.js'
 import { ZERO } from '../domain/usage.js'
+import { ZERO_SESSION_STATS } from '../lib/sessionStats.js'
 import { DEFAULT_THEME } from '../theme.js'
 
 import { DEFAULT_INDICATOR_STYLE, type UiState } from './interfaces.js'
@@ -24,6 +25,7 @@ const buildUiState = (): UiState => ({
   pasteCollapseChars: 2000,
   sections: {},
   sessionTitle: '',
+  sessionStats: ZERO_SESSION_STATS,
   showReasoning: false,
   sid: null,
   status: 'starting clawcodex…',

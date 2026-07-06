@@ -18,6 +18,7 @@ import type {
   SetupStatusResponse
 } from '../gatewayTypes.js'
 import { asRpcResult } from '../lib/rpc.js'
+import { ZERO_SESSION_STATS } from '../lib/sessionStats.js'
 import type { Msg, PanelSection, SessionInfo, Usage } from '../types.js'
 
 import type { ComposerActions, GatewayRpc, StateSetter } from './interfaces.js'
@@ -156,7 +157,10 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     turnController.fullReset()
     setVoiceRecording(false)
     setVoiceProcessing(false)
-    patchUiState({ bgTasks: new Set(), info: null, sid: null, usage: ZERO })
+    // sessionStats: zeros beat another session's numbers; the server
+    // re-stamps truth on the clear/resume reply (session.stats event) or at
+    // the latest on the next end-of-turn result.
+    patchUiState({ bgTasks: new Set(), info: null, sessionStats: ZERO_SESSION_STATS, sid: null, usage: ZERO })
     setHistoryItems([])
     setLastUserMsg('')
     setStickyPrompt('')

@@ -149,6 +149,11 @@ class _AgentSession:
     # real turn (inside the async context; _build_runtime runs sync in an
     # executor with no live loop). Guarded so it fires exactly once.
     _session_start_fired: bool = False
+    # Completed user turns — the "turns: N" odometer on the client's session
+    # stats line (the deleted REPL's ``_stats_turns``, repl/core.py). Counts
+    # successful non-internal, non-btw turns; /resume seeds it from the
+    # restored conversation, /clear zeroes it, /rewind recomputes it.
+    _stats_turns: int = 0
     session: Any = None
     system_prompt: Any = "You are a helpful assistant."
     _base_system_prompt: Any = None  # system prompt before the /plan section is composed in
@@ -583,7 +588,17 @@ class _AgentSession:
             try:
                 if self.session is not None:
                     self.session.conversation.clear()
-                self._reply(request_id, {"ok": True, "count": 0})
+                # Fresh conversation, fresh odometer (token/cost totals are
+                # process-wide spend and deliberately survive /clear).
+                self._stats_turns = 0
+                self._reply(request_id, {
+                    "ok": True,
+                    "count": 0,
+                    # Stats-line refresh rider (same shape as the resume
+                    # reply): turns reset with the conversation, spend stays.
+                    "session_turns": 0,
+                    "cost": _cost_snapshot(),
+                })
             except Exception as exc:  # noqa: BLE001
                 self._reply(request_id, {"ok": False, "error": str(exc)})
             return
@@ -685,6 +700,10 @@ class _AgentSession:
                 # re-stamp sites.
                 "mode": mode_value,
                 "conversation": self.session.conversation.to_dict(),
+                # Turns odometer — _do_resume prefers this exact counter over
+                # recounting the conversation (which can't tell a real prompt
+                # from a persisted notification/hook-context message).
+                "turns": self._stats_turns,
             }
             # ch03 round-4 GAP B — the live persister carries the cost
             # block (schema owner: cost_restore.build_cost_block, matching
@@ -1367,6 +1386,20 @@ class _AgentSession:
             data = json.loads(f.read_text(encoding="utf-8"))
             conv = Conversation.from_dict(data.get("conversation", {"messages": []}))
             self.session.conversation = conv
+            # Seed the turns odometer so the stats line continues where the
+            # resumed session left off (its token/cost siblings restore below
+            # via restore_cost_state). Prefer the exact persisted counter
+            # (_save_session stamps it every turn end); fall back to counting
+            # the restored conversation for pre-"turns" session files — an
+            # approximation: notification prompts, hook-injected context and
+            # aborted-turn prompts persist as plain user messages, so the
+            # recount can run high vs the live success-only rule.
+            saved_turns = data.get("turns")
+            self._stats_turns = (
+                saved_turns
+                if isinstance(saved_turns, int) and not isinstance(saved_turns, bool) and saved_turns >= 0
+                else _count_prompt_turns(conv.messages)
+            )
             # ch03 round-4 GAP B — restore the accumulated cost counters
             # (guarded: the reader refuses a file whose session_id header
             # doesn't match). Gated single_session like every other
@@ -1469,6 +1502,11 @@ class _AgentSession:
                 "ok": True,
                 "count": len(conv.messages),
                 "preview": data.get("preview", ""),
+                # Session-stats seed for the client's stats line — the next
+                # result message is potentially a whole turn away, so the
+                # reply carries the authoritative odometer + totals now.
+                "session_turns": self._stats_turns,
+                "cost": _cost_snapshot(),
                 **({"mode_banner": mode_banner} if mode_banner else {}),
             })
         except Exception as exc:  # noqa: BLE001
@@ -1510,6 +1548,12 @@ class _AgentSession:
             target = prompt_idxs[max(0, len(prompt_idxs) - n)]
             removed = len(msgs) - target
             del msgs[target:]
+            # Rewound turns leave the odometer — recount from what's left.
+            # NOTE: `is_prompt` above counts isMeta text messages (rewind
+            # boundaries pre-date the odometer); _count_prompt_turns excludes
+            # them, so the recount can sit below the number of boundaries
+            # rewind saw. Fine for an odometer; don't reuse is_prompt here.
+            self._stats_turns = _count_prompt_turns(msgs)
             self._reply(request_id, {"ok": True, "removed": removed, "count": len(msgs)})
         except Exception as exc:  # noqa: BLE001
             logger.exception("[agent-server] rewind failed")
@@ -1886,6 +1930,7 @@ class _AgentSession:
                 self.session_id,
                 permission_mode=_current_mode(self.tool_context, self.config.permission_mode), subtype="error", num_turns=0,
                 result=self.init_error, is_error=True, error=self.init_error,
+                session_turns=self._stats_turns,
             ))
             return
 
@@ -1925,6 +1970,7 @@ class _AgentSession:
                     self.session_id,
                     permission_mode=_current_mode(self.tool_context, self.config.permission_mode), subtype="success", num_turns=0,
                     result="", is_error=False, duration_ms=0,
+                    session_turns=self._stats_turns,
                 ))
                 return
             if ups is not None and ups.prevented:
@@ -1938,6 +1984,7 @@ class _AgentSession:
                     self.session_id,
                     permission_mode=_current_mode(self.tool_context, self.config.permission_mode), subtype="success", num_turns=0,
                     result="", is_error=False, duration_ms=0,
+                    session_turns=self._stats_turns,
                 ))
                 return
             if ups is not None:
@@ -2056,6 +2103,7 @@ class _AgentSession:
                 permission_mode=_current_mode(self.tool_context, self.config.permission_mode), subtype="cancelled", num_turns=0,
                 result="", is_error=False,
                 duration_ms=int((time.monotonic() - start) * 1000),
+                session_turns=self._stats_turns,
             ))
             return
         except Exception as exc:  # noqa: BLE001 - one bad turn must not kill the session
@@ -2065,6 +2113,7 @@ class _AgentSession:
                 permission_mode=_current_mode(self.tool_context, self.config.permission_mode), subtype="error", num_turns=0,
                 result=str(exc), is_error=True, error=str(exc),
                 duration_ms=int((time.monotonic() - start) * 1000),
+                session_turns=self._stats_turns,
             ))
             return
         finally:
@@ -2084,6 +2133,11 @@ class _AgentSession:
                 _cost = compute_cost(getattr(self.provider, "model", None) or self.config.model or "", _usage)
             except Exception:  # noqa: BLE001 — cost is best-effort, never break the turn
                 _cost = 0.0
+        # One more completed user turn. Internal (notification) and btw
+        # (ephemeral, rolled-back) turns don't move the odometer — same rule
+        # as the deleted REPL, which only counted real prompt→response rounds.
+        if not internal and not btw:
+            self._stats_turns += 1
         self._emit(_result_message(
             self.session_id,
             permission_mode=_current_mode(self.tool_context, self.config.permission_mode),
@@ -2094,6 +2148,7 @@ class _AgentSession:
             usage=_usage,
             duration_ms=int((time.monotonic() - start) * 1000),
             total_cost_usd=_cost,
+            session_turns=self._stats_turns,
         ))
         self._save_session()  # persist for /resume
 
@@ -2791,6 +2846,7 @@ def _result_message(
     duration_ms: int = 0,
     total_cost_usd: float = 0.0,
     permission_mode: str | None = None,
+    session_turns: int | None = None,
 ) -> dict:
     payload: dict[str, Any] = {
         "type": "result",
@@ -2809,6 +2865,10 @@ def _result_message(
     }
     if error is not None:
         payload["error"] = error
+    # Completed-user-turn odometer for the client's session stats line
+    # (distinct from num_turns, the agent-loop iteration count of THIS query).
+    if session_turns is not None:
+        payload["session_turns"] = session_turns
     # Server-side mode flips (plan approval, "accept edits for this session")
     # emit no dedicated event — the end-of-turn result refreshes the client's
     # permission-mode badge instead (at most one turn stale, and mode changes
@@ -2877,6 +2937,26 @@ def _first_prompt_preview(msgs: list) -> str:
                     if txt:
                         return str(txt)[:80]
     return ""
+
+
+def _count_prompt_turns(msgs: list) -> int:
+    """Real user prompts in a conversation — re-seeds ``_stats_turns`` after
+    /resume and /rewind. A prompt is a user message that isn't an injected
+    reminder (``isMeta``) and carries string or text-block content (a
+    tool_result carrier is also role 'user' but has no text block)."""
+    n = 0
+    for m in msgs:
+        if getattr(m, "role", None) != "user" or getattr(m, "isMeta", False):
+            continue
+        c = getattr(m, "content", None)
+        if isinstance(c, str):
+            n += 1
+        elif isinstance(c, list) and any(
+            (b.get("type") if isinstance(b, dict) else getattr(b, "type", None)) == "text"
+            for b in c
+        ):
+            n += 1
+    return n
 
 
 def _list_saved_sessions(limit: int = 20) -> list[dict]:
