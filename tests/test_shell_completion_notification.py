@@ -157,7 +157,38 @@ class TestKillSuppressesNotification:
     """critic #3: a user kill (stop_background_bash) sets notified=True, so the
     reaper sends NO notification — matching TS killTask."""
 
-    def test_kill_marks_killed_and_notified(self, tmp_path):
+    def test_stop_task_kill_suppresses_notification(self, tmp_path):
+        # THE PRODUCTION PATH (what TaskStop uses): stop_task → LocalShellTask.kill.
+        # The critic reproduced a spurious "failed with exit code -15" 8/8 here
+        # because the mark used to live only in stop_background_bash, which
+        # stop_task bypasses. The mark is now in LocalShellTask.kill BEFORE the
+        # signal → the reaper's notification no-ops.
+        import asyncio
+        import time
+        from pathlib import Path
+
+        from src.tasks.stop_task import stop_task
+        from src.tool_system.context import ToolContext, ToolUseOptions
+        from src.tool_system.tools.bash.background import spawn_background_bash
+
+        clear_pending_notifications()
+        ctx = ToolContext(workspace_root=tmp_path)
+        ctx.options = ToolUseOptions(tools=[])
+        out = spawn_background_bash(
+            command="sleep 30", cwd=Path(str(tmp_path)),
+            description="long job", context=ctx,
+        )
+        task_id = out["backgroundTaskId"]
+        asyncio.run(stop_task(task_id, ctx))
+        st = ctx.runtime_tasks.get(task_id)
+        assert st is not None and st.status == "killed" and st.notified is True
+        time.sleep(0.4)  # let the reaper settle
+        assert peek_pending_notifications() == [], \
+            f"kill produced a spurious notification: {peek_pending_notifications()}"
+        clear_pending_notifications()
+
+    def test_direct_stop_background_bash_also_marks(self, tmp_path):
+        # the defense-in-depth mark in stop_background_bash still works directly
         import time
         from pathlib import Path
 
@@ -178,7 +209,6 @@ class TestKillSuppressesNotification:
         assert stop_background_bash(ctx, task_id) is True
         st = ctx.runtime_tasks.get(task_id)
         assert st is not None and st.status == "killed" and st.notified is True
-        # give the reaper a moment; it must NOT send a notification (notified=True)
         time.sleep(0.3)
-        assert peek_pending_notifications() == [], "kill produced a spurious notification"
+        assert peek_pending_notifications() == []
         clear_pending_notifications()

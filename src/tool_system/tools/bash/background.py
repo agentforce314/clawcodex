@@ -341,18 +341,10 @@ def stop_background_bash(context: ToolContext, task_id: str) -> bool:
     proc: subprocess.Popen | None = entry.get("_proc")
     if proc is None or proc.poll() is not None:
         return False
-    try:
-        # Kill the whole process group started with ``start_new_session=True``
-        # so that ``bash -lc "cmd"`` and any children terminate together.
-        os.killpg(os.getpgid(proc.pid), 15)
-    except (ProcessLookupError, PermissionError):
-        return False
-    # Atomically mark status='killed' + notified=True (TS killTask,
-    # killShellTasks.ts:38-44). Setting notified=True SUPPRESSES the reaper's
-    # later enqueue_shell_notification (it no-ops on notified=True), so a
-    # user-killed bg bash produces NO completion notification — instead of the
-    # spurious "failed with exit code N" the reaper would otherwise send
-    # (critic C5-P1 #3). _patch preserves an existing 'killed' status.
+    # Mark status='killed' + notified=True BEFORE the signal (defense-in-depth;
+    # the PRIMARY mark is in LocalShellTask.kill, the production path). Marking
+    # first suppresses the reaper's spurious "failed" notification and closes
+    # the reaper-vs-killer race (critic C5-P1 #3).
     try:
         from dataclasses import replace as _replace
 
@@ -362,6 +354,12 @@ def stop_background_bash(context: ToolContext, task_id: str) -> bool:
             return prev
 
         context.runtime_tasks.update(task_id, _mark_killed)
-    except Exception:  # noqa: BLE001 — the SIGTERM already succeeded
+    except Exception:  # noqa: BLE001
         pass
+    try:
+        # Kill the whole process group started with ``start_new_session=True``
+        # so that ``bash -lc "cmd"`` and any children terminate together.
+        os.killpg(os.getpgid(proc.pid), 15)
+    except (ProcessLookupError, PermissionError):
+        return False
     return True
