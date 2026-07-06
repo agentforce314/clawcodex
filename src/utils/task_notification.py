@@ -50,6 +50,60 @@ def _build_summary(description: str, status: NotificationStatus, error: str | No
     return f'Agent "{description}" was stopped'
 
 
+#: Prefix identifying a background-bash summary to the UI collapse transform
+#: ("N background commands completed"). TS
+#: LocalShellTask.tsx:22-23,131-133 keys the collapse on this exact string.
+BACKGROUND_BASH_SUMMARY_PREFIX = "Background command "
+
+
+def _build_shell_summary(
+    description: str, status: NotificationStatus, exit_code: int | None
+) -> str:
+    """Mirror TS ``enqueueShellNotification`` (LocalShellTask.tsx:145-157):
+    ``Background command "<desc>" completed (exit code N)`` /
+    ``... failed with exit code N`` / ``... was stopped`` (killed). The exit
+    code is included only when known (TS's ``exitCode !== undefined``)."""
+    if status == "completed":
+        tail = f" (exit code {exit_code})" if exit_code is not None else ""
+        return f'{BACKGROUND_BASH_SUMMARY_PREFIX}"{description}" completed{tail}'
+    if status == "failed":
+        tail = f" with exit code {exit_code}" if exit_code is not None else ""
+        return f'{BACKGROUND_BASH_SUMMARY_PREFIX}"{description}" failed{tail}'
+    return f'{BACKGROUND_BASH_SUMMARY_PREFIX}"{description}" was stopped'
+
+
+def build_shell_notification_xml(
+    *,
+    task_id: str,
+    description: str,
+    status: NotificationStatus,
+    output_file: str,
+    exit_code: int | None = None,
+    tool_use_id: str | None = None,
+) -> str:
+    """The ``<task-notification>`` envelope for a background BASH task
+    (LocalShellTask.tsx:160-166). Unlike the agent builder, the summary is
+    XML-ESCAPED — a bg command routinely contains ``< > & |`` (and ``_reap``
+    uses ``description or command``), so a raw summary would produce a
+    malformed envelope. Pure function (no mutation/enqueue)."""
+    from xml.sax.saxutils import escape as _xml_escape
+
+    summary = _xml_escape(_build_shell_summary(description, status, exit_code))
+    tool_use_line = (
+        f"\n<{TOOL_USE_ID_TAG}>{tool_use_id}</{TOOL_USE_ID_TAG}>"
+        if tool_use_id
+        else ""
+    )
+    return (
+        f"<{TASK_NOTIFICATION_TAG}>\n"
+        f"<{TASK_ID_TAG}>{task_id}</{TASK_ID_TAG}>{tool_use_line}\n"
+        f"<{OUTPUT_FILE_TAG}>{output_file}</{OUTPUT_FILE_TAG}>\n"
+        f"<{STATUS_TAG}>{status}</{STATUS_TAG}>\n"
+        f"<{SUMMARY_TAG}>{summary}</{SUMMARY_TAG}>\n"
+        f"</{TASK_NOTIFICATION_TAG}>"
+    )
+
+
 def build_task_notification_xml(
     *,
     task_id: str,
@@ -164,8 +218,63 @@ def enqueue_agent_notification(
     return True
 
 
+def enqueue_shell_notification(
+    *,
+    task_id: str,
+    description: str,
+    status: NotificationStatus,
+    output_file: str,
+    registry: "RuntimeTaskRegistry",
+    exit_code: int | None = None,
+    tool_use_id: str | None = None,
+) -> bool:
+    """Atomically check-and-set ``notified`` on a background BASH task, then
+    enqueue its completion notification.
+
+    Port of the TS task-framework notification for background shell tasks
+    (``utils/task/framework.ts:280-289`` enqueues a ``task-notification`` when a
+    task reaches a terminal state; ``BashTool/prompt.ts:285-287`` promises "you
+    will be notified when it completes — do not poll"). The port previously
+    marked the terminal state ``notified=True`` WITHOUT sending (the forward
+    trap in ``background.py``), so a ``run_in_background`` bash finishing while
+    the model was away went unannounced. The check-and-set here is the single
+    duplicate-delivery guard, exactly as ``enqueue_agent_notification`` — but
+    gated on ``LocalShellTaskState`` (the bash task type) instead of
+    ``LocalAgentTaskState``."""
+    from src.tasks.local_shell import LocalShellTaskState
+
+    should_enqueue = False
+
+    def _mark_notified(prev: Any) -> Any:
+        nonlocal should_enqueue
+        if not isinstance(prev, LocalShellTaskState):
+            return prev
+        if prev.notified:
+            return prev
+        should_enqueue = True
+        return replace(prev, notified=True)
+
+    registry.update(task_id, _mark_notified)
+    if not should_enqueue:
+        return False
+
+    xml = build_shell_notification_xml(
+        task_id=task_id,
+        description=description,
+        status=status,
+        output_file=output_file,
+        exit_code=exit_code,
+        tool_use_id=tool_use_id,
+    )
+    enqueue_pending_notification(value=xml, mode="task-notification")
+    return True
+
+
 __all__ = [
     "NotificationStatus",
     "build_task_notification_xml",
+    "build_shell_notification_xml",
+    "BACKGROUND_BASH_SUMMARY_PREFIX",
     "enqueue_agent_notification",
+    "enqueue_shell_notification",
 ]
