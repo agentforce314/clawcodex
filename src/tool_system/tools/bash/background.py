@@ -175,7 +175,27 @@ def spawn_background_bash(
                     registry=context.runtime_tasks,
                 )
             except Exception:  # noqa: BLE001 — notification must not break reaping
-                pass
+                # FALLBACK: if the enqueue raised, the terminal state is still
+                # notified=False and the eviction sweeper (which keeps
+                # un-notified terminal tasks) would leak it forever. Mark it
+                # notified so it stays evictable — degrading to the OLD
+                # behavior (evictable, unsent) rather than a leak. This is
+                # strictly better than the pre-C5 silent-drop.
+                import logging as _logging
+                _logging.getLogger(__name__).debug(
+                    "[bg] shell completion notification failed", exc_info=True
+                )
+                try:
+                    from dataclasses import replace as _replace
+
+                    def _force_notified(prev: Any) -> Any:
+                        if isinstance(prev, LocalShellTaskState) and not prev.notified:
+                            return _replace(prev, notified=True)
+                        return prev
+
+                    context.runtime_tasks.update(task_id, _force_notified)
+                except Exception:  # noqa: BLE001
+                    pass
             # Mirror to the legacy dict in lockstep so old readers see the
             # exit code without round-tripping through runtime_tasks. The
             # legacy dict carries the chapter-10 status string too — older
