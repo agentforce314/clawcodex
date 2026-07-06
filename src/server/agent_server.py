@@ -626,6 +626,9 @@ class _AgentSession:
         if subtype == "subgoal":
             self._do_subgoal_command(request_id, inner.get("arg"))
             return
+        if subtype == "advisor":
+            self._do_advisor_command(request_id, inner.get("arg"))
+            return
         if subtype == "clear":
             # Reset the conversation so /clear actually starts a fresh context
             # (not just the client screen). Idle-only.
@@ -2051,6 +2054,67 @@ class _AgentSession:
             self._reply(request_id, reply)
         except Exception as exc:  # noqa: BLE001
             logger.exception("[agent-server] subgoal command failed")
+            self._reply(request_id, {"ok": False, "error": str(exc)})
+
+    def _do_advisor_command(self, request_id: object, arg: object) -> None:
+        """Control handler for /advisor — configure the reviewer model.
+
+        Bridges to the command-system implementation (advisor_command_call),
+        which owns the full grammar: bare status query, ``<provider>:<model>
+        [--client]``, ``--client`` / ``--no-client`` alone, ``off`` /
+        ``unset``. The command reads only ``provider`` (mode decision +
+        main-loop model) and ``app_state_store`` off the context; the
+        remaining CommandContext fields are required positionally but
+        unused here.
+
+        ``app_state_store`` is deliberately None even though single-session
+        transports carry one: ``seed_app_state_from_settings`` doesn't seed
+        the advisor fields, so a store-preferred read is blind to config
+        persisted by a prior session ("/advisor" reports not-set while the
+        advisor fires), and a store-preferred ``off`` write is swallowed by
+        the persistence handlers' equality-skip (defaults → defaults).
+        With no store, every helper reads AND writes user settings directly
+        (+ cache invalidation) — the same channel the query layer's
+        activation check reads (src/query/query.py).
+
+        Reply shape: transport-level ``ok`` is True whenever the command
+        ran; command-level rejections (unknown provider, bad grammar) ride
+        ``text`` like every other command output. Only an exception or the
+        multi-session gate produces ``ok: False`` + ``error``.
+        """
+        # /advisor persists user-level settings (~/.clawcodex/config.json),
+        # and the query layer reads them globally — on the multi-session WS
+        # transport one client's /advisor would flip the advisor for every
+        # session on this host. Same gate as the other user-settings writers
+        # (the app-state store is only wired when single_session).
+        if not self.config.single_session:
+            self._reply(request_id, {
+                "ok": False,
+                "error": "/advisor is only available on single-session "
+                         "(stdio) transports — it persists user-level "
+                         "settings.",
+            })
+            return
+        try:
+            from src.command_system.builtins import advisor_command_call
+            from src.command_system.types import CommandContext
+
+            ctx = CommandContext(
+                workspace_root=Path(self.cwd),
+                cwd=Path(self.cwd),
+                conversation=getattr(self.session, "conversation", None),
+                cost_tracker=None,
+                history=None,
+                app_state_store=None,
+                provider=self.provider,
+            )
+            result = advisor_command_call(str(arg or ""), ctx)
+            self._reply(request_id, {
+                "ok": True,
+                "text": str(getattr(result, "value", "") or ""),
+            })
+        except Exception as exc:  # noqa: BLE001 — must not kill the control channel
+            logger.exception("[agent-server] advisor command failed")
             self._reply(request_id, {"ok": False, "error": str(exc)})
 
     def _maybe_continue_goal(self, outcome: dict | None) -> None:
