@@ -64,13 +64,27 @@ class TestStreaming:
         assert "<task-id>b1</task-id>" in joined  # parse_task_id can correlate
         assert "line1" in joined and "line2" in joined
 
-    def test_partial_line_held_until_complete(self, tmp_path):
+    def test_partial_line_held_while_running_flushed_on_completion(self, tmp_path, monkeypatch):
+        # A partial (no-newline) line is HELD on a mid-stream (non-final) drain,
+        # then FLUSHED on the final drain when the task completes (critic #3.ii).
+        import src.tool_system.tools.monitor as mod
+        monkeypatch.setattr(mod, "_POLL_INTERVAL_S", 0.0)
         log = tmp_path / "b.log"
-        log.write_text("partial-no-newline")  # no \n → nothing streamed
-        reg = _Reg(status="completed")
-        ctx = SimpleNamespace(runtime_tasks=reg)
+        log.write_text("partial-no-newline")  # no \n
+
+        class _RunThenDone:
+            def __init__(self): self._n = 0
+            def get(self, task_id):
+                self._n += 1
+                # first poll: running (partial held); then completed (final flush)
+                return SimpleNamespace(
+                    status="running" if self._n < 2 else "completed",
+                    output_path=str(log))
+        ctx = SimpleNamespace(runtime_tasks=_RunThenDone())
         _stream_output(task_id="b2", output_path=str(log), context=ctx, description="d")
-        assert peek_pending_notifications() == []  # partial not emitted
+        # the partial is surfaced on completion (final flush)
+        joined = "\n".join(str(n) for n in peek_pending_notifications())
+        assert "partial-no-newline" in joined
 
     def test_metachars_escaped(self, tmp_path):
         log = tmp_path / "b.log"
@@ -243,3 +257,40 @@ class TestRenderPathCompat:
             output_file="/tmp/b.log", exit_code=0)
         turn = build_notification_turn([done])
         assert "have finished" in turn and "STILL RUNNING" not in turn
+
+
+class TestFinalDrainAndLongLine:
+    """critic C5-P2 #3: final partial line surfaced on completion; a single
+    line longer than the read window doesn't stall forever."""
+
+    def test_final_partial_line_surfaced(self, tmp_path):
+        # a command whose last output has NO trailing newline (printf done)
+        log = tmp_path / "b.log"
+        log.write_text("first\nno-newline-tail")  # 'no-newline-tail' has no \n
+        reg = _Reg(status="completed")  # terminal → final drain
+        ctx = SimpleNamespace(runtime_tasks=reg)
+        _stream_output(task_id="b", output_path=str(log), context=ctx, description="d")
+        joined = "\n".join(str(n) for n in peek_pending_notifications())
+        assert "no-newline-tail" in joined  # the trailing partial is not lost
+
+    def test_long_line_over_read_window_makes_progress(self, tmp_path, monkeypatch):
+        import src.tool_system.tools.monitor as mod
+        monkeypatch.setattr(mod, "_MONITOR_MAX_READ_BYTES", 100)  # tiny window
+        log = tmp_path / "b.log"
+        log.write_text("Y" * 500)  # a 500-byte single line, no newline, still running
+        emitted = {"n": 0}
+
+        class _OneShotReg:
+            def __init__(self): self._calls = 0
+            def get(self, task_id):
+                self._calls += 1
+                # running for the first couple polls, then terminal
+                return SimpleNamespace(
+                    status="running" if self._calls < 3 else "completed",
+                    output_path=str(log))
+        monkeypatch.setattr(mod, "_POLL_INTERVAL_S", 0.0)
+        ctx = SimpleNamespace(runtime_tasks=_OneShotReg())
+        _stream_output(task_id="b", output_path=str(log), context=ctx, description="d")
+        # the full-window no-newline line was emitted (progress made), not stalled
+        joined = "\n".join(str(n) for n in peek_pending_notifications())
+        assert "Y" in joined

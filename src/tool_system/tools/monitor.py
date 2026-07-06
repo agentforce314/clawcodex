@@ -102,12 +102,16 @@ def _stream_output(
         sent = 0
         path = Path(output_path)
 
-        def _drain() -> int:
+        def _drain(final: bool = False) -> int:
             """Enqueue the new whole lines (if any); return 1 if it enqueued.
 
             Reads at most ``_MONITOR_MAX_READ_BYTES`` from the current offset —
             never the whole file — so a firehose command can't OOM the agent
-            (TS getTaskOutputDelta bounds each read the same way)."""
+            (TS getTaskOutputDelta bounds each read the same way).
+
+            ``final=True`` (the terminal drain) emits any trailing partial line
+            too, so a command whose last output has no newline (``printf done``)
+            isn't lost (critic C5-P2 #3.ii)."""
             nonlocal pos
             try:
                 with open(path, "rb") as fh:
@@ -120,13 +124,24 @@ def _stream_output(
             read_n = len(raw)  # advance the offset by BYTES read (offset arithmetic
             pos += read_n      # stays in bytes; decode replacement can't drift it)
             chunk = raw.decode("utf-8", "replace")
-            if "\n" not in chunk:
-                # No complete line yet — rewind so the partial is re-read next poll.
-                pos -= read_n
-                return 0
-            body, _, tail = chunk.rpartition("\n")
-            pos -= len(tail.encode("utf-8"))
-            lines = body.strip("\n")
+            if "\n" in chunk:
+                if final:
+                    lines = chunk  # include the trailing partial on the last drain
+                else:
+                    body, _, tail = chunk.rpartition("\n")
+                    pos -= len(tail.encode("utf-8"))  # hold the partial for next poll
+                    lines = body
+            else:
+                # No newline in this window. Normally hold the partial for the
+                # next poll — UNLESS this is the final drain, or the window is
+                # FULL (a single line longer than the read cap would otherwise
+                # stall forever with no progress; critic C5-P2 #3.i). In those
+                # cases emit what we have so the stream keeps moving.
+                if not final and read_n < _MONITOR_MAX_READ_BYTES:
+                    pos -= read_n
+                    return 0
+                lines = chunk
+            lines = lines.strip("\n")
             if not lines:
                 return 0
             # Per-notification size bound (critic C5-P2 #1): keep the TAIL (the
@@ -147,7 +162,7 @@ def _stream_output(
             sent += _drain()
             if sent >= _MONITOR_MAX_NOTIFICATIONS:
                 # BACKPRESSURE: too many events → auto-stop the monitor.
-                _drain()
+                _drain(final=True)
                 _kill_monitor_task(task_id, context)
                 enqueue_pending_notification(
                     value=_monitor_notification_xml(
@@ -163,11 +178,11 @@ def _stream_output(
             if state is None:
                 return
             if status is not None and status != "running":
-                _drain()  # final drain so the last lines aren't lost
+                _drain(final=True)  # final drain: emit the last (maybe partial) lines
                 return
             time.sleep(_POLL_INTERVAL_S)
         # Deadline — stop the shell so it doesn't linger past the monitor.
-        _drain()
+        _drain(final=True)
         _kill_monitor_task(task_id, context)
     except Exception:  # noqa: BLE001 — a monitor poller must NEVER crash the app
         logger.debug("monitor poller failed for %s", task_id, exc_info=True)
