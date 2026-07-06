@@ -468,6 +468,7 @@ def _resolve_permission_state(args) -> None:
     from src.permissions.modes import (
         has_allow_bypass_permissions_mode,
         initial_permission_mode_from_cli,
+        is_bypass_permissions_mode_disabled,
     )
 
     dangerously = bool(getattr(args, 'dangerously_skip_permissions', False))
@@ -484,11 +485,17 @@ def _resolve_permission_state(args) -> None:
         dangerously_skip_permissions=dangerously,
     )
 
+    # TS isBypassPermissionsModeAvailable (permissionSetup.ts:941-946):
+    # (bypass-requested OR allow-key) AND NOT disabled. The negative guard was
+    # dropped in the port → an operator's disableBypassPermissionsMode lockdown
+    # was silently ignored (critic C12, a live fail-open). A disable overrides
+    # even an explicit --dangerously-skip-permissions, matching TS's
+    # unconditional `&& !settingsDisableBypassPermissionsMode`.
     is_bypass_available = (
         dangerously
         or allow_dangerously
         or has_allow_bypass_permissions_mode()
-    )
+    ) and not is_bypass_permissions_mode_disabled()
 
     # Stash on args so downstream entrypoints don't need to re-derive.
     args._resolved_permission_mode = mode
