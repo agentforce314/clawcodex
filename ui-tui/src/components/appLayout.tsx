@@ -191,13 +191,8 @@ const ComposerPane = memo(function ComposerPane({
   const isBlocked = useStore($isBlocked)
   const sh = composer.input.startsWith('!')
 
-  const promptText = composerPromptText(
-    ui.theme.brand.prompt,
-    ui.info?.profile_name,
-    sh,
-    TERMUX_TUI_MODE,
-    composer.cols
-  )
+  // Bare glyph — the provider already reads out on the stats line below.
+  const promptText = composerPromptText(ui.theme.brand.prompt, sh, TERMUX_TUI_MODE)
 
   const promptWidth = composerPromptWidth(promptText)
   const inputColumns = stableComposerColumns(composer.cols, promptWidth, TERMUX_TUI_MODE)

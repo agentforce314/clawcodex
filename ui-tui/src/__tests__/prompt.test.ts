@@ -4,28 +4,20 @@ import { composerPromptText } from '../lib/prompt.js'
 
 describe('composerPromptText', () => {
   it('returns shell prompt for ! commands', () => {
-    expect(composerPromptText('❯', 'coder', true)).toBe('$')
+    expect(composerPromptText('❯', true)).toBe('$')
   })
 
-  it('prefixes named profiles onto the normal prompt', () => {
-    expect(composerPromptText('❯', 'coder')).toBe('coder ❯')
-  })
-
-  it('does not prefix default or custom profiles', () => {
-    expect(composerPromptText('❯', 'default')).toBe('❯')
-    expect(composerPromptText('❯', 'custom')).toBe('❯')
+  it('is the bare brand glyph — no provider prefix (the stats line carries it)', () => {
     expect(composerPromptText('❯')).toBe('❯')
+    // Compound branding glyphs pass through unmodified.
+    expect(composerPromptText('Ψ >')).toBe('Ψ >')
   })
 
   it('uses a Termux-safe ASCII prompt marker in normal mode', () => {
-    expect(composerPromptText('❯', 'coder', false, true, 50)).toBe('>')
+    expect(composerPromptText('❯', false, true)).toBe('>')
   })
 
-  it('keeps profile prefix suppressed on narrow Termux widths', () => {
-    expect(composerPromptText('❯', 'upstr', false, true, 72)).toBe('>')
-  })
-
-  it('allows profile prefix on very wide Termux panes', () => {
-    expect(composerPromptText('❯', 'upstr', false, true, 120)).toBe('upstr >')
+  it('keeps shell mode ahead of Termux substitution', () => {
+    expect(composerPromptText('❯', true, true)).toBe('$')
   })
 })
