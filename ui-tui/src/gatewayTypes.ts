@@ -768,6 +768,8 @@ export type GatewayEvent =
         permission_mode?: string
         reasoning?: string
         rendered?: string
+        /** Completed-user-turn odometer (server-authoritative; survives /resume). */
+        session_turns?: number
         text?: string
         usage?: Usage
       }

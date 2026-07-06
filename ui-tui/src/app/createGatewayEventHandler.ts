@@ -13,6 +13,7 @@ import { setLastCostSnapshot } from '../lib/costSummary.js'
 import { isTodoDone } from '../lib/liveProgress.js'
 import { openExternalUrl } from '../lib/openExternalUrl.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
+import { statsFromCostSnapshot } from '../lib/sessionStats.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
 import { formatAbandonedClarify, formatToolCall, stripAnsi } from '../lib/text.js'
 import { fromSkin } from '../theme.js'
@@ -968,6 +969,25 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         // Session totals rider — /cost's baseline and the exit summary's
         // data source (printed by registerCostSummaryOnExit, entry.tsx).
         setLastCostSnapshot(ev.payload?.cost)
+
+        // Stats line under the composer: token/cost totals fold out of the
+        // snapshot; the turn odometer is server-authoritative. Each piece
+        // updates independently so an empty best-effort snapshot can't zero
+        // the totals and a snapshot-only payload can't stall the odometer.
+        {
+          const snap = ev.payload?.cost
+          const turns = ev.payload?.session_turns
+
+          if ((snap && Object.keys(snap).length > 0) || typeof turns === 'number') {
+            patchUiState(state => ({
+              ...state,
+              sessionStats:
+                snap && Object.keys(snap).length > 0
+                  ? statsFromCostSnapshot(snap, turns ?? state.sessionStats.turns)
+                  : { ...state.sessionStats, turns: turns! }
+            }))
+          }
+        }
 
         return
       }

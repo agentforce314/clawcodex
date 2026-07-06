@@ -99,6 +99,22 @@ describe('GatewayClient NDJSON adapter', () => {
     await expect(gw.request('session.create', {})).resolves.toMatchObject({ session_id: 's1' })
   })
 
+  it('passes the session totals rider through on result (cost + session_turns)', async () => {
+    proc.line({
+      cost: { total_cost_usd: 0.0048 },
+      result: 'done',
+      session_turns: 3,
+      subtype: 'success',
+      type: 'result'
+    })
+    await vi.waitFor(() => expect(last('message.complete')).toBeTruthy())
+    expect(last('message.complete').payload).toMatchObject({
+      cost: { total_cost_usd: 0.0048 },
+      session_turns: 3,
+      text: 'done'
+    })
+  })
+
   it('labels file tools with a workspace-relative path', async () => {
     proc.line(toolUse('t1', 'Read', { file_path: '/ws/src/foo.ts' }))
     await vi.waitFor(() => expect(last('tool.start')).toBeTruthy())

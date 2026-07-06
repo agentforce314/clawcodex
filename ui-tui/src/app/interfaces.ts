@@ -6,6 +6,7 @@ import type { GatewayClient } from '../gatewayClient.js'
 import type { BillingStateResponse, ImageAttachResponse, SessionCloseResponse } from '../gatewayTypes.js'
 import type { ParsedVoiceRecordKey } from '../lib/platform.js'
 import type { RpcResult } from '../lib/rpc.js'
+import type { SessionStats } from '../lib/sessionStats.js'
 import type { Theme } from '../theme.js'
 import type {
   ApprovalReq,
@@ -180,6 +181,9 @@ export interface UiState {
 
   sections: SectionVisibility
   sessionTitle: string
+  // Accumulated turn/token/cost totals for the stats line under the composer
+  // (refreshed from each end-of-turn result's CostSnapshot + session_turns).
+  sessionStats: SessionStats
   showReasoning: boolean
   indicatorStyle: IndicatorStyle
   sid: null | string

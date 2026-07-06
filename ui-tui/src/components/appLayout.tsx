@@ -31,6 +31,7 @@ import { HelpHint } from './helpHint.js'
 import { MessageLine } from './messageLine.js'
 import { PetKitty, PetSprite } from './petSprite.js'
 import { QueuedMessages } from './queuedMessages.js'
+import { SessionStatsLine } from './sessionStatsLine.js'
 import { LiveTodoPanel, StreamingAssistant } from './streamingAssistant.js'
 import { TextInput, type TextInputMouseApi } from './textInput.js'
 
@@ -367,6 +368,8 @@ const ComposerPane = memo(function ComposerPane({
       />
 
       <StatusRulePane at="bottom" composer={composer} status={status} />
+
+      <SessionStatsLine cols={composer.cols} />
     </NoSelect>
   )
 })

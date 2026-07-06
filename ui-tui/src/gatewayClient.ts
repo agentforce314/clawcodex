@@ -1178,6 +1178,7 @@ export class GatewayClient extends EventEmitter {
             // Running session totals for /cost + the exit summary.
             cost: msg.cost && typeof msg.cost === 'object' ? msg.cost : undefined,
             permission_mode: typeof msg.permission_mode === 'string' ? msg.permission_mode : undefined,
+            session_turns: typeof msg.session_turns === 'number' ? msg.session_turns : undefined,
             text: typeof msg.result === 'string' ? msg.result : undefined,
             usage: msg.usage
           },
