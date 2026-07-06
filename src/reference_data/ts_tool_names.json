@@ -1,5 +1,5 @@
 {
-  "_comment": "Canonical TS tool names from tools.ts getAllBaseTools, mapped to Python equivalents",
+  "_comment": "Canonical TS tool names from tools.ts getAllBaseTools, mapped to Python equivalents. NOTE: StructuredOutput/SyntheticOutputTool is a 'specialTool' EXCLUDED from getAllBaseTools (tools.ts:293-299) and is injected per-call only for schema/jsonSchema runs \u2014 so it is intentionally NOT a core base tool (C6).",
   "core_tools": {
     "Agent": {
       "python_name": "Agent",
@@ -85,9 +85,6 @@
     },
     "Status": {
       "python_name": "Status"
-    },
-    "StructuredOutput": {
-      "python_name": "StructuredOutput"
     },
     "TaskCreate": {
       "python_name": "TaskCreate"

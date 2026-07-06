@@ -66,7 +66,11 @@ class TestClaudeCodeToolParity(unittest.TestCase):
             "Write",
         ]
         not_yet_implemented = {"NotebookEdit", "PowerShell", "REPL", "RemoteTrigger", "SendMessage"}
-        missing = [name for name in expected if self.registry.get(name) is None and name not in not_yet_implemented]
+        # C6: StructuredOutput is a SPECIAL tool — injected per-call by the
+        # schema path (workflow/structured.py), NOT in the default registry
+        # (TS specialTools excludes SyntheticOutputTool from getAllBaseTools).
+        special_injected = {"StructuredOutput"}
+        missing = [name for name in expected if self.registry.get(name) is None and name not in not_yet_implemented and name not in special_injected]
         self.assertEqual(missing, [])
 
     def test_send_user_message_is_user_visible_fallback(self) -> None:
