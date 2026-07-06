@@ -591,7 +591,14 @@ class _AgentSession:
                 # Fresh conversation, fresh odometer (token/cost totals are
                 # process-wide spend and deliberately survive /clear).
                 self._stats_turns = 0
-                self._reply(request_id, {"ok": True, "count": 0})
+                self._reply(request_id, {
+                    "ok": True,
+                    "count": 0,
+                    # Stats-line refresh rider (same shape as the resume
+                    # reply): turns reset with the conversation, spend stays.
+                    "session_turns": 0,
+                    "cost": _cost_snapshot(),
+                })
             except Exception as exc:  # noqa: BLE001
                 self._reply(request_id, {"ok": False, "error": str(exc)})
             return
@@ -693,6 +700,10 @@ class _AgentSession:
                 # re-stamp sites.
                 "mode": mode_value,
                 "conversation": self.session.conversation.to_dict(),
+                # Turns odometer — _do_resume prefers this exact counter over
+                # recounting the conversation (which can't tell a real prompt
+                # from a persisted notification/hook-context message).
+                "turns": self._stats_turns,
             }
             # ch03 round-4 GAP B — the live persister carries the cost
             # block (schema owner: cost_restore.build_cost_block, matching
@@ -1335,10 +1346,20 @@ class _AgentSession:
             data = json.loads(f.read_text(encoding="utf-8"))
             conv = Conversation.from_dict(data.get("conversation", {"messages": []}))
             self.session.conversation = conv
-            # Seed the turns odometer from the restored conversation so the
-            # stats line continues where the resumed session left off (its
-            # token/cost siblings restore below via restore_cost_state).
-            self._stats_turns = _count_prompt_turns(conv.messages)
+            # Seed the turns odometer so the stats line continues where the
+            # resumed session left off (its token/cost siblings restore below
+            # via restore_cost_state). Prefer the exact persisted counter
+            # (_save_session stamps it every turn end); fall back to counting
+            # the restored conversation for pre-"turns" session files — an
+            # approximation: notification prompts, hook-injected context and
+            # aborted-turn prompts persist as plain user messages, so the
+            # recount can run high vs the live success-only rule.
+            saved_turns = data.get("turns")
+            self._stats_turns = (
+                saved_turns
+                if isinstance(saved_turns, int) and not isinstance(saved_turns, bool) and saved_turns >= 0
+                else _count_prompt_turns(conv.messages)
+            )
             # ch03 round-4 GAP B — restore the accumulated cost counters
             # (guarded: the reader refuses a file whose session_id header
             # doesn't match). Gated single_session like every other
@@ -1440,6 +1461,11 @@ class _AgentSession:
                 "ok": True,
                 "count": len(conv.messages),
                 "preview": data.get("preview", ""),
+                # Session-stats seed for the client's stats line — the next
+                # result message is potentially a whole turn away, so the
+                # reply carries the authoritative odometer + totals now.
+                "session_turns": self._stats_turns,
+                "cost": _cost_snapshot(),
                 **({"mode_banner": mode_banner} if mode_banner else {}),
             })
         except Exception as exc:  # noqa: BLE001
@@ -1482,6 +1508,10 @@ class _AgentSession:
             removed = len(msgs) - target
             del msgs[target:]
             # Rewound turns leave the odometer — recount from what's left.
+            # NOTE: `is_prompt` above counts isMeta text messages (rewind
+            # boundaries pre-date the odometer); _count_prompt_turns excludes
+            # them, so the recount can sit below the number of boundaries
+            # rewind saw. Fine for an odometer; don't reuse is_prompt here.
             self._stats_turns = _count_prompt_turns(msgs)
             self._reply(request_id, {"ok": True, "removed": removed, "count": len(msgs)})
         except Exception as exc:  # noqa: BLE001

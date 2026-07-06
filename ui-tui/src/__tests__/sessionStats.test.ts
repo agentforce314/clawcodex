@@ -94,6 +94,19 @@ describe('buildSessionStatsLine', () => {
     expect(build(90)).toBe('deepseek · deepseek-v4-flash · turns: 1 · tokens: 33189 in / 622 out · cost $0.0048')
   })
 
+  it('tilde-abbreviates only at a path boundary (/Users/testuser is not under /Users/test)', () => {
+    const under = `/Users/test/${'a'.repeat(30)}`
+    const sibling = `/Users/testuser/${'a'.repeat(26)}`
+
+    // Same length (42): the under-home cwd shrinks to ~/… and fits; the
+    // sibling must NOT become ~user/… — it falls through to the … tail.
+    expect(build(120, { cwd: under })).toContain(` · ~/${'a'.repeat(30)} · `)
+
+    const shed = build(120, { cwd: sibling })
+    expect(shed).not.toContain('~user')
+    expect(shed).toContain(' · …')
+  })
+
   it('omits empty segments instead of doubling separators', () => {
     expect(build(200, { cwd: '', provider: '' })).toBe(
       'deepseek-v4-flash · turns: 1 · tokens: 33189 in / 622 out · cost $0.0048'
@@ -170,6 +183,21 @@ describe('message.complete → ui.sessionStats', () => {
     onEvent({ payload: { text: 'plain' }, type: 'message.complete' } as any)
 
     expect(getUiState().sessionStats).toBe(before)
+  })
+
+  it('folds an out-of-band session.stats event (/clear and /resume reply riders)', () => {
+    const onEvent = createGatewayEventHandler(buildCtx())
+
+    onEvent({ payload: { cost: SNAPSHOT, session_turns: 5, text: 'a' }, type: 'message.complete' } as any)
+    // /clear rider: odometer resets, spend totals persist.
+    onEvent({ payload: { cost: SNAPSHOT, session_turns: 0 }, type: 'session.stats' } as any)
+
+    expect(getUiState().sessionStats).toEqual({
+      costUsd: 0.0048,
+      inputTokens: 33189,
+      outputTokens: 622,
+      turns: 0
+    })
   })
 })
 

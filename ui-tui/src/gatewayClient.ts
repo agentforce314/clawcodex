@@ -542,6 +542,16 @@ export class GatewayClient extends EventEmitter {
         // system/init has set it. The app then enables the composer.
         return this.readyPromise.then(() => ({ info: this.sessionInfo ?? undefined, session_id: this.sessionId }) as T)
 
+      case 'session.clear':
+        // /clear's server half: reset the backend conversation (and its turn
+        // odometer) so a "cleared" transcript isn't silently re-fed the old
+        // context next prompt. The reply's stats rider refreshes the line.
+        return this.controlQuery('clear', {}).then(r => {
+          this.publishSessionStats(r)
+
+          return { ok: (r as any)?.ok !== false } as T
+        })
+
       case 'setup.status':
         return Promise.resolve({ provider_configured: true } as T)
 
@@ -824,10 +834,12 @@ export class GatewayClient extends EventEmitter {
     const out = (output: string) => ({ output, type: 'exec' })
 
     switch (name) {
-      case 'clear':
-        await this.controlQuery('clear', {})
+      case 'clear': {
+        const r = await this.controlQuery('clear', {})
+        this.publishSessionStats(r)
 
         return out('Conversation cleared.')
+      }
       case 'compact': {
         const r = (await this.controlQuery('compact', { instructions: arg ?? null })) as any
 
@@ -981,6 +993,7 @@ export class GatewayClient extends EventEmitter {
       case 'resume': {
         if (arg) {
           const r = (await this.controlQuery('resume', { session_id: arg })) as any
+          this.publishSessionStats(r)
 
           // mode_banner: coordinator-mode flip notice (matchSessionMode) —
           // e.g. "Entered coordinator mode to match resumed session."
@@ -1391,6 +1404,24 @@ export class GatewayClient extends EventEmitter {
 
     if (this.subscribed) {this.emit('event', ev)}
     else {this.buffered.push(ev)}
+  }
+
+  /** Stats-line refresh from a clear/resume reply's rider (session_turns +
+   *  cost snapshot). Silently a no-op for replies without the fields. */
+  private publishSessionStats(r: unknown): void {
+    const reply = r as { cost?: unknown; session_turns?: unknown } | null
+
+    if (typeof reply?.session_turns !== 'number' && !reply?.cost) {
+      return
+    }
+
+    this.publish({
+      payload: {
+        cost: reply.cost && typeof reply.cost === 'object' ? (reply.cost as any) : undefined,
+        session_turns: typeof reply.session_turns === 'number' ? reply.session_turns : undefined
+      },
+      type: 'session.stats'
+    })
   }
 
   private pushLog(line: string): void {

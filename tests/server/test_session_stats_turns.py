@@ -2,16 +2,21 @@
 deleted REPL's bottom toolbar, repl/core.py ``_bottom_toolbar``).
 
 Covers:
-* ``_count_prompt_turns`` — the /resume & /rewind re-seed predicate (real
-  prompts only: no meta reminders, no tool_result carrier messages).
+* ``_count_prompt_turns`` — the /resume-fallback & /rewind recount predicate
+  (real prompts only: no meta reminders, no tool_result carrier messages).
 * ``_result_message`` — stamps ``session_turns`` only when provided.
 * ``_run_turn`` — a successful turn increments the odometer and stamps the
-  result payload; an aborted turn stamps the current value unchanged; an
-  internal (notification) turn never moves it.
+  result payload; an aborted turn stamps the current value unchanged;
+  internal (notification) and btw (ephemeral) turns never move it.
+* Lifecycle: ``clear`` zeroes it (reply rider included), ``_do_rewind``
+  recounts it, ``_do_resume`` seeds it (persisted counter first, recount
+  fallback for old files), ``_save_session`` persists it.
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
 import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -152,6 +157,123 @@ class TestRunTurnOdometer(unittest.TestCase):
         self.assertEqual(payload["subtype"], "success")
         self.assertEqual(payload["session_turns"], 0)
         self.assertEqual(sess._stats_turns, 0)
+
+    def test_btw_turn_does_not_increment(self) -> None:
+        sess, emitted = self._session()
+        self._run(sess, btw=True)
+        payload = self._last_result(emitted)
+        self.assertEqual(payload["subtype"], "success")
+        self.assertEqual(payload["session_turns"], 0)
+        self.assertEqual(sess._stats_turns, 0)
+
+
+class TestLifecycleSync(unittest.TestCase):
+    """clear zeroes, rewind recounts, resume seeds, save persists."""
+
+    def _session(self) -> tuple[_AgentSession, list[dict]]:
+        from src.agent.conversation import Conversation
+
+        emitted: list[dict] = []
+        sess = _AgentSession(
+            session_id="s1", cwd="/tmp",
+            config=AgentServerConfig(single_session=True),
+            loop=MagicMock(), out_queue=MagicMock(),
+        )
+        sess._emit = lambda env: emitted.append(env)
+        sess.session = SimpleNamespace(conversation=Conversation())
+        return sess, emitted
+
+    @staticmethod
+    def _reply_of(emitted: list[dict]) -> dict:
+        responses = [e for e in emitted if e.get("type") == "control_response"]
+        assert responses, f"no control_response emitted: {emitted}"
+        return responses[-1]["response"]["response"]
+
+    def test_clear_zeroes_odometer_and_stamps_reply(self) -> None:
+        sess, emitted = self._session()
+        sess._stats_turns = 4
+        sess.session.conversation.add_user_message("hello")
+        asyncio.run(sess._handle_control_request({
+            "type": "control_request",
+            "request_id": "r1",
+            "request": {"subtype": "clear"},
+        }))
+        self.assertEqual(sess._stats_turns, 0)
+        self.assertEqual(sess.session.conversation.messages, [])
+        reply = self._reply_of(emitted)
+        self.assertEqual(reply["session_turns"], 0)
+        self.assertIn("cost", reply)
+
+    def test_rewind_recounts_from_remaining_messages(self) -> None:
+        sess, _ = self._session()
+        conv = sess.session.conversation
+        for i in range(3):
+            conv.add_user_message(f"prompt {i}")
+            conv.add_assistant_message(f"answer {i}")
+        sess._stats_turns = 3
+        sess._do_rewind("r1", 2)
+        self.assertEqual(sess._stats_turns, 1)
+        self.assertEqual(_count_prompt_turns(conv.messages), 1)
+
+    def _write_session_file(self, tmpdir, *, turns: int | None) -> str:
+        from src.agent.conversation import Conversation
+
+        conv = Conversation()
+        conv.add_user_message("first prompt")
+        conv.add_assistant_message("first answer")
+        conv.add_user_message("second prompt")
+        payload = {
+            "session_id": "saved1",
+            "conversation": conv.to_dict(),
+        }
+        if turns is not None:
+            payload["turns"] = turns
+        (tmpdir / "saved1.json").write_text(json.dumps(payload), encoding="utf-8")
+        return "saved1"
+
+    def test_resume_prefers_persisted_counter(self) -> None:
+        import pathlib
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            tmpdir = pathlib.Path(td)
+            sid = self._write_session_file(tmpdir, turns=7)
+            sess, emitted = self._session()
+            with patch("src.server.agent_server._sessions_dir", return_value=tmpdir):
+                sess._do_resume("r1", sid)
+            self.assertEqual(sess._stats_turns, 7)
+            reply = self._reply_of(emitted)
+            self.assertTrue(reply["ok"])
+            self.assertEqual(reply["session_turns"], 7)
+            self.assertIn("cost", reply)
+
+    def test_resume_falls_back_to_recount_for_old_files(self) -> None:
+        import pathlib
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            tmpdir = pathlib.Path(td)
+            sid = self._write_session_file(tmpdir, turns=None)
+            sess, _ = self._session()
+            with patch("src.server.agent_server._sessions_dir", return_value=tmpdir):
+                sess._do_resume("r1", sid)
+            # Two real prompts restored through the REAL Conversation/message
+            # round-trip — pins the predicate to the production message type.
+            self.assertEqual(sess._stats_turns, 2)
+
+    def test_save_session_persists_odometer(self) -> None:
+        import pathlib
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            tmpdir = pathlib.Path(td)
+            sess, _ = self._session()
+            sess.session.conversation.add_user_message("hello")
+            sess._stats_turns = 5
+            with patch("src.server.agent_server._sessions_dir", return_value=tmpdir):
+                sess._save_session()
+            data = json.loads((tmpdir / "s1.json").read_text(encoding="utf-8"))
+            self.assertEqual(data["turns"], 5)
 
 
 if __name__ == "__main__":

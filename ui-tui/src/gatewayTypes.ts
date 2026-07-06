@@ -776,4 +776,7 @@ export type GatewayEvent =
       session_id?: string
       type: 'message.complete'
     }
+  /** Out-of-band stats-line refresh: /clear and /resume replies carry the
+   *  odometer + totals so the line is right before any turn completes. */
+  | { payload: { cost?: CostSnapshot; session_turns?: number }; session_id?: string; type: 'session.stats' }
   | { payload?: { message?: string }; session_id?: string; type: 'error' }

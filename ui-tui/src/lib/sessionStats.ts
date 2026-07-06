@@ -60,7 +60,10 @@ export function buildSessionStatsLine({ cols, cwd, model, provider, stats }: Ses
   ]
 
   const home = process.env.HOME
-  const tilde = home && cwd.startsWith(home) ? `~${cwd.slice(home.length)}` : cwd
+  // Boundary-safe prefix check: /Users/testuser must not abbreviate under
+  // HOME=/Users/test (shortCwd's looser match is a pre-existing quirk).
+  const underHome = !!home && (cwd === home || cwd.startsWith(`${home}/`))
+  const tilde = underHome ? `~${cwd.slice(home!.length)}` : cwd
   const cwdVariants = cwd ? [cwd, tilde, shortCwd(cwd, 28), shortCwd(cwd, 12), ''] : ['']
 
   let line = ''
