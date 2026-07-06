@@ -595,7 +595,7 @@ class TestServerModePersistResume(_ServerHarness):
         self.assertTrue(inits, "init was not re-emitted after the mode flip")
         names = {t["name"] for t in inits[-1]["tools"]}
         self.assertEqual(
-            names, {"Agent", "SendMessage", "TaskStop", "StructuredOutput"}
+            names, {"Agent", "SendMessage", "TaskStop"}
         )
 
     def test_resume_without_mode_field_is_noop(self) -> None:
@@ -675,7 +675,7 @@ class TestServerMainLoopToolFilter(_ServerHarness):
         self.assertEqual(
             names,
             {
-                "Agent", "SendMessage", "TaskStop", "StructuredOutput",
+                "Agent", "SendMessage", "TaskStop",
                 "mcp__x__subscribe_pr_activity",
             },
         )
@@ -741,4 +741,6 @@ def test_headless_init_event_names_are_filtered(
     names = {
         t.name for t in coordinator_main_loop_registry(registry).list_tools()
     }
-    assert names == {"Agent", "SendMessage", "TaskStop", "StructuredOutput"}
+    # C6: StructuredOutput is no longer a static tool (TS specialTools), so the
+    # coordinator keep-if-in-allowset filter now yields the 3 real tools.
+    assert names == {"Agent", "SendMessage", "TaskStop"}
