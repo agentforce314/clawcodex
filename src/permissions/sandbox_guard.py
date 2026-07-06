@@ -21,6 +21,14 @@ This module surfaces that guard so a user who asked for a sandbox is never
 silently given an unsandboxed shell. Actual enforcement (a native
 ``sandbox-exec``/``bwrap`` engine) is the deferred
 **sandbox-native-enforcement** sub-chapter.
+
+SCOPE: like TS (``shouldUseSandbox`` is BashTool-scoped — called only from
+``bashPermissions.ts``), this guards the **Bash tool** — both foreground and
+background commands, which share the ``_bash_call`` entry (the guard runs
+before the ``run_in_background`` branch). Hook subprocesses and MCP stdio
+servers are user-authored config that TS's sandbox does not wrap either, so
+they are intentionally out of scope — the hard gate is an honest "no
+unsandboxed BASH", not a false "nothing runs unsandboxed".
 """
 from __future__ import annotations
 

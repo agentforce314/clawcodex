@@ -132,3 +132,22 @@ class TestBashHardGateRefusal:
         res = _bash_call({"command": "echo sandbox-ok"}, ctx)
         assert res.is_error is False
         assert "sandbox-ok" in res.output["stdout"]  # ran unsandboxed, with the warning
+
+
+class TestBackgroundBashAlsoGuarded:
+    """The hard gate must cover BACKGROUND bash too — else it's a false gate.
+    Both fg + bg flow through _bash_call; the guard precedes the
+    run_in_background branch."""
+
+    def test_background_bash_refused_under_hard_gate(self, monkeypatch, tmp_path):
+        from src.settings.types import SettingsSchema
+        from src.tool_system.context import ToolContext, ToolUseOptions
+        from src.tool_system.errors import ToolPermissionError
+        from src.tool_system.tools.bash.bash_tool import _bash_call
+
+        hard = SettingsSchema.from_dict({"sandbox": {"enabled": True, "failIfUnavailable": True}})
+        monkeypatch.setattr("src.settings.settings.get_settings", lambda *a, **k: hard)
+        ctx = ToolContext(workspace_root=tmp_path)
+        ctx.options = ToolUseOptions(tools=[])
+        with pytest.raises(ToolPermissionError):
+            _bash_call({"command": "sleep 100", "run_in_background": True}, ctx)
