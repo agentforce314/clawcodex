@@ -2332,6 +2332,38 @@ def _make_elicitation_handler(sess: "_AgentSession") -> Any:
     """
 
     async def _elicit(params: dict[str, Any]) -> dict[str, Any]:
+        # MCP elicitation hooks (C3): fire the 3-event unit around the prompt.
+        # An Elicitation hook may provide a response (short-circuit) or block
+        # (→ decline); an ElicitationResult hook may OVERRIDE the response or
+        # block; a Notification hook records the final action. server_name is
+        # threaded in by McpClient._run_elicitation.
+        ctx = getattr(sess, "tool_context", None)
+        server_name = params.get("serverName") or ""
+        mode = params.get("mode")
+        elicitation_id = params.get("elicitationId")
+
+        if ctx is not None and server_name:
+            try:
+                from src.hooks.hook_executor import execute_elicitation_hooks
+
+                resp, block = await execute_elicitation_hooks(
+                    server_name, params.get("message", ""), ctx,
+                    requested_schema=params.get("requestedSchema"),
+                    mode=mode, url=params.get("url"),
+                    elicitation_id=elicitation_id,
+                )
+                if block is not None:
+                    return {"action": "decline"}
+                if resp is not None:
+                    # short-circuit: the Elicitation hook itself answered.
+                    # TS returns this DIRECTLY (elicitationHandler.ts:96-107 —
+                    # `if (hookResponse) return hookResponse`), WITHOUT running
+                    # the result hooks or the notification (those run only on
+                    # the real user-prompt path below). Return as-is.
+                    return _elicit_result(resp["action"], resp.get("content"))
+            except Exception:  # noqa: BLE001 — a hook failure must not brick elicitation
+                logger.debug("[hooks] elicitation pre-hook failed", exc_info=True)
+
         request_id = str(_uuid.uuid4())
         pending = _Pending(event=threading.Event())
         with sess._lock:
@@ -2349,9 +2381,58 @@ def _make_elicitation_handler(sess: "_AgentSession") -> Any:
         finally:
             with sess._lock:
                 sess._pending.pop(request_id, None)
-        if not got:
-            return {"action": "cancel"}
-        return pending.reply or {"action": "decline"}
+        raw = {"action": "cancel"} if not got else (pending.reply or {"action": "decline"})
+        if ctx is not None and server_name:
+            return await _finish_elicitation(raw, ctx, server_name, mode, elicitation_id)
+        return raw
+
+    def _elicit_result(action: str, content: Any) -> dict[str, Any]:
+        # Omit ``content`` when None (TS emits ``undefined``, which
+        # JSON.stringify drops — a strict MCP server validating ElicitResult
+        # against "object or absent" could reject an explicit ``null``).
+        return {"action": action} if content is None else {"action": action, "content": content}
+
+    async def _finish_elicitation(
+        raw: dict[str, Any], ctx: Any, server_name: str,
+        mode: str | None, elicitation_id: str | None,
+    ) -> dict[str, Any]:
+        """Run ElicitationResult hooks (may override/block), then fire the
+        elicitation_response Notification (port of runElicitationResultHooks).
+
+        The return value is computed inside the try (a result-hook raise leaves
+        ``final = raw``) but the notification fires OUTSIDE it: TS fires it
+        fire-and-forget (``void``) so it can NEVER alter the ElicitResult
+        (critic C3-MAJOR). It fires on every path — block, override,
+        passthrough, and the result-hook error path (TS "even on error",
+        elicitationHandler.ts:304-310 → MINOR-1). ``execute_notification_hooks``
+        itself never raises."""
+        from src.hooks.hook_executor import (
+            execute_elicitation_result_hooks,
+            execute_notification_hooks,
+        )
+
+        final = raw
+        try:
+            resp, block = await execute_elicitation_result_hooks(
+                server_name, raw.get("action", "decline"), raw.get("content"),
+                ctx, mode=mode, elicitation_id=elicitation_id,
+            )
+            if block is not None:
+                final = {"action": "decline"}
+            elif resp is not None:
+                _c = resp.get("content")
+                final = _elicit_result(
+                    resp["action"], _c if _c is not None else raw.get("content")
+                )
+        except Exception:  # noqa: BLE001 — a result-hook failure falls back to raw
+            logger.debug("[hooks] elicitation result-hook failed", exc_info=True)
+            final = raw
+        # Fire-and-forget observability — never alters ``final``.
+        await execute_notification_hooks(
+            f'Elicitation response for server "{server_name}": {final.get("action")}',
+            "elicitation_response", ctx,
+        )
+        return final
 
     return _elicit
 
