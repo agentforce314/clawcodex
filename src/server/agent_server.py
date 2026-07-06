@@ -245,6 +245,18 @@ class _AgentSession:
             return
         subtype = inner.get("subtype")
         request_id = msg.get("request_id")
+        # A session that refused to start (``init_error`` — e.g. the sandbox
+        # HARD GATE) must not service control requests that actually DO work.
+        # ``bg_run``/``bg_agent`` (/bg, /bg-agent) spawn subprocesses via
+        # ``_do_bgtask`` → ``subprocess.Popen(shell=True)`` OUTSIDE
+        # ``_build_runtime`` and the turn path — so without this guard they'd
+        # run UNSANDBOXED under a hard-gate config the session was supposed to
+        # refuse (critic C8). ``interrupt`` is exempt (a benign abort of a
+        # non-existent turn). Mirrors the ``session not ready`` pattern the
+        # permission-mode handlers already use.
+        if self.init_error is not None and subtype != "interrupt":
+            self._reply(request_id, {"ok": False, "error": self.init_error})
+            return
         if subtype == "interrupt":
             with self._lock:
                 abort = self._current_abort

@@ -32,10 +32,13 @@ SCOPE — two distinct mechanisms (critic C8):
 * The HARD GATE (``enabled`` + ``failIfUnavailable``) is a REFUSE-TO-START, not
   a per-command refusal — TS exits at the entrypoints (print.ts:600 /
   REPL.tsx:2362, "refusing to start without a working sandbox"). The port
-  enforces it in ``agent_server._build_runtime`` (``sess.init_error`` →
-  the session refuses to start, so /bg + MCP + hooks never run) AND at
-  ``_bash_call`` as a CLI-path backstop. So the "hard gate" is truthful:
-  nothing runs, not just Bash.
+  enforces it in ``agent_server._build_runtime`` (``sess.init_error`` → the
+  session refuses to start, so MCP + hooks never run) AND in
+  ``_handle_control_request`` (a refused session rejects ``bg_run``/``bg_agent``
+  and every other control request except ``interrupt`` — /bg is a CONTROL
+  request that bypasses _build_runtime and the turn path) AND at ``_bash_call``
+  as a CLI-path backstop. So the "hard gate" is truthful: nothing runs, not
+  just Bash.
 """
 from __future__ import annotations
 

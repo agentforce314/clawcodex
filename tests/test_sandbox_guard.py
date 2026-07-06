@@ -206,6 +206,63 @@ class TestHardGateRefusesToStart:
         # it may fail for the unknown provider, but NOT with a sandbox gate
         assert sess.init_error is None or "sandbox" not in sess.init_error.lower()
 
+    def test_bg_run_control_request_refused_under_init_error(self, monkeypatch, tmp_path):
+        """critic C8 re-review: /bg is a CONTROL request that bypasses
+        _build_runtime + the turn path, so a refused-to-start session (init_error
+        set) must REFUSE bg_run — else it spawns an unsandboxed subprocess. Drive
+        the real _handle_control_request and assert no subprocess + the gate
+        error reply."""
+        import asyncio
+        import subprocess
+        from unittest.mock import MagicMock
+
+        from src.server.agent_server import AgentServerConfig, _AgentSession
+
+        sess = _AgentSession(
+            session_id="s1", cwd=str(tmp_path),
+            config=AgentServerConfig(provider_name="anthropic", single_session=True),
+            loop=MagicMock(), out_queue=MagicMock(),
+        )
+        sess.init_error = "sandbox hard gate: refusing to start"
+
+        replies = []
+        monkeypatch.setattr(sess, "_reply", lambda rid, payload: replies.append((rid, payload)))
+        # if the guard fails, _do_bgtask would run — trip both it and Popen
+        monkeypatch.setattr(subprocess, "Popen",
+                            lambda *a, **k: (_ for _ in ()).throw(
+                                AssertionError("subprocess spawned under init_error — /bg leaked!")))
+        monkeypatch.setattr(sess, "_do_bgtask",
+                            lambda *a, **k: (_ for _ in ()).throw(
+                                AssertionError("_do_bgtask reached under init_error")))
+
+        asyncio.run(sess._handle_control_request({
+            "request_id": "r1",
+            "request": {"subtype": "bg_run", "command": "echo leaked"},
+        }))
+        assert replies and replies[0][0] == "r1"
+        assert replies[0][1]["ok"] is False
+        assert "sandbox" in replies[0][1]["error"].lower()
+
+    def test_interrupt_still_works_under_init_error(self, monkeypatch, tmp_path):
+        # interrupt is exempt (benign abort) — must NOT be refused with the gate error
+        import asyncio
+        from unittest.mock import MagicMock
+
+        from src.server.agent_server import AgentServerConfig, _AgentSession
+
+        sess = _AgentSession(
+            session_id="s2", cwd=str(tmp_path),
+            config=AgentServerConfig(provider_name="anthropic", single_session=True),
+            loop=MagicMock(), out_queue=MagicMock(),
+        )
+        sess.init_error = "sandbox hard gate"
+        replies = []
+        monkeypatch.setattr(sess, "_reply", lambda rid, payload: replies.append((rid, payload)))
+        asyncio.run(sess._handle_control_request({
+            "request_id": "r2", "request": {"subtype": "interrupt"},
+        }))
+        assert not any("sandbox" in str(r[1].get("error", "")).lower() for r in replies)
+
 
 class TestSkillShellFailsClosed:
     """minor #4: a skill/slash `!`-embedded shell runs through _bash_call, so
