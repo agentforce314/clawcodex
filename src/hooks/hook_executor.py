@@ -561,11 +561,55 @@ async def _execute_command_hook(
                         result.updated_permissions = hso_decision["updatedPermissions"]
                     if hso_decision.get("interrupt"):
                         result.interrupt = True
+                # PreToolUse structured form (types/hooks.ts:73-78, mapped at
+                # utils/hooks.ts:726-800): ``hookSpecificOutput.permissionDecision``
+                # is the DOCUMENTED way a PreToolUse hook allows/denies/asks.
+                # TS treats it as the MORE SPECIFIC decision — it OVERRIDES the
+                # flat ``decision`` (unlike the PermissionRequest envelope
+                # above, which only fills when unset). A deny's message rides
+                # hook_permission_decision_reason (the port's single-path deny
+                # convention — TS also sets a separate blockingError, which
+                # here would double-yield a denial).
+                if isinstance(hso, dict) and hso.get("hookEventName") == "PreToolUse":
+                    pd = hso.get("permissionDecision")
+                    if pd is not None:
+                        if pd in ("allow", "deny", "ask"):
+                            result.permission_behavior = pd
+                            if pd == "deny":
+                                result.hook_permission_decision_reason = (
+                                    hso.get("permissionDecisionReason")
+                                    or parsed.reason
+                                    or "Blocked by hook"
+                                )
+                        else:
+                            # TS throws "Unknown hook permissionDecision
+                            # type"; the port's WI-1.4 posture is warn + drop.
+                            logger.warning(
+                                "Hook %r emitted unknown permissionDecision %r;"
+                                " valid types are: allow, deny, ask. Dropping.",
+                                command, pd,
+                            )
+                    pdr = hso.get("permissionDecisionReason")
+                    if isinstance(pdr, str) and pdr:
+                        result.hook_permission_decision_reason = pdr
+                    if isinstance(hso.get("updatedInput"), dict):
+                        result.updated_input = hso["updatedInput"]
                 if parsed.preventContinuation:
                     result.prevent_continuation = True
                     result.stop_reason = parsed.stopReason
                 if parsed.additionalContexts:
                     result.additional_contexts = parsed.additionalContexts
+                # ``hookSpecificOutput.additionalContext`` (singular string —
+                # the PreToolUse/PostToolUse/UserPromptSubmit/SessionStart
+                # forms all carry it, utils/hooks.ts:793-800): APPEND onto the
+                # additional_contexts list (after the flat assignment above,
+                # so both survive) → the hook_additional_context attachment.
+                if isinstance(hso, dict):
+                    _hso_ac = hso.get("additionalContext")
+                    if isinstance(_hso_ac, str) and _hso_ac:
+                        result.additional_contexts = (
+                            list(result.additional_contexts or []) + [_hso_ac]
+                        )
                 if parsed.updatedMCPToolOutput is not None:
                     result.updated_mcp_tool_output = parsed.updatedMCPToolOutput
 
