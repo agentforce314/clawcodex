@@ -267,6 +267,18 @@ async def _check_permissions_and_call_tool(
                 hook_permission_result = result.get("hookPermissionResult") if isinstance(result, dict) else getattr(result, "hook_permission_result", None)
             elif result_type == "hookUpdatedInput":
                 processed_input = result.get("updatedInput") if isinstance(result, dict) else getattr(result, "updated_input", processed_input)
+            elif result_type == "additionalContext":
+                # A PreToolUse hook's additionalContext / additionalContexts
+                # (the hook_additional_context attachment). run_pre_tool_use_hooks
+                # wraps it as {"type":"additionalContext","message":{"message":
+                # <attachment>}} (tool_hooks.py:116-128); surface it like the
+                # "message" case. Previously DROPPED (critic C1-M2).
+                _wrap = result.get("message") if isinstance(result, dict) else None
+                _msg = _wrap.get("message") if isinstance(_wrap, dict) else _wrap
+                if _msg:
+                    resulting_messages.append(
+                        _msg if isinstance(_msg, MessageUpdateLazy) else MessageUpdateLazy(message=_msg)
+                    )
             elif result_type == "preventContinuation":
                 should_prevent_continuation = True
             elif result_type == "stopReason":
