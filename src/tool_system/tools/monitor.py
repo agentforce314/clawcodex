@@ -47,14 +47,17 @@ _MONITOR_MAX_NOTIFICATION_BYTES = 8 * 1024
 _MONITOR_MAX_READ_BYTES = 8 * 1024 * 1024
 
 
-def _monitor_notification_xml(task_id: str, output_file: str, lines: str) -> str:
-    """A ``<task-notification>`` envelope with ``status=running`` carrying a
-    streamed batch (critic C5-P2 major: the invented ``<monitor-output>`` tag
-    was incompatible with the render path — parse_task_id found no ``<task-id>``
-    child and the banner mis-rendered). Uses the real envelope structure the
-    drain path parses (``<task-id>/<output-file>/<status>/<summary>``); the
-    ``running`` status makes ``build_notification_turn`` frame it as a live
-    update, not a completion."""
+def _monitor_notification_xml(
+    task_id: str, output_file: str, lines: str, status: str = "running"
+) -> str:
+    """A ``<task-notification>`` envelope carrying a streamed batch (critic
+    C5-P2 major: the invented ``<monitor-output>`` tag was incompatible with the
+    render path — parse_task_id found no ``<task-id>`` child and the banner
+    mis-rendered). Uses the real envelope structure the drain path parses
+    (``<task-id>/<output-file>/<status>/<summary>``). ``status="running"`` (the
+    streaming default) makes ``build_notification_turn`` frame it as a live
+    update; the terminal auto-stop notice passes ``status="killed"`` so it gets
+    the completion framing instead (critic C5-P2 minor #3)."""
     from xml.sax.saxutils import escape as _esc
 
     from src.constants.xml import (
@@ -69,7 +72,7 @@ def _monitor_notification_xml(task_id: str, output_file: str, lines: str) -> str
         f"<{TASK_NOTIFICATION_TAG}>\n"
         f"<{TASK_ID_TAG}>{_esc(task_id)}</{TASK_ID_TAG}>\n"
         f"<{OUTPUT_FILE_TAG}>{_esc(output_file)}</{OUTPUT_FILE_TAG}>\n"
-        f"<{STATUS_TAG}>running</{STATUS_TAG}>\n"
+        f"<{STATUS_TAG}>{_esc(status)}</{STATUS_TAG}>\n"
         f"<{SUMMARY_TAG}>{_esc(lines)}</{SUMMARY_TAG}>\n"
         f"</{TASK_NOTIFICATION_TAG}>"
     )
@@ -94,6 +97,15 @@ def _stream_output(
     <task-notification> envelope (status=running). Stops when the task leaves ``running``
     (after a final drain), the 30-minute deadline passes, OR the notification
     cap is hit (auto-stop backpressure). Never raises."""
+    # DELIBERATE DIVERGENCE from TS (accepted as port scope, c5p2-critic APPROVE):
+    # each drain enqueues a <task-notification> that the drain loop turns into an
+    # internal model turn, whereas TS injects monitor deltas as passive
+    # task_status/deltaSummary ATTACHMENTS that ride the next natural turn
+    # (attachments.ts / framework.ts). Building that attachment pipeline for one
+    # tool is out of scope; the cost here is bounded (≤ _MONITOR_MAX_NOTIFICATIONS
+    # turns then auto-stop, and ZERO for a quiet monitor since a drain only fires
+    # on new output). If turn-per-drain ever bites, rate-limit monitor turns or
+    # lower the cap rather than "fixing" this by accident.
     try:
         from src.utils.message_queue_manager import enqueue_pending_notification
 
@@ -165,11 +177,15 @@ def _stream_output(
                 _drain(final=True)
                 _kill_monitor_task(task_id, context)
                 enqueue_pending_notification(
+                    # status="killed": this notice is TERMINAL (the monitor just
+                    # stopped), so it takes the completion framing, not the
+                    # "STILL RUNNING" streaming preamble (critic C5-P2 minor #3).
                     value=_monitor_notification_xml(
                         task_id, output_path,
                         f"Monitor auto-stopped after {sent} notifications "
                         f"(too many events). Re-run with a tighter filter "
-                        f"(e.g. grep) if you still need to watch this."),
+                        f"(e.g. grep) if you still need to watch this.",
+                        status="killed"),
                     mode="task-notification",
                 )
                 return
