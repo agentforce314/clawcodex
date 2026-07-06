@@ -83,6 +83,10 @@ def _set_advisor(value: str) -> None:
     # server-side path; tests overriding to a non-anthropic provider
     # would need to set this explicitly.
     sub["advisor_provider"] = "anthropic" if value else ""
+    # advisor_enabled master switch (default False) — added after this
+    # helper was written; without it decide_advisor_mode is INACTIVE and
+    # the beta header never attaches.
+    sub["advisor_enabled"] = bool(value)
     cfg["settings"] = sub
     mgr.save_global(cfg)
     invalidate_settings_cache()
