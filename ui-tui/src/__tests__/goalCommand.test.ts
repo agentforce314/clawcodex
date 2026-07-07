@@ -159,6 +159,97 @@ describe('/goal gateway adapter', () => {
     expect(ev.payload.text).toContain('Continuing toward goal')
   })
 
+  it('SET reply snapshot publishes a goal.state event for the indicator', async () => {
+    const p = gw.request('command.dispatch', { arg: 'ship the feature', name: 'goal' })
+    await replyToLastControl({
+      active: true,
+      goal: { created_at: 1_751_800_000, goal: 'ship the feature', max_turns: 20, status: 'active', turns_used: 0 },
+      kickoff: 'ship the feature',
+      notice: '◎ Goal set (20-turn budget): ship the feature',
+      ok: true,
+      text: '◎ Goal set (20-turn budget): ship the feature'
+    })
+    await p
+
+    const ev = events.find(e => e.type === 'goal.state')
+
+    expect(ev).toBeTruthy()
+    expect(ev.payload.goal).toMatchObject({ created_at: 1_751_800_000, status: 'active' })
+  })
+
+  it('clear reply with a null snapshot publishes goal.state null', async () => {
+    const p = gw.request('command.dispatch', { arg: 'clear', name: 'goal' })
+    await replyToLastControl({ active: false, goal: null, ok: true, text: '✓ Goal cleared.' })
+    await p
+
+    const ev = events.find(e => e.type === 'goal.state')
+
+    expect(ev).toBeTruthy()
+    expect(ev.payload.goal).toBeNull()
+  })
+
+  it('a reply without the snapshot field (older backend) publishes nothing', async () => {
+    const p = gw.request('command.dispatch', { arg: 'status', name: 'goal' })
+    await replyToLastControl({ active: true, ok: true, text: '◎ Goal (active): x' })
+    await p
+
+    expect(events.find(e => e.type === 'goal.state')).toBeUndefined()
+  })
+
+  it('goal_status events refresh the indicator from their snapshot', async () => {
+    proc.line({
+      goal: { created_at: 1_751_800_000, goal: 'x', max_turns: 20, status: 'paused', turns_used: 3 },
+      goal_active: false,
+      message: '⏸ Goal paused — turn interrupted.',
+      session_id: 's1',
+      subtype: 'goal_status',
+      type: 'system'
+    })
+    await flush()
+
+    const ev = events.find(e => e.type === 'goal.state')
+
+    expect(ev).toBeTruthy()
+    expect(ev.payload.goal).toMatchObject({ status: 'paused', turns_used: 3 })
+  })
+
+  it('legacy goal_status without a snapshot clears only on goal_active=false', async () => {
+    proc.line({
+      goal_active: true,
+      message: '↻ Continuing toward goal (1/20): wip',
+      session_id: 's1',
+      subtype: 'goal_status',
+      type: 'system'
+    })
+    await flush()
+    expect(events.find(e => e.type === 'goal.state')).toBeUndefined()
+
+    proc.line({
+      goal_active: false,
+      message: '✓ Goal achieved: all pass',
+      session_id: 's1',
+      subtype: 'goal_status',
+      type: 'system'
+    })
+    await flush()
+
+    const ev = events.find(e => e.type === 'goal.state')
+
+    expect(ev).toBeTruthy()
+    expect(ev.payload.goal).toBeNull()
+  })
+
+  it('/clear drops the indicator (backend /clear removes the goal)', async () => {
+    const p = gw.request('command.dispatch', { arg: '', name: 'clear' })
+    await replyToLastControl({ ok: true })
+    await p
+
+    const ev = events.find(e => e.type === 'goal.state')
+
+    expect(ev).toBeTruthy()
+    expect(ev.payload.goal).toBeNull()
+  })
+
   it('/goal and /subgoal are in the slash catalog', async () => {
     proc.line({
       cwd: '/ws', model: 'm', protocol_version: '0.1.0', session_id: 's1',

@@ -21,6 +21,7 @@ import { fromSkin } from '../theme.js'
 import type { Msg, SubagentProgress, SubagentStatus } from '../types.js'
 
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
+import { applyGoalSnapshot, resetGoalState } from './goalStore.js'
 import type { GatewayEventHandlerContext } from './interfaces.js'
 import { getOverlayState, patchOverlayState } from './overlayStore.js'
 import { flashPet } from './petFlashStore.js'
@@ -332,6 +333,11 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     if (skin) {
       applySkin(skin)
     }
+
+    // A (re)started backend has no goal until it says otherwise — a resume
+    // with an active goal re-arms via its goal_status event moments later.
+    // Prevents a stale "◎ /goal active" surviving a crash-respawn.
+    resetGoalState()
 
     // Kick off the config fetch once the gateway is actually ready. If handler
     // construction does this during React render, a startup transport error can
@@ -1002,6 +1008,12 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         return
 
+      case 'goal.state':
+        // /goal indicator feed (goal/subgoal replies, goal_status events,
+        // /clear). The payload is the whole truth — null hides the line.
+        applyGoalSnapshot(ev.payload?.goal ?? null)
+
+        return
       case 'error':
         turnController.recordError()
         flashPet('failed')

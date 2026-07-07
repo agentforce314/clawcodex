@@ -277,10 +277,12 @@ class _AgentSession:
                 # turn. /goal resume re-arms deliberately. Deviation from
                 # CC (which keeps the goal active) — documented.
                 goal_paused = False
+                goal_snapshot = None
                 if self._goal_mgr is not None and self._goal_mgr.is_active():
                     try:
                         self._goal_mgr.pause(reason="interrupted (ESC)")
                         goal_paused = True
+                        goal_snapshot = self._goal_snapshot_locked()
                     except Exception:  # noqa: BLE001
                         logger.debug("[agent-server] goal pause on interrupt failed",
                                      exc_info=True)
@@ -302,6 +304,7 @@ class _AgentSession:
                     "message": ("⏸ Goal paused — turn interrupted. Use "
                                 "/goal resume to continue, or /goal clear to stop."),
                     "goal_active": False,
+                    "goal": goal_snapshot,
                 })
             return
         if subtype == "set_permission_mode":
@@ -1664,6 +1667,7 @@ class _AgentSession:
                                     snapshot_now.get("total_cost_usd", 0.0) or 0.0
                                 ),
                             )
+                        restored_snapshot = self._goal_snapshot_locked()
                     if restored is not None:
                         goal_notice = (
                             f"◎ Goal restored (counters reset): {restored.goal}\n"
@@ -1676,6 +1680,7 @@ class _AgentSession:
                             "session_id": self.session_id,
                             "message": goal_notice,
                             "goal_active": True,
+                            "goal": restored_snapshot,
                         })
                 except Exception:  # noqa: BLE001 — a bad goal record must not break resume
                     logger.debug("[agent-server] goal restore failed",
@@ -1964,6 +1969,27 @@ class _AgentSession:
             logger.debug("[agent-server] goal judge bind failed", exc_info=True)
         return self._goal_mgr
 
+    def _goal_snapshot_locked(self) -> dict[str, Any] | None:
+        """Compact goal state for the TUI's persistent indicator
+        (``◎ /goal active (14s)``). Call with ``_lock`` HELD — reads the
+        same state the worker's post-turn hook mutates.
+
+        Only active|paused states have an indicator; done/cleared return
+        None so the client hides it. ``created_at`` is epoch seconds — the
+        client owns the ticking elapsed display.
+        """
+        mgr = self._goal_mgr
+        state = mgr.state if mgr is not None else None
+        if state is None or state.status not in ("active", "paused"):
+            return None
+        return {
+            "status": state.status,
+            "goal": state.goal,
+            "created_at": state.created_at,
+            "turns_used": state.turns_used,
+            "max_turns": state.max_turns,
+        }
+
     def _goal_set_gate(self) -> str | None:
         """CC docs/en/goal §Requirements: /goal needs an accepted trust
         dialog and the hooks framework enabled — "the command tells you why
@@ -2020,11 +2046,14 @@ class _AgentSession:
                     baseline_tokens=self._usage_token_total(snapshot),
                     baseline_cost_usd=float(snapshot.get("total_cost_usd", 0.0) or 0.0),
                 )
+                goal_snapshot = self._goal_snapshot_locked()
             self._save_session()
             reply: dict[str, Any] = {
                 "ok": result.ok,
                 "text": result.text,
                 "active": result.active,
+                # Indicator feed — None means "no indicator" (cleared/done).
+                "goal": goal_snapshot,
             }
             if result.kickoff:
                 reply["notice"] = result.notice
@@ -2043,11 +2072,13 @@ class _AgentSession:
             mgr = self._goal_manager()
             with self._lock:
                 result = run_subgoal_command(mgr, str(arg or ""))
+                goal_snapshot = self._goal_snapshot_locked()
             self._save_session()
             reply: dict[str, Any] = {
                 "ok": result.ok,
                 "text": result.text,
                 "active": result.active,
+                "goal": goal_snapshot,
             }
             if not result.ok:
                 reply["error"] = result.text
@@ -2203,6 +2234,8 @@ class _AgentSession:
                     # hooks, no ultracode reminder, no memory recall, no
                     # stats-odometer tick — loop machinery, not a user prompt.
                     self._inbox.put({"__goal__": True, "content": continuation})
+                goal_active = bool(mgr.is_active())
+                goal_snapshot = self._goal_snapshot_locked()
             self._save_session()  # persist turns_used/verdict/achieved state
 
             message = decision.get("message") or ""
@@ -2212,7 +2245,8 @@ class _AgentSession:
                     "subtype": "goal_status",
                     "session_id": self.session_id,
                     "message": message,
-                    "goal_active": bool(mgr.is_active()),
+                    "goal_active": goal_active,
+                    "goal": goal_snapshot,
                 })
         except Exception:  # noqa: BLE001 — the goal loop must never kill the worker
             logger.debug("[agent-server] goal continuation hook failed",

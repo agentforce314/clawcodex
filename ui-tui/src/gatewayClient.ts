@@ -21,7 +21,7 @@ import { readdirSync } from 'node:fs'
 import { resolve as pathResolve } from 'node:path'
 import { createInterface } from 'node:readline'
 
-import type { CostSnapshot, GatewayEvent, PatchHunk, StructuredDiffPayload } from './gatewayTypes.js'
+import type { CostSnapshot, GatewayEvent, GoalSnapshot, PatchHunk, StructuredDiffPayload } from './gatewayTypes.js'
 import { formatTotalCost, setLastCostSnapshot } from './lib/costSummary.js'
 import type { SessionInfo } from './types.js'
 
@@ -856,9 +856,13 @@ export class GatewayClient extends EventEmitter {
       case 'clear': {
         const r = await this.controlQuery('clear', {})
         this.publishSessionStats(r)
+        // Backend /clear also removes any active goal (CC docs/en/goal
+        // §Clear a goal) — drop the indicator with it.
+        this.publish({ payload: { goal: null }, type: 'goal.state' })
 
         return out('Conversation cleared.')
       }
+
       case 'compact': {
         const r = (await this.controlQuery('compact', { instructions: arg ?? null })) as any
 
@@ -949,6 +953,7 @@ export class GatewayClient extends EventEmitter {
             : `Output style: ${current}.`
         )
       }
+
       case 'provider': {
         const r = (await this.controlQuery('set_provider', { provider: arg })) as any
 
@@ -1012,6 +1017,8 @@ export class GatewayClient extends EventEmitter {
 
         if (!r || Object.keys(r).length === 0) {return out('goal: backend not ready')}
 
+        this.publishGoalState(r)
+
         if (r.ok && typeof r.kickoff === 'string' && r.kickoff) {
           return { message: r.kickoff, notice: typeof r.notice === 'string' ? r.notice : undefined, type: 'send' }
         }
@@ -1023,6 +1030,8 @@ export class GatewayClient extends EventEmitter {
         const r = (await this.controlQuery('subgoal', { arg: arg ?? '' })) as any
 
         if (!r || Object.keys(r).length === 0) {return out('subgoal: backend not ready')}
+
+        this.publishGoalState(r)
 
         return out(String(r.text ?? r.error ?? 'subgoal: no response'))
       }
@@ -1289,6 +1298,15 @@ export class GatewayClient extends EventEmitter {
             payload: { kind: 'goal', text: String(msg.message ?? '') },
             type: 'status.update'
           })
+
+          // Indicator refresh: every loop transition (continue/done/paused/
+          // restored) rides here. Backends without the snapshot field only
+          // clear on an explicit goal_active=false — never invent state.
+          if ('goal' in msg) {
+            this.publishGoalState(msg)
+          } else if (msg.goal_active === false) {
+            this.publish({ payload: { goal: null }, type: 'goal.state' })
+          }
         }
 
         break
@@ -1455,6 +1473,21 @@ export class GatewayClient extends EventEmitter {
 
     if (this.subscribed) {this.emit('event', ev)}
     else {this.buffered.push(ev)}
+  }
+
+  /** /goal indicator refresh from any carrier with a `goal` snapshot field
+   *  (goal/subgoal replies, goal_status events). A carrier WITHOUT the field
+   *  (older backend) is a no-op — never invent or drop state on silence. */
+  private publishGoalState(carrier: unknown): void {
+    const c = carrier as { goal?: unknown } | null
+
+    if (!c || typeof c !== 'object' || !('goal' in c)) {
+      return
+    }
+
+    const goal = c.goal && typeof c.goal === 'object' ? (c.goal as GoalSnapshot) : null
+
+    this.publish({ payload: { goal }, type: 'goal.state' })
   }
 
   /** Stats-line refresh from a clear/resume reply's rider (session_turns +

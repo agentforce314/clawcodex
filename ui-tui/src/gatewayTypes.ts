@@ -665,6 +665,21 @@ export interface SpawnTreeLoadResponse {
   subagents?: unknown[]
 }
 
+// ── /goal indicator ──────────────────────────────────────────────────
+
+/** Wire shape of the backend's goal snapshot (agent_server
+ *  ``_goal_snapshot_locked``): rides /goal + /subgoal control replies and
+ *  every ``goal_status`` system event. Only active|paused goals are sent —
+ *  done/cleared arrive as null. */
+export interface GoalSnapshot {
+  /** Epoch SECONDS when the goal was set (python time.time()). */
+  created_at?: number
+  goal?: string
+  max_turns?: number
+  status?: string
+  turns_used?: number
+}
+
 export type GatewayEvent =
   | { payload?: { skin?: GatewaySkin }; session_id?: string; type: 'gateway.ready' }
   | { payload?: GatewaySkin; session_id?: string; type: 'skin.changed' }
@@ -779,4 +794,7 @@ export type GatewayEvent =
   /** Out-of-band stats-line refresh: /clear and /resume replies carry the
    *  odometer + totals so the line is right before any turn completes. */
   | { payload: { cost?: CostSnapshot; session_turns?: number }; session_id?: string; type: 'session.stats' }
+  /** /goal indicator refresh — the latest snapshot (null hides it). Fired
+   *  from /goal and /subgoal replies, goal_status events, and /clear. */
+  | { payload: { goal: GoalSnapshot | null }; session_id?: string; type: 'goal.state' }
   | { payload?: { message?: string }; session_id?: string; type: 'error' }
