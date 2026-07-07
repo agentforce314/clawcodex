@@ -347,17 +347,19 @@ class TestPermissionRuleMatchingSnapshot(unittest.TestCase):
     def test_filesystem_safety_snapshot(self) -> None:
         from src.permissions.filesystem import check_path_safety_for_auto_edit
 
-        # Protected files require confirmation
-        protected = [".gitconfig", ".bashrc", ".env", "package-lock.json"]
+        # Protected files require confirmation (the original's DANGEROUS_FILES).
+        protected = [".gitconfig", ".bashrc", ".zshrc", ".mcp.json"]
         for f in protected:
             result = check_path_safety_for_auto_edit(f"/project/{f}")
             self.assertIsNotNone(result, f"Expected protection for: {f}")
             self.assertEqual(result.behavior, "ask")
 
-        # Normal files auto-allowed
-        normal = ["app.py", "README.md", "index.ts"]
+        # Auto-allowed: normal source AND the entries trimmed to match the
+        # original (.env / lockfiles are NOT gated by the original).
+        normal = ["src/app.py", "README.md", "src/index.ts", ".env",
+                  "package-lock.json"]
         for f in normal:
-            result = check_path_safety_for_auto_edit(f"/project/src/{f}")
+            result = check_path_safety_for_auto_edit(f"/project/{f}")
             self.assertIsNone(result, f"Expected auto-allow for: {f}")
 
     def test_legacy_tool_name_normalization(self) -> None:

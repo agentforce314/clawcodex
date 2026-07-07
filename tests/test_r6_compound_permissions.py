@@ -132,9 +132,10 @@ class TestCompoundSuggestions(unittest.TestCase):
         updates = suggestions_for_bash_command(USER_PIPELINE)
         self.assertEqual(len(updates), 1)  # ONE addRules update (TS parity)
         contents = [r.rule_content for r in updates[0].rules]
-        # grep/tr are read-only-safe first words → prefix rules; sort is
-        # excluded from the safe set (sort -o writes) → exact; dedup applies.
-        self.assertEqual(contents, ["grep:*", "tr:*", "sort -u"])
+        # Every first word now generalizes to a prefix rule (getFirstWordPrefix
+        # parity — the read-only SAFE_PREFIX allowlist was removed): grep/tr/
+        # sort all become `<cmd>:*`; dedup applies.
+        self.assertEqual(contents, ["grep:*", "tr:*", "sort:*"])
         self.assertEqual(updates[0].destination, "localSettings")
 
     def test_cap_at_five_rules(self):
@@ -143,11 +144,12 @@ class TestCompoundSuggestions(unittest.TestCase):
         self.assertEqual(len(updates), 1)
         self.assertEqual(len(updates[0].rules), 5)
 
-    def test_splitter_refusal_falls_back_to_legacy(self):
-        # Command substitution → no split; legacy first-sub 2-word prefix.
+    def test_substitution_bearing_compound_yields_no_suggestion(self):
+        # A command with executable substitution ($(...)) is injection-suspect;
+        # like TS's too-complex path it carries NO savable suggestion (was: the
+        # port's legacy fallback minted `git status:*`).
         updates = suggestions_for_bash_command("git status && echo $(id)")
-        contents = [r.rule_content for u in updates for r in u.rules]
-        self.assertEqual(contents, ["git status:*"])
+        self.assertEqual(updates, [])
 
 
 class TestCompoundMatching(unittest.TestCase):
@@ -155,9 +157,22 @@ class TestCompoundMatching(unittest.TestCase):
         ctx = _ctx(allow=("grep:*", "tr:*", "sort -u"))
         self.assertEqual(_decide(USER_PIPELINE, ctx).behavior, "allow")
 
-    def test_one_unmatched_sub_still_asks(self):
-        ctx = _ctx(allow=("grep:*", "tr:*"))  # no rule for sort -u
-        self.assertEqual(_decide(USER_PIPELINE, ctx).behavior, "ask")
+    def test_one_unmatched_non_readonly_sub_still_asks(self):
+        # A sub that is neither rule-matched NOR read-only keeps the whole
+        # compound at ask. (`tee out` writes; not read-only, no rule.)
+        ctx = _ctx(allow=("grep:*",))
+        self.assertEqual(
+            _decide("grep x f | tee out.txt", ctx).behavior, "ask"
+        )
+
+    def test_unmatched_but_readonly_sub_rides_readonly_fallback(self):
+        # NEW (rule-OR-readonly per sub, TS parity): with grep:*/tr:* granted,
+        # the un-granted `sort -u` leg is provably read-only, so the pipeline
+        # auto-allows without a `sort` rule. (No out-of-roots paths here.)
+        ctx = _ctx(allow=("grep:*", "tr:*"))
+        self.assertEqual(
+            _decide("grep x f.txt | tr a b | sort -u", ctx).behavior, "allow"
+        )
 
     def test_accepting_the_suggestion_stops_reprompting(self):
         # The full loop: ask → accept the suggested bundle → same command allows.
@@ -279,47 +294,71 @@ class TestSubstitutionAllowGuard(unittest.TestCase):
         self.assertEqual(_decide('echo "$(rm -rf /)"', ctx).behavior, "deny")
 
 
-class TestSafetyScreenBackstop(unittest.TestCase):
-    """Belt-and-suspenders: with the REAL bash safety screen wired in (not the
-    passthrough stub the other tests use), genuinely-dangerous commands are
-    caught even without any rule — and the substitution forms stay ask whether
-    the guard or the analyzer fires. Pins that the two layers agree."""
+class TestFaithfulBashToolCheck(unittest.TestCase):
+    """Drives the REAL BashTool.check_permissions (not the passthrough stub the
+    other tests use), so these pin the shipped end-to-end behavior after the
+    class-based safety screen was removed: a non-read-only command with no rule
+    still asks, substitution forms stay ask under a grant, and a plain
+    read-only/granted command allows."""
 
-    def _decide_faithful(self, command, allow=()):
-        from src.tool_system.tools.bash.bash_tool import check_bash_command_safety
+    def _decide_faithful(self, command, allow=(), mode="default"):
+        from src.tool_system.tools.bash.bash_tool import BashTool
 
-        class _FaithfulBash:
-            name = "Bash"
+        class _TUC:
+            def __init__(self, root, perm):
+                self.cwd = root
+                self._root = root
+                self.permission_context = perm
 
-            def check_permissions(self, tool_input, context):
-                r = check_bash_command_safety(tool_input.get("command", ""), cwd=None)
-                return r if r is not None else PermissionPassthroughResult()
+            def allowed_roots(self):
+                return [self._root]
 
-        ctx = ToolPermissionContext(
-            always_allow_rules={"session": [f"Bash({r})" for r in allow]}
-        )
-        return has_permissions_to_use_tool_inner(
-            _FaithfulBash(), {"command": command}, ctx
-        ).behavior
+        import tempfile
 
-    def test_dangerous_command_asks_without_a_rule(self):
-        self.assertEqual(self._decide_faithful("rm -rf /tmp/x"), "ask")
+        with tempfile.TemporaryDirectory() as root:
+            perm = ToolPermissionContext(
+                mode=mode,
+                always_allow_rules={"session": [f"Bash({r})" for r in allow]},
+            )
+            return has_permissions_to_use_tool_inner(
+                BashTool, {"command": command}, perm,
+                tool_use_context=_TUC(root, perm),
+            ).behavior
+
+    def test_non_readonly_command_asks_without_a_rule(self):
+        # Was a class-based "destructive" ask; now: rm isn't read-only and has
+        # no rule → passthrough → ask (writes need acceptEdits or a prompt).
+        self.assertEqual(self._decide_faithful("rm -rf build"), "ask")
+
+    def test_unknown_binary_asks_without_a_rule(self):
+        self.assertEqual(self._decide_faithful("frobnicate --go"), "ask")
 
     def test_substitution_forms_ask_even_with_a_grant(self):
-        # The guard fires first; the safety screen would also catch these — both
-        # layers point the same way, so this can never silently over-allow.
+        # Structural refusal fires first: a grant can't auto-run smuggled code.
         for cmd in (
             'echo "$(rm -rf /)"',
             'cat <(rm -rf /)',
             'echo \\$(rm -rf /)',
             "echo $'x'$(rm -rf /)",
         ):
-            self.assertEqual(self._decide_faithful(cmd, allow=("echo:*", "cat:*")),
-                             "ask", cmd)
+            self.assertEqual(
+                self._decide_faithful(cmd, allow=("echo:*", "cat:*")), "ask", cmd
+            )
 
-    def test_plain_safe_command_still_allows_under_grant(self):
-        self.assertEqual(self._decide_faithful("echo hello", allow=("echo:*",)),
-                         "allow")
+    def test_eval_like_asks_even_with_a_grant(self):
+        self.assertEqual(
+            self._decide_faithful('eval "ls"', allow=("eval:*",)), "ask"
+        )
+
+    def test_plain_granted_command_allows(self):
+        self.assertEqual(
+            self._decide_faithful("echo hello", allow=("echo:*",)), "allow"
+        )
+
+    def test_read_only_command_allows_without_a_rule(self):
+        # The core loosening, end-to-end through the real tool.
+        self.assertEqual(self._decide_faithful("ls -la"), "allow")
+        self.assertEqual(self._decide_faithful("git status"), "allow")
 
 
 class TestDenyNormalization(unittest.TestCase):

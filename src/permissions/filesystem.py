@@ -14,6 +14,16 @@ from .types import (
     WorkingDirDecisionReason,
 )
 
+# TS parity (typescript/src/utils/permissions/filesystem.ts:59-83). The gate
+# these lists feed (``check_path_safety_for_auto_edit``) only runs on the
+# acceptEdits/auto fast-paths, and only AFTER the working-roots containment
+# check — out-of-workspace paths (~/.ssh, ~/.aws, …) never reach it. A
+# previous revision padded the lists far beyond the original (lockfiles,
+# .env*, Makefile, .npmrc/.netrc/ssh/kube/aws entries, .ssh/.gnupg/.config
+# dirs), which meant a user who explicitly opted into "allow all edits during
+# this session" still got prompted for everyday in-repo files the original
+# auto-accepts. Trimmed back to the original's sets, plus this port's own
+# config namespace (``.clawcodex``) in the ``.openclaude`` slot.
 DANGEROUS_FILES: tuple[str, ...] = (
     ".gitconfig",
     ".gitmodules",
@@ -25,19 +35,7 @@ DANGEROUS_FILES: tuple[str, ...] = (
     ".ripgreprc",
     ".mcp.json",
     ".claude.json",
-    ".env",
-    ".npmrc",
-    ".yarnrc",
-    ".yarnrc.yml",
-    ".pypirc",
-    ".netrc",
-    ".docker/config.json",
-    ".kube/config",
-    ".aws/credentials",
-    ".ssh/config",
-    ".ssh/known_hosts",
-    ".ssh/authorized_keys",
-    "Makefile",
+    ".clawcodex.json",
 )
 
 DANGEROUS_DIRECTORIES: tuple[str, ...] = (
@@ -45,9 +43,7 @@ DANGEROUS_DIRECTORIES: tuple[str, ...] = (
     ".vscode",
     ".idea",
     ".claude",
-    ".ssh",
-    ".gnupg",
-    ".config",
+    ".clawcodex",
 )
 
 PROTECTED_LOCKFILES: tuple[str, ...] = (
@@ -138,16 +134,33 @@ def is_in_generated_dir(file_path: str, cwd: str | None = None) -> bool:
     return False
 
 
+# Structural carve-out (TS filesystem.ts:474-486): ``.claude/worktrees/`` (and
+# this port's ``.clawcodex/worktrees/``) is where git worktrees live — a
+# ``.claude`` segment immediately followed by ``worktrees`` is infrastructure,
+# not a user-created dangerous directory. Without the carve-out, EVERY file in
+# a worktree session (…/.claude/worktrees/<name>/src/x.py) matched the
+# protected-directory gate and acceptEdits was completely defeated there.
+_WORKTREE_CARVEOUT_DIRS: frozenset[str] = frozenset({".claude", ".clawcodex"})
+
+
 def check_path_safety_for_auto_edit(
     file_path: str,
     cwd: str | None = None,
 ) -> PermissionResult | None:
     abs_path = resolve_path(file_path)
-    normalized = normalize_case_for_comparison(abs_path)
+    segments = abs_path.replace("\\", "/").split("/")
 
-    for dangerous_dir in DANGEROUS_DIRECTORIES:
-        dir_lower = normalize_case_for_comparison(dangerous_dir)
-        if f"/{dir_lower}/" in normalized or normalized.endswith(f"/{dir_lower}"):
+    for i, segment in enumerate(segments):
+        seg_lower = normalize_case_for_comparison(segment)
+        for dangerous_dir in DANGEROUS_DIRECTORIES:
+            if seg_lower != normalize_case_for_comparison(dangerous_dir):
+                continue
+            # (TS scans every segment including the last — a target path
+            # ending in ``.claude``/``.git`` is itself flagged.)
+            if dangerous_dir in _WORKTREE_CARVEOUT_DIRS:
+                nxt = segments[i + 1] if i + 1 < len(segments) else ""
+                if normalize_case_for_comparison(nxt) == "worktrees":
+                    continue  # structural worktree path — keep scanning
             return PermissionAskDecision(
                 behavior="ask",
                 message=f"This file is inside a protected directory ({dangerous_dir}/) and requires confirmation.",
@@ -170,26 +183,6 @@ def check_path_safety_for_auto_edit(
                     classifier_approvable=True,
                 ),
             )
-
-    if is_env_file(basename):
-        return PermissionAskDecision(
-            behavior="ask",
-            message=f"Editing {basename} requires confirmation as it may contain secrets.",
-            decision_reason=SafetyCheckDecisionReason(
-                reason=f"File is an environment file: {basename}",
-                classifier_approvable=True,
-            ),
-        )
-
-    if is_lockfile(basename):
-        return PermissionAskDecision(
-            behavior="ask",
-            message=f"Editing lockfile {basename} requires confirmation.",
-            decision_reason=SafetyCheckDecisionReason(
-                reason=f"File is a lockfile: {basename}",
-                classifier_approvable=False,
-            ),
-        )
 
     return None
 

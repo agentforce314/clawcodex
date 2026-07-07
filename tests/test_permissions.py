@@ -61,13 +61,18 @@ class TestWriteToolPermissions(unittest.TestCase):
         )
         self.assertEqual(result.behavior, "passthrough")
 
-    def test_check_permissions_ask_for_md_file_when_docs_disallowed(self) -> None:
-        result = WriteTool.check_permissions(
-            {"file_path": str(self.root / "test.md"), "content": "hello"},
-            self.ctx,
-        )
-        self.assertEqual(result.behavior, "ask")
-        self.assertIn("allow_docs", result.message.lower())
+    def test_check_permissions_passthrough_for_md_file(self) -> None:
+        # Docs gate REMOVED (loosen-permissions): the original Claude Code has
+        # no markdown permission gate, and the port's explicit ask was
+        # structurally un-grantable (no session option, immune to acceptEdits)
+        # → every .md write re-prompted forever. Markdown now flows like any
+        # other write: prompt in default mode WITH the session option.
+        for name in ("test.md", "test.markdown"):
+            result = WriteTool.check_permissions(
+                {"file_path": str(self.root / name), "content": "hello"},
+                self.ctx,
+            )
+            self.assertEqual(result.behavior, "passthrough", name)
 
     def test_check_permissions_passthrough_for_md_file_when_docs_allowed(self) -> None:
         self.ctx.allow_docs = True
@@ -76,13 +81,6 @@ class TestWriteToolPermissions(unittest.TestCase):
             self.ctx,
         )
         self.assertEqual(result.behavior, "passthrough")
-
-    def test_check_permissions_ask_for_markdown_file(self) -> None:
-        result = WriteTool.check_permissions(
-            {"file_path": str(self.root / "test.markdown"), "content": "hello"},
-            self.ctx,
-        )
-        self.assertEqual(result.behavior, "ask")
 
 
 class TestEditToolPermissions(unittest.TestCase):
@@ -104,13 +102,13 @@ class TestEditToolPermissions(unittest.TestCase):
         )
         self.assertEqual(result.behavior, "passthrough")
 
-    def test_check_permissions_ask_for_md_file_when_docs_disallowed(self) -> None:
+    def test_check_permissions_passthrough_for_md_file(self) -> None:
+        # Docs gate removed — see TestWriteToolPermissions for rationale.
         result = EditTool.check_permissions(
             {"file_path": str(self.test_file), "old_string": "original", "new_string": "modified"},
             self.ctx,
         )
-        self.assertEqual(result.behavior, "ask")
-        self.assertIn("allow_docs", result.message.lower())
+        self.assertEqual(result.behavior, "passthrough")
 
     def test_check_permissions_passthrough_for_md_file_when_docs_allowed(self) -> None:
         self.ctx.allow_docs = True
@@ -147,17 +145,20 @@ class TestToolRegistryDispatchPermissions(unittest.TestCase):
         self.assertFalse(result.is_error)
         self.assertEqual(result.output.get("type"), "create")
 
-    def test_dispatch_denies_md_file_without_handler(self) -> None:
-        result = self.registry.dispatch(
+    def test_dispatch_md_file_asks_like_any_write(self) -> None:
+        # Docs gate removed: a .md write goes through the ORDINARY ask flow
+        # (here: no handler + prompts unavailable is not simulated, so the
+        # ask surfaces as a deny from the missing handler), identical to a
+        # .txt write without a handler — not a special docs denial.
+        md = self.registry.dispatch(
             ToolCall(name="Write", input={"file_path": str(self.root / "test.md"), "content": "hello"}),
             self.ctx,
         )
-        self.assertTrue(result.is_error)
-        error_msg = result.output.get("error", "").lower()
-        self.assertTrue(
-            "permission" in error_msg or "allow_docs" in error_msg or "blocked" in error_msg or "denied" in error_msg,
-            f"Expected permission-related error, got: {error_msg}",
+        txt = self.registry.dispatch(
+            ToolCall(name="Write", input={"file_path": str(self.root / "test.txt"), "content": "hello"}),
+            self.ctx,
         )
+        self.assertEqual(md.is_error, txt.is_error)
 
     def test_dispatch_calls_permission_handler_for_ask(self) -> None:
         from src.permissions.types import PermissionAskReply

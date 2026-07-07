@@ -1929,6 +1929,10 @@ class _AgentSession:
                 # the real grant scope instead of a generic "don't ask again for
                 # <tool>". Mirrors the original's tool-specific option text.
                 "session_label": _session_option_label_safe(request),
+                # Destructive-command caution (e.g. "Note: may overwrite
+                # remote history") — rendered as a warning line in the
+                # approval box, mirroring the original's dialog warning.
+                "warning": _permission_request_warning(request),
             },
         })
 
@@ -3798,6 +3802,29 @@ def _session_option_label_safe(request: Any) -> str | None:
             getattr(request, "tool_input", None),
         )
     except Exception:  # noqa: BLE001 — label is cosmetic
+        return None
+
+
+def _permission_request_warning(request: Any) -> str | None:
+    """Destructive-command caution line for the approval box.
+
+    The original renders this inside its Bash permission dialog
+    (destructiveCommandWarning). Since the loosening rework routes
+    destructive commands through the ordinary grantable prompt (no more
+    un-grantable class asks), the warning is how the risk stays visible.
+    Best-effort and purely informational."""
+    try:
+        if (getattr(request, "tool_name", "") or "") != "Bash":
+            return None
+        command = (getattr(request, "tool_input", None) or {}).get("command", "")
+        if not isinstance(command, str) or not command:
+            return None
+        from src.tool_system.tools.bash.destructive_warnings import (
+            get_destructive_command_warning,
+        )
+
+        return get_destructive_command_warning(command)
+    except Exception:  # noqa: BLE001 — warning is cosmetic
         return None
 
 
