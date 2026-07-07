@@ -2,6 +2,7 @@ import { atom, computed } from 'nanostores'
 
 import { MOUSE_TRACKING } from '../config/env.js'
 import { ZERO } from '../domain/usage.js'
+import { readLogoColorSync } from '../lib/logoPalettes.js'
 import { ZERO_SESSION_STATS } from '../lib/sessionStats.js'
 import { DEFAULT_THEME } from '../theme.js'
 
@@ -19,6 +20,9 @@ const buildUiState = (): UiState => ({
   info: null,
   liveSessionCount: 0,
   inlineDiffs: true,
+  // Seeded synchronously from ~/.clawcodex/config.json so the banner's first
+  // paint is already in the chosen palette (the backend isn't up yet).
+  logoPalette: readLogoColorSync(),
   mouseTracking: MOUSE_TRACKING,
   notice: null,
   pasteCollapseLines: 5,
@@ -39,6 +43,7 @@ export const $uiState = atom<UiState>(buildUiState())
 
 export const $uiTheme = computed($uiState, state => state.theme)
 export const $uiSessionId = computed($uiState, state => state.sid)
+export const $uiLogoPalette = computed($uiState, state => state.logoPalette)
 
 export const getUiState = () => $uiState.get()
 

@@ -301,6 +301,21 @@ describe('GatewayClient NDJSON adapter', () => {
     await expect(p).resolves.toEqual({ ok: false })
   })
 
+  it('routes config.set logoColor to the set_logo_color control and echoes the value', async () => {
+    // /logo persistence: the round-trip matters — a not-ready backend must
+    // surface as ok:false (the command prints "this session only"), never a
+    // silent false success.
+    const p = gw.request('config.set', { key: 'logoColor', value: 'forest' })
+    await replyToControl('set_logo_color', { logo_color: 'forest', ok: true })
+    await expect(p).resolves.toEqual({ ok: true, value: 'forest' })
+  })
+
+  it('reflects a set_logo_color rejection as ok:false', async () => {
+    const p = gw.request('config.set', { key: 'logoColor', value: 'lava' })
+    await replyToControl('set_logo_color', { error: 'invalid palette', ok: false })
+    await expect(p).resolves.toEqual({ ok: false })
+  })
+
   // ── config.set model (the /model picker + typed /model) ───────────────────
 
   it('parses the picker model grammar and answers with the switched value', async () => {

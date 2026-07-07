@@ -170,6 +170,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return patchOverlayState({ petPicker: false })
     }
 
+    if (overlay.logoPicker) {
+      return patchOverlayState({ logoPicker: false })
+    }
+
     if (overlay.billing) {
       return patchOverlayState({ billing: null })
     }

@@ -1,7 +1,11 @@
 """Tests for the logo color-palette module (Phase 8).
 
-Guards the direct data port of ``StartupScreen.palettes.ts`` and the banner-style
-helpers (``banner_palette``, ``mascot_gradient_text``, ``rgb_hex``).
+Guards the direct data port of ``StartupScreen.palettes.ts``. The Rich
+banner-style helpers this file also covered (``banner_palette``,
+``mascot_gradient_text``, ``rgb_hex``) were deleted along with their REPL/Textual
+consumers (UI consolidation, PR #566) — the rendering twin now lives in
+``ui-tui/src/lib/logoPalettes.ts`` + ``ui-tui/src/banner.ts`` with its own
+vitest coverage (``logoPalettes.test.ts``).
 """
 from __future__ import annotations
 
@@ -10,11 +14,8 @@ from src.utils.logo_palettes import (
     LOGO_PALETTE_LABELS,
     LOGO_PALETTE_NAMES,
     LOGO_PALETTES,
-    banner_palette,
     is_logo_palette_name,
-    mascot_gradient_text,
     resolve_logo_palette,
-    rgb_hex,
 )
 
 
@@ -58,43 +59,3 @@ def test_resolve_logo_palette_falls_back_to_default():
     assert resolve_logo_palette("ocean") is LOGO_PALETTES["ocean"]
     assert resolve_logo_palette("bogus") is LOGO_PALETTES["sunset"]
     assert resolve_logo_palette(None) is LOGO_PALETTES["sunset"]
-
-
-def test_rgb_hex():
-    assert rgb_hex((255, 180, 100)) == "#ffb464"
-    assert rgb_hex((0, 0, 0)) == "#000000"
-    assert rgb_hex((100, 80, 65)) == "#645041"
-
-
-def test_banner_palette_styles():
-    st = banner_palette("ocean")
-    p = LOGO_PALETTES["ocean"]
-    assert st.border == rgb_hex(p.border)  # not bold (Panel border)
-    assert st.title == f"bold {rgb_hex(p.accent)}"
-    assert st.accent == f"bold {rgb_hex(p.accent)}"
-    assert st.value == f"bold {rgb_hex(p.cream)}"  # bold preserved
-    assert st.label == rgb_hex(p.dim)  # not bold
-    assert st.dim == rgb_hex(p.dim)
-
-
-def test_banner_palette_default_on_unset():
-    assert banner_palette(None) == banner_palette("sunset")
-    assert banner_palette("bogus") == banner_palette("sunset")
-
-
-def test_mascot_gradient_text_per_line():
-    lines = ["a", "b", "c", "d"]  # the 4-line mascot shape
-    text = mascot_gradient_text("sunset", lines)
-    assert text.plain == "a\nb\nc\nd"
-    grad = LOGO_PALETTES["sunset"].gradient
-    # 4 lines sample stops [0, 2, 3, 5].
-    expected = [grad[0], grad[2], grad[3], grad[5]]
-    styles = [span.style for span in text.spans]
-    assert styles == [f"bold {rgb_hex(s)}" for s in expected]
-
-
-def test_mascot_gradient_text_single_line_guard():
-    # N<=1 must not divide-by-zero.
-    text = mascot_gradient_text("forest", ["only"])
-    assert text.plain == "only"
-    assert text.spans[0].style == f"bold {rgb_hex(LOGO_PALETTES['forest'].gradient[0])}"

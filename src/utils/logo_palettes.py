@@ -1,20 +1,20 @@
 """Color palettes for the startup banner logo.
 
 Port of ``typescript/src/components/StartupScreen.palettes.ts``. Selected via the
-``/logo`` command, persisted in the global config ``logoColor`` key, and applied by
-the two startup banners (``src/repl/core.py::_print_startup_header`` and
-``src/tui/widgets/header.py::StartupHeader._render_banner``).
+``/logo`` command, persisted in the global config ``logoColor`` key (written by
+:func:`src.config.set_logo_color` — the ``set_logo_color`` agent-server control).
 
-Imports only ``rich`` + stdlib (NO Textual) so the REPL banner can import it. The
-palette ROLES (gradient / accent / cream / dim / border) are mapped onto Python's
-mascot+table+Panel banner (which differs from TS's gradient ASCII logo) via
-:func:`banner_palette` + :func:`mascot_gradient_text`.
+The rendering consumer is the Ink TUI banner: ``ui-tui/src/lib/logoPalettes.ts``
+carries the SAME verbatim palette table (keep the two in sync) and
+``ui-tui/src/banner.ts`` paints the wordmark/mascot rows from it. The old Rich
+REPL / Textual TUI banners that this module originally styled were deleted in the
+UI consolidation (PR #566), and their ``banner_palette`` / ``mascot_gradient_text``
+helpers went with them; this module now only keeps the palette table + validators
+for the ``/logo`` command and the server control.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-
-from rich.text import Text
 
 RGB = tuple[int, int, int]
 
@@ -113,58 +113,6 @@ def resolve_logo_palette(name: str | None) -> LogoPalette:
     return LOGO_PALETTES[DEFAULT_LOGO_PALETTE]
 
 
-def rgb_hex(rgb: RGB) -> str:
-    """``(r,g,b)`` → ``"#rrggbb"`` (Rich truecolor style)."""
-    r, g, b = rgb
-    return f"#{r:02x}{g:02x}{b:02x}"
-
-
-@dataclass(frozen=True)
-class BannerStyles:
-    """Resolved Rich style strings for the banner elements. ``bold`` weight is
-    preserved where the original hardcoded styles were bold (so ``/logo`` changes
-    only hue, not weight)."""
-
-    border: str  # Panel border_style (current "bright_black" — not bold)
-    title: str  # Panel title (current "bold bright_cyan")
-    accent: str  # version row (current "bold white"/"bold cyan")
-    value: str  # table values (current "bold magenta"/"green"/"blue")
-    label: str  # label column (current "bright_black" — not bold)
-    dim: str  # footer / subtitle (current "dim" — not bold)
-
-
-def banner_palette(name: str | None) -> BannerStyles:
-    """Resolve ``name`` → the banner style strings. Never raises (unknown/None →
-    default ``sunset``)."""
-    p = resolve_logo_palette(name)
-    return BannerStyles(
-        border=rgb_hex(p.border),
-        title=f"bold {rgb_hex(p.accent)}",
-        accent=f"bold {rgb_hex(p.accent)}",
-        value=f"bold {rgb_hex(p.cream)}",
-        label=rgb_hex(p.dim),
-        dim=rgb_hex(p.dim),
-    )
-
-
-def mascot_gradient_text(name: str | None, mascot_lines: list[str]) -> Text:
-    """Build the mascot as a Rich ``Text`` with a vertical gradient: each line gets a
-    gradient stop sampled across the palette (bold, matching the original
-    ``bold orange3``). Never raises."""
-    palette = resolve_logo_palette(name)
-    gradient = palette.gradient
-    n = len(mascot_lines)
-    text = Text(no_wrap=True)
-    for i, line in enumerate(mascot_lines):
-        if n <= 1:
-            stop = gradient[0]
-        else:
-            stop = gradient[round(i * (len(gradient) - 1) / (n - 1))]
-        suffix = "\n" if i < n - 1 else ""
-        text.append(line + suffix, style=f"bold {rgb_hex(stop)}")
-    return text
-
-
 __all__ = [
     "RGB",
     "LogoPalette",
@@ -174,8 +122,4 @@ __all__ = [
     "LOGO_PALETTE_LABELS",
     "is_logo_palette_name",
     "resolve_logo_palette",
-    "rgb_hex",
-    "BannerStyles",
-    "banner_palette",
-    "mascot_gradient_text",
 ]

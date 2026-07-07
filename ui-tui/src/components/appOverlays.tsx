@@ -5,11 +5,12 @@ import { useGateway } from '../app/gatewayContext.js'
 import type { AppOverlaysProps } from '../app/interfaces.js'
 import { $overlayState, patchOverlayState } from '../app/overlayStore.js'
 import { argumentHintFor } from '../app/slash/argumentHints.js'
-import { $uiSessionId, $uiTheme } from '../app/uiStore.js'
+import { $uiLogoPalette, $uiSessionId, $uiTheme } from '../app/uiStore.js'
 
 import { ActiveSessionSwitcher } from './activeSessionSwitcher.js'
 import { FloatBox } from './appChrome.js'
 import { BillingOverlay } from './billingOverlay.js'
+import { LogoPicker } from './logoPicker.js'
 import { MaskedPrompt } from './maskedPrompt.js'
 import { ModelPicker } from './modelPicker.js'
 import { OverlayHint } from './overlayControls.js'
@@ -127,6 +128,7 @@ export function FloatingOverlays({
   completions,
   onActiveSessionSelect,
   onActiveSessionClose,
+  onLogoSelect,
   onModelSelect,
   onNewLiveSession,
   onNewPromptSession,
@@ -139,6 +141,7 @@ export function FloatingOverlays({
   | 'completions'
   | 'onActiveSessionSelect'
   | 'onActiveSessionClose'
+  | 'onLogoSelect'
   | 'onModelSelect'
   | 'onNewLiveSession'
   | 'onNewPromptSession'
@@ -149,8 +152,10 @@ export function FloatingOverlays({
   const overlay = useStore($overlayState)
   const sid = useStore($uiSessionId)
   const theme = useStore($uiTheme)
+  const logoPalette = useStore($uiLogoPalette)
 
   const hasAny =
+    overlay.logoPicker ||
     overlay.modelPicker ||
     overlay.pager ||
     overlay.petPicker ||
@@ -195,6 +200,17 @@ export function FloatingOverlays({
             onCancel={() => patchOverlayState({ modelPicker: false })}
             onSelect={onModelSelect}
             sessionId={sid}
+            t={theme}
+          />
+        </FloatBox>
+      )}
+
+      {overlay.logoPicker && (
+        <FloatBox color={theme.color.border}>
+          <LogoPicker
+            current={logoPalette}
+            onClose={() => patchOverlayState({ logoPicker: false })}
+            onSelect={onLogoSelect}
             t={theme}
           />
         </FloatBox>

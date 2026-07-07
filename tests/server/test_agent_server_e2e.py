@@ -627,6 +627,53 @@ async def test_control_set_output_style(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_control_set_logo_color(tmp_path):
+    """set_logo_color validates the palette, persists it to the global config
+    (the /logo picker's write path), and get_settings echoes it back."""
+    from src.tool_system.registry import ToolRegistry
+
+    with contextlib.ExitStack() as stack:
+        for p in _patches(_TextProvider, ToolRegistry([])):
+            stack.enter_context(p)
+        spawn = make_spawn_agent(AgentServerConfig(permission_mode="default"))
+        handle = await spawn("ds_test", str(tmp_path), None)
+        gen = handle.messages_from_agent()
+        try:
+            init = await asyncio.wait_for(gen.__anext__(), timeout=5)
+            assert init["subtype"] == "init"
+
+            async def _reply_for(rid, req):
+                await handle.send_to_agent({"type": "control_request", "request_id": rid, "request": req})
+                for _ in range(12):
+                    msg = await asyncio.wait_for(gen.__anext__(), timeout=5)
+                    if msg.get("type") == "control_response" and msg["response"].get("request_id") == rid:
+                        return msg["response"]["response"]
+                raise AssertionError(f"no reply for {rid}")
+
+            ok = await _reply_for("l1", {"subtype": "set_logo_color", "name": "forest"})
+            assert ok["ok"] is True and ok["logo_color"] == "forest"
+
+            # Persisted where the TUI's startup read (and the original's
+            # getGlobalConfig) looks: the global config's top-level logoColor.
+            from src.config import load_config
+
+            assert load_config().get("logoColor") == "forest"
+
+            settings = await _reply_for("l2", {"subtype": "get_settings"})
+            assert settings["logo_color"] == "forest"
+
+            bad = await _reply_for("l3", {"subtype": "set_logo_color", "name": "lava"})
+            assert bad["ok"] is False and "invalid palette" in bad["error"]
+            assert "forest" in bad["available_palettes"]
+            # A rejected name must not clobber the persisted choice.
+            assert load_config().get("logoColor") == "forest"
+        finally:
+            await handle.shutdown()
+            with contextlib.suppress(Exception):
+                await gen.aclose()
+
+
+@pytest.mark.asyncio
 async def test_control_set_model(tmp_path):
     """set_model round-trips {ok, model}: the TUI's /model needs the resulting
     model echoed back (a bare ack reads as failure), refusal on cross-provider
