@@ -30,6 +30,9 @@ def fake_home(monkeypatch, tmp_path):
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.delenv("CLAWCODEX_CONFIG_DIR", raising=False)
+    # conftest disables migration suite-wide; these tests are the ones
+    # that exercise it (against the fake home above).
+    monkeypatch.delenv("CLAWCODEX_DISABLE_LEGACY_MIGRATION", raising=False)
     return home
 
 

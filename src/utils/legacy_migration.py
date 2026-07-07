@@ -183,7 +183,7 @@ def _migrate_skills(src_skills: Path, dst_skills: Path, report: MigrationReport)
                         {
                             "item": label,
                             "reason": (
-                                f"~{size // (1024 * 1024)}MB exceeds the "
+                                "exceeds the "
                                 f"{_MAX_SKILL_DIR_BYTES // (1024 * 1024)}MB "
                                 "per-skill cap; copy manually with "
                                 f"`cp -R {child} {dst_skills / child.name}` "
@@ -238,7 +238,16 @@ def migrate_user_dir_once(*, force: bool = False) -> MigrationReport | None:
     Returns the report when a migration pass ran, ``None`` when the
     marker short-circuited it. Startup callers wrap this in a broad
     try/except and ignore the result beyond logging.
+
+    ``CLAWCODEX_DISABLE_LEGACY_MIGRATION`` (truthy) disables the pass
+    entirely — the test suite sets it (tests/conftest.py) so tests that
+    drive real entrypoints can't migrate the developer's actual home,
+    and ops can set it to pin a frozen config dir.
     """
+    if os.environ.get("CLAWCODEX_DISABLE_LEGACY_MIGRATION", "").lower() in (
+        "1", "true", "yes",
+    ):
+        return None
     dst_home = get_user_config_dir()
     marker = dst_home / MARKER_FILENAME
     if marker.exists() and not force:
