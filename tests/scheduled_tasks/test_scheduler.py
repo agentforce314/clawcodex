@@ -218,6 +218,15 @@ class TestDisableFlag(unittest.TestCase):
             with self.assertRaises(ValueError):
                 sched.create("* * * * *", "x")
 
+    def test_restore_honors_disable_flag(self) -> None:
+        sched, clock = make()
+        sched.create("*/5 * * * *", "x")
+        snap = sched.snapshot()
+        fresh = SessionCronScheduler(now_fn=clock, jitter=False)
+        with patch.dict("os.environ", {"CLAWCODEX_DISABLE_CRON": "1"}):
+            self.assertEqual(fresh.restore(snap), 0)
+        self.assertEqual(fresh.list_jobs(), [])
+
 
 class TestSnapshotRestore(unittest.TestCase):
     def test_roundtrip(self) -> None:

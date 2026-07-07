@@ -29,13 +29,14 @@ through one lock.
 from __future__ import annotations
 
 import hashlib
-import os
 import threading
 import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable, Optional
+
+from src.utils.env import is_env_truthy
 
 from .cron_expr import CronExpression, describe_cron
 
@@ -60,16 +61,12 @@ WAKEUP_MAX_DELAY_SECONDS = 3600
 #: iteration ends without rescheduling or stopping (§Stop a loop).
 FALLBACK_WAKEUP_DELAY_SECONDS = 20 * 60
 
-_TRUTHY = ("1", "true", "yes", "on")
-
-
 def scheduled_tasks_disabled() -> bool:
     """CLAWCODEX_DISABLE_CRON=1 disables the scheduler entirely (the
     CLAUDE_CODE_DISABLE_CRON spelling is honored for CC parity)."""
-    for var in ("CLAWCODEX_DISABLE_CRON", "CLAUDE_CODE_DISABLE_CRON"):
-        if os.environ.get(var, "").strip().lower() in _TRUTHY:
-            return True
-    return False
+    return is_env_truthy("CLAWCODEX_DISABLE_CRON") or is_env_truthy(
+        "CLAUDE_CODE_DISABLE_CRON"
+    )
 
 
 def _stable_offset(job_id: str, modulo: int) -> int:
@@ -170,13 +167,16 @@ class SessionCronScheduler:
         base = expr.next_after(datetime.fromtimestamp(after))
         fire_at = base.timestamp()
         if not self.jitter:
-            return fire_at
+            return max(fire_at, after + 1.0)
         if recurring:
-            return fire_at + self._job_jitter_seconds(job_id, expr, base)
-        jittered = fire_at + self._one_shot_jitter_seconds(job_id, base)
-        # An early offset must not land in the past (it would double-fire
-        # the "fires once when idle" rule for a wall-clock-near one-shot).
-        return max(jittered, after + 1.0)
+            fire_at += self._job_jitter_seconds(job_id, expr, base)
+        else:
+            fire_at += self._one_shot_jitter_seconds(job_id, base)
+        # Never land in the past: an early one-shot offset (or naive-local
+        # datetime arithmetic across a DST fold) must not produce a fire
+        # time at-or-before ``after`` — that would re-fire the same slot
+        # in a tight loop instead of advancing.
+        return max(fire_at, after + 1.0)
 
     def create(self, cron: str, prompt: str, *, recurring: bool = True,
                durable: bool = False) -> CronJob:
@@ -329,7 +329,7 @@ class SessionCronScheduler:
         one-shots whose time already passed are dropped, and a pending
         wakeup survives only if its fire time is still in the future.
         Returns how many tasks (jobs + wakeup) were restored."""
-        if not isinstance(snapshot, dict):
+        if not isinstance(snapshot, dict) or scheduled_tasks_disabled():
             return 0
         now = self.now_fn()
         restored = 0

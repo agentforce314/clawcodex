@@ -292,6 +292,7 @@ class _AgentSession:
         if subtype == "interrupt":
             with self._lock:
                 abort = self._current_abort
+                turn_active = abort is not None
                 pendings = list(self._pending.values())
                 # ESC during a goal run auto-pauses the goal (donor
                 # semantics, critic R4): without this, the interrupted turn
@@ -322,20 +323,28 @@ class _AgentSession:
                 pending.event.set()
             if abort is not None:
                 abort.abort("user_interrupt")
-            # ESC clears the pending dynamic-loop wakeup (docs/en/
-            # scheduled-tasks §Stop a loop: "press Esc — this clears the
-            # pending wakeup so the loop does not fire again"). Cron jobs
-            # scheduled by asking directly are NOT affected; they stay
-            # until CronDelete or their 7-day expiry.
-            try:
-                if self.cron_scheduler.clear_wakeup():
-                    self._push_cron_state(
-                        "⟳ Loop stopped (Esc) — the pending wakeup was "
-                        "cleared and the loop will not fire again."
-                    )
-            except Exception:  # noqa: BLE001 — interrupt must never fail
-                logger.debug("[agent-server] wakeup clear on interrupt failed",
-                             exc_info=True)
+            # ESC while IDLE clears the pending dynamic-loop wakeup
+            # (docs/en/scheduled-tasks §Stop a loop: "press Esc while it is
+            # waiting for the next iteration — this clears the pending
+            # wakeup so the loop does not fire again"). Gated on no active
+            # turn: the same interrupt control also arrives from busy-turn
+            # Esc, interrupt-and-send busy-input mode, and double-Enter
+            # force-send — aborting an unrelated in-flight turn must not
+            # silently kill a waiting loop. Cron jobs are NEVER affected;
+            # they stay until CronDelete or their 7-day expiry. The save
+            # makes the stop durable — without it a crash before the next
+            # turn-end save would resurrect the wakeup on --resume.
+            if not turn_active:
+                try:
+                    if self.cron_scheduler.clear_wakeup():
+                        self._push_cron_state(
+                            "⟳ Loop stopped (Esc) — the pending wakeup was "
+                            "cleared and the loop will not fire again."
+                        )
+                        self._save_session()
+                except Exception:  # noqa: BLE001 — interrupt must never fail
+                    logger.debug("[agent-server] wakeup clear on interrupt failed",
+                                 exc_info=True)
             if goal_paused:
                 self._save_session()
                 self._emit({
@@ -671,7 +680,7 @@ class _AgentSession:
             self._reply(request_id, {"servers": servers})
             return
         if subtype == "skill_command":
-            self._do_skill_command(request_id, inner.get("name"), inner.get("args"))
+            await self._do_skill_command(request_id, inner.get("name"), inner.get("args"))
             return
         if subtype == "goal":
             self._do_goal_command(request_id, inner.get("arg"))
@@ -1471,14 +1480,21 @@ class _AgentSession:
             logger.exception("[agent-server] workflow_command failed")
             self._reply(request_id, {"ok": False, "error": str(exc)})
 
-    def _do_skill_command(self, request_id: object, name: object, args: object) -> None:
+    async def _do_skill_command(self, request_id: object, name: object, args: object) -> None:
         """Expand a user-typed skill slash command (``/loop 5m check ci``)
         into its prompt for the client to submit as a user turn — the
         missing producer for the TUI's ``{type:'skill'}`` dispatch. Uses
         the exact expansion path the model-side Skill tool uses
         (bundled ``get_prompt_for_command`` builders, disk SKILL.md
         rendering, MCP skills), so typed and model invocations of the
-        same skill can't drift."""
+        same skill can't drift. Runs in an executor thread: expansion
+        scans skill directories and a disk skill's embedded ``!`cmd```
+        lines execute shell inline — neither belongs on the asyncio
+        loop that pumps the WebSocket.
+
+        Known scope limit: only the rendered prompt travels back; a
+        skill's ``context_modifier`` (allowed-tools / model / effort
+        scoping) applies on the model-side Skill-tool path only."""
         try:
             if not isinstance(name, str) or not name.strip():
                 self._reply(request_id, {"ok": False, "error": "missing skill name"})
@@ -1486,11 +1502,13 @@ class _AgentSession:
             if self.tool_context is None:
                 self._reply(request_id, {"ok": False, "error": "session not ready"})
                 return
-            from src.tool_system.tools.skill import _run_markdown_skill
+            from src.tool_system.tools.skill import run_markdown_skill
 
             skill_name = name.strip().lstrip("/")
             arg_str = args if isinstance(args, str) else ""
-            result = _run_markdown_skill(skill_name, arg_str, self.tool_context)
+            result = await asyncio.get_running_loop().run_in_executor(
+                None, lambda: run_markdown_skill(skill_name, arg_str, self.tool_context)
+            )
             out = result.output if isinstance(result.output, dict) else {}
             prompt = out.get("prompt")
             if result.is_error or not (isinstance(prompt, str) and prompt.strip()):
@@ -1861,19 +1879,29 @@ class _AgentSession:
             # Scheduled-task restore (docs/en/scheduled-tasks §Limitations:
             # resuming restores recurring tasks within 7 days of creation
             # and one-shots whose time hasn't passed; the scheduler's
-            # restore() applies those rules).
-            saved_sched = data.get("scheduled_tasks")
-            if isinstance(saved_sched, dict):
-                try:
-                    restored_n = self.cron_scheduler.restore(saved_sched)
-                    if restored_n:
-                        self._push_cron_state(
-                            f"⏰ Restored {restored_n} scheduled task(s) "
-                            "from the saved session."
-                        )
-                except Exception:  # noqa: BLE001 — must not break resume
-                    logger.debug("[agent-server] scheduled-tasks restore failed",
-                                 exc_info=True)
+            # restore() applies those rules). The resumed conversation
+            # REPLACES the current one, so its tasks do too — clear the
+            # live scheduler first or the discarded conversation's jobs
+            # and wakeup would merge into the resumed session.
+            try:
+                for job in self.cron_scheduler.list_jobs():
+                    self.cron_scheduler.delete(job.id)
+                self.cron_scheduler.clear_wakeup()
+                saved_sched = data.get("scheduled_tasks")
+                restored_n = (
+                    self.cron_scheduler.restore(saved_sched)
+                    if isinstance(saved_sched, dict) else 0
+                )
+                if restored_n:
+                    self._push_cron_state(
+                        f"⏰ Restored {restored_n} scheduled task(s) "
+                        "from the saved session."
+                    )
+                else:
+                    self._push_cron_state()
+            except Exception:  # noqa: BLE001 — must not break resume
+                logger.debug("[agent-server] scheduled-tasks restore failed",
+                             exc_info=True)
             self._reply(request_id, {
                 "ok": True,
                 "count": len(conv.messages),
@@ -2864,8 +2892,10 @@ class _AgentSession:
                     f"⟳ {label} fired — {task.reason or 'running the next iteration'}."
                 )
                 self.cron_scheduler.begin_turn_window()
-                self._run_turn(self._scheduled_turn_content(task), internal=True)
-                self._after_wakeup_turn(task)
+                outcome = self._run_turn(
+                    self._scheduled_turn_content(task), internal=True
+                )
+                self._after_wakeup_turn(task, outcome)
             else:
                 human = SessionCronScheduler.human_schedule(task.cron)
                 if task.deleted and task.recurring:
@@ -2884,17 +2914,27 @@ class _AgentSession:
         self._save_session()  # persist advanced next_fire_at / removals
         return True
 
-    def _after_wakeup_turn(self, task: Any) -> None:
+    def _after_wakeup_turn(self, task: Any, outcome: dict | None = None) -> None:
         """Fallback semantics (§Stop a loop, CC ≥2.1.202): an iteration
         that neither reschedules nor stops gets ONE fallback wakeup ~20
         minutes out; when the fallback iteration doesn't reschedule either,
-        the loop ends."""
+        the loop ends. An iteration that did not complete (user interrupt,
+        provider error) ends the loop instead of arming the fallback —
+        rescheduling work the user just killed, or retrying into a broken
+        provider every 20 minutes, are both worse than stopping (mirrors
+        the goal loop's no-continuation-on-error guard)."""
         try:
             action = self.cron_scheduler.wakeup_action_since()
             if action == "set":
                 return  # rescheduled — the loop continues
             if action == "stopped":
                 self._push_cron_state("⟳ Loop ended.")
+                return
+            if not outcome or outcome.get("subtype") != "success":
+                self._push_cron_state(
+                    "⟳ Loop ended — the iteration was interrupted or errored "
+                    "before it could reschedule."
+                )
                 return
             if task.is_fallback:
                 self._push_cron_state(

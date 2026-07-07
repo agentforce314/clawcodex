@@ -33,9 +33,10 @@ _FIELD_BOUNDS: tuple[tuple[int, int], ...] = (
 )
 _FIELD_NAMES = ("minute", "hour", "day-of-month", "month", "day-of-week")
 
-# Safety bound for the next-fire search: 366*4+1 days covers any gap a
-# valid expression can produce (e.g. "Feb 29" waits at most 4 years).
-_MAX_SEARCH_DAYS = 366 * 4 + 1
+# Safety bound for the next-fire search. "Feb 29" normally waits at most
+# 4 years, but a non-leap century year stretches the gap to 8 (2096 →
+# 2104), so the bound covers that worst case.
+_MAX_SEARCH_DAYS = 366 * 8 + 1
 
 
 def _parse_field(raw: str, lo: int, hi: int, name: str) -> frozenset[int]:

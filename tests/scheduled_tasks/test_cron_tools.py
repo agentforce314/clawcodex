@@ -130,6 +130,16 @@ class TestScheduleWakeup(_Base):
         with self.assertRaises(ToolInputError):
             ScheduleWakeupTool.call({"delaySeconds": 60, "prompt": "/loop"}, self.ctx)
 
+    def test_non_finite_delay_rejected(self) -> None:
+        # json.loads accepts bare NaN/Infinity tokens; a NaN delay would
+        # sail through min/max clamping and arm a wakeup that never fires.
+        for bad in (float("nan"), float("inf"), float("-inf")):
+            with self.assertRaises(ToolInputError):
+                ScheduleWakeupTool.call(
+                    {"delaySeconds": bad, "prompt": "/loop", "reason": "r"}, self.ctx
+                )
+        self.assertIsNone(self.sched.wakeup_info())
+
     def test_unavailable_without_scheduler(self) -> None:
         self.ctx.cron_scheduler = None
         result = ScheduleWakeupTool.call(

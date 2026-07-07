@@ -107,9 +107,14 @@ class TestIdleFiring(unittest.TestCase):
 
 
 class TestWakeupFallback(unittest.TestCase):
-    def _fire_one_wakeup(self, sess, clock, on_turn=None) -> None:
+    def _fire_one_wakeup(self, sess, clock, on_turn=None, outcome="success") -> None:
+        def run_turn(content, **kw):
+            if on_turn:
+                on_turn()
+            return {"subtype": outcome, "response_text": "done"} if outcome else None
+
         sess._deliver_task_notifications = lambda: False
-        sess._run_turn = lambda content, **kw: (on_turn() if on_turn else None)
+        sess._run_turn = run_turn
         clock.advance(61)
         self.assertTrue(sess._fire_due_scheduled())
 
@@ -157,6 +162,17 @@ class TestWakeupFallback(unittest.TestCase):
         self.assertTrue(any("Loop ended" in (e.get("message") or "")
                             for e in _cron_events(emitted)))
 
+    def test_interrupted_iteration_ends_loop_without_fallback(self) -> None:
+        # A wakeup turn the user killed (or that errored) must NOT arm the
+        # ~20min fallback — rescheduling work the user just aborted, or
+        # retrying into a broken provider, are both worse than stopping.
+        sess, emitted, clock = _make_session()
+        sess.cron_scheduler.set_wakeup(60, "/loop check ci", "watching CI")
+        self._fire_one_wakeup(sess, clock, outcome="error")
+        self.assertIsNone(sess.cron_scheduler.wakeup_info())
+        self.assertTrue(any("interrupted or errored" in (e.get("message") or "")
+                            for e in _cron_events(emitted)))
+
     def test_wakeup_envelope_carries_loop_instructions(self) -> None:
         sess, _, clock = _make_session()
         turns: list[str] = []
@@ -187,6 +203,20 @@ class TestInterruptClearsWakeup(unittest.TestCase):
     def test_interrupt_without_wakeup_stays_silent(self) -> None:
         sess, emitted, _ = _make_session()
         _control(sess, "interrupt")
+        self.assertEqual(_cron_events(emitted), [])
+
+    def test_interrupt_during_active_turn_keeps_wakeup(self) -> None:
+        # Busy-turn Esc (and interrupt-and-send / double-Enter force-send)
+        # aborts the in-flight turn only — a waiting loop survives. Only
+        # an IDLE interrupt stops the loop (docs: "press Esc while it is
+        # waiting for the next iteration").
+        from src.utils.abort_controller import AbortController
+
+        sess, emitted, _ = _make_session()
+        sess.cron_scheduler.set_wakeup(300, "/loop check ci", "watching CI")
+        sess._current_abort = AbortController()
+        _control(sess, "interrupt")
+        self.assertIsNotNone(sess.cron_scheduler.wakeup_info())
         self.assertEqual(_cron_events(emitted), [])
 
 

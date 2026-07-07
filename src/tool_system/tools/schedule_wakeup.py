@@ -15,6 +15,7 @@ that iteration doesn't reschedule either — mirroring CC ≥2.1.202.
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from ..build_tool import Tool, build_tool
@@ -55,8 +56,12 @@ def _schedule_wakeup_call(tool_input: dict[str, Any], context: ToolContext) -> T
     delay = tool_input.get("delaySeconds")
     prompt = tool_input.get("prompt")
     reason = tool_input.get("reason")
-    if not isinstance(delay, (int, float)) or isinstance(delay, bool):
-        raise ToolInputError("delaySeconds must be a number (unless stop is true)")
+    if (
+        not isinstance(delay, (int, float))
+        or isinstance(delay, bool)
+        or not math.isfinite(delay)
+    ):
+        raise ToolInputError("delaySeconds must be a finite number (unless stop is true)")
     if not isinstance(prompt, str) or not prompt.strip():
         raise ToolInputError("prompt must be a non-empty string (unless stop is true)")
     if not isinstance(reason, str) or not reason.strip():

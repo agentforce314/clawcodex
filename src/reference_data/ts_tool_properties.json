@@ -8,169 +8,45 @@
     "max_result_size_chars": 20000
   },
   "tool_overrides": {
-    "AskUserQuestion": {
-      "is_read_only": true,
-      "is_concurrency_safe": true
-    },
-    "Bash": {
-      "is_read_only": false,
-      "is_concurrency_safe": false,
-      "is_destructive": true
-    },
-    "Brief": {
-      "is_read_only": true,
-      "is_concurrency_safe": true
-    },
-    "ClipboardRead": {
-      "is_read_only": true,
-      "is_concurrency_safe": true
-    },
-    "CronCreate": {
-      "is_read_only": true,
-      "is_concurrency_safe": true
-    },
-    "CronDelete": {
-      "is_read_only": true,
-      "is_concurrency_safe": true
-    },
-    "CronList": {
-      "is_read_only": true,
-      "is_concurrency_safe": true
-    },
-    "Edit": {
-      "is_read_only": false,
-      "is_concurrency_safe": false
-    },
-    "EnterPlanMode": {
-      "is_read_only": true,
-      "is_concurrency_safe": true
-    },
-    "Glob": {
-      "is_read_only": true,
-      "is_concurrency_safe": true
-    },
-    "Grep": {
-      "is_read_only": true,
-      "is_concurrency_safe": true
-    },
-    "LSP": {
-      "is_read_only": true,
-      "is_concurrency_safe": true
-    },
-    "ListMcpResourcesTool": {
-      "is_read_only": true,
-      "is_concurrency_safe": true
-    },
-    "Read": {
-      "is_read_only": true,
-      "is_concurrency_safe": true
-    },
-    "ReadMcpResourceTool": {
-      "is_read_only": true,
-      "is_concurrency_safe": true
-    },
-    "SendUserMessage": {
-      "is_read_only": true,
-      "is_concurrency_safe": true
-    },
-    "Skill": {
-      "is_read_only": true,
-      "is_concurrency_safe": true
-    },
-    "Sleep": {
-      "is_read_only": true,
-      "is_concurrency_safe": true
-    },
-    "Status": {
-      "is_read_only": true,
-      "is_concurrency_safe": true
-    },
-    "StructuredOutput": {
-      "is_read_only": true,
-      "is_concurrency_safe": true
-    },
-    "TaskCreate": {
-      "is_read_only": true,
-      "is_concurrency_safe": true
-    },
-    "TaskGet": {
-      "is_read_only": true,
-      "is_concurrency_safe": true
-    },
-    "TaskList": {
-      "is_read_only": true,
-      "is_concurrency_safe": true
-    },
-    "TaskOutput": {
-      "is_read_only": true,
-      "is_concurrency_safe": true
-    },
-    "TaskStop": {
-      "is_read_only": true,
-      "is_concurrency_safe": true
-    },
-    "TaskUpdate": {
-      "is_read_only": true,
-      "is_concurrency_safe": true
-    },
-    "TeamCreate": {
-      "is_read_only": true,
-      "is_concurrency_safe": true
-    },
-    "TeamDelete": {
-      "is_read_only": true,
-      "is_concurrency_safe": true
-    },
-    "TodoWrite": {
-      "is_read_only": true,
-      "is_concurrency_safe": true
-    },
-    "ToolSearch": {
-      "is_read_only": true,
-      "is_concurrency_safe": true
-    },
-    "WebFetch": {
-      "is_read_only": true,
-      "is_concurrency_safe": true
-    },
-    "WebSearch": {
-      "is_read_only": true,
-      "is_concurrency_safe": true
-    },
-    "Write": {
-      "is_read_only": false,
-      "is_concurrency_safe": false
-    },
-    "Agent": {
-      "is_read_only": false,
-      "_is_read_only_note": "ch07 round-4: TS AgentTool.isReadOnly()=true, but the port keeps false \u2014 sub-agents run Edit/Write so Agent is not read-only in effect (concurrency-safety != read-only); no live is_read_only consumer exists.",
-      "is_concurrency_safe": true,
-      "is_destructive": true
-    },
-    "advisor": {
-      "is_read_only": true,
-      "is_concurrency_safe": true,
-      "_note": "clawcodex-only client-side dispatch tool (src/tool_system/tools/advisor.py), not a TS core tool \u2014 it only reads conversation state and forwards it to the reviewer model, so read-only/concurrency-safe by design."
-    },
-    "ExitPlanMode": {
-      "is_read_only": false,
-      "is_concurrency_safe": true,
-      "_note": "TS ExitPlanModeV2Tool.ts:179-184 \u2014 isConcurrencySafe()=true, isReadOnly()=false ('Now writes to disk': edited plan text is written to the plan file)."
-    },
-    "Monitor": {
-      "is_read_only": false,
-      "is_concurrency_safe": true,
-      "_note": "TS MonitorTool.ts:54 \u2014 isConcurrencySafe()=true (fire-and-forget spawn); isReadOnly not overridden in TS, so the false default stands."
-    },
-    "Workflow": {
-      "is_read_only": true,
-      "is_concurrency_safe": true,
-      "_note": "TS WorkflowTool impl is not in the reference dump (only constants.ts; tools.ts:118-121 loads a bundled .js), so these are the port's documented design (workflow.py:200-201): spawned subagents carry their own permission checks, mirroring Agent's concurrency-safety."
-    },
-    "ScheduleWakeup": {
-      "is_read_only": true,
-      "is_concurrency_safe": true
-    }
+    "AskUserQuestion": {"is_read_only": true, "is_concurrency_safe": true},
+    "Bash": {"is_read_only": false, "is_concurrency_safe": false, "is_destructive": true},
+    "Brief": {"is_read_only": true, "is_concurrency_safe": true},
+    "ClipboardRead": {"is_read_only": true, "is_concurrency_safe": true},
+    "CronCreate": {"is_read_only": true, "is_concurrency_safe": true},
+    "CronDelete": {"is_read_only": true, "is_concurrency_safe": true},
+    "CronList": {"is_read_only": true, "is_concurrency_safe": true},
+    "Edit": {"is_read_only": false, "is_concurrency_safe": false},
+    "EnterPlanMode": {"is_read_only": true, "is_concurrency_safe": true},
+    "Glob": {"is_read_only": true, "is_concurrency_safe": true},
+    "Grep": {"is_read_only": true, "is_concurrency_safe": true},
+    "LSP": {"is_read_only": true, "is_concurrency_safe": true},
+    "ListMcpResourcesTool": {"is_read_only": true, "is_concurrency_safe": true},
+    "Read": {"is_read_only": true, "is_concurrency_safe": true},
+    "ReadMcpResourceTool": {"is_read_only": true, "is_concurrency_safe": true},
+    "ScheduleWakeup": {"is_read_only": true, "is_concurrency_safe": true},
+    "SendUserMessage": {"is_read_only": true, "is_concurrency_safe": true},
+    "Skill": {"is_read_only": true, "is_concurrency_safe": true},
+    "Sleep": {"is_read_only": true, "is_concurrency_safe": true},
+    "Status": {"is_read_only": true, "is_concurrency_safe": true},
+    "StructuredOutput": {"is_read_only": true, "is_concurrency_safe": true},
+    "TaskCreate": {"is_read_only": true, "is_concurrency_safe": true},
+    "TaskGet": {"is_read_only": true, "is_concurrency_safe": true},
+    "TaskList": {"is_read_only": true, "is_concurrency_safe": true},
+    "TaskOutput": {"is_read_only": true, "is_concurrency_safe": true},
+    "TaskStop": {"is_read_only": true, "is_concurrency_safe": true},
+    "TaskUpdate": {"is_read_only": true, "is_concurrency_safe": true},
+    "TeamCreate": {"is_read_only": true, "is_concurrency_safe": true},
+    "TeamDelete": {"is_read_only": true, "is_concurrency_safe": true},
+    "TodoWrite": {"is_read_only": true, "is_concurrency_safe": true},
+    "ToolSearch": {"is_read_only": true, "is_concurrency_safe": true},
+    "WebFetch": {"is_read_only": true, "is_concurrency_safe": true},
+    "WebSearch": {"is_read_only": true, "is_concurrency_safe": true},
+    "Write": {"is_read_only": false, "is_concurrency_safe": false},
+    "Agent": {"is_read_only": false, "_is_read_only_note": "ch07 round-4: TS AgentTool.isReadOnly()=true, but the port keeps false — sub-agents run Edit/Write so Agent is not read-only in effect (concurrency-safety != read-only); no live is_read_only consumer exists.", "is_concurrency_safe": true, "is_destructive": true},
+    "advisor": {"is_read_only": true, "is_concurrency_safe": true, "_note": "clawcodex-only client-side dispatch tool (src/tool_system/tools/advisor.py), not a TS core tool — it only reads conversation state and forwards it to the reviewer model, so read-only/concurrency-safe by design."},
+    "ExitPlanMode": {"is_read_only": false, "is_concurrency_safe": true, "_note": "TS ExitPlanModeV2Tool.ts:179-184 — isConcurrencySafe()=true, isReadOnly()=false ('Now writes to disk': edited plan text is written to the plan file)."},
+    "Monitor": {"is_read_only": false, "is_concurrency_safe": true, "_note": "TS MonitorTool.ts:54 — isConcurrencySafe()=true (fire-and-forget spawn); isReadOnly not overridden in TS, so the false default stands."},
+    "Workflow": {"is_read_only": true, "is_concurrency_safe": true, "_note": "TS WorkflowTool impl is not in the reference dump (only constants.ts; tools.ts:118-121 loads a bundled .js), so these are the port's documented design (workflow.py:200-201): spawned subagents carry their own permission checks, mirroring Agent's concurrency-safety."}
   },
   "required_tool_attributes": [
     "name",
