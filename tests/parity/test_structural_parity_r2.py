@@ -303,27 +303,55 @@ class TestFilesystemProtectedPaths(unittest.TestCase):
 
     def test_dangerous_directories_blocked(self) -> None:
         from src.permissions.filesystem import check_path_safety_for_auto_edit
-        dirs = [".git", ".ssh", ".gnupg", ".config", ".vscode"]
+        # Trimmed to the original Claude Code's DANGEROUS_DIRECTORIES (plus this
+        # port's .clawcodex): .ssh/.gnupg/.config are NOT in the original's set
+        # (out-of-workspace paths never reach this acceptEdits gate anyway).
+        dirs = [".git", ".vscode", ".idea", ".claude", ".clawcodex"]
         for d in dirs:
             path = f"/home/user/{d}/some_file.txt"
             result = check_path_safety_for_auto_edit(path)
             self.assertIsNotNone(result, f"Expected protection for dir: {d}")
 
-    def test_env_files_blocked(self) -> None:
+    def test_trimmed_directories_not_blocked(self) -> None:
         from src.permissions.filesystem import check_path_safety_for_auto_edit
-        env_files = [".env", ".env.local", ".env.production"]
-        for f in env_files:
-            path = f"/project/{f}"
-            result = check_path_safety_for_auto_edit(path)
-            self.assertIsNotNone(result, f"Expected protection for: {f}")
+        for d in (".ssh", ".gnupg", ".config"):
+            path = f"/project/{d}/some_file.txt"
+            self.assertIsNone(
+                check_path_safety_for_auto_edit(path),
+                f"{d} is no longer gated (TS parity)",
+            )
 
-    def test_lockfiles_blocked(self) -> None:
+    def test_worktree_carveout(self) -> None:
         from src.permissions.filesystem import check_path_safety_for_auto_edit
-        lockfiles = ["package-lock.json", "yarn.lock", "poetry.lock"]
-        for f in lockfiles:
+        # .claude/worktrees/ is structural — edits inside a worktree pass.
+        self.assertIsNone(
+            check_path_safety_for_auto_edit(
+                "/project/.claude/worktrees/feat/src/main.py"
+            )
+        )
+        # A real .claude config file is still protected.
+        self.assertIsNotNone(
+            check_path_safety_for_auto_edit("/project/.claude/settings.json")
+        )
+
+    def test_env_files_not_blocked(self) -> None:
+        from src.permissions.filesystem import check_path_safety_for_auto_edit
+        # .env* is NOT in the original's DANGEROUS_FILES — auto-accept.
+        for f in (".env", ".env.local", ".env.production"):
             path = f"/project/{f}"
-            result = check_path_safety_for_auto_edit(path)
-            self.assertIsNotNone(result, f"Expected protection for: {f}")
+            self.assertIsNone(
+                check_path_safety_for_auto_edit(path),
+                f"{f} is no longer gated (TS parity)",
+            )
+
+    def test_lockfiles_not_blocked(self) -> None:
+        from src.permissions.filesystem import check_path_safety_for_auto_edit
+        for f in ("package-lock.json", "yarn.lock", "poetry.lock"):
+            path = f"/project/{f}"
+            self.assertIsNone(
+                check_path_safety_for_auto_edit(path),
+                f"{f} is no longer gated (TS parity)",
+            )
 
     def test_normal_files_allowed(self) -> None:
         from src.permissions.filesystem import check_path_safety_for_auto_edit

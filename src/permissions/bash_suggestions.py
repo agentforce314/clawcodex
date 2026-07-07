@@ -61,6 +61,57 @@ BARE_SHELL_PREFIXES = frozenset(
     }
 )
 
+# TS utils/bash/ast.ts:2086 EVAL_LIKE_BUILTINS — shell builtins that execute
+# or re-parse their arguments as code (`eval`, `source`, `trap 'cmd' EXIT`,
+# `hash -p`, `let 'x=a[$(id)]'`, …). The original refuses to reason about
+# them (checkSemantics → ask, suggestions: []); a `Bash(eval:*)` rule would
+# be ≈ `Bash(*)`. Used both by the structural refusal in the Bash tool check
+# and by the suggestion ladder (never mint a prefix OR exact rule for these).
+EVAL_LIKE_BUILTINS = frozenset(
+    {
+        "eval",
+        "source",
+        ".",
+        "exec",
+        "command",
+        "builtin",
+        "fc",
+        "coproc",
+        "noglob",
+        "nocorrect",
+        "trap",
+        "enable",
+        "mapfile",
+        "readarray",
+        "hash",
+        "bind",
+        "complete",
+        "compgen",
+        "alias",
+        "let",
+    }
+)
+
+# TS utils/bash/ast.ts:2060 ZSH_DANGEROUS_BUILTINS — zsh builtins that escape
+# the argv abstraction (module load, raw syscalls, zsh/files ``zf_*`` fs ops).
+# The harness spawns ``bash -lc`` so these are ``command not found`` in
+# practice, but refusing them (like eval-like builtins) completes the
+# checkSemantics parity family and is defense-in-depth if a zsh path ever
+# becomes reachable.
+ZSH_DANGEROUS_BUILTINS = frozenset(
+    {
+        "zmodload", "emulate", "sysopen", "sysread", "syswrite", "sysseek",
+        "zpty", "ztcp", "zsocket",
+        "zf_rm", "zf_mv", "zf_ln", "zf_chmod", "zf_chown", "zf_mkdir",
+        "zf_rmdir", "zf_chgrp",
+    }
+)
+
+# Union used by every "may this first word become a prefix rule?" site.
+NEVER_PREFIX_COMMANDS = (
+    BARE_SHELL_PREFIXES | EVAL_LIKE_BUILTINS | ZSH_DANGEROUS_BUILTINS
+)
+
 # TS bashPermissions.ts:357-410 — env vars that CANNOT execute code or load
 # libraries; safe to skip when extracting the command name. PATH/LD_*/
 # PYTHONPATH/NODE_OPTIONS etc. must never be added here.
@@ -362,67 +413,28 @@ def get_simple_command_prefix(command: str) -> str | None:
     return " ".join(remaining[:2])
 
 
-# Commands safe to generalize to a first-word ``Bash(<cmd>:*)`` rule: each is
-# read-only with respect to its OWN arguments — it cannot write a file, exec
-# another program, or mutate system state via any flag/positional, regardless of
-# arguments. This is the deterministic stand-in for TS's ``getFirstWordPrefix``
-# (bashPermissions.ts:222), which TS surfaces as an *editable* dialog default the
-# user can narrow; this port has no such field, so it must never auto-grant a
-# generalization the user can't take back — hence the allowlist rather than
-# "any first word".
-#
-# DELIBERATELY EXCLUDED (would be unsafe to generalize — and, crucially, a
-# rule-matched ``Bash(<cmd>:*)`` allow is NOT re-screened by the bash safety
-# check at match time, so the allowlist is the entire boundary): find / fd
-# (``-exec`` / ``-delete`` / ``-x``), sort / uniq / tee / xxd / base64 / info
-# (write via an output-file arg or flag — ``xxd in out``, ``base64 -o``,
-# ``info --output``), cp / mv / dd / install / ln / truncate (write), command /
-# env / xargs / shells (exec their args — also in BARE_SHELL_PREFIXES), sed / awk
-# (``-i`` in-place / ``system()``), git / npm / make (mutating subcommands —
-# read-only ``git`` subcommands still get the 2-word ``git status:*`` prefix),
-# and ``date`` (``-s`` sets the clock).
-#
-# KNOWN LIMITATION (pre-existing for ALL Bash prefix rules — including the
-# existing 2-word ``git status:*`` form — and shared with TS): an output
-# redirect like ``ls > FILE`` is matched by ``Bash(ls:*)`` and can clobber FILE.
-# Closing that needs a change to the rule MATCHER (refuse redirected commands),
-# which applies to every prefix rule and is out of scope for this UX fix.
-SAFE_PREFIX_COMMANDS: frozenset[str] = frozenset({
-    # listing / navigation / fs metadata
-    "ls", "pwd", "tree", "stat", "file", "basename", "dirname", "realpath",
-    "readlink", "du", "df", "free",
-    # file contents → stdout (no in-place / output-file arg). NB: xxd is
-    # EXCLUDED — ``xxd in out`` / ``xxd -r in out`` writes the second positional.
-    "cat", "head", "tail", "nl", "tac", "rev", "wc", "od", "hexdump",
-    "strings",
-    # text transforms: stdin/args → stdout (no output-file arg). NB: base64 is
-    # EXCLUDED — BSD/macOS ``base64 -o out`` writes a file.
-    "cut", "paste", "column", "fold", "expand", "unexpand", "fmt", "numfmt",
-    "tr", "comm", "cmp", "diff", "jq",
-    # read-only search (NO find/fd — they exec/delete)
-    "grep", "egrep", "fgrep", "rg", "locate",
-    # system / process / network info
-    "whoami", "hostname", "uname", "arch", "id", "groups", "nproc", "uptime",
-    "cal", "locale", "getconf", "printenv",
-    "ps", "pgrep", "lsof", "netstat", "ss", "which", "type",
-    # hashing (read → digest on stdout)
-    "sha256sum", "sha1sum", "md5sum", "cksum",
-    # pure / trivial. NB: info is EXCLUDED — GNU texinfo ``info --output=FILE``
-    # writes a file; ``man`` has no such flag (and the pager shell-escape is
-    # neutralized by the Bash tool's stdin=DEVNULL), so man stays.
-    "echo", "printf", "seq", "expr", "test", "true", "false", "sleep",
-    "man", "help", "tput",
-})
-
-
 def get_safe_first_word_prefix(command: str) -> str | None:
-    """``'ls demos/'`` → ``'ls'``; ``None`` unless the first word is read-only
-    w.r.t. its arguments (:data:`SAFE_PREFIX_COMMANDS`).
+    """``'pytest -q'`` → ``'pytest'``; ``None`` for bare shells/wrappers.
 
-    Lets a single ``Bash(ls:*)`` grant cover ``ls`` of any path instead of a
-    path-specific exact rule that re-prompts for every directory. The safe-set
-    restriction is the security control — see the set's comment for why a bare
-    ``getFirstWordPrefix`` port (TS) would be unsafe here.
+    Faithful port of TS ``getFirstWordPrefix`` (bashPermissions.ts:222): when
+    the 2-word prefix declines, offer the first word alone as the (editable)
+    "don't ask again" rule — ``Bash(pytest:*)`` covers every future pytest
+    invocation instead of an exact rule that re-prompts on each new flag.
+    TS's comment: "as an editable starting point it's what users expect" —
+    and the TUI approval box HAS an editable rule field (prompts.tsx), so the
+    user sees exactly what they are granting and can narrow it before saving.
+
+    The only refusals are the same shape/safety gates TS applies:
+    - :data:`SAFE_ENV_VARS`-only env prefixes (a rule minted past an unsafe
+      env assignment could never match at check time);
+    - the subcommand shape regex (no paths, flags, numbers);
+    - :data:`BARE_SHELL_PREFIXES` — ``bash:*`` ≈ ``Bash(*)`` via ``-c``, and
+      wrapper prefixes (env/xargs/nice/…/sudo) exec their arguments.
+
+    (An earlier revision gated this rung on a read-only allowlist because the
+    dialog had no editable field yet; the field shipped in round 6, so the
+    gate now just forces exact rules for everyday dev tools — the exact
+    over-prompting this change removes.)
     """
     tokens = [t for t in command.strip().split() if t]
     remaining = _skip_safe_env_assignments(tokens)
@@ -433,7 +445,7 @@ def get_safe_first_word_prefix(command: str) -> str | None:
     # flags, and numbers — only a bare command name may generalize.
     if not _SUBCOMMAND_RE.match(cmd):
         return None
-    if cmd not in SAFE_PREFIX_COMMANDS:
+    if cmd in NEVER_PREFIX_COMMANDS:
         return None
     return cmd
 
@@ -459,6 +471,26 @@ def _extract_prefix_before_heredoc(command: str) -> str | None:
     if remaining[0] in BARE_SHELL_PREFIXES:
         return None
     return " ".join(remaining[:2])
+
+
+def _mentions_eval_like(command: str) -> bool:
+    """True when the command — or any sub-command of a compound — invokes an
+    eval-like builtin as its first word (env assignments skipped). Used by the
+    suggestion ladder; the authoritative match-time refusal lives in the Bash
+    tool's structural check (which also strips safe wrappers)."""
+    subs: list[str] | None = [command]
+    if contains_unquoted_chaining(command):
+        subs = split_chained_command(command)
+        if subs is None:
+            return True  # unsplittable — do not reason about it
+    for sub in subs:
+        tokens = [t for t in sub.strip().split() if t]
+        remaining = _skip_safe_env_assignments(tokens)
+        first = (remaining if remaining is not None else tokens)
+        head = first[0] if first else ""
+        if head in EVAL_LIKE_BUILTINS or head in ZSH_DANGEROUS_BUILTINS:
+            return True
+    return False
 
 
 def suggestion_for_prefix(prefix: str) -> list[PermissionUpdate]:
@@ -518,7 +550,10 @@ def _rule_value_for_subcommand(sub: str) -> PermissionRuleValue | None:
     tokens = [t for t in sub.split() if t]
     remaining = _skip_safe_env_assignments(tokens)
     first = (remaining or tokens)[0] if (remaining or tokens) else ""
-    if first in BARE_SHELL_PREFIXES:
+    if first in NEVER_PREFIX_COMMANDS:
+        # Bare shells AND eval-like builtins: an "exact" rule is
+        # exact-OR-word-prefix at match time, so even the exact form would
+        # over-match; and eval-likes should never be encouraged for saving.
         return None
     return PermissionRuleValue(tool_name=BASH_TOOL_NAME, rule_content=sub)
 
@@ -564,6 +599,27 @@ def suggestions_for_bash_command(command: str) -> list[PermissionUpdate]:
 
     command = command.strip()
     if not command:
+        return []
+
+    # Never offer to save an injection-suspect or eval-like command: the
+    # original's structural asks carry ``suggestions: []`` ("Don't suggest
+    # saving a potentially dangerous command"), and an eval-like rule —
+    # prefix OR word-prefix-matching exact — would be ≈ ``Bash(*)``.
+    if contains_executable_substitution(command):
+        return []
+    if _mentions_eval_like(command):
+        return []
+    # A NAME-eval subscript attack (`printf -v 'a[$(id)]'`) or a
+    # /proc/*/environ read must not mint a savable rule either — a `printf:*`
+    # / `cat:*` grant would then auto-run/leak.
+    from .read_only_commands import (
+        accesses_proc_environ,
+        find_name_eval_subscript_attack,
+    )
+
+    if find_name_eval_subscript_attack(command) is not None:
+        return []
+    if accesses_proc_environ(command):
         return []
 
     heredoc_idx = command.find("<<")
@@ -627,10 +683,11 @@ def suggestions_for_bash_command(command: str) -> list[PermissionUpdate]:
 __all__ = [
     "BARE_SHELL_PREFIXES",
     "BASH_TOOL_NAME",
+    "EVAL_LIKE_BUILTINS",
     "MAX_SUBCOMMANDS",
     "MAX_SUGGESTED_RULES_FOR_COMPOUND",
+    "NEVER_PREFIX_COMMANDS",
     "SAFE_ENV_VARS",
-    "SAFE_PREFIX_COMMANDS",
     "contains_executable_substitution",
     "contains_unquoted_chaining",
     "get_safe_first_word_prefix",

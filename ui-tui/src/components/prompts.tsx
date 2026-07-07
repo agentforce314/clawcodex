@@ -145,6 +145,14 @@ export function ApprovalPrompt({ cols = 80, onChoice, req, t }: ApprovalPromptPr
         ) : null}
       </Box>
 
+      {req.warning ? (
+        // Destructive-command caution (backend-computed, e.g. "Note: may
+        // overwrite remote history") — parity with the original's dialog
+        // warning now that destructive commands prompt through the ordinary
+        // grantable flow.
+        <Text bold color={t.color.warn}>⚠ {req.warning}</Text>
+      ) : null}
+
       <Text color={t.color.muted}>Do you want to proceed?</Text>
 
       {opts.map((o, i) => {

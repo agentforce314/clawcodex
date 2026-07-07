@@ -89,7 +89,9 @@ class TestGatedToolsStillAsk(_Base):
             "Edit": {"file_path": str(self.ws / "a.txt"), "old_string": "hi", "new_string": "yo"},
             "Write": {"file_path": str(self.ws / "b.txt"), "content": "x"},
             "NotebookEdit": {"notebook_path": str(self.ws / "n.ipynb"), "new_source": "x"},
-            "Bash": {"command": "echo hi"},
+            # A non-read-only command: `echo hi` now auto-allows (read-only
+            # loosening), so use a command that still requires approval.
+            "Bash": {"command": "pytest -q"},
             "WebFetch": {"url": "https://example.com", "prompt": "x"},
             "MCP": {"server": "s", "tool": "t"},
             "ListMcpResourcesTool": {},
@@ -255,14 +257,31 @@ class TestSkillEmbeddedShellGated(_Base):
         self.assertFalse(marker.exists(), "undeclared command must NOT execute")
         self.assertIn("Error", out)
 
-    def test_dangerous_command_blocked_even_when_declared(self) -> None:
-        # Safety screen wins over an allowed_tools grant: the marker survives
-        # because the declared-but-destructive rm never runs.
-        marker = self.ws / "danger.marker"
-        marker.write_text("keep")
-        out = self._exec(["Bash(rm:*)"], f"rm -rf {marker}")
-        self.assertTrue(marker.exists(), "destructive command must be blocked despite being declared")
+    def test_declared_rm_of_dangerous_path_blocked(self) -> None:
+        # The class-based safety screen is gone; the remaining guard is the
+        # path gate. A declared Bash(rm:*) can delete an in-workspace file
+        # (the skill declared it), but a DANGEROUS-removal target (here $HOME)
+        # is still blocked — the marker outside the target is irrelevant; we
+        # assert rm -rf ~ never runs.
+        out = self._exec(["Bash(rm:*)"], "rm -rf ~")
         self.assertIn("Error", out)
+
+    def test_declared_rm_outside_workspace_blocked(self) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as other:
+            victim = Path(other) / "keep.txt"
+            victim.write_text("keep")
+            out = self._exec(["Bash(rm:*)"], f"rm -rf {victim}")
+            self.assertTrue(victim.exists(), "out-of-workspace rm must be blocked")
+            self.assertIn("Error", out)
+
+    def test_declared_in_workspace_rm_runs(self) -> None:
+        # Documented deviation: a skill that declares Bash(rm:*) may delete an
+        # in-workspace, non-critical file (the declaration IS the grant).
+        marker = self.ws / "declared_rm.marker"
+        marker.write_text("x")
+        self._exec(["Bash(rm:*)"], f"rm -rf {marker}")
+        self.assertFalse(marker.exists(), "declared in-workspace rm should run")
 
     def test_chained_command_blocked(self) -> None:
         # Chaining can't ride in on a single-command allow rule.
@@ -271,16 +290,16 @@ class TestSkillEmbeddedShellGated(_Base):
         self.assertFalse(marker.exists(), "chained command must not run")
         self.assertIn("Error", out)
 
-    def test_bare_bash_grant_runs_safe_blocks_dangerous(self) -> None:
-        # A bare `Bash` allowed-tool grants all *non-screened* shell, but the
-        # safety screen still fires first for destructive commands.
+    def test_bare_bash_grant_runs_in_workspace_blocks_dangerous_path(self) -> None:
+        # A bare `Bash` grant (allow-all) runs safe/in-workspace shell, but the
+        # write path gate still blocks a dangerous-removal target — TS path-gates
+        # Bash(*) writes too (checkPathConstraints precedes the allow rule).
         safe = self.ws / "bare_safe.marker"
         self._exec(["Bash"], f"touch {safe}")
-        self.assertTrue(safe.exists(), "bare Bash grant should run safe commands")
-        danger = self.ws / "bare_danger.marker"
-        danger.write_text("keep")
-        self._exec(["Bash"], f"rm -rf {danger}")
-        self.assertTrue(danger.exists(), "bare Bash grant must not bypass the safety screen")
+        self.assertTrue(safe.exists(), "bare Bash grant should run in-workspace commands")
+        # rm -rf ~ must never run, even under allow-all.
+        out = self._exec(["Bash"], "rm -rf ~")
+        self.assertIn("Error", out)
 
     def test_bypass_mode_runs_undeclared(self) -> None:
         marker = self.ws / "bypass.marker"

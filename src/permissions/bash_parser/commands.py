@@ -15,19 +15,25 @@ class CommandSafety(Enum):
 
 CommandSafetyLevel = Literal["safe", "read_only", "write", "destructive", "dangerous", "unknown"]
 
+# NB (loosen-permissions round): the eval-like builtins the original refuses
+# to reason about (TS utils/bash/ast.ts:2086 EVAL_LIKE_BUILTINS — source, ".",
+# command, builtin, trap, hash, bind, enable, alias, let, fc, compgen,
+# complete, …) were previously listed SAFE here, which made auto mode
+# auto-allow e.g. ``trap 'rm -rf /' EXIT``. They now classify DANGEROUS,
+# matching eval/exec.
 SAFE_COMMANDS: frozenset[str] = frozenset({
     "echo", "printf", "true", "false", "test", "[", "[[",
     "pwd", "whoami", "date", "uname", "basename", "dirname",
     "seq", "yes", "sleep", "wait", "exit", "return",
-    "export", "unset", "set", "alias", "unalias",
-    "source", ".", "cd", "pushd", "popd", "dirs",
+    "export", "unset", "set", "unalias",
+    "cd", "pushd", "popd", "dirs",
     "read", "local", "declare", "typeset", "readonly",
-    "shift", "getopts", "let", "expr",
-    "trap", "hash", "times", "builtin", "command",
-    "type", "help", "compgen", "complete",
+    "shift", "getopts", "expr",
+    "times",
+    "type", "help",
     "bg", "fg", "jobs", "disown", "suspend",
-    "ulimit", "umask", "history", "fc",
-    "bind", "enable", "shopt",
+    "ulimit", "umask", "history",
+    "shopt",
     "nproc", "arch", "lsb_release",
     "tput", "clear", "reset",
     "realpath", "readlink",
@@ -90,6 +96,10 @@ DANGEROUS_COMMANDS: frozenset[str] = frozenset({
     "nc", "ncat", "netcat", "socat",
     "git-push", "git-force-push",
     "eval", "exec",
+    # eval-like builtins — arguments are shell code (TS EVAL_LIKE_BUILTINS)
+    "source", ".", "command", "builtin", "trap", "hash", "bind", "enable",
+    "alias", "let", "fc", "compgen", "complete", "coproc",
+    "mapfile", "readarray", "noglob", "nocorrect",
     "python", "python3", "python2",
     "node", "deno", "tsx",
     "ruby", "perl", "php", "lua",

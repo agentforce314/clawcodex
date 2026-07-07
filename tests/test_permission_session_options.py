@@ -194,12 +194,32 @@ class TestDefaultSessionSuggestions(unittest.TestCase):
         self.assertEqual(updates[0].rules[0].tool_name, "Grep")
         self.assertEqual(updates[1].directories, ("/other/sub",))
 
-    def test_other_tool_yields_persisted_content_less_rule(self) -> None:
-        updates = default_session_suggestions("WebFetch", {"url": "https://x"})
+    def test_webfetch_yields_domain_scoped_rule(self) -> None:
+        # WebFetch now grants the HOST (TS WebFetchTool.ts:346), not all of
+        # WebFetch — the "always" option persists WebFetch(domain:<host>).
+        updates = default_session_suggestions(
+            "WebFetch", {"url": "https://docs.python.org/3/"}
+        )
         self.assertEqual(len(updates), 1)
         self.assertIsInstance(updates[0], PermissionUpdateAddRules)
         self.assertEqual(updates[0].destination, "localSettings")
         self.assertEqual(updates[0].rules[0].tool_name, "WebFetch")
+        self.assertEqual(
+            updates[0].rules[0].rule_content, "domain:docs.python.org"
+        )
+
+    def test_webfetch_unparseable_url_falls_back_to_content_less(self) -> None:
+        updates = default_session_suggestions("WebFetch", {"url": ""})
+        self.assertEqual(len(updates), 1)
+        self.assertEqual(updates[0].rules[0].tool_name, "WebFetch")
+        self.assertIsNone(updates[0].rules[0].rule_content)
+
+    def test_generic_other_tool_yields_content_less_rule(self) -> None:
+        updates = default_session_suggestions("SomeMcpTool", {})
+        self.assertEqual(len(updates), 1)
+        self.assertIsInstance(updates[0], PermissionUpdateAddRules)
+        self.assertEqual(updates[0].destination, "localSettings")
+        self.assertEqual(updates[0].rules[0].tool_name, "SomeMcpTool")
         self.assertIsNone(updates[0].rules[0].rule_content)
 
     def test_interaction_tools_have_no_session_option(self) -> None:
@@ -318,10 +338,19 @@ class TestSessionOptionLabel(unittest.TestCase):
         self.assertTrue(label.startswith("and don't ask again for"))
         self.assertIn("Bash(git diff", label)
 
-    def test_other_tool_label_uses_dont_ask_again(self) -> None:
-        suggestions = default_session_suggestions("WebFetch", {"url": "https://x"})
+    def test_webfetch_label_names_the_domain(self) -> None:
+        suggestions = default_session_suggestions(
+            "WebFetch", {"url": "https://docs.python.org/3/"}
+        )
         label = session_option_label(tuple(suggestions), "WebFetch")
-        self.assertEqual(label, "and don't ask again for WebFetch")
+        self.assertEqual(
+            label, "and don't ask again for WebFetch(domain:docs.python.org)"
+        )
+
+    def test_generic_other_tool_label_uses_dont_ask_again(self) -> None:
+        suggestions = default_session_suggestions("SomeMcpTool", {})
+        label = session_option_label(tuple(suggestions), "SomeMcpTool")
+        self.assertEqual(label, "and don't ask again for SomeMcpTool")
 
 
 # --------------------------------------------------------------------------
@@ -359,11 +388,24 @@ class TestAcceptEditsAutoAllow(unittest.TestCase):
         self.assertEqual(decision.behavior, "allow")
 
     def test_dangerous_file_inside_roots_still_asks(self) -> None:
+        # .env / lockfiles are no longer gated (TS parity — trimmed the
+        # over-broad safety set); a genuinely protected config file (.gitconfig,
+        # in the original's DANGEROUS_FILES) still asks in acceptEdits.
         decision = self._check(
             _MockTool(name="Write"),
-            {"file_path": os.path.join(self.root, ".env"), "content": "x"},
+            {"file_path": os.path.join(self.root, ".gitconfig"), "content": "x"},
         )
         self.assertEqual(decision.behavior, "ask")
+
+    def test_env_and_lockfile_inside_roots_now_auto_allow(self) -> None:
+        # Loosened to match the original: after opting into acceptEdits, an
+        # in-repo .env / lockfile / Makefile auto-accepts instead of prompting.
+        for name in (".env", "package-lock.json", "Makefile"):
+            decision = self._check(
+                _MockTool(name="Write"),
+                {"file_path": os.path.join(self.root, name), "content": "x"},
+            )
+            self.assertEqual(decision.behavior, "allow", name)
 
     def test_edit_outside_roots_still_asks(self) -> None:
         decision = self._check(

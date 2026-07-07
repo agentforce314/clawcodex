@@ -817,7 +817,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
             rule: rule ? String(rule) : undefined,
             ruleLabel: ruleLabel ? String(ruleLabel) : undefined,
             sessionLabel: sessionLabel ? String(sessionLabel) : undefined,
-            toolName: String(ev.payload.tool_name ?? 'tool')
+            toolName: String(ev.payload.tool_name ?? 'tool'),
+            warning: ev.payload.warning ? String(ev.payload.warning) : undefined
           }
         })
         setStatus('approval needed')

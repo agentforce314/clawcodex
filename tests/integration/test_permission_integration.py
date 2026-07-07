@@ -80,21 +80,40 @@ class TestPermissionPipelineFilesystem(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result.behavior, "ask")
 
-    def test_env_file_blocked(self) -> None:
+    def test_env_file_not_blocked(self) -> None:
+        # Loosened to TS parity: .env is NOT in the original's DANGEROUS_FILES,
+        # so an in-repo .env auto-accepts under acceptEdits (was over-gated).
         result = check_path_safety_for_auto_edit("/project/.env")
-        self.assertIsNotNone(result)
+        self.assertIsNone(result)
 
     def test_git_dir_blocked(self) -> None:
         result = check_path_safety_for_auto_edit("/project/.git/config")
+        self.assertIsNotNone(result)
+
+    def test_gitconfig_blocked(self) -> None:
+        # A file that IS in the original's DANGEROUS_FILES still asks.
+        result = check_path_safety_for_auto_edit("/project/.gitconfig")
         self.assertIsNotNone(result)
 
     def test_normal_source_allowed(self) -> None:
         result = check_path_safety_for_auto_edit("/project/src/main.py")
         self.assertIsNone(result)
 
-    def test_lockfile_blocked(self) -> None:
+    def test_lockfile_not_blocked(self) -> None:
+        # Lockfiles are not in the original's set either — auto-accept.
         result = check_path_safety_for_auto_edit("/project/package-lock.json")
-        self.assertIsNotNone(result)
+        self.assertIsNone(result)
+
+    def test_worktree_path_not_blocked(self) -> None:
+        # .claude/worktrees/ is structural (git worktrees live there); edits
+        # inside a worktree must not hit the .claude protected-dir gate.
+        result = check_path_safety_for_auto_edit(
+            "/project/.claude/worktrees/feat/src/main.py"
+        )
+        self.assertIsNone(result)
+        # ...but a real .claude config file is still protected.
+        nested = check_path_safety_for_auto_edit("/project/.claude/settings.json")
+        self.assertIsNotNone(nested)
 
 
 class TestPermissionRuleFlow(unittest.TestCase):
