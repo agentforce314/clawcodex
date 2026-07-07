@@ -27,7 +27,7 @@ const DASHBOARD_NEW_SESSION_MESSAGE = 'starting a fresh dashboard chat...'
 export const shouldAllowIdleHotkeyExit = (dashboardTuiMode = DASHBOARD_TUI_MODE) => !dashboardTuiMode
 
 export function handleIdleHotkeyExit(
-  actions: Pick<InputHandlerActions, 'die' | 'sys'>,
+  actions: Pick<InputHandlerActions, 'requestExit' | 'sys'>,
   dashboardTuiMode = DASHBOARD_TUI_MODE,
   requestDashboardNewSession?: () => void
 ) {
@@ -37,7 +37,9 @@ export function handleIdleHotkeyExit(
     return actions.sys(DASHBOARD_NEW_SESSION_MESSAGE)
   }
 
-  return actions.die()
+  // requestExit runs the --worktree keep/remove flow when one is active and
+  // dies directly otherwise — same routing as /exit.
+  return actions.requestExit()
 }
 
 /**
