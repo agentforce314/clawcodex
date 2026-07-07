@@ -1452,7 +1452,9 @@ export class GatewayClient extends EventEmitter {
           // all edits during this session"); the box uses it verbatim for
           // non-Bash tools instead of a generic "don't ask again for <tool>".
           session_label: typeof req.session_label === 'string' ? req.session_label : null,
-          tool_name: String(req.tool_name ?? 'tool')
+          tool_name: String(req.tool_name ?? 'tool'),
+          // Destructive-command caution (backend-computed) → warning line.
+          warning: typeof req.warning === 'string' && req.warning ? req.warning : null
         },
         type: 'approval.request'
       })

@@ -170,13 +170,12 @@ from ...build_tool import SearchOrReadResult, Tool, ValidationResult, build_tool
 from ...context import ToolContext
 from ...errors import ToolInputError, ToolPermissionError
 from ...protocol import ToolResult
-from src.permissions.bash_security import check_bash_command_safety
+from src.permissions.bash_security import analyze_bash_command
 from src.permissions.types import PermissionPassthroughResult, PermissionResult
 from src.utils.format import format_duration
 
 from .background import spawn_background_bash
 from .command_semantics import interpret_command_result
-from .destructive_warnings import get_destructive_command_warning
 from .prompt import get_bash_prompt, get_default_timeout_ms, get_max_timeout_ms
 from .read_only_validation import is_command_read_only
 from .search_classification import (
@@ -209,16 +208,235 @@ def _bash_check_permissions(
     tool_input: dict[str, Any],
     context: ToolContext,
 ) -> PermissionResult:
+    """Bash's own permission stage — TS-parity rewrite.
+
+    Mirrors the original's per-command pipeline (bashPermissions.ts): deny/ask
+    RULES run upstream in ``has_permissions_to_use_tool_inner`` (compound-aware
+    and normalization-hardened) before this is called; here we resolve:
+
+    1. STRUCTURAL refusals only — a command the parser can't statically
+       analyze (control flow, unparseable quoting) or one hiding executable
+       substitution asks with NO suggestions (TS too-complex/injection asks,
+       ``suggestions: []``), except that a raw exact-string allow rule is
+       honored first (TS checkEarlyExitDeny exact-allow: the user consciously
+       saved that literal command).
+    2. acceptEdits mode — filesystem-write commands (mkdir/touch/rm/rmdir/
+       mv/cp/sed; rm/rmdir still gated on critical paths) and redirect-free
+       read-only commands auto-allow (TS modeValidation.ts).
+    3. Read-only auto-allow — a provably read-only, in-roots command runs
+       with NO prompt and NO rule in any mode (TS bashPermissions.ts:1136
+       "Read-only command is allowed").
+    4. Everything else → passthrough → the generic prompt, which now carries
+       the "don't ask again" suggestion ladder.
+
+    The old class-based screen (dangerous/destructive/unknown → un-grantable
+    safety ask that also preempted allow rules) is gone — the original has no
+    such screen; its dialog shows a warning for destructive commands instead
+    (forwarded via the ``warning`` field on the can_use_tool request). The
+    classifier still consumes ``analyze_bash_command`` via auto mode, and the
+    hardcoded dangerous patterns + sandbox hard-gate still refuse at spawn
+    (``bash_command_safety_guard``).
+    """
     command = (tool_input or {}).get("command", "")
     if not command:
         return PermissionPassthroughResult()
 
-    cwd_str = str(context.cwd) if context.cwd else None
-    result = check_bash_command_safety(command, cwd=cwd_str)
-    if result is not None:
-        return result
+    from src.permissions.bash_mode_validation import check_accept_edits_bash
+    from src.permissions.bash_suggestions import (
+        contains_executable_substitution,
+    )
+    from src.permissions.read_only_commands import (
+        check_read_only_constraints,
+    )
+    from src.permissions.types import (
+        PermissionAllowDecision,
+        PermissionAskDecision,
+        SafetyCheckDecisionReason,
+    )
 
+    cwd_str = str(context.cwd) if getattr(context, "cwd", None) else _os_mod.getcwd()
+    perm_ctx = getattr(context, "permission_context", None)
+
+    # bypassPermissions (and plan+bypass-available) runs everything — the
+    # tool's own structural/write asks must not preempt it (they are
+    # SafetyCheck asks, which otherwise short-circuit before the bypass branch
+    # in has_permissions_to_use_tool_inner). Deny rules still apply upstream.
+    _mode = getattr(perm_ctx, "mode", None)
+    if _mode == "bypassPermissions" or (
+        _mode == "plan"
+        and getattr(perm_ctx, "is_bypass_permissions_mode_available", False)
+    ):
+        return PermissionPassthroughResult()
+
+    allowed_roots: list[str] = []
+    try:
+        allowed_roots = [str(r) for r in context.allowed_roots()]
+    except Exception:
+        allowed_roots = []
+    if not allowed_roots:
+        allowed_roots = [cwd_str]
+
+    # 1. Structural refusals (parser gives up / hidden substitution /
+    #    eval-like builtins whose arguments ARE code). Two TS analogs with
+    #    DIFFERENT exact-allow handling:
+    #    * PARSE refusals (AST too-complex / injection substitution) go through
+    #      checkEarlyExitDeny, which honors an exact-string ALLOW rule
+    #      (bashPermissions.ts:2124-2131) — the user saved that literal command.
+    #    * checkSemantics refusals (EVAL_LIKE_BUILTINS, NAME-eval subscript)
+    #      go through checkSemanticsDeny, which only honors DENY rules, NEVER an
+    #      allow — so an exact ``Bash(eval "…")`` rule must NOT run eval.
+    #    All ask with empty suggestions.
+    from src.permissions.read_only_commands import (
+        accesses_proc_environ,
+        find_eval_like_builtin,
+        find_name_eval_subscript_attack,
+    )
+
+    analysis = analyze_bash_command(command)
+    parse_reason: str | None = None      # exact-allow honored
+    semantics_reason: str | None = None  # exact-allow NOT honored
+    if analysis.is_complex:
+        parse_reason = f"Complex command: {analysis.reason}"
+    elif contains_executable_substitution(command):
+        parse_reason = "Command contains substitution that executes hidden commands"
+    else:
+        eval_like = find_eval_like_builtin(command)
+        subscript = find_name_eval_subscript_attack(command)
+        if eval_like is not None:
+            semantics_reason = (
+                f"`{eval_like}` executes its arguments as shell code, which "
+                "cannot be statically analyzed"
+            )
+        elif subscript is not None:
+            semantics_reason = (
+                f"`{subscript}` arithmetically evaluates an array subscript, "
+                "which can execute a command substitution even when quoted"
+            )
+        elif accesses_proc_environ(command):
+            semantics_reason = (
+                "Accesses /proc/*/environ, which may expose environment "
+                "secrets of another process"
+            )
+    if parse_reason is not None:
+        exact_rule = _exact_allow_rule(perm_ctx, command)
+        if exact_rule is not None:
+            from src.permissions.types import RuleDecisionReason
+
+            return PermissionAllowDecision(
+                behavior="allow",
+                updated_input=tool_input,
+                decision_reason=RuleDecisionReason(rule=exact_rule),
+            )
+    if parse_reason is not None or semantics_reason is not None:
+        return PermissionAskDecision(
+            behavior="ask",
+            message=(
+                "This command requires confirmation: "
+                f"{parse_reason or semantics_reason}"
+            ),
+            decision_reason=SafetyCheckDecisionReason(
+                reason=parse_reason or semantics_reason,
+                classifier_approvable=True,
+            ),
+            suggestions=(),  # never suggest saving an unanalyzable command
+        )
+
+    # 2. acceptEdits mode: filesystem writes + read-only commands auto-allow.
+    if perm_ctx is not None and getattr(perm_ctx, "mode", None) == "acceptEdits":
+        accept_edits = check_accept_edits_bash(
+            command, cwd=cwd_str, allowed_roots=allowed_roots
+        )
+        if accept_edits is True:
+            from src.permissions.types import ModeDecisionReason
+
+            return PermissionAllowDecision(
+                behavior="allow",
+                updated_input=tool_input,
+                decision_reason=ModeDecisionReason(mode="acceptEdits"),
+            )
+        if isinstance(accept_edits, PermissionAskDecision):
+            return accept_edits  # dangerous rm/rmdir target — always surface
+
+    # 2.5. A filesystem-write command aimed at a DANGEROUS-removal target
+    # (`/`, `~`, a direct child of `/`) or OUTSIDE the workspace can never be
+    # auto-allowed — not by acceptEdits, not by a Bash(rm:*) rule. Surface a
+    # SafetyCheck ask with NO suggestions (mirrors TS checkPathConstraints /
+    # checkDangerousRemovalPaths, which "cannot be auto-allowed by permission
+    # rules" and never suggests saving the command). Returning it here — as a
+    # SafetyCheck ask — makes it preempt the content-rule allow in check.py
+    # (the safetyCheck coercion runs before rule matching), so a saved
+    # ``Bash(rm:*)`` still can't reach ``rm -rf ~``.
+    from src.permissions.bash_mode_validation import (
+        rule_allow_path_gate,
+        ACCEPT_EDITS_WRITE_COMMANDS,
+    )
+    from src.permissions.bash_suggestions import (
+        contains_unquoted_chaining,
+        split_chained_command,
+    )
+
+    write_legs = [command]
+    if contains_unquoted_chaining(command):
+        _subs = split_chained_command(command)
+        write_legs = _subs if _subs is not None else [command]
+    for _leg in write_legs:
+        _tok = _leg.strip().split(None, 1)[0] if _leg.strip() else ""
+        _base = _os_mod.path.basename(_tok)
+        if _base in ACCEPT_EDITS_WRITE_COMMANDS and not rule_allow_path_gate(
+            _leg, cwd=cwd_str, allowed_roots=allowed_roots
+        ):
+            return PermissionAskDecision(
+                behavior="ask",
+                message=(
+                    f"This command targets a protected or out-of-workspace "
+                    f"path and requires confirmation: {_leg.strip()}"
+                ),
+                decision_reason=SafetyCheckDecisionReason(
+                    reason="Write to a dangerous or out-of-workspace path",
+                    classifier_approvable=False,
+                ),
+                suggestions=(),
+            )
+
+    # 3. Read-only auto-allow (no rule, no prompt — any mode).
+    if check_read_only_constraints(
+        command, cwd=cwd_str, allowed_roots=allowed_roots
+    ):
+        from src.permissions.types import OtherDecisionReason
+
+        return PermissionAllowDecision(
+            behavior="allow",
+            updated_input=tool_input,
+            decision_reason=OtherDecisionReason(
+                reason="Read-only command is allowed",
+            ),
+        )
+
+    # 4. No verdict here — rules and the prompt flow decide.
     return PermissionPassthroughResult()
+
+
+def _exact_allow_rule(perm_ctx: Any, command: str) -> Any | None:
+    """Raw exact-string allow rule for ``command``, or None.
+
+    TS honors an exact-match allow even for commands its analyzers refuse to
+    reason about (bashPermissions.ts:2124-2131) — the user saved that literal
+    string on purpose. Only full-string equality qualifies.
+    """
+    if perm_ctx is None:
+        return None
+    try:
+        from src.permissions.rules import get_rule_by_contents_for_tool
+
+        stripped = command.strip()
+        for rule_content, rule in get_rule_by_contents_for_tool(
+            perm_ctx, "Bash", "allow"
+        ).items():
+            if stripped and stripped == str(rule_content).strip():
+                return rule
+    except Exception:
+        return None
+    return None
 
 
 def _bash_validate_input(

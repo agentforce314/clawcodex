@@ -16,10 +16,9 @@ from ..diff_utils import (
     unified_diff_hunks,
 )
 from .read import _backfill_read_edit_path  # shared file_path expander
-from ..errors import ToolInputError, ToolPermissionError
+from ..errors import ToolInputError
 from ..protocol import ToolResult
 from src.permissions.types import (
-    PermissionAskDecision,
     PermissionPassthroughResult,
     PermissionResult,
 )
@@ -189,17 +188,14 @@ def _find_similar_file(file_path: str, cwd: Path) -> str | None:
 # -- Permissions ---------------------------------------------------------------
 
 def _check_permissions(tool_input: dict[str, Any], context: ToolContext) -> PermissionResult:
-    file_path = tool_input.get("file_path")
-    if not isinstance(file_path, str):
-        return PermissionPassthroughResult()
-    try:
-        path = context.ensure_allowed_path(file_path)
-    except ToolPermissionError:
-        return PermissionPassthroughResult()
-    if path.suffix.lower() in {".md", ".markdown"} and not context.allow_docs:
-        return PermissionAskDecision(
-            message="Editing documentation files is blocked unless allow_docs is enabled",
-        )
+    # NB: no docs gate. The port used to raise an explicit ask for
+    # ``.md``/``.markdown`` edits unless ``allow_docs`` — the original Claude
+    # Code has no such permission gate (stray-docs discouragement lives in
+    # the system prompt), and being an explicit ask it was structurally
+    # un-grantable: no "allow all edits this session" option and immune to
+    # acceptEdits (both are passthrough-gated), so every markdown edit
+    # re-prompted forever. Markdown now flows like any other edit: prompt in
+    # default mode WITH the session option, auto-allow under acceptEdits.
     return PermissionPassthroughResult()
 
 
