@@ -324,8 +324,8 @@ def _readable_internal_dirs(context: Any) -> list[Path]:
     except Exception:
         pass
 
-    # Auto-memory (memdir): the ``~/.claude/projects/<slug>/memory/`` subtree
-    # ONLY. NOT ``get_memory_base_dir()`` — that returns the whole ``~/.claude``
+    # Auto-memory (memdir): the ``~/.clawcodex/projects/<slug>/memory/`` subtree
+    # ONLY. NOT ``get_memory_base_dir()`` — that returns the whole ``~/.clawcodex``
     # config home and would silently expose ``.credentials.json``, settings, and
     # *other* projects' transcripts. Mirrors TS ``isAutoMemPath``
     # (``typescript/src/memdir/paths.ts:274``), scoped to this project's slug.
@@ -342,7 +342,7 @@ def _readable_internal_dirs(context: Any) -> list[Path]:
     # ``~/.claude/teams``, and bundled-skills. Those subsystems are not (yet)
     # ported here; omitting them only causes extra prompts (under-allow), never
     # extra access. Extend this set when porting them — keep every entry
-    # narrowly scoped (never the ``~/.claude`` root).
+    # narrowly scoped (never the ``~/.clawcodex`` root).
     return dirs
 
 

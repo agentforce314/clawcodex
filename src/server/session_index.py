@@ -1,4 +1,4 @@
-"""``~/.claude/server-sessions.json`` persistence for Direct Connect sessions.
+"""``~/.clawcodex/server-sessions.json`` persistence for Direct Connect sessions.
 
 Mirrors the persistence helpers implied by ``server/types.ts:46-57``:
 the server reads the index at startup to resume sessions across server
@@ -27,7 +27,7 @@ from .types import SessionIndexEntry
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_INDEX_PATH = Path.home() / '.claude' / 'server-sessions.json'
+DEFAULT_INDEX_PATH = Path.home() / '.clawcodex' / 'server-sessions.json'
 
 #: ``SessionIndex`` is keyed by ``session_id`` (TS uses ``string`` keys
 #: but the value type matches ``SessionIndexEntry``).

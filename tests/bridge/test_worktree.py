@@ -58,7 +58,7 @@ async def test_create_then_remove_happy_path(git_repo: str) -> None:
         assert paths.created is True
         assert paths.base_dir == git_repo
         expected = os.path.join(
-            git_repo, '.claude', 'worktrees', 'agent-sess-abc',
+            git_repo, '.clawcodex', 'worktrees', 'agent-sess-abc',
         )
         assert paths.working_dir == expected
         # The worktree exists on disk with the README from HEAD.
@@ -115,9 +115,9 @@ async def test_session_id_validation_falls_back(
     paths = await create_agent_worktree(git_repo, bad_id)
     assert paths.created is False
     assert paths.working_dir == git_repo
-    # No .claude/worktrees/agent-<bad> is created.
+    # No .clawcodex/worktrees/agent-<bad> is created.
     expected = os.path.join(
-        git_repo, '.claude', 'worktrees', f'agent-{bad_id}',
+        git_repo, '.clawcodex', 'worktrees', f'agent-{bad_id}',
     )
     assert not os.path.exists(expected)
 
@@ -154,8 +154,8 @@ async def test_fallback_when_not_a_git_repo(tmp_path) -> None:
     assert paths.created is False
     assert paths.working_dir == base
     assert paths.base_dir == base
-    # No .claude/worktrees created on fallback.
-    assert not os.path.exists(os.path.join(base, '.claude', 'worktrees'))
+    # No .clawcodex/worktrees created on fallback.
+    assert not os.path.exists(os.path.join(base, '.clawcodex', 'worktrees'))
 
 
 @pytest.mark.asyncio
@@ -167,7 +167,7 @@ async def test_fallback_when_worktree_add_fails(
     # Pre-create the target as a real worktree, so a second ``add`` at
     # the same path is guaranteed to fail.
     target = os.path.join(
-        git_repo, '.claude', 'worktrees', 'agent-sess-dupe',
+        git_repo, '.clawcodex', 'worktrees', 'agent-sess-dupe',
     )
     os.makedirs(os.path.dirname(target), exist_ok=True)
     subprocess.run(

@@ -5,7 +5,7 @@ Ports ``typescript/src/bridge/inboundAttachments.ts``.
 Web composer uploads files via cookie-authed ``/api/{org}/upload``, then
 sends ``file_uuid`` alongside the message. This module fetches each via
 GET ``/api/oauth/files/{uuid}/content`` (OAuth-authed, same store),
-writes to ``~/.claude/uploads/{sessionId}/``, and returns ``@path`` refs
+writes to ``~/.clawcodex/uploads/{sessionId}/``, and returns ``@path`` refs
 the Read tool can pick up.
 
 **Best-effort**: any failure (no token, network, non-2xx, disk) logs at
@@ -171,16 +171,17 @@ def _sanitize_filename(name: str) -> str:
 
 
 def _uploads_dir() -> Path:
-    """Per-session uploads directory under ``~/.claude/uploads/``.
+    """Per-session uploads directory under ``~/.clawcodex/uploads/``.
 
     Mirrors TS ``uploadsDir`` on ``inboundAttachments.ts:60-62``. The TS
     version reads ``getClaudeConfigHomeDir()`` (which honors a
-    ``CLAUDE_CONFIG_DIR`` env override); the Python port checks the
-    same env var first, falling back to ``~/.claude``.
+    ``CLAUDE_CONFIG_DIR`` env override); the Python port resolves the
+    clawcodex home via ``clawcodex_dirs.get_user_config_dir`` (its
+    ``CLAWCODEX_CONFIG_DIR`` equivalent, tilde-expanded).
     """
-    override = os.environ.get('CLAUDE_CONFIG_DIR')
-    home = Path(override) if override else Path.home() / '.claude'
-    return home / 'uploads' / str(get_session_id())
+    from src.utils.clawcodex_dirs import get_user_config_dir
+
+    return get_user_config_dir() / 'uploads' / str(get_session_id())
 
 
 def _debug(message: str) -> None:

@@ -130,7 +130,7 @@ class TestLoadSkillsFromSkillsDir:
 
 class TestGetSkillDirCommands:
     def test_caching(self, tmp_path: Path) -> None:
-        skill_dir = tmp_path / ".claude" / "skills" / "s1"
+        skill_dir = tmp_path / ".clawcodex" / "skills" / "s1"
         skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text("---\ndescription: S1\n---\nContent")
 
@@ -139,7 +139,7 @@ class TestGetSkillDirCommands:
         assert len(skills1) == len(skills2)
 
     def test_conditional_skills_excluded(self, tmp_path: Path) -> None:
-        skill_dir = tmp_path / ".claude" / "skills" / "conditional"
+        skill_dir = tmp_path / ".clawcodex" / "skills" / "conditional"
         skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text(
             "---\ndescription: Conditional\npaths:\n  - src/*.py\n---\nConditional"

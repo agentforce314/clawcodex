@@ -55,7 +55,7 @@ from src.tool_system.tools.skill import _run_markdown_skill
 
 
 # ----------------------------------------------------------------------
-# Fixture skill bodies (written to a tmp workspace's .claude/skills tree).
+# Fixture skill bodies (written to a tmp workspace's .clawcodex/skills tree).
 # ----------------------------------------------------------------------
 
 # Exercises every transform: a named arg ($topic), ${CLAUDE_SKILL_DIR},
@@ -123,7 +123,7 @@ def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[P
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     for var in (
-        "CLAUDE_CONFIG_DIR",
+        "CLAWCODEX_CONFIG_DIR",
         "CLAWCODEX_SKILLS_DIR",
         "CLAUDE_SKILLS_DIR",
         "CLAWCODEX_MANAGED_SKILLS_DIR",
@@ -132,7 +132,7 @@ def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[P
         "CLAUDE_CODE_ADDITIONAL_DIRECTORIES",
     ):
         monkeypatch.delenv(var, raising=False)
-    monkeypatch.setenv("CLAUDE_MANAGED_CONFIG_DIR", str(tmp_path / "managed"))
+    monkeypatch.setenv("CLAWCODEX_MANAGED_CONFIG_DIR", str(tmp_path / "managed"))
     yield home
 
 
@@ -174,9 +174,9 @@ def _reset_config_manager() -> Iterator[None]:
 
 @pytest.fixture
 def gizmo_ws(tmp_path: Path, isolated_home: Path) -> Path:
-    """A workspace whose ``.claude/skills/`` holds the four fixture skills."""
+    """A workspace whose ``.clawcodex/skills/`` holds the four fixture skills."""
     ws = tmp_path / "proj"
-    skills = ws / ".claude" / "skills"
+    skills = ws / ".clawcodex" / "skills"
 
     def _write(rel: str, body: str) -> None:
         path = skills / rel / "SKILL.md"

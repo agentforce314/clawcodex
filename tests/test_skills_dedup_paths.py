@@ -32,8 +32,8 @@ def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[P
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     for var in (
-        "CLAUDE_CONFIG_DIR",
-        "CLAUDE_MANAGED_CONFIG_DIR",
+        "CLAWCODEX_CONFIG_DIR",
+        "CLAWCODEX_MANAGED_CONFIG_DIR",
         "CLAWCODEX_SKILLS_DIR",
         "CLAUDE_SKILLS_DIR",
         "CLAWCODEX_MANAGED_SKILLS_DIR",
@@ -42,7 +42,7 @@ def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[P
         "CLAUDE_CODE_ADDITIONAL_DIRECTORIES",
     ):
         monkeypatch.delenv(var, raising=False)
-    monkeypatch.setenv("CLAUDE_MANAGED_CONFIG_DIR", str(tmp_path / "managed"))
+    monkeypatch.setenv("CLAWCODEX_MANAGED_CONFIG_DIR", str(tmp_path / "managed"))
     yield home
 
 
@@ -75,13 +75,13 @@ def test_symlinked_skill_collapses_to_single_entry(
     """Two paths pointing at the same SKILL.md (via symlink) must
     collapse to one entry after realpath dedup."""
     project = tmp_path / "proj"
-    real_dir = project / ".claude" / "skills" / "real"
+    real_dir = project / ".clawcodex" / "skills" / "real"
     _write_skill(real_dir / "SKILL.md", "---\ndescription: real\n---\nbody")
 
     # Create a sibling symlinked dir that points at the same
     # SKILL.md-containing folder. After realpath dedup they should
     # collapse to one entry.
-    link_dir = project / ".claude" / "skills" / "linked"
+    link_dir = project / ".clawcodex" / "skills" / "linked"
     link_dir.symlink_to(real_dir, target_is_directory=True)
 
     skills = get_skill_dir_commands(str(project))
@@ -102,9 +102,9 @@ def test_disable_policy_skills_excludes_managed_dir(
     tmp_path: Path, isolated_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # Plant a "policy" skill in the managed dir we set via the fixture.
-    managed_root = Path(os.environ["CLAUDE_MANAGED_CONFIG_DIR"])
+    managed_root = Path(os.environ["CLAWCODEX_MANAGED_CONFIG_DIR"])
     _write_skill(
-        managed_root / ".claude" / "skills" / "policyskill" / "SKILL.md",
+        managed_root / ".clawcodex" / "skills" / "policyskill" / "SKILL.md",
         "---\ndescription: policy\n---\nbody",
     )
 
@@ -133,7 +133,7 @@ def test_bare_mode_skips_autodiscovery(
 ) -> None:
     project = tmp_path / "proj"
     _write_skill(
-        project / ".claude" / "skills" / "projskill" / "SKILL.md",
+        project / ".clawcodex" / "skills" / "projskill" / "SKILL.md",
         "---\ndescription: proj\n---\nbody",
     )
 
@@ -152,14 +152,14 @@ def test_bare_mode_with_add_dir_only_loads_those(
     project = tmp_path / "proj"
     # Plant a project skill that should be IGNORED in bare mode.
     _write_skill(
-        project / ".claude" / "skills" / "projskill" / "SKILL.md",
+        project / ".clawcodex" / "skills" / "projskill" / "SKILL.md",
         "---\ndescription: proj\n---\nbody",
     )
 
     # Plant an additional-dir skill that SHOULD load.
     extra_dir = tmp_path / "extra"
     _write_skill(
-        extra_dir / ".claude" / "skills" / "extraskill" / "SKILL.md",
+        extra_dir / ".clawcodex" / "skills" / "extraskill" / "SKILL.md",
         "---\ndescription: extra\n---\nbody",
     )
 
@@ -183,20 +183,20 @@ def test_managed_user_project_precedence(
     dirs, the unified ``get_all_skills`` merge keeps the highest-
     priority occurrence (TS order: managed → user → project → bundled).
     """
-    managed_root = Path(os.environ["CLAUDE_MANAGED_CONFIG_DIR"])
+    managed_root = Path(os.environ["CLAWCODEX_MANAGED_CONFIG_DIR"])
     user_root = isolated_home
 
     _write_skill(
-        managed_root / ".claude" / "skills" / "shared" / "SKILL.md",
+        managed_root / ".clawcodex" / "skills" / "shared" / "SKILL.md",
         "---\ndescription: from-managed\n---\nM",
     )
     _write_skill(
-        user_root / ".claude" / "skills" / "shared" / "SKILL.md",
+        user_root / ".clawcodex" / "skills" / "shared" / "SKILL.md",
         "---\ndescription: from-user\n---\nU",
     )
     project = tmp_path / "proj"
     _write_skill(
-        project / ".claude" / "skills" / "shared" / "SKILL.md",
+        project / ".clawcodex" / "skills" / "shared" / "SKILL.md",
         "---\ndescription: from-project\n---\nP",
     )
 
@@ -220,7 +220,7 @@ def test_conditional_skill_held_until_path_matches(
 ) -> None:
     project = tmp_path / "proj"
     _write_skill(
-        project / ".claude" / "skills" / "lintpy" / "SKILL.md",
+        project / ".clawcodex" / "skills" / "lintpy" / "SKILL.md",
         "---\n"
         "description: lint python\n"
         "paths:\n"
@@ -256,7 +256,7 @@ def test_paths_double_glob_treated_as_unconditional(
 ) -> None:
     project = tmp_path / "proj"
     _write_skill(
-        project / ".claude" / "skills" / "always" / "SKILL.md",
+        project / ".clawcodex" / "skills" / "always" / "SKILL.md",
         "---\ndescription: always\npaths:\n  - \"**\"\n---\nbody",
     )
     skills = get_skill_dir_commands(str(project))
@@ -272,7 +272,7 @@ def test_path_validity_guards_reject_dotdot_and_absolute(
 ) -> None:
     project = tmp_path / "proj"
     _write_skill(
-        project / ".claude" / "skills" / "guarded" / "SKILL.md",
+        project / ".clawcodex" / "skills" / "guarded" / "SKILL.md",
         "---\n"
         "description: guarded\n"
         "paths:\n"
@@ -314,8 +314,8 @@ def test_dynamic_discovery_skips_gitignored_dirs(
     project = tmp_path / "proj"
     project.mkdir()
 
-    # Plant a `.claude/skills` dir under a gitignored path.
-    ignored_skills_dir = project / "node_modules" / "pkg" / ".claude" / "skills"
+    # Plant a `.clawcodex/skills` dir under a gitignored path.
+    ignored_skills_dir = project / "node_modules" / "pkg" / ".clawcodex" / "skills"
     ignored_skills_dir.mkdir(parents=True)
     (ignored_skills_dir / "noisy" / "SKILL.md").parent.mkdir(parents=True)
     (ignored_skills_dir / "noisy" / "SKILL.md").write_text(
@@ -349,11 +349,11 @@ def test_dynamic_discovery_skips_gitignored_dirs(
 def test_dynamic_discovery_includes_non_ignored_dirs(
     tmp_path: Path, isolated_home: Path
 ) -> None:
-    """Sanity counterpart: a non-ignored `.claude/skills` dir is
+    """Sanity counterpart: a non-ignored `.clawcodex/skills` dir is
     returned by the discovery walk."""
     project = tmp_path / "proj"
     project.mkdir()
-    nested_skills_dir = project / "pkg" / ".claude" / "skills"
+    nested_skills_dir = project / "pkg" / ".clawcodex" / "skills"
     nested_skills_dir.mkdir(parents=True)
     file_path = project / "pkg" / "lib.js"
     file_path.write_text("//")
@@ -363,6 +363,6 @@ def test_dynamic_discovery_includes_non_ignored_dirs(
     new_dirs = discover_skill_dirs_for_paths([str(file_path)], str(project))
     # The nested skills dir is included.
     assert any(str(nested_skills_dir) == d for d in new_dirs), (
-        f"non-ignored nested .claude/skills dir should appear in "
+        f"non-ignored nested .clawcodex/skills dir should appear in "
         f"discovery; got: {new_dirs}"
     )

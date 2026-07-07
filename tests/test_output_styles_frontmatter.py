@@ -102,13 +102,18 @@ def test_empty_body_is_skipped(tmp_path: Path) -> None:
 def test_resolve_uses_default_dir_when_search_dir_is_none(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``resolve_output_style`` auto-discovers ``~/.claude/outputStyles/``
-    when ``search_dir`` is ``None`` (Phase-9 behavior)."""
+    """``resolve_output_style`` auto-discovers ``~/.clawcodex/outputStyles/``
+    when ``search_dir`` is ``None`` (Phase-9 behavior). The canon dir comes
+    from ``GLOBAL_CONFIG_DIR`` (import-time constant), so the test re-points
+    that rather than ``HOME``."""
 
-    monkeypatch.setenv("HOME", str(tmp_path))
-    target = tmp_path / ".claude" / "outputStyles"
+    import src.config as config
+
+    home = tmp_path / ".clawcodex"
+    target = home / "outputStyles"
     target.mkdir(parents=True)
     (target / "auto.md").write_text("---\nname: auto\n---\nAuto-discovered.\n")
+    monkeypatch.setattr(config, "GLOBAL_CONFIG_DIR", home)
     style = resolve_output_style("auto", search_dir=None)
     assert style.prompt == "Auto-discovered."
 

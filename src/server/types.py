@@ -18,7 +18,7 @@ class SessionState(str, Enum):
     """5-state Direct Connect session lifecycle.
 
     Mirrors ``server/types.ts:26-31``. Values are strings so they
-    serialize cleanly through ``~/.claude/server-sessions.json``.
+    serialize cleanly through ``~/.clawcodex/server-sessions.json``.
     """
 
     STARTING = 'starting'
@@ -72,7 +72,7 @@ class SessionInfo:
 
 @dataclass(frozen=True)
 class SessionIndexEntry:
-    """On-disk record persisted to ``~/.claude/server-sessions.json``.
+    """On-disk record persisted to ``~/.clawcodex/server-sessions.json``.
 
     Mirrors ``server/types.ts:46-55``. Used to resume sessions across
     server restarts: the new server reads this file at startup and can

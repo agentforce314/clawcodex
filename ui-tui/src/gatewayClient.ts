@@ -304,7 +304,7 @@ const SLASHES: ReadonlyArray<{ desc: string; hint?: string; name: string }> = [
 type Pending = { reject: (e: Error) => void; resolve: (v: unknown) => void }
 
 /** A workflow slash command reported by the backend (`list_workflow_commands`):
- *  bundled /deep-research plus saved `.claude/workflows/*.py`. */
+ *  bundled /deep-research plus saved `.clawcodex/workflows/*.py`. */
 type WorkflowCommand = { argument_hint?: string; description?: string; name: string }
 
 /** A skill reported by the backend (`list_skills` control). */
@@ -452,7 +452,7 @@ export class GatewayClient extends EventEmitter {
       // ── startup handshake ────────────────────────────────────────────────
       case 'commands.catalog': {
         // Await the backend so the catalog can include its workflow commands
-        // (/deep-research + saved .claude/workflows) alongside the static set.
+        // (/deep-research + saved .clawcodex/workflows) alongside the static set.
         return this.readyPromise
           .then(() => this.fetchWorkflowCommands())
           .catch(() => [] as WorkflowCommand[])
@@ -646,7 +646,7 @@ export class GatewayClient extends EventEmitter {
         // success.
         if (action === 'install' || action === 'browse') {
           return Promise.reject(
-            new Error(`/skills ${action}: not supported in clawcodex — add skills under ~/.claude/skills or .claude/skills`)
+            new Error(`/skills ${action}: not supported in clawcodex — add skills under ~/.clawcodex/skills or .clawcodex/skills`)
           )
         }
 
@@ -909,7 +909,7 @@ export class GatewayClient extends EventEmitter {
   // and return a CommandDispatchResponse — `type:'exec'` + human-readable output
   // the app prints, or `type:'send'` for workflow commands whose expanded
   // directive the app submits as a prompt. Unknown commands are offered to the
-  // backend as workflow commands (/deep-research, saved .claude/workflows)
+  // backend as workflow commands (/deep-research, saved .clawcodex/workflows)
   // before reporting they aren't wired.
   private async dispatchSlash(
     name: string,
@@ -1194,7 +1194,7 @@ export class GatewayClient extends EventEmitter {
       }
 
       default: {
-        // Workflow commands (/deep-research + saved .claude/workflows/*.py):
+        // Workflow commands (/deep-research + saved .clawcodex/workflows/*.py):
         // the backend expands the directive; the app submits it as a prompt so
         // the model launches the run via the Workflow tool.
         const r = (await this.controlQuery('workflow_command', { args: arg ?? '', name })) as any

@@ -1,7 +1,7 @@
 """Crash-recovery pointer for perpetual-mode bridges.
 
 The pointer is a small JSON file written under the daemon's working
-directory at ``<dir>/.claude/bridge-pointer.json``. It records the
+directory at ``<dir>/.clawcodex/bridge-pointer.json``. It records the
 identity (``bridge_id``, ``environment_id``, ``session_id``) of the
 currently-running bridge so that a subsequent restart (after a clean
 shutdown OR a crash) can:
@@ -56,7 +56,7 @@ from dataclasses import asdict, dataclass
 logger = logging.getLogger(__name__)
 
 _SCHEMA_VERSION = 1
-_POINTER_REL = os.path.join('.claude', 'bridge-pointer.json')
+_POINTER_REL = os.path.join('.clawcodex', 'bridge-pointer.json')
 
 
 @dataclass

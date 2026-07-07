@@ -7,7 +7,7 @@ centralized gate at the top of ``executeHooks()`` — introduced after two
 vulnerabilities where hooks fired in lifecycle states the user had not consented
 to.
 
-Failure mode without this gate: a project's ``.claude/settings.json`` defines a
+Failure mode without this gate: a project's ``.clawcodex/settings.json`` defines a
 hook that fires before every tool call. The user opens the project, declines the
 workspace-trust dialog, and the hook still fires once because ``SessionStart``
 runs before the trust check. The gate closes that window.

@@ -181,13 +181,13 @@ class TestStartupProfiler(unittest.TestCase):
             self.assertFalse(tmp_root.exists())
 
     def test_output_dir_honors_claude_config_dir_env(self):
-        """Critic m6: ``CLAUDE_CONFIG_DIR`` should redirect the report path."""
+        """Critic m6: ``CLAWCODEX_CONFIG_DIR`` should redirect the report path."""
         import tempfile
 
         with tempfile.TemporaryDirectory() as tmpdir:
             mod = _fresh_profiler({
                 "CLAUDE_CODE_PROFILE_STARTUP": "1",
-                "CLAUDE_CONFIG_DIR": tmpdir,
+                "CLAWCODEX_CONFIG_DIR": tmpdir,
             })
             self.assertEqual(
                 mod._OUTPUT_DIR,  # type: ignore[attr-defined]

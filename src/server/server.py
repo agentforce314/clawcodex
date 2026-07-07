@@ -10,7 +10,7 @@ contract is deduced from the client side
   - WS endpoint accepts NDJSON-over-WS, with ``Authorization: Bearer``
     on the upgrade request OR ``?token=<token>`` query param.
   - 5-state ``SessionState`` lifecycle persisted to
-    ``~/.claude/server-sessions.json`` (via ``SessionManager``).
+    ``~/.clawcodex/server-sessions.json`` (via ``SessionManager``).
 
 **Architecture** — for robustness, the server uses **two separate
 listeners**: one HTTP (``asyncio.start_server`` + minimal HTTP/1.1

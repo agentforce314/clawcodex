@@ -126,3 +126,12 @@ def _isolate_mcp_keyring(request, monkeypatch):
     monkeypatch.setattr(keyring, "set_password", fake.set_password)
     monkeypatch.setattr(keyring, "delete_password", fake.delete_password)
     yield
+
+
+@pytest.fixture(autouse=True)
+def _no_real_home_migration(monkeypatch):
+    """Keep the one-time ``~/.claude`` -> ``~/.clawcodex`` migration away
+    from the developer's real home: tests that drive real entrypoints
+    (``run_agent_server_subcommand``, ``cli.main``) would otherwise run it
+    against ``$HOME``. Migration tests re-enable it explicitly."""
+    monkeypatch.setenv("CLAWCODEX_DISABLE_LEGACY_MIGRATION", "1")

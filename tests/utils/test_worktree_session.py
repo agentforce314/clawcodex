@@ -87,8 +87,8 @@ def test_flatten_slug_is_injective_over_allowed_alphabet():
 
 def test_paths_flatten_nested_slugs(repo):
     path = worktree_path_for(str(repo), "user/feature")
-    assert path == str(repo / ".claude" / "worktrees" / "user+feature")
-    assert worktrees_dir(str(repo)) == str(repo / ".claude" / "worktrees")
+    assert path == str(repo / ".clawcodex" / "worktrees" / "user+feature")
+    assert worktrees_dir(str(repo)) == str(repo / ".clawcodex" / "worktrees")
 
 
 # ── PR references ────────────────────────────────────────────────────────────
@@ -113,7 +113,7 @@ def test_parse_pr_reference(text, expected):
 
 def test_env_round_trip_and_owner_pid():
     session = WorktreeSession(
-        worktree_name="x", worktree_path="/r/.claude/worktrees/x",
+        worktree_name="x", worktree_path="/r/.clawcodex/worktrees/x",
         worktree_branch="worktree-x", original_cwd="/r", repo_root="/r",
     )
     env = session.to_env()
@@ -146,7 +146,7 @@ def test_strip_worktree_env_removes_inherited_block():
 
 def test_create_worktree_for_session_creates_dir_and_branch(repo):
     session = create_worktree_for_session("feat-x", cwd=str(repo))
-    assert session.worktree_path == str(repo / ".claude" / "worktrees" / "feat-x")
+    assert session.worktree_path == str(repo / ".clawcodex" / "worktrees" / "feat-x")
     assert session.worktree_branch == "worktree-feat-x"
     assert session.repo_root == str(repo)
     assert (Path(session.worktree_path) / ".git").is_file()
@@ -159,7 +159,7 @@ def test_create_from_subdirectory_lands_in_repo_root(repo):
     sub.mkdir()
     session = create_worktree_for_session("from-sub", cwd=str(sub))
     assert session.repo_root == str(repo)
-    assert session.worktree_path.startswith(str(repo / ".claude"))
+    assert session.worktree_path.startswith(str(repo / ".clawcodex"))
     assert session.original_cwd == str(sub)
 
 
@@ -176,15 +176,15 @@ def test_resume_existing_worktree_preserves_work(repo):
 def test_creating_inside_a_worktree_resolves_to_main_repo(repo):
     outer = create_worktree_for_session("outer", cwd=str(repo))
     inner = create_worktree_for_session("inner", cwd=outer.worktree_path)
-    # Lands in the MAIN repo's .claude/worktrees, not nested inside `outer`.
-    assert inner.worktree_path == str(repo / ".claude" / "worktrees" / "inner")
+    # Lands in the MAIN repo's .clawcodex/worktrees, not nested inside `outer`.
+    assert inner.worktree_path == str(repo / ".clawcodex" / "worktrees" / "inner")
 
 
 def test_orphaned_plain_dir_is_rejected_not_adopted(repo):
     """Critic B2: a plain directory at the worktree path must NOT fast-resume
     (bare rev-parse walks up and reports the MAIN repo's HEAD) and must NOT be
     auto-deleted — creation fails loud with a prune hint."""
-    orphan = repo / ".claude" / "worktrees" / "orphan"
+    orphan = repo / ".clawcodex" / "worktrees" / "orphan"
     orphan.mkdir(parents=True)
     (orphan / "leftover.txt").write_text("precious\n")
 
@@ -342,18 +342,39 @@ def test_cleanup_reports_failure(repo):
 
 # ── post-creation setup ──────────────────────────────────────────────────────
 
-def test_settings_local_json_is_copied_for_both_tiers(repo):
-    # clawcodex's own project tier + the harness-compatible .claude tier
-    # (hooks) — both propagate so the worktree session behaves like the
-    # original checkout.
+def test_settings_local_json_copies_clawcodex_tier_only(repo):
+    # Only clawcodex's own project tier propagates. The real Claude Code
+    # harness's .claude/settings.local.json (foreign permission grants) is
+    # deliberately NOT copied since the directory rebrand.
     for dirname in (".clawcodex", ".claude"):
         d = repo / dirname
         d.mkdir(exist_ok=True)
         (d / "settings.local.json").write_text('{"permissions": {}}')
     session = create_worktree_for_session("settings", cwd=str(repo))
-    for dirname in (".clawcodex", ".claude"):
-        copied = Path(session.worktree_path) / dirname / "settings.local.json"
-        assert copied.read_text() == '{"permissions": {}}'
+    copied = Path(session.worktree_path) / ".clawcodex" / "settings.local.json"
+    assert copied.read_text() == '{"permissions": {}}'
+    assert not (Path(session.worktree_path) / ".claude" / "settings.local.json").exists()
+
+
+def test_legacy_claude_worktree_is_resumed_and_removable(repo):
+    # A pre-rebrand worktree under .claude/worktrees/ (git-registered at its
+    # absolute path) must be resumed in place — creating a fresh tree would
+    # also fail on the branch being checked out there — and the exit-dialog
+    # removal must accept the legacy root.
+    legacy_dir = repo / ".claude" / "worktrees"
+    legacy_dir.mkdir(parents=True)
+    legacy_path = legacy_dir / "old-task"
+    subprocess.run(
+        ["git", "worktree", "add", "-B", "worktree-old-task", str(legacy_path), "HEAD"],
+        cwd=repo, check=True, capture_output=True,
+    )
+
+    session = create_worktree_for_session("old-task", cwd=str(repo))
+    assert session.worktree_path == str(legacy_path)
+
+    ok, error = cleanup_worktree(session)
+    assert ok, error
+    assert not legacy_path.exists()
 
 
 def test_worktreeinclude_copies_matched_gitignored_files(repo):

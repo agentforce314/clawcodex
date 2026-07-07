@@ -114,8 +114,8 @@ def test_prepend_non_string_non_list_returns_unchanged() -> None:
 
 @pytest.fixture
 def _isolated_uploads_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Pin uploads to a temp dir so tests don't touch ~/.claude/uploads."""
-    monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(tmp_path))
+    """Pin uploads to a temp dir so tests don't touch ~/.clawcodex/uploads."""
+    monkeypatch.setenv('CLAWCODEX_CONFIG_DIR', str(tmp_path))
     return tmp_path
 
 

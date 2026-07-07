@@ -18,7 +18,7 @@ def run_mcp_subcommand(rest: list[str]) -> int:
 
     Verbs (initial set):
       * ``list``   — list configured MCP servers (reads
-        ``~/.claude/settings.json``-style config and prints names).
+        ``~/.clawcodex/settings.json``-style config and prints names).
       * ``--help`` — print usage and exit 0.
 
     Returns the process exit code.

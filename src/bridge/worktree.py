@@ -2,10 +2,10 @@
 
 When the bridge runs multi-session with ``--spawn worktree``, each
 session is given an isolated working tree under
-``<base>/.claude/worktrees/agent-<session_id>/`` so concurrent edits
+``<base>/.clawcodex/worktrees/agent-<session_id>/`` so concurrent edits
 don't stomp each other. This module owns the create/remove plumbing.
 
-The path layout (``<base>/.claude/worktrees/agent-<sid>/``) is a
+The path layout (``<base>/.clawcodex/worktrees/agent-<sid>/``) is a
 clawcodex convention. Crash-recovery — sweeping orphan worktrees from
 a previous run on daemon startup — is intentionally out of scope for
 this phase; it belongs with the perpetual-mode work in Phase 12c.
@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 # Session IDs nominally arrive as ``cse_<hex>`` from the server, but the
 # work-secret payload isn't strongly typed, so a malformed value could
 # otherwise become a path-traversal vector (``session_id='../escape'``
-# would land the worktree outside ``<base>/.claude/worktrees/``).
+# would land the worktree outside ``<base>/.clawcodex/worktrees/``).
 _SESSION_ID_RE = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
 
 # Wall-clock cap for any single git subprocess. ``git worktree add``
@@ -130,7 +130,7 @@ async def _is_git_repo(path: str) -> bool:
 async def create_agent_worktree(
     base_dir: str, session_id: str,
 ) -> WorktreePaths:
-    """Create ``<base>/.claude/worktrees/agent-<session_id>/`` as a
+    """Create ``<base>/.clawcodex/worktrees/agent-<session_id>/`` as a
     detached worktree of ``base_dir``.
 
     Returns a :class:`WorktreePaths` with ``created=True`` on success.
@@ -161,7 +161,7 @@ async def create_agent_worktree(
         )
 
     target = os.path.join(
-        base_dir, '.claude', 'worktrees', f'agent-{session_id}',
+        base_dir, '.clawcodex', 'worktrees', f'agent-{session_id}',
     )
     parent = os.path.dirname(target)
     try:

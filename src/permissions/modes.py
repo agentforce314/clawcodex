@@ -134,7 +134,7 @@ def has_allow_bypass_permissions_mode() -> bool:
     ``typescript/src/utils/settings/settings.ts:897``: reads
     ``permissions.allowBypassPermissionsMode`` from the user (global) and local
     tiers, and INTENTIONALLY EXCLUDES the project tier
-    (``<git-root>/.claude/config.json``) — that file is committable, so a
+    (``<git-root>/.clawcodex/config.json``) — that file is committable, so a
     cloned repo must not be able to auto-enable bypass (the TS comment: "a
     malicious project could otherwise enable bypass mode (security risk)").
 

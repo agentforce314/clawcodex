@@ -5,6 +5,54 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Directory rebrand: clawcodex state now lives under `~/.clawcodex/` and
+  `<project>/.clawcodex/` everywhere.** The subsystems that still read/wrote
+  the real Claude Code harness's `~/.claude/` and `./.claude/` (user skills,
+  agents, workflows, hooks settings, auto-memory, MCP config + OAuth tokens,
+  CLAUDE.md/rules enumeration, output styles, plugins, uploads, project
+  `config.json`, bridge worktrees + pointer, `--worktree` sessions, tool
+  results, startup-perf, `loop.md`, `debug.log`) were repointed to the
+  clawcodex-branded locations. Sharing directories with the Claude Code
+  harness meant inheriting and mutating another tool's live state.
+- Env overrides renamed: `CLAUDE_CONFIG_DIR` → `CLAWCODEX_CONFIG_DIR`,
+  `CLAUDE_MANAGED_CONFIG_DIR` → `CLAWCODEX_MANAGED_CONFIG_DIR`; managed
+  defaults unified to `/etc/clawcodex`. The old `CLAUDE_*` variables are
+  intentionally ignored (honoring the other harness's override would
+  re-couple the two tools' state).
+- `--worktree` sessions are created under `.clawcodex/worktrees/`;
+  pre-rebrand worktrees under `.claude/worktrees/` are still resumed and
+  removable in place (git registers them by absolute path).
+- New worktrees no longer receive a copy of the repo's
+  `.claude/settings.local.json` (a foreign harness's permission grants);
+  only `.clawcodex/settings.local.json` is propagated.
+
+### Added
+
+- One-time startup migration copying legacy `~/.claude` state
+  (skills — size-capped per skill, agents, workflows, outputStyles,
+  plugins, rules, `CLAUDE.md`, per-project `memory/`) into `~/.clawcodex`.
+  Copy-only and destination-absent-only: nothing under `~/.claude` is ever
+  modified, and existing `~/.clawcodex` files always win. Marker:
+  `~/.clawcodex/.claude-migration.json`.
+- `clawcodex migrate [--user-only|--project-only]` — re-attempts the user
+  migration and migrates the current project's `.claude/` config dirs into
+  `./.clawcodex/` (settings files and worktrees are deliberately skipped).
+
+### Migration notes
+
+- User-scope MCP servers previously stored in `~/.claude/config.json` are
+  NOT migrated (that file is shared with the real Claude Code harness and
+  clawcodex's entries can't be told apart) — re-add them with
+  `clawcodex mcp add --scope user`. MCP OAuth tokens live in the OS
+  keychain and are unaffected.
+- `settings.json` / `settings.local.json` are never migrated: on a machine
+  with both tools they hold the other harness's live permission grants and
+  hooks. Copy them manually only if they were written for clawcodex.
+
 ## [0.1.0] - 2026-04-19
 
 ### Added

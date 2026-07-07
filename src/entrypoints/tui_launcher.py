@@ -70,7 +70,7 @@ def run_tui_launcher(argv: list[str]) -> int:
         "-w", "--worktree",
         nargs="?", const=True, default=None, metavar="NAME",
         help="Run this session in an isolated git worktree at "
-             ".claude/worktrees/NAME (created or resumed; a name is generated "
+             ".clawcodex/worktrees/NAME (created or resumed; a name is generated "
              "when omitted). NAME may also be a PR reference (#123 or PR URL).",
     )
     parser.add_argument("--tui-dir", default=None,

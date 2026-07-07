@@ -1058,7 +1058,7 @@ async def test_settings_output_style_applies_at_startup(tmp_path):
     from src.tool_system.registry import ToolRegistry
 
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
-    cfg_dir = tmp_path / ".claude"
+    cfg_dir = tmp_path / ".clawcodex"
     cfg_dir.mkdir()
     (cfg_dir / "config.local.json").write_text(
         _json.dumps({"settings": {"output_style": {"style": "explanatory"}}}),

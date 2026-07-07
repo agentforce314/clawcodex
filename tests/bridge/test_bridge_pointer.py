@@ -86,7 +86,7 @@ def test_read_missing_file_returns_none(tmp_path) -> None:
 def test_read_malformed_json_returns_none(tmp_path) -> None:
     """A pointer file with non-JSON content reads as absent — never
     raises into the daemon's startup path."""
-    path = os.path.join(str(tmp_path), '.claude', 'bridge-pointer.json')
+    path = os.path.join(str(tmp_path), '.clawcodex', 'bridge-pointer.json')
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, 'w', encoding='utf-8') as fh:
         fh.write('not json at all { ')
@@ -112,7 +112,7 @@ def test_read_missing_required_field_returns_none(
         'updated_at_ms': 2000,
     }
     del base[missing_field]
-    path = os.path.join(str(tmp_path), '.claude', 'bridge-pointer.json')
+    path = os.path.join(str(tmp_path), '.clawcodex', 'bridge-pointer.json')
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, 'w', encoding='utf-8') as fh:
         json.dump(base, fh)
@@ -122,7 +122,7 @@ def test_read_missing_required_field_returns_none(
 def test_read_wrong_schema_version_returns_none(tmp_path) -> None:
     """Future schema versions can't be parsed by older code; safer to
     treat them as absent than to misinterpret."""
-    path = os.path.join(str(tmp_path), '.claude', 'bridge-pointer.json')
+    path = os.path.join(str(tmp_path), '.clawcodex', 'bridge-pointer.json')
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, 'w', encoding='utf-8') as fh:
         json.dump({
@@ -161,7 +161,7 @@ def test_read_rejects_mismatched_dir(tmp_path) -> None:
     """A pointer file moved (via symlink or rename) to a different dir
     is rejected — the ``dir`` field captures the absolute path at
     write time and read_pointer verifies it matches."""
-    # Write under tmp_path, then physically move the .claude/ dir to
+    # Write under tmp_path, then physically move the .clawcodex/ dir to
     # a sibling and try to read from there.
     write_pointer(
         str(tmp_path),
@@ -173,8 +173,8 @@ def test_read_rejects_mismatched_dir(tmp_path) -> None:
     sibling = tmp_path.parent / 'sibling'
     sibling.mkdir()
     os.rename(
-        os.path.join(str(tmp_path), '.claude'),
-        os.path.join(str(sibling), '.claude'),
+        os.path.join(str(tmp_path), '.clawcodex'),
+        os.path.join(str(sibling), '.clawcodex'),
     )
     assert read_pointer(str(sibling), machine_name='host-1') is None
 
@@ -219,16 +219,16 @@ def test_write_replaces_atomically(tmp_path) -> None:
 
 
 def test_write_creates_claude_subdir_if_missing(tmp_path) -> None:
-    """If ``<dir>/.claude/`` doesn't exist yet, write_pointer creates
+    """If ``<dir>/.clawcodex/`` doesn't exist yet, write_pointer creates
     it — operators shouldn't have to pre-provision the directory."""
     working_dir = str(tmp_path / 'fresh')
     os.makedirs(working_dir)
-    assert not os.path.exists(os.path.join(working_dir, '.claude'))
+    assert not os.path.exists(os.path.join(working_dir, '.clawcodex'))
     write_pointer(
         working_dir,
         bridge_id='br-1', environment_id='env-srv-1',
         session_id=None, machine_name='host-1',
     )
     assert os.path.exists(
-        os.path.join(working_dir, '.claude', 'bridge-pointer.json')
+        os.path.join(working_dir, '.clawcodex', 'bridge-pointer.json')
     )

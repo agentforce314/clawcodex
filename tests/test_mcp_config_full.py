@@ -177,3 +177,52 @@ class TestChannelPermissions:
         manager.set_permission("test", perm)
         manager.clear()
         assert manager.list_servers() == []
+
+
+class TestUserScopeConfigWrites:
+    """User-scope add/remove target ~/.clawcodex/config.json — the SAME
+    file the secret store keeps provider API keys in. Pin the two
+    integrity properties the directory rebrand made load-bearing."""
+
+    def _user_home(self, monkeypatch, tmp_path):
+        home = tmp_path / "clawhome"
+        monkeypatch.setenv("CLAWCODEX_CONFIG_DIR", str(home))
+        return home
+
+    def test_add_preserves_existing_keys_and_uses_0600(self, monkeypatch, tmp_path):
+        from src.services.mcp.config import add_mcp_config
+
+        home = self._user_home(monkeypatch, tmp_path)
+        home.mkdir(parents=True)
+        cfg = home / "config.json"
+        cfg.write_text(json.dumps({"providers": {"a": {"api_key": "sk-keep-me"}}}))
+
+        add_mcp_config("srv", {"command": "echo"}, scope="user")
+
+        data = json.loads(cfg.read_text())
+        assert data["providers"]["a"]["api_key"] == "sk-keep-me"
+        assert data["mcpServers"]["srv"] == {"command": "echo"}
+        assert (os.stat(cfg).st_mode & 0o777) == 0o600
+
+    def test_add_raises_on_unreadable_config_without_rewriting(self, monkeypatch, tmp_path):
+        from src.services.mcp.config import add_mcp_config
+
+        home = self._user_home(monkeypatch, tmp_path)
+        home.mkdir(parents=True)
+        cfg = home / "config.json"
+        cfg.write_text("{not json — a hand-edit typo")
+        before = cfg.read_text()
+
+        with pytest.raises(ValueError, match="cannot be read"):
+            add_mcp_config("srv", {"command": "echo"}, scope="user")
+        # The corrupt file was NOT replaced with a servers-only skeleton.
+        assert cfg.read_text() == before
+
+    def test_remove_roundtrip(self, monkeypatch, tmp_path):
+        from src.services.mcp.config import add_mcp_config, remove_mcp_config
+
+        home = self._user_home(monkeypatch, tmp_path)
+        add_mcp_config("srv", {"command": "echo"}, scope="user")
+        remove_mcp_config("srv", scope="user")
+        data = json.loads((home / "config.json").read_text())
+        assert data["mcpServers"] == {}

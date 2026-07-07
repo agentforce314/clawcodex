@@ -193,7 +193,7 @@ class TestResolveToolResultsDir(unittest.TestCase):
     def test_falls_back_when_no_session_id(self) -> None:
         ctx = _make_context()
         d = resolve_tool_results_dir(ctx)
-        self.assertIn("claude_tool_results", str(d))
+        self.assertIn("clawcodex_tool_results", str(d))
         self.assertTrue(str(d).endswith("tool-results"))
 
     def test_uses_session_id_when_present(self) -> None:
@@ -201,7 +201,7 @@ class TestResolveToolResultsDir(unittest.TestCase):
         ctx.session_id = "session-abc"
         d = resolve_tool_results_dir(ctx)
         self.assertIn("session-abc", str(d))
-        self.assertIn(".claude", str(d))
+        self.assertIn(".clawcodex", str(d))
 
 
 class TestDeferredToolRecoveryHint(unittest.TestCase):
