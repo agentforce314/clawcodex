@@ -766,6 +766,15 @@ export type GatewayEvent =
       session_id?: string
       type: 'approval.request'
     }
+  | {
+      payload: {
+        bypass_available?: boolean
+        plan?: null | string
+        plan_file_path?: null | string
+      }
+      session_id?: string
+      type: 'plan.approval'
+    }
   | { payload: { request_id: string }; session_id?: string; type: 'sudo.request' }
   | { payload: { env_var: string; prompt: string; request_id: string }; session_id?: string; type: 'secret.request' }
   | { payload: { mode: string }; session_id?: string; type: 'permission.mode' }

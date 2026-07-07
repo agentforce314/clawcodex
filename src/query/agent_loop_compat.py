@@ -465,6 +465,15 @@ async def run_query_as_agent_loop(
     # ch05 round-4 GAP B — the '+500k' auto-continue budget parsed from
     # the user's prompt (query/token_budget.parse_token_budget).
     token_budget: int | None = None,
+    # Plan-mode port — persistence hook for injected conversation
+    # attachments (plan_mode / plan_mode_exit system reminders). Unlike
+    # ``on_message`` (which persists AND emits an SDK envelope — rendering
+    # the attachment as user text in the TUI), this callback must persist
+    # ONLY (agent-server: session.conversation.add_message; headless: its
+    # conversation). None → attachments are injected ephemerally into this
+    # turn's working set (degraded: the cadence scan can't see them next
+    # turn, so the full reminder repeats — both live surfaces wire this).
+    on_attachment: Callable[[Message], None] | None = None,
 ) -> AgentLoopRunResult:
     """Drive the canonical query() loop and adapt to AgentLoopResult.
 
@@ -555,6 +564,41 @@ async def run_query_as_agent_loop(
                 )
         except Exception:  # noqa: BLE001 — must never block a turn
             logging.getLogger(__name__).debug("date-change wiring failed",
+                                              exc_info=True)
+
+    # Plan-mode attachments (port of getPlanModeAttachments +
+    # getPlanModeExitAttachment, typescript/src/utils/attachments.ts:882-883,
+    # 1187-1274). Same real-user-turn gate as the recall/date-change blocks
+    # (internal __goal__/notification turns must not consume the one-shot
+    # flags or burn the cadence). Unlike those EPHEMERAL reminders, plan
+    # attachments are PERSISTED via on_attachment — TS keeps them in the
+    # transcript, and both the throttle scan and the model's context across
+    # turns 2..5 depend on them surviving into later turns' initial_messages.
+    if memory_recall_enabled:
+        try:
+            from src.context_system.plan_mode import (
+                build_plan_mode_attachments,
+                build_plan_mode_exit_attachment,
+                wrap_in_system_reminder,
+            )
+            from src.types.messages import create_user_message
+
+            pc = getattr(tool_context, "permission_context", None)
+            mode = str(getattr(pc, "mode", "default")) if pc is not None else "default"
+            agent_id = getattr(tool_context, "agent_id", None)
+            texts = build_plan_mode_attachments(
+                messages_for_query, mode, agent_id=agent_id,
+            )
+            texts += build_plan_mode_exit_attachment(mode, agent_id=agent_id)
+            for text in texts:
+                attachment_msg = create_user_message(
+                    content=wrap_in_system_reminder(text), isMeta=True,
+                )
+                messages_for_query.append(attachment_msg)
+                if on_attachment is not None:
+                    on_attachment(attachment_msg)
+        except Exception:  # noqa: BLE001 — must never block a turn
+            logging.getLogger(__name__).debug("plan-mode attachment wiring failed",
                                               exc_info=True)
 
     params = QueryParams(

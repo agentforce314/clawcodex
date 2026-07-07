@@ -3,8 +3,9 @@ import { useState } from 'react'
 
 import { isMac } from '../lib/platform.js'
 import type { Theme } from '../theme.js'
-import type { ApprovalReq, ClarifyReq, ConfirmReq } from '../types.js'
+import type { ApprovalReq, ClarifyReq, ConfirmReq, PlanApprovalReq } from '../types.js'
 
+import { Md } from './markdown.js'
 import { TextInput } from './textInput.js'
 
 type ApprovalChoice = 'always' | 'deny' | 'once'
@@ -198,6 +199,165 @@ export function ApprovalPrompt({ cols = 80, onChoice, req, t }: ApprovalPromptPr
   )
 }
 
+// ── Plan approval (ExitPlanModePermissionRequest analog) ────────────────────
+
+type PlanApprovalChoice = 'accept-edits' | 'bypass' | 'default' | 'deny'
+
+const PLAN_PREVIEW_LINES = 24
+
+/**
+ * Pure option builder (exported for tests) — mirrors the original's
+ * buildPlanApprovalOptions (open-build arms): the elevated approve reads
+ * "bypass permissions" when the session launched with bypass available,
+ * "auto-accept edits" otherwise; then manual approve; then reject-with-
+ * feedback ("No, keep planning").
+ */
+export function planApprovalOptions(
+  bypassAvailable: boolean
+): { choice: PlanApprovalChoice; label: string }[] {
+  return [
+    bypassAvailable
+      ? { choice: 'bypass', label: 'Yes, and bypass permissions' }
+      : { choice: 'accept-edits', label: 'Yes, auto-accept edits' },
+    { choice: 'default', label: 'Yes, manually approve edits' },
+    { choice: 'deny', label: 'No, keep planning' }
+  ]
+}
+
+export function PlanApprovalPrompt({ cols = 80, onChoice, req, t }: PlanApprovalPromptProps) {
+  const isEmpty = !req.plan || !req.plan.trim()
+  // Empty plan → the original's simplified "Exit plan mode?" Yes/No branch
+  // (Yes approves with manual-approve mode; no feedback field).
+  const opts: { choice: PlanApprovalChoice; label: string }[] = isEmpty
+    ? [
+        { choice: 'default', label: 'Yes' },
+        { choice: 'deny', label: 'No' }
+      ]
+    : planApprovalOptions(req.bypassAvailable)
+  const [sel, setSel] = useState(0)
+  const [feedback, setFeedback] = useState('')
+  const [typing, setTyping] = useState(false)
+
+  const pick = (o: { choice: PlanApprovalChoice }) => {
+    // "No, keep planning" focuses the feedback field first (full dialog
+    // only) — Enter there submits the rejection with whatever was typed.
+    if (o.choice === 'deny' && !isEmpty) {
+      return setTyping(true)
+    }
+
+    return onChoice(o.choice)
+  }
+
+  useInput(
+    (ch, key) => {
+      // Esc = reject without feedback (stay in plan mode), matching the
+      // original dialog's onCancel.
+      if (key.escape) {
+        return onChoice('deny')
+      }
+
+      const n = parseInt(ch, 10)
+
+      if (n >= 1 && n <= opts.length) {
+        return pick(opts[n - 1]!)
+      }
+
+      if (key.return) {
+        return pick(opts[sel]!)
+      }
+
+      if (key.upArrow && sel > 0) {
+        setSel(s => s - 1)
+      }
+
+      if (key.downArrow && sel < opts.length - 1) {
+        setSel(s => s + 1)
+      }
+    },
+    { isActive: !typing }
+  )
+
+  // Feedback field: Enter submits the rejection (with feedback), Esc returns
+  // to the option list.
+  useInput(
+    (_ch, key) => {
+      if (key.escape) {
+        setTyping(false)
+      }
+    },
+    { isActive: typing }
+  )
+
+  const innerWidth = Math.max(20, cols - 6)
+
+  const optionRows = opts.map((o, i) => {
+    const isSel = sel === i
+    const head = `${isSel ? '❯ ' : '  '}${i + 1}. `
+
+    if (o.choice === 'deny' && !isEmpty && (typing || feedback)) {
+      const label = `${head}${o.label}: `
+
+      return (
+        <Box key={o.choice}>
+          <Text bold={isSel} color={isSel ? t.color.planMode : t.color.muted}>{label}</Text>
+          <TextInput
+            columns={Math.max(12, innerWidth - label.length)}
+            focus={typing}
+            onChange={setFeedback}
+            onSubmit={() => onChoice('deny', feedback.trim() || undefined)}
+            value={feedback}
+          />
+        </Box>
+      )
+    }
+
+    return (
+      <Text bold={isSel} color={isSel ? t.color.planMode : t.color.muted} key={o.choice}>
+        {head}{o.label}
+      </Text>
+    )
+  })
+
+  if (isEmpty) {
+    return (
+      <Box borderColor={t.color.planMode} borderStyle="round" flexDirection="column" paddingX={1}>
+        <Text bold color={t.color.planMode}>Exit plan mode?</Text>
+        <Text color={t.color.text}>Claude wants to exit plan mode</Text>
+        {optionRows}
+        <Text color={t.color.muted}>↑/↓ select · Enter confirm · Esc keep planning</Text>
+      </Box>
+    )
+  }
+
+  const planLines = (req.plan ?? '').split('\n')
+  const shown = planLines.slice(0, PLAN_PREVIEW_LINES)
+  const overflow = planLines.length - shown.length
+
+  return (
+    <Box borderColor={t.color.planMode} borderStyle="round" flexDirection="column" paddingX={1}>
+      <Text bold color={t.color.planMode}>Ready to code?</Text>
+      <Text color={t.color.text}>Here is Claude&apos;s plan:</Text>
+
+      <Box borderColor={t.color.muted} borderStyle="single" flexDirection="column" paddingX={1}>
+        <Md cols={innerWidth} t={t} text={shown.join('\n')} />
+        {overflow > 0 ? (
+          <Text color={t.color.muted}>… +{overflow} more line{overflow === 1 ? '' : 's'} · {req.planFilePath ?? ''}</Text>
+        ) : null}
+      </Box>
+
+      <Text color={t.color.muted}>Would you like to proceed?</Text>
+
+      {optionRows}
+
+      <Text color={t.color.muted}>
+        {typing
+          ? 'Enter to reject with feedback · Esc back'
+          : `↑/↓ select · Enter confirm · 1-${opts.length} quick pick · Esc keep planning`}
+      </Text>
+    </Box>
+  )
+}
+
 export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, req, t }: ClarifyPromptProps) {
   const [sel, setSel] = useState(0)
   const [custom, setCustom] = useState('')
@@ -351,6 +511,13 @@ interface ClarifyPromptProps {
   onAnswer: (s: string) => void
   onCancel: () => void
   req: ClarifyReq
+  t: Theme
+}
+
+interface PlanApprovalPromptProps {
+  cols?: number
+  onChoice: (choice: PlanApprovalChoice, feedback?: string) => void
+  req: PlanApprovalReq
   t: Theme
 }
 

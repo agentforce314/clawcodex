@@ -668,6 +668,16 @@ class _AgentSession:
             try:
                 if self.session is not None:
                     self.session.conversation.clear()
+                # /clear starts a FRESH plan file (TS clearAllPlanSlugs on
+                # clear — plans.ts:75-86): drop every session's slug so the
+                # next plan-mode turn mints a new file instead of appending
+                # to the cleared conversation's plan.
+                try:
+                    from src.utils.plans import clear_all_plan_slugs
+
+                    clear_all_plan_slugs()
+                except Exception:  # noqa: BLE001 — best-effort
+                    logger.debug("[agent-server] plan slug clear failed", exc_info=True)
                 # /clear removes an active goal (CC docs/en/goal §Clear a
                 # goal: "Running /clear to start a new conversation also
                 # removes any active goal"). Under _lock — the worker's
@@ -1152,22 +1162,26 @@ class _AgentSession:
         self._reply(request_id, {"ok": True, "language": self._language or ""})
 
     def _do_plan(self, request_id: object, action: object, text: object) -> None:
-        """/plan: view (default) | set <text> | clear. The plan is injected into
-        the system prompt (the original's /plan)."""
-        try:
-            from src.plan import clear_plan, get_plan, set_plan
+        """/plan status: the CC plan-MODE command's server half.
 
-            act = str(action or "view").strip().lower()
-            if act == "set":
-                if not isinstance(text, str) or not text.strip():
-                    self._reply(request_id, {"ok": False, "error": "usage: /plan <text>"})
-                    return
-                set_plan(self.cwd, text)
-            elif act == "clear":
-                clear_plan(self.cwd)
-            if act in ("set", "clear") and self._base_system_prompt is not None:
-                self.system_prompt = self._compose_with_plan(self._base_system_prompt)
-            self._reply(request_id, {"ok": True, "plan": get_plan(self.cwd)})
+        Repurposed from the hermes-legacy "inject plan text into the system
+        prompt" control (that read path — ``_compose_with_plan`` picking up a
+        pre-existing legacy plan file at bootstrap/resume — stays intact and
+        inert-unless-a-legacy-file-exists; only this control changed owners).
+        The client composes the TS ``/plan`` semantics
+        (commands/plan/plan.tsx): not in plan mode → ``set_permission_mode
+        plan`` (+ optional prompt submit); in plan mode → show this status's
+        plan file content."""
+        try:
+            from src.utils.plans import get_plan, get_plan_file_path
+
+            mode = _current_mode(self.tool_context, self.config.permission_mode)
+            self._reply(request_id, {
+                "ok": True,
+                "mode": mode,
+                "plan": get_plan(),
+                "plan_file_path": str(get_plan_file_path()),
+            })
         except Exception as exc:  # noqa: BLE001
             logger.exception("[agent-server] plan failed")
             self._reply(request_id, {"ok": False, "error": str(exc)})
@@ -1927,6 +1941,28 @@ class _AgentSession:
         pending.reply = inner if isinstance(inner, dict) else {"behavior": "deny"}
         pending.event.set()
 
+    # ─── permission-mode push (any thread; _emit is thread-safe) ───────────
+
+    def _notify_permission_mode(self, mode: str) -> None:
+        """Push a live permission-mode change to the client + app state.
+
+        The print.ts:1054-1073 analog (`{type:'system', subtype:'status',
+        permissionMode}`): fires on mid-turn flips the client can't learn
+        from an RPC reply — a plan-approval `chosen_updates` setMode, an
+        EnterPlanMode/ExitPlanMode transition. The client maps it to its
+        `permission.mode` event → footer badge. `_dispatch_app_state` is
+        best-effort (store-gated on some transports)."""
+        try:
+            self._emit({
+                "type": "system",
+                "subtype": "status",
+                "session_id": self.session_id,
+                "permission_mode": mode,
+            })
+        except Exception:  # noqa: BLE001 — a push must never break the caller
+            logger.debug("[agent-server] permission-mode push failed", exc_info=True)
+        _dispatch_app_state(self, permission_mode=mode)
+
     # ─── permission handler (worker thread; BLOCKS) ────────────────────────
 
     def permission_handler(self, request: Any) -> Any:
@@ -1943,29 +1979,47 @@ class _AgentSession:
         # client hardcoded a generic "always allow" with no rule attached
         # and the choice was dropped — the user re-approved every turn AND
         # session while the UI falsely reported "approved (always)".
+        wire_request: dict[str, Any] = {
+            "subtype": "can_use_tool",
+            "tool_name": getattr(request, "tool_name", ""),
+            "input": getattr(request, "tool_input", None) or {},
+            "tool_use_id": None,
+            "suggestions": [
+                _serialize_permission_update(u)
+                for u in (getattr(request, "suggestions", None) or ())
+            ],
+            # Authoritative per-tool wording for the persist option, e.g.
+            # "allow all edits during this session" for a file edit vs.
+            # "and don't ask again for <rule>" for Bash — so the box states
+            # the real grant scope instead of a generic "don't ask again for
+            # <tool>". Mirrors the original's tool-specific option text.
+            "session_label": _session_option_label_safe(request),
+            # Destructive-command caution (e.g. "Note: may overwrite
+            # remote history") — rendered as a warning line in the
+            # approval box, mirroring the original's dialog warning.
+            "warning": _permission_request_warning(request),
+        }
+        # Plan-mode port: ExitPlanMode's ask renders the plan-approval dialog
+        # — the client needs the plan body (read from the session plan FILE,
+        # the V2 contract), its path, and whether the elevated option should
+        # read "bypass permissions" instead of "auto-accept edits"
+        # (ExitPlanModePermissionRequest.tsx buildPlanApprovalOptions).
+        if wire_request["tool_name"] == "ExitPlanMode":
+            try:
+                from src.utils.plans import get_plan, get_plan_file_path
+
+                pc = getattr(self.tool_context, "permission_context", None)
+                wire_request["plan"] = get_plan()
+                wire_request["plan_file_path"] = str(get_plan_file_path())
+                wire_request["bypass_available"] = bool(
+                    getattr(pc, "is_bypass_permissions_mode_available", False)
+                )
+            except Exception:  # noqa: BLE001 — degrade to the generic box
+                logger.debug("[agent-server] plan payload failed", exc_info=True)
         self._emit({
             "type": "control_request",
             "request_id": request_id,
-            "request": {
-                "subtype": "can_use_tool",
-                "tool_name": getattr(request, "tool_name", ""),
-                "input": getattr(request, "tool_input", None) or {},
-                "tool_use_id": None,
-                "suggestions": [
-                    _serialize_permission_update(u)
-                    for u in (getattr(request, "suggestions", None) or ())
-                ],
-                # Authoritative per-tool wording for the persist option, e.g.
-                # "allow all edits during this session" for a file edit vs.
-                # "and don't ask again for <rule>" for Bash — so the box states
-                # the real grant scope instead of a generic "don't ask again for
-                # <tool>". Mirrors the original's tool-specific option text.
-                "session_label": _session_option_label_safe(request),
-                # Destructive-command caution (e.g. "Note: may overwrite
-                # remote history") — rendered as a warning line in the
-                # approval box, mirroring the original's dialog warning.
-                "warning": _permission_request_warning(request),
-            },
+            "request": wire_request,
         })
 
         got = pending.event.wait(timeout=self.config.permission_timeout_s)
@@ -2808,6 +2862,14 @@ class _AgentSession:
                 # entirely there, so gate on `internal`.
                 memory_surfaced=None if internal else self._memory_surfaced,
                 memory_recall_enabled=not internal,
+                # Plan-mode attachments: persist WITHOUT emitting an SDK
+                # envelope (on_message would render them as user text in the
+                # TUI — _sdk_envelope has no meta filter). Persistence is what
+                # keeps the instructions in later turns' context and lets the
+                # cadence scan find prior attachments.
+                on_attachment=lambda m: self.session.conversation.add_message(
+                    m.role, m.content
+                ),
             ))
         except AbortError:
             self._emit(_result_message(
@@ -3454,6 +3516,9 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
         sess.provider_name = provider_name
         sess.tool_context = tool_context
         tool_context.agent_progress_emit = sess._emit_agent_progress  # stream subagent progress
+        # Plan-mode port: mid-turn mode flips (plan-approval setMode,
+        # EnterPlanMode/ExitPlanMode) push the new mode to the TUI footer.
+        tool_context.on_permission_mode_change = sess._notify_permission_mode
         sess.session = Session.create(provider_name, getattr(provider, "model", model or ""))
         sess._base_system_prompt = system_prompt
         sess.system_prompt = sess._compose_with_plan(system_prompt)  # honor an existing /plan
@@ -4003,8 +4068,24 @@ def _current_mode(tool_context: Any, default: str) -> str:
 
 
 def _set_mode(tool_context: Any, mode: str) -> None:
+    """Set the live permission mode, running the plan-mode transition seam.
+
+    ``transition_permission_mode`` (the transitionPermissionMode port) arms
+    the plan enter/exit attachment flags and manages the ``pre_plan_mode``
+    stash; the returned context is REBOUND (functional-update contract shared
+    with ``registry._apply_and_persist_updates``) with the new mode applied.
+    """
     pc = getattr(tool_context, "permission_context", None)
-    if pc is not None:
+    if pc is None:
+        return
+    try:
+        from dataclasses import replace as _dc_replace
+
+        from src.permissions.plan_transitions import transition_permission_mode
+
+        next_pc = transition_permission_mode(pc.mode, mode, pc)
+        tool_context.permission_context = _dc_replace(next_pc, mode=mode)
+    except Exception:  # noqa: BLE001 — fall back to the bare mode set
         try:
             pc.mode = mode  # type: ignore[attr-defined]
         except Exception:  # noqa: BLE001

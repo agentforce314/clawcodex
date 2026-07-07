@@ -898,9 +898,17 @@ async def test_control_insights(tmp_path):
 
 @pytest.mark.asyncio
 async def test_control_plan(tmp_path):
-    """plan set/view/clear round-trips and injects into the system prompt."""
-    from src.tool_system.registry import ToolRegistry
+    """The plan control reports CC plan-MODE status (mode + plan file).
 
+    Repurposed from the hermes-legacy "inject plan text into the system
+    prompt" contract (plan-mode port): the control is now read-only status —
+    mode enabling goes through set_permission_mode, and the plan body lives
+    in the session plan FILE (~/.clawcodex/plans/{slug}.md).
+    """
+    from src.tool_system.registry import ToolRegistry
+    from src.utils import plans as plan_files
+
+    plan_files.clear_all_plan_slugs()
     with contextlib.ExitStack() as stack:
         for p in _patches(_TextProvider, ToolRegistry([])):
             stack.enter_context(p)
@@ -919,15 +927,28 @@ async def test_control_plan(tmp_path):
                         return msg["response"]["response"]
                 raise AssertionError(f"no reply for {rid}")
 
-            empty = await _reply_for("p0", {"subtype": "plan", "action": "view"})
-            assert empty["plan"] == ""
-            setr = await _reply_for("p1", {"subtype": "plan", "action": "set", "text": "ship v2"})
-            assert setr["ok"] is True and "ship v2" in setr["plan"]
-            view = await _reply_for("p2", {"subtype": "plan", "action": "view"})
-            assert "ship v2" in view["plan"]
-            cleared = await _reply_for("p3", {"subtype": "plan", "action": "clear"})
-            assert cleared["plan"] == ""
+            status = await _reply_for("p0", {"subtype": "plan", "action": "status"})
+            assert status["ok"] is True
+            assert status["mode"] == "default"
+            assert status["plan"] is None
+            assert status["plan_file_path"].endswith(".md")
+
+            switched = await _reply_for(
+                "p1", {"subtype": "set_permission_mode", "mode": "plan"}
+            )
+            assert switched["ok"] is True and switched["mode"] == "plan"
+
+            plan_path = Path(status["plan_file_path"])
+            plan_path.parent.mkdir(parents=True, exist_ok=True)
+            plan_path.write_text("ship v2", encoding="utf-8")
+            try:
+                view = await _reply_for("p2", {"subtype": "plan", "action": "status"})
+                assert view["mode"] == "plan"
+                assert view["plan"] == "ship v2"
+            finally:
+                plan_path.unlink(missing_ok=True)
         finally:
+            plan_files.clear_all_plan_slugs()
             await handle.shutdown()
             with contextlib.suppress(Exception):
                 await gen.aclose()

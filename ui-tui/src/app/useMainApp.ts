@@ -1034,6 +1034,31 @@ export function useMainApp(gw: GatewayClient) {
     [respondWith, ui.sid]
   )
 
+  const answerPlanApproval = useCallback(
+    // Plan-approval dialog (ExitPlanModePermissionRequest analog):
+    // 'accept-edits' | 'bypass' | 'default' approve the plan and flip the
+    // session mode via chosen_updates; 'deny' rejects with the optional
+    // "keep planning" feedback. The optimistic footer patch keeps the badge
+    // truthful mid-turn; the server's status push / result confirms it.
+    (choice: string, feedback?: string) =>
+      respondWith('planApproval.respond', { choice, feedback, session_id: ui.sid }, () => {
+        patchOverlayState({ planApproval: null })
+
+        if (choice === 'deny') {
+          patchTurnState({ outcome: 'plan rejected — still planning' })
+        } else {
+          const optimistic =
+            choice === 'accept-edits' ? 'acceptEdits' : choice === 'bypass' ? 'bypassPermissions' : 'default'
+
+          patchUiState({ permissionMode: optimistic })
+          patchTurnState({ outcome: 'plan approved' })
+        }
+
+        patchUiState({ status: 'running…' })
+      }),
+    [respondWith, ui.sid]
+  )
+
   const answerSudo = useCallback(
     (pw: string) => {
       if (!overlay.sudo) {
@@ -1169,6 +1194,7 @@ export function useMainApp(gw: GatewayClient) {
       closeLiveSession,
       answerApproval,
       answerClarify,
+      answerPlanApproval,
       answerSecret,
       answerSudo,
       clearSelection,
@@ -1192,6 +1218,7 @@ export function useMainApp(gw: GatewayClient) {
     [
       answerApproval,
       answerClarify,
+      answerPlanApproval,
       answerSecret,
       answerSudo,
       clearSelection,

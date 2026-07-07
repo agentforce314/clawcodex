@@ -504,6 +504,7 @@ export const AppLayout = memo(function AppLayout({
                 cols={composer.cols}
                 onApprovalChoice={actions.answerApproval}
                 onClarifyAnswer={actions.answerClarify}
+                onPlanApprovalChoice={actions.answerPlanApproval}
                 onSecretSubmit={actions.answerSecret}
                 onSudoSubmit={actions.answerSudo}
               />

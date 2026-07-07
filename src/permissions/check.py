@@ -155,8 +155,10 @@ _FILE_EDIT_TOOLS: tuple[str, ...] = ("Write", "Edit", "MultiEdit", "NotebookEdit
 #     content-rule handling is input-conditional, like Config/Grep.)
 #   * MCP server access: MCP / ListMcpResourcesTool / ReadMcpResourceTool and
 #     dynamic ``mcp__*`` (external/untrusted boundary).
-#   * plan-mode meta tools: EnterPlanMode / ExitPlanMode (ExitPlanMode is the
-#     plan-confirmation gate).
+#   * plan-mode meta tools: ExitPlanMode is the plan-confirmation gate
+#     (requires_user_interaction ask, bypass-immune); EnterPlanMode carries
+#     its own explicit check_permissions→allow (TS Tool.ts default-allow
+#     parity), so neither belongs in this list.
 NO_PERMISSION_TOOLS: frozenset[str] = frozenset({
     # Interactive / output (the interaction or output IS the action)
     "AskUserQuestion", "SendUserMessage", "StructuredOutput",
@@ -452,6 +454,49 @@ def has_permissions_to_use_tool_inner(
             context=context,
             tool_use_context=tool_use_context,
         )
+
+    # Plan-file write exemption (TS checkWritePermissionForTool step 1.5 →
+    # checkEditableInternalPath → isSessionPlanFile, filesystem.ts:1259-1268,
+    # 1501-1519, 263-273): the session's plan files — `{slug}.md` AND the
+    # subagent `{slug}-agent-{id}.md` variants — are writable without
+    # prompting in ANY mode, so the model can build its plan in plan mode
+    # (default-mode permissions) without an approval per edit. DENY rules
+    # still win (TS runs the exemption at step 1.5, after deny rules only);
+    # a configured ASK rule on the plan path also wins here — a slightly
+    # stricter-than-TS ordering (TS's exemption precedes ask rules), accepted
+    # because a hand-written ask rule targeting a random-slug plans file is
+    # not a real configuration. Gated on a passthrough tool result like the
+    # acceptEdits fast-path.
+    if (
+        tool_permission_result.behavior == "passthrough"
+        and tool.name in _FILE_EDIT_TOOLS
+    ):
+        _plan_target = tool_input.get("file_path") or tool_input.get("notebook_path")
+        if isinstance(_plan_target, str) and _plan_target:
+            try:
+                from src.utils.plans import is_session_plan_file
+
+                _expanded = os.path.expanduser(_plan_target)
+                if not os.path.isabs(_expanded):
+                    _cwd_base = os.getcwd()
+                    if tool_use_context is not None:
+                        try:
+                            _cwd_base = str(tool_use_context.cwd or _cwd_base)
+                        except Exception:  # noqa: BLE001
+                            pass
+                    _expanded = os.path.join(_cwd_base, _expanded)
+                if is_session_plan_file(_expanded):
+                    return PermissionAllowDecision(
+                        behavior="allow",
+                        updated_input=_get_updated_input_or_fallback(
+                            tool_permission_result, tool_input
+                        ),
+                        decision_reason=OtherDecisionReason(
+                            reason="Plan files for current session are allowed for writing",
+                        ),
+                    )
+            except Exception:  # noqa: BLE001 — exemption failure falls through to the ask
+                pass
 
     should_bypass = (
         context.mode == "bypassPermissions"
