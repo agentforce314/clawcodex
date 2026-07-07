@@ -5,6 +5,7 @@ Tests the full tool dispatch pipeline for the Edit and Write tools.
 """
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -151,15 +152,31 @@ class TestE2EWriteFlow(unittest.TestCase):
         self.assertTrue(target.exists())
 
     def test_write_outside_workspace_blocked(self) -> None:
-        """Write tool blocks writes outside workspace root."""
+        """Write tool blocks writes outside workspace root.
+
+        A bare ToolContext defaults to bypassPermissions, and — faithful to
+        TS ``shouldBypassPermissions`` (permissions.ts:1268-1281) — that mode
+        skips the working-directory allowlist entirely, so pin a gated mode.
+        In a gated mode the permission pipeline surfaces an *ask* before the
+        tool body runs (TS prompts for outside-cwd writes), so dispatch
+        yields an error result rather than raising; the containment gate
+        itself still hard-refuses the path.
+        """
+        self.ctx.permission_context.mode = "default"
+        target = Path(tempfile.gettempdir()) / f"outside_workspace_test_{os.getpid()}.txt"
+        target.unlink(missing_ok=True)  # stale leftover from a crashed run
+        self.addCleanup(lambda: target.unlink(missing_ok=True))
+        result = self.registry.dispatch(
+            ToolCall(name="Write", input={
+                "file_path": str(target),
+                "content": "bad\n",
+            }),
+            self.ctx,
+        )
+        self.assertTrue(result.is_error)
+        self.assertFalse(target.exists())  # nothing written
         with self.assertRaises(ToolPermissionError):
-            self.registry.dispatch(
-                ToolCall(name="Write", input={
-                    "file_path": "/tmp/outside_workspace_test.txt",
-                    "content": "bad\n",
-                }),
-                self.ctx,
-            )
+            self.ctx.ensure_allowed_path(str(target))
 
 
 class TestE2EPermissionDenyBlocks(unittest.TestCase):
