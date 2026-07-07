@@ -447,12 +447,11 @@ _NO_SESSION_OPTION_TOOLS: frozenset[str] = frozenset(
     {"AskUserQuestion", "EnterPlanMode", "ExitPlanMode"}
 )
 
-# NB: the original surfaces this option with a "(shift+tab)" hint, because there
-# the key cycles permission modes. This port has the cycle *logic*
-# (``src.permissions.cycle.cycle_permission_mode``) but no keybinding wired to
-# it — mode changes go through the ``/permissions`` command — so advertising the
-# shortcut would promise a keypress that does nothing. The hint is intentionally
-# omitted until a shift+tab binding exists.
+# NB: the original surfaces this option with a "(shift+tab)" hint, because
+# there the key cycles permission modes. The TUI wired shift+tab cycling in
+# ch13 round-4 (ui-tui useInputHandlers → cycle_permission_mode control), so
+# the hint would now be truthful — it stays off the LABEL only because the
+# option text mirrors the original's wording exactly.
 
 _PATH_INPUT_KEYS: tuple[str, ...] = ("file_path", "notebook_path", "path")
 
@@ -585,7 +584,36 @@ def default_session_suggestions(
                 )
         return updates
 
-    # Every other tool (WebFetch, Skill, MCP, …): persisted content-less rule.
+    # WebFetch: domain-scoped rule (TS WebFetchTool.ts:346 buildSuggestions) —
+    # "don't ask again" grants the HOST, not every future fetch. Normally the
+    # tool's own check supplies this on its passthrough; this branch is the
+    # fallback for callers that build suggestions from tool_input directly.
+    if tool_name == "WebFetch":
+        url = tool_input.get("url", "")
+        hostname = None
+        if isinstance(url, str) and url:
+            import urllib.parse
+
+            try:
+                hostname = urllib.parse.urlparse(url).hostname
+            except Exception:
+                hostname = None
+        if hostname:
+            return [
+                PermissionUpdateAddRules(
+                    destination="localSettings",
+                    behavior="allow",
+                    rules=(
+                        PermissionRuleValue(
+                            tool_name="WebFetch",
+                            rule_content=f"domain:{hostname}",
+                        ),
+                    ),
+                )
+            ]
+        # Unparseable URL → fall through to the content-less rule below.
+
+    # Every other tool (Skill, MCP, …): persisted content-less rule.
     if tool_name:
         return [
             PermissionUpdateAddRules(

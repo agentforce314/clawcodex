@@ -15,7 +15,6 @@ from ..diff_utils import (
 )
 from src.permissions.types import (
     PermissionAllowDecision,
-    PermissionAskDecision,
     PermissionPassthroughResult,
     PermissionResult,
 )
@@ -157,21 +156,17 @@ def _check_permissions(tool_input: dict[str, Any], context: ToolContext) -> Perm
         return PermissionPassthroughResult()
 
     # Memory carve-out: writes inside the auto-memory directory bypass
-    # the workspace allowlist AND the docs gate. Without this, the model
-    # would prompt the user on every "save a memory" attempt.
+    # the workspace allowlist. Without this, the model would prompt the
+    # user on every "save a memory" attempt.
     if _is_auto_memory_write(file_path):
         return PermissionPassthroughResult()
 
-    # Path is already expanded by backfill_observable_input
-    try:
-        path = context.ensure_allowed_path(file_path)
-    except ToolPermissionError:
-        return PermissionPassthroughResult()
-
-    if path.suffix.lower() in {".md", ".markdown"} and not context.allow_docs:
-        return PermissionAskDecision(
-            message="Writing documentation files is blocked unless allow_docs is enabled",
-        )
+    # NB: no docs gate. The port used to raise an explicit ask for
+    # ``.md``/``.markdown`` writes unless ``allow_docs`` — the original
+    # Claude Code has no such permission gate, and being an explicit ask it
+    # was structurally un-grantable (no session option, immune to
+    # acceptEdits), so every markdown write re-prompted forever. Markdown
+    # now flows like any other write.
     return PermissionPassthroughResult()
 
 
