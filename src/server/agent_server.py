@@ -63,6 +63,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from src.scheduled_tasks import (
+    FALLBACK_WAKEUP_DELAY_SECONDS,
+    SessionCronScheduler,
+)
 from src.server.server import AgentHandle
 from src.utils.abort_controller import AbortController, AbortError
 
@@ -180,6 +184,16 @@ class _AgentSession:
     # --worktree exit already serviced (keep or remove) — a second
     # worktree_exit is refused so the client can't double-remove.
     _worktree_done: bool = False
+    # /loop + Cron* + ScheduleWakeup engine (docs/en/scheduled-tasks port).
+    # The worker's idle branch pops due tasks and runs their prompts as
+    # internal turns; _build_runtime hands this to tool_context so the
+    # Cron*/ScheduleWakeup tools register real firing jobs on it.
+    cron_scheduler: SessionCronScheduler = field(
+        default_factory=SessionCronScheduler
+    )
+    # Last cron_status snapshot pushed to the client (JSON string) — the
+    # post-turn push only re-emits when the state actually changed.
+    _cron_push_json: str = ""
 
     # Worker + cross-thread coordination.
     _inbox: _queue.Queue = field(default_factory=_queue.Queue)
@@ -308,6 +322,20 @@ class _AgentSession:
                 pending.event.set()
             if abort is not None:
                 abort.abort("user_interrupt")
+            # ESC clears the pending dynamic-loop wakeup (docs/en/
+            # scheduled-tasks §Stop a loop: "press Esc — this clears the
+            # pending wakeup so the loop does not fire again"). Cron jobs
+            # scheduled by asking directly are NOT affected; they stay
+            # until CronDelete or their 7-day expiry.
+            try:
+                if self.cron_scheduler.clear_wakeup():
+                    self._push_cron_state(
+                        "⟳ Loop stopped (Esc) — the pending wakeup was "
+                        "cleared and the loop will not fire again."
+                    )
+            except Exception:  # noqa: BLE001 — interrupt must never fail
+                logger.debug("[agent-server] wakeup clear on interrupt failed",
+                             exc_info=True)
             if goal_paused:
                 self._save_session()
                 self._emit({
@@ -642,6 +670,9 @@ class _AgentSession:
             )
             self._reply(request_id, {"servers": servers})
             return
+        if subtype == "skill_command":
+            self._do_skill_command(request_id, inner.get("name"), inner.get("args"))
+            return
         if subtype == "goal":
             self._do_goal_command(request_id, inner.get("arg"))
             return
@@ -698,6 +729,24 @@ class _AgentSession:
                     except Exception:  # noqa: BLE001 — never break /clear
                         logger.debug("[agent-server] goal clear on /clear failed",
                                      exc_info=True)
+                # /clear starts a fresh conversation, and session-scoped
+                # scheduled tasks go with it (docs/en/scheduled-tasks
+                # §Limitations: "Starting a fresh conversation clears all
+                # session-scoped tasks"). The on-disk strip keeps a /clear +
+                # immediate-quit from resurrecting them on --resume.
+                try:
+                    for job in self.cron_scheduler.list_jobs():
+                        self.cron_scheduler.delete(job.id)
+                    self.cron_scheduler.clear_wakeup()
+                    self._push_cron_state()
+                    f = _sessions_dir() / f"{self.session_id}.json"
+                    if f.exists():
+                        data = json.loads(f.read_text(encoding="utf-8"))
+                        if data.pop("scheduled_tasks", None) is not None:
+                            f.write_text(json.dumps(data), encoding="utf-8")
+                except Exception:  # noqa: BLE001 — never break /clear
+                    logger.debug("[agent-server] scheduled-tasks clear failed",
+                                 exc_info=True)
                 # Fresh conversation, fresh odometer (token/cost totals are
                 # process-wide spend and deliberately survive /clear).
                 self._stats_turns = 0
@@ -836,6 +885,18 @@ class _AgentSession:
                 except Exception:  # noqa: BLE001 — goal snapshot is best-effort
                     logger.debug("[agent-server] goal snapshot failed",
                                  exc_info=True)
+            # Scheduled tasks ride the session file so --resume restores
+            # unexpired jobs and a still-future wakeup (docs/en/
+            # scheduled-tasks §Limitations). The restore-side rules
+            # (7-day expiry, past one-shots dropped) live in
+            # SessionCronScheduler.restore.
+            try:
+                sched_snap = self.cron_scheduler.snapshot()
+                if sched_snap.get("jobs") or sched_snap.get("wakeup"):
+                    payload["scheduled_tasks"] = sched_snap
+            except Exception:  # noqa: BLE001 — snapshot is best-effort
+                logger.debug("[agent-server] scheduled-tasks snapshot failed",
+                             exc_info=True)
             # ch03 round-4 GAP B — the live persister carries the cost
             # block (schema owner: cost_restore.build_cost_block, matching
             # the /resume reader) so accumulated cost survives restarts.
@@ -1410,6 +1471,43 @@ class _AgentSession:
             logger.exception("[agent-server] workflow_command failed")
             self._reply(request_id, {"ok": False, "error": str(exc)})
 
+    def _do_skill_command(self, request_id: object, name: object, args: object) -> None:
+        """Expand a user-typed skill slash command (``/loop 5m check ci``)
+        into its prompt for the client to submit as a user turn — the
+        missing producer for the TUI's ``{type:'skill'}`` dispatch. Uses
+        the exact expansion path the model-side Skill tool uses
+        (bundled ``get_prompt_for_command`` builders, disk SKILL.md
+        rendering, MCP skills), so typed and model invocations of the
+        same skill can't drift."""
+        try:
+            if not isinstance(name, str) or not name.strip():
+                self._reply(request_id, {"ok": False, "error": "missing skill name"})
+                return
+            if self.tool_context is None:
+                self._reply(request_id, {"ok": False, "error": "session not ready"})
+                return
+            from src.tool_system.tools.skill import _run_markdown_skill
+
+            skill_name = name.strip().lstrip("/")
+            arg_str = args if isinstance(args, str) else ""
+            result = _run_markdown_skill(skill_name, arg_str, self.tool_context)
+            out = result.output if isinstance(result.output, dict) else {}
+            prompt = out.get("prompt")
+            if result.is_error or not (isinstance(prompt, str) and prompt.strip()):
+                self._reply(request_id, {
+                    "ok": False,
+                    "error": str(out.get("error") or f"unknown skill '{skill_name}'"),
+                })
+                return
+            self._reply(request_id, {
+                "ok": True,
+                "name": skill_name,
+                "prompt": prompt,
+            })
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[agent-server] skill_command failed")
+            self._reply(request_id, {"ok": False, "error": str(exc)})
+
     def _do_wiki(self, request_id: object, action: object, path: object) -> None:
         """/wiki: init | status | ingest <path>. File-based project wiki under
         .clawcodex/wiki (the original's /wiki)."""
@@ -1759,6 +1857,22 @@ class _AgentSession:
                         })
                 except Exception:  # noqa: BLE001 — a bad goal record must not break resume
                     logger.debug("[agent-server] goal restore failed",
+                                 exc_info=True)
+            # Scheduled-task restore (docs/en/scheduled-tasks §Limitations:
+            # resuming restores recurring tasks within 7 days of creation
+            # and one-shots whose time hasn't passed; the scheduler's
+            # restore() applies those rules).
+            saved_sched = data.get("scheduled_tasks")
+            if isinstance(saved_sched, dict):
+                try:
+                    restored_n = self.cron_scheduler.restore(saved_sched)
+                    if restored_n:
+                        self._push_cron_state(
+                            f"⏰ Restored {restored_n} scheduled task(s) "
+                            "from the saved session."
+                        )
+                except Exception:  # noqa: BLE001 — must not break resume
+                    logger.debug("[agent-server] scheduled-tasks restore failed",
                                  exc_info=True)
             self._reply(request_id, {
                 "ok": True,
@@ -2514,11 +2628,16 @@ class _AgentSession:
                 # old REPL's turn-boundary drain, on a poll instead of a
                 # blocking prompt.
                 self._deliver_task_notifications()
+                # …then fire any due scheduled task (/loop, Cron*): the
+                # 0.5s inbox poll doubles as the scheduler tick, well under
+                # CC's "checks every second" contract.
+                self._fire_due_scheduled()
                 continue
             if item is _SHUTDOWN or self._stop.is_set():
                 break
             if isinstance(item, dict) and item.get("__btw__"):  # side question (/btw)
                 self._run_turn(item.get("content"), btw=True)
+                self._push_cron_state()
                 continue
             if isinstance(item, dict) and item.get("__goal__"):
                 # /goal continuation — internal-turn semantics (no UPS hooks,
@@ -2538,6 +2657,7 @@ class _AgentSession:
                 outcome = self._run_turn(item.get("content"), internal=True)
                 self._maybe_continue_goal(outcome)
                 self._deliver_task_notifications()
+                self._push_cron_state()
                 continue
             if not isinstance(item, (str, list)):  # str prompt, or multimodal blocks
                 continue
@@ -2545,6 +2665,9 @@ class _AgentSession:
             self._maybe_continue_goal(outcome)
             # A task that finished while the turn ran is delivered right after.
             self._deliver_task_notifications()
+            # Reflect any Cron*/ScheduleWakeup change the turn made (deduped
+            # push — costs a frame only when the state differs).
+            self._push_cron_state()
         self._close_stream()
 
     def _deliver_task_notifications(self) -> bool:
@@ -2606,6 +2729,191 @@ class _AgentSession:
         # Let the agent read the results and report conversationally.
         self._run_turn(build_notification_turn(envelopes), internal=True)
         return True
+
+    # ─── scheduled tasks (/loop + Cron* + ScheduleWakeup firing) ───────────
+
+    def _cron_state_payload(self) -> dict:
+        """Client-facing scheduled-state snapshot. Prompts ride truncated —
+        the TUI indicator only needs a preview; full prompts persist in the
+        session file via ``_save_session``."""
+        snap = self.cron_scheduler.snapshot()
+        jobs = []
+        for job in snap.get("jobs") or []:
+            prompt = str(job.get("prompt") or "")
+            jobs.append({
+                "id": job.get("id"),
+                "cron": job.get("cron"),
+                "human_schedule": SessionCronScheduler.human_schedule(
+                    str(job.get("cron") or "")
+                ),
+                "prompt_preview": prompt[:120] + ("…" if len(prompt) > 120 else ""),
+                "recurring": bool(job.get("recurring")),
+                "next_fire_at": job.get("next_fire_at"),
+                "expires_at": job.get("expires_at"),
+            })
+        wakeup = snap.get("wakeup")
+        return {
+            "jobs": jobs,
+            "wakeup": (
+                {
+                    "fire_at": wakeup.get("fire_at"),
+                    "reason": str(wakeup.get("reason") or ""),
+                    "is_fallback": bool(wakeup.get("is_fallback", False)),
+                }
+                if isinstance(wakeup, dict)
+                else None
+            ),
+        }
+
+    def _push_cron_state(self, message: str = "") -> None:
+        """Emit a ``cron_status`` event carrying the scheduled-state
+        snapshot. Message-less pushes dedupe against the last emitted
+        snapshot, so the routine post-turn call only costs a frame when a
+        tool actually changed something."""
+        try:
+            payload = self._cron_state_payload()
+            encoded = json.dumps(payload, sort_keys=True, default=str)
+            if not message and encoded == self._cron_push_json:
+                return
+            self._cron_push_json = encoded
+            self._emit({
+                "type": "system",
+                "subtype": "cron_status",
+                "session_id": self.session_id,
+                "message": message,
+                "scheduled": payload,
+            })
+        except Exception:  # noqa: BLE001 — status pushes must never break the worker
+            logger.debug("[agent-server] cron state push failed", exc_info=True)
+
+    @staticmethod
+    def _scheduled_turn_content(task: Any) -> str:
+        """Wrap a fired prompt in the envelope the model acts on. A prompt
+        that starts with a slash command is re-dispatched through the Skill
+        tool BY THE MODEL (the same rule the /loop skill body states), so
+        the server needs no skill-expansion path of its own here."""
+        prompt = task.prompt or ""
+        if task.kind == "wakeup":
+            reason = (task.reason or "").replace('"', "'")
+            fallback_attr = ' fallback="true"' if task.is_fallback else ""
+            lines = [
+                f'<scheduled-wakeup reason="{reason}"{fallback_attr}>',
+                prompt,
+                "</scheduled-wakeup>",
+                "",
+                "The wakeup you scheduled just fired. Run one iteration of the task above.",
+                "- If the prompt starts with a slash command (e.g. /loop), invoke it via the Skill tool (skill = the word after '/', args = the rest).",
+                "- Otherwise act on it directly.",
+                "When the iteration finishes, either schedule the next wakeup with ScheduleWakeup or end the loop with ScheduleWakeup stop: true.",
+            ]
+            if task.is_fallback:
+                lines.append(
+                    "This is the FALLBACK wakeup: the previous iteration neither "
+                    "rescheduled nor stopped. If this iteration doesn't "
+                    "reschedule, the loop ends."
+                )
+            return "\n".join(lines)
+        human = SessionCronScheduler.human_schedule(task.cron) if task.cron else ""
+        lines = [
+            f'<scheduled-task id="{task.id}" schedule="{task.cron}">',
+            prompt,
+            "</scheduled-task>",
+            "",
+            f"This scheduled prompt ({human or task.cron}) just came due. Run it now.",
+            "- If it starts with a slash command, invoke it via the Skill tool (skill = the word after '/', args = the rest).",
+            "- Otherwise act on it directly.",
+        ]
+        if task.recurring and not task.deleted:
+            lines.append(
+                "Do not reschedule it yourself — the recurring job re-fires "
+                "on its own schedule."
+            )
+        elif task.recurring and task.deleted:
+            lines.append(
+                "This recurring task reached its 7-day expiry: this was its "
+                "final run and it has been removed."
+            )
+        else:
+            lines.append(
+                "This was a one-shot task; it has been removed after this run."
+            )
+        return "\n".join(lines)
+
+    def _fire_due_scheduled(self) -> bool:
+        """Idle-branch consumer: pop every due scheduled task and run each
+        prompt as one internal turn. Runs on the worker thread with an
+        empty inbox, so a fire can never interleave with a user turn (CC:
+        "a scheduled prompt fires between your turns, not while Claude is
+        mid-response"; a task that came due mid-turn fires once now — no
+        catch-up). Returns whether anything fired."""
+        if self.init_error is not None or self._stop.is_set():
+            return False
+        try:
+            fired = self.cron_scheduler.pop_due()
+        except Exception:  # noqa: BLE001 — scheduler failure must not kill the worker
+            logger.debug("[agent-server] scheduled pop_due failed", exc_info=True)
+            return False
+        if not fired:
+            return False
+        for task in fired:
+            if self._stop.is_set():
+                break
+            if task.kind == "wakeup":
+                label = "Fallback loop wakeup" if task.is_fallback else "Loop wakeup"
+                self._push_cron_state(
+                    f"⟳ {label} fired — {task.reason or 'running the next iteration'}."
+                )
+                self.cron_scheduler.begin_turn_window()
+                self._run_turn(self._scheduled_turn_content(task), internal=True)
+                self._after_wakeup_turn(task)
+            else:
+                human = SessionCronScheduler.human_schedule(task.cron)
+                if task.deleted and task.recurring:
+                    note = (f"⏰ Scheduled task {task.id} fired ({human}) — "
+                            "7-day expiry reached; final run, task removed.")
+                elif task.deleted:
+                    note = f"⏰ One-time scheduled task {task.id} fired."
+                else:
+                    note = f"⏰ Scheduled task {task.id} fired ({human})."
+                self._push_cron_state(note)
+                self._run_turn(self._scheduled_turn_content(task), internal=True)
+            # A task that finished while the scheduled turn ran is delivered
+            # right after, matching the real-turn path.
+            self._deliver_task_notifications()
+        self._push_cron_state()
+        self._save_session()  # persist advanced next_fire_at / removals
+        return True
+
+    def _after_wakeup_turn(self, task: Any) -> None:
+        """Fallback semantics (§Stop a loop, CC ≥2.1.202): an iteration
+        that neither reschedules nor stops gets ONE fallback wakeup ~20
+        minutes out; when the fallback iteration doesn't reschedule either,
+        the loop ends."""
+        try:
+            action = self.cron_scheduler.wakeup_action_since()
+            if action == "set":
+                return  # rescheduled — the loop continues
+            if action == "stopped":
+                self._push_cron_state("⟳ Loop ended.")
+                return
+            if task.is_fallback:
+                self._push_cron_state(
+                    "⟳ Loop ended — the fallback iteration didn't reschedule."
+                )
+                return
+            self.cron_scheduler.set_wakeup(
+                FALLBACK_WAKEUP_DELAY_SECONDS,
+                task.prompt,
+                "fallback — the last iteration didn't reschedule or stop",
+                is_fallback=True,
+            )
+            self._push_cron_state(
+                "⟳ The iteration ended without rescheduling — one fallback "
+                "wakeup in ~20 minutes, then the loop ends."
+            )
+        except Exception:  # noqa: BLE001 — fallback bookkeeping must never raise
+            logger.debug("[agent-server] wakeup fallback handling failed",
+                         exc_info=True)
 
     def _build_turn_pipeline_config(self, turn_provider: Any) -> Any:
         """ch05 round-4 GAP A — per-turn PipelineConfig with the
@@ -3449,6 +3757,9 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
             abort_controller=AbortController(),
         )
         tool_context.options.is_non_interactive_session = True
+        # Scheduled tasks (/loop, Cron*, ScheduleWakeup): the tools write to
+        # the session's scheduler; the worker's idle branch fires due prompts.
+        tool_context.cron_scheduler = sess.cron_scheduler
         # ch01 round-4 WI-1 — load settings hooks into the executor-visible
         # snapshot + global registry. Safe here: _build_runtime runs in an
         # executor thread with no live event loop. Never raises.

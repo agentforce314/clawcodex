@@ -478,7 +478,24 @@ Example:
 - Arguments: use `$ARGUMENTS`, `$0`, `$1`, or named args like `$path` (from `arguments`).
 - Placeholder syntax: use `$path`, not `${path}`.
 
+### Scheduled tasks (`/loop`)
 
+Run a prompt repeatedly while the session stays open — poll a deployment, babysit a PR, or re-run a skill on a cadence. A port of Claude Code's [`/loop` + scheduled tasks](https://code.claude.com/docs/en/scheduled-tasks).
+
+| What you type | What happens |
+| ------------- | ------------ |
+| `/loop 5m check the deploy` | The prompt runs on a **fixed schedule** (a recurring cron job) |
+| `/loop check the deploy` | **Self-paced mode** — after each iteration the model picks the next delay (1 min–1 hr) via the `ScheduleWakeup` tool and tells you why |
+| `/loop 15m` | The built-in **maintenance prompt** (or your `loop.md`) on a fixed schedule |
+| `/loop` | The maintenance prompt, self-paced |
+
+Intervals accept `s`/`m`/`h`/`d` as a leading token (`30m check ci`) or a trailing clause (`check ci every 2 hours`). A bare `/loop` looks for `.clawcodex/loop.md`, then `~/.clawcodex/loop.md`, then falls back to the built-in maintenance prompt (continue unfinished work, tend the PR, cleanup passes).
+
+**How it runs** — scheduled prompts fire **between turns**, when the session is idle; a task that comes due mid-turn fires once when the turn ends (no catch-up). Under the hood the model manages jobs with `CronCreate` / `CronList` / `CronDelete` (standard 5-field cron, local timezone, 8-char job IDs, 50 per session) — you can also just ask in natural language ("what scheduled tasks do I have?", "remind me in 45 minutes to check the build"). Recurring jobs auto-expire after **7 days** (one final fire, then self-delete); one-shots delete after firing. Deterministic per-job jitter spreads fire times (recurring: up to 30 min or half the interval; one-shots pinned to `:00`/`:30` fire up to 90 s early).
+
+**Stopping** — press **Esc** while a self-paced loop waits and the pending wakeup is cleared (the loop won't fire again); cron jobs stay until `CronDelete` or expiry. In self-paced mode the model can end the loop itself (`ScheduleWakeup stop: true`); an iteration that neither reschedules nor stops gets one ~20-minute fallback wakeup, then the loop ends. `/clear` drops all session tasks; `/resume` restores unexpired ones. Set `CLAWCODEX_DISABLE_CRON=1` to disable the scheduler entirely.
+
+The TUI shows an indicator above the composer while anything is armed: `⟳ loop wakeup in 2m 14s · ⏰ 1 scheduled`.
 
 ***
 

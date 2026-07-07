@@ -143,6 +143,13 @@ class ToolContext:
     outbox: list[dict[str, Any]] = field(default_factory=list)
     ask_user: Callable[[list[dict[str, Any]]], dict[str, str]] | None = None
     crons: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Live scheduled-task engine (src.scheduled_tasks.SessionCronScheduler).
+    # Set for the MAIN agent-server session only; when present the Cron*
+    # and ScheduleWakeup tools register real firing jobs on it, and the
+    # worker's idle branch runs due prompts as internal turns. When None
+    # (subagents, SDK, bare tests) CronCreate falls back to the inert
+    # legacy ``crons`` dict above.
+    cron_scheduler: Any | None = None
     team: dict[str, Any] | None = None
     output_style_name: str | None = None
     output_style_dir: Path | None = None

@@ -21,6 +21,7 @@ import { fromSkin } from '../theme.js'
 import type { Msg, SubagentProgress, SubagentStatus } from '../types.js'
 
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
+import { applyCronSnapshot, resetCronState } from './cronStore.js'
 import { applyGoalSnapshot, resetGoalState } from './goalStore.js'
 import type { GatewayEventHandlerContext } from './interfaces.js'
 import { getOverlayState, patchOverlayState } from './overlayStore.js'
@@ -339,6 +340,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     // Prevents a stale "◎ /goal active" surviving a crash-respawn.
     resetGoalState()
 
+    // Same rule for scheduled tasks: a fresh backend has none until its
+    // cron_status events say otherwise (resume restore re-arms them).
+    resetCronState()
+
     // Kick off the config fetch once the gateway is actually ready. If handler
     // construction does this during React render, a startup transport error can
     // report through sys(), mutate transcript state, and trip React's
@@ -508,6 +513,16 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
                 : 'ready'
 
           setStatus(brief)
+          restoreStatusAfter(6000)
+
+          return
+        }
+
+        if (p.kind === 'cron') {
+          // Scheduled-task transition line (/loop fired, wakeup cleared,
+          // task expired) — persistent transcript line + brief status.
+          sys(p.text)
+          setStatus(p.text.startsWith('⏰') ? '⏰ scheduled task' : '⟳ loop update')
           restoreStatusAfter(6000)
 
           return
@@ -1023,6 +1038,12 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         return
 
+      case 'cron.state':
+        // Scheduled-task indicator feed (cron_status events): the snapshot
+        // is authoritative — an empty one hides the indicator.
+        applyCronSnapshot(ev.payload?.scheduled ?? null)
+
+        return
       case 'goal.state':
         // /goal indicator feed (goal/subgoal/clear replies, goal_status
         // events). The payload is the whole truth — null hides the line;

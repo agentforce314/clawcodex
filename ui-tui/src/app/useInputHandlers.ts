@@ -14,6 +14,7 @@ import { isAction, isCopyShortcut, isMac, isVoiceToggleKey } from '../lib/platfo
 import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionWheel.js'
 import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
 
+import { getCronState } from './cronStore.js'
 import { getInputSelection } from './inputSelectionStore.js'
 import type { InputHandlerActions, InputHandlerContext, InputHandlerResult } from './interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from './overlayStore.js'
@@ -496,6 +497,17 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         sid: live.sid,
         sys: actions.sys
       })
+    }
+
+    // Esc while IDLE stops a waiting /loop: the interrupt control clears
+    // the pending self-paced wakeup backend-side (docs/en/scheduled-tasks
+    // §Stop a loop) and its cron_status event confirms in the transcript.
+    // Cron jobs scheduled by asking directly are not affected. Only fires
+    // when a wakeup is actually pending, so plain Esc stays inert.
+    if (key.escape && !live.busy && live.sid && getCronState()?.wakeup) {
+      void gateway.gw.request('session.interrupt', { session_id: live.sid }).catch(() => {})
+
+      return
     }
 
     if (key.upArrow) {

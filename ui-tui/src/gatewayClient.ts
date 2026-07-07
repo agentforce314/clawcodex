@@ -21,7 +21,14 @@ import { readdirSync } from 'node:fs'
 import { resolve as pathResolve } from 'node:path'
 import { createInterface } from 'node:readline'
 
-import type { CostSnapshot, GatewayEvent, GoalSnapshot, PatchHunk, StructuredDiffPayload } from './gatewayTypes.js'
+import type {
+  CostSnapshot,
+  CronSnapshot,
+  GatewayEvent,
+  GoalSnapshot,
+  PatchHunk,
+  StructuredDiffPayload
+} from './gatewayTypes.js'
 import { formatTotalCost, setLastCostSnapshot } from './lib/costSummary.js'
 import type { SessionInfo } from './types.js'
 
@@ -294,6 +301,11 @@ const SLASHES: ReadonlyArray<{ desc: string; hint?: string; name: string }> = [
     name: '/goal'
   },
   { desc: 'Add or manage extra criteria on the active goal', hint: '[<text> | remove <n> | clear]', name: '/subgoal' },
+  {
+    desc: 'Run a prompt repeatedly on a schedule (Esc while waiting stops a self-paced loop)',
+    hint: '[interval] [prompt]',
+    name: '/loop'
+  },
   { desc: 'Generate session insights', name: '/insights' },
   { desc: 'List or start background agents', name: '/bg' },
   { desc: 'Resume a past session', name: '/resume' },
@@ -914,10 +926,33 @@ export class GatewayClient extends EventEmitter {
   private async dispatchSlash(
     name: string,
     arg?: string
-  ): Promise<{ output: string; type: string } | { message: string; notice?: string; type: 'send' }> {
+  ): Promise<
+    | { output: string; type: string }
+    | { message: string; notice?: string; type: 'send' }
+    | { message?: string; name: string; type: 'skill' }
+  > {
     const out = (output: string) => ({ output, type: 'exec' })
 
+    // Skill slash commands (/loop today; any user-invocable skill via the
+    // default fallback below): the backend expands the skill body through
+    // the same path the model-side Skill tool uses, and the app submits it
+    // as a user turn (createSlashHandler's {type:'skill'} consumer).
+    const trySkill = async (skillName: string) => {
+      const r = (await this.controlQuery('skill_command', { args: arg ?? '', name: skillName })) as any
+
+      if (r?.ok && typeof r.prompt === 'string' && r.prompt) {
+        return { message: r.prompt as string, name: skillName, type: 'skill' as const }
+      }
+
+      return null
+    }
+
     switch (name) {
+      case 'loop': {
+        const skill = await trySkill('loop')
+
+        return skill ?? out('loop: backend not ready')
+      }
       case 'advisor': {
         const r = (await this.controlQuery('advisor', { arg: arg ?? '' })) as any
 
@@ -1207,6 +1242,14 @@ export class GatewayClient extends EventEmitter {
           }
         }
 
+        // Not a workflow — try skills (bundled + on-disk SKILL.md), the CC
+        // rule that a typed /name falls back to the skill of that name.
+        const skill = await trySkill(name).catch(() => null)
+
+        if (skill) {
+          return skill
+        }
+
         return out(`/${name} isn't wired into the clawcodex backend yet.`)
       }
     }
@@ -1430,6 +1473,18 @@ export class GatewayClient extends EventEmitter {
           } else if (msg.goal_active === false) {
             this.publish({ payload: { goal: null }, type: 'goal.state' })
           }
+        } else if (msg.subtype === 'cron_status') {
+          // Scheduled-task transitions (/loop wakeup fired, cron job fired,
+          // Esc-cleared, restore): kind:'cron' renders the transcript line;
+          // the `scheduled` snapshot feeds the CronIndicator store.
+          if (typeof msg.message === 'string' && msg.message.trim()) {
+            this.publish({ payload: { kind: 'cron', text: String(msg.message) }, type: 'status.update' })
+          }
+
+          this.publish({
+            payload: { scheduled: (msg.scheduled ?? null) as CronSnapshot | null },
+            type: 'cron.state'
+          })
         }
 
         break

@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`/loop` scheduled tasks now actually fire — full port of Claude Code's
+  session-scoped scheduler** (docs/en/scheduled-tasks). A new
+  `src/scheduled_tasks` engine parses standard 5-field vixie cron
+  expressions (wildcards, steps, ranges, lists, dow 0/7=Sunday, dom/dow OR
+  semantics, local timezone) and fires due prompts between turns from the
+  agent-server worker's idle poll. `CronCreate`/`CronList`/`CronDelete`
+  register real firing jobs (8-char IDs, 50-job cap, deterministic per-job
+  jitter, 7-day recurring expiry with a final fire, one-shots self-delete);
+  the new `ScheduleWakeup` tool drives self-paced `/loop` mode (delay
+  clamped 60–3600 s, `stop: true` ends the loop, one ~20-minute fallback
+  wakeup when an iteration forgets to reschedule). Esc while idle clears a
+  pending loop wakeup; `/clear` drops all session tasks; `/resume` restores
+  unexpired ones; `CLAWCODEX_DISABLE_CRON=1` disables the scheduler.
+- **Typed skill slash commands reach the backend:** the TUI's slash
+  dispatch falls back from workflow commands to a new `skill_command`
+  control that expands bundled/disk skills through the same path the
+  model-side Skill tool uses — so `/loop 5m check ci` (and any
+  user-invocable skill) now works typed from the composer, with `/loop`
+  listed in the completion menu.
+- **TUI scheduled-task indicator:** a persistent `⟳ loop wakeup in 2m 14s ·
+  ⏰ 1 scheduled` line above the composer (cronStore + CronIndicator), fed
+  by new `cron_status` events that also render fire/stop/restore lines in
+  the transcript.
+
 ### Changed
 
 - **Directory rebrand: clawcodex state now lives under `~/.clawcodex/` and
