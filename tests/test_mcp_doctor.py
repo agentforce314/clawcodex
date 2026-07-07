@@ -1,3 +1,5 @@
+import sys
+
 import pytest
 from unittest.mock import patch, MagicMock
 
@@ -92,7 +94,10 @@ class TestDiagnosticReport:
 
 class TestValidateStdioConfig:
     def test_valid_command(self):
-        config = McpStdioServerConfig(command="python")
+        # sys.executable rather than "python": macOS/Linux boxes often ship
+        # only `python3`. An absolute path contains os.sep, so the doctor's
+        # PATH lookup (guarded by `os.sep not in command`) is skipped.
+        config = McpStdioServerConfig(command=sys.executable)
         warnings = _validate_stdio_config("test", config)
         assert warnings == []
 
