@@ -36,6 +36,18 @@ def main():
 
     import os
 
+    # Worktree env hygiene — MUST run before anything snapshots the
+    # environment (prefetch spawns, run_pre_action, tui_launcher child env),
+    # and before the subcommand sieve so the ``tui`` path is covered too.
+    # A clawcodex spawned from INSIDE a --worktree session (e.g. by the
+    # agent's Bash tool) inherits the parent's CLAWCODEX_WORKTREE_* vars;
+    # without the strip its TUI would adopt the OUTER session's worktree and
+    # its clean-exit path would delete it out from under the parent. Only the
+    # launcher that creates a worktree may advertise one (see
+    # src/utils/worktree_session.py module docstring).
+    from src.utils.worktree_session import strip_worktree_env
+    strip_worktree_env()
+
     # OpenClaude default: experimental API betas off unless the user opts in
     # (mirrors typescript/src/entrypoints/cli.tsx:44 — tool search
     # defer_loading / global cache scope / context management need internal
@@ -181,6 +193,16 @@ def main():
     if not _gate_folder_trust():
         return 1
 
+    # --worktree: create/resume AFTER the trust gate (the gate runs against
+    # the ORIGINAL cwd — user consents to the repo before we mutate
+    # .claude/worktrees/; nothing re-checks trust against the worktree path,
+    # the backend has no trust gate of its own). The worktree becomes the
+    # session's workspace; the TUI + agent-server child run inside it and the
+    # env block carries the session for the exit-time keep/remove flow.
+    worktree_session = _maybe_create_worktree(args)
+    if worktree_session is _WORKTREE_FAILED:
+        return 1
+
     profile_checkpoint("phase4_dispatch")
     from src.entrypoints.tui_launcher import launch_ink_tui
 
@@ -189,7 +211,43 @@ def main():
         model=args.model,
         permission_mode=args._resolved_permission_mode,
         is_bypass_available=args._resolved_is_bypass_available,
+        workspace=(worktree_session.worktree_path if worktree_session else None),
+        worktree=worktree_session,
     )
+
+
+#: Sentinel: worktree creation was requested and failed (error already
+#: printed) — distinct from None (no --worktree flag).
+_WORKTREE_FAILED = object()
+
+
+def _maybe_create_worktree(args):
+    """Create/resume the session worktree when ``--worktree`` was passed.
+
+    Returns the :class:`WorktreeSession`, ``None`` when the flag is absent, or
+    :data:`_WORKTREE_FAILED` after printing the error (mirrors TS setup.ts:
+    red stderr + exit 1).
+    """
+    option = getattr(args, "worktree", None)
+    if option is None:
+        return None
+
+    from src.utils.worktree_session import (
+        WorktreeError,
+        create_session_from_cli_option,
+    )
+
+    try:
+        session = create_session_from_cli_option(option)
+    except WorktreeError as exc:
+        print(f"Error creating worktree: {exc}", file=sys.stderr)
+        return _WORKTREE_FAILED
+    print(
+        f"Using worktree {session.worktree_name} at {session.worktree_path} "
+        f"(branch {session.worktree_branch})",
+        file=sys.stderr,
+    )
+    return session
 
 
 def _gate_folder_trust() -> bool:
@@ -323,6 +381,22 @@ Examples:
     parser.add_argument('prompt', nargs='?', help='Prompt to send in non-interactive mode')
     parser.add_argument('--version', action='store_true', help='Show version information')
     parser.add_argument('--config', action='store_true', help='Show current configuration')
+    # Optional-value flag, mirroring TS `-w, --worktree [name]`
+    # (typescript/src/main.tsx:3804). Bare `-w` → True → a name is generated.
+    # Known commander/argparse ambiguity, same as TS: `-w <bareword>` consumes
+    # the word, so a headless prompt should come via -p or --worktree=NAME.
+    parser.add_argument(
+        '-w', '--worktree',
+        nargs='?', const=True, default=None, metavar='NAME',
+        help=(
+            'Run this session in an isolated git worktree at '
+            '.claude/worktrees/NAME (created or resumed; a name is generated '
+            'when omitted). NAME may also be a PR reference (#123 or a GitHub '
+            'PR URL). At exit you choose to keep or remove it; parallel '
+            'sessions with different names never touch each other\'s files. '
+            'Prefer --worktree=NAME when combining with a positional prompt.'
+        ),
+    )
 
     # ---- Interactive UI ----
     #
@@ -537,6 +611,15 @@ def _run_print_mode(args) -> int:
         print("error: --fallback-model must differ from --model", file=sys.stderr)
         return 2
 
+    # --worktree in print mode: run headless inside the worktree and KEEP it
+    # (TS print mode has no exit dialog and leaves the worktree in place; the
+    # stderr note is a deliberate small improvement so scripts can find it).
+    worktree_session = _maybe_create_worktree(args)
+    if worktree_session is _WORKTREE_FAILED:
+        return 1
+    if worktree_session is not None:
+        os.chdir(worktree_session.worktree_path)
+
     options = HeadlessOptions(
         prompt=args.prompt,
         output_format=args.output_format,
@@ -553,7 +636,15 @@ def _run_print_mode(args) -> int:
         include_partial_messages=bool(args.include_partial_messages),
         verbose=bool(args.verbose),
     )
-    return run_headless(options)
+    try:
+        return run_headless(options)
+    finally:
+        if worktree_session is not None:
+            print(
+                f"Worktree kept at {worktree_session.worktree_path} "
+                f"(branch {worktree_session.worktree_branch})",
+                file=sys.stderr,
+            )
 
 
 def _split_csv(value: str | None) -> list[str]:

@@ -127,6 +127,24 @@ export interface ClarifyReq {
   requestId: string
 }
 
+/** Exit-time keep/remove dialog for a --worktree session (the TS reference's
+ *  WorktreeExitDialog). `phase` flips to keeping/removing while the backend
+ *  RPC runs — removal of a large tree can take a while. */
+export interface WorktreeExitReq {
+  branch: string
+  /** Esc — abort the exit and return to the session. */
+  onCancel: () => void
+  onChoose: (action: 'keep' | 'remove') => void
+  /** Ctrl+C/Ctrl+D during the busy phase — die now without waiting for the
+   *  backend RPC (worktree left in place). Escape hatch for a hung git. */
+  onForceQuit: () => void
+  path: string
+  phase: 'asking' | 'keeping' | 'removing'
+  /** Remove is rendered as destructive when changes would be lost. */
+  removeIsDanger: boolean
+  subtitle: string
+}
+
 export interface Msg {
   // Structured Edit/Write patch for kind:'diff' segments — rendered by
   // DiffView (line numbers, word diff, ColorDiff). Text-only diff segments

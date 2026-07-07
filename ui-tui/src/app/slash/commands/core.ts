@@ -135,7 +135,9 @@ export const coreCommands: SlashCommand[] = [
         return
       }
 
-      ctx.session.die()
+      // Routes through the --worktree keep/remove flow when one is active;
+      // a plain session dies immediately.
+      ctx.session.requestExit()
     }
   },
 

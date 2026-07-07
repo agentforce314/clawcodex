@@ -20,7 +20,8 @@ import type {
   SessionInfo,
   SlashCatalog,
   SudoReq,
-  Usage
+  Usage,
+  WorktreeExitReq
 } from '../types.js'
 
 export interface StateSetter<T> {
@@ -146,6 +147,7 @@ export interface OverlayState {
   sessions: boolean
   skillsHub: boolean
   sudo: null | SudoReq
+  worktreeExit: null | WorktreeExitReq
 }
 
 export interface PagerState {
@@ -267,6 +269,9 @@ export interface InputHandlerActions {
   dispatchSubmission: (full: string) => void
   guardBusySessionSwitch: (what?: string) => boolean
   newSession: (msg?: string, title?: string) => void
+  /** Orderly exit: runs the --worktree keep/remove flow when one is active,
+   *  otherwise (or on a second call while one is in flight) dies directly. */
+  requestExit: () => void
   sys: (text: string) => void
 }
 
@@ -364,6 +369,8 @@ export interface SlashHandlerContext {
     guardBusySessionSwitch: (what?: string) => boolean
     newLiveSession: (msg?: string, title?: string) => void
     newSession: (msg?: string, title?: string) => void
+    /** /exit path: worktree keep/remove flow when active, else die(). */
+    requestExit: () => void
     resetVisibleHistory: (info?: null | SessionInfo) => void
     resumeById: (id: string) => void
     setSessionStartedAt: StateSetter<number>

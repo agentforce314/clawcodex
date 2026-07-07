@@ -15,7 +15,8 @@ Usage::
     clawcodex tui [--provider P] [--model M] [--permission-mode MODE]
                   [--dangerously-skip-permissions]
                   [--allow-dangerously-skip-permissions]
-                  [--workspace DIR] [--tui-dir DIR] [--print-connect]
+                  [--workspace DIR] [--worktree [NAME]] [--tui-dir DIR]
+                  [--print-connect]
 
 ``--print-connect`` instead runs the agent-server directly and prints its
 ``cc://`` URL + token, then waits (for attaching the reference client or
@@ -65,6 +66,13 @@ def run_tui_launcher(argv: list[str]) -> int:
     )
     parser.add_argument("--workspace", default=None,
                         help="Workspace root the agent operates in (default: cwd).")
+    parser.add_argument(
+        "-w", "--worktree",
+        nargs="?", const=True, default=None, metavar="NAME",
+        help="Run this session in an isolated git worktree at "
+             ".claude/worktrees/NAME (created or resumed; a name is generated "
+             "when omitted). NAME may also be a PR reference (#123 or PR URL).",
+    )
     parser.add_argument("--tui-dir", default=None,
                         help="Path to the ui-tui client (default: auto-detect).")
     parser.add_argument("--print-connect", action="store_true",
@@ -106,9 +114,39 @@ def run_tui_launcher(argv: list[str]) -> int:
         dangerously or allow_dangerously or has_allow_bypass_permissions_mode()
     ) and not is_bypass_permissions_mode_disabled()
 
+    # --worktree: the trust gate already ran in cli.py::_run_tui_subcommand
+    # (against the original cwd) before this launcher was invoked. Create or
+    # resume the worktree relative to --workspace (or cwd) and make it the
+    # session's workspace.
+    worktree_session = None
+    if args.worktree is not None:
+        from src.utils.worktree_session import (
+            WorktreeError,
+            create_session_from_cli_option,
+        )
+
+        base_cwd = str(Path(args.workspace).resolve()) if args.workspace else None
+        try:
+            worktree_session = create_session_from_cli_option(args.worktree, cwd=base_cwd)
+        except WorktreeError as exc:
+            print(f"clawcodex tui: error creating worktree: {exc}", file=sys.stderr)
+            return 1
+        print(
+            f"Using worktree {worktree_session.worktree_name} at "
+            f"{worktree_session.worktree_path} "
+            f"(branch {worktree_session.worktree_branch})",
+            file=sys.stderr,
+        )
+        args.workspace = worktree_session.worktree_path
+
     if args.print_connect:
         args.permission_mode = mode
         args.is_bypass_available = is_bypass_available
+        if worktree_session is not None:
+            # run_agent_server_subcommand runs IN THIS process; exporting the
+            # session here is exactly how the server's worktree controls see
+            # it (same channel the spawned-child path uses).
+            os.environ.update(worktree_session.to_env())
         return _print_connect(args)
     return launch_ink_tui(
         provider=args.provider,
@@ -117,6 +155,7 @@ def run_tui_launcher(argv: list[str]) -> int:
         is_bypass_available=is_bypass_available,
         workspace=args.workspace,
         tui_dir=args.tui_dir,
+        worktree=worktree_session,
     )
 
 
@@ -128,6 +167,7 @@ def launch_ink_tui(
     is_bypass_available: bool = False,
     workspace: str | None = None,
     tui_dir: str | None = None,
+    worktree=None,
 ) -> int:
     """Launch the Ink TUI as the interactive UI (it spawns + owns the agent-server).
 
@@ -151,6 +191,7 @@ def launch_ink_tui(
         workspace=workspace,
         tui_dir=tui_dir,
         print_connect=False,
+        worktree_session=worktree,
     )
     try:
         return asyncio.run(_launch(args))
@@ -224,6 +265,13 @@ def _child_env(args) -> dict[str, str]:
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = str(_REPO_ROOT) + (os.pathsep + existing if existing else "")
     env["CLAWCODEX_AGENT_SERVER_CMD"] = " ".join(_agent_server_cmd(args))
+    # --worktree session block: read by the Ink TUI (banner + exit keep/remove
+    # gating, validated against OWNER_PID/ppid) and inherited by the
+    # agent-server child (exit-time git ops). cli.py stripped any INHERITED
+    # block at entry, so this is only ever the worktree THIS launcher created.
+    worktree = getattr(args, "worktree_session", None)
+    if worktree is not None:
+        env.update(worktree.to_env())
     return env
 
 
