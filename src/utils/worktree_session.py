@@ -42,6 +42,7 @@ import random
 import re
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -616,7 +617,32 @@ def cleanup_worktree(session: WorktreeSession) -> tuple[bool, str]:
 
     Branch deletion is best-effort (TS parity): a failure there is logged but
     doesn't fail the removal.
+
+    Defense-in-depth: re-assert the launcher's injective slug→(path, branch)
+    mapping at the point of destruction. The session normally round-trips
+    through the env channel the launcher itself wrote, but a split/forged env
+    block (real worktree path + ``branch=main``) would otherwise turn the
+    best-effort ``branch -D`` into deleting an arbitrary branch. (``git
+    worktree remove`` already refuses paths that aren't registered worktrees;
+    this closes the branch half.)
     """
+    if not session.worktree_branch.startswith("worktree-"):
+        return False, (
+            f"refusing to clean up: branch {session.worktree_branch!r} is not "
+            "a worktree-* session branch"
+        )
+    expected_root = os.path.abspath(worktrees_dir(session.repo_root))
+    actual_path = os.path.abspath(session.worktree_path)
+    try:
+        inside = os.path.commonpath([expected_root, actual_path]) == expected_root
+    except ValueError:  # different drives (Windows) — definitely outside
+        inside = False
+    if not inside:
+        return False, (
+            f"refusing to clean up: {session.worktree_path} is outside "
+            f"{expected_root}"
+        )
+
     _, remove_err, remove_rc = _git(
         ["worktree", "remove", "--force", session.worktree_path],
         cwd=session.repo_root, timeout=600.0,
@@ -624,6 +650,9 @@ def cleanup_worktree(session: WorktreeSession) -> tuple[bool, str]:
     if remove_rc != 0:
         return False, remove_err.strip() or "git worktree remove failed"
 
+    # Brief settle before branch -D (TS parity, worktree.ts:930 sleep(100)) —
+    # lets git release worktree locks on slower filesystems/Windows.
+    time.sleep(0.1)
     _, branch_err, branch_rc = _git(
         ["branch", "-D", session.worktree_branch], cwd=session.repo_root
     )

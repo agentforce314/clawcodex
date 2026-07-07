@@ -202,3 +202,47 @@ def test_exit_invalid_action_is_rejected(repo):
     assert reply["ok"] is False
     assert "explode" in reply["error"]
     assert os.path.isdir(env["CLAWCODEX_WORKTREE_PATH"])
+
+
+def test_exit_remove_is_refused_during_an_active_turn(repo):
+    """Idle-only, like every destructive control (critic MAJOR): the turn
+    runs on the worker thread while controls run on the main loop — removal
+    mid-turn would delete the directory out from under live tool calls."""
+    from src.utils.abort_controller import AbortController
+
+    env = _env_for(repo, "busy-wt")
+    sess, emitted = _make_session()
+    sess._current_abort = AbortController()
+    with patch.dict(os.environ, env):
+        _control(sess, "worktree_exit", action="remove")
+        refused = _last_reply(emitted)
+        # keep stays allowed mid-turn — it deletes nothing.
+        _control(sess, "worktree_exit", action="keep")
+        kept = _last_reply(emitted)
+    assert refused["ok"] is False
+    assert "active turn" in refused["error"]
+    assert os.path.isdir(env["CLAWCODEX_WORKTREE_PATH"])  # untouched
+    assert kept["ok"] is True
+
+
+def test_exit_remove_refuses_forged_branch_or_foreign_path(repo):
+    """Defense-in-depth (critic): a split env block must not turn the
+    best-effort `branch -D` into deleting an arbitrary branch, nor point
+    removal outside .claude/worktrees/."""
+    env = _env_for(repo, "forged")
+    sess, emitted = _make_session()
+    with patch.dict(os.environ, {**env, "CLAWCODEX_WORKTREE_BRANCH": "main"}):
+        _control(sess, "worktree_exit", action="remove")
+    forged_branch = _last_reply(emitted)
+    assert forged_branch["ok"] is False
+    assert "worktree-" in forged_branch["error"]
+    assert _git(repo, "branch", "--list", "main").strip() != ""  # main survives
+
+    outside = repo.parent / "outside-dir"
+    outside.mkdir(exist_ok=True)
+    with patch.dict(os.environ, {**env, "CLAWCODEX_WORKTREE_PATH": str(outside)}):
+        _control(sess, "worktree_exit", action="remove")
+    foreign_path = _last_reply(emitted)
+    assert foreign_path["ok"] is False
+    assert "outside" in foreign_path["error"]
+    assert outside.is_dir()  # untouched

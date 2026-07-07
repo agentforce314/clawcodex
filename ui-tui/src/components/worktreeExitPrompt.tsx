@@ -64,7 +64,7 @@ export function WorktreeExitPrompt({ req, t }: WorktreeExitPromptProps) {
     return (
       <Box borderColor={t.color.border} borderStyle="double" flexDirection="column" paddingX={1}>
         <Text color={t.color.warn}>{req.phase === 'keeping' ? 'Keeping worktree…' : 'Removing worktree…'}</Text>
-        <Text color={t.color.muted}>Ctrl+C to quit without waiting (worktree left in place)</Text>
+        <Text color={t.color.muted}>Ctrl+C to quit without waiting (the worktree may be left in a partial state)</Text>
       </Box>
     )
   }

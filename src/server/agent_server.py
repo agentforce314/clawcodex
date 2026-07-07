@@ -2198,6 +2198,21 @@ class _AgentSession:
             })
             return
 
+        # Idle-only, like every destructive control (clear/resume/rewind/…):
+        # the turn runs on the worker thread while this handler runs on the
+        # main loop, so without the guard a mid-turn exit could `git worktree
+        # remove --force` the directory out from under live tool calls
+        # (critic: worktree_exit was the only file-deleting control missing
+        # it). The client degrades the refusal to keep-and-exit.
+        with self._lock:
+            active = self._current_abort is not None
+        if active:
+            self._reply(request_id, {
+                "ok": False,
+                "error": "cannot remove the worktree during an active turn",
+            })
+            return
+
         from src.utils.worktree_session import (
             cleanup_worktree,
             removal_message,

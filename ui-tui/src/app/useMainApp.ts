@@ -548,9 +548,18 @@ export function useMainApp(gw: GatewayClient) {
           if (r && r.ok !== false) {
             finish(typeof r.message === 'string' && r.message ? r.message : null)
           } else {
-            const detail = typeof r?.error === 'string' && r.error ? ` (${r.error})` : ''
+            const error = typeof r?.error === 'string' ? r.error : ''
 
-            finish(`Worktree cleanup failed, exiting anyway${detail} — worktree kept at ${wt.path}`)
+            // The backend refuses removal while a turn is running (idle-only,
+            // like every destructive control) — that's a normal keep, not a
+            // failure.
+            if (error.includes('active turn')) {
+              finish(`${keptNote} (a turn was still running)`)
+            } else {
+              const detail = error ? ` (${error})` : ''
+
+              finish(`Worktree cleanup failed, exiting anyway${detail} — worktree kept at ${wt.path}`)
+            }
           }
         })
         .catch(() => finish(`Worktree cleanup failed, exiting anyway — worktree kept at ${wt.path}`))
