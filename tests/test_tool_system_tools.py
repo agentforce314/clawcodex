@@ -125,10 +125,14 @@ class TestWriteTool(ToolSystemTests):
         WriteTool.call({"file_path": str(p), "content": "new"}, self.ctx)
         self.assertEqual(p.read_text(encoding="utf-8"), "new")
 
-    def test_write_blocks_docs_by_default(self) -> None:
+    def test_write_markdown_passthrough(self) -> None:
+        # Docs gate removed (loosen-permissions): the original Claude Code has
+        # no markdown permission gate, so a .md write flows like any other
+        # write (prompt in default mode WITH a session option, not a special
+        # un-grantable docs ask).
         p = self.root / "README.md"
         result = WriteTool.check_permissions({"file_path": str(p), "content": "x"}, self.ctx)
-        self.assertEqual(result.behavior, "ask")
+        self.assertEqual(result.behavior, "passthrough")
 
 
 class TestEditTool(ToolSystemTests):

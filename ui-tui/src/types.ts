@@ -110,6 +110,9 @@ export interface ApprovalReq {
   // "Yes, <sessionLabel>" (e.g. "Yes, allow all edits during this session").
   // Used for non-Bash tools; Bash uses the editable rule instead.
   sessionLabel?: string
+  // Destructive-command caution from the backend (e.g. "Note: may overwrite
+  // remote history"), rendered as a warning line above the options.
+  warning?: string
 }
 
 export interface ConfirmReq {

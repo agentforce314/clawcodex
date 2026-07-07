@@ -415,7 +415,52 @@ def _is_preapproved(hostname: str, pathname: str) -> bool:
 
 # -- Permission Check ----------------------------------------------------------
 
+def _domain_rule_content(url: str) -> str | None:
+    """``https://docs.foo.com/x`` → ``domain:docs.foo.com`` (TS
+    webFetchToolInputToPermissionRuleContent, WebFetchTool.ts:66-79)."""
+    try:
+        hostname = urllib.parse.urlparse(url).hostname
+    except Exception:
+        return None
+    return f"domain:{hostname}" if hostname else None
+
+
+def _domain_suggestions(rule_content: str) -> tuple:
+    """One ``addRules WebFetch(domain:<host>) → localSettings`` update (TS
+    buildSuggestions, WebFetchTool.ts:346-355) — the "don't ask again" grant
+    is scoped to the host, not all of WebFetch."""
+    from src.permissions.types import (
+        PermissionRuleValue,
+        PermissionUpdateAddRules,
+    )
+
+    return (
+        PermissionUpdateAddRules(
+            destination="localSettings",
+            behavior="allow",
+            rules=(
+                PermissionRuleValue(
+                    tool_name="WebFetch", rule_content=rule_content
+                ),
+            ),
+        ),
+    )
+
+
 def _check_permissions(tool_input: dict[str, Any], context: ToolContext) -> PermissionResult:
+    """TS-parity WebFetch permission stage (WebFetchTool.ts:118-195):
+    preapproved host → allow; then ``domain:<hostname>`` deny/ask/allow rules;
+    else ask-by-passthrough carrying a domain-scoped suggestion. Previously
+    BOTH branches returned passthrough — the preapproved list was dead code
+    and every fetch prompted with only an all-of-WebFetch grant on offer."""
+    from src.permissions.types import (
+        PermissionAllowDecision,
+        PermissionAskDecision,
+        PermissionDenyDecision,
+        OtherDecisionReason,
+        RuleDecisionReason,
+    )
+
     url = tool_input.get("url", "")
     if not isinstance(url, str) or not url:
         return PermissionPassthroughResult()
@@ -424,10 +469,57 @@ def _check_permissions(tool_input: dict[str, Any], context: ToolContext) -> Perm
         hostname = parsed.hostname or ""
         pathname = parsed.path or "/"
         if _is_preapproved(hostname, pathname):
-            return PermissionPassthroughResult()
+            return PermissionAllowDecision(
+                behavior="allow",
+                updated_input=tool_input,
+                decision_reason=OtherDecisionReason(reason="Preapproved host"),
+            )
     except Exception:
         pass
-    return PermissionPassthroughResult()
+
+    rule_content = _domain_rule_content(url)
+    if rule_content is None:
+        return PermissionPassthroughResult()
+
+    perm_ctx = getattr(context, "permission_context", None)
+    if perm_ctx is not None:
+        try:
+            from src.permissions.rules import get_rule_by_contents_for_tool
+
+            deny = get_rule_by_contents_for_tool(perm_ctx, "WebFetch", "deny").get(
+                rule_content
+            )
+            if deny is not None:
+                return PermissionDenyDecision(
+                    behavior="deny",
+                    message=f"WebFetch denied access to {rule_content}.",
+                    decision_reason=RuleDecisionReason(rule=deny),
+                )
+            ask = get_rule_by_contents_for_tool(perm_ctx, "WebFetch", "ask").get(
+                rule_content
+            )
+            if ask is not None:
+                return PermissionAskDecision(
+                    behavior="ask",
+                    message="WebFetch requires approval for this domain.",
+                    decision_reason=RuleDecisionReason(rule=ask),
+                    suggestions=_domain_suggestions(rule_content),
+                )
+            allow = get_rule_by_contents_for_tool(perm_ctx, "WebFetch", "allow").get(
+                rule_content
+            )
+            if allow is not None:
+                return PermissionAllowDecision(
+                    behavior="allow",
+                    updated_input=tool_input,
+                    decision_reason=RuleDecisionReason(rule=allow),
+                )
+        except Exception:
+            pass
+
+    return PermissionPassthroughResult(
+        suggestions=_domain_suggestions(rule_content),
+    )
 
 
 # -- Result Mapping ------------------------------------------------------------

@@ -496,17 +496,96 @@ def has_permissions_to_use_tool_inner(
                     decision_reason=ModeDecisionReason(mode="acceptEdits"),
                 )
 
+    # The path-write gate every Bash rule-allow must pass: in the original,
+    # checkPathConstraints runs BEFORE allow rules (bashPermissions.ts step 3
+    # vs step 5), so a matched Bash allow — content-less ``Bash`` / ``Bash(*)``
+    # OR a ``Bash(rm:*)`` prefix — never auto-runs a write against an
+    # out-of-workspace or dangerous-removal target. See
+    # :func:`rule_allow_path_gate` for the documented in-workspace deviation.
+    _pwg_state: dict[str, Any] = {}
+
+    def _passes_path_gate(cmd_text: str) -> bool:
+        from .bash_mode_validation import rule_allow_path_gate
+        from .bash_suggestions import (
+            contains_unquoted_chaining,
+            split_chained_command,
+        )
+
+        if "cwd" not in _pwg_state:
+            gate_cwd = os.getcwd()
+            gate_roots: list[str] = []
+            if tool_use_context is not None:
+                try:
+                    gate_cwd = str(tool_use_context.cwd or gate_cwd)
+                except Exception:
+                    pass
+                try:
+                    gate_roots = [
+                        str(r) for r in tool_use_context.allowed_roots()
+                    ]
+                except Exception:
+                    gate_roots = []
+            if not gate_roots:
+                gate_roots = [gate_cwd]
+            _pwg_state["cwd"] = gate_cwd
+            _pwg_state["roots"] = gate_roots
+        # A content-less allow-all can match a compound (`echo && rm -rf ~`),
+        # so gate EVERY sub-command's write target, not just the head. A
+        # splitter refusal fails closed (prompt).
+        legs = [cmd_text]
+        if contains_unquoted_chaining(cmd_text):
+            subs = split_chained_command(cmd_text)
+            if subs is None:
+                return False
+            legs = subs
+        return all(
+            rule_allow_path_gate(
+                leg, cwd=_pwg_state["cwd"], allowed_roots=_pwg_state["roots"]
+            )
+            for leg in legs
+        )
+
     always_allowed = tool_always_allowed_rule(context, tool)
     if always_allowed:
-        return PermissionAllowDecision(
-            behavior="allow",
-            updated_input=_get_updated_input_or_fallback(tool_permission_result, tool_input),
-            decision_reason=RuleDecisionReason(rule=always_allowed),
-        )
+        # A content-less allow-all for Bash still can't escape the workspace
+        # with a write (TS: Bash(*) is path-gated too). Non-Bash tools and
+        # non-write Bash commands pass straight through.
+        if tool.name != "Bash" or _passes_path_gate(
+            tool_input.get("command", "")
+        ):
+            return PermissionAllowDecision(
+                behavior="allow",
+                updated_input=_get_updated_input_or_fallback(tool_permission_result, tool_input),
+                decision_reason=RuleDecisionReason(rule=always_allowed),
+            )
 
     content_rules = get_rule_by_contents_for_tool(context, tool.name, "allow")
     if content_rules and tool.name == "Bash":
         command = tool_input.get("command", "")
+
+        # Raw exact-string equality fires FIRST, before the substitution
+        # refusal below — a user who saved the literal rule
+        # ``Bash(echo "$(date)")`` made a conscious choice to permit that
+        # specific string, and TS honors exact allows even on
+        # injection-flagged commands (bashPermissions.ts:2124-2131,
+        # exactMatchResult in the misparsing gate). Only full-string
+        # equality gets this bypass; every prefix/wildcard/word-prefix
+        # matcher still refuses substitution and chaining. The path-write
+        # gate still applies (TS: exact allow is honored at step 4, AFTER
+        # step 3's path constraints).
+        if command:
+            stripped_cmd = command.strip()
+            for rule_content, rule in content_rules.items():
+                if (
+                    stripped_cmd
+                    and stripped_cmd == str(rule_content).strip()
+                    and _passes_path_gate(stripped_cmd)
+                ):
+                    return PermissionAllowDecision(
+                        behavior="allow",
+                        updated_input=tool_input,
+                        decision_reason=RuleDecisionReason(rule=rule),
+                    )
         # A content ALLOW rule (e.g. Bash(echo:*)) must never auto-allow a
         # command that hides an executable substitution — `echo "$(rm -rf /)"`
         # runs the rm, which the safety analyzer tokenizes away and the string
@@ -531,20 +610,23 @@ def has_permissions_to_use_tool_inner(
             for cand in allow_candidates:
                 for rule_content, rule in content_rules.items():
                     matcher = prepare_permission_matcher(rule_content)
-                    if matcher(cand):
+                    if matcher(cand) and _passes_path_gate(cand):
                         return PermissionAllowDecision(
                             behavior="allow",
                             updated_input=tool_input,
                             decision_reason=RuleDecisionReason(rule=rule),
                         )
             # Compound command: allow iff EVERY sub-command matches some
-            # allow content rule (TS bashPermissions.ts:2383/2470). Runs
-            # after the whole-command loop (which refuses chained commands
-            # by design) and after the tool safety screen above — a
-            # safety-flagged compound never reaches here. Each sub faces
-            # the SAME matcher a simple command would, so this never widens
-            # what one rule can match; it only lets several rules agree.
-            witness = _all_subcommands_allowed_by_content_rules(context, command)
+            # allow content rule OR is provably read-only (TS
+            # bashPermissions.ts:2383/2470 — each sub resolves through the
+            # full per-sub pipeline, whose step 7 is the read-only allow).
+            # Runs after the whole-command loop (which refuses chained
+            # commands by design). Each sub faces the SAME matcher a simple
+            # command would, so this never widens what one rule can match;
+            # it only lets several rules (or the read-only validator) agree.
+            witness = _all_subcommands_allowed_by_content_rules(
+                context, command, tool_use_context=tool_use_context,
+            )
             if witness is not None:
                 return PermissionAllowDecision(
                     behavior="allow",
@@ -947,17 +1029,30 @@ def _match_bash_content_rules(
 def _all_subcommands_allowed_by_content_rules(
     context: ToolPermissionContext,
     command: str,
+    *,
+    tool_use_context: Any | None = None,
 ) -> "PermissionRule | None":
     """When EVERY sub-command of a chained ``command`` matches some allow
-    content rule, return a witness rule (the last sub's match); else None.
+    content rule OR is provably read-only, return a witness rule (the last
+    sub's rule match); else None.
 
     TS parity (bashPermissions.ts:2383/2470): a compound command is allowed
-    iff all of its sub-commands are individually allowed. The whole-command
-    matcher (chaining guard) stays authoritative for simple commands; this
-    runs only for chained ones, each sub matched by the SAME matcher a simple
-    command would face — so splitting never widens what a single rule can
-    match, it only requires more rules to agree. Splitter refusal → None
-    (today's behavior: prompt).
+    iff all of its sub-commands are individually allowed, where each sub runs
+    the FULL per-sub pipeline — whose step 7 is the no-rule read-only allow
+    (bashPermissions.ts:1136). So ``pytest -q && git status`` needs only the
+    ``pytest:*`` grant; the ``git status`` leg rides the read-only validator.
+
+    The read-only fallback is gated on the compound-level structure guards
+    (multi-cd / cd+git / bare-repo-git) — without that, two individually
+    read-only ``cd`` subs would re-admit exactly what the whole-command
+    read-only gate refuses. A compound where EVERY sub is read-only never
+    reaches here (the Bash tool's own check allows it first); at least one
+    sub matched a rule, so a witness always exists on success.
+
+    The whole-command matcher (chaining guard) stays authoritative for simple
+    commands; this runs only for chained ones, each sub matched by the SAME
+    matcher a simple command would face — so splitting never widens what a
+    single rule can match. Splitter refusal → None (today's behavior: prompt).
     """
 
     if not contains_unquoted_chaining(command):
@@ -973,7 +1068,53 @@ def _all_subcommands_allowed_by_content_rules(
         (prepare_permission_matcher(rule_content), rule)
         for rule_content, rule in content_rules.items()
     ]
+
+    # Lazy shared state (cwd/roots resolved once): compound structure guards
+    # for the read-only fallback, and the path-write gate for rule matches.
+    _ro_state: dict[str, Any] = {}
+
+    def _ensure_state() -> None:
+        from .read_only_commands import compound_structure_guards_ok
+
+        if "cwd" in _ro_state:
+            return
+        cwd = os.getcwd()
+        roots: list[str] = []
+        if tool_use_context is not None:
+            try:
+                cwd = str(tool_use_context.cwd or cwd)
+            except Exception:
+                pass
+            try:
+                roots = [str(r) for r in tool_use_context.allowed_roots()]
+            except Exception:
+                roots = []
+        if not roots:
+            roots = [cwd]
+        _ro_state["cwd"] = cwd
+        _ro_state["roots"] = roots
+        _ro_state["structure_ok"] = compound_structure_guards_ok(subs, cwd)
+
+    def _sub_read_only(sub: str) -> bool:
+        from .read_only_commands import sub_command_read_only_and_contained
+
+        _ensure_state()
+        if not _ro_state["structure_ok"]:
+            return False
+        return sub_command_read_only_and_contained(
+            sub, cwd=_ro_state["cwd"], allowed_roots=_ro_state["roots"]
+        )
+
+    def _sub_passes_path_gate(cand: str) -> bool:
+        from .bash_mode_validation import rule_allow_path_gate
+
+        _ensure_state()
+        return rule_allow_path_gate(
+            cand, cwd=_ro_state["cwd"], allowed_roots=_ro_state["roots"]
+        )
+
     witness = None
+    matched_any_rule = False
     for sub in subs:
         # Strip SAFE_ENV_VARS only (as the suggestion ladder does) so an
         # accepted rule actually matches the sub it came from.
@@ -981,16 +1122,27 @@ def _all_subcommands_allowed_by_content_rules(
         safe_stripped = _strip_env_assignments(sub, safe_only=True)
         if safe_stripped and safe_stripped != sub:
             candidates.append(safe_stripped)
+        sub_ok = False
         for cand in candidates:
             for matcher, rule in matchers:
-                if matcher(cand):
+                # Rule matches are still path-gated (TS: checkPathConstraints
+                # precedes allow rules) — Bash(rm:*) in a compound cannot
+                # reach out-of-roots/critical targets either.
+                if matcher(cand) and _sub_passes_path_gate(cand):
                     witness = rule
+                    matched_any_rule = True
+                    sub_ok = True
                     break
-            else:
-                continue
-            break
-        else:
+            if sub_ok:
+                break
+        if not sub_ok and _sub_read_only(sub):
+            sub_ok = True
+        if not sub_ok:
             return None
+    # All-read-only compounds are the Bash tool check's job; requiring a rule
+    # witness here keeps the decision_reason honest (it names a real rule).
+    if not matched_any_rule:
+        return None
     return witness
 
 

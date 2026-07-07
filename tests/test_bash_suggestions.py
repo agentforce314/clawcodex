@@ -10,7 +10,9 @@ from __future__ import annotations
 import unittest
 
 from src.permissions.bash_suggestions import (
-    SAFE_PREFIX_COMMANDS,
+    BARE_SHELL_PREFIXES,
+    EVAL_LIKE_BUILTINS,
+    NEVER_PREFIX_COMMANDS,
     get_safe_first_word_prefix,
     get_simple_command_prefix,
     suggestions_for_bash_command,
@@ -61,17 +63,25 @@ class TestSuggestionsForBashCommand(unittest.TestCase):
         self.assertEqual(rule.tool_name, "Bash")
         self.assertEqual(rule.rule_content, "git diff:*")
 
-    def test_exact_rule_when_no_prefix(self) -> None:
-        # No 2-word prefix and not a safe-to-generalize command → exact rule.
-        # (NB: a safe read-only command like `ls -la` now yields `ls:*` — see
-        # TestFirstWordPrefixSuggestion.)
+    def test_first_word_generalizes_when_no_two_word_prefix(self) -> None:
+        # `mv old.txt new.txt` has no 2-word prefix (2nd token is a path), so
+        # the first-word rung now generalizes to `mv:*` (TS getFirstWordPrefix
+        # parity; the rule-allow path gate keeps `mv:*` workspace-contained).
         rule = _only_rule(suggestions_for_bash_command("mv old.txt new.txt"))
-        self.assertEqual(rule.rule_content, "mv old.txt new.txt")
+        self.assertEqual(rule.rule_content, "mv:*")
 
-    def test_heredoc_uses_prefix_before_operator(self) -> None:
+    def test_exact_rule_for_ungeneralizable_first_word(self) -> None:
+        # A path-form first token can't generalize (not a bare command name)
+        # → exact rule fallback.
+        rule = _only_rule(suggestions_for_bash_command("./run.sh --once"))
+        self.assertEqual(rule.rule_content, "./run.sh --once")
+
+    def test_substitution_heredoc_yields_no_suggestion(self) -> None:
+        # A command with executable substitution ($(...)) is injection-suspect;
+        # like TS's too-complex path it carries NO savable suggestion (was: the
+        # port's heredoc special-case minted `git commit:*`).
         cmd = 'git commit -m "$(cat <<\'EOF\'\nmsg\nEOF\n)"'
-        rule = _only_rule(suggestions_for_bash_command(cmd))
-        self.assertEqual(rule.rule_content, "git commit:*")
+        self.assertEqual(suggestions_for_bash_command(cmd), [])
 
     def test_heredoc_bare_shell_yields_nothing(self) -> None:
         # Deliberate divergence from TS: Bash(bash:*) ≈ Bash(*).
@@ -254,19 +264,28 @@ class TestMatcherChainingGuard(unittest.TestCase):
 
 
 class TestGetSafeFirstWordPrefix(unittest.TestCase):
-    def test_safe_command_returns_first_word(self) -> None:
-        self.assertEqual(get_safe_first_word_prefix("ls demos/"), "ls")
-        self.assertEqual(get_safe_first_word_prefix("cat a/b/c.txt"), "cat")
-        self.assertEqual(get_safe_first_word_prefix("grep -r foo ."), "grep")
+    # Behavior CHANGED (loosen-permissions): the first-word rung is now a
+    # faithful port of TS getFirstWordPrefix — it generalizes ANY bare command
+    # name except bare shells/wrappers and eval-like builtins, because the TUI
+    # approval box has an editable rule field (round 6). The prior read-only
+    # allowlist (SAFE_PREFIX_COMMANDS) was deleted; it forced everyday dev
+    # tools (pytest, ruff, find) to re-prompt on every arg.
+    def test_generalizes_bare_command_names(self) -> None:
+        for cmd, want in (
+            ("ls demos/", "ls"),
+            ("cat a/b/c.txt", "cat"),
+            ("grep -r foo .", "grep"),
+            ("pytest -q", "pytest"),
+            ("ruff check .", "ruff"),
+            ("find . -name x", "find"),
+            ("sort -o out f", "sort"),
+        ):
+            self.assertEqual(get_safe_first_word_prefix(cmd), want, cmd)
 
-    def test_unsafe_command_returns_none(self) -> None:
-        # Commands that write/exec via their own args — must NOT generalize.
-        # Includes the write-via-output-arg trio (xxd/base64/info) a reviewer
-        # caught in the first cut.
-        for cmd in ("find . -name x", "sort -o /etc/x f", "tee /etc/x",
-                    "cp a /b", "mv a /b", "dd if=/dev/zero of=/x", "rm x",
-                    "xxd -r p.hex /victim", "base64 -d -i x -o /victim",
-                    "info --output=/victim coreutils"):
+    def test_bare_shells_and_eval_like_return_none(self) -> None:
+        for cmd in ("bash -c ls", "sh x", "env ls", "xargs rm", "sudo ls",
+                    "eval x", "source setup.sh", "trap 'x' EXIT",
+                    "command ls", "let y=1"):
             self.assertIsNone(get_safe_first_word_prefix(cmd), cmd)
 
     def test_path_or_flag_first_token_returns_none(self) -> None:
@@ -280,12 +299,13 @@ class TestGetSafeFirstWordPrefix(unittest.TestCase):
     def test_safe_env_var_skipped(self) -> None:
         self.assertEqual(get_safe_first_word_prefix("NO_COLOR=1 ls /"), "ls")
 
-    def test_no_shells_or_wrappers_in_safe_set(self) -> None:
-        for bad in ("bash", "sh", "env", "xargs", "sudo", "find", "fd",
-                    "sort", "uniq", "tee", "cp", "mv", "rm", "dd", "git",
-                    "sed", "awk", "command", "date", "npm", "curl",
-                    "xxd", "base64", "info"):
-            self.assertNotIn(bad, SAFE_PREFIX_COMMANDS, bad)
+    def test_never_prefix_covers_shells_and_eval_like(self) -> None:
+        # The refusal set = bare shells/wrappers ∪ eval-like builtins.
+        self.assertTrue(BARE_SHELL_PREFIXES <= NEVER_PREFIX_COMMANDS)
+        self.assertTrue(EVAL_LIKE_BUILTINS <= NEVER_PREFIX_COMMANDS)
+        for bad in ("bash", "sh", "env", "xargs", "sudo", "eval", "source",
+                    "command", "builtin", "trap", "let", "hash"):
+            self.assertIn(bad, NEVER_PREFIX_COMMANDS, bad)
 
 
 class TestFirstWordPrefixSuggestion(unittest.TestCase):
@@ -307,19 +327,24 @@ class TestFirstWordPrefixSuggestion(unittest.TestCase):
         matcher = prepare_permission_matcher(rule)
         self.assertTrue(matcher("ls /Users/x/workspace/demos/elon-blog/"))
 
-    def test_dangerous_command_not_generalized_to_bare_prefix(self) -> None:
-        # Must never auto-suggest Bash(find:*)/Bash(sort:*)/Bash(xxd:*)/etc.
-        for cmd in ("find . -name x", "sort -o /etc/x f", "tee /etc/x",
-                    "xxd -r p.hex /victim", "base64 -d -i x -o /victim",
-                    "info --output=/victim coreutils"):
-            self.assertNotEqual(self._rule(cmd), f"{cmd.split()[0]}:*", cmd)
+    def test_everyday_dev_tools_generalize(self) -> None:
+        # The core UX win: one grant covers all future args (TS parity).
+        self.assertEqual(self._rule("pytest -k foo"), "pytest:*")
+        # `ruff check src` HAS a 2-word prefix (check is a subcommand) → the
+        # tighter `ruff check:*` wins over the first-word rung.
+        self.assertEqual(self._rule("ruff check src"), "ruff check:*")
+        self.assertEqual(self._rule("find . -name x"), "find:*")
+
+    def test_eval_like_and_substitution_never_suggested(self) -> None:
+        # Guardrail: eval-like builtins and substitution-bearing commands get
+        # NO savable suggestion (they ask through the structural path).
+        for cmd in ('eval "x"', "source s.sh", "trap 'rm -rf /' EXIT",
+                    'echo "$(date)"', "cat `whoami`"):
+            self.assertEqual(suggestions_for_bash_command(cmd), [], cmd)
 
     def test_two_word_prefix_still_wins(self) -> None:
         # The 2-word prefix path is unchanged (takes precedence).
         self.assertEqual(self._rule("git status"), "git status:*")
-
-    def test_unsafe_command_falls_back_to_exact(self) -> None:
-        self.assertEqual(self._rule("find . -name x"), "find . -name x")
 
 
 if __name__ == "__main__":

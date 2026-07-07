@@ -761,6 +761,7 @@ export type GatewayEvent =
         rule_label?: null | string
         session_label?: null | string
         tool_name: string
+        warning?: null | string
       }
       session_id?: string
       type: 'approval.request'

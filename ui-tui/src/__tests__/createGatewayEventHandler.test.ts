@@ -900,6 +900,35 @@ describe('createGatewayEventHandler', () => {
     })
   })
 
+  it('carries the destructive-command warning onto the approval overlay', () => {
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    onEvent({
+      payload: {
+        command: 'git push --force origin main',
+        tool_name: 'Bash',
+        warning: 'Note: may overwrite remote history'
+      },
+      type: 'approval.request'
+    } as any)
+
+    expect(getOverlayState().approval).toMatchObject({
+      command: 'git push --force origin main',
+      warning: 'Note: may overwrite remote history'
+    })
+  })
+
+  it('leaves warning undefined when the backend sends none', () => {
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    onEvent({
+      payload: { command: 'ls -la', tool_name: 'Bash' },
+      type: 'approval.request'
+    } as any)
+
+    expect(getOverlayState().approval?.warning).toBeUndefined()
+  })
+
   it('still surfaces terminal turn failures as errors', () => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))
