@@ -15,7 +15,7 @@ import { ModelPicker } from './modelPicker.js'
 import { OverlayHint } from './overlayControls.js'
 import { PetPicker } from './petPicker.js'
 import { PluginsHub } from './pluginsHub.js'
-import { ApprovalPrompt, ClarifyPrompt, ConfirmPrompt } from './prompts.js'
+import { ApprovalPrompt, ClarifyPrompt, ConfirmPrompt, PlanApprovalPrompt } from './prompts.js'
 import { SkillsHub } from './skillsHub.js'
 import { WorktreeExitPrompt } from './worktreeExitPrompt.js'
 
@@ -25,9 +25,13 @@ export function PromptZone({
   cols,
   onApprovalChoice,
   onClarifyAnswer,
+  onPlanApprovalChoice,
   onSecretSubmit,
   onSudoSubmit
-}: Pick<AppOverlaysProps, 'cols' | 'onApprovalChoice' | 'onClarifyAnswer' | 'onSecretSubmit' | 'onSudoSubmit'>) {
+}: Pick<
+  AppOverlaysProps,
+  'cols' | 'onApprovalChoice' | 'onClarifyAnswer' | 'onPlanApprovalChoice' | 'onSecretSubmit' | 'onSudoSubmit'
+>) {
   const overlay = useStore($overlayState)
   const theme = useStore($uiTheme)
 
@@ -37,6 +41,14 @@ export function PromptZone({
     return (
       <Box flexDirection="column" flexShrink={0} paddingX={1} paddingY={1}>
         <WorktreeExitPrompt req={overlay.worktreeExit} t={theme} />
+      </Box>
+    )
+  }
+
+  if (overlay.planApproval) {
+    return (
+      <Box flexDirection="column" flexShrink={0} paddingX={1} paddingY={1}>
+        <PlanApprovalPrompt cols={cols} onChoice={onPlanApprovalChoice} req={overlay.planApproval} t={theme} />
       </Box>
     )
   }

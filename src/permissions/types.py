@@ -374,6 +374,12 @@ class ToolPermissionContext:
     # to ``False`` keeps existing call sites unchanged; the field is
     # set only by ``run_agent._build_permission_context`` for now.
     await_automated_checks_before_dialog: bool = False
+    # The mode active before entering plan mode, restored by ExitPlanMode
+    # (TS ``prePlanMode``). Stashed by ``prepare_context_for_plan_mode``;
+    # cleared when plan mode is left via an explicit mode switch
+    # (``transition_permission_mode``). May be stale after a dialog-approved
+    # exit (TS parity — it is only ever read while mode == "plan").
+    pre_plan_mode: PermissionMode | None = None
 
     @classmethod
     def from_iterables(

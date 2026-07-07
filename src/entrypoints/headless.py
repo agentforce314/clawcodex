@@ -520,6 +520,14 @@ def run_headless(options: HeadlessOptions) -> int:
                             on_event=on_event,
                             on_text_chunk=on_text_chunk,
                             on_message=_persist,
+                            # Plan-mode attachments persist into the run's
+                            # conversation (same seam as _persist) so the
+                            # cadence scan + later turns see them; unlike
+                            # on_message there is no SDK envelope to emit
+                            # here, but keep the paths distinct anyway.
+                            on_attachment=lambda m: session.conversation.add_message(
+                                m.role, m.content
+                            ),
                             # Critic C2: pass the OWNING controller so
                             # the provider's chat_stream_response listens
                             # on the same signal the SIGINT handler trips.

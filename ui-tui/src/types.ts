@@ -124,6 +124,15 @@ export interface ConfirmReq {
   title: string
 }
 
+// ExitPlanMode's plan-approval dialog (the ExitPlanModePermissionRequest
+// analog): the plan body read from the session plan file, its path, and
+// whether the elevated approve option should read "bypass permissions".
+export interface PlanApprovalReq {
+  bypassAvailable: boolean
+  plan: null | string
+  planFilePath: null | string
+}
+
 export interface ClarifyReq {
   choices: string[] | null
   question: string

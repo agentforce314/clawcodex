@@ -150,6 +150,19 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         .then(r => r && (patchOverlayState({ approval: null }), patchTurnState({ outcome: 'denied' })))
     }
 
+    if (overlay.planApproval) {
+      // Ctrl+C on the plan dialog = reject without feedback (stay in plan
+      // mode), same as the dialog's own Esc.
+      return gateway
+        .rpc<ApprovalRespondResponse>('planApproval.respond', { choice: 'deny', session_id: getUiState().sid })
+        .then(
+          r =>
+            r &&
+            (patchOverlayState({ planApproval: null }),
+            patchTurnState({ outcome: 'plan rejected — still planning' }))
+        )
+    }
+
     if (overlay.sudo) {
       return gateway
         .rpc<SudoRespondResponse>('sudo.respond', { password: '', request_id: overlay.sudo.requestId })

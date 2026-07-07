@@ -826,6 +826,20 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
       }
 
+      case 'plan.approval':
+        // ExitPlanMode's ask → the plan-approval dialog (planMode-colored,
+        // markdown plan, mode-switch options) instead of the generic box.
+        patchOverlayState({
+          planApproval: {
+            bypassAvailable: ev.payload.bypass_available === true,
+            plan: ev.payload.plan ?? null,
+            planFilePath: ev.payload.plan_file_path ?? null
+          }
+        })
+        setStatus('plan ready for review')
+
+        return
+
       case 'sudo.request':
         patchOverlayState({ sudo: { requestId: ev.payload.request_id } })
         setStatus('sudo password needed')

@@ -16,7 +16,6 @@ from src.context_system.prompt_assembly import (
     _USING_TOOLS_SECTION,
     _TONE_STYLE_SECTION,
     _OUTPUT_EFFICIENCY_SECTION,
-    _PLAN_MODE_PROMPT,
     _NON_INTERACTIVE_PROMPT,
     build_full_system_prompt,
     get_system_prompt_cache,
@@ -134,11 +133,11 @@ class TestBuildFullSystemPrompt:
         assert "filesystem" in prompt
         assert "MCP Servers" in prompt
 
-    def test_plan_mode(self):
-        prompt = build_full_system_prompt(plan_mode=True, use_cache=False)
-        assert "PLAN MODE" in prompt
-
-    def test_no_plan_mode_by_default(self):
+    def test_no_plan_mode_section(self):
+        # Plan mode is NOT a system-prompt section: the original injects
+        # per-turn plan_mode attachments (system reminders) into the
+        # conversation instead (src/context_system/plan_mode.py). The old
+        # invented "# Plan Mode" section (and its plan_mode kwarg) is gone.
         prompt = build_full_system_prompt(use_cache=False)
         assert "PLAN MODE" not in prompt
 
@@ -196,7 +195,6 @@ class TestBuildFullSystemPrompt:
             skills=[MockSkill()],
             mcp_servers=[MockMcpServer()],
             output_style="verbose",
-            plan_mode=True,
             non_interactive=True,
             tool_restrictions=["Bash"],
             append_system_prompt="Final note",
@@ -216,6 +214,5 @@ class TestBuildFullSystemPrompt:
         assert "filesystem" in prompt  # MCP
         assert "general-purpose" in prompt  # agents
         assert "echo-arg" in prompt  # skills
-        assert "PLAN MODE" in prompt
         assert "Non-Interactive" in prompt
         assert "Final note" in prompt

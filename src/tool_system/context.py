@@ -139,7 +139,6 @@ class ToolContext:
     # shape here so any external test fixtures or readers that haven't
     # migrated yet continue to work. Removed in a follow-up phase.
     background_bash_tasks: dict[str, dict[str, Any]] = field(default_factory=dict)
-    plan_mode: bool = False
     worktree_root: Path | None = None
     outbox: list[dict[str, Any]] = field(default_factory=list)
     ask_user: Callable[[list[dict[str, Any]]], dict[str, str]] | None = None
@@ -156,6 +155,14 @@ class ToolContext:
     # deny feedback). Replaced the legacy (tool_name, message, suggestion)
     # -> (allowed, enable) shape end-to-end; no shim.
     permission_handler: PermissionAskHandler | None = None
+
+    # Plan-mode port — fired whenever the LIVE permission mode changes off
+    # the control channel (a chosen_updates setMode from a permission dialog,
+    # EnterPlanMode/ExitPlanMode transitions). The agent-server wires this to
+    # its status push (`{type:'system', subtype:'status', permission_mode}`,
+    # the print.ts:1054-1073 analog) so the TUI footer badge tracks mid-turn
+    # flips; None (SDK/tests) skips the notification.
+    on_permission_mode_change: Callable[[str], None] | None = None
 
     options: ToolUseOptions = field(default_factory=ToolUseOptions)
     # Always present; callers that own the per-run cancellation lifecycle
@@ -347,6 +354,20 @@ class ToolContext:
         roots = self.allowed_roots()
         if any(_is_within(p, root) for root in roots):
             return p
+        # The current session's plan files (~/.clawcodex/plans/{slug}*.md)
+        # are writable even though they sit outside the working roots — TS's
+        # checkEditableInternalPath exempts them BEFORE the working-dir gate
+        # (filesystem.ts:1259-1268), and the plan-mode attachment explicitly
+        # directs the model to write there. Session-scoped slug prefix +
+        # ``.md`` suffix keeps the carve-out narrow; failures fall through to
+        # the normal refusal (fail closed).
+        try:
+            from src.utils.plans import is_session_plan_file
+
+            if is_session_plan_file(str(p)):
+                return p
+        except Exception:  # noqa: BLE001
+            pass
         roots_str = ", ".join(str(r) for r in roots)
         raise ToolPermissionError(f"path is outside allowed working directories: {p} (allowed: {roots_str})")
 

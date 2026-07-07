@@ -286,7 +286,7 @@ const SLASHES: ReadonlyArray<{ desc: string; hint?: string; name: string }> = [
   { desc: 'List running and recent dynamic workflows', name: '/workflows' },
   { desc: 'Search / manage the knowledge base', hint: '[status|list|clear|enable|disable]', name: '/knowledge' },
   { desc: 'Browse and inspect available skills', hint: '[list | inspect <name> | search <query>]', name: '/skills' },
-  { desc: 'View or set the plan', hint: '[<text>]', name: '/plan' },
+  { desc: 'Enable plan mode or view the current session plan', hint: '[<description>]', name: '/plan' },
   {
     desc: 'Set a completion condition Claude keeps working toward',
     hint: '[<condition> | status | clear | pause | resume]',
@@ -737,6 +737,46 @@ export class GatewayClient extends EventEmitter {
         return Promise.resolve({ ok: true } as T)
       }
 
+      case 'planApproval.respond': {
+        // Plan-approval dialog reply (ExitPlanModePermissionRequest analog):
+        //   choice 'accept-edits'  → allow + setMode acceptEdits (session)
+        //   choice 'bypass'        → allow + setMode bypassPermissions (session)
+        //   choice 'default'       → allow + setMode default (session)
+        //   choice 'deny'          → deny; `feedback` (may be '') becomes the
+        //     rejection reason the model reads ("No, keep planning").
+        // The setMode updates are client-built exactly like the original
+        // dialog's buildPermissionUpdates — the backend applies them via the
+        // same chosen_updates path as "don't ask again" rules.
+        const ap = this.pendingApproval
+        this.pendingApproval = null
+
+        if (ap) {
+          const choice = String(p.choice ?? 'deny')
+          const modeByChoice: Record<string, string> = {
+            'accept-edits': 'acceptEdits',
+            bypass: 'bypassPermissions',
+            default: 'default'
+          }
+          const mode = modeByChoice[choice]
+
+          this.send({
+            response: {
+              request_id: ap.request_id,
+              response: mode
+                ? {
+                    behavior: 'allow',
+                    chosen_updates: [{ destination: 'session', mode, type: 'setMode' }],
+                    updatedInput: ap.input
+                  }
+                : { behavior: 'deny', message: typeof p.feedback === 'string' ? p.feedback : '' }
+            },
+            type: 'control_response'
+          })
+        }
+
+        return Promise.resolve({ ok: true } as T)
+      }
+
       case 'clarify.respond':
         this.send({
           response: {
@@ -1041,9 +1081,39 @@ export class GatewayClient extends EventEmitter {
       }
 
       case 'plan': {
-        const r = (await this.controlQuery('plan', { action: arg ? 'set' : 'view', text: arg })) as any
+        // CC /plan semantics (commands/plan/plan.tsx): not in plan mode →
+        // enable it (with an argument, the argument is submitted as the
+        // prompt); already in plan mode → show the current plan file.
+        const status = (await this.controlQuery('plan', { action: 'status' })) as any
 
-        return out(r?.plan ? `Plan:\n${r.plan}` : 'No plan set.')
+        if (status?.mode !== 'plan') {
+          const r = (await this.controlQuery('set_permission_mode', { mode: 'plan' })) as any
+
+          if (r && r.ok === false) {
+            return out(String(r.error ?? 'failed to enable plan mode'))
+          }
+
+          this.publish({ payload: { mode: 'plan' }, type: 'permission.mode' })
+
+          const description = (arg ?? '').trim()
+
+          if (description && description !== 'open') {
+            // TS onDone('Enabled plan mode', {shouldQuery:true}) — a
+            // {type:'send'} dispatch renders the notice and submits the
+            // description as the prompt (same contract as /goal kickoff).
+            return { message: description, notice: 'Enabled plan mode', type: 'send' }
+          }
+
+          return out('Enabled plan mode')
+        }
+
+        if (!status?.plan) {
+          return out('Already in plan mode. No plan written yet.')
+        }
+
+        const pathLine = status.plan_file_path ? `${status.plan_file_path}\n\n` : ''
+
+        return out(`Current Plan\n${pathLine}${status.plan}`)
       }
 
       case 'goal': {
@@ -1316,7 +1386,13 @@ export class GatewayClient extends EventEmitter {
           this.publish({ payload: {}, session_id: this.sessionId, type: 'gateway.ready' })
           this.publish({ payload: this.sessionInfo, session_id: this.sessionId, type: 'session.info' })
         } else if (msg.subtype === 'status') {
-          if (msg.level === 'error') {
+          if (typeof msg.permission_mode === 'string' && msg.permission_mode) {
+            // Server-initiated mode push (a plan-approval setMode, EnterPlanMode/
+            // ExitPlanMode transition — the print.ts:1054-1073 permissionMode
+            // status analog). Routes to the existing permission.mode handler so
+            // the footer badge tracks mid-turn flips the RPC replies can't see.
+            this.publish({ payload: { mode: String(msg.permission_mode) }, type: 'permission.mode' })
+          } else if (msg.level === 'error') {
             this.publish({ payload: { message: String(msg.message ?? 'error') }, type: 'error' })
           } else {
             this.publish({ payload: { kind: 'status', text: String(msg.message ?? '') }, type: 'status.update' })
@@ -1457,6 +1533,24 @@ export class GatewayClient extends EventEmitter {
       // "don't ask again" choice persists a real rule.
       const suggestions: any[] = Array.isArray(req.suggestions) ? req.suggestions : []
       this.pendingApproval = { input: req.input, request_id: String(msg.request_id ?? ''), suggestions }
+
+      // ExitPlanMode's ask is the plan-approval dialog, not the generic
+      // command box (ExitPlanModePermissionRequest.tsx). The backend sends
+      // the plan body (read from the session plan file), its path, and
+      // whether bypass is available (elevated-option label). Replies go
+      // through planApproval.respond against the same pendingApproval slot.
+      if (String(req.tool_name ?? '') === 'ExitPlanMode') {
+        this.publish({
+          payload: {
+            bypass_available: req.bypass_available === true,
+            plan: typeof req.plan === 'string' ? req.plan : null,
+            plan_file_path: typeof req.plan_file_path === 'string' ? req.plan_file_path : null
+          },
+          type: 'plan.approval'
+        })
+
+        return
+      }
       // Show the ACTUAL command/action under review, not the tool name or a raw
       // JSON dump — and carry the editable grant rule separately so the box can
       // offer a broadenable "don't ask again for <rule>" option. Only offer the

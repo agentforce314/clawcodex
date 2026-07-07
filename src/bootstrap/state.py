@@ -153,6 +153,11 @@ class _BootstrapState:
     session_persistence_disabled: bool = False
     is_remote_mode: bool = False
     has_exited_plan_mode: bool = False
+    # Plan mode (TS state.ts:131-133, 1264-1286): one-shot flag driving the
+    # plan_mode_exit attachment, plus the per-session plan-file slug cache
+    # (TS getPlanSlugCache, state.ts:1391).
+    needs_plan_mode_exit_attachment: bool = False
+    plan_slug_cache: dict[str, str] = field(default_factory=dict)
 
     # --- Cost & timing (TS: lines 51-66) -----------------------------------
     total_cost_usd: float = 0.0
@@ -531,6 +536,32 @@ def has_exited_plan_mode_in_session() -> bool:
 
 def set_has_exited_plan_mode(value: bool) -> None:
     _STATE.has_exited_plan_mode = bool(value)
+
+
+def needs_plan_mode_exit_attachment() -> bool:
+    return _STATE.needs_plan_mode_exit_attachment
+
+
+def set_needs_plan_mode_exit_attachment(value: bool) -> None:
+    _STATE.needs_plan_mode_exit_attachment = bool(value)
+
+
+def handle_plan_mode_transition(from_mode: str, to_mode: str) -> None:
+    """Mirrors ``handlePlanModeTransition`` (TS bootstrap/state.ts:1272-1286).
+
+    Entering plan mode clears any pending exit attachment (a quick
+    plan→other→plan toggle must not send both plan_mode and plan_mode_exit);
+    leaving plan mode arms the one-shot plan_mode_exit attachment.
+    """
+    if to_mode == "plan" and from_mode != "plan":
+        _STATE.needs_plan_mode_exit_attachment = False
+    if from_mode == "plan" and to_mode != "plan":
+        _STATE.needs_plan_mode_exit_attachment = True
+
+
+def get_plan_slug_cache() -> dict[str, str]:
+    """Session-id → plan-file word slug (TS ``getPlanSlugCache``)."""
+    return _STATE.plan_slug_cache
 
 
 def prefer_third_party_authentication() -> bool:
@@ -1168,7 +1199,11 @@ __all__ = [
     "set_session_persistence_disabled",
     "get_is_remote_mode",
     "set_is_remote_mode",
+    "get_plan_slug_cache",
+    "handle_plan_mode_transition",
     "has_exited_plan_mode_in_session",
+    "needs_plan_mode_exit_attachment",
+    "set_needs_plan_mode_exit_attachment",
     "set_has_exited_plan_mode",
     "prefer_third_party_authentication",
     # Cost & timing

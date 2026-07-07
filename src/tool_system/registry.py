@@ -46,11 +46,46 @@ def _apply_and_persist_updates(
     )
 
     try:
+        updates_list = list(updates)
+        base_ctx = context.permission_context
+        prev_mode = getattr(base_ctx, "mode", None)
+        # Plan-mode port: a dialog-accepted setMode (e.g. the plan-approval
+        # "Yes, auto-accept edits") changes the LIVE mode mid-turn. Run the
+        # transition seam (plan enter/exit attachment flags, pre_plan_mode
+        # stash/clear) BEFORE applying — the entry-side stash reads the
+        # PRE-switch mode, so running it after apply would no-op.
+        final_mode = prev_mode
+        for u in updates_list:
+            if getattr(u, "type", "") == "setMode":
+                final_mode = getattr(u, "mode", final_mode)
+        mode_changed = (
+            final_mode != prev_mode
+            and prev_mode is not None
+            and final_mode is not None
+        )
+        if mode_changed:
+            try:
+                from src.permissions.plan_transitions import (
+                    transition_permission_mode,
+                )
+
+                base_ctx = transition_permission_mode(
+                    prev_mode, final_mode, base_ctx
+                )
+            except Exception:  # noqa: BLE001 — transition side effects are best-effort
+                log.debug("permission-mode transition seam failed", exc_info=True)
         # apply_permission_updates returns a FRESH context (input unchanged)
         # — rebind it so every later dispatch sees the new rules.
         context.permission_context = apply_permission_updates(
-            context.permission_context, list(updates)
+            base_ctx, updates_list
         )
+        if mode_changed:
+            cb = getattr(context, "on_permission_mode_change", None)
+            if cb is not None:
+                try:
+                    cb(str(final_mode))
+                except Exception:  # noqa: BLE001
+                    log.debug("permission-mode change notify failed", exc_info=True)
     except Exception:
         log.exception("failed to apply accepted permission updates in-memory")
     try:

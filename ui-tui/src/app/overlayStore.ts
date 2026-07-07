@@ -12,6 +12,7 @@ const buildOverlayState = (): OverlayState => ({
   modelPicker: false,
   pager: null,
   petPicker: false,
+  planApproval: null,
   pluginsHub: false,
   secret: null,
   sessions: false,
@@ -33,6 +34,7 @@ export const $isBlocked = computed(
     modelPicker,
     pager,
     petPicker,
+    planApproval,
     pluginsHub,
     secret,
     sessions,
@@ -49,6 +51,7 @@ export const $isBlocked = computed(
       modelPicker ||
       pager ||
       petPicker ||
+      planApproval ||
       pluginsHub ||
       secret ||
       sessions ||

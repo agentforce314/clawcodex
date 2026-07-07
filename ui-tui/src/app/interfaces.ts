@@ -15,6 +15,7 @@ import type {
   DetailsMode,
   Msg,
   PanelSection,
+  PlanApprovalReq,
   SecretReq,
   SectionVisibility,
   SessionInfo,
@@ -142,6 +143,7 @@ export interface OverlayState {
   modelPicker: boolean
   pager: null | PagerState
   petPicker: boolean
+  planApproval: null | PlanApprovalReq
   pluginsHub: boolean
   secret: null | SecretReq
   sessions: boolean
@@ -394,6 +396,7 @@ export interface SlashHandlerContext {
 export interface AppLayoutActions {
   answerApproval: (choice: string, rule?: string) => void
   answerClarify: (answer: string) => void
+  answerPlanApproval: (choice: string, feedback?: string) => void
   answerSecret: (value: string) => void
   answerSudo: (pw: string) => void
   clearSelection: () => void
@@ -461,6 +464,7 @@ export interface AppOverlaysProps {
   completions: CompletionItem[]
   onApprovalChoice: (choice: string, rule?: string) => void
   onClarifyAnswer: (value: string) => void
+  onPlanApprovalChoice: (choice: string, feedback?: string) => void
   onActiveSessionSelect: (sessionId: string) => void
   onActiveSessionClose: (sessionId: string) => Promise<null | SessionCloseResponse>
   onModelSelect: (value: string) => void

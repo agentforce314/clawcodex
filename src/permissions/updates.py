@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from dataclasses import replace
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
@@ -117,18 +118,19 @@ def _replace_ruleset(
     key = _ruleset_key(behavior)
     current = dict(getattr(context, key))
     current[destination] = new_strings
+    # dataclasses.replace (not a field-explicit constructor) so every field
+    # not named here — including later additions like ``pre_plan_mode`` —
+    # carries through instead of silently resetting to its default. The
+    # ruleset dicts are still defensively copied (functional-update
+    # contract: the input context is left unchanged).
     kwargs: dict[str, Any] = {
-        "mode": context.mode,
         "additional_working_directories": dict(context.additional_working_directories),
         "always_allow_rules": dict(context.always_allow_rules),
         "always_deny_rules": dict(context.always_deny_rules),
         "always_ask_rules": dict(context.always_ask_rules),
-        "is_bypass_permissions_mode_available": context.is_bypass_permissions_mode_available,
-        "should_avoid_permission_prompts": context.should_avoid_permission_prompts,
-        "await_automated_checks_before_dialog": context.await_automated_checks_before_dialog,
     }
     kwargs[key] = current
-    return ToolPermissionContext(**kwargs)
+    return replace(context, **kwargs)
 
 
 def apply_permission_update(
@@ -153,15 +155,13 @@ def apply_permission_update(
     """
     if isinstance(update, PermissionUpdateSetMode):
         log.debug("permission update: setMode -> %s", update.mode)
-        return ToolPermissionContext(
+        return replace(
+            context,
             mode=update.mode,
             additional_working_directories=dict(context.additional_working_directories),
             always_allow_rules=dict(context.always_allow_rules),
             always_deny_rules=dict(context.always_deny_rules),
             always_ask_rules=dict(context.always_ask_rules),
-            is_bypass_permissions_mode_available=context.is_bypass_permissions_mode_available,
-            should_avoid_permission_prompts=context.should_avoid_permission_prompts,
-            await_automated_checks_before_dialog=context.await_automated_checks_before_dialog,
         )
 
     if isinstance(update, PermissionUpdateAddRules):
@@ -208,15 +208,12 @@ def apply_permission_update(
             new_dirs[path] = AdditionalWorkingDirectory(
                 path=path, source=update.destination,  # type: ignore[arg-type]
             )
-        return ToolPermissionContext(
-            mode=context.mode,
+        return replace(
+            context,
             additional_working_directories=new_dirs,
             always_allow_rules=dict(context.always_allow_rules),
             always_deny_rules=dict(context.always_deny_rules),
             always_ask_rules=dict(context.always_ask_rules),
-            is_bypass_permissions_mode_available=context.is_bypass_permissions_mode_available,
-            should_avoid_permission_prompts=context.should_avoid_permission_prompts,
-            await_automated_checks_before_dialog=context.await_automated_checks_before_dialog,
         )
 
     if isinstance(update, PermissionUpdateRemoveDirectories):
@@ -227,15 +224,12 @@ def apply_permission_update(
         new_dirs = dict(context.additional_working_directories)
         for path in update.directories:
             new_dirs.pop(path, None)
-        return ToolPermissionContext(
-            mode=context.mode,
+        return replace(
+            context,
             additional_working_directories=new_dirs,
             always_allow_rules=dict(context.always_allow_rules),
             always_deny_rules=dict(context.always_deny_rules),
             always_ask_rules=dict(context.always_ask_rules),
-            is_bypass_permissions_mode_available=context.is_bypass_permissions_mode_available,
-            should_avoid_permission_prompts=context.should_avoid_permission_prompts,
-            await_automated_checks_before_dialog=context.await_automated_checks_before_dialog,
         )
 
     return context

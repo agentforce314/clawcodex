@@ -382,7 +382,6 @@ def build_full_system_prompt(
     skills: list[Any] | None = None,
     mcp_servers: list[Any] | None = None,
     output_style: str = "default",
-    plan_mode: bool = False,
     non_interactive: bool = False,
     tool_restrictions: list[str] | None = None,
     custom_system_prompt: str | None = None,
@@ -408,7 +407,6 @@ def build_full_system_prompt(
     40. Agent instructions — definitions and usage
     50. Skill listing — available skills
     60. Output style — additional configured style overlay
-    70. Plan mode — plan mode instructions
     80. Non-interactive mode — headless instructions
     90. Tool restrictions — availability constraints
     """
@@ -515,11 +513,6 @@ def build_full_system_prompt(
     if style_section:
         sections.append(style_section)
 
-    # 70. Plan mode
-    if plan_mode:
-        plan_section = _build_plan_mode_section(use_cache)
-        if plan_section:
-            sections.append(plan_section)
 
     # 80. Non-interactive mode
     if non_interactive:
@@ -578,7 +571,6 @@ def build_full_system_prompt_blocks(
     skills: list[Any] | None = None,
     mcp_servers: list[Any] | None = None,
     output_style: str = "default",
-    plan_mode: bool = False,
     non_interactive: bool = False,
     tool_restrictions: list[str] | None = None,
     custom_system_prompt: str | None = None,
@@ -678,10 +670,6 @@ def build_full_system_prompt_blocks(
     style_section = _build_output_style_section(output_style, use_cache)
     if style_section:
         sections.append(style_section)
-    if plan_mode:
-        plan_section = _build_plan_mode_section(use_cache)
-        if plan_section:
-            sections.append(plan_section)
     if non_interactive:
         ni_section = _build_non_interactive_section(use_cache)
         if ni_section:
@@ -1259,22 +1247,6 @@ def _build_output_style_section(
     if not prompt:
         return None
     return SystemPromptSection(id="output_style", content=f"# Output Style\n{prompt}", cache_scope=CacheScope.SESSION, order=60)
-
-
-_PLAN_MODE_PROMPT = (
-    "# Plan Mode\n"
-    "You are in PLAN MODE. In this mode:\n"
-    "- Analyze the user's request and create a detailed plan\n"
-    "- Do NOT make any changes to files\n"
-    "- Do NOT execute any commands\n"
-    "- Focus on understanding the problem and proposing a solution\n"
-    "- Ask clarifying questions if needed\n"
-    "- Present the plan in a clear, structured format"
-)
-
-
-def _build_plan_mode_section(use_cache: bool) -> SystemPromptSection | None:
-    return SystemPromptSection(id="plan_mode", content=_PLAN_MODE_PROMPT, cache_scope=CacheScope.REQUEST, order=70)
 
 
 _NON_INTERACTIVE_PROMPT = (

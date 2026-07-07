@@ -58,7 +58,11 @@ def _status_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult
         output={
             "cwd": str(context.cwd),
             "workspace_root": str(context.workspace_root),
-            "plan_mode": getattr(context, "plan_mode", False),
+            # Plan mode is the live PERMISSION mode now (the old private
+            # ToolContext.plan_mode bool was the pre-port stub).
+            "plan_mode": getattr(
+                getattr(context, "permission_context", None), "mode", "default"
+            ) == "plan",
             "in_worktree": context.worktree_root is not None,
         },
     )
