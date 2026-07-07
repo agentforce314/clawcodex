@@ -123,11 +123,12 @@ const TranscriptPane = memo(function TranscriptPane({
 
               {row.msg.kind === 'intro' ? (
                 <Box flexDirection="column" paddingTop={1}>
-                  <Banner maxWidth={Math.max(1, composer.cols - 2)} t={ui.theme} />
+                  <Banner logoPalette={ui.logoPalette} maxWidth={Math.max(1, composer.cols - 2)} t={ui.theme} />
 
                   {row.msg.info && (
                     <SessionPanel
                       info={row.msg.info}
+                      logoPalette={ui.logoPalette}
                       maxWidth={Math.max(1, composer.cols - 2)}
                       sid={ui.sid}
                       t={ui.theme}
@@ -299,6 +300,7 @@ const ComposerPane = memo(function ComposerPane({
           completions={composer.completions}
           onActiveSessionClose={actions.closeLiveSession}
           onActiveSessionSelect={actions.activateLiveSession}
+          onLogoSelect={actions.onLogoSelect}
           onModelSelect={actions.onModelSelect}
           onNewLiveSession={actions.newLiveSession}
           onNewPromptSession={actions.newPromptSession}

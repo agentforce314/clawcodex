@@ -398,6 +398,9 @@ class _AgentSession:
         if subtype == "set_output_style":
             self._do_set_output_style(request_id, inner.get("style"))
             return
+        if subtype == "set_logo_color":
+            self._do_set_logo_color(request_id, inner.get("name"))
+            return
         if subtype == "knowledge":
             self._do_knowledge(request_id, inner.get("action"))
             return
@@ -466,6 +469,8 @@ class _AgentSession:
                 # OS-1 W3 — the /output-style no-arg display.
                 "output_style": getattr(self.tool_context, "output_style_name", None) or "default",
                 "available_output_styles": self._available_output_styles(),
+                # /logo — the persisted startup-logo palette (None = default).
+                "logo_color": _current_logo_color(),
             })
             return
         if subtype == "get_context_usage":
@@ -1454,6 +1459,33 @@ class _AgentSession:
         except Exception as exc:  # noqa: BLE001
             logger.exception("[agent-server] knowledge failed")
             self._reply(request_id, {"ok": False, "error": str(exc)})
+
+    def _do_set_logo_color(self, request_id: object, name: object) -> None:
+        """Persist the startup-logo palette (the TUI's /logo — openclaude's
+        ``saveGlobalConfig(c => ({...c, logoColor: chosen}))``). A pure global
+        config write with no agent/system-prompt impact, so unlike
+        ``set_output_style`` there is no idle-only gate."""
+        from src.utils.logo_palettes import LOGO_PALETTE_NAMES, is_logo_palette_name
+
+        if not is_logo_palette_name(name):
+            self._reply(
+                request_id,
+                {
+                    "ok": False,
+                    "error": f"invalid palette (valid: {', '.join(LOGO_PALETTE_NAMES)})",
+                    "available_palettes": LOGO_PALETTE_NAMES,
+                },
+            )
+            return
+        try:
+            from src.config import set_logo_color
+
+            set_logo_color(str(name))
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[agent-server] set_logo_color failed")
+            self._reply(request_id, {"ok": False, "error": f"failed to persist: {exc}"})
+            return
+        self._reply(request_id, {"ok": True, "logo_color": name})
 
     def _do_set_output_style(self, request_id: object, style: object) -> None:
         """Switch the output style mid-session (the original's /output-style).
@@ -3947,6 +3979,20 @@ def _dispatch_app_state(sess: "_AgentSession", **changes: Any) -> None:
         store.set_state(lambda prev: replace_state(prev, **changes))
     except Exception:  # noqa: BLE001
         logger.debug("[agent-server] app-state dispatch failed", exc_info=True)
+
+
+def _current_logo_color() -> str | None:
+    """The persisted /logo palette name, or None for the default/unset (the
+    ``get_settings`` rider; the TUI's startup read is its own synchronous
+    config.json read — see ui-tui/src/lib/logoPalettes.ts)."""
+    try:
+        from src.config import load_config
+        from src.utils.logo_palettes import is_logo_palette_name
+
+        value = load_config().get("logoColor")
+        return value if is_logo_palette_name(value) else None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _current_mode(tool_context: Any, default: str) -> str:

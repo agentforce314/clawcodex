@@ -11,6 +11,7 @@ import type {
   SlashExecResponse,
   VoiceToggleResponse
 } from '../../../gatewayTypes.js'
+import { isLogoPaletteName, LOGO_PALETTE_LABELS, LOGO_PALETTE_NAMES } from '../../../lib/logoPalettes.js'
 import { formatVoiceRecordKey, parseVoiceRecordKey } from '../../../lib/platform.js'
 import { fmtK } from '../../../lib/text.js'
 import type { PanelSection } from '../../../types.js'
@@ -375,6 +376,48 @@ export const sessionCommands: SlashCommand[] = [
           ctx.guarded<SlashExecResponse>(r => {
             const body = r.output || '/pet: no output'
             ctx.transcript.sys(r.warning ? `warning: ${r.warning}\n${body}` : body)
+          })
+        )
+        .catch(ctx.guardedErr)
+    }
+  },
+
+  {
+    argumentHint: `[${LOGO_PALETTE_NAMES.join('|')}]`,
+    help: 'change the startup logo color scheme',
+    name: 'logo',
+    usage: `/logo [${LOGO_PALETTE_NAMES.join('|')}]`,
+    // Port of openclaude's /logo (commands/logo/). Bare /logo opens the picker
+    // overlay (the original's local-jsx LogoPicker); /logo <name> applies —
+    // that arg path is the /model-picker pattern (the overlay re-enters
+    // "/logo <name>" so the result lands in the transcript), a documented
+    // divergence from the TS command, which is picker-only. Next-launch-only,
+    // like the original: the intro banner is a committed transcript row and
+    // the renderer never re-emits committed rows, so the already-painted
+    // wordmark cannot reliably repaint mid-session. logoPalette is patched on
+    // success anyway — it keeps the picker's "· current" marker truthful.
+    run: (arg, ctx) => {
+      const name = arg.trim().toLowerCase()
+
+      if (!name) {
+        return patchOverlayState({ logoPicker: true })
+      }
+
+      if (!isLogoPaletteName(name)) {
+        return ctx.transcript.sys(`usage: /logo [${LOGO_PALETTE_NAMES.join('|')}]`)
+      }
+
+      ctx.gateway
+        .rpc<ConfigSetResponse>('config.set', { key: 'logoColor', value: name })
+        .then(
+          ctx.guarded<ConfigSetResponse>(r => {
+            if (!r.value) {
+              return ctx.transcript.sys('Could not persist the startup logo (backend not ready) — try again shortly.')
+            }
+
+            patchUiState({ logoPalette: name })
+            // TS-verbatim (logo.tsx onDone).
+            ctx.transcript.sys(`Startup logo set to ${LOGO_PALETTE_LABELS[name]}. Visible on next launch.`)
           })
         )
         .catch(ctx.guardedErr)

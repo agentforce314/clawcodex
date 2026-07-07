@@ -512,9 +512,10 @@ def set_logo_color(name: str) -> None:
     """Persist the startup logo color palette to the global config.
 
     Mirrors TS ``/logo`` (``saveGlobalConfig(c => ({...c, logoColor: chosen}))``). A
-    top-level config key (like :func:`set_theme`), read via
-    ``load_config().get("logoColor")`` by the startup banners — NOT a nested settings
-    field.
+    top-level config key (like :func:`set_theme`) — NOT a nested settings field.
+    Read by the Ink TUI banner (synchronously at startup via
+    ``ui-tui/src/lib/logoPalettes.ts::readLogoColorSync``) and echoed in the
+    agent-server's ``get_settings`` reply.
     """
     _get_default_manager().set_global("logoColor", name)
 

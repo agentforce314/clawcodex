@@ -266,6 +266,7 @@ const SLASHES: ReadonlyArray<{ desc: string; hint?: string; name: string }> = [
   { desc: 'Clear the conversation', name: '/clear' },
   { desc: 'Switch the model', name: '/model' },
   { desc: 'Set the output style', hint: '[<name>]', name: '/output-style' },
+  { desc: 'Change the startup logo color scheme', name: '/logo' },
   { desc: 'Set the permission mode', hint: '[default|plan|acceptEdits|dontAsk|bypassPermissions]', name: '/mode' },
   { desc: 'Compact the conversation to save context', name: '/compact' },
   { desc: 'Show context-window usage', name: '/context' },
@@ -536,6 +537,14 @@ export class GatewayClient extends EventEmitter {
         }
 
         if (key === 'model') {return this.setModel(String(value ?? '')) as Promise<T>}
+
+        if (key === 'logoColor') {
+          return this.controlQuery('set_logo_color', { name: value }).then(r => {
+            const ok = (r as any)?.ok === true
+
+            return (ok ? { ok: true, value: String(value ?? '') } : { ok: false }) as T
+          })
+        }
 
         if (key === 'effort' || key === 'reasoning') {this.sendControl('set_effort', { effort: value })}
         else if (key === 'provider') {this.sendControl('set_provider', { provider: value })}

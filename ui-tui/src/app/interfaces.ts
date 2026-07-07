@@ -139,6 +139,7 @@ export interface OverlayState {
   billing: BillingOverlayState | null
   clarify: ClarifyReq | null
   confirm: ConfirmReq | null
+  logoPicker: boolean
   modelPicker: boolean
   pager: null | PagerState
   petPicker: boolean
@@ -176,6 +177,8 @@ export interface UiState {
   info: null | SessionInfo
   liveSessionCount: number
   inlineDiffs: boolean
+  /** Persisted /logo palette name ('' = default sunset brand look). */
+  logoPalette: string
   mouseTracking: MouseTrackingMode
   notice: Notice | null
   pasteCollapseLines: number
@@ -401,6 +404,7 @@ export interface AppLayoutActions {
   closeLiveSession: (id: string) => Promise<null | SessionCloseResponse>
   newLiveSession: () => void
   newPromptSession: (prompt: string, modelArg?: string) => void
+  onLogoSelect: (value: string) => void
   onModelSelect: (value: string) => void
   resumeById: (id: string) => void
   setStickyPrompt: (value: string) => void
@@ -463,6 +467,7 @@ export interface AppOverlaysProps {
   onClarifyAnswer: (value: string) => void
   onActiveSessionSelect: (sessionId: string) => void
   onActiveSessionClose: (sessionId: string) => Promise<null | SessionCloseResponse>
+  onLogoSelect: (value: string) => void
   onModelSelect: (value: string) => void
   onNewLiveSession: () => void
   onNewPromptSession: (prompt: string, modelArg?: string) => void

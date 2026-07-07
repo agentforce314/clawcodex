@@ -2,14 +2,16 @@
 
 Port of ``typescript/src/commands/logo/`` (``logo.tsx`` + ``index.ts``). Picks the
 startup-banner color palette and persists it to the global config ``logoColor`` key;
-the two startup banners (REPL + TUI) resolve and render it on next launch.
+the Ink TUI banner (``ui-tui/src/banner.ts``) resolves and renders it — live on
+selection, and again at every startup via its synchronous config read.
 
-Coexistence: **fall-through** (the ``/export`` pattern, NOT the ``/theme``/``/effort``/
-``/model`` inversion). There is **no TUI dialog** for ``/logo`` (it is not in the TUI's
-``LOCAL_BUILTINS``/``open_dialog`` map), so the dispatch falls through and this
-``InteractiveCommand`` serves every surface via the ``UIHost`` port — TUI
-(``TextualUIHost.select``), REPL (``ReplUIHost.select``), SDK (``NullUIHost`` → clean
-error), and the help/aggregator listings.
+Coexistence: the interactive Ink TUI **shadows** ``/logo`` with its own local
+command + picker overlay (``ui-tui/src/app/slash/commands/session.ts`` →
+``logoPicker.tsx``), which persists through the agent-server ``set_logo_color``
+control. This ``InteractiveCommand`` therefore serves the non-TUI surfaces via the
+``UIHost`` port — headless/SDK (``NullUIHost`` → clean error) and the
+help/aggregator listings. (Its original REPL/Textual consumers were deleted in the
+UI consolidation, PR #566.)
 
 Faithfulness to TS (``logo.tsx``):
   * ``call(onDone, _context)`` **ignores args** — the picker is the only path; no
