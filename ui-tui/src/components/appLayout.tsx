@@ -27,6 +27,7 @@ import { Banner, Panel, SessionPanel } from './branding.js'
 import { BusyLine } from './busyLine.js'
 import { ComposerFooter } from './composerFooter.js'
 import { FpsOverlay } from './fpsOverlay.js'
+import { GoalIndicator } from './goalIndicator.js'
 import { HelpHint } from './helpHint.js'
 import { MessageLine } from './messageLine.js'
 import { PetKitty, PetSprite } from './petSprite.js'
@@ -278,6 +279,8 @@ const ComposerPane = memo(function ComposerPane({
       )}
 
       <LiveTodoPanel />
+
+      <GoalIndicator t={ui.theme} />
 
       <Box
         borderBottom

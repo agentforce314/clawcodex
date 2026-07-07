@@ -472,6 +472,146 @@ class TestGoalPersistence(unittest.TestCase):
                 )
 
 
+# ── indicator snapshot feed (TUI "◎ /goal active (14s)" line) ──────────
+
+
+class TestGoalSnapshotFeed(unittest.TestCase):
+    """Every goal-state carrier (control replies + goal_status events) must
+    ship the compact snapshot the TUI indicator renders from — with
+    ``created_at`` so the client owns a correct ticking elapsed display."""
+
+    def test_set_reply_carries_active_snapshot(self) -> None:
+        sess, emitted = _make_session()
+        with patch.object(_AgentSession, "_goal_set_gate", return_value=None):
+            _control(sess, "goal", arg="ship the feature")
+        snap = _last_reply(emitted)["goal"]
+        self.assertEqual(snap["status"], "active")
+        self.assertEqual(snap["goal"], "ship the feature")
+        self.assertGreater(snap["created_at"], 0)
+        self.assertEqual(snap["turns_used"], 0)
+        self.assertGreater(snap["max_turns"], 0)
+
+    def test_clear_reply_carries_none(self) -> None:
+        sess, emitted = _make_session()
+        _set_goal(sess)
+        _control(sess, "goal", arg="clear")
+        reply = _last_reply(emitted)
+        self.assertIn("goal", reply)
+        self.assertIsNone(reply["goal"])
+
+    def test_pause_and_status_replies_carry_paused_snapshot(self) -> None:
+        sess, emitted = _make_session()
+        _set_goal(sess)
+        _control(sess, "goal", arg="pause")
+        self.assertEqual(_last_reply(emitted)["goal"]["status"], "paused")
+        _control(sess, "goal", arg="")
+        self.assertEqual(_last_reply(emitted)["goal"]["status"], "paused")
+
+    def test_subgoal_reply_carries_snapshot(self) -> None:
+        sess, emitted = _make_session()
+        _set_goal(sess)
+        _control(sess, "subgoal", arg="also update docs")
+        self.assertEqual(_last_reply(emitted)["goal"]["status"], "active")
+
+    def test_interrupt_pause_event_carries_paused_snapshot(self) -> None:
+        sess, emitted = _make_session()
+        _set_goal(sess)
+        _control(sess, "interrupt")
+        event = _goal_events(emitted)[-1]
+        self.assertEqual(event["goal"]["status"], "paused")
+        self.assertGreater(event["goal_rev"], 0)
+
+    def test_goal_rev_is_monotonic_across_carriers(self) -> None:
+        """Capture order == rev order (critic R2): the client uses rev to
+        drop carriers the wire delivered out of capture order."""
+        sess, emitted = _make_session()
+        with patch.object(_AgentSession, "_goal_set_gate", return_value=None):
+            _control(sess, "goal", arg="ship it")
+        rev_set = _last_reply(emitted)["goal_rev"]
+        _control(sess, "goal", arg="pause")
+        rev_pause = _last_reply(emitted)["goal_rev"]
+        _control(sess, "goal", arg="clear")
+        rev_clear = _last_reply(emitted)["goal_rev"]
+        self.assertLess(rev_set, rev_pause)
+        self.assertLess(rev_pause, rev_clear)
+
+    def test_clear_control_reply_carries_goal_rider(self) -> None:
+        """A SUCCESSFUL /clear tells the client to hide the indicator via
+        the reply rider (goal=None + rev), same channel as every other
+        carrier."""
+        sess, emitted = _make_session()
+        _set_goal(sess)
+        sess.session.conversation.clear = MagicMock()
+        with patch("src.server.agent_server._cost_snapshot", return_value={}):
+            _control(sess, "clear")
+        reply = _last_reply(emitted)
+        self.assertTrue(reply["ok"])
+        self.assertIn("goal", reply)
+        self.assertIsNone(reply["goal"])
+        self.assertGreater(reply["goal_rev"], 0)
+
+    def test_rejected_clear_reply_has_no_goal_rider(self) -> None:
+        """A /clear refused mid-turn must NOT carry the rider — the goal is
+        still armed and the client indicator must stay up (critic R1)."""
+        sess, emitted = _make_session()
+        _set_goal(sess)
+        sess._current_abort = MagicMock()  # simulate a running turn
+        _control(sess, "clear")
+        reply = _last_reply(emitted)
+        self.assertFalse(reply["ok"])
+        self.assertNotIn("goal", reply)
+        self.assertTrue(sess._goal_mgr.is_active())
+
+    def test_continue_event_carries_snapshot_with_turn_odometer(self) -> None:
+        sess, emitted = _make_session()
+        _set_goal(sess, judge=_judge_returning(
+            '{"verdict": "continue", "reason": "tests still red"}'
+        ))
+        sess._maybe_continue_goal({"subtype": "success", "response_text": "wip"})
+        event = _goal_events(emitted)[-1]
+        self.assertEqual(event["goal"]["status"], "active")
+        self.assertEqual(event["goal"]["turns_used"], 1)
+
+    def test_done_event_carries_none_snapshot(self) -> None:
+        sess, emitted = _make_session()
+        _set_goal(sess, judge=_judge_returning(
+            '{"verdict": "done", "reason": "all pass"}'
+        ))
+        sess._maybe_continue_goal({"subtype": "success", "response_text": "ok"})
+        event = _goal_events(emitted)[-1]
+        self.assertIn("goal", event)
+        self.assertIsNone(event["goal"])
+
+    def test_restore_event_carries_active_snapshot(self) -> None:
+        import src.server.agent_server as srv
+
+        with __import__("tempfile").TemporaryDirectory() as td:
+            tmp = __import__("pathlib").Path(td)
+            with patch.object(srv, "_sessions_dir", return_value=tmp):
+                sess, _ = _make_session()
+                from src.agent.conversation import Conversation
+
+                conv = Conversation()
+                conv.add_user_message("kick")
+                sess.session = SimpleNamespace(conversation=conv)
+                sess._save_session = _AgentSession._save_session.__get__(sess)
+                _set_goal(sess, "finish the port")
+                sess._save_session()
+
+                sess2, emitted2 = _make_session()
+                sess2.session = SimpleNamespace(conversation=Conversation())
+                sess2._save_session = lambda: None  # type: ignore[method-assign]
+                asyncio.run(sess2._handle_control_request({
+                    "type": "control_request",
+                    "request_id": "r9",
+                    "request": {"subtype": "resume", "session_id": "goal-sess"},
+                }))
+                event = _goal_events(emitted2)[-1]
+                self.assertEqual(event["goal"]["status"], "active")
+                self.assertEqual(event["goal"]["goal"], "finish the port")
+                self.assertGreater(event["goal"]["created_at"], 0)
+
+
 class TestUsageTokenTotal(unittest.TestCase):
     def test_sums_model_usage(self) -> None:
         snap = {"model_usage": {
