@@ -38,10 +38,10 @@ from src.services.startup_gates import (
 @pytest.fixture
 def isolated_repo(tmp_path, monkeypatch):
     """A fake 'clone': global config in one tmp dir, a repo dir whose
-    .claude/config.json is the committable project tier."""
+    .clawcodex/config.json is the committable project tier."""
     global_cfg = tmp_path / "home" / ".clawcodex" / "config.json"
     repo = tmp_path / "repo"
-    (repo / ".claude").mkdir(parents=True)
+    (repo / ".clawcodex").mkdir(parents=True)
     monkeypatch.setattr(config_module, "GLOBAL_CONFIG_FILE", global_cfg)
     monkeypatch.setattr(config_module, "_default_manager", None, raising=False)
     monkeypatch.setattr(config_module, "_find_git_root", lambda *a, **k: repo)
@@ -49,7 +49,7 @@ def isolated_repo(tmp_path, monkeypatch):
 
 
 def _write_project_config(repo: Path, data: dict) -> None:
-    (repo / ".claude" / "config.json").write_text(json.dumps(data))
+    (repo / ".clawcodex" / "config.json").write_text(json.dumps(data))
 
 
 @pytest.fixture(autouse=True)
@@ -239,7 +239,8 @@ def test_project_settings_env_beats_project_config_env(
         isolated_repo, {"env": {"ANTHROPIC_MODEL": "from-project-config"}}
     )
     settings_dir = isolated_repo / ".clawcodex"
-    settings_dir.mkdir()
+    # Same dir as the project config tier since the directory rebrand.
+    settings_dir.mkdir(exist_ok=True)
     (settings_dir / "settings.json").write_text(
         json.dumps({"env": {"ANTHROPIC_MODEL": "from-project-settings"}})
     )

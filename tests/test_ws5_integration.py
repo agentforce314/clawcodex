@@ -206,9 +206,9 @@ class TestWS5IntegrationClaudeMdPipeline(unittest.TestCase):
                         self.assertGreater(core_idx, root_idx)
 
     def test_rules_directory_loaded(self):
-        """Files in .claude/rules/*.md are loaded as project rules."""
+        """Files in .clawcodex/rules/*.md are loaded as project rules."""
         with tempfile.TemporaryDirectory() as tmp:
-            rules_dir = Path(tmp) / ".claude" / "rules"
+            rules_dir = Path(tmp) / ".clawcodex" / "rules"
             rules_dir.mkdir(parents=True)
             (rules_dir / "style.md").write_text("Use 4-space indent.", encoding="utf-8")
             (rules_dir / "testing.md").write_text("All PRs need tests.", encoding="utf-8")
@@ -240,7 +240,7 @@ class TestWS5IntegrationClaudeMdPipeline(unittest.TestCase):
         """get_claude_mds() produces formatted prompt text with type descriptions."""
         files = [
             MemoryFileInfo(path="/p/CLAUDE.md", type="Project", content="Rule A"),
-            MemoryFileInfo(path="/home/.claude/CLAUDE.md", type="User", content="Rule B"),
+            MemoryFileInfo(path="/home/.clawcodex/CLAUDE.md", type="User", content="Rule B"),
             MemoryFileInfo(path="/p/CLAUDE.local.md", type="Local", content="Rule C"),
         ]
         result = get_claude_mds(files)

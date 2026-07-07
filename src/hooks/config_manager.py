@@ -37,10 +37,10 @@ class HookValidationError:
 
 
 def _get_settings_path() -> Path:
-    env_override = os.environ.get("CLAUDE_CONFIG_DIR")
+    env_override = os.environ.get("CLAWCODEX_CONFIG_DIR")
     if env_override:
         return Path(env_override).expanduser().resolve() / "settings.json"
-    return Path.home() / ".claude" / "settings.json"
+    return Path.home() / ".clawcodex" / "settings.json"
 
 
 def _parse_hook_config(raw: dict[str, Any], source: HookSource | None = None) -> HookConfig:
@@ -377,7 +377,7 @@ class HookConfigManager:
 
     async def load(self) -> HookConfigSnapshot:
         # ch12 round-4 WI-2 — merge hooks from ALL scopes (was USER only, so
-        # a repo's .claude/settings.json hooks + enterprise policy hooks
+        # a repo's .clawcodex/settings.json hooks + enterprise policy hooks
         # never fired). Each scope's configs are tagged with their source
         # (for the trust gate's policy-survives-distrust rule) and both read
         # lanes — the merged snapshot (context lane) + the registry (router
@@ -496,8 +496,8 @@ def bootstrap_hook_config_manager(
 
     ``cwd`` scopes both the ``hooks.enabled`` knob lookup AND (ch12
     round-4 WI-2) the project/local hook-entry files: ``load()`` now merges
-    hooks from user + project (``<cwd>/.claude/settings.json``) + local
-    (``<cwd>/.claude/settings.local.json``) + policy (enterprise managed)
+    hooks from user + project (``<cwd>/.clawcodex/settings.json``) + local
+    (``<cwd>/.clawcodex/settings.local.json``) + policy (enterprise managed)
     scopes, each tagged with its ``HookSource`` for the trust gate. An
     explicit ``settings_path`` (tests / SDK) keeps single-scope behavior.
     """

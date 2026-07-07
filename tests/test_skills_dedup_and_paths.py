@@ -6,7 +6,7 @@ Acceptance criteria:
 3. ``CLAUDE_CODE_DISABLE_POLICY_SKILLS`` skips the managed dir.
 4. ``CLAUDE_CODE_BARE_MODE`` skips autodiscovery; only ``--add-dir``.
 5. Conditional ``paths: ["src/**/*.py"]`` activates for `src/foo/bar.py`.
-6. ``discover_skill_dirs_for_paths`` skips a `.claude/skills` dir whose
+6. ``discover_skill_dirs_for_paths`` skips a `.clawcodex/skills` dir whose
    parent is gitignored.
 """
 
@@ -52,8 +52,8 @@ class _IsolatedHomeMixin:
             os.environ,
             {
                 "HOME": str(self._home),
-                "CLAUDE_CONFIG_DIR": str(self._home / ".claude"),
-                "CLAUDE_MANAGED_CONFIG_DIR": str(self._managed),
+                "CLAWCODEX_CONFIG_DIR": str(self._home / ".clawcodex"),
+                "CLAWCODEX_MANAGED_CONFIG_DIR": str(self._managed),
             },
             clear=False,
         )
@@ -181,7 +181,7 @@ class TestGetSkillDirCommandsBareAndPolicy(_IsolatedHomeMixin, unittest.TestCase
 
     def test_policy_disabled_skips_managed_dir(self) -> None:
         # AC#3
-        self._make_skill(self._managed / ".claude", "managed-only")
+        self._make_skill(self._managed / ".clawcodex", "managed-only")
         with patch.dict(os.environ, {"CLAUDE_CODE_DISABLE_POLICY_SKILLS": "1"}):
             clear_skill_caches()
             skills = get_skill_dir_commands(str(self._project))
@@ -189,7 +189,7 @@ class TestGetSkillDirCommandsBareAndPolicy(_IsolatedHomeMixin, unittest.TestCase
         self.assertNotIn("managed-only", names)
 
     def test_managed_loaded_when_policy_enabled(self) -> None:
-        self._make_skill(self._managed / ".claude", "managed-only")
+        self._make_skill(self._managed / ".clawcodex", "managed-only")
         clear_skill_caches()
         skills = get_skill_dir_commands(str(self._project))
         names = {s.name for s in skills}
@@ -197,9 +197,9 @@ class TestGetSkillDirCommandsBareAndPolicy(_IsolatedHomeMixin, unittest.TestCase
 
     def test_bare_mode_skips_managed_user_project(self) -> None:
         # AC#4
-        self._make_skill(self._managed / ".claude", "m1")
-        self._make_skill(self._home / ".claude", "u1")
-        self._make_skill(self._project / ".claude", "p1")
+        self._make_skill(self._managed / ".clawcodex", "m1")
+        self._make_skill(self._home / ".clawcodex", "u1")
+        self._make_skill(self._project / ".clawcodex", "p1")
         with patch.dict(os.environ, {"CLAUDE_CODE_BARE_MODE": "1"}):
             clear_skill_caches()
             skills = get_skill_dir_commands(str(self._project))
@@ -208,11 +208,11 @@ class TestGetSkillDirCommandsBareAndPolicy(_IsolatedHomeMixin, unittest.TestCase
 
     def test_bare_mode_with_add_dir_loads_additional_only(self) -> None:
         # AC#4 — bare + --add-dir loads only the explicit dir.
-        self._make_skill(self._managed / ".claude", "m1")
-        self._make_skill(self._home / ".claude", "u1")
-        self._make_skill(self._project / ".claude", "p1")
+        self._make_skill(self._managed / ".clawcodex", "m1")
+        self._make_skill(self._home / ".clawcodex", "u1")
+        self._make_skill(self._project / ".clawcodex", "p1")
         extra = self._root / "extra"
-        self._make_skill(extra / ".claude", "e1")
+        self._make_skill(extra / ".clawcodex", "e1")
         with patch.dict(
             os.environ,
             {
@@ -242,12 +242,12 @@ class TestSymlinkDedup(_IsolatedHomeMixin, unittest.TestCase):
         clear_skill_caches(); clear_dynamic_skills(); clear_skill_registry()
 
     def test_symlink_to_project_skill_collapses_to_one(self) -> None:
-        # AC#2: ~/.claude/skills/foo → <proj>/.claude/skills/foo
-        proj_skill = self._project / ".claude" / "skills" / "foo"
+        # AC#2: ~/.clawcodex/skills/foo → <proj>/.clawcodex/skills/foo
+        proj_skill = self._project / ".clawcodex" / "skills" / "foo"
         proj_skill.mkdir(parents=True)
         (proj_skill / "SKILL.md").write_text("---\ndescription: foo\n---\nbody")
 
-        user_skills_dir = self._home / ".claude" / "skills"
+        user_skills_dir = self._home / ".clawcodex" / "skills"
         user_skills_dir.mkdir(parents=True)
         (user_skills_dir / "foo").symlink_to(proj_skill)
 
@@ -343,8 +343,8 @@ class TestActivatedConditionalIsInvokableViaSkillTool(unittest.TestCase):
             os.environ,
             {
                 "HOME": str(self._home),
-                "CLAUDE_CONFIG_DIR": str(self._home / ".claude"),
-                "CLAUDE_MANAGED_CONFIG_DIR": str(self._managed),
+                "CLAWCODEX_CONFIG_DIR": str(self._home / ".clawcodex"),
+                "CLAWCODEX_MANAGED_CONFIG_DIR": str(self._managed),
             },
             clear=False,
         )
@@ -369,8 +369,8 @@ class TestActivatedConditionalIsInvokableViaSkillTool(unittest.TestCase):
         from src.tool_system.context import ToolContext
         from src.tool_system.tools import SkillTool
 
-        # Place a paths-gated SKILL.md under .claude/skills/lint-py/
-        skill_dir = self._project / ".claude" / "skills" / "lint-py"
+        # Place a paths-gated SKILL.md under .clawcodex/skills/lint-py/
+        skill_dir = self._project / ".clawcodex" / "skills" / "lint-py"
         skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text(
             "---\n"
@@ -437,11 +437,11 @@ class TestDiscoverSkillDirsGitignore(unittest.TestCase):
     def test_skips_gitignored_skills_dir(self) -> None:
         if not self._git_ok:
             self.skipTest("git unavailable")
-        # AC#6: node_modules-style gitignored dir's .claude/skills isn't loaded.
+        # AC#6: node_modules-style gitignored dir's .clawcodex/skills isn't loaded.
         (self._cwd / ".gitignore").write_text("node_modules/\n")
         ignored_pkg = self._cwd / "node_modules" / "pkg"
         ignored_pkg.mkdir(parents=True)
-        skills_dir = ignored_pkg / ".claude" / "skills"
+        skills_dir = ignored_pkg / ".clawcodex" / "skills"
         skills_dir.mkdir(parents=True)
         (skills_dir / "evil").mkdir()
         (skills_dir / "evil" / "SKILL.md").write_text(
@@ -457,10 +457,10 @@ class TestDiscoverSkillDirsGitignore(unittest.TestCase):
     def test_loads_non_gitignored_skills_dir(self) -> None:
         if not self._git_ok:
             self.skipTest("git unavailable")
-        # Sanity: a non-ignored .claude/skills dir IS picked up.
+        # Sanity: a non-ignored .clawcodex/skills dir IS picked up.
         nested = self._cwd / "feature"
         nested.mkdir()
-        skills_dir = nested / ".claude" / "skills"
+        skills_dir = nested / ".clawcodex" / "skills"
         skills_dir.mkdir(parents=True)
         (skills_dir / "good").mkdir()
         (skills_dir / "good" / "SKILL.md").write_text(

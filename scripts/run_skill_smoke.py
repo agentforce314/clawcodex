@@ -55,10 +55,10 @@ PREVIEW_CHARS = 200
 
 
 def _build_workspace(tmp: Path) -> Path:
-    """Construct a workspace whose ``.claude/skills/`` mirrors the
+    """Construct a workspace whose ``.clawcodex/skills/`` mirrors the
     fixture catalogue. Returns the workspace root."""
     project = tmp / "proj"
-    skills_root = project / ".claude" / "skills"
+    skills_root = project / ".clawcodex" / "skills"
     skills_root.mkdir(parents=True)
     for name in FIXTURE_NAMES:
         shutil.copytree(FIXTURES_ROOT / name, skills_root / name)
@@ -70,9 +70,9 @@ def _isolate_env(tmp: Path) -> None:
     fake_home = tmp / "home"
     fake_home.mkdir()
     os.environ["HOME"] = str(fake_home)
-    os.environ["CLAUDE_MANAGED_CONFIG_DIR"] = str(tmp / "managed")
+    os.environ["CLAWCODEX_MANAGED_CONFIG_DIR"] = str(tmp / "managed")
     for var in (
-        "CLAUDE_CONFIG_DIR",
+        "CLAWCODEX_CONFIG_DIR",
         "CLAWCODEX_SKILLS_DIR",
         "CLAUDE_SKILLS_DIR",
         "CLAWCODEX_MANAGED_SKILLS_DIR",

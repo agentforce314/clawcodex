@@ -28,7 +28,7 @@ class LockfileBusyError(RuntimeError):
 
 
 class ServerLockfile:
-    """Acquire/release context for ``~/.claude/server.lock``.
+    """Acquire/release context for ``~/.clawcodex/server.lock``.
 
     Usage:
         async with ServerLockfile(path).hold():

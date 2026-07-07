@@ -45,8 +45,8 @@ def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[P
     monkeypatch.setenv("HOME", str(home))
     # Strip every env knob that would inject extra skill dirs.
     for var in (
-        "CLAUDE_CONFIG_DIR",
-        "CLAUDE_MANAGED_CONFIG_DIR",
+        "CLAWCODEX_CONFIG_DIR",
+        "CLAWCODEX_MANAGED_CONFIG_DIR",
         "CLAWCODEX_SKILLS_DIR",
         "CLAUDE_SKILLS_DIR",
         "CLAWCODEX_MANAGED_SKILLS_DIR",
@@ -57,7 +57,7 @@ def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[P
         monkeypatch.delenv(var, raising=False)
     # Send the managed-policy lookup to an empty tmp dir so /etc/claude
     # never affects results.
-    monkeypatch.setenv("CLAUDE_MANAGED_CONFIG_DIR", str(tmp_path / "managed"))
+    monkeypatch.setenv("CLAWCODEX_MANAGED_CONFIG_DIR", str(tmp_path / "managed"))
     yield home
 
 
@@ -80,7 +80,7 @@ def _write_skill(path: Path, body: str) -> None:
 
 
 # ======================================================================
-# A1. Flat project skill at ``.claude/skills/foo/SKILL.md`` is
+# A1. Flat project skill at ``.clawcodex/skills/foo/SKILL.md`` is
 # invokable through SkillTool with skill="foo".
 # ======================================================================
 
@@ -90,7 +90,7 @@ def test_flat_project_skill_invokable_via_skilltool(
 ) -> None:
     project = tmp_path / "proj"
     _write_skill(
-        project / ".claude" / "skills" / "foo" / "SKILL.md",
+        project / ".clawcodex" / "skills" / "foo" / "SKILL.md",
         "---\ndescription: foo skill\n---\nfoo body",
     )
 
@@ -104,7 +104,7 @@ def test_flat_project_skill_invokable_via_skilltool(
 
 # ======================================================================
 # A2. Nested namespace lookup — the previously-broken case from DEV-1.
-# ``.claude/skills/git/commit/SKILL.md`` must be invokable as
+# ``.clawcodex/skills/git/commit/SKILL.md`` must be invokable as
 # ``skill: "git:commit"`` through SkillTool.
 # ======================================================================
 
@@ -114,7 +114,7 @@ def test_nested_namespace_skill_invokable_as_colon_form(
 ) -> None:
     project = tmp_path / "proj"
     _write_skill(
-        project / ".claude" / "skills" / "git" / "commit" / "SKILL.md",
+        project / ".clawcodex" / "skills" / "git" / "commit" / "SKILL.md",
         "---\ndescription: git commit skill\n---\nWrite a commit message",
     )
 
@@ -135,7 +135,7 @@ def test_nested_namespace_appears_in_get_all_skills(
 ) -> None:
     project = tmp_path / "proj"
     _write_skill(
-        project / ".claude" / "skills" / "deep" / "nested" / "thing" / "SKILL.md",
+        project / ".clawcodex" / "skills" / "deep" / "nested" / "thing" / "SKILL.md",
         "---\ndescription: deep skill\n---\nbody",
     )
 
@@ -188,7 +188,7 @@ def test_get_all_skills_returns_union_of_bundled_and_disk(
 ) -> None:
     project = tmp_path / "proj"
     _write_skill(
-        project / ".claude" / "skills" / "diskskill" / "SKILL.md",
+        project / ".clawcodex" / "skills" / "diskskill" / "SKILL.md",
         "---\ndescription: disk skill\n---\nbody",
     )
     register_bundled_skill(
@@ -242,7 +242,7 @@ def test_get_registered_skill_populated_after_get_all_skills(
 ) -> None:
     project = tmp_path / "proj"
     _write_skill(
-        project / ".claude" / "skills" / "lookup-me" / "SKILL.md",
+        project / ".clawcodex" / "skills" / "lookup-me" / "SKILL.md",
         "---\ndescription: lookup\n---\nbody",
     )
 

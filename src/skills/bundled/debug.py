@@ -31,14 +31,14 @@ def _get_debug_log_path() -> str:
     """Resolve the conventional session debug log path.
 
     Honors ``CLAUDE_CODE_DEBUG_LOG_PATH`` if set; otherwise falls back to
-    ``$CLAUDE_CONFIG_DIR/debug.log`` (or ``~/.claude/debug.log``). The
+    ``$CLAWCODEX_CONFIG_DIR/debug.log`` (or ``~/.clawcodex/debug.log``). The
     file may not exist — callers handle that case.
     """
     env = os.environ.get("CLAUDE_CODE_DEBUG_LOG_PATH")
     if env:
         return str(Path(env).expanduser())
-    config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
-    base = Path(config_dir).expanduser() if config_dir else Path.home() / ".claude"
+    config_dir = os.environ.get("CLAWCODEX_CONFIG_DIR")
+    base = Path(config_dir).expanduser() if config_dir else Path.home() / ".clawcodex"
     return str(base / "debug.log")
 
 
@@ -104,13 +104,13 @@ def _settings_path_hint(scope: str) -> str:
     paths so the user can locate them. Mirrors TS' three scopes.
     """
     if scope == "userSettings":
-        config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
-        base = Path(config_dir).expanduser() if config_dir else Path.home() / ".claude"
+        config_dir = os.environ.get("CLAWCODEX_CONFIG_DIR")
+        base = Path(config_dir).expanduser() if config_dir else Path.home() / ".clawcodex"
         return str(base / "settings.json")
     if scope == "projectSettings":
-        return ".claude/settings.json"
+        return ".clawcodex/settings.json"
     if scope == "localSettings":
-        return ".claude/settings.local.json"
+        return ".clawcodex/settings.local.json"
     return "(unknown scope)"
 
 

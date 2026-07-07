@@ -311,7 +311,7 @@ describe('createSlashHandler', () => {
   })
 
   it('submits a send-dispatch payload without echoing it as a user bubble', async () => {
-    // Workflow commands (/deep-research, saved .claude/workflows) resolve to
+    // Workflow commands (/deep-research, saved .clawcodex/workflows) resolve to
     // {type:'send'}: the notice is printed, the expanded directive is submitted
     // silently — the typed slash line is already in the transcript.
     const request = vi.fn((method: string) =>

@@ -204,7 +204,7 @@ class TestProcessMemoryFile(unittest.TestCase):
 class TestProcessMdRules(unittest.TestCase):
     def test_rules_directory(self):
         with tempfile.TemporaryDirectory() as tmp:
-            rules_dir = Path(tmp) / ".claude" / "rules"
+            rules_dir = Path(tmp) / ".clawcodex" / "rules"
             rules_dir.mkdir(parents=True)
             (rules_dir / "style.md").write_text("Use 4-space indent.", encoding="utf-8")
             (rules_dir / "testing.md").write_text("Always add tests.", encoding="utf-8")
@@ -244,7 +244,7 @@ class TestGetClaudeMds(unittest.TestCase):
     def test_formats_correctly(self):
         files = [
             MemoryFileInfo(path="/p/CLAUDE.md", type="Project", content="Rule 1"),
-            MemoryFileInfo(path="/home/.claude/CLAUDE.md", type="User", content="Rule 2"),
+            MemoryFileInfo(path="/home/.clawcodex/CLAUDE.md", type="User", content="Rule 2"),
         ]
         result = get_claude_mds(files)
         self.assertIn("Rule 1", result)
@@ -314,7 +314,7 @@ class TestIsMemoryFilePath(unittest.TestCase):
         self.assertTrue(is_memory_file_path("/project/CLAUDE.local.md"))
 
     def test_rules_file(self):
-        self.assertTrue(is_memory_file_path("/project/.claude/rules/style.md"))
+        self.assertTrue(is_memory_file_path("/project/.clawcodex/rules/style.md"))
 
     def test_regular_file(self):
         self.assertFalse(is_memory_file_path("/project/README.md"))

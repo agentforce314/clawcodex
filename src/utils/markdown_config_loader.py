@@ -1,4 +1,4 @@
-"""Generic markdown-config discovery for ``.claude/<subdir>`` directories.
+"""Generic markdown-config discovery for ``.clawcodex/<subdir>`` directories.
 
 Port of typescript/src/utils/markdownConfigLoader.ts. Walks managed,
 user, and project directories (and ``.openclaude`` variants) to collect
@@ -6,14 +6,14 @@ user, and project directories (and ``.openclaude`` variants) to collect
 ``output-styles`` later).
 
 Loader semantics:
-  * Managed dir: ``$CLAUDE_MANAGED_CONFIG_DIR/.claude/<subdir>`` (default
-    ``/etc/claude``).
-  * User dir: ``$CLAUDE_CONFIG_DIR/<subdir>`` (default ``~/.claude``).
+  * Managed dir: ``$CLAWCODEX_MANAGED_CONFIG_DIR/.clawcodex/<subdir>`` (default
+    ``/etc/clawcodex``).
+  * User dir: ``$CLAWCODEX_CONFIG_DIR/<subdir>`` (default ``~/.clawcodex``).
   * Project dirs: walk ``cwd`` upward, stopping at the nearest ``.git``
     ancestor (or ``$HOME`` outside a git repo), collecting both
-    ``.claude/<subdir>`` and ``.openclaude/<subdir>`` at every level.
+    ``.clawcodex/<subdir>`` and ``.openclaude/<subdir>`` at every level.
 
-Files are deduplicated by realpath so a symlinked ``~/.claude`` inside a
+Files are deduplicated by realpath so a symlinked ``~/.clawcodex`` inside a
 project tree doesn't produce duplicate entries.
 """
 from __future__ import annotations
@@ -44,19 +44,19 @@ class MarkdownFile:
 
 
 def _get_global_config_dir() -> Path:
-    """Return ``$CLAUDE_CONFIG_DIR`` or ``~/.claude`` (resolved)."""
-    env_override = os.environ.get("CLAUDE_CONFIG_DIR")
+    """Return ``$CLAWCODEX_CONFIG_DIR`` or ``~/.clawcodex`` (resolved)."""
+    env_override = os.environ.get("CLAWCODEX_CONFIG_DIR")
     if env_override:
         return Path(env_override).expanduser().resolve()
-    return (Path.home() / ".claude").resolve()
+    return (Path.home() / ".clawcodex").resolve()
 
 
 def _get_managed_file_path() -> Path:
-    """Return ``$CLAUDE_MANAGED_CONFIG_DIR`` or ``/etc/claude``."""
-    env_override = os.environ.get("CLAUDE_MANAGED_CONFIG_DIR")
+    """Return ``$CLAWCODEX_MANAGED_CONFIG_DIR`` or ``/etc/clawcodex``."""
+    env_override = os.environ.get("CLAWCODEX_MANAGED_CONFIG_DIR")
     if env_override:
         return Path(env_override).expanduser().resolve()
-    return Path("/etc/claude")
+    return Path("/etc/clawcodex")
 
 
 def _find_git_root(cwd: Path) -> Path | None:
@@ -73,14 +73,14 @@ def _find_git_root(cwd: Path) -> Path | None:
 
 
 def _get_project_subdir_paths(cwd: str, subdir: str) -> list[str]:
-    """Walk from ``cwd`` upward, collecting ``.claude/<subdir>`` per level.
+    """Walk from ``cwd`` upward, collecting ``.clawcodex/<subdir>`` per level.
 
     Generalization of src/skills/loader.py:_get_project_skills_dirs that
     matches the TS ``getProjectDirsUpToHome`` semantics: when ``cwd`` is
     inside a git repository, stop at the repo root (so parent-of-repo
-    ``.claude/`` directories don't leak into the project). When not in a
+    ``.clawcodex/`` directories don't leak into the project). When not in a
     git repo, walk all the way to ``$HOME``. For each visited directory
-    both ``.claude/<subdir>`` and ``.openclaude/<subdir>`` are appended so
+    both ``.clawcodex/<subdir>`` and ``.openclaude/<subdir>`` are appended so
     projects using either convention are discovered.
     """
     current = Path(cwd).expanduser().resolve()
@@ -89,7 +89,7 @@ def _get_project_subdir_paths(cwd: str, subdir: str) -> list[str]:
     dirs: list[str] = []
 
     while True:
-        for config_dir_name in (".claude", ".openclaude"):
+        for config_dir_name in (".clawcodex", ".openclaude"):
             candidate = current / config_dir_name / subdir
             dirs.append(str(candidate))
         if current == home or current.parent == current:
@@ -144,7 +144,7 @@ def load_markdown_files_for_subdir(subdir: str, cwd: str) -> list[MarkdownFile]:
     First-seen realpath wins (later duplicates are dropped). The caller is
     responsible for applying source-priority overrides on parsed entries.
     """
-    managed_dir = str(_get_managed_file_path() / ".claude" / subdir)
+    managed_dir = str(_get_managed_file_path() / ".clawcodex" / subdir)
     user_dir = str(_get_global_config_dir() / subdir)
     project_dirs = _get_project_subdir_paths(cwd, subdir)
 

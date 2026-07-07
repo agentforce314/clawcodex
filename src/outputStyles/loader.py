@@ -7,7 +7,7 @@ plain-body-only loader and chapter
 * YAML frontmatter parsing — ``name`` / ``description`` / ``model``
   override the defaults derived from the file basename. Reuses the
   existing :mod:`src.skills.frontmatter` parser; no new dependency.
-* Default ``~/.claude/outputStyles/`` lookup — ``resolve_output_style``
+* Default ``~/.clawcodex/outputStyles/`` lookup — ``resolve_output_style``
   with ``search_dir=None`` now consults the user-config directory before
   falling back to built-ins. Previously the ``None`` path returned
   built-ins only.
@@ -30,28 +30,27 @@ _logger = logging.getLogger(__name__)
 
 
 def _user_style_dirs() -> list[Path]:
-    """User output-style directories, canon first (OS-1 G4).
+    """User output-style directories (OS-1 G4).
 
-    Primary: ``GLOBAL_CONFIG_DIR/outputStyles`` (this port's config home —
-    the INTEG-1 canon rule; lazy import so test re-points are honored).
-    Legacy fallback: ``~/.claude/outputStyles`` — the TS config home this
-    loader originally copied; kept readable for continuity, canon wins on
-    name collisions. Lazy so tests that monkeypatch ``HOME`` /
-    ``GLOBAL_CONFIG_DIR`` after import see the override.
+    ``GLOBAL_CONFIG_DIR/outputStyles`` — this port's config home (the
+    INTEG-1 canon rule; lazy import so test re-points are honored). The
+    old ``~/.claude/outputStyles`` read-through is gone with the
+    directory rebrand: legacy content is copied over once by
+    ``src/utils/legacy_migration.py`` instead of being read in place.
+    Lazy so tests that monkeypatch ``HOME`` / ``GLOBAL_CONFIG_DIR``
+    after import see the override.
     """
     from src.config import GLOBAL_CONFIG_DIR
 
     return [
         Path(GLOBAL_CONFIG_DIR) / "outputStyles",
-        Path("~/.claude/outputStyles").expanduser(),
     ]
 
 
 def _load_default_user_styles() -> dict[str, OutputStyle]:
-    """Merged builtins + legacy-dir + canon-dir styles (canon wins)."""
-    canon, legacy = _user_style_dirs()
+    """Merged builtins + user-dir styles (user wins name collisions)."""
     styles: dict[str, OutputStyle] = dict(BUILTIN_OUTPUT_STYLES)
-    for directory in (legacy, canon):  # canon merged LAST → wins collisions
+    for directory in _user_style_dirs():
         if directory.is_dir():
             styles.update(load_output_styles_dir(directory))
     return styles
@@ -113,7 +112,7 @@ def resolve_output_style(
     Resolution order:
 
     1. ``search_dir`` if explicitly given.
-    2. Default ``~/.claude/outputStyles/`` if it exists.
+    2. Default ``~/.clawcodex/outputStyles/`` if it exists.
     3. Built-ins (``default``, ``explanatory``).
 
     Falls back to the ``"default"`` style when ``name`` is not known —

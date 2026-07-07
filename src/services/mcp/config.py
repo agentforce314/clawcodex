@@ -50,17 +50,17 @@ def _get_cwd() -> str:
 
 
 def _get_global_config_dir() -> Path:
-    env_override = os.environ.get("CLAUDE_CONFIG_DIR")
+    env_override = os.environ.get("CLAWCODEX_CONFIG_DIR")
     if env_override:
         return Path(env_override).expanduser().resolve()
-    return Path.home() / ".claude"
+    return Path.home() / ".clawcodex"
 
 
 def _get_managed_file_path() -> Path:
-    env_override = os.environ.get("CLAUDE_MANAGED_CONFIG_DIR")
+    env_override = os.environ.get("CLAWCODEX_MANAGED_CONFIG_DIR")
     if env_override:
         return Path(env_override).expanduser().resolve()
-    return Path("/etc/claude")
+    return Path("/etc/clawcodex")
 
 
 def get_enterprise_mcp_file_path() -> str:
@@ -383,9 +383,9 @@ def get_mcp_configs_by_scope(
         cwd, walked toward the filesystem root. Closest-parent-wins.
         The cwd itself is intentionally excluded so it can be tagged
         ``local`` with stricter approval semantics.
-      - ``user``: ``~/.claude/config.json``'s ``mcpServers`` field.
-      - ``enterprise``: ``/etc/claude/managed-mcp.json`` (or
-        ``$CLAUDE_MANAGED_CONFIG_DIR/managed-mcp.json``).
+      - ``user``: ``~/.clawcodex/config.json``'s ``mcpServers`` field.
+      - ``enterprise``: ``/etc/clawcodex/managed-mcp.json`` (or
+        ``$CLAWCODEX_MANAGED_CONFIG_DIR/managed-mcp.json``).
       - ``managed`` / ``dynamic`` / ``claudeai``: see ``get_managed_mcp_configs``,
         ``get_dynamic_mcp_configs``, and the future Phase 7.3 claudeai loader.
     """
@@ -778,6 +778,45 @@ def set_mcp_server_enabled(name: str, enabled: bool) -> None:
         _disabled_servers.add(name)
 
 
+def _invalidate_config_manager_cache() -> None:
+    """Drop config.py's process-global cache after writing its file.
+
+    ``~/.clawcodex/config.json`` is shared with ``config.py``'s singleton
+    ``ConfigManager``; without this, a later config.py save from a stale
+    cached read would drop a just-written ``mcpServers`` block in a
+    long-lived process. Best-effort — cache coherence must not fail an
+    MCP add/remove that already landed on disk.
+    """
+    try:
+        from src.config import _get_default_manager
+
+        _get_default_manager().invalidate()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _write_user_config_atomic(config_file: Path, data: dict[str, Any]) -> None:
+    """Atomic 0600 replace for the user config file.
+
+    Since the directory rebrand this is ``~/.clawcodex/config.json`` — the
+    SAME file the secret store keeps provider API keys in (0600). A plain
+    truncate-in-place ``write_text`` could destroy those keys on a crash
+    mid-write, and a default-umask create would over-expose them.
+    """
+    tmp_path = str(config_file) + f".tmp.{os.getpid()}"
+    try:
+        fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp_path, str(config_file))
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def add_mcp_config(
     name: str,
     config: dict[str, Any],
@@ -829,14 +868,26 @@ def add_mcp_config(
         if config_file.exists():
             try:
                 data = json.loads(config_file.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                data = {}
+            except (json.JSONDecodeError, OSError) as exc:
+                # ~/.clawcodex/config.json also holds provider API keys.
+                # Falling back to {} would rewrite the file with ONLY
+                # mcpServers, silently destroying them: unreadable is an
+                # error, not an empty config (matches remove_mcp_config).
+                raise ValueError(
+                    f"user config {config_file} exists but cannot be read "
+                    f"({exc}); fix or remove it before adding MCP servers"
+                ) from exc
+            if not isinstance(data, dict):
+                raise ValueError(
+                    f"user config {config_file} is not a JSON object"
+                )
         servers = data.get("mcpServers", {})
         if name in servers:
             raise ValueError(f"MCP server {name} already exists in user config")
         servers[name] = config
         data["mcpServers"] = servers
-        config_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        _write_user_config_atomic(config_file, data)
+        _invalidate_config_manager_cache()
 
 
 def remove_mcp_config(name: str, scope: ConfigScope) -> None:
@@ -873,7 +924,8 @@ def remove_mcp_config(name: str, scope: ConfigScope) -> None:
             raise ValueError(f"No user-scoped MCP server found with name: {name}")
         del servers[name]
         data["mcpServers"] = servers
-        config_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        _write_user_config_atomic(config_file, data)
+        _invalidate_config_manager_cache()
     else:
         raise ValueError(f"Cannot remove MCP server from scope: {scope}")
 

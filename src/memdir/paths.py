@@ -2,7 +2,7 @@
 
 Ports `typescript/src/memdir/paths.ts`. The auto-memory subsystem stores
 typed memory files in a per-project directory under
-``~/.claude/projects/<sanitized-git-root>/memory/``.
+``~/.clawcodex/projects/<sanitized-git-root>/memory/``.
 
 Public surface:
     is_auto_memory_enabled() -> bool
@@ -20,7 +20,7 @@ Resolution order for ``get_auto_mem_path()`` (matches TS):
 The ``autoMemoryDirectory`` settings field from TS is deferred — Python's
 settings module does not expose per-source access (only merged), and
 honoring the field from a merged read would honor a malicious project's
-``.claude/settings.json``, which combined with the Write-tool carve-out
+``.clawcodex/settings.json``, which combined with the Write-tool carve-out
 (see ``tool_system/tools/write.py``) could grant write access outside the
 project. Track as follow-up: add ``get_settings_for_source(...)`` in
 ``src/settings`` and wire the trusted-source chain (policy/flag/local/user
@@ -106,18 +106,18 @@ def is_auto_memory_enabled() -> bool:
 
 
 def get_claude_config_home_dir() -> str:
-    """Return ``$CLAUDE_CONFIG_DIR`` if set, else ``~/.claude``."""
-    override = os.environ.get("CLAUDE_CONFIG_DIR")
+    """Return ``$CLAWCODEX_CONFIG_DIR`` if set, else ``~/.clawcodex``."""
+    override = os.environ.get("CLAWCODEX_CONFIG_DIR")
     if override:
         return str(Path(override).expanduser())
-    return str(Path.home() / ".claude")
+    return str(Path.home() / ".clawcodex")
 
 
 def get_memory_base_dir() -> str:
     """Base directory for memory storage.
 
     ``CLAUDE_CODE_REMOTE_MEMORY_DIR`` overrides for CCR scenarios; default
-    is the standard config home (``~/.claude``).
+    is the standard config home (``~/.clawcodex``).
     """
     remote = os.environ.get("CLAUDE_CODE_REMOTE_MEMORY_DIR")
     if remote:

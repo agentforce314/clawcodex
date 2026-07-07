@@ -44,7 +44,7 @@ class FakeUIHost:
 
 @pytest.fixture
 def mem_env(tmp_path, monkeypatch):
-    """Fake HOME (so ~/.claude lives in tmp) + empty get_memory_files."""
+    """Fake HOME (so ~/.clawcodex lives in tmp) + empty get_memory_files."""
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
@@ -82,9 +82,9 @@ async def test_options_synthetic_candidates_with_descriptions(mem_env):
     call = ui.select_calls[0]
     assert call["labels"][0] == "User memory"
     assert call["labels"][1] == "Project memory"
-    assert call["descriptions"][0] == "Saved in ~/.claude/CLAUDE.md"  # verbatim TS
+    assert call["descriptions"][0] == "Saved in ~/.clawcodex/CLAUDE.md"  # verbatim TS
     assert call["descriptions"][1] == "Saved in ./CLAUDE.md"  # non-git branch
-    assert call["values"][0] == str(home / ".claude" / "CLAUDE.md")
+    assert call["values"][0] == str(home / ".clawcodex" / "CLAUDE.md")
     assert call["values"][1] == str(cwd / "CLAUDE.md")  # fallback (no loaded ancestor)
 
 
@@ -164,12 +164,12 @@ async def test_options_extra_files_and_imported_desc(mem_env, monkeypatch):
 # --------------------------------------------------------------------------- #
 async def test_select_user_memory_creates_dir_and_file(mem_env):
     home, cwd = mem_env
-    target = str(home / ".claude" / "CLAUDE.md")
+    target = str(home / ".clawcodex" / "CLAUDE.md")
     ui = FakeUIHost(pick=target)
     out = await MEMORY_COMMAND.run("", _ctx(cwd, ui=ui))
     assert isinstance(out, InteractiveOutcome)
-    assert (home / ".claude" / "CLAUDE.md").exists()
-    assert out.message.startswith("Memory file at ~/.claude/CLAUDE.md. Open it in your editor.")
+    assert (home / ".clawcodex" / "CLAUDE.md").exists()
+    assert out.message.startswith("Memory file at ~/.clawcodex/CLAUDE.md. Open it in your editor.")
     assert "> To choose an editor, set the $EDITOR or $VISUAL environment variable." in out.message
     assert out.display == "system"
 

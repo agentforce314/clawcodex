@@ -30,7 +30,7 @@ def main():
     # WI-0.1 (ch17 Phase 0): instrument cold-start phases. Env-gated by
     # ``CLAUDE_CODE_PROFILE_STARTUP``; a no-op import + no-op call when
     # disabled (~ns overhead). On exit the profiler writes a Markdown
-    # report to ``$CLAUDE_CONFIG_DIR/startup-perf/{session_id}.txt``.
+    # report to ``$CLAWCODEX_CONFIG_DIR/startup-perf/{session_id}.txt``.
     from src.utils.startup_profiler import profile_checkpoint
     profile_checkpoint("cli_main_entry")
 
@@ -70,6 +70,19 @@ def main():
         print(f"claw-codex version {__version__} (Python)")
         return 0
 
+    # One-time legacy ``~/.claude`` → ``~/.clawcodex`` copy (directory
+    # rebrand). Marker-gated: after the first run this is a single stat.
+    # Runs before the subcommand sieve so ``mcp``/``daemon``/``tui`` also
+    # see migrated state. Must never break startup. The explicit
+    # ``migrate`` subcommand owns the pass itself (so its report shows
+    # what THIS invocation copied rather than "already exists").
+    if sys.argv[1:2] != ['migrate']:
+        try:
+            from src.utils.legacy_migration import migrate_user_dir_once
+            migrate_user_dir_once()
+        except Exception:  # noqa: BLE001 — migration is best-effort by contract
+            pass
+
     # Subcommands are matched BEFORE the main parser to avoid argparse treating
     # a free-form prompt (e.g. ``clawcodex -p "hello"``) as an unknown
     # subcommand.
@@ -105,6 +118,9 @@ def main():
             return run_agent_server_subcommand(rest)
         if token == 'tui':
             return _run_tui_subcommand(rest)
+        if token == 'migrate':
+            from src.entrypoints.migrate import run_migrate_subcommand
+            return run_migrate_subcommand(rest)
 
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -195,7 +211,7 @@ def main():
 
     # --worktree: create/resume AFTER the trust gate (the gate runs against
     # the ORIGINAL cwd — user consents to the repo before we mutate
-    # .claude/worktrees/; nothing re-checks trust against the worktree path,
+    # .clawcodex/worktrees/; nothing re-checks trust against the worktree path,
     # the backend has no trust gate of its own). The worktree becomes the
     # session's workspace; the TUI + agent-server child run inside it and the
     # env block carries the session for the exit-time keep/remove flow.
@@ -390,7 +406,7 @@ Examples:
         nargs='?', const=True, default=None, metavar='NAME',
         help=(
             'Run this session in an isolated git worktree at '
-            '.claude/worktrees/NAME (created or resumed; a name is generated '
+            '.clawcodex/worktrees/NAME (created or resumed; a name is generated '
             'when omitted). NAME may also be a PR reference (#123 or a GitHub '
             'PR URL). At exit you choose to keep or remove it; parallel '
             'sessions with different names never touch each other\'s files. '

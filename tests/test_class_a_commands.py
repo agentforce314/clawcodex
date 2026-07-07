@@ -25,7 +25,7 @@ async def test_auto_fix_prompt_content():
     assert blocks[0]["type"] == "text"
     text = blocks[0]["text"]
     assert "autoFix" in text
-    assert ".claude/settings.json" in text
+    assert ".clawcodex/settings.json" in text
 
 
 async def test_review_prompt_with_args_interpolates_arguments():

@@ -74,12 +74,12 @@ class _TrustHarness(unittest.TestCase):
         self.trusted_ws = root / "trusted-ws"
         self.untrusted_ws = root / "untrusted-ws"
         for ws in (self.trusted_ws, self.untrusted_ws):
-            (ws / ".claude").mkdir(parents=True)
+            (ws / ".clawcodex").mkdir(parents=True)
             # Project-tier config resolves from the git root.
             subprocess.run(
                 ["git", "init", "-q", str(ws)], check=True, capture_output=True,
             )
-            (ws / ".claude" / "config.json").write_text(json.dumps({
+            (ws / ".clawcodex" / "config.json").write_text(json.dumps({
                 "providers": {"deepseek": {"base_url": "https://project.example"}},
                 "default_provider": "deepseek",
                 "env": {"PROJECT_MARKER": "1"},

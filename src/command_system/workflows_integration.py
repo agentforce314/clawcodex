@@ -1,6 +1,6 @@
 """Contribute saved + bundled workflows as slash commands.
 
-Discovers ``.claude/workflows/*.py`` (project) and ``~/.claude/workflows/*.py``
+Discovers ``.clawcodex/workflows/*.py`` (project) and ``~/.clawcodex/workflows/*.py``
 (personal), plus the bundled ``/deep-research``, and turns each into a
 ``PromptCommand`` (``kind="workflow"``) that directs the model to launch it via
 the Workflow tool. Project workflows win over personal ones on a name clash.
@@ -129,8 +129,8 @@ def load_workflow_commands(cwd: str) -> list[Command]:
         commands.append(deep)
 
     # Project first so it reserves the name before the personal copy.
-    project = _discover_dir(Path(cwd) / ".claude" / "workflows", "project")
-    personal = _discover_dir(Path.home() / ".claude" / "workflows", "user")
+    project = _discover_dir(Path(cwd) / ".clawcodex" / "workflows", "project")
+    personal = _discover_dir(Path.home() / ".clawcodex" / "workflows", "user")
 
     seen = {c.name for c in commands}
     for cmd in [*project, *personal]:
@@ -171,8 +171,8 @@ def load_and_register_workflows(
     from .registry import get_command_registry
 
     cwd = Path(project_root) if project_root is not None else Path.cwd()
-    project = _discover_dir(cwd / ".claude" / "workflows", "project")
-    personal = _discover_dir(Path.home() / ".claude" / "workflows", "user")
+    project = _discover_dir(cwd / ".clawcodex" / "workflows", "project")
+    personal = _discover_dir(Path.home() / ".clawcodex" / "workflows", "user")
 
     target = registry if registry is not None else get_command_registry()
     registered: list[PromptCommand] = []

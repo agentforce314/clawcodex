@@ -21,7 +21,7 @@ def test_deep_research_bundled_command():
 
 
 def test_discovers_project_workflow(tmp_path):
-    wf_dir = tmp_path / ".claude" / "workflows"
+    wf_dir = tmp_path / ".clawcodex" / "workflows"
     wf_dir.mkdir(parents=True)
     (wf_dir / "triage.py").write_text(_VALID, encoding="utf-8")
 
@@ -37,7 +37,7 @@ def test_discovers_project_workflow(tmp_path):
 
 
 def test_invalid_workflow_file_is_skipped(tmp_path):
-    wf_dir = tmp_path / ".claude" / "workflows"
+    wf_dir = tmp_path / ".clawcodex" / "workflows"
     wf_dir.mkdir(parents=True)
     (wf_dir / "broken.py").write_text("x = 1  # no meta block\n", encoding="utf-8")
     (wf_dir / "good.py").write_text(_VALID, encoding="utf-8")
@@ -96,7 +96,7 @@ def test_aggregator_includes_workflow_commands(tmp_path, monkeypatch):
     monkeypatch.setattr("src.settings.settings.get_settings", lambda **_: SettingsSchema())
     aggregator.clear_commands_cache()
 
-    wf_dir = tmp_path / ".claude" / "workflows"
+    wf_dir = tmp_path / ".clawcodex" / "workflows"
     wf_dir.mkdir(parents=True)
     (wf_dir / "myflow.py").write_text(_VALID, encoding="utf-8")
 

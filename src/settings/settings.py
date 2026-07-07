@@ -99,7 +99,7 @@ def update_local_settings(
 
     OS-1 G3 — the ``updateSettingsForSource('localSettings', ...)`` analog
     (Settings/Config.tsx:1600): writes the ``settings`` sub-key of the
-    project-local config file (``.claude/config.local.json``), creating the
+    project-local config file (``.clawcodex/config.local.json``), creating the
     file/dir as needed, atomically (tempfile + replace), then invalidates
     the settings cache. Returns False (logged) on any failure — persistence
     is best-effort; callers' in-memory state still applies.

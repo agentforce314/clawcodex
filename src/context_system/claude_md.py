@@ -2,9 +2,9 @@
 Multi-level CLAUDE.md loading — aligned with typescript/src/utils/claudemd.ts.
 
 Loading order (reverse priority — later entries take precedence):
-  1. Managed memory (/etc/claude-code/CLAUDE.md)
-  2. User memory (~/.claude/CLAUDE.md)
-  3. Project memory (CLAUDE.md, .claude/CLAUDE.md, .claude/rules/*.md)
+  1. Managed memory (/etc/clawcodex/CLAUDE.md by default)
+  2. User memory (~/.clawcodex/CLAUDE.md)
+  3. Project memory (CLAUDE.md, .clawcodex/CLAUDE.md, .clawcodex/rules/*.md)
   4. Local memory (CLAUDE.local.md)
 
 Files closer to CWD have higher priority (loaded later in the list).
@@ -306,7 +306,7 @@ async def process_md_rules(
     conditional_rule: bool = False,
 ) -> list[MemoryFileInfo]:
     """
-    Process all .md files in a .claude/rules/ directory and subdirectories.
+    Process all .md files in a .clawcodex/rules/ directory and subdirectories.
 
     Mirrors TS processMdRules from claudemd.ts.
     """
@@ -418,25 +418,30 @@ async def get_memory_files(
 
     home = str(Path.home())
 
-    # 1. Managed memory (/etc/claude-code/CLAUDE.md)
-    managed_path = os.path.join("/etc", "claude-code", "CLAUDE.md")
+    # 1. Managed memory (<managed dir>/CLAUDE.md — /etc/clawcodex by
+    # default, CLAWCODEX_MANAGED_CONFIG_DIR override like the managed
+    # skills/MCP tiers)
+    from src.utils.clawcodex_dirs import get_managed_config_dir
+
+    managed_base = str(get_managed_config_dir())
+    managed_path = os.path.join(managed_base, "CLAUDE.md")
     result.extend(await process_memory_file(
         managed_path, "Managed", processed_paths, include_external,
     ))
     # Managed rules
-    managed_rules_dir = os.path.join("/etc", "claude-code", ".claude", "rules")
+    managed_rules_dir = os.path.join(managed_base, ".clawcodex", "rules")
     result.extend(await process_md_rules(
         managed_rules_dir, "Managed", processed_paths, include_external,
         conditional_rule=False,
     ))
 
-    # 2. User memory (~/.claude/CLAUDE.md)
-    user_claude_md = os.path.join(home, ".claude", "CLAUDE.md")
+    # 2. User memory (~/.clawcodex/CLAUDE.md)
+    user_claude_md = os.path.join(home, ".clawcodex", "CLAUDE.md")
     result.extend(await process_memory_file(
         user_claude_md, "User", processed_paths, True,  # User can always include external
     ))
-    # User rules (~/.claude/rules/*.md)
-    user_rules_dir = os.path.join(home, ".claude", "rules")
+    # User rules (~/.clawcodex/rules/*.md)
+    user_rules_dir = os.path.join(home, ".clawcodex", "rules")
     result.extend(await process_md_rules(
         user_rules_dir, "User", processed_paths, True,
         conditional_rule=False,
@@ -461,13 +466,13 @@ async def get_memory_files(
         result.extend(await process_memory_file(
             project_path, "Project", processed_paths, include_external,
         ))
-        # Project: .claude/CLAUDE.md
-        dot_claude_path = os.path.join(d, ".claude", "CLAUDE.md")
+        # Project: .clawcodex/CLAUDE.md
+        dot_claude_path = os.path.join(d, ".clawcodex", "CLAUDE.md")
         result.extend(await process_memory_file(
             dot_claude_path, "Project", processed_paths, include_external,
         ))
-        # Project: .claude/rules/*.md
-        rules_dir = os.path.join(d, ".claude", "rules")
+        # Project: .clawcodex/rules/*.md
+        rules_dir = os.path.join(d, ".clawcodex", "rules")
         result.extend(await process_md_rules(
             rules_dir, "Project", processed_paths, include_external,
             conditional_rule=False,
@@ -484,11 +489,11 @@ async def get_memory_files(
         result.extend(await process_memory_file(
             project_path, "Project", processed_paths, include_external,
         ))
-        dot_claude_path = os.path.join(add_dir, ".claude", "CLAUDE.md")
+        dot_claude_path = os.path.join(add_dir, ".clawcodex", "CLAUDE.md")
         result.extend(await process_memory_file(
             dot_claude_path, "Project", processed_paths, include_external,
         ))
-        rules_dir = os.path.join(add_dir, ".claude", "rules")
+        rules_dir = os.path.join(add_dir, ".clawcodex", "rules")
         result.extend(await process_md_rules(
             rules_dir, "Project", processed_paths, include_external,
             conditional_rule=False,
@@ -550,6 +555,6 @@ def is_memory_file_path(file_path: str) -> bool:
     name = os.path.basename(file_path)
     if name in ("CLAUDE.md", "CLAUDE.local.md"):
         return True
-    if name.endswith(".md") and (os.sep + ".claude" + os.sep + "rules" + os.sep) in file_path:
+    if name.endswith(".md") and (os.sep + ".clawcodex" + os.sep + "rules" + os.sep) in file_path:
         return True
     return False

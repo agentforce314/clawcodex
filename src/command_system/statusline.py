@@ -53,6 +53,6 @@ STATUSLINE_COMMAND = StatuslineCommand(
     progress_message="setting up statusLine",
     content_length=0,  # TS contentLength: 0 (dynamic content)
     source="builtin",  # TS source: 'builtin'
-    allowed_tools=[AGENT_TOOL_NAME, "Read(~/**)", "Edit(~/.claude/settings.json)"],
+    allowed_tools=[AGENT_TOOL_NAME, "Read(~/**)", "Edit(~/.clawcodex/settings.json)"],
     disable_non_interactive=True,  # TS disableNonInteractive: true
 )

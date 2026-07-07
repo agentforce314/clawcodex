@@ -1305,7 +1305,7 @@ async def test_spawn_worktree_creates_isolated_dir_and_cleans_up(
     assert len(spawner.spawns) == 1
     _opts, wd = spawner.spawns[0]
     # The spawner was handed the worktree path, not the base repo.
-    expected = os.path.join(repo, '.claude', 'worktrees', 'agent-cse_wt1')
+    expected = os.path.join(repo, '.clawcodex', 'worktrees', 'agent-cse_wt1')
     assert wd == expected
     assert os.path.isdir(expected)
 
@@ -1389,7 +1389,7 @@ async def test_shutdown_removes_orphaned_worktrees(tmp_path) -> None:
         if spawner.spawns:
             break
 
-    expected = os.path.join(repo, '.claude', 'worktrees', 'agent-cse_wt3')
+    expected = os.path.join(repo, '.clawcodex', 'worktrees', 'agent-cse_wt3')
     assert os.path.isdir(expected)
     # Trigger shutdown WITHOUT completing the session first.
     cancel.set()

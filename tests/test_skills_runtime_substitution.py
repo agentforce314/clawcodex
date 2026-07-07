@@ -366,7 +366,7 @@ class TestSkillToolRuntimeIntegration(unittest.TestCase):
 
     def test_disk_skill_gets_base_dir_header(self) -> None:
         """AC#2: disk-loaded skill prepends the canonical header."""
-        skills_dir = self.root / ".claude" / "skills"
+        skills_dir = self.root / ".clawcodex" / "skills"
         create_skill(
             directory=skills_dir, name="hello", description="say hi", body="Hi!",
         )
@@ -383,7 +383,7 @@ class TestSkillToolRuntimeIntegration(unittest.TestCase):
     def test_skill_dir_and_session_substitution(self) -> None:
         """AC#1: ${CLAUDE_SKILL_DIR} and ${CLAUDE_SESSION_ID} both
         substitute in a real disk-loaded skill via SkillTool."""
-        skills_dir = self.root / ".claude" / "skills"
+        skills_dir = self.root / ".clawcodex" / "skills"
         create_skill(
             directory=skills_dir, name="echo",
             description="echo placeholders",
@@ -412,7 +412,7 @@ class TestSkillToolRuntimeIntegration(unittest.TestCase):
 
     def test_argument_substitution_with_header(self) -> None:
         """AC#4: arg substitution still works after header prepend."""
-        skills_dir = self.root / ".claude" / "skills"
+        skills_dir = self.root / ".clawcodex" / "skills"
         create_skill(
             directory=skills_dir, name="greet", description="greet",
             arguments=["name"], body="Hello $name from $1",

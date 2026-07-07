@@ -1633,7 +1633,7 @@ async def test_perpetual_ignores_stale_pointer_from_different_dir(
     params = _make_params(perpetual=True)
     params.dir = str(tmp_path)
     # Write a pointer that claims a DIFFERENT dir.
-    pointer_dir = os.path.join(params.dir, '.claude')
+    pointer_dir = os.path.join(params.dir, '.clawcodex')
     os.makedirs(pointer_dir, exist_ok=True)
     with open(
         os.path.join(pointer_dir, 'bridge-pointer.json'),

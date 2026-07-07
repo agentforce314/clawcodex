@@ -104,7 +104,7 @@ def test_metadata_matches_ts_definition():
     assert cmd.allowed_tools == [
         AGENT_TOOL_NAME,
         "Read(~/**)",
-        "Edit(~/.claude/settings.json)",
+        "Edit(~/.clawcodex/settings.json)",
     ]
     # Cross-check: the hardcoded literal above is only correct because of this.
     assert AGENT_TOOL_NAME == "Agent"

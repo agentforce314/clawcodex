@@ -2,9 +2,14 @@
 
 Port of ``typescript/src/utils/worktree.ts`` (the *session* subset used by
 ``setup.ts`` and ``WorktreeExitDialog.tsx``): create-or-resume an isolated
-worktree at ``<repoRoot>/.claude/worktrees/<slug>`` on branch
+worktree at ``<repoRoot>/.clawcodex/worktrees/<slug>`` on branch
 ``worktree-<slug>``, run the whole session inside it, and at exit either keep
 it or remove it (directory + branch).
+
+Worktrees created before the directory rebrand live under
+``<repoRoot>/.claude/worktrees/`` and cannot be file-copied (git registers
+them in ``.git`` by absolute path), so resume and cleanup accept the legacy
+location; NEW worktrees are always created under ``.clawcodex/worktrees/``.
 
 Relationship to the other worktree helpers in this repo — do NOT merge them:
 ``src/utils/git.py::create_worktree/remove_worktree`` (used by
@@ -51,7 +56,10 @@ logger = logging.getLogger(__name__)
 MAX_WORKTREE_SLUG_LENGTH = 64
 _VALID_SLUG_SEGMENT = re.compile(r"^[a-zA-Z0-9._-]+$")
 
-WORKTREES_SUBDIR = os.path.join(".claude", "worktrees")
+WORKTREES_SUBDIR = os.path.join(".clawcodex", "worktrees")
+
+#: Pre-rebrand location — resume/cleanup only, never used for creation.
+LEGACY_WORKTREES_SUBDIR = os.path.join(".claude", "worktrees")
 
 #: Env channel launcher → (Ink TUI, agent-server). Keep in sync with
 #: ``ui-tui/src/lib/worktree.ts``.
@@ -186,7 +194,7 @@ def _git(
 
 
 def validate_worktree_slug(slug: str) -> None:
-    """Reject slugs that could escape ``.claude/worktrees/`` (TS parity).
+    """Reject slugs that could escape ``.clawcodex/worktrees/`` (TS parity).
 
     The slug is joined into the worktrees dir with ``os.path.join``, which
     normalizes ``..`` segments and discards the prefix for absolute paths —
@@ -231,8 +239,16 @@ def worktrees_dir(repo_root: str) -> str:
     return os.path.join(repo_root, WORKTREES_SUBDIR)
 
 
+def legacy_worktrees_dir(repo_root: str) -> str:
+    return os.path.join(repo_root, LEGACY_WORKTREES_SUBDIR)
+
+
 def worktree_path_for(repo_root: str, slug: str) -> str:
     return os.path.join(worktrees_dir(repo_root), flatten_slug(slug))
+
+
+def legacy_worktree_path_for(repo_root: str, slug: str) -> str:
+    return os.path.join(legacy_worktrees_dir(repo_root), flatten_slug(slug))
 
 
 def parse_pr_reference(text: str) -> int | None:
@@ -319,12 +335,22 @@ def _read_resumable_worktree(worktree_path: str) -> bool:
 def _get_or_create_worktree(
     repo_root: str, slug: str, pr_number: int | None = None
 ) -> _CreateResult:
-    """Create the worktree for ``slug``, or resume it if it already exists."""
+    """Create the worktree for ``slug``, or resume it if it already exists.
+
+    Resume checks the canonical ``.clawcodex/worktrees/`` location first,
+    then the pre-rebrand ``.claude/worktrees/`` one — an existing legacy
+    worktree (git-registered at its absolute path) is resumed in place
+    rather than shadowed by a fresh tree, which would also fail on the
+    branch being checked out there.
+    """
     worktree_path = worktree_path_for(repo_root, slug)
     branch = worktree_branch_name(slug)
 
     if _read_resumable_worktree(worktree_path):
         return _CreateResult(worktree_path=worktree_path, worktree_branch=branch, existed=True)
+    legacy_path = legacy_worktree_path_for(repo_root, slug)
+    if _read_resumable_worktree(legacy_path):
+        return _CreateResult(worktree_path=legacy_path, worktree_branch=branch, existed=True)
 
     os.makedirs(worktrees_dir(repo_root), exist_ok=True)
 
@@ -393,17 +419,18 @@ def _copy_local_settings(repo_root: str, worktree_path: str) -> None:
     """Propagate local settings (permission grants, hook config the worktree
     session needs) — best-effort, TS parity.
 
-    Two tiers, both copied when present: clawcodex's own project tier
-    (``.clawcodex/settings.local.json`` — permission rules; namespaced away
-    from the real Claude Code harness, see src/permissions/settings_paths.py)
-    and the harness-compatible ``.claude/settings.local.json`` (read for
-    hooks; the tier TS itself copies).
+    Copies clawcodex's own project tier (``.clawcodex/settings.local.json``
+    — permission rules AND hook config since the directory rebrand; see
+    src/permissions/settings_paths.py). The pre-rebrand extra copy of the
+    real Claude Code harness's ``.claude/settings.local.json`` is gone:
+    no clawcodex subsystem reads that tier anymore, and propagating a
+    foreign harness's grants into the worktree was exactly the coupling
+    the rebrand removes.
     """
     from src.permissions.settings_paths import local_settings_path
 
     sources = [
         local_settings_path(repo_root),
-        os.path.join(repo_root, ".claude", "settings.local.json"),
     ]
     for source in sources:
         rel = os.path.relpath(source, repo_root)
@@ -631,16 +658,25 @@ def cleanup_worktree(session: WorktreeSession) -> tuple[bool, str]:
             f"refusing to clean up: branch {session.worktree_branch!r} is not "
             "a worktree-* session branch"
         )
-    expected_root = os.path.abspath(worktrees_dir(session.repo_root))
+    # Legacy root accepted so a resumed pre-rebrand worktree can still be
+    # removed from the exit dialog.
+    expected_roots = [
+        os.path.abspath(worktrees_dir(session.repo_root)),
+        os.path.abspath(legacy_worktrees_dir(session.repo_root)),
+    ]
     actual_path = os.path.abspath(session.worktree_path)
-    try:
-        inside = os.path.commonpath([expected_root, actual_path]) == expected_root
-    except ValueError:  # different drives (Windows) — definitely outside
-        inside = False
+    inside = False
+    for expected_root in expected_roots:
+        try:
+            if os.path.commonpath([expected_root, actual_path]) == expected_root:
+                inside = True
+                break
+        except ValueError:  # different drives (Windows) — definitely outside
+            continue
     if not inside:
         return False, (
             f"refusing to clean up: {session.worktree_path} is outside "
-            f"{expected_root}"
+            f"{expected_roots[0]}"
         )
 
     _, remove_err, remove_rc = _git(

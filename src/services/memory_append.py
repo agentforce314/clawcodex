@@ -9,7 +9,7 @@ the trigger glue: no ``#`` detection or append function exists in the
 snapshot. This module supplies that glue with a documented discipline:
 
 * ensure the file exists (ensure-create via append-mode open, plus the
-  same ``~/.claude`` mkdir rule as the ``/memory`` port);
+  same ``~/.clawcodex`` mkdir rule as the ``/memory`` port);
 * separate from existing content with a single newline (adding one to
   a file that doesn't end in ``\\n`` first);
 * write the note as a ``- `` bullet line unless the user already
@@ -46,10 +46,10 @@ def append_memory_note(path: str, note: str) -> bool:
         return False
     try:
         target = Path(path)
-        claude_home = Path.home() / ".claude"
+        config_home = Path.home() / ".clawcodex"
         try:
-            if target.resolve().is_relative_to(claude_home.resolve()):
-                claude_home.mkdir(parents=True, exist_ok=True)
+            if target.resolve().is_relative_to(config_home.resolve()):
+                config_home.mkdir(parents=True, exist_ok=True)
         except (OSError, ValueError):
             pass
         target.parent.mkdir(parents=True, exist_ok=True)

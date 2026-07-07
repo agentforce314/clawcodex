@@ -107,7 +107,7 @@ Include:
 
 ## Step 6: Create skills (if user chose skills)
 
-Create skills at `.claude/skills/<name>/SKILL.md`:
+Create skills at `.clawcodex/skills/<name>/SKILL.md`:
 ```yaml
 ---
 name: <skill-name>
@@ -1198,8 +1198,8 @@ INIT_COMMAND = PromptCommand(
 AUTO_FIX_PROMPT = (
     "The user wants to configure auto-fix settings. Auto-fix automatically runs lint "
     "and test commands after AI file edits, feeding errors back for self-repair.\n\n"
-    "Current settings location: `.claude/settings.json` or "
-    "`.claude/settings.local.json`\n\n"
+    "Current settings location: `.clawcodex/settings.json` or "
+    "`.clawcodex/settings.local.json`\n\n"
     "Example configuration:\n```json\n{\n  \"autoFix\": {\n    \"enabled\": true,\n"
     "    \"lint\": \"eslint . --fix\",\n    \"test\": \"bun test\",\n"
     "    \"maxRetries\": 3,\n    \"timeout\": 30000\n  }\n}\n```\n\n"

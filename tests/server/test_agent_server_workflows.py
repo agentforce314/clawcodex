@@ -212,7 +212,7 @@ _SAVED_WF = 'meta = {"name": "triage", "description": "Sort issues", "phases": [
 
 
 async def test_list_workflow_commands_includes_bundled_and_saved(tmp_path):
-    wf_dir = tmp_path / ".claude" / "workflows"
+    wf_dir = tmp_path / ".clawcodex" / "workflows"
     wf_dir.mkdir(parents=True)
     (wf_dir / "triage.py").write_text(_SAVED_WF, encoding="utf-8")
 
@@ -234,7 +234,7 @@ async def test_list_workflow_commands_empty_when_disabled(tmp_path, monkeypatch)
 
 
 async def test_workflow_command_expands_directive(tmp_path):
-    wf_dir = tmp_path / ".claude" / "workflows"
+    wf_dir = tmp_path / ".clawcodex" / "workflows"
     wf_dir.mkdir(parents=True)
     (wf_dir / "triage.py").write_text(_SAVED_WF, encoding="utf-8")
 

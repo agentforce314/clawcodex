@@ -1,4 +1,4 @@
-"""Auto-memory subsystem (`~/.claude/projects/<slug>/memory/`).
+"""Auto-memory subsystem (`~/.clawcodex/projects/<slug>/memory/`).
 
 Mirrors `typescript/src/memdir/`. Slice A in the ch11 refactor:
 path resolution, type taxonomy, prompt builders. Slices B (recall) and C

@@ -51,7 +51,7 @@ def test_cli_main_strips_inherited_worktree_env():
     from src.cli import main
 
     inherited = {
-        ENV_PATH: "/outer/.claude/worktrees/x",
+        ENV_PATH: "/outer/.clawcodex/worktrees/x",
         "CLAWCODEX_WORKTREE_NAME": "x",
         "CLAWCODEX_WORKTREE_BRANCH": "worktree-x",
         "CLAWCODEX_WORKTREE_ORIGINAL_CWD": "/outer",
@@ -77,11 +77,11 @@ def _launcher_args(worktree: WorktreeSession | None) -> SimpleNamespace:
 
 def test_child_env_carries_worktree_block_with_owner_pid():
     session = WorktreeSession(
-        worktree_name="feat", worktree_path="/r/.claude/worktrees/feat",
+        worktree_name="feat", worktree_path="/r/.clawcodex/worktrees/feat",
         worktree_branch="worktree-feat", original_cwd="/r", repo_root="/r",
     )
     env = _child_env(_launcher_args(session))
-    assert env[ENV_PATH] == "/r/.claude/worktrees/feat"
+    assert env[ENV_PATH] == "/r/.clawcodex/worktrees/feat"
     assert env["CLAWCODEX_WORKTREE_NAME"] == "feat"
     assert env["CLAWCODEX_WORKTREE_BRANCH"] == "worktree-feat"
     assert env["CLAWCODEX_WORKTREE_ORIGINAL_CWD"] == "/r"
@@ -136,7 +136,7 @@ def test_print_mode_chdirs_into_worktree_and_prints_keep_note(tmp_path, monkeypa
         rc = cli._run_print_mode(_headless_args(worktree="headless-wt"))
 
     assert rc == 0
-    expected_wt = str(repo / ".claude" / "worktrees" / "headless-wt")
+    expected_wt = str(repo / ".clawcodex" / "worktrees" / "headless-wt")
     assert os.path.realpath(seen["cwd"]) == os.path.realpath(expected_wt)
     err = capsys.readouterr().err
     assert "Worktree kept at" in err
