@@ -2,7 +2,7 @@
 
 Port of ``typescript/src/commands/memory/`` + the core of ``MemoryFileSelector``.
 Presents the CLAUDE.md memory hierarchy — the synthetic **User memory**
-(``~/.claude/CLAUDE.md``) and **Project memory** (nearest loaded ancestor
+(``~/.clawcodex/CLAUDE.md``) and **Project memory** (nearest loaded ancestor
 ``CLAUDE.md``, falling back to ``{cwd}/CLAUDE.md``) candidates, differentiated via
 option *descriptions* (the TS selector's real channel), plus the existing files
 enumerated by the ``claude_md`` port — ensure-creates the selected file
