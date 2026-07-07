@@ -17,6 +17,7 @@ import { PetPicker } from './petPicker.js'
 import { PluginsHub } from './pluginsHub.js'
 import { ApprovalPrompt, ClarifyPrompt, ConfirmPrompt } from './prompts.js'
 import { SkillsHub } from './skillsHub.js'
+import { WorktreeExitPrompt } from './worktreeExitPrompt.js'
 
 const COMPLETION_WINDOW = 16
 
@@ -29,6 +30,16 @@ export function PromptZone({
 }: Pick<AppOverlaysProps, 'cols' | 'onApprovalChoice' | 'onClarifyAnswer' | 'onSecretSubmit' | 'onSudoSubmit'>) {
   const overlay = useStore($overlayState)
   const theme = useStore($uiTheme)
+
+  // The exit flow outranks everything: the user has already asked to leave,
+  // and the dialog's Esc explicitly returns to the session.
+  if (overlay.worktreeExit) {
+    return (
+      <Box flexDirection="column" flexShrink={0} paddingX={1} paddingY={1}>
+        <WorktreeExitPrompt req={overlay.worktreeExit} t={theme} />
+      </Box>
+    )
+  }
 
   if (overlay.approval) {
     return (

@@ -16,7 +16,8 @@ const buildOverlayState = (): OverlayState => ({
   secret: null,
   sessions: false,
   skillsHub: false,
-  sudo: null
+  sudo: null,
+  worktreeExit: null
 })
 
 export const $overlayState = atom<OverlayState>(buildOverlayState())
@@ -36,7 +37,8 @@ export const $isBlocked = computed(
     secret,
     sessions,
     skillsHub,
-    sudo
+    sudo,
+    worktreeExit
   }) =>
     Boolean(
       agents ||
@@ -51,7 +53,8 @@ export const $isBlocked = computed(
       secret ||
       sessions ||
       skillsHub ||
-      sudo
+      sudo ||
+      worktreeExit
     )
 )
 
@@ -80,5 +83,9 @@ export const resetFlowOverlays = () =>
     petPicker: $overlayState.get().petPicker,
     pluginsHub: $overlayState.get().pluginsHub,
     sessions: $overlayState.get().sessions,
-    skillsHub: $overlayState.get().skillsHub
+    skillsHub: $overlayState.get().skillsHub,
+    // Deliberately preserved: the exit keep/remove dialog is an explicit user
+    // flow, not turn-scoped — a background turn completing while it is up
+    // must not wipe it (that would strand requestExit's in-flight guard).
+    worktreeExit: $overlayState.get().worktreeExit
   })

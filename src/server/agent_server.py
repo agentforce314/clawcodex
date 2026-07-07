@@ -32,6 +32,10 @@ client → server (``send_to_agent``)::
     {type:'control_request', request_id, request:{subtype:'set_model', model, provider?}}
                                              # replies {ok, model, warning?} | {ok:false, error}
     {type:'control_request', request_id, request:{subtype:'get_settings'|'get_context_usage'}}
+    {type:'control_request', request_id, request:{subtype:'worktree_status'}}
+                                             # {ok, active, name?, path?, branch?, git_ok?, dirty_files?, commits?}
+    {type:'control_request', request_id, request:{subtype:'worktree_exit', action:'keep'|'remove'}}
+                                             # {ok, message} | {ok:false, error}; client uses a LONG timeout
 
 Concurrency model
 -----------------
@@ -173,6 +177,9 @@ class _AgentSession:
     _goal_mgr: Any = None
     # Monotonic goal-state capture counter (see _goal_snapshot_locked).
     _goal_rev: int = 0
+    # --worktree exit already serviced (keep or remove) — a second
+    # worktree_exit is refused so the client can't double-remove.
+    _worktree_done: bool = False
 
     # Worker + cross-thread coordination.
     _inbox: _queue.Queue = field(default_factory=_queue.Queue)
@@ -638,6 +645,12 @@ class _AgentSession:
             return
         if subtype == "advisor":
             self._do_advisor_command(request_id, inner.get("arg"))
+            return
+        if subtype == "worktree_status":
+            await self._do_worktree_status(request_id)
+            return
+        if subtype == "worktree_exit":
+            await self._do_worktree_exit(request_id, inner.get("action"))
             return
         if subtype == "clear":
             # Reset the conversation so /clear actually starts a fresh context
@@ -2114,6 +2127,116 @@ class _AgentSession:
         except Exception as exc:  # noqa: BLE001
             logger.exception("[agent-server] subgoal command failed")
             self._reply(request_id, {"ok": False, "error": str(exc)})
+
+    def _worktree_env_session(self):
+        """The --worktree session advertised by the launcher, if any.
+
+        Read from ``CLAWCODEX_WORKTREE_*`` (set by src/cli.py / tui_launcher
+        for the worktree THIS process tree was launched into; cli.py strips
+        any inherited block at entry, so nested sessions never see one).
+        Gated on ``single_session``: the env block is process-wide, so on the
+        multi-session --http transport it must not be visible — any WS client
+        could otherwise remove a worktree it doesn't own.
+        """
+        if not self.config.single_session or self._worktree_done:
+            return None
+        from src.utils.worktree_session import WorktreeSession
+
+        return WorktreeSession.from_env()
+
+    async def _do_worktree_status(self, request_id: object) -> None:
+        """Exit-time snapshot for the client's keep/remove decision.
+
+        ``git_ok: False`` means the counts are placeholders, not measurements
+        — the client must fail closed (treat as has-changes, render no
+        numbers, never silent-remove).
+        """
+        ws = self._worktree_env_session()
+        if ws is None:
+            self._reply(request_id, {"ok": True, "active": False})
+            return
+
+        from src.utils.worktree_session import worktree_changes
+
+        changes = await asyncio.to_thread(worktree_changes, ws)
+        self._reply(request_id, {
+            "ok": True,
+            "active": True,
+            "name": ws.worktree_name,
+            "path": ws.worktree_path,
+            "branch": ws.worktree_branch,
+            "original_cwd": ws.original_cwd,
+            "git_ok": changes.git_ok,
+            "dirty_files": changes.dirty_files,
+            "commits": changes.commits,
+        })
+
+    async def _do_worktree_exit(self, request_id: object, action: object) -> None:
+        """Perform the exit-time keep/remove the client chose.
+
+        The client is about to terminate this process either way; ``remove``
+        chdirs to the original cwd first so the dying process doesn't hold
+        its cwd inside the directory being deleted. Runs in a thread — a
+        ``git worktree remove --force`` of a large tree can take minutes and
+        must not block the control loop (the client uses a long RPC timeout
+        for exactly this call).
+        """
+        ws = self._worktree_env_session()
+        if ws is None:
+            self._reply(request_id, {"ok": False, "error": "no active worktree session"})
+            return
+        if action == "keep":
+            from src.utils.worktree_session import keep_message
+
+            self._worktree_done = True
+            self._reply(request_id, {"ok": True, "message": keep_message(ws)})
+            return
+        if action != "remove":
+            self._reply(request_id, {
+                "ok": False,
+                "error": f"invalid worktree_exit action: {action!r} (keep | remove)",
+            })
+            return
+
+        # Idle-only, like every destructive control (clear/resume/rewind/…):
+        # the turn runs on the worker thread while this handler runs on the
+        # main loop, so without the guard a mid-turn exit could `git worktree
+        # remove --force` the directory out from under live tool calls
+        # (critic: worktree_exit was the only file-deleting control missing
+        # it). The client degrades the refusal to keep-and-exit.
+        with self._lock:
+            active = self._current_abort is not None
+        if active:
+            self._reply(request_id, {
+                "ok": False,
+                "error": "cannot remove the worktree during an active turn",
+            })
+            return
+
+        from src.utils.worktree_session import (
+            cleanup_worktree,
+            removal_message,
+            worktree_changes,
+        )
+
+        def _remove() -> dict:
+            import os
+
+            # Measure BEFORE removal — the message reports what was discarded.
+            changes = worktree_changes(ws)
+            try:
+                os.chdir(ws.original_cwd)
+            except OSError:
+                pass  # removal runs with explicit cwd=repo_root regardless
+            ok, error = cleanup_worktree(ws)
+            if not ok:
+                return {"ok": False, "error": error}
+            return {"ok": True, "message": removal_message(ws, changes)}
+
+        result = await asyncio.to_thread(_remove)
+        if result.get("ok"):
+            self._worktree_done = True
+        self._reply(request_id, result)
 
     def _do_advisor_command(self, request_id: object, arg: object) -> None:
         """Control handler for /advisor — configure the reviewer model.
