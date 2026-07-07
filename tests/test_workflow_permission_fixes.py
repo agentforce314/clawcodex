@@ -10,7 +10,7 @@ B) The internal tool-results spill dir is readable in any mode: the runtime
 
 Repro for both: ``/wc26-watch-guide`` under ``--dangerously-skip-permissions``
 failed with ``ToolPermissionError: path is outside allowed working directories:
-/private/tmp/claude_tool_results/<pid>/tool-results/toolu_*.txt``.
+/private/tmp/clawcodex_tool_results/<pid>/tool-results/toolu_*.txt``.
 """
 
 from __future__ import annotations
@@ -66,7 +66,7 @@ def test_tool_results_spill_dir_allowed_in_non_bypass_mode(tmp_path):
     out = ctx.ensure_allowed_path(str(target))
     assert str(out).endswith("toolu_vrtx_01CniSDiu45h5JZN2vUGFaTo.txt")
     # the spill dir is among the allowed roots
-    assert any("claude" in str(r).lower() and "tool-results" in str(r) for r in ctx.allowed_roots())
+    assert any("clawcodex" in str(r).lower() and "tool-results" in str(r) for r in ctx.allowed_roots())
 
 
 def test_unrelated_outside_path_still_blocked(tmp_path):

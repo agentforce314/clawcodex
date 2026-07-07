@@ -248,12 +248,12 @@ Whether you're prompted depends on permission mode:
 
 ### 4.5 Saving, discovery, and `args`
 
-- **Save:** in `/workflows`, select a run and press `s`. `Tab` toggles two locations: `.claude/workflows/` (project, shared via the repo) or `~/.claude/workflows/` (personal, all projects). Saved workflows run as `/<name>`. **A project workflow wins over a personal one** on name clash.
+- **Save:** in `/workflows`, select a run and press `s`. `Tab` toggles two locations: `.clawcodex/workflows/` (project, shared via the repo) or `~/.clawcodex/workflows/` (personal, all projects). Saved workflows run as `/<name>`. **A project workflow wins over a personal one** on name clash.
 - **`args`:** a saved workflow reads invocation input from the `args` global, passed as **structured data** (lists/dicts usable without parsing); `undefined`/`None` if omitted. Example: `Run /triage-issues on issues 1024, 1025, and 1030`.
 
 ### 4.6 Persistence and resume
 
-Every run writes its script to a file under the session's directory in `~/.claude/projects/<session>/`; Claude receives the path when the run starts (you can ask for it, diff it against a prior run, or edit it and relaunch). The runtime tracks each agent's result, which is what makes a run **resumable within the same session** (`p` in `/workflows`, or ask Claude to relaunch with the same script). Exiting Claude Code mid-run restarts it fresh next session.
+Every run writes its script to a file under `~/.clawcodex/transcripts/workflows/`; Claude receives the path when the run starts (you can ask for it, diff it against a prior run, or edit it and relaunch). The runtime tracks each agent's result, which is what makes a run **resumable within the same session** (`p` in `/workflows`, or ask Claude to relaunch with the same script). Exiting Claude Code mid-run restarts it fresh next session.
 
 ### 4.7 Cost
 
@@ -262,7 +262,7 @@ A workflow spawns many agents, so one run can use meaningfully more tokens than 
 ### 4.8 Turning workflows off
 
 - `/config` → toggle **Dynamic workflows** off (persists).
-- `"disableWorkflows": true` in `~/.claude/settings.json` (persists), or in managed settings for an org.
+- `"disableWorkflows": true` in `~/.clawcodex/settings.json` (persists), or in managed settings for an org.
 - `CLAUDE_CODE_DISABLE_WORKFLOWS=1` (read at startup).
 
 When disabled: bundled workflow commands are unavailable, the `ultracode` keyword no longer triggers a run, and `ultracode` is removed from the `/effort` menu.
@@ -299,7 +299,7 @@ The engine is a constellation of seams, not one module. The port maps each onto 
    └───────────────────────────┘    └─────────────────────────────────────┘
 
    discovery   ──►  /workflows (static) · /deep-research (bundled) ·
-                    /<name> per file in .claude/workflows + ~/.claude/workflows
+                    /<name> per file in .clawcodex/workflows + ~/.clawcodex/workflows
    approval    ──►  per-run permission prompt; subagents run acceptEdits + inherit allowlist
    gating      ──►  disableWorkflows setting · CLAUDE_CODE_DISABLE_WORKFLOWS · /config
 ```

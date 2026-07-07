@@ -469,10 +469,10 @@ class TestEngineProducesCacheableSystemBlocks(unittest.TestCase):
         from src.skills.create import create_skill
 
         # Plant a project skill discoverable from the engine's cwd:
-        # <cwd>/.claude/skills/<name>/SKILL.md → loaded_from="project", which
+        # <cwd>/.clawcodex/skills/<name>/SKILL.md → loaded_from="project", which
         # is in SKILLS_DIR_BUCKET so get_skill_tool_commands includes it.
         create_skill(
-            directory=self.workspace / ".claude" / "skills",
+            directory=self.workspace / ".clawcodex" / "skills",
             name="wiringdemo",
             description="a wiring demo skill",
             body="Hello from the wiring demo.",

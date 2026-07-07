@@ -125,7 +125,7 @@ class GetAutoMemPathTest(unittest.TestCase):
             for k in (
                 "CLAUDE_COWORK_MEMORY_PATH_OVERRIDE",
                 "CLAUDE_CODE_REMOTE_MEMORY_DIR",
-                "CLAUDE_CONFIG_DIR",
+                "CLAWCODEX_CONFIG_DIR",
             )
         }
         for k in self._saved:

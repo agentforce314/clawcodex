@@ -34,8 +34,8 @@ _DYNAMIC_MAX_DELAY = "1 hour"
 
 _MAINTENANCE_PROMPT = """Scheduled maintenance loop iteration.
 
-If .claude/loop.md exists, read it and follow it.
-Otherwise, if ~/.claude/loop.md exists, read it and follow it.
+If .clawcodex/loop.md exists, read it and follow it.
+Otherwise, if ~/.clawcodex/loop.md exists, read it and follow it.
 Otherwise:
 - continue any unfinished work from the conversation
 - tend to the current branch's pull request: review comments, failed CI runs, merge conflicts
@@ -195,8 +195,8 @@ def _build_dynamic_prompt(parsed: ParsedLoopArgs) -> str:
         effective_instructions = (
             "This is a maintenance loop with no explicit prompt.\n"
             "\nDetermine the effective prompt in this order:\n"
-            "1. If .claude/loop.md exists, read it and use it.\n"
-            "2. Otherwise, if ~/.claude/loop.md exists, read it and use it.\n"
+            "1. If .clawcodex/loop.md exists, read it and use it.\n"
+            "2. Otherwise, if ~/.clawcodex/loop.md exists, read it and use it.\n"
             "3. Otherwise, use this built-in maintenance prompt:\n"
             "\n--- BEGIN MAINTENANCE PROMPT ---\n"
             f"{_MAINTENANCE_PROMPT}\n"

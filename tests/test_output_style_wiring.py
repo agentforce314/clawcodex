@@ -6,7 +6,7 @@ G3 persistence (set_output_style → local settings tier),
 W3 availability (get_settings + validation against the loader's truth —
 the old fixed VALID_OUTPUT_STYLES list rejected the real builtin
 "explanatory" and accepted three nonexistent styles),
-G4 loader canon dir (GLOBAL_CONFIG_DIR primary, ~/.claude legacy fallback).
+G4 loader canon dir (GLOBAL_CONFIG_DIR only; the ~/.claude legacy fallback is gone).
 """
 from __future__ import annotations
 
@@ -153,7 +153,9 @@ class TestUserDirCanon:
         monkeypatch.setenv("HOME", str(tmp_path / "emptyhome"))
         assert "canonstyle" in available_output_styles()
 
-    def test_legacy_dir_fallback_and_canon_wins(self, tmp_path, monkeypatch):
+    def test_legacy_claude_dir_is_not_read(self, tmp_path, monkeypatch):
+        # Directory rebrand: ~/.claude/outputStyles is no longer consulted
+        # (migration copies it once instead). Only the canon dir loads.
         import src.config as config
         from src.outputStyles import available_output_styles, resolve_output_style
 
@@ -173,8 +175,8 @@ class TestUserDirCanon:
         monkeypatch.setattr(config, "GLOBAL_CONFIG_DIR", canon)
         monkeypatch.setenv("HOME", str(legacy_home))
         names = available_output_styles()
-        assert "legacystyle" in names  # legacy dir still readable
-        assert resolve_output_style("shared").prompt == "From canon."  # canon wins
+        assert "legacystyle" not in names  # legacy dir ignored
+        assert resolve_output_style("shared").prompt == "From canon."
 
 
 # ---------------------------------------------------------------------------

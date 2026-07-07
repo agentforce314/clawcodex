@@ -1,7 +1,7 @@
 """QA-2 — End-to-end real-skill tests.
 
 Drops three example SKILL.md files (under ``tests/fixtures/skills/``)
-into a workspace's ``.claude/skills/`` tree (via tmp-path symlink) and
+into a workspace's ``.clawcodex/skills/`` tree (via tmp-path symlink) and
 exercises them through the full ``SkillTool`` pipeline:
 
     fixture SKILL.md  ──►  load via get_all_skills  ──►  invoke via
@@ -68,7 +68,7 @@ def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[P
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     for var in (
-        "CLAUDE_CONFIG_DIR",
+        "CLAWCODEX_CONFIG_DIR",
         "CLAWCODEX_SKILLS_DIR",
         "CLAUDE_SKILLS_DIR",
         "CLAWCODEX_MANAGED_SKILLS_DIR",
@@ -77,7 +77,7 @@ def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[P
         "CLAUDE_CODE_ADDITIONAL_DIRECTORIES",
     ):
         monkeypatch.delenv(var, raising=False)
-    monkeypatch.setenv("CLAUDE_MANAGED_CONFIG_DIR", str(tmp_path / "managed"))
+    monkeypatch.setenv("CLAWCODEX_MANAGED_CONFIG_DIR", str(tmp_path / "managed"))
     yield home
 
 
@@ -96,17 +96,17 @@ def _clean_skill_state() -> Iterator[None]:
 
 @pytest.fixture
 def project_with_fixtures(tmp_path: Path, isolated_home: Path) -> Path:
-    """Construct a workspace whose ``.claude/skills/`` mirrors the
+    """Construct a workspace whose ``.clawcodex/skills/`` mirrors the
     fixture catalogue.
 
     Each fixture under ``tests/fixtures/skills/<name>/`` is copied to
-    ``<workspace>/.claude/skills/<name>/`` so the unified loader picks
+    ``<workspace>/.clawcodex/skills/<name>/`` so the unified loader picks
     them up via the project-skills walk. We copy (rather than symlink)
     so the dedup-by-realpath logic doesn't collapse them with the
     fixtures dir itself.
     """
     project = tmp_path / "proj"
-    skills_root = project / ".claude" / "skills"
+    skills_root = project / ".clawcodex" / "skills"
     skills_root.mkdir(parents=True)
 
     for name in FIXTURE_NAMES:
@@ -137,7 +137,7 @@ def test_commit_helper_renders_all_substitutions(
     assert out["success"] is True, f"unexpected failure: {out}"
     prompt = out["prompt"]
 
-    skill_dir = project_with_fixtures / ".claude" / "skills" / "commit-helper"
+    skill_dir = project_with_fixtures / ".clawcodex" / "skills" / "commit-helper"
     expected_dir_str = str(skill_dir.resolve())
 
     # (a) base-dir header — exact format pinned by render_skill_prompt.

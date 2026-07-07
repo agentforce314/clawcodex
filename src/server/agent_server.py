@@ -501,8 +501,8 @@ class _AgentSession:
                 from src.plugins.loader import load_plugins_from_directories
 
                 dirs = [
-                    str(Path.home() / ".claude" / "plugins"),
-                    str(Path(self.cwd) / ".claude" / "plugins"),
+                    str(Path.home() / ".clawcodex" / "plugins"),
+                    str(Path(self.cwd) / ".clawcodex" / "plugins"),
                 ]
                 count = len(load_plugins_from_directories(dirs).plugins)
             except Exception:  # noqa: BLE001
@@ -515,8 +515,8 @@ class _AgentSession:
                 from src.plugins.loader import load_plugins_from_directories
 
                 dirs = [
-                    str(Path.home() / ".claude" / "plugins"),
-                    str(Path(self.cwd) / ".claude" / "plugins"),
+                    str(Path.home() / ".clawcodex" / "plugins"),
+                    str(Path(self.cwd) / ".clawcodex" / "plugins"),
                 ]
                 res = load_plugins_from_directories(dirs)
                 plugins = [
@@ -1331,7 +1331,7 @@ class _AgentSession:
 
     def _do_list_workflow_commands(self, request_id: object) -> None:
         """Slash-menu catalog: bundled (/deep-research) + saved
-        ``.claude/workflows/*.py`` workflow commands, read fresh from disk each
+        ``.clawcodex/workflows/*.py`` workflow commands, read fresh from disk each
         call so a workflow authored mid-session (the ultracode keyword flow)
         appears without a restart — replaces the old REPL's mtime-gated
         ``_refresh_workflow_commands`` loop."""

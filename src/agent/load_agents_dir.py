@@ -11,7 +11,7 @@ Last-wins merge order on duplicate ``agent_type``:
 
 A module-level cache keyed on cwd avoids re-walking the filesystem on
 every prompt build. Call ``clear_agent_definitions_cache()`` after a
-known on-disk change (e.g., the user edits ``~/.claude/agents/foo.md``)
+known on-disk change (e.g., the user edits ``~/.clawcodex/agents/foo.md``)
 to force a refresh.
 """
 from __future__ import annotations

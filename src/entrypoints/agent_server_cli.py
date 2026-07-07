@@ -109,6 +109,15 @@ def _sanitize_agent_server_mode(args: Any, dangerously: bool) -> None:
 
 def run_agent_server_subcommand(argv: list[str]) -> int:
     """Entry point for ``clawcodex agent-server`` (fast-path subcommand)."""
+    # Directory-rebrand migration: the Ink TUI may exec this entry without
+    # going through ``cli.main``'s sieve, so the marker-gated one-time
+    # ``~/.claude`` → ``~/.clawcodex`` copy is repeated here (idempotent).
+    try:
+        from src.utils.legacy_migration import migrate_user_dir_once
+        migrate_user_dir_once()
+    except Exception:  # noqa: BLE001 — migration is best-effort by contract
+        pass
+
     parser = argparse.ArgumentParser(
         prog="clawcodex agent-server",
         description="Run the Direct Connect agent server (TUI-client backend).",

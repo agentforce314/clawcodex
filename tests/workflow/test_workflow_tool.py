@@ -85,7 +85,7 @@ def test_resolve_source_script_path(tmp_path):
 
 
 def test_resolve_source_named(tmp_path):
-    wf_dir = tmp_path / ".claude" / "workflows"
+    wf_dir = tmp_path / ".clawcodex" / "workflows"
     wf_dir.mkdir(parents=True)
     (wf_dir / "demo.py").write_text("named body", encoding="utf-8")
     assert _resolve_source({"name": "demo"}, tmp_path) == ("named body", None)

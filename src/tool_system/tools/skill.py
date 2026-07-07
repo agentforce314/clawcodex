@@ -489,9 +489,9 @@ def _get_skills_dir() -> Path | None:
         p = Path(env).expanduser().resolve()
         if p.is_dir():
             return p
-    for d in (Path.home() / ".clawcodex" / "skills", Path.home() / ".claude" / "skills"):
-        if d.is_dir():
-            return d
+    d = Path.home() / ".clawcodex" / "skills"
+    if d.is_dir():
+        return d
     return None
 
 

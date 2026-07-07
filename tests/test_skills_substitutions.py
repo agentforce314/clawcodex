@@ -46,8 +46,8 @@ def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[P
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     for var in (
-        "CLAUDE_CONFIG_DIR",
-        "CLAUDE_MANAGED_CONFIG_DIR",
+        "CLAWCODEX_CONFIG_DIR",
+        "CLAWCODEX_MANAGED_CONFIG_DIR",
         "CLAWCODEX_SKILLS_DIR",
         "CLAUDE_SKILLS_DIR",
         "CLAWCODEX_MANAGED_SKILLS_DIR",
@@ -56,7 +56,7 @@ def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[P
         "CLAUDE_CODE_ADDITIONAL_DIRECTORIES",
     ):
         monkeypatch.delenv(var, raising=False)
-    monkeypatch.setenv("CLAUDE_MANAGED_CONFIG_DIR", str(tmp_path / "managed"))
+    monkeypatch.setenv("CLAWCODEX_MANAGED_CONFIG_DIR", str(tmp_path / "managed"))
     yield home
 
 
@@ -223,7 +223,7 @@ def test_skilltool_invocation_substitutes_all_placeholders(
     tmp_path: Path, isolated_home: Path
 ) -> None:
     project = tmp_path / "proj"
-    skill_dir = project / ".claude" / "skills" / "showctx"
+    skill_dir = project / ".clawcodex" / "skills" / "showctx"
     _write_skill(
         skill_dir / "SKILL.md",
         "---\n"
@@ -258,7 +258,7 @@ def test_skilltool_unknown_session_id_renders_empty(
 ) -> None:
     project = tmp_path / "proj"
     _write_skill(
-        project / ".claude" / "skills" / "sess" / "SKILL.md",
+        project / ".clawcodex" / "skills" / "sess" / "SKILL.md",
         "---\ndescription: shows session\n---\nsession=[${CLAUDE_SESSION_ID}]",
     )
 

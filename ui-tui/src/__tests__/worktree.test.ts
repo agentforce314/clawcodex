@@ -9,7 +9,7 @@ const fullEnv = (overrides: Record<string, string | undefined> = {}) => ({
   CLAWCODEX_WORKTREE_NAME: 'fix-auth',
   CLAWCODEX_WORKTREE_ORIGINAL_CWD: '/repo',
   CLAWCODEX_WORKTREE_OWNER_PID: String(OWNER_PID),
-  CLAWCODEX_WORKTREE_PATH: '/repo/.claude/worktrees/fix-auth',
+  CLAWCODEX_WORKTREE_PATH: '/repo/.clawcodex/worktrees/fix-auth',
   CLAWCODEX_WORKTREE_REPO_ROOT: '/repo',
   ...overrides
 })
@@ -20,7 +20,7 @@ describe('parseWorktreeSession', () => {
       branch: 'worktree-fix-auth',
       name: 'fix-auth',
       originalCwd: '/repo',
-      path: '/repo/.claude/worktrees/fix-auth',
+      path: '/repo/.clawcodex/worktrees/fix-auth',
       repoRoot: '/repo'
     })
   })

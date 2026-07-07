@@ -14,7 +14,7 @@ Usage::
 The function is a near-zero-cost no-op when ``CLAUDE_CODE_PROFILE_STARTUP``
 is unset; that gate is what makes call sites safe to scatter through the
 critical path. When the env var is truthy at process start, an ``atexit``
-handler writes the report to ``.claude/startup-perf/{session_id}.txt`` and
+handler writes the report to ``.clawcodex/startup-perf/{session_id}.txt`` and
 emits a one-line stderr summary.
 
 The chapter's thesis (line 205): *"Measurement first, optimization second,
@@ -52,13 +52,13 @@ _PROFILING_ENABLED: bool = False
 _SESSION_ID: str = uuid.uuid4().hex[:12]
 
 # Output directory. Lazy-created on first write; never read at import time.
-# Honors ``CLAUDE_CONFIG_DIR`` (matches the codebase's existing config-dir
+# Honors ``CLAWCODEX_CONFIG_DIR`` (matches the codebase's existing config-dir
 # resolution at ``src/memdir/paths.py:108`` ``get_claude_config_home_dir``).
 def _resolve_output_dir() -> Path:
-    override = os.environ.get("CLAUDE_CONFIG_DIR")
+    override = os.environ.get("CLAWCODEX_CONFIG_DIR")
     if override:
         return Path(override).expanduser() / "startup-perf"
-    return Path.home() / ".claude" / "startup-perf"
+    return Path.home() / ".clawcodex" / "startup-perf"
 
 
 _OUTPUT_DIR = _resolve_output_dir()

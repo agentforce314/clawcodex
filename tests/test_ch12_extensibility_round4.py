@@ -23,7 +23,7 @@ class TestSkillDeliversBody(unittest.TestCase):
         from src.tool_system.context import ToolContext
 
         with tempfile.TemporaryDirectory() as tmp:
-            skill_dir = Path(tmp) / ".claude" / "skills" / "greet"
+            skill_dir = Path(tmp) / ".clawcodex" / "skills" / "greet"
             skill_dir.mkdir(parents=True)
             (skill_dir / "SKILL.md").write_text(
                 "---\nname: greet\ndescription: greet the user\n---\n"

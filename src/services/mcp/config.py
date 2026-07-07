@@ -50,17 +50,17 @@ def _get_cwd() -> str:
 
 
 def _get_global_config_dir() -> Path:
-    env_override = os.environ.get("CLAUDE_CONFIG_DIR")
+    env_override = os.environ.get("CLAWCODEX_CONFIG_DIR")
     if env_override:
         return Path(env_override).expanduser().resolve()
-    return Path.home() / ".claude"
+    return Path.home() / ".clawcodex"
 
 
 def _get_managed_file_path() -> Path:
-    env_override = os.environ.get("CLAUDE_MANAGED_CONFIG_DIR")
+    env_override = os.environ.get("CLAWCODEX_MANAGED_CONFIG_DIR")
     if env_override:
         return Path(env_override).expanduser().resolve()
-    return Path("/etc/claude")
+    return Path("/etc/clawcodex")
 
 
 def get_enterprise_mcp_file_path() -> str:
@@ -383,9 +383,9 @@ def get_mcp_configs_by_scope(
         cwd, walked toward the filesystem root. Closest-parent-wins.
         The cwd itself is intentionally excluded so it can be tagged
         ``local`` with stricter approval semantics.
-      - ``user``: ``~/.claude/config.json``'s ``mcpServers`` field.
-      - ``enterprise``: ``/etc/claude/managed-mcp.json`` (or
-        ``$CLAUDE_MANAGED_CONFIG_DIR/managed-mcp.json``).
+      - ``user``: ``~/.clawcodex/config.json``'s ``mcpServers`` field.
+      - ``enterprise``: ``/etc/clawcodex/managed-mcp.json`` (or
+        ``$CLAWCODEX_MANAGED_CONFIG_DIR/managed-mcp.json``).
       - ``managed`` / ``dynamic`` / ``claudeai``: see ``get_managed_mcp_configs``,
         ``get_dynamic_mcp_configs``, and the future Phase 7.3 claudeai loader.
     """

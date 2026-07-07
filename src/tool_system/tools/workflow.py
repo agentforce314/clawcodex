@@ -32,7 +32,7 @@ _INPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "script": {"type": "string", "description": "An inline Python workflow script to run."},
-        "name": {"type": "string", "description": "Name of a saved workflow under .claude/workflows."},
+        "name": {"type": "string", "description": "Name of a saved workflow under .clawcodex/workflows."},
         "script_path": {"type": "string", "description": "Path to a workflow script file to run."},
         "args": {"description": "Structured input passed to the script as the `args` global."},
         "resume_from_run_id": {"type": "string", "description": "Resume a prior run by id (same session)."},
@@ -56,8 +56,8 @@ def resolve_named_workflow(name: str, cwd: Optional[Path]) -> Optional[str]:
     """Resolve a saved workflow ``name`` to its source (project wins over home)."""
     candidates = []
     if cwd is not None:
-        candidates.append(Path(cwd) / ".claude" / "workflows" / f"{name}.py")
-    candidates.append(Path.home() / ".claude" / "workflows" / f"{name}.py")
+        candidates.append(Path(cwd) / ".clawcodex" / "workflows" / f"{name}.py")
+    candidates.append(Path.home() / ".clawcodex" / "workflows" / f"{name}.py")
     for path in candidates:
         try:
             if path.is_file():
@@ -82,7 +82,7 @@ def _resolve_source(tool_input: dict, cwd: Optional[Path]) -> tuple[Optional[str
     if isinstance(name, str) and name.strip():
         source = resolve_named_workflow(name, cwd)
         if source is None:
-            return None, f"no saved workflow named '{name}' under .claude/workflows"
+            return None, f"no saved workflow named '{name}' under .clawcodex/workflows"
         return source, None
     return None, "provide one of: script, script_path, or name"
 

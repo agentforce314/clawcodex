@@ -56,11 +56,11 @@ class AuthResult:
 
 
 def _get_token_store_path() -> Path:
-    env_override = os.environ.get("CLAUDE_CONFIG_DIR")
+    env_override = os.environ.get("CLAWCODEX_CONFIG_DIR")
     if env_override:
         base = Path(env_override).expanduser().resolve()
     else:
-        base = Path.home() / ".claude"
+        base = Path.home() / ".clawcodex"
     base.mkdir(parents=True, exist_ok=True)
     return base / TOKEN_STORE_FILENAME
 
@@ -104,7 +104,7 @@ class McpTokenStore:
 
     Mirrors TS' platform-native secure storage pattern (macOS Keychain,
     Linux secret-service, Windows DPAPI) — replaces the previous
-    plaintext ``~/.claude/mcp_tokens.json`` file (a security regression
+    plaintext ``~/.clawcodex/mcp_tokens.json`` file (a security regression
     vs TS that the gap analysis flagged as a blocker).
 
     Backend detection: if ``keyring`` resolves to ``FailKeyring`` (no
@@ -114,7 +114,7 @@ class McpTokenStore:
     plaintext can opt in via ``MCP_ALLOW_PLAINTEXT_TOKEN_STORAGE=1``;
     that path is intentionally awkward to discover.
 
-    A small index file (``~/.claude/mcp_token_index.json``) tracks the
+    A small index file (``~/.clawcodex/mcp_token_index.json``) tracks the
     set of server names whose tokens are stored — the keyring API does
     not iterate by service, so we need a side-channel to implement
     ``list_servers``. The index contains only names, never tokens.

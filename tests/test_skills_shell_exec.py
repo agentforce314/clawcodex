@@ -49,8 +49,8 @@ def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[P
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     for var in (
-        "CLAUDE_CONFIG_DIR",
-        "CLAUDE_MANAGED_CONFIG_DIR",
+        "CLAWCODEX_CONFIG_DIR",
+        "CLAWCODEX_MANAGED_CONFIG_DIR",
         "CLAWCODEX_SKILLS_DIR",
         "CLAUDE_SKILLS_DIR",
         "CLAWCODEX_MANAGED_SKILLS_DIR",
@@ -59,7 +59,7 @@ def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[P
         "CLAUDE_CODE_ADDITIONAL_DIRECTORIES",
     ):
         monkeypatch.delenv(var, raising=False)
-    monkeypatch.setenv("CLAUDE_MANAGED_CONFIG_DIR", str(tmp_path / "managed"))
+    monkeypatch.setenv("CLAWCODEX_MANAGED_CONFIG_DIR", str(tmp_path / "managed"))
     yield home
 
 

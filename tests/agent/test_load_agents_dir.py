@@ -47,8 +47,8 @@ def _isolated_config_dirs(tmp_path, monkeypatch):
     managed_dir = tmp_path / "managed"
     user_dir.mkdir()
     managed_dir.mkdir()
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(user_dir))
-    monkeypatch.setenv("CLAUDE_MANAGED_CONFIG_DIR", str(managed_dir))
+    monkeypatch.setenv("CLAWCODEX_CONFIG_DIR", str(user_dir))
+    monkeypatch.setenv("CLAWCODEX_MANAGED_CONFIG_DIR", str(managed_dir))
     clear_agent_definitions_cache()
     yield {"user": user_dir, "managed": managed_dir, "tmp_path": tmp_path}
     clear_agent_definitions_cache()
@@ -59,7 +59,7 @@ def _by_type(agents: list[AgentDefinition]) -> dict[str, AgentDefinition]:
 
 
 def test_user_dir_agent_loaded(_isolated_config_dirs, tmp_path):
-    """An agent in ~/.claude/agents/ is discoverable."""
+    """An agent in ~/.clawcodex/agents/ is discoverable."""
     user_dir = _isolated_config_dirs["user"]
     _write_agent(user_dir / "agents" / "critic.md")
     agents = get_agent_definitions_with_overrides(str(tmp_path))
@@ -73,7 +73,7 @@ def test_project_dir_walk_up_to_home(_isolated_config_dirs, tmp_path):
     nested_cwd = proj / "src" / "sub"
     nested_cwd.mkdir(parents=True)
     _write_agent(
-        proj / ".claude" / "agents" / "reviewer.md",
+        proj / ".clawcodex" / "agents" / "reviewer.md",
         name="reviewer",
         description="Project reviewer",
     )
@@ -92,7 +92,7 @@ def test_project_overrides_user_same_agent_type(_isolated_config_dirs, tmp_path)
         description="from user",
     )
     _write_agent(
-        proj / ".claude" / "agents" / "foo.md",
+        proj / ".clawcodex" / "agents" / "foo.md",
         name="foo",
         description="from project",
     )
@@ -106,12 +106,12 @@ def test_managed_wins_over_project(_isolated_config_dirs, tmp_path):
     proj = tmp_path / "proj"
     proj.mkdir()
     _write_agent(
-        proj / ".claude" / "agents" / "foo.md",
+        proj / ".clawcodex" / "agents" / "foo.md",
         name="foo",
         description="from project",
     )
     _write_agent(
-        managed_dir / ".claude" / "agents" / "foo.md",
+        managed_dir / ".clawcodex" / "agents" / "foo.md",
         name="foo",
         description="from managed",
     )
@@ -207,7 +207,7 @@ def test_git_root_boundary_blocks_parent_dir_leak(_isolated_config_dirs, tmp_pat
     """Agents in dirs above the project's git-root must not leak in.
 
     Layout:
-        tmp_path/parent/.claude/agents/leaky.md   (must NOT appear)
+        tmp_path/parent/.clawcodex/agents/leaky.md   (must NOT appear)
         tmp_path/parent/proj/.git/                (the project's git root)
         tmp_path/parent/proj/src/                 (cwd)
     """
@@ -216,7 +216,7 @@ def test_git_root_boundary_blocks_parent_dir_leak(_isolated_config_dirs, tmp_pat
     cwd = proj / "src"
     cwd.mkdir(parents=True)
     (proj / ".git").mkdir()
-    _write_agent(parent / ".claude" / "agents" / "leaky.md", name="leaky", description="parent")
+    _write_agent(parent / ".clawcodex" / "agents" / "leaky.md", name="leaky", description="parent")
     agents = get_agent_definitions_with_overrides(str(cwd))
     assert "leaky" not in _by_type(agents)
 
@@ -227,7 +227,7 @@ def test_project_inside_git_root_still_loads(_isolated_config_dirs, tmp_path):
     (proj / ".git").mkdir(parents=True)
     cwd = proj / "src" / "nested"
     cwd.mkdir(parents=True)
-    _write_agent(proj / ".claude" / "agents" / "ok.md", name="ok", description="root-level agent")
+    _write_agent(proj / ".clawcodex" / "agents" / "ok.md", name="ok", description="root-level agent")
     agents = get_agent_definitions_with_overrides(str(cwd))
     assert "ok" in _by_type(agents)
 
@@ -236,7 +236,7 @@ def test_managed_source_label_preserved(_isolated_config_dirs, tmp_path):
     """Agents loaded from the managed dir keep ``source='managed'``."""
     managed_dir = _isolated_config_dirs["managed"]
     _write_agent(
-        managed_dir / ".claude" / "agents" / "policy.md",
+        managed_dir / ".clawcodex" / "agents" / "policy.md",
         name="policy",
         description="from managed",
     )
@@ -273,7 +273,7 @@ def test_cache_dedupes_path_aliases(_isolated_config_dirs, tmp_path):
     proj = tmp_path / "proj"
     proj.mkdir()
     _write_agent(
-        proj / ".claude" / "agents" / "x.md",
+        proj / ".clawcodex" / "agents" / "x.md",
         name="x",
         description="x",
     )

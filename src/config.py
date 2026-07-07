@@ -2,8 +2,8 @@
 
 Three-level config hierarchy matching TypeScript config.ts:
   Global:  ~/.clawcodex/config.json
-  Project: <git-root>/.claude/config.json
-  Local:   <git-root>/.claude/config.local.json
+  Project: <git-root>/.clawcodex/config.json
+  Local:   <git-root>/.clawcodex/config.local.json
 
 Inheritance: local > project > global (deep merge).
 """
@@ -30,7 +30,7 @@ GLOBAL_CONFIG_DIR = Path.home() / ".clawcodex"
 GLOBAL_CONFIG_FILE = GLOBAL_CONFIG_DIR / "config.json"
 HISTORY_FILE = GLOBAL_CONFIG_DIR / "history.jsonl"
 
-PROJECT_CONFIG_DIR_NAME = ".claude"
+PROJECT_CONFIG_DIR_NAME = ".clawcodex"
 PROJECT_CONFIG_FILE_NAME = "config.json"
 LOCAL_CONFIG_FILE_NAME = "config.local.json"
 
@@ -243,7 +243,7 @@ class ConfigManager:
 
         While the session is untrusted, the project/local tiers are
         stripped of trust-sensitive keys before merging (ch02 round-3
-        gap A5): a committable ``.claude/config.json`` must not be able
+        gap A5): a committable ``.clawcodex/config.json`` must not be able
         to redirect API traffic (``providers.*.base_url`` riding the
         user's global ``api_key``) or inject env before the folder-trust
         gate. Checked at merge time so a mid-session trust grant takes

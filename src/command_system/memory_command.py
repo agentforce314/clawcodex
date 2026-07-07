@@ -83,7 +83,7 @@ async def build_memory_options(cwd: str) -> list[UIOption]:
         files = []
 
     home = Path.home()
-    user_path = str(home / ".claude" / "CLAUDE.md")
+    user_path = str(home / ".clawcodex" / "CLAUDE.md")
     project_path = _resolve_project_memory_path(files, cwd)
 
     # Git-aware project description (TS: `${isGit ? 'Checked in at' : 'Saved in'} ./…`).
@@ -104,7 +104,7 @@ async def build_memory_options(cwd: str) -> list[UIOption]:
         UIOption(
             value=user_path,
             label="User memory",
-            description="Saved in ~/.claude/CLAUDE.md",  # verbatim TS (hardcoded tilde)
+            description="Saved in ~/.clawcodex/CLAUDE.md",  # hardcoded tilde (TS shape)
         ),
         UIOption(value=project_path, label="Project memory", description=project_desc),
     ]
@@ -129,11 +129,11 @@ async def build_memory_options(cwd: str) -> list[UIOption]:
 
 
 def _ensure_file(path: str) -> None:
-    """TS parity: mkdir the claude home when the path is under it, then
+    """TS parity: mkdir the config home when the path is under it, then
     exclusive-create an empty file (existing content preserved)."""
-    claude_home = str(Path.home() / ".claude")
-    if path.startswith(claude_home):
-        Path(claude_home).mkdir(parents=True, exist_ok=True)
+    config_home = str(Path.home() / ".clawcodex")
+    if path.startswith(config_home):
+        Path(config_home).mkdir(parents=True, exist_ok=True)
     try:
         with open(path, "x", encoding="utf-8"):
             pass

@@ -53,12 +53,12 @@ def test_keyword_detection_disabled(monkeypatch):
 
 
 def test_reminder_for_keyword():
-    # The keyword triggers author + SAVE (write .claude/workflows/<name>.py, don't run).
+    # The keyword triggers author + SAVE (write .clawcodex/workflows/<name>.py, don't run).
     r = uc.ultracode_reminder_for("ultracode: build X")
     assert r is not None
     assert "<system-reminder>" in r
     assert '"ultracode"' in r              # references the keyword
-    assert ".claude/workflows" in r        # author + save as a /<name> command
+    assert ".clawcodex/workflows" in r        # author + save as a /<name> command
     assert "Write the file" in r
     assert "do NOT run" in r               # …don't run it now
     assert "ToolSearch" in r               # forbid the tool/skill hunt (live-failure fix)
