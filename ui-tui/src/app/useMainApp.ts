@@ -1067,6 +1067,11 @@ export function useMainApp(gw: GatewayClient) {
     slashRef.current(`/model ${value}`)
   }, [])
 
+  const onLogoSelect = useCallback((value: string) => {
+    patchOverlayState({ logoPicker: false })
+    slashRef.current(`/logo ${value}`)
+  }, [])
+
   const closeLiveSession = useCallback(
     async (id: string) => {
       patchUiState({ status: 'closing session…' })
@@ -1169,6 +1174,7 @@ export function useMainApp(gw: GatewayClient) {
       clearSelection,
       newLiveSession: () => session.newLiveSession(),
       newPromptSession,
+      onLogoSelect,
       onModelSelect,
       // Resuming a cold session from the overlay CLOSES the current one, so it
       // must respect the busy guard just like the `/resume` slash path.
@@ -1191,6 +1197,7 @@ export function useMainApp(gw: GatewayClient) {
       clearSelection,
       closeLiveSession,
       newPromptSession,
+      onLogoSelect,
       onModelSelect,
       session
     ]
