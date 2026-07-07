@@ -778,6 +778,28 @@ def set_mcp_server_enabled(name: str, enabled: bool) -> None:
         _disabled_servers.add(name)
 
 
+def _write_user_config_atomic(config_file: Path, data: dict[str, Any]) -> None:
+    """Atomic 0600 replace for the user config file.
+
+    Since the directory rebrand this is ``~/.clawcodex/config.json`` — the
+    SAME file the secret store keeps provider API keys in (0600). A plain
+    truncate-in-place ``write_text`` could destroy those keys on a crash
+    mid-write, and a default-umask create would over-expose them.
+    """
+    tmp_path = str(config_file) + f".tmp.{os.getpid()}"
+    try:
+        fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp_path, str(config_file))
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def add_mcp_config(
     name: str,
     config: dict[str, Any],
@@ -836,7 +858,7 @@ def add_mcp_config(
             raise ValueError(f"MCP server {name} already exists in user config")
         servers[name] = config
         data["mcpServers"] = servers
-        config_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        _write_user_config_atomic(config_file, data)
 
 
 def remove_mcp_config(name: str, scope: ConfigScope) -> None:
@@ -873,7 +895,7 @@ def remove_mcp_config(name: str, scope: ConfigScope) -> None:
             raise ValueError(f"No user-scoped MCP server found with name: {name}")
         del servers[name]
         data["mcpServers"] = servers
-        config_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        _write_user_config_atomic(config_file, data)
     else:
         raise ValueError(f"Cannot remove MCP server from scope: {scope}")
 
