@@ -852,58 +852,140 @@ class TestWorktreeTools(ToolSystemTests):
 
 
 class TestPlanModeTools(ToolSystemTests):
-    def test_plan_mode_roundtrip(self) -> None:
+    """The faithful plan-mode tools (V2): the permission MODE is the state,
+    the plan lives in the session plan file, and ExitPlanMode restores the
+    stashed pre-plan mode (see src/tool_system/tools/plan_mode.py)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        # Isolate the session plan file/slug from other tests.
+        from src.utils.plans import clear_all_plan_slugs
+
+        clear_all_plan_slugs()
+        self.ctx.permission_context.mode = "default"
+
+    def tearDown(self) -> None:
+        from src.utils.plans import clear_all_plan_slugs, get_plan_file_path
+
+        try:
+            get_plan_file_path().unlink(missing_ok=True)
+        except OSError:
+            pass
+        clear_all_plan_slugs()
+        super().tearDown()
+
+    def test_plan_mode_roundtrip_restores_pre_plan_mode(self) -> None:
+        self.ctx.permission_context.mode = "acceptEdits"
         enter_out = EnterPlanModeTool.call({}, self.ctx).output
-        self.assertTrue(self.ctx.plan_mode)
+        self.assertEqual(self.ctx.permission_context.mode, "plan")
+        self.assertEqual(self.ctx.permission_context.pre_plan_mode, "acceptEdits")
         self.assertIn("Entered plan mode", enter_out["message"])
 
         exit_out = ExitPlanModeTool.call({}, self.ctx).output
-        self.assertFalse(self.ctx.plan_mode)
+        # Hook-auto-approve fallback path: mode restored to the stash.
+        self.assertEqual(self.ctx.permission_context.mode, "acceptEdits")
         self.assertFalse(exit_out["isAgent"])
-        self.assertTrue(exit_out["hasTaskTool"])
 
-    def test_plan_mode_exit_with_plan(self) -> None:
+    def test_exit_sets_one_shot_flags(self) -> None:
+        from src.bootstrap.state import (
+            has_exited_plan_mode_in_session,
+            needs_plan_mode_exit_attachment,
+            set_has_exited_plan_mode,
+            set_needs_plan_mode_exit_attachment,
+        )
+
+        set_has_exited_plan_mode(False)
+        set_needs_plan_mode_exit_attachment(False)
+        EnterPlanModeTool.call({}, self.ctx)
+        ExitPlanModeTool.call({}, self.ctx)
+        self.assertTrue(has_exited_plan_mode_in_session())
+        self.assertTrue(needs_plan_mode_exit_attachment())
+        set_has_exited_plan_mode(False)
+        set_needs_plan_mode_exit_attachment(False)
+
+    def test_plan_mode_exit_with_edited_plan_syncs_disk(self) -> None:
+        from src.utils.plans import get_plan_file_path
+
         EnterPlanModeTool.call({}, self.ctx)
 
         plan_content = "# My Plan\n\n- Do something\n- Do something else"
         exit_out = ExitPlanModeTool.call({"plan": plan_content}, self.ctx).output
 
         self.assertEqual(exit_out["plan"], plan_content)
-        self.assertIsNotNone(exit_out["filePath"])
-
-        plan_file = self.root / ".clawcodex" / "plan.md"
-        self.assertTrue(plan_file.exists())
+        self.assertTrue(exit_out["planWasEdited"])
+        plan_file = get_plan_file_path()
+        self.assertEqual(str(plan_file), exit_out["filePath"])
         self.assertEqual(plan_file.read_text(encoding="utf-8"), plan_content)
 
-    def test_plan_mode_exit_with_custom_path(self) -> None:
-        EnterPlanModeTool.call({}, self.ctx)
-
-        custom_path = self.root / "my-plan.md"
-        plan_content = "# Custom Plan"
-        exit_out = ExitPlanModeTool.call(
-            {"plan": plan_content, "planFilePath": str(custom_path)},
-            self.ctx,
-        ).output
-
-        self.assertEqual(exit_out["filePath"], str(custom_path))
-        self.assertTrue(custom_path.exists())
-
-    def test_plan_mode_exit_not_in_mode(self) -> None:
-        from src.tool_system.errors import ToolPermissionError
-
-        with self.assertRaises(ToolPermissionError):
-            ExitPlanModeTool.call({}, self.ctx)
-
-    def test_plan_mode_plan_validation(self) -> None:
-        from src.tool_system.errors import ToolInputError
+    def test_plan_read_from_disk_when_no_input(self) -> None:
+        from src.utils.plans import get_plan_file_path
 
         EnterPlanModeTool.call({}, self.ctx)
+        plan_file = get_plan_file_path()
+        plan_file.parent.mkdir(parents=True, exist_ok=True)
+        plan_file.write_text("# Disk Plan", encoding="utf-8")
 
-        with self.assertRaises(ToolInputError):
-            ExitPlanModeTool.call({"plan": 123}, self.ctx)
+        exit_out = ExitPlanModeTool.call({}, self.ctx).output
+        self.assertEqual(exit_out["plan"], "# Disk Plan")
+        self.assertNotIn("planWasEdited", exit_out)
 
-        with self.assertRaises(ToolInputError):
-            ExitPlanModeTool.call({"plan": "x", "planFilePath": 123}, self.ctx)
+    def test_exit_validate_rejects_outside_plan_mode(self) -> None:
+        # validateInput parity (ExitPlanModeV2Tool.ts:195-220): outside plan
+        # mode the tool is rejected with the TS message, no dialog.
+        validation = ExitPlanModeTool.validate_input({}, self.ctx)
+        self.assertFalse(validation.result)
+        self.assertIn("You are not in plan mode", validation.message)
+
+    def test_enter_rejected_in_agent_contexts(self) -> None:
+        from src.tool_system.errors import ToolExecutionError
+
+        self.ctx.agent_id = "a1234"
+        try:
+            with self.assertRaises(ToolExecutionError):
+                EnterPlanModeTool.call({}, self.ctx)
+        finally:
+            self.ctx.agent_id = None
+
+    def test_exit_result_mapping_texts(self) -> None:
+        from src.tool_system.tools.plan_mode import (
+            _exit_plan_mode_map_result,
+        )
+
+        # Empty plan → the simplified approval text.
+        content = _exit_plan_mode_map_result(
+            {"plan": None, "isAgent": False, "filePath": "/p.md"}, "t1"
+        )["content"]
+        self.assertEqual(
+            content,
+            "User has approved exiting plan mode. You can now proceed.",
+        )
+
+        # Agent → respond with "ok".
+        content = _exit_plan_mode_map_result(
+            {"plan": "x", "isAgent": True, "filePath": "/p.md"}, "t1"
+        )["content"]
+        self.assertIn('Please respond with "ok"', content)
+
+        # Normal plan → the approved-plan preamble + body (byte pins).
+        content = _exit_plan_mode_map_result(
+            {"plan": "PLAN BODY", "isAgent": False, "filePath": "/p.md"},
+            "t1",
+        )["content"]
+        self.assertIn(
+            "User has approved your plan. You can now start coding. "
+            "Start with updating your todo list if applicable",
+            content,
+        )
+        self.assertIn("Your plan has been saved to: /p.md", content)
+        self.assertIn("## Approved Plan:\nPLAN BODY", content)
+
+        # Edited plan → labeled.
+        content = _exit_plan_mode_map_result(
+            {"plan": "P", "isAgent": False, "filePath": "/p.md",
+             "planWasEdited": True},
+            "t1",
+        )["content"]
+        self.assertIn("## Approved Plan (edited by user):", content)
 
 
 if __name__ == "__main__":

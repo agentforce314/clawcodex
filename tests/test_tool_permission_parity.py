@@ -28,7 +28,11 @@ _GATED = {
     "Bash",                                          # code execution
     "WebFetch",                                      # arbitrary network egress
     "MCP", "ListMcpResourcesTool", "ReadMcpResourceTool",  # MCP boundary
-    "EnterPlanMode", "ExitPlanMode",                 # plan-mode meta
+    # Plan-mode meta: ExitPlanMode is the plan-confirmation gate (bypass-
+    # immune ask). EnterPlanMode AUTO-ALLOWS by design (plan-mode port —
+    # TS Tool.ts default-allow parity; the mode flip is restrictive-direction)
+    # and has its own pin below.
+    "ExitPlanMode",
 }
 
 
@@ -96,7 +100,6 @@ class TestGatedToolsStillAsk(_Base):
             "MCP": {"server": "s", "tool": "t"},
             "ListMcpResourcesTool": {},
             "ReadMcpResourceTool": {"server": "s", "uri": "u"},
-            "EnterPlanMode": {},
             "ExitPlanMode": {},
         }
         for name, inp in inputs.items():
@@ -106,6 +109,25 @@ class TestGatedToolsStillAsk(_Base):
                 _behavior(self.reg, name, inp, ctx), "ask",
                 f"{name} must remain gated (ask) in default mode",
             )
+
+    def test_enter_plan_mode_auto_allows_by_design(self) -> None:
+        # Plan-mode port: the reference's buildTool defaults checkPermissions
+        # to allow and EnterPlanMode defines none — no entry dialog, and no
+        # headless deny for proactive plan entry (design doc §1/§3.4).
+        ctx = _ctx("default", self.ws)
+        if self.reg.get("EnterPlanMode") is not None:
+            self.assertEqual(_behavior(self.reg, "EnterPlanMode", {}, ctx), "allow")
+
+    def test_exit_plan_mode_asks_even_in_bypass(self) -> None:
+        # The plan-approval gate must survive bypassPermissions (step 1e).
+        ctx = ToolContext(
+            workspace_root=self.ws,
+            permission_context=ToolPermissionContext(
+                mode="bypassPermissions", is_bypass_permissions_mode_available=True
+            ),
+        )
+        if self.reg.get("ExitPlanMode") is not None:
+            self.assertEqual(_behavior(self.reg, "ExitPlanMode", {}, ctx), "ask")
 
     def test_gated_tools_not_in_allow_set(self) -> None:
         # Guard against accidentally adding a gated tool to the allow-set.
