@@ -135,12 +135,27 @@ class TestE2EFileRead(unittest.TestCase):
         self.assertIn("Hello, world!", content)
 
     def test_read_outside_workspace_blocked(self) -> None:
-        """Read tool blocks reads outside workspace root."""
+        """Read tool blocks reads outside workspace root.
+
+        A bare ToolContext defaults to bypassPermissions, and — faithful to
+        TS ``shouldBypassPermissions`` (permissions.ts:1268-1281) — that mode
+        skips the working-directory allowlist entirely, so pin a gated mode.
+        In a gated mode the permission pipeline surfaces an *ask* before the
+        tool body runs (TS prompts for outside-cwd reads), so dispatch yields
+        an error result rather than raising; the containment gate itself
+        still hard-refuses the path.
+        """
+        self.ctx.permission_context.mode = "default"
+        result = self.registry.dispatch(
+            ToolCall(name="Read", input={"file_path": "/etc/passwd"}),
+            self.ctx,
+        )
+        self.assertTrue(result.is_error)
+        # "root:" is the first passwd entry on macOS and Linux; an error
+        # message legitimately mentioning a path or workspace *root* is fine.
+        self.assertNotIn("root:", str(result.output))  # no content leak
         with self.assertRaises(ToolPermissionError):
-            self.registry.dispatch(
-                ToolCall(name="Read", input={"file_path": "/etc/passwd"}),
-                self.ctx,
-            )
+            self.ctx.ensure_readable_path("/etc/passwd")
 
     def test_read_tool_is_concurrent_safe(self) -> None:
         """Read tool can be called concurrently."""
