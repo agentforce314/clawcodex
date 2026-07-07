@@ -97,8 +97,10 @@ describe('createSlashHandler', () => {
   it('exits locally for /quit', () => {
     const ctx = buildCtx()
 
+    // requestExit (not die): /quit routes through the --worktree keep/remove
+    // flow when one is active; requestExit itself dies for plain sessions.
     expect(createSlashHandler(ctx)('/quit')).toBe(true)
-    expect(ctx.session.die).toHaveBeenCalledTimes(1)
+    expect(ctx.session.requestExit).toHaveBeenCalledTimes(1)
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
   })
 
@@ -107,6 +109,7 @@ describe('createSlashHandler', () => {
     const ctx = buildCtx()
 
     expect(createSlashHandler(ctx)('/exit')).toBe(true)
+    expect(ctx.session.requestExit).not.toHaveBeenCalled()
     expect(ctx.session.die).not.toHaveBeenCalled()
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
     expect(ctx.transcript.sys).toHaveBeenCalledWith(DASHBOARD_EXIT_DISABLED_MESSAGE)
@@ -117,7 +120,7 @@ describe('createSlashHandler', () => {
     const ctx = buildCtx()
 
     expect(createSlashHandler(ctx)('/quit')).toBe(true)
-    expect(ctx.session.die).toHaveBeenCalledTimes(1)
+    expect(ctx.session.requestExit).toHaveBeenCalledTimes(1)
   })
 
   it('handles /update locally and exits with code 42 via dieWithCode', () => {
@@ -984,6 +987,7 @@ const buildSession = () => ({
   guardBusySessionSwitch: vi.fn(() => false),
   newLiveSession: vi.fn(),
   newSession: vi.fn(),
+  requestExit: vi.fn(),
   resetVisibleHistory: vi.fn(),
   resumeById: vi.fn(),
   setSessionStartedAt: vi.fn()

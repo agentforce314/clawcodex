@@ -4,6 +4,7 @@ import unicodeSpinners from 'unicode-animations'
 
 import { artWidth, lobster, LOBSTER_WIDTH, logo, LOGO_WIDTH } from '../banner.js'
 import { flat } from '../lib/text.js'
+import { getWorktreeSession } from '../lib/worktree.js'
 import type { Theme } from '../theme.js'
 import type { PanelSection, SessionInfo } from '../types.js'
 
@@ -174,6 +175,10 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
   const [systemOpen, setSystemOpen] = useState(false)
   const [mcpOpen, setMcpOpen] = useState(false)
 
+  // --worktree session (env-advertised by the launcher) — shown under cwd so
+  // parallel sessions are visually distinguishable at a glance.
+  const worktree = getWorktreeSession()
+
   const truncLine = (pfx: string, items: string[]) => {
     let line = ''
     let shown = 0
@@ -298,6 +303,12 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
             {info.cwd || process.cwd()}
           </Text>
 
+          {worktree && (
+            <Text color={t.color.muted} wrap="truncate-end">
+              worktree <Text color={t.color.accent}>{worktree.name}</Text> · {worktree.branch}
+            </Text>
+          )}
+
           {sid && (
             <Text>
               <Text color={t.color.sessionLabel}>Session: </Text>
@@ -327,6 +338,11 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
             <Text color={t.color.muted} wrap="truncate-end">
               {info.cwd || process.cwd()}
             </Text>
+            {worktree && (
+              <Text color={t.color.muted} wrap="truncate-end">
+                worktree <Text color={t.color.accent}>{worktree.name}</Text> · {worktree.branch}
+              </Text>
+            )}
             {sid && (
               <Text wrap="truncate-end">
                 <Text color={t.color.sessionLabel}>Session: </Text>

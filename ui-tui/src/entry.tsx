@@ -14,6 +14,7 @@ import { type MemorySnapshot, startMemoryMonitor } from './lib/memoryMonitor.js'
 import { openExternalUrl } from './lib/openExternalUrl.js'
 import { recordParentLifecycle } from './lib/parentLog.js'
 import { resetTerminalModes } from './lib/terminalModes.js'
+import { registerWorktreeNoteOnExit } from './lib/worktree.js'
 
 if (!process.stdin.isTTY) {
   console.log('clawcodex-tui: no TTY')
@@ -51,6 +52,11 @@ resetTerminalModes()
 process.on('exit', () => {
   resetTerminalModes(process.stdout, FULLSCREEN)
 })
+
+// --worktree keep/remove result under the final frame. Registered AFTER the
+// reset backstop (sane terminal) and BEFORE the cost summary so it reads as
+// the session's closing status line.
+registerWorktreeNoteOnExit()
 
 // Session cost summary under the final frame — the original's useCostSummary
 // process-exit hook (costHook.ts:12). Registered AFTER the reset backstop

@@ -28,6 +28,13 @@ import type { SessionInfo } from './types.js'
 const STARTUP_TIMEOUT_MS = 30_000
 const MAX_LOG_LINES = 500
 const RPC_TIMEOUT_MS = 5_000
+
+/** Worktree exit RPCs get a LONG deadline: `git worktree remove --force` on a
+ *  node_modules-scale tree can far exceed the default 5 s — a timeout there
+ *  would misreport "cleanup failed" and SIGTERM the backend mid-removal,
+ *  leaving a half-deleted directory. The prompt shows an interim
+ *  "Removing worktree…" state while this runs. */
+const WORKTREE_RPC_TIMEOUT_MS = 600_000
 // clawcodex app version shown in the banner ("clawcodex v{version}"). Keep in
 // sync with the installer (install.sh INSTALLER_VERSION).
 const CLAWCODEX_VERSION = '1.0.0'
@@ -607,6 +614,19 @@ export class GatewayClient extends EventEmitter {
         this.sendControl('interrupt', {})
 
         return Promise.resolve({ ok: true } as T)
+
+      // ── --worktree exit flow (long deadline: removal can take minutes) ───
+      case 'worktree.exit':
+        return this.controlQuery(
+          'worktree_exit',
+          { action: String(p.action ?? '') },
+          WORKTREE_RPC_TIMEOUT_MS
+        ).then(r => (r ?? { error: 'no response from backend', ok: false }) as T)
+
+      case 'worktree.status':
+        return this.controlQuery('worktree_status', {}, WORKTREE_RPC_TIMEOUT_MS).then(
+          r => (r ?? { error: 'no response from backend', ok: false }) as T
+        )
       // ── skills hub + /skills subcommands ─────────────────────────────────
       case 'skills.manage': {
         const action = String(p.action ?? 'list')
@@ -817,7 +837,11 @@ export class GatewayClient extends EventEmitter {
   }
 
   // ── event plumbing ───────────────────────────────────────────────────────
-  private controlQuery(subtype: string, params: Record<string, unknown>): Promise<unknown> {
+  private controlQuery(
+    subtype: string,
+    params: Record<string, unknown>,
+    timeoutMs: number = RPC_TIMEOUT_MS
+  ): Promise<unknown> {
     const requestId = `q${++this.reqId}`
 
     return new Promise(resolve => {
@@ -828,7 +852,7 @@ export class GatewayClient extends EventEmitter {
           this.pending.delete(requestId)
           resolve(null)
         }
-      }, RPC_TIMEOUT_MS)
+      }, timeoutMs)
     })
   }
 

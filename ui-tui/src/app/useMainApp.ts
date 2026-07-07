@@ -27,6 +27,12 @@ import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import { terminalParityHints } from '../lib/terminalParity.js'
 import { buildToolTrailLine, formatAbandonedClarify, sameToolTrailGroup, toolTrailLabel } from '../lib/text.js'
 import { estimatedMsgHeight, messageHeightKey } from '../lib/virtualHeights.js'
+import {
+  getWorktreeSession,
+  planWorktreeExit,
+  setWorktreeExitNote,
+  type WorktreeStatusResponse
+} from '../lib/worktree.js'
 import type { Msg, PanelSection, SlashCatalog } from '../types.js'
 
 import { createGatewayEventHandler } from './createGatewayEventHandler.js'
@@ -498,6 +504,117 @@ export function useMainApp(gw: GatewayClient) {
     [exit, gw]
   )
 
+  // ── --worktree exit flow ────────────────────────────────────────────────
+  // /exit and the idle hotkey exits route through here instead of die(): with
+  // a worktree session active, the TS reference's WorktreeExitDialog semantics
+  // apply — untouched worktree removed silently, otherwise a Keep(default)/
+  // Remove dialog; the git ops run in the backend (worktree.exit RPC, long
+  // deadline). dieWithCode (e.g. /update) bypasses this and keeps the
+  // worktree silently; signal/crash exits never reach it (worktree kept).
+  const exitFlightRef = useRef(false)
+
+  const requestExit = useCallback(() => {
+    const wt = getWorktreeSession()
+
+    // No worktree session — plain exit. In-flight flow — the second request
+    // is the escape hatch (backend may be wedged): die now, worktree kept.
+    if (!wt || exitFlightRef.current) {
+      return die()
+    }
+
+    exitFlightRef.current = true
+
+    const finish = (note: null | string) => {
+      if (note) {
+        setWorktreeExitNote(note)
+      }
+
+      die()
+    }
+
+    const keptNote = `Worktree kept at ${wt.path} (branch ${wt.branch})`
+
+    const perform = (action: 'keep' | 'remove') => {
+      patchOverlayState(prev =>
+        prev.worktreeExit
+          ? {
+              ...prev,
+              worktreeExit: { ...prev.worktreeExit, phase: action === 'keep' ? 'keeping' : 'removing' }
+            }
+          : prev
+      )
+      gw.request<Record<string, any>>('worktree.exit', { action })
+        .then(r => {
+          if (r && r.ok !== false) {
+            finish(typeof r.message === 'string' && r.message ? r.message : null)
+          } else {
+            const error = typeof r?.error === 'string' ? r.error : ''
+
+            // The backend refuses removal while a turn is running (idle-only,
+            // like every destructive control) — that's a normal keep, not a
+            // failure.
+            if (error.includes('active turn')) {
+              finish(`${keptNote} (a turn was still running)`)
+            } else {
+              const detail = error ? ` (${error})` : ''
+
+              finish(`Worktree cleanup failed, exiting anyway${detail} — worktree kept at ${wt.path}`)
+            }
+          }
+        })
+        .catch(() => finish(`Worktree cleanup failed, exiting anyway — worktree kept at ${wt.path}`))
+    }
+
+    gw.request<WorktreeStatusResponse>('worktree.status', {})
+      .then(status => {
+        if (!status || status.ok === false || status.active === false) {
+          // Backend can't service the flow (dead, init_error, no session on
+          // its side) — keep the worktree, tell the user where it lives.
+          return finish(keptNote)
+        }
+
+        const plan = planWorktreeExit(status, wt.branch)
+
+        if (plan.kind === 'silent-remove') {
+          // TS parity: an untouched worktree is removed without asking. The
+          // overlay still mounts (phase 'removing') so slow removals show
+          // their interim state instead of a frozen UI.
+          patchOverlayState({
+            worktreeExit: {
+              branch: wt.branch,
+              onCancel: () => {},
+              onChoose: () => {},
+              onForceQuit: () => finish(keptNote),
+              path: wt.path,
+              phase: 'removing',
+              removeIsDanger: false,
+              subtitle: ''
+            }
+          })
+
+          return perform('remove')
+        }
+
+        patchOverlayState({
+          worktreeExit: {
+            branch: wt.branch,
+            onCancel: () => {
+              // Esc — abort the exit entirely, back to the session (TS parity).
+              exitFlightRef.current = false
+              patchOverlayState({ worktreeExit: null })
+            },
+            onChoose: perform,
+            onForceQuit: () => finish(keptNote),
+            path: wt.path,
+            phase: 'asking',
+            removeIsDanger: plan.removeIsDanger,
+            subtitle: plan.subtitle
+          }
+        })
+      })
+      .catch(() => finish(keptNote))
+  }, [die, gw])
+
   const session = useSessionLifecycle({
     colsRef,
     composerActions,
@@ -730,6 +847,7 @@ export function useMainApp(gw: GatewayClient) {
       dispatchSubmission,
       guardBusySessionSwitch: session.guardBusySessionSwitch,
       newSession: session.newSession,
+      requestExit,
       sys
     },
     composer: { actions: composerActions, refs: composerRefs, state: composerState },
@@ -868,6 +986,7 @@ export function useMainApp(gw: GatewayClient) {
           guardBusySessionSwitch: session.guardBusySessionSwitch,
           newLiveSession: session.newLiveSession,
           newSession: session.newSession,
+          requestExit,
           resetVisibleHistory: session.resetVisibleHistory,
           resumeById: session.resumeById,
           setSessionStartedAt
@@ -888,6 +1007,7 @@ export function useMainApp(gw: GatewayClient) {
       page,
       panel,
       paste,
+      requestExit,
       selection,
       send,
       session,
