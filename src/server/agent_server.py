@@ -171,6 +171,8 @@ class _AgentSession:
     # lazily by _goal_manager(); the worker's post-turn hook evaluates it and
     # enqueues continuation turns. Persisted in the session file for /resume.
     _goal_mgr: Any = None
+    # Monotonic goal-state capture counter (see _goal_snapshot_locked).
+    _goal_rev: int = 0
 
     # Worker + cross-thread coordination.
     _inbox: _queue.Queue = field(default_factory=_queue.Queue)
@@ -278,12 +280,16 @@ class _AgentSession:
                 # CC (which keeps the goal active) — documented.
                 goal_paused = False
                 goal_snapshot = None
+                goal_rev = 0
                 if self._goal_mgr is not None and self._goal_mgr.is_active():
                     try:
                         self._goal_mgr.pause(reason="interrupted (ESC)")
                         goal_paused = True
-                        goal_snapshot = self._goal_snapshot_locked()
+                        goal_snapshot, goal_rev = self._goal_snapshot_locked()
                     except Exception:  # noqa: BLE001
+                        # No event either — the indicator keeps showing
+                        # "active", which is then TRUE: an unpaused goal
+                        # resurrects the loop at the next completed turn.
                         logger.debug("[agent-server] goal pause on interrupt failed",
                                      exc_info=True)
             # Release any in-flight permission ask NOW so the worker unblocks
@@ -305,6 +311,7 @@ class _AgentSession:
                                 "/goal resume to continue, or /goal clear to stop."),
                     "goal_active": False,
                     "goal": goal_snapshot,
+                    "goal_rev": goal_rev,
                 })
             return
         if subtype == "set_permission_mode":
@@ -666,6 +673,12 @@ class _AgentSession:
                 # Fresh conversation, fresh odometer (token/cost totals are
                 # process-wide spend and deliberately survive /clear).
                 self._stats_turns = 0
+                # Indicator rider (critic R1): only a SUCCESSFUL clear may
+                # hide the client's goal indicator — a rejected /clear
+                # (active turn) reply carries no `goal` field and the
+                # client leaves the indicator alone.
+                with self._lock:
+                    goal_snapshot, goal_rev = self._goal_snapshot_locked()
                 self._reply(request_id, {
                     "ok": True,
                     "count": 0,
@@ -673,6 +686,8 @@ class _AgentSession:
                     # reply): turns reset with the conversation, spend stays.
                     "session_turns": 0,
                     "cost": _cost_snapshot(),
+                    "goal": goal_snapshot,
+                    "goal_rev": goal_rev,
                 })
             except Exception as exc:  # noqa: BLE001
                 self._reply(request_id, {"ok": False, "error": str(exc)})
@@ -1667,7 +1682,7 @@ class _AgentSession:
                                     snapshot_now.get("total_cost_usd", 0.0) or 0.0
                                 ),
                             )
-                        restored_snapshot = self._goal_snapshot_locked()
+                        restored_snapshot, restored_rev = self._goal_snapshot_locked()
                     if restored is not None:
                         goal_notice = (
                             f"◎ Goal restored (counters reset): {restored.goal}\n"
@@ -1681,6 +1696,7 @@ class _AgentSession:
                             "message": goal_notice,
                             "goal_active": True,
                             "goal": restored_snapshot,
+                            "goal_rev": restored_rev,
                         })
                 except Exception:  # noqa: BLE001 — a bad goal record must not break resume
                     logger.debug("[agent-server] goal restore failed",
@@ -1969,26 +1985,36 @@ class _AgentSession:
             logger.debug("[agent-server] goal judge bind failed", exc_info=True)
         return self._goal_mgr
 
-    def _goal_snapshot_locked(self) -> dict[str, Any] | None:
+    def _goal_snapshot_locked(self) -> tuple[dict[str, Any] | None, int]:
         """Compact goal state for the TUI's persistent indicator
         (``◎ /goal active (14s)``). Call with ``_lock`` HELD — reads the
         same state the worker's post-turn hook mutates.
 
-        Only active|paused states have an indicator; done/cleared return
-        None so the client hides it. ``created_at`` is epoch seconds — the
-        client owns the ticking elapsed display.
+        Returns ``(snapshot, rev)``. Only active|paused states have an
+        indicator; done/cleared return None so the client hides it.
+        ``created_at`` is epoch seconds — the client owns the ticking
+        elapsed display.
+
+        ``rev`` is a per-session monotonic capture counter (critic R2):
+        captures are serialized by ``_lock``, so rev order == state order —
+        but the wire is enqueue order (``_save_session`` file IO sits
+        between capture and emit, and the client's control-reply promise
+        resolution can reorder against same-chunk events). The client
+        applies a carrier only when its rev is newer, so a stale "active"
+        can never clobber a fresher paused/done/cleared.
         """
+        self._goal_rev += 1
         mgr = self._goal_mgr
         state = mgr.state if mgr is not None else None
         if state is None or state.status not in ("active", "paused"):
-            return None
+            return None, self._goal_rev
         return {
             "status": state.status,
             "goal": state.goal,
             "created_at": state.created_at,
             "turns_used": state.turns_used,
             "max_turns": state.max_turns,
-        }
+        }, self._goal_rev
 
     def _goal_set_gate(self) -> str | None:
         """CC docs/en/goal §Requirements: /goal needs an accepted trust
@@ -2046,7 +2072,7 @@ class _AgentSession:
                     baseline_tokens=self._usage_token_total(snapshot),
                     baseline_cost_usd=float(snapshot.get("total_cost_usd", 0.0) or 0.0),
                 )
-                goal_snapshot = self._goal_snapshot_locked()
+                goal_snapshot, goal_rev = self._goal_snapshot_locked()
             self._save_session()
             reply: dict[str, Any] = {
                 "ok": result.ok,
@@ -2054,6 +2080,7 @@ class _AgentSession:
                 "active": result.active,
                 # Indicator feed — None means "no indicator" (cleared/done).
                 "goal": goal_snapshot,
+                "goal_rev": goal_rev,
             }
             if result.kickoff:
                 reply["notice"] = result.notice
@@ -2072,13 +2099,14 @@ class _AgentSession:
             mgr = self._goal_manager()
             with self._lock:
                 result = run_subgoal_command(mgr, str(arg or ""))
-                goal_snapshot = self._goal_snapshot_locked()
+                goal_snapshot, goal_rev = self._goal_snapshot_locked()
             self._save_session()
             reply: dict[str, Any] = {
                 "ok": result.ok,
                 "text": result.text,
                 "active": result.active,
                 "goal": goal_snapshot,
+                "goal_rev": goal_rev,
             }
             if not result.ok:
                 reply["error"] = result.text
@@ -2235,7 +2263,7 @@ class _AgentSession:
                     # stats-odometer tick — loop machinery, not a user prompt.
                     self._inbox.put({"__goal__": True, "content": continuation})
                 goal_active = bool(mgr.is_active())
-                goal_snapshot = self._goal_snapshot_locked()
+                goal_snapshot, goal_rev = self._goal_snapshot_locked()
             self._save_session()  # persist turns_used/verdict/achieved state
 
             message = decision.get("message") or ""
@@ -2247,6 +2275,7 @@ class _AgentSession:
                     "message": message,
                     "goal_active": goal_active,
                     "goal": goal_snapshot,
+                    "goal_rev": goal_rev,
                 })
         except Exception:  # noqa: BLE001 — the goal loop must never kill the worker
             logger.debug("[agent-server] goal continuation hook failed",

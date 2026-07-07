@@ -795,6 +795,9 @@ export type GatewayEvent =
    *  odometer + totals so the line is right before any turn completes. */
   | { payload: { cost?: CostSnapshot; session_turns?: number }; session_id?: string; type: 'session.stats' }
   /** /goal indicator refresh — the latest snapshot (null hides it). Fired
-   *  from /goal and /subgoal replies, goal_status events, and /clear. */
-  | { payload: { goal: GoalSnapshot | null }; session_id?: string; type: 'goal.state' }
+   *  from /goal, /subgoal and /clear replies plus goal_status events. `rev`
+   *  is the backend's monotonic capture counter: the store ignores carriers
+   *  older than what it already applied (wire/promise order can invert
+   *  capture order); rev-less carriers (legacy backend) apply as-is. */
+  | { payload: { goal: GoalSnapshot | null; rev?: number }; session_id?: string; type: 'goal.state' }
   | { payload?: { message?: string }; session_id?: string; type: 'error' }

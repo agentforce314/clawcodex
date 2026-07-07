@@ -164,6 +164,7 @@ describe('/goal gateway adapter', () => {
     await replyToLastControl({
       active: true,
       goal: { created_at: 1_751_800_000, goal: 'ship the feature', max_turns: 20, status: 'active', turns_used: 0 },
+      goal_rev: 3,
       kickoff: 'ship the feature',
       notice: '◎ Goal set (20-turn budget): ship the feature',
       ok: true,
@@ -175,6 +176,7 @@ describe('/goal gateway adapter', () => {
 
     expect(ev).toBeTruthy()
     expect(ev.payload.goal).toMatchObject({ created_at: 1_751_800_000, status: 'active' })
+    expect(ev.payload.rev).toBe(3)
   })
 
   it('clear reply with a null snapshot publishes goal.state null', async () => {
@@ -239,15 +241,37 @@ describe('/goal gateway adapter', () => {
     expect(ev.payload.goal).toBeNull()
   })
 
-  it('/clear drops the indicator (backend /clear removes the goal)', async () => {
+  it('/clear drops the indicator (legacy success reply without the rider)', async () => {
     const p = gw.request('command.dispatch', { arg: '', name: 'clear' })
     await replyToLastControl({ ok: true })
+    const d: any = await p
+
+    const ev = events.find(e => e.type === 'goal.state')
+
+    expect(ev).toBeTruthy()
+    expect(ev.payload.goal).toBeNull()
+    expect(d.output).toContain('cleared')
+  })
+
+  it('/clear success routes the new goal rider (with rev) through', async () => {
+    const p = gw.request('command.dispatch', { arg: '', name: 'clear' })
+    await replyToLastControl({ cost: {}, goal: null, goal_rev: 9, ok: true, session_turns: 0 })
     await p
 
     const ev = events.find(e => e.type === 'goal.state')
 
     expect(ev).toBeTruthy()
     expect(ev.payload.goal).toBeNull()
+    expect(ev.payload.rev).toBe(9)
+  })
+
+  it('a REJECTED /clear (active turn) leaves the indicator alone', async () => {
+    const p = gw.request('command.dispatch', { arg: '', name: 'clear' })
+    await replyToLastControl({ error: 'cannot clear during an active turn', ok: false })
+    const d: any = await p
+
+    expect(events.find(e => e.type === 'goal.state')).toBeUndefined()
+    expect(d.output).toContain('cannot clear during an active turn')
   })
 
   it('/goal and /subgoal are in the slash catalog', async () => {

@@ -1009,9 +1009,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
 
       case 'goal.state':
-        // /goal indicator feed (goal/subgoal replies, goal_status events,
-        // /clear). The payload is the whole truth — null hides the line.
-        applyGoalSnapshot(ev.payload?.goal ?? null)
+        // /goal indicator feed (goal/subgoal/clear replies, goal_status
+        // events). The payload is the whole truth — null hides the line;
+        // the store drops carriers whose rev is older than one applied.
+        applyGoalSnapshot(ev.payload?.goal ?? null, ev.payload?.rev)
 
         return
       case 'error':

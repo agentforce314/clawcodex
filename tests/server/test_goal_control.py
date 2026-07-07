@@ -519,6 +519,48 @@ class TestGoalSnapshotFeed(unittest.TestCase):
         _control(sess, "interrupt")
         event = _goal_events(emitted)[-1]
         self.assertEqual(event["goal"]["status"], "paused")
+        self.assertGreater(event["goal_rev"], 0)
+
+    def test_goal_rev_is_monotonic_across_carriers(self) -> None:
+        """Capture order == rev order (critic R2): the client uses rev to
+        drop carriers the wire delivered out of capture order."""
+        sess, emitted = _make_session()
+        with patch.object(_AgentSession, "_goal_set_gate", return_value=None):
+            _control(sess, "goal", arg="ship it")
+        rev_set = _last_reply(emitted)["goal_rev"]
+        _control(sess, "goal", arg="pause")
+        rev_pause = _last_reply(emitted)["goal_rev"]
+        _control(sess, "goal", arg="clear")
+        rev_clear = _last_reply(emitted)["goal_rev"]
+        self.assertLess(rev_set, rev_pause)
+        self.assertLess(rev_pause, rev_clear)
+
+    def test_clear_control_reply_carries_goal_rider(self) -> None:
+        """A SUCCESSFUL /clear tells the client to hide the indicator via
+        the reply rider (goal=None + rev), same channel as every other
+        carrier."""
+        sess, emitted = _make_session()
+        _set_goal(sess)
+        sess.session.conversation.clear = MagicMock()
+        with patch("src.server.agent_server._cost_snapshot", return_value={}):
+            _control(sess, "clear")
+        reply = _last_reply(emitted)
+        self.assertTrue(reply["ok"])
+        self.assertIn("goal", reply)
+        self.assertIsNone(reply["goal"])
+        self.assertGreater(reply["goal_rev"], 0)
+
+    def test_rejected_clear_reply_has_no_goal_rider(self) -> None:
+        """A /clear refused mid-turn must NOT carry the rider — the goal is
+        still armed and the client indicator must stay up (critic R1)."""
+        sess, emitted = _make_session()
+        _set_goal(sess)
+        sess._current_abort = MagicMock()  # simulate a running turn
+        _control(sess, "clear")
+        reply = _last_reply(emitted)
+        self.assertFalse(reply["ok"])
+        self.assertNotIn("goal", reply)
+        self.assertTrue(sess._goal_mgr.is_active())
 
     def test_continue_event_carries_snapshot_with_turn_odometer(self) -> None:
         sess, emitted = _make_session()

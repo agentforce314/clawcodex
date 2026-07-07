@@ -854,11 +854,25 @@ export class GatewayClient extends EventEmitter {
       }
 
       case 'clear': {
-        const r = await this.controlQuery('clear', {})
+        const r = (await this.controlQuery('clear', {})) as any
+
+        // The clear control is idle-only — a rejected /clear (active turn)
+        // must NOT hide the goal indicator or claim success (critic R1).
+        if (!r || r.ok === false) {
+          return out(`clear: ${r?.error ?? 'backend not ready'}`)
+        }
+
         this.publishSessionStats(r)
+
         // Backend /clear also removes any active goal (CC docs/en/goal
-        // §Clear a goal) — drop the indicator with it.
-        this.publish({ payload: { goal: null }, type: 'goal.state' })
+        // §Clear a goal). New backends say so via the reply's goal rider;
+        // a legacy success reply without the field falls back to an
+        // explicit hide — the goal IS gone backend-side either way.
+        if ('goal' in r) {
+          this.publishGoalState(r)
+        } else {
+          this.publish({ payload: { goal: null }, type: 'goal.state' })
+        }
 
         return out('Conversation cleared.')
       }
@@ -1476,10 +1490,11 @@ export class GatewayClient extends EventEmitter {
   }
 
   /** /goal indicator refresh from any carrier with a `goal` snapshot field
-   *  (goal/subgoal replies, goal_status events). A carrier WITHOUT the field
-   *  (older backend) is a no-op — never invent or drop state on silence. */
+   *  (goal/subgoal/clear replies, goal_status events). A carrier WITHOUT the
+   *  field (older backend) is a no-op — never invent or drop state on
+   *  silence. `goal_rev` rides along so the store can drop stale carriers. */
   private publishGoalState(carrier: unknown): void {
-    const c = carrier as { goal?: unknown } | null
+    const c = carrier as { goal?: unknown; goal_rev?: unknown; session_id?: unknown } | null
 
     if (!c || typeof c !== 'object' || !('goal' in c)) {
       return
@@ -1487,7 +1502,11 @@ export class GatewayClient extends EventEmitter {
 
     const goal = c.goal && typeof c.goal === 'object' ? (c.goal as GoalSnapshot) : null
 
-    this.publish({ payload: { goal }, type: 'goal.state' })
+    this.publish({
+      payload: { goal, rev: typeof c.goal_rev === 'number' ? c.goal_rev : undefined },
+      session_id: typeof c.session_id === 'string' ? c.session_id : undefined,
+      type: 'goal.state'
+    })
   }
 
   /** Stats-line refresh from a clear/resume reply's rider (session_turns +
