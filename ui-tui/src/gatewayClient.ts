@@ -30,7 +30,7 @@ const MAX_LOG_LINES = 500
 const RPC_TIMEOUT_MS = 5_000
 // clawcodex app version shown in the banner ("clawcodex v{version}"). Keep in
 // sync with the installer (install.sh INSTALLER_VERSION).
-const CLAWCODEX_VERSION = '0.7.0'
+const CLAWCODEX_VERSION = '1.0.0'
 
 /** Command that launches the clawcodex agent-server (set by the Python launcher). */
 function resolveAgentCmd(): string[] {
