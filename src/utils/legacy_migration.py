@@ -20,6 +20,11 @@ Invariants (the whole safety story):
     explicitly.
   * ``migrate_user_dir_once()`` must never break startup: every failure
     is caught and recorded.
+  * Concurrent first-starts (e.g. CLI + agent-server racing past the
+    marker check) are benign: copies are additive and destination-owned
+    (the loser of a per-item race records a spurious error/skip in its
+    report while the winner's copy stands), and the marker write is an
+    atomic replace, so the state converges regardless of ordering.
 
 Project-level migration (``migrate_project_dir``) mutates the user's
 repository (creates ``.clawcodex/`` copies), so it is NEVER automatic —
@@ -87,10 +92,6 @@ class MigrationReport:
     copied: list[str] = field(default_factory=list)
     skipped: list[dict[str, str]] = field(default_factory=list)
     errors: list[dict[str, str]] = field(default_factory=list)
-
-    @property
-    def did_anything(self) -> bool:
-        return bool(self.copied or self.errors)
 
     def to_dict(self) -> dict:
         return {
@@ -259,7 +260,11 @@ def migrate_user_dir_once(*, force: bool = False) -> MigrationReport | None:
                 else "legacy and clawcodex homes are the same directory",
             }
         )
-        _write_marker(marker, report)
+        # Self-aliased case (CLAWCODEX_CONFIG_DIR=~/.claude): writing the
+        # marker would violate "nothing under ~/.claude is ever modified",
+        # so skip it — the samefile re-check each startup is one stat.
+        if not same:
+            _write_marker(marker, report)
         return report
 
     if (src_home / "skills").is_dir():

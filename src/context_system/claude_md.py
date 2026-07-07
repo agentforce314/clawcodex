@@ -2,7 +2,7 @@
 Multi-level CLAUDE.md loading — aligned with typescript/src/utils/claudemd.ts.
 
 Loading order (reverse priority — later entries take precedence):
-  1. Managed memory (/etc/claude-code/CLAUDE.md)
+  1. Managed memory (/etc/clawcodex/CLAUDE.md by default)
   2. User memory (~/.clawcodex/CLAUDE.md)
   3. Project memory (CLAUDE.md, .clawcodex/CLAUDE.md, .clawcodex/rules/*.md)
   4. Local memory (CLAUDE.local.md)
@@ -418,13 +418,18 @@ async def get_memory_files(
 
     home = str(Path.home())
 
-    # 1. Managed memory (/etc/claude-code/CLAUDE.md)
-    managed_path = os.path.join("/etc", "clawcodex", "CLAUDE.md")
+    # 1. Managed memory (<managed dir>/CLAUDE.md — /etc/clawcodex by
+    # default, CLAWCODEX_MANAGED_CONFIG_DIR override like the managed
+    # skills/MCP tiers)
+    from src.utils.clawcodex_dirs import get_managed_config_dir
+
+    managed_base = str(get_managed_config_dir())
+    managed_path = os.path.join(managed_base, "CLAUDE.md")
     result.extend(await process_memory_file(
         managed_path, "Managed", processed_paths, include_external,
     ))
     # Managed rules
-    managed_rules_dir = os.path.join("/etc", "clawcodex", ".clawcodex", "rules")
+    managed_rules_dir = os.path.join(managed_base, ".clawcodex", "rules")
     result.extend(await process_md_rules(
         managed_rules_dir, "Managed", processed_paths, include_external,
         conditional_rule=False,

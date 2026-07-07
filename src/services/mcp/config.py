@@ -851,8 +851,19 @@ def add_mcp_config(
         if config_file.exists():
             try:
                 data = json.loads(config_file.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                data = {}
+            except (json.JSONDecodeError, OSError) as exc:
+                # ~/.clawcodex/config.json also holds provider API keys.
+                # Falling back to {} would rewrite the file with ONLY
+                # mcpServers, silently destroying them: unreadable is an
+                # error, not an empty config (matches remove_mcp_config).
+                raise ValueError(
+                    f"user config {config_file} exists but cannot be read "
+                    f"({exc}); fix or remove it before adding MCP servers"
+                ) from exc
+            if not isinstance(data, dict):
+                raise ValueError(
+                    f"user config {config_file} is not a JSON object"
+                )
         servers = data.get("mcpServers", {})
         if name in servers:
             raise ValueError(f"MCP server {name} already exists in user config")

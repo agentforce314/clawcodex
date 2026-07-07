@@ -695,7 +695,7 @@ def get_skill_dir_commands(cwd: str) -> list[Skill]:
 
     Behavior matches TS `loadSkillsFromSkillsDir` (line 720+):
       - Bare mode: load only ``--add-dir`` paths; skip everything else.
-      - Policy disabled: skip the managed/`/etc/claude` dir.
+      - Policy disabled: skip the managed/`/etc/clawcodex` dir.
       - Plugin-only restriction: collapses user + project loads to empty
         (the gate currently always returns False; future hook).
       - Order: managed → user → project → additional. Realpath dedup is

@@ -175,13 +175,13 @@ def _uploads_dir() -> Path:
 
     Mirrors TS ``uploadsDir`` on ``inboundAttachments.ts:60-62``. The TS
     version reads ``getClaudeConfigHomeDir()`` (which honors a
-    ``CLAUDE_CONFIG_DIR`` env override); the Python port honors the
-    clawcodex equivalent (``CLAWCODEX_CONFIG_DIR``), falling back to
-    ``~/.clawcodex``.
+    ``CLAUDE_CONFIG_DIR`` env override); the Python port resolves the
+    clawcodex home via ``clawcodex_dirs.get_user_config_dir`` (its
+    ``CLAWCODEX_CONFIG_DIR`` equivalent, tilde-expanded).
     """
-    override = os.environ.get('CLAWCODEX_CONFIG_DIR')
-    home = Path(override) if override else Path.home() / '.clawcodex'
-    return home / 'uploads' / str(get_session_id())
+    from src.utils.clawcodex_dirs import get_user_config_dir
+
+    return get_user_config_dir() / 'uploads' / str(get_session_id())
 
 
 def _debug(message: str) -> None:

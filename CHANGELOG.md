@@ -42,6 +42,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   migration and migrates the current project's `.claude/` config dirs into
   `./.clawcodex/` (settings files and worktrees are deliberately skipped).
 
+### Migration notes
+
+- User-scope MCP servers previously stored in `~/.claude/config.json` are
+  NOT migrated (that file is shared with the real Claude Code harness and
+  clawcodex's entries can't be told apart) — re-add them with
+  `clawcodex mcp add --scope user`. MCP OAuth tokens live in the OS
+  keychain and are unaffected.
+- `settings.json` / `settings.local.json` are never migrated: on a machine
+  with both tools they hold the other harness's live permission grants and
+  hooks. Copy them manually only if they were written for clawcodex.
+
 ## [0.1.0] - 2026-04-19
 
 ### Added

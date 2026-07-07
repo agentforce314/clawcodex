@@ -34,6 +34,9 @@ def run_migrate_subcommand(rest: list[str]) -> int:
     if unknown:
         print(f"unknown argument(s): {' '.join(unknown)}\n\n{_USAGE}", end="")
         return 2
+    if "--user-only" in rest and "--project-only" in rest:
+        print(f"--user-only and --project-only are mutually exclusive\n\n{_USAGE}", end="")
+        return 2
 
     from src.utils.legacy_migration import (
         format_report,
