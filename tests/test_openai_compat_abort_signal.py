@@ -371,6 +371,71 @@ class _ContentThenUsageStream:
         yield final
 
 
+class _FirehoseStream:
+    """Mimic a proxy that never honors ``response.close()`` and keeps
+    sending chunks as fast as possible, forever.
+
+    Models issue #278: a non-graceful disconnect where the worker
+    thread's ``for c in stream: chunk_queue.put(c)`` never sees the
+    iterator end, so it keeps ``put()``-ing chunks after the main
+    thread has already raised ``AbortError`` and walked away.
+    """
+
+    def __init__(self, produced_counter: dict[str, int]) -> None:
+        self.response = MagicMock()
+        self.response.close.side_effect = lambda: None  # does nothing
+        self._produced = produced_counter
+
+    def __iter__(self):
+        while True:
+            self._produced["count"] += 1
+            yield _FakeChunk(content="x" * 1000)
+
+
+def test_orphaned_worker_does_not_accumulate_unbounded_chunks() -> None:
+    """Regression for #278: the ESC-cancel queue must be bounded.
+
+    Before the fix, ``chunk_queue`` was an unbounded ``queue.Queue``.
+    Once the main thread raises ``AbortError`` and stops draining it,
+    an orphaned worker reading from a stream that never honors
+    ``response.close()`` (e.g. a LiteLLM proxy that keeps the socket
+    open) would call ``put()`` as fast as the stream produces chunks,
+    accumulating megabytes of chunks the main thread will never read.
+
+    With a bounded queue, ``put()`` blocks once full, so the number of
+    chunks the worker manages to produce stays capped near the queue's
+    ``maxsize`` regardless of how long the orphaned worker keeps
+    running after abort.
+    """
+    controller = AbortController()
+    produced = {"count": 0}
+    stream = _FirehoseStream(produced)
+    provider = _provider_with_stream(stream)
+
+    def _trip_after_worker_starts() -> None:
+        time.sleep(0.05)
+        controller.abort("user_interrupt")
+
+    threading.Thread(target=_trip_after_worker_starts, daemon=True).start()
+
+    with pytest.raises(AbortError):
+        provider.chat_stream_response(
+            messages=[{"role": "user", "content": "hi"}],
+            abort_signal=controller.signal,
+        )
+
+    count_at_abort = produced["count"]
+    # Let the orphaned worker run free. Pre-fix, this alone would grow
+    # ``count`` by tens of thousands (~20MB+) in this window. Post-fix,
+    # the worker blocks on the full queue almost immediately.
+    time.sleep(0.5)
+    growth_after_abort = produced["count"] - count_at_abort
+    assert growth_after_abort < 200, (
+        f"orphaned worker produced {growth_after_abort} more chunks after "
+        "abort — queue is not applying backpressure (unbounded growth regression)"
+    )
+
+
 def test_normal_completion_still_captures_final_usage() -> None:
     """The worker+queue path must not drop the final usage chunk.
 
