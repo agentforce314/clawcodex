@@ -778,6 +778,23 @@ def set_mcp_server_enabled(name: str, enabled: bool) -> None:
         _disabled_servers.add(name)
 
 
+def _invalidate_config_manager_cache() -> None:
+    """Drop config.py's process-global cache after writing its file.
+
+    ``~/.clawcodex/config.json`` is shared with ``config.py``'s singleton
+    ``ConfigManager``; without this, a later config.py save from a stale
+    cached read would drop a just-written ``mcpServers`` block in a
+    long-lived process. Best-effort — cache coherence must not fail an
+    MCP add/remove that already landed on disk.
+    """
+    try:
+        from src.config import _get_default_manager
+
+        _get_default_manager().invalidate()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _write_user_config_atomic(config_file: Path, data: dict[str, Any]) -> None:
     """Atomic 0600 replace for the user config file.
 
@@ -870,6 +887,7 @@ def add_mcp_config(
         servers[name] = config
         data["mcpServers"] = servers
         _write_user_config_atomic(config_file, data)
+        _invalidate_config_manager_cache()
 
 
 def remove_mcp_config(name: str, scope: ConfigScope) -> None:
@@ -907,6 +925,7 @@ def remove_mcp_config(name: str, scope: ConfigScope) -> None:
         del servers[name]
         data["mcpServers"] = servers
         _write_user_config_atomic(config_file, data)
+        _invalidate_config_manager_cache()
     else:
         raise ValueError(f"Cannot remove MCP server from scope: {scope}")
 
