@@ -1,17 +1,20 @@
-# Core Dependencies
+# Runtime dependencies (production install).
+# Dev/test-only tools live in requirements.dev.txt.
 anthropic>=0.18.0
 openai>=1.0.0
 python-dotenv>=1.0.0
 rich>=13.0.0
 prompt-toolkit>=3.0.0
+tiktoken>=0.7.0
 textual>=0.79
 PyYAML>=6.0
 pathspec>=0.11
+websockets>=14.0
+httpx-sse>=0.4
 mcp>=1.27.0
+Pillow>=10.0
 markdownify>=0.11
-
-# Development Dependencies
-build>=1.0.0
-twine>=5.0.0
-pytest>=8.0.0
-pytest-asyncio>=1.3.0
+pydantic>=2.0
+regex>=2023.0
+wcwidth>=0.2
+typing_extensions>=4.0; python_version < '3.11'

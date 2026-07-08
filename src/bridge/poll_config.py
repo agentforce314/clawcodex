@@ -23,7 +23,10 @@ exercise the schema on raw inputs.
 
 from __future__ import annotations
 
-from typing import Self
+try:  # Python 3.11+ has Self in typing
+    from typing import Self
+except ImportError:  # pragma: no cover - fallback for Python 3.10
+    from typing_extensions import Self  # type: ignore
 
 from pydantic import (
     BaseModel,

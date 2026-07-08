@@ -1,0 +1,44 @@
+name: Test Results
+
+# Publishes results produced by the "Python Tests" workflow. Split out into
+# its own workflow_run-triggered job (rather than publishing inline from
+# ci.yml) because PRs from forks and Dependabot run with a read-only
+# GITHUB_TOKEN and cannot be granted checks/pull-requests write access
+# directly — see:
+# https://github.com/EnricoMi/publish-unit-test-result-action#support-fork-repositories-and-dependabot-branches
+on:
+  workflow_run:
+    workflows: ["Python Tests"]
+    types:
+      - completed
+
+permissions: {}
+
+jobs:
+  test-results:
+    name: Test Results
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.conclusion == 'success' || github.event.workflow_run.conclusion == 'failure'
+
+    permissions:
+      checks: write
+      pull-requests: write
+      contents: read
+      issues: read
+      actions: read
+
+    steps:
+      - name: Download and extract artifacts
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          run_id: ${{ github.event.workflow_run.id }}
+          path: artifacts
+
+      - name: Publish test results
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        with:
+          commit: ${{ github.event.workflow_run.head_sha }}
+          event_file: artifacts/Event File/event.json
+          event_name: ${{ github.event.workflow_run.event }}
+          files: "artifacts/**/*.xml"
+          check_name: Test Results
