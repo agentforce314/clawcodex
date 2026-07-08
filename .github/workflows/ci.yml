@@ -56,6 +56,3 @@ jobs:
           name: test-results-${{ matrix.python-version }}
           path: test-results.xml
           retention-days: 3
-      
-
-          retention-days: 3
