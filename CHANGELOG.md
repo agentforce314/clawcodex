@@ -33,6 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   by new `cron_status` events that also render fire/stop/restore lines in
   the transcript.
 
+### Fixed
+
+- Bounded the ESC-cancel worker-thread queue in `OpenAICompatibleProvider.chat_stream_response` (`src/providers/openai_compatible.py`) to `maxsize=64`. Previously an unbounded `queue.Queue` let an orphaned worker accumulate chunks in memory indefinitely when a proxy kept sending bytes after abort without closing the SDK iterator (#278).
+
 ### Changed
 
 - **Directory rebrand: clawcodex state now lives under `~/.clawcodex/` and
