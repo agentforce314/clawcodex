@@ -11,17 +11,10 @@ events, etc.). Same one-bridge-per-process justification as
 Set from the orchestrator (Phase 5/6) when init completes; cleared on
 teardown. Reading is best-effort: ``None`` means no bridge is connected.
 
-⚠️ **Phase 1 caveat — multi-peer dedup is BROKEN until Phase 2** ⚠️
-
-The TS version calls ``utils/concurrentSessions.updateSessionBridgeId()``
-on every set, which publishes the local bridge ID so other peers can
-dedup. That cross-folder dep lives in Phase 2 (per refactoring plan §5
-second-wave list). The Python port replaces it with a debug-logged
-TODO-noop until Phase 2 lands the publisher. Operationally this means
-**two concurrent Python bridges in the same workspace will not dedup
-against each other** — both will appear in claude.ai/code session lists.
-The public API of this module is unaffected; only the cross-process
-side effect is missing.
+Every set/clear publishes the local bridge ID to the concurrent-session
+PID registry (``src/utils/concurrent_sessions.py``, #284) so other peers
+can dedup us out of session lists — mirroring TS
+``utils/concurrentSessions.updateSessionBridgeId()``.
 """
 
 from __future__ import annotations
@@ -39,24 +32,23 @@ _handle: ReplBridgeHandle | None = None
 def set_repl_bridge_handle(h: ReplBridgeHandle | None) -> None:
     """Register (or clear) the active REPL bridge handle.
 
-    Mirrors TS ``setReplBridgeHandle`` on ``replBridgeHandle.ts:18-23``.
-
-    The TS version also calls
-    ``updateSessionBridgeId(getSelfBridgeCompatId() ?? null)`` to publish
-    the local bridge ID for cross-peer dedup. That helper doesn't exist
-    in Python yet (Phase 2). Until then, calling ``set_repl_bridge_handle``
-    just updates the in-process pointer; cross-process dedup is a no-op.
+    Mirrors TS ``setReplBridgeHandle`` on ``replBridgeHandle.ts:18-23``,
+    including the ``updateSessionBridgeId(getSelfBridgeCompatId() ??
+    null)`` publish: setting the handle records our bridge compat ID in
+    the PID registry so peer enumeration dedups us; clearing publishes
+    ``None`` so a stale ID doesn't suppress a legitimately-remote
+    session after reconnect (#284).
     """
     global _handle
     _handle = h
-    # TODO(phase2): once src/utils/concurrent_sessions.py exists, call
-    #   update_session_bridge_id(get_self_bridge_compat_id())
-    # to publish the local bridge ID so other peers can dedup us out.
-    # Until then, cross-peer dedup is silently broken — a debug log keeps
-    # the gap visible during development.
+    try:
+        from src.utils.concurrent_sessions import update_session_bridge_id
+
+        update_session_bridge_id(get_self_bridge_compat_id())
+    except Exception:
+        logger.debug('[bridge:handle] bridge-id publish failed', exc_info=True)
     logger.debug(
-        '[bridge:handle] %s (multi-peer dedup not yet wired — Phase 2)',
-        'set' if h is not None else 'cleared',
+        '[bridge:handle] %s', 'set' if h is not None else 'cleared',
     )
 
 
