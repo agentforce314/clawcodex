@@ -75,6 +75,14 @@ class AppState:
     # Model selection (TS: state/AppStateStore.ts:93)
     main_loop_model: str | None = None
 
+    # Provider key (matches ``~/.clawcodex/config.json``'s providers map)
+    # that ``main_loop_model`` belongs to. Persisted alongside the model
+    # (#280): clawcodex is multi-provider and a persisted model is only
+    # restorable when the next launch uses the same provider (the
+    # advisor_model/advisor_provider precedent). Written together with
+    # main_loop_model via ``persist_model_choice``.
+    main_loop_provider: str | None = None
+
     # Verbose mode (TS: AppStateStore.ts:92)
     verbose: bool = False
 
@@ -125,8 +133,27 @@ def replace_state(state: AppState, **changes: Any) -> AppState:
 
 
 def get_default_app_state() -> AppState:
-    """Mirror of TS ``getDefaultAppState`` (``AppStateStore.ts:458``)."""
-    return AppState()
+    """Mirror of TS ``getDefaultAppState`` (``AppStateStore.ts:458``).
+
+    Display preferences persisted by the side-effect router (#280)
+    are seeded back here so /verbose and the expanded-view toggle
+    survive restarts. ``main_loop_model`` is deliberately NOT seeded:
+    entrypoints own model resolution (cli option > settings.model >
+    provider default_model) and pass it via ``provider.model``.
+    """
+    state = AppState()
+    try:
+        from src.settings.settings import get_settings
+
+        settings = get_settings()
+        if settings.verbose:
+            state = replace_state(state, verbose=True)
+        if settings.expanded_view in ("none", "tasks", "teammates"):
+            state = replace_state(state, expanded_view=settings.expanded_view)
+    except Exception:
+        # Settings load failures must not block startup; defaults apply.
+        logger.debug("could not seed AppState from settings", exc_info=True)
+    return state
 
 
 # ---------------------------------------------------------------------------
@@ -134,18 +161,56 @@ def get_default_app_state() -> AppState:
 # ---------------------------------------------------------------------------
 
 
+def _persist_user_settings(**values: Any) -> None:
+    """Write ``values`` into the user-scoped global config's ``settings``
+    section and invalidate the read cache — the single writer chokepoint
+    (#280; TS ``updateSettingsForSource('userSettings', ...)``).
+
+    Failures are logged, never propagated: the in-memory store update
+    already took effect for this process; only re-launches would lose
+    the setting.
+    """
+    # Local imports avoid making this module's import time pay for the
+    # settings stack on cold start. Use the SHARED default ConfigManager
+    # so callers reading via ``load_config()`` / the global cache see
+    # the new value, not a stale in-memory snapshot from before the
+    # write.
+    from src import config as cfg_mod
+    from src.settings.settings import invalidate_settings_cache
+
+    try:
+        mgr = cfg_mod._get_default_manager()
+        cfg = mgr.load_global()
+        settings_section = cfg.get("settings")
+        # Copy before mutating: load_global returns a shallow copy, so an
+        # in-place update would leak unsaved values into the manager's
+        # cache if save_global fails.
+        if isinstance(settings_section, dict):
+            settings_section = dict(settings_section)
+        else:
+            settings_section = {}
+        settings_section.update(values)
+        cfg["settings"] = settings_section
+        mgr.save_global(cfg)
+        invalidate_settings_cache()
+        logger.debug("persisted user settings %s + cache invalidated", values)
+    except Exception:
+        logger.exception(
+            "Failed to persist %s to settings; in-memory value still active",
+            sorted(values.keys()),
+        )
+
+
 def _on_main_loop_model_change(old: AppState, new: AppState) -> None:
-    """Mirror model choice into bootstrap singleton.
+    """Mirror model choice into bootstrap singleton + persist (#280).
 
     Matches TS at ``onChangeAppState.ts:97-120`` — when the user changes
     the model (via /model slash command or the model picker), the
     bootstrap-state override must update so the next API call reads the
     new value, and settings persistence happens as a side effect.
-
-    Settings persistence is currently no-op — the settings.json layering
-    lives in ``src.settings`` and the writer is not yet wired through
-    a single chokepoint. Plan §P2.1 left this stub here as the wiring
-    target.
+    ``settings.model`` is the restore channel: entrypoints resolve the
+    startup model as ``cli option > settings.model > provider
+    default_model``.
     """
     if old.main_loop_model == new.main_loop_model:
         return
@@ -155,27 +220,66 @@ def _on_main_loop_model_change(old: AppState, new: AppState) -> None:
         old.main_loop_model,
         new.main_loop_model,
     )
-    # TODO: persist to user settings via ``src.settings`` once the
-    # writer-side has a single chokepoint.
+    _persist_user_settings(model=new.main_loop_model or "")
+
+
+def _on_main_loop_provider_change(old: AppState, new: AppState) -> None:
+    """Persist the provider key paired with the model choice (#280).
+
+    ``get_persisted_model`` only restores a model whose persisted
+    provider matches the launch provider — without the pairing, a model
+    persisted on provider A would feed provider B an invalid model id
+    on the next launch.
+    """
+    if old.main_loop_provider == new.main_loop_provider:
+        return
+    _persist_user_settings(model_provider=new.main_loop_provider or "")
+
+
+def persist_model_choice(
+    store: Any, provider_name: str | None, model: str | None
+) -> None:
+    """Single write path for a user model choice (#280).
+
+    When a reactive store is wired, write through it so the side-effect
+    router persists (and mirrors bootstrap); otherwise persist directly
+    via the same chokepoint the handlers use — the ``/advisor`` command
+    pattern (``builtins._persist_advisor_model``).
+    """
+    if store is not None:
+        store.set_state(
+            lambda s: replace_state(
+                s,
+                main_loop_model=model or None,
+                main_loop_provider=provider_name or None,
+            )
+        )
+        return
+    set_main_loop_model_override(model or None)
+    _persist_user_settings(
+        model=model or "", model_provider=provider_name or ""
+    )
 
 
 def _on_verbose_change(old: AppState, new: AppState) -> None:
     if old.verbose == new.verbose:
         return
     logger.debug("AppState.verbose %s -> %s", old.verbose, new.verbose)
-    # TODO: persist to global config.
+    _persist_user_settings(verbose=bool(new.verbose))
 
 
 def _on_expanded_view_change(old: AppState, new: AppState) -> None:
     if old.expanded_view == new.expanded_view:
         return
     logger.debug(
-        "AppState.expanded_view %s -> %s — persist as showExpandedTodos/showSpinnerTree",
+        "AppState.expanded_view %s -> %s — persisted",
         old.expanded_view,
         new.expanded_view,
     )
-    # TODO: persist to global config as showExpandedTodos +
-    # showSpinnerTree (TS: onChangeAppState.ts:123-136).
+    # Persisted as the store's own 'none' | 'tasks' | 'teammates' string
+    # rather than the TS legacy showExpandedTodos/showSpinnerTree boolean
+    # pair (this port's config file is not shared with TS Claude Code).
+    _persist_user_settings(expanded_view=new.expanded_view or "none")
 
 
 # Permission-mode notification hooks. Real listeners (CCR bridge, SDK
@@ -252,38 +356,9 @@ def _on_advisor_model_change(old: AppState, new: AppState) -> None:
     """
     if old.advisor_model == new.advisor_model:
         return
-    # Local imports avoid making this module's import time pay for the
-    # settings stack on cold start. Use the SHARED default ConfigManager
-    # so callers reading via ``load_config()`` / the global cache see
-    # the new value, not a stale in-memory snapshot from before the
-    # write.
-    from src import config as cfg_mod
-    from src.settings.settings import invalidate_settings_cache
-    try:
-        mgr = cfg_mod._get_default_manager()
-        cfg = mgr.load_global()
-        settings_section = cfg.get("settings")
-        if not isinstance(settings_section, dict):
-            settings_section = {}
-        # None / "" both map to "unset" — write empty string for
-        # round-trip fidelity with the SettingsSchema default.
-        settings_section["advisor_model"] = new.advisor_model or ""
-        cfg["settings"] = settings_section
-        mgr.save_global(cfg)
-        invalidate_settings_cache()
-        logger.debug(
-            "AppState.advisor_model %s -> %s — persisted + cache invalidated",
-            old.advisor_model,
-            new.advisor_model,
-        )
-    except Exception:
-        # The slash command already reported success to the user based on
-        # the in-memory store update; surface persistence failures via the
-        # log but don't propagate (the in-memory change still works for
-        # the current process; only re-launches would lose the setting).
-        logger.exception(
-            "Failed to persist advisor_model to settings; in-memory value still active"
-        )
+    # None / "" both map to "unset" — write empty string for round-trip
+    # fidelity with the SettingsSchema default.
+    _persist_user_settings(advisor_model=new.advisor_model or "")
 
 
 def _on_advisor_provider_change(old: AppState, new: AppState) -> None:
@@ -297,27 +372,7 @@ def _on_advisor_provider_change(old: AppState, new: AppState) -> None:
     """
     if old.advisor_provider == new.advisor_provider:
         return
-    from src import config as cfg_mod
-    from src.settings.settings import invalidate_settings_cache
-    try:
-        mgr = cfg_mod._get_default_manager()
-        cfg = mgr.load_global()
-        settings_section = cfg.get("settings")
-        if not isinstance(settings_section, dict):
-            settings_section = {}
-        settings_section["advisor_provider"] = new.advisor_provider or ""
-        cfg["settings"] = settings_section
-        mgr.save_global(cfg)
-        invalidate_settings_cache()
-        logger.debug(
-            "AppState.advisor_provider %s -> %s — persisted + cache invalidated",
-            old.advisor_provider,
-            new.advisor_provider,
-        )
-    except Exception:
-        logger.exception(
-            "Failed to persist advisor_provider to settings; in-memory value still active"
-        )
+    _persist_user_settings(advisor_provider=new.advisor_provider or "")
 
 
 def _on_advisor_client_mode_change(old: AppState, new: AppState) -> None:
@@ -330,27 +385,7 @@ def _on_advisor_client_mode_change(old: AppState, new: AppState) -> None:
     """
     if old.advisor_client_mode == new.advisor_client_mode:
         return
-    from src import config as cfg_mod
-    from src.settings.settings import invalidate_settings_cache
-    try:
-        mgr = cfg_mod._get_default_manager()
-        cfg = mgr.load_global()
-        settings_section = cfg.get("settings")
-        if not isinstance(settings_section, dict):
-            settings_section = {}
-        settings_section["advisor_client_mode"] = bool(new.advisor_client_mode)
-        cfg["settings"] = settings_section
-        mgr.save_global(cfg)
-        invalidate_settings_cache()
-        logger.debug(
-            "AppState.advisor_client_mode %s -> %s — persisted + cache invalidated",
-            old.advisor_client_mode,
-            new.advisor_client_mode,
-        )
-    except Exception:
-        logger.exception(
-            "Failed to persist advisor_client_mode to settings; in-memory value still active"
-        )
+    _persist_user_settings(advisor_client_mode=bool(new.advisor_client_mode))
 
 
 # Registry. EVERY field in AppState must appear here as a handler
@@ -359,6 +394,7 @@ def _on_advisor_client_mode_change(old: AppState, new: AppState) -> None:
 # ``test_every_field_appears_in_handler_registry``.
 _FIELD_HANDLERS: dict[str, Callable[[AppState, AppState], None]] = {
     "main_loop_model": _on_main_loop_model_change,
+    "main_loop_provider": _on_main_loop_provider_change,
     "verbose": _on_verbose_change,
     "expanded_view": _on_expanded_view_change,
     "permission_mode": _on_permission_mode_change,
@@ -414,6 +450,7 @@ __all__ = [
     "create_app_state_store",
     "get_default_app_state",
     "on_change_app_state",
+    "persist_model_choice",
     "replace_state",
     "set_permission_mode_listener",
     "set_session_metadata_listener",
