@@ -15,6 +15,10 @@ from .base import BaseProvider, ChatResponse, MessageInput, TextChunkCallback
 
 logger = logging.getLogger(__name__)
 
+# Cap on the ESC-cancel worker-thread queue in ``chat_stream_response``.
+# See the ``chunk_queue`` construction below for why this is bounded.
+_CHUNK_QUEUE_MAXSIZE = 64
+
 
 def _apply_client_timeout(client: Any) -> Any:
     """Bound an OpenAI-SDK client's read timeout + retries (env-tunable).
@@ -871,7 +875,14 @@ class OpenAICompatibleProvider(BaseProvider):
         import threading as _threading
 
         _DONE = object()
-        chunk_queue: _queue.Queue = _queue.Queue()
+        # Bounded so an orphaned worker (abort fired but the SDK
+        # iterator never honors ``response.close()`` — the LiteLLM
+        # proxy case documented above) can't accumulate unbounded
+        # chunks in memory. Once the queue is full, ``put()`` blocks
+        # the worker instead of growing, capping retained memory at
+        # ``_CHUNK_QUEUE_MAXSIZE`` chunks regardless of how long the
+        # underlying connection stays open after abort.
+        chunk_queue: _queue.Queue = _queue.Queue(maxsize=_CHUNK_QUEUE_MAXSIZE)
 
         def _drain_stream() -> None:
             try:
