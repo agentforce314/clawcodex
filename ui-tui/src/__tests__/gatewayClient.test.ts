@@ -403,7 +403,67 @@ describe('GatewayClient NDJSON adapter', () => {
   it('reports unknown commands as unwired when the backend does not own them', async () => {
     const p = gw.request('slash.exec', { command: 'frobnicate now' })
     await replyToControl('workflow_command', { error: "unknown workflow command 'frobnicate'", ok: false })
+    // Not a workflow → the client falls back to the skill resolver before
+    // giving up; only when that also misses does the unwired line show.
+    await replyToControl('skill_command', { error: "unknown skill 'frobnicate'", ok: false })
     await expect(p).resolves.toEqual({ output: "/frobnicate isn't wired into the clawcodex backend yet.", type: 'exec' })
+  })
+
+  it('dispatches /loop through the backend skill resolver as a skill payload', async () => {
+    const p = gw.request('slash.exec', { command: 'loop 5m check the deploy' })
+    await replyToControl('skill_command', {
+      name: 'loop',
+      ok: true,
+      prompt: '# /loop — fixed recurring interval\nRequested interval: 5m'
+    })
+    await expect(p).resolves.toEqual({
+      message: '# /loop — fixed recurring interval\nRequested interval: 5m',
+      name: 'loop',
+      type: 'skill'
+    })
+    const req = seen.find(f => f.request?.subtype === 'skill_command')
+    expect(req.request).toMatchObject({ args: '5m check the deploy', name: 'loop' })
+  })
+
+  it('falls back from workflows to skills for typed skill commands', async () => {
+    const p = gw.request('slash.exec', { command: 'my-skill do things' })
+    await replyToControl('workflow_command', { error: "unknown workflow command 'my-skill'", ok: false })
+    await replyToControl('skill_command', { name: 'my-skill', ok: true, prompt: 'skill body here' })
+    await expect(p).resolves.toEqual({ message: 'skill body here', name: 'my-skill', type: 'skill' })
+  })
+
+  it('lists /loop in the slash-completion menu', async () => {
+    const p = gw.request<{ items: Array<{ text: string }> }>('complete.slash', { text: '/lo' })
+    await replyToControl('list_workflow_commands', { commands: [], ok: true })
+    const r = await p
+    expect(r.items.map(i => i.text)).toContain('/loop')
+  })
+
+  it('maps cron_status system envelopes to a cron transcript line and a cron.state snapshot', async () => {
+    proc.line({
+      message: '⏰ Scheduled task ab12cd34 fired (every 5 minutes).',
+      scheduled: { jobs: [{ cron: '*/5 * * * *', id: 'ab12cd34', next_fire_at: 1_900_000_000 }], wakeup: null },
+      session_id: 'sess',
+      subtype: 'cron_status',
+      type: 'system'
+    })
+    await vi.waitFor(() => expect(last('cron.state')).toBeTruthy())
+    const line = last('status.update')
+    expect(line?.payload).toEqual({ kind: 'cron', text: '⏰ Scheduled task ab12cd34 fired (every 5 minutes).' })
+    expect(last('cron.state')?.payload?.scheduled?.jobs?.[0]?.id).toBe('ab12cd34')
+  })
+
+  it('publishes a message-less cron_status as a snapshot-only cron.state event', async () => {
+    proc.line({
+      message: '',
+      scheduled: { jobs: [], wakeup: { fire_at: 1_900_000_123, is_fallback: false, reason: 'watching CI' } },
+      session_id: 'sess',
+      subtype: 'cron_status',
+      type: 'system'
+    })
+    await vi.waitFor(() => expect(last('cron.state')).toBeTruthy())
+    expect(events.some(e => e.type === 'status.update')).toBe(false)
+    expect(last('cron.state')?.payload?.scheduled?.wakeup?.reason).toBe('watching CI')
   })
 
   it('merges backend workflow commands into slash completion', async () => {

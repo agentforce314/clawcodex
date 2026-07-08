@@ -19,11 +19,13 @@ from typing import Optional
 from ..bundled_skills import BundledSkillDefinition, register_bundled_skill
 
 
-# Cron-tool name constants. The Python tool registry exposes
+# Tool name constants. The Python tool registry exposes
 # ``CronCreate`` / ``CronDelete`` (see ``src.tool_system.tools.cron``)
-# which is the same naming the prompt body references.
+# and ``ScheduleWakeup`` (``src.tool_system.tools.schedule_wakeup``),
+# the same naming the prompt bodies reference.
 _CRON_CREATE_TOOL_NAME = "CronCreate"
 _CRON_DELETE_TOOL_NAME = "CronDelete"
+_SCHEDULE_WAKEUP_TOOL_NAME = "ScheduleWakeup"
 
 # Recurring-job auto-expiration window (mirrors TS DEFAULT_MAX_AGE_DAYS).
 _DEFAULT_MAX_AGE_DAYS = 7
@@ -208,7 +210,8 @@ def _build_dynamic_prompt(parsed: ParsedLoopArgs) -> str:
     return (
         "# /loop — dynamic rescheduling\n"
         "\n"
-        "The user invoked /loop without a fixed interval.\n"
+        "The user invoked /loop without a fixed interval: this is a self-paced\n"
+        "loop. You choose when the next iteration runs.\n"
         "\n"
         f"{effective_instructions}\n"
         "## Instructions\n"
@@ -220,17 +223,18 @@ def _build_dynamic_prompt(parsed: ParsedLoopArgs) -> str:
         "   - Use shorter delays while active work is progressing or likely to change soon.\n"
         "   - Use longer delays when the situation is quiet or stable.\n"
         "3. Briefly tell the user the chosen delay and the reason.\n"
-        f"4. Schedule exactly one session-only follow-up run with {_CRON_CREATE_TOOL_NAME}.\n"
-        "   - Use recurring: false.\n"
-        "   - Use durable: false.\n"
-        "   - Pin the cron expression to a specific future local-time minute that matches the chosen delay.\n"
-        "   - Set the scheduled prompt to this exact text so the next iteration stays in dynamic mode:\n"
+        f"4. Schedule the next iteration with the {_SCHEDULE_WAKEUP_TOOL_NAME} tool:\n"
+        "   - delaySeconds: the chosen delay (clamped to [60, 3600])\n"
+        "   - reason: one short sentence explaining the chosen delay\n"
+        "   - prompt: this exact text, so the next iteration stays in dynamic mode:\n"
         "\n--- BEGIN SCHEDULED PROMPT ---\n"
         f"{reschedule_prompt}\n"
         "--- END SCHEDULED PROMPT ---\n"
         "\n"
-        "5. Confirm the next run time and the returned job ID.\n"
-        "6. Do not create a recurring cron for this mode.\n"
+        f"5. If the task is COMPLETE and the loop should end, call {_SCHEDULE_WAKEUP_TOOL_NAME} "
+        "with stop: true instead of rescheduling, and tell the user the loop is done.\n"
+        f"6. Do not use {_CRON_CREATE_TOOL_NAME} for this mode — the wakeup slot IS the loop.\n"
+        "   (The user can end the loop anytime by pressing Esc while it waits.)\n"
     )
 
 
