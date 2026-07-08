@@ -6,7 +6,7 @@ Detailed installation and configuration for **clawcodex**. For a quick overview,
 
 - **Python 3.10+** (3.11 recommended)
 - **git**
-- **[uv](https://github.com/astral-sh/uv)** (recommended) or `pip`
+- **[uv]([https://github.com/astral-sh/uv](https://github.com/astral-sh/uv#installation))**
 - An API key for at least one supported provider: Anthropic, OpenAI, Z.ai (GLM), MiniMax, OpenRouter, or DeepSeek
 
 ## 1. Clone and install
