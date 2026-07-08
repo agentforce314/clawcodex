@@ -239,6 +239,13 @@ def _skill_call(tool_input: dict[str, Any], context: ToolContext) -> ToolResult:
     raise ToolInputError("either 'skill' (for SKILL.md) or 'name' (for legacy .py) is required")
 
 
+def run_markdown_skill(skill_name: str, args: str, context: ToolContext) -> ToolResult:
+    """Public expansion entry point — used by the Skill tool below AND by
+    the agent-server's ``skill_command`` control (typed slash commands), so
+    typed and model invocations of the same skill can't drift."""
+    return _run_markdown_skill(skill_name, args, context)
+
+
 def _run_markdown_skill(skill_name: str, args: str, context: ToolContext) -> ToolResult:
     from src.skills.loader import get_all_skills, get_registered_skill
     from src.skills.runtime_substitution import render_skill_prompt

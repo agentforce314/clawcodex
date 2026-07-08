@@ -23,6 +23,7 @@
     "ListMcpResourcesTool": {"is_read_only": true, "is_concurrency_safe": true},
     "Read": {"is_read_only": true, "is_concurrency_safe": true},
     "ReadMcpResourceTool": {"is_read_only": true, "is_concurrency_safe": true},
+    "ScheduleWakeup": {"is_read_only": true, "is_concurrency_safe": true},
     "SendUserMessage": {"is_read_only": true, "is_concurrency_safe": true},
     "Skill": {"is_read_only": true, "is_concurrency_safe": true},
     "Sleep": {"is_read_only": true, "is_concurrency_safe": true},

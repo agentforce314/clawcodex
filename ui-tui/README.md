@@ -83,6 +83,7 @@ npm run test:watch
 - `src/app/useLongRunToolCharms.ts` — fires ambient activity messages for tools running longer than 8 s
 - `src/app/overlayStore.ts` / `src/app/uiStore.ts` — nanostores for overlay and UI state
 - `src/app/delegationStore.ts` — nanostore for subagent spawning caps and overlay accordion state
+- `src/app/cronStore.ts` — nanostore for the scheduled-task indicator (`/loop` wakeup + cron jobs), fed by `cron_status` events; `components/cronIndicator.tsx` renders it above the composer, and Esc while idle clears a pending loop wakeup
 - `src/app/spawnHistoryStore.ts` — in-memory ring (last 10) of finished subagent fan-out snapshots; populated at turn end for `/replay`
 - `src/app/inputSelectionStore.ts` — nanostore exposing the active text-input selection handle
 - `src/app/gatewayContext.tsx` — React context for the gateway client
@@ -132,6 +133,7 @@ Current input behavior is split across `app.tsx`, `components/textInput.tsx`, an
 | empty `Enter` twice             | If queued messages exist and the agent is busy, interrupt the current run. If queued messages exist and the agent is idle, send the next queued message |
 | `Shift+Enter` / `Alt+Enter`     | Insert a newline in the current draft                                                                                                                   |
 | `\` + `Enter`                   | Append the line to the multiline buffer (fallback for terminals without modifier support)                                                               |
+| `Esc`                           | Interrupt the running turn; while idle, stop a waiting `/loop` (clears the pending self-paced wakeup)                                                   |
 | `Ctrl+C`                        | Interrupt active run, or clear the current draft, or exit if nothing is pending                                                                         |
 | `Ctrl+D`                        | Exit                                                                                                                                                    |
 | `Cmd/Ctrl+G` / `Alt+G`          | Open `$EDITOR` with the current draft (use `Alt+G` in VSCode/Cursor — they bind the primary keystroke to Find Next)                                     |

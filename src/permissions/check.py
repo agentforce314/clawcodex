@@ -172,7 +172,7 @@ NO_PERMISSION_TOOLS: frozenset[str] = frozenset({
     # permission-checked, so the spawn is not the gate.
     "Agent", "Workflow", "TeamCreate", "TeamDelete",
     # Scheduling — the scheduled run is permission-checked when it fires.
-    "CronCreate", "CronList", "CronDelete",
+    "CronCreate", "CronList", "CronDelete", "ScheduleWakeup",
     # Local, reversible git-worktree management.
     "EnterWorktree", "ExitWorktree",
 })

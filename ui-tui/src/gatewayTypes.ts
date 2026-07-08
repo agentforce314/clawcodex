@@ -680,6 +680,33 @@ export interface GoalSnapshot {
   turns_used?: number
 }
 
+// ── Scheduled tasks (/loop, Cron*, ScheduleWakeup) ───────────────────
+
+export interface CronJobInfo {
+  cron?: string
+  /** Epoch SECONDS the recurring job expires (7 days after creation). */
+  expires_at?: null | number
+  human_schedule?: string
+  id?: string
+  /** Epoch SECONDS of the next fire. */
+  next_fire_at?: number
+  prompt_preview?: string
+  recurring?: boolean
+}
+
+export interface CronWakeupInfo {
+  /** Epoch SECONDS the pending /loop wakeup fires. */
+  fire_at?: number
+  is_fallback?: boolean
+  reason?: string
+}
+
+/** The `scheduled` snapshot riding every `cron_status` system event. */
+export interface CronSnapshot {
+  jobs?: CronJobInfo[]
+  wakeup?: CronWakeupInfo | null
+}
+
 export type GatewayEvent =
   | { payload?: { skin?: GatewaySkin }; session_id?: string; type: 'gateway.ready' }
   | { payload?: GatewaySkin; session_id?: string; type: 'skin.changed' }
@@ -810,4 +837,5 @@ export type GatewayEvent =
    *  older than what it already applied (wire/promise order can invert
    *  capture order); rev-less carriers (legacy backend) apply as-is. */
   | { payload: { goal: GoalSnapshot | null; rev?: number }; session_id?: string; type: 'goal.state' }
+  | { payload: { scheduled: CronSnapshot | null }; session_id?: string; type: 'cron.state' }
   | { payload?: { message?: string }; session_id?: string; type: 'error' }
