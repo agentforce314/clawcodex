@@ -33,6 +33,7 @@ from src.tasks.local_agent import (
 )
 from src.tasks.progress import AgentProgress
 from src.tasks_core import generate_task_id
+from src.permissions.types import ToolPermissionContext
 from src.tool_system.context import ToolContext
 from src.tool_system.defaults import build_default_registry
 from src.tool_system.protocol import ToolCall
@@ -270,7 +271,10 @@ def test_async_agent_writes_jsonl_transcript_on_disk(tmp_path: Path) -> None:
     yielded message. This is the prerequisite for Phase 3 / WI-3.1
     notification XML and Phase 7 / WI-7.4 auto-resume."""
     registry = build_default_registry(provider=object())
-    ctx = ToolContext(workspace_root=tmp_path)
+    ctx = ToolContext(
+        workspace_root=tmp_path,
+        permission_context=ToolPermissionContext(mode="bypassPermissions"),
+    )
 
     async def _fake(_params):
         yield AssistantMessage(
@@ -320,7 +324,10 @@ def test_async_agent_finalize_total_tokens_is_no_longer_zero(tmp_path: Path) -> 
     the chapter-correct latest_input + cumulative_output instead of the
     pre-WI-2.4 hard-coded ``0``."""
     registry = build_default_registry(provider=object())
-    ctx = ToolContext(workspace_root=tmp_path)
+    ctx = ToolContext(
+        workspace_root=tmp_path,
+        permission_context=ToolPermissionContext(mode="bypassPermissions"),
+    )
 
     async def _fake(_params):
         yield AssistantMessage(

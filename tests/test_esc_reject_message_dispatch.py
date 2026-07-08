@@ -34,6 +34,7 @@ from src.query.query import (
     _dispatch_single_tool,
     _is_user_cancelled_abort,
 )
+from src.permissions.types import ToolPermissionContext
 from src.tool_system.context import ToolContext
 from src.tool_system.protocol import ToolResult
 from src.tool_system.registry import ToolRegistry
@@ -44,7 +45,12 @@ from src.utils.abort_controller import AbortController, AbortError
 
 
 def _make_ctx(workspace: Path) -> ToolContext:
-    ctx = ToolContext(workspace_root=workspace)
+    # Explicit bypass: these tests exercise ESC/abort dispatch plumbing,
+    # not permissions (the ToolContext default is no longer bypass — #274).
+    ctx = ToolContext(
+        workspace_root=workspace,
+        permission_context=ToolPermissionContext(mode="bypassPermissions"),
+    )
     ctx.abort_controller = AbortController()
     return ctx
 

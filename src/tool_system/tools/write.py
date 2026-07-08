@@ -158,11 +158,10 @@ def _check_permissions(tool_input: dict[str, Any], context: ToolContext) -> Perm
     if _is_auto_memory_write(file_path):
         return PermissionPassthroughResult()
 
-    # Path is already expanded by backfill_observable_input
-    try:
-        path = context.ensure_allowed_path(file_path)
-    except ToolPermissionError:
-        return PermissionPassthroughResult()
+    # Path is already expanded by backfill_observable_input.
+    # A path outside the workspace allowlist raises ToolPermissionError and
+    # propagates (hard structural failure, not an ask-able prompt) — see #274.
+    path = context.ensure_allowed_path(file_path)
 
     if path.suffix.lower() in {".md", ".markdown"} and not context.allow_docs:
         return PermissionAskDecision(

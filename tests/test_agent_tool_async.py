@@ -4,11 +4,21 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
+from src.permissions.types import ToolPermissionContext
 from src.tool_system.context import ToolContext
 from src.tool_system.defaults import build_default_registry
 from src.tool_system.protocol import ToolCall
 from src.types.content_blocks import TextBlock
 from src.types.messages import AssistantMessage
+
+
+def _bypass_context(tmp_path: Path) -> ToolContext:
+    # Explicit bypass: these tests exercise async-agent task state, not
+    # permissions (the ToolContext default is no longer bypassPermissions).
+    return ToolContext(
+        workspace_root=tmp_path,
+        permission_context=ToolPermissionContext(mode="bypassPermissions"),
+    )
 
 
 def _wait_for_task_status(context: ToolContext, task_id: str, timeout_s: float = 2.0) -> str:
@@ -46,7 +56,7 @@ def _task_output_text(context: ToolContext, task_id: str) -> str:
 
 def test_async_agent_launch_persists_completed_output(tmp_path: Path) -> None:
     registry = build_default_registry(provider=object())
-    context = ToolContext(workspace_root=tmp_path)
+    context = _bypass_context(tmp_path)
 
     async def _fake_run_agent(_params):
         yield AssistantMessage(content=[TextBlock(text="async done")])
@@ -82,7 +92,7 @@ def test_async_agent_launch_persists_completed_output(tmp_path: Path) -> None:
 
 def test_async_agent_launch_marks_failed_output(tmp_path: Path) -> None:
     registry = build_default_registry(provider=object())
-    context = ToolContext(workspace_root=tmp_path)
+    context = _bypass_context(tmp_path)
 
     async def _failing_run_agent(_params):
         if False:
