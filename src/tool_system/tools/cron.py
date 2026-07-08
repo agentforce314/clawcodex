@@ -51,7 +51,8 @@ def _cron_create_call(tool_input: dict[str, Any], context: ToolContext) -> ToolR
     scheduler = getattr(context, "cron_scheduler", None)
     if scheduler is None:
         # Legacy inert registry (subagents / SDK surfaces without a worker
-        # loop to fire jobs) — record the request without scheduling.
+        # loop to fire jobs) — record the request without scheduling. The
+        # `inert` flag keeps the success shape honest: nothing will fire.
         cid = uuid.uuid4().hex[:12]
         context.crons[cid] = {
             "id": cid, "cron": cron, "prompt": prompt,
@@ -60,7 +61,7 @@ def _cron_create_call(tool_input: dict[str, Any], context: ToolContext) -> ToolR
         return ToolResult(
             name="CronCreate",
             output={"id": cid, "humanSchedule": cron, "recurring": recurring,
-                    "durable": durable},
+                    "durable": durable, "inert": True},
         )
 
     try:
