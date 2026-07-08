@@ -56,6 +56,22 @@ def __getattr__(name: str):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
+def _strip_none_deep(value: Any) -> Any:
+    """Recursively drop ``None``-valued dict keys.
+
+    ``model_dump(exclude_none=True)`` only strips ``None`` at the fields
+    pydantic itself owns; a field typed loosely (e.g. the advisor
+    ``content`` union) round-trips as a plain ``dict`` that the SDK's
+    lenient ``construct_type`` fills with schema defaults such as
+    ``stop_reason: None``, and those survive untouched.
+    """
+    if isinstance(value, dict):
+        return {k: _strip_none_deep(v) for k, v in value.items() if v is not None}
+    if isinstance(value, list):
+        return [_strip_none_deep(v) for v in value]
+    return value
+
+
 def _extract_usage_dict(usage: Any) -> dict[str, Any]:
     """Build the ChatResponse.usage dict from an Anthropic SDK ``Usage`` object.
 
@@ -265,7 +281,7 @@ class AnthropicProvider(BaseProvider):
             if is_advisor:
                 dump = getattr(block, "model_dump", None)
                 if callable(dump):
-                    raw_content_blocks.append(dict(dump(exclude_none=True)))
+                    raw_content_blocks.append(_strip_none_deep(dict(dump(exclude_none=True))))
                 else:
                     # Fallback for non-Pydantic shapes (test doubles, etc.).
                     raw_content_blocks.append(
