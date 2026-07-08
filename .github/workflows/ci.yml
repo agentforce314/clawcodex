@@ -37,13 +37,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.dev.txt
       
-      - name: Run tests with coverage
+      - name: Run tests
         run: |
           pytest tests/ \
-            --junitxml=test-results.xml \
-            --cov=src \
-            --cov-report=xml \
-            --cov-report=html
+            --junitxml=test-results.xml
       
       - name: Publish test results
         uses: EnricoMi/publish-unit-test-result-action@v2
@@ -60,12 +57,5 @@ jobs:
           path: test-results.xml
           retention-days: 3
       
-      - name: Upload coverage reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-reports-${{ matrix.python-version }}
-          path: |
-            coverage.xml
-            htmlcov/
+
           retention-days: 3
