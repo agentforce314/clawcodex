@@ -166,3 +166,40 @@ class TestExecutorRespectsGate:
             items.append(r)
 
         assert items == []
+
+
+# ---------------------------------------------------------------------------
+# #275: ToolContext.workspace_trusted seeds from bootstrap session trust
+# ---------------------------------------------------------------------------
+
+
+class TestToolContextTrustSeeding:
+    def teardown_method(self) -> None:
+        from src.bootstrap.state import set_session_trust_accepted
+
+        set_session_trust_accepted(False)
+
+    def _make_context(self, tmp_path: Path):
+        from src.tool_system.context import ToolContext
+
+        return ToolContext(workspace_root=tmp_path)
+
+    def test_untrusted_session_seeds_false(self, tmp_path):
+        from src.bootstrap.state import set_session_trust_accepted
+
+        set_session_trust_accepted(False)
+        assert self._make_context(tmp_path).workspace_trusted is False
+
+    def test_trusted_session_seeds_true(self, tmp_path):
+        from src.bootstrap.state import set_session_trust_accepted
+
+        set_session_trust_accepted(True)
+        assert self._make_context(tmp_path).workspace_trusted is True
+
+    def test_explicit_value_wins_over_seed(self, tmp_path):
+        from src.bootstrap.state import set_session_trust_accepted
+        from src.tool_system.context import ToolContext
+
+        set_session_trust_accepted(True)
+        ctx = ToolContext(workspace_root=tmp_path, workspace_trusted=False)
+        assert ctx.workspace_trusted is False

@@ -155,20 +155,27 @@ def run_pre_action(args: object) -> None:
     set_is_interactive(_determine_is_interactive(args))
     set_client_type(_determine_client_type())
 
-    # The trust dialog SHIPPED (components C8:
-    # ``services/startup_gates.check_trust_accepted`` + the TUI's
-    # TrustFolderScreen), but this placeholder must outlive it: the TUI
-    # is the only surface with a dialog — headless / -p / legacy-REPL
-    # sessions have no way to ask, and flipping the default to
-    # untrusted would hard-block their ``hooks/trust_gate.py`` and
-    # ``tool_system/context.py:workspace_trusted`` consumers with no
-    # way to consent. The dialog's accept path syncs this same flag via
-    # ``record_trust_accepted``, so narrowing this later only requires
-    # seeding interactive sessions from check_trust_accepted() here.
-    # TODO(components-C8 follow-up): seed from
-    # ``startup_gates.check_trust_accepted()`` for interactive sessions
-    # instead of unconditionally trusting.
-    set_session_trust_accepted(True)
+    # Seed session trust from the persisted per-project decision (C8
+    # ``startup_gates.check_trust_accepted``: session flag, then cwd and
+    # every parent in the user-owned global config). Previously this was
+    # an unconditional ``True`` (#275): every surface — including ones
+    # with no dialog — implicitly trusted the workspace, so project
+    # hooks could fire without consent. Now:
+    # - previously-trusted dirs (or children) start trusted;
+    # - the TUI asks via TrustFolderScreen on first visit and
+    #   ``record_trust_accepted`` syncs this flag on accept;
+    # - headless / -p / legacy-REPL sessions in never-trusted dirs run
+    #   untrusted: non-policy hooks are skipped (fail-safe, mirrors the
+    #   TS shouldSkipHookDueToTrust gate) until the dir is trusted once
+    #   via the TUI.
+    try:
+        from src.services.startup_gates import check_trust_accepted
+
+        set_session_trust_accepted(check_trust_accepted())
+    except Exception:
+        # Fail CLOSED: an errored consent check must not wave the
+        # workspace through.
+        set_session_trust_accepted(False)
 
     profile_checkpoint("pre_action_end")
 

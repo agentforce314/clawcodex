@@ -387,7 +387,17 @@ async def _run_hooks_for_event(
         # need it. Phase-1 / WI-1.2 renamed ``POLICY`` → ``POLICY_SETTINGS``;
         # the ``is_policy`` predicate is the canonical way to ask the
         # question and shields callers from future renames.
+        gated = [h for h in event_hooks if not h.source.is_policy]
         event_hooks = [h for h in event_hooks if h.source.is_policy]
+        if gated:
+            # Breadcrumb for "why don't my hooks run": configured hooks
+            # silently not firing in an untrusted workspace is
+            # undiagnosable otherwise (#275).
+            logger.info(
+                "skipping %d non-policy %s hook(s): workspace is untrusted",
+                len(gated),
+                event,
+            )
 
     tool_use_id = stdin_data.get("tool_use_id", str(uuid4()))
     parent_tool_use_id = ""
