@@ -1,0 +1,62 @@
+name: Python Tests
+
+on:
+  pull_request:
+    branches:
+      - main
+
+# Cancel superseded runs for the same PR (or the same manual run).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+# Test results are published by the separate "Test Results" workflow
+# (triggered via workflow_run) so PRs from forks/Dependabot — which get a
+# read-only GITHUB_TOKEN here — still get results published. See
+# .github/workflows/test-results.yml and:
+# https://github.com/EnricoMi/publish-unit-test-result-action#support-fork-repositories-and-dependabot-branches
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.11']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.dev.txt
+
+      - name: Run tests
+        run: |
+          pytest tests/ \
+            --junitxml=test-results/test-results.xml
+
+      - name: Upload test results
+        if: (!cancelled())
+        uses: actions/upload-artifact@v4
+        with:
+          name: Test Results (${{ matrix.python-version }})
+          path: test-results/*.xml
+          retention-days: 3
+
+  event_file:
+    name: "Event File"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: Event File
+          path: ${{ github.event_path }}

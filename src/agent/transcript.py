@@ -179,9 +179,11 @@ class TranscriptWriter:
         # level. ``O_CLOEXEC`` keeps the fd from leaking to bash
         # subprocesses. ``0o600`` because transcripts can contain
         # sensitive prompt content — readable by the user only.
+        # ``O_CLOEXEC`` is POSIX-only; on Windows it is absent (and fds
+        # are non-inheritable by default since PEP 446), so fall back to 0.
         self._fd: int | None = os.open(
             self._path,
-            os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_CLOEXEC,
+            os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_CLOEXEC", 0),
             0o600,
         )
         self._closed = False

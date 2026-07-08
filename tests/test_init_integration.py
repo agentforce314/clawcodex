@@ -372,7 +372,7 @@ class TestSigintBeforePrefetchStarted(unittest.TestCase):
             """
         )
         rc, out, err = _run_in_subprocess(
-            code, signal_after_ms=50, signal_name="SIGINT"
+            code, signal_after_ms=300, signal_name="SIGINT"
         )
         self.assertEqual(rc, 130, msg=f"unexpected rc={rc}. err={err}")
         # No "cleanup error" lines should appear in stderr.

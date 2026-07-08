@@ -61,6 +61,16 @@ dependencies = [
     # without it WebFetch falls back to a flat regex tag-strip (no structure).
     # Pulls in beautifulsoup4 (pure-Python).
     "markdownify>=0.11",
+    # Runtime schema validation for bridge poll config, MCP output validation,
+    # hook output schemas, and env-less bridge config.
+    "pydantic>=2.0",
+    # Unicode-aware regex (``\p{...}`` property classes) used by the bridge
+    # status renderer; the stdlib ``re`` lacks these.
+    "regex>=2023.0",
+    # Terminal display-width measurement for the bridge status renderer.
+    "wcwidth>=0.2",
+    # ``typing.Self`` backport for Python 3.10 (added to stdlib in 3.11).
+    "typing_extensions>=4.0; python_version < '3.11'",
 ]
 
 [project.optional-dependencies]
