@@ -88,6 +88,22 @@ def _run_bash_with_abort(
         "stderr": subprocess.PIPE,
         "text": True,
     }
+    # #281: exports written by SessionStart/Setup/CwdChanged hooks via
+    # CLAUDE_ENV_FILE apply to subsequent Bash tool commands (and ONLY
+    # here — the host process env is untouched; TS sessionEnvironment.ts
+    # scopes the contract to bash commands the same way).
+    try:
+        from src.hooks.session_env import get_session_hook_env
+
+        _session_env = get_session_hook_env()
+        if _session_env:
+            popen_kwargs["env"] = {**_os_mod.environ, **_session_env}
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).debug(
+            "session hook env merge failed", exc_info=True
+        )
     if _sys_mod.platform == "win32":
         popen_kwargs["creationflags"] = getattr(
             subprocess, "CREATE_NEW_PROCESS_GROUP", 0

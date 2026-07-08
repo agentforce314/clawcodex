@@ -152,12 +152,12 @@ def _build_hook_env(
         for skill-declared hooks; empty for everything else).
       * ``CLAUDE_ENV_FILE`` — per-fire ephemeral env file path. Set ONLY for
         the three lifecycle events that benefit from env propagation
-        (``SessionStart``, ``Setup``, ``CwdChanged``). For other events:
-        empty string. Per N4: this WI sets the path; the
-        sourcing-and-applying loop (read the file back and apply exports to
-        subsequent shells in the session) is a separate follow-up ticket.
-        TODO(ch12-followup): ticket #<TBD> covers the env-file source/apply
-        cycle.
+        (``SessionStart``, ``Setup``, ``CwdChanged``) and only for
+        POSIX-shell hooks (TS parity: PowerShell hooks are skipped — they
+        would write ``$env:FOO = ...`` syntax a POSIX source can't
+        consume). After the hook completes successfully the executor
+        evaluates the file and applies the exports to subsequent Bash
+        tool commands (#281, ``_apply_env_file``).
     """
     event_name = stdin_data.get("hook_event", "")
     workspace_root = ""
@@ -166,7 +166,13 @@ def _build_hook_env(
         if wr is not None:
             workspace_root = str(wr)
 
-    env_file = _env_file_for_event(event_name)
+    # PowerShell hooks never get the env file (TS parity, hooks.ts
+    # ``!isPowerShell``): they'd write ``$env:FOO = ...`` syntax that a
+    # POSIX source can't consume.
+    if hook.shell == "powershell":
+        env_file = ""
+    else:
+        env_file = _env_file_for_event(event_name)
 
     return {
         **os.environ,
@@ -186,17 +192,156 @@ def _env_file_for_event(event_name: str) -> str:
     "empty" as "no env propagation requested."
 
     The file is per-fire ephemeral: a unique path under
-    ``~/.clawcodex/hook-env/<event>.<pid>.<nanos>``. This WI does NOT
-    create the file or read it back; it only computes the path. Sourcing is
-    a follow-up.
+    ``~/.clawcodex/hook-env/<event>.<pid>.<nanos>``. The parent directory
+    is created here so a hook's ``echo ... > "$CLAUDE_ENV_FILE"`` redirect
+    can succeed; the executor reads the file back and applies the exports
+    after the hook completes (#281, ``_apply_env_file``).
     """
+    # TS also includes FileChanged (hooks.ts:1097); add it here when the
+    # file-watcher event is ported.
     if event_name not in ("SessionStart", "Setup", "CwdChanged"):
         return ""
     home = os.path.expanduser("~")
+    env_dir = os.path.join(home, ".clawcodex", "hook-env")
+    try:
+        os.makedirs(env_dir, exist_ok=True)
+    except OSError:
+        return ""  # unwritable home — skip env propagation for this fire
     return os.path.join(
-        home, ".clawcodex", "hook-env",
-        f"{event_name}.{os.getpid()}.{time.time_ns()}",
+        env_dir, f"{event_name}.{os.getpid()}.{time.time_ns()}",
     )
+
+
+_MAX_ENV_FILE_BYTES = 256 * 1024
+
+# Noise the sourcing shell itself sets — never part of the hook's intent.
+_SHELL_NOISE_KEYS = frozenset({"_", "SHLVL", "PWD", "OLDPWD"})
+
+
+def _shell_eval_env_exports(env_file: str) -> dict[str, str]:
+    """Evaluate the env file with a real POSIX shell and return the env
+    delta it produced (#281).
+
+    Sourcing — rather than parsing ``KEY=VAL`` lines — is load-bearing:
+    the canonical use case is ``export PATH="$HOME/bin:$PATH"`` (venv /
+    conda activation), and a literal parse would store the unexpanded
+    ``$HOME/bin:$PATH`` string, corrupting PATH for every later spawn.
+    The shell sees (and the diff baseline includes) the current session
+    view, so a later hook can prepend to a PATH an earlier hook already
+    extended. Same trust boundary as the hook itself, which already ran
+    arbitrary shell.
+
+    Known limits: ``unset FOO`` is ignored (the diff only observes
+    additions/changes); the eval is a deliberately synchronous
+    ``subprocess.run`` inside the async hook path — ~10ms, once per fire
+    of three rare lifecycle events.
+    """
+    import subprocess
+
+    if os.name == "nt":
+        return {}  # POSIX-shell contract; PowerShell hooks don't get the var
+    from .session_env import get_session_hook_env
+
+    base = {**os.environ, **get_session_hook_env()}
+    try:
+        # ``set -a``: auto-export plain ``KEY=VAL`` assignments too — the
+        # documented contract accepts both with and without ``export``.
+        proc = subprocess.run(
+            [
+                "/bin/sh",
+                "-c",
+                'set -a; . "$1" >/dev/null 2>&1 || exit 9; env -0',
+                "sh",
+                env_file,
+            ],
+            capture_output=True,
+            env=base,
+            timeout=10,
+        )
+    except Exception:
+        logger.debug("failed to evaluate %s", env_file, exc_info=True)
+        return {}
+    if proc.returncode != 0:
+        logger.warning(
+            "CLAUDE_ENV_FILE %s failed to source (exit %s); ignoring",
+            env_file,
+            proc.returncode,
+        )
+        return {}
+    exports: dict[str, str] = {}
+    for entry in proc.stdout.split(b"\0"):
+        if not entry:
+            continue
+        raw_key, sep, raw_val = entry.partition(b"=")
+        if not sep:
+            continue
+        key = raw_key.decode("utf-8", errors="replace")
+        if key in _SHELL_NOISE_KEYS:
+            continue
+        value = raw_val.decode("utf-8", errors="replace")
+        if base.get(key) != value:
+            exports[key] = value
+    return exports
+
+
+def _discard_env_file(env_file: str) -> None:
+    """Remove the per-fire env file without applying it (fail/timeout/abort
+    paths — partial writes from an unsuccessful hook are untrusted)."""
+    if not env_file:
+        return
+    try:
+        os.unlink(env_file)
+    except OSError:
+        pass
+
+
+def _apply_env_file(env_file: str, event: str) -> None:
+    """Source-and-apply cycle for ``CLAUDE_ENV_FILE`` (#281).
+
+    Evaluates the per-fire env file a SessionStart/Setup/CwdChanged hook
+    may have written, merges the resulting exports into the session hook
+    env (consumed by the Bash tool at spawn — NOT the host process env;
+    TS parity: ``sessionEnvironment.ts`` injects into bash commands
+    only), and removes the ephemeral file. Fail-soft throughout — env
+    propagation is a convenience, never a reason to fail the hook
+    pipeline.
+
+    Deliberate divergence from TS: TS sources whatever the file holds
+    regardless of how the hook exited; here only a hook that completed
+    successfully gets its exports applied (the caller gates on
+    ``exit_code == 0``) — partial writes from a failed/timed-out hook
+    are discarded.
+    """
+    if not env_file:
+        return
+    try:
+        if not os.path.isfile(env_file):
+            return
+        if os.path.getsize(env_file) > _MAX_ENV_FILE_BYTES:
+            logger.warning(
+                "CLAUDE_ENV_FILE %s exceeds %d bytes; ignoring",
+                env_file,
+                _MAX_ENV_FILE_BYTES,
+            )
+            return
+        exports = _shell_eval_env_exports(env_file)
+        if exports:
+            from .session_env import merge_into_bucket
+
+            merge_into_bucket(event, exports)
+            logger.debug(
+                "applied %d env export(s) from %s hook env file: %s",
+                len(exports),
+                event,
+                sorted(exports.keys()),
+            )
+    except Exception:
+        logger.debug("failed to apply %s", env_file, exc_info=True)
+    finally:
+        try:
+            os.unlink(env_file)
+        except OSError:
+            pass
 
 
 async def _execute_command_hook(
@@ -213,8 +358,16 @@ async def _execute_command_hook(
     effective_timeout = (hook.timeout or timeout_ms) / 1000.0
     start_time = time.monotonic()
 
+    env_file = ""
     try:
         stdin_json = json.dumps(stdin_data, default=str)
+
+        # Built once per fire: the env dict carries the unique
+        # CLAUDE_ENV_FILE path that the source-and-apply step below must
+        # read back (#281) — calling _build_hook_env twice would mint two
+        # different paths.
+        hook_env = _build_hook_env(hook, stdin_data, tool_use_context)
+        env_file = hook_env.get("CLAUDE_ENV_FILE", "")
 
         # Round-2 / Ch12 — per-hook shell selection. ``shell="powershell"``
         # spawns ``pwsh`` with explicit argv and skips the bash-shell path.
@@ -248,7 +401,7 @@ async def _execute_command_hook(
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env=_build_hook_env(hook, stdin_data, tool_use_context),
+                env=hook_env,
             )
         else:
             # Default (bash on POSIX via /bin/sh, the historical path).
@@ -260,7 +413,7 @@ async def _execute_command_hook(
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env=_build_hook_env(hook, stdin_data, tool_use_context),
+                env=hook_env,
             )
 
         try:
@@ -313,6 +466,12 @@ async def _execute_command_hook(
                 command=command,
             )
 
+        # Source-and-apply (#281): only a hook that completed successfully
+        # gets its env exports applied — a timed-out, aborted, or failed
+        # hook's partial writes are discarded by the finally below
+        # (deliberate divergence from TS, which sources unconditionally).
+        _apply_env_file(env_file, stdin_data.get("hook_event", ""))
+
         result = HookResult(
             exit_code=0,
             stdout=stdout,
@@ -359,6 +518,11 @@ async def _execute_command_hook(
             duration_ms=duration_ms,
             command=command,
         )
+    finally:
+        # Ephemeral-file cleanup on every exit path. A no-op after a
+        # successful apply (which already unlinked); on timeout / abort /
+        # non-zero exit it discards unapplied partial writes.
+        _discard_env_file(env_file)
 
 
 async def _run_hooks_for_event(
@@ -369,6 +533,15 @@ async def _run_hooks_for_event(
     abort_signal: Any | None = None,
     timeout_ms: int = TOOL_HOOK_EXECUTION_TIMEOUT_MS,
 ) -> AsyncGenerator[dict[str, Any], None]:
+    # #281: each fire of an env-propagating event REPLACES that event's
+    # session exports — for CwdChanged this is the TS clearing semantics
+    # (clearCwdEnvFiles): the previous directory's per-project env never
+    # leaks into the next one, even when the new cwd defines no hooks.
+    if event in ("SessionStart", "Setup", "CwdChanged"):
+        from .session_env import clear_event_bucket
+
+        clear_event_bucket(event)
+
     # WI-0.2 — workspace-trust gate. Skip non-policy hooks while the workspace
     # is untrusted. The per-hook policy check happens below since policy-source
     # identification is per-HookConfig.

@@ -43,6 +43,13 @@ async def run_session_start_hooks(
     reg = registry or get_global_hook_registry()
     hooks = await reg.get_hooks_for_event(SESSION_START_EVENT)
 
+    # #281: each fire REPLACES the event's session exports (the same
+    # invariant _run_hooks_for_event enforces for its dispatch path) —
+    # a SessionStart re-fire (resume, /clear) must not accumulate.
+    from .session_env import clear_event_bucket
+
+    clear_event_bucket(SESSION_START_EVENT)
+
     results: list[dict[str, Any]] = []
     for hook in hooks:
         stdin_data = {
