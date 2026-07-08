@@ -9,6 +9,8 @@ from datetime import datetime
 from typing import Any
 from urllib.parse import urlparse
 
+from src.utils.abortable_net import call_with_abort
+
 from ..build_tool import Tool, ValidationResult, build_tool
 from ..context import ToolContext
 from ..errors import ToolInputError
@@ -130,7 +132,9 @@ def is_web_search_configured() -> bool:
     return _tavily_api_key() is not None
 
 
-def _tavily_search(query: str, num: int = 15) -> list[dict[str, str]]:
+def _tavily_search(
+    query: str, num: int = 15, abort_signal=None
+) -> list[dict[str, str]]:
     """Search the web via Tavily.
 
     Raises ``ToolInputError`` when ``TAVILY_API_KEY`` is unset (so the model and
@@ -153,9 +157,15 @@ def _tavily_search(query: str, num: int = 15) -> list[dict[str, str]]:
         method="POST",
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
     )
-    try:
+
+    def _request() -> str:
         with urllib.request.urlopen(req, timeout=20) as resp:
-            raw = resp.read(2_000_000).decode("utf-8", errors="replace")
+            return resp.read(2_000_000).decode("utf-8", errors="replace")
+
+    try:
+        # ESC unblocks the caller immediately; the worker dies at the
+        # 20s socket timeout (#276).
+        raw = call_with_abort(_request, abort_signal)
     except urllib.error.HTTPError as exc:
         detail = ""
         try:
@@ -333,7 +343,9 @@ def _web_search_call(tool_input: dict[str, Any], context: ToolContext) -> ToolRe
     start_time = time.monotonic()
 
     # Search via Tavily (requires TAVILY_API_KEY).
-    results = _tavily_search(query, num=15)
+    results = _tavily_search(
+        query, num=15, abort_signal=context.abort_controller.signal
+    )
 
     # Apply domain filters
     results = _apply_domain_filters(
