@@ -5,9 +5,17 @@ on:
     branches:
       - main
 
+# Cancel superseded runs for the same PR (or the same manual run).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
+
+permissions:
+  checks: write
+  contents: read
+  pull-requests: write
+  security-events: write
+  actions: read
 
 jobs:
   test:
