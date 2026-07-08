@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import os
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Optional
 
@@ -313,6 +315,36 @@ class WorkflowRun:
                 item.close()
 
 
+def _resolve_default_budget(meta: WorkflowMeta) -> Optional[int]:
+    """The workflow's own token ceiling when the caller set none (#283).
+
+    Resolution order:
+
+    1. ``CLAWCODEX_<NAME>_TOKEN_BUDGET`` env var (name uppercased,
+       non-alphanumerics → ``_`` — e.g. deep-research reads
+       ``CLAWCODEX_DEEP_RESEARCH_TOKEN_BUDGET``). ``0`` disables the
+       default entirely; malformed values are ignored.
+    2. ``meta.default_budget`` — a positive int literal in the meta block.
+    """
+    env_key = (
+        "CLAWCODEX_"
+        + re.sub(r"[^A-Za-z0-9]+", "_", meta.name).upper().strip("_")
+        + "_TOKEN_BUDGET"
+    )
+    raw_env = os.environ.get(env_key)
+    if raw_env is not None:
+        try:
+            value = int(raw_env)
+        except ValueError:
+            pass  # malformed — fall through to the meta default
+        else:
+            return value if value > 0 else None
+    declared = meta.raw.get("default_budget")
+    if isinstance(declared, int) and not isinstance(declared, bool) and declared > 0:
+        return declared
+    return None
+
+
 async def run_workflow(
     source: str,
     *,
@@ -340,6 +372,12 @@ async def run_workflow(
     meta = extract_meta(source)
 
     scheduler = scheduler if scheduler is not None else Scheduler(max_concurrent)
+    # A workflow may declare its own ceiling via ``meta.default_budget``
+    # (#283: deep-research burned ~888k tokens on a verbose model with no
+    # cap). Applied only when the caller set no budget — an explicit
+    # budget_total or an inherited parent Budget (nested workflow()) wins.
+    if budget is None and budget_total is None:
+        budget_total = _resolve_default_budget(meta)
     budget = budget if budget is not None else Budget(budget_total)
     journal = Journal(resume)
     progress = WorkflowProgress(meta.phases, on_change=on_progress)
