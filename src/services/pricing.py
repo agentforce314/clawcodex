@@ -82,10 +82,10 @@ _TIER_DEEPSEEK_PRO = {
 # tier at ≤512K input. Like DeepSeek, there is no separate cache-write charge —
 # a non-cached token is just input — so ``cache_creation`` mirrors ``input``.
 _TIER_MINIMAX_M3 = {
-    "input": 0.6 / 1_000_000,
-    "output": 2.4 / 1_000_000,
-    "cache_creation": 0.6 / 1_000_000,
-    "cache_read": 0.12 / 1_000_000,
+    "input": 0.3 / 1_000_000,
+    "output": 0.2 / 1_000_000,
+    "cache_creation": 0.3 / 1_000_000,
+    "cache_read": 0.06 / 1_000_000,
 }
 
 
