@@ -2,7 +2,7 @@
 # Dev/test-only tools live in requirements.dev.txt.
 anthropic>=0.18.0
 openai>=1.0.0
-python-dotenv>=1.0.0
+python-dotenv>=1.2.2
 rich>=13.0.0
 prompt-toolkit>=3.0.0
 tiktoken>=0.7.0
