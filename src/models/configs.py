@@ -187,6 +187,36 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
         max_output_tokens=8_192,
         supports_cache=True,
     ),
+    # Meta Muse Spark 1.1 (api.meta.ai, OpenAI-compatible). Muse Spark is a
+    # server-side reasoning model (usage reports ``reasoning_tokens``); like
+    # DeepSeek/GLM it exposes no Anthropic-style thinking blocks (the
+    # ``thinking=`` kwarg is gated on ``is_anthropic`` in query.py), so the
+    # capability flags keep their defaults. Pricing lives in
+    # ``services/pricing.py`` (single source) — the cost_* fields are unset.
+    # A future ``muse-spark-2.x`` would prefix-match this row via
+    # ``get_model_config`` (base ``muse-spark``); register such variants
+    # explicitly, as the DeepSeek/GLM rows above note.
+    #
+    # context_window=1_048_576 (2^20): Meta's documented window — the
+    # api.meta.ai overview page states 1,048,576 tokens. Same 1M-class tier as
+    # the DeepSeek-V4 / GLM-5.2 rows above.
+    #
+    # max_output_tokens=16_384 is NOT sent as the wire ``max_tokens``:
+    # query.py forwards ``resolve_max_output_tokens()`` only for
+    # Anthropic/Minimax providers; OpenAI-compatible providers send no cap and
+    # rely on the server default (verified — a ~2.3K-token answer returns
+    # ``finish_reason="stop"``, not truncated). The value's only live effect is
+    # the auto-compact output reservation (``token_warning`` -> ``autocompact``,
+    # clamped at 20_000); 16_384 reserves more output headroom than DeepSeek/
+    # GLM's 8_192, which suits a model that spends part of its budget on
+    # reasoning tokens.
+    "muse-spark-1.1": ModelConfig(
+        model_id="muse-spark-1.1",
+        display_name="Muse Spark 1.1",
+        context_window=1_048_576,
+        max_output_tokens=16_384,
+        supports_cache=True,
+    ),
 }
 
 
