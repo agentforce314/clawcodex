@@ -25,6 +25,7 @@ import { relative } from 'node:path'
 import { Box, NoSelect, RawAnsi, Text } from '@clawcodex/ink'
 import { memo, type ReactNode, useSyncExternalStore } from 'react'
 
+import { TRANSCRIPT_COLOR } from '../config/env.js'
 import { ColorDiff, ColorFile, highlighterReady, subscribeHighlighter } from '../lib/colorDiff.js'
 import type { Theme } from '../theme.js'
 import type { MsgDiffData } from '../types.js'
@@ -41,17 +42,21 @@ const CREATE_PREVIEW_LINES = 10
 const HUNK_SEPARATOR = '\x1b[0m\x1b[2m...\x1b[0m'
 
 /**
- * True when ANSI diff rendering makes sense for this terminal. Under
- * NO_COLOR the raw escape rows would stay fully colored while the rest of
- * the UI goes monochrome — callers should fall back to the plain ```diff
- * markdown path instead. NO_COLOR is the only gate needed: ColorDiff's
- * detectColorMode degrades to 256-color escapes whenever COLORTERM isn't
- * truecolor (e.g. Apple Terminal, where forceTruecolor deliberately deletes
- * COLORTERM), so any color-capable terminal receives valid sequences — and a
- * terminal with no color support at all breaks the chalk-driven UI equally.
+ * True when ANSI diff rendering makes sense for this terminal. ColorDiff
+ * builds its escape sequences itself (not through chalk), so whenever the
+ * rest of the UI goes monochrome the raw diff rows would stay fully colored
+ * — callers should fall back to the plain ```diff markdown path instead
+ * (markdown styling flows through chalk and is suppressed with the rest).
+ * Gate on the same no-color signals as transcript chrome: TRANSCRIPT_COLOR
+ * (stdout.hasColors → false under FORCE_COLOR=0 / TERM=dumb / NO_COLOR on a
+ * TTY) plus the call-time NO_COLOR check, which also covers non-TTY streams
+ * and per-test env overrides. Any color-capable terminal receives valid
+ * sequences — ColorDiff's detectColorMode degrades to 256-color escapes
+ * whenever COLORTERM isn't truecolor (e.g. Apple Terminal, where
+ * forceTruecolor deliberately deletes COLORTERM).
  */
 export function structuredDiffSupported(): boolean {
-  return !process.env.NO_COLOR
+  return TRANSCRIPT_COLOR && !process.env.NO_COLOR
 }
 
 // ── Module-level render cache ────────────────────────────────────────────

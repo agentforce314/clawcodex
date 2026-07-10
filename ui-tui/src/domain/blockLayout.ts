@@ -145,3 +145,19 @@ export const prevRenderedMsg = (
 
   return undefined
 }
+
+/**
+ * Whether the `───` inter-turn separator renders above this row. The band
+ * behind past user inputs (messageLine's transcriptRowBand) is the designed
+ * turn marker, but it is pure background color — on a terminal with color
+ * disabled (NO_COLOR, FORCE_COLOR=0, TERM=dumb) the band emits nothing, so
+ * monochrome transcripts fall back to the textual dash above every
+ * non-first user turn. Callers pass `colorEnabled` from the real stream
+ * (see TRANSCRIPT_COLOR) so the render gate and the height estimator agree.
+ */
+export const showsInterTurnSeparator = (
+  msg: Pick<Msg, 'kind' | 'role'>,
+  index: number,
+  firstUserIdx: number,
+  colorEnabled: boolean
+): boolean => !colorEnabled && msg.role === 'user' && firstUserIdx >= 0 && index > firstUserIdx
