@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react'
 
 import { DASHBOARD_TUI_MODE } from '../config/env.js'
 import { TYPING_IDLE_MS } from '../config/timing.js'
+import { PLACEHOLDER, suggestedQuery } from '../content/placeholders.js'
 import type {
   ApprovalRespondResponse,
   SecretRespondResponse,
@@ -79,6 +80,22 @@ export function shouldFallThroughForScroll(key: {
   return false
 }
 
+/**
+ * Plain Tab accepts the composer placeholder's suggested query (`Try "…"`).
+ * True only while that suggestion is actually visible — fresh conversation,
+ * idle, empty input (appLayout gates the placeholder on the first two;
+ * TextInput hides it once the input has text) — and only for unmodified Tab
+ * with no completion menu open, so it can never shadow completion-accept or
+ * the Shift+Tab permission-mode cycle. Mirrors original CC's Tab fallback
+ * (useTypeahead.tsx handleKeyDown: tab / no shift / no suggestions / empty
+ * input → insert the prompt suggestion).
+ */
+export const shouldAcceptPlaceholderSuggestion = (
+  key: { shift: boolean; tab: boolean },
+  state: { busy: boolean; completionsLen: number; conversationEmpty: boolean; input: string }
+): boolean =>
+  key.tab && !key.shift && !state.completionsLen && !state.input && state.conversationEmpty && !state.busy
+
 export function applyVoiceRecordResponse(
   response: null | VoiceRecordResponse,
   starting: boolean,
@@ -100,7 +117,7 @@ export function applyVoiceRecordResponse(
 }
 
 export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
-  const { actions, composer, gateway, terminal, voice, wheelStep } = ctx
+  const { actions, composer, conversationEmpty, gateway, terminal, voice, wheelStep } = ctx
   const { actions: cActions, refs: cRefs, state: cState } = composer
 
   const overlay = useStore($overlayState)
@@ -657,6 +674,26 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
             : row.text
 
         cActions.setInput(cState.input.slice(0, cState.compReplace) + text)
+      }
+
+      return
+    }
+
+    if (
+      shouldAcceptPlaceholderSuggestion(key, {
+        busy: live.busy,
+        completionsLen: cState.completions.length,
+        conversationEmpty,
+        input: cState.input
+      })
+    ) {
+      const query = suggestedQuery(PLACEHOLDER)
+
+      // 'Ask me anything…' carries no query — Tab stays inert. On accept the
+      // external value change snaps TextInput's cursor to the end, and a
+      // suggested `/command` pops its completion menu exactly as if typed.
+      if (query) {
+        cActions.setInput(query)
       }
 
       return

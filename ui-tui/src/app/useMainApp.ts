@@ -851,6 +851,7 @@ export function useMainApp(gw: GatewayClient) {
       sys
     },
     composer: { actions: composerActions, refs: composerRefs, state: composerState },
+    conversationEmpty: empty,
     gateway,
     terminal: { hasSelection, scrollRef, scrollWithSelection, selection, stdout },
     voice: {

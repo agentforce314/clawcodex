@@ -287,6 +287,10 @@ export interface InputHandlerContext {
     refs: ComposerRefs
     state: ComposerState
   }
+  /** True while the transcript holds nothing but the intro — the state in
+   *  which appLayout shows the `Try "…"` placeholder, and the only state in
+   *  which Tab may accept its suggested query. */
+  conversationEmpty: boolean
   gateway: GatewayServices
   terminal: {
     hasSelection: boolean
