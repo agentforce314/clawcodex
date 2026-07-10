@@ -2,9 +2,9 @@ import { type ScrollBoxHandle, useApp, useHasSelection, useSelection, useStdout,
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { STARTUP_RESUME_ID } from '../config/env.js'
+import { STARTUP_RESUME_ID, TRANSCRIPT_COLOR } from '../config/env.js'
 import { MAX_HISTORY, WHEEL_SCROLL_STEP } from '../config/limits.js'
-import { hasLeadGap, prevRenderedMsg } from '../domain/blockLayout.js'
+import { hasLeadGap, prevRenderedMsg, showsInterTurnSeparator } from '../domain/blockLayout.js'
 import { SECTION_NAMES, sectionMode } from '../domain/details.js'
 import { attachedImageNotice, imageTokenMeta } from '../domain/messages.js'
 import { composeTabTitle, fmtCwdBranch, shortCwd } from '../domain/paths.js'
@@ -359,10 +359,14 @@ export function useMainApp(gw: GatewayClient) {
     return cache
   }, [heightCacheKey])
 
-  // Index of the first user-role message — separator-rendering in
-  // appLayout.tsx skips this row, so the height estimator must skip it
-  // too. -1 when no user message exists yet (no row will gate true).
-  const firstUserIdx = useMemo(() => virtualRows.findIndex(r => r.msg.role === 'user'), [virtualRows])
+  // First user-row index feeds the monochrome `───` fallback gate — both the
+  // appLayout.tsx render side and the height estimate below must agree (see
+  // domain/blockLayout.ts::showsInterTurnSeparator). Short-circuited to -1
+  // when color renders (the band replaces the separator).
+  const firstUserIdx = useMemo(
+    () => (TRANSCRIPT_COLOR ? -1 : virtualRows.findIndex(r => r.msg.role === 'user')),
+    [virtualRows]
+  )
 
   const estimateRowHeight = useCallback(
     (index: number) =>
@@ -381,7 +385,7 @@ export function useMainApp(gw: GatewayClient) {
         toolsExpanded: toolsDetailsExpanded,
         toolsVisible: toolsDetailsVisible,
         userPrompt: ui.theme.brand.prompt,
-        withSeparator: virtualRows[index]!.msg.role === 'user' && firstUserIdx >= 0 && index > firstUserIdx
+        withSeparator: showsInterTurnSeparator(virtualRows[index]!.msg, index, firstUserIdx, TRANSCRIPT_COLOR)
       }),
     [
       cols,

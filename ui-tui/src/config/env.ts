@@ -73,3 +73,21 @@ export const INLINE_MODE = inlineOverride ?? true
 // Live FPS counter overlay, fed by ink's onFrame (real render rate, not a
 // synthetic timer).
 export const SHOW_FPS = truthy(process.env.CLAWCODEX_TUI_FPS)
+
+// Whether the output stream renders color at all (NO_COLOR / FORCE_COLOR=0 /
+// TERM=dumb → false). The renderer's chalk does NOT read NO_COLOR itself —
+// lib/forceTruecolor.ts translates NO_COLOR into FORCE_COLOR=0 before chalk's
+// import, which is what keeps this signal and the renderer's actual output in
+// agreement (both honor FORCE_COLOR). The transcript's user-input band is
+// pure background color, so monochrome terminals fall back to the textual
+// `───` inter-turn separator (domain/blockLayout.ts::showsInterTurnSeparator).
+// hasColors is missing on mocked/piped streams in tests — treat that as
+// color-capable so the designed band path is the default and the fallback
+// stays scoped to explicit no-color terminals.
+export const TRANSCRIPT_COLOR: boolean = (() => {
+  try {
+    return process.stdout.hasColors?.() ?? true
+  } catch {
+    return true
+  }
+})()

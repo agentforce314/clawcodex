@@ -264,7 +264,7 @@ describe('expanded rendering', () => {
 
   it('height estimates count the variant that renders', () => {
     const msg: Msg = { kind: 'trail', role: 'system', text: '', tools: trail, toolsVerbose: verboseTrail }
-    const opts = { compact: false, details: true, leadGap: false, withSeparator: false }
+    const opts = { compact: false, details: true, leadGap: false }
 
     const collapsed = estimatedMsgHeight(msg, 80, opts)
     const expanded = estimatedMsgHeight(msg, 80, { ...opts, toolsExpanded: true })

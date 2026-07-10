@@ -159,7 +159,14 @@ export const MessageLine = memo(function MessageLine({
     )
   }
 
-  const { body, glyph, prefix } = ROLE[msg.role](t)
+  // Past user inputs and slash echoes render like the original transcript:
+  // the `❯ ` pointer in `subtle` with the text on a `userMessageBackground`
+  // band (UserPromptMessage.tsx:76 / UserCommandMessage.tsx:62 — the band,
+  // not bold text, carries the emphasis, per HighlightedThinkingText). Slash
+  // echoes keep their system role (and gutter width) but borrow the user
+  // pointer, matching UserCommandMessage.
+  const band = transcriptRowBand(msg, t)
+  const { body, glyph, prefix } = ROLE[band === undefined ? msg.role : 'user'](t)
   const gutterWidth = transcriptGutterWidth(msg.role, t.brand.prompt)
 
   const showDetails =
@@ -169,7 +176,7 @@ export const MessageLine = memo(function MessageLine({
 
   const content = (() => {
     if (msg.kind === 'slash') {
-      return <Text color={t.color.muted}>{msg.text}</Text>
+      return <Text color={t.color.text}>{msg.text}</Text>
     }
 
     // ── Collapsible long system message (system prompt, AGENTS.md, etc.) ──
@@ -265,9 +272,9 @@ export const MessageLine = memo(function MessageLine({
         </Box>
       )}
 
-      <Box>
+      <Box {...(band === undefined ? {} : { backgroundColor: band, width: '100%' })}>
         <NoSelect flexShrink={0} fromLeftEdge width={gutterWidth}>
-          <Text bold={msg.role === 'user'} color={prefix}>
+          <Text color={prefix}>
             {glyph}{' '}
           </Text>
         </NoSelect>
@@ -282,6 +289,12 @@ export const MessageLine = memo(function MessageLine({
 // is chrome noise (and the structured branch above never reaches here).
 export const shouldShowResponseSeparator = (msg: Msg, showDetails: boolean): boolean =>
   msg.role === 'assistant' && msg.kind !== 'diff' && showDetails && /\S/.test(msg.text)
+
+// The highlight band behind past user inputs and slash echoes — the original
+// userMessageBackground emphasis (UserPromptMessage.tsx:76 /
+// UserCommandMessage.tsx:62). Assistant/system/tool rows get none.
+export const transcriptRowBand = (msg: Msg, t: Theme): string | undefined =>
+  msg.role === 'user' || msg.kind === 'slash' ? t.color.userMessageBackground : undefined
 
 interface MessageLineProps {
   cols: number
