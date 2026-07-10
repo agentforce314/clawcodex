@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { blockRenders, hasLeadGap, messageGroup, prevRenderedMsg } from '../domain/blockLayout.js'
+import { blockRenders, hasLeadGap, messageGroup, prevRenderedMsg, showsInterTurnSeparator } from '../domain/blockLayout.js'
 import type { Msg } from '../types.js'
 
 const m = (over: Partial<Msg>): Msg => ({ role: 'assistant', text: '', ...over })
@@ -119,5 +119,23 @@ describe('prevRenderedMsg', () => {
 
   it('returns undefined at the top of the transcript', () => {
     expect(prevRenderedMsg(at, 0, shownCtx)).toBeUndefined()
+  })
+})
+
+describe('showsInterTurnSeparator', () => {
+  const user = m({ role: 'user' })
+  const assistant = m({ role: 'assistant' })
+  const slash = m({ kind: 'slash', role: 'system' })
+
+  it('never renders when color is available — the band is the turn marker', () => {
+    expect(showsInterTurnSeparator(user, 5, 1, true)).toBe(false)
+  })
+
+  it('renders above non-first user rows only when color is disabled', () => {
+    expect(showsInterTurnSeparator(user, 5, 1, false)).toBe(true)
+    expect(showsInterTurnSeparator(user, 1, 1, false)).toBe(false) // first user row
+    expect(showsInterTurnSeparator(assistant, 5, 1, false)).toBe(false)
+    expect(showsInterTurnSeparator(slash, 5, 1, false)).toBe(false)
+    expect(showsInterTurnSeparator(user, 5, -1, false)).toBe(false) // no user yet
   })
 })

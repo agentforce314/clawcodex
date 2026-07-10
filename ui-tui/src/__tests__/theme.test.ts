@@ -82,6 +82,25 @@ describe('LIGHT_THEME', () => {
     expect(Object.keys(LIGHT_THEME.color).sort()).toEqual(Object.keys(DARK_THEME.color).sort())
     expect(LIGHT_THEME.brand).toEqual(DARK_THEME.brand)
   })
+
+  it('pins the original userMessageBackground band values (utils/theme.ts)', async () => {
+    const { DARK_THEME, LIGHT_THEME } = await importThemeWithCleanEnv()
+
+    expect(DARK_THEME.color.userMessageBackground).toBe('rgb(55,55,55)')
+    expect(LIGHT_THEME.color.userMessageBackground).toBe('rgb(240,240,240)')
+  })
+
+  it('keeps text selection visible on the user-input band', async () => {
+    // Regression guard: dark selectionBg was #373737 — the exact band color —
+    // so selecting a past user row painted band-on-band and vanished. The
+    // original keeps selection a distinct blue in both themes.
+    const { DARK_THEME, LIGHT_THEME } = await importThemeWithCleanEnv()
+
+    expect(DARK_THEME.color.selectionBg).toBe('rgb(38,79,120)')
+    expect(LIGHT_THEME.color.selectionBg).toBe('rgb(180,213,255)')
+    expect(DARK_THEME.color.selectionBg).not.toBe(DARK_THEME.color.userMessageBackground)
+    expect(LIGHT_THEME.color.selectionBg).not.toBe(LIGHT_THEME.color.userMessageBackground)
+  })
 })
 
 describe('DEFAULT_THEME aliasing', () => {
@@ -248,6 +267,15 @@ describe('fromSkin', () => {
     const theme = fromSkin({ completion_menu_current_bg: '#123456', selection_bg: '#654321' }, {})
 
     expect(theme.color.selectionBg).toBe('#654321')
+  })
+
+  it('keeps the user-message band through skins, with user_message_bg override', async () => {
+    const { DEFAULT_THEME, fromSkin } = await importThemeWithCleanEnv()
+
+    expect(fromSkin({ banner_title: '#FF0000' }, {}).color.userMessageBackground).toBe(
+      DEFAULT_THEME.color.userMessageBackground
+    )
+    expect(fromSkin({ user_message_bg: '#222233' }, {}).color.userMessageBackground).toBe('#222233')
   })
 
   it('overrides branding', async () => {

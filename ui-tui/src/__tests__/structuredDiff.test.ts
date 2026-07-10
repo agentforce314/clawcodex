@@ -493,3 +493,49 @@ describe('DiffView rendering', () => {
     expect(plain).toMatch(/221 \+\s+id: "drone-warfare",/)
   })
 })
+
+describe('structuredDiffSupported no-color gating', () => {
+  // ColorDiff emits raw SGR itself (not through chalk), so the structured
+  // path must bow out on the SAME signals that turn the rest of the UI
+  // monochrome — otherwise a FORCE_COLOR=0 / TERM=dumb session gets colored
+  // diff blocks inside an otherwise colorless transcript.
+  const importFresh = async () => (await import('../components/diffView.js')).structuredDiffSupported
+
+  // Piped test stdout has no hasColors at all; install/remove an own prop.
+  const setHasColors = (v: boolean | undefined) => {
+    if (v === undefined) {
+      delete (process.stdout as { hasColors?: unknown }).hasColors
+    } else {
+      Object.defineProperty(process.stdout, 'hasColors', { configurable: true, value: () => v, writable: true })
+    }
+  }
+
+  afterEach(() => {
+    setHasColors(undefined)
+    vi.unstubAllEnvs()
+    vi.resetModules()
+  })
+
+  it('falls back when the stream reports no color support (FORCE_COLOR=0 / TERM=dumb)', async () => {
+    vi.resetModules()
+    setHasColors(false)
+
+    expect((await importFresh())()).toBe(false)
+  })
+
+  it('falls back under NO_COLOR even when the stream reports color', async () => {
+    vi.resetModules()
+    setHasColors(true)
+    vi.stubEnv('NO_COLOR', '1')
+
+    expect((await importFresh())()).toBe(false)
+  })
+
+  it('renders structured diffs on color-capable terminals', async () => {
+    vi.resetModules()
+    setHasColors(true)
+    delete process.env.NO_COLOR
+
+    expect((await importFresh())()).toBe(true)
+  })
+})

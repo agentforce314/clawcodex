@@ -25,6 +25,9 @@ export interface ThemeColors {
   statusBad: string
   statusCritical: string
   selectionBg: string
+  /** Original CC `userMessageBackground` (utils/theme.ts): the highlight band
+   *  drawn behind past user inputs (and slash echoes) in the transcript. */
+  userMessageBackground: string
 
   // Original Claude Code tokens (utils/theme.ts) consumed by the ported
   // surfaces: busy-line shimmer, composer rules, permission-mode badges.
@@ -293,7 +296,14 @@ export const DARK_THEME: Theme = {
     statusWarn: '#FFC107',
     statusBad: '#FF8C5A',
     statusCritical: '#FF6B80',
-    selectionBg: '#373737',
+    // Original darkTheme selectionBg: "classic dark-mode selection blue (VS
+    // Code dark default)" (utils/theme.ts) — must stay distinct from
+    // userMessageBackground or selecting text on a past user row paints
+    // band-on-band and vanishes (the previous #373737 collided exactly).
+    selectionBg: 'rgb(38,79,120)',
+    // Original darkTheme userMessageBackground: "Lighter grey for better
+    // visual contrast" (utils/theme.ts).
+    userMessageBackground: 'rgb(55,55,55)',
 
     claudeShimmer: 'rgb(235,159,127)',
     subtle: 'rgb(80,80,80)',
@@ -349,7 +359,12 @@ export const LIGHT_THEME: Theme = {
     statusWarn: '#966C1E',
     statusBad: '#C25A3A',
     statusCritical: '#AB2B3F',
-    selectionBg: '#E0E0E0',
+    // Original lightTheme selectionBg: "classic light-mode selection blue
+    // (macOS/VS Code-ish)" (utils/theme.ts); distinct from the 240 band.
+    selectionBg: 'rgb(180,213,255)',
+    // Original lightTheme userMessageBackground: "Slightly darker grey for
+    // optimal contrast" (utils/theme.ts).
+    userMessageBackground: 'rgb(240,240,240)',
 
     claudeShimmer: 'rgb(245,149,117)',
     subtle: 'rgb(175,175,175)',
@@ -652,6 +667,7 @@ export function fromSkin(
           c('selection_bg') ??
           c('completion_menu_current_bg') ??
           (hasSkinColors ? completionCurrentBg : d.color.selectionBg),
+        userMessageBackground: c('user_message_bg') ?? d.color.userMessageBackground,
 
         claudeShimmer: d.color.claudeShimmer,
         subtle: d.color.subtle,

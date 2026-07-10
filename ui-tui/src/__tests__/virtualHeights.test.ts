@@ -79,12 +79,21 @@ describe('virtual height estimates', () => {
     ).toBe(estimatedMsgHeight(toolsOnly, 80, { compact: false, details: false }))
   })
 
-  it('reserves two extra rows for the inter-turn separator on non-first user messages', () => {
+  it('gives every user message the same height when the band renders', () => {
+    // With color available, the userMessageBackground band replaces the dash
+    // separator and adds no rows — non-first user rows cost the same.
+    const msg: Msg = { role: 'user', text: 'follow-up question' }
+
+    expect(estimatedMsgHeight(msg, 80, { compact: false, details: false })).toBe(3)
+  })
+
+  it('reserves two rows for the monochrome ─── fallback separator', () => {
+    // NO_COLOR terminals can't see the band; the textual separator returns
+    // (1 rule row + 1 margin row) and the estimate must match the render.
     const msg: Msg = { role: 'user', text: 'follow-up question' }
     const base = estimatedMsgHeight(msg, 80, { compact: false, details: false })
-    const withSep = estimatedMsgHeight(msg, 80, { compact: false, details: false, withSeparator: true })
 
-    expect(withSep).toBe(base + 2)
+    expect(estimatedMsgHeight(msg, 80, { compact: false, details: false, withSeparator: true })).toBe(base + 2)
   })
 
   it('caps wrapped-line counting so giant assistant turns do not block offset rebuilds', () => {

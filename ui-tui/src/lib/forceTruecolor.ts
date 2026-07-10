@@ -40,7 +40,21 @@ export function shouldDowngradeAppleTerminalTruecolor(env: NodeJS.ProcessEnv = p
   return isAdvertisedTruecolor(env)
 }
 
-if (shouldForceTruecolor()) {
+// The bundled chalk predates NO_COLOR support (it never checks the variable),
+// so a NO_COLOR terminal still got full color output. Translate NO_COLOR into
+// FORCE_COLOR=0 — the env channel this chalk does honor — unless the user set
+// FORCE_COLOR themselves (explicit FORCE_COLOR outranks NO_COLOR, matching
+// supports-color/Node getColorDepth precedence). This also keeps the
+// transcript's monochrome `───` fallback (config/env.ts::TRANSCRIPT_COLOR,
+// from stdout.hasColors which DOES honor NO_COLOR) agreeing with what the
+// renderer actually emits.
+export function shouldSuppressColorForNoColor(env: NodeJS.ProcessEnv = process.env): boolean {
+  return 'NO_COLOR' in env && (env.FORCE_COLOR ?? '') === ''
+}
+
+if (shouldSuppressColorForNoColor()) {
+  process.env.FORCE_COLOR = '0'
+} else if (shouldForceTruecolor()) {
   if (!process.env.COLORTERM) {
     process.env.COLORTERM = 'truecolor'
   }

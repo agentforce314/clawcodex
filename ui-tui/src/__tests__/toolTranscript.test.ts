@@ -118,7 +118,7 @@ describe('estimatedMsgHeight with multi-line tool details', () => {
       tools: [buildToolTrailLine('Bash', 'ls', false, 'a')]
     }
 
-    const opts = { compact: false, details: true, leadGap: false, withSeparator: false }
+    const opts = { compact: false, details: true, leadGap: false }
     const tall = estimatedMsgHeight(base, 80, opts)
     const short = estimatedMsgHeight(single, 80, opts)
 

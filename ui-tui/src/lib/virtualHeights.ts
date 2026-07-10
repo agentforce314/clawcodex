@@ -171,9 +171,11 @@ export const estimatedMsgHeight = (
     h++
   }
 
-  // Inter-turn separator above non-first user messages (1 rule row + 1
-  // top-margin row). The render-side gate is in appLayout.tsx; we trust
-  // the caller to pass `withSeparator` only when it matches that gate.
+  // Monochrome fallback: the `───` inter-turn separator above non-first user
+  // rows (1 rule row + 1 top-margin row). Rendered only when color is
+  // disabled — the band replaces it otherwise. The caller passes the
+  // domain/blockLayout.ts::showsInterTurnSeparator result so this estimate
+  // matches the appLayout.tsx render gate exactly.
   if (withSeparator) {
     h += 2
   }

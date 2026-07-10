@@ -147,7 +147,7 @@ describe('forceTruecolor', () => {
     )
   })
 
-  it('respects NO_COLOR', async () => {
+  it('respects NO_COLOR — even over the explicit truecolor opt-in', async () => {
     await withCleanEnv(
       () => {
         process.env.NO_COLOR = '1'
@@ -156,7 +156,23 @@ describe('forceTruecolor', () => {
       async () => {
         await import('../lib/forceTruecolor.js?t=no-color-' + importId++)
         expect(process.env.COLORTERM).toBeUndefined()
-        expect(process.env.FORCE_COLOR).toBeUndefined()
+        // The bundled chalk never checks NO_COLOR itself, so the bootstrap
+        // translates it into the FORCE_COLOR=0 channel chalk does honor.
+        expect(process.env.FORCE_COLOR).toBe('0')
+      }
+    )
+  })
+
+  it('lets an explicit FORCE_COLOR outrank NO_COLOR', async () => {
+    await withCleanEnv(
+      () => {
+        process.env.NO_COLOR = '1'
+        process.env.FORCE_COLOR = '2'
+      },
+      async () => {
+        const mod = await import('../lib/forceTruecolor.js?t=no-color-force-' + importId++)
+        expect(mod.shouldSuppressColorForNoColor(process.env)).toBe(false)
+        expect(process.env.FORCE_COLOR).toBe('2')
       }
     )
   })
