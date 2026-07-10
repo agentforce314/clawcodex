@@ -26,7 +26,7 @@ from src.providers.openai_compatible_specs import (
     build_provider_class,
 )
 
-# The 18 OpenAI-compatible providers added via the registry.
+# The 19 OpenAI-compatible providers added via the registry.
 EXPECTED_NEW_PROVIDERS = {
     "nvidia-nim",
     "atlascloud",
@@ -46,6 +46,7 @@ EXPECTED_NEW_PROVIDERS = {
     "together",
     "stepfun",
     "deepinfra",
+    "meta",
 }
 
 # A sample of (id -> (base_url, default_model)) — each vendor's published
@@ -58,6 +59,7 @@ VENDOR_DEFAULTS = {
     "deepinfra": ("https://api.deepinfra.com/v1/openai", "deepseek-ai/DeepSeek-V4-Pro"),
     "stepfun": ("https://api.stepfun.ai/v1", "step-3.7-flash"),
     "siliconflow-cn": ("https://api.siliconflow.cn/v1", "deepseek-ai/DeepSeek-V4-Pro"),
+    "meta": ("https://api.meta.ai/v1", "muse-spark-1.1"),
 }
 
 

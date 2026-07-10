@@ -78,6 +78,24 @@ _TIER_DEEPSEEK_PRO = {
     "cache_creation": 0.435 / 1_000_000,
     "cache_read": 0.003625 / 1_000_000,
 }
+# Meta Muse Spark 1.1 (api.meta.ai, OpenAI-compatible). Meta's published rates:
+# $1.25/M input, $4.25/M output, $0.15/M cached input. OpenAI-style caching has
+# no separate cache-write charge, so ``cache_creation`` mirrors ``input``.
+# NOTE: the generic OpenAI-compat usage builder does not (yet) map
+# ``prompt_tokens_details.cached_tokens`` onto ``cache_read_input_tokens`` —
+# only the hand-written DeepSeek provider does — so today ``cache_read`` is
+# inert for Meta: cached input is billed at the full input rate in the cost
+# display, an over-estimate on the cached portion ($1.25 vs $0.15/M, ~8x).
+# The displayed cost is thus a safe upper bound, consistent with the other
+# registry providers; wiring the mapping into ``_build_usage_dict`` is a
+# separate change (it would affect all OpenAI-compat providers). The real
+# cache-read rate is recorded here for when that lands.
+_TIER_MUSE_SPARK = {
+    "input": 1.25 / 1_000_000,
+    "output": 4.25 / 1_000_000,
+    "cache_creation": 1.25 / 1_000_000,
+    "cache_read": 0.15 / 1_000_000,
+}
 
 
 # Exact-match table — keyed by canonical model name. Order DOESN'T matter
@@ -106,6 +124,8 @@ PRICING: dict[str, dict[str, float]] = {
     # every proxied model is priced at its upstream rate.
     "deepseek-v4-flash": _TIER_DEEPSEEK_FLASH,
     "deepseek-v4-pro": _TIER_DEEPSEEK_PRO,
+    # Meta Muse Spark (api.meta.ai)
+    "muse-spark-1.1": _TIER_MUSE_SPARK,
 }
 
 

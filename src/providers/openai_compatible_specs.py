@@ -311,6 +311,19 @@ _SPECS: tuple[ProviderSpec, ...] = (
         env_vars=("DEEPINFRA_API_KEY", "DEEPINFRA_TOKEN"),
         aliases=("deep-infra", "deep_infra"),
     ),
+    # Meta's first-party API (api.meta.ai) — not a DeepSeek gateway; it serves
+    # its own ``muse-spark-1.1`` reasoning model over the OpenAI-compatible
+    # ``/v1/chat/completions`` endpoint (Bearer auth). ``muse``/``muse-spark``
+    # aliases mirror how ``kimi`` aliases ``moonshot``.
+    ProviderSpec(
+        id="meta",
+        label="Meta",
+        default_base_url="https://api.meta.ai/v1",
+        default_model="muse-spark-1.1",
+        available_models=("muse-spark-1.1",),
+        env_vars=("META_API_KEY", "META_AI_API_KEY"),
+        aliases=("meta-ai", "meta_ai", "muse", "muse-spark"),
+    ),
 )
 
 
