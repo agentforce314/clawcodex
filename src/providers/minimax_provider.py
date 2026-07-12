@@ -52,6 +52,19 @@ class MinimaxProvider(BaseProvider):
         self.client = anthropic.Anthropic(**self._client_kwargs)
         return self.client
 
+    def _prepare_messages(self, messages: list[Any]) -> list[dict[str, Any]]:
+        """Base preparation + removal of foreign passthrough blocks.
+
+        Minimax speaks the Anthropic wire format, which rejects unknown
+        content-block types — a mid-session ``/model`` switch away from
+        the ChatGPT-subscription provider must not leak its
+        ``openai_responses_item`` replay blocks here. Same strip as
+        ``AnthropicProvider._prepare_messages``.
+        """
+        prepared = super()._prepare_messages(messages)
+        from .openai_responses import strip_responses_item_blocks
+        return strip_responses_item_blocks(prepared)
+
     def _build_chat_response(self, response: Any) -> ChatResponse:
         content_text = ""
         tool_uses: list[dict[str, Any]] = []

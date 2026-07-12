@@ -228,6 +228,18 @@ class AnthropicProvider(BaseProvider):
         self.client = mod.anthropic.Anthropic(**self._client_kwargs)
         return self.client
 
+    def _prepare_messages(self, messages: list[Any]) -> list[dict[str, Any]]:
+        """Base preparation + removal of foreign passthrough blocks.
+
+        A mid-session ``/model`` switch away from the ChatGPT-subscription
+        provider leaves ``openai_responses_item`` blocks (encrypted
+        reasoning replay state) in assistant history; the Anthropic API
+        rejects unknown content-block types, so they are stripped here.
+        """
+        prepared = super()._prepare_messages(messages)
+        from .openai_responses import strip_responses_item_blocks
+        return strip_responses_item_blocks(prepared)
+
     def _effective_base_url(self) -> str | None:
         """The base URL the SDK will actually use.
 
