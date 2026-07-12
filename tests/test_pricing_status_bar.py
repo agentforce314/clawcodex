@@ -35,6 +35,18 @@ class TestGetPricing(unittest.TestCase):
         self.assertEqual(p["input"], 3.0 / 1_000_000)
         self.assertEqual(p["output"], 15.0 / 1_000_000)
 
+    def test_exact_match_minimax_models(self) -> None:
+        m3 = get_pricing("MiniMax-M3")
+        self.assertEqual(m3["input"], 0.30 / 1_000_000)
+        self.assertEqual(m3["output"], 1.20 / 1_000_000)
+        self.assertEqual(m3["cache_read"], 0.06 / 1_000_000)
+
+        m27 = get_pricing("MiniMax-M2.7")
+        self.assertEqual(m27["input"], 0.30 / 1_000_000)
+        self.assertEqual(m27["output"], 1.20 / 1_000_000)
+        self.assertEqual(m27["cache_creation"], 0.375 / 1_000_000)
+        self.assertEqual(m27["cache_read"], 0.06 / 1_000_000)
+
     def test_family_prefix_falls_back_for_future_opus_variant(self) -> None:
         # A model name not in the exact table but matching the
         # ``claude-opus-4-7`` family prefix → 5/25 tier.
