@@ -1,7 +1,17 @@
+import { linkOpenHotkey } from '../lib/linkAffordance.js'
 import { isMac, isRemoteShell } from '../lib/platform.js'
 
 const action = isMac ? 'Cmd' : 'Ctrl'
 const paste = isMac ? 'Cmd' : 'Alt'
+
+// Terminal-appropriate link-opening gesture (Cmd+click in OSC 8 terminals,
+// Cmd+double-click the URL in Apple Terminal). Omitted when unknown, so we
+// never advertise a gesture the user's terminal can't perform.
+const linkHotkeys: [string, string][] = (() => {
+  const row = linkOpenHotkey()
+
+  return row ? [row] : []
+})()
 
 const copyHotkeys: [string, string][] = isMac
   ? [
@@ -18,6 +28,7 @@ const copyHotkeys: [string, string][] = isMac
 export const HOTKEYS: [string, string][] = [
   ['Esc', 'interrupt the running turn'],
   ...copyHotkeys,
+  ...linkHotkeys,
   [action + '+D', 'exit'],
   [action + '+G / Alt+G', 'open $EDITOR (Alt+G fallback for VSCode/Cursor)'],
   [action + '+L', 'redraw / repaint'],
