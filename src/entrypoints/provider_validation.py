@@ -50,6 +50,10 @@ def get_provider_validation_error(provider_name: str | None) -> str | None:
     # ``DEEPSEEK_API_KEY``). Local providers (Ollama / vLLM / SGLang) need
     # no key. Same check the headless path ran inline pre-ENTRY-2.
     api_key = resolve_api_key(name, provider_cfg)
+    if name == "anthropic" and not api_key:
+        from src.auth.anthropic_subscription import load_credentials
+        if load_credentials() is not None:
+            return None
     if not api_key and provider_requires_api_key(name):
         return (
             f"error: API key for provider '{name}' is not configured. "
