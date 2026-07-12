@@ -485,6 +485,21 @@ class _AgentSession:
                 ok = False
             self._reply(request_id, {"ok": ok})
             return
+        if subtype == "memory_targets":
+            await self._do_memory_targets(request_id)
+            return
+        if subtype == "memory_edited":
+            # /memory post-editor sync: the memory-file cache keys on cwd only
+            # (no mtimes), so an external $EDITOR write stays invisible until a
+            # bust — clear so the next turn's prompt assembly re-reads disk.
+            try:
+                from src.context_system.claude_md import clear_memory_file_caches
+
+                clear_memory_file_caches()
+                self._reply(request_id, {"ok": True})
+            except Exception as exc:  # noqa: BLE001
+                self._reply(request_id, {"ok": False, "error": str(exc)})
+            return
         if subtype == "set_effort":
             self._do_set_effort(request_id, inner.get("effort"))
             return
@@ -1255,6 +1270,25 @@ class _AgentSession:
         except Exception as exc:  # noqa: BLE001
             logger.exception("[agent-server] plan failed")
             self._reply(request_id, {"ok": False, "error": str(exc)})
+
+    async def _do_memory_targets(self, request_id: object) -> None:
+        """/memory picker rows (the TS MemoryFileSelector data): the shared
+        ``build_memory_options`` hierarchy — synthetic User/Project candidates
+        plus every loaded memory file — serialized for the TUI overlay, which
+        owns the ensure-create + ``$EDITOR`` spawn (memory.tsx)."""
+        try:
+            from src.command_system.memory_command import build_memory_options
+
+            options = await build_memory_options(self.cwd)
+            self._reply(request_id, {
+                "ok": True,
+                "targets": [
+                    {"path": o.value, "label": o.label, "description": o.description or ""}
+                    for o in options
+                ],
+            })
+        except Exception as exc:  # noqa: BLE001
+            self._reply(request_id, {"ok": False, "error": str(exc), "targets": []})
 
     def _do_insights(self, request_id: object) -> None:
         """/insights: a model-based analysis of the session (the original's

@@ -12,6 +12,7 @@ import { FloatBox } from './appChrome.js'
 import { BillingOverlay } from './billingOverlay.js'
 import { LogoPicker } from './logoPicker.js'
 import { MaskedPrompt } from './maskedPrompt.js'
+import { MemoryPicker } from './memoryPicker.js'
 import { ModelPicker } from './modelPicker.js'
 import { OverlayHint } from './overlayControls.js'
 import { PetPicker } from './petPicker.js'
@@ -141,6 +142,7 @@ export function FloatingOverlays({
   onActiveSessionSelect,
   onActiveSessionClose,
   onLogoSelect,
+  onMemorySelect,
   onModelSelect,
   onNewLiveSession,
   onNewPromptSession,
@@ -154,6 +156,7 @@ export function FloatingOverlays({
   | 'onActiveSessionSelect'
   | 'onActiveSessionClose'
   | 'onLogoSelect'
+  | 'onMemorySelect'
   | 'onModelSelect'
   | 'onNewLiveSession'
   | 'onNewPromptSession'
@@ -168,6 +171,7 @@ export function FloatingOverlays({
 
   const hasAny =
     overlay.logoPicker ||
+    overlay.memoryPicker ||
     overlay.modelPicker ||
     overlay.pager ||
     overlay.petPicker ||
@@ -223,6 +227,17 @@ export function FloatingOverlays({
             current={logoPalette}
             onClose={() => patchOverlayState({ logoPicker: false })}
             onSelect={onLogoSelect}
+            t={theme}
+          />
+        </FloatBox>
+      )}
+
+      {overlay.memoryPicker && (
+        <FloatBox color={theme.color.border}>
+          <MemoryPicker
+            gw={gw}
+            onCancel={() => patchOverlayState({ memoryPicker: false })}
+            onSelect={onMemorySelect}
             t={theme}
           />
         </FloatBox>

@@ -293,6 +293,7 @@ const SLASHES: ReadonlyArray<{ desc: string; hint?: string; name: string }> = [
   },
   { desc: 'List running and recent dynamic workflows', name: '/workflows' },
   { desc: 'Search / manage the knowledge base', hint: '[status|list|clear|enable|disable]', name: '/knowledge' },
+  { desc: 'Edit Claude memory files', name: '/memory' },
   { desc: 'Browse and inspect available skills', hint: '[list | inspect <name> | search <query>]', name: '/skills' },
   { desc: 'Enable plan mode or view the current session plan', hint: '[<description>]', name: '/plan' },
   {
@@ -705,6 +706,16 @@ export class GatewayClient extends EventEmitter {
         return this.fetchSkills().then(
           skills => ({ output: `Re-scanned skills: ${this.skillsTotal || skills.length} available.` }) as T
         )
+
+      // ── /memory picker (backend enumerates; the TUI owns the editor) ─────
+      case 'memory.targets':
+        return this.controlQuery('memory_targets', {}).then(
+          r => (r ?? { error: 'no response from backend', ok: false, targets: [] }) as T
+        )
+
+      case 'memory.edited':
+        // Post-$EDITOR cache bust so the next turn re-reads memory files.
+        return this.controlQuery('memory_edited', {}).then(r => (r ?? { ok: false }) as T)
 
       // ── slash commands → clawcodex control_requests ──────────────────────
       case 'command.dispatch':
