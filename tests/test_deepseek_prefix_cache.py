@@ -55,7 +55,9 @@ def test_deepseek_v4_context_windows_registered():
 def test_other_providers_context_window_unchanged():
     # OpenRouter-DeepSeek (decision #1: out of scope) keeps the 200K default.
     assert get_context_window_for_model("deepseek/deepseek-v4-pro") == 200_000
-    assert get_context_window_for_model("gpt-5.4") == 200_000
+    # gpt-5.4 gained a registered 272K window with the ChatGPT-subscription
+    # work (models/configs.py) — no longer the 200K unknown-model default.
+    assert get_context_window_for_model("gpt-5.4") == 272_000
     assert get_context_window_for_model("some-unknown-model") == 200_000
     # Legacy aliases intentionally NOT registered (broad prefix-match risk).
     assert get_context_window_for_model("deepseek-chat") == 200_000

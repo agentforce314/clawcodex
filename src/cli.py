@@ -725,6 +725,15 @@ def handle_login():
         if auth_method == "subscription":
             return _handle_anthropic_subscription_login(console, Prompt)
 
+    if provider == "openai":
+        auth_method = Prompt.ask(
+            "Authentication method",
+            choices=["subscription", "api-key"],
+            default="subscription",
+        )
+        if auth_method == "subscription":
+            return _handle_openai_subscription_login(console, Prompt)
+
     api_key = Prompt.ask(
         f"Enter {provider.upper()} API Key",
         password=True
@@ -794,20 +803,99 @@ def _handle_anthropic_subscription_login(console, Prompt):
     return 0
 
 
+def _handle_openai_subscription_login(console, Prompt):
+    """Run the ChatGPT "Sign in with ChatGPT" OAuth flow (Codex backend)."""
+    import webbrowser
+
+    from src.auth import openai_subscription as oai
+    from src.config import set_api_key, set_default_provider
+    from src.providers import PROVIDER_INFO
+
+    console.print(
+        "\n[yellow]Important:[/yellow] this signs in with your ChatGPT "
+        "Plus/Pro plan via the same OAuth flow the Codex CLI uses. Usage "
+        "draws on your plan's allowance, is subject to OpenAI's terms, "
+        "and may stop working for third-party clients."
+    )
+    consent = Prompt.ask("Continue?", choices=["yes", "no"], default="no")
+    if consent != "yes":
+        console.print("Login cancelled.")
+        return 1
+
+    methods = ["browser", "device-code"]
+    if oai.has_codex_cli_credentials():
+        methods.append("import-codex-cli")
+    method = Prompt.ask("Login method", choices=methods, default=methods[0])
+
+    try:
+        if method == "import-codex-cli":
+            console.print(
+                "[dim]Copying the ChatGPT login stored by Codex CLI "
+                f"({oai.codex_cli_auth_path()}). Both clients refresh "
+                "independently; if Codex CLI later asks you to sign in "
+                "again, that's why.[/dim]"
+            )
+            oai.import_codex_cli_credentials()
+        elif method == "device-code":
+            device = oai.begin_device_login()
+            console.print(
+                f"\nOpen [bold]{device['verify_url']}[/bold] on any device "
+                f"and enter code: [bold]{device['user_code']}[/bold]"
+            )
+            console.print("Waiting for authorization...")
+            oai.poll_device_login(device)
+        else:
+            url, verifier, state = oai.begin_login()
+            console.print("\nOpening ChatGPT authorization in your browser...")
+            if not webbrowser.open(url):
+                console.print(f"Open this URL manually:\n{url}")
+            console.print("Waiting for the browser redirect on localhost:1455...")
+            code = oai.wait_for_callback(state)
+            oai.complete_login(code, verifier)
+    except Exception as exc:
+        console.print(f"\n[red]ChatGPT subscription login failed:[/red] {exc}")
+        return 1
+
+    from src.providers.openai_responses import SUBSCRIPTION_MODELS
+
+    info = PROVIDER_INFO["openai"]
+    set_api_key(
+        "openai", api_key="", base_url=info["default_base_url"],
+        default_model=info["default_model"],
+    )
+    set_default_provider("openai")
+    console.print("\n[green]✓ ChatGPT subscription connected.[/green]")
+    console.print(
+        "[dim]Subscription models: " + ", ".join(SUBSCRIPTION_MODELS) + "[/dim]"
+    )
+    import os as _os
+    if (_os.environ.get("OPENAI_API_KEY") or "").strip():
+        console.print(
+            "[yellow]Note:[/yellow] OPENAI_API_KEY is set in your environment "
+            "and takes precedence — unset it to use the subscription."
+        )
+    return 0
+
+
 def handle_logout(args: list[str]) -> int:
     """Remove locally stored provider OAuth credentials."""
     from rich.console import Console
 
     console = Console()
     provider = args[0] if args else "anthropic"
-    if provider != "anthropic":
+    if provider == "anthropic":
+        from src.auth.anthropic_subscription import remove_credentials
+        label = "Claude Pro/Max"
+    elif provider == "openai":
+        from src.auth.openai_subscription import remove_credentials
+        label = "ChatGPT"
+    else:
         console.print(f"[red]OAuth logout is not supported for provider '{provider}'.[/red]")
         return 2
-    from src.auth.anthropic_subscription import remove_credentials
     if remove_credentials():
-        console.print("[green]✓ Claude Pro/Max subscription disconnected.[/green]")
+        console.print(f"[green]✓ {label} subscription disconnected.[/green]")
     else:
-        console.print("No Claude Pro/Max subscription login was stored.")
+        console.print(f"No {label} subscription login was stored.")
     return 0
 
 
@@ -842,6 +930,13 @@ def show_config():
         console.print(
             "\n[cyan]Claude Pro/Max:[/cyan] "
             + ("Connected" if load_credentials() is not None else "Not connected")
+        )
+        from src.auth.openai_subscription import (
+            load_credentials as load_openai_credentials,
+        )
+        console.print(
+            "[cyan]ChatGPT subscription:[/cyan] "
+            + ("Connected" if load_openai_credentials() is not None else "Not connected")
         )
 
         # Stored API keys (config "env" block, e.g. TAVILY_API_KEY). Values are
