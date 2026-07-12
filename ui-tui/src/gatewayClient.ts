@@ -44,7 +44,7 @@ const RPC_TIMEOUT_MS = 5_000
 const WORKTREE_RPC_TIMEOUT_MS = 600_000
 // clawcodex app version shown in the banner ("clawcodex v{version}"). Keep in
 // sync with the installer (install.sh INSTALLER_VERSION).
-const CLAWCODEX_VERSION = '1.0.0'
+const CLAWCODEX_VERSION = '1.1.0'
 
 /** Command that launches the clawcodex agent-server (set by the Python launcher). */
 function resolveAgentCmd(): string[] {

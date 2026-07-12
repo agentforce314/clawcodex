@@ -298,7 +298,7 @@ wheels = [
 
 [[package]]
 name = "clawcodex"
-version = "1.0.0"
+version = "1.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
@@ -309,11 +309,15 @@ dependencies = [
     { name = "pathspec" },
     { name = "pillow" },
     { name = "prompt-toolkit" },
+    { name = "pydantic" },
     { name = "python-dotenv" },
     { name = "pyyaml" },
+    { name = "regex" },
     { name = "rich" },
     { name = "textual" },
     { name = "tiktoken" },
+    { name = "typing-extensions", marker = "python_full_version < '3.11'" },
+    { name = "wcwidth" },
     { name = "websockets" },
 ]
 
@@ -337,15 +341,19 @@ requires-dist = [
     { name = "pathspec", specifier = ">=0.11" },
     { name = "pillow", specifier = ">=10.0" },
     { name = "prompt-toolkit" },
+    { name = "pydantic", specifier = ">=2.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=1.3.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0" },
     { name = "python-dotenv" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "regex", specifier = ">=2023.0" },
     { name = "rich" },
     { name = "textual", specifier = ">=0.79" },
     { name = "tiktoken", specifier = ">=0.7.0" },
     { name = "twine", marker = "extra == 'dev'", specifier = ">=5.0.0" },
+    { name = "typing-extensions", marker = "python_full_version < '3.11'", specifier = ">=4.0" },
+    { name = "wcwidth", specifier = ">=0.2" },
     { name = "websockets", specifier = ">=14.0" },
 ]
 provides-extras = ["dev"]

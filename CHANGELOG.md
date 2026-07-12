@@ -7,8 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-07-12
+
 ### Added
 
+- **Sign in with ChatGPT — use OpenAI models on a ChatGPT Plus/Pro
+  subscription instead of metered API billing** (#698). `clawcodex login →
+  openai → subscription` runs an OAuth login (browser loopback,
+  device-code, or import from an existing Codex CLI login) and routes
+  requests through the ChatGPT Codex backend's Responses API. Subscription
+  models: `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex-spark`, with
+  encrypted-reasoning replay across turns; a configured `OPENAI_API_KEY`
+  always wins, and subscription usage reports `billing_mode: subscription`
+  (billed as `$0`).
+- **Claude Pro/Max subscription login** (#697). `clawcodex login →
+  anthropic → subscription` connects a Claude subscription over OAuth
+  (PKCE), with automatic token refresh, `mcp_`-prefixed tool adaptation,
+  and the same `$0` accounting.
+- **Meta provider + `muse-spark-1.1`** (#692) — the `api.meta.ai`
+  OpenAI-compatible reasoning model with a 1M-token context window, added
+  as a one-row `ProviderSpec`.
+- **`/plan` mode** with implicit plan-mode entry/exit
+  (`EnterPlanMode`/`ExitPlanMode`), ported from the reference (#676).
+- **`--worktree` / `-w` session isolation** — run parallel sessions in
+  isolated git worktrees, wired through the launcher, backend, and TUI
+  (#672).
 - **`/loop` scheduled tasks now actually fire — full port of Claude Code's
   session-scoped scheduler** (docs/en/scheduled-tasks). A new
   `src/scheduled_tasks` engine parses standard 5-field vixie cron
@@ -64,6 +87,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Claude subscription login repaired** (#702). The Anthropic OAuth login
+  migrated off `console.anthropic.com` to `platform.claude.com`, and the
+  token exchange sent no `User-Agent` — so `urllib`'s default signature was
+  Cloudflare bot-blocked (`error code: 1010`) before it reached OAuth.
+  Updated the token/authorize/redirect endpoints and scopes to the current
+  upstream config (subscriber authorize base `claude.com/cai/oauth/authorize`)
+  and send a genuine `User-Agent`.
+- **Adaptive thinking is only sent to models that support it** (#699).
+  Requests previously sent `thinking={"type":"adaptive"}` to every Claude
+  4.x model, which the API rejects for all but Opus 4.6/4.7 and Sonnet 4.6
+  ("adaptive thinking is not supported on this model"). Models that support
+  thinking but not adaptive now get a token budget instead; `output_config`
+  effort is gated to the models that accept it.
+- **Semantic tool-input coercion + parity validation errors** (#700) —
+  string-coerce boolean/number tool arguments (mirroring the reference's
+  `semanticBoolean`/`semanticNumber`) and format schema-validation failures
+  to match `formatZodValidationError`.
 - Bounded the ESC-cancel worker-thread queue in `OpenAICompatibleProvider.chat_stream_response` (`src/providers/openai_compatible.py`) to `maxsize=64`. Previously an unbounded `queue.Queue` let an orphaned worker accumulate chunks in memory indefinitely when a proxy kept sending bytes after abort without closing the SDK iterator (#278).
 - **URLs the agent prints are clickable again.** The TUI markdown renderer
   (`ui-tui/src/components/markdown.tsx`) replaced every visible URL with a
