@@ -232,11 +232,12 @@ async def _check_permissions_and_call_tool(
             logger.debug("Validation error for %s: %s", tool.name, e)
 
     # ----- Step 6 — Input Backfill (clone, not mutate).
-    # call() receives the MODEL-ORIGINAL input: tool results embed input
+    # call() receives the PRE-BACKFILL input (post schema-coercion — TS's
+    # callInput is likewise parsedInput.data): tool results embed input
     # fields verbatim (e.g. "File created successfully at: {path}"), and
-    # changing them alters the serialized transcript. The cloned,
-    # backfilled input is the hooks/permissions audience only.
-    # Mirrors typescript/src/services/tools/toolExecution.ts:838-853.
+    # backfill mutations (path expansion) would alter the serialized
+    # transcript. The cloned, backfilled input is the hooks/permissions
+    # audience only. Mirrors typescript/src/services/tools/toolExecution.ts:838-853.
     call_input = processed_input
     backfilled_clone: dict[str, Any] | None = None
     if tool.backfill_observable_input is not None:
@@ -341,12 +342,12 @@ async def _check_permissions_and_call_tool(
 
         # If processed_input still points at the backfill clone, no
         # hook/permission replaced it — pass the pre-backfill call_input so
-        # call() sees the model's original field values. Hook/permission
-        # flows may return a fresh object derived from the backfilled clone
-        # (e.g. via schema re-parse): if its file_path matches the
-        # backfill-expanded value, restore the model's original so the tool
-        # result string embeds the path the model emitted. Other
-        # modifications flow through unchanged. Mirrors
+        # call() sees the pre-expansion field values (post schema-coercion).
+        # Hook/permission flows may return a fresh object derived from the
+        # backfilled clone (e.g. via schema re-parse): if its file_path
+        # matches the backfill-expanded value, restore the pre-backfill one
+        # so the tool result string embeds the path the model emitted.
+        # Other modifications flow through unchanged. Mirrors
         # typescript/src/services/tools/toolExecution.ts:1212-1237.
         if (
             backfilled_clone is not None

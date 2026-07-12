@@ -108,7 +108,9 @@ def validate_json_schema(value: Any, schema: Mapping[str, Any], *, root_name: st
 # coerce, mirroring the original's unwrapped unions (ConfigTool.value must
 # keep "true" a string).
 
-_NUMBER_LITERAL_RE = re.compile(r"-?\d+(\.\d+)?")
+# re.ASCII: JS \d is ASCII-only — Python's Unicode \d would coerce
+# non-ASCII digits ("٣٠") the original's regex refuses.
+_NUMBER_LITERAL_RE = re.compile(r"-?\d+(\.\d+)?", re.ASCII)
 
 
 def semantic_coerce(value: Any, schema: Mapping[str, Any]) -> Any:

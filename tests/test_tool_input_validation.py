@@ -73,6 +73,10 @@ class TestSemanticCoerce(unittest.TestCase):
         for v in ("1e5", "abc", ".5", "1.", "30 ", " 30", "+5", "NaN", "Infinity", ""):
             self.assertIs(semantic_coerce(v, _NUM), v)
 
+    def test_non_ascii_digits_pass_through(self):
+        # JS \d is ASCII-only; Python's Unicode \d must not widen the gate.
+        self.assertIs(semantic_coerce("٣٠", _NUM), "٣٠")
+
     def test_number_overflowing_js_range_passes_through(self):
         # Number("9" * 400) is Infinity in JS, so semanticNumber's
         # Number.isFinite gate refuses it — mirror that rather than minting
@@ -364,7 +368,8 @@ class TestRunToolUseValidation(unittest.TestCase):
 class TestSendMessageApproveFlag(unittest.TestCase):
     """``approve`` sits INSIDE the SendMessage union (semanticBoolean at
     SendMessageTool.ts:55,61), which the boundary coercion deliberately
-    skips — the tool reads it with the same tolerance at runtime."""
+    skips — the tool reads it with the same semantics at runtime:
+    "true"/"false" coerce, everything else fails like z.boolean()."""
 
     def test_quoted_literals_and_bools(self):
         from src.tool_system.tools.send_message import _approve_flag
@@ -373,7 +378,17 @@ class TestSendMessageApproveFlag(unittest.TestCase):
         self.assertIs(_approve_flag({"approve": "true"}), True)
         self.assertIs(_approve_flag({"approve": True}), True)
         self.assertIs(_approve_flag({"approve": False}), False)
-        self.assertIs(_approve_flag({}), False)
+
+    def test_junk_and_missing_reject_like_z_boolean(self):
+        # A truthy junk value must NOT read as approval of a control-plane
+        # message ("no" would otherwise APPROVE a shutdown).
+        from src.tool_system.tools.send_message import _approve_flag
+
+        for junk in ("no", "off", "0", "1", "FALSE", "False", " false", "n", 1, 0, None):
+            with self.assertRaises(ToolInputError):
+                _approve_flag({"approve": junk})
+        with self.assertRaises(ToolInputError):
+            _approve_flag({})
 
 
 if __name__ == "__main__":
