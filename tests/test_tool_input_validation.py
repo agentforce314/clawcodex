@@ -361,5 +361,20 @@ class TestRunToolUseValidation(unittest.TestCase):
         self.assertEqual(self.received, {"flag": True, "limit": 30})
 
 
+class TestSendMessageApproveFlag(unittest.TestCase):
+    """``approve`` sits INSIDE the SendMessage union (semanticBoolean at
+    SendMessageTool.ts:55,61), which the boundary coercion deliberately
+    skips — the tool reads it with the same tolerance at runtime."""
+
+    def test_quoted_literals_and_bools(self):
+        from src.tool_system.tools.send_message import _approve_flag
+
+        self.assertIs(_approve_flag({"approve": "false"}), False)
+        self.assertIs(_approve_flag({"approve": "true"}), True)
+        self.assertIs(_approve_flag({"approve": True}), True)
+        self.assertIs(_approve_flag({"approve": False}), False)
+        self.assertIs(_approve_flag({}), False)
+
+
 if __name__ == "__main__":
     unittest.main()

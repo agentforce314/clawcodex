@@ -320,6 +320,21 @@ def _broadcast(
     )
 
 
+def _approve_flag(message_obj: dict[str, Any]) -> bool:
+    """Read ``approve`` with the original's semanticBoolean tolerance.
+
+    The original wraps ``approve`` in ``semanticBoolean()`` inside the union
+    branches (SendMessageTool.ts:55,61), so a quoted ``"false"`` is False —
+    a bare ``bool()`` would JS-truthy it into True. The port validates union
+    internals at runtime rather than schema level, so the coercion lives
+    here; other junk strings stay truthy-loose (documented divergence — the
+    original's z.boolean() rejects them outright).
+    """
+    from ..schema_validation import semantic_coerce
+
+    return bool(semantic_coerce(message_obj.get("approve"), {"type": "boolean"}))
+
+
 def _structured_message_to_envelope(
     *,
     message_obj: dict[str, Any],
@@ -344,7 +359,7 @@ def _structured_message_to_envelope(
             "",  # caller passes the original ``to``
         )
     if msg_type == "shutdown_response":
-        approve = bool(message_obj.get("approve"))
+        approve = _approve_flag(message_obj)
         if approve:
             return (
                 create_shutdown_approved_message(
@@ -371,7 +386,7 @@ def _structured_message_to_envelope(
             raise ToolInputError(
                 "plan_approval_response can only be sent by the team lead."
             )
-        approve = bool(message_obj.get("approve"))
+        approve = _approve_flag(message_obj)
         permission_mode = str(
             message_obj.get("permission_mode") or "default"
         )
