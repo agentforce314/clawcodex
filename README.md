@@ -232,6 +232,7 @@ Assistant: Hi! I'm ClawCodex, a Python reimplementation...
 clawcodex                       # Interactive Ink TUI (default)
 clawcodex tui                   # Interactive Ink TUI (explicit)
 clawcodex login                 # Configure API keys (interactive)
+clawcodex logout anthropic      # Remove Claude Pro/Max OAuth credentials
 clawcodex config                # Show ~/.clawcodex/config.json-backed settings
 clawcodex --version             # Version string
 
@@ -249,6 +250,23 @@ clawcodex --permission-mode plan                       # plan / acceptEdits / do
 clawcodex --dangerously-skip-permissions -p "ls"       # bypass all permission checks
 clawcodex --allow-dangerously-skip-permissions         # allow /permission-mode bypass later
 ```
+
+### Claude Pro/Max subscription login
+
+Run `clawcodex login`, choose `anthropic`, then choose `subscription`. The CLI
+opens Claude's PKCE authorization page; paste the returned authorization code
+back into the prompt. ClawCodex stores the OAuth tokens in
+`~/.clawcodex/anthropic-oauth.json` with user-only permissions, refreshes them
+automatically, and uses the subscription whenever no Anthropic API key is set.
+An explicit `ANTHROPIC_API_KEY` or configured Anthropic API key takes precedence.
+
+> **Important:** Anthropic does not officially support using Claude Pro/Max
+> subscriptions from third-party clients. This integration may stop working
+> and remains subject to Anthropic's terms. The login flow requires explicit
+> confirmation before opening the authorization page.
+
+Use `clawcodex config` to check connection status and
+`clawcodex logout anthropic` to delete the stored OAuth credentials.
 
 > **`--dangerously-skip-permissions`** disables every tool permission check
 > for the session. Recommended only inside sandboxed containers/VMs with no

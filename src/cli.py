@@ -102,6 +102,8 @@ def main():
         rest = argv[1:]
         if token == 'login':
             return handle_login()
+        if token == 'logout':
+            return handle_logout(rest)
         if token == 'config':
             return show_config()
         if token == 'mcp':
@@ -714,6 +716,15 @@ def handle_login():
 
     info = PROVIDER_INFO[provider]
 
+    if provider == "anthropic":
+        auth_method = Prompt.ask(
+            "Authentication method",
+            choices=["subscription", "api-key"],
+            default="subscription",
+        )
+        if auth_method == "subscription":
+            return _handle_anthropic_subscription_login(console, Prompt)
+
     api_key = Prompt.ask(
         f"Enter {provider.upper()} API Key",
         password=True
@@ -746,6 +757,60 @@ def handle_login():
     return 0
 
 
+def _handle_anthropic_subscription_login(console, Prompt):
+    """Run Claude Pro/Max's copy/paste OAuth authorization flow."""
+    import webbrowser
+
+    from src.auth.anthropic_subscription import begin_login, complete_login
+    from src.config import set_api_key, set_default_provider
+    from src.providers import PROVIDER_INFO
+
+    console.print(
+        "\n[yellow]Important:[/yellow] Anthropic does not officially support "
+        "using Claude Pro/Max subscriptions from third-party clients. "
+        "This flow may stop working and is subject to Anthropic's terms."
+    )
+    consent = Prompt.ask("Continue?", choices=["yes", "no"], default="no")
+    if consent != "yes":
+        console.print("Login cancelled.")
+        return 1
+    url, verifier = begin_login()
+    console.print("\nOpening Claude authorization in your browser...")
+    if not webbrowser.open(url):
+        console.print(f"Open this URL manually:\n{url}")
+    code = Prompt.ask("Paste the authorization code")
+    try:
+        complete_login(code, verifier)
+    except Exception as exc:
+        console.print(f"\n[red]Claude subscription login failed:[/red] {exc}")
+        return 1
+    info = PROVIDER_INFO["anthropic"]
+    set_api_key(
+        "anthropic", api_key="", base_url=info["default_base_url"],
+        default_model=info["default_model"],
+    )
+    set_default_provider("anthropic")
+    console.print("\n[green]✓ Claude Pro/Max subscription connected.[/green]")
+    return 0
+
+
+def handle_logout(args: list[str]) -> int:
+    """Remove locally stored provider OAuth credentials."""
+    from rich.console import Console
+
+    console = Console()
+    provider = args[0] if args else "anthropic"
+    if provider != "anthropic":
+        console.print(f"[red]OAuth logout is not supported for provider '{provider}'.[/red]")
+        return 2
+    from src.auth.anthropic_subscription import remove_credentials
+    if remove_credentials():
+        console.print("[green]✓ Claude Pro/Max subscription disconnected.[/green]")
+    else:
+        console.print("No Claude Pro/Max subscription login was stored.")
+    return 0
+
+
 def show_config():
     """Show current configuration."""
     from rich.console import Console
@@ -772,6 +837,12 @@ def show_config():
             console.print(f"    API Key: {masked_key}")
             console.print(f"    Base URL: {provider_config.get('base_url', 'Not set')}")
             console.print(f"    Default Model: {provider_config.get('default_model', 'Not set')}")
+
+        from src.auth.anthropic_subscription import load_credentials
+        console.print(
+            "\n[cyan]Claude Pro/Max:[/cyan] "
+            + ("Connected" if load_credentials() is not None else "Not connected")
+        )
 
         # Stored API keys (config "env" block, e.g. TAVILY_API_KEY). Values are
         # masked — only the name and a hint are shown.

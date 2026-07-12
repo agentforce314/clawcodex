@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 import os
 import re
@@ -173,6 +174,23 @@ class AnthropicProvider(BaseProvider):
         super().__init__(api_key, base_url, model or "claude-sonnet-4-6")
 
         self._client_kwargs = {"api_key": api_key}
+        self._subscription_token: str | None = None
+        # A configured API key deliberately wins.  With no key, fall back to
+        # the user's explicitly stored Claude Pro/Max OAuth login.
+        oauth_eligible_endpoint = not base_url or urlparse(base_url).hostname == "api.anthropic.com"
+        if not api_key and oauth_eligible_endpoint:
+            from src.auth.anthropic_subscription import (
+                get_valid_credentials,
+                subscription_headers,
+            )
+            credentials = get_valid_credentials()
+            if credentials is not None:
+                self._subscription_token = credentials.access_token
+                self._client_kwargs = {
+                    "auth_token": credentials.access_token,
+                    "default_headers": subscription_headers(),
+                    "default_query": {"beta": "true"},
+                }
         if base_url:
             self._client_kwargs["base_url"] = base_url
         # ch16 round-4 — ANTHROPIC_CUSTOM_HEADERS (enterprise gateway/proxy
@@ -180,10 +198,26 @@ class AnthropicProvider(BaseProvider):
         from src.services.api.custom_headers import get_anthropic_custom_headers
         _headers = get_anthropic_custom_headers()
         if _headers:
-            self._client_kwargs["default_headers"] = _headers
+            merged_headers = dict(self._client_kwargs.get("default_headers") or {})
+            merged_headers.update(_headers)
+            self._client_kwargs["default_headers"] = merged_headers
+        if self._subscription_token is not None:
+            from src.auth.anthropic_subscription import subscription_headers
+            self._client_kwargs["default_headers"] = subscription_headers(
+                self._client_kwargs.get("default_headers")
+            )
         self.client = None
 
     def _ensure_client(self):
+        if self._subscription_token is not None:
+            from src.auth.anthropic_subscription import get_valid_credentials
+            credentials = get_valid_credentials()
+            if credentials is None:
+                raise RuntimeError("Claude subscription login was removed; run `clawcodex login`")
+            if credentials.access_token != self._subscription_token:
+                self._subscription_token = credentials.access_token
+                self._client_kwargs["auth_token"] = credentials.access_token
+                self.client = None
         if self.client is not None:
             return self.client
         # WI-4.4: resolve ``anthropic`` through the module's globals so
@@ -234,6 +268,47 @@ class AnthropicProvider(BaseProvider):
         if self._is_first_party():
             return {"x-client-request-id": str(uuid4())}
         return {}
+
+    def _prepare_subscription_request(
+        self,
+        messages: list[dict[str, Any]],
+        tools: Optional[list[dict[str, Any]]],
+        system: Any,
+    ) -> tuple[list[dict[str, Any]], Optional[list[dict[str, Any]]], Any]:
+        """Apply the request conventions required by Claude subscription OAuth."""
+        if self._subscription_token is None:
+            return messages, tools, system
+        prepared_messages = copy.deepcopy(messages)
+        prepared_tools = copy.deepcopy(tools) if tools else tools
+        for message in prepared_messages:
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    name = block.get("name")
+                    if isinstance(name, str) and not name.startswith("mcp_"):
+                        block["name"] = "mcp_" + name
+        if prepared_tools:
+            for tool in prepared_tools:
+                name = tool.get("name")
+                if isinstance(name, str) and not name.startswith("mcp_"):
+                    tool["name"] = "mcp_" + name
+
+        prefix = "You are Claude Code, Anthropic's official CLI for Claude."
+        def clean(text: str) -> str:
+            return re.sub(r"claw[ -]?codex", "Claude Code", text, flags=re.IGNORECASE)
+        if isinstance(system, str):
+            system = prefix + "\n\n" + clean(system)
+        elif isinstance(system, list):
+            system = copy.deepcopy(system)
+            for block in system:
+                if isinstance(block, dict) and isinstance(block.get("text"), str):
+                    block["text"] = clean(block["text"])
+            system.insert(0, {"type": "text", "text": prefix})
+        else:
+            system = prefix
+        return prepared_messages, prepared_tools, system
 
     def has_custom_endpoint(self) -> bool:
         """True iff requests target a non-first-party endpoint.
@@ -293,17 +368,24 @@ class AnthropicProvider(BaseProvider):
                 if text_val is not None:
                     content_text += str(text_val)
             elif block_type == "tool_use":
+                tool_name = str(getattr(block, "name", ""))
+                if self._subscription_token is not None and tool_name.startswith("mcp_"):
+                    tool_name = tool_name[4:]
                 tool_uses.append({
                     "id": str(getattr(block, "id", "")),
-                    "name": str(getattr(block, "name", "")),
+                    "name": tool_name,
                     "input": dict(getattr(block, "input", {})),
                 })
 
-        usage = getattr(response, "usage", None)
+        usage = _extract_usage_dict(getattr(response, "usage", None))
+        if self._subscription_token is not None:
+            # Subscription requests consume plan allowance rather than
+            # metered API credits; retain token counts but report $0.
+            usage["billing_mode"] = "subscription"
         return ChatResponse(
             content=content_text,
             model=getattr(response, "model", self.model or ""),
-            usage=_extract_usage_dict(usage),
+            usage=usage,
             finish_reason=str(getattr(response, "stop_reason", "stop")),
             tool_uses=tool_uses if tool_uses else None,
             raw_content_blocks=raw_content_blocks or None,
@@ -370,6 +452,9 @@ class AnthropicProvider(BaseProvider):
 
         # Convert messages to Anthropic format
         anthropic_messages = self._prepare_messages(messages)
+        anthropic_messages, tools, system = self._prepare_subscription_request(
+            anthropic_messages, tools, system
+        )
 
         # Make API call
         client = self._client_for_request(kwargs)
@@ -407,9 +492,13 @@ class AnthropicProvider(BaseProvider):
         """
         model = self._get_model(**kwargs)
         max_tokens = kwargs.get("max_tokens", _default_max_tokens(model))
+        system = kwargs.pop("system", None)
 
         # Convert messages
         anthropic_messages = self._prepare_messages(messages)
+        anthropic_messages, tools, system = self._prepare_subscription_request(
+            anthropic_messages, tools, system
+        )
 
         # Stream API call
         client = self._ensure_client()
@@ -421,6 +510,7 @@ class AnthropicProvider(BaseProvider):
             model=model,
             max_tokens=max_tokens,
             messages=anthropic_messages,
+            **({"system": system} if system else {}),
             **extra_kwargs,
             **{k: v for k, v in kwargs.items() if k not in ["model", "max_tokens", "tools"]},
         ) as stream:
@@ -468,6 +558,9 @@ class AnthropicProvider(BaseProvider):
         max_tokens = kwargs.get("max_tokens", _default_max_tokens(model))
         system = kwargs.pop("system", None)
         anthropic_messages = self._prepare_messages(messages)
+        anthropic_messages, tools, system = self._prepare_subscription_request(
+            anthropic_messages, tools, system
+        )
         # ch04 round-4 GAP A — one cache_control marker on the last message
         # (TS addCacheBreakpoints, claude.ts:3078/1719). Without it the
         # canonical prefix cache ends at the system blocks and every
