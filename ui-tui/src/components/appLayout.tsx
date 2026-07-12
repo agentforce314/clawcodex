@@ -304,6 +304,7 @@ const ComposerPane = memo(function ComposerPane({
           onActiveSessionClose={actions.closeLiveSession}
           onActiveSessionSelect={actions.activateLiveSession}
           onLogoSelect={actions.onLogoSelect}
+          onMemorySelect={actions.onMemorySelect}
           onModelSelect={actions.onModelSelect}
           onNewLiveSession={actions.newLiveSession}
           onNewPromptSession={actions.newPromptSession}

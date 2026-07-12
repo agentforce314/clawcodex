@@ -667,6 +667,19 @@ export const opsCommands: SlashCommand[] = [
   },
 
   {
+    // Port of openclaude's /memory (commands/memory/): picker-only — the TS
+    // command ignores arguments, so any arg just opens the same overlay. The
+    // selection flow (ensure-create + $EDITOR spawn) lives in onMemorySelect.
+    // Cancel closes silently like the sibling pickers — the TS "Cancelled
+    // memory editing" line existed only because local-jsx onDone must resolve.
+    help: 'edit memory files (CLAUDE.md) in your editor',
+    name: 'memory',
+    run: () => {
+      patchOverlayState({ memoryPicker: true })
+    }
+  },
+
+  {
     argumentHint: '[enable|disable <name>]',
     help: 'view & toggle plugins (no arg opens the hub; enable/disable <name> for direct toggle)',
     name: 'plugins',

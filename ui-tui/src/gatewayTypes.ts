@@ -72,6 +72,21 @@ export interface SlashExecResponse {
   warning?: string
 }
 
+// ── /memory picker (memory_targets control) ─────────────────────────
+
+export interface MemoryTarget {
+  /** Secondary dim text — e.g. "Saved in ~/.clawcodex/CLAUDE.md", "@-imported". */
+  description?: string
+  label: string
+  path: string
+}
+
+export interface MemoryTargetsResponse {
+  error?: string
+  ok?: boolean
+  targets?: MemoryTarget[]
+}
+
 // ── Credits / top-up ─────────────────────────────────────────────────
 
 export interface CreditsViewResponse {
