@@ -42,15 +42,22 @@ export function linkOpenHotkey(
     // OSC 8 terminals open our hyperlink metadata on Cmd/Ctrl+click in both
     // modes (xterm.js and iTerm2 handle it themselves even with mouse
     // tracking armed — the double-open dance the renderer's click dispatcher
-    // defers to in @clawcodex/ink's components/App.tsx).
-    return [`${isMac ? 'Cmd' : 'Ctrl'}+click link`, 'open link in browser']
+    // defers to in @clawcodex/ink's components/App.tsx). They also render
+    // their own hover affordance (underline/tooltip while the modifier is
+    // held), so tell the user that's how to spot a clickable link.
+    const mod = isMac ? 'Cmd' : 'Ctrl'
+
+    return [`${mod}+click link`, `open link in browser (${mod}+hover underlines it)`]
   }
 
   if (!inline) {
     // Fullscreen arms mouse tracking, so clicks are handled in-process
     // (onHyperlinkClick) in every terminal — including Apple Terminal,
     // where the captured mouse suppresses the native Cmd+double-click.
-    return ['click link', 'open link in browser']
+    // The renderer's hover overlay (applyHyperlinkHoverHighlight) inverts
+    // a link's cells while the pointer is over it — no modifier, since
+    // terminals don't put Cmd in mouse reports.
+    return ['click link', 'open link in browser (highlights on hover)']
   }
 
   if (isAppleTerminal(env)) {
