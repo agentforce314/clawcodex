@@ -81,10 +81,10 @@ PROVIDER_INFO: dict[str, ProviderInfo] = {
     },
     "minimax": {
         "label": "Minimax AI",
-        "default_base_url": "https://api.minimaxi.com/anthropic",
-        "default_model": "MiniMax-M2.7",
+        "default_base_url": "https://api.minimax.io/anthropic",
+        "default_model": "MiniMax-M3",
         "available_models": [
-            # M2 series (latest)
+            "MiniMax-M3",
             "MiniMax-M2.7",
             "MiniMax-M2.7-highspeed",
             "MiniMax-M2.5",

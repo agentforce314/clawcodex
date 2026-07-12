@@ -78,6 +78,20 @@ _TIER_DEEPSEEK_PRO = {
     "cache_creation": 0.435 / 1_000_000,
     "cache_read": 0.003625 / 1_000_000,
 }
+# MiniMax standard pay-as-you-go rates in USD per million tokens. The static
+# pricing table uses M3's <=512k input tier; longer requests have a higher tier.
+_TIER_MINIMAX_M3 = {
+    "input": 0.30 / 1_000_000,
+    "output": 1.20 / 1_000_000,
+    "cache_creation": 0.30 / 1_000_000,
+    "cache_read": 0.06 / 1_000_000,
+}
+_TIER_MINIMAX_M27 = {
+    "input": 0.30 / 1_000_000,
+    "output": 1.20 / 1_000_000,
+    "cache_creation": 0.375 / 1_000_000,
+    "cache_read": 0.06 / 1_000_000,
+}
 # Meta Muse Spark 1.1 (api.meta.ai, OpenAI-compatible). Meta's published rates:
 # $1.25/M input, $4.25/M output, $0.15/M cached input. OpenAI-style caching has
 # no separate cache-write charge, so ``cache_creation`` mirrors ``input``.
@@ -124,6 +138,8 @@ PRICING: dict[str, dict[str, float]] = {
     # every proxied model is priced at its upstream rate.
     "deepseek-v4-flash": _TIER_DEEPSEEK_FLASH,
     "deepseek-v4-pro": _TIER_DEEPSEEK_PRO,
+    "MiniMax-M3": _TIER_MINIMAX_M3,
+    "MiniMax-M2.7": _TIER_MINIMAX_M27,
     # Meta Muse Spark (api.meta.ai)
     "muse-spark-1.1": _TIER_MUSE_SPARK,
 }

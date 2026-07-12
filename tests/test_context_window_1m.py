@@ -27,6 +27,13 @@ def test_glm_4_legacy_not_promoted_to_1m():
     assert canonical_window("glm-4") == 128_000
 
 
+def test_minimax_current_context_windows():
+    assert display_window("MiniMax-M3") == 1_000_000
+    assert canonical_window("MiniMax-M3") == 1_000_000
+    assert display_window("MiniMax-M2.7") == 204_800
+    assert canonical_window("MiniMax-M2.7") == 204_800
+
+
 def test_legacy_deepseek_chat_not_promoted_to_1m():
     # Only deepseek-v4* gets 1M; legacy deepseek-chat/-reasoner do not.
     assert display_window("deepseek-chat") != 1_000_000
