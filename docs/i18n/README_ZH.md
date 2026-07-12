@@ -357,9 +357,9 @@ clawcodex login
 
 内置 Minimax provider 会把 SDK base URL 传给 Anthropic SDK：全球区域使用
 `https://api.minimax.io/anthropic`，中国区域使用
-`https://api.minimaxi.com/anthropic`，SDK 会自动追加 `/v1/messages`。对应的原始
-Messages API root 分别为 `https://api.minimax.io/anthropic/v1` 和
-`https://api.minimaxi.com/anthropic/v1`。OpenAI 兼容 API root 分别为全球区域的
+`https://api.minimaxi.com/anthropic`，SDK 会自动追加 `/v1/messages`。最终的
+Messages 请求 URL 分别为 `https://api.minimax.io/anthropic/v1/messages` 和
+`https://api.minimaxi.com/anthropic/v1/messages`。OpenAI 兼容 API root 分别为全球区域的
 `https://api.minimax.io/v1` 和中国区域的 `https://api.minimaxi.com/v1`。
 
 - **`session`** —— REPL 会话持久化：`auto_save` 自动保存每个会话；`max_history` 限制保留的对话轮数。
