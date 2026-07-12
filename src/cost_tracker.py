@@ -45,7 +45,7 @@ def record_api_usage(model: str, usage: Any) -> float:
     """
     if not isinstance(usage, dict):
         usage = {}
-    cost = compute_cost(model, usage)
+    cost = 0.0 if usage.get("billing_mode") == "subscription" else compute_cost(model, usage)
     bootstrap_usage = ModelUsage(
         input_tokens=int(usage.get("input_tokens", 0) or 0),
         output_tokens=int(usage.get("output_tokens", 0) or 0),
