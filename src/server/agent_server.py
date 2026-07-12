@@ -1039,12 +1039,12 @@ class _AgentSession:
                 self._reply(request_id, {"ok": False, "error": "missing provider"})
                 return
             from src.config import get_provider_config
-            from src.providers import get_provider_class, provider_requires_api_key, resolve_api_key
+            from src.providers import get_provider_class, provider_has_credentials, resolve_api_key
             from src.tool_system.defaults import build_default_registry
 
             provider_cfg = get_provider_config(name)
             api_key = resolve_api_key(name, provider_cfg)
-            if not api_key and provider_requires_api_key(name):
+            if not provider_has_credentials(name, api_key):
                 self._reply(request_id, {"ok": False, "error": f"provider '{name}' is not configured (no API key)"})
                 return
             provider_cls = get_provider_class(name)
@@ -3594,7 +3594,7 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
         from src.permissions.setup import setup_permissions
         from src.providers import (
             get_provider_class,
-            provider_requires_api_key,
+            provider_has_credentials,
             resolve_api_key,
         )
         from src.agent import Session
@@ -3681,7 +3681,7 @@ def _build_runtime(sess: _AgentSession, perm_mode: str | None) -> None:
         provider_name = cfg.provider_name or get_default_provider()
         provider_cfg = get_provider_config(provider_name)
         api_key = resolve_api_key(provider_name, provider_cfg)
-        if not api_key and provider_requires_api_key(provider_name):
+        if not provider_has_credentials(provider_name, api_key):
             sess.init_error = (
                 f"API key for provider '{provider_name}' is not configured. "
                 "Run `clawcodex login` to set it up."

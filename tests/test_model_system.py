@@ -61,7 +61,9 @@ class TestModelConfigs:
         assert cfg.cost_input_per_mtok == 1.0
 
     def test_unknown_returns_none(self):
-        assert get_model_config("gpt-4o") is None
+        # gpt-4o gained a real config with the ChatGPT-subscription work;
+        # use a genuinely unregistered id (no key shares its prefix base).
+        assert get_model_config("totally-unknown-model") is None
 
     def test_prefix_match(self):
         cfg = get_model_config("claude-sonnet-4-20250514-v2")

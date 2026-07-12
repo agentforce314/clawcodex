@@ -166,6 +166,14 @@ def _convert_anthropic_messages_to_openai(
        ever appears it lands in the closest OpenAI shape rather than
        passing through as an unrecognised Anthropic block.
     """
+    # ChatGPT-subscription passthrough items (encrypted reasoning et al.)
+    # have no Chat Completions representation — they exist only for the
+    # OpenAI Responses replay path. Strip them BEFORE conversion so a
+    # mid-session model switch never leaks them to a server that rejects
+    # unknown block types. See openai_responses.RESPONSES_ITEM_BLOCK_TYPE.
+    from .openai_responses import strip_responses_item_blocks
+    messages = strip_responses_item_blocks(messages)
+
     result: list[dict[str, Any]] = []
 
     # Pre-scan every assistant message for the tool_use ids it declares.

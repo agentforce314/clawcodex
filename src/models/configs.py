@@ -232,6 +232,74 @@ MODEL_CONFIGS: dict[str, ModelConfig] = {
         max_output_tokens=16_384,
         supports_cache=True,
     ),
+
+    # OpenAI GPT-5 family. 272K input / 128K output is the GPT-5 window
+    # (400K total); it matches what the ChatGPT-subscription backend reports
+    # for gpt-5.5 / gpt-5.4 / gpt-5.4-mini (Codex CLI models cache; OpenCode
+    # pins the same numbers for gpt-5.5, plugin/openai/codex.ts:387). Until
+    # now every gpt model silently fell back to DEFAULT_CONTEXT_WINDOW
+    # (200K), making auto-compact fire ~70K tokens early on these. NOTE on
+    # the prefix fallback in ``get_model_config``: a gpt id with no exact
+    # entry resolves to the FIRST gpt entry below (base "gpt"), i.e. 272K —
+    # the safe direction for compaction (under-estimating compacts early;
+    # over-estimating overflows); the smaller legacy windows get exact
+    # entries so they never take that path. As with the Meta entry above,
+    # max_output_tokens is not sent on the wire for OpenAI providers — its
+    # live effect is the auto-compact output reservation (clamped at 20K).
+    "gpt-5.5": ModelConfig(
+        model_id="gpt-5.5",
+        display_name="GPT-5.5",
+        context_window=272_000,
+        max_output_tokens=128_000,
+    ),
+    "gpt-5.4": ModelConfig(
+        model_id="gpt-5.4",
+        display_name="GPT-5.4",
+        context_window=272_000,
+        max_output_tokens=128_000,
+    ),
+    "gpt-5.4-mini": ModelConfig(
+        model_id="gpt-5.4-mini",
+        display_name="GPT-5.4 Mini",
+        context_window=272_000,
+        max_output_tokens=128_000,
+    ),
+    "gpt-5.3-codex-spark": ModelConfig(
+        model_id="gpt-5.3-codex-spark",
+        display_name="GPT-5.3 Codex Spark",
+        context_window=128_000,
+        max_output_tokens=64_000,
+    ),
+    "gpt-4o": ModelConfig(
+        model_id="gpt-4o",
+        display_name="GPT-4o",
+        context_window=128_000,
+        max_output_tokens=16_384,
+    ),
+    "gpt-4o-mini": ModelConfig(
+        model_id="gpt-4o-mini",
+        display_name="GPT-4o Mini",
+        context_window=128_000,
+        max_output_tokens=16_384,
+    ),
+    "gpt-4-turbo": ModelConfig(
+        model_id="gpt-4-turbo",
+        display_name="GPT-4 Turbo",
+        context_window=128_000,
+        max_output_tokens=4_096,
+    ),
+    "gpt-4": ModelConfig(
+        model_id="gpt-4",
+        display_name="GPT-4",
+        context_window=8_192,
+        max_output_tokens=8_192,
+    ),
+    "gpt-3.5-turbo": ModelConfig(
+        model_id="gpt-3.5-turbo",
+        display_name="GPT-3.5 Turbo",
+        context_window=16_385,
+        max_output_tokens=4_096,
+    ),
 }
 
 

@@ -49,7 +49,9 @@ PROVIDER_INFO: dict[str, ProviderInfo] = {
         "default_base_url": "https://api.openai.com/v1",
         "default_model": "gpt-5.4",
         "available_models": [
-            # GPT-5.4 series (latest flagship)
+            # GPT-5.5 (flagship; also served by the ChatGPT subscription)
+            "gpt-5.5",
+            # GPT-5.4 series
             "gpt-5.4",
             "gpt-5.4-pro",
             "gpt-5.4-mini",
@@ -61,6 +63,7 @@ PROVIDER_INFO: dict[str, ProviderInfo] = {
             "gpt-5.2-nano",
             # GPT-5.3-Codex (coding-specialized)
             "gpt-5.3-codex",
+            "gpt-5.3-codex-spark",
             # Legacy GPT-4 series
             "gpt-4o",
             "gpt-4o-mini",
@@ -300,6 +303,32 @@ def provider_requires_api_key(provider_name: str) -> bool:
     return spec.requires_api_key if spec else True
 
 
+def provider_has_credentials(provider_name: str, api_key: str) -> bool:
+    """Whether requests to ``provider_name`` can authenticate.
+
+    True when an API key is present, the provider needs none (local
+    servers), or the user has a stored subscription OAuth login — Claude
+    Pro/Max for ``anthropic`` (#697) or a ChatGPT plan for ``openai``.
+    Every "no API key configured" fatality gate must go through this
+    helper (startup validation, agent-server session init, agent-server
+    provider switch) so subscription logins work on all of them —
+    gating on ``provider_requires_api_key`` alone bricked subscription
+    sessions in the TUI.
+    """
+    if api_key or not provider_requires_api_key(provider_name):
+        return True
+    canonical = _canonical_provider_name(provider_name)
+    if canonical == "anthropic":
+        from src.auth.anthropic_subscription import load_credentials
+
+        return load_credentials() is not None
+    if canonical == "openai":
+        from src.auth.openai_subscription import load_credentials
+
+        return load_credentials() is not None
+    return False
+
+
 def resolve_api_key(
     provider_name: str, provider_cfg: dict[str, Any] | None = None
 ) -> str:
@@ -347,6 +376,7 @@ __all__ = [
     "get_provider_info",
     "canonical_provider_name",
     "provider_env_vars",
+    "provider_has_credentials",
     "provider_requires_api_key",
     "resolve_api_key",
     "PROVIDER_INFO",

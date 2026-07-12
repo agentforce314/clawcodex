@@ -38,7 +38,7 @@ def get_provider_validation_error(provider_name: str | None) -> str | None:
     paths use (``options.provider_name or get_default_provider()``).
     """
     from src.config import get_default_provider, get_provider_config
-    from src.providers import provider_requires_api_key, resolve_api_key
+    from src.providers import provider_has_credentials, resolve_api_key
 
     name = provider_name or get_default_provider()
     try:
@@ -48,13 +48,11 @@ def get_provider_validation_error(provider_name: str | None) -> str | None:
 
     # Config api_key wins; fall back to the provider's known env vars (e.g.
     # ``DEEPSEEK_API_KEY``). Local providers (Ollama / vLLM / SGLang) need
-    # no key. Same check the headless path ran inline pre-ENTRY-2.
+    # no key; anthropic/openai subscription OAuth logins also pass. Same
+    # check the headless path ran inline pre-ENTRY-2; the shared helper
+    # keeps this gate consistent with the agent-server's two gates.
     api_key = resolve_api_key(name, provider_cfg)
-    if name == "anthropic" and not api_key:
-        from src.auth.anthropic_subscription import load_credentials
-        if load_credentials() is not None:
-            return None
-    if not api_key and provider_requires_api_key(name):
+    if not provider_has_credentials(name, api_key):
         return (
             f"error: API key for provider '{name}' is not configured. "
             "Run `clawcodex login` to set it up."

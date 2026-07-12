@@ -233,6 +233,7 @@ clawcodex                       # Interactive Ink TUI (default)
 clawcodex tui                   # Interactive Ink TUI (explicit)
 clawcodex login                 # Configure API keys (interactive)
 clawcodex logout anthropic      # Remove Claude Pro/Max OAuth credentials
+clawcodex logout openai         # Remove ChatGPT subscription OAuth credentials
 clawcodex config                # Show ~/.clawcodex/config.json-backed settings
 clawcodex --version             # Version string
 
@@ -267,6 +268,28 @@ An explicit `ANTHROPIC_API_KEY` or configured Anthropic API key takes precedence
 
 Use `clawcodex config` to check connection status and
 `clawcodex logout anthropic` to delete the stored OAuth credentials.
+
+### ChatGPT subscription login (OpenAI)
+
+Run `clawcodex login`, choose `openai`, then choose `subscription`. Three
+login methods are offered: `browser` (opens ChatGPT's PKCE authorization page
+and completes via a localhost:1455 redirect — the same flow the Codex CLI
+uses), `device-code` (for headless/SSH machines: enter a short code at
+auth.openai.com/codex/device), and `import-codex-cli` (shown when a Codex CLI
+ChatGPT login exists in `~/.codex/auth.json` — copies it). Tokens are stored
+in `~/.clawcodex/openai-oauth.json` with user-only permissions and refresh
+automatically. With a subscription connected and no OpenAI API key set,
+requests go to the ChatGPT Codex backend (Responses API) and draw on your
+plan's allowance — the cost display shows $0. An explicit `OPENAI_API_KEY` or
+configured OpenAI API key takes precedence. Subscription models:
+`gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex-spark`.
+
+> **Important:** using a ChatGPT plan from third-party clients rides the
+> Codex CLI's official OAuth app, remains subject to OpenAI's terms, and may
+> stop working. The login flow requires explicit confirmation.
+
+Use `clawcodex config` to check connection status and
+`clawcodex logout openai` to delete the stored OAuth credentials.
 
 > **`--dangerously-skip-permissions`** disables every tool permission check
 > for the session. Recommended only inside sandboxed containers/VMs with no
